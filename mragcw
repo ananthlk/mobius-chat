@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Mobius RAG Chat Worker – start Redis + worker (coupled on this server).
+# Starts Redis if not already listening on 6379, then runs the worker.
+set -e
+cd "$(dirname "$0")"
+export QUEUE_TYPE="${QUEUE_TYPE:-redis}"
+export REDIS_URL="${REDIS_URL:-redis://localhost:6379/0}"
+if [ -d .venv ]; then
+  source .venv/bin/activate
+fi
+
+# Check if Redis is already listening on 6379
+redis_ok() {
+  (command -v redis-cli >/dev/null 2>&1 && redis-cli ping 2>/dev/null | grep -q PONG) || \
+  (command -v nc >/dev/null 2>&1 && nc -z localhost 6379 2>/dev/null)
+}
+
+if ! redis_ok; then
+  echo "[mragcw] Redis not running on 6379. Starting Redis..."
+  if command -v redis-server >/dev/null 2>&1; then
+    redis-server --daemonize yes 2>/dev/null || true
+    sleep 1
+  elif command -v brew >/dev/null 2>&1 && brew services list 2>/dev/null | grep -q redis; then
+    brew services start redis 2>/dev/null || true
+    sleep 2
+  elif command -v brew >/dev/null 2>&1; then
+    echo "[mragcw] Install Redis with Homebrew, then run mragcw again:"
+    if [ "$(uname -m)" = "arm64" ]; then
+      echo "  arch -arm64 brew install redis"
+      echo "  arch -arm64 brew services start redis"
+    else
+      echo "  brew install redis"
+      echo "  brew services start redis"
+    fi
+    exit 1
+  elif command -v docker >/dev/null 2>&1; then
+    docker run -d --name mobius-chat-redis -p 6379:6379 redis 2>/dev/null || docker start mobius-chat-redis 2>/dev/null || true
+    sleep 2
+  else
+    echo "[mragcw] Redis is required. Install one of:"
+    if [ "$(uname -m)" = "arm64" ]; then
+      echo "  • Homebrew (ARM): arch -arm64 brew install redis && arch -arm64 brew services start redis"
+    else
+      echo "  • Homebrew: brew install redis && brew services start redis"
+    fi
+    echo "  • Docker:   docker run -d -p 6379:6379 --name mobius-chat-redis redis"
+    echo "Then run: mragcw"
+    exit 1
+  fi
+  if ! redis_ok; then
+    echo "[mragcw] Redis still not reachable. Try:"
+    if [ "$(uname -m)" = "arm64" ]; then
+      echo "  arch -arm64 brew install redis && arch -arm64 brew services start redis"
+    else
+      echo "  brew install redis && brew services start redis"
+    fi
+    echo "  or: docker run -d -p 6379:6379 --name mobius-chat-redis redis"
+    exit 1
+  fi
+  echo "[mragcw] Redis is up."
+fi
+
+echo "[mragcw] Starting worker (QUEUE_TYPE=$QUEUE_TYPE REDIS_URL=$REDIS_URL)..."
+exec python3 -m app.worker

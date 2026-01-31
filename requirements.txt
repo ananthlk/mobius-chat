@@ -1,0 +1,8 @@
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+# Optional: for QUEUE_TYPE=redis (API and worker in separate processes)
+redis>=5.0.0
+# Optional: for LLM_PROVIDER=vertex (Vertex AI / Gemini)
+google-cloud-aiplatform>=1.38.0

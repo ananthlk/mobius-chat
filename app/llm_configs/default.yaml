@@ -1,0 +1,12 @@
+# Default LLM config (Ollama for local dev).
+version: "default"
+provider: "ollama"
+model: "llama3.1:8b"
+options:
+  num_predict: 8192
+  temperature: 0.1
+ollama:
+  base_url: "http://localhost:11434"
+vertex:
+  project_id: null
+  location: "us-central1"
