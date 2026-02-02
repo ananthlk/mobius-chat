@@ -3,6 +3,8 @@ from abc import ABC, abstractmethod
 import asyncio
 import json
 import logging
+import queue
+import threading
 import urllib.error
 import urllib.request
 from typing import Any, AsyncIterator, Callable, Dict
@@ -34,6 +36,37 @@ class LLMProvider(ABC):
         """Generate and return (text, usage). Default: call generate() and return empty usage."""
         text = await self.generate(prompt, **kwargs)
         return (text, zero_usage())
+
+
+def _ollama_stream_producer(
+    base_url: str, model: str, prompt: str, out: queue.Queue, **kwargs
+) -> None:
+    """Runs in a thread. Reads Ollama stream line-by-line, puts chunks into out. Puts None when done; puts ('error', msg) on failure."""
+    req_data = {"model": model, "prompt": prompt, "stream": True, **kwargs}
+    data = json.dumps(req_data).encode("utf-8")
+    req = urllib.request.Request(
+        f"{base_url.rstrip('/')}/api/generate",
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            for line in resp:
+                line = line.decode("utf-8").strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                    if "response" in d:
+                        out.put(d["response"])
+                    if d.get("done", False):
+                        break
+                except json.JSONDecodeError:
+                    continue
+        out.put(None)
+    except Exception as e:
+        out.put(("error", str(e)))
 
 
 def _ollama_request(
@@ -95,13 +128,26 @@ class OllamaProvider(LLMProvider):
         opts = {"num_predict": self.num_predict}
         if "options" in kwargs:
             opts = {**opts, **kwargs.pop("options")}
-        err, chunks = await asyncio.to_thread(
-            _ollama_request, self.base_url, self.model, prompt, True, options=opts, **kwargs
+        loop = asyncio.get_running_loop()
+        q: queue.Queue = queue.Queue()
+
+        def get() -> object:
+            return q.get()
+
+        t = threading.Thread(
+            target=_ollama_stream_producer,
+            args=(self.base_url, self.model, prompt, q),
+            kwargs={"options": opts, **{k: v for k, v in kwargs.items() if k != "options"}},
+            daemon=True,
         )
-        if err:
-            raise Exception(err)
-        for c in chunks or []:
-            yield c
+        t.start()
+        while True:
+            item = await loop.run_in_executor(None, get)
+            if item is None:
+                break
+            if isinstance(item, tuple) and item[0] == "error":
+                raise Exception(item[1])
+            yield item
 
     async def generate(self, prompt: str, **kwargs) -> str:
         text, _ = await self.generate_with_usage(prompt, **kwargs)
@@ -118,6 +164,36 @@ class OllamaProvider(LLMProvider):
             raise Exception(err)
         text = (chunks or [""])[0]
         return (text, usage if usage else zero_usage("ollama", self.model))
+
+
+def _vertex_stream_producer(model_name: str, prompt: str, gen_config: dict, out: queue.Queue) -> None:
+    """Runs in a thread. Streams Vertex AI (Gemini) response into out. Puts delta text only (Gemini may return cumulative .text). Puts None when done; puts ('error', msg) on failure."""
+    try:
+        from vertexai.generative_models import GenerativeModel
+        model = GenerativeModel(model_name)
+        response = model.generate_content(
+            prompt,
+            generation_config=gen_config,
+            stream=True,
+        )
+        so_far = ""
+        for chunk in response:
+            text = getattr(chunk, "text", None) if chunk else None
+            if not text:
+                continue
+            # Vertex/Gemini streaming may return cumulative text; send only the new delta
+            if text.startswith(so_far):
+                delta = text[len(so_far) :]
+                so_far = text
+                if delta:
+                    out.put(delta)
+            else:
+                # treat as delta if not cumulative
+                so_far = text
+                out.put(text)
+        out.put(None)
+    except Exception as e:
+        out.put(("error", str(e)))
 
 
 def _vertex_generate_sync(model_name: str, prompt: str, gen_config: dict) -> tuple[str, LLMUsageDict]:
@@ -168,11 +244,25 @@ class VertexAIProvider(LLMProvider):
 
     async def stream_generate(self, prompt: str, **kwargs) -> AsyncIterator[str]:
         gen_config = self._generation_config(**kwargs)
-        # Simple non-streaming fallback for parity; can add stream later
-        text, _ = await asyncio.to_thread(
-            _vertex_generate_sync, self.model_name, prompt, gen_config
+        loop = asyncio.get_running_loop()
+        q: queue.Queue = queue.Queue()
+
+        def get() -> object:
+            return q.get()
+
+        t = threading.Thread(
+            target=_vertex_stream_producer,
+            args=(self.model_name, prompt, gen_config, q),
+            daemon=True,
         )
-        yield text
+        t.start()
+        while True:
+            item = await loop.run_in_executor(None, get)
+            if item is None:
+                break
+            if isinstance(item, tuple) and item[0] == "error":
+                raise Exception(item[1])
+            yield item
 
     async def generate(self, prompt: str, **kwargs) -> str:
         text, _ = await self.generate_with_usage(prompt, **kwargs)

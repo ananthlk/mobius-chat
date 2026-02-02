@@ -104,7 +104,10 @@ def search_published_rag(
         _emit(emitter, "Searching our materials...")
         deployed_id = (rag.vertex_deployed_index_id or "").strip()
         # Vertex API requires the deployed index ID (e.g. endpoint_mobius_chat_publi_*), not the display name
-        if deployed_id in ("Endpoint_mobius_chat_published_rag", "mobius_chat_published_rag"):
+        if not deployed_id.startswith("endpoint_mobius_chat_publi_") and (
+            deployed_id in ("Endpoint_mobius_chat_published_rag", "mobius_chat_published_rag")
+            or "published_rag" in deployed_id.lower()
+        ):
             deployed_id = "endpoint_mobius_chat_publi_1769989702095"
             logger.info("[RAG search] normalized display name → deployed_index_id=%r", deployed_id)
         print(f"[RAG find_neighbors] deployed_index_id={deployed_id!r}", flush=True)

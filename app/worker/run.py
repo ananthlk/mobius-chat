@@ -19,7 +19,12 @@ try:
     _env_source = "env_helper.load_env"
 except ImportError:
     from dotenv import load_dotenv
-    load_dotenv(_chat_root / ".env", override=True)
+    _env_file = _chat_root / ".env"
+    _preserve = {k: os.environ.get(k) for k in ("QUEUE_TYPE", "REDIS_URL") if os.environ.get(k)}
+    load_dotenv(_env_file, override=True)
+    for k, v in _preserve.items():
+        if v is not None:
+            os.environ[k] = v
     _env_source = "dotenv(_chat_root/.env)"
     # Clear placeholder credentials and resolve to credentials/*.json when env_helper not available
     _c = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or ""
@@ -34,6 +39,20 @@ except ImportError:
                         break
                 if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
                     break
+
+# Clear placeholder GCP credentials and resolve to credentials/*.json if missing (safety net when env_helper loaded global .env with placeholder)
+_c = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or ""
+if "/path/to/" in _c or "your-service-account" in _c or "your-" in _c.lower():
+    os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
+if not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+    for _d in (_chat_root / "credentials", _chat_root.parent / "mobius-config" / "credentials"):
+        if _d.exists():
+            for _p in _d.glob("*.json"):
+                if _p.is_file():
+                    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(_p.resolve())
+                    break
+            if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+                break
 
 # Ensure Vertex project ID is always set (SDK and get_chat_config read env)
 _vp = (os.environ.get("VERTEX_PROJECT_ID") or os.environ.get("CHAT_VERTEX_PROJECT_ID") or "mobiusos-new").strip()
@@ -76,9 +95,20 @@ from app.services.cost_model import compute_cost
 from app.services.non_patient_rag import answer_non_patient
 from app.services.retrieval_calibration import get_retrieval_blend, intent_to_score
 from app.services.usage import LLMUsageDict
-from app.trace_log import trace_entered
+from app.trace_log import trace_entered, is_trace_enabled
 
 logger = logging.getLogger(__name__)
+
+# Show trace status at startup so we can see why [trace] lines may be missing
+_trace_val = os.environ.get("CHAT_DEBUG_TRACE") or os.environ.get("DEBUG_TRACE") or ""
+print(f"[worker startup] CHAT_DEBUG_TRACE/DEBUG_TRACE={_trace_val!r} trace_enabled={is_trace_enabled()}", flush=True)
+# Show queue_type so we can confirm progress will publish to Redis when redis
+try:
+    from app.config import get_config
+    _cfg = get_config()
+    print(f"[worker startup] queue_type={_cfg.queue_type!r} (progress publishes to Redis when redis)", flush=True)
+except Exception as e:
+    print(f"[worker startup] get_config: {e}", flush=True)
 
 DEBUG_PREFIX = "[debug]"
 TRUNCATE = 200

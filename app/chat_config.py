@@ -9,7 +9,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from app.trace_log import trace_entered
+try:
+    from app.trace_log import trace_entered
+except Exception:
+    def trace_entered(_component: str, **_kwargs: Any) -> None:
+        pass
 
 logger = logging.getLogger(__name__)
 
@@ -28,23 +32,24 @@ except ImportError:
         load_dotenv(env_file, override=True)
     get_env_or = lambda k, d, **_: (os.environ.get(k) or d) or d
 
+# Don't pass placeholder credential paths; resolve to first *.json in credentials/ (run after env load)
+_c = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or ""
+if "/path/to/" in _c or "your-service-account" in _c or "your-" in (_c or "").lower():
+    os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
+if not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+    for _d in (_chat_root / "credentials", _chat_root.parent / "mobius-config" / "credentials"):
+        if _d.exists():
+            for _p in _d.glob("*.json"):
+                if _p.is_file():
+                    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(_p.resolve())
+                    break
+            if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+                break
+
 # Ensure Vertex project ID is set (SDK may check env; avoid "Vertex AI requires CHAT_VERTEX_PROJECT_ID or VERTEX_PROJECT_ID")
 _vp = (os.environ.get("VERTEX_PROJECT_ID") or os.environ.get("CHAT_VERTEX_PROJECT_ID") or "mobiusos-new").strip() or "mobiusos-new"
 os.environ.setdefault("VERTEX_PROJECT_ID", _vp)
 os.environ.setdefault("CHAT_VERTEX_PROJECT_ID", os.environ.get("VERTEX_PROJECT_ID", "mobiusos-new"))
-    # Don't pass placeholder credential paths; resolve to first *.json in credentials/
-    _c = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or ""
-    if "/path/to/" in _c or "your-service-account" in _c or "your-" in _c.lower():
-        os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
-    if not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
-        for _d in (_chat_root / "credentials", _chat_root.parent / "mobius-config" / "credentials"):
-            if _d.exists():
-                for _p in _d.glob("*.json"):
-                    if _p.is_file():
-                        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(_p.resolve())
-                        break
-                if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
-                    break
 
 # Optional: load from YAML if present (app/chat_config.yaml)
 _CHAT_CONFIG_DIR = Path(__file__).resolve().parent
@@ -220,9 +225,12 @@ def get_chat_config() -> ChatConfig:
         vertex_deployed_raw,
         _chat_root,
     )
-    vertex_deployed = vertex_deployed_raw
-    # Vertex API requires the deployed index ID (e.g. endpoint_mobius_chat_publi_1769989702095), not the display name
-    if vertex_deployed and vertex_deployed.strip() in ("Endpoint_mobius_chat_published_rag", "mobius_chat_published_rag"):
+    vertex_deployed = (vertex_deployed_raw or "").strip()
+    # Vertex API requires the deployed index ID (e.g. endpoint_mobius_chat_publi_*), not the display name
+    if vertex_deployed and not vertex_deployed.startswith("endpoint_mobius_chat_publi_") and (
+        vertex_deployed in ("Endpoint_mobius_chat_published_rag", "mobius_chat_published_rag")
+        or "published_rag" in vertex_deployed.lower()
+    ):
         vertex_deployed = "endpoint_mobius_chat_publi_1769989702095"
         logger.info("[RAG config] normalized display name → deployed_index_id=%r", vertex_deployed)
     rag_db_url = _env("CHAT_RAG_DATABASE_URL") or os.getenv("RAG_DATABASE_URL") or os.getenv("CHAT_DATABASE_URL")

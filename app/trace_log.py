@@ -21,13 +21,16 @@ _TRACE_ENABLED: bool | None = None
 
 
 def is_trace_enabled() -> bool:
-    """True if trace mode is on (CHAT_DEBUG_TRACE or DEBUG_TRACE = 1, true, yes)."""
+    """True if trace mode is on (CHAT_DEBUG_TRACE or DEBUG_TRACE = 1, true, yes, on; or any non-empty except 0/false/no)."""
     global _TRACE_ENABLED
     if _TRACE_ENABLED is not None:
         return _TRACE_ENABLED
     for key in TRACE_ENV_KEYS:
         v = (os.environ.get(key) or "").strip().lower()
-        if v in ("1", "true", "yes"):
+        if v in ("1", "true", "yes", "on"):
+            _TRACE_ENABLED = True
+            return True
+        if v and v not in ("0", "false", "no"):
             _TRACE_ENABLED = True
             return True
     _TRACE_ENABLED = False

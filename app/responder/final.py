@@ -28,14 +28,14 @@ async def _stream_integrator(
     prompt: str,
     message_chunk_callback: Callable[[str], None],
 ) -> str:
-    """Stream integrator LLM output; call message_chunk_callback for each chunk. Returns full text."""
+    """Stream integrator LLM output; emit each chunk immediately, then accumulate. Returns full text."""
     from app.services.llm_provider import get_llm_provider
     provider = get_llm_provider()
     full: list[str] = []
     async for chunk in provider.stream_generate(prompt):
         if chunk:
+            message_chunk_callback(chunk)  # emit before storing so UI updates immediately
             full.append(chunk)
-            message_chunk_callback(chunk)
     return "".join(full)
 
 

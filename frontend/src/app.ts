@@ -144,6 +144,12 @@ function renderThinkingBlock(
   block.appendChild(preview);
   block.appendChild(body);
 
+  /* Start expanded when we have initial lines so "Sending request…" is visible */
+  if (initialLines.length > 0) {
+    block.classList.remove("collapsed");
+    preview.setAttribute("aria-expanded", "true");
+  }
+
   return {
     el: block,
     setPreview(text: string) {
@@ -155,13 +161,18 @@ function renderThinkingBlock(
       div.textContent = line;
       body.appendChild(div);
       word.textContent = "Thinking";
+      // Keep block open while streaming; show last lines (body has max-height + overflow)
+      block.classList.remove("collapsed");
+      preview.setAttribute("aria-expanded", "true");
+      body.scrollTop = body.scrollHeight;
     },
     done(lineCount: number) {
       word.textContent = lineCount <= 1 ? "Thinking" : `Thinking (${lineCount})`;
       block.classList.add("thinking-block--done");
+      // Stay open for a few seconds after final message, then collapse
       setTimeout(() => {
         collapse();
-      }, 2500);
+      }, 3000);
     },
   };
 }
@@ -375,13 +386,73 @@ function run(): void {
     });
   }
 
+  /** Live stream via SSE; falls back to polling if EventSource unavailable or stream fails. */
+  function streamResponse(
+    correlationId: string,
+    onThinking: ((line: string) => void) | null,
+    onStreamingMessage: ((text: string) => void) | null
+  ): Promise<ChatResponse> {
+    if (typeof EventSource === "undefined") {
+      return pollResponse(correlationId, onThinking, onStreamingMessage);
+    }
+    const streamUrl = API_BASE + "/chat/stream/" + encodeURIComponent(correlationId);
+    return new Promise((resolve, reject) => {
+      let messageSoFar = "";
+      let resolved = false;
+      const es = new EventSource(streamUrl);
+      es.onmessage = (e: MessageEvent) => {
+        try {
+          const parsed = JSON.parse(e.data as string) as { event: string; data?: unknown };
+          const ev = parsed.event;
+          const data = parsed.data as Record<string, unknown> | undefined;
+          // Debug: log when each SSE event arrives (ts_readable = when worker wrote it)
+          const writtenAt = data?.ts_readable ?? data?.ts;
+          if (typeof console !== "undefined") {
+            console.log(`[stream] ${ev} received_at=${new Date().toISOString().slice(11, 23)} written_at=${String(writtenAt ?? "—")}`);
+          }
+          if (ev === "thinking" && data?.line != null && onThinking) {
+            onThinking(String(data.line));
+          } else if (ev === "message" && data?.chunk != null && onStreamingMessage) {
+            messageSoFar += String(data.chunk);
+            onStreamingMessage(messageSoFar);
+          } else if (ev === "completed" && data != null) {
+            resolved = true;
+            es.close();
+            resolve(data as unknown as ChatResponse);
+          } else if (ev === "error" && data?.message != null) {
+            resolved = true;
+            es.close();
+            reject(new Error(String(data.message)));
+          }
+        } catch (err) {
+          resolved = true;
+          es.close();
+          reject(err instanceof Error ? err : new Error(String(err)));
+        }
+      };
+      es.onerror = () => {
+        es.close();
+        if (resolved) return;
+        pollResponse(correlationId, onThinking, onStreamingMessage).then(resolve).catch(reject);
+      };
+    });
+  }
+
   const chatEmpty = document.getElementById("chatEmpty");
 
   function sendMessage(): void {
     const message = (inputEl.value ?? "").trim();
     if (!message) return;
+    if (sendBtn.disabled) return; // already sending
 
     if (chatEmpty) chatEmpty.classList.add("hidden");
+
+    // Collapse any previous turn's thinking blocks so only this turn's thinking is open
+    messagesEl.querySelectorAll(".thinking-block").forEach((block) => {
+      block.classList.add("collapsed");
+      const p = block.querySelector(".thinking-preview");
+      if (p) p.setAttribute("aria-expanded", "false");
+    });
 
     // 1. User message
     const turnWrap = document.createElement("div");
@@ -393,6 +464,7 @@ function run(): void {
     inputEl.value = "";
     updateSendState();
     sendBtn.disabled = true;
+    inputEl.disabled = true;
 
     // 2. Thinking block (compact line, streams then collapses)
     const thinkingLines: string[] = [];
@@ -426,7 +498,7 @@ function run(): void {
       .then((r) => r.json() as Promise<ChatPostResponse>)
       .then((data) => {
         addThinkingLineAndScroll("Request sent. Waiting for worker…");
-        return pollResponse(data.correlation_id, addThinkingLineAndScroll, onStreamingMessage);
+        return streamResponse(data.correlation_id, addThinkingLineAndScroll, onStreamingMessage);
       })
       .then((data) => {
         // Final thinking lines if any not yet shown
@@ -495,6 +567,8 @@ function run(): void {
       })
       .finally(() => {
         sendBtn.disabled = false;
+        inputEl.disabled = false;
+        updateSendState();
       });
   }
 

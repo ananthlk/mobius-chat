@@ -12,6 +12,8 @@ class Config:
     redis_request_key: str = "mobius:chat:requests"
     redis_response_key_prefix: str = "mobius:chat:response:"
     redis_response_ttl_seconds: int = 86400  # 24h
+    redis_progress_channel_prefix: str = "mobius:chat:progress:"
+    live_stream_via_redis: bool = False  # When True, API subscribes to Redis for progress (set CHAT_LIVE_STREAM=1 when worker is separate)
     storage_backend: Literal["memory"] = "memory"
     api_base_url: str = "http://localhost:8000"
     # LLM (same pattern as Mobius RAG: vertex for prod, ollama for local)
@@ -31,6 +33,8 @@ def get_config() -> Config:
         redis_request_key=os.getenv("REDIS_REQUEST_KEY", "mobius:chat:requests"),
         redis_response_key_prefix=os.getenv("REDIS_RESPONSE_KEY_PREFIX", "mobius:chat:response:"),
         redis_response_ttl_seconds=int(os.getenv("REDIS_RESPONSE_TTL_SECONDS", "86400")),
+        redis_progress_channel_prefix=os.getenv("REDIS_PROGRESS_CHANNEL_PREFIX", "mobius:chat:progress:"),
+        live_stream_via_redis=os.getenv("CHAT_LIVE_STREAM", "").strip().lower() in ("1", "true", "yes"),
         storage_backend=os.getenv("STORAGE_BACKEND", "memory"),
         api_base_url=os.getenv("API_BASE_URL", "http://localhost:8000"),
         llm_provider=os.getenv("LLM_PROVIDER", "vertex" if os.getenv("VERTEX_PROJECT_ID") else "ollama") or "ollama",

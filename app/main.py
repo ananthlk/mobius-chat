@@ -1,6 +1,11 @@
-"""FastAPI app: POST /chat (enqueue), GET /chat/response/:id (poll), GET /chat/plan/:id, health."""
+"""FastAPI app: POST /chat (enqueue), GET /chat/response/:id (poll), GET /chat/stream/:id (SSE), GET /chat/plan/:id, health."""
+import asyncio
+import json
 import logging
 import os
+import queue
+import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -15,7 +20,12 @@ try:
     load_env(_chat_root)
 except ImportError:
     from dotenv import load_dotenv
-    load_dotenv(_chat_root / ".env", override=True)
+    _env_file = _chat_root / ".env"
+    _preserve = {k: os.environ.get(k) for k in ("QUEUE_TYPE", "REDIS_URL") if os.environ.get(k)}
+    load_dotenv(_env_file, override=True)
+    for k, v in _preserve.items():
+        if v is not None:
+            os.environ[k] = v
     # Clear placeholder credentials and resolve to credentials/*.json when env_helper not available
     _c = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or ""
     if "/path/to/" in _c or "your-service-account" in _c or "your-" in _c.lower():
@@ -32,15 +42,16 @@ except ImportError:
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.chat_config import chat_config_for_api
 from app.config import get_config
 from app.queue import get_queue
+from app.queue.redis_queue import RedisQueue
 from app.storage import get_plan, get_response
-from app.storage.progress import get_progress
+from app.storage.progress import get_and_clear_events, get_progress
 from app.worker import start_worker_background
 
 logging.basicConfig(level=logging.INFO)
@@ -96,6 +107,124 @@ def get_chat_response(correlation_id: str):
     if in_progress:
         return {"status": "processing", "message": message_so_far or None, "plan": None, "thinking_log": thinking_log}
     return {"status": "pending", "message": None, "plan": None, "thinking_log": None}
+
+
+def _redis_progress_subscriber(channel: str, out: queue.Queue) -> None:
+    """Run in a thread. Subscribes to Redis channel and puts each message payload (JSON str) into out."""
+    try:
+        from app.config import get_config
+        import redis
+        cfg = get_config()
+        r = redis.from_url(cfg.redis_url, decode_responses=True)
+        pubsub = r.pubsub()
+        pubsub.subscribe(channel)
+        for message in pubsub.listen():
+            if message.get("type") == "message":
+                data = message.get("data")
+                if data is not None:
+                    out.put(data)
+    except Exception as e:
+        logger.exception("Redis progress subscriber error: %s", e)
+        out.put(None)  # Signal error so stream can exit
+
+
+@app.get("/chat/stream/{correlation_id}")
+async def stream_chat_response(correlation_id: str):
+    """SSE stream: yields thinking and message chunks in real time, then a 'completed' event with full response.
+    With Redis queue, subscribes to progress channel. With memory queue, polls in-memory progress."""
+    STREAM_POLL_INTERVAL = 0.05
+    STREAM_REDIS_GET_TIMEOUT = 0.5
+    STREAM_TIMEOUT_SEC = 300
+
+    cfg = get_config()
+    queue_is_redis = isinstance(get_queue(), RedisQueue)
+    live_stream_env = getattr(cfg, "live_stream_via_redis", False)
+    use_redis_stream = live_stream_env or queue_is_redis
+    logger.info(
+        "[stream] GET /chat/stream/%s live_stream_via_redis=%s queue_type=%s queue_is_redis=%s use_redis_stream=%s",
+        correlation_id[:8],
+        live_stream_env,
+        getattr(cfg, "queue_type", "?"),
+        queue_is_redis,
+        use_redis_stream,
+    )
+
+    async def event_generator():
+        start = time.monotonic()
+        redis_queue = None
+        redis_thread = None
+        use_redis = use_redis_stream  # local copy so except can set False without UnboundLocalError
+        if use_redis:
+            try:
+                channel = getattr(cfg, "redis_progress_channel_prefix", "mobius:chat:progress:") + correlation_id
+                redis_queue = queue.Queue()
+                redis_thread = threading.Thread(
+                    target=_redis_progress_subscriber,
+                    args=(channel, redis_queue),
+                    daemon=True,
+                )
+                redis_thread.start()
+                logger.info("[stream] Redis subscriber started for channel=%s", channel)
+            except Exception as e:
+                logger.warning("[stream] Redis progress subscribe failed, falling back to poll: %s", e)
+                use_redis = False
+
+        loop = asyncio.get_running_loop()
+        redis_event_count = 0
+
+        while True:
+            if time.monotonic() - start > STREAM_TIMEOUT_SEC:
+                yield f"data: {json.dumps({'event': 'error', 'data': {'message': 'Stream timeout'}})}\n\n"
+                return
+
+            if use_redis and redis_queue is not None:
+                try:
+                    def get_with_timeout():
+                        return redis_queue.get(timeout=STREAM_REDIS_GET_TIMEOUT)
+                    raw = await loop.run_in_executor(None, get_with_timeout)
+                    if raw is None:
+                        yield f"data: {json.dumps({'event': 'error', 'data': {'message': 'Stream error'}})}\n\n"
+                        return
+                    ev = json.loads(raw) if isinstance(raw, str) else raw
+                    redis_event_count += 1
+                    received_at = time.strftime("%H:%M:%S", time.localtime()) + f".{int(time.time() * 1000) % 1000:03d}"
+                    data = ev.get("data") or {}
+                    written_at = data.get("ts_readable", "")
+                    if redis_event_count == 1:
+                        logger.info("[stream] first progress event received for %s", correlation_id[:8])
+                    logger.info(
+                        "[stream] received #%s cid=%s event=%s written_at=%s received_at=%s",
+                        redis_event_count, correlation_id[:8], ev.get("event"), written_at, received_at,
+                    )
+                    yield f"data: {json.dumps(ev)}\n\n"
+                except queue.Empty:
+                    pass
+                except Exception as e:
+                    logger.debug("Redis stream get: %s", e)
+                await asyncio.sleep(0.02)
+            else:
+                for ev in get_and_clear_events(correlation_id):
+                    yield f"data: {json.dumps(ev)}\n\n"
+
+            q = get_queue()
+            resp = q.get_response(correlation_id)
+            if resp is None:
+                resp = get_response(correlation_id)
+            if resp is not None:
+                logger.info("[stream] completed %s (redis_events=%s)", correlation_id[:8], redis_event_count if use_redis else "n/a")
+                yield f"data: {json.dumps({'event': 'completed', 'data': resp})}\n\n"
+                return
+            await asyncio.sleep(STREAM_POLL_INTERVAL if not use_redis else 0)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/chat/plan/{correlation_id}")
