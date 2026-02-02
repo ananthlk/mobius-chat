@@ -9,6 +9,10 @@ function el(id) {
         throw new Error("Element not found: " + id);
     return e;
 }
+/** Normalize message text: collapse multiple newlines to single for tighter display. */
+function normalizeMessageText(text) {
+    return (text ?? "").replace(/\n{2,}/g, "\n").trim();
+}
 /** Parse full message into body text and sources (from "Sources:" block). */
 function parseMessageAndSources(fullMessage) {
     const raw = (fullMessage ?? "").trim();
@@ -54,9 +58,14 @@ function renderThinkingBlock(initialLines, opts) {
     const word = document.createElement("span");
     word.className = "thinking-word";
     word.textContent = "Thinking";
+    const dotsEl = document.createElement("span");
+    dotsEl.className = "thinking-dots";
+    dotsEl.setAttribute("aria-hidden", "true");
+    dotsEl.textContent = "...";
     const lineEl = document.createElement("span");
     lineEl.className = "thinking-rule";
     preview.appendChild(word);
+    preview.appendChild(dotsEl);
     preview.appendChild(lineEl);
     const body = document.createElement("div");
     body.className = "thinking-body";
@@ -108,6 +117,7 @@ function renderThinkingBlock(initialLines, opts) {
             body.scrollTop = body.scrollHeight;
         },
         done(lineCount) {
+            dotsEl.remove(); // stop "..." animation
             word.textContent = lineCount <= 1 ? "Thinking" : `Thinking (${lineCount})`;
             block.classList.add("thinking-block--done");
             // Stay open for a few seconds after final message, then collapse
@@ -123,39 +133,190 @@ function renderAssistantMessage(text, isError) {
     wrap.className = "message message--assistant" + (isError ? " message--error" : "");
     const bubble = document.createElement("div");
     bubble.className = "message-bubble";
-    bubble.textContent = text;
+    bubble.textContent = normalizeMessageText(text);
     wrap.appendChild(bubble);
     return wrap;
 }
-/** Reusable: feedback bar (thumbs up/down, copy). */
-function renderFeedback() {
+const FEEDBACK_COMMENT_MAX_LENGTH = 500;
+function svgIcon(className, paths) {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", className);
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    paths.forEach((d) => {
+        const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        p.setAttribute("d", d);
+        svg.appendChild(p);
+    });
+    return svg;
+}
+/** Thumbs up icon (Feather-style). */
+function thumbsUpIcon(className) {
+    return svgIcon(className, [
+        "M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3",
+    ]);
+}
+/** Thumbs down icon (Feather-style). */
+function thumbsDownIcon(className) {
+    return svgIcon(className, [
+        "M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17",
+    ]);
+}
+/** Copy icon (Feather-style: two overlapping rectangles). */
+function copyIcon(className) {
+    return svgIcon(className, [
+        "M16 4h4v4h-4V4z",
+        "M20 10v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2z",
+        "M6 10v10h12V10H6z",
+    ]);
+}
+/** Reusable: feedback bar (thumbs up/down, copy). Accepts correlationId and optional initial state; returns el + updateFeedback for post-submit UI update. */
+function renderFeedback(correlationId, options) {
     const bar = document.createElement("div");
     bar.className = "feedback";
     const up = document.createElement("button");
     up.type = "button";
     up.setAttribute("aria-label", "Good response");
-    up.textContent = "👍";
+    up.appendChild(thumbsUpIcon("feedback-icon"));
     const down = document.createElement("button");
     down.type = "button";
     down.setAttribute("aria-label", "Bad response");
-    down.textContent = "👎";
-    const copy = document.createElement("button");
-    copy.type = "button";
-    copy.setAttribute("aria-label", "Copy");
-    copy.textContent = "Copy";
-    copy.addEventListener("click", () => {
+    down.appendChild(thumbsDownIcon("feedback-icon"));
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.setAttribute("aria-label", "Copy");
+    copyBtn.appendChild(copyIcon("feedback-icon"));
+    copyBtn.addEventListener("click", () => {
         const msg = bar.closest(".chat-turn")?.querySelector(".message--assistant .message-bubble");
         if (msg?.textContent) {
             navigator.clipboard.writeText(msg.textContent).then(() => {
-                copy.textContent = "Copied";
-                setTimeout(() => (copy.textContent = "Copy"), 1500);
+                const label = copyBtn.getAttribute("aria-label");
+                copyBtn.setAttribute("aria-label", "Copied");
+                const icon = copyBtn.querySelector(".feedback-icon");
+                if (icon)
+                    copyBtn.removeChild(icon);
+                const span = document.createElement("span");
+                span.className = "feedback-copy-label";
+                span.textContent = "Copied";
+                copyBtn.appendChild(span);
+                setTimeout(() => {
+                    copyBtn.removeChild(span);
+                    copyBtn.appendChild(copyIcon("feedback-icon"));
+                    if (label)
+                        copyBtn.setAttribute("aria-label", label);
+                }, 1500);
             });
         }
     });
-    bar.appendChild(up);
-    bar.appendChild(down);
-    bar.appendChild(copy);
-    return bar;
+    const commentEl = document.createElement("div");
+    commentEl.className = "feedback-comment";
+    commentEl.style.display = "none";
+    const commentForm = document.createElement("div");
+    commentForm.className = "feedback-comment-form";
+    commentForm.style.display = "none";
+    const commentInput = document.createElement("textarea");
+    commentInput.placeholder = "What went wrong? (optional)";
+    commentInput.rows = 2;
+    commentInput.maxLength = FEEDBACK_COMMENT_MAX_LENGTH;
+    const btnRow = document.createElement("div");
+    btnRow.className = "feedback-comment-buttons";
+    const submitBtn = document.createElement("button");
+    submitBtn.type = "button";
+    submitBtn.textContent = "Submit";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.textContent = "Cancel";
+    btnRow.appendChild(submitBtn);
+    btnRow.appendChild(cancelBtn);
+    commentForm.appendChild(commentInput);
+    commentForm.appendChild(btnRow);
+    function setSelected(rating) {
+        up.classList.toggle("selected", rating === "up");
+        down.classList.toggle("selected", rating === "down");
+    }
+    function setCommentVisible(text) {
+        commentEl.textContent = text;
+        commentEl.style.display = text ? "block" : "none";
+    }
+    function disableThumbs() {
+        up.disabled = true;
+        down.disabled = true;
+    }
+    function updateFeedback(rating, comment) {
+        setSelected(rating);
+        setCommentVisible(comment);
+        commentForm.style.display = "none";
+        disableThumbs();
+    }
+    if (options?.initialRating) {
+        setSelected(options.initialRating);
+        if (options.initialComment)
+            setCommentVisible(options.initialComment);
+        disableThumbs();
+    }
+    up.addEventListener("click", () => {
+        if (up.disabled)
+            return;
+        fetch(API_BASE + "/chat/feedback", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ correlation_id: correlationId, rating: "up", comment: null }),
+        })
+            .then((r) => {
+            if (r.ok)
+                updateFeedback("up", "");
+        })
+            .catch(() => { });
+    });
+    down.addEventListener("click", () => {
+        if (down.disabled)
+            return;
+        commentForm.style.display = "block";
+        commentInput.value = "";
+        commentInput.focus();
+    });
+    cancelBtn.addEventListener("click", () => {
+        commentForm.style.display = "none";
+    });
+    commentInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            submitBtn.click();
+        }
+    });
+    submitBtn.addEventListener("click", () => {
+        const comment = commentInput.value.trim().slice(0, FEEDBACK_COMMENT_MAX_LENGTH);
+        fetch(API_BASE + "/chat/feedback", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                correlation_id: correlationId,
+                rating: "down",
+                comment: comment || null,
+            }),
+        })
+            .then((r) => {
+            if (r.ok)
+                updateFeedback("down", comment);
+        })
+            .catch(() => { });
+    });
+    const leftGroup = document.createElement("div");
+    leftGroup.className = "feedback-left";
+    leftGroup.appendChild(up);
+    leftGroup.appendChild(down);
+    leftGroup.appendChild(commentEl);
+    leftGroup.appendChild(commentForm);
+    const actionsGroup = document.createElement("div");
+    actionsGroup.className = "feedback-actions";
+    actionsGroup.appendChild(copyBtn);
+    bar.appendChild(leftGroup);
+    bar.appendChild(actionsGroup);
+    return { el: bar, updateFeedback };
 }
 /** Reusable: source citer – same look as thinking (word + line, muted, collapsed by default). */
 function renderSourceCiter(sources) {
@@ -229,7 +390,6 @@ function run() {
     const drawerOverlay = el("drawerOverlay");
     const hamburger = el("hamburger");
     const drawerClose = el("drawerClose");
-    const btnConfig = document.getElementById("btnConfig");
     function openDrawer() {
         drawer.classList.add("open");
         drawerOverlay.classList.add("open");
@@ -242,8 +402,6 @@ function run() {
     hamburger.addEventListener("click", openDrawer);
     drawerClose.addEventListener("click", closeDrawer);
     drawerOverlay.addEventListener("click", closeDrawer);
-    if (btnConfig)
-        btnConfig.addEventListener("click", openDrawer);
     function loadChatConfig() {
         fetch(API_BASE + "/chat/config")
             .then((r) => r.json())
@@ -270,6 +428,7 @@ function run() {
                         (parser.patient_keywords?.length
                             ? parser.patient_keywords.join(", ")
                             : "—");
+            loadSidebarLlm(data);
         })
             .catch(() => {
             const sysEl = document.getElementById("promptFirstGenSystem");
@@ -278,6 +437,90 @@ function run() {
                 sysEl.textContent = "Failed to load config.";
             if (llmEl)
                 llmEl.textContent = "Failed to load config.";
+        });
+    }
+    function loadSidebarLlm(config) {
+        const el = document.getElementById("sidebarLlmLabel");
+        if (!el)
+            return;
+        if (config?.llm) {
+            const p = config.llm.provider ?? "—";
+            const m = config.llm.model ?? "—";
+            el.textContent = "LLM: " + p + " / " + m;
+        }
+        else {
+            fetch(API_BASE + "/chat/config")
+                .then((r) => r.json())
+                .then((data) => {
+                if (data.llm)
+                    el.textContent =
+                        "LLM: " + (data.llm.provider ?? "—") + " / " + (data.llm.model ?? "—");
+            })
+                .catch(() => {
+                el.textContent = "LLM: —";
+            });
+        }
+    }
+    function loadSidebarHistory() {
+        const recentList = document.getElementById("recentList");
+        const helpfulList = document.getElementById("helpfulList");
+        const documentsList = document.getElementById("documentsList");
+        if (!recentList || !helpfulList || !documentsList)
+            return;
+        const snippet = (q, max = 50) => (q ?? "").trim().slice(0, max) + ((q ?? "").length > max ? "…" : "");
+        Promise.all([
+            fetch(API_BASE + "/chat/history/recent?limit=10").then((r) => r.json()),
+            fetch(API_BASE + "/chat/history/most-helpful-searches?limit=10").then((r) => r.json()),
+            fetch(API_BASE + "/chat/history/most-helpful-documents?limit=10").then((r) => r.json()),
+        ])
+            .then(([recent, helpful, documents]) => {
+            recentList.innerHTML = "";
+            recent.forEach((item) => {
+                const li = document.createElement("li");
+                li.className = "recent-item";
+                li.textContent = snippet(item.question);
+                li.title = item.question;
+                li.setAttribute("data-correlation-id", item.correlation_id);
+                li.addEventListener("click", () => {
+                    const q = (item.question ?? "").trim();
+                    if (!q)
+                        return;
+                    inputEl.value = q;
+                    updateSendState();
+                    sendMessage();
+                });
+                recentList.appendChild(li);
+            });
+            helpfulList.innerHTML = "";
+            helpful.forEach((item) => {
+                const li = document.createElement("li");
+                li.className = "helpful-item";
+                li.textContent = snippet(item.question);
+                li.title = item.question;
+                li.setAttribute("data-correlation-id", item.correlation_id);
+                li.addEventListener("click", () => {
+                    const q = (item.question ?? "").trim();
+                    if (!q)
+                        return;
+                    inputEl.value = q;
+                    updateSendState();
+                    sendMessage();
+                });
+                helpfulList.appendChild(li);
+            });
+            documentsList.innerHTML = "";
+            documents.forEach((item) => {
+                const li = document.createElement("li");
+                li.className = "documents-item";
+                li.textContent = item.document_name;
+                li.title = item.document_name;
+                documentsList.appendChild(li);
+            });
+        })
+            .catch(() => {
+            recentList.innerHTML = "";
+            helpfulList.innerHTML = "";
+            documentsList.innerHTML = "";
         });
     }
     function pollResponse(correlationId, onThinking, onStreamingMessage) {
@@ -413,7 +656,7 @@ function run() {
             else {
                 const bubble = messageWrapEl.querySelector(".message-bubble");
                 if (bubble)
-                    bubble.textContent = text;
+                    bubble.textContent = normalizeMessageText(text);
             }
             scrollToBottom(messagesEl);
         }
@@ -423,11 +666,12 @@ function run() {
             body: JSON.stringify({ message }),
         })
             .then((r) => r.json())
-            .then((data) => {
+            .then((postData) => {
             addThinkingLineAndScroll("Request sent. Waiting for worker…");
-            return streamResponse(data.correlation_id, addThinkingLineAndScroll, onStreamingMessage);
+            const correlationId = postData.correlation_id;
+            return streamResponse(correlationId, addThinkingLineAndScroll, onStreamingMessage).then((streamData) => ({ streamData, correlationId }));
         })
-            .then((data) => {
+            .then(({ streamData: data, correlationId }) => {
             // Final thinking lines if any not yet shown
             (data.thinking_log ?? []).forEach((line) => {
                 if (!thinkingLines.includes(line))
@@ -446,15 +690,15 @@ function run() {
             if (messageWrapEl) {
                 const bubble = messageWrapEl.querySelector(".message-bubble");
                 if (bubble)
-                    bubble.textContent = body || "(No response)";
+                    bubble.textContent = normalizeMessageText(body || "(No response)");
                 if (data.llm_error)
                     messageWrapEl.classList.add("message--error");
             }
             else {
                 turnWrap.appendChild(renderAssistantMessage(body || "(No response)", !!data.llm_error));
             }
-            // 4. Feedback
-            turnWrap.appendChild(renderFeedback());
+            // 4. Feedback (pass correlation_id for persistence)
+            turnWrap.appendChild(renderFeedback(correlationId).el);
             // 5. Sources: prefer API response.sources (from RAG) so source cards show even when integrator drops them
             const sourceList = data.sources && data.sources.length > 0
                 ? data.sources.map((s) => ({
@@ -481,6 +725,7 @@ function run() {
                 turnWrap.appendChild(renderSourceCiter(sourceList));
             }
             scrollToBottom(messagesEl);
+            loadSidebarHistory();
         })
             .catch((err) => {
             thinkingDone(thinkingLines.length);
@@ -506,6 +751,8 @@ function run() {
     });
     sendBtn.addEventListener("click", () => sendMessage());
     updateSendState();
+    loadSidebarHistory();
+    loadSidebarLlm();
 }
 run();
 export {};

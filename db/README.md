@@ -13,6 +13,10 @@
 
 ### Apply schema
 
+**Standard:** Migrations run automatically at the start of `./mstart`. They apply all `.sql` files in `db/schema/` in order using `CHAT_RAG_DATABASE_URL` from `mobius-chat/.env`. No manual step needed when using mstart.
+
+**Manual (first-time or without mstart):**
+
 ```bash
 psql -h <host> -U <user> -d mobius_chat -f db/schema/002_published_rag_metadata.sql
 ```

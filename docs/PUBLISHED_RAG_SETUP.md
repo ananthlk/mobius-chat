@@ -11,7 +11,9 @@ On the Postgres server (e.g. Cloud SQL at your `POSTGRES_HOST`), create the data
 psql -h <your-chat-db-host> -U postgres -d postgres -c "CREATE DATABASE mobius_chat;"
 ```
 
-Then apply the published RAG metadata table and sync audit table:
+**Migrations run automatically:** When you start Mobius with `./mstart`, mobius-chat DB migrations run first (before any services). They apply all `.sql` files in `db/schema/` in order (001, 002, 003) using `CHAT_RAG_DATABASE_URL` from `mobius-chat/.env`. If that URL is not set, migrations are skipped and startup continues.
+
+For first-time setup or if you are not using `mstart`, apply the schema manually. Published RAG metadata and sync audit:
 
 ```bash
 psql -h <your-chat-db-host> -U <your-user> -d mobius_chat -f db/schema/002_published_rag_metadata.sql
@@ -28,6 +30,14 @@ psql -h 127.0.0.1 -U <your-user> -d mobius_chat -f db/schema/002_published_rag_m
 ```
 
 Creates: `published_rag_metadata` (metadata only; id = link to Vertex), `sync_runs` (audit).
+
+Chat feedback table (thumbs up/down + comment per turn):
+
+```bash
+psql -h <your-chat-db-host> -U <your-user> -d mobius_chat -f db/schema/003_chat_feedback.sql
+```
+
+Creates: `chat_feedback` (correlation_id, rating, comment, created_at).
 
 ## 2. Create Vertex AI Vector Search index
 

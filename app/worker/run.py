@@ -89,7 +89,7 @@ from app.planner.blueprint import build_blueprint
 from app.planner.schemas import Plan
 from app.queue import get_queue
 from app.responder import format_response
-from app.storage import store_plan, store_response
+from app.storage import insert_turn, store_plan, store_response
 from app.storage.progress import append_message_chunk, append_thinking, clear_progress, start_progress
 from app.services.cost_model import compute_cost
 from app.services.non_patient_rag import answer_non_patient
@@ -154,6 +154,7 @@ def _answer_for_subquestion(
 def process_one(correlation_id: str, payload: dict) -> None:
     """Process one request: plan (breakdown only) → answer each subquestion via patient/non-patient path → combine → publish."""
     trace_entered("worker.run.process_one", correlation_id=correlation_id)
+    t0_total = time.perf_counter()
     message = payload.get("message", "").strip()
     thinking_chunks: list[str] = []
     start_progress(correlation_id)
@@ -321,6 +322,10 @@ def process_one(correlation_id: str, payload: dict) -> None:
         for i, s in enumerate(all_sources)
     ]
 
+    duration_ms = int((time.perf_counter() - t0_total) * 1000)
+    llm_provider = (usages[0].get("provider") or None) if usages else None
+    session_id = payload.get("session_id") if isinstance(payload.get("session_id"), str) else None
+
     response_payload = {
         "status": "completed",
         "message": final_message,
@@ -335,6 +340,17 @@ def process_one(correlation_id: str, payload: dict) -> None:
         "sources": response_sources,
     }
     clear_progress(correlation_id)
+    insert_turn(
+        correlation_id=correlation_id,
+        question=message,
+        thinking_log=thinking_chunks,
+        final_message=final_message,
+        sources=response_sources,
+        duration_ms=duration_ms,
+        model_used=model_used,
+        llm_provider=llm_provider,
+        session_id=session_id,
+    )
     store_response(correlation_id, response_payload)
     get_queue().publish_response(correlation_id, response_payload)
     logger.info("Response published for %s", correlation_id)

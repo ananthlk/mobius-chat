@@ -50,7 +50,14 @@ from app.chat_config import chat_config_for_api
 from app.config import get_config
 from app.queue import get_queue
 from app.queue.redis_queue import RedisQueue
-from app.storage import get_plan, get_response
+from app.storage import (
+    get_most_helpful_documents,
+    get_most_helpful_turns,
+    get_plan,
+    get_recent_turns,
+    get_response,
+)
+from app.storage.feedback import get_feedback, insert_feedback
 from app.storage.progress import get_and_clear_events, get_progress
 from app.worker import start_worker_background
 
@@ -80,17 +87,69 @@ def maybe_start_worker():
 
 class ChatRequest(BaseModel):
     message: str = ""
+    session_id: str | None = None
 
 
 class ChatResponse(BaseModel):
     correlation_id: str
 
 
+FEEDBACK_COMMENT_MAX_LENGTH = 500
+
+
+class FeedbackRequest(BaseModel):
+    correlation_id: str
+    rating: str  # "up" | "down"
+    comment: str | None = None
+
+
+@app.post("/chat/feedback")
+def post_feedback(body: FeedbackRequest):
+    """Persist thumbs up/down and optional comment for a turn. One feedback per correlation_id (upsert)."""
+    if body.rating not in ("up", "down"):
+        raise HTTPException(status_code=400, detail="rating must be 'up' or 'down'")
+    comment = (body.comment or "").strip()
+    if len(comment) > FEEDBACK_COMMENT_MAX_LENGTH:
+        comment = comment[:FEEDBACK_COMMENT_MAX_LENGTH]
+    insert_feedback(body.correlation_id, body.rating, comment or None)
+    return {"ok": True}
+
+
+@app.get("/chat/feedback/{correlation_id}")
+def get_feedback_route(correlation_id: str):
+    """Return stored feedback for a turn, or 404 if none."""
+    fb = get_feedback(correlation_id)
+    if fb is None:
+        raise HTTPException(status_code=404, detail="No feedback for this turn")
+    return fb
+
+
+@app.get("/chat/history/recent")
+def get_history_recent(limit: int = 10):
+    """Return recent turns for left panel (correlation_id, question, created_at)."""
+    return get_recent_turns(limit=max(1, min(limit, 100)))
+
+
+@app.get("/chat/history/most-helpful-searches")
+def get_history_most_helpful_searches(limit: int = 10):
+    """Return turns with thumbs up for left panel."""
+    return get_most_helpful_turns(limit=max(1, min(limit, 100)))
+
+
+@app.get("/chat/history/most-helpful-documents")
+def get_history_most_helpful_documents(limit: int = 10):
+    """Return top documents from turns with thumbs up (document_name, count)."""
+    return get_most_helpful_documents(limit=max(1, min(limit, 100)))
+
+
 @app.post("/chat", response_model=ChatResponse)
 def post_chat(body: ChatRequest):
     """Enqueue a chat request; returns correlation_id for polling."""
     correlation_id = str(uuid.uuid4())
-    get_queue().publish_request(correlation_id, {"message": body.message or ""})
+    payload = {"message": body.message or ""}
+    if body.session_id is not None:
+        payload["session_id"] = body.session_id
+    get_queue().publish_request(correlation_id, payload)
     return ChatResponse(correlation_id=correlation_id)
 
 

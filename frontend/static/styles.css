@@ -4,15 +4,15 @@
   --sidebar-text: #0f172a;
   --sidebar-text-muted: #64748b;
   --sidebar-border: #e2e8f0;
-  --main-bg: #ffffff;
-  --main-text: #0f172a;
+  --main-bg: #fafbfc;
+  --main-text: #1a1d21;
   --accent: #3b82f6;
   --accent-hover: #2563eb;
   --user-bubble: #3b82f6;
   --assistant-bubble: #ffffff;
-  --assistant-border: #e2e8f0;
-  --assistant-bubble-tint: rgba(60, 64, 67, 0.06);
-  --assistant-bubble-edge: rgba(60, 64, 67, 0.10);
+  --assistant-border: #e5e7eb;
+  --assistant-bubble-tint: rgba(255, 255, 255, 0.95);
+  --assistant-bubble-edge: rgba(0, 0, 0, 0.06);
   --thinking-bg: #f1f5f9;
   --thinking-text: #64748b;
   --thinking-muted: #cbd5e1;
@@ -26,9 +26,20 @@
   --radius-md: 12px;
   --radius-lg: 16px;
   --radius-full: 9999px;
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", sans-serif;
+  --font-sans: "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
   --sidebar-width: 300px;
   --header-height: 56px;
+  /* Type scale */
+  --text-xs: 0.7rem;
+  --text-sm: 0.8125rem;
+  --text-base: 0.9375rem;
+  --text-md: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.25rem;
+  /* Spacing */
+  --space-bucket: 1.25rem;
+  --space-list: 0.375rem;
 }
 
 * {
@@ -38,12 +49,14 @@
 body {
   margin: 0;
   font-family: var(--font-sans);
-  font-size: 15px;
+  font-size: var(--text-base);
+  line-height: 1.5;
   color: var(--main-text);
   background: var(--main-bg);
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+  -webkit-font-smoothing: antialiased;
 }
 
 /* Layout: sidebar + main */
@@ -71,40 +84,43 @@ body {
 }
 
 .sidebar-header {
-  padding: 1rem 1rem 0.75rem;
+  padding: 1.125rem 1rem 1rem;
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.625rem;
   border-bottom: 1px solid var(--sidebar-border);
 }
 
 .sidebar-logo {
-  height: 28px;
+  height: 30px;
   width: auto;
   display: block;
 }
 
 .sidebar-logo-text {
   font-weight: 600;
-  font-size: 1.1rem;
+  font-size: var(--text-lg);
+  letter-spacing: -0.02em;
   color: var(--sidebar-text);
   text-decoration: none;
 }
 
 .sidebar .btn-new-chat {
-  margin: 0.75rem 1rem;
-  padding: 0.5rem 1rem;
-  background: transparent;
+  margin: 1rem 1rem 0;
+  padding: 0.625rem 1rem;
+  background: var(--main-bg);
   border: 1px solid var(--sidebar-border);
   color: var(--sidebar-text);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 0.9rem;
+  font-size: var(--text-sm);
+  font-weight: 500;
   width: calc(100% - 2rem);
   text-align: left;
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  transition: border-color 0.15s, background 0.15s;
 }
 
 .sidebar .btn-new-chat:hover {
@@ -112,18 +128,20 @@ body {
   border-color: var(--sidebar-text-muted);
 }
 
+/* Three buckets: recent, helpful, documents – clear spacing */
 .sidebar-recent {
-  flex: 1;
+  flex: 1 1 0;
+  min-height: 0;
   overflow-y: auto;
-  padding: 0 0.75rem 1rem;
+  padding: var(--space-bucket) 1rem 0;
 }
 
 .sidebar-recent h3 {
-  margin: 0.5rem 0 0.5rem;
-  font-size: 0.75rem;
+  margin: 0 0 var(--space-list);
+  font-size: var(--text-xs);
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
   color: var(--sidebar-text-muted);
 }
 
@@ -136,39 +154,101 @@ body {
 .recent-item {
   padding: 0.5rem 0.5rem;
   margin: 0.125rem 0;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 0.85rem;
+  font-size: var(--text-sm);
   color: var(--sidebar-text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  transition: background 0.15s;
 }
 
 .recent-item:hover {
   background: rgba(0,0,0,0.05);
 }
 
-.sidebar-config {
-  padding: 0.75rem 1rem;
+.sidebar-helpful {
+  overflow-y: auto;
+  padding: var(--space-bucket) 1rem 0;
+  flex-shrink: 0;
   border-top: 1px solid var(--sidebar-border);
 }
 
-.sidebar-config .btn-config {
-  width: 100%;
-  padding: 0.5rem;
-  background: transparent;
-  border: none;
-  color: var(--sidebar-text-muted);
-  font-size: 0.85rem;
-  cursor: pointer;
-  text-align: left;
-  border-radius: 4px;
+.sidebar-documents {
+  overflow-y: auto;
+  padding: var(--space-bucket) 1rem 0;
+  flex-shrink: 0;
+  border-top: 1px solid var(--sidebar-border);
 }
 
-.sidebar-config .btn-config:hover {
+.sidebar-helpful h3,
+.sidebar-documents h3 {
+  margin: 0 0 var(--space-list);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--sidebar-text-muted);
+}
+
+.helpful-list,
+.documents-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.helpful-item,
+.documents-item {
+  padding: 0.5rem 0.5rem;
+  margin: 0.125rem 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: var(--text-sm);
   color: var(--sidebar-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 0.15s;
+}
+
+.helpful-item:hover,
+.documents-item:hover {
   background: rgba(0,0,0,0.05);
+}
+
+.sidebar-user {
+  padding: 0.75rem 1rem;
+  font-size: var(--text-sm);
+  color: var(--sidebar-text-muted);
+  border-top: 1px solid var(--sidebar-border);
+  margin-top: auto;
+}
+
+.sidebar-user-label {
+  display: block;
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 0.2rem;
+}
+
+.sidebar-user-name {
+  font-weight: 500;
+  color: var(--sidebar-text);
+}
+
+.sidebar-llm {
+  padding: 0.5rem 1rem 1rem;
+  font-size: var(--text-sm);
+  color: var(--sidebar-text-muted);
+  border-top: 1px solid var(--sidebar-border);
+}
+
+.sidebar-llm-label {
+  font-size: var(--text-sm);
+  color: var(--sidebar-text);
 }
 
 /* Main area */
@@ -182,7 +262,7 @@ body {
 
 .main-header {
   height: var(--header-height);
-  padding: 0 1.25rem;
+  padding: 0 1.5rem;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -193,10 +273,10 @@ body {
 
 .main-header-title {
   margin: 0;
-  font-size: 1.05rem;
+  font-size: var(--text-lg);
   font-weight: 600;
-  color: var(--main-text);
   letter-spacing: -0.02em;
+  color: var(--main-text);
 }
 
 .main-header-actions {
@@ -227,10 +307,10 @@ body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 1.25rem 1.5rem;
+  padding: 1.5rem 2rem;
   display: flex;
   flex-direction: column;
-  gap: 1.25rem;
+  gap: 1.5rem;
 }
 
 /* Empty state */
@@ -240,8 +320,8 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  min-height: 240px;
-  padding: 2rem;
+  min-height: 280px;
+  padding: 2.5rem;
   text-align: center;
 }
 
@@ -250,33 +330,34 @@ body {
 }
 
 .chat-empty-icon {
-  width: 64px;
-  height: 64px;
-  margin-bottom: 1rem;
+  width: 72px;
+  height: 72px;
+  margin-bottom: 1.25rem;
   border-radius: var(--radius-lg);
   background: linear-gradient(135deg, var(--thinking-bg) 0%, var(--assistant-border) 100%);
-  opacity: 0.7;
+  opacity: 0.75;
 }
 
 .chat-empty-title {
-  margin: 0 0 0.35rem;
-  font-size: 1.15rem;
+  margin: 0 0 0.5rem;
+  font-size: var(--text-xl);
   font-weight: 600;
-  color: var(--main-text);
   letter-spacing: -0.02em;
+  color: var(--main-text);
 }
 
 .chat-empty-subtitle {
   margin: 0;
-  font-size: 0.9rem;
+  font-size: var(--text-md);
   color: var(--sidebar-text-muted);
+  line-height: 1.5;
 }
 
 /* One user + thinking + assistant + feedback + sources */
 .chat-turn {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.4rem;
   align-items: stretch;
 }
 
@@ -305,15 +386,17 @@ body {
 }
 
 .message-bubble {
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: 1.45;
+  letter-spacing: 0.01em;
   padding: 0.6rem 1rem;
-  border-radius: 12px;
-  line-height: 1.55;
+  border-radius: var(--radius-md);
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 50vh;
   overflow-y: auto;
   overflow-x: hidden;
-  font-size: 0.95rem;
 }
 
 .message--user .message-bubble {
@@ -368,13 +451,32 @@ body {
   flex-shrink: 0;
 }
 
+/* Animated "..." while thinking is in progress */
+.thinking-block .thinking-preview .thinking-dots {
+  flex-shrink: 0;
+  animation: thinking-dots-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes thinking-dots-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+
+/* Line hidden while thinking; drawn when done so user knows we're finished */
 .thinking-block .thinking-preview .thinking-rule {
   flex: 1;
   height: 0;
   border: none;
-  border-top: 1px solid var(--thinking-muted);
+  border-top: 1px solid transparent;
   min-width: 2rem;
   align-self: center;
+  opacity: 0;
+  transition: opacity 0.25s ease, border-color 0.25s ease;
+}
+
+.thinking-block.thinking-block--done .thinking-preview .thinking-rule {
+  border-top-color: var(--thinking-muted);
+  opacity: 1;
 }
 
 .thinking-block .thinking-body {
@@ -397,28 +499,51 @@ body {
   color: var(--thinking-muted-hover);
 }
 
-/* Feedback */
+/* Feedback: same visual language as thinking-block/source-citer (muted, light, no heavy box) */
+.chat-turn .feedback {
+  align-self: flex-start;
+  max-width: 85%;
+  margin: 0.35rem 0;
+}
+
 .feedback {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  font-size: 0.75rem;
+  color: var(--thinking-muted);
+}
+
+.feedback-left {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.feedback-actions {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  margin-top: 0.25rem;
-  padding-left: 0.25rem;
+  flex-shrink: 0;
 }
 
 .feedback button {
   padding: 0.25rem 0.5rem;
   border: none;
   background: transparent;
-  color: var(--sidebar-text-muted);
+  color: var(--thinking-muted);
   cursor: pointer;
-  border-radius: 4px;
-  font-size: 0.9rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
 }
 
 .feedback button:hover {
   background: var(--thinking-bg);
-  color: var(--main-text);
+  color: var(--thinking-muted-hover);
 }
 
 .feedback button.selected {
@@ -428,6 +553,68 @@ body {
 .feedback button:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+.feedback .feedback-icon {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+.feedback .feedback-comment {
+  font-size: 0.75rem;
+  color: var(--thinking-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin-left: 0.15rem;
+}
+
+.feedback .feedback-comment-form {
+  width: 100%;
+  margin-top: 0.35rem;
+}
+
+.feedback .feedback-comment-form textarea {
+  width: 100%;
+  max-width: 24rem;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.75rem;
+  color: var(--main-text);
+  border: 1px solid var(--thinking-muted);
+  border-radius: var(--radius-sm);
+  resize: vertical;
+  min-height: 2.5rem;
+  background: var(--main-bg);
+}
+
+.feedback .feedback-comment-form textarea::placeholder {
+  color: var(--thinking-muted);
+}
+
+.feedback .feedback-comment-form textarea:focus {
+  outline: none;
+  border-color: var(--thinking-muted-hover);
+}
+
+.feedback .feedback-comment-buttons {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+
+.feedback .feedback-comment-buttons button {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--thinking-muted);
+  background: var(--thinking-bg);
+  color: var(--thinking-muted-hover);
+  cursor: pointer;
+}
+
+.feedback .feedback-comment-buttons button:hover {
+  border-color: var(--thinking-muted-hover);
+  color: var(--main-text);
 }
 
 /* Source citer – same look as thinking: word + line, muted, no box */
@@ -504,7 +691,7 @@ body {
 /* Composer – integrated input + send in one bar */
 .composer-wrap {
   flex-shrink: 0;
-  padding: 1rem 1.5rem 1.5rem;
+  padding: 1.25rem 2rem 1.5rem;
   background: var(--main-bg);
 }
 
@@ -514,7 +701,7 @@ body {
   gap: 0;
   max-width: 720px;
   margin: 0 auto;
-  padding: 0.35rem 0.35rem 0.35rem 1rem;
+  padding: 0.5rem 0.5rem 0.5rem 1.125rem;
   background: var(--assistant-bubble);
   border: 1px solid var(--assistant-border);
   border-radius: var(--radius-full);
@@ -530,10 +717,10 @@ body {
 .composer input {
   flex: 1;
   min-width: 0;
-  padding: 0.65rem 0.5rem;
+  padding: 0.7rem 0.5rem;
   border: none;
   background: transparent;
-  font-size: 0.95rem;
+  font-size: var(--text-base);
   font-family: inherit;
   color: var(--main-text);
 }
