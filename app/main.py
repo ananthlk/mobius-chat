@@ -16,6 +16,7 @@ from app.chat_config import chat_config_for_api
 from app.config import get_config
 from app.queue import get_queue
 from app.storage import get_plan, get_response
+from app.storage.progress import get_progress
 from app.worker import start_worker_background
 
 logging.basicConfig(level=logging.INFO)
@@ -60,14 +61,17 @@ def post_chat(body: ChatRequest):
 
 @app.get("/chat/response/{correlation_id}")
 def get_chat_response(correlation_id: str):
-    """Poll for completed response. Returns status, message, plan, thinking_log."""
+    """Poll for response. Returns completed payload when done; while in progress returns status 'processing' and live thinking_log."""
     q = get_queue()
     resp = q.get_response(correlation_id)
     if resp is None:
         resp = get_response(correlation_id)
-    if resp is None:
-        return {"status": "pending", "message": None, "plan": None, "thinking_log": None}
-    return resp
+    if resp is not None:
+        return resp
+    in_progress, thinking_log, message_so_far = get_progress(correlation_id)
+    if in_progress:
+        return {"status": "processing", "message": message_so_far or None, "plan": None, "thinking_log": thinking_log}
+    return {"status": "pending", "message": None, "plan": None, "thinking_log": None}
 
 
 @app.get("/chat/plan/{correlation_id}")

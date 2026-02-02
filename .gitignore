@@ -2,10 +2,14 @@
 .env
 .venv/
 venv/
+keys/
 
 # Python
 __pycache__/
 *.pyc
+
+# Frontend
+frontend/node_modules/
 
 # IDE / OS
 .vscode/

@@ -1,0 +1,24 @@
+# Local RAG DB for Mobius-Chat (cloned schema; when docs are published they move here).
+# Run: docker compose up -d
+# Then: psql $RAG_DATABASE_URL -f db/schema/001_rag_schema.sql  (or use init below)
+
+services:
+  ragdb:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: mobius
+      POSTGRES_PASSWORD: mobius
+      POSTGRES_DB: mobius_chat_rag
+    ports:
+      - "5433:5432"
+    volumes:
+      - ragdb_data:/var/lib/postgresql/data
+      - ./db/schema:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mobius -d mobius_chat_rag"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  ragdb_data:

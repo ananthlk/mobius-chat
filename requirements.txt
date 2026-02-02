@@ -6,3 +6,5 @@ python-dotenv>=1.0.0
 redis>=5.0.0
 # Optional: for LLM_PROVIDER=vertex (Vertex AI / Gemini)
 google-cloud-aiplatform>=1.38.0
+# For CHAT_RAG_DATABASE_URL (published_rag_metadata Postgres)
+psycopg2-binary>=2.9.0

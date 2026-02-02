@@ -3,11 +3,11 @@ from abc import ABC, abstractmethod
 import asyncio
 import json
 import logging
-import queue
-import threading
 import urllib.error
 import urllib.request
 from typing import Any, AsyncIterator, Callable, Dict
+
+from app.services.usage import LLMUsageDict, zero_usage, usage_dict
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +29,16 @@ class LLMProvider(ABC):
     async def generate(self, prompt: str, **kwargs) -> str:
         pass
 
+    async def generate_with_usage(self, prompt: str, **kwargs) -> tuple[str, LLMUsageDict]:
+        """Generate and return (text, usage). Default: call generate() and return empty usage."""
+        text = await self.generate(prompt, **kwargs)
+        return (text, zero_usage())
 
-def _ollama_request(base_url: str, model: str, prompt: str, stream: bool, **kwargs) -> tuple[str | None, list[str] | None]:
+
+def _ollama_request(
+    base_url: str, model: str, prompt: str, stream: bool, **kwargs
+) -> tuple[str | None, list[str] | None, LLMUsageDict | None]:
+    """Returns (error, chunks, usage). usage is set only for non-stream."""
     req_data = {"model": model, "prompt": prompt, "stream": stream, **kwargs}
     data = json.dumps(req_data).encode("utf-8")
     req = urllib.request.Request(
@@ -55,19 +63,25 @@ def _ollama_request(base_url: str, model: str, prompt: str, stream: bool, **kwar
                             break
                     except json.JSONDecodeError:
                         continue
-                return (None, chunks)
+                return (None, chunks, None)
             else:
                 body = resp.read().decode("utf-8")
                 d = json.loads(body)
-                return (None, [d.get("response", "")])
+                usage = usage_dict(
+                    provider="ollama",
+                    model=model,
+                    input_tokens=int(d.get("prompt_eval_count", 0) or 0),
+                    output_tokens=int(d.get("eval_count", 0) or 0),
+                )
+                return (None, [d.get("response", "")], usage)
     except urllib.error.HTTPError as e:
         try:
             err_body = e.read().decode("utf-8")
         except Exception:
             err_body = ""
-        return (f"Ollama API error: {e.code} - {err_body}", None)
+        return (f"Ollama API error: {e.code} - {err_body}", None, None)
     except Exception as e:
-        return (str(e), None)
+        return (str(e), None, None)
 
 
 class OllamaProvider(LLMProvider):
@@ -89,22 +103,42 @@ class OllamaProvider(LLMProvider):
             yield c
 
     async def generate(self, prompt: str, **kwargs) -> str:
+        text, _ = await self.generate_with_usage(prompt, **kwargs)
+        return text
+
+    async def generate_with_usage(self, prompt: str, **kwargs) -> tuple[str, LLMUsageDict]:
         opts = {"num_predict": self.num_predict}
         if "options" in kwargs:
             opts = {**opts, **kwargs.pop("options")}
-        err, chunks = await asyncio.to_thread(
+        err, chunks, usage = await asyncio.to_thread(
             _ollama_request, self.base_url, self.model, prompt, False, options=opts, **kwargs
         )
         if err:
             raise Exception(err)
-        return (chunks or [""])[0]
+        text = (chunks or [""])[0]
+        return (text, usage if usage else zero_usage("ollama", self.model))
 
 
-def _vertex_generate_sync(model_name: str, prompt: str, gen_config: dict) -> str:
+def _vertex_generate_sync(model_name: str, prompt: str, gen_config: dict) -> tuple[str, LLMUsageDict]:
     from vertexai.generative_models import GenerativeModel
     model = GenerativeModel(model_name)
     response = model.generate_content(prompt, generation_config=gen_config)
-    return response.text or ""
+    text = response.text or ""
+    usage = zero_usage("vertex", model_name)
+    if getattr(response, "usage_metadata", None) is not None:
+        um = response.usage_metadata
+        usage = usage_dict(
+            provider="vertex",
+            model=model_name,
+            input_tokens=int(getattr(um, "prompt_token_count", 0) or 0),
+            output_tokens=int(
+                getattr(um, "candidates_token_count", 0)
+                or getattr(um, "total_token_count", 0)
+                - getattr(um, "prompt_token_count", 0)
+                or 0
+            ),
+        )
+    return (text, usage)
 
 
 class VertexAIProvider(LLMProvider):
@@ -126,12 +160,16 @@ class VertexAIProvider(LLMProvider):
     async def stream_generate(self, prompt: str, **kwargs) -> AsyncIterator[str]:
         gen_config = self._generation_config(**kwargs)
         # Simple non-streaming fallback for parity; can add stream later
-        text = await asyncio.to_thread(
+        text, _ = await asyncio.to_thread(
             _vertex_generate_sync, self.model_name, prompt, gen_config
         )
         yield text
 
     async def generate(self, prompt: str, **kwargs) -> str:
+        text, _ = await self.generate_with_usage(prompt, **kwargs)
+        return text
+
+    async def generate_with_usage(self, prompt: str, **kwargs) -> tuple[str, LLMUsageDict]:
         gen_config = self._generation_config(**kwargs)
         return await asyncio.to_thread(
             _vertex_generate_sync, self.model_name, prompt, gen_config

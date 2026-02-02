@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Mobius RAG Chat – start the chat interface (API + frontend).
-# Expects Redis + worker to be running elsewhere (e.g. mragcw).
+# Mobius Chat – start the chat interface (API + frontend).
+# Expects Redis + worker to be running elsewhere (e.g. mchatcw).
 set -e
 cd "$(dirname "$0")"
 export QUEUE_TYPE="${QUEUE_TYPE:-redis}"

@@ -59,7 +59,7 @@ Chat webpage → POST /chat (enqueue) → Request queue
 
 ### 9. Root
 - **`requirements.txt`** – fastapi, uvicorn, pydantic, python-dotenv. Optional: redis, google-cloud-pubsub for later.
-- **`.env.example`** – QUEUE_TYPE=memory, etc.
+- **`.env`** – QUEUE_TYPE=memory, Vertex/RAG vars (see [ENV.md](ENV.md)); gitignored.
 - **`README.md`** – How to run worker, run API, open frontend; flow summary.
 
 ---
@@ -98,6 +98,6 @@ Mobius-Chat/
     ARCHITECTURE.md
     MODULES.md
   requirements.txt
-  .env.example
+  .env
   README.md
 ```
