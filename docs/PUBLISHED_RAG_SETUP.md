@@ -36,7 +36,7 @@ Creates: `published_rag_metadata` (metadata only; id = link to Vertex), `sync_ru
 MOBIUS-DBT has a script to create a batch index from the BigQuery mart:
 
 ```bash
-cd /path/to/MOBIUS-DBT
+cd /path/to/Mobius/mobius-dbt
 export BQ_PROJECT=mobiusos-new BQ_DATASET=mobius_rag_dev
 export GCS_BUCKET=your-bucket-name
 export VERTEX_PROJECT=mobiusos-new VERTEX_REGION=us-central1
@@ -105,4 +105,4 @@ After MOBIUS-DBT runs the sync:
   (use your actual host and user; Cloud SQL may require authorized networks or Cloud SQL Proxy.)
 
 - **"keys/your-service-account.json was not found"** or **"RAG: Vertex endpoint/deployed index or database URL not set"**  
-  Start the worker from the **Mobius-Chat repo directory** so `.env` is loaded (e.g. `cd /path/to/Mobius-Chat && mchatcw`). Ensure `.env` has `GOOGLE_APPLICATION_CREDENTIALS` and the RAG variables (e.g. `VERTEX_INDEX_ENDPOINT_ID`, `VERTEX_DEPLOYED_INDEX_ID`, `CHAT_RAG_DATABASE_URL`).
+  Start the worker from the **Mobius-Chat repo directory** so `.env` is loaded (e.g. `cd /path/to/Mobius/mobius-chat && mchatcw`). Ensure `.env` has `GOOGLE_APPLICATION_CREDENTIALS` and the RAG variables (e.g. `VERTEX_INDEX_ENDPOINT_ID`, `VERTEX_DEPLOYED_INDEX_ID`, `CHAT_RAG_DATABASE_URL`).

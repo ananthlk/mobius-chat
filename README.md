@@ -22,7 +22,7 @@ Queue backend is pluggable: **memory** (single process) or **redis** (API and wo
 API and worker run in one process (worker in a background thread).
 
 ```bash
-cd /path/to/Mobius-Chat
+cd /path/to/Mobius/mobius-chat
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
@@ -34,7 +34,7 @@ Open http://localhost:8000/ — send a message; response appears after the in-pr
 
 Chat uses GCP/Vertex for LLM and RAG. Create a **`.env`** file in the **repo root** (see [docs/ENV.md](docs/ENV.md)) and set:
 
-- **`GOOGLE_APPLICATION_CREDENTIALS`** – **Must point to an existing file.** Use the full path to your GCP service account JSON (e.g. `keys/mobiusos-new-xxxx.json` or `../Mobius RAG/mobiusos-new-090a058b63d9.json`). If this file does not exist, you will see: `LLM failed: File keys/your-service-account.json was not found.`
+- **`GOOGLE_APPLICATION_CREDENTIALS`** – **Must point to an existing file.** Use the full path to your GCP service account JSON (e.g. `keys/mobiusos-new-xxxx.json` or `../mobius-rag/mobiusos-new-090a058b63d9.json`). If this file does not exist, you will see: `LLM failed: File keys/your-service-account.json was not found.`
 - `VERTEX_PROJECT_ID`, `VERTEX_LOCATION`, `VERTEX_MODEL` – for Vertex AI (LLM).
 - For RAG: `VERTEX_INDEX_ENDPOINT_ID`, `VERTEX_DEPLOYED_INDEX_ID`, `CHAT_RAG_DATABASE_URL` (see [docs/PUBLISHED_RAG_SETUP.md](docs/PUBLISHED_RAG_SETUP.md)). If these are missing, you will see: `RAG: Vertex endpoint/deployed index or database URL not set. Using no context.`
 
@@ -46,19 +46,19 @@ Use the scripts `mchatc` (chat interface) and `mchatcw` (worker + Redis) from th
 
 **Terminal 1 – Chat interface (API + frontend)**  
 ```bash
-cd /path/to/Mobius-Chat
+cd /path/to/Mobius/mobius-chat
 ./mchatc
 ```
 Uses `QUEUE_TYPE=redis` and `REDIS_URL=redis://localhost:6379/0` by default; override with env if needed.
 
 **Terminal 2 – Worker + Redis**  
 ```bash
-cd /path/to/Mobius-Chat
+cd /path/to/Mobius/mobius-chat
 ./mchatcw
 ```
 Starts Redis if not already running (via `redis-server` or Docker), then starts the worker. Worker and Redis are coupled on this server.
 
-**Run from anywhere:** Add the repo to PATH (`export PATH="/path/to/Mobius-Chat:$PATH"`) or symlink `mchatc` and `mchatcw` into a directory on PATH (e.g. `~/bin`). Then you can run `mchatc` and `mchatcw` from any directory.
+**Run from anywhere:** Add the repo to PATH (`export PATH="/path/to/Mobius/mobius-chat:$PATH"`) or symlink `mchatc` and `mchatcw` into a directory on PATH (e.g. `~/bin`). Then you can run `mchatc` and `mchatcw` from any directory.
 
 Open http://localhost:8000/ and send a message; the worker (started by `mchatcw`) will process it via the Redis list.
 

@@ -17,7 +17,7 @@ The app loads `.env` from the **repo root**. Create a `.env` file there with the
 | `VERTEX_PROJECT_ID` | GCP project (e.g. `mobiusos-new`) |
 | `VERTEX_LOCATION` | Region (e.g. `us-central1`) |
 | `VERTEX_MODEL` | Model (e.g. `gemini-2.5-flash`) |
-| `GOOGLE_APPLICATION_CREDENTIALS` | **Required.** Absolute path to GCP service account JSON (e.g. `/Users/ananth/Mobius RAG/mobiusos-new-090a058b63d9.json`) |
+| `GOOGLE_APPLICATION_CREDENTIALS` | **Required.** Absolute path to GCP service account JSON (e.g. `/Users/ananth/Mobius/mobius-rag/mobiusos-new-090a058b63d9.json`) |
 
 ## Vertex Vector Search + Postgres (RAG)
 
