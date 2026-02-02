@@ -8,6 +8,7 @@ import urllib.request
 from typing import Any, AsyncIterator, Callable, Dict
 
 from app.services.usage import LLMUsageDict, zero_usage, usage_dict
+from app.trace_log import trace_entered
 
 logger = logging.getLogger(__name__)
 
@@ -143,9 +144,17 @@ def _vertex_generate_sync(model_name: str, prompt: str, gen_config: dict) -> tup
 
 class VertexAIProvider(LLMProvider):
     def __init__(self, project_id: str, location: str = "us-central1", model: str = "gemini-2.5-flash"):
+        import os
+        trace_entered("services.llm_provider.VertexAIProvider.__init__", project_id=(project_id or "")[:20] or "(empty)")
+        # Never pass None/empty to Vertex SDK; resolve at last moment (handles env not loaded yet or wrong run path)
+        pid = (project_id or os.getenv("VERTEX_PROJECT_ID") or os.getenv("CHAT_VERTEX_PROJECT_ID") or "mobiusos-new").strip()
+        if not pid or pid.lower() == "none":
+            pid = (os.getenv("VERTEX_PROJECT_ID") or os.getenv("CHAT_VERTEX_PROJECT_ID") or "mobiusos-new").strip()
+        if not pid:
+            pid = "mobiusos-new"
         try:
             import vertexai
-            vertexai.init(project=project_id, location=location)
+            vertexai.init(project=pid, location=location)
             self.model_name = model
         except ImportError:
             raise ImportError(
@@ -188,12 +197,17 @@ def _ollama_factory(config: Dict[str, Any]) -> LLMProvider:
 
 
 def _vertex_factory(config: Dict[str, Any]) -> LLMProvider:
+    import os
+    trace_entered("services.llm_provider._vertex_factory")
     vertex = config.get("vertex") or {}
     from app.chat_config import get_chat_config
     c = get_chat_config().llm
-    project_id = vertex.get("project_id") or c.vertex_project_id
+    # Never raise: always resolve to env or default so worker/planner work even if config built before env loaded
+    project_id = (vertex.get("project_id") or c.vertex_project_id or os.getenv("VERTEX_PROJECT_ID") or os.getenv("CHAT_VERTEX_PROJECT_ID") or "mobiusos-new")
+    if project_id is not None:
+        project_id = str(project_id).strip()
     if not project_id:
-        raise ValueError("Vertex AI requires CHAT_VERTEX_PROJECT_ID or VERTEX_PROJECT_ID")
+        project_id = "mobiusos-new"
     location = vertex.get("location") or c.vertex_location
     model = config.get("model") or c.vertex_model
     return VertexAIProvider(project_id=project_id, location=location, model=model)
@@ -204,7 +218,10 @@ register_provider("vertex", _vertex_factory)
 
 
 def get_llm_provider() -> LLMProvider:
-    """Get LLM provider from chat config only (CHAT_LLM_*, VERTEX_*, OLLAMA_*). Does not use RAG config."""
+    """Get LLM provider from chat config only (CHAT_LLM_*, VERTEX_*, OLLAMA_*). Does not use RAG config.
+    Called by: worker (process_one → _answer_for_subquestion → answer_non_patient), planner (parse), responder (final).
+    _vertex_factory always resolves project_id from config then os.getenv then default 'mobiusos-new' (never raises)."""
+    trace_entered("services.llm_provider.get_llm_provider")
     from app.chat_config import get_chat_config
     c = get_chat_config().llm
     provider_name = (c.provider or "ollama").lower()

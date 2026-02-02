@@ -14,12 +14,12 @@ EMBED_DIMENSIONS = 1536
 
 def get_query_embedding(text: str) -> List[float]:
     """Return 1536-dim embedding vector for one query string (Vertex AI). Same model as Mobius RAG published mart."""
+    import os
     from app.chat_config import get_chat_config
     cfg = get_chat_config()
-    project_id = cfg.llm.vertex_project_id
+    # Never raise: always resolve to env or default (same as llm_provider)
+    project_id = (cfg.llm.vertex_project_id or os.getenv("VERTEX_PROJECT_ID") or os.getenv("CHAT_VERTEX_PROJECT_ID") or "mobiusos-new").strip() or "mobiusos-new"
     location = cfg.llm.vertex_location or "us-central1"
-    if not project_id:
-        raise ValueError("Vertex embedding requires CHAT_VERTEX_PROJECT_ID or VERTEX_PROJECT_ID")
     try:
         import vertexai
         from vertexai.language_models import TextEmbeddingModel, TextEmbeddingInput

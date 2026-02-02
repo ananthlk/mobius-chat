@@ -5,6 +5,7 @@ from collections.abc import Callable
 
 from app.planner.schemas import Plan
 from app.services.usage import LLMUsageDict
+from app.trace_log import trace_entered
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ def format_response(
     message_chunk_callback: Callable[[str], None] | None = None,
 ) -> tuple[str, LLMUsageDict | None]:
     """Turn plan + answers into one chat-friendly message via LLM. If message_chunk_callback is set, stream the draft; returns (message, None) for usage when streaming. On LLM failure, returns fallback and None usage."""
+    trace_entered("responder.final.format_response", subquestions=len(plan.subquestions))
     if not plan.subquestions:
         return ("", None)
 

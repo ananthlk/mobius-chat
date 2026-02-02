@@ -2,10 +2,20 @@
 # Mobius Chat – start the chat interface (API + frontend).
 # Expects Redis + worker to be running elsewhere (e.g. mchatcw).
 set -e
-cd "$(dirname "$0")"
+# Resolve symlinks so we cd to the real repo dir when run from ~/bin
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+REPO_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+cd "$REPO_DIR"
 export QUEUE_TYPE="${QUEUE_TYPE:-redis}"
 export REDIS_URL="${REDIS_URL:-redis://localhost:6379/0}"
-if [ -d .venv ]; then
-  source .venv/bin/activate
+if [ ! -d .venv ]; then
+  echo "[mchatc] No .venv in mobius-chat. Create it and install deps:"
+  echo "  cd $REPO_DIR && python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt"
+  exit 1
 fi
-exec python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 "$@"
+exec .venv/bin/python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 "$@"

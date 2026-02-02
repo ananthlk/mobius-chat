@@ -8,6 +8,7 @@ import re
 from collections.abc import Callable
 
 from app.planner.schemas import Plan, SubQuestion, QuestionIntent
+from app.trace_log import trace_entered
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,7 @@ def _llm_decompose(
     """Call LLM to decompose message into subquestions and classify each (kind, question_intent, intent_score).
     Returns (list of (id, text, kind, intent, intent_score) or None on failure, llm_usage dict or None).
     """
+    trace_entered("planner.parser._llm_decompose")
     try:
         from app.chat_config import get_chat_config
         from app.services.llm_provider import get_llm_provider

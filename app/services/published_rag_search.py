@@ -8,6 +8,8 @@ Two retrieval modes:
 import logging
 from typing import Any, Callable, List
 
+from app.trace_log import trace_entered
+
 logger = logging.getLogger(__name__)
 
 # Source-type hierarchy for canonical/hierarchical retrieval (lower index = higher in hierarchy).
@@ -44,11 +46,19 @@ def search_published_rag(
     If source_type_allow is set, restrict Vertex results to those source_type values (index must expose source_type namespace).
     Returns list of dicts with keys: text, document_id, document_name, page_number, source_type (same shape as legacy RAG).
     """
+    trace_entered("services.published_rag_search.search_published_rag", k=k)
     from app.chat_config import get_chat_config
     from app.services.embedding_provider import get_query_embedding
 
     cfg = get_chat_config()
     rag = cfg.rag
+    logger.info(
+        "[RAG search] config: vertex_index_endpoint_id=%r vertex_deployed_index_id=%r (len=%s) database_url_set=%s",
+        rag.vertex_index_endpoint_id,
+        rag.vertex_deployed_index_id,
+        len(rag.vertex_deployed_index_id or ""),
+        bool(rag.database_url),
+    )
     if not rag.vertex_index_endpoint_id or not rag.vertex_deployed_index_id or not rag.database_url:
         logger.warning("Published RAG: vertex_index_endpoint_id, vertex_deployed_index_id, or database_url not set")
         return []
@@ -92,8 +102,18 @@ def search_published_rag(
         aiplatform.init(project=cfg.llm.vertex_project_id, location=cfg.llm.vertex_location or "us-central1")
         endpoint = aiplatform.MatchingEngineIndexEndpoint(index_endpoint_name=rag.vertex_index_endpoint_id)
         _emit(emitter, "Searching our materials...")
+        deployed_id = (rag.vertex_deployed_index_id or "").strip()
+        # Vertex API requires the deployed index ID (e.g. endpoint_mobius_chat_publi_*), not the display name
+        if deployed_id in ("Endpoint_mobius_chat_published_rag", "mobius_chat_published_rag"):
+            deployed_id = "endpoint_mobius_chat_publi_1769989702095"
+            logger.info("[RAG search] normalized display name → deployed_index_id=%r", deployed_id)
+        print(f"[RAG find_neighbors] deployed_index_id={deployed_id!r}", flush=True)
+        logger.info(
+            "[RAG search] find_neighbors: deployed_index_id=%r",
+            deployed_id,
+        )
         response = endpoint.find_neighbors(
-            deployed_index_id=rag.vertex_deployed_index_id,
+            deployed_index_id=deployed_id,
             queries=[query_embedding],
             num_neighbors=k,
             filter=filters if filters else None,
@@ -259,6 +279,7 @@ def retrieve_with_blend(
     emitter: Callable[[str], None] | None = None,
 ) -> List[dict[str, Any]]:
     """Run hierarchical and/or factual retrieval per blend; merge and dedupe by chunk id."""
+    trace_entered("services.published_rag_search.retrieve_with_blend", n_hierarchical=n_hierarchical, n_factual=n_factual)
     combined: List[dict[str, Any]] = []
     if n_hierarchical > 0:
         _emit(emitter, "Searching for high-level (hierarchical) materials...")

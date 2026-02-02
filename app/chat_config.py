@@ -2,10 +2,49 @@
 Chat-specific config: LLM, parser, prompts. Self-contained; does not use or change RAG configs.
 All factors for this module live here for faster development and separation.
 """
+import logging
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
+
+from app.trace_log import trace_entered
+
+logger = logging.getLogger(__name__)
+
+# Load env: module .env first, then global mobius-config/.env (reusable helper for any module)
+_chat_root = Path(__file__).resolve().parent.parent
+_config_dir = _chat_root.parent / "mobius-config"
+if _config_dir.exists() and str(_config_dir) not in sys.path:
+    sys.path.insert(0, str(_config_dir))
+try:
+    from env_helper import load_env, get_env_or
+    load_env(_chat_root)
+except ImportError:
+    from dotenv import load_dotenv
+    env_file = _chat_root / ".env"
+    if env_file.exists():
+        load_dotenv(env_file, override=True)
+    get_env_or = lambda k, d, **_: (os.environ.get(k) or d) or d
+
+# Ensure Vertex project ID is set (SDK may check env; avoid "Vertex AI requires CHAT_VERTEX_PROJECT_ID or VERTEX_PROJECT_ID")
+_vp = (os.environ.get("VERTEX_PROJECT_ID") or os.environ.get("CHAT_VERTEX_PROJECT_ID") or "mobiusos-new").strip() or "mobiusos-new"
+os.environ.setdefault("VERTEX_PROJECT_ID", _vp)
+os.environ.setdefault("CHAT_VERTEX_PROJECT_ID", os.environ.get("VERTEX_PROJECT_ID", "mobiusos-new"))
+    # Don't pass placeholder credential paths; resolve to first *.json in credentials/
+    _c = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or ""
+    if "/path/to/" in _c or "your-service-account" in _c or "your-" in _c.lower():
+        os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
+    if not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        for _d in (_chat_root / "credentials", _chat_root.parent / "mobius-config" / "credentials"):
+            if _d.exists():
+                for _p in _d.glob("*.json"):
+                    if _p.is_file():
+                        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(_p.resolve())
+                        break
+                if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+                    break
 
 # Optional: load from YAML if present (app/chat_config.yaml)
 _CHAT_CONFIG_DIR = Path(__file__).resolve().parent
@@ -147,13 +186,14 @@ def _env_float(key: str, default: float) -> float:
 
 def get_chat_config() -> ChatConfig:
     """Load chat config from env (CHAT_*). Does not touch RAG config."""
+    trace_entered("chat_config.get_chat_config")
     # LLM: default to Vertex AI; use Ollama only if CHAT_LLM_PROVIDER=ollama or LLM_PROVIDER=ollama
     llm_provider = _env("CHAT_LLM_PROVIDER") or os.getenv("LLM_PROVIDER") or "vertex"
     llm = ChatLLMConfig(
         provider=llm_provider.lower() or "vertex",
         model=_env("CHAT_LLM_MODEL") or (os.getenv("VERTEX_MODEL", "gemini-2.5-flash") if llm_provider.lower() == "vertex" else os.getenv("OLLAMA_MODEL", "llama3.1:8b")) or ("gemini-2.5-flash" if llm_provider.lower() == "vertex" else "llama3.1:8b"),
         temperature=_env_float("CHAT_LLM_TEMPERATURE", 0.1),
-        vertex_project_id=_env("CHAT_VERTEX_PROJECT_ID") or os.getenv("VERTEX_PROJECT_ID"),
+        vertex_project_id=(_env("CHAT_VERTEX_PROJECT_ID") or get_env_or("VERTEX_PROJECT_ID", "mobiusos-new") or os.getenv("VERTEX_PROJECT_ID") or os.getenv("CHAT_VERTEX_PROJECT_ID") or "mobiusos-new").strip() or "mobiusos-new",
         vertex_location=_env("CHAT_VERTEX_LOCATION") or os.getenv("VERTEX_LOCATION", "us-central1"),
         vertex_model=_env("CHAT_VERTEX_MODEL") or os.getenv("VERTEX_MODEL", "gemini-2.5-flash"),
         ollama_base_url=_env("CHAT_OLLAMA_BASE_URL") or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
@@ -172,7 +212,19 @@ def get_chat_config() -> ChatConfig:
     )
     # RAG: Vertex AI Vector Search + Postgres published_rag_metadata
     vertex_endpoint = _env("CHAT_VERTEX_INDEX_ENDPOINT_ID") or os.getenv("VERTEX_INDEX_ENDPOINT_ID")
-    vertex_deployed = _env("CHAT_VERTEX_DEPLOYED_INDEX_ID") or os.getenv("VERTEX_DEPLOYED_INDEX_ID")
+    vertex_deployed_raw = _env("CHAT_VERTEX_DEPLOYED_INDEX_ID") or os.getenv("VERTEX_DEPLOYED_INDEX_ID")
+    logger.info(
+        "[RAG config] env: CHAT_VERTEX_DEPLOYED_INDEX_ID=%r VERTEX_DEPLOYED_INDEX_ID=%r → raw=%r _chat_root=%s",
+        _env("CHAT_VERTEX_DEPLOYED_INDEX_ID"),
+        os.getenv("VERTEX_DEPLOYED_INDEX_ID"),
+        vertex_deployed_raw,
+        _chat_root,
+    )
+    vertex_deployed = vertex_deployed_raw
+    # Vertex API requires the deployed index ID (e.g. endpoint_mobius_chat_publi_1769989702095), not the display name
+    if vertex_deployed and vertex_deployed.strip() in ("Endpoint_mobius_chat_published_rag", "mobius_chat_published_rag"):
+        vertex_deployed = "endpoint_mobius_chat_publi_1769989702095"
+        logger.info("[RAG config] normalized display name → deployed_index_id=%r", vertex_deployed)
     rag_db_url = _env("CHAT_RAG_DATABASE_URL") or os.getenv("RAG_DATABASE_URL") or os.getenv("CHAT_DATABASE_URL")
     rag_k = int(os.getenv("CHAT_RAG_TOP_K") or os.getenv("RAG_TOP_K", "10"))
     rag = ChatRAGConfig(

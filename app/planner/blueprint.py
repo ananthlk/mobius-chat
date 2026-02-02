@@ -2,6 +2,7 @@
 from typing import Literal
 
 from app.planner.schemas import Plan, SubQuestion
+from app.trace_log import trace_entered
 
 Sensitivity = Literal["low", "medium", "high"]
 AgentType = Literal["RAG", "patient_stub"]
@@ -19,6 +20,7 @@ def _sensitivity_for(sq: SubQuestion) -> Sensitivity:
 
 def build_blueprint(plan: Plan, rag_default_k: int = 10) -> list[dict]:
     """Build Parse 2 Blueprint: one entry per subquestion with sensitivity, RAG config, agent."""
+    trace_entered("planner.blueprint.build_blueprint", subquestions=len(plan.subquestions))
     out: list[dict] = []
     for sq in plan.subquestions:
         agent: AgentType = "RAG" if sq.kind == "non_patient" else "patient_stub"

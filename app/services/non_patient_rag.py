@@ -5,6 +5,8 @@ import asyncio
 import logging
 from typing import Any
 
+from app.trace_log import trace_entered
+
 logger = logging.getLogger(__name__)
 
 
@@ -22,6 +24,7 @@ def answer_non_patient(
     emitter=None,
 ) -> tuple[str, list[dict], dict[str, Any] | None]:
     """Answer a non-patient subquestion: RAG (blend of hierarchical + factual or single path) then LLM. Returns (answer_text, sources, llm_usage)."""
+    trace_entered("services.non_patient_rag.answer_non_patient")
     from app.chat_config import get_chat_config
     from app.services.llm_provider import get_llm_provider
 
@@ -58,7 +61,15 @@ def answer_non_patient(
             _emit(emitter, f"Search didn’t work ({e}). Answering without our materials.")
     else:
         _emit(emitter, "I don’t have access to our materials right now; I’ll answer from what I know.")
-        logger.info("RAG: vertex_index_endpoint_id, vertex_deployed_index_id, or database_url not set; skipping RAG")
+        missing = [x for x, v in [
+            ("VERTEX_INDEX_ENDPOINT_ID", rag.vertex_index_endpoint_id),
+            ("VERTEX_DEPLOYED_INDEX_ID", rag.vertex_deployed_index_id),
+            ("CHAT_RAG_DATABASE_URL", rag.database_url),
+        ] if not (v or "").strip()]
+        logger.info(
+            "RAG skipped: set %s in mobius-config/.env or mobius-chat/.env (see .env.example). See docs/PUBLISHED_RAG_SETUP.md.",
+            ", ".join(missing) or "vertex_index_endpoint_id, vertex_deployed_index_id, database_url",
+        )
 
     # Build context string and sources list for citations (include match_score, confidence for chat source cards)
     context_parts = []

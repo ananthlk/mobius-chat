@@ -1,11 +1,68 @@
 """Worker: consume from request queue → planner (breakdown only) → answer per subquestion (patient / non-patient path) → combine → publish."""
 import logging
+import os
 import threading
 import time
 from typing import Any, Callable
 
-from dotenv import load_dotenv
-load_dotenv()  # load .env from project root (same credentials as Mobius RAG when using Vertex)
+from pathlib import Path
+
+_chat_root = Path(__file__).resolve().parent.parent.parent
+# Load env: module .env first, then global mobius-config/.env (same as chat_config)
+import sys
+_config_dir = _chat_root.parent / "mobius-config"
+if _config_dir.exists() and str(_config_dir) not in sys.path:
+    sys.path.insert(0, str(_config_dir))
+try:
+    from env_helper import load_env
+    load_env(_chat_root)
+    _env_source = "env_helper.load_env"
+except ImportError:
+    from dotenv import load_dotenv
+    load_dotenv(_chat_root / ".env", override=True)
+    _env_source = "dotenv(_chat_root/.env)"
+    # Clear placeholder credentials and resolve to credentials/*.json when env_helper not available
+    _c = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or ""
+    if "/path/to/" in _c or "your-service-account" in _c or "your-" in _c.lower():
+        os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
+    if not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        for _d in (_chat_root / "credentials", _chat_root.parent / "mobius-config" / "credentials"):
+            if _d.exists():
+                for _p in _d.glob("*.json"):
+                    if _p.is_file():
+                        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(_p.resolve())
+                        break
+                if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+                    break
+
+# Ensure Vertex project ID is always set (SDK and get_chat_config read env)
+_vp = (os.environ.get("VERTEX_PROJECT_ID") or os.environ.get("CHAT_VERTEX_PROJECT_ID") or "mobiusos-new").strip()
+if not _vp:
+    _vp = "mobiusos-new"
+os.environ.setdefault("VERTEX_PROJECT_ID", _vp)
+os.environ.setdefault("CHAT_VERTEX_PROJECT_ID", os.environ.get("VERTEX_PROJECT_ID", "mobiusos-new"))
+
+# Debug: log env and .env state at worker startup (root cause for RAG deployed index)
+_log_env_path = _chat_root / ".env"
+logger_startup = logging.getLogger(__name__)
+_vert_id = os.environ.get("VERTEX_DEPLOYED_INDEX_ID", "")
+_vert_proj = os.environ.get("VERTEX_PROJECT_ID", "")
+_vert_ep = os.environ.get("VERTEX_INDEX_ENDPOINT_ID", "")
+_rag_db = "set" if os.environ.get("CHAT_RAG_DATABASE_URL") else "unset"
+print(
+    f"[worker startup] _chat_root={_chat_root} .env_exists={_log_env_path.exists()} "
+    f"VERTEX_PROJECT_ID={_vert_proj!r} VERTEX_INDEX_ENDPOINT_ID={'set' if _vert_ep else 'unset'} "
+    f"VERTEX_DEPLOYED_INDEX_ID={_vert_id!r} CHAT_RAG_DATABASE_URL={_rag_db}",
+    flush=True,
+)
+logger_startup.info(
+    "[worker startup] _chat_root=%s VERTEX_PROJECT_ID=%r VERTEX_INDEX_ENDPOINT_ID=%s VERTEX_DEPLOYED_INDEX_ID=%r CHAT_RAG_DATABASE_URL=%s",
+    _chat_root,
+    _vert_proj,
+    "set" if _vert_ep else "unset",
+    _vert_id,
+    _rag_db,
+)
 
 from app.chat_config import get_chat_config
 from app.planner import parse
@@ -19,6 +76,7 @@ from app.services.cost_model import compute_cost
 from app.services.non_patient_rag import answer_non_patient
 from app.services.retrieval_calibration import get_retrieval_blend, intent_to_score
 from app.services.usage import LLMUsageDict
+from app.trace_log import trace_entered
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +123,7 @@ def _answer_for_subquestion(
 
 def process_one(correlation_id: str, payload: dict) -> None:
     """Process one request: plan (breakdown only) → answer each subquestion via patient/non-patient path → combine → publish."""
+    trace_entered("worker.run.process_one", correlation_id=correlation_id)
     message = payload.get("message", "").strip()
     thinking_chunks: list[str] = []
     start_progress(correlation_id)

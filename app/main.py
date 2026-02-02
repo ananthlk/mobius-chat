@@ -1,10 +1,34 @@
 """FastAPI app: POST /chat (enqueue), GET /chat/response/:id (poll), GET /chat/plan/:id, health."""
 import logging
+import os
 import uuid
 from pathlib import Path
 
-from dotenv import load_dotenv
-load_dotenv()  # load .env from project root (same pattern as Mobius RAG)
+_chat_root = Path(__file__).resolve().parent.parent
+# Load env first (module + global, fixes placeholder credentials) so GOOGLE_APPLICATION_CREDENTIALS is never /path/to/...
+import sys
+_config_dir = _chat_root.parent / "mobius-config"
+if _config_dir.exists() and str(_config_dir) not in sys.path:
+    sys.path.insert(0, str(_config_dir))
+try:
+    from env_helper import load_env
+    load_env(_chat_root)
+except ImportError:
+    from dotenv import load_dotenv
+    load_dotenv(_chat_root / ".env", override=True)
+    # Clear placeholder credentials and resolve to credentials/*.json when env_helper not available
+    _c = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or ""
+    if "/path/to/" in _c or "your-service-account" in _c or "your-" in _c.lower():
+        os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
+    if not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        for _d in (_chat_root / "credentials", _chat_root.parent / "mobius-config" / "credentials"):
+            if _d.exists():
+                for _p in _d.glob("*.json"):
+                    if _p.is_file():
+                        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(_p.resolve())
+                        break
+                if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+                    break
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
