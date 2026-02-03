@@ -47,6 +47,13 @@ The app loads `.env` from the **repo root**. Create a `.env` file there with the
 
 Install mobius-user for Option B: `pip install -e ../mobius-user`. Create DB and run migrations: see mobius-user/README.md.
 
+## Document mini reader (inline + open in new tab)
+
+| Variable | Description |
+|----------|-------------|
+| `RAG_APP_API_BASE` | RAG backend URL for full-page inline reader (e.g. `http://localhost:8000`). When set, `GET /api/v1/documents/{document_id}/pages` proxies to RAG. If unset, mini reader shows snippet only and "Open in new tab" still works when `RAG_APP_BASE` is set. |
+| `RAG_APP_BASE` (frontend) | RAG app base URL for "Open in new tab" (e.g. `http://localhost:5173` for RAG Vite dev). Set in `frontend/index.html` as `window.RAG_APP_BASE = '...'` or at build time. Deep link: `?tab=read&documentId=<id>&pageNumber=<n>`. |
+
 ## Optional overrides
 
 | Variable | Description |

@@ -370,6 +370,7 @@ def process_one(correlation_id: str, payload: dict) -> None:
     response_sources = [
         {
             "index": s.get("index", i + 1),
+            "document_id": s.get("document_id"),
             "document_name": s.get("document_name") or "document",
             "page_number": s.get("page_number"),
             "source_type": s.get("source_type"),

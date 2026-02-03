@@ -12,6 +12,7 @@ interface ChatResponse {
 
 /** Single RAG source (when backend provides sources array) */
 interface SourceItem {
+  document_id?: string | null;
   document_name?: string;
   page_number?: number | null;
   text?: string;
@@ -21,6 +22,7 @@ interface SourceItem {
 /** Parsed source from "Sources:" block or API response.sources (RAG) */
 interface ParsedSource {
   index: number;
+  document_id?: string | null;
   document_name: string;
   page_number: number | null;
   snippet: string;
@@ -48,9 +50,10 @@ interface HistoryTurnItem {
   created_at: string | null;
 }
 
-/** GET /chat/history/most-helpful-documents (sorted by distinct liked turns, no counts shown) */
+/** GET /chat/history/most-helpful-documents (sorted by distinct liked turns; document_id when present) */
 interface HistoryDocumentItem {
   document_name: string;
+  document_id?: string | null;
 }
 
 import {
@@ -240,6 +243,7 @@ function svgIcon(className: string, paths: string[]): SVGElement {
   svg.setAttribute("stroke-width", "2");
   svg.setAttribute("stroke-linecap", "round");
   svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
   paths.forEach((d) => {
     const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
     p.setAttribute("d", d);
@@ -428,8 +432,13 @@ function renderFeedback(
   return { el: bar, updateFeedback };
 }
 
-/** Reusable: source citer – same look as thinking (word + line, muted, collapsed by default). */
-function renderSourceCiter(sources: ParsedSource[]): HTMLElement {
+/** Reusable: source citer – same look as thinking (word + line, muted, collapsed by default). Click source to open mini reader. Per-source: "Was this helpful and accurate?" thumbs + "Open document" link. */
+function renderSourceCiter(
+  sources: ParsedSource[],
+  onSourceClick?: (s: ParsedSource) => void,
+  correlationId?: string,
+  initialRatings?: Record<number, "up" | "down">
+): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "source-citer collapsed";
 
@@ -461,7 +470,26 @@ function renderSourceCiter(sources: ParsedSource[]): HTMLElement {
   body.className = "source-citer-body";
   sources.forEach((s) => {
     const item = document.createElement("div");
-    item.className = "source-item";
+    item.className = "source-item" + (onSourceClick ? " source-item--clickable" : "");
+    if (onSourceClick) {
+      item.setAttribute("role", "button");
+      item.setAttribute("tabindex", "0");
+      item.title = "View document";
+      item.addEventListener("click", (e) => {
+        if (
+          (e.target as HTMLElement).closest(".source-feedback-row") ||
+          (e.target as HTMLElement).closest(".source-open-doc")
+        )
+          return;
+        onSourceClick(s);
+      });
+      item.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          if (!(e.target as HTMLElement).closest(".source-feedback-row")) onSourceClick(s);
+        }
+      });
+    }
     const doc = document.createElement("div");
     doc.className = "source-doc";
     doc.textContent = `[${s.index}] ${s.document_name}` + (s.page_number != null ? ` (page ${s.page_number})` : "");
@@ -482,12 +510,165 @@ function renderSourceCiter(sources: ParsedSource[]): HTMLElement {
       meta.textContent = s.snippet;
       item.appendChild(meta);
     }
+    const sourceIndex = s.index >= 1 ? s.index : 1;
+    const existingRating = initialRatings?.[sourceIndex];
+    const feedbackRow = document.createElement("div");
+    feedbackRow.className = "source-feedback-row";
+    const question = document.createElement("span");
+    question.className = "source-feedback-question";
+    question.textContent = "Was this helpful and accurate?";
+    const thumbsWrap = document.createElement("div");
+    thumbsWrap.className = "source-feedback-thumbs";
+    const upBtn = document.createElement("button");
+    upBtn.type = "button";
+    upBtn.setAttribute("aria-label", "Yes, helpful");
+    upBtn.appendChild(thumbsUpIcon("source-feedback-icon"));
+    const downBtn = document.createElement("button");
+    downBtn.type = "button";
+    downBtn.setAttribute("aria-label", "No, not helpful");
+    downBtn.appendChild(thumbsDownIcon("source-feedback-icon"));
+    thumbsWrap.appendChild(upBtn);
+    thumbsWrap.appendChild(downBtn);
+    feedbackRow.appendChild(question);
+    feedbackRow.appendChild(thumbsWrap);
+    item.appendChild(feedbackRow);
+    if (existingRating) {
+      upBtn.classList.toggle("selected", existingRating === "up");
+      downBtn.classList.toggle("selected", existingRating === "down");
+      upBtn.disabled = true;
+      downBtn.disabled = true;
+    } else if (correlationId) {
+      upBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        fetch(API_BASE + "/chat/feedback/source", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+          body: JSON.stringify({ correlation_id: correlationId, source_index: sourceIndex, rating: "up" }),
+        }).then((r) => {
+          if (r.ok) {
+            upBtn.classList.add("selected");
+            downBtn.classList.remove("selected");
+            upBtn.disabled = true;
+            downBtn.disabled = true;
+          }
+        });
+      });
+      downBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        fetch(API_BASE + "/chat/feedback/source", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+          body: JSON.stringify({ correlation_id: correlationId, source_index: sourceIndex, rating: "down" }),
+        }).then((r) => {
+          if (r.ok) {
+            downBtn.classList.add("selected");
+            upBtn.classList.remove("selected");
+            upBtn.disabled = true;
+            downBtn.disabled = true;
+          }
+        });
+      });
+    }
+    const ragUrl = onSourceClick ? getRagDocumentUrl(s.document_id, s.page_number) : null;
+    if (ragUrl) {
+      const linkWrap = document.createElement("div");
+      linkWrap.className = "source-open-doc";
+      const link = document.createElement("a");
+      link.href = ragUrl;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.className = "source-open-doc-link";
+      link.textContent = "Open full document";
+      link.addEventListener("click", (e) => e.stopPropagation());
+      linkWrap.appendChild(link);
+      item.appendChild(linkWrap);
+    }
     body.appendChild(item);
   });
 
   wrap.appendChild(preview);
   wrap.appendChild(body);
   return wrap;
+}
+
+/** RAG deep-link URL for Read tab (document + optional page). Same URL for "view document" and "open in new tab". */
+function getRagDocumentUrl(documentId: string | null | undefined, pageNumber: number | null | undefined): string | null {
+  const base = (typeof window !== "undefined" && window.RAG_APP_BASE) ? window.RAG_APP_BASE.trim() : "";
+  if (!base || !documentId || !documentId.trim()) return null;
+  const params = new URLSearchParams({ tab: "read", documentId: documentId.trim() });
+  if (pageNumber != null) params.set("pageNumber", String(pageNumber));
+  return `${base.replace(/\/$/, "")}?${params.toString()}`;
+}
+
+/** Open document: if RAG_APP_BASE and document_id, open RAG Read tab in new tab; else show snippet-only mini reader. */
+function openDocumentOrSnippet(s: {
+  document_id?: string | null;
+  document_name: string;
+  page_number?: number | null;
+  snippet: string;
+}): void {
+  const url = getRagDocumentUrl(s.document_id, s.page_number);
+  if (url) {
+    window.open(url, "_blank", "noopener,noreferrer");
+    return;
+  }
+  openMiniReaderSnippetOnly(s.document_name, s.page_number, s.snippet);
+}
+
+/** Mini reader: snippet only (no full-page fetch). Used when RAG_APP_BASE is not set. */
+function openMiniReaderSnippetOnly(documentName: string, pageNumber: number | null | undefined, snippet: string): void {
+  const docName = documentName || "Document";
+  const title = pageNumber != null ? `${docName} (page ${pageNumber})` : docName;
+
+  let overlay: HTMLElement | null = document.getElementById("mini-reader-overlay");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.id = "mini-reader-overlay";
+    overlay.className = "mini-reader-overlay";
+    overlay.setAttribute("aria-hidden", "true");
+    const panel = document.createElement("div");
+    panel.className = "mini-reader-panel";
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-labelledby", "mini-reader-title");
+    const header = document.createElement("div");
+    header.className = "mini-reader-header";
+    const titleEl = document.createElement("h2");
+    titleEl.id = "mini-reader-title";
+    titleEl.className = "mini-reader-title";
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "mini-reader-close";
+    closeBtn.setAttribute("aria-label", "Close");
+    closeBtn.textContent = "×";
+    const contentEl = document.createElement("div");
+    contentEl.className = "mini-reader-content";
+    header.appendChild(titleEl);
+    header.appendChild(closeBtn);
+    panel.appendChild(header);
+    panel.appendChild(contentEl);
+    overlay.appendChild(panel);
+
+    closeBtn.addEventListener("click", () => {
+      overlay?.classList.remove("open");
+      overlay?.setAttribute("aria-hidden", "true");
+    });
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) {
+        overlay.classList.remove("open");
+        overlay.setAttribute("aria-hidden", "true");
+      }
+    });
+    document.body.appendChild(overlay);
+  }
+
+  const titleEl = overlay.querySelector("#mini-reader-title") as HTMLElement;
+  const contentEl = overlay.querySelector(".mini-reader-content") as HTMLElement;
+  titleEl.textContent = title;
+  contentEl.textContent = snippet || "(No snippet)";
+  overlay.classList.add("open");
+  overlay.setAttribute("aria-hidden", "false");
 }
 
 function scrollToBottom(container: HTMLElement): void {
@@ -658,11 +839,22 @@ function run(): void {
         });
 
         documentsList.innerHTML = "";
-        documents.forEach((item) => {
+        documents.forEach((item: HistoryDocumentItem) => {
           const li = document.createElement("li");
-          li.className = "documents-item";
+          li.className = "documents-item documents-item--clickable";
           li.textContent = item.document_name;
-          li.title = item.document_name;
+          li.title = "View document";
+          li.setAttribute("role", "button");
+          li.setAttribute("tabindex", "0");
+          li.addEventListener("click", () =>
+            openDocumentOrSnippet({ document_id: item.document_id ?? null, document_name: item.document_name, page_number: null, snippet: "" })
+          );
+          li.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              openDocumentOrSnippet({ document_id: item.document_id ?? null, document_name: item.document_name, page_number: null, snippet: "" });
+            }
+          });
           documentsList.appendChild(li);
         });
       })
@@ -864,8 +1056,9 @@ function run(): void {
         // 5. Sources: prefer API response.sources (from RAG) so source cards show even when integrator drops them
         const sourceList: ParsedSource[] =
           data.sources && data.sources.length > 0
-            ? (data.sources as Array<{ index?: number; document_name?: string; page_number?: number | null; text?: string; source_type?: string | null; match_score?: number | null; confidence?: number | null }>).map((s) => ({
+            ? (data.sources as Array<{ index?: number; document_id?: string | null; document_name?: string; page_number?: number | null; text?: string; source_type?: string | null; match_score?: number | null; confidence?: number | null }>).map((s) => ({
                 index: s.index ?? 0,
+                document_id: s.document_id ?? null,
                 document_name: s.document_name ?? "document",
                 page_number: s.page_number ?? null,
                 snippet: (s.text ?? "").slice(0, 200),
@@ -876,6 +1069,7 @@ function run(): void {
             : sources.length > 0
               ? sources.map((s) => ({
                   index: s.index ?? 0,
+                  document_id: s.document_id ?? null,
                   document_name: s.document_name ?? "document",
                   page_number: s.page_number ?? null,
                   snippet: (s.snippet ?? "").slice(0, 120),
@@ -885,7 +1079,32 @@ function run(): void {
                 }))
               : [];
         if (sourceList.length > 0) {
-          turnWrap.appendChild(renderSourceCiter(sourceList));
+          const appendSourceCiter = (ratings: Record<number, "up" | "down">) => {
+            turnWrap.appendChild(
+              renderSourceCiter(
+                sourceList,
+                (s) =>
+                  openDocumentOrSnippet({
+                    document_id: s.document_id,
+                    document_name: s.document_name,
+                    page_number: s.page_number,
+                    snippet: s.snippet,
+                  }),
+                correlationId,
+                ratings
+              )
+            );
+          };
+          fetch(API_BASE + "/chat/feedback/source/" + encodeURIComponent(correlationId))
+            .then((r) => (r.ok ? r.json() : { ratings: [] }))
+            .then((data: { ratings?: Array<{ source_index: number; rating: string }> }) => {
+              const ratings: Record<number, "up" | "down"> = {};
+              (data.ratings || []).forEach((x) => {
+                if (x.rating === "up" || x.rating === "down") ratings[x.source_index] = x.rating;
+              });
+              appendSourceCiter(ratings);
+            })
+            .catch(() => appendSourceCiter({}));
         }
 
         scrollToBottom(messagesEl);

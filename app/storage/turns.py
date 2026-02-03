@@ -151,7 +151,7 @@ def get_most_helpful_turns(limit: int = 10) -> list[dict[str, Any]]:
 
 
 def get_most_helpful_documents(limit: int = 10) -> list[dict[str, Any]]:
-    """From turns with feedback up, list documents by how many distinct liked turns featured them (no counts shown)."""
+    """From turns with feedback up, list documents by how many distinct liked turns featured them. Returns document_name and one document_id when present in sources."""
     url = _get_db_url()
     if not url:
         return []
@@ -163,13 +163,13 @@ def get_most_helpful_documents(limit: int = 10) -> list[dict[str, Any]]:
         cur.execute(
             """
             WITH liked_docs AS (
-                SELECT DISTINCT t.correlation_id, elem->>'document_name' AS document_name
+                SELECT DISTINCT t.correlation_id, elem->>'document_name' AS document_name, elem->>'document_id' AS document_id
                 FROM chat_turns t
                 INNER JOIN chat_feedback f ON f.correlation_id = t.correlation_id AND f.rating = 'up'
                 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(t.sources, '[]'::jsonb)) AS elem
                 WHERE elem->>'document_name' IS NOT NULL AND (elem->>'document_name') != ''
             )
-            SELECT document_name
+            SELECT document_name, MAX(NULLIF(TRIM(document_id), '')) AS document_id
             FROM liked_docs
             GROUP BY document_name
             ORDER BY COUNT(*) DESC, document_name
@@ -180,7 +180,10 @@ def get_most_helpful_documents(limit: int = 10) -> list[dict[str, Any]]:
         rows = cur.fetchall()
         cur.close()
         conn.close()
-        return [{"document_name": r["document_name"] or ""} for r in rows]
+        return [
+            {"document_name": r["document_name"] or "", "document_id": r["document_id"] if r.get("document_id") else None}
+            for r in rows
+        ]
     except Exception as e:
         logger.warning("Failed to get most helpful documents: %s", e)
         return []

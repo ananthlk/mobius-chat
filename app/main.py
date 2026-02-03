@@ -60,7 +60,7 @@ from app.storage import (
     get_response,
 )
 from app.auth import get_user_id_from_request
-from app.storage.feedback import get_feedback, insert_feedback
+from app.storage.feedback import get_feedback, get_source_feedback, insert_feedback, insert_source_feedback
 from app.storage.progress import get_and_clear_events, get_progress
 from app.worker import start_worker_background
 
@@ -167,6 +167,30 @@ def get_feedback_route(correlation_id: str):
     return fb
 
 
+class SourceFeedbackRequest(BaseModel):
+    correlation_id: str
+    source_index: int  # 1-based index in turn's sources array
+    rating: str  # "up" | "down"
+
+
+@app.post("/chat/feedback/source")
+def post_source_feedback(body: SourceFeedbackRequest):
+    """Persist thumbs up/down for one source in a turn. Upsert by (correlation_id, source_index)."""
+    if body.rating not in ("up", "down"):
+        raise HTTPException(status_code=400, detail="rating must be 'up' or 'down'")
+    if body.source_index < 1:
+        raise HTTPException(status_code=400, detail="source_index must be >= 1")
+    insert_source_feedback(body.correlation_id, body.source_index, body.rating)
+    return {"ok": True}
+
+
+@app.get("/chat/feedback/source/{correlation_id}")
+def get_source_feedback_route(correlation_id: str):
+    """Return per-source feedback for a turn: { ratings: [ { source_index, rating } ] }."""
+    ratings = get_source_feedback(correlation_id)
+    return {"ratings": ratings}
+
+
 @app.get("/chat/history/recent")
 def get_history_recent(limit: int = 10):
     """Return recent turns for left panel (correlation_id, question, created_at)."""
@@ -181,8 +205,31 @@ def get_history_most_helpful_searches(limit: int = 10):
 
 @app.get("/chat/history/most-helpful-documents")
 def get_history_most_helpful_documents(limit: int = 10):
-    """Return top documents from turns with thumbs up (document_name, count)."""
+    """Return top documents from turns with thumbs up (document_name, document_id when present)."""
     return get_most_helpful_documents(limit=max(1, min(limit, 100)))
+
+
+@app.get("/api/v1/documents/{document_id}/pages")
+async def get_document_pages_proxy(document_id: str, page_number: int | None = None):
+    """Proxy to RAG backend for full-page inline reader. Returns 501 if RAG_APP_API_BASE not set."""
+    cfg = get_config()
+    base = getattr(cfg, "rag_app_api_base", None) if cfg else None
+    if not base:
+        raise HTTPException(status_code=501, detail="Document pages proxy not configured (set RAG_APP_API_BASE)")
+    base = base.rstrip("/")
+    url = f"{base}/documents/{document_id}/pages"
+    if page_number is not None:
+        url = f"{url}?page_number={page_number}"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(url)
+        if resp.status_code == 404:
+            raise HTTPException(status_code=404, detail="Document not found")
+        resp.raise_for_status()
+        return resp.json()
+    except httpx.RequestError as e:
+        logger.warning("Document pages proxy failed: %s", e)
+        raise HTTPException(status_code=502, detail="RAG backend unavailable")
 
 
 @app.post("/chat", response_model=ChatResponse)

@@ -803,6 +803,7 @@ function svgIcon(className, paths) {
   svg.setAttribute("stroke-width", "2");
   svg.setAttribute("stroke-linecap", "round");
   svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
   paths.forEach((d) => {
     const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
     p.setAttribute("d", d);
@@ -968,7 +969,7 @@ function renderFeedback(correlationId, options) {
   bar.appendChild(actionsGroup);
   return { el: bar, updateFeedback };
 }
-function renderSourceCiter(sources) {
+function renderSourceCiter(sources, onSourceClick, correlationId, initialRatings) {
   const wrap = document.createElement("div");
   wrap.className = "source-citer collapsed";
   const preview = document.createElement("div");
@@ -998,7 +999,24 @@ function renderSourceCiter(sources) {
   body.className = "source-citer-body";
   sources.forEach((s) => {
     const item = document.createElement("div");
-    item.className = "source-item";
+    item.className = "source-item" + (onSourceClick ? " source-item--clickable" : "");
+    if (onSourceClick) {
+      item.setAttribute("role", "button");
+      item.setAttribute("tabindex", "0");
+      item.title = "View document";
+      item.addEventListener("click", (e) => {
+        if (e.target.closest(".source-feedback-row") || e.target.closest(".source-open-doc"))
+          return;
+        onSourceClick(s);
+      });
+      item.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          if (!e.target.closest(".source-feedback-row"))
+            onSourceClick(s);
+        }
+      });
+    }
     const doc = document.createElement("div");
     doc.className = "source-doc";
     doc.textContent = `[${s.index}] ${s.document_name}` + (s.page_number != null ? ` (page ${s.page_number})` : "");
@@ -1022,11 +1040,152 @@ function renderSourceCiter(sources) {
       meta.textContent = s.snippet;
       item.appendChild(meta);
     }
+    const sourceIndex = s.index >= 1 ? s.index : 1;
+    const existingRating = initialRatings?.[sourceIndex];
+    const feedbackRow = document.createElement("div");
+    feedbackRow.className = "source-feedback-row";
+    const question = document.createElement("span");
+    question.className = "source-feedback-question";
+    question.textContent = "Was this helpful and accurate?";
+    const thumbsWrap = document.createElement("div");
+    thumbsWrap.className = "source-feedback-thumbs";
+    const upBtn = document.createElement("button");
+    upBtn.type = "button";
+    upBtn.setAttribute("aria-label", "Yes, helpful");
+    upBtn.appendChild(thumbsUpIcon("source-feedback-icon"));
+    const downBtn = document.createElement("button");
+    downBtn.type = "button";
+    downBtn.setAttribute("aria-label", "No, not helpful");
+    downBtn.appendChild(thumbsDownIcon("source-feedback-icon"));
+    thumbsWrap.appendChild(upBtn);
+    thumbsWrap.appendChild(downBtn);
+    feedbackRow.appendChild(question);
+    feedbackRow.appendChild(thumbsWrap);
+    item.appendChild(feedbackRow);
+    if (existingRating) {
+      upBtn.classList.toggle("selected", existingRating === "up");
+      downBtn.classList.toggle("selected", existingRating === "down");
+      upBtn.disabled = true;
+      downBtn.disabled = true;
+    } else if (correlationId) {
+      upBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        fetch(API_BASE + "/chat/feedback/source", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+          body: JSON.stringify({ correlation_id: correlationId, source_index: sourceIndex, rating: "up" })
+        }).then((r) => {
+          if (r.ok) {
+            upBtn.classList.add("selected");
+            downBtn.classList.remove("selected");
+            upBtn.disabled = true;
+            downBtn.disabled = true;
+          }
+        });
+      });
+      downBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        fetch(API_BASE + "/chat/feedback/source", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+          body: JSON.stringify({ correlation_id: correlationId, source_index: sourceIndex, rating: "down" })
+        }).then((r) => {
+          if (r.ok) {
+            downBtn.classList.add("selected");
+            upBtn.classList.remove("selected");
+            upBtn.disabled = true;
+            downBtn.disabled = true;
+          }
+        });
+      });
+    }
+    const ragUrl = onSourceClick ? getRagDocumentUrl(s.document_id, s.page_number) : null;
+    if (ragUrl) {
+      const linkWrap = document.createElement("div");
+      linkWrap.className = "source-open-doc";
+      const link = document.createElement("a");
+      link.href = ragUrl;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.className = "source-open-doc-link";
+      link.textContent = "Open full document";
+      link.addEventListener("click", (e) => e.stopPropagation());
+      linkWrap.appendChild(link);
+      item.appendChild(linkWrap);
+    }
     body.appendChild(item);
   });
   wrap.appendChild(preview);
   wrap.appendChild(body);
   return wrap;
+}
+function getRagDocumentUrl(documentId, pageNumber) {
+  const base = typeof window !== "undefined" && window.RAG_APP_BASE ? window.RAG_APP_BASE.trim() : "";
+  if (!base || !documentId || !documentId.trim())
+    return null;
+  const params = new URLSearchParams({ tab: "read", documentId: documentId.trim() });
+  if (pageNumber != null)
+    params.set("pageNumber", String(pageNumber));
+  return `${base.replace(/\/$/, "")}?${params.toString()}`;
+}
+function openDocumentOrSnippet(s) {
+  const url = getRagDocumentUrl(s.document_id, s.page_number);
+  if (url) {
+    window.open(url, "_blank", "noopener,noreferrer");
+    return;
+  }
+  openMiniReaderSnippetOnly(s.document_name, s.page_number, s.snippet);
+}
+function openMiniReaderSnippetOnly(documentName, pageNumber, snippet) {
+  const docName = documentName || "Document";
+  const title = pageNumber != null ? `${docName} (page ${pageNumber})` : docName;
+  let overlay = document.getElementById("mini-reader-overlay");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.id = "mini-reader-overlay";
+    overlay.className = "mini-reader-overlay";
+    overlay.setAttribute("aria-hidden", "true");
+    const panel = document.createElement("div");
+    panel.className = "mini-reader-panel";
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-labelledby", "mini-reader-title");
+    const header = document.createElement("div");
+    header.className = "mini-reader-header";
+    const titleEl2 = document.createElement("h2");
+    titleEl2.id = "mini-reader-title";
+    titleEl2.className = "mini-reader-title";
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "mini-reader-close";
+    closeBtn.setAttribute("aria-label", "Close");
+    closeBtn.textContent = "\xD7";
+    const contentEl2 = document.createElement("div");
+    contentEl2.className = "mini-reader-content";
+    header.appendChild(titleEl2);
+    header.appendChild(closeBtn);
+    panel.appendChild(header);
+    panel.appendChild(contentEl2);
+    overlay.appendChild(panel);
+    closeBtn.addEventListener("click", () => {
+      overlay?.classList.remove("open");
+      overlay?.setAttribute("aria-hidden", "true");
+    });
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) {
+        overlay.classList.remove("open");
+        overlay.setAttribute("aria-hidden", "true");
+      }
+    });
+    document.body.appendChild(overlay);
+  }
+  const titleEl = overlay.querySelector("#mini-reader-title");
+  const contentEl = overlay.querySelector(".mini-reader-content");
+  titleEl.textContent = title;
+  contentEl.textContent = snippet || "(No snippet)";
+  overlay.classList.add("open");
+  overlay.setAttribute("aria-hidden", "false");
 }
 function scrollToBottom(container) {
   container.scrollTop = container.scrollHeight;
@@ -1180,9 +1339,21 @@ function run() {
       documentsList.innerHTML = "";
       documents.forEach((item) => {
         const li = document.createElement("li");
-        li.className = "documents-item";
+        li.className = "documents-item documents-item--clickable";
         li.textContent = item.document_name;
-        li.title = item.document_name;
+        li.title = "View document";
+        li.setAttribute("role", "button");
+        li.setAttribute("tabindex", "0");
+        li.addEventListener(
+          "click",
+          () => openDocumentOrSnippet({ document_id: item.document_id ?? null, document_name: item.document_name, page_number: null, snippet: "" })
+        );
+        li.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            openDocumentOrSnippet({ document_id: item.document_id ?? null, document_name: item.document_name, page_number: null, snippet: "" });
+          }
+        });
         documentsList.appendChild(li);
       });
     }).catch(() => {
@@ -1351,6 +1522,7 @@ function run() {
       turnWrap.appendChild(renderFeedback(correlationId).el);
       const sourceList = data.sources && data.sources.length > 0 ? data.sources.map((s) => ({
         index: s.index ?? 0,
+        document_id: s.document_id ?? null,
         document_name: s.document_name ?? "document",
         page_number: s.page_number ?? null,
         snippet: (s.text ?? "").slice(0, 200),
@@ -1359,6 +1531,7 @@ function run() {
         confidence: s.confidence ?? null
       })) : sources.length > 0 ? sources.map((s) => ({
         index: s.index ?? 0,
+        document_id: s.document_id ?? null,
         document_name: s.document_name ?? "document",
         page_number: s.page_number ?? null,
         snippet: (s.snippet ?? "").slice(0, 120),
@@ -1367,7 +1540,29 @@ function run() {
         confidence: null
       })) : [];
       if (sourceList.length > 0) {
-        turnWrap.appendChild(renderSourceCiter(sourceList));
+        const appendSourceCiter = (ratings) => {
+          turnWrap.appendChild(
+            renderSourceCiter(
+              sourceList,
+              (s) => openDocumentOrSnippet({
+                document_id: s.document_id,
+                document_name: s.document_name,
+                page_number: s.page_number,
+                snippet: s.snippet
+              }),
+              correlationId,
+              ratings
+            )
+          );
+        };
+        fetch(API_BASE + "/chat/feedback/source/" + encodeURIComponent(correlationId)).then((r) => r.ok ? r.json() : { ratings: [] }).then((data2) => {
+          const ratings = {};
+          (data2.ratings || []).forEach((x) => {
+            if (x.rating === "up" || x.rating === "down")
+              ratings[x.source_index] = x.rating;
+          });
+          appendSourceCiter(ratings);
+        }).catch(() => appendSourceCiter({}));
       }
       scrollToBottom(messagesEl);
       loadSidebarHistory();

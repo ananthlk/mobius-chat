@@ -662,9 +662,31 @@ body {
 .source-citer .source-citer-body {
   margin-top: 0.35rem;
   padding-left: 0;
-  max-height: 10rem;
+  padding-bottom: 0.25rem;
+  max-height: min(22rem, 50vh);
   overflow-y: auto;
   overflow-x: hidden;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+.source-citer .source-citer-body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.source-citer .source-citer-body::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 4px;
+}
+
+.source-citer .source-citer-body::-webkit-scrollbar-thumb {
+  background: var(--thinking-muted);
+  border-radius: 4px;
+}
+
+.source-citer .source-citer-body::-webkit-scrollbar-thumb:hover {
+  background: var(--thinking-muted-hover);
 }
 
 .source-citer.collapsed .source-citer-body {
@@ -694,6 +716,180 @@ body {
 .source-citer .source-item .source-snippet {
   margin-top: 0.25rem;
   color: var(--thinking-muted-hover);
+}
+
+.source-citer .source-feedback-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.375rem;
+  font-size: 0.75rem;
+  color: var(--thinking-muted);
+}
+
+.source-citer .source-feedback-question {
+  flex-shrink: 0;
+}
+
+.source-citer .source-feedback-thumbs {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+.source-citer .source-feedback-thumbs button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0.25rem;
+  border: 1px solid var(--assistant-border);
+  background: var(--main-bg);
+  color: var(--thinking-muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+.source-citer .source-feedback-thumbs button:hover:not(:disabled) {
+  background: var(--thinking-bg);
+  color: var(--accent);
+  border-color: var(--thinking-muted-hover);
+}
+
+.source-citer .source-feedback-thumbs button.selected {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.source-citer .source-feedback-thumbs button:disabled {
+  opacity: 0.8;
+  cursor: default;
+}
+
+.source-citer .source-feedback-icon {
+  width: 18px;
+  height: 18px;
+  display: block;
+  flex-shrink: 0;
+}
+
+.source-citer .source-open-doc {
+  margin-top: 0.375rem;
+}
+
+.source-citer .source-open-doc-link {
+  color: var(--accent);
+  font-size: var(--text-sm);
+  text-decoration: none;
+}
+
+.source-citer .source-open-doc-link:hover {
+  text-decoration: underline;
+}
+
+.source-citer .source-item--clickable {
+  cursor: pointer;
+}
+
+.source-citer .source-item--clickable:hover {
+  background: var(--thinking-bg);
+}
+
+/* Mini reader modal */
+.mini-reader-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 1000;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+}
+
+.mini-reader-overlay.open {
+  display: flex;
+}
+
+.mini-reader-panel {
+  background: var(--main-bg);
+  border: 1px solid var(--assistant-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  max-width: 560px;
+  width: 100%;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.mini-reader-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--assistant-border);
+  flex-shrink: 0;
+}
+
+.mini-reader-title {
+  margin: 0;
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--main-text);
+}
+
+.mini-reader-close {
+  padding: 0.25rem;
+  border: none;
+  background: transparent;
+  color: var(--sidebar-text-muted);
+  cursor: pointer;
+  font-size: 1.5rem;
+  line-height: 1;
+}
+
+.mini-reader-close:hover {
+  color: var(--main-text);
+}
+
+.mini-reader-content {
+  padding: 1rem 1.25rem;
+  overflow-y: auto;
+  font-size: var(--text-sm);
+  color: var(--main-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  flex: 1;
+  min-height: 120px;
+}
+
+.mini-reader-actions {
+  padding: 0.75rem 1.25rem;
+  border-top: 1px solid var(--assistant-border);
+  flex-shrink: 0;
+}
+
+.mini-reader-open-new-tab {
+  color: var(--accent);
+  text-decoration: none;
+  font-size: var(--text-sm);
+}
+
+.mini-reader-open-new-tab:hover {
+  text-decoration: underline;
+}
+
+/* Sidebar: clickable document items */
+.documents-item--clickable {
+  cursor: pointer;
+}
+
+.documents-item--clickable:hover {
+  background: var(--thinking-bg);
 }
 
 /* Composer – integrated input + send in one bar */
