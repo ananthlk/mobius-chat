@@ -25,6 +25,7 @@ def insert_turn(
     plan_snapshot: dict[str, Any] | None = None,
     blueprint_snapshot: dict[str, Any] | None = None,
     agent_cards: list[dict[str, Any]] | None = None,
+    source_confidence_strip: str | None = None,
 ) -> None:
     """Insert one turn row. Called by worker when response is complete. Optional agent data for audit/debug."""
     url = _get_db_url()
@@ -35,14 +36,15 @@ def insert_turn(
         import psycopg2
         conn = psycopg2.connect(url)
         cur = conn.cursor()
+        strip_val = (source_confidence_strip or "").strip() or None
         cur.execute(
             """
             INSERT INTO chat_turns (
                 correlation_id, question, thinking_log, final_message, sources,
                 duration_ms, model_used, llm_provider, session_id,
-                plan_snapshot, blueprint_snapshot, agent_cards
+                plan_snapshot, blueprint_snapshot, agent_cards, source_confidence_strip
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (correlation_id) DO UPDATE SET
                 question = EXCLUDED.question,
                 thinking_log = EXCLUDED.thinking_log,
@@ -54,7 +56,8 @@ def insert_turn(
                 session_id = EXCLUDED.session_id,
                 plan_snapshot = EXCLUDED.plan_snapshot,
                 blueprint_snapshot = EXCLUDED.blueprint_snapshot,
-                agent_cards = EXCLUDED.agent_cards
+                agent_cards = EXCLUDED.agent_cards,
+                source_confidence_strip = EXCLUDED.source_confidence_strip
             """,
             (
                 correlation_id,
@@ -69,6 +72,7 @@ def insert_turn(
                 json.dumps(plan_snapshot) if plan_snapshot is not None else None,
                 json.dumps(blueprint_snapshot) if blueprint_snapshot is not None else None,
                 json.dumps(agent_cards) if agent_cards is not None else None,
+                strip_val,
             ),
         )
         conn.commit()

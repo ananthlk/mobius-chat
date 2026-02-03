@@ -89,6 +89,7 @@ def answer_non_patient(
             "document_name": doc_name,
             "page_number": page,
             "source_type": source_type,
+            "document_authority_level": c.get("document_authority_level"),
             "match_score": c.get("match_score"),
             "confidence": c.get("confidence"),
             "distance": c.get("distance"),

@@ -827,7 +827,7 @@ function renderOneSection(sec) {
   }
   return sectionEl;
 }
-function renderAnswerCard(card, isError) {
+function renderAnswerCard(card, isError, sourceConfidenceStrip) {
   const wrap = document.createElement("div");
   wrap.className = "message message--assistant answer-card answer-card--" + card.mode.toLowerCase() + (isError ? " message--error" : "");
   const bubble = document.createElement("div");
@@ -866,6 +866,12 @@ function renderAnswerCard(card, isError) {
   }
   if (metaRow.childNodes.length > 0)
     bubble.appendChild(metaRow);
+  if (sourceConfidenceStrip != null && sourceConfidenceStrip !== "") {
+    const badgeWrap = document.createElement("div");
+    badgeWrap.className = "answer-card-badge-wrap";
+    badgeWrap.appendChild(renderConfidenceBadge(sourceConfidenceStrip));
+    bubble.appendChild(badgeWrap);
+  }
   const { visible, hidden } = splitSectionsByVisibility(card.sections ?? [], card.mode);
   visible.forEach((sec) => bubble.appendChild(renderOneSection(sec)));
   if (hidden.length > 0) {
@@ -897,6 +903,31 @@ function renderAnswerCard(card, isError) {
   }
   wrap.appendChild(bubble);
   return wrap;
+}
+var CONFIDENCE_BADGE = {
+  approved_authoritative: { icon: "\u2714", label: "Approved" },
+  approved_informational: { icon: "\u2139", label: "Informational" },
+  pending: { icon: "\u26A0", label: "Unverified" },
+  partial_pending: { icon: "\u26A0", label: "Unverified" },
+  unverified: { icon: "\u26D4", label: "No source" }
+};
+function renderConfidenceBadge(value) {
+  const key = (value || "").trim() || "unverified";
+  const { icon, label } = CONFIDENCE_BADGE[key] ?? CONFIDENCE_BADGE.unverified;
+  const badge = document.createElement("span");
+  badge.className = "confidence-badge confidence-badge--" + key;
+  badge.setAttribute("aria-label", label);
+  badge.setAttribute("role", "status");
+  const iconEl = document.createElement("span");
+  iconEl.className = "confidence-badge-icon";
+  iconEl.setAttribute("aria-hidden", "true");
+  iconEl.textContent = icon;
+  const textEl = document.createElement("span");
+  textEl.className = "confidence-badge-label";
+  textEl.textContent = label;
+  badge.appendChild(iconEl);
+  badge.appendChild(textEl);
+  return badge;
 }
 function parseMessageAndSources(fullMessage) {
   const raw = (fullMessage ?? "").trim();
@@ -980,13 +1011,13 @@ function renderAssistantMessage(text, isError) {
   wrap.appendChild(bubble);
   return wrap;
 }
-function renderAssistantContent(body, isError) {
+function renderAssistantContent(body, isError, sourceConfidenceStrip) {
   const card = tryParseAnswerCard(body);
   if (typeof console !== "undefined" && console.log) {
     console.log("[AnswerCard] renderAssistantContent: card=", card ? "yes (mode=" + card.mode + ")" : "no");
   }
   if (card)
-    return renderAnswerCard(card, isError);
+    return renderAnswerCard(card, isError, sourceConfidenceStrip);
   const trimmed = (body ?? "").trim();
   if (trimmed.startsWith("{") && trimmed.length > 10) {
     console.warn("[AnswerCard] Invalid JSON, showing fallback. Raw:", trimmed.slice(0, 500));
@@ -1765,7 +1796,8 @@ function run() {
       if (typeof console !== "undefined" && console.log) {
         console.log("[AnswerCard] tryParseAnswerCard:", parsedCard ? "card (mode=" + parsedCard.mode + ")" : "null");
       }
-      const contentEl = renderAssistantContent(finalBody, !!data.llm_error);
+      const stripValue = data.source_confidence_strip ?? "unverified";
+      const contentEl = renderAssistantContent(finalBody, !!data.llm_error, stripValue);
       if (messageWrapEl) {
         messageWrapEl.replaceWith(contentEl);
       } else {

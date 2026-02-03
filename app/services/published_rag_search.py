@@ -167,7 +167,7 @@ def search_published_rag(
         conn = psycopg2.connect(rag.database_url)
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(
-            "SELECT id, document_id, source_type, text, page_number, document_display_name, document_filename FROM published_rag_metadata WHERE id::text = ANY(%s)",
+            "SELECT id, document_id, source_type, text, page_number, document_display_name, document_filename, document_authority_level FROM published_rag_metadata WHERE id::text = ANY(%s)",
             (ids,),
         )
         rows = cur.fetchall()
@@ -211,6 +211,7 @@ def search_published_rag(
             "document_name": doc_name,
             "page_number": r.get("page_number"),
             "source_type": r.get("source_type") or "chunk",
+            "document_authority_level": (r.get("document_authority_level") or "").strip() or None,
             "distance": distance,
             "match_score": match_score,
             "confidence": confidence,

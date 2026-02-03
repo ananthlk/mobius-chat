@@ -669,6 +669,65 @@ body {
   margin-top: 0.55rem;
 }
 
+/* Trust badge: status chrome, not content. Icon + short label, content-fit, below short answer. */
+.answer-card-badge-wrap {
+  margin-top: 0.35rem;
+  margin-bottom: 0.15rem;
+}
+.confidence-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  border-radius: 6px;
+  width: max-content;
+  max-width: 100%;
+}
+.confidence-badge-icon {
+  flex-shrink: 0;
+  font-size: 12px;
+  line-height: 1;
+  opacity: 0.85;
+}
+.confidence-badge-label {
+  text-transform: capitalize;
+}
+.confidence-badge--approved_authoritative {
+  background: rgba(48, 100, 48, 0.07);
+  color: rgba(30, 70, 30, 0.85);
+}
+.confidence-badge--approved_authoritative .confidence-badge-icon {
+  color: rgba(30, 70, 30, 0.9);
+}
+.confidence-badge--approved_informational {
+  background: rgba(60, 80, 120, 0.07);
+  color: rgba(40, 55, 90, 0.85);
+}
+.confidence-badge--approved_informational .confidence-badge-icon {
+  color: rgba(40, 55, 90, 0.9);
+}
+.confidence-badge--pending,
+.confidence-badge--partial_pending,
+.confidence-badge--unverified {
+  background: rgba(120, 90, 40, 0.07);
+  color: rgba(80, 60, 25, 0.85);
+}
+.confidence-badge--pending .confidence-badge-icon,
+.confidence-badge--partial_pending .confidence-badge-icon {
+  color: rgba(80, 60, 25, 0.9);
+}
+.confidence-badge--unverified {
+  background: rgba(130, 70, 30, 0.07);
+  color: rgba(90, 50, 20, 0.85);
+}
+.confidence-badge--unverified .confidence-badge-icon {
+  color: rgba(90, 50, 20, 0.9);
+}
+
 /* Selection: clearly user selection, not system emphasis (avoids default blue confusion) */
 .message-bubble::selection {
   background: rgba(0, 0, 0, 0.12);

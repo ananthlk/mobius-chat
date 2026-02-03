@@ -122,6 +122,43 @@ def _debug_log_block(title: str, lines: list[str]) -> None:
     logger.info("%s", DEBUG_PREFIX)
 
 
+# Confidence strip: allowed values for UI (frontend maps to locked copy)
+# Authoritative: document_authority_level from published_rag_metadata (e.g. Sunshine = contract_source_of_truth); fallback to source_type
+_CONFIDENCE_STRIP_AUTHORITY_LEVEL_VALUES = ("contract_source_of_truth", "authoritative", "authority", "approved")
+_CONFIDENCE_STRIP_SOURCE_TYPE_AUTHORITATIVE = ("policy", "section")
+_CONFIDENCE_PENDING_THRESHOLD = 0.5
+
+
+def _derive_source_confidence_strip(sources: list[dict]) -> str:
+    """Derive single confidence-strip value from aggregated RAG sources. Returns one of:
+    approved_authoritative, approved_informational, pending, partial_pending, unverified.
+    Uses document_authority_level (from published_rag_metadata) when present; else source_type (policy/section)."""
+    if not sources:
+        return "unverified"
+    n_authoritative = 0
+    n_pending = 0
+    n_approved = 0
+    for s in sources:
+        auth_level = (s.get("document_authority_level") or "").strip().lower()
+        st = (s.get("source_type") or "").strip().lower()
+        if auth_level and auth_level in _CONFIDENCE_STRIP_AUTHORITY_LEVEL_VALUES:
+            n_authoritative += 1
+        elif st in _CONFIDENCE_STRIP_SOURCE_TYPE_AUTHORITATIVE:
+            n_authoritative += 1
+        conf = s.get("confidence")
+        if conf is None or (isinstance(conf, (int, float)) and float(conf) < _CONFIDENCE_PENDING_THRESHOLD):
+            n_pending += 1
+        else:
+            n_approved += 1
+    if n_authoritative >= 1:
+        return "approved_authoritative"
+    if n_pending == len(sources):
+        return "pending"
+    if n_pending >= 1 and n_approved >= 1:
+        return "partial_pending"
+    return "approved_informational"
+
+
 def _answer_for_subquestion(
     sq_id: str,
     kind: str,
@@ -366,6 +403,9 @@ def process_one(correlation_id: str, payload: dict) -> None:
         })
     model_used = (usages[0].get("model") or None) if usages else None
 
+    # Confidence strip: single value for UI (worker classifies; frontend renders locked copy)
+    source_confidence_strip = _derive_source_confidence_strip(all_sources)
+
     # Source cards for chat (from RAG; not dependent on integrator message)
     response_sources = [
         {
@@ -374,6 +414,7 @@ def process_one(correlation_id: str, payload: dict) -> None:
             "document_name": s.get("document_name") or "document",
             "page_number": s.get("page_number"),
             "source_type": s.get("source_type"),
+            "document_authority_level": s.get("document_authority_level"),
             "match_score": s.get("match_score"),
             "confidence": s.get("confidence"),
             "text": (s.get("text") or "")[:200],
@@ -397,6 +438,7 @@ def process_one(correlation_id: str, payload: dict) -> None:
         "usage_breakdown": usage_breakdown,
         "cost_usd": round(total_cost, 6),
         "sources": response_sources,
+        "source_confidence_strip": source_confidence_strip,
     }
     clear_progress(correlation_id)
     insert_turn(
@@ -412,6 +454,7 @@ def process_one(correlation_id: str, payload: dict) -> None:
         plan_snapshot=plan_snapshot,
         blueprint_snapshot=blueprint_snapshot,
         agent_cards=agent_cards,
+        source_confidence_strip=source_confidence_strip,
     )
     store_response(correlation_id, response_payload)
     get_queue().publish_response(correlation_id, response_payload)

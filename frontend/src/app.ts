@@ -8,6 +8,7 @@ interface ChatResponse {
   model_used?: string | null;
   llm_error?: string | null;
   sources?: SourceItem[];
+  source_confidence_strip?: string;
 }
 
 /** Single RAG source (when backend provides sources array) */
@@ -274,7 +275,7 @@ function renderOneSection(sec: AnswerCardSection): HTMLElement {
 }
 
 /** Render AnswerCard with mode-based visibility and single "Show details" for hidden sections. */
-function renderAnswerCard(card: AnswerCard, isError?: boolean): HTMLElement {
+function renderAnswerCard(card: AnswerCard, isError?: boolean, sourceConfidenceStrip?: string): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className =
     "message message--assistant answer-card answer-card--" +
@@ -319,6 +320,13 @@ function renderAnswerCard(card: AnswerCard, isError?: boolean): HTMLElement {
   }
   if (metaRow.childNodes.length > 0) bubble.appendChild(metaRow);
 
+  if (sourceConfidenceStrip != null && sourceConfidenceStrip !== "") {
+    const badgeWrap = document.createElement("div");
+    badgeWrap.className = "answer-card-badge-wrap";
+    badgeWrap.appendChild(renderConfidenceBadge(sourceConfidenceStrip));
+    bubble.appendChild(badgeWrap);
+  }
+
   const { visible, hidden } = splitSectionsByVisibility(card.sections ?? [], card.mode);
 
   visible.forEach((sec) => bubble.appendChild(renderOneSection(sec)));
@@ -355,6 +363,35 @@ function renderAnswerCard(card: AnswerCard, isError?: boolean): HTMLElement {
 
   wrap.appendChild(bubble);
   return wrap;
+}
+
+/** Trust badge: icon + 1–2 word label. Status chrome, not content. Doc state → badge. */
+const CONFIDENCE_BADGE: Record<string, { icon: string; label: string }> = {
+  approved_authoritative: { icon: "✔", label: "Approved" },
+  approved_informational: { icon: "ℹ", label: "Informational" },
+  pending: { icon: "⚠", label: "Unverified" },
+  partial_pending: { icon: "⚠", label: "Unverified" },
+  unverified: { icon: "⛔", label: "No source" },
+};
+
+/** Compact status badge (GitHub CI / Stripe style). Icon-first, muted color, content-fit. */
+function renderConfidenceBadge(value: string): HTMLElement {
+  const key = (value || "").trim() || "unverified";
+  const { icon, label } = CONFIDENCE_BADGE[key] ?? CONFIDENCE_BADGE.unverified;
+  const badge = document.createElement("span");
+  badge.className = "confidence-badge confidence-badge--" + key;
+  badge.setAttribute("aria-label", label);
+  badge.setAttribute("role", "status");
+  const iconEl = document.createElement("span");
+  iconEl.className = "confidence-badge-icon";
+  iconEl.setAttribute("aria-hidden", "true");
+  iconEl.textContent = icon;
+  const textEl = document.createElement("span");
+  textEl.className = "confidence-badge-label";
+  textEl.textContent = label;
+  badge.appendChild(iconEl);
+  badge.appendChild(textEl);
+  return badge;
 }
 
 /** Parse full message into body text and sources (from "Sources:" block). */
@@ -458,12 +495,12 @@ function renderAssistantMessage(text: string, isError?: boolean): HTMLElement {
 }
 
 /** Render final assistant content: AnswerCard JSON or prose fallback. */
-function renderAssistantContent(body: string, isError?: boolean): HTMLElement {
+function renderAssistantContent(body: string, isError?: boolean, sourceConfidenceStrip?: string): HTMLElement {
   const card = tryParseAnswerCard(body);
   if (typeof console !== "undefined" && console.log) {
     console.log("[AnswerCard] renderAssistantContent: card=", card ? "yes (mode=" + card.mode + ")" : "no");
   }
-  if (card) return renderAnswerCard(card, isError);
+  if (card) return renderAnswerCard(card, isError, sourceConfidenceStrip);
   const trimmed = (body ?? "").trim();
   if (trimmed.startsWith("{") && trimmed.length > 10) {
     console.warn("[AnswerCard] Invalid JSON, showing fallback. Raw:", trimmed.slice(0, 500));
@@ -1342,7 +1379,8 @@ function run(): void {
         if (typeof console !== "undefined" && console.log) {
           console.log("[AnswerCard] tryParseAnswerCard:", parsedCard ? "card (mode=" + parsedCard.mode + ")" : "null");
         }
-        const contentEl = renderAssistantContent(finalBody, !!data.llm_error);
+        const stripValue = data.source_confidence_strip ?? "unverified";
+        const contentEl = renderAssistantContent(finalBody, !!data.llm_error, stripValue);
         if (messageWrapEl) {
           messageWrapEl.replaceWith(contentEl);
         } else {
