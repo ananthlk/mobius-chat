@@ -22,24 +22,27 @@ def insert_turn(
     model_used: str | None,
     llm_provider: str | None,
     session_id: str | None = None,
+    plan_snapshot: dict[str, Any] | None = None,
+    blueprint_snapshot: dict[str, Any] | None = None,
+    agent_cards: list[dict[str, Any]] | None = None,
 ) -> None:
-    """Insert one turn row. Called by worker when response is complete."""
+    """Insert one turn row. Called by worker when response is complete. Optional agent data for audit/debug."""
     url = _get_db_url()
     if not url:
         logger.warning("CHAT_RAG_DATABASE_URL not set; turn not persisted")
         return
     try:
         import psycopg2
-        import psycopg2.extras
         conn = psycopg2.connect(url)
         cur = conn.cursor()
         cur.execute(
             """
             INSERT INTO chat_turns (
                 correlation_id, question, thinking_log, final_message, sources,
-                duration_ms, model_used, llm_provider, session_id
+                duration_ms, model_used, llm_provider, session_id,
+                plan_snapshot, blueprint_snapshot, agent_cards
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (correlation_id) DO UPDATE SET
                 question = EXCLUDED.question,
                 thinking_log = EXCLUDED.thinking_log,
@@ -48,7 +51,10 @@ def insert_turn(
                 duration_ms = EXCLUDED.duration_ms,
                 model_used = EXCLUDED.model_used,
                 llm_provider = EXCLUDED.llm_provider,
-                session_id = EXCLUDED.session_id
+                session_id = EXCLUDED.session_id,
+                plan_snapshot = EXCLUDED.plan_snapshot,
+                blueprint_snapshot = EXCLUDED.blueprint_snapshot,
+                agent_cards = EXCLUDED.agent_cards
             """,
             (
                 correlation_id,
@@ -60,6 +66,9 @@ def insert_turn(
                 (model_used or "").strip() or None,
                 (llm_provider or "").strip() or None,
                 (session_id or "").strip() or None,
+                json.dumps(plan_snapshot) if plan_snapshot is not None else None,
+                json.dumps(blueprint_snapshot) if blueprint_snapshot is not None else None,
+                json.dumps(agent_cards) if agent_cards is not None else None,
             ),
         )
         conn.commit()

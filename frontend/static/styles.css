@@ -239,6 +239,14 @@ body {
   color: var(--sidebar-text);
 }
 
+.sidebar-user--clickable {
+  cursor: pointer;
+}
+
+.sidebar-user--clickable:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
 .sidebar-llm {
   padding: 0.5rem 1rem 1rem;
   font-size: var(--text-sm);
@@ -895,3 +903,5 @@ body {
     max-width: 95%;
   }
 }
+
+/* Auth modal styles from @mobius/auth (injected at runtime) */

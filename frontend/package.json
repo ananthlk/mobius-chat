@@ -2,11 +2,16 @@
   "name": "mobius-chat-frontend",
   "version": "1.0.0",
   "private": true,
+  "dependencies": {
+    "@mobius/auth": "file:../../mobius-auth"
+  },
   "scripts": {
-    "build": "tsc",
-    "watch": "tsc --watch"
+    "build": "esbuild src/app.ts --bundle --outfile=static/app.js --format=esm --target=es2020",
+    "build:check": "tsc --noEmit",
+    "watch": "esbuild src/app.ts --bundle --outfile=static/app.js --format=esm --target=es2020 --watch"
   },
   "devDependencies": {
+    "esbuild": "^0.19.0",
     "typescript": "~5.3.0"
   }
 }

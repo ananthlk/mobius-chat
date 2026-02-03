@@ -181,6 +181,22 @@ def process_one(correlation_id: str, payload: dict) -> None:
         parse1_lines.append(f"  llm_usage: provider={u.get('provider')} model={u.get('model')} in={u.get('input_tokens')} out={u.get('output_tokens')}")
     _debug_log_block("Parse 1 (Plan)", parse1_lines)
 
+    plan_snapshot: dict[str, Any] = {
+        "user_message_snippet": message[:TRUNCATE] + ("..." if len(message) > TRUNCATE else ""),
+        "subquestions_count": len(plan.subquestions),
+        "subquestions": [
+            {
+                "id": sq.id,
+                "kind": sq.kind,
+                "intent": getattr(sq, "question_intent", None) or "—",
+                "intent_score": getattr(sq, "intent_score", None),
+                "text_snippet": (sq.text or "")[:TRUNCATE] + ("..." if len(sq.text or "") > TRUNCATE else ""),
+            }
+            for sq in plan.subquestions
+        ],
+        "llm_usage": getattr(plan, "llm_usage", None),
+    }
+
     # --- DEBUG: Parse 2 (Blueprint) ---
     rag_k_default = get_chat_config().rag.top_k
     blueprint = build_blueprint(plan, rag_default_k=rag_k_default)
@@ -193,7 +209,25 @@ def process_one(correlation_id: str, payload: dict) -> None:
         parse2_lines.append(f"    text: {entry['text'][:80]}{'...' if len(entry['text']) > 80 else ''}")
     _debug_log_block("Parse 2 (Blueprint)", parse2_lines)
 
+    blueprint_snapshot: dict[str, Any] = {
+        "pipeline": "Planner → [per subquestion] → Integrator",
+        "entries": [
+            {
+                "sq_id": e["sq_id"],
+                "agent": e["agent"],
+                "sensitivity": e["sensitivity"],
+                "rag_k": e["rag_k"],
+                "retrieval_config": str(e.get("retrieval_config", "")),
+                "kind": e["kind"],
+                "intent": e["intent"],
+                "text_snippet": ((e.get("text") or "")[:TRUNCATE] + ("..." if len(e.get("text") or "") > TRUNCATE else "")),
+            }
+            for e in blueprint
+        ],
+    }
+
     # --- DEBUG: Agent I/O cards ---
+    agent_cards: list[dict[str, Any]] = []
     # Planner I/O
     planner_out_lines = [f"subquestions: {len(plan.subquestions)}"]
     for sq in plan.subquestions:
@@ -202,7 +236,16 @@ def process_one(correlation_id: str, payload: dict) -> None:
     if getattr(plan, "llm_usage", None):
         u = plan.llm_usage
         planner_out_lines.append(f"  llm_usage: provider={u.get('provider')} model={u.get('model')} in={u.get('input_tokens')} out={u.get('output_tokens')}")
-    _debug_log_block("Agent I/O: Planner", ["INPUT: user_message", f"  {message[:TRUNCATE]}{'...' if len(message) > TRUNCATE else ''}", "OUTPUT: plan"] + planner_out_lines)
+    planner_in = ["INPUT: user_message", f"  {message[:TRUNCATE]}{'...' if len(message) > TRUNCATE else ''}"]
+    planner_out = ["OUTPUT: plan"] + planner_out_lines
+    _debug_log_block("Agent I/O: Planner", planner_in + planner_out)
+    plan_usage = getattr(plan, "llm_usage", None)
+    agent_cards.append({
+        "stage": "Planner",
+        "input_lines": planner_in,
+        "output_lines": planner_out,
+        "usage": {"input_tokens": plan_usage.get("input_tokens"), "output_tokens": plan_usage.get("output_tokens"), "cost_usd": round(compute_cost(plan_usage), 6)} if plan_usage else None,
+    })
 
     # Answer each subquestion: patient = stub; non_patient = RAG + LLM (emit progress); collect usage and sources
     answers: list[str] = []
@@ -261,6 +304,14 @@ def process_one(correlation_id: str, payload: dict) -> None:
             out_lines.append(f"  usage: in={usage.get('input_tokens')} out={usage.get('output_tokens')} cost_usd={round(compute_cost(usage), 6)}")
         out_lines.append(f"  duration_ms: {elapsed_ms:.0f}")
         _debug_log_block(f"Agent I/O: {agent_name} {sq.id}", in_lines + out_lines)
+        agent_cards.append({
+            "stage": agent_name,
+            "sq_id": sq.id,
+            "input_lines": in_lines,
+            "output_lines": out_lines,
+            "duration_ms": int(elapsed_ms),
+            "usage": {"input_tokens": usage.get("input_tokens"), "output_tokens": usage.get("output_tokens"), "cost_usd": round(compute_cost(usage), 6)} if usage else None,
+        })
 
     t0_integ = time.perf_counter()
     logger.info("%s [Agent: Integrator] input: plan + %d answers → output: combined message", DEBUG_PREFIX, len(answers))
@@ -283,6 +334,13 @@ def process_one(correlation_id: str, payload: dict) -> None:
         integ_out.append(f"  usage: in={integrator_usage.get('input_tokens')} out={integrator_usage.get('output_tokens')} cost_usd={round(compute_cost(integrator_usage), 6)}")
     integ_out.append(f"  duration_ms: {elapsed_integ_ms:.0f}")
     _debug_log_block("Agent I/O: Integrator", integ_in + integ_out)
+    agent_cards.append({
+        "stage": "Integrator",
+        "input_lines": integ_in,
+        "output_lines": integ_out,
+        "duration_ms": int(elapsed_integ_ms),
+        "usage": {"input_tokens": integrator_usage.get("input_tokens"), "output_tokens": integrator_usage.get("output_tokens"), "cost_usd": round(compute_cost(integrator_usage), 6)} if integrator_usage else None,
+    })
     logger.info("%s [Agent: Integrator] done.", DEBUG_PREFIX)
 
     # Aggregate tokens and cost for billing / cost-plus pricing
@@ -350,6 +408,9 @@ def process_one(correlation_id: str, payload: dict) -> None:
         model_used=model_used,
         llm_provider=llm_provider,
         session_id=session_id,
+        plan_snapshot=plan_snapshot,
+        blueprint_snapshot=blueprint_snapshot,
+        agent_cards=agent_cards,
     )
     store_response(correlation_id, response_payload)
     get_queue().publish_response(correlation_id, response_payload)

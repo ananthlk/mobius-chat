@@ -24,6 +24,8 @@ class Config:
     vertex_project_id: str | None = None
     vertex_location: str = "us-central1"
     vertex_model: str = "gemini-2.5-flash"
+    # Auth: when set, proxy /api/v1/auth/* to Mobius-OS (plug-and-play)
+    mobius_os_auth_url: str | None = None
 
 
 def get_config() -> Config:
@@ -44,4 +46,5 @@ def get_config() -> Config:
         vertex_project_id=os.getenv("VERTEX_PROJECT_ID"),
         vertex_location=os.getenv("VERTEX_LOCATION", "us-central1"),
         vertex_model=os.getenv("VERTEX_MODEL", "gemini-2.5-flash"),
+        mobius_os_auth_url=os.getenv("MOBIUS_OS_AUTH_URL") or None,
     )

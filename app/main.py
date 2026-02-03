@@ -40,11 +40,13 @@ except ImportError:
                 if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
                     break
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
+import httpx
 
 from app.chat_config import chat_config_for_api
 from app.config import get_config
@@ -57,6 +59,7 @@ from app.storage import (
     get_recent_turns,
     get_response,
 )
+from app.auth import get_user_id_from_request
 from app.storage.feedback import get_feedback, insert_feedback
 from app.storage.progress import get_and_clear_events, get_progress
 from app.worker import start_worker_background
@@ -66,6 +69,46 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Mobius Chat", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# Auth: proxy to Mobius-OS (plug-and-play) or use mobius-user (standalone)
+_mobius_os_auth_url = (os.getenv("MOBIUS_OS_AUTH_URL") or "").rstrip("/")
+_user_db_url = os.getenv("USER_DATABASE_URL")
+
+if _mobius_os_auth_url:
+    # Proxy auth to Mobius-OS - same users/tokens as extension
+    _auth_base = f"{_mobius_os_auth_url}/api/v1/auth"
+
+    @app.api_route("/api/v1/auth/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+    async def proxy_auth(request: Request, path: str):
+        """Forward auth requests to Mobius-OS for plug-and-play shared users."""
+        url = f"{_auth_base}/{path}" if path else _auth_base
+        if request.url.query:
+            url = f"{url}?{request.url.query}"
+        headers = {k: v for k, v in request.headers.items() if k.lower() not in ("host", "content-length")}
+        body = await request.body() if request.method in ("POST", "PUT", "PATCH") else None
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.request(request.method, url, headers=headers, content=body)
+            ct = resp.headers.get("content-type", "")
+            if "application/json" in ct:
+                return JSONResponse(status_code=resp.status_code, content=resp.json())
+            return JSONResponse(status_code=resp.status_code, content={"detail": resp.text or "Auth error"})
+        except httpx.RequestError as e:
+            logger.warning("Auth proxy to Mobius-OS failed: %s", e)
+            return JSONResponse(status_code=502, content={"detail": "Auth service unavailable"})
+
+    logger.info("Auth proxying to Mobius-OS at %s", _mobius_os_auth_url)
+elif _user_db_url:
+    try:
+        import mobius_user.db.session as _user_db
+        from mobius_user.routes.fastapi_auth import router as _auth_router
+        _user_db.init_db(_user_db_url)
+        app.include_router(_auth_router, prefix="/api/v1/auth")
+        logger.info("Mounted mobius-user auth at /api/v1/auth")
+    except ImportError as e:
+        logger.warning("mobius-user not installed; auth disabled. pip install -e ../mobius-user : %s", e)
+else:
+    logger.info("MOBIUS_OS_AUTH_URL and USER_DATABASE_URL not set; auth disabled")
 
 # Start worker in background only for in-memory queue (single process). For Redis, run worker separately.
 _worker_started = False
@@ -143,12 +186,15 @@ def get_history_most_helpful_documents(limit: int = 10):
 
 
 @app.post("/chat", response_model=ChatResponse)
-def post_chat(body: ChatRequest):
+def post_chat(request: Request, body: ChatRequest):
     """Enqueue a chat request; returns correlation_id for polling."""
     correlation_id = str(uuid.uuid4())
-    payload = {"message": body.message or ""}
+    payload: dict = {"message": body.message or ""}
     if body.session_id is not None:
         payload["session_id"] = body.session_id
+    user_id = get_user_id_from_request(request)
+    if user_id:
+        payload["user_id"] = user_id
     get_queue().publish_request(correlation_id, payload)
     return ChatResponse(correlation_id=correlation_id)
 

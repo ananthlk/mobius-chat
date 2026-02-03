@@ -53,12 +53,30 @@ interface HistoryDocumentItem {
   document_name: string;
 }
 
+import {
+  createAuthService,
+  localStorageAdapter,
+  createAuthModal,
+  AUTH_STYLES,
+  STORAGE_KEYS,
+} from "@mobius/auth";
+import type { UserProfile } from "@mobius/auth";
+
 const API_BASE =
   typeof window !== "undefined" &&
   window.API_BASE &&
   window.API_BASE.startsWith("http")
     ? window.API_BASE
     : "http://localhost:8000";
+
+const apiBase = `${API_BASE}/api/v1`;
+const auth = createAuthService({ apiBase, storage: localStorageAdapter });
+
+function getAuthHeaders(): Record<string, string> {
+  const token = localStorage.getItem(STORAGE_KEYS.accessToken);
+  if (token) return { Authorization: `Bearer ${token}` };
+  return {};
+}
 
 function el(id: string): HTMLElement {
   const e = document.getElementById(id);
@@ -350,7 +368,7 @@ function renderFeedback(
     if (up.disabled) return;
     fetch(API_BASE + "/chat/feedback", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...getAuthHeaders() },
       body: JSON.stringify({ correlation_id: correlationId, rating: "up", comment: null }),
     })
       .then((r) => {
@@ -381,7 +399,7 @@ function renderFeedback(
     const comment = commentInput.value.trim().slice(0, FEEDBACK_COMMENT_MAX_LENGTH);
     fetch(API_BASE + "/chat/feedback", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...getAuthHeaders() },
       body: JSON.stringify({
         correlation_id: correlationId,
         rating: "down",
@@ -499,6 +517,35 @@ function run(): void {
   hamburger.addEventListener("click", openDrawer);
   drawerClose.addEventListener("click", closeDrawer);
   drawerOverlay.addEventListener("click", closeDrawer);
+
+  let currentAuthUser: UserProfile | null = null;
+
+  function updateSidebarUser(user: UserProfile | null): void {
+    currentAuthUser = user;
+    const nameEl = document.getElementById("sidebarUserName");
+    if (nameEl)
+      nameEl.textContent = user ? (user.preferred_name || user.first_name || user.display_name || user.email || "User") : "Guest";
+  }
+
+  const authModal = createAuthModal({
+    auth,
+    showOAuth: true,
+    onSuccess: (u) => updateSidebarUser(u),
+  });
+  document.body.appendChild(authModal.el);
+  document.head.insertAdjacentHTML("beforeend", `<style>${AUTH_STYLES}</style>`);
+  (window as unknown as { onOpenPreferences?: () => void }).onOpenPreferences = openDrawer;
+  auth.on((event, u) => {
+    if (event === "login") updateSidebarUser(u as UserProfile);
+    else if (event === "logout") updateSidebarUser(null);
+  });
+
+  const sidebarUser = document.getElementById("sidebarUser");
+  sidebarUser?.addEventListener("click", () => authModal.open(currentAuthUser ? "account" : "login"));
+  sidebarUser?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); authModal.open(currentAuthUser ? "account" : "login"); }
+  });
+  auth.getUserProfile().then((u) => updateSidebarUser(u ?? null));
 
   function loadChatConfig(): void {
     fetch(API_BASE + "/chat/config")
@@ -774,7 +821,7 @@ function run(): void {
 
     fetch(API_BASE + "/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...getAuthHeaders() },
       body: JSON.stringify({ message }),
     })
       .then((r) => r.json() as Promise<ChatPostResponse>)

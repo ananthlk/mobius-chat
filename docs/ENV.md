@@ -29,6 +29,24 @@ The app loads `.env` from the **repo root**. Create a `.env` file there with the
 | `VERTEX_PROJECT`, `VERTEX_REGION`, `VERTEX_INDEX_ID`, `GCS_BUCKET`, `BQ_PROJECT`, `BQ_DATASET` | Used by sync job (MOBIUS-DBT); optional for Chat |
 | `CHAT_RAG_FILTER_PAYER`, `CHAT_RAG_FILTER_STATE`, `CHAT_RAG_FILTER_PROGRAM`, `CHAT_RAG_FILTER_AUTHORITY_LEVEL` | Optional RAG filter defaults. If set, **only** documents matching these values are returned (e.g. `CHAT_RAG_FILTER_PAYER=Sunshine Health`). Leave unset to search all payers. |
 
+## User auth
+
+**Option A – Proxy to Mobius-OS (plug-and-play, same users as extension):**
+
+| Variable | Description |
+|----------|-------------|
+| `MOBIUS_OS_AUTH_URL` | Mobius-OS backend URL (e.g. `http://localhost:5001`). When set, `/api/v1/auth/*` is proxied to Mobius-OS. Same users and tokens as the extension. |
+| `JWT_SECRET` | Must match Mobius-OS for token validation (optional; enables user_id extraction for chat payloads). |
+
+**Option B – Standalone mobius-user (separate DB):**
+
+| Variable | Description |
+|----------|-------------|
+| `USER_DATABASE_URL` | Postgres URL for mobius_user DB. When set (and `MOBIUS_OS_AUTH_URL` not set), auth routes use mobius-user. |
+| `JWT_SECRET` | Secret for JWT signing. |
+
+Install mobius-user for Option B: `pip install -e ../mobius-user`. Create DB and run migrations: see mobius-user/README.md.
+
 ## Optional overrides
 
 | Variable | Description |
