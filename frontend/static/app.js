@@ -1742,6 +1742,7 @@ function run() {
     });
   }
   const chatEmpty = document.getElementById("chatEmpty");
+  let threadId = null;
   function sendMessage() {
     const message = (inputEl.value ?? "").trim();
     if (!message)
@@ -1770,12 +1771,17 @@ function run() {
     function onStreamingMessage(_text) {
       scrollToBottom(messagesEl);
     }
+    const body = { message };
+    if (threadId != null && threadId !== "")
+      body.thread_id = threadId;
     fetch(API_BASE + "/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-      body: JSON.stringify({ message })
+      body: JSON.stringify(body)
     }).then((r) => r.json()).then((postData) => {
       progressAddLine("Request sent. Waiting for worker\u2026");
+      if (postData.thread_id != null && postData.thread_id !== "")
+        threadId = postData.thread_id;
       const correlationId = postData.correlation_id;
       return streamResponse(correlationId, onThinkingLine, onStreamingMessage).then(
         (streamData) => ({ streamData, correlationId })
@@ -1785,13 +1791,13 @@ function run() {
         console.log("[AnswerCard] stream completed, processing final message\u2026");
       }
       const fullMessage = data.message ?? "(No message)";
-      const { body, sources } = parseMessageAndSources(fullMessage);
+      const { body: body2, sources } = parseMessageAndSources(fullMessage);
       if (typeof console !== "undefined" && console.log) {
         console.log("[AnswerCard] fullMessage length:", fullMessage.length, "starts:", (fullMessage || "").slice(0, 120));
-        console.log("[AnswerCard] body length:", (body || "").length, "starts:", (body || "").slice(0, 120));
+        console.log("[AnswerCard] body length:", (body2 || "").length, "starts:", (body2 || "").slice(0, 120));
       }
       progressStackEl.remove();
-      const finalBody = body || "(No response)";
+      const finalBody = body2 || "(No response)";
       const parsedCard = tryParseAnswerCard(finalBody);
       if (typeof console !== "undefined" && console.log) {
         console.log("[AnswerCard] tryParseAnswerCard:", parsedCard ? "card (mode=" + parsedCard.mode + ")" : "null");
@@ -1874,6 +1880,16 @@ function run() {
     }
   });
   sendBtn.addEventListener("click", () => sendMessage());
+  const btnNewChat = document.getElementById("btnNewChat");
+  btnNewChat?.addEventListener("click", () => {
+    threadId = null;
+    if (messagesEl && chatEmpty) {
+      messagesEl.innerHTML = "";
+      messagesEl.appendChild(chatEmpty);
+      chatEmpty.classList.remove("hidden");
+    }
+    loadSidebarHistory();
+  });
   updateSendState();
   loadSidebarHistory();
   loadSidebarLlm();

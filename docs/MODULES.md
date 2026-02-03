@@ -58,7 +58,7 @@ Chat webpage → POST /chat (enqueue) → Request queue
 - **`frontend/static/app.js`** or inline – On send: POST /chat, get correlation_id, poll GET /chat/response/:id until done, append response to chat area; optionally show “thinking” or “planning…” while pending.
 
 ### 9. Root
-- **`requirements.txt`** – fastapi, uvicorn, pydantic, python-dotenv. Optional: redis, google-cloud-pubsub for later.
+- **`requirements.txt`** – fastapi, uvicorn, pydantic, python-dotenv, pytest (tests). Optional: redis, google-cloud-aiplatform (Vertex), psycopg2-binary (Postgres), json-repair.
 - **`.env`** – QUEUE_TYPE=memory, Vertex/RAG vars (see [ENV.md](ENV.md)); gitignored.
 - **`README.md`** – How to run worker, run API, open frontend; flow summary.
 

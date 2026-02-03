@@ -101,3 +101,24 @@ See [docs/MODULES.md](docs/MODULES.md) for the list of modules and helpers. Summ
 - **responder** – `app/responder/final.py` (format_response)
 - **API** – `app/main.py` (POST /chat, GET /chat/response/:id, GET /chat/plan/:id, GET /)
 - **Frontend** – TypeScript in `frontend/src/app.ts`, built to `frontend/static/app.js`. To rebuild: `cd frontend && npm install && npm run build`
+
+## Chat QA (test bot)
+
+The chat test bot (curated questions, LLM adjudication, accuracy reports) lives in **mobius-qa/mobius-chat-qa**. From mobius-chat root you can run it via the launcher:
+
+```bash
+python scripts/chat_bot.py
+```
+
+Or from Mobius repo root: `PYTHONPATH=mobius-chat python mobius-qa/mobius-chat-qa/chat_bot.py`. See [mobius-qa/mobius-chat-qa/README.md](../mobius-qa/mobius-chat-qa/README.md) for config and options.
+
+## Tests
+
+Unit tests use **pytest** (listed in `requirements.txt`). From the project root with a venv active:
+
+```bash
+pip install -r requirements.txt
+python -m pytest tests/ -v
+```
+
+To run only short-term memory tests: `python -m pytest tests/test_short_term_memory.py -v`

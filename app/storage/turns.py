@@ -22,12 +22,13 @@ def insert_turn(
     model_used: str | None,
     llm_provider: str | None,
     session_id: str | None = None,
+    thread_id: str | None = None,
     plan_snapshot: dict[str, Any] | None = None,
     blueprint_snapshot: dict[str, Any] | None = None,
     agent_cards: list[dict[str, Any]] | None = None,
     source_confidence_strip: str | None = None,
 ) -> None:
-    """Insert one turn row. Called by worker when response is complete. Optional agent data for audit/debug."""
+    """Insert one turn row. Called by worker when response is complete. Optional thread_id, agent data for audit/debug."""
     url = _get_db_url()
     if not url:
         logger.warning("CHAT_RAG_DATABASE_URL not set; turn not persisted")
@@ -37,14 +38,15 @@ def insert_turn(
         conn = psycopg2.connect(url)
         cur = conn.cursor()
         strip_val = (source_confidence_strip or "").strip() or None
+        thread_val = (thread_id or "").strip() or None
         cur.execute(
             """
             INSERT INTO chat_turns (
                 correlation_id, question, thinking_log, final_message, sources,
-                duration_ms, model_used, llm_provider, session_id,
+                duration_ms, model_used, llm_provider, session_id, thread_id,
                 plan_snapshot, blueprint_snapshot, agent_cards, source_confidence_strip
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (correlation_id) DO UPDATE SET
                 question = EXCLUDED.question,
                 thinking_log = EXCLUDED.thinking_log,
@@ -54,6 +56,7 @@ def insert_turn(
                 model_used = EXCLUDED.model_used,
                 llm_provider = EXCLUDED.llm_provider,
                 session_id = EXCLUDED.session_id,
+                thread_id = EXCLUDED.thread_id,
                 plan_snapshot = EXCLUDED.plan_snapshot,
                 blueprint_snapshot = EXCLUDED.blueprint_snapshot,
                 agent_cards = EXCLUDED.agent_cards,
@@ -69,6 +72,7 @@ def insert_turn(
                 (model_used or "").strip() or None,
                 (llm_provider or "").strip() or None,
                 (session_id or "").strip() or None,
+                thread_val,
                 json.dumps(plan_snapshot) if plan_snapshot is not None else None,
                 json.dumps(blueprint_snapshot) if blueprint_snapshot is not None else None,
                 json.dumps(agent_cards) if agent_cards is not None else None,

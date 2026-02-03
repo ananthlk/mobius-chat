@@ -13,3 +13,9 @@ google-cloud-aiplatform>=1.38.0
 psycopg2-binary>=2.9.0
 # Repair malformed LLM JSON (trailing commas, missing quotes, etc.) before LLM repair
 json-repair>=0.55.0
+# Chat bot script (config and questions YAML)
+PyYAML>=6.0.0
+# Tests
+pytest>=7.0.0
+# Payer normalization config (config/payer_normalization.yaml)
+PyYAML>=6.0.0

@@ -42,6 +42,7 @@ interface ChatConfigResponse {
 /** POST /chat response */
 interface ChatPostResponse {
   correlation_id: string;
+  thread_id?: string | null;
 }
 
 /** GET /chat/history/recent or most-helpful-searches */
@@ -1308,6 +1309,7 @@ function run(): void {
   }
 
   const chatEmpty = document.getElementById("chatEmpty");
+  let threadId: string | null = null;
 
   function sendMessage(): void {
     const message = (inputEl.value ?? "").trim();
@@ -1345,14 +1347,17 @@ function run(): void {
       scrollToBottom(messagesEl);
     }
 
+    const body: { message: string; thread_id?: string } = { message };
+    if (threadId != null && threadId !== "") body.thread_id = threadId;
     fetch(API_BASE + "/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-      body: JSON.stringify({ message }),
+      body: JSON.stringify(body),
     })
       .then((r) => r.json() as Promise<ChatPostResponse>)
       .then((postData) => {
         progressAddLine("Request sent. Waiting for worker…");
+        if (postData.thread_id != null && postData.thread_id !== "") threadId = postData.thread_id;
         const correlationId = postData.correlation_id;
         return streamResponse(correlationId, onThinkingLine, onStreamingMessage).then(
           (streamData) => ({ streamData, correlationId })
@@ -1475,6 +1480,17 @@ function run(): void {
   });
 
   sendBtn.addEventListener("click", () => sendMessage());
+
+  const btnNewChat = document.getElementById("btnNewChat");
+  btnNewChat?.addEventListener("click", () => {
+    threadId = null;
+    if (messagesEl && chatEmpty) {
+      messagesEl.innerHTML = "";
+      messagesEl.appendChild(chatEmpty);
+      chatEmpty.classList.remove("hidden");
+    }
+    loadSidebarHistory();
+  });
 
   updateSendState();
 

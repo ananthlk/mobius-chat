@@ -59,6 +59,7 @@ from app.storage import (
     get_recent_turns,
     get_response,
 )
+from app.storage.threads import ensure_thread
 from app.auth import get_user_id_from_request
 from app.storage.feedback import get_feedback, get_source_feedback, insert_feedback, insert_source_feedback
 from app.storage.progress import get_and_clear_events, get_progress
@@ -131,10 +132,12 @@ def maybe_start_worker():
 class ChatRequest(BaseModel):
     message: str = ""
     session_id: str | None = None
+    thread_id: str | None = None
 
 
 class ChatResponse(BaseModel):
     correlation_id: str
+    thread_id: str | None = None
 
 
 FEEDBACK_COMMENT_MAX_LENGTH = 500
@@ -234,16 +237,19 @@ async def get_document_pages_proxy(document_id: str, page_number: int | None = N
 
 @app.post("/chat", response_model=ChatResponse)
 def post_chat(request: Request, body: ChatRequest):
-    """Enqueue a chat request; returns correlation_id for polling."""
+    """Enqueue a chat request; returns correlation_id and thread_id for polling and subsequent messages."""
     correlation_id = str(uuid.uuid4())
-    payload: dict = {"message": body.message or ""}
+    thread_id = (body.thread_id or "").strip() or None
+    if not thread_id:
+        thread_id = ensure_thread(None)
+    payload: dict = {"message": body.message or "", "thread_id": thread_id}
     if body.session_id is not None:
         payload["session_id"] = body.session_id
     user_id = get_user_id_from_request(request)
     if user_id:
         payload["user_id"] = user_id
     get_queue().publish_request(correlation_id, payload)
-    return ChatResponse(correlation_id=correlation_id)
+    return ChatResponse(correlation_id=correlation_id, thread_id=thread_id)
 
 
 @app.get("/chat/response/{correlation_id}")

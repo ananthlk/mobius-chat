@@ -28,6 +28,8 @@ class Config:
     mobius_os_auth_url: str | None = None
     # Document mini reader: when set, proxy GET /api/v1/documents/{id}/pages to RAG backend for full-page inline reader
     rag_app_api_base: str | None = None
+    # Web scraper: when set, Chat calls POST /scrape/review when detecting weblinks in user message
+    scraper_api_base: str | None = None
 
 
 def get_config() -> Config:
@@ -50,4 +52,5 @@ def get_config() -> Config:
         vertex_model=os.getenv("VERTEX_MODEL", "gemini-2.5-flash"),
         mobius_os_auth_url=os.getenv("MOBIUS_OS_AUTH_URL") or None,
         rag_app_api_base=(os.getenv("RAG_APP_API_BASE") or "").strip() or None,
+        scraper_api_base=(os.getenv("SCRAPER_API_BASE") or "").strip() or None,
     )
