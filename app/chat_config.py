@@ -143,29 +143,103 @@ class ChatPromptsConfig:
         "Plan: {plan_summary}\n\n"
         "Response:"
     )
-    # Non-patient RAG: answer from retrieved context
+    # Non-patient RAG: answer from retrieved context (first drafter; integrator customizes final message)
     rag_answering_user_template: str = (
         "Use the following context to answer the question. Only use the context; if the context does not contain the answer, say so.\n\n"
         "When the question asks about philosophy, policy, process, or how something works (e.g. care management philosophy, program design), "
         "give a substantive answer that draws on all relevant context—use multiple relevant points and short paragraphs rather than a single sentence.\n\n"
+        "When you have enough in the context to suggest concrete next steps, include 1–2 viable next steps the user could take (e.g. a tool, form, or follow-up action mentioned in the context). "
+        "Only suggest next steps that are logical and that the context supports; do not invent actions. If the context does not support any clear next step, omit this.\n\n"
         "Context:\n{context}\n\n"
         "Question: {question}\n\n"
         "Answer:"
     )
-    # Final integrator: turn plan + answers into one chat-friendly message
+    # Consolidator thresholds: blended canonical score → factual | canonical | blended
+    consolidator_factual_max: float = 0.4   # canonical score < this → factual
+    consolidator_canonical_min: float = 0.6  # canonical score > this → canonical; else blended
+
+    # Final integrator (legacy single prompt; used as fallback if dynamic prompts not set)
     integrator_system: str = (
         "You are formatting a chat response. Your job is to turn separate answers into one clear, professional message.\n\n"
+        "Structure the reply in this order:\n"
+        "1. Short answer — one or two sentences that give the bottom line (e.g. \"Yes — prior authorization is required for certain services.\" or \"No — that typically does not require prior auth.\").\n"
+        "2. More detail — when something is required, when it is not, exceptions, or other context. Use short paragraphs and clear line breaks; no markdown bullets (no * or -).\n"
+        "3. Next steps — if the answers suggest concrete next steps (tools, forms, follow-up), put them in a clear \"what to do next\" line or short paragraph; otherwise omit this section.\n\n"
         "Rules:\n"
         "- Do NOT use internal labels (sq1, sq2, Part 1, etc.). The user never sees those.\n"
         "- Do NOT repeat the user's question(s) back to them.\n"
-        "- Write in a warm, professional tone suitable for chat. Use short paragraphs and clear line breaks.\n"
-        "- Do NOT use markdown bullets (e.g. * or -). Use plain language, short sentences, or simple line breaks so it reads well in chat.\n"
+        "- Write in a warm, professional tone suitable for chat.\n"
         "- Merge the content into one coherent reply that directly answers what they asked."
     )
     integrator_user_template: str = (
-        "Original user question:\n{user_message}\n\n"
-        "Answers we have (use this content to write one combined reply; do not repeat verbatim or list as Part 1 / Part 2):\n{answers_block}\n\n"
-        "Write a single chat message that answers the user. No labels, no repeated question, no bullet markdown. Clear paragraphs only."
+        "Input (JSON):\n{consolidator_input_json}\n\n"
+        "Using ONLY the information in the JSON above, return a single valid JSON object matching the AnswerCard schema. "
+        "Do not include markdown, explanations, or extra text. Return ONLY the JSON."
+    )
+
+    # Repair prompt when LLM returns invalid JSON (one retry)
+    integrator_repair_system: str = (
+        "You returned invalid JSON. Return ONLY valid JSON that matches the AnswerCard schema. "
+        "Do not include any commentary or markdown. Ensure all strings are quoted and arrays/objects are valid. "
+        "Use the same content as before; do not add new facts."
+    )
+
+    # Dynamic consolidator: three system prompts (JSON AnswerCard output)
+    integrator_factual_system: str = (
+        "You are the CONSOLIDATOR for a retrieval-based system.\n\n"
+        "Return ONLY valid JSON matching the AnswerCard schema below. Do not include markdown, explanations, or extra text.\n\n"
+        "AnswerCard schema:\n"
+        '{"mode":"FACTUAL","direct_answer":"string","sections":[{"label":"string","bullets":["string"]}],'
+        '"required_variables":["string"],"confidence_note":"string",'
+        '"citations":[{"id":"string","doc_title":"string","locator":"string","snippet":"string"}],'
+        '"followups":[{"question":"string","reason":"string","field":"string"}]}\n\n'
+        "Rules for FACTUAL mode:\n"
+        "- Use ONLY the facts provided in the input. Do not add new facts.\n"
+        "- Do not include policy intent or justification language.\n"
+        "- Prefer short bullets; do not write paragraphs.\n"
+        "- Include at most 3 sections and at most 4 bullets per section.\n"
+        "- If the answer depends on an unknown variable (service code, setting, plan subtype), put it in required_variables.\n"
+        "- Only add followups if required_variables is non-empty and the user must provide something to be definitive.\n"
+        "- direct_answer must be one sentence, operational, and non-hedgy.\n"
+        "If the facts are insufficient: direct_answer should say what is missing (one sentence). "
+        "sections may include a label \"What's missing\" with bullets. Do not guess."
+    )
+    integrator_canonical_system: str = (
+        "You are the CONSOLIDATOR for a retrieval-based system.\n\n"
+        "Return ONLY valid JSON matching the AnswerCard schema below. Do not include markdown, explanations, or extra text.\n\n"
+        "AnswerCard schema:\n"
+        '{"mode":"CANONICAL","direct_answer":"string","sections":[{"label":"string","bullets":["string"]}],'
+        '"required_variables":["string"],"confidence_note":"string",'
+        '"citations":[{"id":"string","doc_title":"string","locator":"string","snippet":"string"}],'
+        '"followups":[{"question":"string","reason":"string","field":"string"}]}\n\n'
+        "Rules for CANONICAL mode:\n"
+        "- Use ONLY the information provided in the input.\n"
+        "- Explain the standard definition/rule/scope in a stable, reusable way.\n"
+        "- Avoid edge cases unless explicitly included in the facts.\n"
+        "- Prefer bullets; keep it scannable for non-technical users.\n"
+        "- Include 2–4 sections max, 2–4 bullets per section.\n"
+        "- required_variables should usually be empty unless the concept inherently depends on a variable the user asked about.\n"
+        "- direct_answer should be a one-sentence summary of the canonical rule.\n"
+        "- Do not include procedural \"how to submit\" steps unless the policy explicitly describes the process.\n"
+        "If insufficient: direct_answer should state what is missing to give a canonical explanation."
+    )
+    integrator_blended_system: str = (
+        "You are the CONSOLIDATOR for a retrieval-based system.\n\n"
+        "Return ONLY valid JSON matching the AnswerCard schema below. Do not include markdown, explanations, or extra text.\n\n"
+        "AnswerCard schema:\n"
+        '{"mode":"BLENDED","direct_answer":"string","sections":[{"label":"string","bullets":["string"]}],'
+        '"required_variables":["string"],"confidence_note":"string",'
+        '"citations":[{"id":"string","doc_title":"string","locator":"string","snippet":"string"}],'
+        '"followups":[{"question":"string","reason":"string","field":"string"}]}\n\n'
+        "Rules for BLENDED mode:\n"
+        "- Use ONLY the information provided in the input.\n"
+        "- Start with a short explanatory summary in direct_answer (1–2 sentences max).\n"
+        "- Then provide concrete requirements/conditions as bullets in sections.\n"
+        "- Include a practical note section only if supported by the facts.\n"
+        "- Include 2–4 sections max, 2–4 bullets per section.\n"
+        "- If the answer depends on an unknown variable, include it in required_variables and add at most one followup question.\n"
+        "- Do not speculate or add hypotheticals.\n"
+        "If insufficient: direct_answer should state what is missing; do not guess."
     )
 
 
@@ -245,10 +319,13 @@ def get_chat_config() -> ChatConfig:
         filter_program=_env("CHAT_RAG_FILTER_PROGRAM"),
         filter_authority_level=_env("CHAT_RAG_FILTER_AUTHORITY_LEVEL"),
     )
-    # Prompts: optional CHAT_PROMPT_DECOMPOSE_*, CHAT_PROMPT_FIRST_GEN_*, CHAT_PROMPT_RAG_*
+    # Prompts: optional CHAT_PROMPT_*, CHAT_CONSOLIDATOR_*
+    _prompts_default = ChatPromptsConfig()
+    consolidator_factual_max = _env_float("CHAT_CONSOLIDATOR_FACTUAL_MAX", _prompts_default.consolidator_factual_max)
+    consolidator_canonical_min = _env_float("CHAT_CONSOLIDATOR_CANONICAL_MIN", _prompts_default.consolidator_canonical_min)
     prompts = ChatPromptsConfig(
-        decompose_system=_env("CHAT_PROMPT_DECOMPOSE_SYSTEM") or ChatPromptsConfig.decompose_system,
-        decompose_user_template=_env("CHAT_PROMPT_DECOMPOSE_USER_TEMPLATE") or ChatPromptsConfig.decompose_user_template,
+        decompose_system=_env("CHAT_PROMPT_DECOMPOSE_SYSTEM") or _prompts_default.decompose_system,
+        decompose_user_template=_env("CHAT_PROMPT_DECOMPOSE_USER_TEMPLATE") or _prompts_default.decompose_user_template,
         first_gen_system=_env("CHAT_PROMPT_FIRST_GEN_SYSTEM") or (
             "You are a helpful assistant. Provide a concise, accurate response. Do not make up facts; if you don't know, say so."
         ),
@@ -258,9 +335,15 @@ def get_chat_config() -> ChatConfig:
             "Plan: {plan_summary}\n\n"
             "Response:"
         ),
-        rag_answering_user_template=_env("CHAT_PROMPT_RAG_ANSWERING_USER") or ChatPromptsConfig.rag_answering_user_template,
-        integrator_system=_env("CHAT_PROMPT_INTEGRATOR_SYSTEM") or ChatPromptsConfig.integrator_system,
-        integrator_user_template=_env("CHAT_PROMPT_INTEGRATOR_USER") or ChatPromptsConfig.integrator_user_template,
+        rag_answering_user_template=_env("CHAT_PROMPT_RAG_ANSWERING_USER") or _prompts_default.rag_answering_user_template,
+        consolidator_factual_max=consolidator_factual_max,
+        consolidator_canonical_min=consolidator_canonical_min,
+        integrator_system=_env("CHAT_PROMPT_INTEGRATOR_SYSTEM") or _prompts_default.integrator_system,
+        integrator_user_template=_env("CHAT_PROMPT_INTEGRATOR_USER") or _prompts_default.integrator_user_template,
+        integrator_factual_system=_env("CHAT_PROMPT_INTEGRATOR_FACTUAL_SYSTEM") or _prompts_default.integrator_factual_system,
+        integrator_canonical_system=_env("CHAT_PROMPT_INTEGRATOR_CANONICAL_SYSTEM") or _prompts_default.integrator_canonical_system,
+        integrator_blended_system=_env("CHAT_PROMPT_INTEGRATOR_BLENDED_SYSTEM") or _prompts_default.integrator_blended_system,
+        integrator_repair_system=_env("CHAT_PROMPT_INTEGRATOR_REPAIR_SYSTEM") or _prompts_default.integrator_repair_system,
     )
     return ChatConfig(llm=llm, rag=rag, parser=parser, prompts=prompts)
 
@@ -297,5 +380,10 @@ def chat_config_for_api() -> dict:
             "first_gen_user_template": c.prompts.first_gen_user_template,
             "integrator_system": c.prompts.integrator_system,
             "integrator_user_template": c.prompts.integrator_user_template,
+            "consolidator_factual_max": c.prompts.consolidator_factual_max,
+            "consolidator_canonical_min": c.prompts.consolidator_canonical_min,
+            "integrator_factual_system": c.prompts.integrator_factual_system,
+            "integrator_canonical_system": c.prompts.integrator_canonical_system,
+            "integrator_blended_system": c.prompts.integrator_blended_system,
         },
     }

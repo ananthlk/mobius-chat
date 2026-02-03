@@ -12,39 +12,47 @@
 <body>
   <div class="app-layout">
     <aside class="sidebar" id="sidebar">
-      <div class="sidebar-header">
-        <img class="sidebar-logo" src="static/logo.svg" alt="Mobius" />
-        <span class="sidebar-logo-text">Mobius Chat</span>
+      <div class="sidebar-inner">
+        <div class="sidebar-header">
+          <img class="sidebar-logo" src="static/logo.svg" alt="Mobius" />
+          <span class="sidebar-logo-text">Mobius Chat</span>
+        </div>
+        <button type="button" class="btn-new-chat" id="btnNewChat">
+          <span>+</span> New chat
+        </button>
+        <div class="sidebar-recent">
+          <h3>Recent searches</h3>
+          <ul class="recent-list" id="recentList"></ul>
+        </div>
+        <div class="sidebar-helpful">
+          <h3>Most helpful searches</h3>
+          <ul class="helpful-list" id="helpfulList"></ul>
+        </div>
+        <div class="sidebar-documents">
+          <h3>Most helpful documents</h3>
+          <ul class="documents-list" id="documentsList"></ul>
+        </div>
+        <div class="sidebar-user sidebar-user--clickable" id="sidebarUser" role="button" tabindex="0" title="Click to sign in or manage account">
+          <span class="sidebar-user-label">Signed in as</span>
+          <span class="sidebar-user-name" id="sidebarUserName">Guest</span>
+        </div>
+        <div class="sidebar-llm">
+          <span class="sidebar-llm-label" id="sidebarLlmLabel">LLM</span>
+        </div>
       </div>
-      <button type="button" class="btn-new-chat" id="btnNewChat">
-        <span>+</span> New chat
+      <div class="sidebar-rail" aria-hidden="true">
+        <img class="sidebar-rail-logo" src="static/logo.svg" alt="" />
+      </div>
+      <button type="button" class="sidebar-chevron" id="sidebarChevron" aria-label="Collapse sidebar" title="Collapse sidebar">
+        <svg class="sidebar-chevron-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
       </button>
-      <div class="sidebar-recent">
-        <h3>Recent searches</h3>
-        <ul class="recent-list" id="recentList"></ul>
-      </div>
-      <div class="sidebar-helpful">
-        <h3>Most helpful searches</h3>
-        <ul class="helpful-list" id="helpfulList"></ul>
-      </div>
-      <div class="sidebar-documents">
-        <h3>Most helpful documents</h3>
-        <ul class="documents-list" id="documentsList"></ul>
-      </div>
-      <div class="sidebar-user sidebar-user--clickable" id="sidebarUser" role="button" tabindex="0" title="Click to sign in or manage account">
-        <span class="sidebar-user-label">Signed in as</span>
-        <span class="sidebar-user-name" id="sidebarUserName">Guest</span>
-      </div>
-      <div class="sidebar-llm">
-        <span class="sidebar-llm-label" id="sidebarLlmLabel">LLM</span>
-      </div>
     </aside>
 
     <main class="main">
       <header class="main-header">
         <h1 class="main-header-title">Mobius Chat</h1>
         <div class="main-header-actions">
-          <button type="button" id="hamburger" aria-label="Menu">&#9776;</button>
+          <button type="button" id="hamburger" aria-label="Config">&#9776;</button>
         </div>
       </header>
       <div class="chat-thread" id="messages">
@@ -85,6 +93,6 @@
   </aside>
 
   <script>window.API_BASE = window.location.origin;</script>
-  <script type="module" src="static/app.js?v=9"></script>
+  <script type="module" src="static/app.js?v=21"></script>
 </body>
 </html>

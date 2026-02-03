@@ -677,6 +677,180 @@ function el(id) {
 function normalizeMessageText(text) {
   return (text ?? "").replace(/\n{2,}/g, "\n").trim();
 }
+var MAX_SECTIONS = 4;
+var MAX_BULLETS_PER_SECTION = 4;
+function findMatchingCloseBrace(str, start) {
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  let quote = "";
+  for (let i = start; i < str.length; i++) {
+    const c = str[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (inString) {
+      if (c === "\\")
+        escape = true;
+      else if (c === quote)
+        inString = false;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      inString = true;
+      quote = c;
+      continue;
+    }
+    if (c === "{")
+      depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0)
+        return i;
+    }
+  }
+  return -1;
+}
+function tryParseAnswerCard(message) {
+  if (!message || !message.trim())
+    return null;
+  let raw = message.trim();
+  if (raw.startsWith("```")) {
+    const lines = raw.split("\n");
+    if (lines[0].startsWith("```"))
+      lines.shift();
+    if (lines.length > 0 && lines[lines.length - 1].trim() === "```")
+      lines.pop();
+    raw = lines.join("\n").trim();
+  }
+  const parseOne = (str) => {
+    try {
+      const data = JSON.parse(str);
+      if (data.mode !== "FACTUAL" && data.mode !== "CANONICAL" && data.mode !== "BLENDED")
+        return null;
+      if (typeof data.direct_answer !== "string")
+        return null;
+      if (!Array.isArray(data.sections))
+        return null;
+      return {
+        mode: data.mode,
+        direct_answer: data.direct_answer,
+        sections: data.sections.slice(0, MAX_SECTIONS),
+        required_variables: Array.isArray(data.required_variables) ? data.required_variables : [],
+        confidence_note: typeof data.confidence_note === "string" ? data.confidence_note : void 0,
+        citations: Array.isArray(data.citations) ? data.citations : void 0,
+        followups: Array.isArray(data.followups) ? data.followups : void 0
+      };
+    } catch {
+      return null;
+    }
+  };
+  if (raw.startsWith("{")) {
+    const card = parseOne(raw);
+    if (card)
+      return card;
+    const close = findMatchingCloseBrace(raw, 0);
+    if (close !== -1) {
+      const card2 = parseOne(raw.slice(0, close + 1));
+      if (card2)
+        return card2;
+    }
+    const fixed = raw.replace(/\}\]\}\],/g, "}],").replace(/\}\]\},/g, "}],");
+    if (fixed !== raw) {
+      const card3 = parseOne(fixed);
+      if (card3)
+        return card3;
+    }
+  }
+  const modeRe = /["']mode["']\s*:\s*["'](FACTUAL|CANONICAL|BLENDED)["']/;
+  const m = raw.match(modeRe);
+  if (m) {
+    const idx = raw.indexOf(m[0]);
+    let start = raw.lastIndexOf("{", idx);
+    if (start !== -1) {
+      const end = findMatchingCloseBrace(raw, start);
+      if (end !== -1) {
+        const card = parseOne(raw.slice(start, end + 1));
+        if (card)
+          return card;
+      }
+    }
+  }
+  return null;
+}
+function renderAnswerCard(card, isError) {
+  const wrap = document.createElement("div");
+  wrap.className = "message message--assistant answer-card answer-card--" + card.mode.toLowerCase() + (isError ? " message--error" : "");
+  const bubble = document.createElement("div");
+  bubble.className = "message-bubble answer-card-bubble";
+  const direct = document.createElement("div");
+  direct.className = "answer-card-direct";
+  direct.textContent = card.direct_answer;
+  bubble.appendChild(direct);
+  const metaRow = document.createElement("div");
+  metaRow.className = "answer-card-meta-row";
+  if (card.required_variables && card.required_variables.length > 0) {
+    const dep = document.createElement("span");
+    dep.className = "answer-card-depends";
+    dep.textContent = "Depends on: " + card.required_variables.join(", ");
+    metaRow.appendChild(dep);
+  }
+  if (card.followups && card.followups.length > 0 && metaRow.childNodes.length > 0) {
+    const sep = document.createElement("span");
+    sep.className = "answer-card-meta-sep";
+    sep.textContent = " \xB7 ";
+    metaRow.appendChild(sep);
+  }
+  if (card.followups && card.followups.length > 0) {
+    const confirmLabel = document.createElement("span");
+    confirmLabel.className = "answer-card-confirm-label";
+    confirmLabel.textContent = "Confirm";
+    metaRow.appendChild(confirmLabel);
+    card.followups.slice(0, 2).forEach((f) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "answer-card-followup-chip";
+      chip.textContent = f.question || f.reason || f.field || "";
+      chip.setAttribute("aria-label", chip.textContent);
+      metaRow.appendChild(chip);
+    });
+  }
+  if (metaRow.childNodes.length > 0)
+    bubble.appendChild(metaRow);
+  const sections = (card.sections ?? []).slice(0, MAX_SECTIONS);
+  sections.forEach((sec) => {
+    const sectionEl = document.createElement("div");
+    sectionEl.className = "answer-card-section";
+    const labelEl = document.createElement("div");
+    labelEl.className = "answer-card-section-label";
+    labelEl.textContent = sec.label || "";
+    sectionEl.appendChild(labelEl);
+    const bullets = (sec.bullets ?? []).slice(0, MAX_BULLETS_PER_SECTION);
+    bullets.forEach((b) => {
+      const li = document.createElement("div");
+      li.className = "answer-card-bullet";
+      li.textContent = b;
+      sectionEl.appendChild(li);
+    });
+    if (bullets.length < (sec.bullets?.length ?? 0)) {
+      const more = document.createElement("div");
+      more.className = "answer-card-more";
+      more.textContent = "Show more";
+      more.setAttribute("aria-label", "Show more bullets");
+      sectionEl.appendChild(more);
+    }
+    bubble.appendChild(sectionEl);
+  });
+  if (card.confidence_note && card.confidence_note.trim()) {
+    const note = document.createElement("div");
+    note.className = "answer-card-confidence";
+    note.textContent = card.confidence_note;
+    bubble.appendChild(note);
+  }
+  wrap.appendChild(bubble);
+  return wrap;
+}
 function parseMessageAndSources(fullMessage) {
   const raw = (fullMessage ?? "").trim();
   const sourcesIdx = raw.search(/\nSources:\s*\n/i);
@@ -707,81 +881,47 @@ function renderUserMessage(text) {
   wrap.appendChild(bubble);
   return wrap;
 }
-function renderThinkingBlock(initialLines, opts) {
+var PROGRESS_MAX_LINES = 3;
+function renderProgressStack() {
   const block = document.createElement("div");
-  block.className = "thinking-block thinking-block--compact collapsed";
-  const preview = document.createElement("div");
-  preview.className = "thinking-preview";
-  preview.setAttribute("role", "button");
-  preview.setAttribute("tabindex", "0");
-  preview.setAttribute("aria-expanded", "false");
-  const word = document.createElement("span");
-  word.className = "thinking-word";
-  word.textContent = "Thinking";
+  block.className = "progress-stack";
+  block.setAttribute("aria-live", "polite");
+  block.setAttribute("aria-label", "Progress");
+  const linesContainer = document.createElement("div");
+  linesContainer.className = "progress-stack-lines";
+  const lineEls = [];
+  for (let i = 0; i < PROGRESS_MAX_LINES; i++) {
+    const div = document.createElement("div");
+    div.className = "progress-stack-line";
+    div.textContent = "";
+    lineEls.push(div);
+    linesContainer.appendChild(div);
+  }
+  block.appendChild(linesContainer);
   const dotsEl = document.createElement("span");
-  dotsEl.className = "thinking-dots";
+  dotsEl.className = "progress-stack-dots";
   dotsEl.setAttribute("aria-hidden", "true");
   dotsEl.textContent = "...";
-  const lineEl = document.createElement("span");
-  lineEl.className = "thinking-rule";
-  preview.appendChild(word);
-  preview.appendChild(dotsEl);
-  preview.appendChild(lineEl);
-  const body = document.createElement("div");
-  body.className = "thinking-body";
-  initialLines.forEach((line) => {
-    const div = document.createElement("div");
-    div.className = "thinking-line";
-    div.textContent = line;
-    body.appendChild(div);
-  });
-  function collapse() {
-    block.classList.add("collapsed");
-    preview.setAttribute("aria-expanded", "false");
-  }
-  function toggle() {
-    block.classList.toggle("collapsed");
-    const isExp = !block.classList.contains("collapsed");
-    preview.setAttribute("aria-expanded", String(isExp));
-    if (isExp)
-      opts?.onExpand?.();
-  }
-  preview.addEventListener("click", toggle);
-  preview.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      toggle();
+  const buffer = [];
+  function addLine(line) {
+    const trimmed = (line ?? "").trim();
+    if (!trimmed)
+      return;
+    buffer.push(trimmed);
+    const last3 = buffer.slice(-PROGRESS_MAX_LINES);
+    for (let i = 0; i < PROGRESS_MAX_LINES; i++) {
+      const text = last3[i] ?? "";
+      lineEls[i].textContent = text;
+      lineEls[i].classList.toggle("empty", !text);
     }
-  });
-  block.appendChild(preview);
-  block.appendChild(body);
-  if (initialLines.length > 0) {
-    block.classList.remove("collapsed");
-    preview.setAttribute("aria-expanded", "true");
+    dotsEl.remove();
+    const lastIdx = last3.length - 1;
+    if (lastIdx >= 0)
+      lineEls[lastIdx].appendChild(dotsEl);
   }
   return {
     el: block,
-    setPreview(text) {
-      preview.textContent = text;
-    },
-    addLine(line) {
-      const div = document.createElement("div");
-      div.className = "thinking-line";
-      div.textContent = line;
-      body.appendChild(div);
-      word.textContent = "Thinking";
-      block.classList.remove("collapsed");
-      preview.setAttribute("aria-expanded", "true");
-      body.scrollTop = body.scrollHeight;
-    },
-    done(lineCount) {
-      dotsEl.remove();
-      word.textContent = lineCount <= 1 ? "Thinking" : `Thinking (${lineCount})`;
-      block.classList.add("thinking-block--done");
-      setTimeout(() => {
-        collapse();
-      }, 3e3);
-    }
+    addLine
   };
 }
 function renderAssistantMessage(text, isError) {
@@ -792,6 +932,23 @@ function renderAssistantMessage(text, isError) {
   bubble.textContent = normalizeMessageText(text);
   wrap.appendChild(bubble);
   return wrap;
+}
+function renderAssistantContent(body, isError) {
+  const card = tryParseAnswerCard(body);
+  if (typeof console !== "undefined" && console.log) {
+    console.log("[AnswerCard] renderAssistantContent: card=", card ? "yes (mode=" + card.mode + ")" : "no");
+  }
+  if (card)
+    return renderAnswerCard(card, isError);
+  const trimmed = (body ?? "").trim();
+  if (trimmed.startsWith("{") && trimmed.length > 10) {
+    console.warn("[AnswerCard] Invalid JSON, showing fallback. Raw:", trimmed.slice(0, 500));
+    return renderAssistantMessage("Answer could not be displayed. Please try again.", isError);
+  }
+  if (typeof console !== "undefined" && console.log) {
+    console.log("[AnswerCard] rendering as prose (plain text)");
+  }
+  return renderAssistantMessage(body, isError);
 }
 var FEEDBACK_COMMENT_MAX_LENGTH = 500;
 function svgIcon(className, paths) {
@@ -1027,11 +1184,34 @@ function renderSourceCiter(sources, onSourceClick, correlationId, initialRatings
       const parts = [];
       if (s.source_type != null && s.source_type !== "")
         parts.push(`Type: ${s.source_type}`);
-      if (s.match_score != null)
-        parts.push(`Match: ${Number(s.match_score).toFixed(2)}`);
-      if (s.confidence != null)
-        parts.push(`Confidence: ${Number(s.confidence).toFixed(2)}`);
-      metaLine.textContent = parts.join(" \xB7 ");
+      if (s.match_score != null) {
+        const matchNum = Number(s.match_score);
+        const matchLabel = matchNum >= 0.8 ? "Strong match" : matchNum >= 0.5 ? "Moderate match" : "Weak match";
+        const matchSpan = document.createElement("span");
+        matchSpan.className = "source-meta-badge source-meta-badge--match";
+        matchSpan.textContent = matchLabel;
+        matchSpan.title = `Match: ${matchNum.toFixed(2)}`;
+        parts.push(matchSpan);
+      }
+      if (s.confidence != null) {
+        const confNum = Number(s.confidence);
+        const confLabel = confNum >= 0.8 ? "High confidence" : confNum >= 0.5 ? "Medium confidence" : "Low confidence";
+        const confSpan = document.createElement("span");
+        confSpan.className = "source-meta-badge source-meta-badge--confidence";
+        confSpan.textContent = confLabel;
+        confSpan.title = `Confidence: ${confNum.toFixed(2)}`;
+        parts.push(confSpan);
+      }
+      parts.forEach((p) => {
+        if (typeof p === "string") {
+          const t = document.createTextNode(p);
+          metaLine.appendChild(t);
+        } else {
+          if (metaLine.childNodes.length)
+            metaLine.appendChild(document.createTextNode(" \xB7 "));
+          metaLine.appendChild(p);
+        }
+      });
       item.appendChild(metaLine);
     }
     if (s.snippet) {
@@ -1198,6 +1378,39 @@ function run() {
   const drawerOverlay = el("drawerOverlay");
   const hamburger = el("hamburger");
   const drawerClose = el("drawerClose");
+  const sidebar = document.getElementById("sidebar");
+  const mainEl = document.querySelector(".main");
+  const sidebarChevron = document.getElementById("sidebarChevron");
+  function setSidebarCollapsed(collapsed) {
+    if (!sidebar || !mainEl)
+      return;
+    if (collapsed) {
+      sidebar.classList.add("sidebar--collapsed");
+      mainEl.classList.add("sidebar-collapsed");
+      if (sidebarChevron) {
+        sidebarChevron.setAttribute("aria-label", "Expand sidebar");
+        sidebarChevron.setAttribute("title", "Expand sidebar");
+      }
+    } else {
+      sidebar.classList.remove("sidebar--collapsed");
+      mainEl.classList.remove("sidebar-collapsed");
+      if (sidebarChevron) {
+        sidebarChevron.setAttribute("aria-label", "Collapse sidebar");
+        sidebarChevron.setAttribute("title", "Collapse sidebar");
+      }
+    }
+  }
+  function toggleSidebar() {
+    if (!sidebar || !mainEl)
+      return;
+    const collapsed = sidebar.classList.toggle("sidebar--collapsed");
+    mainEl.classList.toggle("sidebar-collapsed", collapsed);
+    if (sidebarChevron) {
+      sidebarChevron.setAttribute("aria-label", collapsed ? "Expand sidebar" : "Collapse sidebar");
+      sidebarChevron.setAttribute("title", collapsed ? "Expand sidebar" : "Collapse sidebar");
+    }
+  }
+  sidebarChevron?.addEventListener("click", toggleSidebar);
   function openDrawer() {
     drawer.classList.add("open");
     drawerOverlay.classList.add("open");
@@ -1340,7 +1553,16 @@ function run() {
       documents.forEach((item) => {
         const li = document.createElement("li");
         li.className = "documents-item documents-item--clickable";
-        li.textContent = item.document_name;
+        const nameSpan = document.createElement("span");
+        nameSpan.textContent = item.document_name;
+        li.appendChild(nameSpan);
+        const n = item.cited_in_count ?? 0;
+        if (n > 0) {
+          const citedSpan = document.createElement("span");
+          citedSpan.className = "documents-item-cited";
+          citedSpan.textContent = n === 1 ? " \u2014 Cited in 1 recent answer." : ` \u2014 Cited in ${n} recent answers.`;
+          li.appendChild(citedSpan);
+        }
         li.title = "View document";
         li.setAttribute("role", "button");
         li.setAttribute("tabindex", "0");
@@ -1450,12 +1672,6 @@ function run() {
       return;
     if (chatEmpty)
       chatEmpty.classList.add("hidden");
-    messagesEl.querySelectorAll(".thinking-block").forEach((block) => {
-      block.classList.add("collapsed");
-      const p = block.querySelector(".thinking-preview");
-      if (p)
-        p.setAttribute("aria-expanded", "false");
-    });
     const turnWrap = document.createElement("div");
     turnWrap.className = "chat-turn";
     turnWrap.appendChild(renderUserMessage(message));
@@ -1465,25 +1681,15 @@ function run() {
     updateSendState();
     sendBtn.disabled = true;
     inputEl.disabled = true;
-    const thinkingLines = [];
-    const { el: thinkingBlockEl, addLine: addThinkingLine, done: thinkingDone } = renderThinkingBlock(["Sending request\u2026"]);
-    turnWrap.appendChild(thinkingBlockEl);
+    const { el: progressStackEl, addLine: progressAddLine } = renderProgressStack();
+    turnWrap.appendChild(progressStackEl);
     scrollToBottom(messagesEl);
-    function addThinkingLineAndScroll(line) {
-      thinkingLines.push(line);
-      addThinkingLine(line);
+    function onThinkingLine(line) {
+      progressAddLine(line);
       scrollToBottom(messagesEl);
     }
     let messageWrapEl = null;
-    function onStreamingMessage(text) {
-      if (!messageWrapEl) {
-        messageWrapEl = renderAssistantMessage(text);
-        turnWrap.appendChild(messageWrapEl);
-      } else {
-        const bubble = messageWrapEl.querySelector(".message-bubble");
-        if (bubble)
-          bubble.textContent = normalizeMessageText(text);
-      }
+    function onStreamingMessage(_text) {
       scrollToBottom(messagesEl);
     }
     fetch(API_BASE + "/chat", {
@@ -1491,33 +1697,32 @@ function run() {
       headers: { "Content-Type": "application/json", ...getAuthHeaders() },
       body: JSON.stringify({ message })
     }).then((r) => r.json()).then((postData) => {
-      addThinkingLineAndScroll("Request sent. Waiting for worker\u2026");
+      progressAddLine("Request sent. Waiting for worker\u2026");
       const correlationId = postData.correlation_id;
-      return streamResponse(correlationId, addThinkingLineAndScroll, onStreamingMessage).then(
+      return streamResponse(correlationId, onThinkingLine, onStreamingMessage).then(
         (streamData) => ({ streamData, correlationId })
       );
     }).then(({ streamData: data, correlationId }) => {
-      (data.thinking_log ?? []).forEach((line) => {
-        if (!thinkingLines.includes(line))
-          addThinkingLineAndScroll(line);
-      });
+      if (typeof console !== "undefined" && console.log) {
+        console.log("[AnswerCard] stream completed, processing final message\u2026");
+      }
       const fullMessage = data.message ?? "(No message)";
       const { body, sources } = parseMessageAndSources(fullMessage);
-      if (data.response_source === "llm" && data.model_used) {
-        addThinkingLineAndScroll("Model: " + data.model_used);
+      if (typeof console !== "undefined" && console.log) {
+        console.log("[AnswerCard] fullMessage length:", fullMessage.length, "starts:", (fullMessage || "").slice(0, 120));
+        console.log("[AnswerCard] body length:", (body || "").length, "starts:", (body || "").slice(0, 120));
       }
-      if (data.response_source === "stub" && data.llm_error) {
-        addThinkingLineAndScroll("LLM failed (stub used): " + data.llm_error);
+      progressStackEl.remove();
+      const finalBody = body || "(No response)";
+      const parsedCard = tryParseAnswerCard(finalBody);
+      if (typeof console !== "undefined" && console.log) {
+        console.log("[AnswerCard] tryParseAnswerCard:", parsedCard ? "card (mode=" + parsedCard.mode + ")" : "null");
       }
-      thinkingDone(thinkingLines.length);
+      const contentEl = renderAssistantContent(finalBody, !!data.llm_error);
       if (messageWrapEl) {
-        const bubble = messageWrapEl.querySelector(".message-bubble");
-        if (bubble)
-          bubble.textContent = normalizeMessageText(body || "(No response)");
-        if (data.llm_error)
-          messageWrapEl.classList.add("message--error");
+        messageWrapEl.replaceWith(contentEl);
       } else {
-        turnWrap.appendChild(renderAssistantMessage(body || "(No response)", !!data.llm_error));
+        turnWrap.appendChild(contentEl);
       }
       turnWrap.appendChild(renderFeedback(correlationId).el);
       const sourceList = data.sources && data.sources.length > 0 ? data.sources.map((s) => ({
@@ -1567,7 +1772,7 @@ function run() {
       scrollToBottom(messagesEl);
       loadSidebarHistory();
     }).catch((err) => {
-      thinkingDone(thinkingLines.length);
+      progressStackEl.remove();
       turnWrap.appendChild(
         renderAssistantMessage("Error: " + (err?.message ?? String(err)), true)
       );

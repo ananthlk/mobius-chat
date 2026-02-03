@@ -169,7 +169,7 @@ def get_most_helpful_documents(limit: int = 10) -> list[dict[str, Any]]:
                 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(t.sources, '[]'::jsonb)) AS elem
                 WHERE elem->>'document_name' IS NOT NULL AND (elem->>'document_name') != ''
             )
-            SELECT document_name, MAX(NULLIF(TRIM(document_id), '')) AS document_id
+            SELECT document_name, MAX(NULLIF(TRIM(document_id), '')) AS document_id, COUNT(*) AS cited_in_count
             FROM liked_docs
             GROUP BY document_name
             ORDER BY COUNT(*) DESC, document_name
@@ -181,7 +181,11 @@ def get_most_helpful_documents(limit: int = 10) -> list[dict[str, Any]]:
         cur.close()
         conn.close()
         return [
-            {"document_name": r["document_name"] or "", "document_id": r["document_id"] if r.get("document_id") else None}
+            {
+                "document_name": r["document_name"] or "",
+                "document_id": r["document_id"] if r.get("document_id") else None,
+                "cited_in_count": int(r["cited_in_count"]) if r.get("cited_in_count") is not None else 0,
+            }
             for r in rows
         ]
     except Exception as e:

@@ -29,6 +29,7 @@
   --font-sans: "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
   --sidebar-width: 300px;
+  --sidebar-rail-width: 56px;
   --header-height: 56px;
   /* Type scale */
   --text-xs: 0.7rem;
@@ -66,7 +67,7 @@ body {
   min-height: 100vh;
 }
 
-/* Sidebar – light panel */
+/* Sidebar – light panel, collapsible; chevron on border at top; collapsed = narrow rail */
 .sidebar {
   width: var(--sidebar-width);
   min-width: var(--sidebar-width);
@@ -80,7 +81,86 @@ body {
   left: 0;
   bottom: 0;
   z-index: 50;
+  transition: width 0.2s ease;
+}
+.sidebar-inner {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: opacity 0.15s ease;
+}
+.sidebar--collapsed {
+  width: var(--sidebar-rail-width);
+  min-width: var(--sidebar-rail-width);
+}
+.sidebar--collapsed .sidebar-inner {
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  left: -9999px;
+}
+/* Collapsed rail: logo at top so user knows panel is there */
+.sidebar-rail {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  padding: 0.75rem 0;
+  gap: 0.5rem;
+}
+.sidebar--collapsed .sidebar-rail {
+  display: flex;
+}
+.sidebar-rail-logo {
+  height: 28px;
+  width: auto;
+  display: block;
+  flex-shrink: 0;
+}
+/* Chevron: top-right, on the border – stylish pill on the edge */
+.sidebar-chevron {
+  position: absolute;
+  right: 0;
+  top: 0.875rem;
+  transform: translateX(50%);
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--sidebar-border);
+  border-radius: 50%;
+  background: var(--sidebar-bg);
+  color: var(--sidebar-text-muted);
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  z-index: 60;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.sidebar-chevron:hover {
+  background: var(--main-bg);
+  color: var(--sidebar-text);
+  border-color: var(--assistant-border);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+.sidebar-chevron:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.sidebar-chevron-icon {
+  width: 14px;
+  height: 14px;
   transition: transform 0.2s ease;
+}
+/* Expanded: chevron points left (collapse). Collapsed: points right (expand) */
+.sidebar--collapsed .sidebar-chevron-icon {
+  transform: rotate(180deg);
+}
+.sidebar--collapsed .sidebar-chevron {
+  top: 0.75rem;
+  right: 0;
+  transform: translateX(50%);
 }
 
 .sidebar-header {
@@ -259,13 +339,17 @@ body {
   color: var(--sidebar-text);
 }
 
-/* Main area */
+/* Main area – margin collapses when sidebar collapsed */
 .main {
   flex: 1;
   margin-left: var(--sidebar-width);
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  transition: margin-left 0.2s ease;
+}
+.main.sidebar-collapsed {
+  margin-left: var(--sidebar-rail-width);
 }
 
 .main-header {
@@ -370,7 +454,7 @@ body {
 }
 
 .chat-turn .message,
-.chat-turn .thinking-block,
+.chat-turn .progress-stack,
 .chat-turn .source-citer {
   align-self: flex-start;
   max-width: 90%;
@@ -407,10 +491,14 @@ body {
   overflow-x: hidden;
 }
 
+/* User question: de-emphasize – reference-first, not chat-first */
 .message--user .message-bubble {
-  background: var(--user-bubble);
+  background: #5b8fd9;
   color: #fff;
-  box-shadow: var(--shadow-sm);
+  box-shadow: none;
+  padding: 0.4rem 0.75rem;
+  font-size: var(--text-sm);
+  line-height: 1.35;
 }
 
 /* Assistant: Mobius OS–style lightweight bubble (soft tint, minimal border, no heavy box) */
@@ -427,6 +515,155 @@ body {
   color: var(--error-text);
 }
 
+/* AnswerCard: reference-first, flat, scannable – policy reference not form */
+.answer-card .answer-card-bubble {
+  white-space: normal;
+  max-width: 100%;
+}
+/* FACTUAL: flat block, left accent, ~35% less padding, no heavy card */
+.answer-card--factual .answer-card-bubble {
+  max-width: 42em;
+  padding: 0.4rem 0.75rem 0.5rem;
+  border-radius: 0;
+  border: none;
+  border-left: 3px solid var(--accent);
+  background: rgba(0, 0, 0, 0.02);
+  box-shadow: none;
+  max-height: 65vh;
+  overflow-y: auto;
+}
+.answer-card--canonical .answer-card-bubble,
+.answer-card--blended .answer-card-bubble {
+  padding: 0.5rem 0.85rem 0.6rem;
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--accent);
+  background: rgba(0, 0, 0, 0.02);
+  max-height: 65vh;
+  overflow-y: auto;
+}
+/* Lead: status line, not paragraph – smaller, muted, single line */
+.answer-card-direct {
+  font-size: var(--text-sm);
+  line-height: 1.35;
+  margin-bottom: 0.2rem;
+  color: var(--sidebar-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.answer-card-direct:hover {
+  white-space: normal;
+  overflow: visible;
+}
+/* Meta row: Depends on · Confirm inline */
+.answer-card-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.2rem 0.35rem;
+  margin-top: 0.2rem;
+  margin-bottom: 0.6rem;
+  font-size: 0.7rem;
+  color: var(--sidebar-text-muted);
+}
+.answer-card-depends {
+  font-weight: normal;
+  opacity: 0.9;
+}
+.answer-card-meta-sep {
+  opacity: 0.6;
+  user-select: none;
+}
+.answer-card-confirm-label {
+  opacity: 0.85;
+  margin-right: 0.15rem;
+}
+.answer-card-followup-chip {
+  font-size: 0.7rem;
+  padding: 0.1rem 0.35rem;
+  margin: 0;
+  border-radius: var(--radius-full);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  background: transparent;
+  color: var(--sidebar-text-muted);
+  cursor: pointer;
+  font-weight: normal;
+}
+.answer-card-followup-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+/* Section: inline label (same size as bullets), no extra top margin */
+.answer-card-section {
+  margin-top: 0.5rem;
+}
+.answer-card-section-label {
+  font-size: var(--text-sm);
+  font-weight: normal;
+  color: var(--main-text);
+  margin-bottom: 0.15rem;
+}
+.answer-card-bullet {
+  font-size: var(--text-sm);
+  line-height: 1.32;
+  margin-left: 1rem;
+  padding-left: 0.2rem;
+  margin-top: 0.2rem;
+  margin-bottom: 0;
+  position: relative;
+}
+.answer-card-bullet::before {
+  content: "•";
+  position: absolute;
+  left: -0.6rem;
+  color: var(--sidebar-text-muted);
+  font-size: 0.65em;
+}
+.answer-card-more {
+  font-size: var(--text-xs);
+  color: var(--accent);
+  cursor: pointer;
+  margin-top: 0.2rem;
+  margin-left: 1rem;
+}
+.answer-card-confidence {
+  font-size: var(--text-xs);
+  color: var(--sidebar-text-muted);
+  margin-top: 0.4rem;
+  font-style: italic;
+  opacity: 0.85;
+}
+/* CANONICAL / BLENDED: slightly more breathing room */
+.answer-card--canonical .answer-card-bubble {
+  max-width: 48em;
+}
+.answer-card--canonical .answer-card-section {
+  margin-top: 0.6rem;
+}
+.answer-card--blended .answer-card-bubble {
+  max-width: 46em;
+}
+.answer-card--blended .answer-card-direct {
+  margin-bottom: 0.2rem;
+}
+.answer-card--blended .answer-card-section {
+  margin-top: 0.55rem;
+}
+
+/* Selection: clearly user selection, not system emphasis (avoids default blue confusion) */
+.message-bubble::selection {
+  background: rgba(0, 0, 0, 0.12);
+  color: var(--main-text);
+}
+.message--user .message-bubble::selection {
+  background: rgba(255, 255, 255, 0.45);
+  color: #fff;
+}
+.chat-thread ::selection {
+  background: rgba(0, 0, 0, 0.12);
+  color: var(--main-text);
+}
+
 .message-time {
   font-size: 0.7rem;
   color: var(--sidebar-text-muted);
@@ -434,7 +671,38 @@ body {
   margin-top: 0.25rem;
 }
 
-/* Thinking – word + line only, muted, no box */
+/* Vanishing progress stack – max 3 neutral lines, removed when answer arrives */
+.progress-stack {
+  margin: 0.35rem 0;
+  max-width: 85%;
+  align-self: flex-start;
+}
+.progress-stack-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.progress-stack-line {
+  font-size: 0.8rem;
+  color: var(--sidebar-text-muted);
+  line-height: 1.35;
+}
+.progress-stack-line:empty,
+.progress-stack-line.empty {
+  display: none;
+}
+/* Animated ... on the last (active) line so it feels in progress */
+.progress-stack-dots {
+  display: inline-block;
+  margin-left: 0.15em;
+  animation: progress-dots 1.4s ease-in-out infinite;
+}
+@keyframes progress-dots {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+
+/* Legacy thinking block (kept for any remaining refs) */
 .thinking-block {
   margin: 0.35rem 0;
   max-width: 85%;
@@ -457,6 +725,13 @@ body {
 
 .thinking-block .thinking-preview .thinking-word {
   flex-shrink: 0;
+}
+
+.thinking-block .thinking-preview .thinking-preview-consolidator {
+  flex: 0 1 auto;
+  font-size: 0.7rem;
+  color: var(--thinking-muted-hover);
+  min-width: 0;
 }
 
 /* Animated "..." while thinking is in progress */
@@ -713,6 +988,24 @@ body {
   margin-top: 0.125rem;
 }
 
+.source-citer .source-item .source-meta-badge {
+  font-size: 0.75rem;
+  padding: 0.1rem 0.35rem;
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.06);
+  cursor: default;
+}
+
+.source-citer .source-item .source-meta-badge--confidence {
+  background: rgba(0, 80, 0, 0.08);
+  color: var(--text);
+}
+
+.source-citer .source-item .source-meta-badge--match {
+  background: rgba(0, 0, 100, 0.06);
+  color: var(--text);
+}
+
 .source-citer .source-item .source-snippet {
   margin-top: 0.25rem;
   color: var(--thinking-muted-hover);
@@ -890,6 +1183,12 @@ body {
 
 .documents-item--clickable:hover {
   background: var(--thinking-bg);
+}
+
+.documents-item .documents-item-cited {
+  font-size: 0.75rem;
+  color: var(--thinking-text);
+  font-weight: normal;
 }
 
 /* Composer – integrated input + send in one bar */
@@ -1095,7 +1394,7 @@ body {
     padding: 0.75rem 1rem 1rem;
   }
 
-  .message, .thinking-block, .source-citer {
+  .message, .progress-stack, .thinking-block, .source-citer {
     max-width: 95%;
   }
 }
