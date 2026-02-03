@@ -547,6 +547,798 @@ function createAuthModal(options) {
   overlay.appendChild(panel);
   return { el: overlay, open, close, updateUser };
 }
+function escapeHtml2(text) {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+function prefsFromProfile(profile) {
+  return {
+    preferred_name: profile.preferred_name ?? "",
+    timezone: profile.timezone ?? "America/New_York",
+    activities: profile.activities ?? [],
+    tone: profile.tone ?? "professional",
+    greeting_enabled: profile.greeting_enabled !== false,
+    autonomy_routine_tasks: profile.autonomy_routine_tasks ?? "confirm_first",
+    autonomy_sensitive_tasks: profile.autonomy_sensitive_tasks ?? "manual"
+  };
+}
+function createPreferencesModal(apiBase2, auth2, options) {
+  const base = apiBase2.replace(/\/$/, "");
+  const authBase = `${base}/auth`;
+  let modalEl = null;
+  let stylesInjected = false;
+  function ensureStyles() {
+    if (stylesInjected || document.getElementById("mobius-prefs-styles")) {
+      stylesInjected = true;
+      return;
+    }
+    const style = document.createElement("style");
+    style.id = "mobius-prefs-styles";
+    style.textContent = PREFERENCES_MODAL_STYLES;
+    document.head.appendChild(style);
+    stylesInjected = true;
+  }
+  function close() {
+    if (modalEl && modalEl.parentNode) {
+      modalEl.parentNode.removeChild(modalEl);
+      modalEl = null;
+    }
+    options?.onClose?.();
+  }
+  async function open() {
+    const token = await auth2.getAccessToken();
+    if (!token) {
+      console.warn("[PreferencesModal] Not signed in");
+      return;
+    }
+    ensureStyles();
+    let activities = [];
+    try {
+      const res = await fetch(`${authBase}/activities`);
+      const data = await res.json();
+      if (data.ok && Array.isArray(data.activities)) {
+        activities = data.activities.map((a) => ({
+          activity_code: a.activity_code,
+          label: a.label,
+          description: a.description
+        }));
+      }
+    } catch (e) {
+      console.error("[PreferencesModal] Error fetching activities:", e);
+    }
+    const profile = await auth2.getCurrentUser();
+    const initialPrefs = profile ? prefsFromProfile(profile) : prefsFromProfile({});
+    const prefs = { ...initialPrefs, activities: [...initialPrefs.activities ?? []] };
+    const selectedActivities = [...prefs.activities ?? []];
+    const modal = document.createElement("div");
+    modal.className = "mobius-prefs-modal";
+    let activeTab = "profile";
+    function render() {
+      modal.innerHTML = `
+      <div class="mobius-prefs-backdrop"></div>
+      <div class="mobius-prefs-container">
+        <div class="mobius-prefs-header">
+          <h2>My Preferences</h2>
+          <button class="mobius-prefs-close" type="button">
+            <svg viewBox="0 0 24 24" width="18" height="18">
+              <path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+            </svg>
+          </button>
+        </div>
+        <div class="mobius-prefs-tabs">
+          <button class="mobius-prefs-tab ${activeTab === "profile" ? "active" : ""}" data-tab="profile">Profile</button>
+          <button class="mobius-prefs-tab ${activeTab === "activities" ? "active" : ""}" data-tab="activities">Activities</button>
+          <button class="mobius-prefs-tab ${activeTab === "ai" ? "active" : ""}" data-tab="ai">AI Comfort</button>
+          <button class="mobius-prefs-tab ${activeTab === "display" ? "active" : ""}" data-tab="display">Display</button>
+        </div>
+        <div class="mobius-prefs-content">
+          ${renderTabContent()}
+        </div>
+        <div class="mobius-prefs-footer">
+          <button class="mobius-prefs-btn-cancel" type="button">Cancel</button>
+          <button class="mobius-prefs-btn-save" type="button">Save Changes</button>
+        </div>
+      </div>
+    `;
+      wireEvents();
+    }
+    function renderTabContent() {
+      const tone = prefs.tone ?? "professional";
+      const routine = prefs.autonomy_routine_tasks ?? "confirm_first";
+      const sensitive = prefs.autonomy_sensitive_tasks ?? "manual";
+      const greeting = prefs.greeting_enabled !== false;
+      switch (activeTab) {
+        case "profile":
+          return `
+          <div class="mobius-prefs-section">
+            <label class="mobius-prefs-label">Preferred Name</label>
+            <input type="text" class="mobius-prefs-input" id="pref-name"
+                   value="${escapeHtml2(prefs.preferred_name ?? "")}"
+                   placeholder="How should we greet you?" />
+          </div>
+          <div class="mobius-prefs-section">
+            <label class="mobius-prefs-label">Timezone</label>
+            <select class="mobius-prefs-select" id="pref-timezone">
+              <option value="America/New_York" ${prefs.timezone === "America/New_York" ? "selected" : ""}>Eastern Time (ET)</option>
+              <option value="America/Chicago" ${prefs.timezone === "America/Chicago" ? "selected" : ""}>Central Time (CT)</option>
+              <option value="America/Denver" ${prefs.timezone === "America/Denver" ? "selected" : ""}>Mountain Time (MT)</option>
+              <option value="America/Los_Angeles" ${prefs.timezone === "America/Los_Angeles" ? "selected" : ""}>Pacific Time (PT)</option>
+            </select>
+          </div>
+        `;
+        case "activities":
+          return `
+          <p class="mobius-prefs-desc">Select the activities you work on. This helps Mobius show you relevant quick actions and tasks.</p>
+          <div class="mobius-prefs-activities">
+            ${activities.map((a) => `
+              <label class="mobius-prefs-activity ${selectedActivities.includes(a.activity_code) ? "selected" : ""}">
+                <input type="checkbox" value="${escapeHtml2(a.activity_code)}" ${selectedActivities.includes(a.activity_code) ? "checked" : ""} />
+                <span class="mobius-prefs-activity-check">
+                  <svg viewBox="0 0 24 24" width="14" height="14">
+                    <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+                  </svg>
+                </span>
+                <span>${escapeHtml2(a.label)}</span>
+              </label>
+            `).join("")}
+          </div>
+        `;
+        case "ai":
+          return `
+          <div class="mobius-prefs-section">
+            <label class="mobius-prefs-label">For routine tasks (eligibility checks, status updates):</label>
+            <div class="mobius-prefs-options">
+              <label class="mobius-prefs-option ${routine === "automatic" ? "selected" : ""}">
+                <input type="radio" name="routine" value="automatic" ${routine === "automatic" ? "checked" : ""} />
+                <span>Do it automatically</span>
+              </label>
+              <label class="mobius-prefs-option ${routine === "confirm_first" ? "selected" : ""}">
+                <input type="radio" name="routine" value="confirm_first" ${routine === "confirm_first" ? "checked" : ""} />
+                <span>Show me first, then confirm</span>
+              </label>
+              <label class="mobius-prefs-option ${routine === "manual" ? "selected" : ""}">
+                <input type="radio" name="routine" value="manual" ${routine === "manual" ? "checked" : ""} />
+                <span>Just guide me, I'll do it</span>
+              </label>
+            </div>
+          </div>
+          <div class="mobius-prefs-section">
+            <label class="mobius-prefs-label">For sensitive tasks (billing, patient records):</label>
+            <div class="mobius-prefs-options">
+              <label class="mobius-prefs-option ${sensitive === "automatic" ? "selected" : ""}">
+                <input type="radio" name="sensitive" value="automatic" ${sensitive === "automatic" ? "checked" : ""} />
+                <span>Do it automatically</span>
+              </label>
+              <label class="mobius-prefs-option ${sensitive === "confirm_first" ? "selected" : ""}">
+                <input type="radio" name="sensitive" value="confirm_first" ${sensitive === "confirm_first" ? "checked" : ""} />
+                <span>Always show me before acting</span>
+              </label>
+              <label class="mobius-prefs-option ${sensitive === "manual" ? "selected" : ""}">
+                <input type="radio" name="sensitive" value="manual" ${sensitive === "manual" ? "checked" : ""} />
+                <span>Never act without my approval</span>
+              </label>
+            </div>
+          </div>
+        `;
+        case "display":
+          return `
+          <div class="mobius-prefs-section">
+            <label class="mobius-prefs-label">Communication Tone</label>
+            <div class="mobius-prefs-options">
+              <label class="mobius-prefs-option ${tone === "professional" ? "selected" : ""}">
+                <input type="radio" name="tone" value="professional" ${tone === "professional" ? "checked" : ""} />
+                <span>Professional</span>
+              </label>
+              <label class="mobius-prefs-option ${tone === "friendly" ? "selected" : ""}">
+                <input type="radio" name="tone" value="friendly" ${tone === "friendly" ? "checked" : ""} />
+                <span>Friendly</span>
+              </label>
+              <label class="mobius-prefs-option ${tone === "concise" ? "selected" : ""}">
+                <input type="radio" name="tone" value="concise" ${tone === "concise" ? "checked" : ""} />
+                <span>Concise</span>
+              </label>
+            </div>
+          </div>
+          <div class="mobius-prefs-section">
+            <label class="mobius-prefs-toggle">
+              <input type="checkbox" id="pref-greeting" ${greeting ? "checked" : ""} />
+              <span class="mobius-prefs-toggle-slider"></span>
+              <span class="mobius-prefs-toggle-label">Show personalized greeting</span>
+            </label>
+          </div>
+        `;
+        default:
+          return "";
+      }
+    }
+    function updateRadioStyles(name) {
+      modal.querySelectorAll(`input[name="${name}"]`).forEach((r) => {
+        const label = r.closest(".mobius-prefs-option");
+        if (r.checked)
+          label?.classList.add("selected");
+        else
+          label?.classList.remove("selected");
+      });
+    }
+    function wireEvents() {
+      modal.querySelector(".mobius-prefs-close")?.addEventListener("click", close);
+      modal.querySelector(".mobius-prefs-backdrop")?.addEventListener("click", close);
+      modal.querySelector(".mobius-prefs-btn-cancel")?.addEventListener("click", close);
+      modal.querySelector(".mobius-prefs-btn-save")?.addEventListener("click", async () => {
+        const saveBtn = modal.querySelector(".mobius-prefs-btn-save");
+        if (saveBtn) {
+          saveBtn.textContent = "Saving...";
+          saveBtn.disabled = true;
+        }
+        try {
+          const t = await auth2.getAccessToken();
+          if (!t) {
+            close();
+            return;
+          }
+          const response = await fetch(`${authBase}/preferences`, {
+            method: "PUT",
+            headers: {
+              Authorization: `Bearer ${t}`,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              preferred_name: prefs.preferred_name,
+              timezone: prefs.timezone,
+              activities: selectedActivities,
+              tone: prefs.tone,
+              greeting_enabled: prefs.greeting_enabled,
+              autonomy_routine_tasks: prefs.autonomy_routine_tasks,
+              autonomy_sensitive_tasks: prefs.autonomy_sensitive_tasks
+            })
+          });
+          if (response.ok) {
+            prefs.activities = [...selectedActivities];
+            await auth2.getCurrentUser();
+            options?.onSave?.(prefs);
+            close();
+          } else {
+            const errData = await response.json().catch(() => ({}));
+            console.error("[PreferencesModal] Error saving preferences:", errData);
+            alert("Failed to save preferences. Please try again.");
+          }
+        } catch (error) {
+          console.error("[PreferencesModal] Error saving preferences:", error);
+          alert("Failed to save preferences. Please try again.");
+        } finally {
+          const btn = modal.querySelector(".mobius-prefs-btn-save");
+          if (btn) {
+            btn.textContent = "Save Changes";
+            btn.disabled = false;
+          }
+        }
+      });
+      modal.querySelectorAll(".mobius-prefs-tab").forEach((tab) => {
+        tab.addEventListener("click", () => {
+          activeTab = tab.dataset.tab ?? "profile";
+          render();
+        });
+      });
+      modal.querySelector("#pref-name")?.addEventListener("input", (e) => {
+        prefs.preferred_name = e.target.value;
+      });
+      modal.querySelector("#pref-timezone")?.addEventListener("change", (e) => {
+        prefs.timezone = e.target.value;
+      });
+      modal.querySelectorAll(".mobius-prefs-activity input").forEach((cb) => {
+        cb.addEventListener("change", (e) => {
+          const code = e.target.value;
+          const checked = e.target.checked;
+          const label = e.target.closest(".mobius-prefs-activity");
+          if (checked) {
+            if (!selectedActivities.includes(code))
+              selectedActivities.push(code);
+            label?.classList.add("selected");
+          } else {
+            const idx = selectedActivities.indexOf(code);
+            if (idx > -1)
+              selectedActivities.splice(idx, 1);
+            label?.classList.remove("selected");
+          }
+        });
+      });
+      ["routine", "sensitive", "tone"].forEach((name) => {
+        modal.querySelectorAll(`input[name="${name}"]`).forEach((r) => {
+          r.addEventListener("change", (e) => {
+            const value = e.target.value;
+            if (name === "routine")
+              prefs.autonomy_routine_tasks = value;
+            if (name === "sensitive")
+              prefs.autonomy_sensitive_tasks = value;
+            if (name === "tone")
+              prefs.tone = value;
+            updateRadioStyles(name);
+          });
+        });
+      });
+      modal.querySelector("#pref-greeting")?.addEventListener("change", (e) => {
+        prefs.greeting_enabled = e.target.checked;
+      });
+    }
+    render();
+    modalEl = modal;
+    document.body.appendChild(modal);
+  }
+  return { open, close };
+}
+var PREFERENCES_MODAL_STYLES = `
+.mobius-prefs-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+}
+.mobius-prefs-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+}
+.mobius-prefs-container {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: white;
+  border-radius: 12px;
+  width: 90%;
+  max-width: 420px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+}
+.mobius-prefs-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid #e2e8f0;
+}
+.mobius-prefs-header h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #0b1220;
+}
+.mobius-prefs-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  color: #64748b;
+}
+.mobius-prefs-close:hover {
+  color: #374151;
+}
+.mobius-prefs-tabs {
+  display: flex;
+  border-bottom: 1px solid #e2e8f0;
+  padding: 0 12px;
+}
+.mobius-prefs-tab {
+  padding: 10px 12px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  font-size: 11px;
+  color: #64748b;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.mobius-prefs-tab:hover {
+  color: #374151;
+}
+.mobius-prefs-tab.active {
+  color: #3b82f6;
+  border-bottom-color: #3b82f6;
+}
+.mobius-prefs-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px;
+}
+.mobius-prefs-section {
+  margin-bottom: 16px;
+}
+.mobius-prefs-section:last-child {
+  margin-bottom: 0;
+}
+.mobius-prefs-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  color: #374151;
+  margin-bottom: 8px;
+}
+.mobius-prefs-desc {
+  font-size: 10px;
+  color: #64748b;
+  margin: 0 0 12px;
+}
+.mobius-prefs-input,
+.mobius-prefs-select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-size: 12px;
+  box-sizing: border-box;
+}
+.mobius-prefs-input:focus,
+.mobius-prefs-select:focus {
+  outline: none;
+  border-color: #3b82f6;
+}
+.mobius-prefs-activities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.mobius-prefs-activity {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 10px;
+  color: #374151;
+  transition: all 0.15s;
+}
+.mobius-prefs-activity:hover {
+  background: #f1f5f9;
+}
+.mobius-prefs-activity.selected {
+  background: #eff6ff;
+  border-color: #3b82f6;
+}
+.mobius-prefs-activity input {
+  display: none;
+}
+.mobius-prefs-activity-check {
+  width: 14px;
+  height: 14px;
+  border: 1px solid #cbd5e1;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+}
+.mobius-prefs-activity.selected .mobius-prefs-activity-check {
+  background: #3b82f6;
+  border-color: #3b82f6;
+}
+.mobius-prefs-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mobius-prefs-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 11px;
+  color: #374151;
+  transition: all 0.15s;
+}
+.mobius-prefs-option:hover {
+  background: #f1f5f9;
+}
+.mobius-prefs-option.selected {
+  background: #eff6ff;
+  border-color: #3b82f6;
+}
+.mobius-prefs-option input {
+  display: none;
+}
+.mobius-prefs-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+.mobius-prefs-toggle input {
+  display: none;
+}
+.mobius-prefs-toggle-slider {
+  width: 36px;
+  height: 20px;
+  background: #e2e8f0;
+  border-radius: 10px;
+  position: relative;
+  transition: background 0.2s;
+}
+.mobius-prefs-toggle-slider::after {
+  content: '';
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  background: white;
+  border-radius: 50%;
+  top: 2px;
+  left: 2px;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+.mobius-prefs-toggle input:checked + .mobius-prefs-toggle-slider {
+  background: #3b82f6;
+}
+.mobius-prefs-toggle input:checked + .mobius-prefs-toggle-slider::after {
+  transform: translateX(16px);
+}
+.mobius-prefs-toggle-label {
+  font-size: 11px;
+  color: #374151;
+}
+.mobius-prefs-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 20px;
+  border-top: 1px solid #e2e8f0;
+}
+.mobius-prefs-btn-cancel {
+  padding: 8px 16px;
+  background: none;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-size: 11px;
+  color: #64748b;
+  cursor: pointer;
+}
+.mobius-prefs-btn-cancel:hover {
+  background: #f8fafc;
+}
+.mobius-prefs-btn-save {
+  padding: 8px 16px;
+  background: #3b82f6;
+  border: none;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: white;
+  cursor: pointer;
+}
+.mobius-prefs-btn-save:hover {
+  background: #2563eb;
+}
+`;
+function escapeHtml3(text) {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+function getDropdownPosition(anchorRect, dropdownWidth, dropdownHeight, options = {}) {
+  const { preferAbove = false, gap = 8 } = options;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  let top;
+  let left;
+  let transformOrigin = "top left";
+  const spaceAbove = anchorRect.top;
+  const spaceBelow = vh - anchorRect.bottom;
+  if (preferAbove && spaceAbove >= dropdownHeight + gap) {
+    top = anchorRect.top - dropdownHeight - gap;
+    transformOrigin = "bottom left";
+  } else if (spaceBelow >= dropdownHeight + gap) {
+    top = anchorRect.bottom + gap;
+    transformOrigin = "top left";
+  } else if (spaceAbove > spaceBelow) {
+    top = Math.max(gap, anchorRect.top - dropdownHeight - gap);
+    transformOrigin = "bottom left";
+  } else {
+    top = anchorRect.bottom + gap;
+    transformOrigin = "top left";
+  }
+  const spaceRight = vw - anchorRect.left;
+  const spaceLeft = anchorRect.right;
+  if (spaceRight >= dropdownWidth) {
+    left = anchorRect.left;
+  } else if (spaceLeft >= dropdownWidth) {
+    left = anchorRect.right - dropdownWidth;
+    transformOrigin = transformOrigin.replace("left", "right");
+  } else {
+    left = Math.max(gap, Math.min(anchorRect.left, vw - dropdownWidth - gap));
+  }
+  return { top, left, transformOrigin };
+}
+function createUserMenu(options) {
+  const { auth: auth2, onOpenPreferences, onSignOut, onSwitchAccount } = options;
+  let menuEl = null;
+  let closeListener = null;
+  let stylesInjected = false;
+  function ensureStyles() {
+    if (stylesInjected || document.getElementById("mobius-user-menu-styles")) {
+      stylesInjected = true;
+      return;
+    }
+    const style = document.createElement("style");
+    style.id = "mobius-user-menu-styles";
+    style.textContent = USER_MENU_STYLES;
+    document.head.appendChild(style);
+    stylesInjected = true;
+  }
+  function hide() {
+    if (closeListener) {
+      document.removeEventListener("click", closeListener);
+      closeListener = null;
+    }
+    if (menuEl?.parentNode) {
+      menuEl.parentNode.removeChild(menuEl);
+      menuEl = null;
+    }
+  }
+  async function show(anchor) {
+    hide();
+    ensureStyles();
+    const user = await auth2.getUserProfile();
+    if (!user)
+      return;
+    const displayName = user.preferred_name || user.first_name || user.display_name || user.email || "User";
+    const email = user.email || "";
+    const initial = (displayName || "?")[0].toUpperCase();
+    const dropdownWidth = Math.max(anchor.getBoundingClientRect().width, 220);
+    const dropdownHeight = 200;
+    const rect = anchor.getBoundingClientRect();
+    const pos = getDropdownPosition(rect, dropdownWidth, dropdownHeight, {
+      preferAbove: false,
+      gap: 4
+    });
+    menuEl = document.createElement("div");
+    menuEl.className = "mobius-user-menu";
+    menuEl.setAttribute("role", "menu");
+    menuEl.style.cssText = `
+      position: fixed;
+      top: ${pos.top}px;
+      left: ${pos.left}px;
+      width: ${dropdownWidth}px;
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+      z-index: 10001;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      transform-origin: ${pos.transformOrigin};
+    `;
+    menuEl.innerHTML = `
+      <div class="mobius-user-menu-header">
+        <div class="mobius-user-menu-avatar">${escapeHtml3(initial)}</div>
+        <div class="mobius-user-menu-info">
+          <div class="mobius-user-menu-name">${escapeHtml3(displayName)}</div>
+          ${email ? `<div class="mobius-user-menu-email">${escapeHtml3(email)}</div>` : ""}
+        </div>
+      </div>
+      <div class="mobius-user-menu-divider"></div>
+      <button type="button" class="mobius-user-menu-item" data-action="preferences">
+        <svg viewBox="0 0 24 24" width="14" height="14" class="mobius-user-menu-icon"><path fill="currentColor" d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+        <span>My Preferences</span>
+      </button>
+      <button type="button" class="mobius-user-menu-item" data-action="switch">
+        <svg viewBox="0 0 24 24" width="14" height="14" class="mobius-user-menu-icon"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+        <span>Not you? Sign in differently</span>
+      </button>
+      <div class="mobius-user-menu-divider"></div>
+      <button type="button" class="mobius-user-menu-item mobius-user-menu-item--danger" data-action="signout">
+        <svg viewBox="0 0 24 24" width="14" height="14" class="mobius-user-menu-icon"><path fill="currentColor" d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/></svg>
+        <span>Sign out</span>
+      </button>
+    `;
+    menuEl.querySelectorAll(".mobius-user-menu-item").forEach((btn) => {
+      btn.addEventListener("mouseenter", () => {
+        btn.style.background = "#f8fafc";
+      });
+      btn.addEventListener("mouseleave", () => {
+        btn.style.background = "transparent";
+      });
+      btn.addEventListener("click", async (e) => {
+        e.preventDefault();
+        const action = btn.dataset.action;
+        hide();
+        if (action === "preferences") {
+          onOpenPreferences?.();
+        } else if (action === "signout") {
+          await auth2.logout();
+          onSignOut?.();
+        } else if (action === "switch") {
+          await auth2.logout();
+          (onSwitchAccount ?? onSignOut)?.();
+        }
+      });
+    });
+    document.body.appendChild(menuEl);
+    const listener = (e) => {
+      if (menuEl && !menuEl.contains(e.target) && !anchor.contains(e.target)) {
+        hide();
+      }
+    };
+    closeListener = listener;
+    setTimeout(() => document.addEventListener("click", listener), 0);
+  }
+  return { show, hide };
+}
+var USER_MENU_STYLES = `
+.mobius-user-menu-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  background: #f8fafc;
+}
+.mobius-user-menu-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: #3b82f6;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.mobius-user-menu-info {
+  flex: 1;
+  min-width: 0;
+}
+.mobius-user-menu-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: #0b1220;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mobius-user-menu-email {
+  font-size: 9px;
+  color: #64748b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mobius-user-menu-divider {
+  height: 1px;
+  background: #e2e8f0;
+}
+.mobius-user-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 10px;
+  color: #374151;
+  text-align: left;
+  font-family: inherit;
+}
+.mobius-user-menu-item:hover {
+  background: #f8fafc;
+}
+.mobius-user-menu-icon {
+  color: #64748b;
+  flex-shrink: 0;
+}
+.mobius-user-menu-item--danger .mobius-user-menu-icon,
+.mobius-user-menu-item--danger {
+  color: #dc2626;
+}
+`;
 var AUTH_STYLES = `
 .mobius-auth-overlay {
   display: none;
@@ -1426,18 +2218,21 @@ function openMiniReaderSnippetOnly(documentName, pageNumber, snippet) {
     panel.appendChild(header);
     panel.appendChild(contentEl2);
     overlay.appendChild(panel);
+    const overlayEl = overlay;
     closeBtn.addEventListener("click", () => {
-      overlay?.classList.remove("open");
-      overlay?.setAttribute("aria-hidden", "true");
+      overlayEl.classList.remove("open");
+      overlayEl.setAttribute("aria-hidden", "true");
     });
-    overlay.addEventListener("click", (e) => {
-      if (e.target === overlay) {
-        overlay.classList.remove("open");
-        overlay.setAttribute("aria-hidden", "true");
+    overlayEl.addEventListener("click", (e) => {
+      if (e.target === overlayEl) {
+        overlayEl.classList.remove("open");
+        overlayEl.setAttribute("aria-hidden", "true");
       }
     });
-    document.body.appendChild(overlay);
+    document.body.appendChild(overlayEl);
   }
+  if (!overlay)
+    return;
   const titleEl = overlay.querySelector("#mini-reader-title");
   const contentEl = overlay.querySelector(".mini-reader-content");
   titleEl.textContent = title;
@@ -1459,25 +2254,6 @@ function run() {
   const sidebar = document.getElementById("sidebar");
   const mainEl = document.querySelector(".main");
   const sidebarChevron = document.getElementById("sidebarChevron");
-  function setSidebarCollapsed(collapsed) {
-    if (!sidebar || !mainEl)
-      return;
-    if (collapsed) {
-      sidebar.classList.add("sidebar--collapsed");
-      mainEl.classList.add("sidebar-collapsed");
-      if (sidebarChevron) {
-        sidebarChevron.setAttribute("aria-label", "Expand sidebar");
-        sidebarChevron.setAttribute("title", "Expand sidebar");
-      }
-    } else {
-      sidebar.classList.remove("sidebar--collapsed");
-      mainEl.classList.remove("sidebar-collapsed");
-      if (sidebarChevron) {
-        sidebarChevron.setAttribute("aria-label", "Collapse sidebar");
-        sidebarChevron.setAttribute("title", "Collapse sidebar");
-      }
-    }
-  }
   function toggleSidebar() {
     if (!sidebar || !mainEl)
       return;
@@ -1493,6 +2269,7 @@ function run() {
     drawer.classList.add("open");
     drawerOverlay.classList.add("open");
     loadChatConfig();
+    loadConfigHistory();
   }
   function closeDrawer() {
     drawer.classList.remove("open");
@@ -1501,6 +2278,57 @@ function run() {
   hamburger.addEventListener("click", openDrawer);
   drawerClose.addEventListener("click", closeDrawer);
   drawerOverlay.addEventListener("click", closeDrawer);
+  const drawerSaveConfig = document.getElementById("drawerSaveConfig");
+  const drawerLoadConfig = document.getElementById("drawerLoadConfig");
+  if (drawerSaveConfig)
+    drawerSaveConfig.addEventListener("click", saveChatConfig);
+  if (drawerLoadConfig)
+    drawerLoadConfig.addEventListener("click", loadChatConfig);
+  loadChatConfig();
+  const configSummaryRow = document.getElementById("configSummaryRow");
+  const configPreferencesExpanded = document.getElementById("configPreferencesExpanded");
+  const configPrefArrow = document.getElementById("configPrefArrow");
+  const configHistorySection = document.getElementById("configHistorySection");
+  const configTestSection = document.getElementById("configTestSection");
+  if (configSummaryRow && configPreferencesExpanded && configPrefArrow) {
+    configSummaryRow.addEventListener("click", () => {
+      const show = !configPreferencesExpanded.classList.contains("show");
+      configPreferencesExpanded.classList.toggle("show", show);
+      configPrefArrow.textContent = show ? "\u25B2" : "\u25BC";
+      configSummaryRow.setAttribute("aria-expanded", String(show));
+      if (configHistorySection)
+        configHistorySection.style.display = show ? "block" : "none";
+      if (configTestSection)
+        configTestSection.style.display = show ? "block" : "none";
+      if (show)
+        loadConfigHistory();
+    });
+    configSummaryRow.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        configSummaryRow.click();
+      }
+    });
+  }
+  const editLlmModelSelect = document.getElementById("editLlmModel");
+  const editLlmModelCustom = document.getElementById("editLlmModelCustom");
+  if (editLlmModelSelect && editLlmModelCustom) {
+    editLlmModelSelect.addEventListener("change", () => {
+      const isCustom = editLlmModelSelect.value === "__custom__";
+      editLlmModelCustom.style.display = isCustom ? "block" : "none";
+      if (!isCustom)
+        editLlmModelCustom.value = "";
+    });
+  }
+  document.querySelectorAll(".config-section-title.config-section-toggle, .config-subsection-title.config-section-toggle").forEach((el2) => {
+    el2.addEventListener("click", () => {
+      const body = el2.nextElementSibling;
+      if (body?.classList.contains("config-section-body") || body?.classList.contains("config-subsection-body")) {
+        body.classList.toggle("collapsed");
+        el2.classList.toggle("collapsed");
+      }
+    });
+  });
   let currentAuthUser = null;
   function updateSidebarUser(user) {
     currentAuthUser = user;
@@ -1515,7 +2343,21 @@ function run() {
   });
   document.body.appendChild(authModal.el);
   document.head.insertAdjacentHTML("beforeend", `<style>${AUTH_STYLES}</style>`);
-  window.onOpenPreferences = openDrawer;
+  document.head.insertAdjacentHTML("beforeend", `<style id="mobius-prefs-styles">${PREFERENCES_MODAL_STYLES}</style>`);
+  document.head.insertAdjacentHTML("beforeend", `<style id="mobius-user-menu-styles">${USER_MENU_STYLES}</style>`);
+  const preferencesModal = createPreferencesModal(apiBase, auth, {
+    onSave: () => auth.getUserProfile().then((u) => updateSidebarUser(u ?? null))
+  });
+  window.onOpenPreferences = () => preferencesModal.open();
+  const userMenu = createUserMenu({
+    auth,
+    onOpenPreferences: () => preferencesModal.open(),
+    onSignOut: () => updateSidebarUser(null),
+    onSwitchAccount: () => {
+      updateSidebarUser(null);
+      authModal.open("login");
+    }
+  });
   auth.on((event, u) => {
     if (event === "login")
       updateSidebarUser(u);
@@ -1523,39 +2365,368 @@ function run() {
       updateSidebarUser(null);
   });
   const sidebarUser = document.getElementById("sidebarUser");
-  sidebarUser?.addEventListener("click", () => authModal.open(currentAuthUser ? "account" : "login"));
+  sidebarUser?.addEventListener("click", () => {
+    if (currentAuthUser)
+      userMenu.show(sidebarUser);
+    else
+      authModal.open("login");
+  });
   sidebarUser?.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
-      authModal.open(currentAuthUser ? "account" : "login");
+      if (currentAuthUser)
+        userMenu.show(sidebarUser);
+      else
+        authModal.open("login");
     }
   });
-  auth.getUserProfile().then((u) => updateSidebarUser(u ?? null));
+  auth.getCurrentUser().then((u) => updateSidebarUser(u ?? null));
+  const MODEL_OPTIONS = ["gemini-2.5-flash", "gemini-2.0-flash", "llama3.1:8b"];
+  function setEl(id, value, attr = "value") {
+    const el2 = document.getElementById(id);
+    if (!el2)
+      return;
+    if (attr === "value" && "value" in el2)
+      el2.value = value;
+    else
+      el2.textContent = value;
+  }
+  function getEl(id) {
+    return document.getElementById(id);
+  }
+  const CONFIG_FETCH_TIMEOUT_MS = 8e3;
   function loadChatConfig() {
-    fetch(API_BASE + "/chat/config").then((r) => r.json()).then((data) => {
-      const p = data.prompts ?? {};
-      const sysEl = document.getElementById("promptFirstGenSystem");
-      const userEl = document.getElementById("promptFirstGenUser");
-      if (sysEl)
-        sysEl.textContent = p.first_gen_system ?? "\u2014";
-      if (userEl)
-        userEl.textContent = p.first_gen_user_template ?? "\u2014";
+    setEl("drawerSummaryLlm", "Loading\u2026", "textContent");
+    const timeoutPromise = new Promise((_, reject) => {
+      window.setTimeout(() => reject(new Error("CONFIG_TIMEOUT")), CONFIG_FETCH_TIMEOUT_MS);
+    });
+    const fetchPromise = fetch(API_BASE + "/chat/config").then((r) => {
+      if (!r.ok)
+        throw new Error(`Config failed (${r.status})`);
+      return r.json();
+    });
+    Promise.race([fetchPromise, timeoutPromise]).then((data) => {
+      const shaEl = document.getElementById("configShaValue");
+      if (shaEl)
+        shaEl.textContent = data.config_sha && data.config_sha.trim() ? data.config_sha : "\u2014";
       const llm = data.llm ?? {};
-      const llmEl = document.getElementById("configLlm");
-      if (llmEl)
-        llmEl.textContent = "Provider: " + (llm.provider ?? "\u2014") + ", Model: " + (llm.model ?? "\u2014") + (llm.temperature != null ? ", Temp: " + llm.temperature : "");
       const parser = data.parser ?? {};
-      const parserEl = document.getElementById("configParser");
-      if (parserEl)
-        parserEl.textContent = "Patient keywords: " + (parser.patient_keywords?.length ? parser.patient_keywords.join(", ") : "\u2014");
+      const p = data.prompts ?? {};
+      const summaryLlm = (llm.provider ?? "\u2014") + " / " + (llm.model ?? "\u2014");
+      const summaryParser = parser.patient_keywords?.length ? String(parser.patient_keywords.length) + " keywords" : "\u2014";
+      setEl("drawerSummaryLlm", summaryLlm, "textContent");
+      setEl("drawerSummaryParser", summaryParser, "textContent");
+      const editProvider = getEl("editLlmProvider");
+      const editModel = getEl("editLlmModel");
+      const editModelCustom = getEl("editLlmModelCustom");
+      const editTemp = getEl("editLlmTemperature");
+      if (editProvider)
+        editProvider.value = (llm.provider ?? "vertex").toLowerCase();
+      const modelVal = (llm.model ?? "").trim();
+      if (editModel && editModelCustom) {
+        if (MODEL_OPTIONS.includes(modelVal)) {
+          editModel.value = modelVal;
+          editModelCustom.style.display = "none";
+          editModelCustom.value = "";
+        } else {
+          editModel.value = "__custom__";
+          editModelCustom.style.display = "block";
+          editModelCustom.value = modelVal;
+        }
+      }
+      if (editTemp)
+        editTemp.value = llm.temperature != null ? String(llm.temperature) : "0.1";
+      setEl("editParserKeywords", (parser.patient_keywords ?? []).join(", "));
+      setEl("editParserSeparators", (parser.decomposition_separators ?? [" and ", " also ", " then "]).join(", "));
+      setEl("editDecomposeSystem", p.decompose_system ?? "");
+      setEl("editDecomposeUserTemplate", p.decompose_user_template ?? "");
+      setEl("editFirstGenSystem", p.first_gen_system ?? "");
+      setEl("editFirstGenUser", p.first_gen_user_template ?? "");
+      setEl("editRagAnsweringUserTemplate", p.rag_answering_user_template ?? "");
+      setEl("editIntegratorSystem", p.integrator_system ?? "");
+      setEl("editIntegratorUserTemplate", p.integrator_user_template ?? "");
+      setEl("editIntegratorRepairSystem", p.integrator_repair_system ?? "");
+      const editFactualMax = getEl("editConsolidatorFactualMax");
+      const editCanonicalMin = getEl("editConsolidatorCanonicalMin");
+      if (editFactualMax)
+        editFactualMax.value = p.consolidator_factual_max != null ? String(p.consolidator_factual_max) : "0.4";
+      if (editCanonicalMin)
+        editCanonicalMin.value = p.consolidator_canonical_min != null ? String(p.consolidator_canonical_min) : "0.6";
+      setEl("editIntegratorFactualSystem", p.integrator_factual_system ?? "");
+      setEl("editIntegratorCanonicalSystem", p.integrator_canonical_system ?? "");
+      setEl("editIntegratorBlendedSystem", p.integrator_blended_system ?? "");
       loadSidebarLlm(data);
+    }).catch((err) => {
+      setEl("configShaValue", "\u2014", "textContent");
+      const msg = err instanceof Error && err.message === "CONFIG_TIMEOUT" ? "Timeout \u2014 click Load from server to retry" : err instanceof Error ? err.message : "Failed to load";
+      setEl("drawerSummaryLlm", msg, "textContent");
+      setEl("drawerSummaryParser", "\u2014", "textContent");
+    });
+  }
+  function saveChatConfig() {
+    const editProvider = getEl("editLlmProvider");
+    const editModel = getEl("editLlmModel");
+    const editModelCustom = getEl("editLlmModelCustom");
+    const editTemp = getEl("editLlmTemperature");
+    const modelVal = editModel?.value === "__custom__" ? (editModelCustom?.value ?? "").trim() : (editModel?.value ?? "").trim();
+    const payload = {};
+    const llm = {};
+    if (editProvider?.value.trim())
+      llm.provider = editProvider.value.trim();
+    if (modelVal)
+      llm.model = modelVal;
+    if (editTemp?.value.trim()) {
+      const t = parseFloat(editTemp.value);
+      if (!Number.isNaN(t))
+        llm.temperature = t;
+    }
+    if (Object.keys(llm).length)
+      payload.llm = llm;
+    const keywordsEl = getEl("editParserKeywords");
+    const separatorsEl = getEl("editParserSeparators");
+    if (keywordsEl?.value.trim() || separatorsEl?.value.trim()) {
+      payload.parser = {};
+      if (keywordsEl?.value.trim())
+        payload.parser.patient_keywords = keywordsEl.value.split(",").map((s) => s.trim()).filter(Boolean);
+      if (separatorsEl?.value.trim())
+        payload.parser.decomposition_separators = separatorsEl.value.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
+    }
+    const prompts = {};
+    const promptIds = [
+      ["editDecomposeSystem", "decompose_system"],
+      ["editDecomposeUserTemplate", "decompose_user_template"],
+      ["editFirstGenSystem", "first_gen_system"],
+      ["editFirstGenUser", "first_gen_user_template"],
+      ["editRagAnsweringUserTemplate", "rag_answering_user_template"],
+      ["editIntegratorSystem", "integrator_system"],
+      ["editIntegratorUserTemplate", "integrator_user_template"],
+      ["editIntegratorRepairSystem", "integrator_repair_system"],
+      ["editIntegratorFactualSystem", "integrator_factual_system"],
+      ["editIntegratorCanonicalSystem", "integrator_canonical_system"],
+      ["editIntegratorBlendedSystem", "integrator_blended_system"]
+    ];
+    for (const [id, key] of promptIds) {
+      const el2 = getEl(id);
+      if (el2 && "value" in el2 && el2.value !== void 0)
+        prompts[key] = el2.value;
+    }
+    const factualMax = getEl("editConsolidatorFactualMax");
+    const canonicalMin = getEl("editConsolidatorCanonicalMin");
+    if (factualMax?.value) {
+      const v = parseFloat(factualMax.value);
+      if (!Number.isNaN(v))
+        prompts.consolidator_factual_max = v;
+    }
+    if (canonicalMin?.value) {
+      const v = parseFloat(canonicalMin.value);
+      if (!Number.isNaN(v))
+        prompts.consolidator_canonical_min = v;
+    }
+    if (Object.keys(prompts).length)
+      payload.prompts = prompts;
+    if (Object.keys(payload).length === 0) {
+      loadChatConfig();
+      return;
+    }
+    fetch(API_BASE + "/chat/config", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+      body: JSON.stringify(payload)
+    }).then((r) => {
+      if (!r.ok)
+        throw new Error(String(r.status));
+      return r.json();
+    }).then((data) => {
+      const shaEl = document.getElementById("configShaValue");
+      if (shaEl && data.config_sha)
+        shaEl.textContent = data.config_sha;
+      loadChatConfig();
+      loadConfigHistory();
     }).catch(() => {
-      const sysEl = document.getElementById("promptFirstGenSystem");
-      const llmEl = document.getElementById("configLlm");
-      if (sysEl)
-        sysEl.textContent = "Failed to load config.";
-      if (llmEl)
-        llmEl.textContent = "Failed to load config.";
+      loadChatConfig();
+    });
+  }
+  function loadConfigHistory() {
+    const listEl = document.getElementById("configHistoryList");
+    if (!listEl)
+      return;
+    fetch(API_BASE + "/chat/config/history?limit=50").then((r) => r.json()).then((entries) => {
+      listEl.innerHTML = "";
+      if (!entries.length) {
+        listEl.textContent = "No history yet. Save config to create an entry.";
+        return;
+      }
+      const formatDate = (iso) => {
+        try {
+          const d = new Date(iso);
+          return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+        } catch {
+          return iso;
+        }
+      };
+      entries.forEach((entry) => {
+        const row = document.createElement("div");
+        row.className = "config-history-row";
+        const shaShort = (entry.config_sha || "").slice(0, 8);
+        row.innerHTML = `<span class="config-history-sha" title="${escapeHtml4(entry.config_sha)}">${escapeHtml4(shaShort)}</span> <span class="config-history-date">${escapeHtml4(formatDate(entry.created_at))}</span> <button type="button" class="config-history-btn config-history-view-btn">View</button> <button type="button" class="config-history-btn config-history-restore-btn">Restore</button>`;
+        const viewBtn = row.querySelector(".config-history-view-btn");
+        const restoreBtn = row.querySelector(".config-history-restore-btn");
+        viewBtn?.addEventListener("click", () => {
+          fetch(API_BASE + "/chat/config/history/" + encodeURIComponent(entry.config_sha)).then((r) => r.json()).then((data) => {
+            const viewPanel = document.getElementById("configHistoryView");
+            const viewBody = document.getElementById("configHistoryViewBody");
+            if (viewPanel && viewBody) {
+              viewBody.textContent = JSON.stringify(data.config ?? data, null, 2);
+              viewPanel.style.display = "block";
+            }
+          }).catch(() => {
+            const viewBody = document.getElementById("configHistoryViewBody");
+            if (viewBody)
+              viewBody.textContent = "Failed to load snapshot.";
+            const viewPanel = document.getElementById("configHistoryView");
+            if (viewPanel)
+              viewPanel.style.display = "block";
+          });
+        });
+        restoreBtn?.addEventListener("click", () => {
+          if (!confirm("Restore this config version? Current form will be replaced."))
+            return;
+          fetch(API_BASE + "/chat/config/restore", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+            body: JSON.stringify({ config_sha: entry.config_sha })
+          }).then((r) => {
+            if (!r.ok)
+              throw new Error(String(r.status));
+            return r.json();
+          }).then((data) => {
+            const shaEl = document.getElementById("configShaValue");
+            if (shaEl && data.config_sha)
+              shaEl.textContent = data.config_sha;
+            loadChatConfig();
+            loadConfigHistory();
+          }).catch(() => {
+            loadConfigHistory();
+          });
+        });
+        listEl.appendChild(row);
+      });
+    }).catch(() => {
+      listEl.textContent = "Failed to load history.";
+    });
+  }
+  function escapeHtml4(s) {
+    const div = document.createElement("div");
+    div.textContent = s;
+    return div.innerHTML;
+  }
+  const configHistoryViewClose = document.getElementById("configHistoryViewClose");
+  const configHistoryView = document.getElementById("configHistoryView");
+  if (configHistoryViewClose && configHistoryView) {
+    configHistoryViewClose.addEventListener("click", () => {
+      configHistoryView.style.display = "none";
+    });
+  }
+  const configTestRun = document.getElementById("configTestRun");
+  const configTestMessage = document.getElementById("configTestMessage");
+  const configTestResult = document.getElementById("configTestResult");
+  if (configTestRun && configTestResult) {
+    configTestRun.addEventListener("click", () => {
+      const message = (configTestMessage?.value ?? "").trim() || "What is prior authorization?";
+      configTestResult.textContent = "Running test\u2026";
+      configTestResult.classList.remove("config-test-error");
+      fetch(API_BASE + "/chat/config/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ message })
+      }).then((r) => r.json().then((data) => ({ ok: r.ok, data }))).then(({ ok, data }) => {
+        if (!ok)
+          throw new Error(data.detail || "Test failed");
+        const stages = data.stages;
+        if (stages) {
+          configTestResult.innerHTML = "";
+          const wrap = document.createElement("div");
+          wrap.className = "config-test-stages";
+          const meta = document.createElement("div");
+          meta.className = "config-test-meta";
+          const metaParts = [];
+          if (data.model_used != null)
+            metaParts.push(`Model: ${data.model_used}`);
+          if (data.config_sha != null)
+            metaParts.push(`Config: ${data.config_sha}`);
+          if (data.duration_ms != null)
+            metaParts.push(`${data.duration_ms} ms`);
+          meta.textContent = metaParts.join(" \xB7 ");
+          wrap.appendChild(meta);
+          const addSection = (title, content, collapsed = false) => {
+            const block = document.createElement("div");
+            block.className = "config-test-stage-block";
+            const h4 = document.createElement("h4");
+            h4.className = "config-section-title config-section-toggle config-test-stage-title";
+            h4.setAttribute("role", "button");
+            h4.setAttribute("tabindex", "0");
+            h4.innerHTML = `${title} <span class="config-toggle-arrow">\u25BC</span>`;
+            const body = document.createElement("div");
+            body.className = "config-section-body" + (collapsed ? " collapsed" : "");
+            if (collapsed)
+              h4.classList.add("collapsed");
+            const pre = document.createElement("pre");
+            pre.textContent = content;
+            pre.className = "config-test-stage-content";
+            body.appendChild(pre);
+            block.appendChild(h4);
+            block.appendChild(body);
+            h4.addEventListener("click", () => {
+              body.classList.toggle("collapsed");
+              h4.classList.toggle("collapsed");
+            });
+            h4.addEventListener("keydown", (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                h4.click();
+              }
+            });
+            wrap.appendChild(block);
+          };
+          if (stages.planner != null) {
+            addSection(
+              "Planner (subquestions)",
+              typeof stages.planner === "string" ? stages.planner : JSON.stringify(stages.planner, null, 2),
+              false
+            );
+          }
+          if (stages.rag_answers != null && stages.rag_answers.length > 0) {
+            const lines = stages.rag_answers.map(
+              (a) => `[${a.sq_id ?? "?"}] ${a.kind ?? "\u2014"}
+  Q: ${(a.text ?? "").trim() || "\u2014"}
+  A: ${(a.answer_preview ?? "").trim() || "\u2014"}`
+            );
+            addSection("RAG answers (per subquestion)", lines.join("\n\n"), false);
+          }
+          if (stages.integrator_raw != null) {
+            addSection("Integrator (raw output)", stages.integrator_raw, true);
+          }
+          if (stages.final_answer != null) {
+            addSection("Final answer", stages.final_answer, false);
+          }
+          configTestResult.appendChild(wrap);
+        } else {
+          const lines = [];
+          if (data.reply != null)
+            lines.push(String(data.reply));
+          if (data.model_used != null)
+            lines.push(`
+Model: ${data.model_used}`);
+          if (data.config_sha != null)
+            lines.push(`Config: ${data.config_sha}`);
+          if (data.duration_ms != null)
+            lines.push(`Duration: ${data.duration_ms} ms`);
+          configTestResult.textContent = lines.join("\n") || "No reply.";
+        }
+      }).catch((err) => {
+        configTestResult.textContent = "Test failed: " + (err?.message || String(err));
+        configTestResult.classList.add("config-test-error");
+      });
     });
   }
   function loadSidebarLlm(config) {
@@ -1767,7 +2938,6 @@ function run() {
       progressAddLine(line);
       scrollToBottom(messagesEl);
     }
-    let messageWrapEl = null;
     function onStreamingMessage(_text) {
       scrollToBottom(messagesEl);
     }
@@ -1804,11 +2974,7 @@ function run() {
       }
       const stripValue = data.source_confidence_strip ?? "unverified";
       const contentEl = renderAssistantContent(finalBody, !!data.llm_error, stripValue);
-      if (messageWrapEl) {
-        messageWrapEl.replaceWith(contentEl);
-      } else {
-        turnWrap.appendChild(contentEl);
-      }
+      turnWrap.appendChild(contentEl);
       turnWrap.appendChild(renderFeedback(correlationId).el);
       const sourceList = data.sources && data.sources.length > 0 ? data.sources.map((s) => ({
         index: s.index ?? 0,
@@ -1880,6 +3046,59 @@ function run() {
     }
   });
   sendBtn.addEventListener("click", () => sendMessage());
+  const composerOptionsBtn = document.getElementById("composerOptions");
+  const composerWrap = document.querySelector(".composer-wrap");
+  let composerOptionsMenu = null;
+  function closeComposerOptionsMenu() {
+    if (composerOptionsMenu)
+      composerOptionsMenu.hidden = true;
+  }
+  function openComposerOptionsMenu() {
+    if (!composerOptionsMenu && composerWrap) {
+      composerOptionsMenu = document.createElement("div");
+      composerOptionsMenu.className = "composer-options-menu";
+      composerOptionsMenu.setAttribute("role", "menu");
+      composerOptionsMenu.hidden = true;
+      composerOptionsMenu.innerHTML = `
+        <button type="button" class="composer-option-item" data-action="new-chat" role="menuitem">New chat</button>
+        <button type="button" class="composer-option-item" data-action="chat-config" role="menuitem">Chat config</button>
+        <button type="button" class="composer-option-item" data-action="preferences" role="menuitem">Preferences</button>
+      `;
+      composerOptionsMenu.querySelectorAll(".composer-option-item").forEach((item) => {
+        item.addEventListener("click", () => {
+          const action = item.dataset.action;
+          closeComposerOptionsMenu();
+          if (action === "new-chat") {
+            threadId = null;
+            if (messagesEl && chatEmpty) {
+              messagesEl.innerHTML = "";
+              messagesEl.appendChild(chatEmpty);
+              chatEmpty.classList.remove("hidden");
+            }
+            loadSidebarHistory();
+          } else if (action === "chat-config")
+            openDrawer();
+          else if (action === "preferences")
+            preferencesModal.open();
+        });
+      });
+      composerWrap.appendChild(composerOptionsMenu);
+    }
+    if (composerOptionsMenu)
+      composerOptionsMenu.hidden = false;
+  }
+  composerOptionsBtn?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (composerOptionsMenu?.hidden !== false)
+      openComposerOptionsMenu();
+    else
+      closeComposerOptionsMenu();
+  });
+  document.addEventListener("click", (e) => {
+    const target = e.target;
+    if (composerOptionsMenu && !composerOptionsMenu.contains(target) && !composerOptionsBtn?.contains(target))
+      closeComposerOptionsMenu();
+  });
   const btnNewChat = document.getElementById("btnNewChat");
   btnNewChat?.addEventListener("click", () => {
     threadId = null;

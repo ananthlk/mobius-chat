@@ -5,7 +5,7 @@ import os
 import sys
 from pathlib import Path
 
-# Load .env before reading CHAT_RAG_DATABASE_URL
+# Load .env before reading CHAT_RAG_DATABASE_URL (module .env first, then mobius-config/.env)
 _chat_root = Path(__file__).resolve().parent.parent
 _config_dir = _chat_root.parent / "mobius-config"
 if _config_dir.exists() and str(_config_dir) not in sys.path:
@@ -15,9 +15,14 @@ try:
     load_env(_chat_root)
 except ImportError:
     from dotenv import load_dotenv
+    # 1) mobius-chat/.env
     env_file = _chat_root / ".env"
     if env_file.exists():
         load_dotenv(env_file, override=True)
+    # 2) mobius-config/.env (fill in only what is not set)
+    global_env = _config_dir / ".env"
+    if global_env.exists():
+        load_dotenv(global_env, override=False)
 
 logger = logging.getLogger(__name__)
 

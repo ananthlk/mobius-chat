@@ -27,8 +27,9 @@ def insert_turn(
     blueprint_snapshot: dict[str, Any] | None = None,
     agent_cards: list[dict[str, Any]] | None = None,
     source_confidence_strip: str | None = None,
+    config_sha: str | None = None,
 ) -> None:
-    """Insert one turn row. Called by worker when response is complete. Optional thread_id, agent data for audit/debug."""
+    """Insert one turn row. Called by worker when response is complete. config_sha ties run to prompts+LLM config version."""
     url = _get_db_url()
     if not url:
         logger.warning("CHAT_RAG_DATABASE_URL not set; turn not persisted")
@@ -39,14 +40,15 @@ def insert_turn(
         cur = conn.cursor()
         strip_val = (source_confidence_strip or "").strip() or None
         thread_val = (thread_id or "").strip() or None
+        config_sha_val = (config_sha or "").strip() or None
         cur.execute(
             """
             INSERT INTO chat_turns (
                 correlation_id, question, thinking_log, final_message, sources,
                 duration_ms, model_used, llm_provider, session_id, thread_id,
-                plan_snapshot, blueprint_snapshot, agent_cards, source_confidence_strip
+                plan_snapshot, blueprint_snapshot, agent_cards, source_confidence_strip, config_sha
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (correlation_id) DO UPDATE SET
                 question = EXCLUDED.question,
                 thinking_log = EXCLUDED.thinking_log,
@@ -60,7 +62,8 @@ def insert_turn(
                 plan_snapshot = EXCLUDED.plan_snapshot,
                 blueprint_snapshot = EXCLUDED.blueprint_snapshot,
                 agent_cards = EXCLUDED.agent_cards,
-                source_confidence_strip = EXCLUDED.source_confidence_strip
+                source_confidence_strip = EXCLUDED.source_confidence_strip,
+                config_sha = EXCLUDED.config_sha
             """,
             (
                 correlation_id,
@@ -77,6 +80,7 @@ def insert_turn(
                 json.dumps(blueprint_snapshot) if blueprint_snapshot is not None else None,
                 json.dumps(agent_cards) if agent_cards is not None else None,
                 strip_val,
+                config_sha_val,
             ),
         )
         conn.commit()

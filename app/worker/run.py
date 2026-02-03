@@ -85,7 +85,7 @@ logger_startup.info(
     _rag_db,
 )
 
-from app.chat_config import get_chat_config
+from app.chat_config import get_chat_config, get_config_sha
 from app.planner import parse
 from app.planner.blueprint import build_blueprint
 from app.planner.schemas import Plan
@@ -110,7 +110,6 @@ from app.payer_normalization import normalize_payer_for_rag
 from app.services.cost_model import compute_cost
 from app.services.non_patient_rag import answer_non_patient
 from app.services.retrieval_calibration import get_retrieval_blend, intent_to_score
-from app.services.web_scraper_review import fetch_urls_context
 from app.services.usage import LLMUsageDict
 from app.trace_log import trace_entered, is_trace_enabled
 
@@ -249,6 +248,7 @@ def process_one(correlation_id: str, payload: dict) -> None:
     """Process one request: plan (breakdown only) → answer each subquestion via patient/non-patient path → combine → publish."""
     trace_entered("worker.run.process_one", correlation_id=correlation_id)
     t0_total = time.perf_counter()
+    config_sha = get_config_sha() or None
     message = payload.get("message", "").strip()
     thinking_chunks: list[str] = []
     start_progress(correlation_id)
@@ -297,15 +297,7 @@ def process_one(correlation_id: str, payload: dict) -> None:
     save_state(thread_id, patch)
     route = route_context(message, new_state, last_turns, reset_reason)
     pack = build_context_pack(route, new_state, last_turns, new_state.get("open_slots", []))
-    scraper_base = get_config().scraper_api_base
-    web_context = fetch_urls_context(message, scraper_base) if scraper_base else ""
-    base_for_parser = (pack + "\n\n" + message) if pack else message
-    if web_context:
-        message_for_parser = (
-            base_for_parser + "\n\n[Context from linked webpages]\n" + web_context
-        )
-    else:
-        message_for_parser = base_for_parser
+    message_for_parser = (pack + "\n\n" + message) if pack else message
 
     def on_thinking(chunk: str) -> None:
         thinking_chunks.append(chunk)
@@ -587,10 +579,93 @@ def process_one(correlation_id: str, payload: dict) -> None:
         blueprint_snapshot=blueprint_snapshot,
         agent_cards=agent_cards,
         source_confidence_strip=source_confidence_strip,
+        config_sha=config_sha,
     )
     store_response(correlation_id, response_payload)
     get_queue().publish_response(correlation_id, response_payload)
     logger.info("Response published for %s", correlation_id)
+
+
+def run_one_turn_test(message: str) -> dict[str, Any]:
+    """Run one pipeline pass with current config without persistence (no DB, no queue).
+    Returns dict with reply, config_sha, model_used, duration_ms for config test endpoint."""
+    t0 = time.perf_counter()
+    config_sha = get_config_sha() or ""
+    message = (message or "").strip() or "What is prior authorization?"
+    state = copy.deepcopy(DEFAULT_STATE)
+    last_turns: list[dict[str, Any]] = []
+    patch, reset_reason = extract_state_patch(message, state, None, None)
+    new_state = _merge_state(state, patch)
+    route = route_context(message, new_state, last_turns, reset_reason)
+    pack = build_context_pack(route, new_state, last_turns, new_state.get("open_slots", []))
+    message_for_parser = (pack + "\n\n" + message) if pack else message
+
+    def noop(_: str) -> None:
+        pass
+
+    plan = parse(message_for_parser, thinking_emitter=noop)
+    rag_k_default = get_chat_config().rag.top_k
+    blueprint = build_blueprint(plan, rag_default_k=rag_k_default)
+    rag_filters = _rag_filters_from_state(new_state)
+    answers: list[str] = []
+    usages: list[LLMUsageDict] = []
+    if getattr(plan, "llm_usage", None):
+        usages.append(plan.llm_usage)
+    for i, sq in enumerate(plan.subquestions):
+        bp = blueprint[i] if i < len(blueprint) else {}
+        retrieval_params = None
+        if sq.kind == "non_patient":
+            score = getattr(sq, "intent_score", None)
+            if score is None:
+                score = intent_to_score(getattr(sq, "question_intent", None))
+            retrieval_params = get_retrieval_blend(score)
+        ans, usage, _ = _answer_for_subquestion(
+            sq.id, sq.kind, sq.text,
+            retrieval_params=retrieval_params,
+            emitter=noop,
+            rag_filters=rag_filters,
+        )
+        answers.append(ans)
+        if usage:
+            usages.append(usage)
+    final_message, integrator_usage = format_response(
+        plan, answers, user_message=message, emitter=noop, message_chunk_callback=None
+    )
+    if integrator_usage:
+        usages.append(integrator_usage)
+    model_used = (usages[0].get("model") or None) if usages else None
+    duration_ms = int((time.perf_counter() - t0) * 1000)
+
+    # Per-stage outputs for config test UI (Planner, RAG answers, Integrator, Final)
+    planner_output: dict[str, Any] = plan.model_dump()
+    rag_answers_list: list[dict[str, Any]] = []
+    for sq, ans in zip(plan.subquestions, answers):
+        rag_answers_list.append({
+            "sq_id": sq.id,
+            "kind": sq.kind,
+            "text": (sq.text or "")[:300] + ("..." if len(sq.text or "") > 300 else ""),
+            "answer_preview": (ans or "")[:600] + ("..." if len(ans or "") > 600 else ""),
+        })
+    final_answer = final_message
+    try:
+        parsed = json.loads(final_message)
+        if isinstance(parsed, dict) and parsed.get("direct_answer") is not None:
+            final_answer = parsed.get("direct_answer") or final_message
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    return {
+        "reply": final_message,
+        "config_sha": config_sha,
+        "model_used": model_used,
+        "duration_ms": duration_ms,
+        "stages": {
+            "planner": planner_output,
+            "rag_answers": rag_answers_list,
+            "integrator_raw": final_message,
+            "final_answer": final_answer,
+        },
+    }
 
 
 def run_worker() -> None:

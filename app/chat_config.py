@@ -55,6 +55,13 @@ os.environ.setdefault("CHAT_VERTEX_PROJECT_ID", os.environ.get("VERTEX_PROJECT_I
 _CHAT_CONFIG_DIR = Path(__file__).resolve().parent
 _CHAT_CONFIG_YAML = _CHAT_CONFIG_DIR / "chat_config.yaml"
 
+# Prompts+LLM versioned config (config/prompts_llm.yaml); when present, used for llm/parser/prompts
+try:
+    from app.prompts_llm_config import load_prompts_llm_config
+except Exception:
+    def load_prompts_llm_config() -> tuple[dict, str]:
+        return {}, ""
+
 
 @dataclass
 class ChatLLMConfig:
@@ -269,10 +276,122 @@ def _env_float(key: str, default: float) -> float:
         return default
 
 
+def _build_rag_from_env() -> ChatRAGConfig:
+    """Build RAG config from env only (unchanged from original get_chat_config)."""
+    vertex_endpoint = _env("CHAT_VERTEX_INDEX_ENDPOINT_ID") or os.getenv("VERTEX_INDEX_ENDPOINT_ID")
+    vertex_deployed_raw = _env("CHAT_VERTEX_DEPLOYED_INDEX_ID") or os.getenv("VERTEX_DEPLOYED_INDEX_ID")
+    logger.info(
+        "[RAG config] env: CHAT_VERTEX_DEPLOYED_INDEX_ID=%r VERTEX_DEPLOYED_INDEX_ID=%r → raw=%r _chat_root=%s",
+        _env("CHAT_VERTEX_DEPLOYED_INDEX_ID"),
+        os.getenv("VERTEX_DEPLOYED_INDEX_ID"),
+        vertex_deployed_raw,
+        _chat_root,
+    )
+    vertex_deployed = (vertex_deployed_raw or "").strip()
+    if vertex_deployed and not vertex_deployed.startswith("endpoint_mobius_chat_publi_") and (
+        vertex_deployed in ("Endpoint_mobius_chat_published_rag", "mobius_chat_published_rag")
+        or "published_rag" in vertex_deployed.lower()
+    ):
+        vertex_deployed = "endpoint_mobius_chat_publi_1769989702095"
+        logger.info("[RAG config] normalized display name → deployed_index_id=%r", vertex_deployed)
+    rag_db_url = _env("CHAT_RAG_DATABASE_URL") or os.getenv("RAG_DATABASE_URL")
+    rag_k = int(os.getenv("CHAT_RAG_TOP_K") or os.getenv("RAG_TOP_K", "10"))
+    return ChatRAGConfig(
+        vertex_index_endpoint_id=vertex_endpoint,
+        vertex_deployed_index_id=vertex_deployed,
+        database_url=rag_db_url,
+        top_k=max(1, min(100, rag_k)),
+        filter_payer=_env("CHAT_RAG_FILTER_PAYER"),
+        filter_state=_env("CHAT_RAG_FILTER_STATE"),
+        filter_program=_env("CHAT_RAG_FILTER_PROGRAM"),
+        filter_authority_level=_env("CHAT_RAG_FILTER_AUTHORITY_LEVEL"),
+    )
+
+
+def _chat_config_from_prompts_llm(pl: dict, rag: ChatRAGConfig) -> ChatConfig:
+    """Build ChatConfig from prompts_llm dict (llm, parser, prompts). RAG is from env."""
+    def _str(d: dict, k: str, default: str = "") -> str:
+        v = d.get(k)
+        return (v.strip() if isinstance(v, str) else str(v)) if v is not None else default
+
+    def _float(d: dict, k: str, default: float = 0.0) -> float:
+        try:
+            v = d.get(k)
+            return float(v) if v is not None else default
+        except (TypeError, ValueError):
+            return default
+
+    def _int(d: dict, k: str, default: int = 0) -> int:
+        try:
+            v = d.get(k)
+            return int(v) if v is not None else default
+        except (TypeError, ValueError):
+            return default
+
+    def _list_str(d: dict, k: str, default: list[str] | None = None) -> list[str]:
+        v = d.get(k)
+        if isinstance(v, list):
+            return [x.strip() if isinstance(x, str) else str(x) for x in v if x is not None]
+        return default or []
+
+    llm_d = pl.get("llm") or {}
+    vertex_project = (llm_d.get("vertex_project_id") or "").strip() or None
+    if not vertex_project:
+        vertex_project = (_env("CHAT_VERTEX_PROJECT_ID") or get_env_or("VERTEX_PROJECT_ID", "mobiusos-new") or "mobiusos-new").strip() or "mobiusos-new"
+    llm = ChatLLMConfig(
+        provider=(_str(llm_d, "provider") or "vertex").lower(),
+        model=_str(llm_d, "model") or "gemini-2.5-flash",
+        temperature=_float(llm_d, "temperature", 0.1),
+        vertex_project_id=vertex_project or None,
+        vertex_location=_str(llm_d, "vertex_location") or "us-central1",
+        vertex_model=_str(llm_d, "vertex_model") or "gemini-2.5-flash",
+        ollama_base_url=_str(llm_d, "ollama_base_url") or "http://localhost:11434",
+        ollama_model=_str(llm_d, "ollama_model") or "llama3.1:8b",
+        ollama_num_predict=_int(llm_d, "ollama_num_predict", 8192),
+    )
+    parser_d = pl.get("parser") or {}
+    parser = ChatParserConfig(
+        patient_keywords=_list_str(parser_d, "patient_keywords") or [
+            "my doctor", "my medication", "my visit", "my record", "my records", "my care",
+            "what did my doctor", "do I qualify", "do we qualify", "my eligibility", "based on my",
+            "my enrollment", "my coverage", "am I eligible", "are we eligible",
+        ],
+        decomposition_separators=_list_str(parser_d, "decomposition_separators") or [" and ", " also ", " then "],
+    )
+    prompts_d = pl.get("prompts") or {}
+    _def = ChatPromptsConfig()
+    prompts = ChatPromptsConfig(
+        decompose_system=_str(prompts_d, "decompose_system") or _def.decompose_system,
+        decompose_user_template=_str(prompts_d, "decompose_user_template") or _def.decompose_user_template,
+        first_gen_system=_str(prompts_d, "first_gen_system") or _def.first_gen_system,
+        first_gen_user_template=_str(prompts_d, "first_gen_user_template") or _def.first_gen_user_template,
+        rag_answering_user_template=_str(prompts_d, "rag_answering_user_template") or _def.rag_answering_user_template,
+        consolidator_factual_max=_float(prompts_d, "consolidator_factual_max", _def.consolidator_factual_max),
+        consolidator_canonical_min=_float(prompts_d, "consolidator_canonical_min", _def.consolidator_canonical_min),
+        integrator_system=_str(prompts_d, "integrator_system") or _def.integrator_system,
+        integrator_user_template=_str(prompts_d, "integrator_user_template") or _def.integrator_user_template,
+        integrator_repair_system=_str(prompts_d, "integrator_repair_system") or _def.integrator_repair_system,
+        integrator_factual_system=_str(prompts_d, "integrator_factual_system") or _def.integrator_factual_system,
+        integrator_canonical_system=_str(prompts_d, "integrator_canonical_system") or _def.integrator_canonical_system,
+        integrator_blended_system=_str(prompts_d, "integrator_blended_system") or _def.integrator_blended_system,
+    )
+    return ChatConfig(llm=llm, rag=rag, parser=parser, prompts=prompts)
+
+
+def get_config_sha() -> str:
+    """Return config_sha when prompts_llm.yaml is in use; otherwise empty string."""
+    _, sha = load_prompts_llm_config()
+    return sha
+
+
 def get_chat_config() -> ChatConfig:
-    """Load chat config from env (CHAT_*). Does not touch RAG config."""
+    """Load chat config: prompts_llm.yaml when present (llm/parser/prompts), else env. RAG always from env."""
     trace_entered("chat_config.get_chat_config")
-    # LLM: default to Vertex AI; use Ollama only if CHAT_LLM_PROVIDER=ollama or LLM_PROVIDER=ollama
+    pl_config, _ = load_prompts_llm_config()
+    rag = _build_rag_from_env()
+    if pl_config:
+        return _chat_config_from_prompts_llm(pl_config, rag)
+    # Fallback: env-only (no prompts_llm.yaml)
     llm_provider = _env("CHAT_LLM_PROVIDER") or os.getenv("LLM_PROVIDER") or "vertex"
     llm = ChatLLMConfig(
         provider=llm_provider.lower() or "vertex",
@@ -285,7 +404,6 @@ def get_chat_config() -> ChatConfig:
         ollama_model=_env("CHAT_OLLAMA_MODEL") or os.getenv("OLLAMA_MODEL", "llama3.1:8b"),
         ollama_num_predict=int(os.getenv("CHAT_OLLAMA_NUM_PREDICT") or os.getenv("OLLAMA_NUM_PREDICT", "8192")),
     )
-    # Parser: optional CHAT_PARSER_PATIENT_KEYWORDS (comma-separated)
     patient_kw = _env("CHAT_PARSER_PATIENT_KEYWORDS")
     parser = ChatParserConfig(
         patient_keywords=[k.strip() for k in patient_kw.split(",") if k.strip()] if patient_kw else [
@@ -294,36 +412,6 @@ def get_chat_config() -> ChatConfig:
             "my enrollment", "my coverage", "am I eligible", "are we eligible",
         ],
         decomposition_separators=[" and ", " also ", " then "],
-    )
-    # RAG: Vertex AI Vector Search + Postgres published_rag_metadata
-    vertex_endpoint = _env("CHAT_VERTEX_INDEX_ENDPOINT_ID") or os.getenv("VERTEX_INDEX_ENDPOINT_ID")
-    vertex_deployed_raw = _env("CHAT_VERTEX_DEPLOYED_INDEX_ID") or os.getenv("VERTEX_DEPLOYED_INDEX_ID")
-    logger.info(
-        "[RAG config] env: CHAT_VERTEX_DEPLOYED_INDEX_ID=%r VERTEX_DEPLOYED_INDEX_ID=%r → raw=%r _chat_root=%s",
-        _env("CHAT_VERTEX_DEPLOYED_INDEX_ID"),
-        os.getenv("VERTEX_DEPLOYED_INDEX_ID"),
-        vertex_deployed_raw,
-        _chat_root,
-    )
-    vertex_deployed = (vertex_deployed_raw or "").strip()
-    # Vertex API requires the deployed index ID (e.g. endpoint_mobius_chat_publi_*), not the display name
-    if vertex_deployed and not vertex_deployed.startswith("endpoint_mobius_chat_publi_") and (
-        vertex_deployed in ("Endpoint_mobius_chat_published_rag", "mobius_chat_published_rag")
-        or "published_rag" in vertex_deployed.lower()
-    ):
-        vertex_deployed = "endpoint_mobius_chat_publi_1769989702095"
-        logger.info("[RAG config] normalized display name → deployed_index_id=%r", vertex_deployed)
-    rag_db_url = _env("CHAT_RAG_DATABASE_URL") or os.getenv("RAG_DATABASE_URL") or os.getenv("CHAT_DATABASE_URL")
-    rag_k = int(os.getenv("CHAT_RAG_TOP_K") or os.getenv("RAG_TOP_K", "10"))
-    rag = ChatRAGConfig(
-        vertex_index_endpoint_id=vertex_endpoint,
-        vertex_deployed_index_id=vertex_deployed,
-        database_url=rag_db_url,
-        top_k=max(1, min(100, rag_k)),
-        filter_payer=_env("CHAT_RAG_FILTER_PAYER"),
-        filter_state=_env("CHAT_RAG_FILTER_STATE"),
-        filter_program=_env("CHAT_RAG_FILTER_PROGRAM"),
-        filter_authority_level=_env("CHAT_RAG_FILTER_AUTHORITY_LEVEL"),
     )
     # Prompts: optional CHAT_PROMPT_*, CHAT_CONSOLIDATOR_*
     _prompts_default = ChatPromptsConfig()
@@ -355,9 +443,10 @@ def get_chat_config() -> ChatConfig:
 
 
 def chat_config_for_api() -> dict:
-    """Return chat config and prompts as a dict for GET /chat/config (frontend)."""
+    """Return chat config and prompts as a dict for GET /chat/config (frontend). Includes config_sha when using prompts_llm.yaml."""
     c = get_chat_config()
-    return {
+    out = {
+        "config_sha": get_config_sha(),
         "rag": {
             "vertex_index_endpoint_id_set": bool(c.rag.vertex_index_endpoint_id),
             "vertex_deployed_index_id_set": bool(c.rag.vertex_deployed_index_id),
@@ -384,8 +473,10 @@ def chat_config_for_api() -> dict:
             "decompose_user_template": c.prompts.decompose_user_template,
             "first_gen_system": c.prompts.first_gen_system,
             "first_gen_user_template": c.prompts.first_gen_user_template,
+            "rag_answering_user_template": c.prompts.rag_answering_user_template,
             "integrator_system": c.prompts.integrator_system,
             "integrator_user_template": c.prompts.integrator_user_template,
+            "integrator_repair_system": c.prompts.integrator_repair_system,
             "consolidator_factual_max": c.prompts.consolidator_factual_max,
             "consolidator_canonical_min": c.prompts.consolidator_canonical_min,
             "integrator_factual_system": c.prompts.integrator_factual_system,
@@ -393,3 +484,4 @@ def chat_config_for_api() -> dict:
             "integrator_blended_system": c.prompts.integrator_blended_system,
         },
     }
+    return out

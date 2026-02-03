@@ -42,13 +42,17 @@ except ImportError:
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import httpx
 
 from app.chat_config import chat_config_for_api
+from app.prompts_llm_config import load_prompts_llm_config, save_prompts_llm_config
+from app.prompts_llm_history import append_entry, get_by_sha, list_entries as list_config_history
+from app.prompts_test import run_single_prompt_test
+from app.test_runs import append_run as append_test_run, get_run as get_test_run, list_runs as list_test_runs
 from app.config import get_config
 from app.queue import get_queue
 from app.queue.redis_queue import RedisQueue
@@ -64,6 +68,7 @@ from app.auth import get_user_id_from_request
 from app.storage.feedback import get_feedback, get_source_feedback, insert_feedback, insert_source_feedback
 from app.storage.progress import get_and_clear_events, get_progress
 from app.worker import start_worker_background
+from app.worker.run import run_one_turn_test
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -395,9 +400,117 @@ def get_chat_plan(correlation_id: str):
 
 
 @app.get("/chat/config")
-def get_chat_config():
-    """Chat-specific config and prompts (LLM, parser, prompts) for the hamburger menu."""
+def api_get_chat_config():
+    """Chat-specific config and prompts (LLM, parser, prompts) plus config_sha for the hamburger menu."""
     return chat_config_for_api()
+
+
+class ChatConfigPatchBody(BaseModel):
+    """Partial or full prompts+LLM+parser for PATCH /chat/config. Omitted keys are left unchanged."""
+    llm: dict | None = None
+    parser: dict | None = None
+    prompts: dict | None = None
+
+
+@app.patch("/chat/config")
+def api_patch_chat_config(body: ChatConfigPatchBody):
+    """Update prompts+LLM config (writes config/prompts_llm.yaml). Returns new config_sha and full config."""
+    payload = body.model_dump(exclude_none=True)
+    if not payload:
+        return chat_config_for_api()
+    existing, _ = load_prompts_llm_config()
+    merged = {k: {**(existing.get(k) or {}), **(payload.get(k) or {})} for k in ("llm", "parser", "prompts") if (existing.get(k) or payload.get(k))}
+    if not merged:
+        return chat_config_for_api()
+    new_sha = save_prompts_llm_config(merged)
+    append_entry(merged)
+    return {"config_sha": new_sha, **chat_config_for_api()}
+
+
+@app.get("/chat/config/history")
+def api_get_chat_config_history(limit: int = 50):
+    """List config history entries (config_sha, created_at), newest first."""
+    return list_config_history(limit=max(1, min(limit, 100)))
+
+
+@app.get("/chat/config/history/{config_sha:path}")
+def api_get_chat_config_history_entry(config_sha: str):
+    """Return full config for a given config_sha (for view/restore)."""
+    entry = get_by_sha(config_sha)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Config version not found")
+    return {"config_sha": config_sha, "config": entry}
+
+
+class ChatConfigRestoreBody(BaseModel):
+    config_sha: str
+
+
+@app.post("/chat/config/restore")
+def api_post_chat_config_restore(body: ChatConfigRestoreBody):
+    """Restore prompts_llm.yaml from history by config_sha. Returns new config_sha and full config."""
+    entry = get_by_sha(body.config_sha)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Config version not found")
+    new_sha = save_prompts_llm_config(entry)
+    append_entry(entry)
+    return {"config_sha": new_sha, **chat_config_for_api()}
+
+
+class ChatConfigTestBody(BaseModel):
+    message: str = "What is prior authorization?"
+    name: str | None = None
+    description: str | None = None
+
+
+class ChatConfigTestPromptBody(BaseModel):
+    """Body for POST /chat/config/test-prompt: run one LLM call for a single prompt key."""
+    prompt_key: str  # planner | rag_answering | integrator_factual | integrator_canonical | integrator_blended | first_gen
+    sample_input: dict | None = None  # message, context, question, consolidator_input_json, plan_summary as needed
+
+
+@app.post("/chat/config/test-prompt")
+def api_post_chat_config_test_prompt(body: ChatConfigTestPromptBody):
+    """Run one LLM call for the given prompt key with sample input. Returns output, model_used, duration_ms."""
+    return run_single_prompt_test(body.prompt_key, body.sample_input)
+
+
+@app.post("/chat/config/test")
+def api_post_chat_config_test(body: ChatConfigTestBody):
+    """Run one pipeline pass with current config without persisting. Optionally save as named run (name/description). Returns reply, config_sha, model_used, duration_ms, run_id if saved."""
+    result = run_one_turn_test(body.message or "What is prior authorization?")
+    name = (body.name or "").strip()
+    description = (body.description or "").strip()
+    if name or description:
+        run_id = append_test_run(
+            name=name,
+            description=description,
+            config_sha=result.get("config_sha") or "",
+            message=body.message or "",
+            reply=result.get("reply") or "",
+            model_used=result.get("model_used"),
+            duration_ms=result.get("duration_ms"),
+            stages=result.get("stages"),
+        )
+        result["run_id"] = run_id
+        if name:
+            result["name"] = name
+    return result
+
+
+@app.get("/chat/config/test-runs")
+def api_get_chat_config_test_runs(limit: int = 50):
+    """List saved named test runs, newest first: id, name, description, config_sha, message_snippet, reply_snippet, created_at."""
+    return list_test_runs(limit=max(1, min(limit, 100)))
+
+
+@app.get("/chat/config/test-runs/{run_id}")
+def api_get_chat_config_test_run(run_id: str):
+    """Return full run details (message, reply, config_sha, stages if stored)."""
+    entry = get_test_run(run_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Test run not found")
+    return entry
 
 
 @app.get("/health")
@@ -409,6 +522,10 @@ def health():
 _frontend = Path(__file__).resolve().parent.parent / "frontend"
 if _frontend.exists():
     app.mount("/static", StaticFiles(directory=_frontend / "static"), name="static")
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon():
+        return RedirectResponse(url="/static/logo.svg", status_code=302)
 
     @app.get("/")
     def index():
