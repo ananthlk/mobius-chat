@@ -1,0 +1,27 @@
+# Payer normalization for RAG filtering and state.
+# canonical: token used in the RAG index (document_payer). Must match published_rag_metadata.
+# aliases: user-facing names, abbreviations, parent/subsidiary names that map to this payer.
+# Update this file when adding payers or normalizing new names; no code changes required.
+#
+# To extend: run a normalization query (e.g. against your data source) to list parent/subsidiary
+# names and add them under aliases for the appropriate canonical payer.
+
+payers:
+  - canonical: "Sunshine Health"
+    aliases:
+      - "Sunshine"
+      - "Sunshine Health"
+      - "Sunshine Health Plan"
+  - canonical: "United Healthcare"
+    aliases:
+      - "United Healthcare"
+      - "UnitedHealthcare"
+      - "UHC"
+      - "United Health Care"
+      - "United"
+  # Index has document_payer='Molina'; canonical must match for filter to work.
+  - canonical: "Molina"
+    aliases:
+      - "Molina"
+      - "Molina Health Care"
+      - "Molina Healthcare"

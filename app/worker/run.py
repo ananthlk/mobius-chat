@@ -1,4 +1,6 @@
 """Worker: consume from request queue → planner (breakdown only) → answer per subquestion (patient / non-patient path) → combine → publish."""
+import copy
+import json
 import logging
 import os
 import threading
@@ -91,9 +93,24 @@ from app.queue import get_queue
 from app.responder import format_response
 from app.storage import insert_turn, store_plan, store_response
 from app.storage.progress import append_message_chunk, append_thinking, clear_progress, start_progress
+from app.storage.threads import (
+    DEFAULT_STATE,
+    append_assistant_message,
+    append_user_message,
+    ensure_thread,
+    get_last_turn_messages,
+    get_state,
+    register_open_slots,
+    save_state,
+)
+from app.state.context_pack import build_context_pack
+from app.state.context_router import route_context
+from app.state.state_extractor import answer_card_to_open_slots, extract_state_patch
+from app.payer_normalization import normalize_payer_for_rag
 from app.services.cost_model import compute_cost
 from app.services.non_patient_rag import answer_non_patient
 from app.services.retrieval_calibration import get_retrieval_blend, intent_to_score
+from app.services.web_scraper_review import fetch_urls_context
 from app.services.usage import LLMUsageDict
 from app.trace_log import trace_entered, is_trace_enabled
 
@@ -159,14 +176,40 @@ def _derive_source_confidence_strip(sources: list[dict]) -> str:
     return "approved_informational"
 
 
+def _rag_filters_from_state(state: dict[str, Any] | None) -> dict[str, Any]:
+    """Build per-request RAG filter dict from thread state. filter_payer: str (single) or list[str] (multi-payer compare).
+    Payer is normalized via config/payer_normalization.yaml so RAG document_payer filter matches index tokens."""
+    out: dict[str, Any] = {}
+    if not state:
+        return out
+    active = state.get("active") or {}
+    payers_list = active.get("payers") or []
+    if payers_list and isinstance(payers_list, list):
+        normalized = [normalize_payer_for_rag(p) for p in payers_list if p and normalize_payer_for_rag(p)]
+        if normalized:
+            out["filter_payer"] = normalized
+    else:
+        raw_payer = (active.get("payer") or "").strip()
+        if raw_payer:
+            payer = normalize_payer_for_rag(raw_payer)
+            if payer:
+                out["filter_payer"] = payer
+    jurisdiction = (active.get("jurisdiction") or "").strip()
+    if jurisdiction:
+        out["filter_state"] = jurisdiction
+    return out
+
+
 def _answer_for_subquestion(
     sq_id: str,
     kind: str,
     text: str,
     retrieval_params: dict[str, Any] | None = None,
     emitter=None,
+    rag_filters: dict[str, str] | None = None,
 ) -> tuple[str, LLMUsageDict | None, list[dict]]:
-    """Answer one subquestion: patient path = warning; non-patient path = RAG + LLM (with sources). Returns (answer_text, llm_usage, sources)."""
+    """Answer one subquestion: patient path = warning; non-patient path = RAG + LLM (with sources). Returns (answer_text, llm_usage, sources).
+    rag_filters (from thread state) scope RAG retrieval to payer/state when set."""
     def emit(msg: str) -> None:
         if emitter and msg.strip():
             emitter(msg.strip())
@@ -177,6 +220,7 @@ def _answer_for_subquestion(
     snippet = (text[:60] + "...") if len(text) > 60 else text
     emit(f"Answering this part: “{snippet}”")
     params = retrieval_params or get_retrieval_blend(0.5)
+    filters = rag_filters or {}
     answer_text, sources, usage = answer_non_patient(
         question=text,
         k=params.get("top_k"),
@@ -184,8 +228,21 @@ def _answer_for_subquestion(
         n_hierarchical=params.get("n_hierarchical"),
         n_factual=params.get("n_factual"),
         emitter=emitter,
+        filter_payer=filters.get("filter_payer"),
+        filter_state=filters.get("filter_state"),
     )
     return (answer_text, usage, sources or [])
+
+
+def _merge_state(state: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    """Apply patch shallowly to state (nested dicts merged). Returns new dict."""
+    out = copy.deepcopy(state)
+    for k, v in patch.items():
+        if isinstance(out.get(k), dict) and isinstance(v, dict):
+            out[k] = {**out.get(k, {}), **v}
+        else:
+            out[k] = v
+    return out
 
 
 def process_one(correlation_id: str, payload: dict) -> None:
@@ -196,12 +253,66 @@ def process_one(correlation_id: str, payload: dict) -> None:
     thinking_chunks: list[str] = []
     start_progress(correlation_id)
 
+    # Resolve thread and persist user message for short-term memory
+    thread_id = payload.get("thread_id") or ensure_thread(None)
+    append_user_message(thread_id, correlation_id, message)
+
+    # Load state and last turns; apply TTL decay (state should decay quickly)
+    state = get_state(thread_id)
+    if state is None:
+        state = copy.deepcopy(DEFAULT_STATE)
+    open_slots = (state.get("open_slots") or []) if state else []
+    if open_slots:
+        save_state(thread_id, {"turn_count_since_active_set": 0})
+        state = get_state(thread_id) or state
+        if state:
+            state.setdefault("turn_count_since_active_set", 0)
+    else:
+        count = (state.get("turn_count_since_active_set") or 0) + 1
+        state["turn_count_since_active_set"] = count
+        if count > 2:
+            save_state(thread_id, {
+                "active": {**(state.get("active") or {}), "payer": None, "domain": None, "jurisdiction": None},
+                "turn_count_since_active_set": 0,
+            })
+            state = get_state(thread_id) or state
+        else:
+            save_state(thread_id, {"turn_count_since_active_set": count})
+            state = get_state(thread_id) or state
+    last_turns = get_last_turn_messages(thread_id, limit_turns=2)
+    patch, reset_reason = extract_state_patch(message, state, None, None)
+    new_state = _merge_state(state, patch)
+    # Log state extraction so we can see why payer might not switch (e.g. "United Healthcare" in message)
+    existing_payer = (state.get("active") or {}).get("payer")
+    patch_payer = (patch.get("active") or {}).get("payer")
+    new_payer = (new_state.get("active") or {}).get("payer")
+    logger.info(
+        "state_extract: message=%r existing_payer=%s patch_payer=%s new_payer=%s reset_reason=%s",
+        (message or "")[:120],
+        existing_payer,
+        patch_payer,
+        new_payer,
+        reset_reason,
+    )
+    save_state(thread_id, patch)
+    route = route_context(message, new_state, last_turns, reset_reason)
+    pack = build_context_pack(route, new_state, last_turns, new_state.get("open_slots", []))
+    scraper_base = get_config().scraper_api_base
+    web_context = fetch_urls_context(message, scraper_base) if scraper_base else ""
+    base_for_parser = (pack + "\n\n" + message) if pack else message
+    if web_context:
+        message_for_parser = (
+            base_for_parser + "\n\n[Context from linked webpages]\n" + web_context
+        )
+    else:
+        message_for_parser = base_for_parser
+
     def on_thinking(chunk: str) -> None:
         thinking_chunks.append(chunk)
         append_thinking(correlation_id, chunk)
         logger.info("[thinking] %s", chunk[:80])
 
-    plan = parse(message, thinking_emitter=on_thinking)
+    plan = parse(message_for_parser, thinking_emitter=on_thinking)
     store_plan(correlation_id, plan, thinking_log=thinking_chunks)
 
     # --- DEBUG: Parse 1 (Plan) ---
@@ -285,6 +396,11 @@ def process_one(correlation_id: str, payload: dict) -> None:
     })
 
     # Answer each subquestion: patient = stub; non_patient = RAG + LLM (emit progress); collect usage and sources
+    rag_filters = _rag_filters_from_state(new_state)
+    _payer = (new_state.get("active") or {}).get("payer")
+    _payers = (new_state.get("active") or {}).get("payers") or []
+    if _payer or _payers or rag_filters:
+        logger.info("RAG filters from state: active.payer=%s active.payers=%s filters=%s", _payer, _payers or None, rag_filters)
     answers: list[str] = []
     usages: list[LLMUsageDict] = []
     all_sources: list[dict] = []
@@ -304,6 +420,7 @@ def process_one(correlation_id: str, payload: dict) -> None:
             sq.id, sq.kind, sq.text,
             retrieval_params=retrieval_params,
             emitter=on_thinking,
+            rag_filters=rag_filters,
         )
         elapsed_ms = (time.perf_counter() - t0) * 1000
         answers.append(ans)
@@ -439,8 +556,22 @@ def process_one(correlation_id: str, payload: dict) -> None:
         "cost_usd": round(total_cost, 6),
         "sources": response_sources,
         "source_confidence_strip": source_confidence_strip,
+        "thread_id": thread_id,
     }
     clear_progress(correlation_id)
+    append_assistant_message(thread_id, correlation_id, final_message)
+    parsed_answer_card: dict[str, Any] | None = None
+    try:
+        parsed = json.loads(final_message)
+        if isinstance(parsed, dict) and parsed.get("mode") and parsed.get("direct_answer") is not None and isinstance(parsed.get("sections"), list):
+            parsed_answer_card = parsed
+    except (json.JSONDecodeError, TypeError):
+        pass
+    if parsed_answer_card is not None:
+        slots = answer_card_to_open_slots(parsed_answer_card)
+        register_open_slots(thread_id, slots)
+        if not slots and (parsed_answer_card.get("mode") or "").upper() == "FACTUAL":
+            save_state(thread_id, {"turn_count_since_active_set": 0})
     insert_turn(
         correlation_id=correlation_id,
         question=message,
@@ -451,6 +582,7 @@ def process_one(correlation_id: str, payload: dict) -> None:
         model_used=model_used,
         llm_provider=llm_provider,
         session_id=session_id,
+        thread_id=thread_id,
         plan_snapshot=plan_snapshot,
         blueprint_snapshot=blueprint_snapshot,
         agent_cards=agent_cards,

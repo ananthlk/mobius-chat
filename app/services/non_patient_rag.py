@@ -22,8 +22,11 @@ def answer_non_patient(
     n_hierarchical: int | None = None,
     n_factual: int | None = None,
     emitter=None,
+    filter_payer: str | list[str] | None = None,
+    filter_state: str | None = None,
 ) -> tuple[str, list[dict], dict[str, Any] | None]:
-    """Answer a non-patient subquestion: RAG (blend of hierarchical + factual or single path) then LLM. Returns (answer_text, sources, llm_usage)."""
+    """Answer a non-patient subquestion: RAG (blend of hierarchical + factual or single path) then LLM. Returns (answer_text, sources, llm_usage).
+    Per-request filter_payer/filter_state (e.g. from thread state) scope retrieval to that payer/state; overrides config."""
     trace_entered("services.non_patient_rag.answer_non_patient")
     from app.chat_config import get_chat_config
     from app.services.llm_provider import get_llm_provider
@@ -46,12 +49,17 @@ def answer_non_patient(
                     n_factual=n_factual or 0,
                     confidence_min=confidence_min,
                     emitter=emitter,
+                    filter_payer=filter_payer,
+                    filter_state=filter_state,
                 )
             else:
                 from app.services.published_rag_search import search_published_rag
                 k = k if k is not None else rag.top_k
                 _emit(emitter, f"Searching our materials (up to {k} results)...")
-                chunks = search_published_rag(question, k=k, confidence_min=confidence_min, emitter=emitter)
+                chunks = search_published_rag(
+                    question, k=k, confidence_min=confidence_min, emitter=emitter,
+                    filter_payer=filter_payer, filter_state=filter_state,
+                )
                 if chunks:
                     _emit(emitter, f"Using {len(chunks)} result{'s' if len(chunks) != 1 else ''} to answer this part.")
             if not chunks:

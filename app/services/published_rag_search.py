@@ -40,10 +40,13 @@ def search_published_rag(
     confidence_min: float | None = None,
     source_type_allow: List[str] | None = None,
     emitter: Callable[[str], None] | None = None,
+    filter_payer: str | List[str] | None = None,
+    filter_state: str | None = None,
 ) -> List[dict[str, Any]]:
     """Search published RAG: embed question (1536), query Vertex with filters, fetch metadata from Postgres by id.
     If confidence_min is set, only return chunks with confidence >= confidence_min (after fetching k).
     If source_type_allow is set, restrict Vertex results to those source_type values (index must expose source_type namespace).
+    Per-request filter_payer: str (single payer) or list[str] (multiple payers, OR semantics) override config; when set, scope retrieval.
     Returns list of dicts with keys: text, document_id, document_name, page_number, source_type (same shape as legacy RAG).
     """
     trace_entered("services.published_rag_search.search_published_rag", k=k)
@@ -70,14 +73,22 @@ def search_published_rag(
         logger.exception("Published RAG embedding failed: %s", e)
         return []
 
-    # Build Vertex filter from config (Namespace uses allow_tokens / deny_tokens)
+    # Build Vertex filter: per-request (thread state) overrides config; filter_payer can be str or list[str] (multi-payer OR)
+    payer_input = filter_payer if filter_payer is not None else (rag.filter_payer or "").strip() or None
+    if isinstance(payer_input, str):
+        payer_tokens = [payer_input.strip()] if payer_input.strip() else []
+    elif isinstance(payer_input, list):
+        payer_tokens = [str(p).strip() for p in payer_input if p and str(p).strip()]
+    else:
+        payer_tokens = []
+    state_token = (filter_state or "").strip() or (rag.filter_state or "").strip()
     filters: List[Any] = []
     try:
         from google.cloud.aiplatform.matching_engine.matching_engine_index_endpoint import Namespace
-        if rag.filter_payer:
-            filters.append(Namespace(name="document_payer", allow_tokens=[rag.filter_payer], deny_tokens=[]))
-        if rag.filter_state:
-            filters.append(Namespace(name="document_state", allow_tokens=[rag.filter_state], deny_tokens=[]))
+        if payer_tokens:
+            filters.append(Namespace(name="document_payer", allow_tokens=payer_tokens, deny_tokens=[]))
+        if state_token:
+            filters.append(Namespace(name="document_state", allow_tokens=[state_token], deny_tokens=[]))
         if rag.filter_program:
             filters.append(Namespace(name="document_program", allow_tokens=[rag.filter_program], deny_tokens=[]))
         if rag.filter_authority_level:
@@ -91,7 +102,7 @@ def search_published_rag(
     if filters:
         logger.info(
             "RAG filters applied: payer=%s state=%s program=%s authority_level=%s source_type_allow=%s",
-            rag.filter_payer or "(none)", rag.filter_state or "(none)",
+            payer_tokens or "(none)", state_token or "(none)",
             rag.filter_program or "(none)", rag.filter_authority_level or "(none)",
             source_type_allow or "(none)",
         )
@@ -228,15 +239,22 @@ def search_factual(
     k: int = 10,
     confidence_min: float | None = None,
     emitter: Callable[[str], None] | None = None,
+    filter_payer: str | List[str] | None = None,
+    filter_state: str | None = None,
 ) -> List[dict[str, Any]]:
-    """Top-k by similarity (factual path). Optionally filter by confidence_min."""
-    return search_published_rag(question, k=k, confidence_min=confidence_min, emitter=emitter)
+    """Top-k by similarity (factual path). Optionally filter by confidence_min. Per-request filter_payer/filter_state override config."""
+    return search_published_rag(
+        question, k=k, confidence_min=confidence_min, emitter=emitter,
+        filter_payer=filter_payer, filter_state=filter_state,
+    )
 
 
 def search_hierarchical(
     question: str,
     k: int = 3,
     emitter: Callable[[str], None] | None = None,
+    filter_payer: str | List[str] | None = None,
+    filter_state: str | None = None,
 ) -> List[dict[str, Any]]:
     """Hierarchical retrieval: ask Vertex for neighbors with source_type in [policy, section, chunk, hierarchical].
     Mart may use "hierarchical" vs "fact"; we request all non-fact types. If the index exposes source_type,
@@ -250,6 +268,8 @@ def search_hierarchical(
         confidence_min=None,
         source_type_allow=hierarchical_types,
         emitter=emitter,
+        filter_payer=filter_payer,
+        filter_state=filter_state,
     )
     if chunks:
         # Optionally sort by hierarchy rank then confidence (in case we got mixed types)
@@ -265,7 +285,10 @@ def search_hierarchical(
         VERTEX_SOURCE_TYPE_NAMESPACE,
     )
     fetch_k = max(20, 2 * k)
-    chunks = search_published_rag(question, k=fetch_k, confidence_min=None, emitter=emitter)
+    chunks = search_published_rag(
+        question, k=fetch_k, confidence_min=None, emitter=emitter,
+        filter_payer=filter_payer, filter_state=filter_state,
+    )
     if not chunks:
         return []
     chunks_sorted = sorted(
@@ -281,17 +304,19 @@ def retrieve_with_blend(
     n_factual: int = 0,
     confidence_min: float | None = None,
     emitter: Callable[[str], None] | None = None,
+    filter_payer: str | List[str] | None = None,
+    filter_state: str | None = None,
 ) -> List[dict[str, Any]]:
-    """Run hierarchical and/or factual retrieval per blend; merge and dedupe by chunk id."""
+    """Run hierarchical and/or factual retrieval per blend; merge and dedupe by chunk id. Per-request filter_payer/filter_state scope retrieval."""
     trace_entered("services.published_rag_search.retrieve_with_blend", n_hierarchical=n_hierarchical, n_factual=n_factual)
     combined: List[dict[str, Any]] = []
     if n_hierarchical > 0:
         _emit(emitter, "Searching for high-level (hierarchical) materials...")
-        H = search_hierarchical(question, k=n_hierarchical, emitter=emitter)
+        H = search_hierarchical(question, k=n_hierarchical, emitter=emitter, filter_payer=filter_payer, filter_state=filter_state)
         combined.extend(H)
     if n_factual > 0:
         _emit(emitter, "Searching for specific facts...")
-        F = search_factual(question, k=n_factual, confidence_min=confidence_min, emitter=emitter)
+        F = search_factual(question, k=n_factual, confidence_min=confidence_min, emitter=emitter, filter_payer=filter_payer, filter_state=filter_state)
         combined.extend(F)
     if not combined:
         return []

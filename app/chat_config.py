@@ -113,6 +113,7 @@ class ChatPromptsConfig:
         "Rules for sub-questions:\n"
         "- If the user asked a single clear question, output exactly one sub-question (id sq1, text, kind).\n"
         "- If the user asked multiple questions (e.g. joined with \"and\", \"also\"), output one sub-question per distinct question.\n"
+        "- If the user asks to compare multiple entities (e.g. \"compare the care management programs of Sunshine Health, United Healthcare and Molina\"), output one sub-question per entity (e.g. What is Sunshine Health's care management program? What is United Healthcare's? What is Molina's?) and optionally one for a direct comparison; this allows retrieval and answer for each.\n"
         "- Do not over-split; keep one logical question per item.\n"
         "- Preserve the user's intent; only rephrase slightly if needed.\n\n"
         "Classification (kind) for each sub-question:\n"
