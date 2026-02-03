@@ -58,8 +58,17 @@ interface HistoryDocumentItem {
   cited_in_count?: number;
 }
 
+/** Section intent for visibility rules; LLM only classifies, renderer decides visibility. */
+const SECTION_INTENTS = ["process", "requirements", "definitions", "exceptions", "references"] as const;
+type SectionIntent = (typeof SECTION_INTENTS)[number];
+
+function isSectionIntent(s: unknown): s is SectionIntent {
+  return typeof s === "string" && SECTION_INTENTS.includes(s as SectionIntent);
+}
+
 /** AnswerCard JSON from consolidator (FACTUAL / CANONICAL / BLENDED) */
 interface AnswerCardSection {
+  intent?: SectionIntent;
   label: string;
   bullets: string[];
 }
@@ -170,10 +179,16 @@ function tryParseAnswerCard(message: string): AnswerCard | null {
       if (data.mode !== "FACTUAL" && data.mode !== "CANONICAL" && data.mode !== "BLENDED") return null;
       if (typeof data.direct_answer !== "string") return null;
       if (!Array.isArray(data.sections)) return null;
+      const rawSections = (data.sections as Array<{ intent?: unknown; label?: string; bullets?: string[] }>).slice(0, MAX_SECTIONS);
+      const sections: AnswerCardSection[] = rawSections.map((sec) => ({
+        intent: isSectionIntent(sec.intent) ? sec.intent : "process",
+        label: typeof sec.label === "string" ? sec.label : "",
+        bullets: Array.isArray(sec.bullets) ? sec.bullets : [],
+      }));
       return {
         mode: data.mode,
         direct_answer: data.direct_answer,
-        sections: (data.sections as AnswerCardSection[]).slice(0, MAX_SECTIONS),
+        sections,
         required_variables: Array.isArray(data.required_variables) ? data.required_variables as string[] : [],
         confidence_note: typeof data.confidence_note === "string" ? data.confidence_note : undefined,
         citations: Array.isArray(data.citations) ? data.citations as AnswerCardCitation[] : undefined,
@@ -213,7 +228,52 @@ function tryParseAnswerCard(message: string): AnswerCard | null {
   return null;
 }
 
-/** Render AnswerCard as deterministic DOM (plain text only; no markdown). */
+/** Build visible vs hidden section lists by mode (authoritative visibility rules). */
+function splitSectionsByVisibility(
+  sections: AnswerCardSection[],
+  mode: AnswerCard["mode"]
+): { visible: AnswerCardSection[]; hidden: AnswerCardSection[] } {
+  const all = sections.slice(0, MAX_SECTIONS);
+  if (mode === "FACTUAL") {
+    return { visible: [], hidden: all };
+  }
+  if (mode === "CANONICAL") {
+    return { visible: all, hidden: [] };
+  }
+  const requirements = all.filter((s) => (s.intent ?? "process") === "requirements");
+  const hidden = all.filter((s) => {
+    const i = s.intent ?? "process";
+    return i === "process" || i === "definitions" || i === "exceptions" || i === "references";
+  });
+  return { visible: requirements, hidden };
+}
+
+/** Render one section (label + bullets) into a div.answer-card-section. */
+function renderOneSection(sec: AnswerCardSection): HTMLElement {
+  const sectionEl = document.createElement("div");
+  sectionEl.className = "answer-card-section";
+  const labelEl = document.createElement("div");
+  labelEl.className = "answer-card-section-label";
+  labelEl.textContent = sec.label || "";
+  sectionEl.appendChild(labelEl);
+  const bullets = (sec.bullets ?? []).slice(0, MAX_BULLETS_PER_SECTION);
+  bullets.forEach((b) => {
+    const li = document.createElement("div");
+    li.className = "answer-card-bullet";
+    li.textContent = b;
+    sectionEl.appendChild(li);
+  });
+  if (bullets.length < (sec.bullets?.length ?? 0)) {
+    const more = document.createElement("div");
+    more.className = "answer-card-more";
+    more.textContent = "Show more";
+    more.setAttribute("aria-label", "Show more bullets");
+    sectionEl.appendChild(more);
+  }
+  return sectionEl;
+}
+
+/** Render AnswerCard with mode-based visibility and single "Show details" for hidden sections. */
 function renderAnswerCard(card: AnswerCard, isError?: boolean): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className =
@@ -259,30 +319,32 @@ function renderAnswerCard(card: AnswerCard, isError?: boolean): HTMLElement {
   }
   if (metaRow.childNodes.length > 0) bubble.appendChild(metaRow);
 
-  const sections = (card.sections ?? []).slice(0, MAX_SECTIONS);
-  sections.forEach((sec) => {
-    const sectionEl = document.createElement("div");
-    sectionEl.className = "answer-card-section";
-    const labelEl = document.createElement("div");
-    labelEl.className = "answer-card-section-label";
-    labelEl.textContent = sec.label || "";
-    sectionEl.appendChild(labelEl);
-    const bullets = (sec.bullets ?? []).slice(0, MAX_BULLETS_PER_SECTION);
-    bullets.forEach((b) => {
-      const li = document.createElement("div");
-      li.className = "answer-card-bullet";
-      li.textContent = b;
-      sectionEl.appendChild(li);
+  const { visible, hidden } = splitSectionsByVisibility(card.sections ?? [], card.mode);
+
+  visible.forEach((sec) => bubble.appendChild(renderOneSection(sec)));
+
+  if (hidden.length > 0) {
+    const detailsBlock = document.createElement("div");
+    detailsBlock.className = "answer-card-details";
+    detailsBlock.setAttribute("aria-hidden", "true");
+    hidden.forEach((sec) => detailsBlock.appendChild(renderOneSection(sec)));
+    bubble.appendChild(detailsBlock);
+
+    const toggleBtn = document.createElement("button");
+    toggleBtn.type = "button";
+    toggleBtn.className = "answer-card-show-details";
+    toggleBtn.textContent = "Show details";
+    toggleBtn.setAttribute("aria-label", "Show details");
+    toggleBtn.setAttribute("aria-expanded", "false");
+    toggleBtn.addEventListener("click", () => {
+      const expanded = detailsBlock.classList.toggle("answer-card-details--expanded");
+      detailsBlock.setAttribute("aria-hidden", expanded ? "false" : "true");
+      toggleBtn.setAttribute("aria-expanded", String(expanded));
+      toggleBtn.textContent = expanded ? "Hide details" : "Show details";
+      toggleBtn.setAttribute("aria-label", expanded ? "Hide details" : "Show details");
     });
-    if (bullets.length < (sec.bullets?.length ?? 0)) {
-      const more = document.createElement("div");
-      more.className = "answer-card-more";
-      more.textContent = "Show more";
-      more.setAttribute("aria-label", "Show more bullets");
-      sectionEl.appendChild(more);
-    }
-    bubble.appendChild(sectionEl);
-  });
+    bubble.appendChild(toggleBtn);
+  }
 
   if (card.confidence_note && card.confidence_note.trim()) {
     const note = document.createElement("div");

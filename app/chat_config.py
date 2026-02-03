@@ -181,6 +181,7 @@ class ChatPromptsConfig:
     integrator_repair_system: str = (
         "You returned invalid JSON. Return ONLY valid JSON that matches the AnswerCard schema. "
         "Do not include any commentary or markdown. Ensure all strings are quoted and arrays/objects are valid. "
+        "Each section must include \"intent\" (one of: process, requirements, definitions, exceptions, references). "
         "Use the same content as before; do not add new facts."
     )
 
@@ -189,11 +190,13 @@ class ChatPromptsConfig:
         "You are the CONSOLIDATOR for a retrieval-based system.\n\n"
         "Return ONLY valid JSON matching the AnswerCard schema below. Do not include markdown, explanations, or extra text.\n\n"
         "AnswerCard schema:\n"
-        '{"mode":"FACTUAL","direct_answer":"string","sections":[{"label":"string","bullets":["string"]}],'
+        '{"mode":"FACTUAL","direct_answer":"string","sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string","bullets":["string"]}],'
         '"required_variables":["string"],"confidence_note":"string",'
         '"citations":[{"id":"string","doc_title":"string","locator":"string","snippet":"string"}],'
         '"followups":[{"question":"string","reason":"string","field":"string"}]}\n\n'
         "Rules for FACTUAL mode:\n"
+        "- direct_answer is required and must stand alone.\n"
+        "- Classify each section with exactly one intent: process, requirements, definitions, exceptions, or references. You do not control visibility; the UI will show only the direct answer and hide sections behind 'Show details'.\n"
         "- Use ONLY the facts provided in the input. Do not add new facts.\n"
         "- Do not include policy intent or justification language.\n"
         "- Prefer short bullets; do not write paragraphs.\n"
@@ -208,11 +211,12 @@ class ChatPromptsConfig:
         "You are the CONSOLIDATOR for a retrieval-based system.\n\n"
         "Return ONLY valid JSON matching the AnswerCard schema below. Do not include markdown, explanations, or extra text.\n\n"
         "AnswerCard schema:\n"
-        '{"mode":"CANONICAL","direct_answer":"string","sections":[{"label":"string","bullets":["string"]}],'
+        '{"mode":"CANONICAL","direct_answer":"string","sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string","bullets":["string"]}],'
         '"required_variables":["string"],"confidence_note":"string",'
         '"citations":[{"id":"string","doc_title":"string","locator":"string","snippet":"string"}],'
         '"followups":[{"question":"string","reason":"string","field":"string"}]}\n\n'
         "Rules for CANONICAL mode:\n"
+        "- direct_answer is required and must stand alone. Classify each section with exactly one intent: process, requirements, definitions, exceptions, or references. The UI will show direct_answer and all sections.\n"
         "- Use ONLY the information provided in the input.\n"
         "- Explain the standard definition/rule/scope in a stable, reusable way.\n"
         "- Avoid edge cases unless explicitly included in the facts.\n"
@@ -227,11 +231,12 @@ class ChatPromptsConfig:
         "You are the CONSOLIDATOR for a retrieval-based system.\n\n"
         "Return ONLY valid JSON matching the AnswerCard schema below. Do not include markdown, explanations, or extra text.\n\n"
         "AnswerCard schema:\n"
-        '{"mode":"BLENDED","direct_answer":"string","sections":[{"label":"string","bullets":["string"]}],'
+        '{"mode":"BLENDED","direct_answer":"string","sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string","bullets":["string"]}],'
         '"required_variables":["string"],"confidence_note":"string",'
         '"citations":[{"id":"string","doc_title":"string","locator":"string","snippet":"string"}],'
         '"followups":[{"question":"string","reason":"string","field":"string"}]}\n\n'
         "Rules for BLENDED mode:\n"
+        "- direct_answer is required and must stand alone. Classify each section with exactly one intent: process, requirements, definitions, exceptions, or references. The UI will show direct_answer and requirements sections; process, definitions, exceptions, and references will be behind 'Show details'.\n"
         "- Use ONLY the information provided in the input.\n"
         "- Start with a short explanatory summary in direct_answer (1–2 sentences max).\n"
         "- Then provide concrete requirements/conditions as bullets in sections.\n"

@@ -86,8 +86,16 @@ def _parse_answer_card(text: str, emitter: Callable[[str], None] | None = None) 
             return None
         if data.get("mode") not in ("FACTUAL", "CANONICAL", "BLENDED"):
             return None
-        if not isinstance(data.get("sections"), list):
+        sections = data.get("sections")
+        if not isinstance(sections, list):
             return None
+        valid_intents = ("process", "requirements", "definitions", "exceptions", "references")
+        for item in sections:
+            if not isinstance(item, dict):
+                continue
+            intent = item.get("intent")
+            if intent is not None and intent not in valid_intents:
+                return None
         return data
 
     try:

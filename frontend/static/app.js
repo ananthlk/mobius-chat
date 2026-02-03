@@ -659,6 +659,10 @@ function createAuthService(config) {
 }
 
 // src/app.ts
+var SECTION_INTENTS = ["process", "requirements", "definitions", "exceptions", "references"];
+function isSectionIntent(s) {
+  return typeof s === "string" && SECTION_INTENTS.includes(s);
+}
 var API_BASE = typeof window !== "undefined" && window.API_BASE && window.API_BASE.startsWith("http") ? window.API_BASE : "http://localhost:8000";
 var apiBase = `${API_BASE}/api/v1`;
 var auth = createAuthService({ apiBase, storage: localStorageAdapter });
@@ -733,10 +737,16 @@ function tryParseAnswerCard(message) {
         return null;
       if (!Array.isArray(data.sections))
         return null;
+      const rawSections = data.sections.slice(0, MAX_SECTIONS);
+      const sections = rawSections.map((sec) => ({
+        intent: isSectionIntent(sec.intent) ? sec.intent : "process",
+        label: typeof sec.label === "string" ? sec.label : "",
+        bullets: Array.isArray(sec.bullets) ? sec.bullets : []
+      }));
       return {
         mode: data.mode,
         direct_answer: data.direct_answer,
-        sections: data.sections.slice(0, MAX_SECTIONS),
+        sections,
         required_variables: Array.isArray(data.required_variables) ? data.required_variables : [],
         confidence_note: typeof data.confidence_note === "string" ? data.confidence_note : void 0,
         citations: Array.isArray(data.citations) ? data.citations : void 0,
@@ -779,6 +789,44 @@ function tryParseAnswerCard(message) {
   }
   return null;
 }
+function splitSectionsByVisibility(sections, mode) {
+  const all = sections.slice(0, MAX_SECTIONS);
+  if (mode === "FACTUAL") {
+    return { visible: [], hidden: all };
+  }
+  if (mode === "CANONICAL") {
+    return { visible: all, hidden: [] };
+  }
+  const requirements = all.filter((s) => (s.intent ?? "process") === "requirements");
+  const hidden = all.filter((s) => {
+    const i = s.intent ?? "process";
+    return i === "process" || i === "definitions" || i === "exceptions" || i === "references";
+  });
+  return { visible: requirements, hidden };
+}
+function renderOneSection(sec) {
+  const sectionEl = document.createElement("div");
+  sectionEl.className = "answer-card-section";
+  const labelEl = document.createElement("div");
+  labelEl.className = "answer-card-section-label";
+  labelEl.textContent = sec.label || "";
+  sectionEl.appendChild(labelEl);
+  const bullets = (sec.bullets ?? []).slice(0, MAX_BULLETS_PER_SECTION);
+  bullets.forEach((b) => {
+    const li = document.createElement("div");
+    li.className = "answer-card-bullet";
+    li.textContent = b;
+    sectionEl.appendChild(li);
+  });
+  if (bullets.length < (sec.bullets?.length ?? 0)) {
+    const more = document.createElement("div");
+    more.className = "answer-card-more";
+    more.textContent = "Show more";
+    more.setAttribute("aria-label", "Show more bullets");
+    sectionEl.appendChild(more);
+  }
+  return sectionEl;
+}
 function renderAnswerCard(card, isError) {
   const wrap = document.createElement("div");
   wrap.className = "message message--assistant answer-card answer-card--" + card.mode.toLowerCase() + (isError ? " message--error" : "");
@@ -818,30 +866,29 @@ function renderAnswerCard(card, isError) {
   }
   if (metaRow.childNodes.length > 0)
     bubble.appendChild(metaRow);
-  const sections = (card.sections ?? []).slice(0, MAX_SECTIONS);
-  sections.forEach((sec) => {
-    const sectionEl = document.createElement("div");
-    sectionEl.className = "answer-card-section";
-    const labelEl = document.createElement("div");
-    labelEl.className = "answer-card-section-label";
-    labelEl.textContent = sec.label || "";
-    sectionEl.appendChild(labelEl);
-    const bullets = (sec.bullets ?? []).slice(0, MAX_BULLETS_PER_SECTION);
-    bullets.forEach((b) => {
-      const li = document.createElement("div");
-      li.className = "answer-card-bullet";
-      li.textContent = b;
-      sectionEl.appendChild(li);
+  const { visible, hidden } = splitSectionsByVisibility(card.sections ?? [], card.mode);
+  visible.forEach((sec) => bubble.appendChild(renderOneSection(sec)));
+  if (hidden.length > 0) {
+    const detailsBlock = document.createElement("div");
+    detailsBlock.className = "answer-card-details";
+    detailsBlock.setAttribute("aria-hidden", "true");
+    hidden.forEach((sec) => detailsBlock.appendChild(renderOneSection(sec)));
+    bubble.appendChild(detailsBlock);
+    const toggleBtn = document.createElement("button");
+    toggleBtn.type = "button";
+    toggleBtn.className = "answer-card-show-details";
+    toggleBtn.textContent = "Show details";
+    toggleBtn.setAttribute("aria-label", "Show details");
+    toggleBtn.setAttribute("aria-expanded", "false");
+    toggleBtn.addEventListener("click", () => {
+      const expanded = detailsBlock.classList.toggle("answer-card-details--expanded");
+      detailsBlock.setAttribute("aria-hidden", expanded ? "false" : "true");
+      toggleBtn.setAttribute("aria-expanded", String(expanded));
+      toggleBtn.textContent = expanded ? "Hide details" : "Show details";
+      toggleBtn.setAttribute("aria-label", expanded ? "Hide details" : "Show details");
     });
-    if (bullets.length < (sec.bullets?.length ?? 0)) {
-      const more = document.createElement("div");
-      more.className = "answer-card-more";
-      more.textContent = "Show more";
-      more.setAttribute("aria-label", "Show more bullets");
-      sectionEl.appendChild(more);
-    }
-    bubble.appendChild(sectionEl);
-  });
+    bubble.appendChild(toggleBtn);
+  }
   if (card.confidence_note && card.confidence_note.trim()) {
     const note = document.createElement("div");
     note.className = "answer-card-confidence";

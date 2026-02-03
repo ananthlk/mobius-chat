@@ -547,13 +547,8 @@ body {
   line-height: 1.35;
   margin-bottom: 0.2rem;
   color: var(--sidebar-text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.answer-card-direct:hover {
   white-space: normal;
-  overflow: visible;
+  word-wrap: break-word;
 }
 /* Meta row: Depends on · Confirm inline */
 .answer-card-meta-row {
@@ -632,6 +627,30 @@ body {
   margin-top: 0.4rem;
   font-style: italic;
   opacity: 0.85;
+}
+/* Collapsible details block: hidden by default, shown when expanded */
+.answer-card-details {
+  display: none;
+  margin-top: 0.5rem;
+}
+.answer-card-details--expanded {
+  display: block;
+}
+.answer-card-show-details {
+  display: inline-block;
+  font-size: var(--text-xs);
+  color: var(--accent);
+  cursor: pointer;
+  margin-top: 0.35rem;
+  padding: 0.1rem 0;
+  border: none;
+  background: transparent;
+  font-weight: normal;
+  text-align: left;
+}
+.answer-card-show-details:hover {
+  text-decoration: underline;
+  color: var(--accent);
 }
 /* CANONICAL / BLENDED: slightly more breathing room */
 .answer-card--canonical .answer-card-bubble {
