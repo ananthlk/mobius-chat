@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Mobius Chat</title>
+  <link rel="icon" href="static/logo.svg" type="image/svg+xml" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -65,6 +66,7 @@
       <div class="composer-wrap">
         <div class="composer">
           <input type="text" id="input" placeholder="Message Mobius Chat…" autocomplete="off" />
+          <button type="button" class="btn-composer-options" id="composerOptions" aria-label="More options" aria-haspopup="true" title="More options">⋯</button>
           <button type="button" class="btn-send" id="send" aria-label="Send">
             <svg class="send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>
           </button>
@@ -77,18 +79,194 @@
   <aside class="drawer" id="drawer">
     <button type="button" class="drawer-close" id="drawerClose" aria-label="Close">&times;</button>
     <h2>Chat config</h2>
-    <p style="font-size: 0.85rem; color: var(--thinking-text);">Self-contained config for this module (LLM, parser, prompts).</p>
-    <div id="drawerPrompts">
-      <h3>Prompts</h3>
-      <p id="promptFirstGenSystem" class="value">Loading…</p>
-      <h3>First-gen user template</h3>
-      <pre id="promptFirstGenUser">Loading…</pre>
+    <div class="drawer-config-sha" id="drawerConfigSha">
+      <strong>Config version:</strong> <code id="configShaValue">—</code>
     </div>
-    <div id="drawerConfigs">
-      <h3>LLM</h3>
-      <p id="configLlm" class="value">Loading…</p>
-      <h3>Parser</h3>
-      <p id="configParser" class="value">Loading…</p>
+
+    <div class="config-preferences-panel" id="configPreferencesPanel">
+      <div class="config-summary-row" id="configSummaryRow" role="button" tabindex="0" aria-expanded="false" aria-label="Expand config">
+        <span class="preference-item"><span class="pref-value" id="drawerSummaryLlm">Loading…</span></span>
+        <span class="preference-item"><span class="pref-value" id="drawerSummaryParser">—</span></span>
+        <span class="pref-arrow" id="configPrefArrow">▼</span>
+      </div>
+      <div class="preferences-expanded" id="configPreferencesExpanded">
+        <!-- Global LLM: used by Planner, First-gen, RAG, Integrator -->
+        <div class="preference-group-block config-agent-block">
+          <h3 class="config-section-title config-section-toggle" role="button" tabindex="0">LLM (global) <span class="config-toggle-arrow">▼</span></h3>
+          <div class="config-section-body">
+            <p class="config-section-desc">Provider, model & temperature used by all agents.</p>
+            <div class="preference-group">
+              <label for="editLlmProvider">Provider</label>
+              <select id="editLlmProvider" aria-label="LLM provider">
+                <option value="vertex">vertex</option>
+                <option value="ollama">ollama</option>
+              </select>
+            </div>
+            <div class="preference-group">
+              <label for="editLlmModel">Model</label>
+              <select id="editLlmModel" aria-label="LLM model">
+                <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+                <option value="llama3.1:8b">llama3.1:8b</option>
+                <option value="__custom__">Custom</option>
+              </select>
+              <input type="text" id="editLlmModelCustom" class="config-custom-input" placeholder="Custom model" style="display: none;" />
+            </div>
+            <div class="preference-group">
+              <label for="editLlmTemperature">Temperature</label>
+              <input type="number" id="editLlmTemperature" min="0" max="2" step="0.1" placeholder="0.1" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Decomposition: Parser + Planner -->
+        <div class="preference-group-block config-agent-block config-process-block">
+          <h3 class="config-section-title config-section-toggle" role="button" tabindex="0">Decomposition <span class="config-toggle-arrow">▼</span></h3>
+          <div class="config-section-body">
+            <h4 class="config-subsection-title config-section-toggle" role="button" tabindex="0">Parser <span class="config-toggle-arrow">▼</span></h4>
+            <div class="config-subsection-body">
+              <div class="config-section-actions"><button type="button" class="config-copy-prompt-btn" data-copy-section="parser" aria-label="Copy prompt">Copy prompt</button> <button type="button" class="config-save-section-btn" data-save-section="parser" aria-label="Save this section">Save</button></div>
+              <p class="config-section-desc">Keywords and separators for splitting the user question into subquestions.</p>
+              <div class="drawer-edit-section">
+                <label for="editParserKeywords">Patient keywords (comma-separated)</label>
+                <textarea id="editParserKeywords" rows="2" placeholder="my doctor, my medication, …"></textarea>
+              </div>
+              <div class="drawer-edit-section">
+                <label for="editParserSeparators">Decomposition separators (one per line or comma)</label>
+                <textarea id="editParserSeparators" rows="1" placeholder=" and ,  also ,  then "></textarea>
+              </div>
+            </div>
+            <h4 class="config-subsection-title config-section-toggle" role="button" tabindex="0">Planner <span class="config-toggle-arrow">▼</span></h4>
+            <div class="config-subsection-body">
+              <div class="config-section-actions"><button type="button" class="config-copy-prompt-btn" data-copy-section="planner" aria-label="Copy prompt">Copy prompt</button> <button type="button" class="config-save-section-btn" data-save-section="planner" aria-label="Save this section">Save</button> <button type="button" class="config-run-test-btn" data-test-section="planner" aria-label="Run test">Run test</button></div>
+              <p class="config-section-desc">Prompts for decomposing the user question into subquestions. Uses global LLM.</p>
+              <div class="config-prompt-test" data-test-section="planner">
+                <div class="config-test-sample"><label>Sample message</label><input type="text" id="testPlannerMessage" placeholder="What is prior authorization?" /></div>
+                <div class="config-test-result" id="testResultPlanner" aria-live="polite"></div>
+              </div>
+              <div class="drawer-edit-section"><label>decompose_system</label><textarea id="editDecomposeSystem" rows="4"></textarea></div>
+              <div class="drawer-edit-section"><label>decompose_user_template</label><textarea id="editDecomposeUserTemplate" rows="3"></textarea></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Answering: First-gen + RAG answering -->
+        <div class="preference-group-block config-agent-block config-process-block">
+          <h3 class="config-section-title config-section-toggle" role="button" tabindex="0">Answering <span class="config-toggle-arrow">▼</span></h3>
+          <div class="config-section-body">
+            <h4 class="config-subsection-title config-section-toggle" role="button" tabindex="0">First-gen <span class="config-toggle-arrow">▼</span></h4>
+            <div class="config-subsection-body">
+              <div class="config-section-actions"><button type="button" class="config-copy-prompt-btn" data-copy-section="first_gen" aria-label="Copy prompt">Copy prompt</button> <button type="button" class="config-save-section-btn" data-save-section="first_gen" aria-label="Save this section">Save</button> <button type="button" class="config-run-test-btn" data-test-section="first_gen" aria-label="Run test">Run test</button></div>
+              <p class="config-section-desc">System and user template for the first-generation answer. Uses global LLM.</p>
+              <div class="config-prompt-test" data-test-section="first_gen">
+                <div class="config-test-sample"><label>Message</label><input type="text" id="testFirstGenMessage" placeholder="What is prior authorization?" /></div>
+                <div class="config-test-sample"><label>Plan summary (optional)</label><input type="text" id="testFirstGenPlanSummary" placeholder="One sub-question: …" /></div>
+                <div class="config-test-result" id="testResultFirstGen" aria-live="polite"></div>
+              </div>
+              <div class="drawer-edit-section"><label>first_gen_system</label><textarea id="editFirstGenSystem" rows="2"></textarea></div>
+              <div class="drawer-edit-section"><label>first_gen_user_template</label><textarea id="editFirstGenUser" rows="3"></textarea></div>
+            </div>
+            <h4 class="config-subsection-title config-section-toggle" role="button" tabindex="0">RAG answering <span class="config-toggle-arrow">▼</span></h4>
+            <div class="config-subsection-body">
+              <div class="config-section-actions"><button type="button" class="config-copy-prompt-btn" data-copy-section="rag_answering" aria-label="Copy prompt">Copy prompt</button> <button type="button" class="config-save-section-btn" data-save-section="rag_answering" aria-label="Save this section">Save</button> <button type="button" class="config-run-test-btn" data-test-section="rag_answering" aria-label="Run test">Run test</button></div>
+              <p class="config-section-desc">User template for answering each subquestion with RAG retrieval. Uses global LLM.</p>
+              <div class="config-prompt-test" data-test-section="rag_answering">
+                <div class="config-test-sample"><label>Sample context</label><textarea id="testRagContext" rows="2" placeholder="(Short placeholder context…)"></textarea></div>
+                <div class="config-test-sample"><label>Sample question</label><input type="text" id="testRagQuestion" placeholder="What is prior authorization?" /></div>
+                <div class="config-test-result" id="testResultRagAnswering" aria-live="polite"></div>
+              </div>
+              <div class="drawer-edit-section"><label>rag_answering_user_template</label><textarea id="editRagAnsweringUserTemplate" rows="4"></textarea></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Integration: Integrator + Consolidator -->
+        <div class="preference-group-block config-agent-block config-process-block">
+          <h3 class="config-section-title config-section-toggle" role="button" tabindex="0">Integration <span class="config-toggle-arrow">▼</span></h3>
+          <div class="config-section-body">
+            <h4 class="config-subsection-title config-section-toggle" role="button" tabindex="0">Integrator <span class="config-toggle-arrow">▼</span></h4>
+            <div class="config-subsection-body">
+              <div class="config-section-actions"><button type="button" class="config-copy-prompt-btn" data-copy-section="integrator" aria-label="Copy prompt">Copy prompt</button> <button type="button" class="config-save-section-btn" data-save-section="integrator" aria-label="Save this section">Save</button> <button type="button" class="config-run-test-btn" data-test-section="integrator" aria-label="Run test">Run test</button></div>
+              <p class="config-section-desc">System and user templates for combining subquestion answers. Uses global LLM.</p>
+              <div class="config-prompt-test" data-test-section="integrator">
+                <div class="config-test-sample"><label>Mode</label><select id="testIntegratorMode"><option value="integrator_factual">Factual</option><option value="integrator_canonical">Canonical</option><option value="integrator_blended">Blended</option></select></div>
+                <div class="config-test-result" id="testResultIntegrator" aria-live="polite"></div>
+              </div>
+              <div class="drawer-edit-section"><label>integrator_system</label><textarea id="editIntegratorSystem" rows="4"></textarea></div>
+              <div class="drawer-edit-section"><label>integrator_user_template</label><textarea id="editIntegratorUserTemplate" rows="2"></textarea></div>
+              <div class="drawer-edit-section"><label>integrator_repair_system</label><textarea id="editIntegratorRepairSystem" rows="2"></textarea></div>
+            </div>
+            <h4 class="config-subsection-title config-section-toggle" role="button" tabindex="0">Consolidator <span class="config-toggle-arrow">▼</span></h4>
+            <div class="config-subsection-body">
+              <div class="config-section-actions"><button type="button" class="config-copy-prompt-btn" data-copy-section="consolidator" aria-label="Copy prompt">Copy prompt</button> <button type="button" class="config-save-section-btn" data-save-section="consolidator" aria-label="Save this section">Save</button> <button type="button" class="config-run-test-btn" data-test-section="consolidator" aria-label="Run test">Run test</button></div>
+              <p class="config-section-desc">Thresholds and system prompts for factual / canonical / blended modes.</p>
+              <div class="config-prompt-test" data-test-section="consolidator">
+                <div class="config-test-sample"><label>Mode</label><select id="testConsolidatorMode"><option value="integrator_factual">Factual</option><option value="integrator_canonical">Canonical</option><option value="integrator_blended">Blended</option></select></div>
+                <div class="config-test-result" id="testResultConsolidator" aria-live="polite"></div>
+              </div>
+              <div class="drawer-edit-section">
+                <label>consolidator_factual_max</label>
+                <input type="number" id="editConsolidatorFactualMax" min="0" max="1" step="0.1" />
+              </div>
+              <div class="drawer-edit-section">
+                <label>consolidator_canonical_min</label>
+                <input type="number" id="editConsolidatorCanonicalMin" min="0" max="1" step="0.1" />
+              </div>
+              <div class="drawer-edit-section"><label>integrator_factual_system</label><textarea id="editIntegratorFactualSystem" rows="4"></textarea></div>
+              <div class="drawer-edit-section"><label>integrator_canonical_system</label><textarea id="editIntegratorCanonicalSystem" rows="4"></textarea></div>
+              <div class="drawer-edit-section"><label>integrator_blended_system</label><textarea id="editIntegratorBlendedSystem" rows="4"></textarea></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="drawer-edit-actions">
+          <button type="button" id="drawerSaveConfig">Save config</button>
+          <button type="button" id="drawerLoadConfig">Load from server</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="config-history-section" id="configHistorySection" style="display: none;">
+      <h3 class="config-section-title">History</h3>
+      <div id="configHistoryList" class="config-history-list"></div>
+      <div id="configHistoryView" class="config-history-view" style="display: none;" aria-live="polite">
+        <div class="config-history-view-header">
+          <strong>Snapshot</strong>
+          <button type="button" id="configHistoryViewClose" aria-label="Close">×</button>
+        </div>
+        <pre id="configHistoryViewBody"></pre>
+      </div>
+    </div>
+
+    <div class="config-test-section" id="configTestSection" style="display: none;">
+      <h3 class="config-section-title">Test with current config</h3>
+      <div class="drawer-edit-section">
+        <label for="configTestMessage">Test prompt</label>
+        <textarea id="configTestMessage" rows="2" placeholder="e.g. What is prior authorization?">What is prior authorization?</textarea>
+      </div>
+      <div class="drawer-edit-section">
+        <label for="configTestVersionName">Version name (optional)</label>
+        <input type="text" id="configTestVersionName" placeholder="e.g. baseline" />
+      </div>
+      <div class="drawer-edit-section">
+        <label for="configTestDescription">Description (optional)</label>
+        <input type="text" id="configTestDescription" placeholder="e.g. short RAG experiment" />
+      </div>
+      <button type="button" id="configTestRun">Run test</button>
+      <div id="configTestSavedAs" class="config-test-saved-as" style="display: none;" aria-live="polite"></div>
+      <div id="configTestResult" class="config-test-result"></div>
+    </div>
+
+    <div class="config-named-runs-section" id="configNamedRunsSection" style="display: none;">
+      <h3 class="config-section-title">Named runs</h3>
+      <div id="configNamedRunsList" class="config-named-runs-list"></div>
+      <div id="configNamedRunView" class="config-named-run-view" style="display: none;" aria-live="polite">
+        <div class="config-named-run-view-header">
+          <strong id="configNamedRunViewTitle">Run</strong>
+          <button type="button" id="configNamedRunViewClose" aria-label="Close">×</button>
+        </div>
+        <div id="configNamedRunViewBody" class="config-named-run-view-body"></div>
+      </div>
     </div>
   </aside>
 
