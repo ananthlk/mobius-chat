@@ -22,16 +22,31 @@
           <span>+</span> New chat
         </button>
         <div class="sidebar-recent">
-          <h3>Recent searches</h3>
-          <ul class="recent-list" id="recentList"></ul>
+          <h3 class="sidebar-section-title sidebar-section-toggle" role="button" tabindex="0" aria-expanded="true" aria-controls="recentListWrap">
+            <span>Recent searches</span>
+            <span class="sidebar-section-arrow" aria-hidden="true">▾</span>
+          </h3>
+          <div class="sidebar-section-body" id="recentListWrap">
+            <ul class="recent-list" id="recentList"></ul>
+          </div>
         </div>
         <div class="sidebar-helpful">
-          <h3>Most helpful searches</h3>
-          <ul class="helpful-list" id="helpfulList"></ul>
+          <h3 class="sidebar-section-title sidebar-section-toggle" role="button" tabindex="0" aria-expanded="true" aria-controls="helpfulListWrap">
+            <span>Most helpful searches</span>
+            <span class="sidebar-section-arrow" aria-hidden="true">▾</span>
+          </h3>
+          <div class="sidebar-section-body" id="helpfulListWrap">
+            <ul class="helpful-list" id="helpfulList"></ul>
+          </div>
         </div>
         <div class="sidebar-documents">
-          <h3>Most helpful documents</h3>
-          <ul class="documents-list" id="documentsList"></ul>
+          <h3 class="sidebar-section-title sidebar-section-toggle" role="button" tabindex="0" aria-expanded="true" aria-controls="documentsListWrap">
+            <span>Most helpful documents</span>
+            <span class="sidebar-section-arrow" aria-hidden="true">▾</span>
+          </h3>
+          <div class="sidebar-section-body" id="documentsListWrap">
+            <ul class="documents-list" id="documentsList"></ul>
+          </div>
         </div>
         <div class="sidebar-user sidebar-user--clickable" id="sidebarUser" role="button" tabindex="0" title="Click to sign in or manage account">
           <span class="sidebar-user-label">Signed in as</span>
@@ -51,16 +66,60 @@
 
     <main class="main">
       <header class="main-header">
-        <h1 class="main-header-title">Mobius Chat</h1>
+        <div class="main-header-titles">
+          <h1 class="main-header-title">Welcome</h1>
+          <p class="main-header-subtitle" id="welcomeRotator">Some questions should take seconds, not three phone calls.</p>
+        </div>
         <div class="main-header-actions">
           <button type="button" id="hamburger" aria-label="Config">&#9776;</button>
         </div>
       </header>
       <div class="chat-thread" id="messages">
         <div class="chat-empty" id="chatEmpty">
-          <div class="chat-empty-icon" aria-hidden="true"></div>
-          <p class="chat-empty-title">Start a conversation</p>
-          <p class="chat-empty-subtitle">Ask anything. Messages appear here.</p>
+          <div class="landing-card" role="region" aria-label="Workspace overview">
+            <div class="landing-brand">
+              <div class="landing-brand-logo-wrap" aria-hidden="true">
+                <img class="landing-brand-logo" src="static/logo.svg" alt="" />
+              </div>
+              <div class="landing-brand-copy">
+                <div class="landing-brand-title">Support for the non-clinical work that keeps care moving</div>
+              </div>
+            </div>
+
+            <div class="landing-section landing-section--together">
+              <div class="landing-section-header">Together, we will</div>
+              <p class="landing-together-lede">Turn operational uncertainty into fast, usable answers—so care doesn’t slow down.</p>
+              <div class="landing-together-list" aria-label="Together, we will">
+                <div class="landing-together-item">Address the specific administrative issues each patient faces</div>
+                <div class="landing-together-item">Replace long phone calls and policy searches with answers in seconds</div>
+                <div class="landing-together-item">Surface coverage, eligibility, and requirements before they delay care</div>
+                <div class="landing-together-item">Work through billing questions, disputes, and appeals when needed</div>
+              </div>
+            </div>
+
+            <div class="landing-section">
+              <div class="landing-section-header">Release updates</div>
+              <div class="landing-updates" aria-label="Release updates">
+                <div class="landing-update">
+                  <div class="landing-update-title">Improved citation coverage</div>
+                  <div class="landing-update-desc">Answers now include clearer source references when available.</div>
+                  <div class="landing-update-try">Try: <button type="button" class="landing-try-link" data-query="How does a provider enroll with Sunshine Health?">How does a provider enroll with Sunshine Health?</button></div>
+                </div>
+
+                <div class="landing-update">
+                  <div class="landing-update-title">Expanded dispute and appeal support</div>
+                  <div class="landing-update-desc">Better retrieval for claims disputes and appeal workflows.</div>
+                  <div class="landing-update-try">Try: <button type="button" class="landing-try-link" data-query="What is the process to dispute a claim decision with Sunshine Health?">What is the process to dispute a claim decision with Sunshine Health?</button></div>
+                </div>
+
+                <div class="landing-update">
+                  <div class="landing-update-title">Faster responses for long questions</div>
+                  <div class="landing-update-desc">Optimized handling of complex policy queries.</div>
+                  <div class="landing-update-try">Try: <button type="button" class="landing-try-link" data-query="Does Sunshine require prior authorization for behavioral health services?">Does Sunshine require prior authorization for behavioral health services?</button></div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
       <div class="composer-wrap">

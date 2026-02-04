@@ -481,6 +481,7 @@ const PROGRESS_MAX_LINES = 3;
 function renderProgressStack(): {
   el: HTMLElement;
   addLine: (line: string) => void;
+  replaceWithLine: (line: string) => void;
 } {
   const block = document.createElement("div");
   block.className = "progress-stack";
@@ -519,10 +520,25 @@ function renderProgressStack(): {
     const lastIdx = last3.length - 1;
     if (lastIdx >= 0) lineEls[lastIdx].appendChild(dotsEl);
   }
+  /** Replace progress with a single line (e.g. first thinking line so "Waiting for worker" is replaced). */
+  function replaceWithLine(line: string): void {
+    const trimmed = (line ?? "").trim();
+    if (!trimmed) return;
+    buffer.length = 0;
+    buffer.push(trimmed);
+    for (let i = 0; i < PROGRESS_MAX_LINES; i++) {
+      const text = i === 0 ? trimmed : "";
+      lineEls[i].textContent = text;
+      lineEls[i].classList.toggle("empty", !text);
+    }
+    dotsEl.remove();
+    lineEls[0].appendChild(dotsEl);
+  }
 
   return {
     el: block,
     addLine,
+    replaceWithLine,
   };
 }
 
@@ -2142,6 +2158,8 @@ function run(): void {
       es.onerror = () => {
         es.close();
         if (resolved) return;
+        // Stream dropped (proxy/timeout); poll for response so we still get the answer
+        if (onThinking) onThinking("Reconnecting…");
         pollResponse(correlationId, onThinking, onStreamingMessage).then(resolve).catch(reject);
       };
     });
@@ -2170,12 +2188,18 @@ function run(): void {
     inputEl.disabled = true;
 
     // 2. Vanishing progress stack (last 3 lines from real thinking_log; removed when answer arrives)
-    const { el: progressStackEl, addLine: progressAddLine } = renderProgressStack();
+    const { el: progressStackEl, addLine: progressAddLine, replaceWithLine: progressReplaceWithLine } = renderProgressStack();
     turnWrap.appendChild(progressStackEl);
     scrollToBottom(messagesEl);
 
+    let firstThinking = true;
     function onThinkingLine(line: string): void {
-      progressAddLine(line);
+      if (firstThinking) {
+        firstThinking = false;
+        progressReplaceWithLine(line);
+      } else {
+        progressAddLine(line);
+      }
       scrollToBottom(messagesEl);
     }
 
@@ -2373,6 +2397,167 @@ function run(): void {
     }
     loadSidebarHistory();
   });
+
+  function initSidebarCollapsibles(): void {
+    document.querySelectorAll(".sidebar-section-title.sidebar-section-toggle").forEach((titleEl) => {
+      const toggle = () => {
+        const controls = (titleEl as HTMLElement).getAttribute("aria-controls") || "";
+        const body = controls ? document.getElementById(controls) : null;
+        if (!body) return;
+        const expanded = (titleEl as HTMLElement).getAttribute("aria-expanded") !== "false";
+        const next = !expanded;
+        (titleEl as HTMLElement).setAttribute("aria-expanded", String(next));
+        body.classList.toggle("collapsed", !next);
+      };
+      titleEl.addEventListener("click", (e) => {
+        e.preventDefault();
+        toggle();
+      });
+      titleEl.addEventListener("keydown", (e: Event) => {
+        const ke = e as KeyboardEvent;
+        if (ke.key === "Enter" || ke.key === " ") {
+          ke.preventDefault();
+          toggle();
+        }
+      });
+    });
+  }
+
+  function initWelcomeSubtitleRotator(): void {
+    const el = document.getElementById("welcomeRotator");
+    if (!el) return;
+    const lines: string[] = [
+      "Some questions should take seconds, not three phone calls.",
+      "If it takes more than one portal, it probably shouldn’t.",
+      "You shouldn’t need a PDF to keep care moving.",
+      "Most delays aren’t clinical—they’re administrative.",
+      "If the answer exists somewhere, it shouldn’t be hard to find.",
+      "Not every problem needs a meeting. Some just need the right answer.",
+      "Paperwork has a way of expanding to fill the day.",
+      "The hard part is rarely the patient—it’s everything around them.",
+      "Finding the right policy shouldn’t feel like detective work.",
+      "Care works better when answers show up on time.",
+    ];
+    let idx = Math.max(0, lines.indexOf((el.textContent || "").trim()));
+    let timer: number | null = null;
+
+    const fadeMs = 180;
+    const setLine = (s: string) => {
+      el.classList.add("is-fading");
+      window.setTimeout(() => {
+        el.textContent = s;
+        el.classList.remove("is-fading");
+      }, fadeMs);
+    };
+
+    const scheduleNext = () => {
+      const ms = 10000 + Math.floor(Math.random() * 5001); // 10–15s
+      timer = window.setTimeout(() => {
+        idx = (idx + 1) % lines.length;
+        setLine(lines[idx]);
+        scheduleNext();
+      }, ms);
+    };
+
+    const stop = () => {
+      if (timer == null) return;
+      window.clearTimeout(timer);
+      timer = null;
+    };
+
+    // Pause on hover/focus so it doesn't change mid-read.
+    el.addEventListener("mouseenter", stop);
+    el.addEventListener("mouseleave", () => {
+      if (timer != null) return;
+      scheduleNext();
+    });
+    el.addEventListener("focusin", stop);
+    el.addEventListener("focusout", () => {
+      if (timer != null) return;
+      scheduleNext();
+    });
+
+    scheduleNext();
+  }
+
+  function initReleaseUpdatesCarousel(): void {
+    const container = document.querySelector(".landing-updates") as HTMLElement | null;
+    if (!container) return;
+    const items = Array.from(container.querySelectorAll(".landing-update")) as HTMLElement[];
+    if (items.length <= 1) return;
+
+    // Enable carousel styling
+    container.classList.add("landing-updates--carousel");
+
+    // Fix container height to the tallest card to avoid layout jump
+    // Temporarily reset positioning so we can measure natural height
+    items.forEach((el) => {
+      el.style.position = "relative";
+      el.style.inset = "auto";
+      el.style.opacity = "1";
+      el.style.pointerEvents = "auto";
+    });
+    const maxH = Math.max(...items.map((el) => el.getBoundingClientRect().height));
+    if (Number.isFinite(maxH) && maxH > 0) container.style.minHeight = `${Math.ceil(maxH)}px`;
+    // Restore class-driven positioning
+    items.forEach((el) => {
+      el.style.position = "";
+      el.style.inset = "";
+      el.style.opacity = "";
+      el.style.pointerEvents = "";
+    });
+
+    let idx = 0;
+    const show = (i: number) => {
+      items.forEach((el, j) => el.classList.toggle("is-active", j === i));
+    };
+    show(idx);
+
+    let timer: number | null = null;
+    const intervalMs = 7000; // 6–8s feel
+    const start = () => {
+      if (timer != null) return;
+      timer = window.setInterval(() => {
+        idx = (idx + 1) % items.length;
+        show(idx);
+      }, intervalMs);
+    };
+    const stop = () => {
+      if (timer == null) return;
+      window.clearInterval(timer);
+      timer = null;
+    };
+
+    // Pause on hover/focus for usability
+    container.addEventListener("mouseenter", stop);
+    container.addEventListener("mouseleave", start);
+    container.addEventListener("focusin", stop);
+    container.addEventListener("focusout", (e) => {
+      // Resume only when focus leaves the carousel
+      const next = e.relatedTarget as Node | null;
+      if (next && container.contains(next)) return;
+      start();
+    });
+
+    start();
+  }
+
+  document.querySelectorAll(".landing-try-link").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      // Demo-safe context: backend infers payer from message text; we track locally as well.
+      (window as unknown as { activePlanContext?: string }).activePlanContext = "Sunshine Health";
+      const query = (chip as HTMLElement).getAttribute("data-query");
+      if (query != null) {
+        inputEl.value = query;
+        updateSendState();
+        inputEl.focus();
+      }
+    });
+  });
+
+  initReleaseUpdatesCarousel();
+  initWelcomeSubtitleRotator();
+  initSidebarCollapsibles();
 
   updateSendState();
 

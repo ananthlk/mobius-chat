@@ -1789,9 +1789,24 @@ function renderProgressStack() {
     if (lastIdx >= 0)
       lineEls[lastIdx].appendChild(dotsEl);
   }
+  function replaceWithLine(line) {
+    const trimmed = (line ?? "").trim();
+    if (!trimmed)
+      return;
+    buffer.length = 0;
+    buffer.push(trimmed);
+    for (let i = 0; i < PROGRESS_MAX_LINES; i++) {
+      const text = i === 0 ? trimmed : "";
+      lineEls[i].textContent = text;
+      lineEls[i].classList.toggle("empty", !text);
+    }
+    dotsEl.remove();
+    lineEls[0].appendChild(dotsEl);
+  }
   return {
     el: block,
-    addLine
+    addLine,
+    replaceWithLine
   };
 }
 function renderAssistantMessage(text, isError) {
@@ -2284,12 +2299,267 @@ function run() {
     drawerSaveConfig.addEventListener("click", saveChatConfig);
   if (drawerLoadConfig)
     drawerLoadConfig.addEventListener("click", loadChatConfig);
+  function getElValue(id) {
+    const el2 = getEl(id);
+    if (!el2 || !("value" in el2))
+      return "";
+    return String(el2.value ?? "").trim();
+  }
+  function buildCopyTextForSection(section) {
+    switch (section) {
+      case "parser":
+        return "Parser config:\npatient_keywords: " + getElValue("editParserKeywords") + "\ndecomposition_separators: " + getElValue("editParserSeparators");
+      case "planner": {
+        const sys = getElValue("editDecomposeSystem");
+        const user = getElValue("editDecomposeUserTemplate");
+        return "--- decompose_system ---\n" + sys + "\n\n--- decompose_user_template (placeholder: {message}) ---\n" + user;
+      }
+      case "first_gen": {
+        const sys = getElValue("editFirstGenSystem");
+        const user = getElValue("editFirstGenUser");
+        return "--- first_gen_system ---\n" + sys + "\n\n--- first_gen_user_template (placeholders: {message}, {plan_summary}) ---\n" + user;
+      }
+      case "rag_answering": {
+        const t = getElValue("editRagAnsweringUserTemplate");
+        return "--- rag_answering_user_template (placeholders: {context}, {question}) ---\n" + t;
+      }
+      case "integrator": {
+        const sys = getElValue("editIntegratorSystem");
+        const user = getElValue("editIntegratorUserTemplate");
+        const repair = getElValue("editIntegratorRepairSystem");
+        return "--- integrator_system ---\n" + sys + "\n\n--- integrator_user_template (placeholder: {consolidator_input_json}) ---\n" + user + "\n\n--- integrator_repair_system ---\n" + repair;
+      }
+      case "consolidator": {
+        const factualMax = getElValue("editConsolidatorFactualMax");
+        const canonicalMin = getElValue("editConsolidatorCanonicalMin");
+        const factual = getElValue("editIntegratorFactualSystem");
+        const canonical = getElValue("editIntegratorCanonicalSystem");
+        const blended = getElValue("editIntegratorBlendedSystem");
+        return "consolidator_factual_max: " + factualMax + "\nconsolidator_canonical_min: " + canonicalMin + "\n\n--- integrator_factual_system ---\n" + factual + "\n\n--- integrator_canonical_system ---\n" + canonical + "\n\n--- integrator_blended_system ---\n" + blended;
+      }
+      default:
+        return "";
+    }
+  }
+  document.querySelectorAll(".config-copy-prompt-btn").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const section = btn.getAttribute("data-copy-section");
+      if (!section)
+        return;
+      const text = buildCopyTextForSection(section);
+      if (!text)
+        return;
+      navigator.clipboard.writeText(text).then(() => {
+        const label = btn;
+        const orig = label.textContent;
+        label.textContent = "Copied";
+        label.disabled = true;
+        window.setTimeout(() => {
+          label.textContent = orig;
+          label.disabled = false;
+        }, 1500);
+      });
+    });
+  });
+  function buildPayloadForSection(section) {
+    const payload = {};
+    if (section === "parser") {
+      const keywordsEl = getEl("editParserKeywords");
+      const separatorsEl = getEl("editParserSeparators");
+      payload.parser = {};
+      if (keywordsEl?.value.trim())
+        payload.parser.patient_keywords = keywordsEl.value.split(",").map((s) => s.trim()).filter(Boolean);
+      if (separatorsEl?.value.trim())
+        payload.parser.decomposition_separators = separatorsEl.value.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
+      return Object.keys(payload.parser).length ? payload : null;
+    }
+    if (section === "planner") {
+      payload.prompts = {
+        decompose_system: getElValue("editDecomposeSystem"),
+        decompose_user_template: getElValue("editDecomposeUserTemplate")
+      };
+      return payload;
+    }
+    if (section === "first_gen") {
+      payload.prompts = {
+        first_gen_system: getElValue("editFirstGenSystem"),
+        first_gen_user_template: getElValue("editFirstGenUser")
+      };
+      return payload;
+    }
+    if (section === "rag_answering") {
+      payload.prompts = { rag_answering_user_template: getElValue("editRagAnsweringUserTemplate") };
+      return payload;
+    }
+    if (section === "integrator") {
+      payload.prompts = {
+        integrator_system: getElValue("editIntegratorSystem"),
+        integrator_user_template: getElValue("editIntegratorUserTemplate"),
+        integrator_repair_system: getElValue("editIntegratorRepairSystem")
+      };
+      return payload;
+    }
+    if (section === "consolidator") {
+      const prompts = {
+        integrator_factual_system: getElValue("editIntegratorFactualSystem"),
+        integrator_canonical_system: getElValue("editIntegratorCanonicalSystem"),
+        integrator_blended_system: getElValue("editIntegratorBlendedSystem")
+      };
+      const factualMax = getEl("editConsolidatorFactualMax");
+      const canonicalMin = getEl("editConsolidatorCanonicalMin");
+      if (factualMax?.value) {
+        const v = parseFloat(factualMax.value);
+        if (!Number.isNaN(v))
+          prompts.consolidator_factual_max = v;
+      }
+      if (canonicalMin?.value) {
+        const v = parseFloat(canonicalMin.value);
+        if (!Number.isNaN(v))
+          prompts.consolidator_canonical_min = v;
+      }
+      payload.prompts = prompts;
+      return payload;
+    }
+    return null;
+  }
+  function saveSection(section, btn) {
+    const pl = buildPayloadForSection(section);
+    if (!pl || Object.keys(pl).length === 0) {
+      loadChatConfig();
+      return;
+    }
+    const origText = btn.textContent;
+    btn.textContent = "Saving\u2026";
+    btn.disabled = true;
+    fetch(API_BASE + "/chat/config", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+      body: JSON.stringify(pl)
+    }).then((r) => {
+      if (!r.ok)
+        throw new Error(String(r.status));
+      return r.json();
+    }).then((data) => {
+      const shaEl = document.getElementById("configShaValue");
+      if (shaEl && data.config_sha)
+        shaEl.textContent = data.config_sha;
+      btn.textContent = "Saved";
+      loadChatConfig();
+      loadConfigHistory();
+      window.setTimeout(() => {
+        btn.textContent = origText;
+        btn.disabled = false;
+      }, 1500);
+    }).catch(() => {
+      btn.textContent = origText ?? "Save";
+      btn.disabled = false;
+      loadChatConfig();
+    });
+  }
+  document.querySelectorAll(".config-save-section-btn").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const section = btn.getAttribute("data-save-section");
+      if (!section)
+        return;
+      saveSection(section, btn);
+    });
+  });
+  function getSampleInputForTest(section) {
+    if (section === "planner") {
+      const msg = document.getElementById("testPlannerMessage")?.value?.trim();
+      return { message: msg || "What is prior authorization?" };
+    }
+    if (section === "first_gen") {
+      const msg = document.getElementById("testFirstGenMessage")?.value?.trim();
+      const plan = document.getElementById("testFirstGenPlanSummary")?.value?.trim();
+      return { message: msg || "What is prior authorization?", plan_summary: plan || "One sub-question." };
+    }
+    if (section === "rag_answering") {
+      const ctx = document.getElementById("testRagContext")?.value?.trim();
+      const q = document.getElementById("testRagQuestion")?.value?.trim();
+      return {
+        context: ctx || "(Sample context: Prior authorization is required for certain services.)",
+        question: q || "What is prior authorization?"
+      };
+    }
+    if (section === "integrator" || section === "consolidator") {
+      return {
+        consolidator_input_json: JSON.stringify({
+          user_message: "What is prior authorization?",
+          subquestions: [{ id: "sq1", text: "What is prior authorization?" }],
+          answers: [{ sq_id: "sq1", answer: "Prior authorization is a process where your doctor gets approval from your health plan before certain services." }]
+        }, null, 2)
+      };
+    }
+    return {};
+  }
+  function getPromptKeyForTest(section) {
+    if (section === "integrator" || section === "consolidator") {
+      const modeEl = document.getElementById(section === "integrator" ? "testIntegratorMode" : "testConsolidatorMode");
+      return modeEl?.value || "integrator_factual";
+    }
+    return section;
+  }
+  function getResultElForTest(section) {
+    const id = section === "planner" ? "testResultPlanner" : section === "first_gen" ? "testResultFirstGen" : section === "rag_answering" ? "testResultRagAnswering" : section === "integrator" ? "testResultIntegrator" : section === "consolidator" ? "testResultConsolidator" : null;
+    return id ? document.getElementById(id) : null;
+  }
+  function runPromptTest(section, btn) {
+    const promptKey = getPromptKeyForTest(section);
+    const sampleInput = getSampleInputForTest(section);
+    const resultEl = getResultElForTest(section);
+    if (!resultEl)
+      return;
+    const origText = btn.textContent;
+    btn.textContent = "Running\u2026";
+    btn.disabled = true;
+    resultEl.textContent = "";
+    resultEl.className = "config-test-result";
+    fetch(API_BASE + "/chat/config/test-prompt", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+      body: JSON.stringify({ prompt_key: promptKey, sample_input: sampleInput })
+    }).then((r) => {
+      if (!r.ok)
+        throw new Error(String(r.status));
+      return r.json();
+    }).then((data) => {
+      if (data.error) {
+        resultEl.textContent = `Error: ${data.error}`;
+        resultEl.classList.add("config-test-result--error");
+      } else {
+        const out = (data.output ?? "").trim();
+        const meta = [data.model_used, data.duration_ms != null ? `${data.duration_ms} ms` : ""].filter(Boolean).join(" \xB7 ");
+        resultEl.innerHTML = meta ? `<div class="config-test-meta">${escapeHtml4(meta)}</div><pre class="config-test-output">${escapeHtml4(out || "(empty)")}</pre>` : `<pre class="config-test-output">${escapeHtml4(out || "(empty)")}</pre>`;
+        resultEl.classList.add("config-test-result--ok");
+      }
+      btn.textContent = origText ?? "Run test";
+      btn.disabled = false;
+    }).catch(() => {
+      resultEl.textContent = "Request failed.";
+      resultEl.classList.add("config-test-result--error");
+      btn.textContent = origText ?? "Run test";
+      btn.disabled = false;
+    });
+  }
+  document.querySelectorAll(".config-run-test-btn").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const section = btn.getAttribute("data-test-section");
+      if (!section)
+        return;
+      runPromptTest(section, btn);
+    });
+  });
   loadChatConfig();
   const configSummaryRow = document.getElementById("configSummaryRow");
   const configPreferencesExpanded = document.getElementById("configPreferencesExpanded");
   const configPrefArrow = document.getElementById("configPrefArrow");
   const configHistorySection = document.getElementById("configHistorySection");
   const configTestSection = document.getElementById("configTestSection");
+  const configNamedRunsSection = document.getElementById("configNamedRunsSection");
   if (configSummaryRow && configPreferencesExpanded && configPrefArrow) {
     configSummaryRow.addEventListener("click", () => {
       const show = !configPreferencesExpanded.classList.contains("show");
@@ -2300,8 +2570,12 @@ function run() {
         configHistorySection.style.display = show ? "block" : "none";
       if (configTestSection)
         configTestSection.style.display = show ? "block" : "none";
-      if (show)
+      if (configNamedRunsSection)
+        configNamedRunsSection.style.display = show ? "block" : "none";
+      if (show) {
         loadConfigHistory();
+        loadNamedRuns();
+      }
     });
     configSummaryRow.addEventListener("keydown", (e) => {
       if (e.key === "Enter" || e.key === " ") {
@@ -2615,6 +2889,86 @@ function run() {
       listEl.textContent = "Failed to load history.";
     });
   }
+  function loadNamedRuns() {
+    const listEl = document.getElementById("configNamedRunsList");
+    if (!listEl)
+      return;
+    fetch(API_BASE + "/chat/config/test-runs?limit=50").then((r) => r.json()).then((entries) => {
+      listEl.innerHTML = "";
+      if (!entries.length) {
+        listEl.textContent = "No named runs yet. Run a test with a version name to save one.";
+        return;
+      }
+      const formatDate = (iso) => {
+        try {
+          const d = new Date(iso);
+          return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+        } catch {
+          return iso;
+        }
+      };
+      entries.forEach((entry) => {
+        const row = document.createElement("div");
+        row.className = "config-named-run-row";
+        const name = (entry.name || "").trim() || "Unnamed";
+        const desc = (entry.description || "").trim();
+        const shaShort = (entry.config_sha || "").slice(0, 8);
+        row.innerHTML = `<span class="config-named-run-name" title="${escapeHtml4(name)}">${escapeHtml4(name)}</span>` + (desc ? ` <span class="config-named-run-desc">${escapeHtml4(desc)}</span>` : "") + ` <span class="config-named-run-meta">${escapeHtml4(shaShort)} \xB7 ${escapeHtml4(formatDate(entry.created_at))}</span> <button type="button" class="config-history-btn config-named-run-view-btn">View</button>`;
+        const viewBtn = row.querySelector(".config-named-run-view-btn");
+        viewBtn?.addEventListener("click", () => {
+          fetch(API_BASE + "/chat/config/test-runs/" + encodeURIComponent(entry.id)).then((r) => {
+            if (!r.ok)
+              throw new Error("Not found");
+            return r.json();
+          }).then((data) => {
+            const viewPanel = document.getElementById("configNamedRunView");
+            const viewTitle = document.getElementById("configNamedRunViewTitle");
+            const viewBody = document.getElementById("configNamedRunViewBody");
+            if (!viewPanel || !viewBody)
+              return;
+            if (viewTitle)
+              viewTitle.textContent = data.name || "Run";
+            viewBody.innerHTML = "";
+            const addBlock = (label, content) => {
+              const block = document.createElement("div");
+              block.className = "config-named-run-view-block";
+              const h4 = document.createElement("h4");
+              h4.textContent = label;
+              const pre = document.createElement("pre");
+              pre.textContent = content;
+              block.appendChild(h4);
+              block.appendChild(pre);
+              viewBody.appendChild(block);
+            };
+            if (data.message != null)
+              addBlock("Message", String(data.message));
+            if (data.reply != null)
+              addBlock("Reply", String(data.reply));
+            if (data.config_sha != null)
+              addBlock("Config SHA", String(data.config_sha));
+            if (data.model_used != null)
+              addBlock("Model", String(data.model_used));
+            if (data.duration_ms != null)
+              addBlock("Duration (ms)", String(data.duration_ms));
+            if (data.stages != null && typeof data.stages === "object") {
+              addBlock("Stages", JSON.stringify(data.stages, null, 2));
+            }
+            viewPanel.style.display = "block";
+          }).catch(() => {
+            const viewBody = document.getElementById("configNamedRunViewBody");
+            if (viewBody)
+              viewBody.textContent = "Failed to load run.";
+            const viewPanel = document.getElementById("configNamedRunView");
+            if (viewPanel)
+              viewPanel.style.display = "block";
+          });
+        });
+        listEl.appendChild(row);
+      });
+    }).catch(() => {
+      listEl.textContent = "Failed to load named runs.";
+    });
+  }
   function escapeHtml4(s) {
     const div = document.createElement("div");
     div.textContent = s;
@@ -2627,21 +2981,42 @@ function run() {
       configHistoryView.style.display = "none";
     });
   }
+  const configNamedRunViewClose = document.getElementById("configNamedRunViewClose");
+  const configNamedRunView = document.getElementById("configNamedRunView");
+  if (configNamedRunViewClose && configNamedRunView) {
+    configNamedRunViewClose.addEventListener("click", () => {
+      configNamedRunView.style.display = "none";
+    });
+  }
   const configTestRun = document.getElementById("configTestRun");
   const configTestMessage = document.getElementById("configTestMessage");
+  const configTestVersionName = document.getElementById("configTestVersionName");
+  const configTestDescription = document.getElementById("configTestDescription");
+  const configTestSavedAs = document.getElementById("configTestSavedAs");
   const configTestResult = document.getElementById("configTestResult");
   if (configTestRun && configTestResult) {
     configTestRun.addEventListener("click", () => {
       const message = (configTestMessage?.value ?? "").trim() || "What is prior authorization?";
+      const name = (configTestVersionName?.value ?? "").trim();
+      const description = (configTestDescription?.value ?? "").trim();
+      if (configTestSavedAs) {
+        configTestSavedAs.style.display = "none";
+        configTestSavedAs.textContent = "";
+      }
       configTestResult.textContent = "Running test\u2026";
       configTestResult.classList.remove("config-test-error");
       fetch(API_BASE + "/chat/config/test", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({ message })
+        body: JSON.stringify({ message, name: name || void 0, description: description || void 0 })
       }).then((r) => r.json().then((data) => ({ ok: r.ok, data }))).then(({ ok, data }) => {
         if (!ok)
           throw new Error(data.detail || "Test failed");
+        if ((data.run_id || data.name) && configTestSavedAs) {
+          configTestSavedAs.style.display = "block";
+          configTestSavedAs.textContent = "Saved as: " + (data.name || data.run_id);
+          loadNamedRuns();
+        }
         const stages = data.stages;
         if (stages) {
           configTestResult.innerHTML = "";
@@ -2908,6 +3283,8 @@ Model: ${data.model_used}`);
         es.close();
         if (resolved)
           return;
+        if (onThinking)
+          onThinking("Reconnecting\u2026");
         pollResponse(correlationId, onThinking, onStreamingMessage).then(resolve).catch(reject);
       };
     });
@@ -2931,11 +3308,17 @@ Model: ${data.model_used}`);
     updateSendState();
     sendBtn.disabled = true;
     inputEl.disabled = true;
-    const { el: progressStackEl, addLine: progressAddLine } = renderProgressStack();
+    const { el: progressStackEl, addLine: progressAddLine, replaceWithLine: progressReplaceWithLine } = renderProgressStack();
     turnWrap.appendChild(progressStackEl);
     scrollToBottom(messagesEl);
+    let firstThinking = true;
     function onThinkingLine(line) {
-      progressAddLine(line);
+      if (firstThinking) {
+        firstThinking = false;
+        progressReplaceWithLine(line);
+      } else {
+        progressAddLine(line);
+      }
       scrollToBottom(messagesEl);
     }
     function onStreamingMessage(_text) {
@@ -3109,6 +3492,154 @@ Model: ${data.model_used}`);
     }
     loadSidebarHistory();
   });
+  function initSidebarCollapsibles() {
+    document.querySelectorAll(".sidebar-section-title.sidebar-section-toggle").forEach((titleEl) => {
+      const toggle = () => {
+        const controls = titleEl.getAttribute("aria-controls") || "";
+        const body = controls ? document.getElementById(controls) : null;
+        if (!body)
+          return;
+        const expanded = titleEl.getAttribute("aria-expanded") !== "false";
+        const next = !expanded;
+        titleEl.setAttribute("aria-expanded", String(next));
+        body.classList.toggle("collapsed", !next);
+      };
+      titleEl.addEventListener("click", (e) => {
+        e.preventDefault();
+        toggle();
+      });
+      titleEl.addEventListener("keydown", (e) => {
+        const ke = e;
+        if (ke.key === "Enter" || ke.key === " ") {
+          ke.preventDefault();
+          toggle();
+        }
+      });
+    });
+  }
+  function initWelcomeSubtitleRotator() {
+    const el2 = document.getElementById("welcomeRotator");
+    if (!el2)
+      return;
+    const lines = [
+      "Some questions should take seconds, not three phone calls.",
+      "If it takes more than one portal, it probably shouldn\u2019t.",
+      "You shouldn\u2019t need a PDF to keep care moving.",
+      "Most delays aren\u2019t clinical\u2014they\u2019re administrative.",
+      "If the answer exists somewhere, it shouldn\u2019t be hard to find.",
+      "Not every problem needs a meeting. Some just need the right answer.",
+      "Paperwork has a way of expanding to fill the day.",
+      "The hard part is rarely the patient\u2014it\u2019s everything around them.",
+      "Finding the right policy shouldn\u2019t feel like detective work.",
+      "Care works better when answers show up on time."
+    ];
+    let idx = Math.max(0, lines.indexOf((el2.textContent || "").trim()));
+    let timer = null;
+    const fadeMs = 180;
+    const setLine = (s) => {
+      el2.classList.add("is-fading");
+      window.setTimeout(() => {
+        el2.textContent = s;
+        el2.classList.remove("is-fading");
+      }, fadeMs);
+    };
+    const scheduleNext = () => {
+      const ms = 1e4 + Math.floor(Math.random() * 5001);
+      timer = window.setTimeout(() => {
+        idx = (idx + 1) % lines.length;
+        setLine(lines[idx]);
+        scheduleNext();
+      }, ms);
+    };
+    const stop = () => {
+      if (timer == null)
+        return;
+      window.clearTimeout(timer);
+      timer = null;
+    };
+    el2.addEventListener("mouseenter", stop);
+    el2.addEventListener("mouseleave", () => {
+      if (timer != null)
+        return;
+      scheduleNext();
+    });
+    el2.addEventListener("focusin", stop);
+    el2.addEventListener("focusout", () => {
+      if (timer != null)
+        return;
+      scheduleNext();
+    });
+    scheduleNext();
+  }
+  function initReleaseUpdatesCarousel() {
+    const container = document.querySelector(".landing-updates");
+    if (!container)
+      return;
+    const items = Array.from(container.querySelectorAll(".landing-update"));
+    if (items.length <= 1)
+      return;
+    container.classList.add("landing-updates--carousel");
+    items.forEach((el2) => {
+      el2.style.position = "relative";
+      el2.style.inset = "auto";
+      el2.style.opacity = "1";
+      el2.style.pointerEvents = "auto";
+    });
+    const maxH = Math.max(...items.map((el2) => el2.getBoundingClientRect().height));
+    if (Number.isFinite(maxH) && maxH > 0)
+      container.style.minHeight = `${Math.ceil(maxH)}px`;
+    items.forEach((el2) => {
+      el2.style.position = "";
+      el2.style.inset = "";
+      el2.style.opacity = "";
+      el2.style.pointerEvents = "";
+    });
+    let idx = 0;
+    const show = (i) => {
+      items.forEach((el2, j) => el2.classList.toggle("is-active", j === i));
+    };
+    show(idx);
+    let timer = null;
+    const intervalMs = 7e3;
+    const start = () => {
+      if (timer != null)
+        return;
+      timer = window.setInterval(() => {
+        idx = (idx + 1) % items.length;
+        show(idx);
+      }, intervalMs);
+    };
+    const stop = () => {
+      if (timer == null)
+        return;
+      window.clearInterval(timer);
+      timer = null;
+    };
+    container.addEventListener("mouseenter", stop);
+    container.addEventListener("mouseleave", start);
+    container.addEventListener("focusin", stop);
+    container.addEventListener("focusout", (e) => {
+      const next = e.relatedTarget;
+      if (next && container.contains(next))
+        return;
+      start();
+    });
+    start();
+  }
+  document.querySelectorAll(".landing-try-link").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      window.activePlanContext = "Sunshine Health";
+      const query = chip.getAttribute("data-query");
+      if (query != null) {
+        inputEl.value = query;
+        updateSendState();
+        inputEl.focus();
+      }
+    });
+  });
+  initReleaseUpdatesCarousel();
+  initWelcomeSubtitleRotator();
+  initSidebarCollapsibles();
   updateSendState();
   loadSidebarHistory();
   loadSidebarLlm();

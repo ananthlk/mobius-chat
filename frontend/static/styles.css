@@ -9,8 +9,9 @@
   --sidebar-border: var(--mobius-border);
   --main-bg: var(--mobius-bg-primary);
   --main-text: var(--mobius-text-primary);
-  --accent: var(--mobius-accent);
-  --accent-hover: var(--mobius-accent-hover);
+  /* Temporary accent (Google-ish) until brand accent is finalized */
+  --accent: #1A73E8;
+  --accent-hover: #185ABC;
   --user-bubble: var(--mobius-accent);
   --assistant-bubble: var(--mobius-bg-card);
   --assistant-border: var(--mobius-border-light);
@@ -180,7 +181,7 @@ body {
 
 .sidebar-logo-text {
   font-weight: 600;
-  font-size: var(--text-lg);
+  font-size: 0.9375rem;
   letter-spacing: -0.02em;
   color: var(--sidebar-text);
   text-decoration: none;
@@ -217,13 +218,49 @@ body {
   padding: var(--space-bucket) 1rem 0;
 }
 
-.sidebar-recent h3 {
+.sidebar-recent h3,
+.sidebar-helpful h3,
+.sidebar-documents h3 {
   margin: 0 0 var(--space-list);
   font-size: var(--text-xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--sidebar-text-muted);
+}
+
+.sidebar-section-title.sidebar-section-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
+  padding: 0.25rem 0;
+  border-radius: 6px;
+}
+
+.sidebar-section-title.sidebar-section-toggle:hover {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.sidebar-section-arrow {
+  font-size: 0.9rem;
+  line-height: 1;
+  color: var(--sidebar-text-muted);
+  transform: rotate(0deg);
+  transition: transform 0.15s ease;
+}
+
+.sidebar-section-title[aria-expanded="false"] .sidebar-section-arrow {
+  transform: rotate(-90deg);
+}
+
+.sidebar-section-body {
+  display: block;
+}
+
+.sidebar-section-body.collapsed {
+  display: none;
 }
 
 .recent-list {
@@ -261,16 +298,6 @@ body {
   padding: var(--space-bucket) 1rem 0;
   flex-shrink: 0;
   border-top: 1px solid var(--sidebar-border);
-}
-
-.sidebar-helpful h3,
-.sidebar-documents h3 {
-  margin: 0 0 var(--space-list);
-  font-size: var(--text-xs);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--sidebar-text-muted);
 }
 
 .helpful-list,
@@ -354,22 +381,43 @@ body {
 }
 
 .main-header {
-  height: var(--header-height);
-  padding: 0 1.5rem;
+  height: auto;
+  padding: 16px 20px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: var(--main-bg);
-  border-bottom: 1px solid var(--assistant-border);
+  background: #ffffff;
+  border-bottom: 1px solid #E5E7EB;
   flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  z-index: 20;
 }
 
 .main-header-title {
   margin: 0;
-  font-size: var(--text-lg);
+  font-size: 18px;
   font-weight: 600;
   letter-spacing: -0.02em;
-  color: var(--main-text);
+  color: #111827;
+}
+
+.main-header-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.main-header-subtitle {
+  margin: 0;
+  font-size: 14px;
+  color: #6B7280;
+  line-height: 1.2;
+  transition: opacity 180ms ease;
+}
+
+.main-header-subtitle.is-fading {
+  opacity: 0;
 }
 
 .main-header-actions {
@@ -406,22 +454,296 @@ body {
   gap: 1.5rem;
 }
 
-/* Empty state */
+/* Empty state / Landing panel */
 .chat-empty {
   flex: 1;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  min-height: 280px;
-  padding: 2.5rem;
-  text-align: center;
+  align-items: stretch;
+  justify-content: flex-start;
+  min-height: 0;
+  padding: 0;
+  text-align: left;
 }
 
 .chat-empty.hidden {
   display: none;
 }
 
+.landing-card {
+  max-width: 720px;
+  margin: 48px auto 0 auto;
+  padding: 24px;
+  background: #FFFFFF;
+  border: 1px solid #E5E7EB;
+  border-radius: 12px;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.landing-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.landing-brand-logo-wrap {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  flex: 0 0 auto;
+}
+
+.landing-brand-logo {
+  width: 44px;
+  height: 44px;
+  object-fit: contain;
+  filter: drop-shadow(0 10px 22px color-mix(in srgb, var(--accent) 14%, transparent));
+}
+
+.landing-brand-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #1F2937;
+  line-height: 1.35;
+  margin: 0;
+}
+
+.landing-brand-subtitle {
+  margin-top: 4px;
+  font-size: 13.5px;
+  color: #6B7280;
+  line-height: 1.45;
+}
+
+.landing-section {
+  margin-top: 0;
+}
+
+.landing-section + .landing-section {
+  padding-top: 18px;
+  border-top: 1px solid #E5E7EB;
+  /* Subtle accent tint (keeps neutral feel) */
+  border-top-color: color-mix(in srgb, var(--accent) 8%, #E5E7EB);
+}
+
+.landing-section-header {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #374151;
+  margin: 0 0 10px;
+  text-transform: uppercase;
+}
+
+.landing-section--together .landing-section-header {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0;
+  color: #111827;
+  text-transform: none;
+  margin-bottom: 8px;
+}
+
+.landing-section--together {
+  border-left: 2px solid color-mix(in srgb, var(--accent) 55%, #E5E7EB);
+  padding-left: 14px;
+}
+
+.landing-together-lede {
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #111827;
+  line-height: 1.55;
+}
+
+.landing-together-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.landing-together-item {
+  position: relative;
+  padding-left: 14px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #374151;
+  line-height: 1.45;
+}
+
+.landing-together-item::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 22%, #D1D5DB);
+  position: absolute;
+  left: 0;
+  top: 0.55em;
+  transform: translateY(-50%);
+}
+
+.landing-help-intro {
+  margin: 0 0 12px;
+  font-size: 14px;
+  color: #374151;
+  line-height: 1.5;
+}
+
+.landing-help-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px 18px;
+}
+
+.landing-help-list li {
+  position: relative;
+  padding-left: 14px;
+  font-size: 14px;
+  color: #111827;
+  line-height: 1.45;
+}
+
+.landing-help-list li::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #9CA3AF;
+  position: absolute;
+  left: 0;
+  top: 0.55em;
+  transform: translateY(-50%);
+}
+
+.landing-help-scope {
+  margin: 14px 0 0;
+  font-size: 13.5px;
+  color: #6B7280;
+  line-height: 1.5;
+}
+
+@media (min-width: 720px) {
+  .landing-help-list {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.landing-callout {
+  background: #F9FAFB;
+  border: 1px solid #E5E7EB;
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.landing-callout-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #111827;
+  margin: 0 0 4px;
+}
+
+.landing-callout-body {
+  font-size: 14px;
+  color: #374151;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.landing-updates {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.landing-updates.landing-updates--carousel {
+  position: relative;
+  gap: 0;
+}
+
+.landing-updates.landing-updates--carousel .landing-update {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 250ms ease;
+}
+
+.landing-updates.landing-updates--carousel .landing-update.is-active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.landing-update {
+  background: transparent;
+  border: none;
+  border-left: 2px solid var(--accent);
+  border-radius: 0;
+  padding: 10px 0 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.landing-update-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #111827;
+  margin: 0 0 4px;
+}
+
+.landing-update-desc {
+  font-size: 13px;
+  color: #6B7280;
+  margin: 0 0 6px;
+  line-height: 1.4;
+}
+
+.landing-update-try {
+  font-size: 13px;
+  color: #6B7280;
+  margin: 0;
+}
+
+.landing-try-link {
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  font-weight: 500;
+}
+
+.landing-try-link:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.landing-try-link:hover {
+  color: var(--accent-hover);
+  text-decoration-color: color-mix(in srgb, var(--accent-hover) 75%, transparent);
+}
+
+/* Legacy empty state (if ever re-used) */
 .chat-empty-icon {
   width: 72px;
   height: 72px;
