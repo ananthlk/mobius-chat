@@ -1,6 +1,7 @@
 """Live progress store: thinking_log and message_so_far streamed per correlation_id so clients can poll and see progress.
 Supports SSE: append_* also push events to a per-id queue so GET /chat/stream/:id can yield them in real time.
-When queue_type=redis, worker runs in a separate process so we also PUBLISH each event to Redis for the API to stream."""
+When queue_type=redis, worker runs in a separate process: we PUBLISH to Redis and persist to DB (chat_progress_events).
+API stream polls DB for progress (like RAG chunking_events) so it works without Redis subscribe."""
 import json
 import logging
 import threading
@@ -42,22 +43,53 @@ def _publish_progress_event_impl(correlation_id: str, ev: dict[str, Any]) -> Non
         logger.warning("[progress] Redis publish failed (stream may not be live): %s", e)
 
 
+def _persist_progress_event_to_db(correlation_id: str, ev: dict[str, Any]) -> None:
+    """Persist event to chat_progress_events so API stream can poll (like RAG chunking_events). Run in thread."""
+    try:
+        from app.chat_config import get_chat_config
+        cfg = get_chat_config()
+        url = (getattr(cfg, "rag", None) and getattr(cfg.rag, "database_url", None) or "").strip()
+        if not url:
+            return
+        import psycopg2
+        import psycopg2.extras
+        conn = psycopg2.connect(url)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO chat_progress_events (correlation_id, event_type, event_data) VALUES (%s, %s, %s)",
+                (correlation_id, ev.get("event", ""), json.dumps(ev.get("data") or {})),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.debug("Progress DB persist failed (stream may poll Redis): %s", e)
+
+
 def _publish_progress_event(correlation_id: str, ev: dict[str, Any]) -> None:
-    """If queue is Redis, publish event in a background thread so the worker never blocks on Redis."""
+    """If queue is Redis, publish to Redis and persist to DB so API stream can poll (like RAG)."""
     try:
         from app.config import get_config
         cfg = get_config()
-        if getattr(cfg, "queue_type", "memory") != "redis":
-            return
+        if getattr(cfg, "queue_type", "memory") == "redis":
+            t = threading.Thread(
+                target=_publish_progress_event_impl,
+                args=(correlation_id, ev),
+                daemon=True,
+                name="progress-publish",
+            )
+            t.start()
+            # Persist to DB so API stream can poll (no Redis subscribe from API needed)
+            t_db = threading.Thread(
+                target=_persist_progress_event_to_db,
+                args=(correlation_id, ev),
+                daemon=True,
+                name="progress-db",
+            )
+            t_db.start()
     except Exception:
-        return
-    t = threading.Thread(
-        target=_publish_progress_event_impl,
-        args=(correlation_id, ev),
-        daemon=True,
-        name="progress-publish",
-    )
-    t.start()
+        pass
 
 
 def start_progress(correlation_id: str) -> None:

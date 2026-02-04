@@ -73,7 +73,16 @@ def _llm_decompose(
         system = cfg.prompts.decompose_system
         user = cfg.prompts.decompose_user_template.format(message=message)
         prompt = f"{system}\n\n{user}"
-        raw, usage = asyncio.run(provider.generate_with_usage(prompt))
+        logger.info("[parser] calling LLM for decomposition (model=%s)", getattr(provider, 'model_name', 'unknown'))
+        try:
+            raw, usage = asyncio.run(provider.generate_with_usage(prompt))
+        except asyncio.TimeoutError as te:
+            logger.error("[parser] LLM call timed out: %s", te)
+            raise
+        except Exception as llm_e:
+            logger.error("[parser] LLM call raised exception: %s", llm_e, exc_info=True)
+            raise
+        logger.info("[parser] LLM decomposition returned len=%d", len(raw) if raw else 0)
         if not raw or not raw.strip():
             return (None, usage)
         if "subquestions" not in raw or "{" not in raw:

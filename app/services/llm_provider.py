@@ -5,6 +5,7 @@ import json
 import logging
 import queue
 import threading
+import time
 import urllib.error
 import urllib.request
 from typing import Any, AsyncIterator, Callable, Dict
@@ -197,9 +198,17 @@ def _vertex_stream_producer(model_name: str, prompt: str, gen_config: dict, out:
 
 
 def _vertex_generate_sync(model_name: str, prompt: str, gen_config: dict) -> tuple[str, LLMUsageDict]:
+    import time as _time
+    t0 = _time.perf_counter()
+    logger.info("[vertex] calling generate_content model=%s prompt_len=%d", model_name, len(prompt))
     from vertexai.generative_models import GenerativeModel
     model = GenerativeModel(model_name)
-    response = model.generate_content(prompt, generation_config=gen_config)
+    try:
+        response = model.generate_content(prompt, generation_config=gen_config)
+    except Exception as e:
+        logger.error("[vertex] generate_content raised: %s (elapsed=%.1fs)", e, _time.perf_counter() - t0)
+        raise
+    logger.info("[vertex] generate_content returned (elapsed=%.1fs)", _time.perf_counter() - t0)
     text = response.text or ""
     usage = zero_usage("vertex", model_name)
     if getattr(response, "usage_metadata", None) is not None:
@@ -239,6 +248,13 @@ class VertexAIProvider(LLMProvider):
         except Exception as e:
             raise Exception(f"Failed to initialize Vertex AI: {e}") from e
 
+    def _timeout_seconds(self) -> float:
+        import os
+        try:
+            return float(os.getenv("LLM_TIMEOUT_SECONDS", "60") or 60)
+        except (TypeError, ValueError):
+            return 60.0
+
     def _generation_config(self, **kwargs) -> dict:
         return {"temperature": 0.1, **kwargs}
 
@@ -246,9 +262,11 @@ class VertexAIProvider(LLMProvider):
         gen_config = self._generation_config(**kwargs)
         loop = asyncio.get_running_loop()
         q: queue.Queue = queue.Queue()
+        timeout_s = self._timeout_seconds()
+        start = time.monotonic()
 
         def get() -> object:
-            return q.get()
+            return q.get(timeout=1)
 
         t = threading.Thread(
             target=_vertex_stream_producer,
@@ -257,7 +275,12 @@ class VertexAIProvider(LLMProvider):
         )
         t.start()
         while True:
-            item = await loop.run_in_executor(None, get)
+            try:
+                item = await loop.run_in_executor(None, get)
+            except queue.Empty:
+                if time.monotonic() - start > timeout_s:
+                    raise Exception(f"LLM stream timed out after {timeout_s:.0f}s")
+                continue
             if item is None:
                 break
             if isinstance(item, tuple) and item[0] == "error":
@@ -270,8 +293,10 @@ class VertexAIProvider(LLMProvider):
 
     async def generate_with_usage(self, prompt: str, **kwargs) -> tuple[str, LLMUsageDict]:
         gen_config = self._generation_config(**kwargs)
-        return await asyncio.to_thread(
-            _vertex_generate_sync, self.model_name, prompt, gen_config
+        timeout_s = self._timeout_seconds()
+        return await asyncio.wait_for(
+            asyncio.to_thread(_vertex_generate_sync, self.model_name, prompt, gen_config),
+            timeout=timeout_s,
         )
 
 

@@ -280,7 +280,7 @@ def _build_rag_from_env() -> ChatRAGConfig:
     """Build RAG config from env only (unchanged from original get_chat_config)."""
     vertex_endpoint = _env("CHAT_VERTEX_INDEX_ENDPOINT_ID") or os.getenv("VERTEX_INDEX_ENDPOINT_ID")
     vertex_deployed_raw = _env("CHAT_VERTEX_DEPLOYED_INDEX_ID") or os.getenv("VERTEX_DEPLOYED_INDEX_ID")
-    logger.info(
+    logger.debug(
         "[RAG config] env: CHAT_VERTEX_DEPLOYED_INDEX_ID=%r VERTEX_DEPLOYED_INDEX_ID=%r → raw=%r _chat_root=%s",
         _env("CHAT_VERTEX_DEPLOYED_INDEX_ID"),
         os.getenv("VERTEX_DEPLOYED_INDEX_ID"),

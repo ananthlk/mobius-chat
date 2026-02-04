@@ -253,8 +253,14 @@ def process_one(correlation_id: str, payload: dict) -> None:
     thinking_chunks: list[str] = []
     start_progress(correlation_id)
 
+    # Debug: acknowledge job immediately and publish same to Redis/DB so we can see if GET receives it
+    ack_msg = "Worker picked up request."
+    logger.info("Acknowledged job correlation_id=%s publishing to Redis/DB: %r", correlation_id[:8], ack_msg)
+    append_thinking(correlation_id, ack_msg)
+
     # Resolve thread and persist user message for short-term memory
     thread_id = payload.get("thread_id") or ensure_thread(None)
+    thread_id = ensure_thread(thread_id)  # ensure row exists so append_user_message FK is satisfied (API may have failed to create it)
     append_user_message(thread_id, correlation_id, message)
 
     # Load state and last turns; apply TTL decay (state should decay quickly)
@@ -550,40 +556,52 @@ def process_one(correlation_id: str, payload: dict) -> None:
         "source_confidence_strip": source_confidence_strip,
         "thread_id": thread_id,
     }
-    clear_progress(correlation_id)
-    append_assistant_message(thread_id, correlation_id, final_message)
-    parsed_answer_card: dict[str, Any] | None = None
-    try:
-        parsed = json.loads(final_message)
-        if isinstance(parsed, dict) and parsed.get("mode") and parsed.get("direct_answer") is not None and isinstance(parsed.get("sections"), list):
-            parsed_answer_card = parsed
-    except (json.JSONDecodeError, TypeError):
-        pass
-    if parsed_answer_card is not None:
-        slots = answer_card_to_open_slots(parsed_answer_card)
-        register_open_slots(thread_id, slots)
-        if not slots and (parsed_answer_card.get("mode") or "").upper() == "FACTUAL":
-            save_state(thread_id, {"turn_count_since_active_set": 0})
-    insert_turn(
-        correlation_id=correlation_id,
-        question=message,
-        thinking_log=thinking_chunks,
-        final_message=final_message,
-        sources=response_sources,
-        duration_ms=duration_ms,
-        model_used=model_used,
-        llm_provider=llm_provider,
-        session_id=session_id,
-        thread_id=thread_id,
-        plan_snapshot=plan_snapshot,
-        blueprint_snapshot=blueprint_snapshot,
-        agent_cards=agent_cards,
-        source_confidence_strip=source_confidence_strip,
-        config_sha=config_sha,
-    )
-    store_response(correlation_id, response_payload)
+    # Publish to Redis first so frontend/API get the response even if worker is killed or stream drops
     get_queue().publish_response(correlation_id, response_payload)
     logger.info("Response published for %s", correlation_id)
+    clear_progress(correlation_id)
+    store_response(correlation_id, response_payload)
+
+    def _persist_response() -> None:
+        try:
+            append_assistant_message(thread_id, correlation_id, final_message)
+            parsed_answer_card: dict[str, Any] | None = None
+            try:
+                parsed = json.loads(final_message)
+                if isinstance(parsed, dict) and parsed.get("mode") and parsed.get("direct_answer") is not None and isinstance(parsed.get("sections"), list):
+                    parsed_answer_card = parsed
+            except (json.JSONDecodeError, TypeError):
+                pass
+            if parsed_answer_card is not None:
+                slots = answer_card_to_open_slots(parsed_answer_card)
+                register_open_slots(thread_id, slots)
+                if not slots and (parsed_answer_card.get("mode") or "").upper() == "FACTUAL":
+                    save_state(thread_id, {"turn_count_since_active_set": 0})
+            insert_turn(
+                correlation_id=correlation_id,
+                question=message,
+                thinking_log=thinking_chunks,
+                final_message=final_message,
+                sources=response_sources,
+                duration_ms=duration_ms,
+                model_used=model_used,
+                llm_provider=llm_provider,
+                session_id=session_id,
+                thread_id=thread_id,
+                plan_snapshot=plan_snapshot,
+                blueprint_snapshot=blueprint_snapshot,
+                agent_cards=agent_cards,
+                source_confidence_strip=source_confidence_strip,
+                config_sha=config_sha,
+            )
+        except Exception as e:
+            logger.warning("Post-response persistence failed for %s: %s", correlation_id, e)
+
+    threading.Thread(
+        target=_persist_response,
+        daemon=True,
+        name=f"persist-{correlation_id[:8]}",
+    ).start()
 
 
 def run_one_turn_test(message: str) -> dict[str, Any]:
@@ -670,6 +688,9 @@ def run_one_turn_test(message: str) -> dict[str, Any]:
 
 def run_worker() -> None:
     """Blocking: consume requests and process each."""
+    from app.config import get_config
+    cfg = get_config()
+    logger.info("run_worker starting queue_type=%s", cfg.queue_type)
     q = get_queue()
     q.consume_requests(process_one)
 

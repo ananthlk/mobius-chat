@@ -67,6 +67,7 @@ from app.storage.threads import ensure_thread
 from app.auth import get_user_id_from_request
 from app.storage.feedback import get_feedback, get_source_feedback, insert_feedback, insert_source_feedback
 from app.storage.progress import get_and_clear_events, get_progress
+from app.chat_config import get_chat_config
 from app.worker import start_worker_background
 from app.worker.run import run_one_turn_test
 
@@ -245,8 +246,7 @@ def post_chat(request: Request, body: ChatRequest):
     """Enqueue a chat request; returns correlation_id and thread_id for polling and subsequent messages."""
     correlation_id = str(uuid.uuid4())
     thread_id = (body.thread_id or "").strip() or None
-    if not thread_id:
-        thread_id = ensure_thread(None)
+    thread_id = ensure_thread(thread_id)  # create if None; if provided, ensure row exists (avoids worker FK violation)
     payload: dict = {"message": body.message or "", "thread_id": thread_id}
     if body.session_id is not None:
         payload["session_id"] = body.session_id
@@ -255,6 +255,18 @@ def post_chat(request: Request, body: ChatRequest):
         payload["user_id"] = user_id
     get_queue().publish_request(correlation_id, payload)
     return ChatResponse(correlation_id=correlation_id, thread_id=thread_id)
+
+
+@app.post("/chat/admin/flush-queue")
+def flush_chat_queue(confirm: str = ""):
+    """Clear the Redis request queue (staging debug). Call with ?confirm=flush to run."""
+    if confirm != "flush":
+        raise HTTPException(status_code=400, detail="Add ?confirm=flush to flush the queue")
+    q = get_queue()
+    if not isinstance(q, RedisQueue):
+        return {"flushed": 0, "message": "Queue is not Redis; nothing to flush"}
+    n = q.flush_request_queue()
+    return {"flushed": n, "message": f"Cleared {n} pending request(s) from queue"}
 
 
 @app.get("/chat/response/{correlation_id}")
@@ -270,6 +282,31 @@ def get_chat_response(correlation_id: str):
     if in_progress:
         return {"status": "processing", "message": message_so_far or None, "plan": None, "thinking_log": thinking_log}
     return {"status": "pending", "message": None, "plan": None, "thinking_log": None}
+
+
+def _get_progress_events_from_db(correlation_id: str, after_id: int = 0) -> list[tuple[int, dict]]:
+    """Poll chat_progress_events (like RAG chunking_events). Returns [(event_id, {event, data}), ...]."""
+    try:
+        cfg = get_chat_config()
+        url = (getattr(cfg, "rag", None) and getattr(cfg.rag, "database_url", None) or "").strip()
+        if not url:
+            return []
+        import psycopg2
+        import psycopg2.extras
+        conn = psycopg2.connect(url)
+        try:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute(
+                "SELECT id, event_type, event_data FROM chat_progress_events WHERE correlation_id = %s AND id > %s ORDER BY id ASC LIMIT 500",
+                (correlation_id, after_id),
+            )
+            rows = cur.fetchall()
+            return [(r["id"], {"event": r["event_type"], "data": r["event_data"] or {}}) for r in rows]
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.debug("Progress DB poll failed: %s", e)
+        return []
 
 
 def _redis_progress_subscriber(channel: str, out: queue.Queue) -> None:
@@ -294,90 +331,72 @@ def _redis_progress_subscriber(channel: str, out: queue.Queue) -> None:
 @app.get("/chat/stream/{correlation_id}")
 async def stream_chat_response(correlation_id: str):
     """SSE stream: yields thinking and message chunks in real time, then a 'completed' event with full response.
-    With Redis queue, subscribes to progress channel. With memory queue, polls in-memory progress."""
+    With Redis queue, polls chat_progress_events (like RAG chunking_events). With memory queue, polls in-memory progress."""
     STREAM_POLL_INTERVAL = 0.05
-    STREAM_REDIS_GET_TIMEOUT = 0.5
+    STREAM_DB_POLL_INTERVAL = 0.3
     STREAM_TIMEOUT_SEC = 300
 
     cfg = get_config()
     queue_is_redis = isinstance(get_queue(), RedisQueue)
-    live_stream_env = getattr(cfg, "live_stream_via_redis", False)
-    use_redis_stream = live_stream_env or queue_is_redis
+    # Use DB polling when worker is separate (redis) so we don't depend on Redis subscribe from API (like RAG)
+    use_db_poll = bool(queue_is_redis and (getattr(get_chat_config(), "rag", None) and getattr(get_chat_config().rag, "database_url", None)))
     logger.info(
-        "[stream] GET /chat/stream/%s live_stream_via_redis=%s queue_type=%s queue_is_redis=%s use_redis_stream=%s",
+        "[stream] GET /chat/stream/%s queue_type=%s use_db_poll=%s",
         correlation_id[:8],
-        live_stream_env,
         getattr(cfg, "queue_type", "?"),
-        queue_is_redis,
-        use_redis_stream,
+        use_db_poll,
     )
 
     async def event_generator():
         start = time.monotonic()
-        redis_queue = None
-        redis_thread = None
-        use_redis = use_redis_stream  # local copy so except can set False without UnboundLocalError
-        if use_redis:
-            try:
-                channel = getattr(cfg, "redis_progress_channel_prefix", "mobius:chat:progress:") + correlation_id
-                redis_queue = queue.Queue()
-                redis_thread = threading.Thread(
-                    target=_redis_progress_subscriber,
-                    args=(channel, redis_queue),
-                    daemon=True,
-                )
-                redis_thread.start()
-                logger.info("[stream] Redis subscriber started for channel=%s", channel)
-            except Exception as e:
-                logger.warning("[stream] Redis progress subscribe failed, falling back to poll: %s", e)
-                use_redis = False
-
-        loop = asyncio.get_running_loop()
-        redis_event_count = 0
+        last_event_id = 0
+        db_event_count = 0
+        last_keepalive = time.monotonic()
+        last_wait_log = 0.0
+        STREAM_KEEPALIVE_SEC = 15
+        STREAM_WAIT_LOG_INTERVAL = 30
 
         while True:
             if time.monotonic() - start > STREAM_TIMEOUT_SEC:
                 yield f"data: {json.dumps({'event': 'error', 'data': {'message': 'Stream timeout'}})}\n\n"
                 return
 
-            if use_redis and redis_queue is not None:
-                try:
-                    def get_with_timeout():
-                        return redis_queue.get(timeout=STREAM_REDIS_GET_TIMEOUT)
-                    raw = await loop.run_in_executor(None, get_with_timeout)
-                    if raw is None:
-                        yield f"data: {json.dumps({'event': 'error', 'data': {'message': 'Stream error'}})}\n\n"
-                        return
-                    ev = json.loads(raw) if isinstance(raw, str) else raw
-                    redis_event_count += 1
-                    received_at = time.strftime("%H:%M:%S", time.localtime()) + f".{int(time.time() * 1000) % 1000:03d}"
-                    data = ev.get("data") or {}
-                    written_at = data.get("ts_readable", "")
-                    if redis_event_count == 1:
-                        logger.info("[stream] first progress event received for %s", correlation_id[:8])
-                    logger.info(
-                        "[stream] received #%s cid=%s event=%s written_at=%s received_at=%s",
-                        redis_event_count, correlation_id[:8], ev.get("event"), written_at, received_at,
-                    )
+            if time.monotonic() - last_keepalive > STREAM_KEEPALIVE_SEC:
+                yield ": keepalive\n\n"
+                last_keepalive = time.monotonic()
+
+            if use_db_poll:
+                events = _get_progress_events_from_db(correlation_id, after_id=last_event_id)
+                for eid, ev in events:
+                    last_event_id = eid
+                    db_event_count += 1
+                    if db_event_count == 1:
+                        logger.info("[stream] first progress event from DB for %s", correlation_id[:8])
                     yield f"data: {json.dumps(ev)}\n\n"
-                except queue.Empty:
-                    pass
-                except Exception as e:
-                    logger.debug("Redis stream get: %s", e)
-                await asyncio.sleep(0.02)
+                await asyncio.sleep(STREAM_DB_POLL_INTERVAL)
             else:
                 for ev in get_and_clear_events(correlation_id):
                     yield f"data: {json.dumps(ev)}\n\n"
+                await asyncio.sleep(STREAM_POLL_INTERVAL)
 
             q = get_queue()
             resp = q.get_response(correlation_id)
+            from_redis = resp is not None
             if resp is None:
                 resp = get_response(correlation_id)
             if resp is not None:
-                logger.info("[stream] completed %s (redis_events=%s)", correlation_id[:8], redis_event_count if use_redis else "n/a")
+                logger.info(
+                    "[stream] completed %s from %s (events=%s)",
+                    correlation_id[:8],
+                    "Redis" if from_redis else "DB",
+                    db_event_count if use_db_poll else "in-memory",
+                )
                 yield f"data: {json.dumps({'event': 'completed', 'data': resp})}\n\n"
                 return
-            await asyncio.sleep(STREAM_POLL_INTERVAL if not use_redis else 0)
+            elapsed = time.monotonic() - start
+            if elapsed - last_wait_log >= STREAM_WAIT_LOG_INTERVAL and elapsed >= STREAM_WAIT_LOG_INTERVAL:
+                logger.info("[stream] still waiting for response (Redis/DB) correlation_id=%s elapsed=%.0fs", correlation_id[:8], elapsed)
+                last_wait_log = elapsed
 
     return StreamingResponse(
         event_generator(),

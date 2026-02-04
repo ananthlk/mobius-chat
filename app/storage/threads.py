@@ -28,26 +28,26 @@ def _get_db_url() -> str:
 
 
 def ensure_thread(thread_id: str | None) -> str:
-    """If thread_id is None, INSERT a row into chat_threads and return the new UUID. If provided, no-op and return it."""
+    """Ensure a row exists in chat_threads: if thread_id is None, create new; if provided, INSERT ON CONFLICT DO NOTHING so FK is satisfied."""
     url = _get_db_url()
     if not url:
         logger.warning("CHAT_RAG_DATABASE_URL not set; creating in-memory thread id only")
         return str(uuid.uuid4()) if thread_id is None else thread_id
-    if thread_id is not None:
-        return thread_id
     try:
         import psycopg2
         conn = psycopg2.connect(url)
         cur = conn.cursor()
-        new_id = str(uuid.uuid4())
+        id_to_use = (thread_id or "").strip() or None
+        if id_to_use is None:
+            id_to_use = str(uuid.uuid4())
         cur.execute(
             "INSERT INTO chat_threads (thread_id, created_at, updated_at) VALUES (%s, now(), now()) ON CONFLICT (thread_id) DO NOTHING",
-            (new_id,),
+            (id_to_use,),
         )
         conn.commit()
         cur.close()
         conn.close()
-        return new_id
+        return id_to_use
     except Exception as e:
         logger.exception("Failed to ensure thread: %s", e)
         return str(uuid.uuid4())

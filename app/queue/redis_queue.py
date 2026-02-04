@@ -32,13 +32,38 @@ class RedisQueue(QueueAdapter):
         self._response_ttl = response_ttl_seconds if response_ttl_seconds is not None else cfg.redis_response_ttl_seconds
         self._client = None
 
+    def _redis_host_for_log(self) -> str:
+        """Return host part of redis_url for logging (no password)."""
+        try:
+            from urllib.parse import urlparse
+            p = urlparse(self._redis_url)
+            return p.hostname or p.path or "(unknown)"
+        except Exception:
+            return "(unknown)"
+
     def _get_client(self):
         if self._client is None:
             try:
                 import redis
             except ImportError as e:
                 raise ImportError("Redis queue requires: pip install redis") from e
-            self._client = redis.from_url(self._redis_url, decode_responses=True)
+            # Longer timeouts for VPC/connector paths where connection can be slow
+            self._client = redis.from_url(
+                self._redis_url,
+                decode_responses=True,
+                socket_connect_timeout=30,
+                socket_timeout=60,
+            )
+            try:
+                self._client.ping()
+                logger.info(
+                    "Redis connected for queue (host=%s, request_key=%s)",
+                    self._redis_host_for_log(),
+                    self._request_key,
+                )
+            except Exception as e:
+                logger.exception("Redis connection failed (host=%s): %s", self._redis_host_for_log(), e)
+                raise
         return self._client
 
     def publish_request(self, correlation_id: str, payload: dict[str, Any]) -> None:
@@ -48,9 +73,22 @@ class RedisQueue(QueueAdapter):
         r.lpush(self._request_key, json.dumps(item))  # Redis list: left push
         logger.debug("Published request %s to list %s", correlation_id, self._request_key)
 
+    def flush_request_queue(self) -> int:
+        """Delete the request list (clear backlog). Returns number of items removed. Staging debug only."""
+        r = self._get_client()
+        n = r.llen(self._request_key)
+        r.delete(self._request_key)
+        logger.info("Flushed request queue %s (%d items)", self._request_key, n)
+        return n
+
     def consume_requests(self, callback: Callable[[str, dict], None]) -> None:
         """Read from Redis list (BRPOP). Blocks until a request is available."""
         r = self._get_client()
+        logger.info(
+            "Worker listening for chat requests (key=%s, redis_host=%s)",
+            self._request_key,
+            self._redis_host_for_log(),
+        )
         while True:
             try:
                 # Redis list: BRPOP = block until item available (FIFO with LPUSH)
@@ -60,6 +98,7 @@ class RedisQueue(QueueAdapter):
                 _, raw = result
                 item = json.loads(raw)
                 cid = item.pop("correlation_id", "")
+                logger.info("Received chat request correlation_id=%s", cid[:8] if cid else "")
                 callback(cid, item)
             except Exception as e:
                 logger.exception("Request consumer error: %s", e)
