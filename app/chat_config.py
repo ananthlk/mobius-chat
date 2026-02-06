@@ -67,12 +67,12 @@ except Exception:
 class ChatLLMConfig:
     """LLM factors for chat (separate from RAG). Default: Vertex AI."""
     provider: Literal["ollama", "vertex"] = "vertex"
-    model: str = "gemini-2.5-flash"
+    model: str = "gemini-2.0-flash"
     temperature: float = 0.1
     # Vertex
     vertex_project_id: str | None = None
     vertex_location: str = "us-central1"
-    vertex_model: str = "gemini-2.5-flash"
+    vertex_model: str = "gemini-2.0-flash"
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b"
@@ -294,7 +294,11 @@ def _build_rag_from_env() -> ChatRAGConfig:
     ):
         vertex_deployed = "endpoint_mobius_chat_publi_1769989702095"
         logger.info("[RAG config] normalized display name → deployed_index_id=%r", vertex_deployed)
-    rag_db_url = _env("CHAT_RAG_DATABASE_URL") or os.getenv("RAG_DATABASE_URL")
+    # DB URL conventions across repo:
+    # - mobius-chat uses CHAT_RAG_DATABASE_URL (preferred)
+    # - some scripts use RAG_DATABASE_URL
+    # - mobius-dbt uses CHAT_DATABASE_URL as the destination (chat) Postgres URL
+    rag_db_url = _env("CHAT_RAG_DATABASE_URL") or os.getenv("RAG_DATABASE_URL") or os.getenv("CHAT_DATABASE_URL")
     rag_k = int(os.getenv("CHAT_RAG_TOP_K") or os.getenv("RAG_TOP_K", "10"))
     return ChatRAGConfig(
         vertex_index_endpoint_id=vertex_endpoint,
@@ -340,11 +344,11 @@ def _chat_config_from_prompts_llm(pl: dict, rag: ChatRAGConfig) -> ChatConfig:
         vertex_project = (_env("CHAT_VERTEX_PROJECT_ID") or get_env_or("VERTEX_PROJECT_ID", "mobiusos-new") or "mobiusos-new").strip() or "mobiusos-new"
     llm = ChatLLMConfig(
         provider=(_str(llm_d, "provider") or "vertex").lower(),
-        model=_str(llm_d, "model") or "gemini-2.5-flash",
+        model=_str(llm_d, "model") or "gemini-2.0-flash",
         temperature=_float(llm_d, "temperature", 0.1),
         vertex_project_id=vertex_project or None,
         vertex_location=_str(llm_d, "vertex_location") or "us-central1",
-        vertex_model=_str(llm_d, "vertex_model") or "gemini-2.5-flash",
+        vertex_model=_str(llm_d, "vertex_model") or "gemini-2.0-flash",
         ollama_base_url=_str(llm_d, "ollama_base_url") or "http://localhost:11434",
         ollama_model=_str(llm_d, "ollama_model") or "llama3.1:8b",
         ollama_num_predict=_int(llm_d, "ollama_num_predict", 8192),
@@ -395,11 +399,11 @@ def get_chat_config() -> ChatConfig:
     llm_provider = _env("CHAT_LLM_PROVIDER") or os.getenv("LLM_PROVIDER") or "vertex"
     llm = ChatLLMConfig(
         provider=llm_provider.lower() or "vertex",
-        model=_env("CHAT_LLM_MODEL") or (os.getenv("VERTEX_MODEL", "gemini-2.5-flash") if llm_provider.lower() == "vertex" else os.getenv("OLLAMA_MODEL", "llama3.1:8b")) or ("gemini-2.5-flash" if llm_provider.lower() == "vertex" else "llama3.1:8b"),
+        model=_env("CHAT_LLM_MODEL") or (os.getenv("VERTEX_MODEL", "gemini-2.0-flash") if llm_provider.lower() == "vertex" else os.getenv("OLLAMA_MODEL", "llama3.1:8b")) or ("gemini-2.0-flash" if llm_provider.lower() == "vertex" else "llama3.1:8b"),
         temperature=_env_float("CHAT_LLM_TEMPERATURE", 0.1),
         vertex_project_id=(_env("CHAT_VERTEX_PROJECT_ID") or get_env_or("VERTEX_PROJECT_ID", "mobiusos-new") or os.getenv("VERTEX_PROJECT_ID") or os.getenv("CHAT_VERTEX_PROJECT_ID") or "mobiusos-new").strip() or "mobiusos-new",
         vertex_location=_env("CHAT_VERTEX_LOCATION") or os.getenv("VERTEX_LOCATION", "us-central1"),
-        vertex_model=_env("CHAT_VERTEX_MODEL") or os.getenv("VERTEX_MODEL", "gemini-2.5-flash"),
+        vertex_model=_env("CHAT_VERTEX_MODEL") or os.getenv("VERTEX_MODEL", "gemini-2.0-flash"),
         ollama_base_url=_env("CHAT_OLLAMA_BASE_URL") or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
         ollama_model=_env("CHAT_OLLAMA_MODEL") or os.getenv("OLLAMA_MODEL", "llama3.1:8b"),
         ollama_num_predict=int(os.getenv("CHAT_OLLAMA_NUM_PREDICT") or os.getenv("OLLAMA_NUM_PREDICT", "8192")),

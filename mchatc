@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Mobius Chat – start the chat interface (API + frontend).
-# Expects Redis + worker to be running elsewhere (e.g. mchatcw).
+# Mobius Chat – start the chat API server using shared venv.
+# Expects worker to be running elsewhere (e.g. mchatcw or mstart).
 set -e
-# Resolve symlinks so we cd to the real repo dir when run from ~/bin
+
+# Resolve symlinks to find repo dir
 SOURCE="${BASH_SOURCE[0]}"
 while [ -h "$SOURCE" ]; do
   DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
@@ -10,12 +11,26 @@ while [ -h "$SOURCE" ]; do
   [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
 done
 REPO_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+MOBIUS_ROOT="$(cd -P "$REPO_DIR/.." && pwd)"
+VENV="$MOBIUS_ROOT/.venv"
+
 cd "$REPO_DIR"
+
+# Load .env
+if [[ -f "$REPO_DIR/.env" ]]; then
+  set -a
+  source "$REPO_DIR/.env"
+  set +a
+fi
+
 export QUEUE_TYPE="${QUEUE_TYPE:-redis}"
-export REDIS_URL="${REDIS_URL:-redis://localhost:6379/0}"
-if [ ! -d .venv ]; then
-  echo "[mchatc] No .venv in mobius-chat. Create it and install deps:"
-  echo "  cd $REPO_DIR && python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt"
+export REDIS_URL="${REDIS_URL:-redis://10.40.102.67:6379/0}"
+
+# Check for shared venv
+if [ ! -d "$VENV" ]; then
+  echo "[mchatc] No shared venv at $VENV. Create it:"
+  echo "  cd $MOBIUS_ROOT && python3.11 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt"
   exit 1
 fi
-exec .venv/bin/python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 "$@"
+
+exec "$VENV/bin/python3" -m uvicorn app.main:app --host 0.0.0.0 --port 8000 "$@"

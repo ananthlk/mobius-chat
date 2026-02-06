@@ -42,6 +42,7 @@ def search_published_rag(
     emitter: Callable[[str], None] | None = None,
     filter_payer: str | List[str] | None = None,
     filter_state: str | None = None,
+    filter_program: str | None = None,
 ) -> List[dict[str, Any]]:
     """Search published RAG: embed question (1536), query Vertex with filters, fetch metadata from Postgres by id.
     If confidence_min is set, only return chunks with confidence >= confidence_min (after fetching k).
@@ -82,6 +83,7 @@ def search_published_rag(
     else:
         payer_tokens = []
     state_token = (filter_state or "").strip() or (rag.filter_state or "").strip()
+    program_token = (filter_program or "").strip() or (rag.filter_program or "").strip()
     filters: List[Any] = []
     try:
         from google.cloud.aiplatform.matching_engine.matching_engine_index_endpoint import Namespace
@@ -89,8 +91,8 @@ def search_published_rag(
             filters.append(Namespace(name="document_payer", allow_tokens=payer_tokens, deny_tokens=[]))
         if state_token:
             filters.append(Namespace(name="document_state", allow_tokens=[state_token], deny_tokens=[]))
-        if rag.filter_program:
-            filters.append(Namespace(name="document_program", allow_tokens=[rag.filter_program], deny_tokens=[]))
+        if program_token:
+            filters.append(Namespace(name="document_program", allow_tokens=[program_token], deny_tokens=[]))
         if rag.filter_authority_level:
             filters.append(Namespace(name="document_authority_level", allow_tokens=[rag.filter_authority_level], deny_tokens=[]))
         # Explicit hierarchical: ask Vertex for chunks with source_type in [policy, section, chunk, hierarchical]
@@ -103,13 +105,14 @@ def search_published_rag(
         logger.info(
             "RAG filters applied: payer=%s state=%s program=%s authority_level=%s source_type_allow=%s",
             payer_tokens or "(none)", state_token or "(none)",
-            rag.filter_program or "(none)", rag.filter_authority_level or "(none)",
+            program_token or "(none)", rag.filter_authority_level or "(none)",
             source_type_allow or "(none)",
         )
 
     try:
         from google.cloud import aiplatform
         from google.api_core.exceptions import ServiceUnavailable, NotFound
+        from google.cloud.aiplatform.matching_engine.matching_engine_index_endpoint import Namespace
         aiplatform.init(project=cfg.llm.vertex_project_id, location=cfg.llm.vertex_location or "us-central1")
         endpoint = aiplatform.MatchingEngineIndexEndpoint(index_endpoint_name=rag.vertex_index_endpoint_id)
         _emit(emitter, "Searching our materials...")
@@ -126,26 +129,66 @@ def search_published_rag(
             "[RAG search] find_neighbors: deployed_index_id=%r",
             deployed_id,
         )
-        response = endpoint.find_neighbors(
-            deployed_index_id=deployed_id,
-            queries=[query_embedding],
-            num_neighbors=k,
-            filter=filters if filters else None,
-        )
-        # response is List[List[MatchNeighbor]]; one query -> response[0]; neighbors have id and optionally distance
-        neighbor_list = response[0] if response else []
-        ids = [n.id for n in neighbor_list if n.id]
-        id_to_distance: dict[str, float] = {}
-        for n in neighbor_list:
-            nid = getattr(n, "id", None)
-            if nid is not None:
-                dist = getattr(n, "distance", None)
-                if dist is not None:
-                    try:
-                        id_to_distance[str(nid)] = float(dist)
-                    except (TypeError, ValueError):
-                        pass
+        def _build_filters(payers: list[str], state: str, program: str) -> List[Any]:
+            out: List[Any] = []
+            if payers:
+                out.append(Namespace(name="document_payer", allow_tokens=payers, deny_tokens=[]))
+            if state:
+                out.append(Namespace(name="document_state", allow_tokens=[state], deny_tokens=[]))
+            if program:
+                out.append(Namespace(name="document_program", allow_tokens=[program], deny_tokens=[]))
+            if rag.filter_authority_level:
+                out.append(Namespace(name="document_authority_level", allow_tokens=[rag.filter_authority_level], deny_tokens=[]))
+            if source_type_allow:
+                out.append(Namespace(name=VERTEX_SOURCE_TYPE_NAMESPACE, allow_tokens=source_type_allow, deny_tokens=[]))
+            return out
+
+        def _do_find(filters_to_use: List[Any]) -> tuple[list[str], dict[str, float]]:
+            response = endpoint.find_neighbors(
+                deployed_index_id=deployed_id,
+                queries=[query_embedding],
+                num_neighbors=k,
+                filter=filters_to_use if filters_to_use else None,
+            )
+            # response is List[List[MatchNeighbor]]; one query -> response[0]; neighbors have id and optionally distance
+            neighbor_list = response[0] if response else []
+            ids_local = [n.id for n in neighbor_list if n.id]
+            id_to_distance_local: dict[str, float] = {}
+            for n in neighbor_list:
+                nid = getattr(n, "id", None)
+                if nid is not None:
+                    dist = getattr(n, "distance", None)
+                    if dist is not None:
+                        try:
+                            id_to_distance_local[str(nid)] = float(dist)
+                        except (TypeError, ValueError):
+                            pass
+            return ids_local, id_to_distance_local
+
+        ids, id_to_distance = _do_find(filters if filters else [])
         logger.info("Vertex find_neighbors returned %d id(s)", len(ids))
+
+        # If we got 0 neighbors and we applied payer/state filters (often from stale thread state),
+        # retry with relaxed filters: drop state, then program, then payer.
+        if not ids and (payer_tokens or state_token or program_token):
+            if state_token:
+                relaxed = _build_filters(payer_tokens, "", program_token)
+                logger.info("RAG: 0 neighbors with state=%r; retrying without state filter", state_token)
+                _emit(emitter, "No matches in that jurisdiction; broadening search...")
+                ids, id_to_distance = _do_find(relaxed)
+                logger.info("Vertex find_neighbors (no state) returned %d id(s)", len(ids))
+            if not ids and program_token:
+                relaxed = _build_filters(payer_tokens, "", "")
+                logger.info("RAG: 0 neighbors with program=%r; retrying without program filter", program_token)
+                _emit(emitter, "No matches in that program; broadening search...")
+                ids, id_to_distance = _do_find(relaxed)
+                logger.info("Vertex find_neighbors (no program) returned %d id(s)", len(ids))
+            if not ids and payer_tokens:
+                relaxed = _build_filters([], "", "")
+                logger.info("RAG: 0 neighbors with payer=%r; retrying without payer/state/program filters", payer_tokens)
+                _emit(emitter, "No matches scoped to that plan; broadening search across all materials...")
+                ids, id_to_distance = _do_find(relaxed)
+                logger.info("Vertex find_neighbors (no payer/state/program) returned %d id(s)", len(ids))
     except NotFound as e:
         logger.exception(
             "Vertex Vector Search 404 (index/deployed index not found): %s. "
@@ -228,7 +271,26 @@ def search_published_rag(
             "confidence": confidence,
         })
     if confidence_min is not None:
+        before = ordered
         ordered = [c for c in ordered if (c.get("confidence") or 0.0) >= confidence_min]
+        if not ordered and before:
+            # Avoid a hard "0 results" failure mode when the index returns neighbors but their
+            # similarity is slightly below the configured confidence threshold.
+            #
+            # This happens often for short, factual questions (confidence_min can be ~0.8).
+            # Returning a few best-effort matches is usually better than returning nothing.
+            logger.info(
+                "RAG: %d neighbors found but all below confidence_min=%.2f; returning best-effort top %d",
+                len(before),
+                float(confidence_min),
+                min(3, len(before)),
+            )
+            _emit(
+                emitter,
+                f"I found matches, but they were below the confidence threshold ({confidence_min:.2f}). "
+                "I’ll use the closest ones anyway.",
+            )
+            ordered = before[:3]
     n = len(ordered)
     _emit(emitter, f"Found {n} relevant bit{'s' if n != 1 else ''}.")
     return ordered
@@ -241,11 +303,12 @@ def search_factual(
     emitter: Callable[[str], None] | None = None,
     filter_payer: str | List[str] | None = None,
     filter_state: str | None = None,
+    filter_program: str | None = None,
 ) -> List[dict[str, Any]]:
     """Top-k by similarity (factual path). Optionally filter by confidence_min. Per-request filter_payer/filter_state override config."""
     return search_published_rag(
         question, k=k, confidence_min=confidence_min, emitter=emitter,
-        filter_payer=filter_payer, filter_state=filter_state,
+        filter_payer=filter_payer, filter_state=filter_state, filter_program=filter_program,
     )
 
 
@@ -255,6 +318,7 @@ def search_hierarchical(
     emitter: Callable[[str], None] | None = None,
     filter_payer: str | List[str] | None = None,
     filter_state: str | None = None,
+    filter_program: str | None = None,
 ) -> List[dict[str, Any]]:
     """Hierarchical retrieval: ask Vertex for neighbors with source_type in [policy, section, chunk, hierarchical].
     Mart may use "hierarchical" vs "fact"; we request all non-fact types. If the index exposes source_type,
@@ -270,6 +334,7 @@ def search_hierarchical(
         emitter=emitter,
         filter_payer=filter_payer,
         filter_state=filter_state,
+        filter_program=filter_program,
     )
     if chunks:
         # Optionally sort by hierarchy rank then confidence (in case we got mixed types)
@@ -287,7 +352,7 @@ def search_hierarchical(
     fetch_k = max(20, 2 * k)
     chunks = search_published_rag(
         question, k=fetch_k, confidence_min=None, emitter=emitter,
-        filter_payer=filter_payer, filter_state=filter_state,
+        filter_payer=filter_payer, filter_state=filter_state, filter_program=filter_program,
     )
     if not chunks:
         return []
@@ -306,17 +371,18 @@ def retrieve_with_blend(
     emitter: Callable[[str], None] | None = None,
     filter_payer: str | List[str] | None = None,
     filter_state: str | None = None,
+    filter_program: str | None = None,
 ) -> List[dict[str, Any]]:
     """Run hierarchical and/or factual retrieval per blend; merge and dedupe by chunk id. Per-request filter_payer/filter_state scope retrieval."""
     trace_entered("services.published_rag_search.retrieve_with_blend", n_hierarchical=n_hierarchical, n_factual=n_factual)
     combined: List[dict[str, Any]] = []
     if n_hierarchical > 0:
         _emit(emitter, "Searching for high-level (hierarchical) materials...")
-        H = search_hierarchical(question, k=n_hierarchical, emitter=emitter, filter_payer=filter_payer, filter_state=filter_state)
+        H = search_hierarchical(question, k=n_hierarchical, emitter=emitter, filter_payer=filter_payer, filter_state=filter_state, filter_program=filter_program)
         combined.extend(H)
     if n_factual > 0:
         _emit(emitter, "Searching for specific facts...")
-        F = search_factual(question, k=n_factual, confidence_min=confidence_min, emitter=emitter, filter_payer=filter_payer, filter_state=filter_state)
+        F = search_factual(question, k=n_factual, confidence_min=confidence_min, emitter=emitter, filter_payer=filter_payer, filter_state=filter_state, filter_program=filter_program)
         combined.extend(F)
     if not combined:
         return []

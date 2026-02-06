@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Mobius Chat Worker – start Redis + worker (coupled on this server).
-# Starts Redis if not already listening on 6379, then runs the worker.
+# Mobius Chat Worker – start the chat worker using shared venv.
+# Connects to cloud Redis (no local Redis required).
 set -e
-# Resolve symlinks so we cd to the real repo dir when run from ~/bin
+
+# Resolve symlinks to find repo dir
 SOURCE="${BASH_SOURCE[0]}"
 while [ -h "$SOURCE" ]; do
   DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
@@ -10,65 +11,27 @@ while [ -h "$SOURCE" ]; do
   [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
 done
 REPO_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+MOBIUS_ROOT="$(cd -P "$REPO_DIR/.." && pwd)"
+VENV="$MOBIUS_ROOT/.venv"
+
 cd "$REPO_DIR"
+
+# Load .env
+if [[ -f "$REPO_DIR/.env" ]]; then
+  set -a
+  source "$REPO_DIR/.env"
+  set +a
+fi
+
 export QUEUE_TYPE="${QUEUE_TYPE:-redis}"
-export REDIS_URL="${REDIS_URL:-redis://localhost:6379/0}"
-if [ ! -d .venv ]; then
-  echo "[mchatcw] No .venv in mobius-chat. Create it and install deps:"
-  echo "  cd $REPO_DIR && python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt"
+export REDIS_URL="${REDIS_URL:-redis://10.40.102.67:6379/0}"
+
+# Check for shared venv
+if [ ! -d "$VENV" ]; then
+  echo "[mchatcw] No shared venv at $VENV. Create it:"
+  echo "  cd $MOBIUS_ROOT && python3.11 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt"
   exit 1
 fi
 
-# Check if Redis is already listening on 6379
-redis_ok() {
-  (command -v redis-cli >/dev/null 2>&1 && redis-cli ping 2>/dev/null | grep -q PONG) || \
-  (command -v nc >/dev/null 2>&1 && nc -z localhost 6379 2>/dev/null)
-}
-
-if ! redis_ok; then
-  echo "[mchatcw] Redis not running on 6379. Starting Redis..."
-  if command -v redis-server >/dev/null 2>&1; then
-    redis-server --daemonize yes 2>/dev/null || true
-    sleep 1
-  elif command -v brew >/dev/null 2>&1 && brew services list 2>/dev/null | grep -q redis; then
-    brew services start redis 2>/dev/null || true
-    sleep 2
-  elif command -v brew >/dev/null 2>&1; then
-    echo "[mchatcw] Install Redis with Homebrew, then run mchatcw again:"
-    if [ "$(uname -m)" = "arm64" ]; then
-      echo "  arch -arm64 brew install redis"
-      echo "  arch -arm64 brew services start redis"
-    else
-      echo "  brew install redis"
-      echo "  brew services start redis"
-    fi
-    exit 1
-  elif command -v docker >/dev/null 2>&1; then
-    docker run -d --name mobius-chat-redis -p 6379:6379 redis 2>/dev/null || docker start mobius-chat-redis 2>/dev/null || true
-    sleep 2
-  else
-    echo "[mchatcw] Redis is required. Install one of:"
-    if [ "$(uname -m)" = "arm64" ]; then
-      echo "  • Homebrew (ARM): arch -arm64 brew install redis && arch -arm64 brew services start redis"
-    else
-      echo "  • Homebrew: brew install redis && brew services start redis"
-    fi
-    echo "  • Docker:   docker run -d -p 6379:6379 --name mobius-chat-redis redis"
-    echo "Then run: mchatcw"
-    exit 1
-  fi
-  if ! redis_ok; then
-    echo "[mchatcw] Redis still not reachable. Try:"
-    if [ "$(uname -m)" = "arm64" ]; then
-      echo "  arch -arm64 brew install redis && arch -arm64 brew services start redis"
-    else
-      echo "  brew install redis && brew services start redis"
-    fi
-    echo "  or: docker run -d -p 6379:6379 --name mobius-chat-redis redis"
-    exit 1
-  fi
-  echo "[mchatcw] Redis is up."
-fi
-
 echo "[mchatcw] Starting worker (QUEUE_TYPE=$QUEUE_TYPE REDIS_URL=$REDIS_URL)..."
-exec .venv/bin/python3 -m app.worker
+exec "$VENV/bin/python3" -m app.worker

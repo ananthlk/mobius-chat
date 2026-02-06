@@ -29,6 +29,24 @@ The app loads `.env` from the **repo root**. Create a `.env` file there with the
 | `VERTEX_PROJECT`, `VERTEX_REGION`, `VERTEX_INDEX_ID`, `GCS_BUCKET`, `BQ_PROJECT`, `BQ_DATASET` | Used by sync job (MOBIUS-DBT); optional for Chat |
 | `CHAT_RAG_FILTER_PAYER`, `CHAT_RAG_FILTER_STATE`, `CHAT_RAG_FILTER_PROGRAM`, `CHAT_RAG_FILTER_AUTHORITY_LEVEL` | Optional RAG filter defaults. If set, **only** documents matching these values are returned (e.g. `CHAT_RAG_FILTER_PAYER=Sunshine Health`). Leave unset to search all payers. |
 
+## Local dev RAG (Mobius RAG backend + pgvector)
+
+If you want a **local dev** setup (no Vertex Vector Search), you can run `mobius-rag` locally and have Chat query it.
+
+- **Run Mobius RAG backend on a non-conflicting port**: Chat typically runs on `8000`, so run RAG on `8001`:
+
+```bash
+cd "/Users/ananth/Mobius/mobius-rag" && python -m uvicorn app.main:app --reload --port 8001
+```
+
+- **Set env vars**:
+  - `RAG_APP_API_BASE=http://localhost:8001`
+  - Leave `VERTEX_INDEX_ENDPOINT_ID` and `VERTEX_DEPLOYED_INDEX_ID` **unset** (so Chat uses local retrieval).
+
+Notes:
+- Chat still uses `CHAT_RAG_DATABASE_URL` for **chat persistence** (threads/turns/feedback). Point it at a local `mobius_chat` DB if you want persistence in dev.
+- `mobius-rag` uses **pgvector** via the `chunk_embeddings` table; make sure embeddings have been generated (see `mobius-rag/INSTALL_AND_TEST.md` → embedding worker).
+
 ## User auth
 
 **Option A – Proxy to Mobius-OS (plug-and-play, same users as extension):**

@@ -1,12 +1,9 @@
-# Default LLM config (Ollama for local dev).
+# Default LLM config (Vertex AI for dev cloud).
 version: "default"
-provider: "ollama"
-model: "llama3.1:8b"
+provider: "vertex"
+model: "gemini-2.0-flash"
 options:
-  num_predict: 8192
   temperature: 0.1
-ollama:
-  base_url: "http://localhost:11434"
 vertex:
-  project_id: null
+  project_id: null  # set via VERTEX_PROJECT_ID env
   location: "us-central1"

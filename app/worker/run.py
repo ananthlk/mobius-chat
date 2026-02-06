@@ -196,6 +196,9 @@ def _rag_filters_from_state(state: dict[str, Any] | None) -> dict[str, Any]:
     jurisdiction = (active.get("jurisdiction") or "").strip()
     if jurisdiction:
         out["filter_state"] = jurisdiction
+    program = (active.get("program") or "").strip()
+    if program:
+        out["filter_program"] = program
     return out
 
 
@@ -229,6 +232,7 @@ def _answer_for_subquestion(
         emitter=emitter,
         filter_payer=filters.get("filter_payer"),
         filter_state=filters.get("filter_state"),
+        filter_program=filters.get("filter_program"),
     )
     return (answer_text, usage, sources or [])
 
@@ -278,7 +282,7 @@ def process_one(correlation_id: str, payload: dict) -> None:
         state["turn_count_since_active_set"] = count
         if count > 2:
             save_state(thread_id, {
-                "active": {**(state.get("active") or {}), "payer": None, "domain": None, "jurisdiction": None},
+                "active": {**(state.get("active") or {}), "payer": None, "program": None, "domain": None, "jurisdiction": None},
                 "turn_count_since_active_set": 0,
             })
             state = get_state(thread_id) or state

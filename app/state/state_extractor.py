@@ -15,9 +15,18 @@ PAYER_NAMES_FALLBACK = (
     "Cigna",
     "Anthem",
     "Blue Cross",
-    "Medicaid",
-    "Medicare",
 )
+
+# Program / coverage words that should NOT be treated as a payer for RAG filtering.
+# If we set active.payer="Medicaid", Vertex filtering usually returns 0 because the index uses document_payer=plan name.
+GENERIC_COVERAGE_WORDS = ("medicaid", "medicare")
+
+# Program keywords -> canonical program token used in the RAG index (document_program).
+# Keep these canonical values aligned with what the dbt sync writes to Vertex/Postgres.
+PROGRAM_KEYWORDS: list[tuple[list[str], str]] = [
+    (["medicaid", "medicaid managed care", "mco"], "Medicaid"),
+    (["medicare", "medicare advantage", "ma plan"], "Medicare"),
+]
 
 # Domain keywords -> domain enum
 DOMAIN_KEYWORDS: list[tuple[list[str], str]] = [
@@ -87,14 +96,82 @@ def _detect_domain(text: str) -> str | None:
     return None
 
 
+def _detect_program(text: str) -> str | None:
+    """Detect program from text (Medicaid/Medicare, etc.)."""
+    tl = (text or "").strip().lower()
+    if not tl:
+        return None
+    for keywords, program in PROGRAM_KEYWORDS:
+        for kw in keywords:
+            # Use word boundaries for short tokens; allow phrases as substring match.
+            if len(kw) <= 3:
+                if re.search(r"\b" + re.escape(kw) + r"\b", tl, flags=re.I):
+                    return program
+            else:
+                if kw in tl:
+                    return program
+    return None
+
+
 def _detect_jurisdiction(text: str) -> str | None:
-    t = (text or "").strip()
-    for ab in STATE_ABBREVS:
-        if re.search(r"\b" + re.escape(ab) + r"\b", t, re.I):
-            return ab.upper()
+    """
+    Detect a US state jurisdiction from text.
+
+    Important: avoid false-positives on common short tokens:
+    - "ID" is almost always "member ID / Medicaid ID / ID card" in this app, not Idaho.
+    - "OR", "IN", "ME", "OK", "HI" appear frequently as normal words.
+
+    We therefore only accept state abbreviations when they appear in clear *location* contexts
+    (e.g. "in FL", "Miami, FL", "(FL)", "state of FL"). Full state names are accepted.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    t = raw
+    tl = raw.lower()
+
+    # 1) Full names (less ambiguous)
     for name in STATE_NAMES:
-        if name.lower() in t.lower():
+        if name.lower() in tl:
             return name
+
+    # 2) Abbreviations: require clear context
+    # Patterns intentionally case-insensitive for the surrounding words, but the token itself is matched and normalized.
+    ctx_patterns = (
+        r"(?:,|\()\s*(?P<ab>[A-Z]{2})\b",              # "Miami, FL" or "(FL"
+        r"\bstate\s+of\s+(?P<ab>[A-Z]{2})\b",          # "state of FL"
+        r"\bin\s+(?P<ab>[A-Z]{2})\b",                  # "in FL"
+        r"\bfor\s+(?P<ab>[A-Z]{2})\b",                 # "for FL"
+        r"\b(?:florida|texas|california|new\s+york|georgia|ohio|pennsylvania|north\s+carolina)\s*\((?P<ab>[A-Z]{2})\)",  # "Florida (FL)"
+    )
+
+    def _is_id_like_context(ab: str, start: int, end: int) -> bool:
+        """True when the matched 'ID' token is likely an identifier, not Idaho."""
+        if ab != "ID":
+            return False
+        after = tl[end : end + 20].strip()
+        before = tl[max(0, start - 25) : start].strip()
+        # Common contexts: "ID card", "member ID", "Medicaid ID", "insurance ID"
+        if after.startswith(("card", "cards", "number", "numbers")):
+            return True
+        if before.endswith(("member", "medicaid", "insurance", "plan")):
+            return True
+        if "id card" in tl or "member id" in tl or "medicaid id" in tl:
+            return True
+        return False
+
+    # Search for context patterns and validate the abbreviation.
+    for pat in ctx_patterns:
+        m = re.search(pat, t, flags=re.I)
+        if not m:
+            continue
+        ab = (m.group("ab") or "").upper()
+        if ab not in STATE_ABBREVS:
+            continue
+        if _is_id_like_context(ab, m.start("ab"), m.end("ab")):
+            continue
+        return ab
+
     return None
 
 
@@ -185,11 +262,14 @@ def extract_state_patch(
     reset_reason: str | None = None
     existing_active = (existing_state or {}).get("active") or {}
     existing_payer = existing_active.get("payer")
+    existing_program = existing_active.get("program")
     existing_domain = existing_active.get("domain")
+    existing_jurisdiction = (existing_active.get("jurisdiction") or "").strip() or None
     existing_slots = (existing_state or {}).get("open_slots") or []
 
     # 1) Payer(s): single -> active.payer; multiple -> active.payers (list), active.payer = None so RAG gets all
-    payers = _detect_all_payers(user_text or "")
+    payers_raw = _detect_all_payers(user_text or "")
+    payers = [p for p in payers_raw if (p or "").strip().lower() not in GENERIC_COVERAGE_WORDS]
     if payers:
         if len(payers) == 1:
             patch.setdefault("active", {})["payer"] = payers[0]
@@ -210,10 +290,30 @@ def extract_state_patch(
         patch.setdefault("active", {})["domain"] = domain
         if existing_domain and (existing_domain or "").strip().lower() != (domain or "").strip().lower():
             patch["open_slots"] = []
+    # 2b) Program (Medicaid/Medicare). Program is separate from payer; do not reset payer on program change.
+    program = _detect_program(user_text or "")
+    if program:
+        patch.setdefault("active", {})["program"] = program
+        if existing_program and (existing_program or "").strip().lower() != (program or "").strip().lower():
+            # Program changes can change which docs are relevant; clear open slots.
+            patch["open_slots"] = []
     # 3) Jurisdiction
     jur = _detect_jurisdiction(user_text or "")
     if jur:
         patch.setdefault("active", {})["jurisdiction"] = jur
+    else:
+        # Recovery: if a previous turn incorrectly set a jurisdiction (most commonly "ID" from "ID card"),
+        # clear it when the current message is clearly about an identifier and not a location.
+        tl = (user_text or "").lower()
+        if existing_jurisdiction == "ID" and (
+            "id card" in tl
+            or "member id" in tl
+            or "medicaid id" in tl
+            or "insurance id" in tl
+        ):
+            # Only clear when there's no explicit Idaho/location mention in the same message.
+            if not re.search(r"(?:\bin\s+ID\b|\bstate\s+of\s+ID\b|,\s*ID\b|\(ID\))", user_text or "", flags=re.I):
+                patch.setdefault("active", {})["jurisdiction"] = None
     # 4) User role
     role = _detect_user_role(user_text or "")
     if role:

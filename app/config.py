@@ -23,7 +23,7 @@ class Config:
     ollama_num_predict: int = 8192
     vertex_project_id: str | None = None
     vertex_location: str = "us-central1"
-    vertex_model: str = "gemini-2.5-flash"
+    vertex_model: str = "gemini-2.0-flash"
     # Auth: when set, proxy /api/v1/auth/* to Mobius-OS (plug-and-play)
     mobius_os_auth_url: str | None = None
     # Document mini reader: when set, proxy GET /api/v1/documents/{id}/pages to RAG backend for full-page inline reader
@@ -47,7 +47,7 @@ def get_config() -> Config:
         ollama_num_predict=int(os.getenv("OLLAMA_NUM_PREDICT", "8192")),
         vertex_project_id=os.getenv("VERTEX_PROJECT_ID"),
         vertex_location=os.getenv("VERTEX_LOCATION", "us-central1"),
-        vertex_model=os.getenv("VERTEX_MODEL", "gemini-2.5-flash"),
+        vertex_model=os.getenv("VERTEX_MODEL", "gemini-2.0-flash"),
         mobius_os_auth_url=os.getenv("MOBIUS_OS_AUTH_URL") or None,
         rag_app_api_base=(os.getenv("RAG_APP_API_BASE") or "").strip() or None,
     )

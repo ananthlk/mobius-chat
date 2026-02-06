@@ -228,7 +228,7 @@ def _vertex_generate_sync(model_name: str, prompt: str, gen_config: dict) -> tup
 
 
 class VertexAIProvider(LLMProvider):
-    def __init__(self, project_id: str, location: str = "us-central1", model: str = "gemini-2.5-flash"):
+    def __init__(self, project_id: str, location: str = "us-central1", model: str = "gemini-2.0-flash"):
         import os
         trace_entered("services.llm_provider.VertexAIProvider.__init__", project_id=(project_id or "")[:20] or "(empty)")
         # Never pass None/empty to Vertex SDK; resolve at last moment (handles env not loaded yet or wrong run path)

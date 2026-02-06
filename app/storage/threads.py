@@ -13,7 +13,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 DEFAULT_STATE: dict[str, Any] = {
-    "active": {"payer": None, "domain": None, "jurisdiction": None, "user_role": None},
+    "active": {"payer": None, "program": None, "domain": None, "jurisdiction": None, "user_role": None},
     "open_slots": [],
     "recent_entities": [],
     "last_user_intent": None,

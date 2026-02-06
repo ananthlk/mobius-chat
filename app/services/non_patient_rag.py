@@ -15,6 +15,54 @@ def _emit(emitter, chunk: str) -> None:
         emitter(chunk.strip())
 
 
+def _search_local_rag_api(question: str, k: int, emitter=None) -> list[dict]:
+    """Local/dev retrieval via Mobius RAG backend (/api/query).
+
+    This is used when Vertex Vector Search is not configured.
+    Expects RAG backend to be reachable via RAG_APP_API_BASE (see mobius-chat/.env.example).
+    """
+    try:
+        from app.config import get_config
+        import httpx
+    except Exception:
+        return []
+
+    base = (get_config().rag_app_api_base or "").strip()
+    if not base:
+        return []
+
+    url = base.rstrip("/") + "/api/query"
+    try:
+        _emit(emitter, f"Searching our materials (local dev, up to {k} results)...")
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.post(url, json={"query": question, "k": k})
+            resp.raise_for_status()
+            data = resp.json() or {}
+        chunks = data.get("chunks") or []
+        out: list[dict] = []
+        for c in chunks:
+            if not isinstance(c, dict):
+                continue
+            text = (c.get("text") or "").strip()
+            if not text:
+                continue
+            out.append(
+                {
+                    "text": text,
+                    "document_id": c.get("document_id"),
+                    "document_name": c.get("document_name"),
+                    "page_number": c.get("page_number"),
+                    "source_type": c.get("source_type") or "chunk",
+                    # (match_score/confidence/distance) not provided by /api/query today
+                }
+            )
+        return out
+    except Exception as e:
+        logger.warning("Local RAG API search failed: %s", e)
+        _emit(emitter, f"Local search didn’t work ({e}). Answering without our materials.")
+        return []
+
+
 def answer_non_patient(
     question: str,
     k: int | None = None,
@@ -24,9 +72,10 @@ def answer_non_patient(
     emitter=None,
     filter_payer: str | list[str] | None = None,
     filter_state: str | None = None,
+    filter_program: str | None = None,
 ) -> tuple[str, list[dict], dict[str, Any] | None]:
     """Answer a non-patient subquestion: RAG (blend of hierarchical + factual or single path) then LLM. Returns (answer_text, sources, llm_usage).
-    Per-request filter_payer/filter_state (e.g. from thread state) scope retrieval to that payer/state; overrides config."""
+    Per-request filter_payer/filter_state/filter_program (e.g. from thread state) scope retrieval; overrides config."""
     trace_entered("services.non_patient_rag.answer_non_patient")
     from app.chat_config import get_chat_config
     from app.services.llm_provider import get_llm_provider
@@ -51,6 +100,7 @@ def answer_non_patient(
                     emitter=emitter,
                     filter_payer=filter_payer,
                     filter_state=filter_state,
+                    filter_program=filter_program,
                 )
             else:
                 from app.services.published_rag_search import search_published_rag
@@ -58,7 +108,7 @@ def answer_non_patient(
                 _emit(emitter, f"Searching our materials (up to {k} results)...")
                 chunks = search_published_rag(
                     question, k=k, confidence_min=confidence_min, emitter=emitter,
-                    filter_payer=filter_payer, filter_state=filter_state,
+                    filter_payer=filter_payer, filter_state=filter_state, filter_program=filter_program,
                 )
                 if chunks:
                     _emit(emitter, f"Using {len(chunks)} result{'s' if len(chunks) != 1 else ''} to answer this part.")
@@ -68,16 +118,23 @@ def answer_non_patient(
             logger.warning("Published RAG search failed: %s", e)
             _emit(emitter, f"Search didn’t work ({e}). Answering without our materials.")
     else:
-        _emit(emitter, "I don’t have access to our materials right now; I’ll answer from what I know.")
-        missing = [x for x, v in [
-            ("VERTEX_INDEX_ENDPOINT_ID", rag.vertex_index_endpoint_id),
-            ("VERTEX_DEPLOYED_INDEX_ID", rag.vertex_deployed_index_id),
-            ("CHAT_RAG_DATABASE_URL", rag.database_url),
-        ] if not (v or "").strip()]
-        logger.info(
-            "RAG skipped: set %s in mobius-config/.env or mobius-chat/.env (see .env.example). See docs/PUBLISHED_RAG_SETUP.md.",
-            ", ".join(missing) or "vertex_index_endpoint_id, vertex_deployed_index_id, database_url",
-        )
+        # Local/dev path: use Mobius RAG backend if configured.
+        k_local = k if k is not None else (rag.top_k or 10)
+        chunks = _search_local_rag_api(question, k=k_local, emitter=emitter)
+        if chunks:
+            _emit(emitter, f"Using {len(chunks)} result{'s' if len(chunks) != 1 else ''} to answer this part.")
+        else:
+            _emit(emitter, "I don’t have access to our materials right now; I’ll answer from what I know.")
+            missing = [x for x, v in [
+                ("VERTEX_INDEX_ENDPOINT_ID", rag.vertex_index_endpoint_id),
+                ("VERTEX_DEPLOYED_INDEX_ID", rag.vertex_deployed_index_id),
+                ("CHAT_RAG_DATABASE_URL", rag.database_url),
+            ] if not (v or "").strip()]
+            logger.info(
+                "RAG skipped: set Vertex env (VERTEX_INDEX_ENDPOINT_ID, VERTEX_DEPLOYED_INDEX_ID, CHAT_RAG_DATABASE_URL) "
+                "or configure local retrieval via RAG_APP_API_BASE (see .env.example / docs/ENV.md). Missing: %s",
+                ", ".join(missing) or "(unknown)",
+            )
 
     # Build context string and sources list for citations (include match_score, confidence for chat source cards)
     context_parts = []

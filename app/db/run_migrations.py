@@ -28,7 +28,13 @@ logger = logging.getLogger(__name__)
 
 
 def _get_db_url() -> str:
-    return (os.environ.get("CHAT_RAG_DATABASE_URL") or os.environ.get("RAG_DATABASE_URL") or "").strip()
+    # Keep in sync with app.chat_config._build_rag_from_env fallbacks.
+    return (
+        os.environ.get("CHAT_RAG_DATABASE_URL")
+        or os.environ.get("RAG_DATABASE_URL")
+        or os.environ.get("CHAT_DATABASE_URL")  # used by mobius-dbt as chat destination URL
+        or ""
+    ).strip()
 
 
 def run_migrations() -> bool:
