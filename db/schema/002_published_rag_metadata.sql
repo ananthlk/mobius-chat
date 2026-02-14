@@ -42,6 +42,7 @@ CREATE INDEX IF NOT EXISTS idx_published_rag_metadata_payer ON published_rag_met
 CREATE INDEX IF NOT EXISTS idx_published_rag_metadata_state ON published_rag_metadata(document_state);
 CREATE INDEX IF NOT EXISTS idx_published_rag_metadata_program ON published_rag_metadata(document_program);
 CREATE INDEX IF NOT EXISTS idx_published_rag_metadata_authority ON published_rag_metadata(document_authority_level);
+CREATE INDEX IF NOT EXISTS idx_published_rag_metadata_generator_id ON published_rag_metadata(generator_id);
 
 -- Sync run audit: one row per sync_mart_to_chat.py run
 CREATE TABLE IF NOT EXISTS sync_runs (
