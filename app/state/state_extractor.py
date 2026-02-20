@@ -3,6 +3,8 @@ Do not write user-provided patient info to chat_state (DOB, names, MRNs, etc.)."
 import re
 from typing import Any
 
+from app.state.jurisdiction import build_jurisdiction_patch
+
 # Fallback payer names when config/payer_normalization.yaml is not used (e.g. Aetna, Medicaid)
 PAYER_NAMES_FALLBACK = (
     "Sunshine Health",
@@ -45,9 +47,15 @@ DOMAIN_KEYWORDS: list[tuple[list[str], str]] = [
 STATE_ABBREVS = ("AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY")
 STATE_NAMES = ("Florida", "North Carolina", "Texas", "California", "New York", "Georgia", "Ohio", "Pennsylvania")
 
-# User role keywords
+# User role keywords (perspective: provider vs patient)
 ROLE_PROVIDER = ("as a provider", "our clinic", "provider portal", "we are a provider", "provider office")
 ROLE_PATIENT = ("member", "i am a patient", "i'm a patient", "as a member", "as a patient")
+
+# Regulatory agency keywords
+REGULATORY_AGENCY_KEYWORDS: list[tuple[list[str], str]] = [
+    (["cms", "centers for medicare", "medicare and medicaid"], "CMS"),
+    (["state medicaid", "state medicaid agency", "medicaid agency"], "state_medicaid_agency"),
+]
 
 # Open slot answer patterns (fulfill slot when user says something like this)
 SLOT_ANSWER_PATTERNS: list[tuple[str, re.Pattern]] = [
@@ -56,10 +64,27 @@ SLOT_ANSWER_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("member_type", re.compile(r"\b(member\s+type|subscriber|dependent)\b", re.I)),
     ("date_range", re.compile(r"\b\d{1,2}/\d{1,2}/\d{2,4}\b|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2},?\s*\d{4}\b", re.I)),
     ("provider_type", re.compile(r"\b(provider\s+type|npi|facility)\b", re.I)),
+    # Jurisdiction slots
+    ("jurisdiction.state", re.compile(r"\b(in|for|state of)\s+[A-Za-z\s]{2,}\b|\b(florida|texas|california|new york|georgia|ohio|pennsylvania|north carolina)\b", re.I)),
+    ("jurisdiction.payor", re.compile(r"\b(sunshine|united|uhc|aetna|molina|humana|cigna|anthem)\b", re.I)),
+    ("jurisdiction.program", re.compile(r"\b(medicaid|medicare|commercial)\b", re.I)),
+    ("jurisdiction.perspective", re.compile(r"\b(as a provider|provider|as a member|member|patient)\b", re.I)),
 ]
 
 # Reset / new topic phrases
 NEW_TOPIC_PHRASES = ("new question", "different topic", "different question", "new topic", "switch to", "what about")
+
+
+def _merge_jurisdiction_patch(patch: dict[str, Any], jpatch: dict[str, Any]) -> None:
+    """Merge jurisdiction_obj from jpatch into patch['active']."""
+    if not jpatch or "jurisdiction_obj" not in jpatch:
+        return
+    patch.setdefault("active", {})
+    existing = patch["active"].get("jurisdiction_obj")
+    if isinstance(existing, dict):
+        patch["active"]["jurisdiction_obj"] = {**existing, **jpatch["jurisdiction_obj"]}
+    else:
+        patch["active"]["jurisdiction_obj"] = dict(jpatch["jurisdiction_obj"])
 
 
 def _detect_payer(text: str) -> str | None:
@@ -175,6 +200,18 @@ def _detect_jurisdiction(text: str) -> str | None:
     return None
 
 
+def _detect_regulatory_agency(text: str) -> str | None:
+    """Detect regulatory agency from text (CMS, state Medicaid agency, etc.)."""
+    tl = (text or "").strip().lower()
+    if not tl:
+        return None
+    for keywords, agency in REGULATORY_AGENCY_KEYWORDS:
+        for kw in keywords:
+            if kw in tl:
+                return agency
+    return None
+
+
 def _detect_user_role(text: str) -> str | None:
     t = (text or "").strip().lower()
     for phrase in ROLE_PROVIDER:
@@ -274,6 +311,7 @@ def extract_state_patch(
         if len(payers) == 1:
             patch.setdefault("active", {})["payer"] = payers[0]
             patch.setdefault("active", {})["payers"] = []
+            _merge_jurisdiction_patch(patch, build_jurisdiction_patch(payor=payers[0]))
             if existing_payer and (existing_payer or "").strip().lower() != (payers[0] or "").strip().lower():
                 reset_reason = "payer_change"
                 patch.setdefault("active", {})["domain"] = None
@@ -281,6 +319,7 @@ def extract_state_patch(
         else:
             patch.setdefault("active", {})["payer"] = None
             patch.setdefault("active", {})["payers"] = payers
+            _merge_jurisdiction_patch(patch, build_jurisdiction_patch(payor=", ".join(payers)))
             reset_reason = "payer_change"
             patch.setdefault("active", {})["domain"] = None
             patch["open_slots"] = []
@@ -294,13 +333,15 @@ def extract_state_patch(
     program = _detect_program(user_text or "")
     if program:
         patch.setdefault("active", {})["program"] = program
+        _merge_jurisdiction_patch(patch, build_jurisdiction_patch(program=program))
         if existing_program and (existing_program or "").strip().lower() != (program or "").strip().lower():
             # Program changes can change which docs are relevant; clear open slots.
             patch["open_slots"] = []
-    # 3) Jurisdiction
+    # 3) Jurisdiction (state)
     jur = _detect_jurisdiction(user_text or "")
     if jur:
         patch.setdefault("active", {})["jurisdiction"] = jur
+        _merge_jurisdiction_patch(patch, build_jurisdiction_patch(state=jur))
     else:
         # Recovery: if a previous turn incorrectly set a jurisdiction (most commonly "ID" from "ID card"),
         # clear it when the current message is clearly about an identifier and not a location.
@@ -314,10 +355,16 @@ def extract_state_patch(
             # Only clear when there's no explicit Idaho/location mention in the same message.
             if not re.search(r"(?:\bin\s+ID\b|\bstate\s+of\s+ID\b|,\s*ID\b|\(ID\))", user_text or "", flags=re.I):
                 patch.setdefault("active", {})["jurisdiction"] = None
-    # 4) User role
+                _merge_jurisdiction_patch(patch, build_jurisdiction_patch(state=""))
+    # 4) User role (perspective: provider vs patient)
     role = _detect_user_role(user_text or "")
     if role:
         patch.setdefault("active", {})["user_role"] = role
+        _merge_jurisdiction_patch(patch, build_jurisdiction_patch(perspective=role))
+    # 4b) Regulatory agency
+    reg = _detect_regulatory_agency(user_text or "")
+    if reg:
+        _merge_jurisdiction_patch(patch, build_jurisdiction_patch(regulatory_agency=reg))
     # 5) Open slots: remove fulfilled when user_text looks like an answer (slots are added post-turn via register_open_slots)
     remaining_slots = _open_slots_fulfilled(user_text or "", existing_slots)
     if "open_slots" not in patch and remaining_slots != existing_slots:

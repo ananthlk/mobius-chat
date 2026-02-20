@@ -46,7 +46,8 @@ def run_single_prompt_test(prompt_key: str, sample_input: dict[str, Any] | None)
 
     if prompt_key == "planner":
         message = sample.get("message") or "What is prior authorization?"
-        user = prompts.decompose_user_template.format(message=message)
+        context = sample.get("context") or ""
+        user = prompts.decompose_user_template.format(message=message, context=context)
         prompt = f"{prompts.decompose_system}\n\n{user}"
     elif prompt_key == "rag_answering":
         context = sample.get("context") or "(No context provided.)"

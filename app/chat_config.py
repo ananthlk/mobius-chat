@@ -67,12 +67,12 @@ except Exception:
 class ChatLLMConfig:
     """LLM factors for chat (separate from RAG). Default: Vertex AI."""
     provider: Literal["ollama", "vertex"] = "vertex"
-    model: str = "gemini-2.0-flash"
+    model: str = "gemini-2.5-flash"
     temperature: float = 0.1
     # Vertex
     vertex_project_id: str | None = None
     vertex_location: str = "us-central1"
-    vertex_model: str = "gemini-2.0-flash"
+    vertex_model: str = "gemini-2.5-flash"
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b"
@@ -137,6 +137,7 @@ class ChatPromptsConfig:
     )
     decompose_user_template: str = (
         "List the sub-questions in this message as JSON only. Do not answer the question.\n\n"
+        "{context}\n\n"
         "User message:\n{message}\n\n"
         "Output ONLY the JSON object (no other text):"
     )
@@ -344,11 +345,11 @@ def _chat_config_from_prompts_llm(pl: dict, rag: ChatRAGConfig) -> ChatConfig:
         vertex_project = (_env("CHAT_VERTEX_PROJECT_ID") or get_env_or("VERTEX_PROJECT_ID", "mobiusos-new") or "mobiusos-new").strip() or "mobiusos-new"
     llm = ChatLLMConfig(
         provider=(_str(llm_d, "provider") or "vertex").lower(),
-        model=_str(llm_d, "model") or "gemini-2.0-flash",
+        model=_str(llm_d, "model") or "gemini-2.5-flash",
         temperature=_float(llm_d, "temperature", 0.1),
         vertex_project_id=vertex_project or None,
         vertex_location=_str(llm_d, "vertex_location") or "us-central1",
-        vertex_model=_str(llm_d, "vertex_model") or "gemini-2.0-flash",
+        vertex_model=_str(llm_d, "vertex_model") or "gemini-2.5-flash",
         ollama_base_url=_str(llm_d, "ollama_base_url") or "http://localhost:11434",
         ollama_model=_str(llm_d, "ollama_model") or "llama3.1:8b",
         ollama_num_predict=_int(llm_d, "ollama_num_predict", 8192),
@@ -399,11 +400,11 @@ def get_chat_config() -> ChatConfig:
     llm_provider = _env("CHAT_LLM_PROVIDER") or os.getenv("LLM_PROVIDER") or "vertex"
     llm = ChatLLMConfig(
         provider=llm_provider.lower() or "vertex",
-        model=_env("CHAT_LLM_MODEL") or (os.getenv("VERTEX_MODEL", "gemini-2.0-flash") if llm_provider.lower() == "vertex" else os.getenv("OLLAMA_MODEL", "llama3.1:8b")) or ("gemini-2.0-flash" if llm_provider.lower() == "vertex" else "llama3.1:8b"),
+        model=_env("CHAT_LLM_MODEL") or (os.getenv("VERTEX_MODEL", "gemini-2.5-flash") if llm_provider.lower() == "vertex" else os.getenv("OLLAMA_MODEL", "llama3.1:8b")) or ("gemini-2.5-flash" if llm_provider.lower() == "vertex" else "llama3.1:8b"),
         temperature=_env_float("CHAT_LLM_TEMPERATURE", 0.1),
         vertex_project_id=(_env("CHAT_VERTEX_PROJECT_ID") or get_env_or("VERTEX_PROJECT_ID", "mobiusos-new") or os.getenv("VERTEX_PROJECT_ID") or os.getenv("CHAT_VERTEX_PROJECT_ID") or "mobiusos-new").strip() or "mobiusos-new",
         vertex_location=_env("CHAT_VERTEX_LOCATION") or os.getenv("VERTEX_LOCATION", "us-central1"),
-        vertex_model=_env("CHAT_VERTEX_MODEL") or os.getenv("VERTEX_MODEL", "gemini-2.0-flash"),
+        vertex_model=_env("CHAT_VERTEX_MODEL") or os.getenv("VERTEX_MODEL", "gemini-2.5-flash"),
         ollama_base_url=_env("CHAT_OLLAMA_BASE_URL") or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
         ollama_model=_env("CHAT_OLLAMA_MODEL") or os.getenv("OLLAMA_MODEL", "llama3.1:8b"),
         ollama_num_predict=int(os.getenv("CHAT_OLLAMA_NUM_PREDICT") or os.getenv("OLLAMA_NUM_PREDICT", "8192")),

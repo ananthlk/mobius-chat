@@ -48,8 +48,16 @@ def choose_consolidator_type(
     return "blended"
 
 
-def _build_consolidator_input_json(plan: Plan, stub_answers: list[str], user_message: str) -> str:
-    """Build JSON payload for consolidator: user_message, subquestions, answers."""
+def _build_consolidator_input_json(
+    plan: Plan,
+    stub_answers: list[str],
+    user_message: str,
+    *,
+    retrieval_metadata: dict | None = None,
+    sources_summary: list[dict] | None = None,
+    jurisdiction_summary: str | None = None,
+) -> str:
+    """Build JSON payload for consolidator: user_message, subquestions, answers, retrieval_metadata, sources_summary, jurisdiction_summary."""
     subquestions = [{"id": sq.id, "text": sq.text} for sq in plan.subquestions]
     answers = []
     for i, sq in enumerate(plan.subquestions):
@@ -60,6 +68,12 @@ def _build_consolidator_input_json(plan: Plan, stub_answers: list[str], user_mes
         "subquestions": subquestions,
         "answers": answers,
     }
+    if retrieval_metadata:
+        payload["retrieval_metadata"] = retrieval_metadata
+    if sources_summary:
+        payload["sources_summary"] = sources_summary
+    if jurisdiction_summary and jurisdiction_summary.strip():
+        payload["jurisdiction_summary"] = jurisdiction_summary.strip()
     return json.dumps(payload, indent=2)
 
 
@@ -175,6 +189,10 @@ def format_response(
     user_message: str,
     emitter: Callable[[str], None] | None = None,
     message_chunk_callback: Callable[[str], None] | None = None,
+    *,
+    retrieval_metadata: dict | None = None,
+    sources_summary: list[dict] | None = None,
+    jurisdiction_summary: str | None = None,
 ) -> tuple[str, LLMUsageDict | None]:
     """Turn plan + answers into one chat-friendly message via LLM. If message_chunk_callback is set, stream the draft; returns (message, None) for usage when streaming. On LLM failure, returns fallback and None usage."""
     trace_entered("responder.final.format_response", subquestions=len(plan.subquestions))
@@ -189,7 +207,12 @@ def format_response(
         from app.services.llm_provider import get_llm_provider
 
         cfg = get_chat_config()
-        consolidator_input_json = _build_consolidator_input_json(plan, stub_answers, user_message)
+        consolidator_input_json = _build_consolidator_input_json(
+            plan, stub_answers, user_message,
+            retrieval_metadata=retrieval_metadata,
+            sources_summary=sources_summary,
+            jurisdiction_summary=jurisdiction_summary,
+        )
         canonical_score = blended_canonical_score(plan)
         consolidator_type = choose_consolidator_type(
             canonical_score,

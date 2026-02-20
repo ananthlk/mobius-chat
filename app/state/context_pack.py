@@ -2,6 +2,7 @@
 from typing import Any
 
 from app.state.context_router import Route
+from app.state.jurisdiction import get_jurisdiction_from_active, jurisdiction_to_summary
 
 
 def build_context_pack(
@@ -14,16 +15,18 @@ def build_context_pack(
     if route == "STANDALONE":
         return ""
     active = (state or {}).get("active") or {}
-    payers_list = active.get("payers") or []
-    if payers_list and isinstance(payers_list, list):
-        payer = ", ".join(str(p).strip() for p in payers_list if p) or "—"
-    else:
-        payer = (active.get("payer") or "").strip() or "—"
+    j = get_jurisdiction_from_active(active)
+    jurisdiction_summary = jurisdiction_to_summary(j) or "—"
+    payer = (j.get("payor") or "").strip() or "—"
     domain = (active.get("domain") or "").strip() or "—"
-    jurisdiction = (active.get("jurisdiction") or "").strip() or "—"
-    role = (active.get("user_role") or "").strip() or "—"
+    state_val = (j.get("state") or "").strip() or "—"
+    program = (j.get("program") or "").strip() or "—"
+    perspective = (j.get("perspective") or "").strip() or "—"
     slots_str = ", ".join(open_slots) if open_slots else "none"
-    header = f"Context: payer={payer}; domain={domain}; jurisdiction={jurisdiction}; role={role}. Open questions: {slots_str}. Do not use patient-specific details."
+    header = (
+        f"Context: jurisdiction={jurisdiction_summary} (state={state_val} payor={payer} program={program} perspective={perspective}); "
+        f"domain={domain}. Open questions: {slots_str}. Do not use patient-specific details."
+    )
     if route == "LIGHT":
         if not last_turns:
             return header + "\n\n"

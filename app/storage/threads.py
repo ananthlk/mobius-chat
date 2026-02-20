@@ -12,8 +12,24 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Jurisdiction dimensions: state, payor, program, perspective, regulatory_agency
+DEFAULT_JURISDICTION: dict[str, Any] = {
+    "state": None,
+    "payor": None,
+    "program": None,
+    "perspective": None,  # "provider_office" | "patient"
+    "regulatory_agency": None,
+}
+
 DEFAULT_STATE: dict[str, Any] = {
-    "active": {"payer": None, "program": None, "domain": None, "jurisdiction": None, "user_role": None},
+    "active": {
+        "payer": None,
+        "program": None,
+        "domain": None,
+        "jurisdiction": None,  # legacy: state string; when dict, use DEFAULT_JURISDICTION shape
+        "user_role": None,
+        "jurisdiction_obj": None,  # explicit: {state, payor, program, perspective, regulatory_agency}
+    },
     "open_slots": [],
     "recent_entities": [],
     "last_user_intent": None,

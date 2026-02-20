@@ -3,11 +3,11 @@
 
 llm:
   provider: vertex
-  model: gemini-2.0-flash
+  model: gemini-2.5-flash
   temperature: 0.1
   vertex_project_id: null
   vertex_location: us-central1
-  vertex_model: gemini-2.0-flash
+  vertex_model: gemini-2.5-flash
   ollama_base_url: http://localhost:11434
   ollama_model: llama3.1:8b
   ollama_num_predict: 8192
@@ -61,8 +61,12 @@ prompts:
 
     Output format (your entire response must be valid JSON in this shape):
     {"subquestions": [{"id": "sq1", "text": "first subquestion", "kind": "non_patient", "question_intent": "factual", "intent_score": 0.9}, {"id": "sq2", "text": "second subquestion", "kind": "non_patient", "question_intent": "canonical", "intent_score": 0.2}]}
+
+    Jurisdiction: When context includes jurisdiction (payor, state, program), preserve it in subquestion text or ensure the subquestions remain scoped to that jurisdiction. If the user changes jurisdiction mid-message, split accordingly and flag in subquestion text.
   decompose_user_template: |
     List the sub-questions in this message as JSON only. Do not answer the question.
+
+    {context}
 
     User message:
     {message}
@@ -119,7 +123,11 @@ prompts:
     Return ONLY valid JSON matching the AnswerCard schema below. Do not include markdown, explanations, or extra text.
 
     AnswerCard schema:
-    {"mode":"FACTUAL","direct_answer":"string","sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string","bullets":["string"]}],"required_variables":["string"],"confidence_note":"string","citations":[{"id":"string","doc_title":"string","locator":"string","snippet":"string"}],"followups":[{"question":"string","reason":"string","field":"string"}]}
+    {"mode":"FACTUAL","direct_answer":"string","sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string","bullets":["string"]}],"required_variables":["string"],"confidence_note":"string","citations":[{"id":"string","doc_title":"string","locator":"string","snippet":"string"}],"followups":[{"question":"string","reason":"string","field":"string"}],"source_confidence_override":"approved_authoritative|approved_informational|proceed_with_caution|augmented_with_google|informational_only|no_sources","cited_source_indices":[1,2,3]}
+
+    Source confidence: The input includes retrieval_metadata with default_source_confidence. We expect you to use the highest-rated document(s). If you override (e.g. conflicting messages, more recent than authoritative), set source_confidence_override and explain in confidence_note. Omit source_confidence_override to use the default. List which source indices you actually used in cited_source_indices (1-based).
+
+    Jurisdiction: When jurisdiction_summary is present in the input, include a short jurisdiction line for the answer (e.g. "For Sunshine Health in Florida …"). If different subanswers apply to different payers or states, add a one-line hint when jurisdiction changes (e.g. "Note: the following applies to United Healthcare, not Sunshine.").
 
     Rules for FACTUAL mode:
     - direct_answer is required and must stand alone.
@@ -138,7 +146,11 @@ prompts:
     Return ONLY valid JSON matching the AnswerCard schema below. Do not include markdown, explanations, or extra text.
 
     AnswerCard schema:
-    {"mode":"CANONICAL","direct_answer":"string","sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string","bullets":["string"]}],"required_variables":["string"],"confidence_note":"string","citations":[{"id":"string","doc_title":"string","locator":"string","snippet":"string"}],"followups":[{"question":"string","reason":"string","field":"string"}]}
+    {"mode":"CANONICAL","direct_answer":"string","sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string","bullets":["string"]}],"required_variables":["string"],"confidence_note":"string","citations":[{"id":"string","doc_title":"string","locator":"string","snippet":"string"}],"followups":[{"question":"string","reason":"string","field":"string"}],"source_confidence_override":"approved_authoritative|approved_informational|proceed_with_caution|augmented_with_google|informational_only|no_sources","cited_source_indices":[1,2,3]}
+
+    Source confidence: The input includes retrieval_metadata with default_source_confidence. We expect you to use the highest-rated document(s). If you override, set source_confidence_override and explain in confidence_note. Omit source_confidence_override to use the default. List which source indices you actually used in cited_source_indices (1-based).
+
+    Jurisdiction: When jurisdiction_summary is present in the input, include a short jurisdiction line for the answer (e.g. "For Sunshine Health in Florida …"). If different subanswers apply to different payers or states, add a one-line hint when jurisdiction changes (e.g. "Note: the following applies to United Healthcare, not Sunshine.").
 
     Rules for CANONICAL mode:
     - direct_answer is required and must stand alone. Classify each section with exactly one intent: process, requirements, definitions, exceptions, or references. The UI will show direct_answer and all sections.
@@ -157,7 +169,11 @@ prompts:
     Return ONLY valid JSON matching the AnswerCard schema below. Do not include markdown, explanations, or extra text.
 
     AnswerCard schema:
-    {"mode":"BLENDED","direct_answer":"string","sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string","bullets":["string"]}],"required_variables":["string"],"confidence_note":"string","citations":[{"id":"string","doc_title":"string","locator":"string","snippet":"string"}],"followups":[{"question":"string","reason":"string","field":"string"}]}
+    {"mode":"BLENDED","direct_answer":"string","sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string","bullets":["string"]}],"required_variables":["string"],"confidence_note":"string","citations":[{"id":"string","doc_title":"string","locator":"string","snippet":"string"}],"followups":[{"question":"string","reason":"string","field":"string"}],"source_confidence_override":"approved_authoritative|approved_informational|proceed_with_caution|augmented_with_google|informational_only|no_sources","cited_source_indices":[1,2,3]}
+
+    Source confidence: The input includes retrieval_metadata with default_source_confidence. We expect you to use the highest-rated document(s). If you override, set source_confidence_override and explain in confidence_note. Omit source_confidence_override to use the default. List which source indices you actually used in cited_source_indices (1-based).
+
+    Jurisdiction: When jurisdiction_summary is present in the input, include a short jurisdiction line for the answer (e.g. "For Sunshine Health in Florida …"). If different subanswers apply to different payers or states, add a one-line hint when jurisdiction changes (e.g. "Note: the following applies to United Healthcare, not Sunshine.").
 
     Rules for BLENDED mode:
     - direct_answer is required and must stand alone. Classify each section with exactly one intent: process, requirements, definitions, exceptions, or references. The UI will show direct_answer and requirements sections; process, definitions, exceptions, and references will be behind 'Show details'.

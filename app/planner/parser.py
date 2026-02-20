@@ -60,6 +60,7 @@ def _heuristic_intent(text: str) -> QuestionIntent | None:
 
 def _llm_decompose(
     message: str,
+    context: str = "",
 ) -> tuple[list[tuple[str, str, str | None, QuestionIntent | None, float | None]] | None, dict | None]:
     """Call LLM to decompose message into subquestions and classify each (kind, question_intent, intent_score).
     Returns (list of (id, text, kind, intent, intent_score) or None on failure, llm_usage dict or None).
@@ -71,7 +72,7 @@ def _llm_decompose(
         cfg = get_chat_config()
         provider = get_llm_provider()
         system = cfg.prompts.decompose_system
-        user = cfg.prompts.decompose_user_template.format(message=message)
+        user = cfg.prompts.decompose_user_template.format(message=message, context=context or "")
         prompt = f"{system}\n\n{user}"
         logger.info("[parser] calling LLM for decomposition (model=%s)", getattr(provider, 'model_name', 'unknown'))
         try:
@@ -139,6 +140,7 @@ def parse(
     message: str,
     *,
     thinking_emitter: Callable[[str], None] | None = None,
+    context: str = "",
 ) -> Plan:
     """Parse user message into a plan (subquestions + patient/non_patient).
     Uses LLM decomposition (JSON) when available; falls back to rule-based split.
@@ -163,7 +165,7 @@ def parse(
     parser_cfg = get_chat_config().parser
 
     # Step 1: Decompose (LLM first, then rule-based fallback). LLM also classifies when possible.
-    triples, plan_usage = _llm_decompose(text)
+    triples, plan_usage = _llm_decompose(text, context=context or "")
     if not triples:
         _emit(emitter, "I'm splitting your message into clear parts.")
         triples = _rule_based_decompose(text, parser_cfg)

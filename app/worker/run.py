@@ -1,4 +1,5 @@
 """Worker: consume from request queue → planner (breakdown only) → answer per subquestion (patient / non-patient path) → combine → publish."""
+import json
 import logging
 import threading
 import time
@@ -13,9 +14,21 @@ from app.planner.blueprint import build_blueprint
 from app.planner.schemas import Plan
 from app.queue import get_queue
 from app.responder import format_response
+from app.state.clarification import need_jurisdiction_clarification
+from app.state.state_extractor import extract_state_patch
 from app.storage import store_plan, store_response
 from app.storage.progress import append_message_chunk, append_thinking, clear_progress, start_progress
+from app.state.context_pack import build_context_pack
+from app.state.context_router import route_context
+from app.state.jurisdiction import get_jurisdiction_from_active, jurisdiction_to_summary, rag_filters_from_active
+from app.storage.threads import DEFAULT_STATE, get_last_turn_messages, get_state, register_open_slots, save_state
 from app.services.cost_model import compute_cost
+from app.services.doc_assembly import (
+    RETRIEVAL_SIGNAL_CORPUS_ONLY,
+    RETRIEVAL_SIGNAL_CORPUS_PLUS_GOOGLE,
+    RETRIEVAL_SIGNAL_GOOGLE_ONLY,
+    RETRIEVAL_SIGNAL_NO_SOURCES,
+)
 from app.services.non_patient_rag import answer_non_patient
 from app.services.retrieval_calibration import get_retrieval_blend, intent_to_score
 from app.services.usage import LLMUsageDict
@@ -24,6 +37,36 @@ logger = logging.getLogger(__name__)
 
 DEBUG_PREFIX = "[debug]"
 TRUNCATE = 200
+
+# Badge keys for source_confidence_strip (Option D: retrieval default, LLM may override)
+BADGE_APPROVED_AUTHORITATIVE = "approved_authoritative"
+BADGE_APPROVED_INFORMATIONAL = "approved_informational"
+BADGE_PROCEED_WITH_CAUTION = "proceed_with_caution"
+BADGE_AUGMENTED_WITH_GOOGLE = "augmented_with_google"
+BADGE_INFORMATIONAL_ONLY = "informational_only"
+BADGE_NO_SOURCES = "no_sources"
+
+
+def _default_source_confidence(retrieval_signals: list[str], all_sources: list[dict]) -> str:
+    """Compute default badge from retrieval signals (worst wins)."""
+    if not retrieval_signals:
+        return BADGE_NO_SOURCES
+    # Worst to best: no_sources, google_only, corpus_plus_google, corpus_only
+    if RETRIEVAL_SIGNAL_NO_SOURCES in retrieval_signals:
+        return BADGE_NO_SOURCES
+    if RETRIEVAL_SIGNAL_GOOGLE_ONLY in retrieval_signals:
+        return BADGE_INFORMATIONAL_ONLY
+    if RETRIEVAL_SIGNAL_CORPUS_PLUS_GOOGLE in retrieval_signals:
+        return BADGE_AUGMENTED_WITH_GOOGLE
+    # corpus_only: check confidence labels in sources
+    labels = [s.get("confidence_label") for s in all_sources if s.get("confidence_label")]
+    if any(l == "process_with_caution" for l in labels):
+        return BADGE_PROCEED_WITH_CAUTION
+    if all(l == "process_confident" for l in labels) and labels:
+        return BADGE_APPROVED_AUTHORITATIVE
+    if labels:
+        return BADGE_APPROVED_INFORMATIONAL
+    return BADGE_APPROVED_INFORMATIONAL
 
 
 def _debug_log_block(title: str, lines: list[str]) -> None:
@@ -35,12 +78,14 @@ def _debug_log_block(title: str, lines: list[str]) -> None:
 
 
 def _answer_for_subquestion(
+    correlation_id: str,
     sq_id: str,
     kind: str,
     text: str,
     retrieval_params: dict[str, Any] | None = None,
     emitter=None,
-) -> tuple[str, LLMUsageDict | None, list[dict]]:
+    rag_filter_overrides: dict[str, str] | None = None,
+) -> tuple[str, LLMUsageDict | None, list[dict], str]:
     """Answer one subquestion: patient path = warning; non-patient path = RAG + LLM (with sources). Returns (answer_text, llm_usage, sources)."""
     def emit(msg: str) -> None:
         if emitter and msg.strip():
@@ -48,24 +93,28 @@ def _answer_for_subquestion(
 
     if kind == "patient":
         emit("This part is about your own info—I can’t access that yet.")
-        return ("I don’t have access to your personal records yet.", None, [])
+        return ("I don’t have access to your personal records yet.", None, [], RETRIEVAL_SIGNAL_NO_SOURCES)
     snippet = (text[:60] + "...") if len(text) > 60 else text
     emit(f"Answering this part: “{snippet}”")
     params = retrieval_params or get_retrieval_blend(0.5)
-    answer_text, sources, usage = answer_non_patient(
+    answer_text, sources, usage, retrieval_signal = answer_non_patient(
         question=text,
         k=params.get("top_k"),
         confidence_min=params.get("confidence_min"),
         n_hierarchical=params.get("n_hierarchical"),
         n_factual=params.get("n_factual"),
         emitter=emitter,
+        correlation_id=correlation_id,
+        subquestion_id=sq_id,
+        rag_filter_overrides=rag_filter_overrides,
     )
-    return (answer_text, usage, sources or [])
+    return (answer_text, usage, sources or [], retrieval_signal)
 
 
 def process_one(correlation_id: str, payload: dict) -> None:
     """Process one request: plan (breakdown only) → answer each subquestion via patient/non-patient path → combine → publish."""
     message = payload.get("message", "").strip()
+    thread_id = (payload.get("thread_id") or "").strip() or None
     thinking_chunks: list[str] = []
     start_progress(correlation_id)
 
@@ -74,8 +123,63 @@ def process_one(correlation_id: str, payload: dict) -> None:
         append_thinking(correlation_id, chunk)
         logger.info("[thinking] %s", chunk[:80])
 
-    plan = parse(message, thinking_emitter=on_thinking)
+    # Load state and extract jurisdiction when thread_id provided
+    active: dict | None = None
+    merged_state: dict | None = None
+    context_pack = ""
+    if thread_id:
+        state = get_state(thread_id)
+        if state is None:
+            state = json.loads(json.dumps(DEFAULT_STATE))
+        patch, reset_reason = extract_state_patch(message, state, parse1_output=None, answer_card=None)
+        if patch:
+            save_state(thread_id, patch)
+        merged_state = {**state}
+        for k, v in (patch or {}).items():
+            if isinstance(merged_state.get(k), dict) and isinstance(v, dict):
+                merged_state[k] = {**merged_state.get(k, {}), **v}
+            else:
+                merged_state[k] = v
+        active = merged_state.get("active")
+        last_turns = get_last_turn_messages(thread_id)
+        route = route_context(message, merged_state, last_turns, reset_reason=reset_reason)
+        context_pack = build_context_pack(route, merged_state, last_turns, merged_state.get("open_slots") or [])
+
+    rag_filter_overrides = rag_filters_from_active((merged_state or {}).get("active")) if merged_state else {}
+
+    plan = parse(message, thinking_emitter=on_thinking, context=context_pack)
     store_plan(correlation_id, plan, thinking_log=thinking_chunks)
+
+    # Jurisdiction clarification: only when stateful (thread_id); if we need payor/state/program and have none, ask
+    needs_clarification, missing_slots, clarification_message = (False, [], None)
+    if thread_id and active is not None:
+        needs_clarification, missing_slots, clarification_message = need_jurisdiction_clarification(
+            plan.subquestions, active
+        )
+    if needs_clarification and clarification_message:
+        if thread_id and missing_slots:
+            register_open_slots(thread_id, missing_slots)
+        response_payload = {
+            "status": "clarification",
+            "message": clarification_message,
+            "plan": plan.model_dump(),
+            "thinking_log": thinking_chunks,
+            "open_slots": missing_slots,
+            "response_source": "clarification",
+            "model_used": None,
+            "llm_error": None,
+            "tokens_used": {"input_tokens": 0, "output_tokens": 0},
+            "usage_breakdown": [],
+            "cost_usd": 0.0,
+            "sources": [],
+            "source_confidence_strip": None,
+            "cited_source_indices": [],
+        }
+        clear_progress(correlation_id)
+        store_response(correlation_id, response_payload)
+        get_queue().publish_response(correlation_id, response_payload)
+        logger.info("Jurisdiction clarification returned for %s", correlation_id)
+        return
 
     # --- DEBUG: Parse 1 (Plan) ---
     parse1_lines = [
@@ -114,10 +218,11 @@ def process_one(correlation_id: str, payload: dict) -> None:
         planner_out_lines.append(f"  llm_usage: provider={u.get('provider')} model={u.get('model')} in={u.get('input_tokens')} out={u.get('output_tokens')}")
     _debug_log_block("Agent I/O: Planner", ["INPUT: user_message", f"  {message[:TRUNCATE]}{'...' if len(message) > TRUNCATE else ''}", "OUTPUT: plan"] + planner_out_lines)
 
-    # Answer each subquestion: patient = stub; non_patient = RAG + LLM (emit progress); collect usage and sources
+    # Answer each subquestion: patient = stub; non_patient = RAG + LLM (emit progress); collect usage, sources, retrieval_signals
     answers: list[str] = []
     usages: list[LLMUsageDict] = []
     all_sources: list[dict] = []
+    retrieval_signals: list[str] = []
     if getattr(plan, "llm_usage", None):
         usages.append(plan.llm_usage)
     for i, sq in enumerate(plan.subquestions):
@@ -130,13 +235,15 @@ def process_one(correlation_id: str, payload: dict) -> None:
                 score = intent_to_score(getattr(sq, "question_intent", None))
             retrieval_params = get_retrieval_blend(score)
         t0 = time.perf_counter()
-        ans, usage, sources = _answer_for_subquestion(
-            sq.id, sq.kind, sq.text,
+        ans, usage, sources, retrieval_signal = _answer_for_subquestion(
+            correlation_id, sq.id, sq.kind, sq.text,
             retrieval_params=retrieval_params,
             emitter=on_thinking,
+            rag_filter_overrides=rag_filter_overrides or None,
         )
         elapsed_ms = (time.perf_counter() - t0) * 1000
         answers.append(ans)
+        retrieval_signals.append(retrieval_signal)
         if usage:
             usages.append(usage)
         for s in sources or []:
@@ -175,11 +282,27 @@ def process_one(correlation_id: str, payload: dict) -> None:
     t0_integ = time.perf_counter()
     logger.info("%s [Agent: Integrator] input: plan + %d answers → output: combined message", DEBUG_PREFIX, len(answers))
 
+    default_source_confidence = _default_source_confidence(retrieval_signals, all_sources)
+    retrieval_metadata = {
+        "default_source_confidence": default_source_confidence,
+        "instruction": "We expect you to use the highest-rated document(s). If you override, set source_confidence_override and explain in confidence_note.",
+    }
+    sources_summary = [
+        {"index": s.get("index", i + 1), "document_name": s.get("document_name") or "document", "confidence_label": s.get("confidence_label")}
+        for i, s in enumerate(all_sources)
+    ]
+
     def on_message_chunk(chunk: str) -> None:
         append_message_chunk(correlation_id, chunk)
 
+    jurisdiction_summary = None
+    if active:
+        j = get_jurisdiction_from_active(active)
+        jurisdiction_summary = jurisdiction_to_summary(j) or None
     final_message, integrator_usage = format_response(
-        plan, answers, user_message=message, emitter=on_thinking, message_chunk_callback=on_message_chunk
+        plan, answers, user_message=message, emitter=on_thinking, message_chunk_callback=on_message_chunk,
+        retrieval_metadata=retrieval_metadata, sources_summary=sources_summary,
+        jurisdiction_summary=jurisdiction_summary,
     )
     elapsed_integ_ms = (time.perf_counter() - t0_integ) * 1000
     if integrator_usage:
@@ -232,6 +355,24 @@ def process_one(correlation_id: str, payload: dict) -> None:
         for i, s in enumerate(all_sources)
     ]
 
+    # Option D: source_confidence_strip = override ?? default; cited_source_indices from AnswerCard
+    source_confidence_strip = default_source_confidence
+    cited_source_indices: list[int] = []
+    try:
+        parsed = json.loads(final_message)
+        if isinstance(parsed, dict):
+            override = parsed.get("source_confidence_override")
+            if override and str(override).strip() in (
+                BADGE_APPROVED_AUTHORITATIVE, BADGE_APPROVED_INFORMATIONAL, BADGE_PROCEED_WITH_CAUTION,
+                BADGE_AUGMENTED_WITH_GOOGLE, BADGE_INFORMATIONAL_ONLY, BADGE_NO_SOURCES,
+            ):
+                source_confidence_strip = str(override).strip()
+            indices = parsed.get("cited_source_indices")
+            if isinstance(indices, list):
+                cited_source_indices = [int(x) for x in indices if isinstance(x, (int, float)) and 1 <= int(x) <= len(all_sources)]
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+
     response_payload = {
         "status": "completed",
         "message": final_message,
@@ -244,6 +385,8 @@ def process_one(correlation_id: str, payload: dict) -> None:
         "usage_breakdown": usage_breakdown,
         "cost_usd": round(total_cost, 6),
         "sources": response_sources,
+        "source_confidence_strip": source_confidence_strip,
+        "cited_source_indices": cited_source_indices,
     }
     clear_progress(correlation_id)
     store_response(correlation_id, response_payload)
