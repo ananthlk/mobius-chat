@@ -8,7 +8,7 @@ from typing import Any, Callable
 from dotenv import load_dotenv
 load_dotenv()  # load .env from project root (same credentials as Mobius RAG when using Vertex)
 
-from app.chat_config import get_chat_config
+from app.chat_config import get_chat_config, get_config_sha
 from app.planner import parse
 from app.planner.blueprint import build_blueprint
 from app.planner.schemas import Plan
@@ -16,12 +16,19 @@ from app.queue import get_queue
 from app.responder import format_response
 from app.state.clarification import need_jurisdiction_clarification
 from app.state.state_extractor import extract_state_patch
-from app.storage import store_plan, store_response
+from app.storage import insert_turn, store_plan, store_response
 from app.storage.progress import append_message_chunk, append_thinking, clear_progress, start_progress
 from app.state.context_pack import build_context_pack
 from app.state.context_router import route_context
 from app.state.jurisdiction import get_jurisdiction_from_active, jurisdiction_to_summary, rag_filters_from_active
-from app.storage.threads import DEFAULT_STATE, get_last_turn_messages, get_state, register_open_slots, save_state
+from app.storage.threads import (
+    DEFAULT_STATE,
+    append_turn_messages,
+    get_last_turn_messages,
+    get_state,
+    register_open_slots,
+    save_state,
+)
 from app.services.cost_model import compute_cost
 from app.services.doc_assembly import (
     RETRIEVAL_SIGNAL_CORPUS_ONLY,
@@ -113,6 +120,7 @@ def _answer_for_subquestion(
 
 def process_one(correlation_id: str, payload: dict) -> None:
     """Process one request: plan (breakdown only) → answer each subquestion via patient/non-patient path → combine → publish."""
+    t0_start = time.perf_counter()
     message = payload.get("message", "").strip()
     thread_id = (payload.get("thread_id") or "").strip() or None
     thinking_chunks: list[str] = []
@@ -150,12 +158,12 @@ def process_one(correlation_id: str, payload: dict) -> None:
     plan = parse(message, thinking_emitter=on_thinking, context=context_pack)
     store_plan(correlation_id, plan, thinking_log=thinking_chunks)
 
-    # Jurisdiction clarification: only when stateful (thread_id); if we need payor/state/program and have none, ask
-    needs_clarification, missing_slots, clarification_message = (False, [], None)
-    if thread_id and active is not None:
-        needs_clarification, missing_slots, clarification_message = need_jurisdiction_clarification(
-            plan.subquestions, active
-        )
+    # Jurisdiction clarification: ask when we have non_patient questions but no payor/state/program.
+    # Run even without thread_id (use empty active) so users see the ask; only register_open_slots when thread_id exists.
+    active_for_clarification = active if active is not None else (merged_state.get("active") if merged_state else {}) or {}
+    needs_clarification, missing_slots, clarification_message = need_jurisdiction_clarification(
+        plan.subquestions, active_for_clarification
+    )
     if needs_clarification and clarification_message:
         if thread_id and missing_slots:
             register_open_slots(thread_id, missing_slots)
@@ -174,7 +182,36 @@ def process_one(correlation_id: str, payload: dict) -> None:
             "sources": [],
             "source_confidence_strip": None,
             "cited_source_indices": [],
+            "thread_id": thread_id,
         }
+        duration_ms = int((time.perf_counter() - t0_start) * 1000)
+        try:
+            config_sha = get_config_sha() or None
+        except Exception:
+            config_sha = None
+        try:
+            insert_turn(
+                correlation_id=correlation_id,
+                question=message,
+                thinking_log=thinking_chunks,
+                final_message=clarification_message,
+                sources=[],
+                duration_ms=duration_ms,
+                model_used=None,
+                llm_provider=None,
+                session_id=None,
+                thread_id=thread_id,
+                plan_snapshot=plan.model_dump(),
+                source_confidence_strip=None,
+                config_sha=config_sha,
+            )
+        except Exception as e:
+            logger.warning("Failed to persist clarification turn: %s", e)
+        if thread_id:
+            try:
+                append_turn_messages(thread_id, correlation_id, message, clarification_message)
+            except Exception as e:
+                logger.warning("Failed to append clarification turn messages: %s", e)
         clear_progress(correlation_id)
         store_response(correlation_id, response_payload)
         get_queue().publish_response(correlation_id, response_payload)
@@ -373,6 +410,11 @@ def process_one(correlation_id: str, payload: dict) -> None:
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
 
+    duration_ms = int((time.perf_counter() - t0_start) * 1000)
+    try:
+        config_sha = get_config_sha() or None
+    except Exception:
+        config_sha = None
     response_payload = {
         "status": "completed",
         "message": final_message,
@@ -387,7 +429,31 @@ def process_one(correlation_id: str, payload: dict) -> None:
         "sources": response_sources,
         "source_confidence_strip": source_confidence_strip,
         "cited_source_indices": cited_source_indices,
+        "thread_id": thread_id,
     }
+    try:
+        insert_turn(
+            correlation_id=correlation_id,
+            question=message,
+            thinking_log=thinking_chunks,
+            final_message=final_message,
+            sources=response_sources,
+            duration_ms=duration_ms,
+            model_used=model_used,
+            llm_provider=(usages[0].get("provider") if usages else None),
+            session_id=None,
+            thread_id=thread_id,
+            plan_snapshot=plan.model_dump(),
+            source_confidence_strip=source_confidence_strip,
+            config_sha=config_sha,
+        )
+    except Exception as e:
+        logger.warning("Failed to persist turn: %s", e)
+    if thread_id:
+        try:
+            append_turn_messages(thread_id, correlation_id, message, final_message)
+        except Exception as e:
+            logger.warning("Failed to append turn messages: %s", e)
     clear_progress(correlation_id)
     store_response(correlation_id, response_payload)
     get_queue().publish_response(correlation_id, response_payload)

@@ -37,6 +37,45 @@ def _get_db_url() -> str:
     ).strip()
 
 
+def _connect_db(url: str):
+    """Connect using URL; parse into components to handle special chars in password."""
+    import urllib.parse
+
+    try:
+        from sqlalchemy.engine import make_url
+        parsed = make_url(url)
+        return __import__("psycopg2").connect(
+            host=parsed.host or "localhost",
+            port=parsed.port or 5432,
+            dbname=(parsed.database or "postgres").lstrip("/"),
+            user=parsed.username or "postgres",
+            password=parsed.password or "",
+            connect_timeout=10,
+        )
+    except ImportError:
+        pass
+
+    # Fallback: parse postgresql://user:password@host:port/db manually
+    parsed = urllib.parse.urlparse(url)
+    netloc = parsed.netloc
+    path = (parsed.path or "/").lstrip("/") or "postgres"
+    userinfo, _, hostport = netloc.rpartition("@")
+    if not hostport:
+        return __import__("psycopg2").connect(url)
+    username, _, password = userinfo.partition(":")
+    password = urllib.parse.unquote_to_bytes(password).decode("utf-8", "replace")
+    host, _, port_str = hostport.rpartition(":")
+    port = int(port_str) if port_str.isdigit() else 5432
+    return __import__("psycopg2").connect(
+        host=host or "localhost",
+        port=port,
+        dbname=path,
+        user=urllib.parse.unquote(username) if username else "postgres",
+        password=password,
+        connect_timeout=10,
+    )
+
+
 def run_migrations() -> bool:
     """Run each .sql in db/schema/ in sorted order. Returns True if ran, False if skipped (no URL)."""
     url = _get_db_url()
@@ -59,7 +98,7 @@ def run_migrations() -> bool:
 
     import psycopg2
 
-    conn = psycopg2.connect(url)
+    conn = _connect_db(url)
     conn.autocommit = True
     cur = conn.cursor()
     try:

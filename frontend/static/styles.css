@@ -1509,6 +1509,10 @@ body {
   background: var(--thinking-bg);
 }
 
+.source-citer .source-item--cited {
+  border-left: 3px solid var(--accent, #3b82f6);
+}
+
 /* Mini reader modal */
 .mini-reader-overlay {
   display: none;

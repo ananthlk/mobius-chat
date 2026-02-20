@@ -32,6 +32,7 @@ def answer_non_patient(
     from app.chat_config import get_chat_config
     from app.services.doc_assembly import RETRIEVAL_SIGNAL_NO_SOURCES
     from app.services.llm_provider import get_llm_provider
+    from app.services.retrieval_emit_adapter import wrap_emitter_for_user
 
     cfg = get_chat_config()
     rag = cfg.rag
@@ -68,8 +69,19 @@ def answer_non_patient(
                 emitter=emitter,
                 include_trace=include_trace,
             )
+            # Defensive: keep only dict-like chunks (handles list/Row from API or DB)
+            def _to_dict(c):
+                if isinstance(c, dict):
+                    return dict(c)
+                if isinstance(c, (list, tuple)) and c and all(isinstance(x, (list, tuple)) and len(x) == 2 for x in c):
+                    return dict(c)
+                return None
+            chunks = [d for c in chunks if (d := _to_dict(c)) is not None]
             if confidence_min is not None and chunks:
-                chunks = [c for c in chunks if (c.get("match_score") or c.get("confidence") or 0.0) >= confidence_min]
+                chunks = [
+                    c for c in chunks
+                    if isinstance(c, dict) and (c.get("match_score") or c.get("confidence") or 0.0) >= confidence_min
+                ]
             if not chunks:
                 _emit(emitter, "I didn’t find anything specific; I’ll answer from what I know.")
             if retrieval_trace and correlation_id and subquestion_id:
@@ -104,7 +116,7 @@ def answer_non_patient(
                 apply_google=True,
                 expand_neighbors=False,
                 database_url=rag.database_url if rag else None,
-                emitter=emitter,
+                emitter=wrap_emitter_for_user(emitter),
             )
         except Exception as e:
             logger.warning("Doc assembly failed: %s; using raw chunks", e)

@@ -154,3 +154,71 @@ def clear_progress(correlation_id: str) -> None:
     with _lock:
         _progress.pop(correlation_id, None)
         _progress_redis_logged.discard(correlation_id)
+def get_progress_from_db(correlation_id: str) -> tuple[list[str], str]:
+    """Build thinking_log and message_so_far from DB events. Used when worker runs in separate process (Redis)."""
+    events = get_progress_events_from_db(correlation_id, after_id=0)
+    thinking: list[str] = []
+    message_so_far = ""
+    for _ev_id, ev in events:
+        ev_data = ev.get("data") or {}
+        if not isinstance(ev_data, dict):
+            ev_data = {}
+        if ev.get("event") == "thinking":
+            line = ev_data.get("line") or ""
+            if line:
+                thinking.append(line)
+        elif ev.get("event") == "message":
+            message_so_far += ev_data.get("chunk") or ""
+    return (thinking, message_so_far)
+
+
+def get_progress_events_from_db(correlation_id: str, after_id: int = 0) -> list[tuple[int, dict[str, Any]]]:
+    """Poll chat_progress_events for this correlation_id. Returns [(id, {event, data}), ...] for API stream.
+    Used when worker runs in separate process (Redis queue); worker persists events to DB."""
+    try:
+        from app.chat_config import get_chat_config
+        cfg = get_chat_config()
+        url = (getattr(cfg, "rag", None) and getattr(cfg.rag, "database_url", None) or "").strip()
+        if not url:
+            return []
+        import psycopg2
+        import psycopg2.extras
+        conn = psycopg2.connect(url)
+        try:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute(
+                """
+                SELECT id, event_type, event_data
+                FROM chat_progress_events
+                WHERE correlation_id = %s AND id > %s
+                ORDER BY id ASC
+                LIMIT 100
+                """,
+                (correlation_id, after_id),
+            )
+            rows = cur.fetchall()
+            def _norm_data(val: Any) -> dict:
+                if isinstance(val, dict):
+                    return val
+                if isinstance(val, str):
+                    try:
+                        return json.loads(val) if val else {}
+                    except Exception:
+                        return {}
+                return {}
+
+            return [
+                (
+                    r["id"],
+                    {
+                        "event": r["event_type"] or "",
+                        "data": _norm_data(r.get("event_data")),
+                    },
+                )
+                for r in rows
+            ]
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.debug("Failed to poll progress events from DB: %s", e)
+        return []

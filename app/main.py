@@ -14,6 +14,19 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+
+class NoCacheStaticFiles(StaticFiles):
+    """Static files with no-cache to ensure frontend changes are picked up after mstart."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        return response
+
 from app.chat_config import chat_config_for_api
 from app.config import get_config
 from app.queue import get_queue
@@ -24,7 +37,8 @@ from app.storage import (
     get_recent_turns,
     get_response,
 )
-from app.storage.progress import get_and_clear_events, get_progress, get_progress_events_from_db
+from app.storage.threads import ensure_thread
+from app.storage.progress import get_and_clear_events, get_progress, get_progress_events_from_db, get_progress_from_db
 from app.worker import start_worker_background
 
 logging.basicConfig(level=logging.INFO)
@@ -49,6 +63,17 @@ def maybe_start_worker():
         logger.info("Started in-process worker (memory queue)")
     else:
         logger.info("Queue type=%s: run worker separately with: python -m app.worker", cfg.queue_type)
+    # Warn when DB not configured: chat history, jurisdiction state, and retrieval persistence will not work
+    try:
+        from app.chat_config import get_chat_config
+        db_url = (get_chat_config().rag.database_url or "").strip()
+        if not db_url:
+            logger.warning(
+                "CHAT_RAG_DATABASE_URL not set: chat turns, recent queries, jurisdiction state, "
+                "and retrieval persistence will NOT be saved. Set it in mobius-chat/.env"
+            )
+    except Exception:
+        pass
 
 
 class ChatRequest(BaseModel):
@@ -58,17 +83,17 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     correlation_id: str
+    thread_id: str  # Created or reused; client sends on follow-up requests
 
 
 @app.post("/chat", response_model=ChatResponse)
 def post_chat(body: ChatRequest):
-    """Enqueue a chat request; returns correlation_id for polling."""
+    """Enqueue a chat request; returns correlation_id and thread_id for polling."""
     correlation_id = str(uuid.uuid4())
-    payload: dict = {"message": body.message or ""}
-    if body.thread_id and body.thread_id.strip():
-        payload["thread_id"] = body.thread_id.strip()
+    thread_id = ensure_thread((body.thread_id or "").strip() or None)
+    payload: dict = {"message": body.message or "", "thread_id": thread_id}
     get_queue().publish_request(correlation_id, payload)
-    return ChatResponse(correlation_id=correlation_id)
+    return ChatResponse(correlation_id=correlation_id, thread_id=thread_id)
 
 
 @app.get("/chat/response/{correlation_id}")
@@ -80,7 +105,12 @@ def get_chat_response(correlation_id: str):
         resp = get_response(correlation_id)
     if resp is not None:
         return resp
+    cfg = get_config()
     in_progress, thinking_log, message_so_far = get_progress(correlation_id)
+    # When worker runs in separate process (Redis), in-memory progress is empty; fetch from DB.
+    if not in_progress and cfg.queue_type == "redis":
+        thinking_log, message_so_far = get_progress_from_db(correlation_id)
+        in_progress = bool(thinking_log or message_so_far)
     if in_progress:
         return {"status": "processing", "message": message_so_far or None, "plan": None, "thinking_log": thinking_log}
     return {"status": "pending", "message": None, "plan": None, "thinking_log": None}
@@ -181,8 +211,10 @@ def health():
 # Serve chat UI at /
 _frontend = Path(__file__).resolve().parent.parent / "frontend"
 if _frontend.exists():
-    app.mount("/static", StaticFiles(directory=_frontend / "static"), name="static")
+    app.mount("/static", NoCacheStaticFiles(directory=_frontend / "static"), name="static")
 
     @app.get("/")
     def index():
-        return FileResponse(_frontend / "index.html")
+        r = FileResponse(_frontend / "index.html")
+        r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return r

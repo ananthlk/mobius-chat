@@ -122,3 +122,15 @@ python -m pytest tests/ -v
 ```
 
 To run only short-term memory tests: `python -m pytest tests/test_short_term_memory.py -v`
+
+**Integration tests** (require DB + optional Google):
+
+```bash
+# DB only (CHAT_RAG_DATABASE_URL in .env)
+python -m pytest tests/test_doc_assembly_integration.py -v -s
+
+# DB + Google (add CHAT_SKILLS_GOOGLE_SEARCH_URL to .env, or pass inline)
+CHAT_SKILLS_GOOGLE_SEARCH_URL=https://your-skills-api/search? python -m pytest tests/test_doc_assembly_integration.py -v -s
+```
+
+Or from Mobius root: `./mobius-chat/scripts/run_doc_assembly_integration_tests.sh`

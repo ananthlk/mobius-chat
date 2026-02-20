@@ -28,6 +28,7 @@ The app loads `.env` from the **repo root**. Create a `.env` file there with the
 | `CHAT_RAG_DATABASE_URL` | Postgres URL for `published_rag_metadata` (e.g. `postgresql://postgres:PASSWORD@HOST:5432/mobius_chat`) |
 | `VERTEX_PROJECT`, `VERTEX_REGION`, `VERTEX_INDEX_ID`, `GCS_BUCKET`, `BQ_PROJECT`, `BQ_DATASET` | Used by sync job (MOBIUS-DBT); optional for Chat |
 | `CHAT_RAG_FILTER_PAYER`, `CHAT_RAG_FILTER_STATE`, `CHAT_RAG_FILTER_PROGRAM`, `CHAT_RAG_FILTER_AUTHORITY_LEVEL` | Optional RAG filter defaults. If set, **only** documents matching these values are returned (e.g. `CHAT_RAG_FILTER_PAYER=Sunshine Health`). Leave unset to search all payers. |
+| `CHAT_SKILLS_GOOGLE_SEARCH_URL` | Optional. Base URL for the Google search skill. When set and corpus confidence is low, Chat augments context with external search results. Local dev: `http://localhost:8004/search?` (run `mobius-skills/google-search` via mstart). |
 
 ## Local dev RAG (Mobius RAG backend + pgvector)
 
@@ -71,6 +72,12 @@ Install mobius-user for Option B: `pip install -e ../mobius-user`. Create DB and
 |----------|-------------|
 | `RAG_APP_API_BASE` | RAG backend URL for full-page inline reader (e.g. `http://localhost:8000`). When set, `GET /api/v1/documents/{document_id}/pages` proxies to RAG. If unset, mini reader shows snippet only and "Open in new tab" still works when `RAG_APP_BASE` is set. |
 | `RAG_APP_BASE` (frontend) | RAG app base URL for "Open in new tab" (e.g. `http://localhost:5173` for RAG Vite dev). Set in `frontend/index.html` as `window.RAG_APP_BASE = '...'` or at build time. Deep link: `?tab=read&documentId=<id>&pageNumber=<n>`. |
+
+## Debug (retrieval)
+
+| Variable | Description |
+|---------|-------------|
+| `CHAT_DEBUG_RETRIEVAL_EMITS` | Set to `1` or `true` to enable technical retrieval emits. When on, BM25 corpus, paragraph/sentence matches, JPD tagger, etc. are **logged** (logger) and **passed through** to the thinking UI (instead of being omitted). Use to debug "0 chunks" or retrieval pipeline behavior. |
 
 ## Optional overrides
 

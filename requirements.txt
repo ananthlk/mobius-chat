@@ -3,6 +3,8 @@ uvicorn[standard]>=0.24.0
 httpx>=0.25.0
 PyJWT>=2.8.0
 # mobius-user: shared auth (install from sibling: pip install -e ../mobius-user)
+# mobius-retriever: BM25 + Vertex retrieval (pip install -e ../mobius-retriever from mobius-chat or Mobius root)
+-e ../mobius-retriever
 pydantic>=2.0.0
 python-dotenv>=1.0.0
 # Optional: for QUEUE_TYPE=redis (API and worker in separate processes)

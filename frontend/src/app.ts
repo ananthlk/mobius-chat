@@ -1,3 +1,10 @@
+import {
+  createAuthService,
+  localStorageAdapter,
+  createAuthModal,
+  AUTH_STYLES,
+} from "@mobius/auth";
+
 /** Chat API response when polling for completion */
 interface ChatResponse {
   status: string;
@@ -155,6 +162,8 @@ function renderThinkingBlock(
       div.textContent = line;
       body.appendChild(div);
       word.textContent = "Thinking";
+      block.classList.remove("collapsed");
+      preview.setAttribute("aria-expanded", "true");
     },
     done(lineCount: number) {
       word.textContent = lineCount <= 1 ? "Thinking" : `Thinking (${lineCount})`;
@@ -209,7 +218,7 @@ function renderFeedback(): HTMLElement {
 }
 
 /** Reusable: source citer – same look as thinking (word + line, muted, collapsed by default). */
-function renderSourceCiter(sources: ParsedSource[]): HTMLElement {
+function renderSourceCiter(sources: ParsedSource[], citedSourceIndices?: number[]): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "source-citer collapsed";
 
@@ -239,9 +248,11 @@ function renderSourceCiter(sources: ParsedSource[]): HTMLElement {
 
   const body = document.createElement("div");
   body.className = "source-citer-body";
+  const citedSet = new Set((citedSourceIndices ?? []).map((n) => Number(n)));
   sources.forEach((s) => {
     const item = document.createElement("div");
-    item.className = "source-item";
+    const isCited = citedSet.size > 0 && citedSet.has(Number(s.index));
+    item.className = "source-item" + (isCited ? " source-item--cited" : "");
     const doc = document.createElement("div");
     doc.className = "source-doc";
     doc.textContent = `[${s.index}] ${s.document_name}` + (s.page_number != null ? ` (page ${s.page_number})` : "");
@@ -283,6 +294,34 @@ function run(): void {
   const hamburger = el("hamburger");
   const drawerClose = el("drawerClose");
   const btnConfig = document.getElementById("btnConfig");
+  const sidebarUser = document.getElementById("sidebarUser");
+  const sidebarUserName = document.getElementById("sidebarUserName");
+
+  const authApiBase = `${API_BASE.replace(/\/$/, "")}/api/v1`;
+  const auth = createAuthService({ apiBase: authApiBase, storage: localStorageAdapter });
+  const modal = createAuthModal({ auth, showOAuth: true });
+  document.body.appendChild(modal.el);
+  const styleEl = document.createElement("style");
+  styleEl.textContent = AUTH_STYLES;
+  document.head.appendChild(styleEl);
+
+  function updateSidebarUser(user: { greeting_name?: string } | null): void {
+    if (sidebarUserName)
+      sidebarUserName.textContent = user?.greeting_name ?? "Guest";
+  }
+
+  auth.on((_event) => {
+    auth.getUserProfile().then(updateSidebarUser);
+  });
+  auth.getUserProfile().then(updateSidebarUser);
+
+  if (sidebarUser) {
+    sidebarUser.addEventListener("click", () => {
+      auth.getUserProfile().then((user) => {
+        modal.open(user ? "account" : "login");
+      });
+    });
+  }
 
   function openDrawer(): void {
     drawer.classList.add("open");
@@ -481,9 +520,11 @@ function run(): void {
                 }))
               : [];
         if (sourceList.length > 0) {
-          turnWrap.appendChild(renderSourceCiter(sourceList));
+          const cited = (data as { cited_source_indices?: number[] }).cited_source_indices ?? [];
+          turnWrap.appendChild(renderSourceCiter(sourceList, cited));
         }
 
+        loadRecentTurns();
         scrollToBottom(messagesEl);
       })
       .catch((err: Error) => {
@@ -512,6 +553,41 @@ function run(): void {
   });
 
   sendBtn.addEventListener("click", () => sendMessage());
+
+  function loadRecentTurns(): void {
+    const listEl = document.getElementById("recentList");
+    if (!listEl) return;
+    fetch(API_BASE + "/chat/history/recent?limit=20")
+      .then((r) => r.json() as Promise<Array<{ correlation_id: string; question: string; created_at: string | null }>>)
+      .then((turns) => {
+        listEl.innerHTML = "";
+        for (const t of turns) {
+          const li = document.createElement("li");
+          li.className = "recent-item";
+          li.textContent = (t.question || "(empty)").slice(0, 80) + (t.question && t.question.length > 80 ? "…" : "");
+          li.title = t.question || "";
+          li.setAttribute("role", "button");
+          li.setAttribute("tabindex", "0");
+          li.addEventListener("click", () => {
+            (inputEl as HTMLInputElement).value = t.question;
+            updateSendState();
+          });
+          li.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              (inputEl as HTMLInputElement).value = t.question;
+              updateSendState();
+            }
+          });
+          listEl.appendChild(li);
+        }
+      })
+      .catch(() => {
+        listEl.innerHTML = "";
+      });
+  }
+
+  loadRecentTurns();
 
   updateSendState();
 }
