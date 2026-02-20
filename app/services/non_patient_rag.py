@@ -9,11 +9,43 @@ import logging
 from typing import Any
 
 logger = logging.getLogger(__name__)
+_DEBUG_RAG = os.environ.get("DEBUG_RAG", "1").lower() in ("1", "true", "yes")
+
+
+def _debug_chunks(label: str, chunks: Any, max_items: int = 5) -> None:
+    """Log type/structure of chunks for debugging list/get errors."""
+    if not _DEBUG_RAG:
+        return
+    tc = type(chunks).__name__
+    try:
+        ln = len(chunks) if chunks is not None else 0
+    except (TypeError, AttributeError):
+        ln = "?"
+    logger.info("[DEBUG_RAG] %s: type=%s len=%s", label, tc, ln)
+    if chunks is None or ln == 0:
+        return
+    try:
+        for i, c in enumerate(chunks):
+            if i >= max_items:
+                logger.info("[DEBUG_RAG]   ... and %s more", ln - max_items)
+                break
+            t = type(c).__name__
+            h = ""
+            if isinstance(c, dict):
+                h = str(list(c.keys())[:8])
+            elif isinstance(c, (list, tuple)):
+                h = f"len={len(c)} first_type={type(c[0]).__name__ if c else 'n/a'}"
+            logger.info("[DEBUG_RAG]   [%s] type=%s %s", i, t, h)
+    except Exception as e:
+        logger.warning("[DEBUG_RAG] %s iteration failed: %s", label, e)
 
 
 def _emit(emitter, chunk: str) -> None:
-    if emitter and chunk.strip():
-        emitter(chunk.strip())
+    try:
+        if emitter and chunk and str(chunk).strip():
+            emitter(str(chunk).strip())
+    except Exception as e:
+        logger.debug("Emit failed (non-fatal): %s", e)
 
 
 def answer_non_patient(
@@ -36,7 +68,7 @@ def answer_non_patient(
 
     cfg = get_chat_config()
     rag = cfg.rag
-    overrides = rag_filter_overrides or {}
+    overrides = rag_filter_overrides if isinstance(rag_filter_overrides, dict) else {}
     fp = overrides.get("filter_payer") if overrides else None
     fst = overrides.get("filter_state") if overrides else None
     fpr = overrides.get("filter_program") if overrides else None
@@ -69,14 +101,32 @@ def answer_non_patient(
                 emitter=emitter,
                 include_trace=include_trace,
             )
+            if retrieval_trace is not None and not isinstance(retrieval_trace, dict):
+                logger.warning("[DEBUG_RAG] retrieval_trace is %s not dict, ignoring", type(retrieval_trace).__name__)
+                retrieval_trace = None
+            if not isinstance(chunks, list):
+                logger.warning("[DEBUG_RAG] chunks is %s not list, using []", type(chunks).__name__)
+                chunks = []
+            _debug_chunks("after retrieve_for_chat", chunks)
             # Defensive: keep only dict-like chunks (handles list/Row from API or DB)
-            def _to_dict(c):
-                if isinstance(c, dict):
-                    return dict(c)
-                if isinstance(c, (list, tuple)) and c and all(isinstance(x, (list, tuple)) and len(x) == 2 for x in c):
-                    return dict(c)
-                return None
-            chunks = [d for c in chunks if (d := _to_dict(c)) is not None]
+            _normalized: list[dict] = []
+            for i, c in enumerate(chunks):
+                try:
+                    if _DEBUG_RAG and i < 3:
+                        logger.info("[DEBUG_RAG] normalize chunk[%s] type=%s", i, type(c).__name__)
+                    if isinstance(c, dict):
+                        _normalized.append(dict(c))
+                    elif isinstance(c, (list, tuple)) and c:
+                        if _DEBUG_RAG and i < 2:
+                            f0 = c[0] if c else None
+                            logger.info("[DEBUG_RAG] chunk[%s] is list-like first_el type=%s", i, type(f0).__name__ if f0 is not None else "None")
+                        if all(isinstance(x, (list, tuple)) and len(x) == 2 for x in c):
+                            _normalized.append(dict(c))
+                except (TypeError, AttributeError, ValueError) as ex:
+                    logger.warning("[DEBUG_RAG] chunk[%s] skip: %s (type=%s)", i, ex, type(c).__name__)
+                    continue
+            chunks = _normalized
+            _debug_chunks("after normalize", chunks)
             if confidence_min is not None and chunks:
                 chunks = [
                     c for c in chunks
@@ -124,10 +174,17 @@ def answer_non_patient(
     # Build context string and sources list for citations (include match_score, confidence, confidence_label)
     from app.services.doc_assembly import _ensure_chunk_dict
 
+    _debug_chunks("before context build", chunks)
     context_parts = []
     sources: list[dict] = []
     for i, c in enumerate(chunks):
-        c = _ensure_chunk_dict(c)
+        if _DEBUG_RAG and i < 2:
+            logger.info("[DEBUG_RAG] context loop i=%s type=%s", i, type(c).__name__)
+        try:
+            c = _ensure_chunk_dict(c)
+        except (TypeError, AttributeError, ValueError):
+            logger.warning("Chunk[%s] invalid (type=%s), skipping", i, type(c).__name__)
+            continue
         text = c.get("text") or ""
         if not text:
             continue
@@ -150,6 +207,20 @@ def answer_non_patient(
             "distance": c.get("distance"),
         })
     context = "\n\n".join(context_parts) if context_parts else "(No retrieved context.)"
+
+    # Prepend jurisdiction scope so the LLM knows docs are pre-filtered for that payer/state
+    jurisdiction_summary = None
+    if overrides and (fp or fst or fpr):
+        from app.state.jurisdiction import jurisdiction_to_summary
+        j = {"payor": (fp or "").strip(), "state": (fst or "").strip(), "program": (fpr or "").strip()}
+        jurisdiction_summary = jurisdiction_to_summary(j)
+    if jurisdiction_summary and context_parts:
+        context = (
+            f"Scope: The documents below were pre-filtered for {jurisdiction_summary}. "
+            "They are from that payer's materials. Use them to answer—do not say the context lacks information about "
+            f"{jurisdiction_summary}; the documents are already scoped to that payer.\n\n"
+            + context
+        )
 
     # Call LLM with context + question
     _emit(emitter, "Reading what I found and writing an answer...")

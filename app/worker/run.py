@@ -15,9 +15,18 @@ from app.planner.schemas import Plan
 from app.queue import get_queue
 from app.responder import format_response
 from app.state.clarification import need_jurisdiction_clarification
+from app.state.query_refinement import need_query_refinement
+from app.state.refined_query import (
+    build_refined_query,
+    classify_message,
+    compute_refined_query,
+    last_turn_was_clarification,
+    looks_like_slot_answer,
+)
 from app.state.state_extractor import extract_state_patch
+from app.communication.gate import send_to_user
 from app.storage import insert_turn, store_plan, store_response
-from app.storage.progress import append_message_chunk, append_thinking, clear_progress, start_progress
+from app.storage.progress import clear_progress, start_progress
 from app.state.context_pack import build_context_pack
 from app.state.context_router import route_context
 from app.state.jurisdiction import get_jurisdiction_from_active, jurisdiction_to_summary, rag_filters_from_active
@@ -101,6 +110,9 @@ def _answer_for_subquestion(
     if kind == "patient":
         emit("This part is about your own info—I can’t access that yet.")
         return ("I don’t have access to your personal records yet.", None, [], RETRIEVAL_SIGNAL_NO_SOURCES)
+    if kind == "tool":
+        emit("This part would use an external tool—not implemented yet.")
+        return ("I don’t have access to that tool yet. This feature is coming soon.", None, [], RETRIEVAL_SIGNAL_NO_SOURCES)
     snippet = (text[:60] + "...") if len(text) > 60 else text
     emit(f"Answering this part: “{snippet}”")
     params = retrieval_params or get_retrieval_blend(0.5)
@@ -118,6 +130,37 @@ def _answer_for_subquestion(
     return (answer_text, usage, sources or [], retrieval_signal)
 
 
+def _publish_failed_response(
+    correlation_id: str,
+    message: str,
+    thread_id: str | None,
+    thinking_chunks: list[str],
+    err: Exception,
+) -> None:
+    """Publish a failed response so the client gets a result instead of hanging."""
+    duration_ms = 0
+    response_payload = {
+        "status": "failed",
+        "message": f"Something went wrong: {err}. Please try again.",
+        "plan": None,
+        "thinking_log": thinking_chunks,
+        "response_source": "error",
+        "model_used": None,
+        "llm_error": str(err),
+        "tokens_used": {"input_tokens": 0, "output_tokens": 0},
+        "usage_breakdown": [],
+        "cost_usd": 0.0,
+        "sources": [],
+        "source_confidence_strip": None,
+        "cited_source_indices": [],
+        "thread_id": thread_id,
+    }
+    clear_progress(correlation_id)
+    store_response(correlation_id, response_payload)
+    get_queue().publish_response(correlation_id, response_payload)
+    logger.warning("Published failed response for %s: %s", correlation_id[:8], err)
+
+
 def process_one(correlation_id: str, payload: dict) -> None:
     """Process one request: plan (breakdown only) → answer each subquestion via patient/non-patient path → combine → publish."""
     t0_start = time.perf_counter()
@@ -127,14 +170,33 @@ def process_one(correlation_id: str, payload: dict) -> None:
     start_progress(correlation_id)
 
     def on_thinking(chunk: str) -> None:
-        thinking_chunks.append(chunk)
-        append_thinking(correlation_id, chunk)
-        logger.info("[thinking] %s", chunk[:80])
+        if chunk and str(chunk).strip():
+            thinking_chunks.append(str(chunk).strip())
+            send_to_user(correlation_id, {"type": "thinking", "content": str(chunk).strip()})
+            logger.info("[thinking] %s", chunk[:80])
 
+    try:
+        _process_one_impl(correlation_id, payload, message, thread_id, thinking_chunks, on_thinking, t0_start)
+    except Exception as e:
+        logger.exception("Request consumer error: %s", e)
+        _publish_failed_response(correlation_id, message, thread_id, thinking_chunks, e)
+
+
+def _process_one_impl(
+    correlation_id: str,
+    payload: dict,
+    message: str,
+    thread_id: str | None,
+    thinking_chunks: list[str],
+    on_thinking: Callable[[str], None],
+    t0_start: float,
+) -> None:
+    """Implementation of process_one (called from try/except)."""
     # Load state and extract jurisdiction when thread_id provided
     active: dict | None = None
     merged_state: dict | None = None
     context_pack = ""
+    last_turns: list = []
     if thread_id:
         state = get_state(thread_id)
         if state is None:
@@ -153,10 +215,29 @@ def process_one(correlation_id: str, payload: dict) -> None:
         route = route_context(message, merged_state, last_turns, reset_reason=reset_reason)
         context_pack = build_context_pack(route, merged_state, last_turns, merged_state.get("open_slots") or [])
 
+    # Refined query: slot_fill (same question + context) vs new_question
+    open_slots = (merged_state or {}).get("open_slots") or []
+    last_refined_query = (merged_state or {}).get("refined_query") or None
+    last_turn = last_turns[0] if last_turns else {}
+    classification = classify_message(message, last_turn, open_slots, last_refined_query)
+    if classification == "slot_fill" and last_refined_query and merged_state:
+        effective_message = build_refined_query(
+            last_refined_query,
+            get_jurisdiction_from_active((merged_state or {}).get("active")),
+        )
+    else:
+        effective_message = message
+
     rag_filter_overrides = rag_filters_from_active((merged_state or {}).get("active")) if merged_state else {}
 
-    plan = parse(message, thinking_emitter=on_thinking, context=context_pack)
+    plan = parse(effective_message, thinking_emitter=on_thinking, context=context_pack)
     store_plan(correlation_id, plan, thinking_log=thinking_chunks)
+
+    # Compute refined_query: slot_fill = merge into last; new_question = from plan
+    plan_text = plan.subquestions[0].text if plan.subquestions else None
+    refined_query = compute_refined_query(
+        classification, message, last_refined_query, merged_state or {}, plan_text
+    )
 
     # Jurisdiction clarification: ask when we have non_patient questions but no payor/state/program.
     # Run even without thread_id (use empty active) so users see the ask; only register_open_slots when thread_id exists.
@@ -167,9 +248,16 @@ def process_one(correlation_id: str, payload: dict) -> None:
     if needs_clarification and clarification_message:
         if thread_id and missing_slots:
             register_open_slots(thread_id, missing_slots)
+        from app.communication.agent import format_clarification
+
+        formatted_message = format_clarification(
+            intent="jurisdiction",
+            slots=missing_slots,
+            raw_message=clarification_message,
+        )
         response_payload = {
             "status": "clarification",
-            "message": clarification_message,
+            "message": formatted_message,
             "plan": plan.model_dump(),
             "thinking_log": thinking_chunks,
             "open_slots": missing_slots,
@@ -192,9 +280,9 @@ def process_one(correlation_id: str, payload: dict) -> None:
         try:
             insert_turn(
                 correlation_id=correlation_id,
-                question=message,
+                question=refined_query or message,
                 thinking_log=thinking_chunks,
-                final_message=clarification_message,
+                final_message=formatted_message,
                 sources=[],
                 duration_ms=duration_ms,
                 model_used=None,
@@ -209,13 +297,76 @@ def process_one(correlation_id: str, payload: dict) -> None:
             logger.warning("Failed to persist clarification turn: %s", e)
         if thread_id:
             try:
-                append_turn_messages(thread_id, correlation_id, message, clarification_message)
+                save_state(thread_id, {"refined_query": refined_query})
+                append_turn_messages(thread_id, correlation_id, refined_query or message, formatted_message)
             except Exception as e:
                 logger.warning("Failed to append clarification turn messages: %s", e)
         clear_progress(correlation_id)
         store_response(correlation_id, response_payload)
         get_queue().publish_response(correlation_id, response_payload)
         logger.info("Jurisdiction clarification returned for %s", correlation_id)
+        return
+
+    # Query refinement: ask user to confirm or rephrase when plan is ambiguous
+    should_refine, refinement_suggestions = need_query_refinement(plan)
+    if should_refine and refinement_suggestions:
+        from app.communication.agent import format_refinement_ask
+
+        formatted_refinement = format_refinement_ask(
+            original=message,
+            suggestions=refinement_suggestions,
+            raw_message="",
+        )
+        response_payload = {
+            "status": "refinement_ask",
+            "message": formatted_refinement,
+            "plan": plan.model_dump(),
+            "thinking_log": thinking_chunks,
+            "suggestions": refinement_suggestions,
+            "response_source": "refinement_ask",
+            "model_used": None,
+            "llm_error": None,
+            "tokens_used": {"input_tokens": 0, "output_tokens": 0},
+            "usage_breakdown": [],
+            "cost_usd": 0.0,
+            "sources": [],
+            "source_confidence_strip": None,
+            "cited_source_indices": [],
+            "thread_id": thread_id,
+        }
+        duration_ms = int((time.perf_counter() - t0_start) * 1000)
+        try:
+            config_sha = get_config_sha() or None
+        except Exception:
+            config_sha = None
+        try:
+            insert_turn(
+                correlation_id=correlation_id,
+                question=refined_query or message,
+                thinking_log=thinking_chunks,
+                final_message=formatted_refinement,
+                sources=[],
+                duration_ms=duration_ms,
+                model_used=None,
+                llm_provider=None,
+                session_id=None,
+                thread_id=thread_id,
+                plan_snapshot=plan.model_dump(),
+                source_confidence_strip=None,
+                config_sha=config_sha,
+            )
+        except Exception as e:
+            logger.warning("Failed to persist refinement turn: %s", e)
+        if thread_id:
+            try:
+                save_state(thread_id, {"refined_query": refined_query})
+                append_turn_messages(thread_id, correlation_id, refined_query or message, formatted_refinement)
+            except Exception as e:
+                logger.warning("Failed to append refinement turn messages: %s", e)
+        clear_progress(correlation_id)
+        store_response(correlation_id, response_payload)
+        get_queue().publish_response(correlation_id, response_payload)
+        logger.info("Query refinement ask returned for %s", correlation_id)
         return
 
     # --- DEBUG: Parse 1 (Plan) ---
@@ -272,8 +423,9 @@ def process_one(correlation_id: str, payload: dict) -> None:
                 score = intent_to_score(getattr(sq, "question_intent", None))
             retrieval_params = get_retrieval_blend(score)
         t0 = time.perf_counter()
+        question_text = bp.get("reframed_text") or bp.get("text") or sq.text
         ans, usage, sources, retrieval_signal = _answer_for_subquestion(
-            correlation_id, sq.id, sq.kind, sq.text,
+            correlation_id, sq.id, sq.kind, question_text,
             retrieval_params=retrieval_params,
             emitter=on_thinking,
             rag_filter_overrides=rag_filter_overrides or None,
@@ -330,7 +482,7 @@ def process_one(correlation_id: str, payload: dict) -> None:
     ]
 
     def on_message_chunk(chunk: str) -> None:
-        append_message_chunk(correlation_id, chunk)
+        send_to_user(correlation_id, {"type": "final", "content": chunk})
 
     jurisdiction_summary = None
     if active:
@@ -434,7 +586,7 @@ def process_one(correlation_id: str, payload: dict) -> None:
     try:
         insert_turn(
             correlation_id=correlation_id,
-            question=message,
+            question=refined_query or message,
             thinking_log=thinking_chunks,
             final_message=final_message,
             sources=response_sources,
@@ -451,7 +603,8 @@ def process_one(correlation_id: str, payload: dict) -> None:
         logger.warning("Failed to persist turn: %s", e)
     if thread_id:
         try:
-            append_turn_messages(thread_id, correlation_id, message, final_message)
+            save_state(thread_id, {"refined_query": refined_query})
+            append_turn_messages(thread_id, correlation_id, refined_query or message, final_message)
         except Exception as e:
             logger.warning("Failed to append turn messages: %s", e)
     clear_progress(correlation_id)

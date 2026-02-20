@@ -36,6 +36,8 @@ from app.storage import (
     get_plan,
     get_recent_turns,
     get_response,
+    insert_feedback,
+    insert_source_feedback,
 )
 from app.storage.threads import ensure_thread
 from app.storage.progress import get_and_clear_events, get_progress, get_progress_events_from_db, get_progress_from_db
@@ -201,6 +203,36 @@ def get_chat_history_most_helpful_searches(limit: int | None = 10):
 def get_chat_history_most_helpful_documents(limit: int | None = 10):
     """Documents most cited in liked answers."""
     return get_most_helpful_documents(_parse_limit(limit))
+
+
+class FeedbackBody(BaseModel):
+    rating: str  # "up" | "down"
+    comment: str | None = None
+
+
+class SourceFeedbackBody(BaseModel):
+    source_index: int  # 1-based
+    rating: str  # "up" | "down"
+
+
+@app.post("/chat/feedback/{correlation_id}")
+def post_chat_feedback(correlation_id: str, body: FeedbackBody):
+    """Persist turn-level feedback (thumbs up/down + optional comment)."""
+    if body.rating not in ("up", "down"):
+        raise HTTPException(status_code=400, detail="rating must be 'up' or 'down'")
+    insert_feedback(correlation_id, body.rating, body.comment or None)
+    return {"status": "ok"}
+
+
+@app.post("/chat/source-feedback/{correlation_id}")
+def post_chat_source_feedback(correlation_id: str, body: SourceFeedbackBody):
+    """Persist per-source feedback (thumbs up/down)."""
+    if body.rating not in ("up", "down"):
+        raise HTTPException(status_code=400, detail="rating must be 'up' or 'down'")
+    if body.source_index < 1:
+        raise HTTPException(status_code=400, detail="source_index must be >= 1")
+    insert_source_feedback(correlation_id, body.source_index, body.rating)
+    return {"status": "ok"}
 
 
 @app.get("/health")

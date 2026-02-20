@@ -9,9 +9,9 @@ class SubQuestion(BaseModel):
     """One subquestion from decomposition, with patient vs non-patient and question intent."""
     id: str = Field(..., description="Unique id for this subquestion (e.g. sq1, sq2)")
     text: str = Field(..., description="The subquestion text")
-    kind: Literal["patient", "non_patient"] = Field(
+    kind: Literal["patient", "non_patient", "tool"] = Field(
         ...,
-        description="patient = we do not have access (warning only); non_patient = RAG path",
+        description="patient = we do not have access; non_patient = RAG path; tool = external tool (TBD)",
     )
     question_intent: QuestionIntent | None = Field(
         default=None,

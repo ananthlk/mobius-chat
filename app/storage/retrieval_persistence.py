@@ -44,7 +44,7 @@ def insert_retrieval_run(
     dc = trace.get("decay_per_category") or []
     bl = trace.get("blend_selection") or {}
 
-    run_id = uuid.uuid4()
+    run_id = str(uuid.uuid4())
     path_val = path or (trace.get("path") if isinstance(trace.get("path"), str) else None) or "mobius"
     run_row = {
         "id": run_id,

@@ -146,45 +146,44 @@ def test_apply_google_fallback_high_confidence_corpus_only():
     """Best >= 0.85 → corpus only, no Google call."""
     chunks = [{"text": "a", "rerank_score": 0.9}]
     emitted = []
-    out = apply_google_fallback(chunks, "q", emitter=emitted.append)
-    assert len(out) == 1
-    assert out[0]["text"] == "a"
+    out_chunks, signal = apply_google_fallback(chunks, "q", emitter=emitted.append)
+    assert len(out_chunks) == 1
+    assert out_chunks[0]["text"] == "a"
     assert any("Corpus confidence sufficient" in s for s in emitted)
 
 
 def test_apply_google_fallback_mid_confidence_no_google_url():
-    """Best 0.5–0.85, no CHAT_SKILLS_GOOGLE_SEARCH_URL → corpus only."""
+    """Best 0.5–0.85, no CHAT_SKILLS_GOOGLE_SEARCH_URL → corpus only (no Google results)."""
     chunks = [{"text": "a", "rerank_score": 0.7}]
     with patch.dict("os.environ", {}, clear=False):
         if "CHAT_SKILLS_GOOGLE_SEARCH_URL" in __import__("os").environ:
             del __import__("os").environ["CHAT_SKILLS_GOOGLE_SEARCH_URL"]
     emitted = []
-    out = apply_google_fallback(chunks, "q", emitter=emitted.append)
-    assert len(out) == 1
+    out_chunks, signal = apply_google_fallback(chunks, "q", emitter=emitted.append)
+    assert len(out_chunks) == 1
     assert any("Adding external search" in s for s in emitted)
 
 
 def test_apply_google_fallback_low_confidence_no_google_url():
-    """Best < 0.5, no Google URL → returns filter_abstain(corpus) (no external results)."""
+    """Best < 0.5, no Google URL → returns all corpus chunks (no abstain filter)."""
     chunks = [{"text": "a", "rerank_score": 0.3}]
     with patch.dict("os.environ", {}, clear=False):
         pass  # ensure no CHAT_SKILLS_GOOGLE_SEARCH_URL
     emitted = []
-    out = apply_google_fallback(chunks, "q", emitter=emitted.append)
+    out_chunks, signal = apply_google_fallback(chunks, "q", emitter=emitted.append)
     assert any("Low corpus confidence" in s for s in emitted)
-    # All chunks are abstain, so filter_abstain removes them; no Google → empty
-    assert len(out) == 0
+    assert len(out_chunks) == 1  # send all chunks (no abstain filter)
 
 
 def test_apply_google_fallback_empty_chunks():
     """Empty chunks, no Google URL → empty result."""
     with patch.dict("os.environ", {}, clear=False):
-        out = apply_google_fallback([], "q")
-    assert out == []
+        out_chunks, signal = apply_google_fallback([], "q")
+    assert out_chunks == []
 
 
 def test_apply_google_fallback_with_mock_google():
-    """Best < 0.5 with mocked Google API → Google results returned."""
+    """Best < 0.5 with mocked Google API → corpus + Google results returned."""
     chunks = [{"text": "a", "rerank_score": 0.3}]
     mock_google = [{
         "text": "Ext snippet",
@@ -195,12 +194,12 @@ def test_apply_google_fallback_with_mock_google():
     }]
 
     with patch("app.services.doc_assembly.google_search_via_skills_api", return_value=mock_google):
-        out = apply_google_fallback(chunks, "test query")
+        out_chunks, signal = apply_google_fallback(chunks, "test query")
 
-    assert len(out) == 1
-    assert out[0]["source_type"] == "external"
-    assert out[0]["confidence_label"] == "abstain"
-    assert "External source" in out[0]["llm_guidance"]
+    assert len(out_chunks) == 2  # corpus + Google
+    assert out_chunks[1]["source_type"] == "external"
+    assert out_chunks[1]["confidence_label"] == "abstain"
+    assert "External source" in out_chunks[1]["llm_guidance"]
 
 
 # --- assemble_with_neighbors ---
@@ -226,30 +225,30 @@ def test_assemble_with_neighbors_deduplicates():
 # --- assemble_docs ---
 
 def test_assemble_docs_no_google():
-    """apply_google=False → confidence assigned, abstain filtered, no Google."""
+    """apply_google=False → confidence assigned, all chunks sent (no abstain filter), no Google."""
     chunks = [
         {"text": "a", "rerank_score": 0.9},
         {"text": "b", "rerank_score": 0.3},
     ]
-    out = assemble_docs(chunks, "q", apply_google=False)
-    assert len(out) == 1
-    assert out[0]["text"] == "a"
-    assert out[0]["confidence_label"] == "process_confident"
+    out_chunks, signal = assemble_docs(chunks, "q", apply_google=False)
+    assert len(out_chunks) == 2
+    assert out_chunks[0]["text"] == "a"
+    assert out_chunks[0]["confidence_label"] == "process_confident"
 
 
 def test_assemble_docs_with_google_high_confidence():
     """apply_google=True, best >= 0.85 → corpus only."""
     chunks = [{"text": "a", "rerank_score": 0.9}]
-    out = assemble_docs(chunks, "q", apply_google=True)
-    assert len(out) == 1
-    assert out[0]["text"] == "a"
+    out_chunks, signal = assemble_docs(chunks, "q", apply_google=True)
+    assert len(out_chunks) == 1
+    assert out_chunks[0]["text"] == "a"
 
 
 def test_assemble_docs_expand_neighbors_no_db():
     """expand_neighbors=True, database_url=None → no expansion (no DB)."""
     chunks = [{"id": "1", "text": "a", "rerank_score": 0.9, "document_id": "d1", "paragraph_index": 0}]
-    out = assemble_docs(chunks, "q", expand_neighbors=True, database_url=None, apply_google=False)
-    assert len(out) == 1
+    out_chunks, signal = assemble_docs(chunks, "q", expand_neighbors=True, database_url=None, apply_google=False)
+    assert len(out_chunks) == 1
 
 
 def test_google_search_via_skills_api_no_url():
@@ -281,9 +280,15 @@ def test_google_search_via_skills_api_with_passed_base():
 # --- Integration: non_patient_rag → doc assembly ---
 
 def test_non_patient_rag_sources_have_confidence_when_chunks_injected():
-    """Integration: when retrieval returns chunks, doc assembly adds confidence_label to sources."""
+    """Integration: sources get confidence_label from chunks (doc assembly or RAG API adds it)."""
     fake_chunks = [
-        {"text": "Eligibility requires prior auth.", "rerank_score": 0.9, "document_name": "Doc1"},
+        {
+            "text": "Eligibility requires prior auth.",
+            "rerank_score": 0.9,
+            "document_name": "Doc1",
+            "confidence_label": "process_confident",
+            "llm_guidance": "Likely correct; verify no conflicts",
+        },
     ]
 
     async def fake_gen(prompt):

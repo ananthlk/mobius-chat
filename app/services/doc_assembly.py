@@ -9,7 +9,10 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+import os
+
 logger = logging.getLogger(__name__)
+_DEBUG_RAG = os.environ.get("DEBUG_RAG", "1").lower() in ("1", "true", "yes")
 
 
 @dataclass
@@ -80,14 +83,17 @@ def assign_confidence_batch(
     chunks: list[dict[str, Any]],
     config: DocAssemblyConfig | None = None,
 ) -> list[dict[str, Any]]:
-    """Assign confidence to all chunks."""
+    """Assign confidence to all chunks. Skips non-dict items."""
     cfg = config or DocAssemblyConfig()
-    return [assign_confidence(c, cfg) for c in chunks]
+    if _DEBUG_RAG and chunks:
+        for i, c in enumerate(chunks[:3]):
+            logger.info("[DEBUG_RAG doc_assembly] assign_confidence_batch chunk[%s] type=%s", i, type(c).__name__)
+    return [assign_confidence(c, cfg) for c in chunks if isinstance(c, dict)]
 
 
 def filter_abstain(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return only chunks that are not abstain (i.e. send to LLM)."""
-    return [c for c in chunks if c.get("confidence_label") != "abstain"]
+    return [c for c in chunks if isinstance(c, dict) and c.get("confidence_label") != "abstain"]
 
 
 def best_score(chunks: list[dict[str, Any]]) -> float:
@@ -96,6 +102,8 @@ def best_score(chunks: list[dict[str, Any]]) -> float:
         return 0.0
     best = 0.0
     for c in chunks:
+        if not isinstance(c, dict):
+            continue
         s = c.get("rerank_score") or c.get("match_score") or c.get("confidence") or 0.0
         try:
             best = max(best, float(s))
@@ -134,10 +142,13 @@ def google_search_via_skills_api(
         out = json.loads(data)
         if isinstance(out, list):
             results = out
-        else:
+        elif isinstance(out, dict):
             results = out.get("results") or out.get("items") or []
+        else:
+            results = []
         out_list: list[dict[str, Any]] = []
-        for r in results[:max_results]:
+        results_slice = results[:max_results] if isinstance(results, (list, tuple)) else []
+        for r in results_slice:
             if isinstance(r, dict):
                 snippet = r.get("snippet") or r.get("description") or r.get("text") or ""
                 title = r.get("title") or ""
@@ -181,25 +192,26 @@ def apply_google_fallback(
     cfg = config or DocAssemblyConfig()
     chunks_with_conf = assign_confidence_batch(chunks, cfg)
     best = best_score(chunks_with_conf)
-    filtered = filter_abstain(chunks_with_conf)
+    # Send all chunks (no abstain filter); complement with Google when confidence low
+    all_chunks = chunks_with_conf
 
     if best >= cfg.confidence_process_confident_min:
         _emit("Corpus confidence sufficient; using retrieved docs only.")
-        return (filtered, RETRIEVAL_SIGNAL_CORPUS_ONLY)
+        return (all_chunks, RETRIEVAL_SIGNAL_CORPUS_ONLY)
 
     if best >= cfg.google_fallback_low_match_min:
         _emit("Adding external search to complement corpus...")
         google_results = google_search_via_skills_api(question)
         if google_results:
-            return (filtered + google_results, RETRIEVAL_SIGNAL_CORPUS_PLUS_GOOGLE)
-        return (filtered, RETRIEVAL_SIGNAL_CORPUS_PLUS_GOOGLE)
+            return (all_chunks + google_results, RETRIEVAL_SIGNAL_CORPUS_PLUS_GOOGLE)
+        return (all_chunks, RETRIEVAL_SIGNAL_CORPUS_PLUS_GOOGLE)
 
     _emit("Low corpus confidence; using external search.")
     google_results = google_search_via_skills_api(question)
     if google_results:
-        return (google_results, RETRIEVAL_SIGNAL_GOOGLE_ONLY)
-    if filtered:
-        return (filtered, RETRIEVAL_SIGNAL_GOOGLE_ONLY)
+        return (all_chunks + google_results, RETRIEVAL_SIGNAL_GOOGLE_ONLY)
+    if all_chunks:
+        return (all_chunks, RETRIEVAL_SIGNAL_GOOGLE_ONLY)
     return ([], RETRIEVAL_SIGNAL_NO_SOURCES)
 
 
@@ -266,6 +278,8 @@ def assemble_with_neighbors(
     seen_ids: set[str] = set()
     out: list[dict[str, Any]] = []
     for c in chunks:
+        if not isinstance(c, dict):
+            continue
         cid = str(c.get("id") or "")
         if cid and cid in seen_ids:
             continue
@@ -310,6 +324,5 @@ def assemble_docs(
     chunks_with_conf = assign_confidence_batch(chunks, cfg)
     if apply_google:
         return apply_google_fallback(chunks_with_conf, question, cfg, emitter)
-    filtered = filter_abstain(chunks_with_conf)
-    signal = RETRIEVAL_SIGNAL_CORPUS_ONLY if filtered else RETRIEVAL_SIGNAL_NO_SOURCES
-    return (filtered, signal)
+    signal = RETRIEVAL_SIGNAL_CORPUS_ONLY if chunks_with_conf else RETRIEVAL_SIGNAL_NO_SOURCES
+    return (chunks_with_conf, signal)

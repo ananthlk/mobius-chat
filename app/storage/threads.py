@@ -35,6 +35,7 @@ DEFAULT_STATE: dict[str, Any] = {
     "last_user_intent": None,
     "last_updated_turn_id": None,
     "safety": {"patient_allowed": False},
+    "refined_query": None,  # Canonical question: updated on slot fill, replaced on new question
 }
 
 

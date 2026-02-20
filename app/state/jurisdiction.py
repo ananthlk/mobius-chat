@@ -31,7 +31,7 @@ def rag_filters_from_active(active: dict[str, Any] | None) -> dict[str, str]:
 def get_jurisdiction_from_active(active: dict[str, Any] | None) -> dict[str, Any]:
     """Resolve jurisdiction dict from active. Merges jurisdiction_obj with legacy flat fields.
     Returns {state, payor, program, perspective, regulatory_agency}."""
-    active = active or {}
+    active = active if isinstance(active, dict) else {}
     base = dict(DEFAULT_JURISDICTION)
     obj = active.get("jurisdiction_obj")
     if isinstance(obj, dict):

@@ -34,21 +34,21 @@ def _normalize_using_results(m: re.Match[str]) -> str:
 
 
 # Regex patterns -> replacement (None = omit, str = replace, callable = call with match)
+# Order matters: more specific first. Use substring patterns to catch messages that may have leading whitespace.
 _USER_FRIENDLY_MAP: list[tuple[str, str | None | Callable[[re.Match[str]], str]]] = [
     (r"^Mobius path:.*", "Searching our materials..."),
     (r"^Lazy path:.*", "Searching our materials..."),
-    (r"^BM25:.*", None),
-    (r"^BM25 corpus:.*", None),
-    (r"^BM25 .* matches:.*", None),
-    (r"^BM25 returned.*", None),
-    (r"^Building BM25.*", None),
+    (r"BM25:.*", None),
+    (r"BM25 corpus:.*", None),
+    (r"BM25 .* matches:.*", None),
+    (r"BM25 returned.*", None),
+    (r"Building BM25.*", None),
     (r"^Vertex returned.*", None),
     (r"^Searching Vertex\.\.\.$", None),
     (r"^Fetching .* metadata rows.*", None),
     (r"^Postgres returned.*", None),
-    (r"^JPD tagger:.*", None),
-    (r"^J/P/D tagger:.*", None),
-    (r"J/P/D tagger:.*document\(s\)", None),  # e.g. "J/P/D tagger: -> 15 document(s) e.g. [...]"
+    (r"JPD tagger:.*", None),
+    (r"J/P/D tagger:.*", None),
     (r"^Corpus confidence sufficient.*", "Found strong matches in our materials."),
     (r"^Adding external search.*", "Adding external sources to complement what we found."),
     (r"^Low corpus confidence.*", "Searching the web for additional context."),

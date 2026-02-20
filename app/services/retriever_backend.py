@@ -14,6 +14,20 @@ from typing import Any, Callable
 from app.services.retrieval_emit_adapter import wrap_emitter_for_user
 
 logger = logging.getLogger(__name__)
+_DEBUG_RAG = os.environ.get("DEBUG_RAG", "1").lower() in ("1", "true", "yes")
+
+
+def _debug_chunks(label: str, chunks: list, max_items: int = 3) -> None:
+    if not _DEBUG_RAG or chunks is None:
+        return
+    try:
+        logger.info("[DEBUG_RAG retriever] %s: len=%s", label, len(chunks))
+        for i, c in enumerate(chunks[:max_items]):
+            t = type(c).__name__
+            logger.info("[DEBUG_RAG retriever]   [%s] type=%s", i, t)
+    except Exception as e:
+        logger.warning("[DEBUG_RAG retriever] %s failed: %s", label, e)
+
 
 # Default reranker config path (same as path_b_v1)
 _DEFAULT_RERANKER_CONFIG = "configs/reranker_v1.yaml"
@@ -78,6 +92,10 @@ def retrieve_via_rag_api(
     n_hierarchical: int | None = None,
     emitter: Callable[[str], None] | None = None,
     include_trace: bool = False,
+    filter_payer: str = "",
+    filter_state: str = "",
+    filter_program: str = "",
+    filter_authority_level: str = "",
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """Call RAG API. Returns (assembled docs, trace or None). Docs already have confidence labels."""
     url = (os.environ.get("RAG_API_URL") or "").strip()
@@ -96,6 +114,14 @@ def retrieve_via_rag_api(
         payload_obj["n_factual"] = n_factual
     if n_hierarchical is not None:
         payload_obj["n_hierarchical"] = n_hierarchical
+    if filter_payer and filter_payer.strip():
+        payload_obj["filter_payer"] = filter_payer.strip()
+    if filter_state and filter_state.strip():
+        payload_obj["filter_state"] = filter_state.strip()
+    if filter_program and filter_program.strip():
+        payload_obj["filter_program"] = filter_program.strip()
+    if filter_authority_level and filter_authority_level.strip():
+        payload_obj["filter_authority_level"] = filter_authority_level.strip()
     payload = json.dumps(payload_obj).encode("utf-8")
     try:
         req = urllib.request.Request(
@@ -106,6 +132,8 @@ def retrieve_via_rag_api(
         )
         with urllib.request.urlopen(req, timeout=60) as resp:
             data = json.loads(resp.read().decode())
+        if _DEBUG_RAG:
+            logger.info("[DEBUG_RAG] RAG API response type=%s keys=%s", type(data).__name__, list(data.keys()) if isinstance(data, dict) else "n/a")
         if not isinstance(data, dict):
             # Handle legacy / proxy response that returns a list of docs at top level
             docs = data if isinstance(data, list) else []
@@ -113,9 +141,15 @@ def retrieve_via_rag_api(
         else:
             docs = data.get("docs") or []
             trace = data.get("retrieval_trace") if include_trace else None
+            if trace is not None and not isinstance(trace, dict):
+                if _DEBUG_RAG:
+                    logger.warning("[DEBUG_RAG] RAG API retrieval_trace is %s not dict, ignoring", type(trace).__name__)
+                trace = None
         # Normalize to plain dicts (API may return Row-like or list-of-pairs)
+        if _DEBUG_RAG:
+            logger.info("[DEBUG_RAG] docs len=%s", len(docs) if docs else 0)
         out: list[dict[str, Any]] = []
-        for d in docs:
+        for idx, d in enumerate(docs):
             if isinstance(d, dict):
                 out.append(dict(d))
             elif isinstance(d, (list, tuple)) and d and all(
@@ -123,9 +157,13 @@ def retrieve_via_rag_api(
             ):
                 out.append(dict(d))
             else:
-                raise TypeError(
-                    f"RAG API doc must be dict or list of (k,v) pairs, got {type(d).__name__}"
-                )
+                if _DEBUG_RAG:
+                    try:
+                        t0 = type(d[0]).__name__ if (isinstance(d, (list, tuple)) and d) else "n/a"
+                    except (TypeError, IndexError, KeyError):
+                        t0 = "n/a"
+                    logger.warning("[DEBUG_RAG] RAG API doc[%s] skip type=%s first_el=%s", idx, type(d).__name__, t0)
+                continue
         return out, trace
     except Exception as e:
         logger.warning("RAG API call failed: %s", e)
@@ -167,9 +205,14 @@ def retrieve_for_chat(
             n_hierarchical=n_hierarchical,
             emitter=emitter,
             include_trace=include_trace,
+            filter_payer=filter_payer,
+            filter_state=filter_state,
+            filter_program=filter_program,
+            filter_authority_level=filter_authority_level,
         )
         if chunks:
             _emit(emitter, f"Using {len(chunks)} result{'s' if len(chunks) != 1 else ''} to answer this part.")
+        _debug_chunks("rag_api return", chunks)
         return chunks, trace
 
     # Fallback: inline BM25
@@ -220,7 +263,11 @@ def retrieve_for_chat(
     try:
         reranker_cfg = load_reranker_config(_DEFAULT_RERANKER_CONFIG)
         if reranker_cfg.signals and chunks_to_convert:
-            dicts = [_bm25_to_rerank_dict(c, bm25_cfg) for c in chunks_to_convert]
+            dicts = [
+                _bm25_to_rerank_dict(c, bm25_cfg)
+                for c in chunks_to_convert
+                if isinstance(c, dict)
+            ]
             doc_ids = list({str(d.get("document_id", "")) for d in dicts if d.get("document_id")})
             doc_tags_by_id = fetch_document_tags_by_ids(database_url, doc_ids) if doc_ids else {}
             line_tags_by_key = fetch_line_tags_for_chunks(database_url, dicts) if dicts else {}
@@ -233,6 +280,7 @@ def retrieve_for_chat(
                 doc_tags_by_id=doc_tags_by_id,
                 line_tags_by_key=line_tags_by_key,
             )
+            _debug_chunks("after rerank (chunks_to_convert)", chunks_to_convert)
     except FileNotFoundError:
         logger.debug("Reranker config not found; using BM25 scores only.")
     except Exception as e:
@@ -249,9 +297,9 @@ def retrieve_for_chat(
         raise TypeError(f"Chunk must be dict or list of (k,v) pairs, got {type(c).__name__}")
 
     out: list[dict[str, Any]] = []
-    for c in chunks_to_convert:
+    for i, c in enumerate(chunks_to_convert):
         if not isinstance(c, dict):
-            logger.debug("Skipping non-dict chunk: %s", type(c).__name__)
+            logger.warning("[DEBUG_RAG] inline chunk[%s] NOT dict type=%s skipping", i, type(c).__name__)
             continue
         c = _to_plain_dict(c)
         raw = c.get("raw_score")
@@ -266,4 +314,5 @@ def retrieve_for_chat(
 
     if out:
         _emit(emitter, f"Using {len(out)} result{'s' if len(out) != 1 else ''} to answer this part.")
+    _debug_chunks("inline return (out)", out)
     return out, None

@@ -6,12 +6,16 @@ correlation_id with TTL; API GETs by correlation_id.
 """
 import json
 import logging
+import time
 from typing import Any, Callable
 
 from app.config import get_config
 from app.queue.base import QueueAdapter
 
 logger = logging.getLogger(__name__)
+
+REDIS_CONNECT_RETRIES = 12  # ~60s total with 5s backoff
+REDIS_CONNECT_RETRY_DELAY = 5
 
 
 class RedisQueue(QueueAdapter):
@@ -47,23 +51,39 @@ class RedisQueue(QueueAdapter):
                 import redis
             except ImportError as e:
                 raise ImportError("Redis queue requires: pip install redis") from e
-            # Longer timeouts for VPC/connector paths where connection can be slow
-            self._client = redis.from_url(
-                self._redis_url,
-                decode_responses=True,
-                socket_connect_timeout=30,
-                socket_timeout=60,
-            )
-            try:
-                self._client.ping()
-                logger.info(
-                    "Redis connected for queue (host=%s, request_key=%s)",
-                    self._redis_host_for_log(),
-                    self._request_key,
-                )
-            except Exception as e:
-                logger.exception("Redis connection failed (host=%s): %s", self._redis_host_for_log(), e)
-                raise
+            host_log = self._redis_host_for_log()
+            last_err = None
+            for attempt in range(REDIS_CONNECT_RETRIES):
+                try:
+                    client = redis.from_url(
+                        self._redis_url,
+                        decode_responses=True,
+                        socket_connect_timeout=30,
+                        socket_timeout=60,
+                    )
+                    client.ping()
+                    self._client = client
+                    logger.info(
+                        "Redis connected for queue (host=%s, request_key=%s)",
+                        host_log,
+                        self._request_key,
+                    )
+                    break
+                except Exception as e:
+                    last_err = e
+                    if attempt < REDIS_CONNECT_RETRIES - 1:
+                        logger.warning(
+                            "Redis connect attempt %d/%d failed (host=%s): %s. Retrying in %ds ...",
+                            attempt + 1,
+                            REDIS_CONNECT_RETRIES,
+                            host_log,
+                            e,
+                            REDIS_CONNECT_RETRY_DELAY,
+                        )
+                        time.sleep(REDIS_CONNECT_RETRY_DELAY)
+                    else:
+                        logger.exception("Redis connection failed (host=%s): %s", host_log, e)
+                        raise last_err
         return self._client
 
     def publish_request(self, correlation_id: str, payload: dict[str, Any]) -> None:

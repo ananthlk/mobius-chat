@@ -1262,6 +1262,11 @@ body {
   display: block;
 }
 
+.feedback .feedback-comment-area {
+  flex-basis: 100%;
+  width: 100%;
+}
+
 .feedback .feedback-comment {
   font-size: 0.75rem;
   color: var(--thinking-text);

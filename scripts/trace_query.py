@@ -3,15 +3,20 @@
 
 Run from Mobius root:
   PYTHONPATH=mobius-chat python mobius-chat/scripts/trace_query.py "How to file a grievance"
+  PYTHONPATH=mobius-chat python mobius-chat/scripts/trace_query.py --payer "Sunshine Health" "What is the process for filing a healthcare appeal?"
+
   CHAT_DEBUG_TRACE=1 PYTHONPATH=mobius-chat python mobius-chat/scripts/trace_query.py "How to file a grievance"
 
 Shows each stage: planner → blueprint → answer per subquestion → format response.
+Use --payer to scope retrieval (same as frontend when user answers "Sunshine Health").
 On failure: prints the exception and traceback.
 """
 from __future__ import annotations
 
+import os
 import sys
 import traceback
+import uuid
 from pathlib import Path
 
 CHAT_ROOT = Path(__file__).resolve().parent.parent
@@ -35,16 +40,46 @@ def _trunc(s: str, n: int = 70) -> str:
 
 
 def main() -> int:
-    message = " ".join(sys.argv[1:]).strip()
+    args = sys.argv[1:]
+    payer = None
+    if "--payer" in args:
+        idx = args.index("--payer")
+        if idx + 1 < len(args):
+            payer = args[idx + 1]
+            args = args[:idx] + args[idx + 2 :]
+    worker_sim = "--worker" in args
+    if worker_sim:
+        args = [a for a in args if a != "--worker"]
+    message = " ".join(args).strip()
     if not message:
-        print("Usage: python trace_query.py <your question>")
+        print("Usage: python trace_query.py [--payer PAYER] [--worker] <your question>")
         print('Example: python trace_query.py "How to file a grievance"')
+        print('Example: python trace_query.py --payer "Sunshine Health" "What is the process for filing a healthcare appeal?"')
+        print("  --worker: simulate worker flow (correlation_id, subquestion_id) to trigger retrieval persistence")
         return 1
+
+    # Build rag_filter_overrides (same as worker when state has payer)
+    rag_filter_overrides = {}
+    if payer:
+        try:
+            from app.payer_normalization import normalize_payer_for_rag
+            canonical = normalize_payer_for_rag(payer)
+            if canonical:
+                rag_filter_overrides["filter_payer"] = canonical
+            else:
+                rag_filter_overrides["filter_payer"] = payer
+        except Exception:
+            rag_filter_overrides["filter_payer"] = payer
 
     print("=" * 80)
     print("TRACE: Full chat pipeline")
     print("=" * 80)
-    print(f"\nQuery: {message}\n")
+    print(f"\nQuery: {message}")
+    if rag_filter_overrides:
+        print(f"Filter overrides: {rag_filter_overrides}")
+    if worker_sim:
+        print("Mode: --worker (simulating worker: correlation_id + subquestion_id → include_trace + retrieval persistence)")
+    print()
 
     # --- Stage 1: Planner (parse) ---
     print("-" * 60)
@@ -86,12 +121,21 @@ def main() -> int:
         traceback.print_exc()
         return 1
 
+    # --- Retriever path (RAG_API_URL vs inline) ---
+    rag_api_url = (os.environ.get("RAG_API_URL") or "").strip()
+    print("\n" + "-" * 60)
+    print("RETRIEVER PATH")
+    print("-" * 60)
+    print(f"  RAG_API_URL: {rag_api_url or '(not set)'}")
+    print(f"  Path: {'RAG API (mobius-rag-api)' if rag_api_url else 'Inline (mobius-retriever retrieve_bm25)'}")
+
     # --- Stage 3: Answer each subquestion ---
     print("\n" + "-" * 60)
     print("STAGE 3: ANSWER SUBQUESTIONS (RAG + LLM)")
     print("-" * 60)
     answers: list[str] = []
     sources: list[dict] = []
+    correlation_id = str(uuid.uuid4()) if worker_sim else None
     for i, sq in enumerate(plan.subquestions):
         print(f"\n  Subquestion {sq.id}: {_trunc(sq.text, 60)}")
         try:
@@ -111,10 +155,19 @@ def main() -> int:
                 n_hierarchical=params.get("n_hierarchical"),
                 n_factual=params.get("n_factual"),
                 emitter=emit,
+                correlation_id=correlation_id,
+                subquestion_id=sq.id if worker_sim else None,
+                rag_filter_overrides=rag_filter_overrides or None,
             )
             answers.append(ans)
             sources.extend(srcs or [])
             print(f"    answer_len={len(ans)} sources={len(srcs or [])} retrieval_signal={signal}")
+            # Show first 3 retrieved chunks for comparison with frontend
+            for j, s in enumerate((srcs or [])[:3]):
+                txt = (s.get("text") or "")[:120].replace("\n", " ")
+                conf = s.get("confidence") or s.get("match_score")
+                doc = s.get("document_name") or s.get("document_id")
+                print(f"    [source {j+1}] {doc} conf={conf} {txt}...")
         except Exception as e:
             print(f"\n>>> FAILED at STAGE 3 (Answer {sq.id}): {e}")
             traceback.print_exc()
