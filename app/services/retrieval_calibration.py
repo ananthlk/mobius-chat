@@ -12,10 +12,12 @@ CANONICAL = "canonical"
 
 
 def intent_to_score(question_intent: str | None) -> float:
-    """Convert binary question_intent to numeric score in [0, 1].
+    """Convert question_intent to numeric score in [0, 1].
 
     - factual -> 1.0
     - canonical -> 0.0
+    - procedural, diagnostic -> 0.3 (more process-oriented)
+    - creative -> 0.6
     - None or unknown -> 0.5 (middle)
     """
     if question_intent is None:
@@ -25,6 +27,10 @@ def intent_to_score(question_intent: str | None) -> float:
         return 1.0
     if intent == CANONICAL:
         return 0.0
+    if intent in ("procedural", "diagnostic"):
+        return 0.3
+    if intent == "creative":
+        return 0.6
     return 0.5
 
 

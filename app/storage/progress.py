@@ -44,35 +44,30 @@ def _publish_progress_event_impl(correlation_id: str, ev: dict[str, Any]) -> Non
 
 
 def _persist_progress_event_to_db(correlation_id: str, ev: dict[str, Any]) -> None:
-    """Persist event to chat_progress_events so API stream can poll (like RAG chunking_events). Run in thread."""
+    """Persist event via PersistencePort (chat_progress_events). Run in thread."""
     try:
-        from app.chat_config import get_chat_config
-        cfg = get_chat_config()
-        url = (getattr(cfg, "rag", None) and getattr(cfg.rag, "database_url", None) or "").strip()
-        if not url:
-            return
-        import psycopg2
-        import psycopg2.extras
-        conn = psycopg2.connect(url)
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                "INSERT INTO chat_progress_events (correlation_id, event_type, event_data) VALUES (%s, %s, %s)",
-                (correlation_id, ev.get("event", ""), json.dumps(ev.get("data") or {})),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        from app.persistence import get_persistence
+
+        get_persistence().append_progress_event(
+            correlation_id,
+            ev.get("event", ""),
+            ev.get("data") or {},
+        )
     except Exception as e:
         logger.debug("Progress DB persist failed (stream may poll Redis): %s", e)
 
 
 def _publish_progress_event(correlation_id: str, ev: dict[str, Any]) -> None:
-    """If queue is Redis, publish to Redis and persist to DB so API stream can poll (like RAG)."""
+    """If queue is Redis, publish to Redis and persist to DB. When trace enabled, always persist to DB."""
     try:
         from app.config import get_config
+        from app.trace_log import is_trace_enabled
+
         cfg = get_config()
-        if getattr(cfg, "queue_type", "memory") == "redis":
+        use_redis = getattr(cfg, "queue_type", "memory") == "redis"
+        use_db_persist = use_redis or is_trace_enabled()
+
+        if use_redis:
             t = threading.Thread(
                 target=_publish_progress_event_impl,
                 args=(correlation_id, ev),
@@ -80,7 +75,7 @@ def _publish_progress_event(correlation_id: str, ev: dict[str, Any]) -> None:
                 name="progress-publish",
             )
             t.start()
-            # Persist to DB so API stream can poll (no Redis subscribe from API needed)
+        if use_db_persist:
             t_db = threading.Thread(
                 target=_persist_progress_event_to_db,
                 args=(correlation_id, ev),

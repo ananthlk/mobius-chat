@@ -129,40 +129,45 @@ def main() -> int:
     print(f"  RAG_API_URL: {rag_api_url or '(not set)'}")
     print(f"  Path: {'RAG API (mobius-rag-api)' if rag_api_url else 'Inline (mobius-retriever retrieve_bm25)'}")
 
-    # --- Stage 3: Answer each subquestion ---
+    # --- Stage 3: Answer each subquestion (uses same routing as resolve: RAG, tool, reasoning) ---
     print("\n" + "-" * 60)
-    print("STAGE 3: ANSWER SUBQUESTIONS (RAG + LLM)")
+    print("STAGE 3: ANSWER SUBQUESTIONS (RAG / tool / reasoning)")
     print("-" * 60)
     answers: list[str] = []
     sources: list[dict] = []
     correlation_id = str(uuid.uuid4()) if worker_sim else None
     for i, sq in enumerate(plan.subquestions):
-        print(f"\n  Subquestion {sq.id}: {_trunc(sq.text, 60)}")
+        bp = blueprint[i] if i < len(blueprint) else {}
+        agent = bp.get("agent") or ("RAG" if sq.kind == "non_patient" else "patient_stub")
+        print(f"\n  Subquestion {sq.id}: agent={agent} {_trunc(sq.text, 50)}")
         try:
-            from app.services.non_patient_rag import answer_non_patient
+            from app.stages.resolve import _answer_for_subquestion
             from app.services.retrieval_calibration import get_retrieval_blend, intent_to_score
 
-            score = getattr(sq, "intent_score", None) or intent_to_score(getattr(sq, "question_intent", None))
-            params = get_retrieval_blend(score)
+            retrieval_params = None
+            if agent == "RAG":
+                score = getattr(sq, "intent_score", None) or intent_to_score(getattr(sq, "question_intent", None))
+                retrieval_params = get_retrieval_blend(score)
+            question_text = bp.get("reframed_text") or bp.get("text") or sq.text
+            on_rag_fail = bp.get("on_rag_fail") if isinstance(bp.get("on_rag_fail"), list) else None
 
             def emit(msg: str) -> None:
                 print(f"    [emit] {msg[:80]}")
 
-            ans, srcs, usage, signal = answer_non_patient(
-                question=sq.text,
-                k=params.get("top_k"),
-                confidence_min=params.get("confidence_min"),
-                n_hierarchical=params.get("n_hierarchical"),
-                n_factual=params.get("n_factual"),
-                emitter=emit,
+            ans, usage, srcs, signal = _answer_for_subquestion(
                 correlation_id=correlation_id,
-                subquestion_id=sq.id if worker_sim else None,
+                sq_id=sq.id,
+                agent=agent,
+                kind=sq.kind,
+                text=question_text,
+                retrieval_params=retrieval_params,
+                emitter=emit,
                 rag_filter_overrides=rag_filter_overrides or None,
+                on_rag_fail=on_rag_fail,
             )
             answers.append(ans)
             sources.extend(srcs or [])
             print(f"    answer_len={len(ans)} sources={len(srcs or [])} retrieval_signal={signal}")
-            # Show first 3 retrieved chunks for comparison with frontend
             for j, s in enumerate((srcs or [])[:3]):
                 txt = (s.get("text") or "")[:120].replace("\n", " ")
                 conf = s.get("confidence") or s.get("match_score")

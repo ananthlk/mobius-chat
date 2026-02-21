@@ -98,11 +98,10 @@ class ChatRAGConfig:
 @dataclass
 class ChatParserConfig:
     """Parser/planner factors (patient vs non-patient, decomposition)."""
-    # Keywords that classify a subquestion as patient-related (no patient RAG yet)
+    use_mobius_planner: bool = True
+    # PHI-only: refuse only when specific identifiers present. Generic/scenario = non_patient.
     patient_keywords: list[str] = field(default_factory=lambda: [
-        "my doctor", "my medication", "my visit", "my record", "my records", "my care",
-        "what did my doctor", "do I qualify", "do we qualify", "my eligibility", "based on my",
-        "my enrollment", "my coverage", "am I eligible", "are we eligible",
+        "ssn", "social security", "medicaid id", "mrn", "medical record number",
     ])
     # Split user message on these to get subquestions
     decomposition_separators: list[str] = field(default_factory=lambda: [" and ", " also ", " then "])
@@ -124,8 +123,8 @@ class ChatPromptsConfig:
         "- Do not over-split; keep one logical question per item.\n"
         "- Preserve the user's intent; only rephrase slightly if needed.\n\n"
         "Classification (kind) for each sub-question:\n"
-        "- patient: about the user's own records, eligibility, care, medications, visits, or personal info. We do not have access to their data.\n"
-        "- non_patient: general policy, how-to, contract terms, or other document knowledge we might have.\n\n"
+        "- patient: ONLY when the user asks to look up a SPECIFIC IDENTIFIABLE person (name, SSN, Medicaid ID, MRN, DOB). We cannot do this; refuse.\n"
+        "- non_patient: everything else—generic policy, scenario-based (\"I have a patient who is 21 with income X—will they qualify?\"), tool requests, capability questions. Users are CMHC staff.\n\n"
         "Question intent (question_intent) for each sub-question—use for RAG prioritization:\n"
         "- factual: asks for a specific fact, number, date, definition, or lookup (e.g. What is the prior auth requirement? How many days for appeal?)\n"
         "- canonical: asks for general policy, process, or canonical description (e.g. Describe the medical necessity criteria. How does enrollment work?)\n\n"
@@ -135,6 +134,8 @@ class ChatPromptsConfig:
         "Output format (your entire response must be valid JSON in this shape):\n"
         '{"subquestions": [{"id": "sq1", "text": "first subquestion", "kind": "non_patient", "question_intent": "factual", "intent_score": 0.9}, {"id": "sq2", "text": "second subquestion", "kind": "non_patient", "question_intent": "canonical", "intent_score": 0.2}]}'
     )
+    decompose_system_mobius: str = ""
+    decompose_user_template_mobius: str = "{planner_input_json}"
     decompose_user_template: str = (
         "List the sub-questions in this message as JSON only. Do not answer the question.\n\n"
         "{context}\n\n"
@@ -355,11 +356,15 @@ def _chat_config_from_prompts_llm(pl: dict, rag: ChatRAGConfig) -> ChatConfig:
         ollama_num_predict=_int(llm_d, "ollama_num_predict", 8192),
     )
     parser_d = pl.get("parser") or {}
+    use_mobius = parser_d.get("use_mobius_planner")
+    if use_mobius is None:
+        use_mobius = True
+    else:
+        use_mobius = bool(use_mobius)
     parser = ChatParserConfig(
+        use_mobius_planner=use_mobius,
         patient_keywords=_list_str(parser_d, "patient_keywords") or [
-            "my doctor", "my medication", "my visit", "my record", "my records", "my care",
-            "what did my doctor", "do I qualify", "do we qualify", "my eligibility", "based on my",
-            "my enrollment", "my coverage", "am I eligible", "are we eligible",
+            "ssn", "social security", "medicaid id", "mrn", "medical record number",
         ],
         decomposition_separators=_list_str(parser_d, "decomposition_separators") or [" and ", " also ", " then "],
     )
@@ -368,6 +373,8 @@ def _chat_config_from_prompts_llm(pl: dict, rag: ChatRAGConfig) -> ChatConfig:
     prompts = ChatPromptsConfig(
         decompose_system=_str(prompts_d, "decompose_system") or _def.decompose_system,
         decompose_user_template=_str(prompts_d, "decompose_user_template") or _def.decompose_user_template,
+        decompose_system_mobius=_str(prompts_d, "decompose_system_mobius") or "",
+        decompose_user_template_mobius=_str(prompts_d, "decompose_user_template_mobius") or _def.decompose_user_template_mobius,
         first_gen_system=_str(prompts_d, "first_gen_system") or _def.first_gen_system,
         first_gen_user_template=_str(prompts_d, "first_gen_user_template") or _def.first_gen_user_template,
         rag_answering_user_template=_str(prompts_d, "rag_answering_user_template") or _def.rag_answering_user_template,
@@ -411,10 +418,9 @@ def get_chat_config() -> ChatConfig:
     )
     patient_kw = _env("CHAT_PARSER_PATIENT_KEYWORDS")
     parser = ChatParserConfig(
+        use_mobius_planner=bool(os.getenv("CHAT_PARSER_USE_MOBIUS_PLANNER", "true").lower() in ("1", "true", "yes")),
         patient_keywords=[k.strip() for k in patient_kw.split(",") if k.strip()] if patient_kw else [
-            "my doctor", "my medication", "my visit", "my record", "my records", "my care",
-            "what did my doctor", "do I qualify", "do we qualify", "my eligibility", "based on my",
-            "my enrollment", "my coverage", "am I eligible", "are we eligible",
+            "ssn", "social security", "medicaid id", "mrn", "medical record number",
         ],
         decomposition_separators=[" and ", " also ", " then "],
     )
@@ -425,6 +431,8 @@ def get_chat_config() -> ChatConfig:
     prompts = ChatPromptsConfig(
         decompose_system=_env("CHAT_PROMPT_DECOMPOSE_SYSTEM") or _prompts_default.decompose_system,
         decompose_user_template=_env("CHAT_PROMPT_DECOMPOSE_USER_TEMPLATE") or _prompts_default.decompose_user_template,
+        decompose_system_mobius=_env("CHAT_PROMPT_DECOMPOSE_SYSTEM_MOBIUS") or _prompts_default.decompose_system_mobius,
+        decompose_user_template_mobius=_env("CHAT_PROMPT_DECOMPOSE_USER_TEMPLATE_MOBIUS") or _prompts_default.decompose_user_template_mobius,
         first_gen_system=_env("CHAT_PROMPT_FIRST_GEN_SYSTEM") or (
             "You are a helpful assistant. Provide a concise, accurate response. Do not make up facts; if you don't know, say so."
         ),
@@ -470,6 +478,7 @@ def chat_config_for_api() -> dict:
             "ollama_num_predict": c.llm.ollama_num_predict,
         },
         "parser": {
+            "use_mobius_planner": c.parser.use_mobius_planner,
             "patient_keywords": c.parser.patient_keywords,
             "decomposition_separators": c.parser.decomposition_separators,
         },

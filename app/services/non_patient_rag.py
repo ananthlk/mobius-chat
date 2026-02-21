@@ -58,6 +58,8 @@ def answer_non_patient(
     correlation_id: str | None = None,
     subquestion_id: str | None = None,
     rag_filter_overrides: dict[str, str] | None = None,
+    include_document_ids: list[str] | None = None,
+    on_rag_fail: list[str] | None = None,
 ) -> tuple[str, list[dict], dict[str, Any] | None, str]:
     """Answer a non-patient subquestion: RAG (blend of hierarchical + factual or single path) then LLM.
     Returns (answer_text, sources, llm_usage, retrieval_signal). retrieval_signal: corpus_only | corpus_plus_google | google_only | no_sources."""
@@ -100,6 +102,7 @@ def answer_non_patient(
                 n_hierarchical=n_hierarchical,
                 emitter=emitter,
                 include_trace=include_trace,
+                include_document_ids=include_document_ids,
             )
             if retrieval_trace is not None and not isinstance(retrieval_trace, dict):
                 logger.warning("[DEBUG_RAG] retrieval_trace is %s not dict, ignoring", type(retrieval_trace).__name__)
@@ -133,7 +136,18 @@ def answer_non_patient(
                     if isinstance(c, dict) and (c.get("match_score") or c.get("confidence") or 0.0) >= confidence_min
                 ]
             if not chunks:
-                _emit(emitter, "I didn’t find anything specific; I’ll answer from what I know.")
+                _emit(emitter, "I didn't find anything specific; I'll answer from what I know.")
+                if on_rag_fail and "search_google" in [str(x).lower() for x in on_rag_fail]:
+                    try:
+                        from app.services.doc_assembly import google_search_via_skills_api
+                        from app.services.doc_assembly import RETRIEVAL_SIGNAL_GOOGLE_ONLY
+                        google_results = google_search_via_skills_api(question)
+                        if google_results:
+                            chunks = google_results
+                            retrieval_signal = RETRIEVAL_SIGNAL_GOOGLE_ONLY
+                            _emit(emitter, "I'm adding external search results to help answer.")
+                    except Exception as eg:
+                        logger.debug("Google fallback failed: %s", eg)
             if retrieval_trace and correlation_id and subquestion_id:
                 try:
                     from app.storage.retrieval_persistence import insert_retrieval_run
@@ -150,7 +164,7 @@ def answer_non_patient(
                 except Exception as ep:
                     logger.debug("Retrieval persistence failed: %s", ep)
         except Exception as e:
-            logger.warning("Retrieval failed: %s", e)
+            logger.warning("Retrieval failed: %s", e, exc_info=True)
             _emit(emitter, f"Search didn’t work ({e}). Answering without our materials.")
     else:
         _emit(emitter, "I don’t have access to our materials right now; I’ll answer from what I know.")

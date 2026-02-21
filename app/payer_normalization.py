@@ -63,6 +63,20 @@ def normalize_payer_for_rag(rawname: str | None) -> str | None:
     return canonical if canonical else rawname
 
 
+def get_canonical_payers() -> list[str]:
+    """Return list of canonical payer names for clarification UI options."""
+    mapping = _load_config()
+    if not mapping:
+        return []
+    seen: set[str] = set()
+    result: list[str] = []
+    for canonical in mapping.values():
+        if canonical and canonical not in seen:
+            seen.add(canonical)
+            result.append(canonical)
+    return sorted(result)
+
+
 def detect_payer_from_text(text: str) -> str | None:
     """Detect payer from user message using config aliases. Longer aliases checked first so 'United Healthcare' matches before 'United'.
     Returns canonical payer name or None if no alias appears in text. Used by state extractor so state and RAG stay in sync."""

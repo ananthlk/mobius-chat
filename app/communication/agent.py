@@ -2,22 +2,38 @@
 
 Used by the Communication Gate when type=clarification or type=refinement_ask.
 Can optionally use LLM to humanize messages; falls back to raw when LLM unavailable.
+
+Clarification and refinement responses are wrapped as AnswerCard JSON for consistent
+styling with final answers (same bubble/card appearance in the frontend).
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
+def wrap_as_answer_card(direct_answer: str, mode: str = "FACTUAL") -> str:
+    """Wrap plain text as AnswerCard JSON for consistent frontend styling."""
+    return json.dumps({
+        "mode": mode,
+        "direct_answer": (direct_answer or "").strip(),
+        "sections": [],
+    })
+
+
 def format_clarification(
     intent: str = "",
     slots: list[str] | None = None,
     raw_message: str = "",
+    *,
+    as_answer_card: bool = True,
 ) -> str:
-    """Format a jurisdiction/clarification prompt via LLM for natural tone; fallback to raw_message."""
+    """Format a jurisdiction/clarification prompt via LLM for natural tone; fallback to raw_message.
+    Returns AnswerCard JSON when as_answer_card=True for consistent styling with final answers."""
     slots = slots or []
     slot_desc = ", ".join(s.replace("jurisdiction.", "") for s in slots) if slots else "jurisdiction"
     draft = str(raw_message or "").strip()
@@ -43,21 +59,27 @@ def format_clarification(
             )
         text, _ = asyncio.run(provider.generate_with_usage(prompt))
         if text and str(text).strip():
-            return str(text).strip()
+            out = str(text).strip()
+            return wrap_as_answer_card(out) if as_answer_card else out
     except Exception as e:
         logger.debug("format_clarification LLM fallback: %s", e)
 
-    return draft or f"To give you an accurate answer, could you please specify {slot_desc}?"
+    out = draft or f"To give you an accurate answer, could you please specify {slot_desc}?"
+    return wrap_as_answer_card(out) if as_answer_card else out
 
 
 def format_refinement_ask(
     original: str = "",
     suggestions: list[str] | None = None,
     raw_message: str = "",
+    *,
+    as_answer_card: bool = True,
 ) -> str:
-    """Format a query refinement prompt. Uses LLM when configured; else returns raw_message or a simple template."""
+    """Format a query refinement prompt. Uses LLM when configured; else returns raw_message or a simple template.
+    Returns AnswerCard JSON when as_answer_card=True for consistent styling with final answers."""
     if raw_message and str(raw_message).strip():
-        return str(raw_message).strip()
+        out = str(raw_message).strip()
+        return wrap_as_answer_card(out) if as_answer_card else out
 
     suggestions = suggestions or []
 
@@ -76,10 +98,13 @@ def format_refinement_ask(
         )
         text, _ = asyncio.run(provider.generate_with_usage(prompt))
         if text and str(text).strip():
-            return str(text).strip()
+            out = str(text).strip()
+            return wrap_as_answer_card(out) if as_answer_card else out
     except Exception as e:
         logger.debug("format_refinement_ask LLM fallback: %s", e)
 
     if suggestions:
-        return f"Did you mean: {suggestions[0]}? Or would you like to rephrase your question?"
-    return "Could you rephrase your question so I can give you a more accurate answer?"
+        out = f"Did you mean: {suggestions[0]}? Or would you like to rephrase your question?"
+    else:
+        out = "Could you rephrase your question so I can give you a more accurate answer?"
+    return wrap_as_answer_card(out) if as_answer_card else out

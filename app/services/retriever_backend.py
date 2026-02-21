@@ -182,13 +182,34 @@ def retrieve_for_chat(
     n_hierarchical: int | None = None,
     emitter: Callable[[str], None] | None = None,
     include_trace: bool = False,
+    include_document_ids: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """Call RAG API (if RAG_API_URL set) or inline mobius-retriever.
 
     Returns (chunks, trace). Chunks have text, document_id, document_name, page_number,
     source_type, match_score, confidence, rerank_score. Trace is None for inline path.
     """
-    emitter = wrap_emitter_for_user(emitter)
+    def _drop_jpd_emits(base: Callable[[str], None] | None):
+        """Filter out JPD tagger and BM25 internal progress before wrap_emitter_for_user."""
+        wrapped = wrap_emitter_for_user(base)
+        _technical_substrings = (
+            "J/P/D tagger", "JPD tagger", "phrase map built", "resolving document_ids",
+            "lexicon loaded", "lexicon has 0 phrases", "no tags matched",
+            "question matched p=", "BM25 corpus:", "Building BM25",
+            "BM25 paragraph matches:", "BM25 sentence matches:", "BM25 returned",
+            "Included ", " seed chunk",
+        )
+
+        def inner(msg: str) -> None:
+            s = (msg or "").strip()
+            if not s:
+                return
+            if any(sub in s for sub in _technical_substrings):
+                return
+            wrapped(s)
+        return inner
+
+    emitter = _drop_jpd_emits(emitter)
     rag_api_url = (os.environ.get("RAG_API_URL") or "").strip()
     rag_path = (os.environ.get("RAG_PATH") or "mobius").strip().lower()
     if rag_path not in ("mobius", "lazy"):
@@ -254,6 +275,7 @@ def retrieve_for_chat(
         top_k=top_k,
         use_jpd_tagger=True,
         emitter=emitter,
+        include_document_ids=include_document_ids,
     )
 
     bm25_cfg = load_bm25_sigmoid_config()
@@ -263,15 +285,20 @@ def retrieve_for_chat(
     try:
         reranker_cfg = load_reranker_config(_DEFAULT_RERANKER_CONFIG)
         if reranker_cfg.signals and chunks_to_convert:
-            dicts = [
-                _bm25_to_rerank_dict(c, bm25_cfg)
-                for c in chunks_to_convert
-                if isinstance(c, dict)
-            ]
+            dicts = []
+            for c in chunks_to_convert:
+                if not isinstance(c, dict):
+                    continue
+                try:
+                    dicts.append(_bm25_to_rerank_dict(c, bm25_cfg))
+                except (TypeError, AttributeError, KeyError) as e:
+                    logger.debug("Skip chunk (not dict-like): %s", e)
+                    continue
             doc_ids = list({str(d.get("document_id", "")) for d in dicts if d.get("document_id")})
             doc_tags_by_id = fetch_document_tags_by_ids(database_url, doc_ids) if doc_ids else {}
             line_tags_by_key = fetch_line_tags_for_chunks(database_url, dicts) if dicts else {}
-            jpd = tag_question_and_resolve_document_ids(question, database_url, emitter=emitter)
+            # Use emitter=None — this call is only for reranker qtags; JPD progress emits are internal
+            jpd = tag_question_and_resolve_document_ids(question, database_url, emitter=None)
             qtags = jpd if ("tag_match" in (reranker_cfg.signals or {}) and jpd.has_tags) else None
             chunks_to_convert = rerank_with_config(
                 dicts,
@@ -284,7 +311,7 @@ def retrieve_for_chat(
     except FileNotFoundError:
         logger.debug("Reranker config not found; using BM25 scores only.")
     except Exception as e:
-        logger.warning("Reranker failed: %s; using BM25 scores only.", e)
+        logger.warning("Reranker failed: %s; using BM25 scores only.", e, exc_info=True)
 
     def _to_plain_dict(c: Any) -> dict[str, Any]:
         """Ensure chunk is a plain dict; handle Row/dict subclasses and list-of-pairs."""

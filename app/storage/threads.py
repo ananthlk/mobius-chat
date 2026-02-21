@@ -230,6 +230,40 @@ def save_state(thread_id: str, patch: dict[str, Any]) -> None:
         raise
 
 
+def save_state_full(thread_id: str, state: dict[str, Any]) -> None:
+    """Replace state entirely (no merge). Use with ThreadState.to_dict() for explicit state model."""
+    url = _get_db_url()
+    if not url:
+        logger.warning("CHAT_RAG_DATABASE_URL not set; state not persisted")
+        return
+    try:
+        import psycopg2
+        conn = psycopg2.connect(url)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO chat_state (thread_id, state_json, state_version, updated_at)
+            VALUES (%s, %s, 1, now())
+            ON CONFLICT (thread_id) DO UPDATE SET
+                state_json = EXCLUDED.state_json,
+                state_version = chat_state.state_version + 1,
+                updated_at = now()
+            """,
+            (thread_id, json.dumps(state),),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.exception("Failed to save state: %s", e)
+        raise
+
+
 def register_open_slots(thread_id: str, slots: list[str]) -> None:
     """Set state.open_slots to slots (replace), increment state_version, save."""
-    save_state(thread_id, {"open_slots": list(slots) if slots else []})
+    from app.state.model import ThreadState
+
+    raw = get_state(thread_id)
+    thread_state = ThreadState.from_dict(raw)
+    thread_state.apply_delta({"open_slots": list(slots) if slots else []})
+    save_state_full(thread_id, thread_state.to_dict())

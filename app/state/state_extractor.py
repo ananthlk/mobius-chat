@@ -1,5 +1,6 @@
 """Deterministic state extraction from user text and optional answer_card. No LLM calls.
-Do not write user-provided patient info to chat_state (DOB, names, MRNs, etc.)."""
+Do not write user-provided patient info to chat_state (DOB, names, MRNs, etc.).
+Uses J tag lexicon (extract_tags_from_text) when RAG DB available; falls back to keyword detection."""
 import re
 from typing import Any
 
@@ -85,6 +86,27 @@ def _merge_jurisdiction_patch(patch: dict[str, Any], jpatch: dict[str, Any]) -> 
         patch["active"]["jurisdiction_obj"] = {**existing, **jpatch["jurisdiction_obj"]}
     else:
         patch["active"]["jurisdiction_obj"] = dict(jpatch["jurisdiction_obj"])
+
+
+def _extract_jurisdiction_from_lexicon(user_text: str) -> dict[str, str] | None:
+    """Extract jurisdiction from user text via J tag lexicon (same as retriever). Returns None if unavailable."""
+    if not (user_text or "").strip():
+        return None
+    try:
+        from app.chat_config import get_chat_config
+        from mobius_retriever.jpd_tagger import extract_tags_from_text, j_tags_to_jurisdiction
+
+        rag_url = (get_chat_config().rag.database_url or "").strip()
+        if not rag_url:
+            return None
+        result = extract_tags_from_text(user_text, rag_url, kinds=("j",))
+        j_tags = result.get("j_tags") or {}
+        if not j_tags:
+            return None
+        j_map = j_tags_to_jurisdiction(j_tags, rag_url)
+        return {k: v for k, v in j_map.items() if v} if j_map else None
+    except Exception:
+        return None
 
 
 def _detect_payer(text: str) -> str | None:
@@ -304,8 +326,15 @@ def extract_state_patch(
     existing_jurisdiction = (existing_active.get("jurisdiction") or "").strip() or None
     existing_slots = (existing_state or {}).get("open_slots") or []
 
-    # 1) Payer(s): single -> active.payer; multiple -> active.payers (list), active.payer = None so RAG gets all
-    payers_raw = _detect_all_payers(user_text or "")
+    # 0) Lexicon extraction (J tags) when RAG DB available - source of truth for jurisdiction
+    lexicon_j = _extract_jurisdiction_from_lexicon(user_text or "")
+
+    # 1) Payer(s): prefer lexicon; else single -> active.payer; multiple -> active.payers
+    payers_raw: list[str] = []
+    if lexicon_j and lexicon_j.get("payor"):
+        payers_raw = [lexicon_j["payor"]]
+    else:
+        payers_raw = _detect_all_payers(user_text or "")
     payers = [p for p in payers_raw if (p or "").strip().lower() not in GENERIC_COVERAGE_WORDS]
     if payers:
         if len(payers) == 1:
@@ -329,16 +358,20 @@ def extract_state_patch(
         patch.setdefault("active", {})["domain"] = domain
         if existing_domain and (existing_domain or "").strip().lower() != (domain or "").strip().lower():
             patch["open_slots"] = []
-    # 2b) Program (Medicaid/Medicare). Program is separate from payer; do not reset payer on program change.
-    program = _detect_program(user_text or "")
+    # 2b) Program (Medicaid/Medicare). Prefer lexicon; else keyword detection.
+    program = (lexicon_j.get("program") or "") if lexicon_j else None
+    if not program:
+        program = _detect_program(user_text or "")
     if program:
         patch.setdefault("active", {})["program"] = program
         _merge_jurisdiction_patch(patch, build_jurisdiction_patch(program=program))
         if existing_program and (existing_program or "").strip().lower() != (program or "").strip().lower():
             # Program changes can change which docs are relevant; clear open slots.
             patch["open_slots"] = []
-    # 3) Jurisdiction (state)
-    jur = _detect_jurisdiction(user_text or "")
+    # 3) Jurisdiction (state). Prefer lexicon; else keyword detection.
+    jur = (lexicon_j.get("state") or "") if lexicon_j else None
+    if not jur:
+        jur = _detect_jurisdiction(user_text or "")
     if jur:
         patch.setdefault("active", {})["jurisdiction"] = jur
         _merge_jurisdiction_patch(patch, build_jurisdiction_patch(state=jur))
@@ -356,13 +389,17 @@ def extract_state_patch(
             if not re.search(r"(?:\bin\s+ID\b|\bstate\s+of\s+ID\b|,\s*ID\b|\(ID\))", user_text or "", flags=re.I):
                 patch.setdefault("active", {})["jurisdiction"] = None
                 _merge_jurisdiction_patch(patch, build_jurisdiction_patch(state=""))
-    # 4) User role (perspective: provider vs patient)
-    role = _detect_user_role(user_text or "")
+    # 4) User role (perspective: provider vs patient). Prefer lexicon; else keyword detection.
+    role = (lexicon_j.get("perspective") or "") if lexicon_j else None
+    if not role:
+        role = _detect_user_role(user_text or "")
     if role:
         patch.setdefault("active", {})["user_role"] = role
         _merge_jurisdiction_patch(patch, build_jurisdiction_patch(perspective=role))
-    # 4b) Regulatory agency
-    reg = _detect_regulatory_agency(user_text or "")
+    # 4b) Regulatory agency. Prefer lexicon; else keyword detection.
+    reg = (lexicon_j.get("regulatory_agency") or "") if lexicon_j else None
+    if not reg:
+        reg = _detect_regulatory_agency(user_text or "")
     if reg:
         _merge_jurisdiction_patch(patch, build_jurisdiction_patch(regulatory_agency=reg))
     # 5) Open slots: remove fulfilled when user_text looks like an answer (slots are added post-turn via register_open_slots)
@@ -381,3 +418,13 @@ def extract_state_patch(
             patch["recent_entities"] = labels[:5]
 
     return (patch, reset_reason)
+
+
+def extract_state_delta(
+    user_text: str,
+    existing_state: dict[str, Any],
+    parse1_output: dict[str, Any] | None = None,
+    answer_card: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], str | None]:
+    """Alias for extract_state_patch. Returns (delta, reset_reason). Delta is suitable for ThreadState.apply_delta."""
+    return extract_state_patch(user_text, existing_state, parse1_output, answer_card)

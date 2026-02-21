@@ -91,6 +91,65 @@ def insert_turn(
         raise
 
 
+def get_last_turn_sources(thread_id: str, limit_turns: int = 2) -> list[dict[str, Any]]:
+    """Return sources (document_id, document_name) from last N turns in thread for continuity.
+    Dedupes by document_id. Used by planner context and retriever include_document_ids."""
+    if not (thread_id or "").strip():
+        return []
+    url = _get_db_url()
+    if not url:
+        return []
+    try:
+        import psycopg2
+        import psycopg2.extras
+        conn = psycopg2.connect(url)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            """
+            SELECT sources
+            FROM chat_turns
+            WHERE thread_id = %s AND sources IS NOT NULL AND sources != '[]'::jsonb
+            ORDER BY created_at DESC
+            LIMIT %s
+            """,
+            (thread_id.strip(), max(1, min(limit_turns, 5))),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        seen: set[str] = set()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            raw = r.get("sources")
+            if raw is None:
+                continue
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            if not isinstance(raw, list):
+                continue
+            for elem in raw:
+                if not isinstance(elem, dict):
+                    continue
+                doc_id = elem.get("document_id")
+                if not doc_id or not str(doc_id).strip():
+                    continue
+                doc_id_str = str(doc_id).strip()
+                if doc_id_str in seen:
+                    continue
+                seen.add(doc_id_str)
+                out.append({
+                    "document_id": doc_id_str,
+                    "document_name": (elem.get("document_name") or "document") or "document",
+                })
+        return out
+    except Exception as e:
+        logger.warning("Failed to get last turn sources: %s", e)
+        return []
+
+
 def get_recent_turns(limit: int = 10) -> list[dict[str, Any]]:
     """Return list of recent turns: { correlation_id, question, created_at }."""
     url = _get_db_url()

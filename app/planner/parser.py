@@ -1,5 +1,6 @@
 """Planner: decompose user message into subquestions (LLM + JSON) and classify patient vs non-patient.
 Emits 'thinking' chunks via callback for streaming display.
+Supports Mobius TaskPlan schema when use_mobius_planner=True.
 """
 import asyncio
 import json
@@ -7,7 +8,10 @@ import logging
 import re
 from collections.abc import Callable
 
+from app.planner.adapter import task_plan_to_plan
+from app.planner.mobius_parse import parse_task_plan_from_json
 from app.planner.schemas import Plan, SubQuestion, QuestionIntent
+from app.stages.agents.capabilities import planner_input_json
 from app.trace_log import trace_entered
 
 logger = logging.getLogger(__name__)
@@ -58,6 +62,45 @@ def _heuristic_intent(text: str) -> QuestionIntent | None:
     return None
 
 
+def _llm_decompose_mobius(
+    message: str,
+    context: str = "",
+) -> tuple[Plan | None, dict | None]:
+    """Call LLM with Mobius planner prompt; return Plan (adapted from TaskPlan) or (None, usage)."""
+    trace_entered("planner.parser._llm_decompose_mobius")
+    try:
+        from app.chat_config import get_chat_config
+        from app.services.llm_provider import get_llm_provider
+
+        cfg = get_chat_config()
+        system = getattr(cfg.prompts, "decompose_system_mobius", None) or ""
+        user_tpl = getattr(cfg.prompts, "decompose_user_template_mobius", None) or ""
+        if not system or not user_tpl:
+            logger.info("[parser] Mobius planner prompts not configured; skipping.")
+            return (None, None)
+
+        planner_input = planner_input_json(message, context)
+        planner_input_str = json.dumps(planner_input, indent=2)
+        user = user_tpl.format(planner_input_json=planner_input_str)
+        prompt = f"{system}\n\n{user}"
+
+        provider = get_llm_provider()
+        logger.info("[parser] calling LLM for Mobius decomposition (model=%s)", getattr(provider, "model_name", "unknown"))
+        raw, usage = asyncio.run(provider.generate_with_usage(prompt))
+        if not raw or not raw.strip():
+            logger.warning("[parser] Mobius LLM returned empty response; falling back to legacy.")
+            return (None, usage)
+        task_plan = parse_task_plan_from_json(raw)
+        if not task_plan:
+            logger.warning("[parser] Mobius parse failed; falling back to legacy.")
+            return (None, usage)
+        plan = task_plan_to_plan(task_plan, [], llm_usage=usage)
+        return (plan, usage)
+    except Exception as e:
+        logger.warning("[parser] Mobius decomposition failed: %s", e, exc_info=True)
+        return (None, None)
+
+
 def _llm_decompose(
     message: str,
     context: str = "",
@@ -85,6 +128,7 @@ def _llm_decompose(
             raise
         logger.info("[parser] LLM decomposition returned len=%d", len(raw) if raw else 0)
         if not raw or not raw.strip():
+            logger.warning("[parser] Legacy LLM returned empty response; using rule-based fallback.")
             return (None, usage)
         if "subquestions" not in raw or "{" not in raw:
             logger.warning("LLM decomposition: response is not JSON (model may have answered). Using fallback.")
@@ -100,6 +144,7 @@ def _llm_decompose(
         data = json.loads(text)
         sqs = data.get("subquestions") or []
         if not sqs or not isinstance(sqs, list):
+            logger.warning("[parser] Legacy LLM response has no valid subquestions; using rule-based fallback.")
             return (None, usage)
         out: list[tuple[str, str, str | None, QuestionIntent | None, float | None]] = []
         for i, item in enumerate(sqs):
@@ -130,6 +175,8 @@ def _llm_decompose(
                 sintent = _heuristic_intent(stext)
             if stext and isinstance(stext, str) and isinstance(sid, str):
                 out.append((str(sid).strip() or f"sq{i+1}", stext.strip(), skind, sintent, sscore))
+        if not out:
+            logger.warning("[parser] Legacy LLM subquestions parsed to empty; using rule-based fallback.")
         return (out if out else None, usage)
     except Exception as e:
         logger.warning("LLM decomposition failed, using rule-based fallback: %s", e)
@@ -164,7 +211,33 @@ def parse(
     from app.chat_config import get_chat_config
     parser_cfg = get_chat_config().parser
 
-    # Step 1: Decompose (LLM first, then rule-based fallback). LLM also classifies when possible.
+    # Step 1: Decompose (Mobius planner first if enabled, else legacy LLM, then rule-based fallback).
+    triples: list[tuple[str, str, str | None, QuestionIntent | None, float | None]] | None = None
+    plan_usage: dict | None = None
+    mobius_plan: Plan | None = None
+
+    if getattr(parser_cfg, "use_mobius_planner", False):
+        mobius_plan, plan_usage = _llm_decompose_mobius(text, context=context or "")
+        if mobius_plan and mobius_plan.subquestions:
+            _emit(emitter, f"I broke your question into {len(mobius_plan.subquestions)} part{'s' if len(mobius_plan.subquestions) != 1 else ''}.")
+            for sq in mobius_plan.subquestions:
+                snippet = sq.text[:50] + "..." if len(sq.text) > 50 else sq.text
+                if sq.kind == "non_patient":
+                    _emit(emitter, f"• {sq.id}: \"{snippet}\" — I can look this up.")
+                else:
+                    _emit(emitter, f"• {sq.id}: \"{snippet}\" — This looks personal; I don't have access to your records.")
+            n_sq = len(mobius_plan.subquestions)
+            patient_count = sum(1 for sq in mobius_plan.subquestions if sq.kind == "patient")
+            if patient_count == 0:
+                _emit(emitter, "Nothing personal in there—I can answer from what we have on file.")
+            elif patient_count == n_sq:
+                _emit(emitter, "These are about your own info—I can't access that yet, so I'll say so where it comes up.")
+            else:
+                _emit(emitter, f"One part is about your own info; I'll answer the other {n_sq - patient_count} from our materials.")
+            _emit(emitter, f"I'll answer these {n_sq} part{'s' if n_sq != 1 else ''} for you.")
+            mobius_plan.thinking_log = thinking_log
+            return mobius_plan
+
     triples, plan_usage = _llm_decompose(text, context=context or "")
     if not triples:
         _emit(emitter, "I'm splitting your message into clear parts.")

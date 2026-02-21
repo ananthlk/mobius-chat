@@ -380,9 +380,19 @@ EmitEvent:
 
 ---
 
-## 5. Summary
+## 5. Emit and Persistence Schema (Ops/Debug)
 
-| Dimension | Current | End-State |
+**EmitEvent** (`app/emit/types.py`): `correlation_id`, `stage`, `message`, `level` (technical|user|both), `ts`, `extra`. Stages: `state_load`, `classify`, `plan`, `clarify`, `resolve`, `integrate`, `publish`.
+
+**PersistencePort** (`app/persistence/interface.py`): `save_turn`, `append_messages`, `save_state`, `append_progress_event`. Implementations: `PostgresPersistence`, `MemoryPersistence` (explicit no-DB).
+
+**Trace**: Set `CHAT_DEBUG_TRACE=1` for stage-level trace with `correlation_id` in logs.
+
+---
+
+## 6. Summary
+
+| Dimension | Before Refactor | After Refactor |
 |-----------|---------|-----------|
 | **Unit of work** | Implicit (turn-based) | Explicit: resolution to user question; refinement loop until resolvable |
 | **Blueprint** | Built once per turn, discarded on clarification | Built/updated across turns; persisted; can be clarified |

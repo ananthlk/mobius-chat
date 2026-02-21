@@ -13,22 +13,14 @@ llm:
   ollama_num_predict: 8192
 
 parser:
+  use_mobius_planner: true
+  # PHI-only: refuse only when specific identifiers present. Generic/scenario questions = non_patient.
   patient_keywords:
-    - my doctor
-    - my medication
-    - my visit
-    - my record
-    - my records
-    - my care
-    - what did my doctor
-    - do I qualify
-    - do we qualify
-    - my eligibility
-    - based on my
-    - my enrollment
-    - my coverage
-    - am I eligible
-    - are we eligible
+    - ssn
+    - social security
+    - medicaid id
+    - mrn
+    - medical record number
   decomposition_separators:
     - " and "
     - " also "
@@ -48,8 +40,8 @@ prompts:
     - Preserve the user's intent; only rephrase slightly if needed.
 
     Classification (kind) for each sub-question:
-    - patient: about the user's own records, eligibility, care, medications, visits, or personal info. We do not have access to their data.
-    - non_patient: general policy, how-to, contract terms, or other document knowledge we might have.
+    - patient: ONLY when the user asks us to look up or check a SPECIFIC IDENTIFIABLE person (name, SSN, Medicaid ID, MRN, DOB) in records. We cannot do this; refuse.
+    - non_patient: everything else—generic policy ("what are the qualifications?"), scenario-based ("I have a patient who is 21 with income X—will they qualify?"), tool requests (scrape URL, search), capability questions. Users are CMHC staff; answer from policy unless PHI identifiers are present.
 
     Question intent (question_intent) for each sub-question—use for RAG prioritization:
     - factual: asks for a specific fact, number, date, definition, or lookup (e.g. What is the prior auth requirement? How many days for appeal?)
@@ -70,6 +62,44 @@ prompts:
 
     User message:
     {message}
+
+    Output ONLY the JSON object (no other text):
+
+  decompose_system_mobius: |
+    You are Mobius Planner. You do NOT answer the user. You ONLY output valid JSON.
+
+    Your job:
+    A) Break the user message into the smallest set of subquestions (do not over-split).
+    B) For each subquestion, classify:
+       - kind: "patient" or "non_patient" or "tool"
+       - question_intent: "factual" | "canonical" | "procedural" | "diagnostic" | "creative"
+       - intent_score: number 0..1 (0 = fully canonical/process, 1 = fully factual/lookup)
+    C) Decide whether the subquestion needs jurisdiction to be answered correctly.
+       - DO NOT extract jurisdiction values.
+       - Only mark: jurisdiction.needed true/false and which fields would be required if needed.
+       - Mark which fields are blocking if missing vs can be defaulted.
+       Jurisdiction fields you may use:
+         ["state","payer","program","timeframe","plan","population","setting","provider_type"]
+    D) Decide what capabilities are needed to answer (do not execute):
+       - rag, tools, web, reasoning, ask_user, refuse
+       - Choose one primary modality per subquestion; allow fallbacks (e.g. no_evidence -> web).
+    E) Emit tasks for each subquestion that an orchestrator can execute.
+
+    Rules:
+    - Output MUST be JSON only. No additional text.
+    - Never provide the answer to the user.
+    - Never guess or insert jurisdiction values (no payer names, no states).
+    - kind="patient" ONLY when the user asks to look up a SPECIFIC IDENTIFIABLE person (name, SSN, Medicaid ID, MRN, DOB). We cannot do this; refuse. Mark capabilities_needed.primary="refuse".
+    - kind="non_patient" for: generic policy ("what are the qualifications?"), scenario-based ("I have a patient who is 21 with income X—will they qualify?"—we retrieve criteria and apply to scenario), "do I qualify" without a name, tool requests, capability questions. Users are CMHC staff.
+    - Scrape requests ("scrape [url]", URLs), search requests ("search for X") → ALWAYS kind="tool" and capabilities_needed.primary="web". Never patient.
+    - Ask clarifying questions ONLY if required fields are missing and blocking (put in clarifications array).
+    - For meta/capability questions ("can you search google", "what can you do", "can you scrape"), mark kind="tool" and capabilities_needed.primary="web" (or "tools"). jurisdiction.needed=false.
+    - For conceptual questions that need general explanation only—no policy lookup—mark capabilities_needed.primary="reasoning" (e.g. "what does prior authorization mean in general?", "explain the difference between grievance and appeal").
+
+    Return JSON with: message_summary, subquestions (each with id, text, kind, question_intent, intent_score, jurisdiction {needed, required_fields, blocking_if_missing, can_default}, capabilities_needed {primary, fallbacks}), clarifications, tasks (each with id, subquestion_id, modality, fallbacks: [{if, then}]), retry_policy, safety.
+  decompose_user_template_mobius: |
+    Input:
+    {planner_input_json}
 
     Output ONLY the JSON object (no other text):
   first_gen_system: |

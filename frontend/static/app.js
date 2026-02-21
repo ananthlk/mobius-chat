@@ -811,7 +811,83 @@ function renderOneSection(sec) {
   }
   return sectionEl;
 }
-function renderAnswerCard(card, isError) {
+var CONFIDENCE_BADGE_MAP = {
+  approved_authoritative: {
+    label: "Approved \u2013 Authoritative",
+    variant: "approved_authoritative",
+    icon: "check"
+  },
+  approved_informational: {
+    label: "Approved \u2013 Informational",
+    variant: "approved_informational",
+    icon: "shield"
+  },
+  proceed_with_caution: {
+    label: "Proceed with Caution",
+    variant: "proceed_with_caution",
+    icon: "alert-triangle"
+  },
+  augmented_with_google: {
+    label: "Augmented with External Search",
+    variant: "augmented_with_google",
+    icon: "globe"
+  },
+  informational_only: {
+    label: "Informational Only",
+    variant: "informational_only",
+    icon: "info"
+  },
+  no_sources: {
+    label: "No Sources",
+    variant: "no_sources",
+    icon: "alert-circle"
+  }
+};
+function renderConfidenceBadge(strip) {
+  const key = strip.toLowerCase().replace(/\s+/g, "_");
+  const cfg = CONFIDENCE_BADGE_MAP[key] ?? {
+    label: strip.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
+    variant: "unverified",
+    icon: "info"
+  };
+  const wrap = document.createElement("div");
+  wrap.className = "confidence-badge-wrap";
+  const badge = document.createElement("span");
+  badge.className = `confidence-badge confidence-badge--${cfg.variant}`;
+  badge.setAttribute("aria-label", "Source confidence: " + cfg.label);
+  const iconEl = document.createElement("span");
+  iconEl.className = "confidence-badge-icon";
+  iconEl.setAttribute("aria-hidden", "true");
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("width", "14");
+  svg.setAttribute("height", "14");
+  const paths = {
+    check: "M20 6L9 17l-5-5",
+    shield: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z",
+    "alert-triangle": "M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z M12 9v4 M12 17h.01",
+    globe: "M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9",
+    info: "M12 16v-4 M12 8h.01 M22 12c0 5.523-4.477 10-10 10S2 17.523 2 12 6.477 2 12 2s10 4.477 10 10z",
+    "alert-circle": "M12 8v4m0 4h.01M22 12c0 5.523-4.477 10-10 10S2 17.523 2 12 6.477 2 12 2s10 4.477 10 10z"
+  };
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", paths[cfg.icon] ?? paths.info);
+  svg.appendChild(path);
+  iconEl.appendChild(svg);
+  const labelEl = document.createElement("span");
+  labelEl.className = "confidence-badge-label";
+  labelEl.textContent = cfg.label;
+  badge.appendChild(iconEl);
+  badge.appendChild(labelEl);
+  wrap.appendChild(badge);
+  return wrap;
+}
+function renderAnswerCard(card, isError, opts) {
   const wrap = document.createElement("div");
   wrap.className = "message message--assistant answer-card answer-card--" + card.mode.toLowerCase() + (isError ? " message--error" : "");
   const bubble = document.createElement("div");
@@ -820,6 +896,11 @@ function renderAnswerCard(card, isError) {
   direct.className = "answer-card-direct";
   direct.textContent = card.direct_answer;
   bubble.appendChild(direct);
+  if (opts?.showConfidenceBadge !== false) {
+    bubble.appendChild(
+      renderConfidenceBadge((opts?.sourceConfidenceStrip ?? "").trim() || "informational_only")
+    );
+  }
   const metaRow = document.createElement("div");
   metaRow.className = "answer-card-meta-row";
   if (card.required_variables && card.required_variables.length > 0) {
@@ -839,12 +920,16 @@ function renderAnswerCard(card, isError) {
     confirmLabel.className = "answer-card-confirm-label";
     confirmLabel.textContent = "Confirm";
     metaRow.appendChild(confirmLabel);
-    card.followups.slice(0, 2).forEach((f) => {
+    card.followups.slice(0, 4).forEach((f) => {
       const chip = document.createElement("button");
       chip.type = "button";
       chip.className = "answer-card-followup-chip";
-      chip.textContent = f.question || f.reason || f.field || "";
-      chip.setAttribute("aria-label", chip.textContent);
+      const questionText = f.question || f.reason || f.field || "";
+      chip.textContent = questionText;
+      chip.setAttribute("aria-label", questionText);
+      if (opts?.onFollowupClick && questionText) {
+        chip.addEventListener("click", () => opts.onFollowupClick(questionText));
+      }
       metaRow.appendChild(chip);
     });
   }
@@ -882,15 +967,43 @@ function renderAnswerCard(card, isError) {
   wrap.appendChild(bubble);
   return wrap;
 }
-function renderAssistantContent(body, isError) {
+function renderAssistantContent(body, isError, opts) {
   const card = tryParseAnswerCard(body);
   if (card)
-    return renderAnswerCard(card, isError);
+    return renderAnswerCard(card, isError, opts);
   const trimmed = (body ?? "").trim();
   if (trimmed.startsWith("{") && trimmed.length > 10) {
-    return renderAssistantMessage("Answer could not be displayed. Please try again.", isError);
+    const errWrap = document.createElement("div");
+    errWrap.className = "message message--assistant" + (isError ? " message--error" : "");
+    const errBubble = document.createElement("div");
+    errBubble.className = "message-bubble";
+    if (opts?.showConfidenceBadge !== false) {
+      errBubble.appendChild(
+        renderConfidenceBadge((opts?.sourceConfidenceStrip ?? "").trim() || "informational_only")
+      );
+    }
+    const errText = document.createElement("div");
+    errText.className = "message-bubble-text";
+    errText.textContent = "Answer could not be displayed. Please try again.";
+    errBubble.appendChild(errText);
+    errWrap.appendChild(errBubble);
+    return errWrap;
   }
-  return renderAssistantMessage(body, isError);
+  const wrap = document.createElement("div");
+  wrap.className = "message message--assistant" + (isError ? " message--error" : "");
+  const bubble = document.createElement("div");
+  bubble.className = "message-bubble";
+  if (opts?.showConfidenceBadge !== false) {
+    bubble.appendChild(
+      renderConfidenceBadge((opts?.sourceConfidenceStrip ?? "").trim() || "informational_only")
+    );
+  }
+  const textEl = document.createElement("div");
+  textEl.className = "message-bubble-text";
+  textEl.textContent = normalizeMessageText(body);
+  bubble.appendChild(textEl);
+  wrap.appendChild(bubble);
+  return wrap;
 }
 function parseMessageAndSources(fullMessage) {
   const raw = (fullMessage ?? "").trim();
@@ -924,12 +1037,12 @@ function renderUserMessage(text) {
 }
 function renderThinkingBlock(initialLines, opts) {
   const block = document.createElement("div");
-  block.className = "thinking-block thinking-block--compact collapsed";
+  block.className = "thinking-block thinking-block--compact" + (initialLines.length ? "" : " collapsed");
   const preview = document.createElement("div");
   preview.className = "thinking-preview";
   preview.setAttribute("role", "button");
   preview.setAttribute("tabindex", "0");
-  preview.setAttribute("aria-expanded", "false");
+  preview.setAttribute("aria-expanded", initialLines.length > 0 ? "true" : "false");
   const word = document.createElement("span");
   word.className = "thinking-word";
   word.textContent = "Thinking";
@@ -978,6 +1091,7 @@ function renderThinkingBlock(initialLines, opts) {
       word.textContent = "Thinking";
       block.classList.remove("collapsed");
       preview.setAttribute("aria-expanded", "true");
+      body.scrollTop = body.scrollHeight;
     },
     done(lineCount) {
       word.textContent = lineCount <= 1 ? "Thinking" : `Thinking (${lineCount})`;
@@ -988,14 +1102,64 @@ function renderThinkingBlock(initialLines, opts) {
     }
   };
 }
-function renderAssistantMessage(text, isError) {
+function renderClarificationOptions(opts, onSelect) {
+  const wrap = document.createElement("div");
+  wrap.className = "clarification-options";
+  for (const opt of opts) {
+    const group = document.createElement("div");
+    group.className = "clarification-option-group";
+    const labelEl = document.createElement("div");
+    labelEl.className = "clarification-option-label";
+    labelEl.textContent = opt.label;
+    group.appendChild(labelEl);
+    const chips = document.createElement("div");
+    chips.className = "clarification-option-chips";
+    for (const c of opt.choices) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "clarification-option-chip";
+      btn.textContent = c.label;
+      btn.addEventListener("click", () => onSelect(c.value));
+      chips.appendChild(btn);
+    }
+    group.appendChild(chips);
+    wrap.appendChild(group);
+  }
+  return wrap;
+}
+function renderAssistantMessage(text, isError, opts) {
   const wrap = document.createElement("div");
   wrap.className = "message message--assistant" + (isError ? " message--error" : "");
   const bubble = document.createElement("div");
   bubble.className = "message-bubble";
-  bubble.textContent = normalizeMessageText(text);
+  bubble.appendChild(
+    renderConfidenceBadge((opts?.sourceConfidenceStrip ?? "").trim() || "informational_only")
+  );
+  const textEl = document.createElement("div");
+  textEl.className = "message-bubble-text";
+  textEl.textContent = normalizeMessageText(text);
+  bubble.appendChild(textEl);
   wrap.appendChild(bubble);
   return wrap;
+}
+function createThumbIcon(type) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("width", "18");
+  svg.setAttribute("height", "18");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute(
+    "d",
+    type === "up" ? "M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3" : "M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"
+  );
+  svg.appendChild(path);
+  return svg;
 }
 function renderFeedback(correlationId) {
   const bar = document.createElement("div");
@@ -1006,12 +1170,14 @@ function renderFeedback(correlationId) {
   actions.className = "feedback-actions";
   const up = document.createElement("button");
   up.type = "button";
+  up.className = "feedback-thumb";
   up.setAttribute("aria-label", "Good response");
-  up.textContent = "\u{1F44D}";
+  up.appendChild(createThumbIcon("up"));
   const down = document.createElement("button");
   down.type = "button";
+  down.className = "feedback-thumb";
   down.setAttribute("aria-label", "Bad response");
-  down.textContent = "\u{1F44E}";
+  down.appendChild(createThumbIcon("down"));
   const commentArea = document.createElement("div");
   commentArea.className = "feedback-comment-area";
   commentArea.style.display = "none";
@@ -1195,11 +1361,11 @@ function renderSourceCiter(sources, citedSourceIndices, correlationId) {
       const upBtn = document.createElement("button");
       upBtn.type = "button";
       upBtn.setAttribute("aria-label", "Helpful");
-      upBtn.textContent = "\u{1F44D}";
+      upBtn.appendChild(createThumbIcon("up"));
       const downBtn = document.createElement("button");
       downBtn.type = "button";
       downBtn.setAttribute("aria-label", "Not helpful");
-      downBtn.textContent = "\u{1F44E}";
+      downBtn.appendChild(createThumbIcon("down"));
       const srcIdx = s.index != null && s.index >= 1 ? s.index : sources.indexOf(s) + 1;
       upBtn.addEventListener("click", () => postSourceFeedback2("up"));
       downBtn.addEventListener("click", () => postSourceFeedback2("down"));
@@ -1406,8 +1572,8 @@ function run() {
     });
   }
   const chatEmpty = document.getElementById("chatEmpty");
-  function sendMessage() {
-    const message = (inputEl.value ?? "").trim();
+  function sendMessage(overrideMessage) {
+    const message = (overrideMessage ?? (inputEl.value ?? "").trim()).trim();
     if (!message)
       return;
     if (sendBtn.disabled)
@@ -1425,7 +1591,8 @@ function run() {
     turnWrap.appendChild(renderUserMessage(message));
     messagesEl.appendChild(turnWrap);
     scrollToBottom(messagesEl);
-    inputEl.value = "";
+    if (!overrideMessage)
+      inputEl.value = "";
     updateSendState();
     sendBtn.disabled = true;
     inputEl.disabled = true;
@@ -1444,9 +1611,9 @@ function run() {
         messageWrapEl = renderAssistantMessage(text);
         turnWrap.appendChild(messageWrapEl);
       } else {
-        const bubble = messageWrapEl.querySelector(".message-bubble");
-        if (bubble)
-          bubble.textContent = text;
+        const textEl = messageWrapEl.querySelector(".message-bubble-text");
+        if (textEl)
+          textEl.textContent = text;
       }
       scrollToBottom(messagesEl);
     }
@@ -1476,10 +1643,23 @@ function run() {
         addThinkingLineAndScroll("LLM failed (stub used): " + data.llm_error);
       }
       thinkingDone(thinkingLines.length);
+      if (data.thread_id)
+        currentThreadId = data.thread_id;
       if (messageWrapEl) {
         messageWrapEl.remove();
       }
-      turnWrap.appendChild(renderAssistantContent(body || "(No response)", !!data.llm_error));
+      turnWrap.appendChild(
+        renderAssistantContent(body || "(No response)", !!data.llm_error, {
+          onFollowupClick: (q) => sendMessage(q),
+          sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || void 0,
+          showConfidenceBadge: data.status !== "clarification" && data.status !== "refinement_ask"
+        })
+      );
+      if (data.clarification_options && data.clarification_options.length > 0) {
+        turnWrap.appendChild(
+          renderClarificationOptions(data.clarification_options, (value) => sendMessage(value))
+        );
+      }
       turnWrap.appendChild(renderFeedback(data.correlation_id));
       const sourceList = data.sources && data.sources.length > 0 ? data.sources.map((s) => ({
         index: s.index ?? 0,
@@ -1501,13 +1681,6 @@ function run() {
         confidence: null
       })) : [];
       const cited = data.cited_source_indices ?? [];
-      const strip = (data.source_confidence_strip ?? "").trim();
-      if (strip) {
-        const badgeWrap = document.createElement("div");
-        badgeWrap.className = "answer-card-badge-wrap";
-        badgeWrap.textContent = strip.replace(/_/g, " ");
-        turnWrap.appendChild(badgeWrap);
-      }
       if (sourceList.length > 0) {
         turnWrap.appendChild(renderSourceCiter(sourceList, cited, data.correlation_id));
       }
@@ -1516,7 +1689,7 @@ function run() {
     }).catch((err) => {
       thinkingDone(thinkingLines.length);
       turnWrap.appendChild(
-        renderAssistantMessage("Error: " + (err?.message ?? String(err)), true)
+        renderAssistantMessage("Error: " + (err?.message ?? String(err)), true, {})
       );
       scrollToBottom(messagesEl);
     }).finally(() => {

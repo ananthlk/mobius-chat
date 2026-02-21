@@ -10,6 +10,7 @@ def build_context_pack(
     state: dict[str, Any],
     last_turns: list[dict[str, Any]],
     open_slots: list[str],
+    last_turn_sources: list[dict[str, Any]] | None = None,
 ) -> str:
     """Return context string to prepend before user message for STANDALONE | LIGHT | STATEFUL."""
     if route == "STANDALONE":
@@ -27,6 +28,11 @@ def build_context_pack(
         f"Context: jurisdiction={jurisdiction_summary} (state={state_val} payor={payer} program={program} perspective={perspective}); "
         f"domain={domain}. Open questions: {slots_str}. Do not use patient-specific details."
     )
+    sources_line = ""
+    if last_turn_sources:
+        names = [s.get("document_name") or "document" for s in last_turn_sources[:10]]
+        sources_line = f" Previous turn(s) sources used: {', '.join(names)}."
+    header = header.rstrip() + sources_line
     if route == "LIGHT":
         if not last_turns:
             return header + "\n\n"
