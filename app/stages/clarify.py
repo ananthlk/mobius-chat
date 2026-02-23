@@ -1,7 +1,8 @@
-"""Stage: jurisdiction clarification and query refinement. Sets resolvable? and messages."""
+"""Stage: jurisdiction clarification, route clash, and query refinement. Sets resolvable? and messages."""
 from collections.abc import Callable
 
 from app.pipeline.context import PipelineContext
+from app.planner.route_triggers import detect_route
 from app.state.clarification import need_jurisdiction_clarification
 from app.state.query_refinement import need_query_refinement
 
@@ -22,6 +23,17 @@ def run_clarify(ctx: PipelineContext, emitter: Callable[[str], None] | None = No
     if not plan:
         return True  # No plan = nothing to clarify
 
+    # Route clash: multiple conflicting deterministic triggers (web vs RAG)
+    message = ctx.effective_message or ctx.message or ""
+    _, route_confidence, route_choices = detect_route(message)
+    if route_confidence < 1.0 and route_choices:
+        ctx.needs_route_clarification = True
+        ctx.clarification_message = (
+            "I can either search the web or search our policy materials. Which would you like?"
+        )
+        ctx.route_clarification_choices = route_choices
+        return False
+
     active = (
         ctx.merged_state.get("active")
         if ctx.merged_state
@@ -40,10 +52,13 @@ def run_clarify(ctx: PipelineContext, emitter: Callable[[str], None] | None = No
         ctx.missing_slots = missing_slots or []
         return False
 
-    should_refine, refinement_suggestions = need_query_refinement(plan)
-    if should_refine and refinement_suggestions:
-        ctx.should_refine = True
-        ctx.refinement_suggestions = refinement_suggestions or []
-        return False
+    # Heuristic refinement only for legacy plans. Mobius planner decides decomposition; trust it.
+    if not getattr(plan, "task_plan", None):
+        user_msg = ctx.effective_message or ctx.message or ""
+        should_refine, refinement_suggestions = need_query_refinement(plan, user_message=user_msg)
+        if should_refine and refinement_suggestions:
+            ctx.should_refine = True
+            ctx.refinement_suggestions = refinement_suggestions or []
+            return False
 
     return True  # Resolvable

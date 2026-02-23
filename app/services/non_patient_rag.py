@@ -244,7 +244,6 @@ def answer_non_patient(
         template = cfg.prompts.rag_answering_user_template
         prompt = template.format(context=context, question=question)
         answer, usage = asyncio.run(provider.generate_with_usage(prompt))
-        _emit(emitter, "Done with this part.")
     except Exception as e:
         logger.warning("Non-patient LLM failed: %s", e)
         answer = f"[LLM failed: {e}]"

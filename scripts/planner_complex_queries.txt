@@ -1,0 +1,7 @@
+Compare the care management programs of Sunshine Health, United Healthcare and Molina
+I need to know the prior auth requirements for Sunshine Health, then the grievance process, and whether we need to file an appeal for a denied claim
+Search for Florida Medicaid eligibility, then tell me how that compares to our Sunshine Health manual
+What are the qualifications for care management? If we don't have that in our docs, search the web
+Scrape https://example.com/policy and summarize the appeals process, then check if it matches our manual
+How do I file an appeal and what's the grievance process for Sunshine? Also what if the member has income under 138% FPL?
+Can you read the policy and see how to file an appeal, and see if this appeal for this abc case will be successful

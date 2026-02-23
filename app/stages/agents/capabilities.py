@@ -56,6 +56,11 @@ def available_capabilities_json() -> dict[str, Any]:
         "tools": ["google_search", "web_scrape", "npi_lookup", "bigquery_templates", "internal_api"],
         "web_allowed": True,
         "reasoning_allowed": True,
+        "routing_to_tool": [
+            "search the web, search google, search for X, look up X, find on the internet",
+            "scrape [url], scrape this, scrape url, read this webpage, read this url, or any URL",
+            "what can you do, what can you help with, your capabilities, can you search/scrape",
+        ],
     }
 
 

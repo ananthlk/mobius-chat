@@ -14,7 +14,7 @@ def run_classify(ctx: PipelineContext, emitter: Callable[[str], None] | None = N
 
     ctx.classification = classify_message(ctx.message, last_turn, open_slots, last_refined)
 
-    if ctx.classification == "slot_fill" and last_refined and ctx.merged_state:
+    if ctx.classification in ("slot_fill", "jurisdiction_change") and last_refined and ctx.merged_state:
         ctx.effective_message = build_refined_query(
             last_refined,
             get_jurisdiction_from_active((ctx.merged_state or {}).get("active")),

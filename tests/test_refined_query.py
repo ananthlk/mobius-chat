@@ -130,7 +130,7 @@ class TestClassifyMessageNewQuestion:
         assert out == "new_question", f"Expected new_question, got {out}"
 
     def test_what_about_indicates_new(self):
-        """'what about eligibility' -> new_question (what about + 4+ words)."""
+        """'what about eligibility for prior auth' -> new_question (different question, not jurisdiction swap)."""
         out = classify_message(
             "what about eligibility for prior auth",
             {"user_content": "appeal", "assistant_content": "..."},

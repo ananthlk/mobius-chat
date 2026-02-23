@@ -68,6 +68,24 @@ def test_parse_modality_web_scrape():
     assert result.tasks[0].modality == "web"
 
 
+def test_parse_capabilities_primary_web_scrape():
+    """capabilities_needed.primary='web_scrape' maps to 'web' in subquestion."""
+    json_str = '''
+    {
+      "message_summary": "scrape",
+      "subquestions": [{"id": "sq1", "text": "Scrape https://example.com", "capabilities_needed": {"primary": "web_scrape"}}],
+      "tasks": [],
+      "clarifications": [],
+      "retry_policy": {},
+      "safety": {}
+    }
+    '''
+    result = parse_task_plan_from_json(json_str)
+    assert result is not None
+    caps = result.subquestions[0].capabilities_needed
+    assert caps.primary == "web"
+
+
 def test_parse_modality_google_search():
     """Modality 'google_search' maps to 'web' in task."""
     json_str = '''

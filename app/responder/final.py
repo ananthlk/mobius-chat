@@ -85,7 +85,7 @@ def _parse_answer_card(text: str, emitter: Callable[[str], None] | None = None) 
     text = text.strip()
     # Strip markdown code fence if present (e.g. ```json\n{...}\n```)
     if text.startswith("```"):
-        _emit(emitter, "Stripping markdown code fence from consolidator output…")
+        logger.debug("Stripping markdown code fence from consolidator output")
         lines = text.split("\n")
         if lines and lines[0].strip().startswith("```"):
             lines = lines[1:]
@@ -116,23 +116,21 @@ def _parse_answer_card(text: str, emitter: Callable[[str], None] | None = None) 
         data = json.loads(text)
         out = _validate(data)
         if out is not None:
-            _emit(emitter, "AnswerCard parsed (valid JSON).")
+            logger.debug("AnswerCard parsed (valid JSON)")
             return out
-        _emit(emitter, "JSON valid but not AnswerCard shape; skipping json_repair.")
-        return None
+        logger.debug("JSON valid but not AnswerCard shape; skipping json_repair")
     except (json.JSONDecodeError, TypeError):
-        _emit(emitter, "Standard JSON parse failed; trying json_repair…")
+        logger.debug("Standard JSON parse failed; trying json_repair")
     try:
         import json_repair
         data = json_repair.loads(text)
         out = _validate(data)
         if out is not None:
-            _emit(emitter, "AnswerCard parsed (json_repair).")
-            logger.debug("AnswerCard parsed via json_repair")
+            logger.debug("AnswerCard parsed (json_repair)")
             return out
-        _emit(emitter, "json_repair produced output but not a valid AnswerCard.")
+        logger.debug("json_repair produced output but not a valid AnswerCard")
     except Exception as e:
-        _emit(emitter, "json_repair could not fix JSON.")
+        logger.debug("json_repair could not fix JSON")
         logger.debug("json_repair failed for AnswerCard: %s", e)
     return None
 
@@ -199,7 +197,7 @@ def format_response(
     if not plan.subquestions:
         return ("", None)
 
-    _emit(emitter, "Formatting the response for chat…")
+    # Formatting message emitted by orchestrator before integrate
     usage: LLMUsageDict | None = None
 
     try:
@@ -220,7 +218,6 @@ def format_response(
             cfg.prompts.consolidator_canonical_min,
         )
         consolidator_line = f"Consolidator: {consolidator_type.capitalize()} (blended canonical score: {canonical_score:.2f})"
-        _emit(emitter, consolidator_line)
         logger.info("[consolidator] %s", consolidator_line)
 
         if consolidator_type == "factual":
@@ -245,22 +242,22 @@ def format_response(
         if text:
             parsed = _parse_answer_card(text, emitter=emitter)
             if parsed is None and (text.strip().startswith("{") or "```" in text):
-                _emit(emitter, "Repairing invalid JSON via LLM…")
+                logger.debug("Repairing invalid JSON via LLM")
                 repaired = _repair_json(cfg, text)
                 if repaired:
                     parsed = _parse_answer_card(repaired, emitter=emitter)
                     if parsed is not None:
                         text = repaired
             if parsed is not None:
-                _emit(emitter, "Emitting canonical AnswerCard JSON to frontend.")
+                logger.debug("Emitting canonical AnswerCard JSON to frontend")
                 # Emit canonical JSON so frontend receives clean JSON (no markdown fence)
                 return (json.dumps(parsed), usage if not message_chunk_callback else None)
             # Not valid AnswerCard: return raw text so UI shows something
             logger.warning("Consolidator output was not valid AnswerCard JSON; returning as prose fallback")
-            _emit(emitter, "Returning raw consolidator output (not valid AnswerCard).")
+            logger.debug("Returning raw consolidator output (not valid AnswerCard)")
             return (text, usage if not message_chunk_callback else None)
     except Exception as e:
         logger.warning("Integrator LLM failed, using fallback: %s", e)
-        _emit(emitter, "Using simple format.")
+        logger.debug("Using simple format (integrator LLM failed)")
 
     return (_fallback_message(plan, stub_answers), None)

@@ -11,8 +11,30 @@ VAGUE_MIN_WORDS = 3  # Very short queries
 MULTI_INTENT_SUBQUESTION_THRESHOLD = 3  # Many subquestions may indicate ambiguity
 LOW_CONFIDENCE_THRESHOLD = 0.4  # intent_score near 0.5 with low confidence
 
+# Patterns suggesting a complete scenario (don't ask user to narrow)
+_CONCRETE_SCENARIO_PATTERNS = (
+    r"\b\d+\s*(year|yo|years?\s*old)\b",  # age
+    r"\$\d+",  # income / dollar amounts
+    r"\b\d+\s*(kid|child|dependent|month|mo)\b",  # dependents, income period
+    r"\b(lives?|in|from)\s+[\w\s]+(florida|fl|tampa|tx|california)\b",  # location
+    r"\b(patient|client)\b.*\b(qualify|eligibility|enroll)\b",  # patient scenario
+)
 
-def need_query_refinement(plan: Any) -> tuple[bool, list[str]]:
+
+def _has_concrete_scenario(user_message: str) -> bool:
+    """True if the question describes a complete scenario (age, income, location, etc.)."""
+    import re
+
+    text = (user_message or "").strip().lower()
+    if len(text) < 30:
+        return False
+    for pat in _CONCRETE_SCENARIO_PATTERNS:
+        if re.search(pat, text, re.IGNORECASE):
+            return True
+    return False
+
+
+def need_query_refinement(plan: Any, *, user_message: str = "") -> tuple[bool, list[str]]:
     """Decide if we should ask the user to confirm or rephrase before answering.
 
     Returns (should_ask, refinement_suggestions).
@@ -33,7 +55,11 @@ def need_query_refinement(plan: Any) -> tuple[bool, list[str]]:
             return (True, suggestions)
 
     # Many subquestions: user may have asked multiple things
+    # Skip refinement when question describes a complete scenario (age, income, location, etc.)
+    # — user wants all parts answered, not to pick one
     if len(subquestions) >= MULTI_INTENT_SUBQUESTION_THRESHOLD:
+        if _has_concrete_scenario(user_message):
+            return (False, [])
         for sq in subquestions[:3]:
             t = getattr(sq, "text", None) or ""
             if t.strip():
@@ -56,26 +82,45 @@ def need_query_refinement(plan: Any) -> tuple[bool, list[str]]:
     return (False, [])
 
 
-def reframe_for_retrieval(question: str, intent: str | None, question_intent: str | None = None) -> str:
-    """Reframe the question for better retrieval. Internal use; does not ask user.
+def reframe_for_retrieval(
+    question: str,
+    intent: str | None,
+    question_intent: str | None = None,
+    *,
+    last_refined_query: str | None = None,
+    jurisdiction: dict | None = None,
+    is_followup: bool = False,
+) -> str:
+    """Reframe the question for retrieval. Strips jurisdiction from question, recombines with jurisdiction.
 
-    For canonical intent: expand to policy/process phrasing.
-    For factual intent: keep or narrow to fact-seeking.
-    Returns the reframed question text.
+    When is_followup and last_refined_query: use last_refined_query (with prior topic) + jurisdiction.
+    Otherwise: strip jurisdiction from question, then recombine with jurisdiction.
     """
+    from app.state.intent_jurisdiction import strip_jurisdiction_from_intent
+    from app.state.jurisdiction import jurisdiction_to_summary
+
     q = (question or "").strip()
     if not q:
         return q
 
-    # Use question_intent or intent
-    it = (question_intent or intent or "").lower()
+    # Follow-up: use last_refined_query (expanded from prior turn) + jurisdiction
+    if is_followup and last_refined_query and (last_refined_query or "").strip():
+        base = strip_jurisdiction_from_intent(last_refined_query)
+        if not base:
+            base = (last_refined_query or "").strip()
+        summary = jurisdiction_to_summary(jurisdiction or {})
+        if summary and summary.lower() not in base.lower():
+            return f"{base} for {summary}".strip()
+        return base
 
-    # For now, return as-is; LLM-based reframing can be added later
-    if it == "canonical":
-        # Could add: "process for", "how to", "requirements for" expansions
-        return q
-    if it == "factual":
-        # Could add: fact-finding phrasing
-        return q
+    # Strip jurisdiction from question, recombine with jurisdiction
+    if jurisdiction:
+        base = strip_jurisdiction_from_intent(q)
+        if base != q or not base:
+            base = base or q
+        summary = jurisdiction_to_summary(jurisdiction)
+        if summary and summary.lower() not in base.lower():
+            return f"{base} for {summary}".strip()
+        return base
 
     return q

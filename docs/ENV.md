@@ -28,7 +28,10 @@ The app loads `.env` from the **repo root**. Create a `.env` file there with the
 | `CHAT_RAG_DATABASE_URL` | Postgres URL for `published_rag_metadata` (e.g. `postgresql://postgres:PASSWORD@HOST:5432/mobius_chat`) |
 | `VERTEX_PROJECT`, `VERTEX_REGION`, `VERTEX_INDEX_ID`, `GCS_BUCKET`, `BQ_PROJECT`, `BQ_DATASET` | Used by sync job (MOBIUS-DBT); optional for Chat |
 | `CHAT_RAG_FILTER_PAYER`, `CHAT_RAG_FILTER_STATE`, `CHAT_RAG_FILTER_PROGRAM`, `CHAT_RAG_FILTER_AUTHORITY_LEVEL` | Optional RAG filter defaults. If set, **only** documents matching these values are returned (e.g. `CHAT_RAG_FILTER_PAYER=Sunshine Health`). Leave unset to search all payers. |
-| `CHAT_SKILLS_GOOGLE_SEARCH_URL` | Optional. Base URL for the Google search skill. When set and corpus confidence is low, Chat augments context with external search results. Local dev: `http://localhost:8004/search?` (run `mobius-skills/google-search` via mstart). |
+| `CHAT_SKILLS_GOOGLE_SEARCH_URL` | Used by mobius-skills-mcp (MCP server). The MCP server calls this for google_search tool. Local dev: `http://localhost:8004/search?` (run `mobius-skills/google-search` via mstart). |
+| `MCP_SERVER_URL` | Tool agent connects to MCP server for skills (google_search, web_scrape_review). Default: `http://localhost:8006/mcp`. Set when using mstart (starts mobius-skills-mcp). |
+| `MCP_CONNECT_TIMEOUT` | MCP HTTP connect timeout in seconds (default 10). |
+| `MCP_READ_TIMEOUT` | MCP HTTP read timeout in seconds (default 60). |
 
 ## Local dev RAG (Mobius RAG backend + pgvector)
 

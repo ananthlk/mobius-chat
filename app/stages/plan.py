@@ -7,7 +7,7 @@ from app.pipeline.context import PipelineContext
 from app.planner import parse
 from app.planner.blueprint import build_blueprint
 from app.planner.schemas import Plan, SubQuestion
-from app.state.refined_query import compute_refined_query
+from app.state.refined_query import compute_refined_query, is_followup_continuation
 from app.stages.agents.capabilities import capabilities_for_parser
 
 logger = logging.getLogger(__name__)
@@ -39,13 +39,23 @@ def run_plan(ctx: PipelineContext, emitter: Callable[[str], None] | None = None)
     ctx.plan = plan
 
     plan_text = plan.subquestions[0].text if plan.subquestions else None
+    last_turn = ctx.last_turns[0] if ctx.last_turns else {}
     ctx.refined_query = compute_refined_query(
         ctx.classification,
         ctx.message,
         (ctx.merged_state or {}).get("refined_query"),
         ctx.merged_state or {},
         plan_text,
+        last_turn=last_turn,
     )
 
     rag_k = get_chat_config().rag.top_k
-    ctx.blueprint = build_blueprint(plan, rag_default_k=rag_k)
+    from app.state.jurisdiction import get_jurisdiction_from_active
+    last_refined = (ctx.merged_state or {}).get("refined_query")
+    retrieval_ctx = {
+        "refined_query": ctx.refined_query,
+        "jurisdiction": get_jurisdiction_from_active((ctx.merged_state or {}).get("active")),
+        "is_followup": is_followup_continuation(ctx.message, last_turn, last_refined),
+        "user_message": ctx.effective_message or ctx.message,
+    }
+    ctx.blueprint = build_blueprint(plan, rag_default_k=rag_k, retrieval_ctx=retrieval_ctx)

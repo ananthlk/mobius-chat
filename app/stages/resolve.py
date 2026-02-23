@@ -2,6 +2,10 @@
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from app.communication.plan_display import (
+    format_step_done,
+    retrieval_signal_to_fallback_note,
+)
 from app.services.doc_assembly import (
     RETRIEVAL_SIGNAL_NO_SOURCES,
 )
@@ -50,9 +54,7 @@ def _answer_for_subquestion(
         )
         return (answer, usage, sources or [], signal)
 
-    # RAG path
-    snippet = (text[:60] + "...") if len(text) > 60 else text
-    emit(f"Answering this part: \"{snippet}\"")
+    # RAG path (step progress emitted after via format_step_done)
     params = retrieval_params or get_retrieval_blend(0.5)
     on_fail = (on_rag_fail or []) if isinstance(on_rag_fail, list) else []
     answer_text, sources, usage, retrieval_signal = answer_non_patient(
@@ -117,6 +119,13 @@ def run_resolve(
         )
         answers.append(ans)
         retrieval_signals.append(retrieval_signal)
+
+        # Emit step progress so user can follow along
+        if emitter:
+            total = len(plan.subquestions)
+            fallback_note = retrieval_signal_to_fallback_note(retrieval_signal)
+            status = format_step_done(i + 1, total, success=True, used_fallback=fallback_note)
+            emitter(status)
         if usage:
             usages.append(usage)
         for s in sources or []:

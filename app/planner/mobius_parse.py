@@ -34,7 +34,10 @@ def _parse_jurisdiction(d: Any) -> JurisdictionInfo:
 def _parse_capabilities(d: Any) -> CapabilitiesNeeded:
     if not isinstance(d, dict):
         return CapabilitiesNeeded()
-    primary = (d.get("primary") or "rag").lower()
+    primary_raw = (d.get("primary") or "rag").lower()
+    # Map LLM variants (web_scrape, google_search, search) to schema value "web"
+    primary_map = {"web_scrape": "web", "google_search": "web", "search": "web"}
+    primary = primary_map.get(primary_raw, primary_raw)
     if primary not in ("rag", "tools", "web", "reasoning", "ask_user", "refuse"):
         primary = "rag"
     fallbacks_raw = d.get("fallbacks") or []
@@ -44,10 +47,11 @@ def _parse_capabilities(d: Any) -> CapabilitiesNeeded:
         if isinstance(x, dict):
             # LLM may return {"if": "no_evidence", "then": "web"} - extract "then"
             then_val = (x.get("then") or "").lower()
+            then_val = primary_map.get(then_val, then_val)
             if then_val in valid:
                 fallbacks.append(then_val)
         elif isinstance(x, str) and x:
-            v = x.lower()
+            v = primary_map.get(x.lower(), x.lower())
             if v in valid:
                 fallbacks.append(v)
     return CapabilitiesNeeded(primary=primary, fallbacks=fallbacks)

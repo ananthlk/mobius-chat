@@ -219,33 +219,14 @@ def parse(
     if getattr(parser_cfg, "use_mobius_planner", False):
         mobius_plan, plan_usage = _llm_decompose_mobius(text, context=context or "")
         if mobius_plan and mobius_plan.subquestions:
-            _emit(emitter, f"I broke your question into {len(mobius_plan.subquestions)} part{'s' if len(mobius_plan.subquestions) != 1 else ''}.")
-            for sq in mobius_plan.subquestions:
-                snippet = sq.text[:50] + "..." if len(sq.text) > 50 else sq.text
-                if sq.kind == "non_patient":
-                    _emit(emitter, f"• {sq.id}: \"{snippet}\" — I can look this up.")
-                else:
-                    _emit(emitter, f"• {sq.id}: \"{snippet}\" — This looks personal; I don't have access to your records.")
-            n_sq = len(mobius_plan.subquestions)
-            patient_count = sum(1 for sq in mobius_plan.subquestions if sq.kind == "patient")
-            if patient_count == 0:
-                _emit(emitter, "Nothing personal in there—I can answer from what we have on file.")
-            elif patient_count == n_sq:
-                _emit(emitter, "These are about your own info—I can't access that yet, so I'll say so where it comes up.")
-            else:
-                _emit(emitter, f"One part is about your own info; I'll answer the other {n_sq - patient_count} from our materials.")
-            _emit(emitter, f"I'll answer these {n_sq} part{'s' if n_sq != 1 else ''} for you.")
+            # Plan breakdown emitted later via format_execution_plan (My plan: 1. ...) for consistency
             mobius_plan.thinking_log = thinking_log
             return mobius_plan
 
     triples, plan_usage = _llm_decompose(text, context=context or "")
     if not triples:
-        _emit(emitter, "I'm splitting your message into clear parts.")
         triples = _rule_based_decompose(text, parser_cfg)
         plan_usage = None
-    else:
-        n = len(triples)
-        _emit(emitter, f"I broke your question into {n} part{'s' if n != 1 else ''}.")
 
     # Step 2: Use LLM kind, intent, intent_score when present; otherwise classify with keywords / heuristic
     from app.services.retrieval_calibration import intent_to_score
@@ -255,20 +236,5 @@ def parse(
         intent = llm_intent if llm_intent in _VALID_INTENTS else _heuristic_intent(sq_text)
         score = llm_score if llm_score is not None else intent_to_score(intent)
         subquestions.append(SubQuestion(id=sq_id, text=sq_text, kind=kind, question_intent=intent, intent_score=score))
-        snippet = sq_text[:50] + "..." if len(sq_text) > 50 else sq_text
-        if kind == "non_patient":
-            _emit(emitter, f"• {sq_id}: “{snippet}” — I can look this up.")
-        else:
-            _emit(emitter, f"• {sq_id}: “{snippet}” — This looks personal; I don’t have access to your records.")
 
-    n_sq = len(subquestions)
-    patient_count = sum(1 for sq in subquestions if sq.kind == "patient")
-    if patient_count == 0:
-        _emit(emitter, "Nothing personal in there—I can answer from what we have on file.")
-    elif patient_count == n_sq:
-        _emit(emitter, "These are about your own info—I can’t access that yet, so I’ll say so where it comes up.")
-    else:
-        _emit(emitter, f"One part is about your own info; I’ll answer the other {n_sq - patient_count} from our materials.")
-
-    _emit(emitter, f"I’ll answer these {n_sq} part{'s' if n_sq != 1 else ''} for you.")
     return Plan(subquestions=subquestions, thinking_log=thinking_log, llm_usage=plan_usage)

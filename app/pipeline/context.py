@@ -49,6 +49,10 @@ class PipelineContext:
     clarification_message: str | None = None
     missing_slots: list[str] = field(default_factory=list)
 
+    needs_route_clarification: bool = False
+    """Route clash: multiple conflicting deterministic triggers (web vs RAG)."""
+    route_clarification_choices: list[dict] = field(default_factory=list)
+
     should_refine: bool = False
     refinement_suggestions: list[str] = field(default_factory=list)
     refinement_message: str | None = None

@@ -1,0 +1,761 @@
+{
+  "queries": [
+    "Compare the care management programs of Sunshine Health, United Healthcare and Molina",
+    "I need to know the prior auth requirements for Sunshine Health, then the grievance process, and whether we need to file an appeal for a denied claim",
+    "Search for Florida Medicaid eligibility, then tell me how that compares to our Sunshine Health manual",
+    "What are the qualifications for care management? If we don't have that in our docs, search the web",
+    "Scrape https://example.com/policy and summarize the appeals process, then check if it matches our manual",
+    "How do I file an appeal and what's the grievance process for Sunshine? Also what if the member has income under 138% FPL?",
+    "Can you read the policy and see how to file an appeal, and see if this appeal for this abc case will be successful"
+  ],
+  "results": [
+    {
+      "message": "Compare the care management programs of Sunshine Health, United Healthcare and Molina",
+      "raw": "```json\n{\n  \"message_summary\": \"The user wants to compare the care management programs offered by Sunshine Health, United Healthcare, and Molina. This requires retrieving information about each payer's programs.\",\n  \"subquestions\": [\n    {\n      \"id\": \"1\",\n      \"text\": \"What are the care management programs of Sunshine Health?\",\n      \"kind\": \"non_patient\",\n      \"question_intent\": \"factual\",\n      \"intent_score\": 0.9,\n      \"jurisdiction\": {\n        \"needed\": true,\n        \"required_fields\": [\n          \"state\",\n          \"payer\",\n          \"program\"\n        ],\n        \"blocking_if_missing\": [\n          \"state\"\n        ],\n        \"can_default\": []\n      },\n      \"capabilities_needed\": {\n        \"primary\": \"rag\",\n        \"fallbacks\": [\n          {\n            \"if\": \"no_evidence\",\n            \"then\": \"web\"\n          }\n        ]\n      }\n    },\n    {\n      \"id\": \"2\",\n      \"text\": \"What are the care management programs of United Healthcare?\",\n      \"kind\": \"non_patient\",\n      \"question_intent\": \"factual\",\n      \"intent_score\": 0.9,\n      \"jurisdiction\": {\n        \"needed\": true,\n        \"required_fields\": [\n          \"state\",\n          \"payer\",\n          \"program\"\n        ],\n        \"blocking_if_missing\": [\n          \"state\"\n        ],\n        \"can_default\": []\n      },\n      \"capabilities_needed\": {\n        \"primary\": \"rag\",\n        \"fallbacks\": [\n          {\n            \"if\": \"no_evidence\",\n            \"then\": \"web\"\n          }\n        ]\n      }\n    },\n    {\n      \"id\": \"3\",\n      \"text\": \"What are the care management programs of Molina?\",\n      \"kind\": \"non_patient\",\n      \"question_intent\": \"factual\",\n      \"intent_score\": 0.9,\n      \"jurisdiction\": {\n        \"needed\": true,\n        \"required_fields\": [\n          \"state\",\n          \"payer\",\n          \"program\"\n        ],\n        \"blocking_if_missing\": [\n          \"state\"\n        ],\n        \"can_default\": []\n      },\n      \"capabilities_needed\": {\n        \"primary\": \"rag\",\n        \"fallbacks\": [\n          {\n            \"if\": \"no_evidence\",\n            \"then\": \"web\"\n          }\n        ]\n      }\n    }\n  ],\n  \"clarifications\": [\n    {\n      \"field\": \"state\",\n      \"text\": \"Please specify the state for which you'd like to compare the care management programs.\"\n    }\n  ],\n  \"tasks\": [\n    {\n      \"id\": \"task_1\",\n      \"subquestion_id\": \"1\",\n      \"modality\": \"rag\",\n      \"fallbacks\": [\n        {\n          \"if\": \"no_evidence\",\n          \"then\": \"web\"\n        }\n      ]\n    },\n    {\n      \"id\": \"task_2\",\n      \"subquestion_id\": \"2\",\n      \"modality\": \"rag\",\n      \"fallbacks\": [\n        {\n          \"if\": \"no_evidence\",\n          \"then\": \"web\"\n        }\n      ]\n    },\n    {\n      \"id\": \"task_3\",\n      \"subquestion_id\": \"3\",\n      \"modality\": \"rag\",\n      \"fallbacks\": [\n        {\n          \"if\": \"no_evidence\",\n          \"then\": \"web\"\n        }\n      ]\n    }\n  ],\n  \"retry_policy\": {},\n  \"safety\": {}\n}\n```",
+      "llm_usage": {
+        "provider": "vertex",
+        "model": "gemini-2.5-flash",
+        "input_tokens": 1144,
+        "output_tokens": 888
+      },
+      "task_plan": {
+        "message_summary": "The user wants to compare the care management programs offered by Sunshine Health, United Healthcare, and Molina. This requires retrieving information about each payer's programs.",
+        "subquestions": [
+          {
+            "id": "1",
+            "text": "What are the care management programs of Sunshine Health?",
+            "kind": "non_patient",
+            "question_intent": "factual",
+            "intent_score": 0.9,
+            "capabilities_needed": {
+              "primary": "rag",
+              "fallbacks": [
+                "web"
+              ]
+            }
+          },
+          {
+            "id": "2",
+            "text": "What are the care management programs of United Healthcare?",
+            "kind": "non_patient",
+            "question_intent": "factual",
+            "intent_score": 0.9,
+            "capabilities_needed": {
+              "primary": "rag",
+              "fallbacks": [
+                "web"
+              ]
+            }
+          },
+          {
+            "id": "3",
+            "text": "What are the care management programs of Molina?",
+            "kind": "non_patient",
+            "question_intent": "factual",
+            "intent_score": 0.9,
+            "capabilities_needed": {
+              "primary": "rag",
+              "fallbacks": [
+                "web"
+              ]
+            }
+          }
+        ],
+        "tasks": [
+          {
+            "id": "task_1",
+            "subquestion_id": "1",
+            "modality": "rag",
+            "goal": "",
+            "steps": [],
+            "fallbacks": [
+              {
+                "if": "",
+                "then": "web"
+              }
+            ]
+          },
+          {
+            "id": "task_2",
+            "subquestion_id": "2",
+            "modality": "rag",
+            "goal": "",
+            "steps": [],
+            "fallbacks": [
+              {
+                "if": "",
+                "then": "web"
+              }
+            ]
+          },
+          {
+            "id": "task_3",
+            "subquestion_id": "3",
+            "modality": "rag",
+            "goal": "",
+            "steps": [],
+            "fallbacks": [
+              {
+                "if": "",
+                "then": "web"
+              }
+            ]
+          }
+        ],
+        "retry_policy": {
+          "max_attempts": 2,
+          "on_missing_jurisdiction": "ask_blocking_clarification",
+          "on_no_results": "broaden_scope_then_offer_alternatives",
+          "on_tool_error": "simplify_then_fail_gracefully"
+        }
+      },
+      "plan": {
+        "subquestions": [
+          {
+            "id": "1",
+            "text": "What are the care management programs of Sunshine Health?",
+            "kind": "non_patient",
+            "capabilities_primary": "rag",
+            "on_rag_fail": [
+              "search_google"
+            ]
+          },
+          {
+            "id": "2",
+            "text": "What are the care management programs of United Healthcare?",
+            "kind": "non_patient",
+            "capabilities_primary": "rag",
+            "on_rag_fail": [
+              "search_google"
+            ]
+          },
+          {
+            "id": "3",
+            "text": "What are the care management programs of Molina?",
+            "kind": "non_patient",
+            "capabilities_primary": "rag",
+            "on_rag_fail": [
+              "search_google"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "message": "I need to know the prior auth requirements for Sunshine Health, then the grievance process, and whether we need to file an appeal for a denied claim",
+      "raw": "```json\n{\n  \"message_summary\": \"The user is asking for prior authorization requirements, the grievance process, and appeal necessity for denied claims, all related to Sunshine Health.\",\n  \"subquestions\": [\n    {\n      \"id\": \"1\",\n      \"text\": \"What are the prior authorization requirements for Sunshine Health?\",\n      \"kind\": \"non_patient\",\n      \"question_intent\": \"factual\",\n      \"intent_score\": 1,\n      \"jurisdiction\": {\n        \"needed\": true,\n        \"required_fields\": [\n          \"payer\"\n        ],\n        \"blocking_if_missing\": [\n          \"payer\"\n        ],\n        \"can_default\": []\n      },\n      \"capabilities_needed\": {\n        \"primary\": \"rag\",\n        \"fallbacks\": [\n          {\n            \"if\": \"no_evidence\",\n            \"then\": \"web\"\n          }\n        ]\n      }\n    },\n    {\n      \"id\": \"2\",\n      \"text\": \"What is the grievance process for Sunshine Health?\",\n      \"kind\": \"non_patient\",\n      \"question_intent\": \"factual\",\n      \"intent_score\": 1,\n      \"jurisdiction\": {\n        \"needed\": true,\n        \"required_fields\": [\n          \"payer\"\n        ],\n        \"blocking_if_missing\": [\n          \"payer\"\n        ],\n        \"can_default\": []\n      },\n      \"capabilities_needed\": {\n        \"primary\": \"rag\",\n        \"fallbacks\": [\n          {\n            \"if\": \"no_evidence\",\n            \"then\": \"web\"\n          }\n        ]\n      }\n    },\n    {\n      \"id\": \"3\",\n      \"text\": \"Do we need to file an appeal for a denied claim with Sunshine Health?\",\n      \"kind\": \"non_patient\",\n      \"question_intent\": \"procedural\",\n      \"intent_score\": 0.8,\n      \"jurisdiction\": {\n        \"needed\": true,\n        \"required_fields\": [\n          \"payer\"\n        ],\n        \"blocking_if_missing\": [\n          \"payer\"\n        ],\n        \"can_default\": []\n      },\n      \"capabilities_needed\": {\n        \"primary\": \"rag\",\n        \"fallbacks\": [\n          {\n            \"if\": \"no_evidence\",\n            \"then\": \"web\"\n          }\n        ]\n      }\n    }\n  ],\n  \"clarifications\": [],\n  \"tasks\": [\n    {\n      \"id\": \"1\",\n      \"subquestion_id\": \"1\",\n      \"modality\": \"rag\",\n      \"fallbacks\": [\n        {\n          \"if\": \"no_evidence\",\n          \"then\": \"web\"\n        }\n      ]\n    },\n    {\n      \"id\": \"2\",\n      \"subquestion_id\": \"2\",\n      \"modality\": \"rag\",\n      \"fallbacks\": [\n        {\n          \"if\": \"no_evidence\",\n          \"then\": \"web\"\n        }\n      ]\n    },\n    {\n      \"id\": \"3\",\n      \"subquestion_id\": \"3\",\n      \"modality\": \"rag\",\n      \"fallbacks\": [\n        {\n          \"if\": \"no_evidence\",\n          \"then\": \"web\"\n        }\n      ]\n    }\n  ],\n  \"retry_policy\": {},\n  \"safety\": {}\n}\n```",
+      "llm_usage": {
+        "provider": "vertex",
+        "model": "gemini-2.5-flash",
+        "input_tokens": 1160,
+        "output_tokens": 810
+      },
+      "task_plan": {
+        "message_summary": "The user is asking for prior authorization requirements, the grievance process, and appeal necessity for denied claims, all related to Sunshine Health.",
+        "subquestions": [
+          {
+            "id": "1",
+            "text": "What are the prior authorization requirements for Sunshine Health?",
+            "kind": "non_patient",
+            "question_intent": "factual",
+            "intent_score": 1.0,
+            "capabilities_needed": {
+              "primary": "rag",
+              "fallbacks": [
+                "web"
+              ]
+            }
+          },
+          {
+            "id": "2",
+            "text": "What is the grievance process for Sunshine Health?",
+            "kind": "non_patient",
+            "question_intent": "factual",
+            "intent_score": 1.0,
+            "capabilities_needed": {
+              "primary": "rag",
+              "fallbacks": [
+                "web"
+              ]
+            }
+          },
+          {
+            "id": "3",
+            "text": "Do we need to file an appeal for a denied claim with Sunshine Health?",
+            "kind": "non_patient",
+            "question_intent": "procedural",
+            "intent_score": 0.8,
+            "capabilities_needed": {
+              "primary": "rag",
+              "fallbacks": [
+                "web"
+              ]
+            }
+          }
+        ],
+        "tasks": [
+          {
+            "id": "1",
+            "subquestion_id": "1",
+            "modality": "rag",
+            "goal": "",
+            "steps": [],
+            "fallbacks": [
+              {
+                "if": "",
+                "then": "web"
+              }
+            ]
+          },
+          {
+            "id": "2",
+            "subquestion_id": "2",
+            "modality": "rag",
+            "goal": "",
+            "steps": [],
+            "fallbacks": [
+              {
+                "if": "",
+                "then": "web"
+              }
+            ]
+          },
+          {
+            "id": "3",
+            "subquestion_id": "3",
+            "modality": "rag",
+            "goal": "",
+            "steps": [],
+            "fallbacks": [
+              {
+                "if": "",
+                "then": "web"
+              }
+            ]
+          }
+        ],
+        "retry_policy": {
+          "max_attempts": 2,
+          "on_missing_jurisdiction": "ask_blocking_clarification",
+          "on_no_results": "broaden_scope_then_offer_alternatives",
+          "on_tool_error": "simplify_then_fail_gracefully"
+        }
+      },
+      "plan": {
+        "subquestions": [
+          {
+            "id": "1",
+            "text": "What are the prior authorization requirements for Sunshine Health?",
+            "kind": "non_patient",
+            "capabilities_primary": "rag",
+            "on_rag_fail": [
+              "search_google"
+            ]
+          },
+          {
+            "id": "2",
+            "text": "What is the grievance process for Sunshine Health?",
+            "kind": "non_patient",
+            "capabilities_primary": "rag",
+            "on_rag_fail": [
+              "search_google"
+            ]
+          },
+          {
+            "id": "3",
+            "text": "Do we need to file an appeal for a denied claim with Sunshine Health?",
+            "kind": "non_patient",
+            "capabilities_primary": "rag",
+            "on_rag_fail": [
+              "search_google"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "message": "Search for Florida Medicaid eligibility, then tell me how that compares to our Sunshine Health manual",
+      "raw": "```json\n{\n  \"message_summary\": \"The user wants to search for Florida Medicaid eligibility criteria and then compare it with information from the Sunshine Health manual.\",\n  \"subquestions\": [\n    {\n      \"id\": \"1\",\n      \"text\": \"Search for Florida Medicaid eligibility\",\n      \"kind\": \"non_patient\",\n      \"question_intent\": \"factual\",\n      \"intent_score\": 1.0,\n      \"jurisdiction\": {\n        \"needed\": true,\n        \"required_fields\": [\n          \"state\"\n        ],\n        \"blocking_if_missing\": [],\n        \"can_default\": []\n      },\n      \"capabilities_needed\": {\n        \"primary\": \"web\",\n        \"fallbacks\": []\n      }\n    },\n    {\n      \"id\": \"2\",\n      \"text\": \"Retrieve eligibility information from the Sunshine Health manual\",\n      \"kind\": \"non_patient\",\n      \"question_intent\": \"factual\",\n      \"intent_score\": 1.0,\n      \"jurisdiction\": {\n        \"needed\": true,\n        \"required_fields\": [\n          \"payer\"\n        ],\n        \"blocking_if_missing\": [],\n        \"can_default\": []\n      },\n      \"capabilities_needed\": {\n        \"primary\": \"rag\",\n        \"fallbacks\": [\n          {\n            \"if\": \"no_evidence\",\n            \"then\": \"web\"\n          }\n        ]\n      }\n    }\n  ],\n  \"clarifications\": [],\n  \"tasks\": [\n    {\n      \"id\": \"1\",\n      \"subquestion_id\": \"1\",\n      \"modality\": \"tool\",\n      \"tool_name\": \"google_search\",\n      \"tool_params\": {\n        \"query\": \"Florida Medicaid eligibility\"\n      },\n      \"fallbacks\": []\n    },\n    {\n      \"id\": \"2\",\n      \"subquestion_id\": \"2\",\n      \"modality\": \"rag\",\n      \"rag_scope\": \"payer_manuals\",\n      \"query\": \"Sunshine Health manual eligibility criteria\",\n      \"fallbacks\": [\n        {\n          \"if\": \"no_evidence\",\n          \"then\": \"web\"\n        }\n      ]\n    }\n  ],\n  \"retry_policy\": {},\n  \"safety\": {}\n}\n```",
+      "llm_usage": {
+        "provider": "vertex",
+        "model": "gemini-2.5-flash",
+        "input_tokens": 1148,
+        "output_tokens": 545
+      },
+      "task_plan": {
+        "message_summary": "The user wants to search for Florida Medicaid eligibility criteria and then compare it with information from the Sunshine Health manual.",
+        "subquestions": [
+          {
+            "id": "1",
+            "text": "Search for Florida Medicaid eligibility",
+            "kind": "non_patient",
+            "question_intent": "factual",
+            "intent_score": 1.0,
+            "capabilities_needed": {
+              "primary": "web",
+              "fallbacks": []
+            }
+          },
+          {
+            "id": "2",
+            "text": "Retrieve eligibility information from the Sunshine Health manual",
+            "kind": "non_patient",
+            "question_intent": "factual",
+            "intent_score": 1.0,
+            "capabilities_needed": {
+              "primary": "rag",
+              "fallbacks": [
+                "web"
+              ]
+            }
+          }
+        ],
+        "tasks": [
+          {
+            "id": "1",
+            "subquestion_id": "1",
+            "modality": "rag",
+            "goal": "",
+            "steps": [],
+            "fallbacks": []
+          },
+          {
+            "id": "2",
+            "subquestion_id": "2",
+            "modality": "rag",
+            "goal": "",
+            "steps": [],
+            "fallbacks": [
+              {
+                "if": "",
+                "then": "web"
+              }
+            ]
+          }
+        ],
+        "retry_policy": {
+          "max_attempts": 2,
+          "on_missing_jurisdiction": "ask_blocking_clarification",
+          "on_no_results": "broaden_scope_then_offer_alternatives",
+          "on_tool_error": "simplify_then_fail_gracefully"
+        }
+      },
+      "plan": {
+        "subquestions": [
+          {
+            "id": "1",
+            "text": "Search for Florida Medicaid eligibility",
+            "kind": "non_patient",
+            "capabilities_primary": "web",
+            "on_rag_fail": []
+          },
+          {
+            "id": "2",
+            "text": "Retrieve eligibility information from the Sunshine Health manual",
+            "kind": "non_patient",
+            "capabilities_primary": "rag",
+            "on_rag_fail": [
+              "search_google"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "message": "What are the qualifications for care management? If we don't have that in our docs, search the web",
+      "raw": "```json\n{\n  \"message_summary\": \"The user is asking about the qualifications for care management and requests a web search if internal documentation is insufficient.\",\n  \"subquestions\": [\n    {\n      \"id\": 1,\n      \"text\": \"What are the qualifications for care management?\",\n      \"kind\": \"non_patient\",\n      \"question_intent\": \"factual\",\n      \"intent_score\": 1.0,\n      \"jurisdiction\": {\n        \"needed\": true,\n        \"required_fields\": [\n          \"state\",\n          \"payer\",\n          \"program\"\n        ],\n        \"blocking_if_missing\": [\n          \"state\",\n          \"payer\",\n          \"program\"\n        ],\n        \"can_default\": []\n      },\n      \"capabilities_needed\": {\n        \"primary\": \"rag\",\n        \"fallbacks\": [\n          {\n            \"if\": \"no_evidence\",\n            \"then\": \"web\"\n          }\n        ]\n      }\n    }\n  ],\n  \"clarifications\": [\n    {\n      \"field\": \"state\",\n      \"text\": \"Please specify the state for which you need the qualifications for care management.\"\n    },\n    {\n      \"field\": \"payer\",\n      \"text\": \"Please specify the payer (e.g., Medicare, Medicaid, commercial insurance) for which you need the qualifications for care management.\"\n    },\n    {\n      \"field\": \"program\",\n      \"text\": \"Please specify the specific program (if applicable) for which you need the qualifications for care management.\"\n    }\n  ],\n  \"tasks\": [\n    {\n      \"id\": 1,\n      \"subquestion_id\": 1,\n      \"modality\": \"rag\",\n      \"fallbacks\": [\n        {\n          \"if\": \"no_evidence\",\n          \"then\": \"web\"\n        }\n      ]\n    }\n  ],\n  \"retry_policy\": {},\n  \"safety\": {}\n}\n```",
+      "llm_usage": {
+        "provider": "vertex",
+        "model": "gemini-2.5-flash",
+        "input_tokens": 1153,
+        "output_tokens": 459
+      },
+      "task_plan": {
+        "message_summary": "The user is asking about the qualifications for care management and requests a web search if internal documentation is insufficient.",
+        "subquestions": [
+          {
+            "id": "1",
+            "text": "What are the qualifications for care management?",
+            "kind": "non_patient",
+            "question_intent": "factual",
+            "intent_score": 1.0,
+            "capabilities_needed": {
+              "primary": "rag",
+              "fallbacks": [
+                "web"
+              ]
+            }
+          }
+        ],
+        "tasks": [
+          {
+            "id": "1",
+            "subquestion_id": "1",
+            "modality": "rag",
+            "goal": "",
+            "steps": [],
+            "fallbacks": [
+              {
+                "if": "",
+                "then": "web"
+              }
+            ]
+          }
+        ],
+        "retry_policy": {
+          "max_attempts": 2,
+          "on_missing_jurisdiction": "ask_blocking_clarification",
+          "on_no_results": "broaden_scope_then_offer_alternatives",
+          "on_tool_error": "simplify_then_fail_gracefully"
+        }
+      },
+      "plan": {
+        "subquestions": [
+          {
+            "id": "1",
+            "text": "What are the qualifications for care management?",
+            "kind": "non_patient",
+            "capabilities_primary": "rag",
+            "on_rag_fail": [
+              "search_google"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "message": "Scrape https://example.com/policy and summarize the appeals process, then check if it matches our manual",
+      "raw": "```json\n{\n  \"message_summary\": \"The user wants to scrape a URL, summarize the appeals process from the scraped content, and then compare that summary to an internal manual.\",\n  \"subquestions\": [\n    {\n      \"id\": \"sq1\",\n      \"text\": \"Scrape https://example.com/policy\",\n      \"kind\": \"tool\",\n      \"question_intent\": \"procedural\",\n      \"intent_score\": 0,\n      \"jurisdiction\": {\n        \"needed\": false\n      },\n      \"capabilities_needed\": {\n        \"primary\": \"web_scrape\"\n      }\n    },\n    {\n      \"id\": \"sq2\",\n      \"text\": \"Summarize the appeals process from the scraped content\",\n      \"kind\": \"non_patient\",\n      \"question_intent\": \"factual\",\n      \"intent_score\": 1,\n      \"jurisdiction\": {\n        \"needed\": false\n      },\n      \"capabilities_needed\": {\n        \"primary\": \"reasoning\"\n      }\n    },\n    {\n      \"id\": \"sq3\",\n      \"text\": \"Check if the summarized appeals process matches our manual\",\n      \"kind\": \"non_patient\",\n      \"question_intent\": \"factual\",\n      \"intent_score\": 1,\n      \"jurisdiction\": {\n        \"needed\": false\n      },\n      \"capabilities_needed\": {\n        \"primary\": \"rag\",\n        \"fallbacks\": [\n          {\n            \"if\": \"no_evidence\",\n            \"then\": \"web\"\n          }\n        ]\n      }\n    }\n  ],\n  \"clarifications\": [],\n  \"tasks\": [\n    {\n      \"id\": \"t1\",\n      \"subquestion_id\": \"sq1\",\n      \"modality\": \"web_scrape\",\n      \"fallbacks\": []\n    },\n    {\n      \"id\": \"t2\",\n      \"subquestion_id\": \"sq2\",\n      \"modality\": \"reasoning\",\n      \"fallbacks\": []\n    },\n    {\n      \"id\": \"t3\",\n      \"subquestion_id\": \"sq3\",\n      \"modality\": \"rag\",\n      \"fallbacks\": [\n        {\n          \"if\": \"no_evidence\",\n          \"then\": \"web\"\n        }\n      ]\n    }\n  ],\n  \"retry_policy\": {\n    \"max_retries\": 3,\n    \"delay_seconds\": 2\n  },\n  \"safety\": {\n    \"sensitive_content\": false,\n    \"pii_detected\": false\n  }\n}\n```",
+      "llm_usage": {
+        "provider": "vertex",
+        "model": "gemini-2.5-flash",
+        "input_tokens": 1153,
+        "output_tokens": 611
+      },
+      "task_plan": {
+        "message_summary": "The user wants to scrape a URL, summarize the appeals process from the scraped content, and then compare that summary to an internal manual.",
+        "subquestions": [
+          {
+            "id": "sq1",
+            "text": "Scrape https://example.com/policy",
+            "kind": "tool",
+            "question_intent": "procedural",
+            "intent_score": 0.0,
+            "capabilities_needed": {
+              "primary": "web",
+              "fallbacks": []
+            }
+          },
+          {
+            "id": "sq2",
+            "text": "Summarize the appeals process from the scraped content",
+            "kind": "non_patient",
+            "question_intent": "factual",
+            "intent_score": 1.0,
+            "capabilities_needed": {
+              "primary": "reasoning",
+              "fallbacks": []
+            }
+          },
+          {
+            "id": "sq3",
+            "text": "Check if the summarized appeals process matches our manual",
+            "kind": "non_patient",
+            "question_intent": "factual",
+            "intent_score": 1.0,
+            "capabilities_needed": {
+              "primary": "rag",
+              "fallbacks": [
+                "web"
+              ]
+            }
+          }
+        ],
+        "tasks": [
+          {
+            "id": "t1",
+            "subquestion_id": "sq1",
+            "modality": "web",
+            "goal": "",
+            "steps": [],
+            "fallbacks": []
+          },
+          {
+            "id": "t2",
+            "subquestion_id": "sq2",
+            "modality": "reasoning",
+            "goal": "",
+            "steps": [],
+            "fallbacks": []
+          },
+          {
+            "id": "t3",
+            "subquestion_id": "sq3",
+            "modality": "rag",
+            "goal": "",
+            "steps": [],
+            "fallbacks": [
+              {
+                "if": "",
+                "then": "web"
+              }
+            ]
+          }
+        ],
+        "retry_policy": {
+          "max_attempts": 2,
+          "on_missing_jurisdiction": "ask_blocking_clarification",
+          "on_no_results": "broaden_scope_then_offer_alternatives",
+          "on_tool_error": "simplify_then_fail_gracefully"
+        }
+      },
+      "plan": {
+        "subquestions": [
+          {
+            "id": "sq1",
+            "text": "Scrape https://example.com/policy",
+            "kind": "tool",
+            "capabilities_primary": "web",
+            "on_rag_fail": []
+          },
+          {
+            "id": "sq2",
+            "text": "Summarize the appeals process from the scraped content",
+            "kind": "non_patient",
+            "capabilities_primary": "reasoning",
+            "on_rag_fail": []
+          },
+          {
+            "id": "sq3",
+            "text": "Check if the summarized appeals process matches our manual",
+            "kind": "non_patient",
+            "capabilities_primary": "rag",
+            "on_rag_fail": [
+              "search_google"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "message": "How do I file an appeal and what's the grievance process for Sunshine? Also what if the member has income under 138% FPL?",
+      "raw": "```json\n{\n  \"message_summary\": \"The user is asking about the appeal and grievance processes for Sunshine, and the implications of a member having an income under 138% FPL.\",\n  \"subquestions\": [\n    {\n      \"id\": \"1\",\n      \"text\": \"How do I file an appeal?\",\n      \"kind\": \"non_patient\",\n      \"question_intent\": \"procedural\",\n      \"intent_score\": 0.1,\n      \"jurisdiction\": {\n        \"needed\": true,\n        \"required_fields\": [\n          \"payer\"\n        ],\n        \"blocking_if_missing\": [],\n        \"can_default\": []\n      },\n      \"capabilities_needed\": {\n        \"primary\": \"rag\",\n        \"fallbacks\": [\n          {\n            \"if\": \"no_evidence\",\n            \"then\": \"web\"\n          }\n        ]\n      }\n    },\n    {\n      \"id\": \"2\",\n      \"text\": \"What's the grievance process for Sunshine?\",\n      \"kind\": \"non_patient\",\n      \"question_intent\": \"procedural\",\n      \"intent_score\": 0.1,\n      \"jurisdiction\": {\n        \"needed\": true,\n        \"required_fields\": [\n          \"payer\"\n        ],\n        \"blocking_if_missing\": [],\n        \"can_default\": []\n      },\n      \"capabilities_needed\": {\n        \"primary\": \"rag\",\n        \"fallbacks\": [\n          {\n            \"if\": \"no_evidence\",\n            \"then\": \"web\"\n          }\n        ]\n      }\n    },\n    {\n      \"id\": \"3\",\n      \"text\": \"What if the member has income under 138% FPL?\",\n      \"kind\": \"non_patient\",\n      \"question_intent\": \"factual\",\n      \"intent_score\": 0.9,\n      \"jurisdiction\": {\n        \"needed\": true,\n        \"required_fields\": [\n          \"payer\",\n          \"state\",\n          \"program\"\n        ],\n        \"blocking_if_missing\": [\n          \"state\",\n          \"program\"\n        ],\n        \"can_default\": []\n      },\n      \"capabilities_needed\": {\n        \"primary\": \"rag\",\n        \"fallbacks\": [\n          {\n            \"if\": \"no_evidence\",\n            \"then\": \"web\"\n          }\n        ]\n      }\n    }\n  ],\n  \"clarifications\": [\n    {\n      \"subquestion_id\": \"3\",\n      \"field\": \"state\",\n      \"reason\": \"Please specify the state for which you are asking about the income threshold.\"\n    },\n    {\n      \"subquestion_id\": \"3\",\n      \"field\": \"program\",\n      \"reason\": \"Please specify the program for which you are asking about the income threshold.\"\n    }\n  ],\n  \"tasks\": [\n    {\n      \"id\": \"1\",\n      \"subquestion_id\": \"1\",\n      \"modality\": \"rag\",\n      \"fallbacks\": [\n        {\n          \"if\": \"no_evidence\",\n          \"then\": \"web\"\n        }\n      ]\n    },\n    {\n      \"id\": \"2\",\n      \"subquestion_id\": \"2\",\n      \"modality\": \"rag\",\n      \"fallbacks\": [\n        {\n          \"if\": \"no_evidence\",\n          \"then\": \"web\"\n        }\n      ]\n    },\n    {\n      \"id\": \"3\",\n      \"subquestion_id\": \"3\",\n      \"modality\": \"rag\",\n      \"fallbacks\": [\n        {\n          \"if\": \"no_evidence\",\n          \"then\": \"web\"\n        }\n      ]\n    }\n  ],\n  \"retry_policy\": {},\n  \"safety\": {}\n}\n```",
+      "llm_usage": {
+        "provider": "vertex",
+        "model": "gemini-2.5-flash",
+        "input_tokens": 1162,
+        "output_tokens": 910
+      },
+      "task_plan": {
+        "message_summary": "The user is asking about the appeal and grievance processes for Sunshine, and the implications of a member having an income under 138% FPL.",
+        "subquestions": [
+          {
+            "id": "1",
+            "text": "How do I file an appeal?",
+            "kind": "non_patient",
+            "question_intent": "procedural",
+            "intent_score": 0.1,
+            "capabilities_needed": {
+              "primary": "rag",
+              "fallbacks": [
+                "web"
+              ]
+            }
+          },
+          {
+            "id": "2",
+            "text": "What's the grievance process for Sunshine?",
+            "kind": "non_patient",
+            "question_intent": "procedural",
+            "intent_score": 0.1,
+            "capabilities_needed": {
+              "primary": "rag",
+              "fallbacks": [
+                "web"
+              ]
+            }
+          },
+          {
+            "id": "3",
+            "text": "What if the member has income under 138% FPL?",
+            "kind": "non_patient",
+            "question_intent": "factual",
+            "intent_score": 0.9,
+            "capabilities_needed": {
+              "primary": "rag",
+              "fallbacks": [
+                "web"
+              ]
+            }
+          }
+        ],
+        "tasks": [
+          {
+            "id": "1",
+            "subquestion_id": "1",
+            "modality": "rag",
+            "goal": "",
+            "steps": [],
+            "fallbacks": [
+              {
+                "if": "",
+                "then": "web"
+              }
+            ]
+          },
+          {
+            "id": "2",
+            "subquestion_id": "2",
+            "modality": "rag",
+            "goal": "",
+            "steps": [],
+            "fallbacks": [
+              {
+                "if": "",
+                "then": "web"
+              }
+            ]
+          },
+          {
+            "id": "3",
+            "subquestion_id": "3",
+            "modality": "rag",
+            "goal": "",
+            "steps": [],
+            "fallbacks": [
+              {
+                "if": "",
+                "then": "web"
+              }
+            ]
+          }
+        ],
+        "retry_policy": {
+          "max_attempts": 2,
+          "on_missing_jurisdiction": "ask_blocking_clarification",
+          "on_no_results": "broaden_scope_then_offer_alternatives",
+          "on_tool_error": "simplify_then_fail_gracefully"
+        }
+      },
+      "plan": {
+        "subquestions": [
+          {
+            "id": "1",
+            "text": "How do I file an appeal?",
+            "kind": "non_patient",
+            "capabilities_primary": "rag",
+            "on_rag_fail": [
+              "search_google"
+            ]
+          },
+          {
+            "id": "2",
+            "text": "What's the grievance process for Sunshine?",
+            "kind": "non_patient",
+            "capabilities_primary": "rag",
+            "on_rag_fail": [
+              "search_google"
+            ]
+          },
+          {
+            "id": "3",
+            "text": "What if the member has income under 138% FPL?",
+            "kind": "non_patient",
+            "capabilities_primary": "rag",
+            "on_rag_fail": [
+              "search_google"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "message": "Can you read the policy and see how to file an appeal, and see if this appeal for this abc case will be successful",
+      "raw": "```json\n{\n  \"message_summary\": \"The user wants to understand the process for filing an appeal and assess the likelihood of success for a specific appeal case, based on policy documents.\",\n  \"subquestions\": [\n    {\n      \"id\": \"1\",\n      \"text\": \"How to file an appeal?\",\n      \"kind\": \"non_patient\",\n      \"question_intent\": \"procedural\",\n      \"intent_score\": 0.1,\n      \"jurisdiction\": {\n        \"needed\": true,\n        \"required_fields\": [\n          \"payer\",\n          \"state\",\n          \"program\"\n        ],\n        \"blocking_if_missing\": [\n          \"payer\",\n          \"state\",\n          \"program\"\n        ],\n        \"can_default\": []\n      },\n      \"capabilities_needed\": {\n        \"primary\": \"rag\",\n        \"fallbacks\": [\n          {\n            \"if\": \"no_evidence\",\n            \"then\": \"web\"\n          }\n        ]\n      }\n    },\n    {\n      \"id\": \"2\",\n      \"text\": \"Will this 'abc case' appeal be successful?\",\n      \"kind\": \"non_patient\",\n      \"question_intent\": \"diagnostic\",\n      \"intent_score\": 0.9,\n      \"jurisdiction\": {\n        \"needed\": true,\n        \"required_fields\": [\n          \"payer\",\n          \"state\",\n          \"program\"\n        ],\n        \"blocking_if_missing\": [\n          \"payer\",\n          \"state\",\n          \"program\"\n        ],\n        \"can_default\": []\n      },\n      \"capabilities_needed\": {\n        \"primary\": \"reasoning\",\n        \"fallbacks\": []\n      }\n    }\n  ],\n  \"clarifications\": [\n    {\n      \"field\": \"payer\",\n      \"blocking\": true,\n      \"reason\": \"To accurately determine the appeal process and success criteria, I need to know the specific payer, state, or program the policy applies to. Please provide at least one of these details.\"\n    },\n    {\n      \"field\": \"state\",\n      \"blocking\": true,\n      \"reason\": \"To accurately determine the appeal process and success criteria, I need to know the specific payer, state, or program the policy applies to. Please provide at least one of these details.\"\n    },\n    {\n      \"field\": \"program\",\n      \"blocking\": true,\n      \"reason\": \"To accurately determine the appeal process and success criteria, I need to know the specific payer, state, or program the policy applies to. Please provide at least one of these details.\"\n    }\n  ],\n  \"tasks\": [\n    {\n      \"id\": \"1\",\n      \"subquestion_id\": \"1\",\n      \"modality\": \"rag\",\n      \"fallbacks\": [\n        {\n          \"if\": \"no_evidence\",\n          \"then\": \"web\"\n        }\n      ]\n    },\n    {\n      \"id\": \"2\",\n      \"subquestion_id\": \"2\",\n      \"modality\": \"reasoning\",\n      \"fallbacks\": []\n    }\n  ],\n  \"retry_policy\": {},\n  \"safety\": {}\n}\n```",
+      "llm_usage": {
+        "provider": "vertex",
+        "model": "gemini-2.5-flash",
+        "input_tokens": 1156,
+        "output_tokens": 746
+      },
+      "task_plan": {
+        "message_summary": "The user wants to understand the process for filing an appeal and assess the likelihood of success for a specific appeal case, based on policy documents.",
+        "subquestions": [
+          {
+            "id": "1",
+            "text": "How to file an appeal?",
+            "kind": "non_patient",
+            "question_intent": "procedural",
+            "intent_score": 0.1,
+            "capabilities_needed": {
+              "primary": "rag",
+              "fallbacks": [
+                "web"
+              ]
+            }
+          },
+          {
+            "id": "2",
+            "text": "Will this 'abc case' appeal be successful?",
+            "kind": "non_patient",
+            "question_intent": "diagnostic",
+            "intent_score": 0.9,
+            "capabilities_needed": {
+              "primary": "reasoning",
+              "fallbacks": []
+            }
+          }
+        ],
+        "tasks": [
+          {
+            "id": "1",
+            "subquestion_id": "1",
+            "modality": "rag",
+            "goal": "",
+            "steps": [],
+            "fallbacks": [
+              {
+                "if": "",
+                "then": "web"
+              }
+            ]
+          },
+          {
+            "id": "2",
+            "subquestion_id": "2",
+            "modality": "reasoning",
+            "goal": "",
+            "steps": [],
+            "fallbacks": []
+          }
+        ],
+        "retry_policy": {
+          "max_attempts": 2,
+          "on_missing_jurisdiction": "ask_blocking_clarification",
+          "on_no_results": "broaden_scope_then_offer_alternatives",
+          "on_tool_error": "simplify_then_fail_gracefully"
+        }
+      },
+      "plan": {
+        "subquestions": [
+          {
+            "id": "1",
+            "text": "How to file an appeal?",
+            "kind": "non_patient",
+            "capabilities_primary": "rag",
+            "on_rag_fail": [
+              "search_google"
+            ]
+          },
+          {
+            "id": "2",
+            "text": "Will this 'abc case' appeal be successful?",
+            "kind": "non_patient",
+            "capabilities_primary": "reasoning",
+            "on_rag_fail": []
+          }
+        ]
+      }
+    }
+  ]
+}
