@@ -76,14 +76,19 @@ def defaults_policy_json() -> dict[str, Any]:
     }
 
 
-def planner_input_json(user_message: str, context: str = "") -> dict[str, Any]:
-    """Build full planner input payload (user_message, available_capabilities, defaults_policy)."""
-    return {
+def planner_input_json(
+    user_message: str, context: str = "", last_master_plan: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Build full planner input payload (user_message, context, available_capabilities, defaults_policy, last_master_plan)."""
+    payload: dict[str, Any] = {
         "user_message": user_message,
         "context": context or "",
         "available_capabilities": available_capabilities_json(),
         "defaults_policy": defaults_policy_json(),
     }
+    if last_master_plan and isinstance(last_master_plan, dict):
+        payload["last_master_plan"] = last_master_plan
+    return payload
 
 
 # Answers for capability questions ("can you search Google?", "what can you do?")

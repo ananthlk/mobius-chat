@@ -233,10 +233,14 @@ def retrieve_for_chat(
         )
         if chunks:
             _emit(emitter, f"Using {len(chunks)} result{'s' if len(chunks) != 1 else ''} to answer this part.")
-        _debug_chunks("rag_api return", chunks)
-        return chunks, trace
+            _debug_chunks("rag_api return", chunks)
+            return chunks, trace
+        # RAG API failed or returned empty; fall back to inline BM25 if database_url available
+        if database_url:
+            logger.info("RAG API returned no chunks; falling back to inline BM25")
+            _emit(emitter, "Falling back to inline search...")
 
-    # Fallback: inline BM25
+    # Inline BM25 (primary when RAG_API_URL unset, or fallback when API fails)
     try:
         from mobius_retriever.retriever import retrieve_bm25
         from mobius_retriever.config import apply_normalize_bm25, load_bm25_sigmoid_config, load_reranker_config

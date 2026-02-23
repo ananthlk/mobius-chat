@@ -27,6 +27,10 @@ interface ChatResponse {
   cited_source_indices?: number[];
   open_slots?: string[];
   clarification_options?: ClarificationOption[];
+  /** Suggested follow-up questions from integrator (clickable options) */
+  next_questions_for_user?: string[];
+  /** Fallback single question when next_questions_for_user is empty */
+  user_ask?: string | null;
   thread_id?: string;
 }
 
@@ -343,7 +347,7 @@ function renderConfidenceBadge(strip: string): HTMLElement {
 function renderAnswerCard(
   card: AnswerCard,
   isError?: boolean,
-  opts?: { onFollowupClick?: (question: string) => void; sourceConfidenceStrip?: string; showConfidenceBadge?: boolean }
+  opts?: { onFollowupClick?: (question: string) => void; sourceConfidenceStrip?: string; showConfidenceBadge?: boolean; suppressFollowups?: boolean; nextQuestions?: string[] }
 ): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className =
@@ -373,13 +377,13 @@ function renderAnswerCard(
     dep.textContent = "Depends on: " + card.required_variables.join(", ");
     metaRow.appendChild(dep);
   }
-  if (card.followups && card.followups.length > 0 && metaRow.childNodes.length > 0) {
+  if (!opts?.suppressFollowups && card.followups && card.followups.length > 0 && metaRow.childNodes.length > 0) {
     const sep = document.createElement("span");
     sep.className = "answer-card-meta-sep";
     sep.textContent = " · ";
     metaRow.appendChild(sep);
   }
-  if (card.followups && card.followups.length > 0) {
+  if (!opts?.suppressFollowups && card.followups && card.followups.length > 0) {
     const confirmLabel = document.createElement("span");
     confirmLabel.className = "answer-card-confirm-label";
     confirmLabel.textContent = "Confirm";
@@ -432,6 +436,29 @@ function renderAnswerCard(
     bubble.appendChild(note);
   }
 
+  // Suggested follow-ups inside the card (unified with next_questions_for_user)
+  const followupQuestions = opts?.nextQuestions ?? [];
+  if (followupQuestions.length > 0 && opts?.onFollowupClick) {
+    const followupWrap = document.createElement("div");
+    followupWrap.className = "answer-card-followups";
+    const label = document.createElement("div");
+    label.className = "answer-card-followups-label";
+    label.textContent = "Suggested follow-ups";
+    followupWrap.appendChild(label);
+    const chips = document.createElement("div");
+    chips.className = "answer-card-followups-chips";
+    followupQuestions.slice(0, 6).forEach((q) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "answer-card-followup-chip";
+      btn.textContent = q.trim() || "Ask this";
+      btn.addEventListener("click", () => opts!.onFollowupClick!(q.trim() || ""));
+      chips.appendChild(btn);
+    });
+    followupWrap.appendChild(chips);
+    bubble.appendChild(followupWrap);
+  }
+
   wrap.appendChild(bubble);
   return wrap;
 }
@@ -440,10 +467,10 @@ function renderAnswerCard(
 function renderAssistantContent(
   body: string,
   isError?: boolean,
-  opts?: { onFollowupClick?: (question: string) => void; sourceConfidenceStrip?: string; showConfidenceBadge?: boolean }
+  opts?: { onFollowupClick?: (question: string) => void; sourceConfidenceStrip?: string; showConfidenceBadge?: boolean; suppressFollowups?: boolean; nextQuestions?: string[] }
 ): HTMLElement {
   const card = tryParseAnswerCard(body);
-  if (card) return renderAnswerCard(card, isError, opts);
+  if (card) return renderAnswerCard(card, isError, { ...opts, nextQuestions: opts?.nextQuestions });
   const trimmed = (body ?? "").trim();
   if (trimmed.startsWith("{") && trimmed.length > 10) {
     const errWrap = document.createElement("div");
@@ -593,6 +620,33 @@ function renderThinkingBlock(
       }, 2500);
     },
   };
+}
+
+/** Reusable: next questions / suggested follow-ups (clickable chips). */
+function renderNextQuestions(
+  questions: string[],
+  onSelect: (question: string) => void
+): HTMLElement {
+  if (!questions.length) return document.createElement("div");
+  const wrap = document.createElement("div");
+  wrap.className = "next-questions";
+  const label = document.createElement("div");
+  label.className = "next-questions-label";
+  label.textContent = "Suggested follow-ups";
+  wrap.appendChild(label);
+  const chips = document.createElement("div");
+  chips.className = "next-questions-chips";
+  questions.slice(0, 6).forEach((q) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "next-questions-chip";
+    btn.textContent = q.trim() || "Ask this";
+    btn.setAttribute("aria-label", q.trim() || "Ask this");
+    btn.addEventListener("click", () => onSelect(q.trim() || ""));
+    chips.appendChild(btn);
+  });
+  wrap.appendChild(chips);
+  return wrap;
 }
 
 /** Reusable: clarification options (buttons/chips for slot fill). */
@@ -1216,7 +1270,22 @@ function run(): void {
 
         if (data.thread_id) currentThreadId = data.thread_id;
 
-        // 3. Assistant message: AnswerCard (formatted) or prose fallback
+        // 3. Next questions (unified: payload + AnswerCard followups) – computed first so we can suppress inline followups
+        let nextQuestions: string[] = Array.isArray(data.next_questions_for_user)
+          ? data.next_questions_for_user.filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+          : data.user_ask && String(data.user_ask).trim()
+            ? [String(data.user_ask).trim()]
+            : [];
+        if (nextQuestions.length === 0) {
+          const card = tryParseAnswerCard(body || "");
+          if (card?.followups?.length) {
+            nextQuestions = card.followups
+              .map((f) => (f.question || f.reason || f.field || "").trim())
+              .filter(Boolean);
+          }
+        }
+
+        // 4. Assistant message: AnswerCard (formatted) or prose fallback
         if (messageWrapEl) {
           messageWrapEl.remove();
         }
@@ -1225,20 +1294,30 @@ function run(): void {
             onFollowupClick: (q) => sendMessage(q),
             sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || undefined,
             showConfidenceBadge: data.status !== "clarification" && data.status !== "refinement_ask",
+            suppressFollowups: nextQuestions.length > 0,
+            nextQuestions,
           })
         );
 
-        // 3b. Clarification options (clickable buttons for slot fill)
+        // 5. Next questions block (only when NOT an AnswerCard – card renders them inside)
+        const isCard = !!tryParseAnswerCard(body || "");
+        if (nextQuestions.length > 0 && !isCard) {
+          turnWrap.appendChild(
+            renderNextQuestions(nextQuestions, (q) => sendMessage(q))
+          );
+        }
+
+        // 6. Clarification options (clickable buttons for slot fill)
         if (data.clarification_options && data.clarification_options.length > 0) {
           turnWrap.appendChild(
             renderClarificationOptions(data.clarification_options, (value) => sendMessage(value))
           );
         }
 
-        // 4. Feedback (thumbs + comment dialogue, POST to backend)
+        // 7. Feedback (thumbs + comment dialogue, POST to backend)
         turnWrap.appendChild(renderFeedback(data.correlation_id));
 
-        // 5. Sources: prefer API response.sources (from RAG) so source cards show even when integrator drops them
+        // 8. Sources: prefer API response.sources (from RAG) so source cards show even when integrator drops them
         const sourceList: ParsedSource[] =
           data.sources && data.sources.length > 0
             ? (data.sources as Array<{ index?: number; document_name?: string; document_id?: string | null; page_number?: number | null; text?: string; source_type?: string | null; match_score?: number | null; confidence?: number | null }>).map((s) => ({

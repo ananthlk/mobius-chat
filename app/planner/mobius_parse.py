@@ -22,11 +22,13 @@ logger = logging.getLogger(__name__)
 def _parse_jurisdiction(d: Any) -> JurisdictionInfo:
     if not isinstance(d, dict):
         return JurisdictionInfo()
+    def _list(v: Any) -> list:
+        return [str(x) for x in v if x] if isinstance(v, list) else []
     return JurisdictionInfo(
         needed=bool(d.get("needed", False)),
-        required_fields=[str(x) for x in (d.get("required_fields") or []) if x],
-        blocking_if_missing=[str(x) for x in (d.get("blocking_if_missing") or []) if x],
-        can_default=[str(x) for x in (d.get("can_default") or []) if x],
+        required_fields=_list(d.get("required_fields")),
+        blocking_if_missing=_list(d.get("blocking_if_missing")),
+        can_default=_list(d.get("can_default")),
         notes=str(d.get("notes") or ""),
     )
 
@@ -113,6 +115,11 @@ def _parse_subquestion(d: Any, index: int) -> TaskPlanSubQuestion | None:
     except (TypeError, ValueError):
         score = 0.5
     score = max(0.0, min(1.0, score))
+    pre_answer = d.get("pre_answer")
+    pre_answer = str(pre_answer).strip() if pre_answer and isinstance(pre_answer, str) else None
+    if not pre_answer:
+        pre_answer = None
+
     return TaskPlanSubQuestion(
         id=str(sq_id),
         text=str(text).strip(),
@@ -121,6 +128,7 @@ def _parse_subquestion(d: Any, index: int) -> TaskPlanSubQuestion | None:
         intent_score=score,
         jurisdiction=_parse_jurisdiction(d.get("jurisdiction")),
         capabilities_needed=_parse_capabilities(d.get("capabilities_needed")),
+        pre_answer=pre_answer,
     )
 
 
@@ -180,11 +188,14 @@ def parse_task_plan_from_json(raw: str) -> TaskPlan | None:
             clarifications.append(cl)
     retry_d = data.get("retry_policy") or {}
     safety_d = data.get("safety") or {}
+    nq_raw = data.get("next_questions_for_user") or []
+    next_questions = [str(x) for x in nq_raw if x] if isinstance(nq_raw, list) else []
     return TaskPlan(
         message_summary=str(data.get("message_summary") or ""),
         subquestions=subquestions,
         clarifications=clarifications,
         tasks=tasks,
+        next_questions_for_user=next_questions,
         retry_policy=RetryPolicy(
             max_attempts=int(retry_d.get("max_attempts", 2)),
             on_missing_jurisdiction=str(retry_d.get("on_missing_jurisdiction") or "ask_blocking_clarification"),

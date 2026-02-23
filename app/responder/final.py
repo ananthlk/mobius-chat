@@ -56,8 +56,9 @@ def _build_consolidator_input_json(
     retrieval_metadata: dict | None = None,
     sources_summary: list[dict] | None = None,
     jurisdiction_summary: str | None = None,
+    user_provided_context: str | None = None,
 ) -> str:
-    """Build JSON payload for consolidator: user_message, subquestions, answers, retrieval_metadata, sources_summary, jurisdiction_summary."""
+    """Build JSON payload for consolidator: user_message, subquestions, answers, retrieval_metadata, sources_summary, jurisdiction_summary, user_provided_context."""
     subquestions = [{"id": sq.id, "text": sq.text} for sq in plan.subquestions]
     answers = []
     for i, sq in enumerate(plan.subquestions):
@@ -74,7 +75,38 @@ def _build_consolidator_input_json(
         payload["sources_summary"] = sources_summary
     if jurisdiction_summary and jurisdiction_summary.strip():
         payload["jurisdiction_summary"] = jurisdiction_summary.strip()
+    if user_provided_context and user_provided_context.strip():
+        payload["user_provided_context"] = user_provided_context.strip()
     return json.dumps(payload, indent=2)
+
+
+def _extract_json_from_text(text: str) -> str:
+    """Extract JSON object from text that may have markdown fences or leading/trailing prose."""
+    text = (text or "").strip()
+    if not text:
+        return ""
+    # Strip markdown code fence (```json ... ``` or ``` ... ```)
+    if "```" in text:
+        start = text.find("```")
+        rest = text[start + 3 :].lstrip()
+        if rest.lower().startswith("json"):
+            rest = rest[4:].lstrip()
+        end = rest.find("```")
+        if end >= 0:
+            rest = rest[:end].rstrip()
+        text = rest
+    # If text looks like it has JSON, try to find the outermost {...}
+    if "{" in text and "}" in text:
+        start = text.find("{")
+        depth = 0
+        for i, c in enumerate(text[start:], start):
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : i + 1]
+    return text.strip()
 
 
 def _parse_answer_card(text: str, emitter: Callable[[str], None] | None = None) -> dict | None:
@@ -82,16 +114,9 @@ def _parse_answer_card(text: str, emitter: Callable[[str], None] | None = None) 
     Tries stdlib json first, then json_repair for malformed LLM output. Optionally emits progress to emitter."""
     if not text or not text.strip():
         return None
-    text = text.strip()
-    # Strip markdown code fence if present (e.g. ```json\n{...}\n```)
-    if text.startswith("```"):
-        logger.debug("Stripping markdown code fence from consolidator output")
-        lines = text.split("\n")
-        if lines and lines[0].strip().startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
+    text = _extract_json_from_text(text)
+    if not text:
+        return None
 
     def _validate(data: object) -> dict | None:
         if not isinstance(data, dict):
@@ -112,27 +137,28 @@ def _parse_answer_card(text: str, emitter: Callable[[str], None] | None = None) 
                 return None
         return data
 
+    def _try_parse(raw: str) -> dict | None:
+        for parse_fn, label in [(json.loads, "json"), (_json_repair_loads, "json_repair")]:
+            try:
+                data = parse_fn(raw)
+                return _validate(data)
+            except Exception:
+                pass
+        return None
+
     try:
-        data = json.loads(text)
-        out = _validate(data)
+        out = _try_parse(text)
         if out is not None:
-            logger.debug("AnswerCard parsed (valid JSON)")
+            logger.debug("AnswerCard parsed successfully")
             return out
-        logger.debug("JSON valid but not AnswerCard shape; skipping json_repair")
-    except (json.JSONDecodeError, TypeError):
-        logger.debug("Standard JSON parse failed; trying json_repair")
-    try:
-        import json_repair
-        data = json_repair.loads(text)
-        out = _validate(data)
-        if out is not None:
-            logger.debug("AnswerCard parsed (json_repair)")
-            return out
-        logger.debug("json_repair produced output but not a valid AnswerCard")
     except Exception as e:
-        logger.debug("json_repair could not fix JSON")
-        logger.debug("json_repair failed for AnswerCard: %s", e)
+        logger.debug("AnswerCard parse failed: %s", e)
     return None
+
+
+def _json_repair_loads(text: str) -> object:
+    import json_repair
+    return json_repair.loads(text)
 
 
 def _repair_json(cfg, invalid_text: str) -> str:
@@ -191,6 +217,7 @@ def format_response(
     retrieval_metadata: dict | None = None,
     sources_summary: list[dict] | None = None,
     jurisdiction_summary: str | None = None,
+    user_provided_context: str | None = None,
 ) -> tuple[str, LLMUsageDict | None]:
     """Turn plan + answers into one chat-friendly message via LLM. If message_chunk_callback is set, stream the draft; returns (message, None) for usage when streaming. On LLM failure, returns fallback and None usage."""
     trace_entered("responder.final.format_response", subquestions=len(plan.subquestions))
@@ -210,6 +237,7 @@ def format_response(
             retrieval_metadata=retrieval_metadata,
             sources_summary=sources_summary,
             jurisdiction_summary=jurisdiction_summary,
+            user_provided_context=user_provided_context,
         )
         canonical_score = blended_canonical_score(plan)
         consolidator_type = choose_consolidator_type(
@@ -252,10 +280,10 @@ def format_response(
                 logger.debug("Emitting canonical AnswerCard JSON to frontend")
                 # Emit canonical JSON so frontend receives clean JSON (no markdown fence)
                 return (json.dumps(parsed), usage if not message_chunk_callback else None)
-            # Not valid AnswerCard: return raw text so UI shows something
-            logger.warning("Consolidator output was not valid AnswerCard JSON; returning as prose fallback")
-            logger.debug("Returning raw consolidator output (not valid AnswerCard)")
-            return (text, usage if not message_chunk_callback else None)
+            # Not valid AnswerCard: wrap prose in minimal AnswerCard so pipeline gets valid JSON
+            logger.warning("Consolidator output was not valid AnswerCard JSON; wrapping prose as FACTUAL")
+            minimal = {"mode": "FACTUAL", "direct_answer": text[:2000], "sections": []}
+            return (json.dumps(minimal), usage if not message_chunk_callback else None)
     except Exception as e:
         logger.warning("Integrator LLM failed, using fallback: %s", e)
         logger.debug("Using simple format (integrator LLM failed)")

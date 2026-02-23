@@ -9,6 +9,7 @@ from app.communication.plan_display import (
 from app.services.doc_assembly import (
     RETRIEVAL_SIGNAL_NO_SOURCES,
 )
+from app.state.objective_eval import evaluate_sub_objective_status
 from app.services.non_patient_rag import answer_non_patient
 from app.services.reasoning_agent import answer_reasoning
 from app.services.tool_agent import answer_tool
@@ -90,11 +91,36 @@ def run_resolve(
     plan_usage = getattr(plan, "llm_usage", None)
     usages: list[dict] = [plan_usage] if plan_usage else []
     answers: list[str] = []
+    # Preserve pre-filled user_context entries (from update_answer_set_from_user_context before resolve)
+    answer_set: dict[str, dict[str, Any]] = dict(getattr(ctx, "answer_set", None) or {})
     all_sources: list[dict] = []
     retrieval_signals: list[str] = []
 
     for i, sq in enumerate(plan.subquestions):
         bp = blueprint[i] if i < len(blueprint) else {}
+        pre_answer = getattr(sq, "pre_answer", None)
+        if pre_answer and str(pre_answer).strip():
+            # Planner resolved this step; skip RAG
+            ans = str(pre_answer).strip()
+            answers.append(ans)
+            retrieval_signals.append("planner_pre_resolved")
+            answer_set[sq.id] = {"answer": ans, "source": "planner", "status": "answered"}
+            if emitter:
+                total = len(plan.subquestions)
+                emitter(format_step_done(i + 1, total, success=True, used_fallback=False))
+            continue
+
+        # Pre-filled from user_context or master_objective (prior-turn); skip RAG
+        existing = answer_set.get(sq.id, {})
+        if existing.get("answer") and existing.get("source") in ("user_context", "master_objective"):
+            ans = str(existing["answer"]).strip()
+            answers.append(ans)
+            retrieval_signals.append(existing.get("source") or "user_context")
+            if emitter:
+                total = len(plan.subquestions)
+                emitter(format_step_done(i + 1, total, success=True, used_fallback=False))
+            continue
+
         retrieval_params = None
         agent = bp.get("agent") or ("RAG" if sq.kind == "non_patient" else "patient_stub")
         if agent == "RAG":
@@ -119,6 +145,9 @@ def run_resolve(
         )
         answers.append(ans)
         retrieval_signals.append(retrieval_signal)
+        obj_status = evaluate_sub_objective_status(ans, retrieval_signal)
+        source = "rag" if agent == "RAG" else ("tool" if agent == "tool" else str(agent).lower())
+        answer_set[sq.id] = {"answer": ans, "source": source, "status": obj_status}
 
         # Emit step progress so user can follow along
         if emitter:
@@ -132,6 +161,7 @@ def run_resolve(
             all_sources.append({**s, "index": len(all_sources) + 1})
 
     ctx.answers = answers
+    ctx.answer_set = answer_set
     ctx.sources = all_sources
     ctx.usages = usages
     ctx.retrieval_signals = retrieval_signals

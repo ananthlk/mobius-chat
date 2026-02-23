@@ -909,13 +909,13 @@ function renderAnswerCard(card, isError, opts) {
     dep.textContent = "Depends on: " + card.required_variables.join(", ");
     metaRow.appendChild(dep);
   }
-  if (card.followups && card.followups.length > 0 && metaRow.childNodes.length > 0) {
+  if (!opts?.suppressFollowups && card.followups && card.followups.length > 0 && metaRow.childNodes.length > 0) {
     const sep = document.createElement("span");
     sep.className = "answer-card-meta-sep";
     sep.textContent = " \xB7 ";
     metaRow.appendChild(sep);
   }
-  if (card.followups && card.followups.length > 0) {
+  if (!opts?.suppressFollowups && card.followups && card.followups.length > 0) {
     const confirmLabel = document.createElement("span");
     confirmLabel.className = "answer-card-confirm-label";
     confirmLabel.textContent = "Confirm";
@@ -964,13 +964,34 @@ function renderAnswerCard(card, isError, opts) {
     note.textContent = card.confidence_note;
     bubble.appendChild(note);
   }
+  const followupQuestions = opts?.nextQuestions ?? [];
+  if (followupQuestions.length > 0 && opts?.onFollowupClick) {
+    const followupWrap = document.createElement("div");
+    followupWrap.className = "answer-card-followups";
+    const label = document.createElement("div");
+    label.className = "answer-card-followups-label";
+    label.textContent = "Suggested follow-ups";
+    followupWrap.appendChild(label);
+    const chips = document.createElement("div");
+    chips.className = "answer-card-followups-chips";
+    followupQuestions.slice(0, 6).forEach((q) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "answer-card-followup-chip";
+      btn.textContent = q.trim() || "Ask this";
+      btn.addEventListener("click", () => opts.onFollowupClick(q.trim() || ""));
+      chips.appendChild(btn);
+    });
+    followupWrap.appendChild(chips);
+    bubble.appendChild(followupWrap);
+  }
   wrap.appendChild(bubble);
   return wrap;
 }
 function renderAssistantContent(body, isError, opts) {
   const card = tryParseAnswerCard(body);
   if (card)
-    return renderAnswerCard(card, isError, opts);
+    return renderAnswerCard(card, isError, { ...opts, nextQuestions: opts?.nextQuestions });
   const trimmed = (body ?? "").trim();
   if (trimmed.startsWith("{") && trimmed.length > 10) {
     const errWrap = document.createElement("div");
@@ -1101,6 +1122,29 @@ function renderThinkingBlock(initialLines, opts) {
       }, 2500);
     }
   };
+}
+function renderNextQuestions(questions, onSelect) {
+  if (!questions.length)
+    return document.createElement("div");
+  const wrap = document.createElement("div");
+  wrap.className = "next-questions";
+  const label = document.createElement("div");
+  label.className = "next-questions-label";
+  label.textContent = "Suggested follow-ups";
+  wrap.appendChild(label);
+  const chips = document.createElement("div");
+  chips.className = "next-questions-chips";
+  questions.slice(0, 6).forEach((q) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "next-questions-chip";
+    btn.textContent = q.trim() || "Ask this";
+    btn.setAttribute("aria-label", q.trim() || "Ask this");
+    btn.addEventListener("click", () => onSelect(q.trim() || ""));
+    chips.appendChild(btn);
+  });
+  wrap.appendChild(chips);
+  return wrap;
 }
 function renderClarificationOptions(opts, onSelect) {
   const wrap = document.createElement("div");
@@ -1645,6 +1689,13 @@ function run() {
       thinkingDone(thinkingLines.length);
       if (data.thread_id)
         currentThreadId = data.thread_id;
+      let nextQuestions = Array.isArray(data.next_questions_for_user) ? data.next_questions_for_user.filter((x) => typeof x === "string" && x.trim().length > 0) : data.user_ask && String(data.user_ask).trim() ? [String(data.user_ask).trim()] : [];
+      if (nextQuestions.length === 0) {
+        const card = tryParseAnswerCard(body || "");
+        if (card?.followups?.length) {
+          nextQuestions = card.followups.map((f) => (f.question || f.reason || f.field || "").trim()).filter(Boolean);
+        }
+      }
       if (messageWrapEl) {
         messageWrapEl.remove();
       }
@@ -1652,9 +1703,17 @@ function run() {
         renderAssistantContent(body || "(No response)", !!data.llm_error, {
           onFollowupClick: (q) => sendMessage(q),
           sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || void 0,
-          showConfidenceBadge: data.status !== "clarification" && data.status !== "refinement_ask"
+          showConfidenceBadge: data.status !== "clarification" && data.status !== "refinement_ask",
+          suppressFollowups: nextQuestions.length > 0,
+          nextQuestions
         })
       );
+      const isCard = !!tryParseAnswerCard(body || "");
+      if (nextQuestions.length > 0 && !isCard) {
+        turnWrap.appendChild(
+          renderNextQuestions(nextQuestions, (q) => sendMessage(q))
+        );
+      }
       if (data.clarification_options && data.clarification_options.length > 0) {
         turnWrap.appendChild(
           renderClarificationOptions(data.clarification_options, (value) => sendMessage(value))

@@ -36,6 +36,7 @@ DEFAULT_STATE: dict[str, Any] = {
     "last_updated_turn_id": None,
     "safety": {"patient_allowed": False},
     "refined_query": None,  # Canonical question: updated on slot fill, replaced on new question
+    "master_objective": None,  # Relentless continuity: {id, status, summary, sub_objectives, ...}
 }
 
 

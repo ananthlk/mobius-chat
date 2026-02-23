@@ -12,12 +12,14 @@ MULTI_INTENT_SUBQUESTION_THRESHOLD = 3  # Many subquestions may indicate ambigui
 LOW_CONFIDENCE_THRESHOLD = 0.4  # intent_score near 0.5 with low confidence
 
 # Patterns suggesting a complete scenario (don't ask user to narrow)
+# Must describe a specific case (age, income, patient, location), not just mention payer in abstract question
 _CONCRETE_SCENARIO_PATTERNS = (
     r"\b\d+\s*(year|yo|years?\s*old)\b",  # age
     r"\$\d+",  # income / dollar amounts
     r"\b\d+\s*(kid|child|dependent|month|mo)\b",  # dependents, income period
     r"\b(lives?|in|from)\s+[\w\s]+(florida|fl|tampa|tx|california)\b",  # location
     r"\b(patient|client)\b.*\b(qualify|eligibility|enroll)\b",  # patient scenario
+    r"\b(patient|client)\b.*\b(medicaid|medicare|sunshine|united)\b",  # patient + payer
 )
 
 

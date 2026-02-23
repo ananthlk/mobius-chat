@@ -88,6 +88,7 @@ def run_integrate(
         retrieval_metadata=retrieval_metadata,
         sources_summary=sources_summary,
         jurisdiction_summary=jurisdiction_summary,
+        user_provided_context=getattr(ctx, "user_provided_context", None),
     )
     ctx.final_message = final_message
 
@@ -117,8 +118,21 @@ def run_integrate(
 
     source_confidence_strip = default_source_confidence
     cited_source_indices: list[int] = []
+    resolutions: list[dict[str, Any]] = []
+    closed_task_ids: list[str] = []
+    open_task_ids: list[str] = []
+    next_steps: list[str] = []
+    next_questions_for_user: list[str] = []
     try:
-        parsed = json.loads(final_message)
+        raw = (final_message or "").strip()
+        if raw.startswith("```"):
+            lines = raw.split("\n")
+            if lines and lines[0].strip().startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            raw = "\n".join(lines).strip()
+        parsed = json.loads(raw)
         if isinstance(parsed, dict):
             override = parsed.get("source_confidence_override")
             if override and str(override).strip() in (
@@ -136,8 +150,30 @@ def run_integrate(
                     int(x) for x in indices
                     if isinstance(x, (int, float)) and 1 <= int(x) <= len(all_sources)
                 ]
+            r = parsed.get("resolutions")
+            if isinstance(r, list):
+                resolutions = [x for x in r if isinstance(x, dict)]
+            v = parsed.get("closed_task_ids")
+            if isinstance(v, list):
+                closed_task_ids[:] = [str(x) for x in v if x]
+            v = parsed.get("open_task_ids")
+            if isinstance(v, list):
+                open_task_ids[:] = [str(x) for x in v if x]
+            ns = parsed.get("next_steps")
+            if isinstance(ns, list):
+                next_steps = [str(x) for x in ns if x]
+            nq = parsed.get("next_questions_for_user")
+            if isinstance(nq, list):
+                next_questions_for_user = [str(x) for x in nq if x]
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
+
+    # Deterministic: only accept task IDs that exist in the plan (upsert-only, no LLM-invented ids)
+    valid_sq_ids = {str(sq.id) for sq in plan.subquestions} if plan and getattr(plan, "subquestions", None) else set()
+    if valid_sq_ids:
+        closed_task_ids[:] = [x for x in closed_task_ids if str(x) in valid_sq_ids]
+        open_task_ids[:] = [x for x in open_task_ids if str(x) in valid_sq_ids]
+        resolutions[:] = [r for r in resolutions if isinstance(r, dict) and str(r.get("sq_id", "")) in valid_sq_ids]
 
     usage_breakdown: list[dict[str, Any]] = []
     has_plan_usage = bool(getattr(plan, "llm_usage", None))
@@ -162,7 +198,7 @@ def run_integrate(
     except Exception:
         config_sha = None
 
-    ctx.response_payload = {
+    payload = {
         "status": "completed",
         "message": final_message,
         "plan": plan.model_dump(),
@@ -178,3 +214,14 @@ def run_integrate(
         "cited_source_indices": cited_source_indices,
         "thread_id": ctx.thread_id,
     }
+    if resolutions:
+        payload["resolutions"] = resolutions
+    if closed_task_ids:
+        payload["closed_task_ids"] = closed_task_ids
+    if open_task_ids:
+        payload["open_task_ids"] = open_task_ids
+    if next_steps:
+        payload["next_steps"] = next_steps
+    if next_questions_for_user:
+        payload["next_questions_for_user"] = next_questions_for_user
+    ctx.response_payload = payload

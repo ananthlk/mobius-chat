@@ -54,8 +54,11 @@ def _heuristic_intent(text: str) -> QuestionIntent | None:
     """Simple heuristic for question_intent when LLM does not provide it."""
     t = text.lower().strip()
     factual_starts = ("what is", "what are", "how many", "when ", "where ", "which ", "who ", "what date", "what number")
+    factual_keywords = ("covered", "coverage", "prior auth", "prior authorization", "bill", "billing", "icd", "hcpcs", "code")
     canonical_starts = ("describe", "explain", "how does", "how do ", "what is the process", "summarize", "outline")
     if any(t.startswith(p) for p in factual_starts):
+        return "factual"
+    if any(kw in t for kw in factual_keywords):
         return "factual"
     if any(t.startswith(p) for p in canonical_starts):
         return "canonical"
@@ -65,6 +68,7 @@ def _heuristic_intent(text: str) -> QuestionIntent | None:
 def _llm_decompose_mobius(
     message: str,
     context: str = "",
+    last_master_plan: dict | None = None,
 ) -> tuple[Plan | None, dict | None]:
     """Call LLM with Mobius planner prompt; return Plan (adapted from TaskPlan) or (None, usage)."""
     trace_entered("planner.parser._llm_decompose_mobius")
@@ -79,7 +83,7 @@ def _llm_decompose_mobius(
             logger.info("[parser] Mobius planner prompts not configured; skipping.")
             return (None, None)
 
-        planner_input = planner_input_json(message, context)
+        planner_input = planner_input_json(message, context, last_master_plan=last_master_plan)
         planner_input_str = json.dumps(planner_input, indent=2)
         user = user_tpl.format(planner_input_json=planner_input_str)
         prompt = f"{system}\n\n{user}"
@@ -188,6 +192,7 @@ def parse(
     *,
     thinking_emitter: Callable[[str], None] | None = None,
     context: str = "",
+    last_master_plan: dict | None = None,
 ) -> Plan:
     """Parse user message into a plan (subquestions + patient/non_patient).
     Uses LLM decomposition (JSON) when available; falls back to rule-based split.
@@ -217,7 +222,7 @@ def parse(
     mobius_plan: Plan | None = None
 
     if getattr(parser_cfg, "use_mobius_planner", False):
-        mobius_plan, plan_usage = _llm_decompose_mobius(text, context=context or "")
+        mobius_plan, plan_usage = _llm_decompose_mobius(text, context=context or "", last_master_plan=last_master_plan)
         if mobius_plan and mobius_plan.subquestions:
             # Plan breakdown emitted later via format_execution_plan (My plan: 1. ...) for consistency
             mobius_plan.thinking_log = thinking_log

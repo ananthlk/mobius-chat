@@ -43,6 +43,17 @@ SLOT_ANSWER_PATTERNS = [
     re.compile(r"\b(as a provider|as a member|as a patient)\b", re.I),
 ]
 
+# Patterns that indicate user is providing info in response to our ask (slot_fill, not new question)
+INFO_PROVISION_PATTERNS = [
+    re.compile(r"^here'?s what i found", re.I),
+    re.compile(r"^i found (that|this)", re.I),
+    re.compile(r"^according to", re.I),
+    re.compile(r"^here'?s (a|the) (link|document|code list)", re.I),
+    re.compile(r"^here'?s (the|a)", re.I),  # "Here's the manual says..."
+    re.compile(r"^i looked it up", re.I),
+    re.compile(r"^(from|per) (the|their) (provider manual|manual|guidelines)", re.I),
+]
+
 # Patterns that indicate new/different question
 NEW_QUESTION_PATTERNS = [
     re.compile(r"\b(how do i|how do you|what is|what are|when does|where do)\b", re.I),
@@ -85,6 +96,12 @@ def classify_message(
     text = (user_text or "").strip()
     if not text:
         return "new_question"
+
+    # User providing info in response to our ask (e.g. "Do you have a code list?") — slot_fill, not new question
+    if (existing_refined_query or last_turn) and len(text.split()) >= 5:
+        for pat in INFO_PROVISION_PATTERNS:
+            if pat.search(text):
+                return "slot_fill"
 
     # Jurisdiction change: "how about for United", "what about for Molina" — same intent, swap jurisdiction
     if existing_refined_query:

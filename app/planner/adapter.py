@@ -79,6 +79,12 @@ def task_plan_to_plan(
         if caps:
             capabilities_primary = str(getattr(caps, "primary", "") or "").strip().lower() or None
 
+        pre_answer = getattr(sq, "pre_answer", None) or None
+        if pre_answer and not str(pre_answer).strip():
+            pre_answer = None
+        else:
+            pre_answer = str(pre_answer).strip() if pre_answer else None
+
         subquestions.append(
             SubQuestion(
                 id=sq.id,
@@ -89,6 +95,7 @@ def task_plan_to_plan(
                 requires_jurisdiction=requires_jurisdiction,
                 on_rag_fail=on_rag_fail,
                 capabilities_primary=capabilities_primary,
+                pre_answer=pre_answer,
             )
         )
 

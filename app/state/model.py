@@ -19,6 +19,7 @@ class ThreadState:
     last_updated_turn_id: str | None = None
     safety: dict[str, Any] = field(default_factory=dict)
     refined_query: str | None = None
+    master_objective: dict[str, Any] | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any] | None) -> ThreadState:
@@ -38,6 +39,7 @@ class ThreadState:
             last_updated_turn_id=d.get("last_updated_turn_id"),
             safety=dict(d.get("safety") or {}),
             refined_query=d.get("refined_query"),
+            master_objective=d.get("master_objective"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -49,6 +51,7 @@ class ThreadState:
             "last_updated_turn_id": self.last_updated_turn_id,
             "safety": dict(self.safety),
             "refined_query": self.refined_query,
+            "master_objective": self.master_objective,
         }
 
     def apply_delta(self, delta: dict[str, Any]) -> None:
@@ -63,7 +66,7 @@ class ThreadState:
                 self.open_slots = list(v) if v else []
             elif k == "recent_entities":
                 self.recent_entities = list(v) if v else []
-            elif k in ("last_user_intent", "last_updated_turn_id", "refined_query"):
+            elif k in ("last_user_intent", "last_updated_turn_id", "refined_query", "master_objective"):
                 setattr(self, k, v)
             elif k == "safety" and isinstance(v, dict):
                 self.safety = {**self.safety, **v}

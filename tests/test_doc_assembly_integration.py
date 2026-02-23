@@ -117,16 +117,16 @@ def test_assemble_docs_with_neighbors_real_db():
         pytest.skip("published_rag_metadata is empty")
 
     chunks = [dict(chunk, rerank_score=0.9)]
-    out = assemble_docs(
+    out_chunks, signal = assemble_docs(
         chunks,
         "test question",
         expand_neighbors=True,
         database_url=db_url,
         apply_google=False,
     )
-    assert len(out) >= 1
-    assert all("confidence_label" in c for c in out)
-    assert all("llm_guidance" in c for c in out)
+    assert len(out_chunks) >= 1
+    assert all("confidence_label" in c for c in out_chunks)
+    assert all("llm_guidance" in c for c in out_chunks)
 
 
 @skip_if_no_google

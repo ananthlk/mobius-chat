@@ -59,6 +59,8 @@ class PipelineContext:
 
     # Resolution (filled in resolve stage)
     answers: list[str] = field(default_factory=list)
+    answer_set: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """Per sq_id: {answer, source, status}. Resolver, user context, and integrator can update."""
     sources: list[dict] = field(default_factory=list)
     usages: list[dict] = field(default_factory=list)
     retrieval_signals: list[str] = field(default_factory=list)
@@ -69,6 +71,11 @@ class PipelineContext:
 
     # Collected during pipeline (emitter appends)
     thinking_chunks: list[str] = field(default_factory=list)
+
+    # Relentless continuity: master objective (created after plan, updated after resolve)
+    master_objective: dict | None = None
+    # User-provided context (when user shares docs/links/info to help answer)
+    user_provided_context: str | None = None
 
     def has_thread(self) -> bool:
         return bool(self.thread_id and (self.thread_id or "").strip())

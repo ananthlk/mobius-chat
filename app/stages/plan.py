@@ -7,6 +7,7 @@ from app.pipeline.context import PipelineContext
 from app.planner import parse
 from app.planner.blueprint import build_blueprint
 from app.planner.schemas import Plan, SubQuestion
+from app.state.master_objective import MasterObjective
 from app.state.refined_query import compute_refined_query, is_followup_continuation
 from app.stages.agents.capabilities import capabilities_for_parser
 
@@ -21,15 +22,65 @@ def _minimal_plan(message: str) -> Plan:
     ])
 
 
+def _plan_from_master_objective(obj: MasterObjective) -> Plan:
+    """Build Plan from master_objective sub_objectives (skip planner when slot_fill)."""
+    subs = []
+    for so in (obj.sub_objectives or []):
+        if so.id and (so.text or "").strip():
+            subs.append(SubQuestion(
+                id=str(so.id),
+                text=so.text.strip(),
+                kind="non_patient",
+                question_intent="factual",
+                intent_score=0.6,
+            ))
+    return Plan(subquestions=subs)
+
+
 def run_plan(ctx: PipelineContext, emitter: Callable[[str], None] | None = None) -> None:
     """Parse effective_message into plan, compute refined_query, build blueprint."""
+    # When slot_fill and we have master_objective, reuse its sub_objectives as plan (don't re-parse)
+    if ctx.classification in ("slot_fill", "jurisdiction_change") and ctx.master_objective:
+        obj = MasterObjective.from_dict(ctx.master_objective)
+        if obj and obj.sub_objectives:
+            plan = _plan_from_master_objective(obj)
+            logger.info("Plan stage: slot_fill, reusing plan from master_objective (%d subquestions)", len(plan.subquestions))
+            ctx.plan = plan
+            plan_text = plan.subquestions[0].text if plan.subquestions else None
+            last_turn = ctx.last_turns[0] if ctx.last_turns else {}
+            ctx.refined_query = compute_refined_query(
+                ctx.classification,
+                ctx.message,
+                (ctx.merged_state or {}).get("refined_query"),
+                ctx.merged_state or {},
+                plan_text,
+                last_turn=last_turn,
+            )
+            rag_k = get_chat_config().rag.top_k
+            from app.state.jurisdiction import get_jurisdiction_from_active
+            last_refined = (ctx.merged_state or {}).get("refined_query")
+            retrieval_ctx = {
+                "refined_query": ctx.refined_query,
+                "jurisdiction": get_jurisdiction_from_active((ctx.merged_state or {}).get("active")),
+                "is_followup": is_followup_continuation(ctx.message, last_turn, last_refined),
+                "user_message": ctx.effective_message or ctx.message,
+            }
+            ctx.blueprint = build_blueprint(plan, rag_default_k=rag_k, retrieval_ctx=retrieval_ctx)
+            return
+
     parser_context = ctx.context_pack
     if parser_context:
         parser_context = f"{parser_context}\n\nAvailable paths and capabilities: {capabilities_for_parser()}"
     else:
         parser_context = f"Available paths and capabilities: {capabilities_for_parser()}"
     try:
-        plan = parse(ctx.effective_message, thinking_emitter=emitter, context=parser_context)
+        last_plan = ctx.master_objective if ctx.master_objective else None
+        plan = parse(
+            ctx.effective_message,
+            thinking_emitter=emitter,
+            context=parser_context,
+            last_master_plan=last_plan,
+        )
         if not plan or not plan.subquestions:
             logger.warning("Plan stage: parse returned empty plan, using minimal plan.")
             plan = _minimal_plan(ctx.effective_message or ctx.message)

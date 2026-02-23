@@ -38,6 +38,10 @@ class SubQuestion(BaseModel):
         default=None,
         description="Primary modality from planner: rag, tools, web, reasoning, ask_user, refuse. Drives agent routing.",
     )
+    pre_answer: str | None = Field(
+        default=None,
+        description="If set, planner resolved this step without RAG; Resolver skips retrieval and uses this answer.",
+    )
 
 
 class Plan(BaseModel):
@@ -86,6 +90,10 @@ class TaskPlanSubQuestion(BaseModel):
     intent_score: float = 0.5
     jurisdiction: JurisdictionInfo = Field(default_factory=JurisdictionInfo)
     capabilities_needed: CapabilitiesNeeded = Field(default_factory=CapabilitiesNeeded)
+    pre_answer: str | None = Field(
+        default=None,
+        description="If set, planner resolved this step; Resolver skips RAG and uses this answer.",
+    )
 
 
 class ClarificationItem(BaseModel):
@@ -161,6 +169,10 @@ class TaskPlan(BaseModel):
     tasks: list[TaskItem] = Field(default_factory=list)
     retry_policy: RetryPolicy = Field(default_factory=RetryPolicy)
     safety: SafetyInfo = Field(default_factory=SafetyInfo)
+    next_questions_for_user: list[str] = Field(
+        default_factory=list,
+        description="Suggested follow-up questions to ask the user (e.g. when blocking fields are missing).",
+    )
 
 
 # Fix forward ref

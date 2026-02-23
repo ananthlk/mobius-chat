@@ -52,6 +52,10 @@ def run_clarify(ctx: PipelineContext, emitter: Callable[[str], None] | None = No
         ctx.missing_slots = missing_slots or []
         return False
 
+    # Skip refinement when slot_fill/jurisdiction_change: user is providing info, not asking a vague question
+    if ctx.classification in ("slot_fill", "jurisdiction_change"):
+        return True
+
     # Heuristic refinement only for legacy plans. Mobius planner decides decomposition; trust it.
     if not getattr(plan, "task_plan", None):
         user_msg = ctx.effective_message or ctx.message or ""
