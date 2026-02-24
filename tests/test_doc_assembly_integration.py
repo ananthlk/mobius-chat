@@ -78,6 +78,8 @@ def _fetch_one_chunk_from_db(database_url: str) -> dict | None:
         pytest.skip(f"DB connect failed: {e}")
 
 
+@pytest.mark.integration
+@pytest.mark.requires_rag
 @skip_if_no_db
 def test_assemble_with_neighbors_real_db():
     """Neighbor expansion against real published_rag_metadata."""
@@ -103,6 +105,8 @@ def test_assemble_with_neighbors_real_db():
         assert any(c.get("is_neighbor") for c in out)
 
 
+@pytest.mark.integration
+@pytest.mark.requires_rag
 @skip_if_no_db
 def test_assemble_docs_with_neighbors_real_db():
     """Full assemble_docs with expand_neighbors=True against real DB."""
@@ -129,6 +133,8 @@ def test_assemble_docs_with_neighbors_real_db():
     assert all("llm_guidance" in c for c in out_chunks)
 
 
+@pytest.mark.integration
+@pytest.mark.requires_skills
 @skip_if_no_google
 def test_google_search_via_skills_api_real():
     """Real Google search via CHAT_SKILLS_GOOGLE_SEARCH_URL."""
@@ -143,6 +149,8 @@ def test_google_search_via_skills_api_real():
         assert r.get("confidence_label") == "abstain"
 
 
+@pytest.mark.integration
+@pytest.mark.requires_skills
 @skip_if_no_google
 def test_apply_google_fallback_with_real_google():
     """apply_google_fallback triggers real Google when best < 0.5."""
@@ -157,6 +165,9 @@ def test_apply_google_fallback_with_real_google():
     assert isinstance(out, list)
 
 
+@pytest.mark.integration
+@pytest.mark.requires_rag
+@pytest.mark.requires_skills
 @skip_if_no_db
 @skip_if_no_google
 def test_assemble_docs_full_integration_db_and_google():

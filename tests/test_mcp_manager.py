@@ -17,6 +17,8 @@ def test_list_tools_returns_list():
         assert "description" in t or "description" in str(t)
 
 
+@pytest.mark.integration
+@pytest.mark.requires_skills
 def test_call_tool_google_search_integration():
     """Integration: call google_search when MCP server and google-search API are running."""
     tools = list_mcp_tools()

@@ -47,6 +47,8 @@ skip_if_mcp_unreachable = pytest.mark.skipif(
 )
 
 
+@pytest.mark.integration
+@pytest.mark.requires_skills
 @skip_if_mcp_unreachable
 def test_google_search_e2e():
     """Real Google search via MCP. Requires mobius-skills-mcp + google-search API."""
@@ -73,6 +75,8 @@ def test_google_search_e2e():
     assert "http" in txt or "[" in txt or "URL:" in txt or "1]" in txt
 
 
+@pytest.mark.integration
+@pytest.mark.requires_skills
 @skip_if_mcp_unreachable
 def test_web_scrape_e2e():
     """Real web scrape via MCP. Requires mobius-skills-mcp + web-scraper."""
@@ -100,6 +104,8 @@ def test_web_scrape_e2e():
     assert "clinical" in txt.lower() or "policy" in txt.lower() or "Sunshine" in txt
 
 
+@pytest.mark.integration
+@pytest.mark.requires_skills
 @skip_if_mcp_unreachable
 def test_tool_agent_google_search_e2e():
     """Full flow: answer_tool with search trigger → MCP google_search → real results."""
@@ -122,6 +128,8 @@ def test_tool_agent_google_search_e2e():
     assert "Medicaid" in answer or "eligibility" in answer or "Florida" in answer
 
 
+@pytest.mark.integration
+@pytest.mark.requires_skills
 @skip_if_mcp_unreachable
 def test_tool_agent_web_scrape_e2e():
     """Full flow: answer_tool with scrape trigger + URL → MCP web_scrape_review → real content."""
