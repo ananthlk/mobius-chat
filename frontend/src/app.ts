@@ -1227,13 +1227,20 @@ function run(): void {
     }
 
     let messageWrapEl: HTMLElement | null = null;
+    /** During stream, do not show raw JSON; show placeholder until final render (AnswerCard or prose). */
+    function streamingDisplayText(text: string): string {
+      const t = (text ?? "").trim();
+      if (t.startsWith("{")) return "Formatting answer…";
+      return normalizeMessageText(text);
+    }
     function onStreamingMessage(text: string): void {
+      const display = streamingDisplayText(text);
       if (!messageWrapEl) {
-        messageWrapEl = renderAssistantMessage(text);
+        messageWrapEl = renderAssistantMessage(display);
         turnWrap.appendChild(messageWrapEl);
       } else {
         const textEl = messageWrapEl.querySelector(".message-bubble-text");
-        if (textEl) textEl.textContent = text;
+        if (textEl) textEl.textContent = display;
       }
       scrollToBottom(messagesEl);
     }

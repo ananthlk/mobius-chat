@@ -1650,14 +1650,21 @@ function run() {
       scrollToBottom(messagesEl);
     }
     let messageWrapEl = null;
+    function streamingDisplayText(text) {
+      const t = (text ?? "").trim();
+      if (t.startsWith("{"))
+        return "Formatting answer\u2026";
+      return normalizeMessageText(text);
+    }
     function onStreamingMessage(text) {
+      const display = streamingDisplayText(text);
       if (!messageWrapEl) {
-        messageWrapEl = renderAssistantMessage(text);
+        messageWrapEl = renderAssistantMessage(display);
         turnWrap.appendChild(messageWrapEl);
       } else {
         const textEl = messageWrapEl.querySelector(".message-bubble-text");
         if (textEl)
-          textEl.textContent = text;
+          textEl.textContent = display;
       }
       scrollToBottom(messagesEl);
     }
