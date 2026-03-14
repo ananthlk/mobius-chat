@@ -18,7 +18,7 @@ from app.storage import store_plan, store_response
 from app.storage.progress import clear_progress, start_progress
 from app.storage.threads import register_open_slots, save_state_full
 
-from app.communication.plan_display import format_execution_plan
+
 from app.stages.state_load import run_state_load
 from app.stages.classify import run_classify
 from app.stages.plan import run_plan
@@ -168,11 +168,6 @@ def run_pipeline(
         if not resolvable:
             _publish_clarification_or_refinement(ctx, t0)
             return
-
-        # Emit execution plan so user can follow along
-        if ctx.plan and ctx.blueprint:
-            for line in format_execution_plan(ctx.plan, ctx.blueprint, user_message=ctx.message):
-                on_thinking(line)
 
         # Pre-fill answer_set before resolve so we skip retrieval for already-answered subquestions
         if ctx.classification in ("slot_fill", "jurisdiction_change"):

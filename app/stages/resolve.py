@@ -8,6 +8,7 @@ from app.communication.plan_display import (
     emit_fallback,
     emit_jurisdiction_context,
     emit_layer_attempt,
+    format_execution_plan,
     format_step_done,
     retrieval_signal_to_fallback_note,
 )
@@ -274,6 +275,18 @@ def run_resolve(
     if not plan:
         return
 
+    # ── ORDERED HEADER EMITS — must fire first, unconditionally, before any retrieval ──
+    # Placing these here (not in the orchestrator) guarantees they enter the serial DB
+    # insert queue before any retrieval events, regardless of classification or timing.
+    active = (ctx.merged_state or {}).get("active") or {}
+    reset_reason = active.get("_reset_reason") or (ctx.merged_state or {}).get("_reset_reason")
+    emit_jurisdiction_context(active, reset_reason, emitter)
+
+    if ctx.blueprint:
+        for line in format_execution_plan(ctx.plan, ctx.blueprint, user_message=ctx.message):
+            if emitter:
+                emitter(line)
+
     from app.state.jurisdiction import rag_filters_from_active
 
     rag_filter_overrides = rag_filters_from_active((ctx.merged_state or {}).get("active")) or {}
@@ -285,11 +298,6 @@ def run_resolve(
     answer_set: dict[str, dict[str, Any]] = dict(getattr(ctx, "answer_set", None) or {})
     all_sources: list[dict] = []
     retrieval_signals: list[str] = []
-
-    # Emit jurisdiction context for this turn before any subquestion work
-    active = (ctx.merged_state or {}).get("active") or {}
-    reset_reason = active.get("_reset_reason") or (ctx.merged_state or {}).get("_reset_reason")
-    emit_jurisdiction_context(active, reset_reason, emitter)
 
     for i, sq in enumerate(plan.subquestions):
         bp = blueprint[i] if i < len(blueprint) else {}
