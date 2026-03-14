@@ -171,7 +171,7 @@ def run_pipeline(
 
         # Emit execution plan so user can follow along
         if ctx.plan and ctx.blueprint:
-            for line in format_execution_plan(ctx.plan, ctx.blueprint):
+            for line in format_execution_plan(ctx.plan, ctx.blueprint, user_message=ctx.message):
                 on_thinking(line)
 
         # Pre-fill answer_set before resolve so we skip retrieval for already-answered subquestions
@@ -206,7 +206,7 @@ def run_pipeline(
 
         trace_entered(f"pipeline.stage.{INTEGRATE}", correlation_id=correlation_id[:8])
         try:
-            on_thinking("Formatting the response…")
+            on_thinking("Composing answer…")
             run_integrate(ctx, emitter=on_thinking)
         except Exception as e:
             logger.exception("Integrate stage error: %s", e)

@@ -2,9 +2,73 @@
 Uses CHAT_RAG_DATABASE_URL (same DB as chat_feedback)."""
 import json
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# -------------------------------------------------------------------
+# Improvement 1: Structured turn summaries
+# -------------------------------------------------------------------
+
+_OUTCOME_MAP = [
+    (r"found\s+(\d+)",           "Found {n} result(s)."),
+    (r"no results?|not found",    "No results found."),
+    (r"created|generated",        "Generated output."),
+    (r"explained|overview",       "Provided explanation."),
+    (r"error|failed|unable",      "Request could not be completed."),
+]
+
+
+def _detect_outcome(text: str) -> str:
+    for pattern, template in _OUTCOME_MAP:
+        m = re.search(pattern, text, re.I)
+        if m:
+            n = m.group(1) if m.lastindex else ""
+            return template.replace("{n}", n)
+    return "Responded to query."
+
+
+def _extract_entity(text: str, sources: list[dict[str, Any]]) -> str:
+    """Pull a short entity label from sources or leading text."""
+    for s in sources[:3]:
+        name = s.get("document_name") or s.get("name") or ""
+        if name and len(name) < 80:
+            return name
+    # Fallback: grab first noun phrase after outcome verbs (heuristic)
+    m = re.search(r"(?:found|returned|for)\s+([A-Z][A-Za-z0-9 &\-]{2,50})", text)
+    if m:
+        return m.group(1).strip()
+    return ""
+
+
+def _extract_jurisdiction(text: str) -> str:
+    """Pull first state or payer mention from answer text."""
+    m = re.search(r"\b(Florida|Texas|California|New York|Ohio|Georgia|Sunshine Health|United Healthcare|Aetna|Molina|WellCare|Humana)\b", text, re.I)
+    return m.group(1) if m else ""
+
+
+def build_context_summary(final_message: str, sources: list[dict[str, Any]]) -> str:
+    """
+    Produce a ≤150-token planner-facing summary of a completed turn.
+    - Leads with outcome verb (Found / Returned / Explained / Unable to find).
+    - Includes count + entity name when data was returned.
+    - Includes first jurisdiction value mentioned (state/payer).
+    - Never exceeds 2 sentences.
+    - Strips markdown, URLs, source citations.
+    """
+    text = re.sub(r"https?://\S+", "", final_message or "")
+    text = re.sub(r"\[.*?\]\(.*?\)", "", text)
+    text = re.sub(r"[*_`#>]", "", text)
+    outcome = _detect_outcome(text)
+    entity = _extract_entity(text, sources or [])
+    juris = _extract_jurisdiction(text)
+    parts = [outcome]
+    if entity:
+        parts.append(entity)
+    if juris:
+        parts.append(f"({juris})")
+    return " ".join(parts)[:600]  # hard cap ~150 tokens
 
 
 def _get_db_url() -> str:
@@ -41,14 +105,16 @@ def insert_turn(
         strip_val = (source_confidence_strip or "").strip() or None
         thread_val = (thread_id or "").strip() or None
         config_sha_val = (config_sha or "").strip() or None
+        context_summary_val = build_context_summary(final_message or "", sources or [])
         cur.execute(
             """
             INSERT INTO chat_turns (
                 correlation_id, question, thinking_log, final_message, sources,
                 duration_ms, model_used, llm_provider, session_id, thread_id,
-                plan_snapshot, blueprint_snapshot, agent_cards, source_confidence_strip, config_sha
+                plan_snapshot, blueprint_snapshot, agent_cards, source_confidence_strip, config_sha,
+                context_summary
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (correlation_id) DO UPDATE SET
                 question = EXCLUDED.question,
                 thinking_log = EXCLUDED.thinking_log,
@@ -63,7 +129,8 @@ def insert_turn(
                 blueprint_snapshot = EXCLUDED.blueprint_snapshot,
                 agent_cards = EXCLUDED.agent_cards,
                 source_confidence_strip = EXCLUDED.source_confidence_strip,
-                config_sha = EXCLUDED.config_sha
+                config_sha = EXCLUDED.config_sha,
+                context_summary = EXCLUDED.context_summary
             """,
             (
                 correlation_id,
@@ -81,6 +148,7 @@ def insert_turn(
                 json.dumps(agent_cards) if agent_cards is not None else None,
                 strip_val,
                 config_sha_val,
+                context_summary_val or None,
             ),
         )
         conn.commit()

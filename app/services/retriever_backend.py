@@ -216,7 +216,6 @@ def retrieve_for_chat(
         rag_path = "mobius"
 
     if rag_api_url:
-        _emit(emitter, "Searching our materials...")
         chunks, trace = retrieve_via_rag_api(
             question,
             path=rag_path,
@@ -232,13 +231,11 @@ def retrieve_for_chat(
             filter_authority_level=filter_authority_level,
         )
         if chunks:
-            _emit(emitter, f"Using {len(chunks)} result{'s' if len(chunks) != 1 else ''} to answer this part.")
             _debug_chunks("rag_api return", chunks)
             return chunks, trace
         # RAG API failed or returned empty; fall back to inline BM25 if database_url available
         if database_url:
             logger.info("RAG API returned no chunks; falling back to inline BM25")
-            _emit(emitter, "Falling back to inline search...")
 
     # Inline BM25 (primary when RAG_API_URL unset, or fallback when API fails)
     try:
@@ -268,7 +265,6 @@ def retrieve_for_chat(
     if filter_authority_level:
         tag_filters["document_authority_level"] = filter_authority_level
 
-    _emit(emitter, "Searching our materials...")
     # Inline path: no trace (run_rag_pipeline is only used by RAG API)
     result = retrieve_bm25(
         question=question,
@@ -343,7 +339,5 @@ def retrieve_for_chat(
             match_score = c.get("similarity") or c.get("rerank_score")
         out.append(_raw_to_chat_chunk(c, match_score))
 
-    if out:
-        _emit(emitter, f"Using {len(out)} result{'s' if len(out) != 1 else ''} to answer this part.")
     _debug_chunks("inline return (out)", out)
     return out, None

@@ -281,11 +281,19 @@ def format_response(
                 # Emit canonical JSON so frontend receives clean JSON (no markdown fence)
                 return (json.dumps(parsed), usage if not message_chunk_callback else None)
             # Not valid AnswerCard: wrap prose in minimal AnswerCard so pipeline gets valid JSON
-            logger.warning("Consolidator output was not valid AnswerCard JSON; wrapping prose as FACTUAL")
+            _log_truncated = (text or "")[:2000] + ("..." if len(text or "") > 2000 else "")
+            logger.warning(
+                "Consolidator output was not valid AnswerCard JSON; wrapping prose as FACTUAL. LLM response (truncated): %s",
+                _log_truncated,
+            )
             minimal = {"mode": "FACTUAL", "direct_answer": text[:2000], "sections": []}
             return (json.dumps(minimal), usage if not message_chunk_callback else None)
     except Exception as e:
-        logger.warning("Integrator LLM failed, using fallback: %s", e)
+        logger.warning(
+            "Integrator LLM failed, using fallback (no valid response). exception=%s",
+            e,
+            exc_info=True,
+        )
         logger.debug("Using simple format (integrator LLM failed)")
 
     return (_fallback_message(plan, stub_answers), None)

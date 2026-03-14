@@ -1004,8 +1004,8 @@ def _run_step_build_report(
             _emit(emitter, "✓ Step 11 done. (Report had issues.)")
         return result_text
     except urllib.error.HTTPError as e:
-        body = e.fp.read().decode()[:500] if e.fp else str(e)
-        logger.warning("report-from-steps HTTP %s %s", e.code, body)
+        body = e.fp.read().decode()[:1000] if e.fp else str(e)
+        logger.warning("report-from-steps HTTP %s %s", e.code, body, exc_info=(e.code >= 500))
         state.mark_done(step_id, f"API error {e.code}")
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Credentialing report", csv_content=f"(API error {e.code})", row_count=0)
@@ -1023,7 +1023,7 @@ def _run_step_build_report(
         _emit(emitter, f"✓ Step 11 done. Failed ({e}).")
         return str(e)
     except Exception as e:
-        logger.warning("report-from-steps failed: %s", e)
+        logger.warning("report-from-steps failed: %s", e, exc_info=True)
         state.mark_done(step_id, str(e))
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Credentialing report", csv_content=f"(failed: {e})", row_count=0)

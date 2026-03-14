@@ -37,6 +37,9 @@ _has_google = bool(os.environ.get("CHAT_SKILLS_GOOGLE_SEARCH_URL", "").strip())
 skip_if_no_db = pytest.mark.skipif(not _has_db, reason="CHAT_RAG_DATABASE_URL not set")
 skip_if_no_google = pytest.mark.skipif(not _has_google, reason="CHAT_SKILLS_GOOGLE_SEARCH_URL not set")
 
+# Excluded by pytest -m "not integration" (Day 3 gate)
+pytestmark = [pytest.mark.integration, pytest.mark.requires_rag]
+
 
 def _get_db_url() -> str | None:
     return (
@@ -150,11 +153,10 @@ def test_apply_google_fallback_with_real_google():
 
     chunks = [{"text": "weak match", "rerank_score": 0.3}]
     emitted = []
-    out = apply_google_fallback(chunks, "Florida Medicaid eligibility", emitter=emitted.append)
+    out_chunks, signal = apply_google_fallback(chunks, "Florida Medicaid eligibility", emitter=emitted.append)
     assert any("Low corpus confidence" in s for s in emitted)
     # Should have either corpus (filter_abstain) or Google results
-    # With abstain filtered, corpus is empty; Google may return results
-    assert isinstance(out, list)
+    assert isinstance(out_chunks, list)
 
 
 @skip_if_no_db
@@ -174,7 +176,7 @@ def test_assemble_docs_full_integration_db_and_google():
     # Low score to trigger Google complement
     chunks = [dict(chunk, rerank_score=0.65)]
     emitted = []
-    out = assemble_docs(
+    out_chunks, signal = assemble_docs(
         chunks,
         "Florida Medicaid prior authorization",
         expand_neighbors=True,
@@ -182,7 +184,7 @@ def test_assemble_docs_full_integration_db_and_google():
         apply_google=True,
         emitter=emitted.append,
     )
-    assert len(out) >= 1
-    assert all("confidence_label" in c for c in out)
+    assert len(out_chunks) >= 1
+    assert all("confidence_label" in c for c in out_chunks)
     # Should have emitted something (e.g. "Adding external search" or "Corpus confidence...")
     assert len(emitted) >= 1

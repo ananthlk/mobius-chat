@@ -1,6 +1,7 @@
 """FastAPI app: POST /chat (enqueue), GET /chat/response/:id (poll), GET /chat/stream/:id (SSE), health."""
 import asyncio
 import json
+import os
 import logging
 import uuid
 from pathlib import Path
@@ -127,7 +128,7 @@ async def chat_stream(correlation_id: str):
     last_progress_id = 0
     loop = asyncio.get_running_loop()
     last_keepalive = loop.time()
-    timeout_s = 300
+    timeout_s = int(os.environ.get("CHAT_STREAM_TIMEOUT_S", "900"))  # 15 min default (Medicaid NPI report can take 10+ min)
 
     async def event_generator():
         nonlocal last_progress_id, last_keepalive

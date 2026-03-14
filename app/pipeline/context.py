@@ -76,6 +76,12 @@ class PipelineContext:
     master_objective: dict | None = None
     # User-provided context (when user shares docs/links/info to help answer)
     user_provided_context: str | None = None
+    # Roster/credentialing: step outputs (CSV per step) for validation UI
+    roster_step_outputs: list[dict] | None = None
+    # Roster/credentialing: report PDF as base64 for download
+    roster_report_pdf_base64: str | None = None
+    # Roster/credentialing: final report markdown for download when PDF unavailable
+    roster_report_final_md: str | None = None
 
     def has_thread(self) -> bool:
         return bool(self.thread_id and (self.thread_id or "").strip())

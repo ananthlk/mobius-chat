@@ -153,31 +153,28 @@ def test_apply_google_fallback_high_confidence_corpus_only():
 
 
 def test_apply_google_fallback_mid_confidence_no_google_url():
-    """Best 0.5–0.85, no CHAT_SKILLS_GOOGLE_SEARCH_URL → corpus only (no Google results)."""
+    """Best 0.5–0.85, no Google URL (mocked) → corpus only (no Google results)."""
     chunks = [{"text": "a", "rerank_score": 0.7}]
-    with patch.dict("os.environ", {}, clear=False):
-        if "CHAT_SKILLS_GOOGLE_SEARCH_URL" in __import__("os").environ:
-            del __import__("os").environ["CHAT_SKILLS_GOOGLE_SEARCH_URL"]
     emitted = []
-    out_chunks, signal = apply_google_fallback(chunks, "q", emitter=emitted.append)
+    with patch("app.services.doc_assembly.google_search_via_skills_api", return_value=[]):
+        out_chunks, signal = apply_google_fallback(chunks, "q", emitter=emitted.append)
     assert len(out_chunks) == 1
     assert any("Adding external search" in s for s in emitted)
 
 
 def test_apply_google_fallback_low_confidence_no_google_url():
-    """Best < 0.5, no Google URL → returns all corpus chunks (no abstain filter)."""
+    """Best < 0.5, no Google URL (mocked) → returns all corpus chunks (no abstain filter)."""
     chunks = [{"text": "a", "rerank_score": 0.3}]
-    with patch.dict("os.environ", {}, clear=False):
-        pass  # ensure no CHAT_SKILLS_GOOGLE_SEARCH_URL
     emitted = []
-    out_chunks, signal = apply_google_fallback(chunks, "q", emitter=emitted.append)
+    with patch("app.services.doc_assembly.google_search_via_skills_api", return_value=[]):
+        out_chunks, signal = apply_google_fallback(chunks, "q", emitter=emitted.append)
     assert any("Low corpus confidence" in s for s in emitted)
     assert len(out_chunks) == 1  # send all chunks (no abstain filter)
 
 
 def test_apply_google_fallback_empty_chunks():
-    """Empty chunks, no Google URL → empty result."""
-    with patch.dict("os.environ", {}, clear=False):
+    """Empty chunks, no Google results (mocked) → empty result."""
+    with patch("app.services.doc_assembly.google_search_via_skills_api", return_value=[]):
         out_chunks, signal = apply_google_fallback([], "q")
     assert out_chunks == []
 
@@ -253,10 +250,9 @@ def test_assemble_docs_expand_neighbors_no_db():
 
 def test_google_search_via_skills_api_no_url():
     """No CHAT_SKILLS_GOOGLE_SEARCH_URL → returns []."""
-    with patch.dict("os.environ", {}, clear=False):
-        if "CHAT_SKILLS_GOOGLE_SEARCH_URL" in __import__("os").environ:
-            del __import__("os").environ["CHAT_SKILLS_GOOGLE_SEARCH_URL"]
-    out = google_search_via_skills_api("test")
+    env_without_google = {k: v for k, v in __import__("os").environ.items() if k != "CHAT_SKILLS_GOOGLE_SEARCH_URL"}
+    with patch.dict("os.environ", env_without_google, clear=True):
+        out = google_search_via_skills_api("test")
     assert out == []
 
 

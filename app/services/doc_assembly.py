@@ -173,6 +173,7 @@ RETRIEVAL_SIGNAL_CORPUS_ONLY = "corpus_only"
 RETRIEVAL_SIGNAL_CORPUS_PLUS_GOOGLE = "corpus_plus_google"
 RETRIEVAL_SIGNAL_GOOGLE_ONLY = "google_only"
 RETRIEVAL_SIGNAL_NO_SOURCES = "no_sources"
+RETRIEVAL_SIGNAL_ROSTER_COMPLETE = "roster_complete"
 
 
 def apply_google_fallback(

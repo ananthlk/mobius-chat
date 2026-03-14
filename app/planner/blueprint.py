@@ -81,6 +81,9 @@ def build_blueprint(
                 if "search_google" not in on_rag_fail and "web" not in str(on_rag_fail).lower():
                     on_rag_fail = list(on_rag_fail) + ["search_google"]
         requires_jurisdiction = getattr(sq, "requires_jurisdiction", None)
+        tool_hint = getattr(sq, "tool_hint", None)
+        skip_layer_4 = bool(getattr(sq, "skip_layer_4", False))
+        question_intent = getattr(sq, "question_intent", None)
         out.append({
             "sq_id": sq.id,
             "agent": agent,
@@ -93,5 +96,8 @@ def build_blueprint(
             "reframed_text": reframed if reframed != sq.text else sq.text,
             "on_rag_fail": on_rag_fail if isinstance(on_rag_fail, list) else [],
             "requires_jurisdiction": requires_jurisdiction,
+            "tool_hint": tool_hint,
+            "skip_layer_4": skip_layer_4,
+            "question_intent": question_intent,
         })
     return out

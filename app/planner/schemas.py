@@ -38,6 +38,14 @@ class SubQuestion(BaseModel):
         default=None,
         description="Primary modality from planner: rag, tools, web, reasoning, ask_user, refuse. Drives agent routing.",
     )
+    tool_hint: str | None = Field(
+        default=None,
+        description="Specific tool to invoke when capabilities_primary is tools or web (e.g. google_search, web_scrape, npi_lookup).",
+    )
+    skip_layer_4: bool = Field(
+        default=False,
+        description="When true, executor skips LLM reasoning (Layer 4) and escalates to ask_user for payer-operational questions.",
+    )
     pre_answer: str | None = Field(
         default=None,
         description="If set, planner resolved this step without RAG; Resolver skips retrieval and uses this answer.",
@@ -90,6 +98,14 @@ class TaskPlanSubQuestion(BaseModel):
     intent_score: float = 0.5
     jurisdiction: JurisdictionInfo = Field(default_factory=JurisdictionInfo)
     capabilities_needed: CapabilitiesNeeded = Field(default_factory=CapabilitiesNeeded)
+    tool_hint: str | None = Field(
+        default=None,
+        description="Specific tool hint from planner (e.g. google_search, web_scrape, npi_lookup).",
+    )
+    skip_layer_4: bool = Field(
+        default=False,
+        description="When true, executor skips LLM reasoning and escalates to ask_user.",
+    )
     pre_answer: str | None = Field(
         default=None,
         description="If set, planner resolved this step; Resolver skips RAG and uses this answer.",

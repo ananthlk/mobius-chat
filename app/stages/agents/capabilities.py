@@ -25,8 +25,11 @@ PATH_CAPABILITIES = {
     "tool": [
         "Google search",
         "web scrape",
-        "NPI lookup (NPPES/Medicaid)",
-        "provider data",
+        "NPI lookup by org name (what is the NPI of X)",
+        "NPI lookup by number (look up NPI 1234567890)",
+        "ICD-10 code lookup",
+        "Medicare/Medicaid coverage (NCD/LCD)",
+        "Provider Roster / Credentialing report",
     ],
     "reasoning": [
         "conceptual explanation",
@@ -53,13 +56,16 @@ def available_capabilities_json() -> dict[str, Any]:
     """Build structured available_capabilities for Mobius Planner input (JSON)."""
     return {
         "rag_scopes": ["payer_manuals", "state_contracts", "internal_docs"],
-        "tools": ["google_search", "web_scrape", "npi_lookup", "bigquery_templates", "internal_api"],
+        "tools": ["google_search", "web_scrape", "search_org_names", "healthcare_query", "npi_lookup", "roster_report"],
         "web_allowed": True,
         "reasoning_allowed": True,
         "routing_to_tool": [
             "search the web, search google, search for X, look up X, find on the internet",
             "scrape [url], scrape this, scrape url, read this webpage, read this url, or any URL",
-            "what can you do, what can you help with, your capabilities, can you search/scrape",
+            "what is the npi of [org], npis for [org], find npi for [org]",
+            "icd-10 codes, npi lookup by number, medicare/medicaid coverage",
+            "provider roster, credentialing report for [org]",
+            "what can you do, what can you help with, your capabilities",
         ],
     }
 
@@ -76,6 +82,34 @@ def defaults_policy_json() -> dict[str, Any]:
     }
 
 
+def slim_master_plan(plan: dict[str, Any] | None) -> dict[str, Any] | None:
+    """
+    Reduce last_master_plan to a planner-safe context object.
+    Strips routing fields (capabilities_needed, kind, intent_score, fallbacks)
+    to prevent the model from inheriting stale routing decisions.
+    Keeps only: what the user originally wanted, which tools ran, and jurisdiction used.
+    """
+    if not plan or not isinstance(plan, dict):
+        return None
+    tasks = plan.get("tasks") or plan.get("subquestions") or []
+    tools_used = []
+    jurisdiction: dict[str, Any] = {}
+    for t in tasks:
+        if not isinstance(t, dict):
+            continue
+        hint = t.get("tool_hint") or t.get("capabilities_primary")
+        if hint and str(hint).lower() not in ("null", "none", ""):
+            tools_used.append(str(hint))
+        jd = t.get("jurisdiction") or {}
+        if isinstance(jd, dict) and not jurisdiction:
+            jurisdiction = {k: v for k, v in jd.items() if v and str(v).lower() not in ("null", "none", "")}
+    return {
+        "original_intent": (plan.get("plan_summary") or plan.get("message_summary") or "").strip(),
+        "tools_used": tools_used,
+        "jurisdiction": jurisdiction,
+    }
+
+
 def planner_input_json(
     user_message: str, context: str = "", last_master_plan: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -87,7 +121,7 @@ def planner_input_json(
         "defaults_policy": defaults_policy_json(),
     }
     if last_master_plan and isinstance(last_master_plan, dict):
-        payload["last_master_plan"] = last_master_plan
+        payload["last_master_plan"] = slim_master_plan(last_master_plan)
     return payload
 
 

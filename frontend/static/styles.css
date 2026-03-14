@@ -1112,6 +1112,29 @@ body {
   margin-top: 0.5rem;
 }
 
+.message-bubble .message-bubble-text h1,
+.message-bubble .message-bubble-text h2,
+.message-bubble .message-bubble-text h3 {
+  margin: 0.75em 0 0.35em;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.message-bubble .message-bubble-text h1 { font-size: 1.25rem; }
+.message-bubble .message-bubble-text h2 { font-size: 1.1rem; }
+.message-bubble .message-bubble-text h3 { font-size: 1rem; }
+.message-bubble .message-bubble-text p {
+  margin: 0.35em 0;
+}
+.message-bubble .message-bubble-text p:first-child { margin-top: 0; }
+.message-bubble .message-bubble-text p:last-child { margin-bottom: 0; }
+.message-bubble .message-bubble-text .report-chart {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0.75em 0;
+  border-radius: var(--radius-sm, 4px);
+}
+
 /* Selection: clearly user selection, not system emphasis (avoids default blue confusion) */
 .message-bubble::selection {
   background: rgba(0, 0, 0, 0.12);
@@ -1320,6 +1343,117 @@ body {
   border-color: var(--accent);
   background: rgba(59, 130, 246, 0.08);
   color: var(--accent);
+}
+
+/* Roster step outputs: collapsible CSV sections for validation */
+.roster-step-outputs {
+  align-self: flex-start;
+  max-width: 85%;
+  margin: 0.5rem 0;
+}
+
+.roster-step-outputs-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--thinking-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.roster-step-outputs-header:hover {
+  color: var(--thinking-muted-hover);
+}
+
+.roster-step-outputs-title {
+  flex: 1;
+}
+
+.roster-step-outputs-chevron {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+}
+
+.roster-step-outputs-body {
+  margin-top: 0.35rem;
+  padding-left: 0.5rem;
+  border-left: 2px solid var(--assistant-border);
+}
+
+.roster-step-outputs-body.roster-step-outputs-body--collapsed {
+  display: none;
+}
+
+.roster-step-section {
+  margin-bottom: 0.5rem;
+}
+
+.roster-step-section:last-child {
+  margin-bottom: 0;
+}
+
+.roster-step-section-header {
+  font-size: 0.75rem;
+  color: var(--thinking-muted-hover);
+  cursor: pointer;
+  user-select: none;
+}
+
+.roster-step-section-header:hover {
+  color: var(--main-text);
+}
+
+.roster-step-section-body {
+  margin-top: 0.25rem;
+}
+
+.roster-step-section.roster-step-section--collapsed .roster-step-section-body {
+  display: none;
+}
+
+.roster-step-csv {
+  margin: 0;
+  padding: 0.5rem;
+  font-size: 0.7rem;
+  font-family: var(--font-mono);
+  background: var(--thinking-bg);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.roster-report-download {
+  margin: 0.5rem 0;
+}
+
+.roster-report-download-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin-bottom: 0.35rem;
+}
+
+.roster-report-download-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.roster-report-download-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.8rem;
+  font-size: 0.85rem;
+  background: var(--mobius-accent, #3b82f6);
+  color: white;
+  border: none;
+  border-radius: var(--radius-sm, 4px);
+  cursor: pointer;
+}
+
+.roster-report-download-btn:hover {
+  opacity: 0.9;
 }
 
 /* Feedback: same visual language as thinking-block/source-citer (muted, light, no heavy box) */

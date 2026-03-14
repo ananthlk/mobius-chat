@@ -4,6 +4,19 @@ from typing import Any
 from app.state.context_router import Route
 from app.state.jurisdiction import get_jurisdiction_from_active, jurisdiction_to_summary
 
+_MAX_RESOLVED_SLOTS = 6  # spec §11 Q4
+
+
+def _format_resolved_slots(resolved: dict[str, str]) -> str:
+    """Format persisted slot values as a compact jurisdiction block (Improvement 3)."""
+    if not resolved:
+        return ""
+    items = list(resolved.items())[:_MAX_RESOLVED_SLOTS]
+    lines = ["Resolved context:"]
+    for k, v in items:
+        lines.append(f"  {k} = {v}")
+    return "\n".join(lines) + "\n\n"
+
 
 def build_context_pack(
     route: Route,
@@ -33,22 +46,29 @@ def build_context_pack(
         names = [s.get("document_name") or "document" for s in last_turn_sources[:10]]
         sources_line = f" Previous turn(s) sources used: {', '.join(names)}."
     header = header.rstrip() + sources_line
+
+    # Improvement 3: prepend resolved slot values so planner always knows jurisdiction
+    resolved_slots = (state or {}).get("resolved_slots") or {}
+    resolved_block = _format_resolved_slots(resolved_slots)
+
     if route == "LIGHT":
         if not last_turns:
-            return header + "\n\n"
+            return resolved_block + header + "\n\n"
         t = last_turns[0]
         user_content = (t.get("user_content") or "").strip()
-        assistant_content = (t.get("assistant_content") or "").strip()
-        if assistant_content and len(assistant_content) > 200:
-            assistant_content = assistant_content[:200] + "..."
-        return header + "\n\nLast turn:\nUser: " + (user_content or "") + "\nAssistant: " + (assistant_content or "") + "\n\n"
+        assistant_text = (
+            (t.get("context_summary") or "").strip()
+            or (t.get("assistant_content") or "")[:200] + ("..." if len(t.get("assistant_content") or "") > 200 else "")
+        )
+        return resolved_block + header + "\n\nLast turn:\nUser: " + (user_content or "") + "\nAssistant: " + assistant_text + "\n\n"
     if route == "STATEFUL":
-        parts = [header]
+        parts = [resolved_block + header] if resolved_block else [header]
         for i, t in enumerate(last_turns[:2]):
             user_content = (t.get("user_content") or "").strip()
-            assistant_content = (t.get("assistant_content") or "").strip()
-            if assistant_content and len(assistant_content) > 300:
-                assistant_content = assistant_content[:300] + "..."
-            parts.append(f"Turn {i+1}:\nUser: {user_content or ''}\nAssistant: {assistant_content or ''}")
+            assistant_text = (
+                (t.get("context_summary") or "").strip()
+                or (t.get("assistant_content") or "")[:300] + ("..." if len(t.get("assistant_content") or "") > 300 else "")
+            )
+            parts.append(f"Turn {i+1}:\nUser: {user_content or ''}\nAssistant: {assistant_text}")
         return "\n\n".join(parts) + "\n\n"
-    return header + "\n\n"
+    return resolved_block + header + "\n\n"

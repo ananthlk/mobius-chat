@@ -667,6 +667,31 @@ function el(id) {
 function normalizeMessageText(text) {
   return (text ?? "").replace(/\n{2,}/g, "\n").trim();
 }
+function simpleMarkdownToHtml(text) {
+  const s = (text ?? "").trim();
+  if (!s)
+    return "";
+  const escape = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const imgs = [];
+  const imgRe = /!\[([^\]]*)\]\(([^)]+)\)/g;
+  let out = s.replace(imgRe, (_m, alt, url) => {
+    const escapedAlt = escape(alt || "");
+    const i = imgs.length;
+    imgs.push(`<img src="${url}" alt="${escapedAlt}" class="report-chart" loading="lazy" />`);
+    return `\uE000${i}\uE001`;
+  });
+  out = escape(out);
+  imgs.forEach((img, i) => {
+    out = out.replace(`\uE000${i}\uE001`, img);
+  });
+  out = out.replace(/^### (.+)$/gm, "<h3>$1</h3>");
+  out = out.replace(/^## (.+)$/gm, "<h2>$1</h2>");
+  out = out.replace(/^# (.+)$/gm, "<h1>$1</h1>");
+  out = out.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  out = out.replace(/\n\n+/g, "</p><p>");
+  out = out.replace(/\n/g, "<br>\n");
+  return "<p>" + out + "</p>";
+}
 var MAX_SECTIONS = 4;
 var MAX_BULLETS_PER_SECTION = 4;
 function findMatchingCloseBrace(str, start) {
@@ -1021,9 +1046,138 @@ function renderAssistantContent(body, isError, opts) {
   }
   const textEl = document.createElement("div");
   textEl.className = "message-bubble-text";
-  textEl.textContent = normalizeMessageText(body);
+  if (opts?.renderAsMarkdown && trimmed.length > 0) {
+    textEl.innerHTML = simpleMarkdownToHtml(body);
+  } else {
+    textEl.textContent = normalizeMessageText(body);
+  }
   bubble.appendChild(textEl);
   wrap.appendChild(bubble);
+  return wrap;
+}
+function renderRosterStepOutputs(stepOutputs) {
+  const wrap = document.createElement("div");
+  wrap.className = "roster-step-outputs";
+  const header = document.createElement("div");
+  header.className = "roster-step-outputs-header";
+  header.setAttribute("role", "button");
+  header.setAttribute("tabindex", "0");
+  header.setAttribute("aria-expanded", "false");
+  const headerTitle = document.createElement("span");
+  headerTitle.className = "roster-step-outputs-title";
+  headerTitle.textContent = "Step outputs (for validation)";
+  const headerChevron = document.createElement("span");
+  headerChevron.className = "roster-step-outputs-chevron";
+  headerChevron.textContent = "\u25B6";
+  header.appendChild(headerTitle);
+  header.appendChild(headerChevron);
+  const body = document.createElement("div");
+  body.className = "roster-step-outputs-body roster-step-outputs-body--collapsed";
+  for (const step of stepOutputs) {
+    const section = document.createElement("div");
+    section.className = "roster-step-section roster-step-section--collapsed";
+    const stepLabel = (step.step_num ? `Step ${step.step_num}: ` : "") + (step.label || step.step_id);
+    const rowHint = step.row_count > 0 ? ` (${step.row_count} row${step.row_count !== 1 ? "s" : ""})` : "";
+    const sectionHeader = document.createElement("div");
+    sectionHeader.className = "roster-step-section-header";
+    sectionHeader.setAttribute("role", "button");
+    sectionHeader.setAttribute("tabindex", "0");
+    sectionHeader.setAttribute("aria-expanded", "false");
+    sectionHeader.textContent = stepLabel + rowHint;
+    const sectionBody = document.createElement("div");
+    sectionBody.className = "roster-step-section-body";
+    const pre = document.createElement("pre");
+    pre.className = "roster-step-csv";
+    pre.textContent = step.csv_content || "(no data)";
+    sectionBody.appendChild(pre);
+    sectionHeader.addEventListener("click", () => {
+      section.classList.toggle("roster-step-section--collapsed");
+      sectionHeader.setAttribute("aria-expanded", section.classList.contains("roster-step-section--collapsed") ? "false" : "true");
+    });
+    sectionHeader.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        sectionHeader.click();
+      }
+    });
+    section.appendChild(sectionHeader);
+    section.appendChild(sectionBody);
+    body.appendChild(section);
+  }
+  header.addEventListener("click", () => {
+    body.classList.toggle("roster-step-outputs-body--collapsed");
+    const collapsed = body.classList.contains("roster-step-outputs-body--collapsed");
+    header.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    headerChevron.textContent = collapsed ? "\u25B6" : "\u25BC";
+  });
+  header.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      header.click();
+    }
+  });
+  wrap.appendChild(header);
+  wrap.appendChild(body);
+  return wrap;
+}
+function renderRosterReportDownload(pdfBase64, reportMarkdown) {
+  const wrap = document.createElement("div");
+  wrap.className = "roster-report-download";
+  const title = document.createElement("div");
+  title.className = "roster-report-download-title";
+  title.textContent = "Report";
+  wrap.appendChild(title);
+  const btns = document.createElement("div");
+  btns.className = "roster-report-download-btns";
+  const downloadIcon = () => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("width", "18");
+    svg.setAttribute("height", "18");
+    svg.setAttribute("aria-hidden", "true");
+    svg.innerHTML = "<path fill='currentColor' d='M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z'/>";
+    return svg;
+  };
+  if (pdfBase64 && typeof pdfBase64 === "string" && pdfBase64.length > 0) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "roster-report-download-btn";
+    btn.appendChild(downloadIcon());
+    btn.appendChild(document.createTextNode(" Download report (PDF)"));
+    btn.addEventListener("click", () => {
+      try {
+        const bytes = Uint8Array.from(atob(pdfBase64), (c) => c.charCodeAt(0));
+        const blob = new Blob([bytes], { type: "application/pdf" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "credentialing_report.pdf";
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch (e) {
+        console.warn("PDF download failed:", e);
+      }
+    });
+    btns.appendChild(btn);
+  }
+  if (reportMarkdown && typeof reportMarkdown === "string" && reportMarkdown.trim().length > 0) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "roster-report-download-btn";
+    btn.appendChild(downloadIcon());
+    btn.appendChild(document.createTextNode(" Download report (Markdown)"));
+    btn.addEventListener("click", () => {
+      const blob = new Blob([reportMarkdown], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "credentialing_report.md";
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+    btns.appendChild(btn);
+  }
+  wrap.appendChild(btns);
   return wrap;
 }
 function parseMessageAndSources(fullMessage) {
@@ -1699,15 +1853,27 @@ function run() {
       if (messageWrapEl) {
         messageWrapEl.remove();
       }
+      const reportMd = data.roster_report_final_md && typeof data.roster_report_final_md === "string" ? data.roster_report_final_md.trim() : "";
+      const contentToShow = reportMd.length > 0 ? reportMd : body || "(No response)";
       turnWrap.appendChild(
-        renderAssistantContent(body || "(No response)", !!data.llm_error, {
+        renderAssistantContent(contentToShow, !!data.llm_error, {
           onFollowupClick: (q) => sendMessage(q),
           sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || void 0,
           showConfidenceBadge: data.status !== "clarification" && data.status !== "refinement_ask",
           suppressFollowups: nextQuestions.length > 0,
-          nextQuestions
+          nextQuestions,
+          renderAsMarkdown: reportMd.length > 0 || !!(data.roster_report_final_md && (body || "").trim().length > 50)
         })
       );
+      const rosterStepOutputs = data.roster_step_outputs;
+      if (Array.isArray(rosterStepOutputs) && rosterStepOutputs.length > 0) {
+        turnWrap.appendChild(renderRosterStepOutputs(rosterStepOutputs));
+      }
+      const pdfBase64 = data.roster_report_pdf_base64;
+      const reportMarkdown = data.roster_report_final_md;
+      if (pdfBase64 && typeof pdfBase64 === "string" && pdfBase64.length > 0 || reportMarkdown && typeof reportMarkdown === "string" && reportMarkdown.trim().length > 0) {
+        turnWrap.appendChild(renderRosterReportDownload(pdfBase64, reportMarkdown));
+      }
       const isCard = !!tryParseAnswerCard(body || "");
       if (nextQuestions.length > 0 && !isCard) {
         turnWrap.appendChild(

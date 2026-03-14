@@ -1,9 +1,15 @@
 """Live progress store: thinking_log and message_so_far streamed per correlation_id so clients can poll and see progress.
 Supports SSE: append_* also push events to a per-id queue so GET /chat/stream/:id can yield them in real time.
 When queue_type=redis, worker runs in a separate process: we PUBLISH to Redis and persist to DB (chat_progress_events).
-API stream polls DB for progress (like RAG chunking_events) so it works without Redis subscribe."""
+API stream polls DB for progress (like RAG chunking_events) so it works without Redis subscribe.
+
+Ordering guarantee: every emit goes through a per-request serial queue (_db_queues) so DB inserts happen in strict
+emit order regardless of OS thread scheduling. This prevents the race where a later emit gets a lower DB id
+than an earlier emit (which caused "Formatting the response…" to appear before "✓ Step 1 done" in the UI).
+"""
 import json
 import logging
+import queue
 import threading
 import time
 from typing import Any
@@ -19,6 +25,55 @@ logger = logging.getLogger(__name__)
 _progress: dict[str, dict] = {}  # correlation_id -> {"thinking": list[str], "message": str, "events": list[dict]}
 _lock = threading.Lock()
 _progress_redis_logged: set[str] = set()  # correlation_ids we've logged "[progress] publishing to Redis" for
+
+# Serial DB insert queues — one per active request. Ensures DB insertion order == emit order.
+# Each queue is drained by exactly one background thread. None sentinel signals shutdown.
+_db_queues: dict[str, queue.Queue] = {}
+_db_workers: dict[str, threading.Thread] = {}
+_db_queues_lock = threading.Lock()
+
+
+def _db_worker_loop(correlation_id: str, q: queue.Queue) -> None:
+    """Drain the serial DB insert queue for one request. Runs in its own daemon thread."""
+    while True:
+        item = q.get()
+        if item is None:  # sentinel — request complete
+            q.task_done()
+            break
+        ev = item
+        try:
+            _persist_progress_event_to_db(correlation_id, ev)
+        except Exception as e:
+            logger.debug("[progress] serial DB insert failed cid=%s: %s", correlation_id[:8], e)
+        q.task_done()
+
+
+def _ensure_db_worker(correlation_id: str) -> queue.Queue:
+    """Return (creating if needed) the serial insert queue for this request."""
+    with _db_queues_lock:
+        existing = _db_queues.get(correlation_id)
+        if existing is not None:
+            return existing
+        q: queue.Queue = queue.Queue()
+        _db_queues[correlation_id] = q
+        t = threading.Thread(
+            target=_db_worker_loop,
+            args=(correlation_id, q),
+            daemon=True,
+            name=f"progress-db-{correlation_id[:8]}",
+        )
+        t.start()
+        _db_workers[correlation_id] = t
+        return q
+
+
+def _enqueue_for_db(correlation_id: str, events: list[dict]) -> None:
+    """Put events onto the serial DB insert queue (creates queue/worker on first call)."""
+    if not events:
+        return
+    q = _ensure_db_worker(correlation_id)
+    for ev in events:
+        q.put(ev)
 
 
 def _publish_progress_event_impl(correlation_id: str, ev: dict[str, Any]) -> None:
@@ -58,7 +113,7 @@ def _persist_progress_event_to_db(correlation_id: str, ev: dict[str, Any]) -> No
 
 
 def _publish_progress_event(correlation_id: str, ev: dict[str, Any]) -> None:
-    """If queue is Redis, publish to Redis and persist to DB. When trace enabled, always persist to DB."""
+    """If queue is Redis, publish to Redis and persist to DB via serial queue. When trace enabled, always persist."""
     try:
         from app.config import get_config
         from app.trace_log import is_trace_enabled
@@ -76,21 +131,49 @@ def _publish_progress_event(correlation_id: str, ev: dict[str, Any]) -> None:
             )
             t.start()
         if use_db_persist:
-            t_db = threading.Thread(
-                target=_persist_progress_event_to_db,
-                args=(correlation_id, ev),
-                daemon=True,
-                name="progress-db",
-            )
-            t_db.start()
+            # Serial queue guarantees DB insertion order == emit order
+            _enqueue_for_db(correlation_id, [ev])
+    except Exception:
+        pass
+
+
+def _publish_progress_events_ordered(correlation_id: str, events: list[dict[str, Any]]) -> None:
+    """Publish multiple events preserving strict emit order.
+    Redis: per-event publish (fire-and-forget; Redis delivery order is best-effort).
+    DB: serial queue — all events for a request flow through one thread, in order."""
+    if not events:
+        return
+    try:
+        from app.config import get_config
+        from app.trace_log import is_trace_enabled
+
+        cfg = get_config()
+        use_redis = getattr(cfg, "queue_type", "memory") == "redis"
+        use_db_persist = use_redis or is_trace_enabled()
+
+        if use_redis:
+            for ev in events:
+                t = threading.Thread(
+                    target=_publish_progress_event_impl,
+                    args=(correlation_id, ev),
+                    daemon=True,
+                    name="progress-publish",
+                )
+                t.start()
+        if use_db_persist:
+            # All events for this batch go onto the same serial queue, preserving order
+            _enqueue_for_db(correlation_id, events)
     except Exception:
         pass
 
 
 def start_progress(correlation_id: str) -> None:
-    """Mark correlation_id as in progress. Worker calls this at start of process_one."""
+    """Mark correlation_id as in progress. Worker calls this at start of process_one.
+    Pre-creates the serial DB insert queue so the first emit never races with queue creation."""
     with _lock:
         _progress[correlation_id] = {"thinking": [], "message": "", "events": []}
+    # Pre-create the serial DB insert worker; _ensure_db_worker is idempotent
+    _ensure_db_worker(correlation_id)
 
 
 def append_thinking(correlation_id: str, chunk: str) -> None:
@@ -107,8 +190,8 @@ def append_thinking(correlation_id: str, chunk: str) -> None:
             _progress[correlation_id]["thinking"].append(line)
             _progress[correlation_id]["events"].append(ev)
             to_publish.append(ev)
-    for ev in to_publish:
-        _publish_progress_event(correlation_id, ev)
+    if to_publish:
+        _publish_progress_events_ordered(correlation_id, to_publish)
 
 
 def append_message_chunk(correlation_id: str, chunk: str) -> None:
@@ -145,10 +228,17 @@ def get_and_clear_events(correlation_id: str) -> list[dict[str, Any]]:
 
 
 def clear_progress(correlation_id: str) -> None:
-    """Clear progress for correlation_id. Worker calls when done so next poll returns full response."""
+    """Clear progress for correlation_id. Worker calls when done so next poll returns full response.
+    Sends sentinel to the serial DB insert queue so its worker thread exits cleanly."""
     with _lock:
         _progress.pop(correlation_id, None)
         _progress_redis_logged.discard(correlation_id)
+    # Signal serial DB worker to stop after draining remaining inserts
+    with _db_queues_lock:
+        q = _db_queues.pop(correlation_id, None)
+        _db_workers.pop(correlation_id, None)
+    if q is not None:
+        q.put(None)  # sentinel — worker exits after draining
 def get_progress_from_db(correlation_id: str) -> tuple[list[str], str]:
     """Build thinking_log and message_so_far from DB events. Used when worker runs in separate process (Redis)."""
     events = get_progress_events_from_db(correlation_id, after_id=0)
