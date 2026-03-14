@@ -237,7 +237,6 @@ def answer_non_patient(
         )
 
     # Call LLM with context + question
-    _emit(emitter, "Reading what I found and writing an answer...")
     usage: dict[str, Any] | None = None
     try:
         provider = get_llm_provider()
