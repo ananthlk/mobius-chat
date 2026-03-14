@@ -225,7 +225,7 @@ def _score_url(url: str, entity: dict, active: dict | None) -> float:
             score += 0.12
             break
 
-    state = (active or {}).get('jurisdiction', '').lower()[:2]
+    state = ((active or {}).get('jurisdiction') or '').lower()[:2]
     if state and f'.{state}.gov' in domain:
         score += 0.2
     if 'cms.gov' in domain or 'medicaid.gov' in domain:
@@ -429,7 +429,6 @@ def _run_web_scrape(
     url: str, emitter=None
 ) -> tuple[str, list[dict], dict[str, Any] | None, str]:
     """Scrape a URL and return (answer, sources, usage, retrieval_signal)."""
-    _emit(emitter, "Scraping the page...")
     try:
         result_text, success = call_mcp_tool(TOOL_WEB_SCRAPE_REVIEW, {"url": url, "include_summary": False})
     except Exception as e:
@@ -462,7 +461,6 @@ def _run_google_search(
         Returns (raw_results: list[dict], snippets: str, usage: dict|None, signal: str)
         raw_results contains {title, snippet, url} dicts for use in score_and_scrape_top_result().
     """
-    _emit(emitter, "Searching the web...")
     try:
         result_text, success = call_mcp_tool(TOOL_GOOGLE_SEARCH, {"query": query, "max_results": 5})
     except Exception as e:
@@ -536,7 +534,6 @@ def _run_npi_lookup_by_name(
     if not org_name or len(org_name) < 2:
         return ("I need an organization name to look up NPIs. Try: 'What is the NPI for [org name]?'", [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
 
-    _emit(emitter, "Looking up provider/organization NPIs…")
     url_in_text = _extract_url(extract_candidate)
     try:
         result_text, success = call_mcp_tool(
@@ -725,7 +722,6 @@ def _answer_tool_impl(
             icd = entity.get('icd10_code')
             state = active.get('jurisdiction', '') or active.get('state', '')
             hc_question = npi or icd or entity.get('raw', '')[:120]
-            _emit(emitter, "Looking up healthcare info…")
             try:
                 result_text, success = call_mcp_tool(
                     TOOL_HEALTHCARE_QUERY,
@@ -915,7 +911,6 @@ def _answer_tool_impl(
     )
     wants_healthcare = any(t in extract_lower for t in healthcare_triggers)
     if wants_healthcare:
-        _emit(emitter, "Looking up healthcare info…")
         try:
             result_text, success = call_mcp_tool(
                 TOOL_HEALTHCARE_QUERY,
