@@ -67,6 +67,9 @@ def _bm25_to_rerank_dict(c: dict[str, Any], bm25_cfg: dict | None) -> dict[str, 
 
 def _raw_to_chat_chunk(c: dict[str, Any], match_score: float | None) -> dict[str, Any]:
     """Convert retriever raw dict to chat/doc_assembly format."""
+    pt = c.get("provision_type", "sentence")
+    # Preserve retrieval_source so _is_sentence_level() works in assemble blend selection
+    retrieval_source = c.get("retrieval_source") or f"bm25_{pt}"
     return {
         "id": c.get("id"),
         "text": c.get("text") or "",
@@ -79,7 +82,8 @@ def _raw_to_chat_chunk(c: dict[str, Any], match_score: float | None) -> dict[str
         "confidence": match_score,
         "rerank_score": c.get("rerank_score") or match_score,
         "raw_score": c.get("raw_score"),
-        "provision_type": c.get("provision_type", "sentence"),
+        "provision_type": pt,
+        "retrieval_source": retrieval_source,
     }
 
 
@@ -338,6 +342,23 @@ def retrieve_for_chat(
         else:
             match_score = c.get("similarity") or c.get("rerank_score")
         out.append(_raw_to_chat_chunk(c, match_score))
+
+    # Apply blend selection: without this, BM25 sentence fragments always outscore
+    # paragraphs because of higher per-word keyword density. Blend selection ensures
+    # n_hierarchical paragraph slots are filled before n_factual sentence slots.
+    if (n_factual is not None or n_hierarchical is not None) and out:
+        try:
+            from mobius_retriever.assemble import _apply_blend_selection
+            out = _apply_blend_selection(out, n_factual, n_hierarchical)
+            if _DEBUG_RAG:
+                para_n = sum(1 for c in out if (c.get("provision_type") or "") == "paragraph")
+                sent_n = sum(1 for c in out if (c.get("provision_type") or "") == "sentence")
+                logger.info(
+                    "[DEBUG_RAG retriever] blend applied n_hier=%s n_fact=%s → para=%s sent=%s total=%s",
+                    n_hierarchical, n_factual, para_n, sent_n, len(out),
+                )
+        except Exception as e:
+            logger.debug("Blend selection failed (non-fatal): %s", e)
 
     _debug_chunks("inline return (out)", out)
     return out, None

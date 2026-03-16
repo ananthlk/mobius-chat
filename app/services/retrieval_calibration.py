@@ -11,26 +11,79 @@ FACTUAL = "factual"
 CANONICAL = "canonical"
 
 
-def intent_to_score(question_intent: str | None) -> float:
+def intent_to_score(question_intent: str | None, question_text: str | None = None) -> float:
     """Convert question_intent to numeric score in [0, 1].
 
-    - factual -> 1.0
-    - canonical -> 0.0
-    - procedural, diagnostic -> 0.3 (more process-oriented)
-    - creative -> 0.6
-    - None or unknown -> 0.5 (middle)
+    Score drives retrieval blend:
+      0.0 (canonical)  → n_hierarchical=5, n_factual=0  — full paragraphs for policy/process docs
+      0.3 (procedural) → n_hierarchical=4, n_factual=3  — mostly paragraphs + some sentences
+      0.5 (default)    → n_hierarchical=2, n_factual=5  — balanced
+      1.0 (factual)    → n_hierarchical=0, n_factual=10 — sentences only for pure data lookups
+
+    "factual" means a pure data lookup (NPI number, ICD-10 code, date, limit).
+    "canonical"/"procedural" means a process/policy question whose answer lives in paragraphs.
+    The planner's intent_score (routing confidence) must NOT be used here — it is always high
+    for correctly-routed questions and has no factual/canonical meaning.
+
+    question_text: optional original question text used as a tiebreaker when
+    question_intent="factual" but the question is actually about a process/how-to.
     """
+    # Signals in question_intent string (free-form planner output)
+    _CANONICAL_SIGNALS = (
+        "process", "how to", "how do", "steps", "procedure", "submit",
+        "appeal", "enroll", "credential", "authorization", "grievance",
+        "policy", "coverage", "eligibility", "benefit",
+    )
+    _FACTUAL_SIGNALS = (
+        "npi", "icd", "code", "number", "date", "deadline", "limit",
+        "rate", "fee", "amount", "cms", "lookup",
+    )
+
+    # Strong process-question patterns in the actual question text.
+    # These override a "factual" intent classification.
+    # Deliberately narrow: only fire on explicit how-to/submission phrasing.
+    _PROCESS_TEXT_SIGNALS = (
+        "how do i", "how do you", "how to", "how does",
+        "steps to", "steps for", "what steps",
+        "process for", "process to", "procedure for",
+        "submit ", "submitting", "how can i",
+    )
+
     if question_intent is None:
-        return 0.5
-    intent = (question_intent or "").strip().lower()
-    if intent == FACTUAL:
-        return 1.0
+        intent = ""
+    else:
+        intent = (question_intent or "").strip().lower()
+
+    # Canonical exact match — always return 0.0 immediately
     if intent == CANONICAL:
         return 0.0
+
+    # For "factual" exact match: check question_text before accepting it.
+    # The planner sometimes marks process questions as "factual" because they have
+    # a definite answer; use the question text to detect explicit how-to phrasing.
+    if intent == FACTUAL:
+        if question_text:
+            qt = question_text.strip().lower()
+            for sig in _PROCESS_TEXT_SIGNALS:
+                if sig in qt:
+                    return 0.3  # Process question misclassified as factual
+        # Pure data lookup — trust the factual classification
+        return 1.0
+
+    # Substring signals in the question_intent string (free-form planner output)
+    for sig in _FACTUAL_SIGNALS:
+        if sig in intent:
+            return 1.0
+    for sig in _CANONICAL_SIGNALS:
+        if sig in intent:
+            return 0.3
+
+    # Named intent types
     if intent in ("procedural", "diagnostic"):
         return 0.3
     if intent == "creative":
         return 0.6
+
     return 0.5
 
 

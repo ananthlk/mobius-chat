@@ -326,9 +326,12 @@ def run_resolve(
         retrieval_params = None
         agent = bp.get("agent") or ("RAG" if sq.kind == "non_patient" else "patient_stub")
         if agent == "RAG":
-            score = getattr(sq, "intent_score", None)
-            if score is None:
-                score = intent_to_score(getattr(sq, "question_intent", None))
+            # Use question_intent string (procedural/factual/canonical) to determine blend.
+            # Do NOT use intent_score — that is the planner's routing confidence and is always
+            # high (≈1.0) for well-routed RAG questions. Using it would set n_hierarchical=0,
+            # eliminating paragraph chunks and leaving only BM25 sentence fragments.
+            # Pass sq.text so intent_to_score can rescue process questions misclassified as factual.
+            score = intent_to_score(getattr(sq, "question_intent", None), question_text=sq.text)
             retrieval_params = get_retrieval_blend(score)
 
         question_text = bp.get("reframed_text") or bp.get("text") or sq.text

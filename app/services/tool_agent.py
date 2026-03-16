@@ -9,6 +9,8 @@ import re
 import urllib.parse
 from typing import Any
 
+import httpx
+
 from app.services.doc_assembly import (
     RETRIEVAL_SIGNAL_NO_SOURCES,
     RETRIEVAL_SIGNAL_GOOGLE_ONLY,
@@ -32,6 +34,7 @@ TOOL_WEB_SCRAPE_REVIEW = "web_scrape_review"
 TOOL_SEARCH_ORG_NAMES = "search_org_names"
 TOOL_SEARCH_ORG_BY_ADDRESS = "search_org_by_address"
 TOOL_HEALTHCARE_QUERY = "healthcare_query"
+TOOL_ORG_NPI_LOOKUP = "org_npi_lookup"
 
 # ---------------------------------------------------------------------------
 # Tool Isolation — Entity Extraction Utilities
@@ -76,24 +79,54 @@ _NON_ENTITY = frozenset({
     'npi', 'npis', 'number', 'numbers', 'lookup', 'search',
 })
 
-# Domains that return gating pages (login walls, aggregators, noise)
+# ── Auto-scrape constants ────────────────────────────────────────────────────
+
+# Domains never worth scraping for payer policy content
 _SKIP_DOMAINS = frozenset({
     'reddit.com', 'quora.com', 'indeed.com', 'glassdoor.com',
     'yelp.com', 'facebook.com', 'linkedin.com', 'twitter.com',
-    'youtube.com',
+    'youtube.com', 'instagram.com', 'tiktok.com', 'pinterest.com',
 })
 
-# Path segments that strongly indicate provider-facing content
+# Path segments that indicate provider-facing / policy content
 _PROVIDER_PATH_SIGNALS = (
     'provider', 'enroll', 'credential', 'network', 'portal',
+    'prior-auth', 'authorization', 'prior_auth', 'pa-criteria',
+    'formulary', 'billing', 'claims', 'medicaid', 'coverage',
+    'become-a-provider', 'join-network',
     'join', 'contract', 'participate', 'become',
 )
 
-# Content that indicates a login wall
+# Content that indicates scrape hit a login wall
 _LOGIN_WALL_SIGNALS = (
-    'sign in', 'log in', 'login required', 'please sign in',
-    'create an account', 'register to', 'access denied',
+    'sign in to continue', 'log in to continue',
+    'login required', 'please sign in',
+    'create an account to', 'register to view',
+    'access denied', 'you must be logged in',
+    'session has expired', 'please log back in',
+    'sign in', 'log in', 'create an account', 'register to',
 )
+
+# Direct scrape settings
+_DIRECT_SCRAPE_TIMEOUT = 8.0  # seconds
+_DIRECT_SCRAPE_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (compatible; MobiusBot/1.0; "
+        "+https://mobiushealth.ai/bot)"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+# Minimum content length to consider a scrape successful
+_MIN_CONTENT_LENGTH = {
+    'policy':  500,   # PA criteria, coverage, prior auth docs
+    'portal':  300,   # Provider portal pages
+    'default': 200,   # Everything else
+}
+
+# Maximum content length passed to integrator LLM (token budget)
+_MAX_CONTENT_LENGTH = 8000  # characters
 
 
 def extract_entity_from_question(text: str) -> dict:
@@ -197,45 +230,65 @@ def build_search_query(
     return ' '.join(p for p in parts if p).strip()
 
 
-def _score_url(url: str, entity: dict, active: dict | None) -> float:
-    """Score a URL for relevance to entity + intent. Higher = more worth scraping."""
+def _score_url(
+    url: str,
+    org_name: str | None = None,
+    state: str | None = None,
+) -> float:
+    """Score a URL for scrape worthiness. Returns -1.0 to skip, 0.0-1.5+ otherwise."""
     try:
         parsed = urllib.parse.urlparse(url.lower())
-        domain = parsed.netloc
+        domain = parsed.netloc.replace('www.', '')
         path = parsed.path
     except Exception:
         return 0.0
 
+    # Hard skip — known noise domains
     for bad in _SKIP_DOMAINS:
         if bad in domain:
             return -1.0
 
+    # Hard skip — third-party NPI aggregators (noise for policy questions)
+    for agg in ('npiprofile.com', 'npinumberlookup.org',
+                'medicarelist.com', 'opennpi.com', 'npidb.org'):
+        if agg in domain:
+            return -1.0
+
     score = 0.0
 
-    # Org name in domain = strong signal
-    org = (entity.get('org_name') or '').lower()
-    if org:
-        org_slug = re.sub(r'[^a-z0-9]', '', org)[:12]
+    # Org name in domain — strongest signal (e.g. sunshinehealth.com for 'Sunshine Health')
+    if org_name:
+        slug = re.sub(r'[^a-z0-9]', '', org_name.lower())[:12]
         domain_slug = re.sub(r'[^a-z0-9]', '', domain)
-        if org_slug and org_slug in domain_slug:
-            score += 0.5
+        if slug and len(slug) > 3 and slug in domain_slug:
+            score += 0.6
 
+    # Provider-facing path keywords
     for signal in _PROVIDER_PATH_SIGNALS:
         if signal in path:
-            score += 0.12
-            break
+            score += 0.15
+            break  # count once
 
-    state = ((active or {}).get('jurisdiction') or '').lower()[:2]
-    if state and f'.{state}.gov' in domain:
+    # Government / CMS sources
+    if '.gov' in domain:
         score += 0.2
     if 'cms.gov' in domain or 'medicaid.gov' in domain:
-        score += 0.15
+        score += 0.1
+
+    # State Medicaid agency
+    if state:
+        state_slug = (state or '').lower()[:2]
+        if state_slug and (f'.{state_slug}.gov' in domain or f'ahca.my{state_slug}' in domain):
+            score += 0.15
+
+    # PDF — often the actual policy document
     if path.endswith('.pdf'):
         score += 0.1
 
+    # Penalise very deep paths (likely old/buried content)
     depth = len([p for p in path.split('/') if p])
-    if depth > 4:
-        score -= 0.05 * (depth - 4)
+    if depth > 5:
+        score -= 0.05 * (depth - 5)
 
     return score
 
@@ -268,56 +321,179 @@ def _parse_search_result_urls(text: str) -> list[dict]:
     return results
 
 
-def _scrape_url_simple(url: str) -> tuple[str, bool]:
-    """Synchronous single-URL scrape. Returns (content, success).
-    Called inside score_and_scrape_top_result() — no emitter, no extra processing.
+def _html_to_text(html: str) -> str:
+    """Convert HTML to plain text. No external dependencies."""
+    if not html:
+        return ''
+    # Remove <script>, <style>, <noscript> blocks entirely
+    text = re.sub(
+        r'<(script|style|noscript)[^>]*>.*?</(script|style|noscript)>',
+        ' ', html, flags=re.DOTALL | re.IGNORECASE,
+    )
+    # Remove <head> block
+    text = re.sub(
+        r'<head[^>]*>.*?</head>',
+        ' ', text, flags=re.DOTALL | re.IGNORECASE,
+    )
+    # Replace block elements with newlines for readability
+    text = re.sub(
+        r'<(br|p|div|h[1-6]|li|tr|section|article)[^>]*>',
+        '\n', text, flags=re.IGNORECASE,
+    )
+    # Remove all remaining HTML tags
+    text = re.sub(r'<[^>]+>', ' ', text)
+    # Decode common HTML entities
+    _ENTITIES = {
+        '&amp;': '&', '&lt;': '<', '&gt;': '>',
+        '&nbsp;': ' ', '&quot;': '"', '&#39;': "'",
+        '&mdash;': '\u2014', '&ndash;': '\u2013',
+        '&hellip;': '...', '&copy;': '(c)', '&reg;': '(R)',
+    }
+    for entity, char in _ENTITIES.items():
+        text = text.replace(entity, char)
+    # Decode numeric entities e.g. &#160; &#8217;
+    def _decode_numeric(m: re.Match) -> str:
+        try:
+            return chr(int(m.group(1)))
+        except (ValueError, OverflowError):
+            return ''
+    text = re.sub(r'&#(\d+);', _decode_numeric, text)
+    # Collapse whitespace, preserve single newlines as paragraph breaks
+    lines = []
+    for line in text.split('\n'):
+        line = re.sub(r'[ \t]+', ' ', line).strip()
+        if line:
+            lines.append(line)
+    return '\n'.join(lines)[:_MAX_CONTENT_LENGTH]
+
+
+def _scrape_direct(url: str) -> tuple[str, bool]:
+    """Fast-path direct HTTP scrape. Handles public static HTML pages.
+    Returns (plain_text_content, success). Returns ('', False) for PDFs, login walls, errors.
     """
     try:
-        result_text, success = call_mcp_tool(TOOL_WEB_SCRAPE_REVIEW, {"url": url, "include_summary": False})
-        content = (result_text or '').strip()
-        ok = success and bool(content) and len(content) > 50
-        return (content, ok)
+        response = httpx.get(
+            url,
+            headers=_DIRECT_SCRAPE_HEADERS,
+            timeout=_DIRECT_SCRAPE_TIMEOUT,
+            follow_redirects=True,
+        )
+        if response.status_code != 200:
+            return '', False
+        content_type = response.headers.get('content-type', '').lower()
+        # PDF — let MCP handle it
+        if 'pdf' in content_type or url.lower().endswith('.pdf'):
+            return '', False
+        # Non-HTML types we can't parse
+        if content_type and not any(t in content_type for t in ('html', 'text', 'xml')):
+            return '', False
+        text = _html_to_text(response.text)
+        if not text or len(text.strip()) < 100:
+            return '', False
+        # Login wall check on first 800 chars
+        text_lower = text.lower()[:800]
+        if any(s in text_lower for s in _LOGIN_WALL_SIGNALS):
+            return '', False
+        # Content length check by page type
+        path = urllib.parse.urlparse(url).path.lower()
+        if any(w in path for w in ('auth', 'criteria', 'policy', 'coverage', 'formulary')):
+            min_len = _MIN_CONTENT_LENGTH['policy']
+        elif 'provider' in path:
+            min_len = _MIN_CONTENT_LENGTH['portal']
+        else:
+            min_len = _MIN_CONTENT_LENGTH['default']
+        if len(text.strip()) < min_len:
+            return '', False
+        return text.strip(), True
+    except httpx.TimeoutException:
+        return '', False
+    except httpx.ConnectError:
+        return '', False
     except Exception:
-        return ('', False)
+        return '', False
+
+
+def _scrape_via_mcp(url: str) -> tuple[str, bool]:
+    """MCP web_scrape_review fallback — handles JS-rendered pages, PDFs, blocked agents.
+    Wired to the same call_mcp_tool(TOOL_WEB_SCRAPE_REVIEW, ...) used elsewhere.
+    Returns (content, success).
+    """
+    try:
+        result_text, success = call_mcp_tool(
+            TOOL_WEB_SCRAPE_REVIEW, {"url": url, "include_summary": False},
+        )
+        content = (result_text or '').strip()
+        if not content or len(content) < 200:
+            return '', False
+        content_lower = content.lower()[:800]
+        if any(s in content_lower for s in _LOGIN_WALL_SIGNALS):
+            return '', False
+        return content[:_MAX_CONTENT_LENGTH], True
+    except Exception:
+        return '', False
+
+
+def _scrape_url_simple(url: str) -> tuple[str, bool]:
+    """Scrape a URL. Direct HTTP first (~1-3s), MCP fallback (~3-8s).
+    Returns (content, success).
+    """
+    # Path 1 — Direct HTTP: wins for public static HTML (most payer provider pages)
+    content, ok = _scrape_direct(url)
+    if ok:
+        return content, True
+    # Path 2 — MCP: wins for JS-rendered pages, PDFs, blocked user agents
+    content, ok = _scrape_via_mcp(url)
+    if ok:
+        return content, True
+    return '', False
 
 
 def score_and_scrape_top_result(
-    search_results: list[dict],
-    entity: dict,
-    active: dict | None,
-    scrape_fn=_scrape_url_simple,
+    sources: list[dict],
+    org_name: str | None = None,
+    state: str | None = None,
     max_attempts: int = 3,
+    emitter=None,
 ) -> tuple[str | None, str | None, bool]:
-    """Score Google search result URLs and scrape the best one.
+    """Score source URLs and scrape the best one.
 
-    Returns (content, source_url, success).
-    content is None if all scrape attempts fail or are login-walled.
+    sources:     list of dicts with 'url' or 'link' key (from _run_google_search raw mode)
+    org_name:    payer/org name for domain scoring (e.g. 'Sunshine Health')
+    state:       state abbreviation for gov domain scoring (e.g. 'FL')
+    max_attempts: max URLs to try
+    emitter:     thinking emit callback
+
+    Returns (content, source_url, success). content is None if all attempts fail.
     """
     scored: list[tuple[float, str, dict]] = []
-    for r in (search_results or []):
-        url = r.get('url') or r.get('link') or r.get('href') or ''
+    for s in (sources or []):
+        url = s.get('url') or s.get('link') or s.get('href') or ''
         if not url or not url.startswith('http'):
             continue
-        s = _score_url(url, entity, active)
-        if s > -1.0:
-            scored.append((s, url, r))
+        score = _score_url(url, org_name, state)
+        if score > -1.0:
+            scored.append((score, url, s))
+
+    if not scored:
+        return None, None, False
 
     scored.sort(key=lambda x: x[0], reverse=True)
 
     for i, (score, url, _) in enumerate(scored[:max_attempts]):
+        # Stop if remaining URLs have no positive relevance signal
         if score <= 0.0 and i > 0:
             break
+        # Emit progress before attempting scrape
+        if emitter:
+            try:
+                domain = urllib.parse.urlparse(url).netloc
+                emitter(f'◌ Reading page: {domain}')
+            except Exception:
+                pass
         try:
-            content, ok = scrape_fn(url)
-            if not ok or not content:
-                continue
-            content_lower = (content or '').lower()[:500]
-            if any(s in content_lower for s in _LOGIN_WALL_SIGNALS):
-                logger.debug("score_and_scrape: login wall at %s, trying next", url)
-                continue
-            if len((content or '').strip()) < 200:
-                continue
-            return content, url, True
+            content, ok = _scrape_url_simple(url)
+            if ok and content:
+                return content, url, True
         except Exception as exc:
             logger.debug("score_and_scrape: scrape failed for %s: %s", url, exc)
             continue
@@ -523,77 +699,35 @@ def _run_npi_lookup_by_name(
     emitter=None,
     extract_candidate: str = "",
 ) -> tuple[str, list[dict], dict[str, Any] | None, str]:
-    """Look up NPI(s) for a named org. Returns confidence-ranked results.
+    """Enriched NPI lookup: NPPES/PML + web discovery via org_npi_lookup MCP tool.
 
-    Single exact match → direct answer with NPI.
-    Multiple matches  → confidence display with clarification prompt.
-    No match          → falls back to Google search.
+    Calls the org_npi_lookup orchestrator which:
+      1. Searches NPPES + PML directly (fast path for exact matches)
+      2. Google-searches for the org's official website
+      3. Scrapes the site to discover entity/DBA name variants and locations
+      4. Runs NPPES + PML for each discovered variant
+      5. Returns a deduplicated, confidence-ranked result
     """
-    # Final defensive clean in case entity extraction returned partially-noisy text
     org_name = _clean_org_name_for_search(org_name)
     if not org_name or len(org_name) < 2:
         return ("I need an organization name to look up NPIs. Try: 'What is the NPI for [org name]?'", [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
 
-    url_in_text = _extract_url(extract_candidate)
+    _emit(emitter, f"◌ Looking up NPIs for {org_name}…")
     try:
         result_text, success = call_mcp_tool(
-            TOOL_SEARCH_ORG_NAMES,
+            TOOL_ORG_NPI_LOOKUP,
             {"name": org_name, "state": "FL", "limit": 10},
         )
     except Exception as e:
-        logger.warning("call_mcp_tool search_org_names failed: %s", e, exc_info=True)
+        logger.warning("call_mcp_tool org_npi_lookup failed: %s", e, exc_info=True)
         return (f"I ran into an issue looking up NPIs. {e}. Please try again.", [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
 
-    # The MCP tool now returns the confidence-formatted text directly.
-    # "No matches found" means we should fall through to Google.
-    org_search_found = (
-        success and result_text
-        and "Error:" not in result_text
-        and "No matches found" not in (result_text or "")
-    )
-    if org_search_found:
-        sources = [{"index": 1, "document_name": "NPPES / PML search", "text": result_text[:300], "source_type": "external"}]
+    if success and result_text and "Error:" not in result_text:
+        sources = [{"index": 1, "document_name": "NPPES / PML (enriched)", "text": result_text[:300], "source_type": "external"}]
         return (result_text, sources, None, RETRIEVAL_SIGNAL_NO_SOURCES)
-    # Fallback: Google search for NPI
-    domain = _extract_domain(url_in_text) if url_in_text else None
-    if not domain and extract_candidate:
-        m = re.search(r"(?:h*https?://)?(?:www\.)?([a-zA-Z0-9][-a-zA-Z0-9.]*\.[a-zA-Z]{2,})", extract_candidate, re.IGNORECASE)
-        domain = m.group(1) if m else None
-    google_query = f"{org_name} NPI" + (f" {domain}" if domain else "")
-    _emit(emitter, "No direct NPI match. Searching the web…")
-    try:
-        google_text, google_ok = call_mcp_tool(TOOL_GOOGLE_SEARCH, {"query": google_query, "max_results": 5})
-    except Exception as e:
-        logger.warning("call_mcp_tool google_search fallback failed: %s", e)
-        return (
-            result_text if result_text else f"No NPIs found for '{org_name}'. Try the exact legal name or an address.",
-            [], None, RETRIEVAL_SIGNAL_NO_SOURCES,
-        )
-    if google_ok and google_text and "No search results found" not in (google_text or ""):
-        try:
-            from app.services.llm_provider import get_llm_provider
-            provider = get_llm_provider()
-            prompt = (
-                f"The user asked for the NPI of {org_name}."
-                + (f" They mentioned the website/domain: {domain}." if domain else "")
-                + f"\n\nWeb search results:\n{google_text}\n\n"
-                "Extract and state any NPI numbers found (10 digits). If multiple NPIs exist, list them with context. "
-                "If no NPI is found, say so clearly. Keep the answer concise."
-            )
-            raw, usage = asyncio.run(provider.generate_with_usage(prompt))
-            answer = (raw or "").strip()
-            sources = [{"index": 1, "document_name": "Web search", "text": (google_text or "")[:300], "source_type": "external"}]
-            return (answer, sources, usage, RETRIEVAL_SIGNAL_GOOGLE_ONLY)
-        except Exception as e:
-            logger.warning("LLM synthesis of Google NPI results failed: %s", e)
-            return (
-                (google_text or "")[:1500] + "\n\n(I couldn't synthesize a clean answer; above are web search snippets.)",
-                [{"document_name": "Web search", "source_type": "external"}],
-                None,
-                RETRIEVAL_SIGNAL_GOOGLE_ONLY,
-            )
+
     return (
-        result_text if result_text else f"No NPIs found for '{org_name}' in our database or via web search. Try the exact legal name or an address.",
+        result_text if result_text else f"No NPIs found for '{org_name}'. Try the exact legal name or an address.",
         [], None, RETRIEVAL_SIGNAL_NO_SOURCES,
     )
 
@@ -662,18 +796,39 @@ def _answer_tool_impl(
             query = build_search_query(entity, active, intent=question_intent)
             if not query.strip():
                 query = (question or "").strip()
-            # Fetch raw results, then auto-scrape the best URL
+
+            # Emit the search query so the user can see what we're looking for
+            if emitter:
+                emitter(f'◌ Searching the web for: {query[:70]}')
+
+            # Fetch raw results with full URL list for scraping
             raw_results, snippets, usage, signal = _run_google_search(
                 query, emitter=emitter, return_raw_results=True,
             )
+
+            # Auto-scrape: score URLs and read the best page
+            org_name = entity.get('org_name') or (active or {}).get('payer') or None
+            state = (active or {}).get('jurisdiction') or (active or {}).get('state') or 'FL'
+
             content, source_url, ok = score_and_scrape_top_result(
-                raw_results, entity, active,
+                raw_results,
+                org_name=org_name,
+                state=state,
+                max_attempts=3,
+                emitter=emitter,
             )
+
             if ok and content:
                 domain = _extract_domain(source_url) or (source_url or "")[:40]
-                sources = [{"url": source_url, "source_type": "web", "document_name": domain}]
-                return (content[:4000], sources, usage, RETRIEVAL_SIGNAL_GOOGLE_ONLY)
-            # Scrape failed — LLM-summarise snippets
+                scraped_sources = [{
+                    "url": source_url,
+                    "source_type": "web",
+                    "document_name": domain,
+                    "confidence_label": "process_confident",
+                }]
+                return (content, scraped_sources, usage, RETRIEVAL_SIGNAL_GOOGLE_ONLY)
+
+            # All scrapes failed — LLM-summarise snippets with disclaimer
             if snippets and "No search results" not in snippets:
                 _emit(emitter, "Summarizing search results...")
                 try:
@@ -686,7 +841,11 @@ def _answer_tool_impl(
                     )
                     raw_ans, llm_usage = asyncio.run(provider.generate_with_usage(prompt))
                     answer = (raw_ans or "").strip()
-                    disclaimer = "\n\n[Note: Based on search result summaries. Verify against source pages.]"
+                    disclaimer = (
+                        "\n\n[Note: Full page content could not be retrieved. "
+                        "These are search result summaries only — "
+                        "verify details directly with the payer.]"
+                    )
                     return (
                         answer + disclaimer,
                         [{"document_name": "Web search", "source_type": "external"}],
@@ -696,12 +855,12 @@ def _answer_tool_impl(
                 except Exception as e:
                     logger.warning("LLM summarization of search snippets failed: %s", e)
                     return (
-                        snippets + "\n\n[Note: These are search result summaries.]",
+                        snippets + "\n\n[Note: These are search result summaries only — verify directly with the payer.]",
                         [{"document_name": "Web search", "source_type": "external"}],
                         None,
                         RETRIEVAL_SIGNAL_GOOGLE_ONLY,
                     )
-            return (snippets or "No results found.", [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
+            return (snippets or "No relevant information found on the web for this query.", [], usage, RETRIEVAL_SIGNAL_NO_SOURCES)
 
         if hint in ("npi_lookup", "search_org_names"):
             # Entity from question ONLY — active payer is never the org being looked up

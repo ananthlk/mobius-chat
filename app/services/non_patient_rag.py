@@ -170,8 +170,16 @@ def answer_non_patient(
         _emit(emitter, "I don’t have access to our materials right now; I’ll answer from what I know.")
         logger.info("RAG: database_url not set; skipping RAG")
 
-    # Doc assembly: only when not using RAG API (API returns assembled docs)
-    if chunks and not rag_api_url:
+    # Doc assembly: RAG API returns chunks that are already assembled (have confidence_label).
+    # Inline BM25 fallback chunks lack confidence_label and need assembly to:
+    #   (a) apply blend selection (n_hierarchical paragraphs + n_factual sentences)
+    #   (b) assign confidence labels
+    #   (c) optionally apply Google fallback
+    # Detect inline BM25 chunks by absence of confidence_label on any returned chunk.
+    _chunks_from_api = bool(
+        rag_api_url and chunks and any(c.get("confidence_label") for c in chunks[:5])
+    )
+    if chunks and not _chunks_from_api:
         try:
             from app.services.doc_assembly import assemble_docs
             chunks, retrieval_signal = assemble_docs(

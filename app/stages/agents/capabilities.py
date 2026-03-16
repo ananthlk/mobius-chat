@@ -56,7 +56,7 @@ def available_capabilities_json() -> dict[str, Any]:
     """Build structured available_capabilities for Mobius Planner input (JSON)."""
     return {
         "rag_scopes": ["payer_manuals", "state_contracts", "internal_docs"],
-        "tools": ["google_search", "web_scrape", "search_org_names", "healthcare_query", "npi_lookup", "roster_report"],
+        "tools": ["google_search", "web_scrape", "org_npi_lookup", "search_org_names", "healthcare_query", "npi_lookup", "roster_report"],
         "web_allowed": True,
         "reasoning_allowed": True,
         "routing_to_tool": [
