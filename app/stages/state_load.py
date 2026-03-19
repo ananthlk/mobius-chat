@@ -40,9 +40,17 @@ def run_state_load(
     )
     if delta:
         thread_state.apply_delta(delta)
-        save_state_full(ctx.thread_id, thread_state.to_dict())
+        to_save = thread_state.to_dict()
+        for key in ("active_skill", "last_failed_query", "active_context"):
+            if key in raw and raw[key] is not None:
+                to_save[key] = raw[key]
+        save_state_full(ctx.thread_id, to_save)
 
     merged = thread_state.to_dict()
+    # Restore conversational continuity / ReAct fields not in ThreadState model (saved as full JSON)
+    for key in ("active_skill", "last_failed_query", "active_context"):
+        if key in raw and raw[key] is not None:
+            merged[key] = raw[key]
     ctx.merged_state = merged
     # Carry report_run_id from previous turn so "ask about this report" can use it
     ctx.report_run_id = (merged.get("active") or {}).get("report_run_id")
@@ -53,8 +61,15 @@ def run_state_load(
     # Improvements 3 & 5: on STANDALONE, evict slots and result cache so stale context doesn't bleed
     if route == "STANDALONE" and (thread_state.open_slots or thread_state.resolved_slots):
         thread_state.clear_slots()
-        save_state_full(ctx.thread_id, thread_state.to_dict())
+        to_save = thread_state.to_dict()
+        for key in ("active_skill", "last_failed_query", "active_context"):
+            if key in merged and merged.get(key) is not None:
+                to_save[key] = merged[key]
+        save_state_full(ctx.thread_id, to_save)
         merged = thread_state.to_dict()
+        for key in ("active_skill", "last_failed_query", "active_context"):
+            if key in raw and raw[key] is not None:
+                merged[key] = raw[key]
         ctx.merged_state = merged
     if route == "STANDALONE":
         clear_tool_results(ctx.thread_id)

@@ -17,6 +17,7 @@ from app.services.tool_agent import (
     _parse_search_result_urls,
     TOOL_GOOGLE_SEARCH,
     TOOL_HEALTHCARE_QUERY,
+    TOOL_ORG_NPI_LOOKUP,
     TOOL_SEARCH_ORG_NAMES,
     TOOL_SEARCH_ORG_BY_ADDRESS,
     TOOL_WEB_SCRAPE_REVIEW,
@@ -158,34 +159,37 @@ class TestScoreAndScrape:
             {"title": "Sunshine Health Provider Enrollment", "url": "https://www.sunshinehealth.com/providers/enroll", "snippet": ""},
             {"title": "Reddit", "url": "https://www.reddit.com/sunshine", "snippet": ""},
         ]
-        entity = {"org_name": "Sunshine Health"}
-        active = {"jurisdiction": "Florida"}
-
-        def fake_scrape(url):
-            if "sunshinehealth" in url:
-                return (_SCRAPE_PROVIDER_CONTENT, True)
-            return ("", False)
-
-        content, source_url, ok = score_and_scrape_top_result(results, entity, active, scrape_fn=fake_scrape)
+        # New v1.2 signature: org_name / state (not entity / active dicts)
+        with patch("app.services.tool_agent._scrape_url_simple") as mock_scrape:
+            def fake_scrape(url):
+                if "sunshinehealth" in url:
+                    return (_SCRAPE_PROVIDER_CONTENT, True)
+                return ("", False)
+            mock_scrape.side_effect = fake_scrape
+            content, source_url, ok = score_and_scrape_top_result(
+                results, org_name="Sunshine Health", state="FL"
+            )
         assert ok is True
         assert "sunshinehealth" in source_url
         assert "Provider Enrollment" in content
 
     def test_skips_login_wall(self):
-        """Class C: login wall detected, falls back to next URL."""
+        """Class C: login wall content → _scrape_url_simple returns ('', False), fallback to next URL."""
         results = [
             {"title": "Login Required", "url": "https://portal.sunshinehealth.com/login", "snippet": ""},
             {"title": "Public page", "url": "https://www.sunshinehealth.com/providers", "snippet": ""},
         ]
-        entity = {"org_name": "Sunshine Health"}
-        active = {}
-
-        def fake_scrape(url):
-            if "login" in url:
-                return ("Please sign in to access this content.", True)
-            return (_SCRAPE_PROVIDER_CONTENT, True)
-
-        content, source_url, ok = score_and_scrape_top_result(results, entity, active, scrape_fn=fake_scrape)
+        # In v1.2, login wall detection happens inside _scrape_direct / _scrape_via_mcp.
+        # Simulate: login URL returns ('', False), public page returns content.
+        with patch("app.services.tool_agent._scrape_url_simple") as mock_scrape:
+            def fake_scrape(url):
+                if "login" in url:
+                    return ("", False)  # login wall rejected inside _scrape_direct
+                return (_SCRAPE_PROVIDER_CONTENT, True)
+            mock_scrape.side_effect = fake_scrape
+            content, source_url, ok = score_and_scrape_top_result(
+                results, org_name="Sunshine Health"
+            )
         assert ok is True
         assert "login" not in source_url
         assert "Provider Enrollment" in content
@@ -193,32 +197,25 @@ class TestScoreAndScrape:
     def test_all_scrapes_fail_returns_none(self):
         """Class C: all scrapes fail → returns (None, None, False) for snippet fallback."""
         results = [{"title": "Page", "url": "https://example.com", "snippet": ""}]
-        entity = {}
-        active = {}
-
-        def fake_scrape(url):
-            return ("", False)
-
-        content, source_url, ok = score_and_scrape_top_result(results, entity, active, scrape_fn=fake_scrape)
+        with patch("app.services.tool_agent._scrape_url_simple", return_value=("", False)):
+            content, source_url, ok = score_and_scrape_top_result(results)
         assert ok is False
         assert content is None
         assert source_url is None
 
     def test_skips_noise_domains(self):
-        """Noise domains (reddit, linkedin, etc.) are never scraped."""
+        """Noise domains (reddit, linkedin, etc.) are scored -1.0 and never scraped."""
         results = [
             {"title": "Reddit post", "url": "https://www.reddit.com/r/medicaid/123", "snippet": ""},
             {"title": "Real page", "url": "https://cms.gov/provider-enrollment", "snippet": ""},
         ]
-        entity = {}
-        active = {}
         scraped_urls: list = []
-
-        def tracking_scrape(url):
-            scraped_urls.append(url)
-            return (_SCRAPE_PROVIDER_CONTENT, True)
-
-        score_and_scrape_top_result(results, entity, active, scrape_fn=tracking_scrape)
+        with patch("app.services.tool_agent._scrape_url_simple") as mock_scrape:
+            def tracking_scrape(url):
+                scraped_urls.append(url)
+                return (_SCRAPE_PROVIDER_CONTENT, True)
+            mock_scrape.side_effect = tracking_scrape
+            score_and_scrape_top_result(results)
         assert not any("reddit.com" in u for u in scraped_urls)
 
 
@@ -233,7 +230,7 @@ class TestAnswerToolEntityIsolation:
 
     def test_npi_lookup_uses_question_entity_not_active_payer(self):
         """Class A+B: 'NPI for David Lawrence Center' with active payer Sunshine Health
-        must call search_org_names with 'David Lawrence Center', NOT 'Sunshine Health'."""
+        must call org_npi_lookup (or search_org_names) with 'David Lawrence Center', NOT 'Sunshine Health'."""
         with patch("app.services.tool_agent.call_mcp_tool") as mock_mcp:
             mock_mcp.return_value = ("Found 1 match: David Lawrence Center | NPI: 1234567890", True)
             answer_tool(
@@ -243,8 +240,12 @@ class TestAnswerToolEntityIsolation:
             )
         calls = mock_mcp.call_args_list
         assert len(calls) >= 1
-        org_search_call = next((c for c in calls if c[0][0] == TOOL_SEARCH_ORG_NAMES), None)
-        assert org_search_call is not None, "search_org_names was never called"
+        # Implementation may use org_npi_lookup or search_org_names
+        org_search_call = next(
+            (c for c in calls if c[0][0] in (TOOL_ORG_NPI_LOOKUP, TOOL_SEARCH_ORG_NAMES)),
+            None,
+        )
+        assert org_search_call is not None, "org_npi_lookup / search_org_names was never called"
         name_arg = org_search_call[0][1].get("name", "")
         assert "David Lawrence" in name_arg, f"Expected 'David Lawrence' in name arg, got: {name_arg!r}"
         assert "Sunshine" not in name_arg, f"Active payer leaked into entity lookup: {name_arg!r}"
@@ -260,7 +261,10 @@ class TestAnswerToolEntityIsolation:
                 active_context=united_active,
             )
         calls = mock_mcp.call_args_list
-        org_search_call = next((c for c in calls if c[0][0] == TOOL_SEARCH_ORG_NAMES), None)
+        org_search_call = next(
+            (c for c in calls if c[0][0] in (TOOL_ORG_NPI_LOOKUP, TOOL_SEARCH_ORG_NAMES)),
+            None,
+        )
         assert org_search_call is not None
         name_arg = org_search_call[0][1].get("name", "")
         assert "Aspire" in name_arg

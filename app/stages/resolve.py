@@ -149,6 +149,7 @@ def _answer_for_subquestion(
     skip_layer_4: bool = False,
     question_intent: str | None = None,
     active_context: dict | None = None,
+    active_skill_context: str | None = None,
 ) -> tuple[str, LLMUsageDict | None, list[dict], str, int]:
     """Answer one subquestion with fallback cascade.
     Returns (answer, usage, sources, retrieval_signal, layer_used).
@@ -250,7 +251,11 @@ def _answer_for_subquestion(
             return (_ask_user_text(text), None, [], RETRIEVAL_SIGNAL_NO_SOURCES, 5)
 
         emit_layer_attempt("reasoning", None, None, emitter)
-        answer, usage = answer_reasoning(text, emitter=emitter)
+        answer, usage = answer_reasoning(
+            text,
+            emitter=emitter,
+            context=active_skill_context if (active_skill_context or "").strip() else None,
+        )
         is_valid, _ = validate_tool_result("reasoning", None, answer, [], RETRIEVAL_SIGNAL_NO_SOURCES, text)
         if is_valid:
             emit("⚠ This answer is from general knowledge. Verify against payer documentation before acting.")
@@ -285,7 +290,7 @@ def run_resolve(
     emit_jurisdiction_context(active, reset_reason, emitter)
 
     if ctx.blueprint:
-        for line in format_execution_plan(ctx.plan, ctx.blueprint, user_message=ctx.message):
+        for line in format_execution_plan(ctx.plan, ctx.blueprint, user_message=ctx.effective_message or ctx.message):
             if emitter:
                 emitter(line)
 
@@ -294,6 +299,14 @@ def run_resolve(
     rag_filter_overrides = rag_filters_from_active((ctx.merged_state or {}).get("active")) or {}
     include_document_ids = [s["document_id"] for s in (ctx.last_turn_sources or []) if s.get("document_id")]
     blueprint = ctx.blueprint
+    # When user is asking about last skill output, pass context so reasoning answers from it
+    active_skill_context = (
+        (ctx.context_pack or "").strip()
+        if getattr(ctx, "active_skill_reference", False)
+        else None
+    )
+    if not (active_skill_context or "").strip():
+        active_skill_context = None
     plan_usage = getattr(plan, "llm_usage", None)
     usages: list[dict] = [plan_usage] if plan_usage else []
     answers: list[str] = []
@@ -343,40 +356,69 @@ def run_resolve(
         question_intent = bp.get("question_intent") or getattr(sq, "question_intent", None)
         extra_out: dict = {} if agent == "tool" else {}
 
-        ans, usage, sources, retrieval_signal, layer_used = _answer_for_subquestion(
-            ctx.correlation_id,
-            sq.id,
-            agent,
-            sq.kind,
-            question_text,
-            retrieval_params=retrieval_params,
-            emitter=emitter,
-            rag_filter_overrides=rag_filter_overrides or None,
-            include_document_ids=include_document_ids or None,
-            on_rag_fail=on_rag_fail,
-            user_message=ctx.message if agent in ("tool", "RAG") else None,
-            extra_out=extra_out if agent == "tool" else None,
-            tool_hint=tool_hint,
-            skip_layer_4=skip_layer_4,
-            question_intent=question_intent,
-            active_context=active,
-        )
+        # Dedupe: if we already ran the credentialing report this turn (same plan, two subquestions), reuse first answer
+        reuse_roster_idx: int | None = None
+        if agent == "tool" and tool_hint == "roster_report" and getattr(ctx, "report_run_id", None):
+            for j in range(i):
+                if (blueprint[j] or {}).get("tool_hint") == "roster_report" and j < len(retrieval_signals) and retrieval_signals[j] == RETRIEVAL_SIGNAL_ROSTER_COMPLETE:
+                    reuse_roster_idx = j
+                    break
+        if reuse_roster_idx is not None:
+            ans = answers[reuse_roster_idx]
+            retrieval_signal = retrieval_signals[reuse_roster_idx]
+            sources = []  # already in all_sources from first run
+            usage = None
+            layer_used = 2
+            if agent == "tool":
+                extra_out["report_run_id"] = ctx.report_run_id
+                if getattr(ctx, "last_report_org", None):
+                    extra_out["last_report_org"] = ctx.last_report_org
+        else:
+            ans, usage, sources, retrieval_signal, layer_used = _answer_for_subquestion(
+                ctx.correlation_id,
+                sq.id,
+                agent,
+                sq.kind,
+                question_text,
+                retrieval_params=retrieval_params,
+                emitter=emitter,
+                rag_filter_overrides=rag_filter_overrides or None,
+                include_document_ids=include_document_ids or None,
+                on_rag_fail=on_rag_fail,
+                user_message=(ctx.effective_message or ctx.message) if agent in ("tool", "RAG") else None,
+                extra_out=extra_out if agent == "tool" else None,
+                tool_hint=tool_hint,
+                skip_layer_4=skip_layer_4,
+                question_intent=question_intent,
+                active_context=active,
+                active_skill_context=active_skill_context,
+            )
         if extra_out and extra_out.get("roster_step_outputs"):
             ctx.roster_step_outputs = extra_out["roster_step_outputs"]
         if extra_out:
             if extra_out.get("report_run_id"):
                 ctx.report_run_id = extra_out["report_run_id"]
-                # Persist so next message can "ask about this report"
-                if ctx.thread_id and (ctx.thread_id or "").strip():
-                    try:
-                        raw = get_state(ctx.thread_id)
-                        ts = ThreadState.from_dict(raw)
-                        ts.apply_delta({"active": {"report_run_id": extra_out["report_run_id"]}})
+            if extra_out.get("last_report_org"):
+                ctx.last_report_org = extra_out["last_report_org"]
+            # Persist so next message can "ask about this report" or pull up by org when report_run_id is missing
+            if ctx.thread_id and (ctx.thread_id or "").strip() and (extra_out.get("report_run_id") or extra_out.get("last_report_org")):
+                try:
+                    raw = get_state(ctx.thread_id)
+                    ts = ThreadState.from_dict(raw)
+                    delta = {}
+                    if extra_out.get("report_run_id"):
+                        delta["report_run_id"] = extra_out["report_run_id"]
+                    if extra_out.get("last_report_org"):
+                        delta["last_report_org"] = extra_out["last_report_org"]
+                    if delta:
+                        ts.apply_delta({"active": delta})
                         save_state_full(ctx.thread_id, ts.to_dict())
-                    except Exception as e:
-                        if __debug__:
-                            import logging
-                            logging.getLogger(__name__).debug("Could not persist report_run_id: %s", e)
+                        if emitter:
+                            emitter("Report stored. You can ask any question about it.")
+                except Exception as e:
+                    if __debug__:
+                        import logging
+                        logging.getLogger(__name__).debug("Could not persist report_run_id/last_report_org: %s", e)
             pdf_b64 = extra_out.get("roster_report_pdf_base64")
             if pdf_b64 and isinstance(pdf_b64, str) and len(pdf_b64) > 0:
                 ctx.roster_report_pdf_base64 = pdf_b64
@@ -416,3 +458,75 @@ def run_resolve(
     ctx.sources = all_sources
     ctx.usages = usages
     ctx.retrieval_signals = retrieval_signals
+
+    # Active skill context: store for follow-up questions (PML, section C, revenue, NPI list)
+    tool_hints = [
+        (ctx.blueprint[i].get("tool_hint") or "")
+        for i in range(len(ctx.blueprint or []))
+    ]
+    if "roster_report" in tool_hints:
+        from app.pipeline.message_resolver import extract_roster_skill_data
+
+        skill_data = extract_roster_skill_data(ctx)
+        # Use resolved org name so "Tell me more about the report for X" matches active_skill.org
+        report_org = getattr(ctx, "last_report_org", None) or ""
+        if not (report_org and report_org.strip()):
+            msg = (ctx.effective_message or ctx.message or "").strip()
+            for prefix in (
+                "credentialing report for ", "report for ", "medicaid npi report for ",
+                "create a credentialing report for ", "create credentialing report for ",
+            ):
+                if prefix in msg.lower():
+                    report_org = msg[msg.lower().find(prefix) + len(prefix) :].strip().rstrip("?.,;!")
+                    break
+            if not report_org and " for " in msg.lower() and "report" in msg.lower():
+                idx = msg.lower().rfind(" for ")
+                if idx >= 0:
+                    report_org = msg[idx + 5 :].strip().rstrip("?.,;!")
+        ctx.active_skill = {
+            "skill": "roster_report",
+            "org": (report_org or ctx.effective_message or ctx.message or "").strip() or "the organization",
+            "data": skill_data,
+            "turn": ctx.correlation_id,
+        }
+    elif "search_org_names" in tool_hints or "healthcare_query" in tool_hints:
+        ctx.active_skill = {
+            "skill": "npi_lookup",
+            "org": ctx.effective_message or ctx.message,
+            "data": {
+                "results": [
+                    {
+                        "name": s.get("document_name"),
+                        "npi": s.get("npi"),
+                        "match_type": s.get("confidence_label"),
+                    }
+                    for s in (ctx.sources or [])
+                ]
+            },
+            "turn": ctx.correlation_id,
+        }
+    else:
+        ctx.active_skill = None
+
+    # Conversational continuity: store failed query for next turn's message resolver
+    all_layer5 = (
+        all(
+            (ctx.answer_set.get(sq.id) or {}).get("layer_used") == 5
+            for sq in plan.subquestions
+        )
+        if plan and plan.subquestions
+        else False
+    )
+    honest_miss_signals = ("no_sources", "ask_user")
+    all_missed = any(
+        sig in (r or "")
+        for r in (ctx.retrieval_signals or [])
+        for sig in honest_miss_signals
+    )
+    if all_layer5 or all_missed:
+        ctx.failed_query = {
+            "question": ctx.effective_message or ctx.message,
+            "payer": (ctx.merged_state or {}).get("active", {}).get("payer"),
+            "retrieval_signals": list(ctx.retrieval_signals or []),
+            "layer_used": 5,
+        }

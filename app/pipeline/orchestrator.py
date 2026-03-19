@@ -43,6 +43,7 @@ from app.pipeline.stages import (
 logger = logging.getLogger(__name__)
 
 DEBUG_PLAN = os.environ.get("MOBIUS_DEBUG_PLAN", "").lower() in ("1", "true", "yes")
+USE_REACT = os.environ.get("MOBIUS_USE_REACT", "").lower() in ("1", "true", "yes")
 
 
 def _debug_plan_state(label: str, ctx: PipelineContext) -> None:
@@ -142,62 +143,118 @@ def run_pipeline(
         # Load master_objective into ctx so planner sees last_master_plan on follow-ups
         ctx.master_objective = (ctx.merged_state or {}).get("master_objective")
 
-        trace_entered(f"pipeline.stage.{CLASSIFY}", correlation_id=correlation_id[:8])
-        run_classify(ctx, emitter=on_thinking)
-        trace_entered(f"pipeline.stage.{PLAN}", correlation_id=correlation_id[:8])
-        _debug_plan_state("PRE-PARSER", ctx)
-        run_plan(ctx, emitter=on_thinking)
+        # Conversational continuity: resolve pronoun/implicit references before planning
+        from app.pipeline.message_resolver import (
+            resolve_pronouns,
+            detect_skill_reference,
+            build_skill_context_summary,
+        )
 
-        store_plan(correlation_id, ctx.plan, thinking_log=ctx.thinking_chunks)
+        last_failed = (ctx.merged_state or {}).get("last_failed_query") or {}
+        prior_failed_question = last_failed.get("question") if isinstance(last_failed, dict) else None
+        resolved_message, was_pronoun_enriched = resolve_pronouns(
+            ctx.message,
+            ctx.last_turns,
+            prior_failed_question=prior_failed_question,
+        )
+        if was_pronoun_enriched:
+            ctx.effective_message = resolved_message
+            if on_thinking:
+                on_thinking(f"↺ Understood: {(resolved_message or '')[:100]}")
+        else:
+            ctx.effective_message = ctx.message
 
-        # Relentless continuity: create/update master objective from plan (even without thread_id for standalone runs)
-        if ctx.plan:
-            is_new = ctx.classification == "new_question"
-            obj = create_or_update_objective(ctx.plan, ctx.merged_state or {}, is_new_question=is_new)
-            ctx.master_objective = obj.to_dict()
-            ctx.merged_state = {**(ctx.merged_state or {}), "master_objective": ctx.master_objective}
-        _debug_plan_state("POST-PARSER", ctx)
+        # Active skill context: inject summary when message refers to it (no re-run)
+        active_skill = (ctx.merged_state or {}).get("active_skill")
+        is_skill_ref, skill_name = detect_skill_reference(ctx.effective_message, active_skill)
+        if is_skill_ref and active_skill:
+            skill_summary = build_skill_context_summary(active_skill)
+            ctx.context_pack = (skill_summary + "\n\n" + (ctx.context_pack or "")).strip()
+            if on_thinking and (active_skill.get("skill") or "").strip().lower() == "roster_report":
+                on_thinking("Your report is stored. You can ask any question — answering from it.")
+        ctx.active_skill_reference = bool(is_skill_ref)
+        ctx.active_skill_name = skill_name
 
-        trace_entered(f"pipeline.stage.{CLARIFY}", correlation_id=correlation_id[:8])
-        try:
-            resolvable = run_clarify(ctx, emitter=on_thinking)
-        except Exception as e:
-            logger.exception("Clarify stage error: %s", e)
-            _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e)
-            return
-        if not resolvable:
-            _publish_clarification_or_refinement(ctx, t0)
-            return
+        if USE_REACT:
+            # ReAct path: Reason → Act → Observe; run_react sets ctx.plan, ctx.answers, ctx.answer_set, etc.
+            trace_entered("pipeline.stage.react", correlation_id=correlation_id[:8])
+            try:
+                from app.pipeline.react_loop import run_react
+                run_react(ctx, emitter=on_thinking)
+            except Exception as e:
+                logger.exception("ReAct stage error: %s", e)
+                _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e)
+                return
+            updates = {}
+            if getattr(ctx, "failed_query", None):
+                updates["last_failed_query"] = ctx.failed_query
+            if getattr(ctx, "active_context", None):
+                updates["active_context"] = ctx.active_context
+            if updates:
+                ctx.merged_state = {**(ctx.merged_state or {}), **updates}
+            _debug_plan_state("PRE-INTEGRATOR", ctx)
+        else:
+            # Legacy path: classify → plan → clarify → resolve
+            trace_entered(f"pipeline.stage.{CLASSIFY}", correlation_id=correlation_id[:8])
+            run_classify(ctx, emitter=on_thinking)
+            trace_entered(f"pipeline.stage.{PLAN}", correlation_id=correlation_id[:8])
+            _debug_plan_state("PRE-PARSER", ctx)
+            run_plan(ctx, emitter=on_thinking)
 
-        # Pre-fill answer_set before resolve so we skip retrieval for already-answered subquestions
-        if ctx.classification in ("slot_fill", "jurisdiction_change"):
-            ctx.answers = ["[No answer yet]"] * len(ctx.plan.subquestions or [])
-            update_answer_set_from_user_context(ctx)
-        prefill_answer_set_from_master_objective(ctx)
+            store_plan(correlation_id, ctx.plan, thinking_log=ctx.thinking_chunks)
 
-        trace_entered(f"pipeline.stage.{RESOLVE}", correlation_id=correlation_id[:8])
-        try:
-            run_resolve(ctx, emitter=on_thinking)
-        except Exception as e:
-            logger.exception("Resolve stage error: %s", e)
-            _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e)
-            return
-
-        # Relentless continuity: update master objective from answers
-        obj_raw = ctx.master_objective
-        obj = MasterObjective.from_dict(obj_raw) if obj_raw else None
-        if obj and ctx.plan and ctx.answers:
-            updated = update_objective_from_answers(
-                obj, ctx.plan, ctx.answers, ctx.retrieval_signals or []
-            )
-            if updated:
-                ctx.master_objective = updated.to_dict()
+            if ctx.plan:
+                is_new = ctx.classification == "new_question"
+                obj = create_or_update_objective(ctx.plan, ctx.merged_state or {}, is_new_question=is_new)
+                ctx.master_objective = obj.to_dict()
                 ctx.merged_state = {**(ctx.merged_state or {}), "master_objective": ctx.master_objective}
+            _debug_plan_state("POST-PARSER", ctx)
 
-        # User context: run again if not slot_fill (e.g. new_question with user providing info mid-stream)
-        if ctx.classification not in ("slot_fill", "jurisdiction_change"):
-            update_answer_set_from_user_context(ctx)
-        _debug_plan_state("PRE-INTEGRATOR", ctx)
+            trace_entered(f"pipeline.stage.{CLARIFY}", correlation_id=correlation_id[:8])
+            try:
+                resolvable = run_clarify(ctx, emitter=on_thinking)
+            except Exception as e:
+                logger.exception("Clarify stage error: %s", e)
+                _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e)
+                return
+            if not resolvable:
+                _publish_clarification_or_refinement(ctx, t0)
+                return
+
+            if ctx.classification in ("slot_fill", "jurisdiction_change"):
+                ctx.answers = ["[No answer yet]"] * len(ctx.plan.subquestions or [])
+                update_answer_set_from_user_context(ctx)
+            prefill_answer_set_from_master_objective(ctx)
+
+            trace_entered(f"pipeline.stage.{RESOLVE}", correlation_id=correlation_id[:8])
+            try:
+                run_resolve(ctx, emitter=on_thinking)
+            except Exception as e:
+                logger.exception("Resolve stage error: %s", e)
+                _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e)
+                return
+
+            updates = {}
+            if getattr(ctx, "failed_query", None):
+                updates["last_failed_query"] = ctx.failed_query
+            if getattr(ctx, "active_skill", None):
+                updates["active_skill"] = ctx.active_skill
+            if updates:
+                ctx.merged_state = {**(ctx.merged_state or {}), **updates}
+
+            obj_raw = ctx.master_objective
+            obj = MasterObjective.from_dict(obj_raw) if obj_raw else None
+            if obj and ctx.plan and ctx.answers:
+                updated = update_objective_from_answers(
+                    obj, ctx.plan, ctx.answers, ctx.retrieval_signals or []
+                )
+                if updated:
+                    ctx.master_objective = updated.to_dict()
+                    ctx.merged_state = {**(ctx.merged_state or {}), "master_objective": ctx.master_objective}
+
+            if ctx.classification not in ("slot_fill", "jurisdiction_change"):
+                update_answer_set_from_user_context(ctx)
+            _debug_plan_state("PRE-INTEGRATOR", ctx)
 
         trace_entered(f"pipeline.stage.{INTEGRATE}", correlation_id=correlation_id[:8])
         try:

@@ -89,6 +89,9 @@ def run_integrate(
     default_source_confidence = _default_source_confidence(
         retrieval_signals, all_sources, answer_set=ctx.answer_set
     )
+    # Answer from active skill output (report/NPI lookup) → approved_informational
+    if getattr(ctx, "active_skill_reference", False):
+        default_source_confidence = BADGE_APPROVED_INFORMATIONAL
     retrieval_metadata = {
         "default_source_confidence": default_source_confidence,
         "instruction": "We expect you to use the highest-rated document(s). If you override, set source_confidence_override and explain in confidence_note.",
@@ -390,6 +393,9 @@ def run_integrate(
     roster_step_outputs = getattr(ctx, "roster_step_outputs", None)
     if roster_step_outputs:
         payload["roster_step_outputs"] = roster_step_outputs
+    report_run_id = getattr(ctx, "report_run_id", None)
+    if report_run_id:
+        payload["report_run_id"] = report_run_id
     roster_report_pdf = getattr(ctx, "roster_report_pdf_base64", None)
     roster_report_final_md = getattr(ctx, "roster_report_final_md", None)
     if roster_report_pdf and isinstance(roster_report_pdf, str) and len(roster_report_pdf) > 0:
