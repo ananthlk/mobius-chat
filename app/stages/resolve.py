@@ -16,7 +16,9 @@ from app.services.doc_assembly import (
     RETRIEVAL_SIGNAL_NO_SOURCES,
     RETRIEVAL_SIGNAL_ROSTER_COMPLETE,
 )
+from app.state.model import ThreadState
 from app.state.objective_eval import evaluate_sub_objective_status
+from app.storage.threads import get_state, save_state_full
 from app.services.non_patient_rag import answer_non_patient
 from app.services.reasoning_agent import answer_reasoning
 from app.services.tool_agent import answer_tool
@@ -362,6 +364,19 @@ def run_resolve(
         if extra_out and extra_out.get("roster_step_outputs"):
             ctx.roster_step_outputs = extra_out["roster_step_outputs"]
         if extra_out:
+            if extra_out.get("report_run_id"):
+                ctx.report_run_id = extra_out["report_run_id"]
+                # Persist so next message can "ask about this report"
+                if ctx.thread_id and (ctx.thread_id or "").strip():
+                    try:
+                        raw = get_state(ctx.thread_id)
+                        ts = ThreadState.from_dict(raw)
+                        ts.apply_delta({"active": {"report_run_id": extra_out["report_run_id"]}})
+                        save_state_full(ctx.thread_id, ts.to_dict())
+                    except Exception as e:
+                        if __debug__:
+                            import logging
+                            logging.getLogger(__name__).debug("Could not persist report_run_id: %s", e)
             pdf_b64 = extra_out.get("roster_report_pdf_base64")
             if pdf_b64 and isinstance(pdf_b64, str) and len(pdf_b64) > 0:
                 ctx.roster_report_pdf_base64 = pdf_b64

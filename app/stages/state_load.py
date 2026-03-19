@@ -44,6 +44,8 @@ def run_state_load(
 
     merged = thread_state.to_dict()
     ctx.merged_state = merged
+    # Carry report_run_id from previous turn so "ask about this report" can use it
+    ctx.report_run_id = (merged.get("active") or {}).get("report_run_id")
     ctx.last_turns = get_last_turn_messages(ctx.thread_id)
     ctx.last_turn_sources = get_last_turn_sources(ctx.thread_id)
     route = route_context(ctx.message, merged, ctx.last_turns, reset_reason=reset_reason)

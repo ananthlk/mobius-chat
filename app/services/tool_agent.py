@@ -5,8 +5,11 @@ tools to mobius-skills-mcp, they are discovered via list_tools—no code changes
 """
 import asyncio
 import logging
+import os
 import re
+import subprocess
 import urllib.parse
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -17,7 +20,7 @@ from app.services.doc_assembly import (
     RETRIEVAL_SIGNAL_ROSTER_COMPLETE,
 )
 from app.services.mcp_manager import call_mcp_tool
-from app.services.roster_credentialing_orchestrator import run_orchestrator
+from app.services.roster_credentialing_orchestrator import run_orchestrator, _provider_roster_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -678,6 +681,93 @@ def _run_google_search(
         return (result_text, [{"document_name": "Web search", "source_type": "external"}], None, RETRIEVAL_SIGNAL_GOOGLE_ONLY)
 
 
+def _clean_org_name_for_credentialing(name: str) -> str:
+    """Strip jurisdiction/payer/context phrases from org name so search_org_names matches correctly.
+
+    E.g. 'Aspire Health in the context of sunshine jurisdiction' -> 'Aspire Health'.
+    Prevents 0 locations when user mentions jurisdiction in the same sentence.
+    """
+    s = (name or "").strip()
+    # Trailing phrases: ", in the context of ...", " for Sunshine", " (Florida)", " in Florida"
+    s = re.sub(r",?\s+in\s+the\s+context\s+of\s+[^.]*$", "", s, flags=re.I).strip()
+    s = re.sub(r"\s+for\s+(sunshine|sunshine\s+health|united|molina|aetna|humana|cigna|anthem)(\s+.*)?$", "", s, flags=re.I).strip()
+    s = re.sub(r"\s*\(?(florida|fl|texas|tx|medicaid|medicare)\)?\s*$", "", s, flags=re.I).strip()
+    s = re.sub(r"\s+in\s+(florida|fl|texas|tx)\s*$", "", s, flags=re.I).strip()
+    # Leading: "sunshine jurisdiction " or "for Florida "
+    s = re.sub(r"^(sunshine\s+(health\s+)?)?(jurisdiction\s*[,:]?\s*)?", "", s, flags=re.I).strip()
+    s = re.sub(r"^for\s+(florida|fl)\s+", "", s, flags=re.I).strip()
+    return s.strip()
+
+
+def _ensure_bq_env_for_daily_load() -> None:
+    """If BQ_* are not set, load from mobius-chat/.env and mobius-dbt/.env so the daily load subprocess can run dbt."""
+    need = ("BQ_PROJECT", "BQ_LANDING_MEDICAID_DATASET", "BQ_MARTS_MEDICAID_DATASET")
+    if all(os.environ.get(k) for k in need):
+        return
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    this_dir = Path(__file__).resolve().parent
+    chat_root = this_dir.parent.parent  # mobius-chat
+    dbt_root = chat_root.parent / "mobius-dbt"
+    for env_path in (chat_root / ".env", dbt_root / ".env"):
+        if env_path.is_file():
+            load_dotenv(env_path, override=False)
+            if all(os.environ.get(k) for k in need):
+                return
+    # Fallback: load from .env.example so BQ_* are set when user has them only in example
+    for env_path in (chat_root / ".env.example", dbt_root / ".env.example"):
+        if env_path.is_file():
+            load_dotenv(env_path, override=False)
+    return
+
+
+def _run_fl_medicaid_daily_load(emitter) -> None:
+    """Run FL Medicaid daily load (scrape PML/PPL, upload, clean, dbt). Forwards [EMIT] lines to emitter.
+
+    Env: MOBIUS_DBT_DIR — path to mobius-dbt repo (default: sibling ../mobius-dbt from this file).
+    BQ_PROJECT, BQ_LANDING_MEDICAID_DATASET, BQ_MARTS_MEDICAID_DATASET — loaded from .env if not set.
+    Script: scripts/run_fl_medicaid_daily_load.sh (no --skip-download so scrape runs).
+    """
+    try:
+        _ensure_bq_env_for_daily_load()
+        # Resolve mobius-dbt root: env or sibling of mobius-chat
+        mobius_dbt_dir = (os.environ.get("MOBIUS_DBT_DIR") or "").strip()
+        if not mobius_dbt_dir:
+            # This file is mobius-chat/app/services/tool_agent.py -> repo is mobius-chat -> sibling mobius-dbt
+            this_dir = Path(__file__).resolve().parent
+            mobius_chat_root = this_dir.parent.parent  # app -> mobius-chat
+            mobius_dbt_dir = str(mobius_chat_root.parent / "mobius-dbt")
+        script_path = Path(mobius_dbt_dir) / "scripts" / "run_fl_medicaid_daily_load.sh"
+        if not script_path.is_file():
+            _emit(emitter, "Reload skipped (MOBIUS_DBT_DIR not set or run_fl_medicaid_daily_load.sh not found).")
+            return
+        _emit(emitter, "Running Florida Medicaid data reload (scrape → upload → clean → dbt)…")
+        proc = subprocess.Popen(
+            ["bash", str(script_path)],
+            cwd=mobius_dbt_dir,
+            env={**os.environ},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line = (line or "").strip()
+            if line.startswith("[EMIT]"):
+                _emit(emitter, line[6:].strip() or line.strip())
+        proc.wait()
+        if proc.returncode != 0:
+            _emit(emitter, "Reload finished with errors (check logs).")
+        else:
+            _emit(emitter, "Reload complete; data ready for report.")
+    except Exception as e:
+        logger.warning("FL Medicaid daily load failed: %s", e, exc_info=True)
+        _emit(emitter, f"Reload failed: {e}. Proceeding with existing data.")
+
+
 def _clean_org_name_for_search(name: str) -> str:
     """Strip any residual NPI-lookup noise from an org name before sending to NPPES search.
     Handles cases where entity extraction returned partially-cleaned text.
@@ -755,6 +845,44 @@ def _run_npi_by_address(
     )
 
 
+def _ask_credentialing_report(
+    report_run_id: str,
+    question: str,
+    emitter=None,
+) -> tuple[str, list[dict], dict[str, Any] | None, str]:
+    """Call provider-roster-credentialing POST /report-runs/{id}/ask. Returns (answer, sources, usage, signal)."""
+    base = _provider_roster_base_url()
+    if not base:
+        return (
+            "Report Q&A is not configured. Set CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL.",
+            [],
+            None,
+            RETRIEVAL_SIGNAL_NO_SOURCES,
+        )
+    url = f"{base.rstrip('/')}/report-runs/{report_run_id}/ask"
+    _emit(emitter, "Asking the report…")
+    try:
+        with httpx.Client(timeout=60.0) as client:
+            resp = client.post(url, json={"question": (question or "").strip()})
+            resp.raise_for_status()
+            data = resp.json()
+            answer = (data.get("answer") or "").strip()
+            if not answer:
+                answer = "No answer returned from the report."
+            sources = [{"index": 1, "document_name": "Credentialing report", "text": answer[:300], "source_type": "external"}]
+            return (answer, sources, None, RETRIEVAL_SIGNAL_ROSTER_COMPLETE)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return ("That report run was not found. It may have expired or been created without persistence.", [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
+        if e.response.status_code == 503:
+            return ("Report persistence is disabled on the credentialing service, so report Q&A is unavailable.", [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
+        logger.warning("Report ask failed: %s", e, exc_info=True)
+        return (f"I couldn't ask the report: {e!s}. Please try again.", [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
+    except Exception as e:
+        logger.warning("Report ask failed: %s", e, exc_info=True)
+        return (f"I ran into an issue asking the report. {e!s}. Please try again.", [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
+
+
 def _answer_tool_impl(
     question: str,
     emitter=None,
@@ -773,6 +901,20 @@ def _answer_tool_impl(
     exclusively from question text via extract_entity_from_question().
     """
     from app.stages.agents.capabilities import get_capability_answer
+
+    # ── Ask about existing credentialing report (report_run_id from previous turn) ──
+    report_run_id = (active_context or {}).get("report_run_id") if isinstance(active_context, dict) else None
+    if report_run_id and isinstance(report_run_id, str) and (report_run_id or "").strip():
+        roster_lower = (user_message or question or "").strip().lower()
+        roster_triggers = (
+            "provider roster for", "credentialing report for", "roster report for",
+            "medicaid roster for", "roster for", "create a medicaid npi report for",
+            "create medicaid npi report for", "create a credentialing report for",
+            "create credentialing report for", "medicaid npi report for",
+        )
+        wants_new_report = any(t in roster_lower for t in roster_triggers)
+        if not wants_new_report:
+            return _ask_credentialing_report(report_run_id.strip(), (question or user_message or "").strip(), emitter=emitter)
 
     # ── Intent-based dispatch (from planner blueprint) ────────────────────
     # tool_hint_override bypasses keyword matching entirely. Uses entity extraction
@@ -968,6 +1110,30 @@ def _answer_tool_impl(
                 org_name = roster_check_text[roster_lower.find(t) + len(t) :].strip()
                 break
         if org_name and len(org_name) > 1:
+            org_name = _clean_org_name_for_credentialing(org_name)
+            if not org_name or len(org_name) < 2:
+                return (
+                    "I couldn't extract a clear organization name from your message. "
+                    "Try: 'Create a credentialing report for Aspire Health' or 'Medicaid NPI report for David Lawrence Center'.",
+                    [],
+                    None,
+                    RETRIEVAL_SIGNAL_NO_SOURCES,
+                )
+            # "Reload and create credentialing report for X" / "reload data and run ..." → force FL Medicaid daily load first
+            reload_triggers = (
+                "reload and",
+                "reload data",
+                "reload then",
+                "force reload",
+                "refresh data",
+                "reload and create",
+                "reload, then",
+                "reload; then",
+                "reload then create",
+            )
+            force_reload = any(r in roster_lower for r in reload_triggers)
+            if force_reload:
+                _run_fl_medicaid_daily_load(emitter)
             _emit(emitter, f"Running the Medicaid NPI report for {org_name}…")
             try:
                 result_text, ostate = run_orchestrator(org_name, emitter=emitter)
@@ -988,6 +1154,7 @@ def _answer_tool_impl(
                     "step_7": 9,
                     "opportunity_sizing": 10,
                     "build_report": 11,
+                    "npi_profile": 12,
                 }
                 extra_out["roster_step_outputs"] = [
                     {
@@ -996,9 +1163,13 @@ def _answer_tool_impl(
                         "label": s.label,
                         "csv_content": s.csv_content,
                         "row_count": s.row_count,
+                        "markdown_content": getattr(s, "markdown_content", "") or "",
+                        "json_content": getattr(s, "json_content", "") or "",
                     }
                     for s in (ostate.step_outputs or [])
                 ]
+                if getattr(ostate, "report_run_id", None):
+                    extra_out["report_run_id"] = ostate.report_run_id
                 if getattr(ostate, "report_pdf_base64", None):
                     extra_out["roster_report_pdf_base64"] = ostate.report_pdf_base64
                 if getattr(ostate, "report_final_md", None):
