@@ -12,7 +12,7 @@ from typing import Literal
 
 AgentType = Literal["RAG", "tool"]
 
-# Tool agent: web search + scrape + capability questions
+# Tool agent: web search + scrape + capability questions + roster/credentialing report
 TRIGGERS_WEB: tuple[str, ...] = (
     "search the web",
     "search google",
@@ -28,6 +28,37 @@ TRIGGERS_WEB: tuple[str, ...] = (
     "what can you do",
     "what can you help with",
     "your capabilities",
+    # Roster / credentialing (orchestrator + report Q&A)
+    "provider roster",
+    "credentialing report",
+    "roster report",
+    "medicaid roster",
+    "medicaid npi report",
+    "latest report",
+    "report for ",
+    "create a medicaid npi report",
+    "create medicaid npi report",
+    "create a credentialing report",
+    "create credentialing report",
+    "i want to create a medicaid npi report",
+    "i want to create a credentialing report",
+    # Org / NPI lookup
+    "npi of ",
+    "npis for ",
+    "npi for ",
+    "what is the npi of",
+    "what are the npis for",
+    "find npi for",
+    "find the npi for",
+    "look up npi for",
+    # Healthcare (ICD-10, NPI number, coverage)
+    "icd-10",
+    "icd10",
+    "npi lookup",
+    "npi number ",
+    "medicare coverage",
+    "medicaid coverage",
+    "diagnosis code",
 )
 
 # RAG: our policy materials

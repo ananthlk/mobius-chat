@@ -103,7 +103,6 @@ class RedisQueue(QueueAdapter):
 
     def consume_requests(self, callback: Callable[[str, dict], None]) -> None:
         """Read from Redis list (BRPOP). Blocks until a request is available."""
-        r = self._get_client()
         logger.info(
             "Worker listening for chat requests (key=%s, redis_host=%s)",
             self._request_key,
@@ -111,6 +110,7 @@ class RedisQueue(QueueAdapter):
         )
         while True:
             try:
+                r = self._get_client()
                 # Redis list: BRPOP = block until item available (FIFO with LPUSH)
                 result = r.brpop(self._request_key, timeout=5)
                 if result is None:
@@ -119,9 +119,21 @@ class RedisQueue(QueueAdapter):
                 item = json.loads(raw)
                 cid = item.pop("correlation_id", "")
                 logger.info("Received chat request correlation_id=%s", cid[:8] if cid else "")
-                callback(cid, item)
+                try:
+                    callback(cid, item)
+                except Exception as e:
+                    logger.exception("Pipeline error for correlation_id=%s: %s", cid[:8] if cid else cid, e)
             except Exception as e:
                 logger.exception("Request consumer error: %s", e)
+                # On connection/read errors, drop client so next iteration reconnects
+                try:
+                    import redis
+                    if isinstance(e, (redis.ConnectionError, redis.TimeoutError, ConnectionError, OSError)):
+                        self._client = None
+                        logger.warning("Dropping Redis client; will reconnect on next request.")
+                except Exception:
+                    pass
+                time.sleep(2)
 
     def publish_response(self, correlation_id: str, payload: dict[str, Any]) -> None:
         key = self._response_prefix + correlation_id
@@ -136,3 +148,48 @@ class RedisQueue(QueueAdapter):
         if raw is None:
             return None
         return json.loads(raw)
+
+    def patch_response_merge(self, correlation_id: str, updates: dict[str, Any]) -> None:
+        """Merge fields into stored response (extends TTL)."""
+        key = self._response_prefix + correlation_id
+        r = self._get_client()
+        raw = r.get(key)
+        if not raw:
+            return
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return
+        for k, v in updates.items():
+            if k == "thinking_log" and isinstance(v, list) and isinstance(payload.get("thinking_log"), list):
+                merged = list(payload["thinking_log"])
+                for line in v:
+                    if line and line not in merged:
+                        merged.append(line)
+                payload["thinking_log"] = merged
+            elif k == "usage_breakdown_enrich" and isinstance(v, dict):
+                # Before append: merge per-call QA scores from llm_calls into existing rows.
+                existing = payload.get("usage_breakdown")
+                if not isinstance(existing, list):
+                    existing = []
+                for row in existing:
+                    if not isinstance(row, dict):
+                        continue
+                    rid = str(row.get("llm_call_id") or "").strip()
+                    if not rid:
+                        continue
+                    patch = v.get(rid)
+                    if not isinstance(patch, dict):
+                        continue
+                    for pk, pv in patch.items():
+                        if pv is not None:
+                            row[pk] = pv
+                payload["usage_breakdown"] = existing
+            elif k == "usage_breakdown_append" and isinstance(v, list):
+                existing = payload.get("usage_breakdown")
+                if not isinstance(existing, list):
+                    existing = []
+                payload["usage_breakdown"] = existing + [x for x in v if isinstance(x, dict)]
+            else:
+                payload[k] = v
+        r.set(key, json.dumps(payload), ex=self._response_ttl)

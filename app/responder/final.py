@@ -1,9 +1,15 @@
 """Final responder: turn plan + answers into one chat-friendly message via LLM (or fallback). Can stream the draft via message_chunk_callback."""
-import asyncio
+
 import json
 import logging
 from collections.abc import Callable
 
+from app.communication.json_display_sanitize import (
+    DEFAULT_BLEED_FALLBACK,
+    build_minimal_answer_card_preserving_metadata,
+    display_text_for_parsed_answer_card,
+    extract_user_visible_text_from_integrator_raw,
+)
 from app.planner.schemas import Plan
 from app.services.usage import LLMUsageDict
 from app.trace_log import trace_entered
@@ -21,7 +27,8 @@ def _emit(emitter: Callable[[str], None] | None, msg: str) -> None:
 def blended_canonical_score(plan: Plan) -> float:
     """Average of (1 - intent_score) over sub-questions where intent_score is not None. Fallback 0.5."""
     scores: list[float] = []
-    for sq in plan.subquestions:
+    subquestions = getattr(plan, "subquestions", None) or []
+    for sq in subquestions:
         s = getattr(sq, "intent_score", None)
         if s is not None:
             try:
@@ -59,10 +66,12 @@ def _build_consolidator_input_json(
     user_provided_context: str | None = None,
 ) -> str:
     """Build JSON payload for consolidator: user_message, subquestions, answers, retrieval_metadata, sources_summary, jurisdiction_summary, user_provided_context."""
-    subquestions = [{"id": sq.id, "text": sq.text} for sq in plan.subquestions]
+    _subs = getattr(plan, "subquestions", None) or []
+    _stub = stub_answers if stub_answers is not None else []
+    subquestions = [{"id": sq.id, "text": sq.text} for sq in _subs]
     answers = []
-    for i, sq in enumerate(plan.subquestions):
-        ans = stub_answers[i] if i < len(stub_answers) else "[No answer yet]"
+    for i, sq in enumerate(_subs):
+        ans = _stub[i] if i < len(_stub) else "[No answer yet]"
         answers.append({"sq_id": sq.id, "answer": (ans or "").strip()})
     payload = {
         "user_message": user_message.strip(),
@@ -118,6 +127,30 @@ def _parse_answer_card(text: str, emitter: Callable[[str], None] | None = None) 
     if not text:
         return None
 
+    def _normalize_answer_card(data: dict) -> dict:
+        """Coerce sections so one bad intent does not void the whole card (avoids losing details)."""
+        valid_intents = ("process", "requirements", "definitions", "exceptions", "references")
+        out = dict(data)
+        sections = out.get("sections")
+        if not isinstance(sections, list):
+            return out
+        fixed: list[dict] = []
+        for item in sections:
+            if not isinstance(item, dict):
+                continue
+            sec = dict(item)
+            intent = sec.get("intent")
+            if intent is None or intent not in valid_intents:
+                if intent is not None and intent not in valid_intents:
+                    logger.warning(
+                        "Integrator AnswerCard: invalid section intent %r coerced to references",
+                        intent,
+                    )
+                sec["intent"] = "references"
+            fixed.append(sec)
+        out["sections"] = fixed
+        return out
+
     def _validate(data: object) -> dict | None:
         if not isinstance(data, dict):
             return None
@@ -128,13 +161,7 @@ def _parse_answer_card(text: str, emitter: Callable[[str], None] | None = None) 
         sections = data.get("sections")
         if not isinstance(sections, list):
             return None
-        valid_intents = ("process", "requirements", "definitions", "exceptions", "references")
-        for item in sections:
-            if not isinstance(item, dict):
-                continue
-            intent = item.get("intent")
-            if intent is not None and intent not in valid_intents:
-                return None
+        data = _normalize_answer_card(data)
         return data
 
     def _try_parse(raw: str) -> dict | None:
@@ -161,9 +188,19 @@ def _json_repair_loads(text: str) -> object:
     return json_repair.loads(text)
 
 
-def _repair_json(cfg, invalid_text: str) -> str:
-    """One retry: call LLM with repair prompt, return new text."""
-    from app.services.llm_provider import get_llm_provider
+def _repair_json(
+    cfg,
+    invalid_text: str,
+    *,
+    correlation_id: str | None = None,
+    thread_id: str | None = None,
+    config_sha: str | None = None,
+    phi_detected: bool = False,
+    llm_stage: str = "integrator",
+) -> str:
+    """One retry: call LLM with repair prompt via llm_manager (integrator stage), return new text."""
+    from app.services.llm_manager import generate_sync
+
     repair_system = getattr(cfg.prompts, "integrator_repair_system", None) or (
         "You returned invalid JSON. Return ONLY valid JSON that matches the AnswerCard schema. "
         "Do not include any commentary or markdown. Ensure all strings are quoted and arrays/objects are valid. "
@@ -175,36 +212,39 @@ def _repair_json(cfg, invalid_text: str) -> str:
     )
     prompt = f"{repair_system}\n\n{repair_user}"
     try:
-        provider = get_llm_provider()
-        text, _ = asyncio.run(provider.generate_with_usage(prompt))
+        text, _ = generate_sync(
+            prompt,
+            stage=llm_stage,
+            max_tokens=4096,
+            config_sha=config_sha,
+            correlation_id=correlation_id,
+            thread_id=thread_id,
+            phi_detected=phi_detected,
+        )
         return (text or "").strip()
     except Exception as e:
         logger.warning("Repair JSON call failed: %s", e)
         return ""
 
 
+def _emit_integrator_chunks(text: str, message_chunk_callback: Callable[[str], None] | None) -> None:
+    """Simulate streaming for UI when using non-streaming llm_manager path."""
+    if not message_chunk_callback or not text:
+        return
+    step = max(32, min(256, len(text) // 48 or 32))
+    for i in range(0, len(text), step):
+        message_chunk_callback(text[i : i + step])
+
+
 def _fallback_message(plan: Plan, stub_answers: list[str]) -> str:
     """Simple concatenation without internal labels or repeated questions. Plain paragraphs."""
     parts: list[str] = []
-    for i, sq in enumerate(plan.subquestions):
-        ans = stub_answers[i] if i < len(stub_answers) else "[No answer yet]"
+    _subs = getattr(plan, "subquestions", None) or []
+    _stub = stub_answers if stub_answers is not None else []
+    for i, sq in enumerate(_subs):
+        ans = _stub[i] if i < len(_stub) else "[No answer yet]"
         parts.append(ans.strip())
     return "\n\n".join(p for p in parts if p)
-
-
-async def _stream_integrator(
-    prompt: str,
-    message_chunk_callback: Callable[[str], None],
-) -> str:
-    """Stream integrator LLM output; emit each chunk immediately, then accumulate. Returns full text."""
-    from app.services.llm_provider import get_llm_provider
-    provider = get_llm_provider()
-    full: list[str] = []
-    async for chunk in provider.stream_generate(prompt):
-        if chunk:
-            message_chunk_callback(chunk)  # emit before storing so UI updates immediately
-            full.append(chunk)
-    return "".join(full)
 
 
 def format_response(
@@ -218,10 +258,17 @@ def format_response(
     sources_summary: list[dict] | None = None,
     jurisdiction_summary: str | None = None,
     user_provided_context: str | None = None,
+    correlation_id: str | None = None,
+    thread_id: str | None = None,
+    config_sha: str | None = None,
+    phi_detected: bool = False,
+    llm_stage: str = "integrator",
 ) -> tuple[str, LLMUsageDict | None]:
-    """Turn plan + answers into one chat-friendly message via LLM. If message_chunk_callback is set, stream the draft; returns (message, None) for usage when streaming. On LLM failure, returns fallback and None usage."""
-    trace_entered("responder.final.format_response", subquestions=len(plan.subquestions))
-    if not plan.subquestions:
+    """Turn plan + answers into one chat-friendly message via llm_manager (integrator or integrator_roster).
+    On LLM failure, returns fallback and None usage."""
+    _subs = getattr(plan, "subquestions", None) or []
+    trace_entered("responder.final.format_response", subquestions=len(_subs))
+    if not _subs:
         return ("", None)
 
     # Formatting message emitted by orchestrator before integrate
@@ -229,7 +276,7 @@ def format_response(
 
     try:
         from app.chat_config import get_chat_config
-        from app.services.llm_provider import get_llm_provider
+        from app.services.llm_manager import generate_sync
 
         cfg = get_chat_config()
         consolidator_input_json = _build_consolidator_input_json(
@@ -247,6 +294,10 @@ def format_response(
         )
         consolidator_line = f"Consolidator: {consolidator_type.capitalize()} (blended canonical score: {canonical_score:.2f})"
         logger.info("[consolidator] %s", consolidator_line)
+        _emit(
+            emitter,
+            f"  → Building answer card ({consolidator_type} mode, score {canonical_score:.2f})…",
+        )
 
         if consolidator_type == "factual":
             prompt_system = cfg.prompts.integrator_factual_system
@@ -259,33 +310,66 @@ def format_response(
         )
         prompt = f"{prompt_system}\n\n{prompt_user}"
 
-        if message_chunk_callback:
-            text = asyncio.run(_stream_integrator(prompt, message_chunk_callback))
-            text = (text or "").strip()
-        else:
-            provider = get_llm_provider()
-            text, usage = asyncio.run(provider.generate_with_usage(prompt))
-            text = (text or "").strip()
+        _emit(emitter, "  Draft composer: calling LLM to generate answer card…")
+        text, usage = generate_sync(
+            prompt,
+            stage=llm_stage,
+            max_tokens=8192,
+            config_sha=config_sha,
+            correlation_id=correlation_id,
+            thread_id=thread_id,
+            phi_detected=phi_detected,
+        )
+        text = (text or "").strip()
 
         if text:
+            _emit(emitter, "  Validator: checking answer card (mode, direct_answer, sections)…")
             parsed = _parse_answer_card(text, emitter=emitter)
             if parsed is None and (text.strip().startswith("{") or "```" in text):
                 logger.debug("Repairing invalid JSON via LLM")
-                repaired = _repair_json(cfg, text)
+                _emit(emitter, "  Validator: retrying after JSON repair…")
+                repaired = _repair_json(
+                    cfg,
+                    text,
+                    correlation_id=correlation_id,
+                    thread_id=thread_id,
+                    config_sha=config_sha,
+                    phi_detected=phi_detected,
+                    llm_stage=llm_stage,
+                )
                 if repaired:
                     parsed = _parse_answer_card(repaired, emitter=emitter)
                     if parsed is not None:
                         text = repaired
             if parsed is not None:
+                _emit(emitter, "  Final composer: answer card ready.")
                 logger.debug("Emitting canonical AnswerCard JSON to frontend")
+                parsed = dict(parsed)
+                display_txt = display_text_for_parsed_answer_card(parsed)
+                if not display_txt.strip():
+                    display_txt = DEFAULT_BLEED_FALLBACK
+                parsed["direct_answer"] = display_txt
+                _emit_integrator_chunks(display_txt, message_chunk_callback)
                 # Emit canonical JSON so frontend receives clean JSON (no markdown fence)
-                return (json.dumps(parsed), usage if not message_chunk_callback else None)
-            # Not valid AnswerCard: wrap prose in minimal AnswerCard so pipeline gets valid JSON
-            logger.warning("Consolidator output was not valid AnswerCard JSON; wrapping prose as FACTUAL")
-            minimal = {"mode": "FACTUAL", "direct_answer": text[:2000], "sections": []}
-            return (json.dumps(minimal), usage if not message_chunk_callback else None)
+                return (json.dumps(parsed), usage)
+            # Not valid AnswerCard: never stream raw model JSON (common: resolutions-only blob).
+            _log_truncated = (text or "")[:2000] + ("..." if len(text or "") > 2000 else "")
+            logger.warning(
+                "Consolidator output was not valid AnswerCard JSON; wrapping prose as FACTUAL. LLM response (truncated): %s",
+                _log_truncated,
+            )
+            visible = extract_user_visible_text_from_integrator_raw(text)
+            minimal = build_minimal_answer_card_preserving_metadata(visible, text)
+            _emit_integrator_chunks(visible, message_chunk_callback)
+            return (json.dumps(minimal), usage)
     except Exception as e:
-        logger.warning("Integrator LLM failed, using fallback: %s", e)
+        logger.warning(
+            "Integrator LLM failed, using fallback (no valid response). exception=%s",
+            e,
+            exc_info=True,
+        )
         logger.debug("Using simple format (integrator LLM failed)")
 
-    return (_fallback_message(plan, stub_answers), None)
+    fb = _fallback_message(plan, stub_answers)
+    _emit_integrator_chunks(fb, message_chunk_callback)
+    return (fb, None)

@@ -46,6 +46,9 @@ skip_if_mcp_unreachable = pytest.mark.skipif(
     reason="MCP server not reachable. Run mstart or start mobius-skills-mcp on port 8006.",
 )
 
+# Excluded by pytest -m "not integration" (Day 3 gate)
+pytestmark = [pytest.mark.integration, pytest.mark.requires_skills]
+
 
 @pytest.mark.integration
 @pytest.mark.requires_skills

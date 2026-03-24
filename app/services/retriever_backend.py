@@ -67,19 +67,24 @@ def _bm25_to_rerank_dict(c: dict[str, Any], bm25_cfg: dict | None) -> dict[str, 
 
 def _raw_to_chat_chunk(c: dict[str, Any], match_score: float | None) -> dict[str, Any]:
     """Convert retriever raw dict to chat/doc_assembly format."""
+    pt = c.get("provision_type", "sentence")
+    # Preserve retrieval_source so _is_sentence_level() works in assemble blend selection
+    retrieval_source = c.get("retrieval_source") or f"bm25_{pt}"
     return {
         "id": c.get("id"),
         "text": c.get("text") or "",
         "document_id": c.get("document_id"),
         "document_name": c.get("document_name") or "document",
         "page_number": c.get("page_number"),
+        "paragraph_index": c.get("paragraph_index"),
         "source_type": c.get("source_type") or "chunk",
         "document_authority_level": c.get("document_authority_level"),
         "match_score": match_score,
         "confidence": match_score,
         "rerank_score": c.get("rerank_score") or match_score,
         "raw_score": c.get("raw_score"),
-        "provision_type": c.get("provision_type", "sentence"),
+        "provision_type": pt,
+        "retrieval_source": retrieval_source,
     }
 
 
@@ -216,7 +221,6 @@ def retrieve_for_chat(
         rag_path = "mobius"
 
     if rag_api_url:
-        _emit(emitter, "Searching our materials...")
         chunks, trace = retrieve_via_rag_api(
             question,
             path=rag_path,
@@ -232,13 +236,11 @@ def retrieve_for_chat(
             filter_authority_level=filter_authority_level,
         )
         if chunks:
-            _emit(emitter, f"Using {len(chunks)} result{'s' if len(chunks) != 1 else ''} to answer this part.")
             _debug_chunks("rag_api return", chunks)
             return chunks, trace
         # RAG API failed or returned empty; fall back to inline BM25 if database_url available
         if database_url:
             logger.info("RAG API returned no chunks; falling back to inline BM25")
-            _emit(emitter, "Falling back to inline search...")
 
     # Inline BM25 (primary when RAG_API_URL unset, or fallback when API fails)
     try:
@@ -268,7 +270,6 @@ def retrieve_for_chat(
     if filter_authority_level:
         tag_filters["document_authority_level"] = filter_authority_level
 
-    _emit(emitter, "Searching our materials...")
     # Inline path: no trace (run_rag_pipeline is only used by RAG API)
     result = retrieve_bm25(
         question=question,
@@ -343,7 +344,22 @@ def retrieve_for_chat(
             match_score = c.get("similarity") or c.get("rerank_score")
         out.append(_raw_to_chat_chunk(c, match_score))
 
-    if out:
-        _emit(emitter, f"Using {len(out)} result{'s' if len(out) != 1 else ''} to answer this part.")
+    # Apply blend selection: without this, BM25 sentence fragments always outscore
+    # paragraphs because of higher per-word keyword density. Blend selection ensures
+    # n_hierarchical paragraph slots are filled before n_factual sentence slots.
+    if (n_factual is not None or n_hierarchical is not None) and out:
+        try:
+            from mobius_retriever.assemble import _apply_blend_selection
+            out = _apply_blend_selection(out, n_factual, n_hierarchical)
+            if _DEBUG_RAG:
+                para_n = sum(1 for c in out if (c.get("provision_type") or "") == "paragraph")
+                sent_n = sum(1 for c in out if (c.get("provision_type") or "") == "sentence")
+                logger.info(
+                    "[DEBUG_RAG retriever] blend applied n_hier=%s n_fact=%s → para=%s sent=%s total=%s",
+                    n_hierarchical, n_factual, para_n, sent_n, len(out),
+                )
+        except Exception as e:
+            logger.debug("Blend selection failed (non-fatal): %s", e)
+
     _debug_chunks("inline return (out)", out)
     return out, None

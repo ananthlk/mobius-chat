@@ -1,1 +1,1 @@
-# Mobius Chat – plan → answer → combine → critique → final
+# Mobius Chat – plan → answer → combine → final

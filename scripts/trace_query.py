@@ -154,7 +154,9 @@ def main() -> int:
             def emit(msg: str) -> None:
                 print(f"    [emit] {msg[:80]}")
 
-            ans, usage, srcs, signal = _answer_for_subquestion(
+            tool_hint = bp.get("tool_hint")
+            question_intent = bp.get("question_intent") or getattr(sq, "question_intent", None)
+            ans, usage, srcs, signal, layer_used = _answer_for_subquestion(
                 correlation_id=correlation_id,
                 sq_id=sq.id,
                 agent=agent,
@@ -164,10 +166,14 @@ def main() -> int:
                 emitter=emit,
                 rag_filter_overrides=rag_filter_overrides or None,
                 on_rag_fail=on_rag_fail,
+                user_message=message,
+                active_context={},
+                tool_hint=tool_hint,
+                question_intent=question_intent,
             )
             answers.append(ans)
             sources.extend(srcs or [])
-            print(f"    answer_len={len(ans)} sources={len(srcs or [])} retrieval_signal={signal}")
+            print(f"    answer_len={len(ans)} sources={len(srcs or [])} retrieval_signal={signal} layer_used={layer_used}")
             for j, s in enumerate((srcs or [])[:3]):
                 txt = (s.get("text") or "")[:120].replace("\n", " ")
                 conf = s.get("confidence") or s.get("match_score")

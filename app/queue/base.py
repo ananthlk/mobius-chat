@@ -33,3 +33,7 @@ class QueueAdapter(ABC):
     def get_response(self, correlation_id: str) -> dict[str, Any] | None:
         """Get response by correlation_id (for polling). Returns None if not ready."""
         return None
+
+    def patch_response_merge(self, correlation_id: str, updates: dict[str, Any]) -> None:
+        """Merge ``updates`` into an existing response payload (e.g. late qc_audit). Default: no-op."""
+        pass

@@ -96,6 +96,8 @@ def task_plan_to_plan(
                 on_rag_fail=on_rag_fail,
                 capabilities_primary=capabilities_primary,
                 pre_answer=pre_answer,
+                tool_hint=getattr(sq, "tool_hint", None),
+                skip_layer_4=bool(getattr(sq, "skip_layer_4", False)),
             )
         )
 

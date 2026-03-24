@@ -31,8 +31,8 @@ def _normalize_using_results(m: re.Match[str]) -> str:
 
 
 _USER_FRIENDLY_MAP: list[tuple[str, str | None | Callable[[re.Match[str]], str]]] = [
-    (r"^Mobius path:.*", "Searching our materials..."),
-    (r"^Lazy path:.*", "Searching our materials..."),
+    (r"^Mobius path:.*", None),   # suppressed — emit_layer_attempt() in resolve.py is the canonical source
+    (r"^Lazy path:.*", None),     # suppressed — same reason
     (r"BM25:.*", None),
     (r"BM25 corpus:.*", None),
     (r"BM25 .* matches:.*", None),

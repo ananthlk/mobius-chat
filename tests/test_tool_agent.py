@@ -32,7 +32,7 @@ def test_tool_agent_google_search_no_results_returns_message():
 
 
 def test_tool_agent_web_scrape_calls_mcp():
-    """Scrape trigger + URL → calls MCP web_scrape_review."""
+    """Scrape trigger + URL → calls MCP web_scrape_review, returns google_only signal."""
     with patch("app.stages.agents.capabilities.get_capability_answer", return_value=None):
         with patch("app.services.tool_agent.call_mcp_tool") as mock_mcp:
             mock_mcp.return_value = ("Page content here...", True)
@@ -44,7 +44,7 @@ def test_tool_agent_web_scrape_calls_mcp():
                 {"url": "https://example.com/page", "include_summary": False},
             )
             assert "Page content" in answer
-            assert signal == RETRIEVAL_SIGNAL_NO_SOURCES
+            assert signal == RETRIEVAL_SIGNAL_GOOGLE_ONLY
 
 
 def test_tool_agent_web_scrape_no_url():

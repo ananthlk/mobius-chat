@@ -326,6 +326,17 @@ def extract_state_patch(
     existing_jurisdiction = (existing_active.get("jurisdiction") or "").strip() or None
     existing_slots = (existing_state or {}).get("open_slots") or []
 
+    # Roster reconciliation: optional override of auto-selected billing org NPI (upload uses best search match)
+    _bnpi = re.search(r"\b(?:use\s+)?(?:billing\s+)?npi\s*(\d{10})\b", user_text or "", flags=re.I)
+    if _bnpi:
+        npi_digits = _bnpi.group(1).strip().zfill(10)
+        has_recon = (existing_active.get("reconciliation_upload_id") or "").strip() or any(
+            isinstance(u, dict) and (u.get("purpose") or "").strip() == "roster_reconciliation"
+            for u in (existing_active.get("uploaded_files") or [])
+        )
+        if has_recon and len(npi_digits) == 10 and npi_digits.isdigit():
+            patch.setdefault("active", {})["reconciliation_org_id"] = npi_digits
+
     # 0) Lexicon extraction (J tags) when RAG DB available - source of truth for jurisdiction
     lexicon_j = _extract_jurisdiction_from_lexicon(user_text or "")
 

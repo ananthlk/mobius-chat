@@ -69,12 +69,15 @@ def _llm_decompose_mobius(
     message: str,
     context: str = "",
     last_master_plan: dict | None = None,
+    correlation_id: str | None = None,
+    thread_id: str | None = None,
+    config_sha: str | None = None,
 ) -> tuple[Plan | None, dict | None]:
     """Call LLM with Mobius planner prompt; return Plan (adapted from TaskPlan) or (None, usage)."""
     trace_entered("planner.parser._llm_decompose_mobius")
     try:
         from app.chat_config import get_chat_config
-        from app.services.llm_provider import get_llm_provider
+        from app.services.llm_manager import generate_sync
 
         cfg = get_chat_config()
         system = getattr(cfg.prompts, "decompose_system_mobius", None) or ""
@@ -88,9 +91,16 @@ def _llm_decompose_mobius(
         user = user_tpl.format(planner_input_json=planner_input_str)
         prompt = f"{system}\n\n{user}"
 
-        provider = get_llm_provider()
-        logger.info("[parser] calling LLM for Mobius decomposition (model=%s)", getattr(provider, "model_name", "unknown"))
-        raw, usage = asyncio.run(provider.generate_with_usage(prompt))
+        logger.info("[parser] calling LLM for Mobius decomposition (llm_manager planner)")
+        raw, usage = generate_sync(
+            prompt,
+            stage="planner",
+            max_tokens=4096,
+            config_sha=config_sha,
+            correlation_id=correlation_id,
+            thread_id=thread_id,
+            parser=True,
+        )
         if not raw or not raw.strip():
             logger.warning("[parser] Mobius LLM returned empty response; falling back to legacy.")
             return (None, usage)
@@ -108,6 +118,10 @@ def _llm_decompose_mobius(
 def _llm_decompose(
     message: str,
     context: str = "",
+    *,
+    correlation_id: str | None = None,
+    thread_id: str | None = None,
+    config_sha: str | None = None,
 ) -> tuple[list[tuple[str, str, str | None, QuestionIntent | None, float | None]] | None, dict | None]:
     """Call LLM to decompose message into subquestions and classify each (kind, question_intent, intent_score).
     Returns (list of (id, text, kind, intent, intent_score) or None on failure, llm_usage dict or None).
@@ -115,15 +129,23 @@ def _llm_decompose(
     trace_entered("planner.parser._llm_decompose")
     try:
         from app.chat_config import get_chat_config
-        from app.services.llm_provider import get_llm_provider
+        from app.services.llm_manager import generate_sync
+
         cfg = get_chat_config()
-        provider = get_llm_provider()
         system = cfg.prompts.decompose_system
         user = cfg.prompts.decompose_user_template.format(message=message, context=context or "")
         prompt = f"{system}\n\n{user}"
-        logger.info("[parser] calling LLM for decomposition (model=%s)", getattr(provider, 'model_name', 'unknown'))
+        logger.info("[parser] calling LLM for decomposition (llm_manager planner)")
         try:
-            raw, usage = asyncio.run(provider.generate_with_usage(prompt))
+            raw, usage = generate_sync(
+                prompt,
+                stage="planner",
+                max_tokens=4096,
+                config_sha=config_sha,
+                correlation_id=correlation_id,
+                thread_id=thread_id,
+                parser=True,
+            )
         except asyncio.TimeoutError as te:
             logger.error("[parser] LLM call timed out: %s", te)
             raise
@@ -193,6 +215,9 @@ def parse(
     thinking_emitter: Callable[[str], None] | None = None,
     context: str = "",
     last_master_plan: dict | None = None,
+    correlation_id: str | None = None,
+    thread_id: str | None = None,
+    config_sha: str | None = None,
 ) -> Plan:
     """Parse user message into a plan (subquestions + patient/non_patient).
     Uses LLM decomposition (JSON) when available; falls back to rule-based split.
@@ -222,13 +247,26 @@ def parse(
     mobius_plan: Plan | None = None
 
     if getattr(parser_cfg, "use_mobius_planner", False):
-        mobius_plan, plan_usage = _llm_decompose_mobius(text, context=context or "", last_master_plan=last_master_plan)
+        mobius_plan, plan_usage = _llm_decompose_mobius(
+            text,
+            context=context or "",
+            last_master_plan=last_master_plan,
+            correlation_id=correlation_id,
+            thread_id=thread_id,
+            config_sha=config_sha,
+        )
         if mobius_plan and mobius_plan.subquestions:
             # Plan breakdown emitted later via format_execution_plan (My plan: 1. ...) for consistency
             mobius_plan.thinking_log = thinking_log
             return mobius_plan
 
-    triples, plan_usage = _llm_decompose(text, context=context or "")
+    triples, plan_usage = _llm_decompose(
+        text,
+        context=context or "",
+        correlation_id=correlation_id,
+        thread_id=thread_id,
+        config_sha=config_sha,
+    )
     if not triples:
         triples = _rule_based_decompose(text, parser_cfg)
         plan_usage = None

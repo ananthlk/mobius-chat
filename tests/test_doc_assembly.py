@@ -153,31 +153,28 @@ def test_apply_google_fallback_high_confidence_corpus_only():
 
 
 def test_apply_google_fallback_mid_confidence_no_google_url():
-    """Best 0.5–0.85, no CHAT_SKILLS_GOOGLE_SEARCH_URL → corpus only (no Google results)."""
+    """Best 0.5–0.85, no Google URL (mocked) → corpus only (no Google results)."""
     chunks = [{"text": "a", "rerank_score": 0.7}]
-    with patch.dict("os.environ", {}, clear=False):
-        if "CHAT_SKILLS_GOOGLE_SEARCH_URL" in __import__("os").environ:
-            del __import__("os").environ["CHAT_SKILLS_GOOGLE_SEARCH_URL"]
     emitted = []
-    out_chunks, signal = apply_google_fallback(chunks, "q", emitter=emitted.append)
+    with patch("app.services.doc_assembly.google_search_via_skills_api", return_value=[]):
+        out_chunks, signal = apply_google_fallback(chunks, "q", emitter=emitted.append)
     assert len(out_chunks) == 1
     assert any("Adding external search" in s for s in emitted)
 
 
 def test_apply_google_fallback_low_confidence_no_google_url():
-    """Best < 0.5, no Google URL → returns all corpus chunks (no abstain filter)."""
+    """Best < 0.5, no Google URL (mocked) → returns all corpus chunks (no abstain filter)."""
     chunks = [{"text": "a", "rerank_score": 0.3}]
-    with patch.dict("os.environ", {}, clear=False):
-        pass  # ensure no CHAT_SKILLS_GOOGLE_SEARCH_URL
     emitted = []
-    out_chunks, signal = apply_google_fallback(chunks, "q", emitter=emitted.append)
+    with patch("app.services.doc_assembly.google_search_via_skills_api", return_value=[]):
+        out_chunks, signal = apply_google_fallback(chunks, "q", emitter=emitted.append)
     assert any("Low corpus confidence" in s for s in emitted)
     assert len(out_chunks) == 1  # send all chunks (no abstain filter)
 
 
 def test_apply_google_fallback_empty_chunks():
-    """Empty chunks, no Google URL → empty result."""
-    with patch.dict("os.environ", {}, clear=False):
+    """Empty chunks, no Google results (mocked) → empty result."""
+    with patch("app.services.doc_assembly.google_search_via_skills_api", return_value=[]):
         out_chunks, signal = apply_google_fallback([], "q")
     assert out_chunks == []
 
@@ -253,10 +250,9 @@ def test_assemble_docs_expand_neighbors_no_db():
 
 def test_google_search_via_skills_api_no_url():
     """No CHAT_SKILLS_GOOGLE_SEARCH_URL → returns []."""
-    with patch.dict("os.environ", {}, clear=False):
-        if "CHAT_SKILLS_GOOGLE_SEARCH_URL" in __import__("os").environ:
-            del __import__("os").environ["CHAT_SKILLS_GOOGLE_SEARCH_URL"]
-    out = google_search_via_skills_api("test")
+    env_without_google = {k: v for k, v in __import__("os").environ.items() if k != "CHAT_SKILLS_GOOGLE_SEARCH_URL"}
+    with patch.dict("os.environ", env_without_google, clear=True):
+        out = google_search_via_skills_api("test")
     assert out == []
 
 
@@ -291,9 +287,6 @@ def test_non_patient_rag_sources_have_confidence_when_chunks_injected():
         },
     ]
 
-    async def fake_gen(prompt):
-        return ("Yes, prior auth is required.", {})
-
     mock_rag = type("RAG", (), {
         "vertex_index_endpoint_id": "ep",
         "vertex_deployed_index_id": "idx",
@@ -312,11 +305,12 @@ def test_non_patient_rag_sources_have_confidence_when_chunks_injected():
     with (
         patch("app.chat_config.get_chat_config", return_value=mock_cfg_val),
         patch("app.services.retriever_backend.retrieve_for_chat", return_value=(fake_chunks, None)),
-        patch("app.services.llm_provider.get_llm_provider") as mock_llm,
+        patch(
+            "app.services.llm_manager.generate_sync",
+            return_value=("Yes, prior auth is required.", {"input_tokens": 1, "output_tokens": 2, "stage": "rag"}),
+        ),
     ):
         from app.services.non_patient_rag import answer_non_patient
-        mock_provider = type("Provider", (), {"generate_with_usage": lambda self, prompt: fake_gen(prompt)})()
-        mock_llm.return_value = mock_provider
         full_msg, sources, usage, _ = answer_non_patient("Does eligibility require prior auth?")
 
     assert len(sources) == 1

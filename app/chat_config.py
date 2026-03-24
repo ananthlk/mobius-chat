@@ -105,6 +105,8 @@ class ChatParserConfig:
     ])
     # Split user message on these to get subquestions
     decomposition_separators: list[str] = field(default_factory=lambda: [" and ", " also ", " then "])
+    # Parser uses this model when provider is vertex (default 2.5-pro for rate-limit separation from 2.5-flash).
+    parser_vertex_model: str = "gemini-2.5-pro"
 
 
 @dataclass
@@ -126,8 +128,8 @@ class ChatPromptsConfig:
         "- patient: ONLY when the user asks to look up a SPECIFIC IDENTIFIABLE person (name, SSN, Medicaid ID, MRN, DOB). We cannot do this; refuse.\n"
         "- non_patient: everything else—generic policy, scenario-based (\"I have a patient who is 21 with income X—will they qualify?\"), tool requests, capability questions. Users are CMHC staff.\n\n"
         "Question intent (question_intent) for each sub-question—use for RAG prioritization:\n"
-        "- factual: asks for a specific fact, number, date, definition, or lookup (e.g. What is the prior auth requirement? How many days for appeal?)\n"
-        "- canonical: asks for general policy, process, or canonical description (e.g. Describe the medical necessity criteria. How does enrollment work?)\n\n"
+        "- factual: ONLY pure data lookups — a specific NPI number, ICD-10 code, dollar limit, rate, or exact date (e.g. What is the appeal deadline in days? What is the NPI for Dr. Smith?)\n"
+        "- canonical: ANY process, how-to, policy, procedure, or eligibility question — including authorization steps, enrollment, grievances, coverage rules (e.g. How do I submit a prior authorization? How does enrollment work? What is the prior auth requirement? How do I appeal a denial?)\n\n"
         "Intent score (intent_score) for each sub-question—a number between 0 and 1:\n"
         "- 0 = fully canonical (policy/process); 1 = fully factual (specific fact/lookup); values in between = blend of both.\n"
         "Use this to set how we retrieve: more hierarchical at 0, more factual at 1.\n\n"
@@ -206,6 +208,7 @@ class ChatPromptsConfig:
         '"followups":[{"question":"string","reason":"string","field":"string"}]}\n\n'
         "Rules for FACTUAL mode:\n"
         "- direct_answer is required and must stand alone.\n"
+        "- Each section MUST include either a non-empty bullets array or a non-empty body string so the Details panel has content.\n"
         "- Classify each section with exactly one intent: process, requirements, definitions, exceptions, or references. You do not control visibility; the UI will show only the direct answer and hide sections behind 'Show details'.\n"
         "- Use ONLY the facts provided in the input. Do not add new facts.\n"
         "- Do not include policy intent or justification language.\n"
@@ -213,6 +216,7 @@ class ChatPromptsConfig:
         "- Include at most 3 sections and at most 4 bullets per section.\n"
         "- If the answer depends on an unknown variable (service code, setting, plan subtype), put it in required_variables.\n"
         "- Only add followups if required_variables is non-empty and the user must provide something to be definitive.\n"
+        "- When retrieval included corpus/manual sources and required_variables is empty, do not use next_questions_for_user to ask the user to upload, attach, or share documents or links.\n"
         "- direct_answer must be one sentence, operational, and non-hedgy.\n"
         "If the facts are insufficient: direct_answer should say what is missing (one sentence). "
         "sections may include a label \"What's missing\" with bullets. Do not guess."
@@ -367,6 +371,7 @@ def _chat_config_from_prompts_llm(pl: dict, rag: ChatRAGConfig) -> ChatConfig:
             "ssn", "social security", "medicaid id", "mrn", "medical record number",
         ],
         decomposition_separators=_list_str(parser_d, "decomposition_separators") or [" and ", " also ", " then "],
+        parser_vertex_model=_str(parser_d, "parser_vertex_model") or "gemini-2.5-pro",
     )
     prompts_d = pl.get("prompts") or {}
     _def = ChatPromptsConfig()
@@ -417,12 +422,14 @@ def get_chat_config() -> ChatConfig:
         ollama_num_predict=int(os.getenv("CHAT_OLLAMA_NUM_PREDICT") or os.getenv("OLLAMA_NUM_PREDICT", "8192")),
     )
     patient_kw = _env("CHAT_PARSER_PATIENT_KEYWORDS")
+    parser_vertex_model = _env("CHAT_PARSER_VERTEX_MODEL") or os.getenv("VERTEX_MODEL", "gemini-2.5-pro")
     parser = ChatParserConfig(
         use_mobius_planner=bool(os.getenv("CHAT_PARSER_USE_MOBIUS_PLANNER", "true").lower() in ("1", "true", "yes")),
         patient_keywords=[k.strip() for k in patient_kw.split(",") if k.strip()] if patient_kw else [
             "ssn", "social security", "medicaid id", "mrn", "medical record number",
         ],
         decomposition_separators=[" and ", " also ", " then "],
+        parser_vertex_model=parser_vertex_model,
     )
     # Prompts: optional CHAT_PROMPT_*, CHAT_CONSOLIDATOR_*
     _prompts_default = ChatPromptsConfig()
@@ -481,6 +488,7 @@ def chat_config_for_api() -> dict:
             "use_mobius_planner": c.parser.use_mobius_planner,
             "patient_keywords": c.parser.patient_keywords,
             "decomposition_separators": c.parser.decomposition_separators,
+            "parser_vertex_model": getattr(c.parser, "parser_vertex_model", "gemini-2.5-pro"),
         },
         "prompts": {
             "decompose_system": c.prompts.decompose_system,

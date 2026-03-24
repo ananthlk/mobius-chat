@@ -14,6 +14,7 @@ class ThreadState:
 
     active: dict[str, Any] = field(default_factory=dict)
     open_slots: list[str] = field(default_factory=list)
+    resolved_slots: dict[str, str] = field(default_factory=dict)
     recent_entities: list[Any] = field(default_factory=list)
     last_user_intent: str | None = None
     last_updated_turn_id: str | None = None
@@ -34,6 +35,7 @@ class ThreadState:
         return cls(
             active=active,
             open_slots=list(d.get("open_slots") or []),
+            resolved_slots=dict(d.get("resolved_slots") or {}),
             recent_entities=list(d.get("recent_entities") or []),
             last_user_intent=d.get("last_user_intent"),
             last_updated_turn_id=d.get("last_updated_turn_id"),
@@ -46,6 +48,7 @@ class ThreadState:
         return {
             "active": dict(self.active),
             "open_slots": list(self.open_slots),
+            "resolved_slots": dict(self.resolved_slots),
             "recent_entities": list(self.recent_entities),
             "last_user_intent": self.last_user_intent,
             "last_updated_turn_id": self.last_updated_turn_id,
@@ -64,6 +67,13 @@ class ThreadState:
                 self.active = {**current, **v}
             elif k == "open_slots":
                 self.open_slots = list(v) if v else []
+            elif k == "resolved_slots" and isinstance(v, dict):
+                # Merge: user-provided values always win; never overwrite with None/empty
+                merged = dict(self.resolved_slots)
+                for slot_k, slot_v in v.items():
+                    if slot_v and str(slot_v).lower() not in ("null", "none", ""):
+                        merged[slot_k] = str(slot_v)
+                self.resolved_slots = merged
             elif k == "recent_entities":
                 self.recent_entities = list(v) if v else []
             elif k in ("last_user_intent", "last_updated_turn_id", "refined_query", "master_objective"):
@@ -72,3 +82,8 @@ class ThreadState:
                 self.safety = {**self.safety, **v}
             else:
                 setattr(self, k, v)
+
+    def clear_slots(self) -> None:
+        """Clear both open_slots and resolved_slots. Called on STANDALONE route."""
+        self.open_slots = []
+        self.resolved_slots = {}

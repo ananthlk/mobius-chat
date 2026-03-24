@@ -1,10 +1,14 @@
 """Worker: consume from request queue → run_pipeline → publish."""
 import logging
+import os
 import threading
 import time
 
 from dotenv import load_dotenv
+
 load_dotenv()
+# After .env: force ReAct (mstart also exports MOBIUS_USE_REACT=1 for API+worker).
+os.environ["MOBIUS_USE_REACT"] = "1"
 
 from app.queue import get_queue
 
@@ -22,6 +26,11 @@ def process_one(correlation_id: str, payload: dict) -> None:
 
 def run_worker() -> None:
     """Blocking: consume requests and process each."""
+    try:
+        from app.services.model_registry import auto_enable_from_env
+        auto_enable_from_env()
+    except Exception:
+        pass
     q = get_queue()
     q.consume_requests(process_one)
 

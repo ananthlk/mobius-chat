@@ -69,6 +69,22 @@ class PipelineContext:
     final_message: str = ""
     response_payload: dict[str, Any] | None = None
 
+    # Conversational continuity: last turn failed (no_sources / layer 5) for next-turn resolver
+    failed_query: dict[str, Any] | None = None
+
+    # Active skill context: last skill run (roster_report / npi_lookup) for follow-up questions
+    active_skill: dict[str, Any] | None = None
+    active_skill_reference: bool = False
+    """True when current message refers to active_skill output → answer from context, not RAG/web."""
+    active_skill_name: str | None = None
+
+    # ReAct: active context from last tool (replaces active_skill when using run_react)
+    active_context: dict[str, Any] | None = None
+    """Tool output for follow-up questions (tool, org, summary, follow_up_capable, expires_after_turns)."""
+
+    react_last_tool: str | None = None
+    """Last tool name from ReAct loop (UI attribution / assistant_envelope)."""
+
     # Collected during pipeline (emitter appends)
     thinking_chunks: list[str] = field(default_factory=list)
 
@@ -76,6 +92,18 @@ class PipelineContext:
     master_objective: dict | None = None
     # User-provided context (when user shares docs/links/info to help answer)
     user_provided_context: str | None = None
+    # Roster/credentialing: step outputs (CSV per step) for validation UI
+    roster_step_outputs: list[dict] | None = None
+    # Roster/credentialing: report run id (for persistence / fetch run)
+    report_run_id: str | None = None
+    # Roster/credentialing: report PDF as base64 for download
+    roster_report_pdf_base64: str | None = None
+    # Roster/credentialing: final report markdown for download when PDF unavailable
+    roster_report_final_md: str | None = None
+
+    # Post-run adjudication (integrator llm_calls row for quality_score attachment)
+    integrator_llm_call_id: str | None = None
+    integrator_model_id: str | None = None
 
     def has_thread(self) -> bool:
         return bool(self.thread_id and (self.thread_id or "").strip())

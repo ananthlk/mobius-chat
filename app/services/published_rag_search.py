@@ -91,7 +91,6 @@ def search_published_rag(
         from google.api_core.exceptions import ServiceUnavailable, NotFound
         aiplatform.init(project=cfg.llm.vertex_project_id, location=cfg.llm.vertex_location or "us-central1")
         endpoint = aiplatform.MatchingEngineIndexEndpoint(index_endpoint_name=rag.vertex_index_endpoint_id)
-        _emit(emitter, "Searching our materials...")
         response = endpoint.find_neighbors(
             deployed_index_id=rag.vertex_deployed_index_id,
             queries=[query_embedding],
@@ -262,11 +261,9 @@ def retrieve_with_blend(
     """Run hierarchical and/or factual retrieval per blend; merge and dedupe by chunk id."""
     combined: List[dict[str, Any]] = []
     if n_hierarchical > 0:
-        _emit(emitter, "Searching for high-level (hierarchical) materials...")
         H = search_hierarchical(question, k=n_hierarchical, emitter=emitter)
         combined.extend(H)
     if n_factual > 0:
-        _emit(emitter, "Searching for specific facts...")
         F = search_factual(question, k=n_factual, confidence_min=confidence_min, emitter=emitter)
         combined.extend(F)
     if not combined:
@@ -282,7 +279,6 @@ def retrieve_with_blend(
             seen.add(cid)
             out.append(c)
     n = len(out)
-    _emit(emitter, f"Using {n} result{'s' if n != 1 else ''} to answer this part.")
     # Warn when all chunks share same source_type (hierarchical retrieval had no diversity to prefer)
     if n > 1:
         stypes = {c.get("source_type") or "chunk" for c in out}

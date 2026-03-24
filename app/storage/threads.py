@@ -31,6 +31,7 @@ DEFAULT_STATE: dict[str, Any] = {
         "jurisdiction_obj": None,  # explicit: {state, payor, program, perspective, regulatory_agency}
     },
     "open_slots": [],
+    "resolved_slots": {},  # Improvement 3: persisted slot values {state, payer, program, ...}
     "recent_entities": [],
     "last_user_intent": None,
     "last_updated_turn_id": None,
@@ -133,7 +134,11 @@ def append_turn_messages(
 
 
 def get_last_turn_messages(thread_id: str, limit_turns: int = 2) -> list[dict[str, Any]]:
-    """Return last N full turns (each turn = user + assistant pair) for thread_id, newest first. Each item: { turn_id, user_content, assistant_content, created_at }."""
+    """Return last N full turns for thread_id, newest first.
+    Each item: { turn_id, user_content, assistant_content, context_summary, created_at }.
+    context_summary is joined from chat_turns for structured planner context (Improvement 1).
+    Falls back to None when column doesn't exist yet (pre-migration).
+    """
     url = _get_db_url()
     if not url:
         return []
@@ -142,25 +147,51 @@ def get_last_turn_messages(thread_id: str, limit_turns: int = 2) -> list[dict[st
         import psycopg2.extras
         conn = psycopg2.connect(url)
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute(
-            """
-            WITH pairs AS (
-                SELECT turn_id,
-                       max(created_at) AS created_at,
-                       max(CASE WHEN role = 'user' THEN content END) AS user_content,
-                       max(CASE WHEN role = 'assistant' THEN content END) AS assistant_content
-                FROM chat_turn_messages
-                WHERE thread_id = %s
-                GROUP BY turn_id
+        # Try to join context_summary from chat_turns; silently fall back if column absent.
+        try:
+            cur.execute(
+                """
+                WITH pairs AS (
+                    SELECT m.turn_id,
+                           max(m.created_at) AS created_at,
+                           max(CASE WHEN m.role = 'user' THEN m.content END) AS user_content,
+                           max(CASE WHEN m.role = 'assistant' THEN m.content END) AS assistant_content
+                    FROM chat_turn_messages m
+                    WHERE m.thread_id = %s
+                    GROUP BY m.turn_id
+                )
+                SELECT p.turn_id, p.user_content, p.assistant_content, p.created_at,
+                       ct.context_summary
+                FROM pairs p
+                LEFT JOIN chat_turns ct ON ct.correlation_id = p.turn_id
+                WHERE p.user_content IS NOT NULL AND p.assistant_content IS NOT NULL
+                ORDER BY p.created_at DESC
+                LIMIT %s
+                """,
+                (thread_id, limit_turns),
             )
-            SELECT turn_id, user_content, assistant_content, created_at
-            FROM pairs
-            WHERE user_content IS NOT NULL AND assistant_content IS NOT NULL
-            ORDER BY created_at DESC
-            LIMIT %s
-            """,
-            (thread_id, limit_turns),
-        )
+        except Exception:
+            # context_summary column may not exist pre-migration — fall back to simple query
+            conn.rollback()
+            cur.execute(
+                """
+                WITH pairs AS (
+                    SELECT turn_id,
+                           max(created_at) AS created_at,
+                           max(CASE WHEN role = 'user' THEN content END) AS user_content,
+                           max(CASE WHEN role = 'assistant' THEN content END) AS assistant_content
+                    FROM chat_turn_messages
+                    WHERE thread_id = %s
+                    GROUP BY turn_id
+                )
+                SELECT turn_id, user_content, assistant_content, created_at
+                FROM pairs
+                WHERE user_content IS NOT NULL AND assistant_content IS NOT NULL
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (thread_id, limit_turns),
+            )
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -258,6 +289,33 @@ def save_state_full(thread_id: str, state: dict[str, Any]) -> None:
     except Exception as e:
         logger.exception("Failed to save state: %s", e)
         raise
+
+
+_MAX_THREAD_UPLOAD_RECORDS = 15
+
+
+def append_uploaded_file_record(thread_id: str, record: dict[str, Any]) -> bool:
+    """Prepend an upload record to active.uploaded_files (capped). For roster_reconciliation,
+    also refreshes reconciliation_upload_id / org_id / org_name so the next message can run the tool.
+    Returns False if state could not be persisted (e.g. database URL unset)."""
+    url = _get_db_url()
+    if not url:
+        logger.warning("CHAT_RAG_DATABASE_URL not set; upload list not persisted")
+        return False
+    current = get_state(thread_id)
+    if current is None:
+        current = json.loads(json.dumps(DEFAULT_STATE))
+    active = {**(current.get("active") or {})}
+    prev = active.get("uploaded_files") or []
+    files: list[dict[str, Any]] = [dict(x) for x in prev if isinstance(x, dict)]
+    files.insert(0, dict(record))
+    active["uploaded_files"] = files[:_MAX_THREAD_UPLOAD_RECORDS]
+    if (record.get("purpose") or "").strip() == "roster_reconciliation":
+        active["reconciliation_upload_id"] = (record.get("upload_id") or "").strip()
+        active["reconciliation_org_id"] = (record.get("org_id") or "").strip()
+        active["reconciliation_org_name"] = (record.get("org_name") or "").strip()
+    save_state(thread_id, {"active": active})
+    return True
 
 
 def register_open_slots(thread_id: str, slots: list[str]) -> None:

@@ -173,7 +173,7 @@ def _run_pipeline_with_trace(question: str) -> tuple[list[dict], dict]:
         apply_google_fallback=True,
         google_search_url=os.environ.get("CHAT_SKILLS_GOOGLE_SEARCH_URL", "").strip() or None,
         n_factual=10,
-        n_hierarchical=0,
+        n_hierarchical=10,
         trace=trace,
     )
     return docs, trace
@@ -207,6 +207,7 @@ def main() -> int:
     p = argparse.ArgumentParser(description="Trace a dev question through Mobius path")
     p.add_argument("--inline", action="store_true", help="Run pipeline inline with full trace; ignore RAG_API_URL")
     p.add_argument("--id", default="dev_002", help="Question id from eval_questions_dev.yaml (e.g. dev_001 .. dev_009)")
+    p.add_argument("--question", "-q", type=str, default="", help="Use this question instead of --id (e.g. -q \"What are member rights...?\")")
     p.add_argument("--list", action="store_true", help="List all 9 dev questions and exit")
     p.add_argument("--all", action="store_true", help="Run all 9 questions and print compact summary (requires --inline)")
     args = p.parse_args()
@@ -256,11 +257,15 @@ def main() -> int:
             print(f"       expect_in_manual={expect}")
         return 0
 
-    resolved = _get_question_by_id(args.id)
-    if not resolved:
-        print(f"Question id {args.id!r} not found. Use --list to see available ids.")
-        return 1
-    question, qid = resolved
+    if (args.question or "").strip():
+        question = args.question.strip()
+        qid = "custom"
+    else:
+        resolved = _get_question_by_id(args.id)
+        if not resolved:
+            print(f"Question id {args.id!r} not found. Use --list to see available ids.")
+            return 1
+        question, qid = resolved
 
     print("=" * 80)
     print(f"TRACE: {qid} — Mobius path")
@@ -300,15 +305,25 @@ def main() -> int:
         _print_trace(trace)
 
     print("\n" + "=" * 80)
-    print("ASSEMBLED DOCS SENT TO LLM")
+    print("ASSEMBLED DOCS SENT TO LLM (core + neighbors)")
     print("=" * 80)
-    for i, c in enumerate(assembled[:12], 1):
+    print(f"  n_assembled: {trace.get('n_assembled', len(assembled))}  n_corpus: {trace.get('n_corpus', '?')}  n_google: {trace.get('n_google', '?')}")
+    for i, c in enumerate(assembled[:25], 1):
         label = c.get("confidence_label", "?")
         rs = c.get("rerank_score")
         src = c.get("retrieval_source", "")
-        txt = _truncate(c.get("text") or "", 60)
+        doc_name = (c.get("document_name") or "doc")[:28]
+        page = c.get("page_number")
+        para_idx = c.get("paragraph_index")
+        is_neighbor = c.get("is_neighbor", False)
+        neighbor_tag = " [NEIGHBOR]" if is_neighbor else ""
+        txt = _truncate(c.get("text") or "", 72)
         rs_str = f"{rs:.3f}" if rs is not None else "0.000"
-        print(f"  {i}. {label:22} rerank={rs_str} {src:14} | {txt}")
+        page_para = f"p{page}" if page is not None else "?"
+        if para_idx is not None:
+            page_para += f" para#{para_idx}"
+        print(f"  {i}. {label:22} rerank={rs_str} {src:14} {doc_name:30} {page_para:12}{neighbor_tag}")
+        print(f"       {txt}")
 
     print("\n" + "=" * 80)
     print("STEP: LLM RESPONSE")

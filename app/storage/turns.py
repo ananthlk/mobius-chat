@@ -2,9 +2,73 @@
 Uses CHAT_RAG_DATABASE_URL (same DB as chat_feedback)."""
 import json
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# -------------------------------------------------------------------
+# Improvement 1: Structured turn summaries
+# -------------------------------------------------------------------
+
+_OUTCOME_MAP = [
+    (r"found\s+(\d+)",           "Found {n} result(s)."),
+    (r"no results?|not found",    "No results found."),
+    (r"created|generated",        "Generated output."),
+    (r"explained|overview",       "Provided explanation."),
+    (r"error|failed|unable",      "Request could not be completed."),
+]
+
+
+def _detect_outcome(text: str) -> str:
+    for pattern, template in _OUTCOME_MAP:
+        m = re.search(pattern, text, re.I)
+        if m:
+            n = m.group(1) if m.lastindex else ""
+            return template.replace("{n}", n)
+    return "Responded to query."
+
+
+def _extract_entity(text: str, sources: list[dict[str, Any]]) -> str:
+    """Pull a short entity label from sources or leading text."""
+    for s in sources[:3]:
+        name = s.get("document_name") or s.get("name") or ""
+        if name and len(name) < 80:
+            return name
+    # Fallback: grab first noun phrase after outcome verbs (heuristic)
+    m = re.search(r"(?:found|returned|for)\s+([A-Z][A-Za-z0-9 &\-]{2,50})", text)
+    if m:
+        return m.group(1).strip()
+    return ""
+
+
+def _extract_jurisdiction(text: str) -> str:
+    """Pull first state or payer mention from answer text."""
+    m = re.search(r"\b(Florida|Texas|California|New York|Ohio|Georgia|Sunshine Health|United Healthcare|Aetna|Molina|WellCare|Humana)\b", text, re.I)
+    return m.group(1) if m else ""
+
+
+def build_context_summary(final_message: str, sources: list[dict[str, Any]]) -> str:
+    """
+    Produce a ≤150-token planner-facing summary of a completed turn.
+    - Leads with outcome verb (Found / Returned / Explained / Unable to find).
+    - Includes count + entity name when data was returned.
+    - Includes first jurisdiction value mentioned (state/payer).
+    - Never exceeds 2 sentences.
+    - Strips markdown, URLs, source citations.
+    """
+    text = re.sub(r"https?://\S+", "", final_message or "")
+    text = re.sub(r"\[.*?\]\(.*?\)", "", text)
+    text = re.sub(r"[*_`#>]", "", text)
+    outcome = _detect_outcome(text)
+    entity = _extract_entity(text, sources or [])
+    juris = _extract_jurisdiction(text)
+    parts = [outcome]
+    if entity:
+        parts.append(entity)
+    if juris:
+        parts.append(f"({juris})")
+    return " ".join(parts)[:600]  # hard cap ~150 tokens
 
 
 def _get_db_url() -> str:
@@ -41,14 +105,16 @@ def insert_turn(
         strip_val = (source_confidence_strip or "").strip() or None
         thread_val = (thread_id or "").strip() or None
         config_sha_val = (config_sha or "").strip() or None
+        context_summary_val = build_context_summary(final_message or "", sources or [])
         cur.execute(
             """
             INSERT INTO chat_turns (
                 correlation_id, question, thinking_log, final_message, sources,
                 duration_ms, model_used, llm_provider, session_id, thread_id,
-                plan_snapshot, blueprint_snapshot, agent_cards, source_confidence_strip, config_sha
+                plan_snapshot, blueprint_snapshot, agent_cards, source_confidence_strip, config_sha,
+                context_summary
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (correlation_id) DO UPDATE SET
                 question = EXCLUDED.question,
                 thinking_log = EXCLUDED.thinking_log,
@@ -63,7 +129,8 @@ def insert_turn(
                 blueprint_snapshot = EXCLUDED.blueprint_snapshot,
                 agent_cards = EXCLUDED.agent_cards,
                 source_confidence_strip = EXCLUDED.source_confidence_strip,
-                config_sha = EXCLUDED.config_sha
+                config_sha = EXCLUDED.config_sha,
+                context_summary = EXCLUDED.context_summary
             """,
             (
                 correlation_id,
@@ -81,12 +148,67 @@ def insert_turn(
                 json.dumps(agent_cards) if agent_cards is not None else None,
                 strip_val,
                 config_sha_val,
+                context_summary_val or None,
             ),
         )
         conn.commit()
         cur.close()
         conn.close()
     except Exception as e:
+        # If context_summary column is missing (migration 017 not run), retry without it so turns still appear in recent searches
+        err_str = str(e).lower()
+        if "context_summary" in err_str or ("column" in err_str and "does not exist" in err_str):
+            try:
+                conn2 = psycopg2.connect(url)
+                cur2 = conn2.cursor()
+                cur2.execute(
+                    """
+                    INSERT INTO chat_turns (
+                        correlation_id, question, thinking_log, final_message, sources,
+                        duration_ms, model_used, llm_provider, session_id, thread_id,
+                        plan_snapshot, blueprint_snapshot, agent_cards, source_confidence_strip, config_sha
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (correlation_id) DO UPDATE SET
+                        question = EXCLUDED.question,
+                        thinking_log = EXCLUDED.thinking_log,
+                        final_message = EXCLUDED.final_message,
+                        sources = EXCLUDED.sources,
+                        duration_ms = EXCLUDED.duration_ms,
+                        model_used = EXCLUDED.model_used,
+                        llm_provider = EXCLUDED.llm_provider,
+                        session_id = EXCLUDED.session_id,
+                        thread_id = EXCLUDED.thread_id,
+                        plan_snapshot = EXCLUDED.plan_snapshot,
+                        blueprint_snapshot = EXCLUDED.blueprint_snapshot,
+                        agent_cards = EXCLUDED.agent_cards,
+                        source_confidence_strip = EXCLUDED.source_confidence_strip,
+                        config_sha = EXCLUDED.config_sha
+                    """,
+                    (
+                        correlation_id,
+                        (question or "").strip() or "",
+                        json.dumps(thinking_log or []),
+                        (final_message or "").strip() or None,
+                        json.dumps(sources or []),
+                        duration_ms,
+                        (model_used or "").strip() or None,
+                        (llm_provider or "").strip() or None,
+                        (session_id or "").strip() or None,
+                        thread_val,
+                        json.dumps(plan_snapshot) if plan_snapshot is not None else None,
+                        json.dumps(blueprint_snapshot) if blueprint_snapshot is not None else None,
+                        json.dumps(agent_cards) if agent_cards is not None else None,
+                        strip_val,
+                        config_sha_val,
+                    ),
+                )
+                conn2.commit()
+                cur2.close()
+                conn2.close()
+                return
+            except Exception as e2:
+                logger.warning("Retry insert_turn without context_summary failed: %s", e2)
         logger.exception("Failed to persist turn: %s", e)
         raise
 
@@ -262,3 +384,67 @@ def get_most_helpful_documents(limit: int = 10) -> list[dict[str, Any]]:
     except Exception as e:
         logger.warning("Failed to get most helpful documents: %s", e)
         return []
+
+
+def fetch_turn_qc_audit(correlation_id: str) -> dict[str, Any] | None:
+    """Return qc_audit JSON from chat_turns, or None if missing / no DB."""
+    url = _get_db_url()
+    if not url or not correlation_id:
+        return None
+    try:
+        import psycopg2
+        import psycopg2.extras
+
+        conn = psycopg2.connect(url)
+        try:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute(
+                "SELECT qc_audit FROM chat_turns WHERE correlation_id = %s",
+                (correlation_id,),
+            )
+            row = cur.fetchone()
+            cur.close()
+        finally:
+            conn.close()
+        if not row or row.get("qc_audit") is None:
+            return None
+        raw = row["qc_audit"]
+        if isinstance(raw, dict):
+            return dict(raw)
+        if isinstance(raw, str):
+            return json.loads(raw)
+        return None
+    except Exception as e:
+        logger.debug("fetch_turn_qc_audit failed: %s", e)
+        return None
+
+
+def update_turn_qc_audit(correlation_id: str, qc_audit: dict[str, Any]) -> None:
+    """Merge qc_audit JSON into chat_turns (requires migration 023). No-op if DB unavailable."""
+    url = _get_db_url()
+    if not url or not correlation_id:
+        return
+    try:
+        import psycopg2
+
+        conn = psycopg2.connect(url)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE chat_turns
+                SET qc_audit = COALESCE(qc_audit, '{}'::jsonb) || %s::jsonb
+                WHERE correlation_id = %s
+                """,
+                (json.dumps(qc_audit), correlation_id),
+            )
+            conn.commit()
+            cur.close()
+        finally:
+            conn.close()
+    except Exception as e:
+        err = str(e).lower()
+        if "qc_audit" in err or ("column" in err and "does not exist" in err):
+            logger.debug("update_turn_qc_audit: column missing (run migration 023): %s", e)
+        else:
+            logger.warning("update_turn_qc_audit failed: %s", e)
