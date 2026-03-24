@@ -51,6 +51,33 @@ from app.services.reasoning_agent import answer_reasoning
 from app.services.tool_agent import answer_tool
 from app.skills.document_upload import DOCUMENT_UPLOAD_SKILL_MARKDOWN, format_thread_uploads_markdown
 
+def _credentialing_copilot_turn_markdown(run: dict[str, Any], org_name: str) -> str:
+    """User-facing summary for a co-pilot turn (chat + panel show draft details)."""
+    phase = run.get("phase") or ""
+    pending = run.get("pending_step_id") or ""
+    rid = run.get("run_id") or ""
+    lines = [
+        "### Credentialing co-pilot",
+        f"**Organization:** {org_name or '—'}",
+        f"**Run ID:** `{rid}`",
+        "",
+    ]
+    if phase == "complete":
+        lines.append("**Status:** All steps complete.")
+        fr = run.get("final_report_text")
+        if isinstance(fr, str) and fr.strip():
+            lines.append("")
+            lines.append(fr.strip()[:4000])
+        return "\n".join(lines)
+    if phase == "awaiting_validation":
+        lines.append(f"**Pending step:** `{pending}` — review the **validation panel** below (or JSON in the UI).")
+        lines.append("")
+        lines.append("Submit edits, then click **Continue**, or ask me to proceed with the values shown.")
+        return "\n".join(lines)
+    lines.append(f"**Status:** {phase}")
+    return "\n".join(lines)
+
+
 def _roster_uploads_from_active(active: dict[str, Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for u in active.get("uploaded_files") or []:
@@ -278,6 +305,7 @@ _TOOL_STAGE_FOR_USAGE: dict[str, str] = {
     "web_scrape": "web_scrape",
     "lookup_npi": "npi_lookup",
     "run_credentialing_report": "roster_report",
+    "validate_credentialing_step": "roster_report",
     "run_roster_reconciliation_report": "roster_reconciliation",
     "ask_credentialing_npi": "credentialing_qa",
     "healthcare_npi_lookup": "healthcare_query",
@@ -465,13 +493,73 @@ def _execute_tool(
 
     if tool == "run_credentialing_report":
         from app.pipeline.message_resolver import _extract_core_topic
+        from app.services.credentialing_run_service import create_credentialing_run
+
         org = inputs.get("org_name") or _extract_core_topic(ctx.effective_message or ctx.message)
-        extra_out: dict = {}
+        extra_out = {}
         if not hasattr(ctx, "extra_out") or ctx.extra_out is None:
             ctx.extra_out = extra_out
         else:
             extra_out = ctx.extra_out
+
+        mode = (inputs.get("mode") or "autopilot").strip().lower()
+        if mode not in ("autopilot", "copilot"):
+            mode = "autopilot"
+
+        if mode == "copilot":
+            emit("◌ Starting credentialing co-pilot (step-by-step validation)…")
+            try:
+                run = create_credentialing_run(
+                    org or "",
+                    "copilot",
+                    thread_id=(ctx.thread_id or "").strip() or None,
+                )
+            except ValueError as e:
+                return {
+                    "tool": "run_credentialing_report",
+                    "success": False,
+                    "result": str(e),
+                    "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
+                    "sources": [],
+                }
+            if run.get("phase") == "error":
+                return {
+                    "tool": "run_credentialing_report",
+                    "success": False,
+                    "result": run.get("error") or "Co-pilot run failed",
+                    "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
+                    "sources": [],
+                }
+            extra_out["credentialing_copilot"] = {
+                "run_id": run["run_id"],
+                "pending_step_id": run.get("pending_step_id"),
+                "phase": run.get("phase"),
+                "draft_output": run.get("draft_output"),
+                "mode": "copilot",
+                "org_name": org,
+            }
+            answer = _credentialing_copilot_turn_markdown(run, org or "")
+            ctx.active_context = {
+                "tool": "credentialing_copilot",
+                "org": org,
+                "summary": answer[:500],
+                "follow_up_capable": True,
+                "expires_after_turns": 30,
+                "credentialing_copilot": True,
+                "full_output": answer,
+                "credentialing_run_id": run["run_id"],
+                "pending_step_id": run.get("pending_step_id"),
+            }
+            return {
+                "tool": "run_credentialing_report",
+                "success": True,
+                "result": answer,
+                "signal": RETRIEVAL_SIGNAL_GOOGLE_ONLY,
+                "sources": [],
+            }
+
         emit("◌ Running credentialing report (this may take a minute)…")
+        extra_out["credentialing_copilot_clear"] = True
         answer, sources, usage, signal = answer_tool(
             org or "",
             emitter=emitter,
@@ -496,6 +584,100 @@ def _execute_tool(
             "signal": signal,
             "sources": sources or [],
             "usage": usage,
+        }
+
+    if tool == "validate_credentialing_step":
+        from app.services.credentialing_run_service import validate_and_advance_credentialing_run
+
+        active = (ctx.merged_state or {}).get("active") or {}
+        run_id = (inputs.get("run_id") or active.get("credentialing_run_id") or "").strip()
+        step_id = (inputs.get("step_id") or active.get("credentialing_pending_step_id") or "").strip()
+        raw_vo = inputs.get("validated_output")
+        if isinstance(raw_vo, str) and raw_vo.strip():
+            try:
+                validated_output = json.loads(raw_vo)
+            except json.JSONDecodeError:
+                validated_output = {}
+        elif isinstance(raw_vo, dict):
+            validated_output = raw_vo
+        else:
+            validated_output = {}
+
+        if not run_id:
+            return {
+                "tool": "validate_credentialing_step",
+                "success": False,
+                "result": "No credentialing run in context. Start with run_credentialing_report(mode='copilot').",
+                "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
+                "sources": [],
+            }
+        if not step_id:
+            return {
+                "tool": "validate_credentialing_step",
+                "success": False,
+                "result": "step_id is required (or set from thread state as credentialing_pending_step_id).",
+                "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
+                "sources": [],
+            }
+        emit(f"◌ Validating step {step_id} and advancing…")
+        extra_out = {}
+        if not hasattr(ctx, "extra_out") or ctx.extra_out is None:
+            ctx.extra_out = extra_out
+        else:
+            extra_out = ctx.extra_out
+        try:
+            run = validate_and_advance_credentialing_run(run_id, step_id, validated_output)
+        except KeyError:
+            return {
+                "tool": "validate_credentialing_step",
+                "success": False,
+                "result": "Credentialing run not found (expired or wrong run_id).",
+                "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
+                "sources": [],
+            }
+        except ValueError as e:
+            return {
+                "tool": "validate_credentialing_step",
+                "success": False,
+                "result": str(e),
+                "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
+                "sources": [],
+            }
+        if run.get("phase") == "error":
+            return {
+                "tool": "validate_credentialing_step",
+                "success": False,
+                "result": run.get("error") or "Step failed",
+                "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
+                "sources": [],
+            }
+        extra_out["credentialing_copilot"] = {
+            "run_id": run["run_id"],
+            "pending_step_id": run.get("pending_step_id"),
+            "phase": run.get("phase"),
+            "draft_output": run.get("draft_output"),
+            "mode": "copilot",
+            "org_name": run.get("org_name"),
+            "final_report_text": run.get("final_report_text"),
+        }
+        answer = _credentialing_copilot_turn_markdown(run, run.get("org_name") or "")
+        ctx.active_context = {
+            "tool": "credentialing_copilot",
+            "org": run.get("org_name"),
+            "summary": answer[:500],
+            "follow_up_capable": True,
+            "expires_after_turns": 30,
+            "credentialing_copilot": True,
+            "full_output": answer,
+            "credentialing_run_id": run["run_id"],
+            "pending_step_id": run.get("pending_step_id"),
+        }
+        return {
+            "tool": "validate_credentialing_step",
+            "success": True,
+            "result": answer,
+            "signal": RETRIEVAL_SIGNAL_GOOGLE_ONLY,
+            "sources": [],
         }
 
     if tool == "run_roster_reconciliation_report":
@@ -730,18 +912,31 @@ def _sync_extra_out_to_context(ctx: PipelineContext, emitter=None) -> None:
         ctx.roster_report_final_md = md
     if extra.get("roster_step_outputs"):
         ctx.roster_step_outputs = extra["roster_step_outputs"]
-    # Persist report_run_id / last_report_org so follow-ups can "ask about this report"
-    if ctx.thread_id and (ctx.thread_id or "").strip() and (extra.get("report_run_id") or extra.get("last_report_org")):
+    cred = extra.get("credentialing_copilot")
+    if isinstance(cred, dict) and cred.get("run_id"):
+        ctx.credentialing_copilot = cred
+    elif extra.get("credentialing_copilot_clear"):
+        ctx.credentialing_copilot = None
+    # Persist report_run_id / last_report_org / credentialing co-pilot pointers
+    if ctx.thread_id and (ctx.thread_id or "").strip():
         try:
             from app.storage.threads import get_state, save_state_full
             from app.state.model import ThreadState
             raw = get_state(ctx.thread_id) or {}
             ts = ThreadState.from_dict(raw)
-            delta = {}
+            delta: dict[str, Any] = {}
             if extra.get("report_run_id"):
                 delta["report_run_id"] = extra["report_run_id"]
             if extra.get("last_report_org"):
                 delta["last_report_org"] = extra["last_report_org"]
+            if extra.get("credentialing_copilot_clear"):
+                delta["credentialing_run_id"] = None
+                delta["credentialing_pending_step_id"] = None
+                delta["credentialing_run_mode"] = None
+            if isinstance(cred, dict) and cred.get("run_id"):
+                delta["credentialing_run_id"] = cred["run_id"]
+                delta["credentialing_run_mode"] = cred.get("mode", "copilot")
+                delta["credentialing_pending_step_id"] = cred.get("pending_step_id")
             if delta:
                 ts.apply_delta({"active": delta})
                 save_state_full(ctx.thread_id, ts.to_dict())
@@ -808,7 +1003,11 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
     ctx.active_context = load_active_context(ctx.merged_state, ctx.last_turns)
 
     # Follow-up to active context? Answer from context without tool.
-    if ctx.active_context and ctx.active_context.get("follow_up_capable"):
+    if (
+        ctx.active_context
+        and ctx.active_context.get("follow_up_capable")
+        and not ctx.active_context.get("credentialing_copilot")
+    ):
         # detect_skill_reference expects {skill, org, data}; map from active_context
         skill_like = {
             "skill": ctx.active_context.get("tool"),

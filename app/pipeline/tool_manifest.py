@@ -39,10 +39,18 @@ lookup_npi(org_name)
   Cannot: Lookup by NPI number; PML status.
   Returns: NPIs with addresses and confidence tiers.
 
-run_credentialing_report(org_name)
-  Generate full credentialing and PML enrollment report.
-  Use ONLY when user explicitly requests a report or roster.
-  Returns: 11-step report with revenue waterfall A-E.
+run_credentialing_report(org_name, mode optional)
+  Generate credentialing / PML enrollment pipeline for an organization.
+  mode: "autopilot" (default) = full 11-step report in one run (revenue waterfall A–E).
+  mode: "copilot" = run one step at a time; user validates each step (locations, NPIs, etc.) via the chat panel or validate_credentialing_step.
+  Use when user explicitly asks for a credentialing report, roster report, or step-by-step credentialing.
+
+validate_credentialing_step(step_id optional, validated_output, run_id optional)
+  Advance the credentialing co-pilot after the user confirms or edits the pending step.
+  run_id defaults to the active thread's credentialing run; step_id defaults to pending step.
+  validated_output: JSON object — e.g. {{"org_npis":["1234567890"]}} after identify_org, {{"locations":[...]}} after find_locations.
+  For "accept draft as-is", pass the same fields as shown in the draft (or {{}} for benchmark-only steps).
+  Use after run_credentialing_report(mode="copilot") when the user says proceed, continue, confirm, or supplies corrections.
 
 run_roster_reconciliation_report(org_name, upload_id, org_id)
   Roster reconciliation: compare org upload vs outside-in roster.
@@ -93,6 +101,7 @@ PER-TOOL CAPABILITIES (explicit):
 ENTITY_TOOLS = frozenset({
     "lookup_npi",
     "run_credentialing_report",
+    "validate_credentialing_step",
     "run_roster_reconciliation_report",
     "web_scrape",
     "ask_credentialing_npi",
@@ -104,6 +113,7 @@ ENTITY_TOOLS = frozenset({
 # Which tools can answer follow-up questions from their output
 FOLLOW_UP_CAPABLE = frozenset({
     "run_credentialing_report",
+    "validate_credentialing_step",
     "run_roster_reconciliation_report",
     "lookup_npi",
     "ask_credentialing_npi",

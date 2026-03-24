@@ -49,6 +49,7 @@ cd "/Users/ananth/Mobius/mobius-rag" && python -m uvicorn app.main:app --reload 
 
 Notes:
 - Chat still uses `CHAT_RAG_DATABASE_URL` for **chat persistence** (threads/turns/feedback). Point it at a local `mobius_chat` DB if you want persistence in dev.
+- **Credentialing co-pilot** (`run_credentialing_report` with `mode: copilot` + UI validate): apply [`db/schema/027_credentialing_runs.sql`](../db/schema/027_credentialing_runs.sql) so runs are stored in Postgres; otherwise the worker and API may use separate in-memory stores and **Continue** in the chat panel will not find the run.
 - `mobius-rag` uses **pgvector** via the `chunk_embeddings` table; make sure embeddings have been generated (see `mobius-rag/INSTALL_AND_TEST.md` → embedding worker).
 
 ## User auth

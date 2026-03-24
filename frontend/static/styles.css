@@ -1587,6 +1587,70 @@ body {
 }
 .roster-step-download-json:hover { opacity: 0.9; }
 
+.credentialing-copilot-panel {
+  margin: 0.75rem 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--assistant-border);
+  border-radius: var(--radius-sm);
+  background: var(--assistant-bubble-tint);
+}
+.credentialing-copilot-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+  margin-bottom: 0.35rem;
+}
+.credentialing-copilot-meta,
+.credentialing-copilot-step,
+.credentialing-copilot-hint {
+  font-size: 0.78rem;
+  color: var(--sidebar-text-muted, #64748b);
+  margin-bottom: 0.35rem;
+}
+.credentialing-copilot-step {
+  color: var(--main-text);
+  font-weight: 500;
+}
+.credentialing-copilot-json {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0.5rem 0;
+  padding: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--assistant-border);
+  background: var(--thinking-bg);
+  resize: vertical;
+}
+.credentialing-copilot-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+.credentialing-copilot-btn {
+  padding: 0.4rem 0.75rem;
+  font-size: 0.8rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--assistant-border);
+  cursor: pointer;
+  background: var(--thinking-bg);
+}
+.credentialing-copilot-btn--primary {
+  background: var(--mobius-accent, #3b82f6);
+  color: #fff;
+  border-color: transparent;
+}
+.credentialing-copilot-btn--secondary:hover,
+.credentialing-copilot-btn--primary:hover {
+  opacity: 0.92;
+}
+.credentialing-copilot-complete,
+.credentialing-copilot-error {
+  font-size: 0.85rem;
+  margin-top: 0.35rem;
+}
+
 .roster-report-download {
   margin: 0.5rem 0;
 }

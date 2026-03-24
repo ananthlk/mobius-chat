@@ -786,6 +786,10 @@ def run_integrate(
         has_charts = "data:image/png;base64," in roster_report_final_md
         logger.info("Roster payload: final_md included (%d chars, charts=%s)", len(roster_report_final_md), has_charts)
 
+    cred_copilot = getattr(ctx, "credentialing_copilot", None)
+    if isinstance(cred_copilot, dict) and cred_copilot.get("run_id"):
+        payload["credentialing_copilot"] = cred_copilot
+
     _tf = resolve_tool_fired(ctx)
     payload["tool_fired"] = _tf
     answer_card_dict: dict[str, Any] | None = None

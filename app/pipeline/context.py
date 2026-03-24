@@ -100,6 +100,8 @@ class PipelineContext:
     roster_report_pdf_base64: str | None = None
     # Roster/credentialing: final report markdown for download when PDF unavailable
     roster_report_final_md: str | None = None
+    # Co-pilot credentialing: run_id, pending_step_id, draft_output for validation UI
+    credentialing_copilot: dict[str, Any] | None = None
 
     # Post-run adjudication (integrator llm_calls row for quality_score attachment)
     integrator_llm_call_id: str | None = None

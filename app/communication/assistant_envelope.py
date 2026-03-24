@@ -28,6 +28,7 @@ TOOL_ATTRIBUTION: dict[str, tuple[str, str]] = {
     "npi_lookup": ("person", "Provider registry"),
     "healthcare_query": ("code", "Healthcare codes"),
     "run_credentialing_report": ("doc", "Credentialing report"),
+    "validate_credentialing_step": ("doc", "Credentialing co-pilot"),
     "run_roster_reconciliation_report": ("doc", "Roster reconciliation report"),
     "roster_report": ("doc", "Credentialing report"),
     "refuse": ("block", "Not answerable"),

@@ -34,7 +34,16 @@ TOOL_CAPABILITIES: dict[str, dict[str, Any]] = {
         "cannot_answer": "Lookup by NPI number; PML status",
     },
     "run_credentialing_report": {
-        "can_answer": ["Full credentialing report for an org (11-step pipeline, revenue waterfall)"],
+        "can_answer": [
+            "Full credentialing report for an org (11-step pipeline, revenue waterfall)",
+            "Co-pilot credentialing: step-by-step with user validation when mode is copilot",
+        ],
+    },
+    "validate_credentialing_step": {
+        "can_answer": [
+            "Advance credentialing co-pilot after user confirms or edits the pending step (NPIs, locations, etc.)",
+        ],
+        "requires": "Active copilot run on thread (credentialing_run_id) or run_id in tool inputs",
     },
     "run_roster_reconciliation_report": {
         "can_answer": [

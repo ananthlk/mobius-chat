@@ -249,10 +249,23 @@ interface ChatResponse {
   roster_report_pdf_base64?: string | null;
   /** Roster/credentialing: final report markdown for download when PDF unavailable */
   roster_report_final_md?: string | null;
+  /** Co-pilot credentialing: validate pending step via panel or chat */
+  credentialing_copilot?: CredentialingCopilotPayload | null;
   /** Set when eval/QC audit posts to POST /chat/qc-audit/{id} */
   qc_audit?: QcAuditInfo;
   /** DB-backed routing + adjudicator thumbs (merged on poll for completed turns). */
   technical_feedback?: TechnicalFeedback;
+}
+
+/** Server payload for co-pilot credentialing validation UI */
+interface CredentialingCopilotPayload {
+  run_id: string;
+  pending_step_id?: string | null;
+  phase?: string;
+  draft_output?: Record<string, unknown> | null;
+  mode?: string;
+  org_name?: string | null;
+  final_report_text?: string | null;
 }
 
 /** assistant_envelope v1 (server merges authoritative + validated LLM ui_blocks) */
@@ -1550,6 +1563,165 @@ function renderRosterStepOutputs(stepOutputs: RosterStepOutput[]): HTMLElement {
 
   wrap.appendChild(header);
   wrap.appendChild(body);
+  return wrap;
+}
+
+function draftToValidatedOutput(
+  draft: Record<string, unknown> | null | undefined,
+  stepId: string
+): Record<string, unknown> {
+  const d = draft && typeof draft === "object" ? draft : {};
+  if (stepId === "identify_org" && Array.isArray(d.org_npis)) {
+    return { org_npis: d.org_npis };
+  }
+  if (stepId === "find_locations" && Array.isArray(d.locations)) {
+    return { locations: d.locations };
+  }
+  if (stepId === "find_associated_providers") {
+    const out: Record<string, unknown> = {};
+    if (d.associated_providers && typeof d.associated_providers === "object") {
+      out.associated_providers = d.associated_providers;
+    }
+    if (d.active_roster && typeof d.active_roster === "object") {
+      out.active_roster = d.active_roster;
+    }
+    return out;
+  }
+  return {};
+}
+
+/** Co-pilot credentialing: edit draft JSON or accept as-is, POST /chat/credentialing-runs/.../validate */
+function renderCredentialingCopilotPanel(
+  cc: CredentialingCopilotPayload,
+  threadId: string | null | undefined
+): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "credentialing-copilot-panel";
+
+  const title = document.createElement("div");
+  title.className = "credentialing-copilot-title";
+  title.textContent = "Credentialing co-pilot — validate step";
+  wrap.appendChild(title);
+
+  const meta = document.createElement("div");
+  meta.className = "credentialing-copilot-meta";
+  meta.textContent = `${cc.org_name || "—"} · run ${cc.run_id.slice(0, 8)}… · ${cc.phase || "—"}`;
+  wrap.appendChild(meta);
+
+  if (cc.phase === "complete") {
+    const done = document.createElement("div");
+    done.className = "credentialing-copilot-complete";
+    done.textContent = "All steps complete. See the message above for the report summary.";
+    wrap.appendChild(done);
+    return wrap;
+  }
+
+  const pending = (cc.pending_step_id || "").trim();
+  if (!pending) {
+    const err = document.createElement("div");
+    err.className = "credentialing-copilot-error";
+    err.textContent = "No pending step.";
+    wrap.appendChild(err);
+    return wrap;
+  }
+
+  const stepLabel = document.createElement("div");
+  stepLabel.className = "credentialing-copilot-step";
+  stepLabel.textContent = `Pending step: ${pending}`;
+  wrap.appendChild(stepLabel);
+
+  const ta = document.createElement("textarea");
+  ta.className = "credentialing-copilot-json";
+  ta.rows = 12;
+  ta.spellcheck = false;
+  ta.value = JSON.stringify(cc.draft_output ?? {}, null, 2);
+  ta.setAttribute("aria-label", "Validated output JSON for this step");
+  wrap.appendChild(ta);
+
+  const btnRow = document.createElement("div");
+  btnRow.className = "credentialing-copilot-actions";
+
+  const acceptBtn = document.createElement("button");
+  acceptBtn.type = "button";
+  acceptBtn.className = "credentialing-copilot-btn credentialing-copilot-btn--secondary";
+  acceptBtn.textContent = "Accept draft as-is";
+  acceptBtn.addEventListener("click", () => {
+    ta.value = JSON.stringify(cc.draft_output ?? {}, null, 2);
+  });
+
+  const submitBtn = document.createElement("button");
+  submitBtn.type = "button";
+  submitBtn.className = "credentialing-copilot-btn credentialing-copilot-btn--primary";
+  submitBtn.textContent = "Continue (submit validation)";
+  submitBtn.addEventListener("click", async () => {
+    let validated: Record<string, unknown>;
+    try {
+      validated = JSON.parse(ta.value) as Record<string, unknown>;
+    } catch {
+      alert("Invalid JSON — fix the textarea or use Accept draft as-is.");
+      return;
+    }
+    submitBtn.disabled = true;
+    acceptBtn.disabled = true;
+    try {
+      const r = await fetch(
+        API_BASE + "/chat/credentialing-runs/" + encodeURIComponent(cc.run_id) + "/validate",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ step_id: pending, validated_output: validated }),
+        }
+      );
+      const data = (await r.json()) as CredentialingCopilotPayload & {
+        draft_output?: Record<string, unknown>;
+        phase?: string;
+        pending_step_id?: string | null;
+        error?: string;
+        detail?: string;
+      };
+      if (!r.ok) {
+        throw new Error((data.detail as string) || (data.error as string) || r.statusText);
+      }
+      const next: CredentialingCopilotPayload = {
+        run_id: data.run_id || cc.run_id,
+        pending_step_id: data.pending_step_id,
+        phase: data.phase,
+        draft_output: data.draft_output,
+        mode: data.mode || "copilot",
+        org_name: data.org_name ?? cc.org_name,
+        final_report_text: data.final_report_text,
+      };
+      const parent = wrap.parentElement;
+      const replacement = renderCredentialingCopilotPanel(next, threadId);
+      parent?.replaceChild(replacement, wrap);
+    } catch (e) {
+      alert("Validation failed: " + (e instanceof Error ? e.message : String(e)));
+      submitBtn.disabled = false;
+      acceptBtn.disabled = false;
+    }
+  });
+
+  const quickAccept = document.createElement("button");
+  quickAccept.type = "button";
+  quickAccept.className = "credentialing-copilot-btn credentialing-copilot-btn--secondary";
+  quickAccept.textContent = "Use curated fields only (recommended)";
+  quickAccept.addEventListener("click", () => {
+    const vo = draftToValidatedOutput(cc.draft_output ?? undefined, pending);
+    ta.value = JSON.stringify(Object.keys(vo).length ? vo : {}, null, 2);
+  });
+
+  btnRow.appendChild(quickAccept);
+  btnRow.appendChild(acceptBtn);
+  btnRow.appendChild(submitBtn);
+  wrap.appendChild(btnRow);
+
+  if (threadId) {
+    const tidNote = document.createElement("div");
+    tidNote.className = "credentialing-copilot-hint";
+    tidNote.textContent = `Thread ${threadId.slice(0, 8)}… — you can also ask the assistant to validate this step in chat.`;
+    wrap.appendChild(tidNote);
+  }
+
   return wrap;
 }
 
@@ -3965,6 +4137,11 @@ function run(): void {
         const rosterStepOutputs = data.roster_step_outputs;
         if (Array.isArray(rosterStepOutputs) && rosterStepOutputs.length > 0) {
           turnWrap.appendChild(renderRosterStepOutputs(rosterStepOutputs));
+        }
+
+        const credCop = data.credentialing_copilot;
+        if (credCop && typeof credCop === "object" && typeof credCop.run_id === "string" && credCop.run_id.length > 0) {
+          turnWrap.appendChild(renderCredentialingCopilotPanel(credCop as CredentialingCopilotPayload, data.thread_id ?? currentThreadId));
         }
 
         // 5b. Roster report download (PDF and/or Markdown)

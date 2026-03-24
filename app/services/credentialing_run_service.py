@@ -1,6 +1,8 @@
-"""In-memory credentialing runs: co-pilot (validate each step) vs autopilot (full orchestrator).
+"""Credentialing runs: autopilot (full orchestrator) vs co-pilot (validate each step).
 
-Run records are keyed by run_id. Thread state can store credentialing_run_id for UI follow-up.
+Records are keyed by run_id. When CHAT_RAG_DATABASE_URL is set and table credentialing_runs exists,
+runs persist in Postgres so the chat worker and the FastAPI validate endpoint share state.
+Otherwise falls back to in-process memory (single-process dev only).
 """
 
 from __future__ import annotations
@@ -28,6 +30,38 @@ Phase = Literal["awaiting_validation", "complete", "error"]
 
 _run_lock = threading.Lock()
 _runs: dict[str, dict[str, Any]] = {}
+
+
+def _store_put(run_id: str, rec: dict[str, Any]) -> None:
+    rid = (run_id or "").strip()
+    if not rid:
+        return
+    with _run_lock:
+        _runs[rid] = rec
+    try:
+        from app.storage.credentialing_runs_pg import save_credentialing_run_record
+
+        save_credentialing_run_record(rid, rec)
+    except Exception:
+        pass
+
+
+def _store_get(run_id: str) -> dict[str, Any] | None:
+    rid = (run_id or "").strip()
+    if not rid:
+        return None
+    try:
+        from app.storage.credentialing_runs_pg import load_credentialing_run_record
+
+        pg = load_credentialing_run_record(rid)
+        if pg:
+            with _run_lock:
+                _runs[rid] = pg
+            return pg
+    except Exception:
+        pass
+    with _run_lock:
+        return _runs.get(rid)
 
 
 def _fresh_state(org_name: str) -> OrchestratorState:
@@ -145,8 +179,7 @@ def create_credentialing_run(
                 "final_report_text": None,
                 "orchestrator_state_dict": None,
             }
-            with _run_lock:
-                _runs[run_id] = rec
+            _store_put(run_id, rec)
             return _public_view(rec)
 
         rec = {
@@ -162,8 +195,7 @@ def create_credentialing_run(
             "final_report_text": final_text,
             "orchestrator_state_dict": orchestrator_state_to_dict(state),
         }
-        with _run_lock:
-            _runs[run_id] = rec
+        _store_put(run_id, rec)
         return _public_view(rec)
 
     # copilot: run first step only
@@ -186,8 +218,7 @@ def create_credentialing_run(
             "final_report_text": None,
             "orchestrator_state_dict": None,
         }
-        with _run_lock:
-            _runs[run_id] = rec
+        _store_put(run_id, rec)
         return _public_view(rec)
 
     draft = extract_draft_for_step(first_sid, state)
@@ -204,14 +235,12 @@ def create_credentialing_run(
         "final_report_text": None,
         "orchestrator_state_dict": orchestrator_state_to_dict(state),
     }
-    with _run_lock:
-        _runs[run_id] = rec
+    _store_put(run_id, rec)
     return _public_view(rec)
 
 
 def get_credentialing_run(run_id: str, include_state: bool = False) -> dict[str, Any] | None:
-    with _run_lock:
-        rec = _runs.get((run_id or "").strip())
+    rec = _store_get((run_id or "").strip())
     if not rec:
         return None
     return _public_view(rec, include_state=include_state)
@@ -225,8 +254,7 @@ def validate_and_advance_credentialing_run(
     """Apply user validation for pending step, then run the next pipeline step (co-pilot)."""
     rid = (run_id or "").strip()
     sid = (step_id or "").strip()
-    with _run_lock:
-        rec = _runs.get(rid)
+    rec = _store_get(rid)
     if not rec:
         raise KeyError("run not found")
     if rec.get("mode") != "copilot":
@@ -247,8 +275,7 @@ def validate_and_advance_credentialing_run(
         rec["pending_step_id"] = None
         rec["draft_output"] = None
         rec["orchestrator_state_dict"] = orchestrator_state_to_dict(state)
-        with _run_lock:
-            _runs[rid] = rec
+        _store_put(rid, rec)
         return _public_view(rec)
 
     next_sid = ROSTER_CREDENTIALING_STEP_IDS[idx + 1]
@@ -261,8 +288,7 @@ def validate_and_advance_credentialing_run(
         rec["pending_step_id"] = None
         rec["draft_output"] = None
         rec["orchestrator_state_dict"] = orchestrator_state_to_dict(state)
-        with _run_lock:
-            _runs[rid] = rec
+        _store_put(rid, rec)
         return _public_view(rec)
 
     if next_sid == "build_report":
@@ -272,8 +298,7 @@ def validate_and_advance_credentialing_run(
     rec["draft_output"] = extract_draft_for_step(next_sid, state)
     rec["phase"] = "awaiting_validation"
     rec["orchestrator_state_dict"] = orchestrator_state_to_dict(state)
-    with _run_lock:
-        _runs[rid] = rec
+    _store_put(rid, rec)
     return _public_view(rec)
 
 
