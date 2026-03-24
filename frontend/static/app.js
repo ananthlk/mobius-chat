@@ -3216,6 +3216,13 @@ function renderAssistantFromEnvelope(envelope, opts) {
         disclosure.appendChild(w);
         bubble.appendChild(disclosure);
       }
+    } else if (t === "pipeline_human_gate") {
+      const b = block;
+      const g = b.gate;
+      if (g && typeof g.run_id === "string" && g.run_id.length > 0) {
+        const tid = (g.thread_id || opts.threadId || "").trim() || null;
+        bubble.appendChild(renderCredentialingCopilotPanel(g, tid));
+      }
     } else if (t === "markdown_report") {
       const b = block;
       const div = document.createElement("div");
@@ -3830,6 +3837,7 @@ function run() {
       const envBlocks = useEnvelope ? envCandidate.blocks : [];
       const envSourcesBlock = envBlocks.find((b) => b.type === "sources");
       const envelopeHasSources = useEnvelope && Array.isArray(envSourcesBlock?.refs) && envSourcesBlock.refs.length > 0;
+      const envelopeHasPipelineGate = useEnvelope && envBlocks.some((b) => b.type === "pipeline_human_gate");
       if (useEnvelope) {
         turnWrap.appendChild(
           renderAssistantFromEnvelope(envCandidate, {
@@ -3838,7 +3846,8 @@ function run() {
             showConfidenceBadge: data.status !== "clarification" && data.status !== "refinement_ask",
             qcAudit: qcFromPayload,
             correlationId: cidForTurn || null,
-            suppressConfidenceForAdminQcFail: suppressConf
+            suppressConfidenceForAdminQcFail: suppressConf,
+            threadId: data.thread_id ?? currentThreadId ?? null
           })
         );
       } else {
@@ -3884,7 +3893,7 @@ function run() {
         turnWrap.appendChild(renderRosterStepOutputs(rosterStepOutputs));
       }
       const credCop = data.credentialing_copilot;
-      if (credCop && typeof credCop === "object" && typeof credCop.run_id === "string" && credCop.run_id.length > 0) {
+      if (!envelopeHasPipelineGate && credCop && typeof credCop === "object" && typeof credCop.run_id === "string" && credCop.run_id.length > 0) {
         turnWrap.appendChild(renderCredentialingCopilotPanel(credCop, data.thread_id ?? currentThreadId));
       }
       const pdfBase64 = data.roster_report_pdf_base64;

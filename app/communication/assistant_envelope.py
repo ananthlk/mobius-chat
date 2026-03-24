@@ -303,10 +303,20 @@ def build_assistant_envelope_v1(
     has_roster_pdf: bool,
     resolutions: list[Any] | None = None,
     source_confidence_strip: str = "",
+    pipeline_human_gate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Merge authoritative data with validated LLM ui_blocks."""
     blocks: list[dict[str, Any]] = []
     blocks.append(tool_attribution_block(tool_fired))
+
+    if isinstance(pipeline_human_gate, dict) and (pipeline_human_gate.get("run_id") or "").strip():
+        blocks.append(
+            {
+                "type": "pipeline_human_gate",
+                "version": 1,
+                "gate": pipeline_human_gate,
+            }
+        )
 
     if answer_card and isinstance(answer_card.get("direct_answer"), str):
         da = answer_card["direct_answer"].strip()

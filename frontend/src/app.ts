@@ -249,7 +249,7 @@ interface ChatResponse {
   roster_report_pdf_base64?: string | null;
   /** Roster/credentialing: final report markdown for download when PDF unavailable */
   roster_report_final_md?: string | null;
-  /** Co-pilot credentialing: validate pending step via panel or chat */
+  /** Co-pilot credentialing: validate pending step (duplicate of envelope gate when present) */
   credentialing_copilot?: CredentialingCopilotPayload | null;
   /** Set when eval/QC audit posts to POST /chat/qc-audit/{id} */
   qc_audit?: QcAuditInfo;
@@ -295,7 +295,8 @@ type EnvelopeBlock =
   | { type: "next_steps"; items: string[]; collapsed_default?: boolean }
   | { type: "suggested_questions"; items: string[]; collapsed_default?: boolean }
   | { type: "markdown_report"; markdown: string }
-  | { type: "attachments"; has_pdf?: boolean };
+  | { type: "attachments"; has_pdf?: boolean }
+  | { type: "pipeline_human_gate"; version?: number; gate: CredentialingCopilotPayload & { plan_kind?: string; thread_id?: string | null } };
 
 /** Single RAG source (when backend provides sources array) */
 interface SourceItem {
@@ -3178,6 +3179,7 @@ function renderAssistantFromEnvelope(
     qcAudit?: QcAuditInfo;
     correlationId?: string | null;
     suppressConfidenceForAdminQcFail?: boolean;
+    threadId?: string | null;
   }
 ): HTMLElement {
   const outer = document.createElement("div");
@@ -3368,6 +3370,13 @@ function renderAssistantFromEnvelope(
         w.appendChild(chips);
         disclosure.appendChild(w);
         bubble.appendChild(disclosure);
+      }
+    } else if (t === "pipeline_human_gate") {
+      const b = block as { gate?: CredentialingCopilotPayload & { thread_id?: string | null } };
+      const g = b.gate;
+      if (g && typeof g.run_id === "string" && g.run_id.length > 0) {
+        const tid = (g.thread_id || opts.threadId || "").trim() || null;
+        bubble.appendChild(renderCredentialingCopilotPanel(g, tid));
       }
     } else if (t === "markdown_report") {
       const b = block as { markdown: string };
@@ -4076,6 +4085,9 @@ function run(): void {
           | { type: string; refs?: unknown[] }
           | undefined;
         const envelopeHasSources = useEnvelope && Array.isArray(envSourcesBlock?.refs) && envSourcesBlock!.refs.length > 0;
+        const envelopeHasPipelineGate =
+          useEnvelope &&
+          envBlocks.some((b) => (b as { type?: string }).type === "pipeline_human_gate");
 
         if (useEnvelope) {
           turnWrap.appendChild(
@@ -4086,6 +4098,7 @@ function run(): void {
               qcAudit: qcFromPayload,
               correlationId: cidForTurn || null,
               suppressConfidenceForAdminQcFail: suppressConf,
+              threadId: data.thread_id ?? currentThreadId ?? null,
             })
           );
         } else {
@@ -4140,7 +4153,13 @@ function run(): void {
         }
 
         const credCop = data.credentialing_copilot;
-        if (credCop && typeof credCop === "object" && typeof credCop.run_id === "string" && credCop.run_id.length > 0) {
+        if (
+          !envelopeHasPipelineGate &&
+          credCop &&
+          typeof credCop === "object" &&
+          typeof credCop.run_id === "string" &&
+          credCop.run_id.length > 0
+        ) {
           turnWrap.appendChild(renderCredentialingCopilotPanel(credCop as CredentialingCopilotPayload, data.thread_id ?? currentThreadId));
         }
 

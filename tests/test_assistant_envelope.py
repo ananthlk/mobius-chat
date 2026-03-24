@@ -220,3 +220,31 @@ def test_validate_chart_drops_oversized_b64():
         has_roster_pdf=False,
     )
     assert not any(b.get("type") == "chart" for b in env["blocks"])
+
+
+def test_build_envelope_pipeline_human_gate_after_tool_attribution():
+    gate = {
+        "run_id": "550e8400-e29b-41d4-a716-446655440000",
+        "pending_step_id": "ensure_benchmarks",
+        "phase": "awaiting_validation",
+        "draft_output": {"step_id": "ensure_benchmarks", "status": "done"},
+        "mode": "copilot",
+        "org_name": "Acme",
+        "plan_kind": "credentialing_copilot",
+        "thread_id": "thread-1",
+    }
+    env = build_assistant_envelope_v1(
+        answer_card={"mode": "FACTUAL", "direct_answer": "Co-pilot started.", "sections": []},
+        ui_blocks_raw=None,
+        tool_fired="run_credentialing_report",
+        response_sources=[],
+        next_steps=[],
+        next_questions_for_user=[],
+        roster_report_final_md=None,
+        has_roster_pdf=False,
+        pipeline_human_gate=gate,
+    )
+    blocks = env["blocks"]
+    assert blocks[0].get("type") == "tool_attribution"
+    assert blocks[1].get("type") == "pipeline_human_gate"
+    assert blocks[1].get("gate", {}).get("run_id") == gate["run_id"]

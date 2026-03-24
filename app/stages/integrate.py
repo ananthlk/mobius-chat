@@ -813,6 +813,14 @@ def run_integrate(
 
     _md_for_envelope = roster_report_final_md if isinstance(roster_report_final_md, str) else None
     _has_pdf = bool(roster_report_pdf and isinstance(roster_report_pdf, str) and len(roster_report_pdf) > 0)
+    _cred = getattr(ctx, "credentialing_copilot", None)
+    _pipeline_gate: dict | None = None
+    if isinstance(_cred, dict) and (_cred.get("run_id") or "").strip():
+        _pipeline_gate = {
+            **_cred,
+            "plan_kind": "credentialing_copilot",
+            "thread_id": ctx.thread_id,
+        }
     payload["assistant_envelope"] = build_assistant_envelope_v1(
         answer_card=answer_card_dict,
         ui_blocks_raw=integrator_ui_blocks,
@@ -824,6 +832,7 @@ def run_integrate(
         has_roster_pdf=_has_pdf,
         resolutions=resolutions,
         source_confidence_strip=source_confidence_strip,
+        pipeline_human_gate=_pipeline_gate,
     )
 
     ctx.response_payload = payload

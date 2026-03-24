@@ -513,6 +513,7 @@ def _execute_tool(
                     org or "",
                     "copilot",
                     thread_id=(ctx.thread_id or "").strip() or None,
+                    emitter=emit,
                 )
             except ValueError as e:
                 return {
@@ -626,7 +627,7 @@ def _execute_tool(
         else:
             extra_out = ctx.extra_out
         try:
-            run = validate_and_advance_credentialing_run(run_id, step_id, validated_output)
+            run = validate_and_advance_credentialing_run(run_id, step_id, validated_output, emitter=emit)
         except KeyError:
             return {
                 "tool": "validate_credentialing_step",

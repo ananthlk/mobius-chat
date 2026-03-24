@@ -11,6 +11,7 @@ import copy
 import logging
 import threading
 import uuid
+from collections.abc import Callable
 from typing import Any, Literal
 
 from app.services.credentialing_state_serde import orchestrator_state_from_dict, orchestrator_state_to_dict
@@ -152,8 +153,12 @@ def create_credentialing_run(
     org_name: str,
     mode: Mode,
     thread_id: str | None = None,
+    emitter: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
-    """Start a run. Autopilot completes in one shot. Copilot runs first step then waits for validate."""
+    """Start a run. Autopilot completes in one shot. Copilot runs first step then waits for validate.
+
+    ``emitter`` streams orchestrator progress (same strings as chat tool) when provided.
+    """
     org_name = (org_name or "").strip()
     if not org_name:
         raise ValueError("org_name is required")
@@ -163,7 +168,7 @@ def create_credentialing_run(
 
     if mode == "autopilot":
         try:
-            final_text, state = run_orchestrator(org_name, emitter=None)
+            final_text, state = run_orchestrator(org_name, emitter=emitter)
         except Exception as e:
             logger.exception("autopilot credentialing run failed")
             rec = {
@@ -202,7 +207,7 @@ def create_credentialing_run(
     state = _fresh_state(org_name)
     first_sid = ROSTER_CREDENTIALING_STEP_IDS[0]
     try:
-        run_credentialing_step(org_name, state, first_sid, emitter=None)
+        run_credentialing_step(org_name, state, first_sid, emitter=emitter)
     except Exception as e:
         logger.exception("copilot first step failed")
         rec = {
@@ -250,8 +255,12 @@ def validate_and_advance_credentialing_run(
     run_id: str,
     step_id: str,
     validated_output: dict[str, Any],
+    emitter: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
-    """Apply user validation for pending step, then run the next pipeline step (co-pilot)."""
+    """Apply user validation for pending step, then run the next pipeline step (co-pilot).
+
+    ``emitter`` is passed to the next ``run_credentialing_step`` when provided.
+    """
     rid = (run_id or "").strip()
     sid = (step_id or "").strip()
     rec = _store_get(rid)
@@ -280,7 +289,7 @@ def validate_and_advance_credentialing_run(
 
     next_sid = ROSTER_CREDENTIALING_STEP_IDS[idx + 1]
     try:
-        out = run_credentialing_step(org_name, state, next_sid, emitter=None)
+        out = run_credentialing_step(org_name, state, next_sid, emitter=emitter)
     except Exception as e:
         logger.exception("copilot step %s failed", next_sid)
         rec["phase"] = "error"
