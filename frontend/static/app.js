@@ -653,11 +653,296 @@ function createAuthService(config) {
 }
 
 // src/app.ts
+function adjudicationVerdictUi(qc) {
+  const raw = (qc.adjudication_verdict || "").toString().trim().toUpperCase();
+  if (raw === "PARTIAL") {
+    return {
+      shortLabel: "PARTIAL",
+      verdictBadgeText: "Verdict: PARTIAL (acceptable)",
+      badgeVariant: "partial"
+    };
+  }
+  if (raw === "PASS") {
+    return { shortLabel: "PASS", verdictBadgeText: "Verdict: PASS", badgeVariant: "pass" };
+  }
+  if (raw === "FAIL") {
+    return { shortLabel: "FAIL", verdictBadgeText: "Verdict: FAIL", badgeVariant: "fail" };
+  }
+  return qc.passed ? { shortLabel: "PASS", verdictBadgeText: "Verdict: PASS", badgeVariant: "pass" } : { shortLabel: "FAIL", verdictBadgeText: "Verdict: FAIL", badgeVariant: "fail" };
+}
 var SECTION_INTENTS = ["process", "requirements", "definitions", "exceptions", "references"];
 function isSectionIntent(s) {
   return typeof s === "string" && SECTION_INTENTS.includes(s);
 }
 var API_BASE = typeof window !== "undefined" && window.API_BASE && window.API_BASE.startsWith("http") ? window.API_BASE : "http://localhost:8000";
+function renderLlmRouterReportCompositeSpec(parent, spec) {
+  if (!spec || !spec.title)
+    return;
+  const details = document.createElement("details");
+  details.className = "llm-router-report-composite";
+  details.open = false;
+  const summ = document.createElement("summary");
+  summ.textContent = spec.title;
+  details.appendChild(summ);
+  if (spec.summary) {
+    const p = document.createElement("p");
+    p.className = "llm-router-report-composite-p";
+    p.textContent = spec.summary;
+    details.appendChild(p);
+  }
+  if (spec.formula) {
+    const pre = document.createElement("pre");
+    pre.className = "llm-router-report-composite-formula";
+    pre.textContent = spec.formula;
+    details.appendChild(pre);
+  }
+  const w = spec.weights;
+  if (w && Object.keys(w).length) {
+    const wp = document.createElement("p");
+    wp.className = "llm-router-report-composite-p";
+    wp.textContent = "Weights: " + Object.entries(w).map(([k, v]) => `${k}=${v}`).join(", ");
+    details.appendChild(wp);
+  }
+  const defs = [
+    { label: "Quality (q)", block: spec.quality },
+    { label: "Reliability (rel)", block: spec.reliability },
+    { label: "Latency term", block: spec.latency_term },
+    { label: "Cost term", block: spec.cost_term }
+  ];
+  for (const { label, block } of defs) {
+    const d = block?.definition;
+    if (!d)
+      continue;
+    const h = document.createElement("div");
+    h.className = "llm-router-report-composite-def";
+    const strong = document.createElement("strong");
+    strong.textContent = label + ": ";
+    h.appendChild(strong);
+    h.appendChild(document.createTextNode(d));
+    details.appendChild(h);
+  }
+  const caps = spec.stage_caps;
+  if (caps && Object.keys(caps).length) {
+    const hc = document.createElement("p");
+    hc.className = "llm-router-report-composite-p";
+    hc.innerHTML = "<strong>Linear caps by stage bucket</strong> (for latTerm / costTerm):";
+    details.appendChild(hc);
+    const tw = document.createElement("div");
+    tw.className = "llm-router-report-table-wrap";
+    const tbl = document.createElement("table");
+    tbl.className = "llm-router-report-table llm-router-report-table--caps";
+    tbl.innerHTML = "<thead><tr><th>Bucket</th><th>Latency cap (ms)</th><th>Cost cap ($)</th></tr></thead><tbody></tbody>";
+    const tb = tbl.querySelector("tbody");
+    for (const name of Object.keys(caps).sort()) {
+      const c = caps[name];
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${escapeHtml2(name)}</td><td>${c?.latency_cap_ms ?? "\u2014"}</td><td>${c?.cost_cap_usd ?? "\u2014"}</td>`;
+      tb.appendChild(tr);
+    }
+    tw.appendChild(tbl);
+    details.appendChild(tw);
+  }
+  if (spec.stage_bucket_rules) {
+    const pr = document.createElement("p");
+    pr.className = "llm-router-report-composite-p";
+    pr.textContent = spec.stage_bucket_rules;
+    details.appendChild(pr);
+  }
+  if (spec.token_pricing_note) {
+    const pt = document.createElement("p");
+    pt.className = "llm-router-report-composite-p";
+    pt.textContent = spec.token_pricing_note;
+    details.appendChild(pt);
+  }
+  if (spec.react_deep_rounds_note) {
+    const prd = document.createElement("p");
+    prd.className = "llm-router-report-composite-p";
+    prd.textContent = spec.react_deep_rounds_note;
+    details.appendChild(prd);
+  }
+  parent.appendChild(details);
+}
+function fmtRouterReportCompositeTerms(row) {
+  const b = row.composite_breakdown;
+  if (!b || typeof b !== "object")
+    return "\u2014";
+  const f = (k) => {
+    const x = b[k];
+    return typeof x === "number" && Number.isFinite(x) ? x.toFixed(2) : "\u2014";
+  };
+  return [f("term_quality"), f("term_reliability"), f("term_latency"), f("term_cost")].join(" / ");
+}
+function routerReportTermsTooltip(row) {
+  const b = row.composite_breakdown;
+  if (!b || typeof b !== "object")
+    return "";
+  try {
+    return JSON.stringify(b, null, 2).slice(0, 4e3);
+  } catch {
+    return "";
+  }
+}
+function setupLlmRouterReportUI() {
+  const btn = document.getElementById("btnLlmRouterReport");
+  const modal = document.getElementById("llmRouterReportModal");
+  const body = document.getElementById("llmRouterReportBody");
+  const closeBtn = document.getElementById("llmRouterReportClose");
+  const backdrop = document.getElementById("llmRouterReportBackdrop");
+  if (!btn || !modal || !body)
+    return;
+  const setOpen = (open) => {
+    modal.classList.toggle("llm-router-report-modal--open", open);
+    modal.setAttribute("aria-hidden", open ? "false" : "true");
+  };
+  const loadReport = () => {
+    body.innerHTML = '<p class="llm-router-report-loading">Loading\u2026</p>';
+    fetch(API_BASE + "/chat/llm-router-report?window_days=30").then((r) => r.json()).then((data) => {
+      renderLlmRouterReportBody(body, data);
+    }).catch(() => {
+      body.innerHTML = '<p class="llm-router-report-error">Could not load report. Is the API up and <code>CHAT_RAG_DATABASE_URL</code> set?</p>';
+    });
+  };
+  btn.addEventListener("click", () => {
+    setOpen(true);
+    loadReport();
+  });
+  closeBtn?.addEventListener("click", () => setOpen(false));
+  backdrop?.addEventListener("click", () => setOpen(false));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && modal.classList.contains("llm-router-report-modal--open"))
+      setOpen(false);
+  });
+}
+function renderLlmRouterReportBody(container, data) {
+  container.replaceChildren();
+  const meta = document.createElement("p");
+  meta.className = "llm-router-report-meta";
+  const gen = data.generated_at ? new Date(data.generated_at).toLocaleString() : "\u2014";
+  meta.textContent = `Rolling window: ${data.window_days} days \xB7 Generated ${gen}`;
+  container.appendChild(meta);
+  if (data.warning) {
+    const w = document.createElement("p");
+    w.className = "llm-router-report-error";
+    w.textContent = data.warning;
+    container.appendChild(w);
+  }
+  renderLlmRouterReportCompositeSpec(container, data.composite_spec);
+  const th = data.thompson;
+  if (th) {
+    const details = document.createElement("details");
+    details.className = "llm-router-report-thompson";
+    details.open = true;
+    const summ = document.createElement("summary");
+    summ.textContent = th.title || "How routing works";
+    details.appendChild(summ);
+    const p = document.createElement("p");
+    p.className = "llm-router-report-thompson-summary";
+    p.textContent = th.summary;
+    details.appendChild(p);
+    const ul = document.createElement("ul");
+    ul.className = "llm-router-report-thompson-list";
+    const li1 = document.createElement("li");
+    li1.textContent = `Forced exploration: least-sampled model every ${th.exploration_interval_turns} turns per stage.`;
+    ul.appendChild(li1);
+    const li2 = document.createElement("li");
+    li2.textContent = `Circuit breakers: pull models above ~${(th.circuit_breaker_hard_error_max * 100).toFixed(0)}% hard failures or ~${(th.circuit_breaker_24h_error_max * 100).toFixed(0)}% errors (24h).`;
+    ul.appendChild(li2);
+    const leg = th.confidence_legend || {};
+    const li3 = document.createElement("li");
+    li3.textContent = "Row shading: " + ["low", "medium", "high", "locked"].map((k) => `${k} \u2014 ${leg[k] || k}`).join(" ");
+    ul.appendChild(li3);
+    details.appendChild(ul);
+    container.appendChild(details);
+  }
+  const legend = document.createElement("div");
+  legend.className = "llm-router-report-legend";
+  legend.innerHTML = '<span class="llm-router-report-legend-item llm-router-report-tr--low">Low data</span><span class="llm-router-report-legend-item llm-router-report-tr--medium">Medium</span><span class="llm-router-report-legend-item llm-router-report-tr--high">High</span><span class="llm-router-report-legend-item llm-router-report-tr--locked">Locked-in</span><span class="llm-router-report-legend-note">= adjudicated sample count (quality scores)</span>';
+  container.appendChild(legend);
+  if (!data.stages || data.stages.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "llm-router-report-empty";
+    empty.textContent = data.ok ? "No llm_calls in this window yet. Chat to populate stats." : "No data.";
+    container.appendChild(empty);
+  }
+  for (const block of data.stages || []) {
+    const h3 = document.createElement("h3");
+    h3.className = "llm-router-report-stage-title";
+    if (block.stage_family === "react" && block.react_round != null && Number.isFinite(block.react_round)) {
+      h3.textContent = `ReAct reasoning \xB7 round ${block.react_round} (${block.stage})`;
+    } else {
+      h3.textContent = block.stage || "\u2014";
+    }
+    container.appendChild(h3);
+    const wrap = document.createElement("div");
+    wrap.className = "llm-router-report-table-wrap";
+    const table = document.createElement("table");
+    table.className = "llm-router-report-table";
+    const thead = document.createElement("thead");
+    thead.innerHTML = `<tr><th title="Rank within stage">#</th><th>Model</th><th>Provider</th><th>Calls</th><th title='Adjudicated quality rows'>Scored</th><th title='Mean quality_score'>Avg Q</th><th title='Router composite [0,1]'>Comp</th><th title="q\xB7r / r / lat / cost weighted terms (hover row for JSON)">Terms</th><th title="stage_bucket">Bkt</th><th title="p95 latency ms (success)">p95</th><th title="Mean cost_usd (success)">Avg $</th><th title="Mean input_tokens">In tok</th><th title="Mean output_tokens">Out tok</th><th title="Registered $/1K input (cost_model)">$/1K in</th><th title="Registered $/1K output">$/1K out</th><th title="(In tok/1000)\xD7$/1K in + (Out tok/1000)\xD7$/1K out">List $</th><th title="Mean latency ms">Avg ms</th><th title="Hard error rate">Err %</th></tr>`;
+    table.appendChild(thead);
+    const tbody = document.createElement("tbody");
+    (block.models || []).forEach((row, idx) => {
+      const tr = document.createElement("tr");
+      tr.className = "llm-router-report-tr llm-router-report-tr--" + (row.confidence || "low");
+      const b = row.composite_breakdown || {};
+      const bucket = typeof b.stage_bucket === "string" ? b.stage_bucket : "\u2014";
+      const cells = [
+        { text: String(idx + 1) },
+        { text: row.model || "\u2014" },
+        { text: row.provider || "\u2014" },
+        { text: String(row.total_calls ?? 0) },
+        { text: String(row.quality_samples ?? 0) },
+        { text: row.avg_quality != null ? Number(row.avg_quality).toFixed(3) : "\u2014" },
+        { text: row.composite_score != null ? Number(row.composite_score).toFixed(3) : "\u2014" },
+        { text: fmtRouterReportCompositeTerms(row), title: routerReportTermsTooltip(row) },
+        { text: bucket },
+        { text: row.p95_latency_ms != null ? String(row.p95_latency_ms) : "\u2014" },
+        {
+          text: row.avg_cost_usd != null && Number(row.avg_cost_usd) > 0 ? Number(row.avg_cost_usd).toFixed(4) : row.avg_cost_usd != null ? String(row.avg_cost_usd) : "\u2014"
+        },
+        { text: row.avg_input_tokens != null ? String(row.avg_input_tokens) : "\u2014" },
+        { text: row.avg_output_tokens != null ? String(row.avg_output_tokens) : "\u2014" },
+        {
+          text: row.usd_per_1k_input != null ? Number(row.usd_per_1k_input).toFixed(5) : "\u2014"
+        },
+        {
+          text: row.usd_per_1k_output != null ? Number(row.usd_per_1k_output).toFixed(5) : "\u2014"
+        },
+        {
+          text: row.avg_list_price_usd != null && row.avg_list_price_usd > 0 ? Number(row.avg_list_price_usd).toFixed(4) : row.avg_list_price_usd != null ? String(row.avg_list_price_usd) : "\u2014"
+        },
+        { text: row.avg_latency_ms != null ? String(row.avg_latency_ms) : "\u2014" },
+        {
+          text: row.hard_error_rate != null ? (Number(row.hard_error_rate) * 100).toFixed(1) + "%" : "\u2014"
+        }
+      ];
+      cells.forEach(({ text, title }) => {
+        const td = document.createElement("td");
+        td.textContent = text;
+        if (title)
+          td.setAttribute("title", title);
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    container.appendChild(wrap);
+  }
+  const roster = data.roster_enabled || [];
+  if (roster.length > 0) {
+    const rd = document.createElement("details");
+    rd.className = "llm-router-report-roster";
+    const rs = document.createElement("summary");
+    rs.textContent = `Currently enabled in router roster (${roster.length} models)`;
+    rd.appendChild(rs);
+    const pre = document.createElement("pre");
+    pre.className = "llm-router-report-roster-pre";
+    pre.textContent = roster.map((r) => `${r.model_id} (${r.provider}) \u2014 ${r.display_name}`).join("\n");
+    rd.appendChild(pre);
+    container.appendChild(rd);
+  }
+}
 function el(id) {
   const e = document.getElementById(id);
   if (!e)
@@ -666,6 +951,118 @@ function el(id) {
 }
 function normalizeMessageText(text) {
   return (text ?? "").replace(/\n{2,}/g, "\n").trim();
+}
+var SANITIZE_BLEED_FALLBACK = "We couldn\u2019t display this answer cleanly. Please try again or rephrase your question.";
+function sanitizeDisplayMessage(raw) {
+  const trimmed = (raw ?? "").trim();
+  if (!trimmed)
+    return "";
+  const tryExtractFromJsonString = (jsonStr, depth) => {
+    if (depth > 4)
+      return null;
+    let s2 = jsonStr.trim();
+    if (/^json\s*\{/i.test(s2))
+      s2 = s2.replace(/^json\s*/i, "").trim();
+    s2 = s2.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```\s*$/i, "").trim();
+    if (!s2.startsWith("{") && !s2.startsWith("["))
+      return null;
+    try {
+      const parsed = JSON.parse(s2);
+      if (typeof parsed.answer === "string" && parsed.answer.trim()) {
+        const inner = tryExtractFromJsonString(parsed.answer, depth + 1);
+        return inner ?? parsed.answer.trim();
+      }
+      if (typeof parsed.direct_answer === "string" && parsed.direct_answer.trim()) {
+        const inner = tryExtractFromJsonString(parsed.direct_answer, depth + 1);
+        if (inner)
+          return inner;
+        const da = parsed.direct_answer.trim();
+        if (!da.startsWith("{") && !da.startsWith("["))
+          return da;
+      }
+      if (typeof parsed.message === "string" && parsed.message.trim()) {
+        return parsed.message.trim();
+      }
+      const res = parsed.resolutions;
+      if (Array.isArray(res) && res.length > 0) {
+        const parts = [];
+        for (const item of res) {
+          if (!item || typeof item !== "object")
+            continue;
+          const o = item;
+          const r = o.resolution;
+          if (typeof r === "string" && r.trim())
+            parts.push(r.trim());
+          else if (r && typeof r === "object") {
+            const rd = r.direct_answer;
+            if (typeof rd === "string" && rd.trim())
+              parts.push(rd.trim());
+          }
+          if (typeof o.text === "string" && o.text.trim())
+            parts.push(o.text.trim());
+          if (typeof o.answer === "string" && o.answer.trim())
+            parts.push(o.answer.trim());
+        }
+        if (parts.length)
+          return parts.join("\n\n");
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  };
+  let s = trimmed;
+  if (/^json\s*\{/i.test(s))
+    s = s.replace(/^json\s*/i, "").trim();
+  s = s.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```\s*$/i, "").trim();
+  const extracted = tryExtractFromJsonString(s, 0);
+  if (extracted)
+    return extracted;
+  if (s.startsWith("{") || s.startsWith("[")) {
+    try {
+      JSON.parse(s);
+      return SANITIZE_BLEED_FALLBACK;
+    } catch {
+    }
+  }
+  if (/^\s*\{/.test(s) && /"direct_answer"\s*:/.test(s) && /"sections"\s*:/.test(s)) {
+    return SANITIZE_BLEED_FALLBACK;
+  }
+  return s;
+}
+function isAllowedOpenHref(href) {
+  const t = href.trim();
+  if (!t || t.toLowerCase().startsWith("javascript:"))
+    return false;
+  if (t.startsWith("/"))
+    return true;
+  return /^https?:\/\//i.test(t);
+}
+function thinkingFriendlyStatus(line) {
+  const l = (line ?? "").toLowerCase();
+  if (l.includes("waiting for worker") || l.includes("request sent"))
+    return "Connecting\u2026";
+  if (l.includes("searching our materials") || l.includes("search_corpus") || l.includes("library research")) {
+    return "Searching provider materials\u2026";
+  }
+  if (l.includes("google") || l.includes("web search") || l.includes("web_scrape") || l.includes("web page")) {
+    return "Searching the web\u2026";
+  }
+  if (l.includes("npi") || l.includes("nppes") || l.includes("registry lookup"))
+    return "Looking up provider registry\u2026";
+  if (l.includes("credentialing") || l.includes("roster_report") || l.includes("roster report")) {
+    return "Running credentialing report\u2026";
+  }
+  if (l.includes("draft composer") || l.includes("integrator") || l.includes("composing your answer")) {
+    return "Composing your answer\u2026";
+  }
+  if (l.includes("validator") || l.includes("answer card"))
+    return "Checking answer format\u2026";
+  if (l.includes("quality") || l.includes("adjudicat"))
+    return "Quality review\u2026";
+  if (l.includes("model:"))
+    return "Finishing up\u2026";
+  return "Working on your answer\u2026";
 }
 function simpleMarkdownToHtml(text) {
   const s = (text ?? "").trim();
@@ -684,6 +1081,7 @@ function simpleMarkdownToHtml(text) {
   imgs.forEach((img, i) => {
     out = out.replace(`\uE000${i}\uE001`, img);
   });
+  out = out.replace(/^#### (.+)$/gm, "<h4>$1</h4>");
   out = out.replace(/^### (.+)$/gm, "<h3>$1</h3>");
   out = out.replace(/^## (.+)$/gm, "<h2>$1</h2>");
   out = out.replace(/^# (.+)$/gm, "<h1>$1</h1>");
@@ -691,6 +1089,45 @@ function simpleMarkdownToHtml(text) {
   out = out.replace(/\n\n+/g, "</p><p>");
   out = out.replace(/\n/g, "<br>\n");
   return "<p>" + out + "</p>";
+}
+function simpleMarkdownToHtmlInner(text) {
+  const s = (text ?? "").trim();
+  if (!s)
+    return "";
+  let out = s;
+  out = out.replace(/^#### (.+)$/gm, "<h4>$1</h4>");
+  out = out.replace(/^### (.+)$/gm, "<h3>$1</h3>");
+  out = out.replace(/^## (.+)$/gm, "<h2>$1</h2>");
+  out = out.replace(/^# (.+)$/gm, "<h1>$1</h1>");
+  out = out.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  out = out.replace(/^- (.+)$/gm, "<li>$1</li>");
+  out = out.replace(/\n\n+/g, "</p><p>");
+  out = out.replace(/\n/g, "<br>\n");
+  out = "<p>" + out + "</p>";
+  out = out.replace(/((?:<li>[\s\S]*?<\/li>(?:<br>\s*)?)+)/g, "<ul>$1</ul>");
+  return out;
+}
+function rosterStepMarkdownToHtml(text) {
+  const s = (text ?? "").trim();
+  if (!s)
+    return "";
+  if (!s.includes("npi-profile-card")) {
+    return simpleMarkdownToHtml(s);
+  }
+  const cardBlocks = [];
+  const placeholder = (i) => `\uE000CARD${i}\uE001`;
+  const re = /<div class="npi-profile-card" markdown="1">\s*([\s\S]*?)<\/div>/g;
+  let out = s.replace(re, (_full, inner) => {
+    const i = cardBlocks.length;
+    cardBlocks.push(inner);
+    return placeholder(i);
+  });
+  out = simpleMarkdownToHtml(out);
+  cardBlocks.forEach((inner, i) => {
+    const cardHtml = '<div class="npi-profile-card">' + simpleMarkdownToHtmlInner(inner) + "</div>";
+    out = out.replace(placeholder(i), cardHtml);
+  });
+  return out;
 }
 var MAX_SECTIONS = 4;
 var MAX_BULLETS_PER_SECTION = 4;
@@ -912,6 +1349,85 @@ function renderConfidenceBadge(strip) {
   wrap.appendChild(badge);
   return wrap;
 }
+function createQcSampleShieldSvg() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "qc-audit-badge-shield-svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "11");
+  svg.setAttribute("height", "11");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke", "currentColor");
+  path.setAttribute("stroke-width", "1.35");
+  path.setAttribute("stroke-linejoin", "round");
+  path.setAttribute(
+    "d",
+    "M12 2.5 19.5 5.2v5.8c0 3.2-2.4 6.5-7.5 8.5-5.1-2-7.5-5.3-7.5-8.5V5.2L12 2.5z"
+  );
+  svg.appendChild(path);
+  return svg;
+}
+function renderQcAuditBadge(_qc) {
+  const wrap = document.createElement("div");
+  wrap.className = "qc-audit-badge-wrap";
+  wrap.setAttribute("data-qc-sample", "1");
+  const row = document.createElement("div");
+  row.className = "qc-audit-badge-row";
+  const badge = document.createElement("span");
+  badge.className = "qc-audit-badge qc-audit-badge--neutral";
+  badge.setAttribute(
+    "aria-label",
+    "This reply was checked by an automated quality review. It does not change your answer."
+  );
+  const iconEl = document.createElement("span");
+  iconEl.className = "qc-audit-badge-icon";
+  iconEl.setAttribute("aria-hidden", "true");
+  iconEl.appendChild(createQcSampleShieldSvg());
+  const labelEl = document.createElement("span");
+  labelEl.className = "qc-audit-badge-label";
+  labelEl.textContent = "Quality review completed";
+  badge.appendChild(iconEl);
+  badge.appendChild(labelEl);
+  row.appendChild(badge);
+  wrap.appendChild(row);
+  const foot = document.createElement("p");
+  foot.className = "qc-audit-badge-footnote";
+  foot.textContent = "Does not change your answer.";
+  wrap.appendChild(foot);
+  return wrap;
+}
+function applyQcAuditToTurn(turnWrap, qc) {
+  if (!qc)
+    return;
+  refreshLlmPerformanceQuality(turnWrap, qc);
+  const assistantEl = turnWrap.querySelector(".message--assistant:last-of-type") ?? turnWrap.querySelector(".message--assistant");
+  if (!assistantEl || assistantEl.querySelector(".qc-audit-badge-wrap"))
+    return;
+  const bubble = assistantEl.querySelector(".answer-card-bubble") ?? assistantEl.querySelector(".message-bubble");
+  if (!bubble)
+    return;
+  const node = renderQcAuditBadge(qc);
+  bubble.appendChild(node);
+}
+function refreshLlmPerformanceQuality(turnWrap, qc) {
+  const panel = turnWrap.querySelector(".llm-performance");
+  if (!panel)
+    return;
+  const eq = effectiveQcScore(qc);
+  const qText = eq !== null ? eq.toFixed(2) : "\u2014";
+  const oneline = panel.querySelector(".llm-performance-oneline");
+  if (oneline) {
+    const m = oneline.dataset.m || "\u2014";
+    const sec = oneline.dataset.s || "0";
+    const cost = oneline.dataset.c || "0";
+    const leg = oneline.dataset.legacy === "1";
+    oneline.textContent = `${leg ? "[LEGACY] " : ""}${m} \xB7 ${sec}s \xB7 $${cost} \xB7 quality ${qText}`;
+  }
+  const badgeQ = panel.querySelector("[data-llm-badge-quality]");
+  if (badgeQ)
+    badgeQ.textContent = `quality ${qText}`;
+}
 function renderAnswerCard(card, isError, opts) {
   const wrap = document.createElement("div");
   wrap.className = "message message--assistant answer-card answer-card--" + card.mode.toLowerCase() + (isError ? " message--error" : "");
@@ -921,7 +1437,7 @@ function renderAnswerCard(card, isError, opts) {
   direct.className = "answer-card-direct";
   direct.textContent = card.direct_answer;
   bubble.appendChild(direct);
-  if (opts?.showConfidenceBadge !== false) {
+  if (opts?.showConfidenceBadge !== false && !opts?.suppressConfidenceForAdminQcFail) {
     bubble.appendChild(
       renderConfidenceBadge((opts?.sourceConfidenceStrip ?? "").trim() || "informational_only")
     );
@@ -995,21 +1511,29 @@ function renderAnswerCard(card, isError, opts) {
     followupWrap.className = "answer-card-followups";
     const label = document.createElement("div");
     label.className = "answer-card-followups-label";
-    label.textContent = "Suggested follow-ups";
+    label.textContent = "Follow-up questions";
     followupWrap.appendChild(label);
+    const hint = document.createElement("div");
+    hint.className = "answer-card-followups-hint";
+    hint.textContent = "Tap a line to send it as your next message.";
+    followupWrap.appendChild(hint);
     const chips = document.createElement("div");
-    chips.className = "answer-card-followups-chips";
+    chips.className = "answer-card-followups-chips answer-card-followups-chips--stacked";
     followupQuestions.slice(0, 6).forEach((q) => {
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = "answer-card-followup-chip";
-      btn.textContent = q.trim() || "Ask this";
-      btn.addEventListener("click", () => opts.onFollowupClick(q.trim() || ""));
+      const text = q.trim() || "Ask this";
+      btn.className = "answer-card-followup-chip answer-card-followup-chip--row";
+      btn.textContent = text;
+      btn.setAttribute("aria-label", "Send: " + text);
+      btn.addEventListener("click", () => opts.onFollowupClick(text));
       chips.appendChild(btn);
     });
     followupWrap.appendChild(chips);
     bubble.appendChild(followupWrap);
   }
+  if (opts?.qcAudit)
+    bubble.appendChild(renderQcAuditBadge(opts.qcAudit));
   wrap.appendChild(bubble);
   return wrap;
 }
@@ -1023,7 +1547,7 @@ function renderAssistantContent(body, isError, opts) {
     errWrap.className = "message message--assistant" + (isError ? " message--error" : "");
     const errBubble = document.createElement("div");
     errBubble.className = "message-bubble";
-    if (opts?.showConfidenceBadge !== false) {
+    if (opts?.showConfidenceBadge !== false && !opts?.suppressConfidenceForAdminQcFail) {
       errBubble.appendChild(
         renderConfidenceBadge((opts?.sourceConfidenceStrip ?? "").trim() || "informational_only")
       );
@@ -1032,6 +1556,8 @@ function renderAssistantContent(body, isError, opts) {
     errText.className = "message-bubble-text";
     errText.textContent = "Answer could not be displayed. Please try again.";
     errBubble.appendChild(errText);
+    if (opts?.qcAudit)
+      errBubble.appendChild(renderQcAuditBadge(opts.qcAudit));
     errWrap.appendChild(errBubble);
     return errWrap;
   }
@@ -1039,7 +1565,7 @@ function renderAssistantContent(body, isError, opts) {
   wrap.className = "message message--assistant" + (isError ? " message--error" : "");
   const bubble = document.createElement("div");
   bubble.className = "message-bubble";
-  if (opts?.showConfidenceBadge !== false) {
+  if (opts?.showConfidenceBadge !== false && !opts?.suppressConfidenceForAdminQcFail) {
     bubble.appendChild(
       renderConfidenceBadge((opts?.sourceConfidenceStrip ?? "").trim() || "informational_only")
     );
@@ -1047,11 +1573,13 @@ function renderAssistantContent(body, isError, opts) {
   const textEl = document.createElement("div");
   textEl.className = "message-bubble-text";
   if (opts?.renderAsMarkdown && trimmed.length > 0) {
-    textEl.innerHTML = simpleMarkdownToHtml(body);
+    textEl.innerHTML = rosterStepMarkdownToHtml(body);
   } else {
-    textEl.textContent = normalizeMessageText(body);
+    textEl.textContent = normalizeMessageText(sanitizeDisplayMessage(body));
   }
   bubble.appendChild(textEl);
+  if (opts?.qcAudit)
+    bubble.appendChild(renderQcAuditBadge(opts.qcAudit));
   wrap.appendChild(bubble);
   return wrap;
 }
@@ -1072,7 +1600,12 @@ function renderRosterStepOutputs(stepOutputs) {
   header.appendChild(headerTitle);
   header.appendChild(headerChevron);
   const body = document.createElement("div");
-  body.className = "roster-step-outputs-body roster-step-outputs-body--collapsed";
+  const hasFullReport = stepOutputs.length >= 12;
+  body.className = hasFullReport ? "roster-step-outputs-body" : "roster-step-outputs-body roster-step-outputs-body--collapsed";
+  if (hasFullReport) {
+    header.setAttribute("aria-expanded", "true");
+    headerChevron.textContent = "\u25BC";
+  }
   for (const step of stepOutputs) {
     const section = document.createElement("div");
     section.className = "roster-step-section roster-step-section--collapsed";
@@ -1086,10 +1619,36 @@ function renderRosterStepOutputs(stepOutputs) {
     sectionHeader.textContent = stepLabel + rowHint;
     const sectionBody = document.createElement("div");
     sectionBody.className = "roster-step-section-body";
-    const pre = document.createElement("pre");
-    pre.className = "roster-step-csv";
-    pre.textContent = step.csv_content || "(no data)";
-    sectionBody.appendChild(pre);
+    const hasMarkdown = !!(step.markdown_content && step.markdown_content.trim());
+    const hasJson = !!(step.json_content && step.json_content.trim());
+    if (hasMarkdown) {
+      const mdWrap = document.createElement("div");
+      mdWrap.className = "roster-step-markdown";
+      mdWrap.innerHTML = rosterStepMarkdownToHtml(step.markdown_content.trim());
+      sectionBody.appendChild(mdWrap);
+      if (hasJson) {
+        const dlBtn = document.createElement("button");
+        dlBtn.type = "button";
+        dlBtn.className = "roster-step-download-json";
+        dlBtn.textContent = "Download JSON";
+        dlBtn.setAttribute("aria-label", "Download NPI profile as JSON");
+        dlBtn.addEventListener("click", () => {
+          const blob = new Blob([step.json_content], { type: "application/json;charset=utf-8" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = "npi_profile.json";
+          a.click();
+          URL.revokeObjectURL(url);
+        });
+        sectionBody.appendChild(dlBtn);
+      }
+    } else {
+      const pre = document.createElement("pre");
+      pre.className = "roster-step-csv";
+      pre.textContent = step.csv_content || "(no data)";
+      sectionBody.appendChild(pre);
+    }
     sectionHeader.addEventListener("click", () => {
       section.classList.toggle("roster-step-section--collapsed");
       sectionHeader.setAttribute("aria-expanded", section.classList.contains("roster-step-section--collapsed") ? "false" : "true");
@@ -1253,23 +1812,32 @@ function renderThinkingBlock(initialLines, opts) {
   });
   block.appendChild(preview);
   block.appendChild(body);
+  let lastStatusLine = "";
   return {
     el: block,
     setPreview(text) {
-      preview.textContent = text;
+      preview.replaceChildren();
+      const w = document.createElement("span");
+      w.className = "thinking-word";
+      w.textContent = thinkingFriendlyStatus(text);
+      const r = document.createElement("span");
+      r.className = "thinking-rule";
+      preview.appendChild(w);
+      preview.appendChild(r);
     },
     addLine(line) {
+      lastStatusLine = line;
+      word.textContent = thinkingFriendlyStatus(line);
       const div = document.createElement("div");
       div.className = "thinking-line";
       div.textContent = line;
       body.appendChild(div);
-      word.textContent = "Thinking";
       block.classList.remove("collapsed");
       preview.setAttribute("aria-expanded", "true");
       body.scrollTop = body.scrollHeight;
     },
-    done(lineCount) {
-      word.textContent = lineCount <= 1 ? "Thinking" : `Thinking (${lineCount})`;
+    done(_lineCount) {
+      word.textContent = lastStatusLine ? thinkingFriendlyStatus(lastStatusLine) : "Ready";
       block.classList.add("thinking-block--done");
       setTimeout(() => {
         collapse();
@@ -1284,17 +1852,22 @@ function renderNextQuestions(questions, onSelect) {
   wrap.className = "next-questions";
   const label = document.createElement("div");
   label.className = "next-questions-label";
-  label.textContent = "Suggested follow-ups";
+  label.textContent = "Follow-up questions";
   wrap.appendChild(label);
+  const hint = document.createElement("div");
+  hint.className = "next-questions-hint";
+  hint.textContent = "Tap a line to send it as your next message.";
+  wrap.appendChild(hint);
   const chips = document.createElement("div");
-  chips.className = "next-questions-chips";
+  chips.className = "next-questions-chips next-questions-chips--stacked";
   questions.slice(0, 6).forEach((q) => {
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = "next-questions-chip";
-    btn.textContent = q.trim() || "Ask this";
-    btn.setAttribute("aria-label", q.trim() || "Ask this");
-    btn.addEventListener("click", () => onSelect(q.trim() || ""));
+    const text = q.trim() || "Ask this";
+    btn.className = "next-questions-chip next-questions-chip--row";
+    btn.textContent = text;
+    btn.setAttribute("aria-label", "Send: " + text);
+    btn.addEventListener("click", () => onSelect(text));
     chips.appendChild(btn);
   });
   wrap.appendChild(chips);
@@ -1449,20 +2022,756 @@ function renderFeedback(correlationId) {
   bar.appendChild(actions);
   return bar;
 }
-function getRagDocumentUrl(documentId, pageNumber) {
-  const base = (typeof window !== "undefined" && window.RAG_APP_BASE)?.trim() ?? "";
+function getRagDocumentUrl(documentId, pageNumber, citeText) {
+  const rawBase = typeof window !== "undefined" ? window.RAG_APP_BASE : void 0;
+  const base = typeof rawBase === "string" ? rawBase.trim() : "";
   if (!base || !documentId?.trim())
     return null;
   const params = new URLSearchParams({ tab: "read", documentId: documentId.trim() });
   if (pageNumber != null)
     params.set("pageNumber", String(pageNumber));
+  const ct = (citeText ?? "").trim().slice(0, 400);
+  if (ct)
+    params.set("citeText", ct);
   return `${base.replace(/\/$/, "")}?${params.toString()}`;
 }
+function resolveSourceOpenHref(s) {
+  if (s.open_href && isAllowedOpenHref(s.open_href))
+    return s.open_href.trim();
+  const cite = (s.cite_text ?? "").trim() || (s.snippet ?? "").trim().slice(0, 400);
+  return getRagDocumentUrl(s.document_id, s.page_number, cite || null);
+}
 function openDocumentOrSnippet(s) {
-  const url = getRagDocumentUrl(s.document_id, s.page_number);
+  const cite = (s.cite_text ?? "").trim() || (s.snippet ?? "").trim().slice(0, 400);
+  const url = getRagDocumentUrl(s.document_id, s.page_number, cite || null);
   if (url) {
     window.open(url, "_blank", "noopener,noreferrer");
   }
+}
+var LLM_PERF_LS = "mobius_show_llm_performance";
+var LEGACY_LLM_INSIGHTS_LS = "mobius_show_answer_insights";
+var LLM_PERF_ACTIVITY = "llm_performance";
+var LLM_PERF_ACTIVITY_ALIASES = ["answer_insights", "technical", "developer"];
+function getShowLlmPerformance(profile) {
+  try {
+    const v = localStorage.getItem(LLM_PERF_LS) ?? localStorage.getItem(LEGACY_LLM_INSIGHTS_LS);
+    if (v === "1")
+      return true;
+    if (v === "0")
+      return false;
+  } catch {
+  }
+  const acts = profile?.activities ?? [];
+  if (acts.includes(LLM_PERF_ACTIVITY))
+    return true;
+  return LLM_PERF_ACTIVITY_ALIASES.some((a) => acts.includes(a));
+}
+function adminShouldSuppressConfidenceForQc(profile, qc) {
+  if (!getShowLlmPerformance(profile))
+    return false;
+  if (!qc || typeof qc.passed !== "boolean")
+    return false;
+  return qc.passed === false;
+}
+function removeConfidenceBadgesInTurn(turnWrap) {
+  turnWrap.querySelectorAll(".confidence-badge-wrap").forEach((el2) => el2.remove());
+}
+function confidenceFromStrip(strip) {
+  const s = (strip || "").toLowerCase().replace(/_/g, "_");
+  if (!s)
+    return "medium";
+  if (s.includes("authoritative") || s.includes("approved") && !s.includes("caution"))
+    return "high";
+  if (s.includes("no_sources") || s.includes("informational_only"))
+    return "low";
+  if (s.includes("caution") || s.includes("augmented"))
+    return "medium";
+  return "medium";
+}
+function formatCostShort(n) {
+  if (n <= 0)
+    return "0.000";
+  if (n < 1e-4)
+    return n.toFixed(6);
+  if (n < 0.01)
+    return n.toFixed(4);
+  return n.toFixed(3);
+}
+function formatRouterNote(meta, rows) {
+  const fromMeta = meta?.router_by_stage;
+  if (fromMeta && fromMeta.length > 0) {
+    const lines = ["Why these models were picked (per LLM call):"];
+    fromMeta.forEach((x) => {
+      const bits = [];
+      if (x.mode)
+        bits.push(x.mode);
+      if (x.exploration)
+        bits.push("exploration round");
+      if (x.circuit_relief)
+        bits.push("circuit relief");
+      const tag = bits.length ? `[${bits.join(" \xB7 ")}] ` : "";
+      let comp = "";
+      if (x.composite_pg != null || x.composite_call != null) {
+        const pg = x.composite_pg != null && Number.isFinite(Number(x.composite_pg)) ? Number(x.composite_pg).toFixed(2) : "\u2014";
+        const pc = x.composite_call != null && Number.isFinite(Number(x.composite_call)) ? Number(x.composite_call).toFixed(2) : "\u2014";
+        comp = ` composite PG/call ${pg}/${pc}.`;
+      }
+      lines.push(
+        `\u2022 ${(x.stage || "?").toString()} \xB7 ${(x.model || "?").toString()}: ${tag}${(x.reason || "\u2014").toString()}${comp}`
+      );
+    });
+    return lines.join("\n");
+  }
+  const intRow = [...rows].reverse().find((r) => r.stage === "integrator");
+  const intModel = intRow?.model || meta?.primary_model || "\u2014";
+  const explore = meta?.integrator_exploration;
+  const reactN = rows.filter((r) => (r.stage || "").startsWith("react_")).length;
+  const conf = explore === true ? "medium, exploration band" : explore === false ? "building, exploitation" : "routing";
+  if (meta?.pipeline === "legacy") {
+    return `[LEGACY] Plan \u2192 resolve path (no ReAct tool rounds). Integrator: ${intModel}. Forced exploration (every 20 stage calls) applies on enabled pipelines.`;
+  }
+  let t = `Router decision \u2014 integrator: ${intModel} selected (confidence ${conf}`;
+  t += explore === true ? "; model still gathering quality samples in router band." : ").";
+  if (reactN > 0) {
+    t += ` ReAct: ${reactN} reasoning round(s). Exploration round uses least-sampled model periodically (interval 20) for A/B calibration \u2014 compare stages in llm_calls.`;
+  }
+  t += " Stage table \u201CComposite PG / call\u201D: batch score at router pick vs same formula on this call (latency, cost, QA, error). Thompson blends priors with the batch composite (not QA alone).";
+  return t;
+}
+function escapeHtml2(s) {
+  return (s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function parseScoreValue(v) {
+  if (typeof v === "number" && Number.isFinite(v))
+    return Math.max(0, Math.min(1, v));
+  if (typeof v === "string" && v.trim()) {
+    const n = parseFloat(v);
+    if (Number.isFinite(n))
+      return Math.max(0, Math.min(1, n));
+  }
+  return void 0;
+}
+function effectiveQcScore(qc) {
+  if (!qc)
+    return null;
+  const u = parseScoreValue(qc.user_score);
+  if (u !== void 0)
+    return u;
+  const a = parseScoreValue(qc.automated_score) ?? parseScoreValue(qc.score);
+  if (a !== void 0)
+    return a;
+  return qc.passed ? 1 : 0;
+}
+function formatRubricDimensionLabel(key) {
+  return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+function getSubScoreEntries(qc) {
+  const raw = qc.sub_scores;
+  if (!raw || typeof raw !== "object")
+    return [];
+  return Object.keys(raw).sort().map((k) => {
+    const n = parseScoreValue(raw[k]);
+    return n !== void 0 ? [k, n] : null;
+  }).filter((x) => x != null);
+}
+function buildAdjudicatorDetailWrap(qc) {
+  const wrap = document.createElement("div");
+  wrap.className = "adjudicator-scorecard-detail-wrap";
+  const hSum = document.createElement("div");
+  hSum.className = "adjudicator-scorecard-section-label";
+  hSum.textContent = "Score summary";
+  wrap.appendChild(hSum);
+  const auto = parseScoreValue(qc.automated_score) ?? parseScoreValue(qc.score) ?? (qc.passed ? 1 : 0);
+  const user = parseScoreValue(qc.user_score);
+  const eff = effectiveQcScore(qc);
+  const tbl = document.createElement("table");
+  tbl.className = "adjudicator-scorecard-matrix";
+  const addRow = (label, val) => {
+    const tr = document.createElement("tr");
+    const th = document.createElement("th");
+    th.textContent = label;
+    const td = document.createElement("td");
+    td.className = "adjudicator-scorecard-matrix-val";
+    td.textContent = val;
+    tr.appendChild(th);
+    tr.appendChild(td);
+    tbl.appendChild(tr);
+  };
+  addRow("Automated (overall)", auto.toFixed(2));
+  addRow("User override", user !== void 0 ? user.toFixed(2) : "\u2014");
+  addRow("Effective (displayed)", eff !== null ? eff.toFixed(2) : "\u2014");
+  if (user !== void 0) {
+    const delta = user - auto;
+    const sign = delta >= 0 ? "+" : "";
+    addRow("\u0394 (user \u2212 automated)", `${sign}${delta.toFixed(2)}`);
+  }
+  wrap.appendChild(tbl);
+  const hSub = document.createElement("div");
+  hSub.className = "adjudicator-scorecard-section-label";
+  hSub.textContent = "Rubric sub-scores";
+  wrap.appendChild(hSub);
+  const entries = getSubScoreEntries(qc);
+  if (entries.length === 0) {
+    const p = document.createElement("p");
+    p.className = "adjudicator-scorecard-subscores-empty";
+    p.textContent = "No rubric dimensions in this audit (older run, or adjudicator did not return JSON sub_scores).";
+    wrap.appendChild(p);
+  } else {
+    const stbl = document.createElement("table");
+    stbl.className = "adjudicator-scorecard-subscores";
+    entries.forEach(([k, v]) => {
+      const tr = document.createElement("tr");
+      const th = document.createElement("th");
+      th.textContent = formatRubricDimensionLabel(k);
+      const td = document.createElement("td");
+      const inner = document.createElement("div");
+      inner.className = "adjudicator-scorecard-subscore-cell-inner";
+      const pct = Math.round(Math.max(0, Math.min(1, v)) * 100);
+      const valSpan = document.createElement("span");
+      valSpan.className = "adjudicator-scorecard-subscore-val";
+      valSpan.textContent = v.toFixed(2);
+      const barWrap = document.createElement("span");
+      barWrap.className = "adjudicator-scorecard-subscore-bar-wrap";
+      const bar = document.createElement("span");
+      bar.className = "adjudicator-scorecard-subscore-bar";
+      bar.style.width = `${pct}%`;
+      barWrap.appendChild(bar);
+      inner.appendChild(valSpan);
+      inner.appendChild(barWrap);
+      td.appendChild(inner);
+      tr.appendChild(th);
+      tr.appendChild(td);
+      stbl.appendChild(tr);
+    });
+    wrap.appendChild(stbl);
+  }
+  const hasTech = qc.adjudicator_model && String(qc.adjudicator_model).trim() || qc.adjudicator_llm_call_id && String(qc.adjudicator_llm_call_id).trim();
+  if (hasTech) {
+    const metaTech = document.createElement("div");
+    metaTech.className = "adjudicator-scorecard-tech";
+    if (qc.adjudicator_model && String(qc.adjudicator_model).trim()) {
+      const line = document.createElement("div");
+      line.className = "adjudicator-scorecard-tech-line";
+      line.textContent = `Adjudicator model: ${String(qc.adjudicator_model).trim()}`;
+      metaTech.appendChild(line);
+    }
+    if (qc.adjudicator_llm_call_id && String(qc.adjudicator_llm_call_id).trim()) {
+      const line = document.createElement("div");
+      line.className = "adjudicator-scorecard-tech-line adjudicator-scorecard-tech-line--mono";
+      line.textContent = `Adjudicator call id: ${String(qc.adjudicator_llm_call_id).trim()}`;
+      metaTech.appendChild(line);
+    }
+    wrap.appendChild(metaTech);
+  }
+  const raw = (qc.adjudicator_full_response || "").toString().trim();
+  if (raw) {
+    const det = document.createElement("details");
+    det.className = "adjudicator-scorecard-raw-details";
+    const summ = document.createElement("summary");
+    summ.textContent = "Full adjudicator response (raw)";
+    const pre = document.createElement("pre");
+    pre.className = "adjudicator-scorecard-pre adjudicator-scorecard-pre--raw";
+    pre.textContent = raw.slice(0, 8e3);
+    det.appendChild(summ);
+    det.appendChild(pre);
+    wrap.appendChild(det);
+  }
+  return wrap;
+}
+function llmUsageBreakdownPatchSig(rows) {
+  return rows.map(
+    (r) => `${r.llm_call_id ?? ""}:${r.quality_score ?? ""}:${(r.quality_source ?? "").slice(0, 32)}:${r.router_composite_at_pick ?? ""}:${r.per_call_composite ?? ""}`
+  ).join("|");
+}
+function formatCompositeTooltip(pg, pgBrk, pc, pcBrk) {
+  const lines = [
+    "Composite = q\xD70.25 + rel\xD70.25 + latTerm\xD70.25 + costTerm\xD70.25.",
+    "Linear caps depend on stage type (planner/rag/integrator/cheap stages, \u2026).",
+    "PG @ pick: p95 latency + avg cost vs those caps; per-call: this latency vs cap.",
+    "Per-call cost term uses list $ from input/output tokens \xD7 registered $/1K when tokens > 0, else billed cost.",
+    "rel=0 if call_status=error (per-call) or from batch hard_error_rate (PG)."
+  ];
+  if (pg !== null) {
+    lines.push(`PG @ pick: ${pg.toFixed(3)}`);
+    if (pgBrk && Object.keys(pgBrk).length)
+      lines.push(JSON.stringify(pgBrk));
+  } else
+    lines.push("PG @ pick: \u2014 (no stats row yet)");
+  if (pc !== null) {
+    lines.push(`This call: ${pc.toFixed(3)}`);
+    if (pcBrk && Object.keys(pcBrk).length)
+      lines.push(JSON.stringify(pcBrk));
+  }
+  return lines.join("\n");
+}
+function fillLlmPerformanceTbody(tbody, rows) {
+  const maxLat = Math.max(1, ...rows.map((r) => Math.max(0, Number(r.latency_ms) || 0)));
+  tbody.replaceChildren();
+  rows.forEach((r) => {
+    const tr = document.createElement("tr");
+    const stageName = (r.display_stage || r.stage || "\u2014").trim();
+    const latMs = Math.max(0, Number(r.latency_ms) || 0);
+    const latSec = latMs > 0 ? (latMs / 1e3).toFixed(1) : "\u2014";
+    const rowCost = r.cost_usd != null && Number(r.cost_usd) > 0 ? formatCostShort(Number(r.cost_usd)) : "0.000";
+    const pct = maxLat > 0 ? Math.round(latMs / maxLat * 100) : 0;
+    const rawStatus = (r.call_status || "ok").toLowerCase();
+    const stClass = rawStatus === "error" ? "llm-performance-status--error" : "llm-performance-status--ok";
+    const stLabel = rawStatus === "error" ? "Error" : "OK";
+    const whyFull = (r.router_reason || "").trim();
+    const mode = (r.router_selection || "").trim();
+    const qSamples = r.router_quality_samples_at_pick;
+    const qAvg = r.router_avg_quality_at_pick;
+    let whyLine = "";
+    if (mode)
+      whyLine += `[${mode}] `;
+    if (r.router_exploration_round)
+      whyLine += "exploration \xB7 ";
+    if (r.router_circuit_relief)
+      whyLine += "circuit relief \xB7 ";
+    if (qSamples != null && Number.isFinite(qSamples))
+      whyLine += `PG samples=${qSamples}${qAvg != null && Number.isFinite(qAvg) ? ` \xB7 avgQ\u2248${Number(qAvg).toFixed(2)}` : ""} \xB7 `;
+    whyLine += whyFull || "\u2014";
+    const whyShort = whyLine.length > 140 ? whyLine.slice(0, 137) + "\u2026" : whyLine;
+    const whyTitle = escapeHtml2(whyLine.length > 200 ? whyLine.slice(0, 2e3) : whyLine);
+    const qRaw = r.quality_score;
+    const qNum = qRaw != null && Number.isFinite(Number(qRaw)) ? Number(qRaw) : null;
+    const qDisp = qNum !== null ? qNum.toFixed(2) : "\u2014";
+    const qSrc = (r.quality_source || "").trim();
+    const qTitle = escapeHtml2(qSrc ? qSrc.slice(0, 500) : "");
+    const pgN = r.router_composite_at_pick != null && Number.isFinite(Number(r.router_composite_at_pick)) ? Number(r.router_composite_at_pick) : null;
+    const pcN = r.per_call_composite != null && Number.isFinite(Number(r.per_call_composite)) ? Number(r.per_call_composite) : null;
+    const pgBrk = r.router_composite_breakdown;
+    const pcBrk = r.per_call_composite_breakdown;
+    const compTitle = escapeHtml2(
+      formatCompositeTooltip(pgN, pgBrk, pcN, pcBrk).slice(0, 3500)
+    );
+    const compShort = (pgN !== null ? pgN.toFixed(2) : "\u2014") + " / " + (pcN !== null ? pcN.toFixed(2) : "\u2014");
+    tr.innerHTML = `<td>${escapeHtml2(stageName)}</td><td class="llm-performance-mono">${escapeHtml2(
+      (r.model || "\u2014").trim()
+    )}</td><td class="llm-performance-why" title="${whyTitle}">${escapeHtml2(whyShort)}</td><td class="llm-performance-lat-cell"><span class="llm-performance-lat-bar-wrap"><span class="llm-performance-lat-bar" style="width:${pct}%"></span></span><span class="llm-performance-lat-num">${latSec}${latSec !== "\u2014" ? "s" : ""}</span></td><td class="llm-performance-mono">$${rowCost}</td><td class="llm-performance-composite-cell" title="${compTitle}">${escapeHtml2(
+      compShort
+    )}</td><td class="llm-performance-qa-cell" title="${qTitle}">${escapeHtml2(
+      qDisp
+    )}</td><td class="llm-performance-status-cell"><span class="${stClass}">${escapeHtml2(
+      stLabel
+    )}</span></td>`;
+    tbody.appendChild(tr);
+  });
+}
+function renderAdjudicatorScorecard(qc, correlationId, technicalFeedback) {
+  const wrap = document.createElement("div");
+  wrap.className = "adjudicator-scorecard collapsed";
+  const auto = parseScoreValue(qc.automated_score) ?? parseScoreValue(qc.score);
+  const userS = parseScoreValue(qc.user_score);
+  const effective = effectiveQcScore(qc);
+  const effStr = effective !== null ? effective.toFixed(2) : "\u2014";
+  const autoStr = auto !== void 0 ? auto.toFixed(2) : qc.passed ? "1.00" : "0.00";
+  const vUi = adjudicationVerdictUi(qc);
+  const preview = document.createElement("div");
+  preview.className = "adjudicator-scorecard-preview";
+  preview.setAttribute("role", "button");
+  preview.setAttribute("tabindex", "0");
+  preview.setAttribute("aria-expanded", "false");
+  const titleEl = document.createElement("span");
+  titleEl.className = "adjudicator-scorecard-title";
+  titleEl.textContent = "QA / Adjudicator";
+  const oneline = document.createElement("span");
+  oneline.className = "adjudicator-scorecard-oneline";
+  oneline.dataset.effective = effStr;
+  oneline.textContent = `${vUi.shortLabel} \xB7 score ${effStr} \xB7 ${(qc.source || "\u2014").toString().slice(0, 24)}`;
+  const chev = document.createElement("span");
+  chev.className = "adjudicator-scorecard-chevron";
+  chev.setAttribute("aria-hidden", "true");
+  chev.textContent = "\u25BC";
+  preview.appendChild(titleEl);
+  preview.appendChild(oneline);
+  preview.appendChild(chev);
+  const body = document.createElement("div");
+  body.className = "adjudicator-scorecard-body";
+  const badges = document.createElement("div");
+  badges.className = "adjudicator-scorecard-badges";
+  const b1 = document.createElement("span");
+  b1.className = `adjudicator-scorecard-badge adjudicator-scorecard-badge--${vUi.badgeVariant}`;
+  b1.textContent = vUi.verdictBadgeText;
+  const b2 = document.createElement("span");
+  b2.className = "adjudicator-scorecard-badge adjudicator-scorecard-badge--score";
+  b2.textContent = `Effective score: ${effStr}`;
+  const b3 = document.createElement("span");
+  b3.className = "adjudicator-scorecard-badge adjudicator-scorecard-badge--auto";
+  b3.textContent = `Automated: ${autoStr}`;
+  const b4 = document.createElement("span");
+  b4.className = "adjudicator-scorecard-badge adjudicator-scorecard-badge--user";
+  b4.textContent = userS !== void 0 ? `User: ${userS.toFixed(2)}` : "User: \u2014";
+  badges.appendChild(b1);
+  badges.appendChild(b2);
+  badges.appendChild(b3);
+  badges.appendChild(b4);
+  body.appendChild(badges);
+  body.appendChild(buildAdjudicatorDetailWrap(qc));
+  const reasonBox = document.createElement("div");
+  reasonBox.className = "adjudicator-scorecard-reason";
+  reasonBox.innerHTML = `<strong>Rationale</strong><pre class="adjudicator-scorecard-pre">${escapeHtml2(
+    (qc.reason || "\u2014").toString().slice(0, 4e3)
+  )}</pre>`;
+  body.appendChild(reasonBox);
+  const metaRow = document.createElement("div");
+  metaRow.className = "adjudicator-scorecard-meta";
+  metaRow.textContent = `Source: ${(qc.source || "\u2014").toString()} \xB7 ${(qc.audited_at || "\u2014").toString()}`;
+  body.appendChild(metaRow);
+  const editWrap = document.createElement("div");
+  editWrap.className = "adjudicator-scorecard-edit";
+  const editLabel = document.createElement("label");
+  editLabel.className = "adjudicator-scorecard-edit-label";
+  editLabel.htmlFor = `qc-user-score-${correlationId.slice(0, 8)}`;
+  editLabel.textContent = "Your score (0\u20131, persisted)";
+  const inputRow = document.createElement("div");
+  inputRow.className = "adjudicator-scorecard-edit-row";
+  const num = document.createElement("input");
+  num.type = "number";
+  num.className = "adjudicator-scorecard-score-input";
+  num.id = `qc-user-score-${correlationId.slice(0, 8)}`;
+  num.min = "0";
+  num.max = "1";
+  num.step = "0.01";
+  num.value = userS !== void 0 ? String(userS) : effective !== null ? String(Math.round(effective * 100) / 100) : "0.8";
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.className = "adjudicator-scorecard-save";
+  saveBtn.textContent = "Save score";
+  const note = document.createElement("textarea");
+  note.className = "adjudicator-scorecard-note";
+  note.rows = 2;
+  note.placeholder = "Optional note (persisted)";
+  note.value = (qc.user_score_comment || "").toString();
+  inputRow.appendChild(num);
+  inputRow.appendChild(saveBtn);
+  editWrap.appendChild(editLabel);
+  editWrap.appendChild(inputRow);
+  editWrap.appendChild(note);
+  body.appendChild(editWrap);
+  saveBtn.addEventListener("click", () => {
+    const raw = parseFloat(num.value);
+    if (Number.isNaN(raw) || raw < 0 || raw > 1) {
+      saveBtn.textContent = "0\u20131 only";
+      window.setTimeout(() => {
+        saveBtn.textContent = "Save score";
+      }, 1500);
+      return;
+    }
+    saveBtn.disabled = true;
+    fetch(API_BASE + "/chat/qc-user-score/" + encodeURIComponent(correlationId), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_score: raw,
+        user_score_comment: note.value.trim() || null
+      })
+    }).then((r) => r.json()).then((j) => {
+      const nq = j.qc_audit;
+      if (nq && typeof nq.passed === "boolean") {
+        syncAdjudicatorScorecardDom(wrap, nq, oneline, badges);
+        refreshLlmPerformanceQuality(wrap.closest(".chat-turn"), nq);
+      }
+      saveBtn.textContent = "Saved";
+    }).catch(() => {
+      saveBtn.textContent = "Error";
+    }).finally(() => {
+      window.setTimeout(() => {
+        saveBtn.disabled = false;
+        if (saveBtn.textContent === "Saved")
+          saveBtn.textContent = "Save score";
+        if (saveBtn.textContent === "Error")
+          saveBtn.textContent = "Save score";
+      }, 1200);
+    });
+  });
+  const fbRow = document.createElement("div");
+  fbRow.className = "adjudicator-scorecard-feedback";
+  const fbLab = document.createElement("span");
+  fbLab.className = "adjudicator-scorecard-feedback-label";
+  fbLab.textContent = "Adjudicator helpful?";
+  const fbTh = document.createElement("div");
+  fbTh.className = "adjudicator-scorecard-feedback-thumbs";
+  const upF = document.createElement("button");
+  upF.type = "button";
+  upF.setAttribute("aria-label", "Adjudicator assessment was helpful");
+  upF.appendChild(createThumbIcon("up"));
+  const downF = document.createElement("button");
+  downF.type = "button";
+  downF.setAttribute("aria-label", "Adjudicator assessment was not helpful");
+  downF.appendChild(createThumbIcon("down"));
+  function postAdj(r) {
+    fetch(API_BASE + "/chat/adjudication-feedback/" + encodeURIComponent(correlationId), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rating: r, comment: null })
+    }).then(() => {
+      upF.disabled = true;
+      downF.disabled = true;
+      upF.classList.toggle("selected", r === "up");
+      downF.classList.toggle("selected", r === "down");
+    }).catch(() => {
+    });
+  }
+  upF.addEventListener("click", () => postAdj("up"));
+  downF.addEventListener("click", () => postAdj("down"));
+  fbTh.appendChild(upF);
+  fbTh.appendChild(downF);
+  fbRow.appendChild(fbLab);
+  fbRow.appendChild(fbTh);
+  body.appendChild(fbRow);
+  const adjFb = technicalFeedback?.adjudication;
+  if (adjFb && (adjFb.rating === "up" || adjFb.rating === "down")) {
+    upF.disabled = true;
+    downF.disabled = true;
+    upF.classList.toggle("selected", adjFb.rating === "up");
+    downF.classList.toggle("selected", adjFb.rating === "down");
+  }
+  const adminNote = document.createElement("p");
+  adminNote.className = "adjudicator-scorecard-admin-note";
+  adminNote.textContent = "QA / adjudicator details visible to admins only.";
+  body.appendChild(adminNote);
+  const setExpanded = (exp) => {
+    if (exp) {
+      wrap.classList.remove("collapsed");
+      wrap.classList.add("adjudicator-scorecard--expanded");
+    } else {
+      wrap.classList.add("collapsed");
+      wrap.classList.remove("adjudicator-scorecard--expanded");
+    }
+    preview.setAttribute("aria-expanded", String(exp));
+    chev.textContent = exp ? "\u25B2" : "\u25BC";
+    oneline.style.display = exp ? "none" : "";
+  };
+  const toggle = () => setExpanded(wrap.classList.contains("collapsed"));
+  preview.addEventListener("click", toggle);
+  preview.addEventListener("keydown", (e) => {
+    const ke = e;
+    if (ke.key === "Enter" || ke.key === " ") {
+      ke.preventDefault();
+      toggle();
+    }
+  });
+  wrap.appendChild(preview);
+  wrap.appendChild(body);
+  return wrap;
+}
+function syncAdjudicatorScorecardDom(wrap, qc, oneline, badgesWrap) {
+  const vUi = adjudicationVerdictUi(qc);
+  const effective = effectiveQcScore(qc);
+  const effStr = effective !== null ? effective.toFixed(2) : "\u2014";
+  const auto = parseScoreValue(qc.automated_score) ?? parseScoreValue(qc.score) ?? (qc.passed ? 1 : 0);
+  oneline.textContent = `${vUi.shortLabel} \xB7 score ${effStr} \xB7 ${(qc.source || "\u2014").toString().slice(0, 24)}`;
+  oneline.dataset.effective = effStr;
+  const spans = badgesWrap.querySelectorAll(".adjudicator-scorecard-badge");
+  if (spans[0]) {
+    spans[0].className = `adjudicator-scorecard-badge adjudicator-scorecard-badge--${vUi.badgeVariant}`;
+    spans[0].textContent = vUi.verdictBadgeText;
+  }
+  if (spans[1])
+    spans[1].textContent = `Effective score: ${effStr}`;
+  if (spans[2])
+    spans[2].textContent = `Automated: ${auto.toFixed(2)}`;
+  const userS = parseScoreValue(qc.user_score);
+  let userBadge = badgesWrap.querySelector(".adjudicator-scorecard-badge--user");
+  if (!userBadge) {
+    userBadge = document.createElement("span");
+    userBadge.className = "adjudicator-scorecard-badge adjudicator-scorecard-badge--user";
+    badgesWrap.appendChild(userBadge);
+  }
+  userBadge.textContent = userS !== void 0 ? `User: ${userS.toFixed(2)}` : "User: \u2014";
+  const detailOld = wrap.querySelector(".adjudicator-scorecard-detail-wrap");
+  if (detailOld?.parentNode) {
+    detailOld.replaceWith(buildAdjudicatorDetailWrap(qc));
+  }
+  const pre = wrap.querySelector(".adjudicator-scorecard-reason .adjudicator-scorecard-pre");
+  if (pre)
+    pre.textContent = (qc.reason || "\u2014").toString().slice(0, 4e3);
+  const note = wrap.querySelector(".adjudicator-scorecard-note");
+  if (note && qc.user_score_comment != null)
+    note.value = String(qc.user_score_comment);
+}
+function renderLlmPerformance(rows, meta, opts) {
+  const wrap = document.createElement("div");
+  wrap.className = "llm-performance collapsed";
+  const primary = (meta?.primary_model || "").trim() || [...rows].reverse().find((r) => r.stage === "integrator")?.model || rows[0]?.model || "\u2014";
+  const totalMs = meta?.total_latency_ms ?? 0;
+  const totalSec = totalMs > 0 ? (totalMs / 1e3).toFixed(1) : "0.0";
+  const costNum = meta?.total_cost_usd != null && meta.total_cost_usd > 0 ? meta.total_cost_usd : opts.totalCostFallback ?? 0;
+  const costStr = formatCostShort(Number(costNum) || 0);
+  const qc = opts.qc;
+  const eqScore = effectiveQcScore(qc ?? void 0);
+  const qCollapsed = eqScore !== null ? eqScore.toFixed(2) : "\u2014";
+  const legacy = meta?.pipeline === "legacy";
+  const preview = document.createElement("div");
+  preview.className = "llm-performance-preview";
+  preview.setAttribute("role", "button");
+  preview.setAttribute("tabindex", "0");
+  preview.setAttribute("aria-expanded", "false");
+  const titleEl = document.createElement("span");
+  titleEl.className = "llm-performance-title";
+  titleEl.textContent = "LLM performance";
+  const oneline = document.createElement("span");
+  oneline.className = "llm-performance-oneline";
+  oneline.dataset.m = primary;
+  oneline.dataset.s = totalSec;
+  oneline.dataset.c = costStr;
+  oneline.dataset.legacy = legacy ? "1" : "0";
+  oneline.textContent = `${legacy ? "[LEGACY] " : ""}${primary} \xB7 ${totalSec}s \xB7 $${costStr} \xB7 quality ${qCollapsed}`;
+  const chev = document.createElement("span");
+  chev.className = "llm-performance-chevron";
+  chev.setAttribute("aria-hidden", "true");
+  chev.textContent = "\u25BC";
+  preview.appendChild(titleEl);
+  preview.appendChild(oneline);
+  preview.appendChild(chev);
+  const body = document.createElement("div");
+  body.className = "llm-performance-body";
+  const badges = document.createElement("div");
+  badges.className = "llm-performance-badges";
+  const confLabel = confidenceFromStrip(opts.sourceConfidenceStrip ?? null);
+  const qBadge = eqScore !== null ? eqScore.toFixed(2) : "\u2014";
+  const badgeSpecs = [
+    { className: "llm-performance-badge llm-performance-badge--model", text: primary },
+    { className: "llm-performance-badge llm-performance-badge--latency", text: `${totalSec}s total` },
+    { className: "llm-performance-badge llm-performance-badge--cost", text: `$${costStr}` },
+    {
+      className: "llm-performance-badge llm-performance-badge--quality",
+      text: `quality ${qBadge}`,
+      isQuality: true
+    }
+  ];
+  badgeSpecs.forEach((b) => {
+    const el2 = document.createElement("span");
+    el2.className = b.className;
+    el2.textContent = b.text;
+    if (b.isQuality)
+      el2.setAttribute("data-llm-badge-quality", "1");
+    badges.appendChild(el2);
+  });
+  const confEl = document.createElement("span");
+  confEl.className = "llm-performance-badge llm-performance-badge--confidence";
+  confEl.textContent = `confidence: ${confLabel}`;
+  badges.appendChild(confEl);
+  body.appendChild(badges);
+  const stageLabel = document.createElement("div");
+  stageLabel.className = "llm-performance-section-label";
+  stageLabel.textContent = "STAGE BREAKDOWN";
+  body.appendChild(stageLabel);
+  const tableWrap = document.createElement("div");
+  tableWrap.className = "llm-performance-table-wrap";
+  const table = document.createElement("table");
+  table.className = "llm-performance-table";
+  const thead = document.createElement("thead");
+  thead.innerHTML = '<tr><th>Stage</th><th>Model</th><th>Why this model</th><th>Latency</th><th>Cost</th><th title="PG batch composite at pick / per-call composite (hover for terms)">Composite<br><span class="llm-performance-th-sub">PG / call</span></th><th>QA</th><th>Status</th></tr>';
+  table.appendChild(thead);
+  const tb = document.createElement("tbody");
+  fillLlmPerformanceTbody(tb, rows);
+  table.appendChild(tb);
+  tableWrap.appendChild(table);
+  body.appendChild(tableWrap);
+  const tin = opts.inputTokens ?? 0;
+  const tout = opts.outputTokens ?? 0;
+  if (tin > 0 || tout > 0) {
+    const tokFoot = document.createElement("div");
+    tokFoot.className = "llm-performance-tokens-foot";
+    tokFoot.textContent = `Tokens in / out: ${tin.toLocaleString()} / ${tout.toLocaleString()}`;
+    body.appendChild(tokFoot);
+  }
+  const routerBox = document.createElement("div");
+  routerBox.className = "llm-performance-router";
+  routerBox.textContent = formatRouterNote(meta, rows);
+  body.appendChild(routerBox);
+  const j = meta?.jurisdiction;
+  const payerSlug = (j?.payer || "" || "").toLowerCase().replace(/\s+/g, "_");
+  const jurisLine = j ? `Jurisdiction: payer=${payerSlug || "\u2014"} \xB7 state=${(j.state || "\u2014").toString()}` : meta?.jurisdiction_summary ? `Jurisdiction: ${meta.jurisdiction_summary}` : "Jurisdiction: \u2014";
+  const cfgShort = (meta?.config_sha || "\u2014").toString().slice(0, 12);
+  const top = meta?.top_source;
+  const corpusBit = top?.document_name ? `Corpus: ${top.document_name}${top.page_number != null ? ` p.${top.page_number}` : ""}${top.match_score != null ? ` \xB7 match=${Number(top.match_score).toFixed(2)}` : ""}` : "Corpus: \u2014";
+  const footer = document.createElement("div");
+  footer.className = "llm-performance-footer";
+  const metaCol = document.createElement("div");
+  metaCol.className = "llm-performance-footer-meta";
+  metaCol.innerHTML = `${escapeHtml2(jurisLine)}<br/>Config: ${escapeHtml2(cfgShort)} \xB7 ${escapeHtml2(corpusBit)}`;
+  footer.appendChild(metaCol);
+  const routeFb = document.createElement("div");
+  routeFb.className = "llm-performance-routing-feedback";
+  const rfLabel = document.createElement("span");
+  rfLabel.className = "llm-performance-routing-label";
+  rfLabel.textContent = "Routing correct?";
+  const thumbs = document.createElement("div");
+  thumbs.className = "llm-performance-routing-thumbs";
+  const upB = document.createElement("button");
+  upB.type = "button";
+  upB.setAttribute("aria-label", "Routing was appropriate");
+  upB.appendChild(createThumbIcon("up"));
+  const downB = document.createElement("button");
+  downB.type = "button";
+  downB.setAttribute("aria-label", "Routing was not appropriate");
+  downB.appendChild(createThumbIcon("down"));
+  const cid = opts.correlationId;
+  function postPerf(r) {
+    if (!cid)
+      return;
+    fetch(API_BASE + "/chat/llm-performance-feedback/" + encodeURIComponent(cid), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rating: r })
+    }).then(() => {
+      upB.disabled = true;
+      downB.disabled = true;
+      upB.classList.toggle("selected", r === "up");
+      downB.classList.toggle("selected", r === "down");
+    }).catch(() => {
+    });
+  }
+  upB.addEventListener("click", () => postPerf("up"));
+  downB.addEventListener("click", () => postPerf("down"));
+  thumbs.appendChild(upB);
+  thumbs.appendChild(downB);
+  routeFb.appendChild(rfLabel);
+  routeFb.appendChild(thumbs);
+  footer.appendChild(routeFb);
+  body.appendChild(footer);
+  const adminNote = document.createElement("p");
+  adminNote.className = "llm-performance-admin-note";
+  adminNote.textContent = "LLM performance visible to admins only.";
+  body.appendChild(adminNote);
+  const rf = opts.routingFeedback;
+  if (rf && (rf.rating === "up" || rf.rating === "down")) {
+    upB.disabled = true;
+    downB.disabled = true;
+    upB.classList.toggle("selected", rf.rating === "up");
+    downB.classList.toggle("selected", rf.rating === "down");
+  }
+  const setExpanded = (exp) => {
+    if (exp) {
+      wrap.classList.remove("collapsed");
+      wrap.classList.add("llm-performance--expanded");
+    } else {
+      wrap.classList.add("collapsed");
+      wrap.classList.remove("llm-performance--expanded");
+    }
+    preview.setAttribute("aria-expanded", String(exp));
+    chev.textContent = exp ? "\u25B2" : "\u25BC";
+    oneline.style.display = exp ? "none" : "";
+  };
+  const toggle = () => {
+    setExpanded(wrap.classList.contains("collapsed"));
+  };
+  preview.addEventListener("click", toggle);
+  preview.addEventListener("keydown", (e) => {
+    const ke = e;
+    if (ke.key === "Enter" || ke.key === " ") {
+      ke.preventDefault();
+      toggle();
+    }
+  });
+  wrap.setAttribute("data-usage-rows", String(rows.length));
+  wrap.setAttribute("data-usage-sig", llmUsageBreakdownPatchSig(rows));
+  wrap.appendChild(preview);
+  wrap.appendChild(body);
+  return wrap;
 }
 function renderSourceCiter(sources, citedSourceIndices, correlationId) {
   const wrap = document.createElement("div");
@@ -1520,23 +2829,41 @@ function renderSourceCiter(sources, citedSourceIndices, correlationId) {
       meta.textContent = s.snippet;
       item.appendChild(meta);
     }
-    const ragUrl = getRagDocumentUrl(s.document_id, s.page_number);
-    if (ragUrl) {
-      const linkWrap = document.createElement("div");
-      linkWrap.className = "source-open-doc";
-      const link = document.createElement("a");
-      link.href = ragUrl;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-      link.className = "source-open-doc-link";
-      link.textContent = "Open full document";
-      link.addEventListener("click", (e) => e.stopPropagation());
-      linkWrap.appendChild(link);
-      item.appendChild(linkWrap);
+    const ragUrl = resolveSourceOpenHref(s);
+    const ragApiRaw = typeof window !== "undefined" ? window.RAG_API_BASE : void 0;
+    const ragApi = typeof ragApiRaw === "string" ? ragApiRaw.trim() : "";
+    const docId = s.document_id?.trim();
+    if (ragUrl || ragApi && docId) {
+      const actions = document.createElement("div");
+      actions.className = "source-doc-actions";
+      if (ragUrl) {
+        const link = document.createElement("a");
+        link.href = ragUrl;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.className = "source-open-doc-link";
+        link.textContent = "Open full document";
+        link.addEventListener("click", (e) => e.stopPropagation());
+        actions.appendChild(link);
+      }
+      if (ragApi && docId) {
+        const dl = document.createElement("a");
+        dl.href = `${ragApi.replace(/\/$/, "")}/documents/${encodeURIComponent(docId)}/download/pdf`;
+        dl.target = "_blank";
+        dl.rel = "noopener noreferrer";
+        dl.className = "source-open-doc-link source-download-link";
+        dl.textContent = "Download PDF";
+        dl.addEventListener("click", (e) => e.stopPropagation());
+        actions.appendChild(dl);
+      }
+      item.appendChild(actions);
     }
     if (correlationId) {
       let postSourceFeedback2 = function(r) {
-        fetch(API_BASE + "/chat/source-feedback/" + encodeURIComponent(correlationId), {
+        const cid = correlationId ?? "";
+        if (!cid)
+          return;
+        fetch(API_BASE + "/chat/source-feedback/" + encodeURIComponent(cid), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ source_index: srcIdx, rating: r })
@@ -1579,6 +2906,214 @@ function renderSourceCiter(sources, citedSourceIndices, correlationId) {
   wrap.appendChild(body);
   return wrap;
 }
+function renderAssistantFromEnvelope(envelope, opts) {
+  const outer = document.createElement("div");
+  outer.className = "assistant-envelope";
+  const bubble = document.createElement("div");
+  bubble.className = "message-bubble answer-card-bubble";
+  let confidenceInjectedAfterDirectAnswer = false;
+  for (const block of envelope.blocks || []) {
+    if (!block || typeof block !== "object")
+      continue;
+    const t = block.type;
+    if (t === "tool_attribution") {
+      const b = block;
+      const chip = document.createElement("div");
+      chip.className = "envelope-tool-chip";
+      chip.setAttribute("data-icon", b.icon || "search");
+      chip.textContent = b.label || "Research";
+      bubble.appendChild(chip);
+    } else if (t === "direct_answer") {
+      const b = block;
+      const chrome2 = document.createElement("div");
+      chrome2.className = "envelope-answer-chrome";
+      const el2 = document.createElement("div");
+      el2.className = "envelope-direct-answer";
+      el2.textContent = sanitizeDisplayMessage(b.markdown || "");
+      chrome2.appendChild(el2);
+      bubble.appendChild(chrome2);
+      if (opts.showConfidenceBadge !== false && !opts.suppressConfidenceForAdminQcFail) {
+        chrome2.appendChild(
+          renderConfidenceBadge((opts.sourceConfidenceStrip ?? "").trim() || "informational_only")
+        );
+        confidenceInjectedAfterDirectAnswer = true;
+      }
+    } else if (t === "detail") {
+      const b = block;
+      const details = document.createElement("details");
+      details.className = "envelope-detail";
+      details.open = b.collapsed_default === false;
+      const sum = document.createElement("summary");
+      sum.textContent = "Details";
+      details.appendChild(sum);
+      const body = document.createElement("div");
+      body.className = "envelope-detail-body";
+      body.innerHTML = simpleMarkdownToHtml(b.markdown || "");
+      details.appendChild(body);
+      bubble.appendChild(details);
+    } else if (t === "chart") {
+      const b = block;
+      const wrap = document.createElement("div");
+      wrap.className = "envelope-chart";
+      if (b.title) {
+        const h = document.createElement("div");
+        h.className = "envelope-chart-title";
+        h.textContent = b.title;
+        wrap.appendChild(h);
+      }
+      const raw = (b.image_base64 || "").trim();
+      const src = raw.startsWith("data:") ? raw : "data:image/png;base64," + raw;
+      const img = document.createElement("img");
+      img.className = "envelope-chart-img report-chart";
+      img.src = src;
+      img.alt = b.title || "Chart";
+      img.loading = "lazy";
+      wrap.appendChild(img);
+      if (b.caption) {
+        const cap = document.createElement("div");
+        cap.className = "envelope-chart-caption";
+        cap.textContent = b.caption;
+        wrap.appendChild(cap);
+      }
+      bubble.appendChild(wrap);
+    } else if (t === "table") {
+      const b = block;
+      const table = document.createElement("table");
+      table.className = "envelope-table";
+      if (b.headers?.length) {
+        const thead = document.createElement("thead");
+        const tr = document.createElement("tr");
+        for (const h of b.headers) {
+          const th = document.createElement("th");
+          th.textContent = h;
+          tr.appendChild(th);
+        }
+        thead.appendChild(tr);
+        table.appendChild(thead);
+      }
+      const tbody = document.createElement("tbody");
+      for (const row of b.rows || []) {
+        const tr = document.createElement("tr");
+        for (const c of row) {
+          const td = document.createElement("td");
+          td.textContent = c;
+          tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      bubble.appendChild(table);
+    } else if (t === "callout") {
+      const b = block;
+      const c = document.createElement("div");
+      c.className = "envelope-callout envelope-callout--" + (b.variant || "info");
+      c.textContent = b.body || "";
+      bubble.appendChild(c);
+    } else if (t === "sources") {
+      const b = block;
+      const parsed = (b.refs || []).map((r) => ({
+        index: r.index,
+        document_name: r.title || "Source",
+        document_id: r.document_id ?? null,
+        page_number: r.page ?? null,
+        snippet: r.snippet ?? "",
+        open_href: r.open?.href ?? null
+      }));
+      if (parsed.length > 0) {
+        bubble.appendChild(renderSourceCiter(parsed, void 0, opts.correlationId ?? null));
+      }
+    } else if (t === "next_steps") {
+      const b = block;
+      const items = (b.items || []).filter((x) => typeof x === "string" && x.trim());
+      if (items.length && opts.onFollowupClick) {
+        const expanded = b.collapsed_default === false;
+        const disclosure = document.createElement("details");
+        disclosure.className = "envelope-followups-disclosure";
+        disclosure.open = expanded;
+        const sum = document.createElement("summary");
+        sum.className = "envelope-followups-summary envelope-followups-summary--next-steps";
+        sum.textContent = expanded ? "Next steps" : "Next steps (tap to expand)";
+        disclosure.appendChild(sum);
+        const w = document.createElement("div");
+        w.className = "envelope-next-steps";
+        const hint = document.createElement("div");
+        hint.className = "envelope-next-steps-hint";
+        hint.textContent = "Things to try outside this chat. Tap a line to paste into your message.";
+        w.appendChild(hint);
+        for (const q of items) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "envelope-step-chip";
+          btn.textContent = q.trim();
+          btn.addEventListener("click", () => opts.onFollowupClick(q.trim()));
+          w.appendChild(btn);
+        }
+        disclosure.appendChild(w);
+        bubble.appendChild(disclosure);
+      }
+    } else if (t === "suggested_questions") {
+      const b = block;
+      const items = (b.items || []).filter((x) => typeof x === "string" && x.trim());
+      if (items.length && opts.onFollowupClick) {
+        const expanded = b.collapsed_default === false;
+        const disclosure = document.createElement("details");
+        disclosure.className = "envelope-followups-disclosure";
+        disclosure.open = expanded;
+        const sum = document.createElement("summary");
+        sum.className = "envelope-followups-summary envelope-followups-summary--suggested";
+        sum.textContent = expanded ? "Follow-up questions" : "Follow-up questions (tap to expand)";
+        disclosure.appendChild(sum);
+        const w = document.createElement("div");
+        w.className = "envelope-suggested";
+        const hint = document.createElement("div");
+        hint.className = "envelope-suggested-hint";
+        hint.textContent = "Tap a line to send it as your next message.";
+        w.appendChild(hint);
+        const chips = document.createElement("div");
+        chips.className = "envelope-suggested-chips";
+        for (const q of items.slice(0, 6)) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "envelope-suggested-chip";
+          const text = q.trim();
+          btn.textContent = text;
+          btn.setAttribute("aria-label", "Send: " + text);
+          btn.addEventListener("click", () => opts.onFollowupClick(text));
+          chips.appendChild(btn);
+        }
+        w.appendChild(chips);
+        disclosure.appendChild(w);
+        bubble.appendChild(disclosure);
+      }
+    } else if (t === "markdown_report") {
+      const b = block;
+      const div = document.createElement("div");
+      div.className = "envelope-markdown-report";
+      div.innerHTML = rosterStepMarkdownToHtml(b.markdown || "");
+      bubble.appendChild(div);
+    } else if (t === "attachments") {
+      const b = block;
+      if (b.has_pdf) {
+        const note = document.createElement("div");
+        note.className = "envelope-attachments-note";
+        note.textContent = "Report attachments available below.";
+        bubble.appendChild(note);
+      }
+    }
+  }
+  if (!confidenceInjectedAfterDirectAnswer && opts.showConfidenceBadge !== false && !opts.suppressConfidenceForAdminQcFail) {
+    bubble.appendChild(
+      renderConfidenceBadge((opts.sourceConfidenceStrip ?? "").trim() || "informational_only")
+    );
+  }
+  if (opts.qcAudit)
+    bubble.appendChild(renderQcAuditBadge(opts.qcAudit));
+  const msg = document.createElement("div");
+  msg.className = "message message--assistant answer-card";
+  msg.appendChild(bubble);
+  outer.appendChild(msg);
+  return outer;
+}
 function scrollToBottom(container) {
   container.scrollTop = container.scrollHeight;
 }
@@ -1586,6 +3121,128 @@ function run() {
   const messagesEl = el("messages");
   const inputEl = el("input");
   const sendBtn = el("send");
+  let currentThreadId = null;
+  const chatStatusBanner = document.getElementById("chatStatusBanner");
+  const chatStatusBannerText = document.getElementById("chatStatusBannerText");
+  let chatStatusBannerTimer = null;
+  function hideChatStatusBanner() {
+    if (chatStatusBannerTimer) {
+      clearTimeout(chatStatusBannerTimer);
+      chatStatusBannerTimer = null;
+    }
+    chatStatusBanner?.setAttribute("hidden", "");
+  }
+  function showChatStatusBanner(message, autoHideMs = 2e4) {
+    if (!chatStatusBanner || !chatStatusBannerText)
+      return;
+    if (chatStatusBannerTimer)
+      clearTimeout(chatStatusBannerTimer);
+    chatStatusBannerText.textContent = message;
+    chatStatusBanner.removeAttribute("hidden");
+    if (autoHideMs > 0) {
+      chatStatusBannerTimer = setTimeout(() => hideChatStatusBanner(), autoHideMs);
+    }
+  }
+  document.getElementById("chatStatusBannerDismiss")?.addEventListener("click", hideChatStatusBanner);
+  function hideRosterUploadReceipt() {
+    document.getElementById("rosterReceipt")?.setAttribute("hidden", "");
+  }
+  function showRosterUploadReceipt(data) {
+    hideChatStatusBanner();
+    const root = document.getElementById("rosterReceipt");
+    const headline = document.getElementById("rosterReceiptHeadline");
+    const sub = document.getElementById("rosterReceiptSub");
+    const checksEl = document.getElementById("rosterReceiptChecks");
+    const alertsEl = document.getElementById("rosterReceiptAlerts");
+    const nextEl = document.getElementById("rosterReceiptNext");
+    const metaEl = document.getElementById("rosterReceiptMeta");
+    if (!root || !headline || !sub || !checksEl || !alertsEl || !nextEl || !metaEl)
+      return;
+    const ack = data.acknowledgment;
+    if (ack && Array.isArray(ack.checks) && ack.checks.length > 0) {
+      headline.textContent = ack.headline || "Your roster is linked";
+      sub.textContent = ack.subhead || "";
+      checksEl.replaceChildren();
+      for (const c of ack.checks) {
+        const li = document.createElement("li");
+        const t = document.createElement("span");
+        t.className = "roster-receipt__check-title";
+        t.textContent = c.title;
+        const d = document.createElement("span");
+        d.className = "roster-receipt__check-detail";
+        d.textContent = c.detail;
+        li.appendChild(t);
+        li.appendChild(d);
+        checksEl.appendChild(li);
+      }
+      alertsEl.replaceChildren();
+      if (ack.alerts && ack.alerts.length > 0) {
+        alertsEl.removeAttribute("hidden");
+        for (const a of ack.alerts) {
+          const div = document.createElement("div");
+          div.className = a.tone === "warning" ? "roster-receipt__alert roster-receipt__alert--warning" : "roster-receipt__alert roster-receipt__alert--notice";
+          div.textContent = a.message;
+          alertsEl.appendChild(div);
+        }
+      } else {
+        alertsEl.setAttribute("hidden", "");
+      }
+      nextEl.textContent = ack.next_step || "";
+    } else {
+      headline.textContent = "Upload complete";
+      sub.textContent = "Your file was saved to this chat.";
+      checksEl.replaceChildren();
+      const li = document.createElement("li");
+      const t = document.createElement("span");
+      t.className = "roster-receipt__check-title";
+      t.textContent = "Summary";
+      const d = document.createElement("span");
+      d.className = "roster-receipt__check-detail";
+      d.textContent = `${data.filename ?? "File"} \u2014 ${data.row_count ?? 0} row(s) for ${data.org_name ?? ""}. Billing NPI ${data.default_billing_npi || data.org_id || "\u2014"}.`;
+      li.appendChild(t);
+      li.appendChild(d);
+      checksEl.appendChild(li);
+      alertsEl.replaceChildren();
+      alertsEl.setAttribute("hidden", "");
+      nextEl.textContent = "Press Send to run reconciliation, or wait if you turned on automatic send after upload.";
+    }
+    function addMeta(label, value) {
+      if (!value)
+        return;
+      const dt = document.createElement("dt");
+      dt.textContent = label;
+      const dd = document.createElement("dd");
+      dd.textContent = value;
+      metaEl.appendChild(dt);
+      metaEl.appendChild(dd);
+    }
+    metaEl.replaceChildren();
+    addMeta("File", (data.filename ?? "").trim());
+    if (data.row_count_cleansed != null)
+      addMeta("Rows after cleanup", String(data.row_count_cleansed));
+    if (data.row_count_resolved != null)
+      addMeta("Rows checked in NPI registry", String(data.row_count_resolved));
+    addMeta("Billing NPI", (data.default_billing_npi || data.org_id || "").trim());
+    addMeta("Matched organization (registry)", (data.matched_organization_name ?? "").trim());
+    if ((data.matched_practice_address ?? "").trim())
+      addMeta("Practice address on file", (data.matched_practice_address ?? "").trim());
+    addMeta("Process status", (data.process_status ?? "").trim());
+    addMeta("Upload ID", (data.upload_id ?? "").trim());
+    addMeta("Chat thread ID", (data.thread_id ?? "").trim());
+    const rs = data.resolution_summary;
+    if (rs && typeof rs === "object") {
+      const parts = Object.entries(rs).filter(([, v]) => typeof v === "number" && v > 0).map(([k, v]) => `${k}: ${v}`);
+      if (parts.length)
+        addMeta("NPI match breakdown", parts.join(", "));
+    }
+    const details = root.querySelector("details");
+    if (details)
+      details.open = false;
+    root.removeAttribute("hidden");
+    document.getElementById("chatEmpty")?.classList.add("hidden");
+    window.setTimeout(() => root.scrollIntoView({ block: "nearest", behavior: "smooth" }), 80);
+  }
+  document.getElementById("rosterReceiptDismiss")?.addEventListener("click", hideRosterUploadReceipt);
   const drawer = el("drawer");
   const drawerOverlay = el("drawerOverlay");
   const hamburger = el("hamburger");
@@ -1604,13 +3261,103 @@ function run() {
     if (sidebarUserName)
       sidebarUserName.textContent = user?.greeting_name ?? "Guest";
   }
-  auth.on((_event) => {
-    auth.getUserProfile().then(updateSidebarUser);
+  let cachedProfile = null;
+  function syncAnswerInsightsCheckbox() {
+    const cb = document.getElementById("prefShowAnswerInsights");
+    if (!cb)
+      return;
+    cb.checked = getShowLlmPerformance(cachedProfile);
+  }
+  function mergeLlmPerformanceUsageFromPoll(turnWrap, d) {
+    const rows = d.usage_breakdown;
+    if (!Array.isArray(rows) || rows.length === 0)
+      return;
+    if (!getShowLlmPerformance(cachedProfile))
+      return;
+    const panel = turnWrap.querySelector(".llm-performance");
+    if (!panel)
+      return;
+    const sig = llmUsageBreakdownPatchSig(rows);
+    const prevSig = panel.getAttribute("data-usage-sig") || "";
+    if (sig === prevSig)
+      return;
+    const tbody = panel.querySelector(".llm-performance-table tbody");
+    if (tbody)
+      fillLlmPerformanceTbody(tbody, rows);
+    panel.setAttribute("data-usage-sig", sig);
+    panel.setAttribute("data-usage-rows", String(rows.length));
+  }
+  function ensureAdjudicatorScorecard(turnWrap, qc, correlationId, technicalFeedback) {
+    if (!getShowLlmPerformance(cachedProfile))
+      return;
+    const existing = turnWrap.querySelector(".adjudicator-scorecard");
+    if (!existing) {
+      const el2 = renderAdjudicatorScorecard(qc, correlationId, technicalFeedback ?? null);
+      const perf = turnWrap.querySelector(".llm-performance");
+      const fb = turnWrap.querySelector(".feedback");
+      if (perf)
+        perf.insertAdjacentElement("afterend", el2);
+      else if (fb)
+        fb.insertAdjacentElement("beforebegin", el2);
+      else
+        turnWrap.appendChild(el2);
+      return;
+    }
+    const oneline = existing.querySelector(".adjudicator-scorecard-oneline");
+    const badges = existing.querySelector(".adjudicator-scorecard-badges");
+    if (oneline && badges)
+      syncAdjudicatorScorecardDom(existing, qc, oneline, badges);
+  }
+  function mergeTechnicalPanels(turnWrap, d) {
+    const qc = d.qc_audit;
+    if (!qc || typeof qc.passed !== "boolean")
+      return;
+    const cid = (d.correlation_id || turnWrap.getAttribute("data-correlation-id") || "").trim();
+    if (!cid)
+      return;
+    ensureAdjudicatorScorecard(turnWrap, qc, cid, d.technical_feedback);
+  }
+  function mergeLlmPerformanceRoutingHydrate(turnWrap, d) {
+    const lp = d.technical_feedback?.llm_performance;
+    if (!lp || lp.rating !== "up" && lp.rating !== "down")
+      return;
+    const panel = turnWrap.querySelector(".llm-performance");
+    if (!panel)
+      return;
+    const buttons = panel.querySelectorAll(".llm-performance-routing-thumbs button");
+    const upB = buttons[0];
+    const downB = buttons[1];
+    if (!upB || !downB)
+      return;
+    upB.disabled = true;
+    downB.disabled = true;
+    upB.classList.toggle("selected", lp.rating === "up");
+    downB.classList.toggle("selected", lp.rating === "down");
+  }
+  auth.on(() => {
+    void auth.getUserProfile().then((p) => {
+      cachedProfile = p;
+      updateSidebarUser(p);
+      syncAnswerInsightsCheckbox();
+    });
   });
-  auth.getUserProfile().then(updateSidebarUser);
+  void auth.getUserProfile().then((p) => {
+    cachedProfile = p;
+    updateSidebarUser(p);
+    syncAnswerInsightsCheckbox();
+  });
+  const prefShowAnswerInsights = document.getElementById(
+    "prefShowAnswerInsights"
+  );
+  prefShowAnswerInsights?.addEventListener("change", () => {
+    try {
+      localStorage.setItem(LLM_PERF_LS, prefShowAnswerInsights.checked ? "1" : "0");
+    } catch {
+    }
+  });
   if (sidebarUser) {
     sidebarUser.addEventListener("click", () => {
-      auth.getUserProfile().then((user) => {
+      void auth.getUserProfile().then((user) => {
         modal.open(user ? "account" : "login");
       });
     });
@@ -1655,8 +3402,9 @@ function run() {
         toggle();
       });
       titleEl.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
+        const ke = e;
+        if (ke.key === "Enter" || ke.key === " ") {
+          ke.preventDefault();
           toggle();
         }
       });
@@ -1666,8 +3414,59 @@ function run() {
   hamburger.addEventListener("click", openDrawer);
   drawerClose.addEventListener("click", closeDrawer);
   drawerOverlay.addEventListener("click", closeDrawer);
+  const configHistoryViewClose = document.getElementById("configHistoryViewClose");
+  if (configHistoryViewClose) {
+    configHistoryViewClose.addEventListener("click", () => {
+      const viewEl = document.getElementById("configHistoryView");
+      if (viewEl)
+        viewEl.style.display = "none";
+    });
+  }
   if (btnConfig)
     btnConfig.addEventListener("click", openDrawer);
+  setupLlmRouterReportUI();
+  function loadConfigHistory() {
+    const section = document.getElementById("configHistorySection");
+    const listEl = document.getElementById("configHistoryList");
+    if (!section || !listEl)
+      return;
+    fetch(API_BASE + "/chat/config/history?limit=20").then((r) => r.json()).then((entries) => {
+      section.style.display = "";
+      listEl.innerHTML = "";
+      if (!Array.isArray(entries) || entries.length === 0) {
+        listEl.innerHTML = '<p class="config-history-empty">No config history yet. Save config or restart the server to record a version.</p>';
+        return;
+      }
+      entries.forEach((entry) => {
+        const row = document.createElement("div");
+        row.className = "config-history-row";
+        const sha = (entry.config_sha ?? "").slice(0, 12);
+        const date = entry.created_at ? new Date(entry.created_at).toLocaleString() : "\u2014";
+        const meta = [entry.model ?? "", entry.provider ?? ""].filter(Boolean).join(" \xB7 ") || "\u2014";
+        row.innerHTML = '<span class="config-history-sha">' + sha + '</span><span class="config-history-date">' + date + '</span><span class="config-history-meta">' + meta + '</span><button type="button" class="config-history-btn" data-sha="' + (entry.config_sha ?? "") + '" aria-label="View">View</button>';
+        const btn = row.querySelector(".config-history-btn");
+        if (btn && entry.config_sha) {
+          btn.addEventListener("click", () => {
+            fetch(API_BASE + "/chat/config/history/" + encodeURIComponent(entry.config_sha)).then((r) => r.json()).then((config) => {
+              const viewEl = document.getElementById("configHistoryView");
+              const bodyEl = document.getElementById("configHistoryViewBody");
+              if (viewEl && bodyEl) {
+                bodyEl.textContent = JSON.stringify(config, null, 2);
+                viewEl.style.display = "";
+              }
+            }).catch(() => {
+            });
+          });
+        }
+        listEl.appendChild(row);
+      });
+    }).catch(() => {
+      if (section)
+        section.style.display = "";
+      if (listEl)
+        listEl.innerHTML = '<p class="config-history-empty">Config history unavailable (e.g. database not connected).</p>';
+    });
+  }
   function loadChatConfig() {
     fetch(API_BASE + "/chat/config").then((r) => r.json()).then((data) => {
       const p = data.prompts ?? {};
@@ -1678,25 +3477,39 @@ function run() {
       if (userEl)
         userEl.textContent = p.first_gen_user_template ?? "\u2014";
       const llm = data.llm ?? {};
+      const llmSummary = "Provider: " + (llm.provider ?? "\u2014") + ", Model: " + (llm.model ?? "\u2014") + (llm.temperature != null ? ", Temp: " + llm.temperature : "");
       const llmEl = document.getElementById("configLlm");
       if (llmEl)
-        llmEl.textContent = "Provider: " + (llm.provider ?? "\u2014") + ", Model: " + (llm.model ?? "\u2014") + (llm.temperature != null ? ", Temp: " + llm.temperature : "");
+        llmEl.textContent = llmSummary;
+      const drawerSummaryLlm = document.getElementById("drawerSummaryLlm");
+      if (drawerSummaryLlm)
+        drawerSummaryLlm.textContent = (llm.provider ?? "") + " / " + (llm.model ?? "\u2014");
+      const configShaValue = document.getElementById("configShaValue");
+      if (configShaValue)
+        configShaValue.textContent = data.config_sha ?? "\u2014";
       const parser = data.parser ?? {};
       const parserEl = document.getElementById("configParser");
       if (parserEl)
         parserEl.textContent = "Patient keywords: " + (parser.patient_keywords?.length ? parser.patient_keywords.join(", ") : "\u2014");
+      const drawerSummaryParser = document.getElementById("drawerSummaryParser");
+      if (drawerSummaryParser)
+        drawerSummaryParser.textContent = parser.patient_keywords?.length ? parser.patient_keywords.slice(0, 3).join(", ") + (parser.patient_keywords.length > 3 ? "\u2026" : "") : "\u2014";
+      loadConfigHistory();
     }).catch(() => {
       const sysEl = document.getElementById("promptFirstGenSystem");
       const llmEl = document.getElementById("configLlm");
+      const drawerSummaryLlm = document.getElementById("drawerSummaryLlm");
       if (sysEl)
         sysEl.textContent = "Failed to load config.";
       if (llmEl)
         llmEl.textContent = "Failed to load config.";
+      if (drawerSummaryLlm)
+        drawerSummaryLlm.textContent = "Failed to load config.";
     });
   }
   function pollResponse(correlationId, onThinking, onStreamingMessage) {
     return new Promise((resolve, reject) => {
-      const maxAttempts = 120;
+      const maxAttempts = 4500;
       let attempts = 0;
       const seenLines = /* @__PURE__ */ new Set();
       function poll() {
@@ -1742,6 +3555,8 @@ function run() {
           const ev = parsed.event;
           const data = parsed.data ?? {};
           if (ev === "thinking" && data.line != null && onThinking) {
+            onThinking(String(data.line));
+          } else if (ev === "quality_audit" && data.line != null && onThinking) {
             onThinking(String(data.line));
           } else if (ev === "message" && data.chunk != null && onStreamingMessage) {
             messageSoFar += String(data.chunk);
@@ -1805,19 +3620,21 @@ function run() {
     }
     let messageWrapEl = null;
     function onStreamingMessage(text) {
+      const safe = sanitizeDisplayMessage(text);
       if (!messageWrapEl) {
-        messageWrapEl = renderAssistantMessage(text);
+        messageWrapEl = renderAssistantMessage(safe);
         turnWrap.appendChild(messageWrapEl);
       } else {
         const textEl = messageWrapEl.querySelector(".message-bubble-text");
         if (textEl)
-          textEl.textContent = text;
+          textEl.textContent = safe;
       }
       scrollToBottom(messagesEl);
     }
     const payload = { message };
     if (currentThreadId)
       payload.thread_id = currentThreadId;
+    let activeCorrelationId = "";
     fetch(API_BASE + "/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1825,9 +3642,20 @@ function run() {
     }).then((r) => r.json()).then((data) => {
       if (data.thread_id)
         currentThreadId = data.thread_id;
+      activeCorrelationId = data.correlation_id ?? "";
       addThinkingLineAndScroll("Request sent. Waiting for worker\u2026");
       return streamResponse(data.correlation_id, addThinkingLineAndScroll, onStreamingMessage);
-    }).then((data) => {
+    }).then(
+      (data) => (
+        // Refresh profile before admin-gated UI. Otherwise the first reply can render while
+        // cachedProfile is still null (getUserProfile not resolved), hiding LLM performance.
+        auth.getUserProfile().then((p) => {
+          cachedProfile = p;
+          syncAnswerInsightsCheckbox();
+          return data;
+        }).catch(() => data)
+      )
+    ).then((data) => {
       (data.thinking_log ?? []).forEach((line) => {
         if (!thinkingLines.includes(line))
           addThinkingLineAndScroll(line);
@@ -1843,6 +3671,9 @@ function run() {
       thinkingDone(thinkingLines.length);
       if (data.thread_id)
         currentThreadId = data.thread_id;
+      const cidForTurn = (data.correlation_id || activeCorrelationId || "").trim();
+      if (cidForTurn)
+        turnWrap.setAttribute("data-correlation-id", cidForTurn);
       let nextQuestions = Array.isArray(data.next_questions_for_user) ? data.next_questions_for_user.filter((x) => typeof x === "string" && x.trim().length > 0) : data.user_ask && String(data.user_ask).trim() ? [String(data.user_ask).trim()] : [];
       if (nextQuestions.length === 0) {
         const card = tryParseAnswerCard(body || "");
@@ -1855,16 +3686,62 @@ function run() {
       }
       const reportMd = data.roster_report_final_md && typeof data.roster_report_final_md === "string" ? data.roster_report_final_md.trim() : "";
       const contentToShow = reportMd.length > 0 ? reportMd : body || "(No response)";
-      turnWrap.appendChild(
-        renderAssistantContent(contentToShow, !!data.llm_error, {
-          onFollowupClick: (q) => sendMessage(q),
-          sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || void 0,
-          showConfidenceBadge: data.status !== "clarification" && data.status !== "refinement_ask",
-          suppressFollowups: nextQuestions.length > 0,
-          nextQuestions,
-          renderAsMarkdown: reportMd.length > 0 || !!(data.roster_report_final_md && (body || "").trim().length > 50)
-        })
-      );
+      const qcFromPayload = data.qc_audit && typeof data.qc_audit === "object" && typeof data.qc_audit.passed === "boolean" ? data.qc_audit : void 0;
+      const suppressConf = adminShouldSuppressConfidenceForQc(cachedProfile, qcFromPayload);
+      const envCandidate = data.assistant_envelope;
+      const useEnvelope = envCandidate && typeof envCandidate === "object" && envCandidate.version === 1 && Array.isArray(envCandidate.blocks) && envCandidate.blocks.length > 0;
+      const envBlocks = useEnvelope ? envCandidate.blocks : [];
+      const envSourcesBlock = envBlocks.find((b) => b.type === "sources");
+      const envelopeHasSources = useEnvelope && Array.isArray(envSourcesBlock?.refs) && envSourcesBlock.refs.length > 0;
+      if (useEnvelope) {
+        turnWrap.appendChild(
+          renderAssistantFromEnvelope(envCandidate, {
+            onFollowupClick: (q) => sendMessage(q),
+            sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || void 0,
+            showConfidenceBadge: data.status !== "clarification" && data.status !== "refinement_ask",
+            qcAudit: qcFromPayload,
+            correlationId: cidForTurn || null,
+            suppressConfidenceForAdminQcFail: suppressConf
+          })
+        );
+      } else {
+        turnWrap.appendChild(
+          renderAssistantContent(contentToShow, !!data.llm_error, {
+            onFollowupClick: (q) => sendMessage(q),
+            sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || void 0,
+            showConfidenceBadge: data.status !== "clarification" && data.status !== "refinement_ask",
+            suppressFollowups: nextQuestions.length > 0,
+            nextQuestions,
+            renderAsMarkdown: reportMd.length > 0 || !!(data.roster_report_final_md && (body || "").trim().length > 50),
+            qcAudit: qcFromPayload,
+            suppressConfidenceForAdminQcFail: suppressConf
+          })
+        );
+      }
+      const mergeQc = (d) => {
+        const q = d.qc_audit && typeof d.qc_audit === "object" && typeof d.qc_audit.passed === "boolean" ? d.qc_audit : void 0;
+        if (q) {
+          applyQcAuditToTurn(turnWrap, q);
+          if (adminShouldSuppressConfidenceForQc(cachedProfile, q))
+            removeConfidenceBadgesInTurn(turnWrap);
+        }
+      };
+      mergeQc(data);
+      if (activeCorrelationId) {
+        const refetchMerged = () => {
+          if (!document.body.contains(turnWrap))
+            return;
+          fetch(API_BASE + "/chat/response/" + encodeURIComponent(activeCorrelationId)).then((r) => r.json()).then((d) => {
+            mergeQc(d);
+            mergeLlmPerformanceUsageFromPoll(turnWrap, d);
+            mergeTechnicalPanels(turnWrap, d);
+            mergeLlmPerformanceRoutingHydrate(turnWrap, d);
+          }).catch(() => {
+          });
+        };
+        const qcRefetchDelaysMs = [800, 2500, 6e3, 12e3, 25e3, 45e3, 75e3, 12e4];
+        qcRefetchDelaysMs.forEach((ms) => window.setTimeout(refetchMerged, ms));
+      }
       const rosterStepOutputs = data.roster_step_outputs;
       if (Array.isArray(rosterStepOutputs) && rosterStepOutputs.length > 0) {
         turnWrap.appendChild(renderRosterStepOutputs(rosterStepOutputs));
@@ -1875,7 +3752,7 @@ function run() {
         turnWrap.appendChild(renderRosterReportDownload(pdfBase64, reportMarkdown));
       }
       const isCard = !!tryParseAnswerCard(body || "");
-      if (nextQuestions.length > 0 && !isCard) {
+      if (nextQuestions.length > 0 && !isCard && !useEnvelope) {
         turnWrap.appendChild(
           renderNextQuestions(nextQuestions, (q) => sendMessage(q))
         );
@@ -1885,30 +3762,54 @@ function run() {
           renderClarificationOptions(data.clarification_options, (value) => sendMessage(value))
         );
       }
-      turnWrap.appendChild(renderFeedback(data.correlation_id));
       const sourceList = data.sources && data.sources.length > 0 ? data.sources.map((s) => ({
         index: s.index ?? 0,
         document_name: s.document_name ?? "document",
         document_id: s.document_id ?? null,
         page_number: s.page_number ?? null,
         snippet: (s.text ?? "").slice(0, 200),
+        cite_text: (s.cite_text ?? s.text ?? "").trim().slice(0, 400) || null,
         source_type: s.source_type ?? null,
         match_score: s.match_score ?? null,
-        confidence: s.confidence ?? null
+        confidence: s.confidence ?? null,
+        open_href: s.open_href ?? null
       })) : sources.length > 0 ? sources.map((s) => ({
         index: s.index ?? 0,
         document_name: s.document_name ?? "document",
         document_id: s.document_id ?? null,
         page_number: s.page_number ?? null,
         snippet: (s.snippet ?? "").slice(0, 120),
+        cite_text: (s.snippet ?? "").trim().slice(0, 400) || null,
         source_type: null,
         match_score: null,
         confidence: null
       })) : [];
       const cited = data.cited_source_indices ?? [];
-      if (sourceList.length > 0) {
-        turnWrap.appendChild(renderSourceCiter(sourceList, cited, data.correlation_id));
+      if (sourceList.length > 0 && !envelopeHasSources) {
+        turnWrap.appendChild(
+          renderSourceCiter(sourceList, cited, data.correlation_id ?? activeCorrelationId)
+        );
       }
+      const insightRows = data.usage_breakdown;
+      const perfMeta = data.llm_performance;
+      if (getShowLlmPerformance(cachedProfile) && Array.isArray(insightRows) && insightRows.length > 0 && data.status === "completed") {
+        const tin = Number(data.tokens_used?.input_tokens) || 0;
+        const tout = Number(data.tokens_used?.output_tokens) || 0;
+        turnWrap.appendChild(
+          renderLlmPerformance(insightRows, perfMeta, {
+            qc: qcFromPayload,
+            sourceConfidenceStrip: data.source_confidence_strip ?? null,
+            correlationId: data.correlation_id ?? activeCorrelationId,
+            totalCostFallback: data.cost_usd,
+            inputTokens: tin,
+            outputTokens: tout,
+            routingFeedback: data.technical_feedback?.llm_performance ?? null
+          })
+        );
+      }
+      mergeTechnicalPanels(turnWrap, data);
+      mergeLlmPerformanceRoutingHydrate(turnWrap, data);
+      turnWrap.appendChild(renderFeedback(data.correlation_id ?? activeCorrelationId));
       loadSidebarHistory();
       scrollToBottom(messagesEl);
     }).catch((err) => {
@@ -1935,11 +3836,191 @@ function run() {
     }
   });
   sendBtn.addEventListener("click", () => sendMessage());
-  let currentThreadId = null;
+  function openUploadModal() {
+    hideRosterUploadReceipt();
+    const modal2 = document.getElementById("uploadModal");
+    const overlay = document.getElementById("uploadOverlay");
+    const form = document.getElementById("uploadForm");
+    const st = document.getElementById("uploadStatus");
+    const progressWrap = document.getElementById("uploadProgressWrap");
+    form?.removeAttribute("aria-busy");
+    modal2?.classList.remove("upload-modal--busy");
+    if (st) {
+      st.textContent = "";
+      st.classList.remove("upload-modal-status--working", "upload-modal-status--error");
+      st.style.removeProperty("color");
+    }
+    progressWrap?.setAttribute("hidden", "");
+    modal2?.removeAttribute("hidden");
+    overlay?.classList.add("open");
+    document.getElementById("uploadOrgName")?.focus();
+  }
+  function setupComposerOptionsMenu() {
+    const optionsBtn = document.getElementById("composerOptions");
+    const optionsMenu = document.getElementById("composerOptionsMenu");
+    const uploadItem = document.getElementById("composerOptionUploadFile");
+    function hideOptionsMenu() {
+      optionsMenu?.setAttribute("hidden", "");
+      optionsBtn?.setAttribute("aria-expanded", "false");
+    }
+    optionsBtn?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const isOpen = !optionsMenu?.hasAttribute("hidden");
+      if (isOpen) {
+        hideOptionsMenu();
+      } else {
+        optionsMenu?.removeAttribute("hidden");
+        optionsBtn?.setAttribute("aria-expanded", "true");
+      }
+    });
+    uploadItem?.addEventListener("click", () => {
+      hideOptionsMenu();
+      openUploadModal();
+    });
+    document.addEventListener("click", () => hideOptionsMenu());
+  }
+  setupComposerOptionsMenu();
+  function setupUploadModal() {
+    const uploadModal = document.getElementById("uploadModal");
+    const uploadOverlay = document.getElementById("uploadOverlay");
+    const uploadForm = document.getElementById("uploadForm");
+    const uploadOrgName = document.getElementById("uploadOrgName");
+    const uploadFile = document.getElementById("uploadFile");
+    const uploadFilePurpose = document.getElementById("uploadFilePurpose");
+    const uploadCancel = document.getElementById("uploadCancel");
+    const uploadSubmit = document.getElementById("uploadSubmit");
+    const uploadStatus = document.getElementById("uploadStatus");
+    const uploadProgressWrap = document.getElementById("uploadProgressWrap");
+    let uploadPhaseTimers = [];
+    let uploadAbort = null;
+    function stopUploadPhaseEmits() {
+      uploadPhaseTimers.forEach((id) => window.clearTimeout(id));
+      uploadPhaseTimers = [];
+    }
+    function startUploadPhaseEmits(purpose) {
+      stopUploadPhaseEmits();
+      const roster = purpose === "roster_reconciliation";
+      const phases = roster ? [
+        { ms: 0, text: "Step 1 of 3 \u2014 Looking up your organization (NPPES / PML)\u2026" },
+        { ms: 2800, text: "Step 2 of 3 \u2014 Sending file to the roster service\u2026" },
+        { ms: 7e3, text: "Step 3 of 3 \u2014 Parsing rows and resolving NPIs (often 30s\u20132 min)\u2026" },
+        { ms: 45e3, text: "Still working \u2014 large rosters can take a bit longer\u2026" }
+      ] : [{ ms: 0, text: "Uploading file\u2026" }];
+      phases.forEach(({ ms, text }) => {
+        const id = window.setTimeout(() => setStatus(text, false, true), ms);
+        uploadPhaseTimers.push(id);
+      });
+    }
+    function hideUploadModal() {
+      if (uploadAbort) {
+        uploadAbort.abort();
+        uploadAbort = null;
+      }
+      stopUploadPhaseEmits();
+      uploadModal?.classList.remove("upload-modal--busy");
+      uploadForm?.removeAttribute("aria-busy");
+      uploadProgressWrap?.setAttribute("hidden", "");
+      uploadModal?.setAttribute("hidden", "");
+      uploadOverlay?.classList.remove("open");
+    }
+    function setStatus(msg, isError = false, isWorking = false) {
+      if (!uploadStatus)
+        return;
+      uploadStatus.textContent = msg;
+      uploadStatus.classList.toggle("upload-modal-status--working", Boolean(isWorking) && !isError);
+      uploadStatus.classList.toggle("upload-modal-status--error", isError);
+      if (isError) {
+        uploadStatus.style.setProperty("color", "var(--error-text, var(--error))");
+      } else {
+        uploadStatus.style.removeProperty("color");
+      }
+    }
+    uploadCancel?.addEventListener("click", hideUploadModal);
+    uploadOverlay?.addEventListener("click", hideUploadModal);
+    function updateSubmitState() {
+      const hasFile = !!uploadFile?.files?.length;
+      const hasOrg = !!uploadOrgName?.value?.trim();
+      if (uploadSubmit)
+        uploadSubmit.disabled = !(hasFile && hasOrg);
+    }
+    uploadOrgName?.addEventListener("input", updateSubmitState);
+    uploadFile?.addEventListener("change", updateSubmitState);
+    uploadForm?.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const orgName = uploadOrgName?.value?.trim();
+      const file = uploadFile?.files?.[0];
+      if (!orgName || !file)
+        return;
+      uploadSubmit?.setAttribute("disabled", "");
+      uploadModal?.classList.add("upload-modal--busy");
+      uploadForm?.setAttribute("aria-busy", "true");
+      uploadProgressWrap?.removeAttribute("hidden");
+      const purpose = (uploadFilePurpose?.value || "roster_reconciliation").trim();
+      startUploadPhaseEmits(purpose);
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("org_name", orgName);
+      formData.append("file_purpose", purpose);
+      if (currentThreadId)
+        formData.append("thread_id", currentThreadId);
+      uploadAbort = new AbortController();
+      const signal = uploadAbort.signal;
+      fetch(API_BASE + "/chat/roster-upload", { method: "POST", body: formData, signal }).then((r) => {
+        if (!r.ok)
+          return r.json().then((d) => Promise.reject(d?.detail ?? r.statusText));
+        return r.json();
+      }).then(
+        (data) => {
+          const org = data.org_name ?? orgName;
+          if (data.thread_id)
+            currentThreadId = data.thread_id;
+          stopUploadPhaseEmits();
+          uploadModal?.classList.remove("upload-modal--busy");
+          uploadForm?.removeAttribute("aria-busy");
+          uploadProgressWrap?.setAttribute("hidden", "");
+          uploadAbort = null;
+          showRosterUploadReceipt(data);
+          uploadForm?.reset();
+          updateSubmitState();
+          inputEl.value = `Run reconciliation report for ${org}`;
+          updateSendState();
+          hideUploadModal();
+          const auto = document.getElementById("uploadAutoSendReconciliation");
+          if ((uploadFilePurpose?.value || "roster_reconciliation").trim() === "roster_reconciliation" && auto?.checked) {
+            window.setTimeout(() => sendMessage(), 0);
+          }
+        }
+      ).catch((err) => {
+        const aborted = err instanceof Error && err.name === "AbortError" || typeof DOMException !== "undefined" && err instanceof DOMException && err.name === "AbortError";
+        if (aborted) {
+          setStatus("Upload cancelled.", false, false);
+          return;
+        }
+        let msg = "Upload failed";
+        if (typeof err === "string")
+          msg = err;
+        else if (err && typeof err === "object" && "detail" in err && err.detail != null)
+          msg = String(err.detail);
+        else if (err instanceof Error)
+          msg = err.message;
+        setStatus(msg, true);
+      }).finally(() => {
+        uploadAbort = null;
+        stopUploadPhaseEmits();
+        uploadModal?.classList.remove("upload-modal--busy");
+        uploadForm?.removeAttribute("aria-busy");
+        uploadProgressWrap?.setAttribute("hidden", "");
+        uploadSubmit?.removeAttribute("disabled");
+      });
+    });
+  }
+  setupUploadModal();
   const btnNewChat = document.getElementById("btnNewChat");
   if (btnNewChat) {
     btnNewChat.addEventListener("click", () => {
       currentThreadId = null;
+      hideChatStatusBanner();
+      hideRosterUploadReceipt();
       messagesEl.querySelectorAll(".chat-turn").forEach((n) => n.remove());
       if (chatEmpty)
         chatEmpty.classList.remove("hidden");
@@ -2058,6 +4139,32 @@ function run() {
       if (documentsList)
         documentsList.innerHTML = "";
     });
+  }
+  const chatEmptyLanding = document.getElementById("chatEmpty");
+  chatEmptyLanding?.addEventListener("click", (e) => {
+    const t = e.target.closest(".landing-try-link");
+    if (!t || !(t instanceof HTMLElement))
+      return;
+    const q = t.getAttribute("data-query")?.trim();
+    if (!q)
+      return;
+    e.preventDefault();
+    inputEl.value = q;
+    updateSendState();
+    sendMessage();
+  });
+  try {
+    const u = new URL(window.location.href);
+    const pq = u.searchParams.get("q")?.trim();
+    if (pq) {
+      u.searchParams.delete("q");
+      const next = u.pathname + (u.search ? u.search : "") + u.hash;
+      window.history.replaceState({}, "", next);
+      inputEl.value = pq;
+      updateSendState();
+      sendMessage();
+    }
+  } catch {
   }
   loadSidebarHistory();
   updateSendState();

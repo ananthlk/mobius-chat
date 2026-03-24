@@ -3,7 +3,6 @@
 When RAG_API_URL is set: calls RAG API (retrieve → rerank → assemble).
 Else: mobius-retriever inline + doc_assembly.
 """
-import asyncio
 import os
 import logging
 from typing import Any
@@ -60,12 +59,14 @@ def answer_non_patient(
     rag_filter_overrides: dict[str, str] | None = None,
     include_document_ids: list[str] | None = None,
     on_rag_fail: list[str] | None = None,
+    thread_id: str | None = None,
+    phi_detected: bool = False,
+    config_sha: str | None = None,
 ) -> tuple[str, list[dict], dict[str, Any] | None, str]:
     """Answer a non-patient subquestion: RAG (blend of hierarchical + factual or single path) then LLM.
     Returns (answer_text, sources, llm_usage, retrieval_signal). retrieval_signal: corpus_only | corpus_plus_google | google_only | no_sources."""
     from app.chat_config import get_chat_config
     from app.services.doc_assembly import RETRIEVAL_SIGNAL_NO_SOURCES
-    from app.services.llm_provider import get_llm_provider
     from app.services.retrieval_emit_adapter import wrap_emitter_for_user
 
     cfg = get_chat_config()
@@ -186,7 +187,7 @@ def answer_non_patient(
                 chunks,
                 question,
                 apply_google=True,
-                expand_neighbors=False,
+                expand_neighbors=True,
                 database_url=rag.database_url if rag else None,
                 emitter=wrap_emitter_for_user(emitter),
             )
@@ -244,13 +245,29 @@ def answer_non_patient(
             + context
         )
 
-    # Call LLM with context + question
+    # Call LLM with context + question (ModelRouter stage `rag` → llm_calls + rotation)
     usage: dict[str, Any] | None = None
     try:
-        provider = get_llm_provider()
+        from app.services.llm_manager import generate_sync
+
+        try:
+            max_rag_tokens = max(
+                256,
+                min(65536, int(os.environ.get("CHAT_RAG_ANSWER_MAX_TOKENS", "8192"))),
+            )
+        except ValueError:
+            max_rag_tokens = 8192
         template = cfg.prompts.rag_answering_user_template
         prompt = template.format(context=context, question=question)
-        answer, usage = asyncio.run(provider.generate_with_usage(prompt))
+        answer, usage = generate_sync(
+            prompt,
+            stage="rag",
+            max_tokens=max_rag_tokens,
+            config_sha=config_sha,
+            correlation_id=correlation_id,
+            thread_id=thread_id,
+            phi_detected=phi_detected,
+        )
     except Exception as e:
         logger.warning("Non-patient LLM failed: %s", e)
         answer = f"[LLM failed: {e}]"

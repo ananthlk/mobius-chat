@@ -23,6 +23,15 @@ from typing import Callable
 
 logger = logging.getLogger(__name__)
 
+
+def _org_slug(org_name: str) -> str:
+    """'Aspire Health' -> 'aspire-health' (for OrgStore key)."""
+    s = (org_name or "").lower().strip()
+    s = re.sub(r"[^\w\s-]", "", s)
+    s = re.sub(r"\s+", "-", s).strip("-")
+    return s[:48] if s else ""
+
+
 # Plan steps: id, label (emitted to user). Execution order 1–11.
 ROSTER_CREDENTIALING_PLAN = [
     {"id": "ensure_benchmarks", "label": "Ensure revenue metrics (utilization benchmarking)"},
@@ -51,12 +60,14 @@ class StepState:
 
 @dataclass
 class StepOutput:
-    """CSV-style output for a step so users can validate."""
+    """Output for a step: CSV for tables, optional markdown + JSON for formatted views (e.g. NPI profile)."""
 
     step_id: str
     label: str
     csv_content: str
     row_count: int
+    markdown_content: str = ""
+    json_content: str = ""
 
 
 @dataclass
@@ -77,6 +88,8 @@ class OrchestratorState:
     step_outputs: list[StepOutput] = field(default_factory=list)
     report_final_md: str = ""
     report_pdf_base64: str = ""
+    report_run_id: str = ""
+    report_summary: dict = field(default_factory=dict)
 
     def step_by_id(self, step_id: str) -> StepState | None:
         for s in self.steps:
@@ -111,7 +124,7 @@ def _emit(emitter: Callable[[str], None] | None, msg: str) -> None:
 
 
 def _provider_roster_base_url() -> str:
-    """Base URL for provider-roster-credentialing API (e.g. http://localhost:8010)."""
+    """Base URL for provider-roster-credentialing API (e.g. http://localhost:8011)."""
     url = (os.environ.get("CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL") or "").strip()
     if not url:
         return ""
@@ -159,7 +172,8 @@ def _run_step_0_ensure_benchmarks(
             headers={"Content-Type": "application/json", "Accept": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        # BigQuery CREATE TABLE (DOGE + NPPES join) can take 2–5 min; use 5 min timeout
+        with urllib.request.urlopen(req, timeout=300) as resp:
             data = json.loads(resp.read().decode())
         status = data.get("status", "")
         if status == "ok":
@@ -179,8 +193,9 @@ def _run_step_1_identify_org(
     state: OrchestratorState,
     emitter: Callable[[str], None] | None,
 ) -> str:
-    """Step 1: Search org by name via provider-roster API. Returns result text; updates state and org_npis."""
+    """Step 2: Search org by name via provider-roster API. Returns result text; updates state and org_npis."""
     step_id = "identify_org"
+    step_num = _step_num(step_id)
     org_name = (org_input or "").strip()
     state.mark_in_progress(step_id)
     _emit(emitter, f"Identifying organization ({org_name})…")
@@ -190,91 +205,104 @@ def _run_step_1_identify_org(
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Organization NPIs", csv_content="(API not configured)", row_count=0)
         )
-        _emit(emitter, "✓ Step 1 done. API not configured. Stopping.")
+        _emit(emitter, f"✓ Step {step_num} done. API not configured. Stopping.")
         return "Provider-roster API not configured. Set CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL."
     url = f"{base}/search/org-names"
     payload = json.dumps({"name": org_name, "state": "FL", "limit": 20}).encode("utf-8")
-    try:
-        req = urllib.request.Request(
-            url,
-            data=payload,
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode())
-        results = data.get("results") or []
-        npis = list(dict.fromkeys(str(r.get("npi", "")).strip() for r in results if r.get("npi")))
-        state.org_npis = npis
-        # Step output: rich CSV (npi, name, entity_type, source, taxonomy_code) for validation
-        org_cols = ["npi", "name", "entity_type", "source", "taxonomy_code"]
-        org_rows = []
-        for r in results:
-            n = str(r.get("npi", "")).strip()
-            if not n:
-                continue
-            org_rows.append({
-                "npi": n,
-                "name": (r.get("name") or "").strip()[:80],
-                "entity_type": (r.get("entity_type") or "").strip(),
-                "source": (r.get("source") or "").strip(),
-                "taxonomy_code": (r.get("taxonomy_code") or "").strip() or "",
-            })
-        csv_content = _to_csv(org_rows, org_cols) if org_rows else "npi,name,entity_type,source,taxonomy_code\n(no matches)"
-        state.step_outputs.append(
-            StepOutput(step_id=step_id, label="Organization NPIs", csv_content=csv_content, row_count=len(org_rows))
-        )
-        result_text = "\n".join(
-            f"  {i}. {r.get('name','')}  |  NPI: {r.get('npi','')}  |  {r.get('entity_type','')}  |  {r.get('source','')}"
-            for i, r in enumerate(results[:20], 1)
-        )
-        if result_text:
-            result_text = f"Found {len(results)} match(es):\n{result_text}"
-        else:
-            result_text = "No matches found."
-        if results:
-            summary = f"Found {len(npis)} org NPI(s)."
-            state.mark_done(step_id, summary)
-            _emit(emitter, f"✓ Step 1 done. {summary}")
-        else:
-            state.mark_done(step_id, "No matches found.")
-            _emit(emitter, "✓ Step 1 done. No matches found.")
-        return result_text
-    except urllib.error.HTTPError as e:
-        body = e.fp.read().decode()[:300] if e.fp else str(e)
-        logger.warning("search_org_names HTTP %s %s", e.code, body)
-        state.mark_done(step_id, f"API error {e.code}")
-        state.step_outputs.append(
-            StepOutput(step_id=step_id, label="Organization NPIs", csv_content=f"(API error {e.code})", row_count=0)
-        )
-        _emit(emitter, "✓ Step 1 done. API error. Stopping.")
-        return f"Org search failed ({e.code}): {body}"
-    except Exception as e:
+
+    def _do_request() -> tuple[dict | None, Exception | None]:
+        try:
+            req = urllib.request.Request(
+                url,
+                data=payload,
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return (json.loads(resp.read().decode()), None)
+        except Exception as err:
+            return (None, err)
+
+    data, err = _do_request()
+    if err is not None and ("timed out" in str(err).lower() or "connection" in str(err).lower() or "refused" in str(err).lower()):
+        _emit(emitter, "Provider-roster API may still be busy; retrying in 5s…")
+        time.sleep(5)
+        data, err = _do_request()
+    if err is not None:
+        e = err
+        if isinstance(e, urllib.error.HTTPError):
+            body = e.fp.read().decode()[:300] if e.fp else str(e)
+            logger.warning("search_org_names HTTP %s %s", e.code, body)
+            state.mark_done(step_id, f"API error {e.code}")
+            state.step_outputs.append(
+                StepOutput(step_id=step_id, label="Organization NPIs", csv_content=f"(API error {e.code})", row_count=0)
+            )
+            _emit(emitter, f"✓ Step {step_num} done. API error. Stopping.")
+            return f"Org search failed ({e.code}): {body}"
         logger.warning("search_org_names failed: %s", e)
         state.mark_done(step_id, str(e))
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Organization NPIs", csv_content=f"(failed: {e})", row_count=0)
         )
-        _emit(emitter, "✓ Step 1 done. Failed. Stopping.")
+        _emit(emitter, f"✓ Step {step_num} done. Failed ({e}). Stopping.")
         return str(e)
+
+    results = data.get("results") or []
+    npis = list(dict.fromkeys(str(r.get("npi", "")).strip() for r in results if r.get("npi")))
+    state.org_npis = npis
+    # Step output: rich CSV (npi, name, entity_type, source, taxonomy_code) for validation
+    org_cols = ["npi", "name", "entity_type", "source", "taxonomy_code"]
+    org_rows = []
+    for r in results:
+        n = str(r.get("npi", "")).strip()
+        if not n:
+            continue
+        org_rows.append({
+            "npi": n,
+            "name": (r.get("name") or "").strip()[:80],
+            "entity_type": (r.get("entity_type") or "").strip(),
+            "source": (r.get("source") or "").strip(),
+            "taxonomy_code": (r.get("taxonomy_code") or "").strip() or "",
+        })
+    csv_content = _to_csv(org_rows, org_cols) if org_rows else "npi,name,entity_type,source,taxonomy_code\n(no matches)"
+    state.step_outputs.append(
+        StepOutput(step_id=step_id, label="Organization NPIs", csv_content=csv_content, row_count=len(org_rows))
+    )
+    result_text = "\n".join(
+        f"  {i}. {r.get('name','')}  |  NPI: {r.get('npi','')}  |  {r.get('entity_type','')}  |  {r.get('source','')}"
+        for i, r in enumerate(results[:20], 1)
+    )
+    if result_text:
+        result_text = f"Found {len(results)} match(es):\n{result_text}"
+    else:
+        result_text = "No matches found."
+    if results:
+        summary = f"Found {len(npis)} org NPI(s)."
+        state.mark_done(step_id, summary)
+        _emit(emitter, f"✓ Step {step_num} done. {summary}")
+    else:
+        state.mark_done(step_id, "No matches found.")
+        _emit(emitter, f"✓ Step {step_num} done. No matches found.")
+    return result_text
 
 
 def _run_step_2_find_locations(
     state: OrchestratorState,
     emitter: Callable[[str], None] | None,
 ) -> str:
-    """Step 2: Find practice locations for org NPIs via provider-roster API."""
+    """Step 3: Find practice locations for org NPIs via provider-roster API."""
     step_id = "find_locations"
+    step_num = _step_num(step_id)
     state.mark_in_progress(step_id)
     _emit(emitter, "Finding practice locations…")
     base = _provider_roster_base_url()
     if not base or not state.org_npis:
-        reason = "No provider-roster API or no org NPIs from Step 1."
+        reason = "No provider-roster API or no org NPIs from previous step."
         state.mark_skipped(step_id, reason)
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Practice locations", csv_content="(skipped)", row_count=0)
         )
-        _emit(emitter, f"✓ Step 2 skipped. {reason}")
+        _emit(emitter, f"✓ Step {step_num} skipped. {reason}")
         return ""
     url = f"{base}/find-locations"
     payload = json.dumps({"org_npis": state.org_npis[:50], "state": "FL"}).encode("utf-8")
@@ -323,7 +351,7 @@ def _run_step_2_find_locations(
             StepOutput(step_id=step_id, label="Practice locations", csv_content=csv_content, row_count=len(locations))
         )
         state.mark_done(step_id, f"Found {len(locations)} location(s).")
-        _emit(emitter, f"✓ Step 2 done. Found {len(locations)} location(s).")
+        _emit(emitter, f"✓ Step {step_num} done. Found {len(locations)} location(s).")
         return json.dumps({"locations": locations, "count": len(locations)})
     except urllib.error.HTTPError as e:
         body = e.fp.read().decode()[:300] if e.fp else str(e)
@@ -332,7 +360,7 @@ def _run_step_2_find_locations(
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Practice locations", csv_content=f"(API error {e.code})", row_count=0)
         )
-        _emit(emitter, f"✓ Step 2 done. API error ({e.code}). Continuing.")
+        _emit(emitter, f"✓ Step {step_num} done. API error ({e.code}). Continuing.")
         return ""
     except Exception as e:
         logger.warning("find_locations failed: %s", e)
@@ -340,7 +368,7 @@ def _run_step_2_find_locations(
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Practice locations", csv_content=f"(failed: {e})", row_count=0)
         )
-        _emit(emitter, f"✓ Step 2 done. Failed. Continuing.")
+        _emit(emitter, f"✓ Step {step_num} done. Failed. Continuing.")
         return ""
 
 
@@ -348,8 +376,9 @@ def _run_step_3_find_associated_providers(
     state: OrchestratorState,
     emitter: Callable[[str], None] | None,
 ) -> str:
-    """Step 3: Find associated facilities and providers per location."""
+    """Step 4: Find associated facilities and providers per location."""
     step_id = "find_associated_providers"
+    step_num = _step_num(step_id)
     state.mark_in_progress(step_id)
     _emit(emitter, "Finding associated facilities and providers…")
     base = _provider_roster_base_url()
@@ -359,7 +388,7 @@ def _run_step_3_find_associated_providers(
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Associated providers", csv_content="(skipped)", row_count=0)
         )
-        _emit(emitter, f"✓ Step 3 skipped. {reason}")
+        _emit(emitter, f"✓ Step {step_num} skipped. {reason}")
         return ""
     url = f"{base}/find-associated-providers"
     payload = json.dumps({
@@ -378,33 +407,37 @@ def _run_step_3_find_associated_providers(
             data = json.loads(resp.read().decode())
         associated = data.get("associated_providers") or {}
         active_roster = data.get("active_roster") or {}
+        location_details = data.get("location_details") or {}
         total = data.get("providers_count") or sum(len(v) for v in associated.values())
         state.associated_providers = associated
         state.active_roster = active_roster if active_roster else associated
-        # Step output: associated providers as CSV with match_type, name_status, roster_status
-        prov_cols = ["location_id", "npi", "name", "entity_type", "match_type", "name_status", "roster_status"]
+        # Step output: location_address first (from API location_details), then roster_rationale for "why active"
+        prov_cols = ["location_address", "location_id", "npi", "name", "entity_type", "match_type", "association_likelihood", "roster_status", "roster_rationale", "name_status"]
         prov_rows = []
         for loc_id, providers in associated.items():
+            loc_addr = (location_details.get(loc_id) or {}).get("location_address", loc_id)
             for p in providers or []:
                 name_val = p.get("name", p.get("provider_name", "")) or ""
-                name_status = p.get("name_status") if not name_val else ""
                 prov_rows.append(
                     {
+                        "location_address": loc_addr,
                         "location_id": loc_id,
                         "npi": p.get("npi", ""),
                         "name": name_val or "",
                         "entity_type": "facility" if p.get("entity_type") == "2" else "individual",
                         "match_type": p.get("match_type", ""),
-                        "name_status": name_status,
+                        "association_likelihood": p.get("association_likelihood", ""),
                         "roster_status": p.get("roster_status", ""),
+                        "roster_rationale": p.get("roster_rationale", ""),
+                        "name_status": p.get("name_status", ""),
                     }
                 )
-        csv_content = _to_csv(prov_rows, prov_cols) if prov_rows else "location_id,npi,name,entity_type,match_type,name_status\n(no providers)"
+        csv_content = _to_csv(prov_rows, prov_cols) if prov_rows else "location_address,location_id,npi,name,entity_type,match_type,association_likelihood,roster_status,roster_rationale,name_status\n(no providers)"
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Associated providers", csv_content=csv_content, row_count=total)
         )
         state.mark_done(step_id, f"Found {total} provider(s) across {len(associated)} location(s).")
-        _emit(emitter, f"✓ Step 3 done. Found {total} provider(s) across {len(associated)} location(s).")
+        _emit(emitter, f"✓ Step {step_num} done. Found {total} provider(s) across {len(associated)} location(s).")
         return json.dumps({"associated_providers": associated, "providers_count": total})
     except urllib.error.HTTPError as e:
         body = e.fp.read().decode()[:300] if e.fp else str(e)
@@ -413,7 +446,7 @@ def _run_step_3_find_associated_providers(
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Associated providers", csv_content=f"(API error {e.code})", row_count=0)
         )
-        _emit(emitter, f"✓ Step 3 done. API error ({e.code}). Continuing.")
+        _emit(emitter, f"✓ Step {step_num} done. API error ({e.code}). Continuing.")
         return ""
     except Exception as e:
         logger.warning("find_associated_providers failed: %s", e)
@@ -421,7 +454,7 @@ def _run_step_3_find_associated_providers(
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Associated providers", csv_content=f"(failed: {e})", row_count=0)
         )
-        _emit(emitter, f"✓ Step 3 done. Failed. Continuing.")
+        _emit(emitter, f"✓ Step {step_num} done. Failed. Continuing.")
         return ""
 
 
@@ -707,8 +740,13 @@ def _run_step_org_benchmark(
         state.mark_skipped(step_id, "No API or no associated providers.")
         _emit(emitter, "✓ Org benchmark skipped.")
         return
+    org_slug = _org_slug(state.org_name)
     url = f"{base}/org-benchmark"
-    payload = json.dumps({"active_roster": downstream, "period": "2024"}).encode("utf-8")
+    payload = json.dumps({
+        "active_roster": downstream,
+        "period": "2024",
+        "org_slug": org_slug,
+    }).encode("utf-8")
     try:
         req = urllib.request.Request(
             url,
@@ -758,6 +796,55 @@ def _run_step_opportunity_sizing(
         state.mark_skipped(step_id, "No PML validation or missing enrollment data.")
         _emit(emitter, "✓ Opportunity sizing skipped (no data).")
         return
+    # Build benchmark snapshot (taxonomy + org) to lock A/B/C/D/E — prevents drift between runs
+    taxonomy_codes = set()
+    for r in validated + flagged:
+        t = (r.get("taxonomy_code") or "").strip()
+        if t:
+            taxonomy_codes.add(t)
+    for r in missing:
+        t = (r.get("suggested_taxonomy_code") or "").strip()
+        if t:
+            taxonomy_codes.add(t)
+    zip5_list = []
+    for loc in (state.locations or []):
+        z = (str(loc.get("site_zip5") or loc.get("site_zip") or "") if isinstance(loc, dict) else "").strip()[:5]
+        if len(z) == 5 and z not in zip5_list:
+            zip5_list.append(z)
+    benchmarks_snapshot: dict = {}
+    bm_rows: list = []
+    try:
+        bm_req = urllib.request.Request(
+            f"{base}/benchmarks-export",
+            data=json.dumps({
+                "period": "2024",
+                "taxonomy_codes": list(taxonomy_codes) if taxonomy_codes else None,
+                "zip5_list": zip5_list if zip5_list else None,
+                "org_slug": _org_slug(state.org_name),
+            }).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(bm_req, timeout=120) as bm_resp:
+            bm_data = json.loads(bm_resp.read().decode())
+        bm_rows = bm_data.get("rows") or []
+        for row in bm_rows:
+            tax = (row.get("taxonomy_code") or "").strip()
+            gtyp = (row.get("geography_type") or "").strip()
+            gval = (row.get("geography_value") or "").strip()
+            if not tax or not gtyp:
+                continue
+            key = f"{gtyp}:{gval}" if gval else gtyp
+            benchmarks_snapshot.setdefault(key, {})[tax] = {
+                "claims_per_member": float(row.get("claims_per_member") or 0),
+                "revenue_per_member": float(row.get("revenue_per_member") or 0),
+                "revenue_per_claim": float(row.get("revenue_per_claim") or 0),
+                "member_count": int(float(row.get("member_count") or 0)),
+                "claim_count": int(float(row.get("claim_count") or 0)),
+                "total_revenue": float(row.get("total_revenue") or 0),
+            }
+    except Exception as bm_err:
+        logger.warning("Benchmarks export for snapshot failed: %s", bm_err)
     url = f"{base}/opportunity-sizing"
     payload = json.dumps({
         "validated": validated,
@@ -765,6 +852,7 @@ def _run_step_opportunity_sizing(
         "missing_enrollment": missing,
         "org_benchmark": state.org_benchmark,
         "member_proxy": 100,
+        "benchmarks_snapshot": benchmarks_snapshot if benchmarks_snapshot else None,
     }).encode("utf-8")
     try:
         req = urllib.request.Request(
@@ -816,42 +904,12 @@ def _run_step_opportunity_sizing(
                 row_count=len(npi_detail),
             )
         )
-        # Benchmarks CSV (filtered to client taxonomies and ZIPs)
-        try:
-            taxonomy_codes = set()
-            for r in validated + flagged:
-                t = (r.get("taxonomy_code") or "").strip()
-                if t:
-                    taxonomy_codes.add(t)
-            for r in missing:
-                t = (r.get("suggested_taxonomy_code") or "").strip()
-                if t:
-                    taxonomy_codes.add(t)
-            zip5_list = []
-            for loc in (state.locations or []):
-                z = (str(loc.get("site_zip5") or loc.get("site_zip") or "") if isinstance(loc, dict) else "").strip()[:5]
-                if len(z) == 5 and z not in zip5_list:
-                    zip5_list.append(z)
-            bm_payload = json.dumps({
-                "period": "2024",
-                "taxonomy_codes": list(taxonomy_codes) if taxonomy_codes else None,
-                "zip5_list": zip5_list if zip5_list else None,
-            }).encode("utf-8")
-            bm_req = urllib.request.Request(
-                f"{base}/benchmarks-export",
-                data=bm_payload,
-                headers={"Content-Type": "application/json", "Accept": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(bm_req, timeout=120) as bm_resp:
-                bm_data = json.loads(bm_resp.read().decode())
-            bm_rows = bm_data.get("rows") or []
+        # Benchmarks step output (reuse bm_rows from snapshot fetch)
+        if bm_rows:
             bm_cols = ["taxonomy_code", "geography_type", "geography_value", "period", "claim_count", "total_revenue", "member_count", "claims_per_member", "revenue_per_member", "revenue_per_claim"]
             state.step_outputs.append(
-                StepOutput(step_id="benchmarks", label="Utilization benchmarks (filtered)", csv_content=_to_csv(bm_rows, bm_cols) if bm_rows else "(no data)", row_count=len(bm_rows))
+                StepOutput(step_id="taxonomy_benchmarks", label="Utilization benchmarks (filtered)", csv_content=_to_csv(bm_rows, bm_cols), row_count=len(bm_rows))
             )
-        except Exception as bm_err:
-            logger.warning("Benchmarks export failed: %s", bm_err)
     except Exception as e:
         logger.warning("opportunity_sizing failed: %s", e)
         state.mark_done(step_id, str(e))
@@ -891,7 +949,27 @@ def _run_step_build_report(
         {"step_id": s.step_id, "label": s.label, "csv_content": s.csv_content, "row_count": s.row_count}
         for s in state.step_outputs
     ]
-    timeout_per_step = 600  # seconds per LLM step (draft has 5–6 section calls; validate/compose also slow)
+    timeout_per_step = 900  # 15 min per request (large orgs e.g. Aspire 772 providers; draft + validate + compose can exceed 10 min)
+
+    # Create report run for persistence (audit trail). If persistence is disabled or fails, continue without report_run_id.
+    try:
+        create_req = urllib.request.Request(
+            f"{base}/report-runs",
+            data=json.dumps({"org_name": org_name.strip()}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(create_req, timeout=10) as cr_resp:
+            cr_data = json.loads(cr_resp.read().decode())
+            state.report_run_id = (cr_data.get("report_run_id") or "").strip()
+            if state.report_run_id:
+                _emit(emitter, "Storing this report for future use.")
+    except Exception as cr_err:
+        logger.warning(
+            "Report run create failed (persistence disabled or skill DB unreachable): %s",
+            cr_err,
+        )
+        state.report_run_id = ""
 
     def _post_report(path: str, body: dict) -> dict:
         req = urllib.request.Request(
@@ -927,14 +1005,21 @@ def _run_step_build_report(
         for draft_attempt in range(draft_max_tries):
             if draft_attempt == 0:
                 _emit(emitter, "Building credentialing report…")
+                _emit(emitter, "  Draft composer: generating report from step outputs…")
             else:
                 _emit(emitter, f"Validation blocked. Retrying with fresh draft (attempt {draft_attempt + 1}/{draft_max_tries})…")
-            draft_resp = _post_report_with_retry(
-                "/report-from-steps/draft",
-                {"org_name": org_name.strip(), "step_outputs": step_outputs_payload},
-            )
+            try:
+                draft_resp = _post_report_with_retry(
+                    "/report-from-steps/draft",
+                    {"org_name": org_name.strip(), "step_outputs": step_outputs_payload},
+                )
+            except urllib.error.HTTPError as draft_err:
+                if draft_err.code in (500, 503):
+                    _emit(emitter, "Draft failed: rate limit or safety filter. Try again in a few minutes.")
+                raise
             draft_md = draft_resp.get("draft_md") or ""
-            _emit(emitter, "Draft ready. Validating…")
+            _emit(emitter, "  → Draft composer done.")
+            _emit(emitter, "  Validator: checking draft (numbers + narrative critique)…")
             validation_resp = _post_report_with_retry(
                 "/report-from-steps/validate",
                 {"org_name": org_name.strip(), "step_outputs": step_outputs_payload, "draft_md": draft_md},
@@ -943,6 +1028,7 @@ def _run_step_build_report(
             critique_report = validation_resp.get("critique_report") or ""
 
             if "Validation Status: BLOCK" not in (validation_report or ""):
+                _emit(emitter, "  → Validator: passed. Critique reviewed.")
                 break
             if draft_attempt == draft_max_tries - 1:
                 _emit(emitter, f"Validation blocked after {draft_max_tries} attempts (e.g. Section E truncation, data inconsistency). Report could not be generated.")
@@ -967,9 +1053,7 @@ def _run_step_build_report(
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Report validation (narrative)", csv_content=critique_report or "(no output)", row_count=1 if critique_report else 0)
         )
-        _emit(emitter, "Validation complete. Building final report…")
-
-        # 11c: Compose (incorporates both validations)
+        _emit(emitter, "  Final composer: incorporating validation into final report…")
         compose_resp = _post_report_with_retry("/report-from-steps/compose", {
             "org_name": org_name.strip(),
             "step_outputs": step_outputs_payload,
@@ -978,6 +1062,8 @@ def _run_step_build_report(
             "critique_report": critique_report,
         })
         final_md = compose_resp.get("final_md") or ""
+        state.report_summary = compose_resp.get("summary") or {}
+        _emit(emitter, "  → Final composer done.")
         _emit(emitter, "Final report ready. Generating charts and PDF…")
 
         # 11d: Charts + PDF
@@ -987,6 +1073,26 @@ def _run_step_build_report(
 
         state.report_final_md = final_md
         state.report_pdf_base64 = pdf_base64
+        # Per-NPI profile: always show step so it appears in chat; use API payload when present
+        npi_profiles_md = charts_resp.get("npi_profiles_md") or ""
+        npi_profile_json = charts_resp.get("npi_profile_json") or ""
+        npi_profile_row_count = int(charts_resp.get("npi_profile_row_count") or 0)
+        if not npi_profiles_md and not npi_profile_json and npi_profile_row_count == 0:
+            # Old API or no profiles: still show the step with a short message
+            npi_profiles_md = (
+                "Per-NPI profile data is included in the **PDF report** (Appendix: NPI Profiles).\n\n"
+                "To see it here in the chat, ensure the provider-roster service is up to date and run the credentialing report again."
+            )
+        state.step_outputs.append(
+            StepOutput(
+                step_id="npi_profile",
+                label="Per-NPI profile",
+                csv_content="",
+                row_count=npi_profile_row_count,
+                markdown_content=npi_profiles_md,
+                json_content=npi_profile_json,
+            )
+        )
         state.step_outputs.append(
             StepOutput(
                 step_id=step_id,
@@ -995,6 +1101,38 @@ def _run_step_build_report(
                 row_count=1 if final_md else 0,
             )
         )
+        # Persist run (steps + summary + documents) when report_run_id was created at start of step 11
+        if state.report_run_id:
+            try:
+                complete_payload = {
+                    "status": "completed",
+                    "summary": state.report_summary,
+                    "step_outputs": [
+                        {
+                            "step_id": s.step_id,
+                            "label": s.label,
+                            "csv_content": s.csv_content,
+                            "row_count": s.row_count,
+                            "sort_order": i,
+                            "markdown_content": getattr(s, "markdown_content", "") or "",
+                            "json_content": getattr(s, "json_content", "") or "",
+                        }
+                        for i, s in enumerate(state.step_outputs)
+                    ],
+                    "final_md": state.report_final_md,
+                    "final_pdf_base64": state.report_pdf_base64 or None,
+                }
+                complete_req = urllib.request.Request(
+                    f"{base}/report-runs/{state.report_run_id}/complete",
+                    data=json.dumps(complete_payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json", "Accept": "application/json"},
+                    method="PUT",
+                )
+                with urllib.request.urlopen(complete_req, timeout=60) as comp_resp:
+                    json.loads(comp_resp.read().decode())
+                _emit(emitter, "Report stored. You can ask any question about it.")
+            except Exception as comp_err:
+                logger.warning("Report run complete failed: %s", comp_err)
         result_text = final_md or "Report generated (no markdown returned)."
         if final_md:
             state.mark_done(step_id, "Report generated.")
@@ -1011,6 +1149,27 @@ def _run_step_build_report(
             StepOutput(step_id=step_id, label="Credentialing report", csv_content=f"(API error {e.code})", row_count=0)
         )
         _emit(emitter, f"✓ Step 11 done. API error ({e.code}).")
+        if e.code == 422:
+            try:
+                detail = json.loads(body)
+                msg = detail.get("detail") or detail
+                if isinstance(msg, dict) and msg.get("message"):
+                    return f"Report could not be generated: {msg['message']}"
+                if isinstance(msg, dict) and msg.get("error"):
+                    return f"Report could not be generated: {msg['error']}"
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if e.code in (500, 503):
+            try:
+                data = json.loads(body)
+                detail = data.get("detail")
+                if isinstance(detail, dict) and detail.get("message"):
+                    return f"Report draft failed: {detail['message']}"
+                if isinstance(detail, str):
+                    return f"Report draft failed: {detail}"
+            except (json.JSONDecodeError, TypeError):
+                pass
+            return "Report draft failed: rate limit or safety filter. Please try again in a few minutes."
         return f"Report failed ({e.code}): {body}"
     except urllib.error.URLError as e:
         if "timed out" in str(e).lower():
@@ -1078,7 +1237,7 @@ def run_orchestrator(
 
 
 def _step_num(step_id: str) -> int:
-    """Map step_id to display number 1–11."""
+    """Map step_id to display number 1–12."""
     order = {
         "ensure_benchmarks": 1,
         "identify_org": 2,
@@ -1091,5 +1250,6 @@ def _step_num(step_id: str) -> int:
         "step_7": 9,
         "opportunity_sizing": 10,
         "build_report": 11,
+        "npi_profile": 12,
     }
     return order.get(step_id, 0)

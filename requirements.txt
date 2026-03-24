@@ -13,6 +13,8 @@ redis>=5.0.0
 google-cloud-aiplatform>=1.38.0
 # For CHAT_RAG_DATABASE_URL (published_rag_metadata Postgres)
 psycopg2-binary>=2.9.0
+# For async analytics writes (llm_analytics, prompts_llm_history PG)
+asyncpg>=0.29.0
 # Repair malformed LLM JSON (trailing commas, missing quotes, etc.) before LLM repair
 json-repair>=0.55.0
 # Chat bot script (config and questions YAML)

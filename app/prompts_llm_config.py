@@ -55,6 +55,11 @@ def load_prompts_llm_config() -> tuple[dict[str, Any], str]:
             return {}, ""
         config = {k: data[k] for k in _TOP_KEYS if k in data}
         sha = compute_config_sha(config)
+        try:
+            from app.prompts_llm_history import append_entry
+            append_entry(config, created_by="startup")
+        except Exception as e:
+            logger.debug("Config history append on load (non-fatal): %s", e)
         return config, sha
     except Exception as e:
         logger.warning("Failed to load prompts_llm config from %s: %s", _CONFIG_PATH, e)
@@ -81,6 +86,11 @@ def save_prompts_llm_config(config: dict[str, Any]) -> str:
             yaml.safe_dump(merged, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
         sha = compute_config_sha(merged)
         logger.info("Saved prompts_llm config to %s config_sha=%s", _CONFIG_PATH, sha)
+        try:
+            from app.prompts_llm_history import append_entry
+            append_entry(merged, created_by="api")
+        except Exception as e:
+            logger.debug("Config history append (non-fatal): %s", e)
         return sha
     except Exception as e:
         logger.exception("Failed to save prompts_llm config to %s: %s", _CONFIG_PATH, e)

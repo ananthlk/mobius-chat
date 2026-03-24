@@ -76,6 +76,7 @@ def _raw_to_chat_chunk(c: dict[str, Any], match_score: float | None) -> dict[str
         "document_id": c.get("document_id"),
         "document_name": c.get("document_name") or "document",
         "page_number": c.get("page_number"),
+        "paragraph_index": c.get("paragraph_index"),
         "source_type": c.get("source_type") or "chunk",
         "document_authority_level": c.get("document_authority_level"),
         "match_score": match_score,

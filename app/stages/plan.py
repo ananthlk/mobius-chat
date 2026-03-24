@@ -2,7 +2,7 @@
 import logging
 from collections.abc import Callable
 
-from app.chat_config import get_chat_config
+from app.chat_config import get_chat_config, get_config_sha
 from app.pipeline.context import PipelineContext
 from app.planner import parse
 from app.planner.blueprint import build_blueprint
@@ -65,6 +65,13 @@ def run_plan(ctx: PipelineContext, emitter: Callable[[str], None] | None = None)
                 "is_followup": is_followup_continuation(ctx.message, last_turn, last_refined),
                 "user_message": ctx.effective_message or ctx.message,
             }
+            if (ctx.merged_state or {}).get("active_skill"):
+                retrieval_ctx["active_skill"] = (ctx.merged_state or {}).get("active_skill")
+            act = (ctx.merged_state or {}).get("active") or {}
+            if (act.get("report_run_id") or "").strip():
+                retrieval_ctx["report_run_id"] = (act.get("report_run_id") or "").strip()
+            if (act.get("last_report_org") or "").strip():
+                retrieval_ctx["last_report_org"] = (act.get("last_report_org") or "").strip()
             ctx.blueprint = build_blueprint(plan, rag_default_k=rag_k, retrieval_ctx=retrieval_ctx)
             return
 
@@ -75,11 +82,15 @@ def run_plan(ctx: PipelineContext, emitter: Callable[[str], None] | None = None)
         parser_context = f"Available paths and capabilities: {capabilities_for_parser()}"
     try:
         last_plan = ctx.master_objective if ctx.master_objective else None
+        _sha = get_config_sha() or None
         plan = parse(
             ctx.effective_message,
             thinking_emitter=emitter,
             context=parser_context,
             last_master_plan=last_plan,
+            correlation_id=ctx.correlation_id,
+            thread_id=ctx.thread_id,
+            config_sha=_sha,
         )
         if not plan or not plan.subquestions:
             logger.warning("Plan stage: parse returned empty plan, using minimal plan.")
@@ -109,4 +120,12 @@ def run_plan(ctx: PipelineContext, emitter: Callable[[str], None] | None = None)
         "is_followup": is_followup_continuation(ctx.message, last_turn, last_refined),
         "user_message": ctx.effective_message or ctx.message,
     }
+    active_skill = (ctx.merged_state or {}).get("active_skill")
+    if active_skill:
+        retrieval_ctx["active_skill"] = active_skill
+    active = (ctx.merged_state or {}).get("active") or {}
+    if (active.get("report_run_id") or "").strip():
+        retrieval_ctx["report_run_id"] = (active.get("report_run_id") or "").strip()
+    if (active.get("last_report_org") or "").strip():
+        retrieval_ctx["last_report_org"] = (active.get("last_report_org") or "").strip()
     ctx.blueprint = build_blueprint(plan, rag_default_k=rag_k, retrieval_ctx=retrieval_ctx)

@@ -46,6 +46,24 @@ def run_clarify(ctx: PipelineContext, emitter: Callable[[str], None] | None = No
         question_text=ctx.message or "",
         rag_url=rag_url,
     )
+    # Skip jurisdiction ask when we're answering from a stored credentialing report (no RAG scope needed)
+    if needs_clar and clarification_message and ctx.merged_state:
+        msg_lower = (message or "").lower()
+        active_skill = ctx.merged_state.get("active_skill") or {}
+        has_report_context = (active_skill.get("skill") or "").strip().lower() == "roster_report"
+        if not has_report_context and active:
+            has_run = bool((active.get("report_run_id") or "").strip() or (active.get("last_report_org") or "").strip())
+            if has_run:
+                has_followup_phrase = (
+                    "pml" in msg_lower and "npi" in msg_lower
+                    or "section" in msg_lower
+                    or ("how many" in msg_lower and "pml" in msg_lower)
+                    or "readiness" in msg_lower
+                    or "revenue opportunity" in msg_lower
+                )
+                has_report_context = has_followup_phrase
+        if has_report_context:
+            needs_clar = False
     if needs_clar and clarification_message:
         ctx.needs_clarification = True
         ctx.clarification_message = clarification_message

@@ -291,6 +291,33 @@ def save_state_full(thread_id: str, state: dict[str, Any]) -> None:
         raise
 
 
+_MAX_THREAD_UPLOAD_RECORDS = 15
+
+
+def append_uploaded_file_record(thread_id: str, record: dict[str, Any]) -> bool:
+    """Prepend an upload record to active.uploaded_files (capped). For roster_reconciliation,
+    also refreshes reconciliation_upload_id / org_id / org_name so the next message can run the tool.
+    Returns False if state could not be persisted (e.g. database URL unset)."""
+    url = _get_db_url()
+    if not url:
+        logger.warning("CHAT_RAG_DATABASE_URL not set; upload list not persisted")
+        return False
+    current = get_state(thread_id)
+    if current is None:
+        current = json.loads(json.dumps(DEFAULT_STATE))
+    active = {**(current.get("active") or {})}
+    prev = active.get("uploaded_files") or []
+    files: list[dict[str, Any]] = [dict(x) for x in prev if isinstance(x, dict)]
+    files.insert(0, dict(record))
+    active["uploaded_files"] = files[:_MAX_THREAD_UPLOAD_RECORDS]
+    if (record.get("purpose") or "").strip() == "roster_reconciliation":
+        active["reconciliation_upload_id"] = (record.get("upload_id") or "").strip()
+        active["reconciliation_org_id"] = (record.get("org_id") or "").strip()
+        active["reconciliation_org_name"] = (record.get("org_name") or "").strip()
+    save_state(thread_id, {"active": active})
+    return True
+
+
 def register_open_slots(thread_id: str, slots: list[str]) -> None:
     """Set state.open_slots to slots (replace), increment state_version, save."""
     from app.state.model import ThreadState

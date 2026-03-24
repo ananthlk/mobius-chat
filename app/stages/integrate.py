@@ -1,16 +1,28 @@
 """Stage: format response, build response payload."""
 import json
 import logging
+import os
 from collections.abc import Callable
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 from app.chat_config import get_config_sha
+from app.communication.assistant_envelope import (
+    build_assistant_envelope_v1,
+    enrich_sources_open_hrefs,
+    resolve_tool_fired,
+)
+from app.communication.followup_next_steps_quality import filter_next_steps_and_questions
+from app.communication.json_display_sanitize import (
+    DEFAULT_BLEED_FALLBACK,
+    finalize_answer_card_json_for_client,
+)
 from app.communication.gate import send_to_user
 from app.pipeline.context import PipelineContext
 from app.responder import format_response
 from app.services.cost_model import compute_cost
+from app.services.model_registry import integrator_llm_stage, per_call_router_composite
 from app.state.jurisdiction import get_jurisdiction_from_active, jurisdiction_to_summary
 
 # Badge keys for source_confidence_strip
@@ -20,6 +32,267 @@ BADGE_PROCEED_WITH_CAUTION = "proceed_with_caution"
 BADGE_AUGMENTED_WITH_GOOGLE = "augmented_with_google"
 BADGE_INFORMATIONAL_ONLY = "informational_only"
 BADGE_NO_SOURCES = "no_sources"
+
+# Optional AnswerCard fields kept on client `message` so assistant_envelope can populate Details.
+_ANSWER_CARD_ENVELOPE_KEYS = (
+    "citations",
+    "confidence_note",
+    "required_variables",
+    "followups",
+)
+
+
+def _answer_card_json_for_client(
+    mode: str,
+    direct_answer: str,
+    sections: list[Any],
+    *,
+    extra_from: dict[str, Any] | None = None,
+) -> str:
+    card: dict[str, Any] = {"mode": mode, "direct_answer": direct_answer, "sections": sections}
+    src = extra_from or {}
+    for k in _ANSWER_CARD_ENVELOPE_KEYS:
+        v = src.get(k)
+        if v is not None:
+            card[k] = v
+    return json.dumps(card)
+
+
+def _answer_step_label(stage: str) -> str:
+    """User-facing label for answer pipeline LLM steps (shown in Answer insights UI)."""
+    s = (stage or "").strip().lower()
+    static = {
+        "plan": "Planning",
+        "planner": "Planning",
+        "rag": "Library research & draft",
+        "integrator_roster": "Composing your report answer",
+        "integrator": "Composing your answer",
+        "context": "Context assembly",
+        "badge": "Safety badge",
+        "classifier": "Classifier",
+        "critique": "Critique",
+        "adjudicator": "Quality review",
+        "phi_detector": "Privacy check",
+    }
+    if s in static:
+        return static[s]
+    if s.startswith("react_"):
+        suffix = s.split("_", 1)[-1] if "_" in s else ""
+        try:
+            n = int(suffix)
+            return f"Reasoning (round {n})"
+        except ValueError:
+            return "Reasoning"
+    if s == "web_search":
+        return "Web search answer"
+    if s == "web_scrape":
+        return "Web page read"
+    if s == "npi_lookup":
+        return "NPI registry lookup"
+    if s == "roster_report":
+        return "Credentialing report"
+    if s == "credentialing_qa":
+        return "Report Q&A"
+    if s == "healthcare_query":
+        return "Healthcare lookup"
+    if s.startswith("tool_"):
+        return f"Tool: {(s[5:] or 'step').replace('_', ' ')}"
+    return (stage or "LLM step").replace("_", " ").strip().title()
+
+
+def _display_stage_name(stage: str) -> str:
+    """Short table header for LLM Performance (matches product copy)."""
+    s = (stage or "").strip().lower()
+    if s in ("plan", "planner"):
+        return "Planner"
+    if s == "rag":
+        return "RAG"
+    if s == "integrator_roster":
+        return "Roster integrator"
+    if s == "integrator":
+        return "Integrator"
+    if s.startswith("react_"):
+        suf = s.split("_", 1)[-1] if "_" in s else ""
+        try:
+            return f"Reasoning R{int(suf)}"
+        except ValueError:
+            return "Reasoning"
+    if s == "adjudicator":
+        return "Quality audit"
+    if s == "web_search":
+        return "Web search"
+    if s == "web_scrape":
+        return "Web scrape"
+    if s == "npi_lookup":
+        return "NPI lookup"
+    if s == "roster_report":
+        return "Roster report"
+    if s == "credentialing_qa":
+        return "Credentialing QA"
+    if s == "healthcare_query":
+        return "Healthcare query"
+    if s.startswith("tool_"):
+        return (s[5:] or "tool").replace("_", " ").title()
+    if s in ("badge", "classifier", "critique", "phi_detector", "context"):
+        return (stage or s).replace("_", " ").title()
+    return (stage or "Step").replace("_", " ").title()
+
+
+def _adjudication_sources_payload(all_sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Full retrieval chunks for post-run adjudication (client-facing ``sources`` stay short)."""
+    try:
+        max_per = max(2000, min(100_000, int(os.environ.get("MOBIUS_ADJ_SOURCE_MAX_CHARS", "16000"))))
+    except ValueError:
+        max_per = 16000
+    all_sources = all_sources or []
+    rows: list[dict[str, Any]] = []
+    for i, s in enumerate(all_sources):
+        if not isinstance(s, dict):
+            continue
+        raw_text = (s.get("text") or "").strip()
+        if len(raw_text) > max_per:
+            raw_text = raw_text[:max_per] + "\n... [truncated: MOBIUS_ADJ_SOURCE_MAX_CHARS]"
+        rows.append(
+            {
+                "index": s.get("index", i + 1),
+                "document_id": s.get("document_id"),
+                "document_name": s.get("document_name") or s.get("name") or "document",
+                "page_number": s.get("page_number"),
+                "source_type": s.get("source_type"),
+                "match_score": s.get("match_score"),
+                "confidence": s.get("confidence"),
+                "confidence_label": s.get("confidence_label"),
+                "text": raw_text,
+                "url": s.get("url"),
+            }
+        )
+    return enrich_sources_open_hrefs(rows)
+
+
+def breakdown_row_from_usage(
+    u: dict[str, Any],
+    resolved_stage: str | None = None,
+) -> dict[str, Any]:
+    """Build one ``usage_breakdown`` row from an llm_manager usage dict (integrator + post-run patch)."""
+    stage = ((resolved_stage or u.get("stage") or "") if isinstance(u, dict) else "").strip() or "unknown"
+    row: dict[str, Any] = {
+        "stage": stage,
+        "step_label": _answer_step_label(stage),
+        "display_stage": _display_stage_name(stage),
+        "model": u.get("model") or "",
+        "provider": u.get("provider") or "",
+        "input_tokens": int(u.get("input_tokens") or 0),
+        "output_tokens": int(u.get("output_tokens") or 0),
+        "cost_usd": round(compute_cost(u), 6),
+    }
+    if isinstance(u, dict):
+        if u.get("latency_ms") is not None:
+            try:
+                row["latency_ms"] = int(u["latency_ms"])
+            except (TypeError, ValueError):
+                pass
+        if u.get("llm_call_id"):
+            row["llm_call_id"] = str(u["llm_call_id"])
+        if "is_ab_call" in u:
+            row["is_ab_call"] = bool(u.get("is_ab_call"))
+        err = u.get("error_type") or u.get("error")
+        row["call_status"] = "error" if err else "ok"
+        # ModelRouter transparency (llm_manager.generate)
+        if u.get("router_reason"):
+            row["router_reason"] = str(u["router_reason"])[:4000]
+        if u.get("router_selection"):
+            row["router_selection"] = str(u["router_selection"])[:120]
+        if "router_exploration_round" in u:
+            row["router_exploration_round"] = bool(u.get("router_exploration_round"))
+        if "router_circuit_relief" in u:
+            row["router_circuit_relief"] = bool(u.get("router_circuit_relief"))
+        if u.get("router_candidates_eligible") is not None:
+            try:
+                row["router_candidates_eligible"] = int(u["router_candidates_eligible"])
+            except (TypeError, ValueError):
+                pass
+        if u.get("router_candidates_after_breaker") is not None:
+            try:
+                row["router_candidates_after_breaker"] = int(u["router_candidates_after_breaker"])
+            except (TypeError, ValueError):
+                pass
+        if u.get("router_avg_quality_at_pick") is not None:
+            try:
+                row["router_avg_quality_at_pick"] = float(u["router_avg_quality_at_pick"])
+            except (TypeError, ValueError):
+                pass
+        if u.get("router_quality_samples_at_pick") is not None:
+            try:
+                row["router_quality_samples_at_pick"] = int(u["router_quality_samples_at_pick"])
+            except (TypeError, ValueError):
+                pass
+        # Post-run QA: per-call scores written to llm_calls and merged into usage_breakdown
+        if u.get("quality_score") is not None:
+            try:
+                row["quality_score"] = round(float(u["quality_score"]), 3)
+            except (TypeError, ValueError):
+                pass
+        if u.get("quality_source"):
+            row["quality_source"] = str(u["quality_source"]).strip()[:200]
+        if u.get("router_composite_at_pick") is not None:
+            try:
+                row["router_composite_at_pick"] = round(float(u["router_composite_at_pick"]), 4)
+            except (TypeError, ValueError):
+                pass
+        br = u.get("router_composite_breakdown")
+        if isinstance(br, dict) and br:
+            row["router_composite_breakdown"] = br
+    ok = row.get("call_status") != "error"
+    lat = row.get("latency_ms")
+    cost = row.get("cost_usd")
+    q_sc = row.get("quality_score")
+    try:
+        pc, pbrk = per_call_router_composite(
+            lat,
+            cost,
+            q_sc,
+            ok,
+            stage=str(row.get("stage") or ""),
+            provider=str(row.get("provider") or ""),
+            model=str(row.get("model") or ""),
+            input_tokens=int(row.get("input_tokens") or 0),
+            output_tokens=int(row.get("output_tokens") or 0),
+        )
+        row["per_call_composite"] = round(float(pc), 4)
+        row["per_call_composite_breakdown"] = {
+            k: round(float(v), 4) if isinstance(v, (int, float)) else v
+            for k, v in pbrk.items()
+        }
+    except (TypeError, ValueError):
+        pass
+    return row
+
+
+def _top_corpus_hit(sources: list[dict[str, Any]]) -> dict[str, Any] | None:
+    best: dict[str, Any] | None = None
+    best_score = -1.0
+    for src in sources or []:
+        if not isinstance(src, dict):
+            continue
+        raw = src.get("match_score")
+        if raw is None:
+            raw = src.get("confidence")
+        try:
+            sc = float(raw) if raw is not None else 0.0
+        except (TypeError, ValueError):
+            sc = 0.0
+        if sc > best_score:
+            best_score = sc
+            best = src
+    if not best:
+        return None
+    return {
+        "document_name": best.get("document_name"),
+        "page_number": best.get("page_number"),
+        "match_score": best.get("match_score"),
+        "confidence": best.get("confidence"),
+    }
+
 
 from app.services.doc_assembly import (
     RETRIEVAL_SIGNAL_CORPUS_ONLY,
@@ -35,6 +308,8 @@ def _default_source_confidence(
     answer_set: dict | None = None,
 ) -> str:
     """Compute default badge from retrieval signals. Layer-aware when answer_set provides layer_used."""
+    retrieval_signals = retrieval_signals or []
+    all_sources = all_sources or []
 
     # Layer-based override — takes priority over signal when layer_used is present
     if answer_set:
@@ -81,13 +356,14 @@ def run_integrate(
     if not plan:
         return
 
-    answers = ctx.answers
-    all_sources = ctx.sources
-    usages = ctx.usages
-    retrieval_signals = ctx.retrieval_signals
+    answers = ctx.answers or []
+    all_sources = ctx.sources if ctx.sources is not None else []
+    usages = [u for u in (ctx.usages or []) if isinstance(u, dict)]
+    retrieval_signals = ctx.retrieval_signals if ctx.retrieval_signals is not None else []
+    answer_set = ctx.answer_set if isinstance(getattr(ctx, "answer_set", None), dict) else {}
 
     default_source_confidence = _default_source_confidence(
-        retrieval_signals, all_sources, answer_set=ctx.answer_set
+        retrieval_signals, all_sources, answer_set=answer_set
     )
     # Answer from active skill output (report/NPI lookup) → approved_informational
     if getattr(ctx, "active_skill_reference", False):
@@ -100,7 +376,7 @@ def run_integrate(
     # Mode cap: if any subquestion was answered by Layer 4 (reasoning), CANONICAL is not permitted
     layer4_used = any(
         (v.get("layer_used") or 0) >= 4
-        for v in (ctx.answer_set or {}).values()
+        for v in answer_set.values()
         if isinstance(v, dict)
     )
     if layer4_used:
@@ -115,8 +391,12 @@ def run_integrate(
         for i, s in enumerate(all_sources)
     ]
 
-    def on_message_chunk(chunk: str) -> None:
-        send_to_user(ctx.correlation_id, {"type": "final", "content": chunk})
+    # Stream only the direct-answer plain text (see format_response); never raw partial JSON.
+    from app.storage.progress import append_message_chunk
+
+    def _stream_answer_chunk(chunk: str) -> None:
+        if chunk:
+            append_message_chunk(ctx.correlation_id, chunk)
 
     active = (ctx.merged_state or {}).get("active")
     jurisdiction_summary = None
@@ -124,42 +404,62 @@ def run_integrate(
         j = get_jurisdiction_from_active(active)
         jurisdiction_summary = jurisdiction_to_summary(j) or None
 
+    _cfg_sha = get_config_sha() or None
+    _integ_stage = integrator_llm_stage(ctx)
     final_message, integrator_usage = format_response(
         plan,
         answers,
         user_message=ctx.message,
         emitter=emitter,
-        message_chunk_callback=on_message_chunk,
+        message_chunk_callback=_stream_answer_chunk,
         retrieval_metadata=retrieval_metadata,
         sources_summary=sources_summary,
         jurisdiction_summary=jurisdiction_summary,
         user_provided_context=getattr(ctx, "user_provided_context", None),
+        correlation_id=ctx.correlation_id,
+        thread_id=ctx.thread_id,
+        config_sha=_cfg_sha,
+        phi_detected=False,
+        llm_stage=_integ_stage,
     )
     ctx.final_message = final_message
 
     if integrator_usage:
         usages = list(usages) + [integrator_usage]
+        if isinstance(integrator_usage, dict):
+            ctx.integrator_llm_call_id = integrator_usage.get("llm_call_id")
+            ctx.integrator_model_id = integrator_usage.get("model")
     else:
         usages = list(usages)
 
     total_input = sum(int(u.get("input_tokens") or 0) for u in usages)
     total_output = sum(int(u.get("output_tokens") or 0) for u in usages)
     total_cost = sum(compute_cost(u) for u in usages)
-    model_used = (usages[0].get("model") or None) if usages else None
+    integrator_model = None
+    for u in reversed(usages):
+        if isinstance(u, dict) and u.get("stage") in ("integrator", "integrator_roster"):
+            integrator_model = u.get("model")
+            break
+    model_used = integrator_model or ((usages[0].get("model") or None) if usages else None)
 
-    response_sources = [
-        {
-            "index": s.get("index", i + 1),
-            "document_id": s.get("document_id"),
-            "document_name": s.get("document_name") or "document",
-            "page_number": s.get("page_number"),
-            "source_type": s.get("source_type"),
-            "match_score": s.get("match_score"),
-            "confidence": s.get("confidence"),
-            "text": (s.get("text") or "")[:200],
-        }
-        for i, s in enumerate(all_sources)
-    ]
+    response_sources = enrich_sources_open_hrefs(
+        [
+            {
+                "index": s.get("index", i + 1),
+                "document_id": s.get("document_id"),
+                "document_name": s.get("document_name") or "document",
+                "page_number": s.get("page_number"),
+                "source_type": s.get("source_type"),
+                "match_score": s.get("match_score"),
+                "confidence": s.get("confidence"),
+                "text": (s.get("text") or "")[:200],
+                "cite_text": (s.get("text") or "").strip()[:500],
+                "url": s.get("url"),
+            }
+            for i, s in enumerate(all_sources)
+        ]
+    )
+    adjudication_sources = _adjudication_sources_payload(all_sources)
 
     source_confidence_strip = default_source_confidence
     cited_source_indices: list[int] = []
@@ -168,8 +468,9 @@ def run_integrate(
     open_task_ids: list[str] = []
     next_steps: list[str] = []
     next_questions_for_user: list[str] = []
+    integrator_ui_blocks: list[Any] = []
     # When we cannot parse the response (LLM error, plain text), show a friendly try-again card
-    FALLBACK_TRY_AGAIN = "Something went wrong. Please try again, or start a new chat."
+    FALLBACK_TRY_AGAIN = DEFAULT_BLEED_FALLBACK
     display_message: str = final_message or ""
     try:
         raw = (final_message or "").strip()
@@ -185,6 +486,9 @@ def run_integrate(
             raw = "\n".join(lines).strip()
         parsed = json.loads(raw)
         if isinstance(parsed, dict):
+            _ub = parsed.get("ui_blocks")
+            if isinstance(_ub, list):
+                integrator_ui_blocks = _ub
             # Extract display_message for frontend AnswerCard (avoids raw JSON in card)
             da = parsed.get("direct_answer")
             secs = parsed.get("sections")
@@ -211,12 +515,14 @@ def run_integrate(
                         ):
                             mode = inner_parsed.get("mode") if inner_parsed.get("mode") in ("FACTUAL", "CANONICAL", "BLENDED") else "FACTUAL"
                             sections_out = []
-                            for s in inner_secs:
+                            for s in (inner_secs or []):
                                 sec = dict(s) if isinstance(s, dict) else {}
                                 if not sec.get("label") and sec.get("title"):
                                     sec["label"] = sec.get("title", "")
                                 sections_out.append(sec)
-                            display_message = json.dumps({"mode": mode, "direct_answer": inner_da, "sections": sections_out})
+                            display_message = _answer_card_json_for_client(
+                                mode, inner_da, sections_out, extra_from=inner_parsed
+                            )
                         else:
                             # Case 2: inner has resolutions; extract from first resolution
                             res_list = inner_parsed.get("resolutions")
@@ -226,28 +532,35 @@ def run_integrate(
                                 if isinstance(res, dict) and isinstance(res.get("direct_answer"), str) and isinstance(res.get("sections"), list):
                                     mode = res.get("mode") if res.get("mode") in ("FACTUAL", "CANONICAL", "BLENDED") else "FACTUAL"
                                     sections_out = []
-                                    for s in res["sections"]:
+                                    for s in (res.get("sections") or []):
                                         sec = dict(s) if isinstance(s, dict) else {}
                                         if not sec.get("label") and sec.get("title"):
                                             sec["label"] = sec.get("title", "")
                                         sections_out.append(sec)
-                                    display_message = json.dumps({"mode": mode, "direct_answer": res["direct_answer"], "sections": sections_out})
+                                    display_message = _answer_card_json_for_client(
+                                        mode,
+                                        res["direct_answer"],
+                                        sections_out,
+                                        extra_from=res if isinstance(res, dict) else inner_parsed,
+                                    )
                                 elif isinstance(first.get("resolution"), str):
                                     # resolution is plain text (schema: "answer text")
                                     mode = inner_parsed.get("mode") if inner_parsed.get("mode") in ("FACTUAL", "CANONICAL", "BLENDED") else "FACTUAL"
-                                    display_message = json.dumps({"mode": mode, "direct_answer": first["resolution"], "sections": []})
+                                    display_message = _answer_card_json_for_client(
+                                        mode, first["resolution"], [], extra_from=inner_parsed
+                                    )
                     except (json.JSONDecodeError, TypeError, ValueError):
                         pass
                 else:
                     # Normal AnswerCard
                     mode = parsed.get("mode") if parsed.get("mode") in ("FACTUAL", "CANONICAL", "BLENDED") else "FACTUAL"
                     sections_out = []
-                    for s in secs:
+                    for s in (secs or []):
                         sec = dict(s) if isinstance(s, dict) else {}
                         if not sec.get("label") and sec.get("title"):
                             sec["label"] = sec.get("title", "")
                         sections_out.append(sec)
-                    display_message = json.dumps({"mode": mode, "direct_answer": da, "sections": sections_out})
+                    display_message = _answer_card_json_for_client(mode, da, sections_out, extra_from=parsed)
             elif parsed.get("resolutions"):
                 # Top-level resolutions format; extract first for AnswerCard
                 r = parsed.get("resolutions")
@@ -258,12 +571,17 @@ def run_integrate(
                         if isinstance(res.get("direct_answer"), str) and isinstance(res.get("sections"), list):
                             mode = res.get("mode") if res.get("mode") in ("FACTUAL", "CANONICAL", "BLENDED") else "FACTUAL"
                             sections_out = []
-                            for s in res["sections"]:
+                            for s in (res.get("sections") or []):
                                 sec = dict(s) if isinstance(s, dict) else {}
                                 if not sec.get("label") and sec.get("title"):
                                     sec["label"] = sec.get("title", "")
                                 sections_out.append(sec)
-                            display_message = json.dumps({"mode": mode, "direct_answer": res["direct_answer"], "sections": sections_out})
+                            display_message = _answer_card_json_for_client(
+                                mode,
+                                res["direct_answer"],
+                                sections_out,
+                                extra_from=res if isinstance(res, dict) else parsed,
+                            )
             override = parsed.get("source_confidence_override")
             if override and str(override).strip() in (
                 BADGE_APPROVED_AUTHORITATIVE,
@@ -334,8 +652,15 @@ def run_integrate(
             "sections": [],
         })
 
+    # Never ship nested JSON or raw AnswerCard-shaped strings inside direct_answer
+    display_message = finalize_answer_card_json_for_client(
+        display_message,
+        fallback_text=FALLBACK_TRY_AGAIN,
+    )
+
     # Deterministic: only accept task IDs that exist in the plan (upsert-only, no LLM-invented ids)
-    valid_sq_ids = {str(sq.id) for sq in plan.subquestions} if plan and getattr(plan, "subquestions", None) else set()
+    _subs = (getattr(plan, "subquestions", None) or []) if plan else []
+    valid_sq_ids = {str(sq.id) for sq in _subs}
     if valid_sq_ids:
         closed_task_ids[:] = [x for x in closed_task_ids if str(x) in valid_sq_ids]
         open_task_ids[:] = [x for x in open_task_ids if str(x) in valid_sq_ids]
@@ -344,38 +669,97 @@ def run_integrate(
     usage_breakdown: list[dict[str, Any]] = []
     has_plan_usage = bool(getattr(plan, "llm_usage", None))
     for i, u in enumerate(usages):
-        if i == 0 and has_plan_usage:
+        u_stage = ((u.get("stage") or "") if isinstance(u, dict) else "").strip()
+        if u_stage.startswith("react_"):
+            stage = u_stage
+        elif u_stage:
+            stage = u_stage
+        elif i == 0 and has_plan_usage:
             stage = "plan"
         elif integrator_usage is not None and i == len(usages) - 1:
-            stage = "integrator"
+            stage = (integrator_usage.get("stage") or "integrator") if isinstance(integrator_usage, dict) else "integrator"
         else:
             stage = "rag"
-        usage_breakdown.append({
-            "stage": stage,
-            "model": u.get("model") or "",
-            "provider": u.get("provider") or "",
-            "input_tokens": int(u.get("input_tokens") or 0),
-            "output_tokens": int(u.get("output_tokens") or 0),
-            "cost_usd": round(compute_cost(u), 6),
-        })
+        row = breakdown_row_from_usage(u, resolved_stage=stage)
+        usage_breakdown.append(row)
 
     try:
         config_sha = get_config_sha() or None
     except Exception:
         config_sha = None
 
+    stages_list = [str(r.get("stage") or "") for r in usage_breakdown]
+    pipeline_kind = "react" if any(s.startswith("react_") for s in stages_list) else "legacy"
+    total_latency_ms = 0
+    for r in usage_breakdown:
+        lm = r.get("latency_ms")
+        if lm is None:
+            continue
+        try:
+            total_latency_ms += int(lm)
+        except (TypeError, ValueError):
+            pass
+    integ_explore: bool | None = None
+    for r in reversed(usage_breakdown):
+        if r.get("stage") in ("integrator", "integrator_roster"):
+            v = r.get("is_ab_call")
+            integ_explore = bool(v) if v is not None else None
+            break
+
+    def _snip_router(s: str, n: int = 280) -> str:
+        t = (s or "").strip()
+        return t if len(t) <= n else t[: n - 1] + "…"
+
+    router_by_stage: list[dict[str, Any]] = []
+    for r in usage_breakdown:
+        if not r.get("router_reason"):
+            continue
+        router_by_stage.append(
+            {
+                "stage": r.get("display_stage") or r.get("stage"),
+                "model": r.get("model"),
+                "mode": r.get("router_selection"),
+                "exploration": r.get("router_exploration_round"),
+                "circuit_relief": r.get("router_circuit_relief"),
+                "reason": _snip_router(str(r.get("router_reason") or "")),
+                "composite_pg": r.get("router_composite_at_pick"),
+                "composite_call": r.get("per_call_composite"),
+            }
+        )
+    _active_j = (ctx.merged_state or {}).get("active")
+    _juris_d: dict[str, Any] = get_jurisdiction_from_active(_active_j) if _active_j else {}
+    llm_performance: dict[str, Any] = {
+        "pipeline": pipeline_kind,
+        "primary_model": (model_used or "").strip(),
+        "total_latency_ms": total_latency_ms,
+        "total_cost_usd": round(total_cost, 6),
+        "config_sha": config_sha,
+        "jurisdiction_summary": jurisdiction_summary,
+        "jurisdiction": {
+            "payer": str(_juris_d.get("payor") or ""),
+            "state": str(_juris_d.get("state") or ""),
+            "program": str(_juris_d.get("program") or ""),
+        },
+        "top_source": _top_corpus_hit(response_sources),
+        "integrator_exploration": integ_explore,
+        "router_by_stage": router_by_stage[:40] if router_by_stage else [],
+    }
+
     payload = {
         "status": "completed",
+        "correlation_id": ctx.correlation_id,
         "message": display_message,
         "plan": plan.model_dump(),
-        "thinking_log": ctx.thinking_chunks,
+        "thinking_log": (ctx.thinking_chunks if ctx.thinking_chunks is not None else []),
         "response_source": "plan",
         "model_used": model_used,
         "llm_error": None,
         "tokens_used": {"input_tokens": total_input, "output_tokens": total_output},
         "usage_breakdown": usage_breakdown,
+        "llm_performance": llm_performance,
         "cost_usd": round(total_cost, 6),
         "sources": response_sources,
+        "adjudication_sources": adjudication_sources,
         "source_confidence_strip": source_confidence_strip,
         "cited_source_indices": cited_source_indices,
         "thread_id": ctx.thread_id,
@@ -386,10 +770,6 @@ def run_integrate(
         payload["closed_task_ids"] = closed_task_ids
     if open_task_ids:
         payload["open_task_ids"] = open_task_ids
-    if next_steps:
-        payload["next_steps"] = next_steps
-    if next_questions_for_user:
-        payload["next_questions_for_user"] = next_questions_for_user
     roster_step_outputs = getattr(ctx, "roster_step_outputs", None)
     if roster_step_outputs:
         payload["roster_step_outputs"] = roster_step_outputs
@@ -405,4 +785,41 @@ def run_integrate(
         payload["roster_report_final_md"] = roster_report_final_md
         has_charts = "data:image/png;base64," in roster_report_final_md
         logger.info("Roster payload: final_md included (%d chars, charts=%s)", len(roster_report_final_md), has_charts)
+
+    _tf = resolve_tool_fired(ctx)
+    payload["tool_fired"] = _tf
+    answer_card_dict: dict[str, Any] | None = None
+    try:
+        _ac = json.loads(display_message)
+        if isinstance(_ac, dict) and _ac.get("mode") in ("FACTUAL", "CANONICAL", "BLENDED"):
+            answer_card_dict = _ac
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+
+    next_steps, next_questions_for_user = filter_next_steps_and_questions(
+        next_steps,
+        next_questions_for_user,
+        response_sources=response_sources,
+        answer_card=answer_card_dict,
+    )
+    if next_steps:
+        payload["next_steps"] = next_steps
+    if next_questions_for_user:
+        payload["next_questions_for_user"] = next_questions_for_user
+
+    _md_for_envelope = roster_report_final_md if isinstance(roster_report_final_md, str) else None
+    _has_pdf = bool(roster_report_pdf and isinstance(roster_report_pdf, str) and len(roster_report_pdf) > 0)
+    payload["assistant_envelope"] = build_assistant_envelope_v1(
+        answer_card=answer_card_dict,
+        ui_blocks_raw=integrator_ui_blocks,
+        tool_fired=_tf,
+        response_sources=response_sources,
+        next_steps=next_steps,
+        next_questions_for_user=next_questions_for_user,
+        roster_report_final_md=_md_for_envelope,
+        has_roster_pdf=_has_pdf,
+        resolutions=resolutions,
+        source_confidence_strip=source_confidence_strip,
+    )
+
     ctx.response_payload = payload

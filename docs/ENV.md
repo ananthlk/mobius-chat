@@ -74,7 +74,10 @@ Install mobius-user for Option B: `pip install -e ../mobius-user`. Create DB and
 | Variable | Description |
 |----------|-------------|
 | `RAG_APP_API_BASE` | RAG backend URL for full-page inline reader (e.g. `http://localhost:8000`). When set, `GET /api/v1/documents/{document_id}/pages` proxies to RAG. If unset, mini reader shows snippet only and "Open in new tab" still works when `RAG_APP_BASE` is set. |
-| `RAG_APP_BASE` (frontend) | RAG app base URL for "Open in new tab" (e.g. `http://localhost:5173` for RAG Vite dev). Set in `frontend/index.html` as `window.RAG_APP_BASE = '...'` or at build time. Deep link: `?tab=read&documentId=<id>&pageNumber=<n>`. |
+| `MOBIUS_RAG_APP_PUBLIC_URL` | **Server-side** public origin of the mobius-rag **web UI** (e.g. `http://localhost:5173`). When set (and `MOBIUS_DOCUMENT_VIEWER_URL_TEMPLATE` is unset), chat adds `open_href` on corpus sources as `?tab=read&documentId=<id>&pageNumber=<n>` so **“Open full document”** works without `window.RAG_APP_BASE`. |
+| `MOBIUS_DOCUMENT_VIEWER_URL_TEMPLATE` | Optional custom URL pattern with `{document_id}` and optional `{page}`. Takes precedence over `MOBIUS_RAG_APP_PUBLIC_URL`. |
+| `RAG_APP_BASE` (frontend) | RAG app base URL for client-side fallback (e.g. `http://localhost:5173`). Set in `frontend/index.html` as `window.RAG_APP_BASE = '...'` if you do not use `MOBIUS_RAG_APP_PUBLIC_URL` on the server. |
+| `RAG_API_BASE` (frontend) | Optional. RAG FastAPI origin for **Download markdown** on source cards (`/documents/{id}/download/markdown`). |
 
 ## Debug (retrieval)
 

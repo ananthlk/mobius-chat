@@ -5,6 +5,7 @@ Runs stages in order; handles clarification/refinement early exit; publishes res
 import logging
 import os
 import time
+import traceback
 from collections.abc import Callable
 
 from app.chat_config import get_config_sha
@@ -42,9 +43,47 @@ from app.pipeline.stages import (
 
 logger = logging.getLogger(__name__)
 
-DEBUG_PLAN = os.environ.get("MOBIUS_DEBUG_PLAN", "").lower() in ("1", "true", "yes")
-USE_REACT = os.environ.get("MOBIUS_USE_REACT", "").lower() in ("1", "true", "yes")
+# Human-readable labels for model emit (thinking panel)
+_MODEL_LABELS = {
+    "gemini-2.5-pro": "Gemini Pro",
+    "gemini-2.5-flash": "Gemini Flash",
+    "gemini-2.0-flash": "Gemini 2.0 Flash",
+    "gemini-1.5-flash": "Gemini 1.5 Flash",
+    "gemini-1.5-pro": "Gemini 1.5 Pro",
+    "llama3.1:8b": "Llama 3.1 8B",
+    "llama3.2:3b": "Llama 3.2 3B",
+}
 
+
+def _emit_model_summary(ctx: PipelineContext, react_duration_s: float, emitter: Callable[[str], None] | None) -> None:
+    """Emit one line: model + latency (or 'Answered from report' when no usages)."""
+    if not emitter:
+        return
+    usages = getattr(ctx, "usages", None) or []
+    if not usages:
+        if getattr(ctx, "active_skill_reference", False):
+            emitter("Answered from report · {:.1f}s".format(react_duration_s or 0.1))
+        return
+    u = usages[-1]
+    if u is None or not isinstance(u, dict):
+        emitter("Unknown · {:.1f}s".format(react_duration_s or 0.1))
+        return
+    model = (u.get("model") or "").strip() or "unknown"
+    model_label = _MODEL_LABELS.get(model, model.replace("gemini-", "Gemini ").title())
+    latency_s = u.get("latency_s")
+    if latency_s is None and u and "latency_ms" in u:
+        latency_s = round((u["latency_ms"] or 0) / 1000.0, 2)
+    latency_s = latency_s if latency_s is not None else round(react_duration_s, 2)
+    if u.get("is_fallback"):
+        emitter(f"{model_label} (fallback) · {latency_s}s")
+    else:
+        emitter(f"{model_label} · {latency_s}s")
+
+
+DEBUG_PLAN = os.environ.get("MOBIUS_DEBUG_PLAN", "").lower() in ("1", "true", "yes")
+# Default ReAct=1; treat missing or empty env as "1" so .env with MOBIUS_USE_REACT= doesn't disable ReAct
+_use_react_val = (os.environ.get("MOBIUS_USE_REACT") or "1").strip().lower()
+USE_REACT = _use_react_val in ("1", "true", "yes")
 
 def _debug_plan_state(label: str, ctx: PipelineContext) -> None:
     """Print master plan, answers (with source), and parser plan when MOBIUS_DEBUG_PLAN=1 (for conversation_demo)."""
@@ -72,9 +111,10 @@ def _debug_plan_state(label: str, ctx: PipelineContext) -> None:
             ans_display = ans[:60] + ("..." if len(ans) > 60 else "")
             lines.append(f"    - {sq_id}: source={src} | {ans_display}")
     plan = ctx.plan
-    if plan and getattr(plan, "subquestions", None):
+    _subs = (getattr(plan, "subquestions", None) or []) if plan else []
+    if _subs:
         lines.append("  plan.subquestions:")
-        for sq in plan.subquestions:
+        for sq in _subs:
             lines.append(f"    - {sq.id}: {(sq.text or '')[:60]}")
     else:
         lines.append("  plan: (none)")
@@ -107,6 +147,9 @@ def run_pipeline(
     """
     t0 = t0_start if t0_start is not None else time.perf_counter()
     start_progress(correlation_id)
+
+    # Read at request time so we use current env (worker may have set MOBIUS_USE_REACT=1 after load_dotenv)
+    use_react = (os.environ.get("MOBIUS_USE_REACT") or "1").strip().lower() in ("1", "true", "yes")
 
     ctx = PipelineContext(
         correlation_id=correlation_id,
@@ -175,9 +218,11 @@ def run_pipeline(
         ctx.active_skill_reference = bool(is_skill_ref)
         ctx.active_skill_name = skill_name
 
-        if USE_REACT:
+        if use_react:
             # ReAct path: Reason → Act → Observe; run_react sets ctx.plan, ctx.answers, ctx.answer_set, etc.
+            logger.info("[pipeline] USE_REACT=true — taking ReAct path (no clarify/plan steps)")
             trace_entered("pipeline.stage.react", correlation_id=correlation_id[:8])
+            t_react_start = time.perf_counter()
             try:
                 from app.pipeline.react_loop import run_react
                 run_react(ctx, emitter=on_thinking)
@@ -185,6 +230,7 @@ def run_pipeline(
                 logger.exception("ReAct stage error: %s", e)
                 _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e)
                 return
+            _emit_model_summary(ctx, time.perf_counter() - t_react_start, on_thinking)
             updates = {}
             if getattr(ctx, "failed_query", None):
                 updates["last_failed_query"] = ctx.failed_query
@@ -194,14 +240,15 @@ def run_pipeline(
                 ctx.merged_state = {**(ctx.merged_state or {}), **updates}
             _debug_plan_state("PRE-INTEGRATOR", ctx)
         else:
-            # Legacy path: classify → plan → clarify → resolve
+            # Legacy path: classify → plan → clarify → resolve (only when MOBIUS_USE_REACT=0)
+            logger.info("[pipeline] USE_REACT=false — taking legacy path (clarify → plan → resolve)")
             trace_entered(f"pipeline.stage.{CLASSIFY}", correlation_id=correlation_id[:8])
             run_classify(ctx, emitter=on_thinking)
             trace_entered(f"pipeline.stage.{PLAN}", correlation_id=correlation_id[:8])
             _debug_plan_state("PRE-PARSER", ctx)
             run_plan(ctx, emitter=on_thinking)
 
-            store_plan(correlation_id, ctx.plan, thinking_log=ctx.thinking_chunks)
+            store_plan(correlation_id, ctx.plan, thinking_log=(ctx.thinking_chunks if ctx.thinking_chunks is not None else []))
 
             if ctx.plan:
                 is_new = ctx.classification == "new_question"
@@ -259,6 +306,7 @@ def run_pipeline(
         trace_entered(f"pipeline.stage.{INTEGRATE}", correlation_id=correlation_id[:8])
         try:
             on_thinking("Composing answer…")
+            on_thinking("  (Integrator: turning reasoning + tool output into your answer card.)")
             run_integrate(ctx, emitter=on_thinking)
         except Exception as e:
             logger.exception("Integrate stage error: %s", e)
@@ -296,6 +344,10 @@ def run_pipeline(
         _publish_completed(ctx, t0)
 
     except Exception as e:
+        if isinstance(e, TypeError):
+            err_str = str(e).lower()
+            if "not iterable" in err_str or "nonetype" in err_str:
+                logger.error("NoneType/iterable TypeError in pipeline; full traceback:\n%s", traceback.format_exc())
         logger.exception("Pipeline error: %s", e)
         _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e)
 
@@ -308,7 +360,7 @@ def _publish_pursuit_ended(correlation_id: str, ctx: PipelineContext, t0_start: 
         "status": "completed",
         "message": msg,
         "plan": ctx.plan.model_dump() if ctx.plan else None,
-        "thinking_log": ctx.thinking_chunks,
+        "thinking_log": (ctx.thinking_chunks if ctx.thinking_chunks is not None else []),
         "response_source": "pursuit_ended",
         "pursuit_ended": True,
         "objective_status": "user_ended",
@@ -332,7 +384,7 @@ def _publish_pursuit_ended(correlation_id: str, ctx: PipelineContext, t0_start: 
             persistence.save_turn_with_messages(
                 correlation_id=correlation_id,
                 question=ctx.message,
-                thinking_log=ctx.thinking_chunks,
+                thinking_log=(ctx.thinking_chunks if ctx.thinking_chunks is not None else []),
                 final_message=msg,
                 sources=[],
                 duration_ms=duration_ms,
@@ -382,7 +434,7 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
             "status": "clarification",
             "message": formatted,
             "plan": ctx.plan.model_dump() if ctx.plan else None,
-            "thinking_log": ctx.thinking_chunks,
+            "thinking_log": (ctx.thinking_chunks if ctx.thinking_chunks is not None else []),
             "open_slots": ["route"],
             "clarification_options": clarification_options,
             "response_source": "clarification",
@@ -402,7 +454,7 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
                 persistence.save_turn_with_messages(
                     correlation_id=ctx.correlation_id,
                     question=ctx.refined_query or ctx.message,
-                    thinking_log=ctx.thinking_chunks,
+                    thinking_log=(ctx.thinking_chunks if ctx.thinking_chunks is not None else []),
                     final_message=formatted,
                     sources=[],
                     duration_ms=duration_ms,
@@ -419,7 +471,7 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
                 persistence.save_turn(
                     correlation_id=ctx.correlation_id,
                     question=ctx.refined_query or ctx.message,
-                    thinking_log=ctx.thinking_chunks,
+                    thinking_log=(ctx.thinking_chunks if ctx.thinking_chunks is not None else []),
                     final_message=formatted,
                     sources=[],
                     duration_ms=duration_ms,
@@ -455,7 +507,7 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
             "status": "clarification",
             "message": formatted,
             "plan": ctx.plan.model_dump() if ctx.plan else None,
-            "thinking_log": ctx.thinking_chunks,
+            "thinking_log": (ctx.thinking_chunks if ctx.thinking_chunks is not None else []),
             "open_slots": ctx.missing_slots,
             "clarification_options": clarification_options,
             "response_source": "clarification",
@@ -479,7 +531,7 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
             "status": "refinement_ask",
             "message": formatted,
             "plan": ctx.plan.model_dump() if ctx.plan else None,
-            "thinking_log": ctx.thinking_chunks,
+            "thinking_log": (ctx.thinking_chunks if ctx.thinking_chunks is not None else []),
             "suggestions": ctx.refinement_suggestions,
             "response_source": "refinement_ask",
             "model_used": None,
@@ -499,7 +551,7 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
             persistence.save_turn_with_messages(
                 correlation_id=ctx.correlation_id,
                 question=ctx.refined_query or ctx.message,
-                thinking_log=ctx.thinking_chunks,
+                thinking_log=(ctx.thinking_chunks if ctx.thinking_chunks is not None else []),
                 final_message=formatted,
                 sources=[],
                 duration_ms=duration_ms,
@@ -516,7 +568,7 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
             persistence.save_turn(
                 correlation_id=ctx.correlation_id,
                 question=ctx.refined_query or ctx.message,
-                thinking_log=ctx.thinking_chunks,
+                thinking_log=(ctx.thinking_chunks if ctx.thinking_chunks is not None else []),
                 final_message=formatted,
                 sources=[],
                 duration_ms=duration_ms,
@@ -548,6 +600,9 @@ def _publish_completed(ctx: PipelineContext, t0_start: float) -> None:
     if not payload:
         return
 
+    # Large adjudication-only source blobs must not go to SSE/HTTP clients or in-memory response cache.
+    client_payload = {k: v for k, v in payload.items() if k != "adjudication_sources"}
+
     try:
         config_sha = get_config_sha() or None
     except Exception:
@@ -559,12 +614,12 @@ def _publish_completed(ctx: PipelineContext, t0_start: float) -> None:
             persistence.save_turn_with_messages(
                 correlation_id=ctx.correlation_id,
                 question=ctx.refined_query or ctx.message,
-                thinking_log=ctx.thinking_chunks,
+                thinking_log=(ctx.thinking_chunks if ctx.thinking_chunks is not None else []),
                 final_message=ctx.final_message,
                 sources=payload.get("sources", []),
                 duration_ms=duration_ms,
                 model_used=payload.get("model_used"),
-                llm_provider=ctx.usages[0].get("provider") if ctx.usages else None,
+                llm_provider=(ctx.usages[0] or {}).get("provider") if ctx.usages else None,
                 thread_id=ctx.thread_id,
                 user_content=ctx.refined_query or ctx.message,
                 assistant_content=ctx.final_message,
@@ -576,12 +631,12 @@ def _publish_completed(ctx: PipelineContext, t0_start: float) -> None:
             persistence.save_turn(
                 correlation_id=ctx.correlation_id,
                 question=ctx.refined_query or ctx.message,
-                thinking_log=ctx.thinking_chunks,
+                thinking_log=(ctx.thinking_chunks if ctx.thinking_chunks is not None else []),
                 final_message=ctx.final_message,
                 sources=payload.get("sources", []),
                 duration_ms=duration_ms,
                 model_used=payload.get("model_used"),
-                llm_provider=ctx.usages[0].get("provider") if ctx.usages else None,
+                llm_provider=(ctx.usages[0] or {}).get("provider") if ctx.usages else None,
                 thread_id=None,
                 plan_snapshot=ctx.plan.model_dump() if ctx.plan else None,
                 source_confidence_strip=payload.get("source_confidence_strip"),
@@ -596,8 +651,13 @@ def _publish_completed(ctx: PipelineContext, t0_start: float) -> None:
         logger.warning("Failed to persist turn: %s", e)
 
     clear_progress(ctx.correlation_id)
-    store_response(ctx.correlation_id, payload)
-    get_queue().publish_response(ctx.correlation_id, payload)
+    store_response(ctx.correlation_id, client_payload)
+    get_queue().publish_response(ctx.correlation_id, client_payload)
+    try:
+        from app.services.post_run_adjudication import schedule_post_run_adjudication
+        schedule_post_run_adjudication(ctx, payload)
+    except Exception as e:
+        logger.debug("schedule_post_run_adjudication: %s", e)
     logger.info("Response published for %s", ctx.correlation_id[:8])
 
 

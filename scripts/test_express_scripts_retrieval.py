@@ -66,7 +66,7 @@ def main() -> int:
 
     print("Calling answer_non_patient...")
     print()
-    answer, sources, usage = answer_non_patient(
+    answer, sources, usage, _signal = answer_non_patient(
         question=QUESTION,
         k=10,
         emitter=emitter,

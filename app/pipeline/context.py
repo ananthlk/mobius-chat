@@ -82,6 +82,9 @@ class PipelineContext:
     active_context: dict[str, Any] | None = None
     """Tool output for follow-up questions (tool, org, summary, follow_up_capable, expires_after_turns)."""
 
+    react_last_tool: str | None = None
+    """Last tool name from ReAct loop (UI attribution / assistant_envelope)."""
+
     # Collected during pipeline (emitter appends)
     thinking_chunks: list[str] = field(default_factory=list)
 
@@ -97,6 +100,10 @@ class PipelineContext:
     roster_report_pdf_base64: str | None = None
     # Roster/credentialing: final report markdown for download when PDF unavailable
     roster_report_final_md: str | None = None
+
+    # Post-run adjudication (integrator llm_calls row for quality_score attachment)
+    integrator_llm_call_id: str | None = None
+    integrator_model_id: str | None = None
 
     def has_thread(self) -> bool:
         return bool(self.thread_id and (self.thread_id or "").strip())

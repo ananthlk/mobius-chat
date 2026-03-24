@@ -27,7 +27,7 @@ def run_state_load(
         ctx.context_pack = ""
         return
 
-    raw = get_state(ctx.thread_id)
+    raw = get_state(ctx.thread_id) or {}
     thread_state = ThreadState.from_dict(raw)
 
     # Capture prior payer before applying delta (for _prior_payer emit)

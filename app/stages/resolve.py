@@ -150,6 +150,9 @@ def _answer_for_subquestion(
     question_intent: str | None = None,
     active_context: dict | None = None,
     active_skill_context: str | None = None,
+    thread_id: str | None = None,
+    phi_detected: bool = False,
+    config_sha: str | None = None,
 ) -> tuple[str, LLMUsageDict | None, list[dict], str, int]:
     """Answer one subquestion with fallback cascade.
     Returns (answer, usage, sources, retrieval_signal, layer_used).
@@ -169,9 +172,11 @@ def _answer_for_subquestion(
     # ── URL pre-processing ───────────────────────────────────
     # Promote to web_scrape if a URL is present and no explicit scrape tool was requested
     detected_urls = extract_urls(text) or extract_urls(user_message or "")
-    if detected_urls and agent == "tool" and tool_hint not in ("web_scrape", "roster_report",
-                                                                 "npi_lookup", "search_org_names",
-                                                                 "healthcare_query"):
+    if detected_urls and agent == "tool" and tool_hint not in (
+        "web_scrape", "roster_report", "roster_reconciliation",
+        "npi_lookup", "search_org_names", "healthcare_query",
+        "document_upload_skill", "list_thread_document_uploads",
+    ):
         if tool_hint in (None, "google_search"):
             tool_hint = "web_scrape"
 
@@ -192,6 +197,9 @@ def _answer_for_subquestion(
             rag_filter_overrides=rag_filter_overrides,
             include_document_ids=include_document_ids,
             on_rag_fail=on_fail,
+            thread_id=thread_id,
+            phi_detected=phi_detected,
+            config_sha=config_sha,
         )
         is_valid, _ = validate_tool_result("RAG", None, answer_text, sources, signal, text)
         if is_valid:
@@ -207,7 +215,8 @@ def _answer_for_subquestion(
         # Layer 2 = system tools; Layer 3 = generic web
         layer_num = 2 if tool_hint in (
             "npi_lookup", "search_org_names", "healthcare_query",
-            "roster_report", "search_org_by_address",
+            "roster_report", "search_org_by_address", "roster_reconciliation",
+            "document_upload_skill", "list_thread_document_uploads",
         ) else 3
 
         scrape_url = detected_urls[0] if (tool_hint == "web_scrape" and detected_urls) else None
@@ -215,8 +224,37 @@ def _answer_for_subquestion(
         if not _is_roster_request(user_message or text):
             emit_layer_attempt(agent, tool_hint, scrape_url, emitter)
 
+        tool_question = text
+        rec_uid: str | None = None
+        rec_oid: str | None = None
+        if tool_hint == "roster_reconciliation" and isinstance(active_context, dict):
+            ac = active_context
+            rec_uid = (ac.get("reconciliation_upload_id") or "").strip() or None
+            rec_oid = (ac.get("reconciliation_org_id") or "").strip() or None
+            roster_files = [
+                u
+                for u in (ac.get("uploaded_files") or [])
+                if isinstance(u, dict) and (u.get("purpose") or "").strip() == "roster_reconciliation"
+            ]
+            if (not rec_uid or not rec_oid) and len(roster_files) >= 1:
+                latest = roster_files[0]
+                rec_uid = rec_uid or ((latest.get("upload_id") or "").strip() or None)
+                rec_oid = rec_oid or ((latest.get("org_id") or "").strip() or None)
+            state_org = (ac.get("reconciliation_org_name") or "").strip()
+            tnorm = (tool_question or "").strip().lower()
+            generic_reconcile_sq = tnorm in (
+                "",
+                "run roster reconciliation report",
+                "run reconciliation report",
+                "roster reconciliation report",
+                "run reconciliation",
+                "reconciliation report",
+            )
+            if state_org and (not (tool_question or "").strip() or generic_reconcile_sq):
+                tool_question = state_org
+
         answer, sources, usage, signal = answer_tool(
-            text,
+            tool_question,
             emitter=emitter,
             invoke_google_for_search_request=True,
             user_message=user_message,
@@ -225,6 +263,9 @@ def _answer_for_subquestion(
             scrape_url=scrape_url,
             question_intent=question_intent,
             active_context=active_context,
+            reconciliation_upload_id=rec_uid,
+            reconciliation_org_id=rec_oid,
+            thread_id=thread_id,
         )
         is_valid, _ = validate_tool_result(agent, tool_hint, answer, sources, signal, text)
         if is_valid:
@@ -307,6 +348,12 @@ def run_resolve(
     )
     if not (active_skill_context or "").strip():
         active_skill_context = None
+    try:
+        from app.chat_config import get_config_sha
+
+        resolve_config_sha = get_config_sha() or None
+    except Exception:
+        resolve_config_sha = None
     plan_usage = getattr(plan, "llm_usage", None)
     usages: list[dict] = [plan_usage] if plan_usage else []
     answers: list[str] = []
@@ -392,6 +439,9 @@ def run_resolve(
                 question_intent=question_intent,
                 active_context=active,
                 active_skill_context=active_skill_context,
+                thread_id=ctx.thread_id,
+                phi_detected=False,
+                config_sha=resolve_config_sha,
             )
         if extra_out and extra_out.get("roster_step_outputs"):
             ctx.roster_step_outputs = extra_out["roster_step_outputs"]

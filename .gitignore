@@ -15,3 +15,7 @@ frontend/node_modules/
 .vscode/
 .idea/
 .DS_Store
+
+# Local reload markers / scratch
+.last_fl_medicaid_reload
+reports/

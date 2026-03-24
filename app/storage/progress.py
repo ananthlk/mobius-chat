@@ -254,7 +254,25 @@ def get_progress_from_db(correlation_id: str) -> tuple[list[str], str]:
                 thinking.append(line)
         elif ev.get("event") == "message":
             message_so_far += ev_data.get("chunk") or ""
+        elif ev.get("event") == "quality_audit":
+            line = ev_data.get("line") or ""
+            if line:
+                thinking.append(line)
     return (thinking, message_so_far)
+
+
+def publish_quality_audit_event(correlation_id: str, audit: dict[str, Any], line: str) -> None:
+    """Emit a standalone progress event for QC / eval audit (SSE + optional DB replay)."""
+    ts, ts_readable = _event_ts()
+    ev: dict[str, Any] = {
+        "event": "quality_audit",
+        "data": {**audit, "line": line, "ts": ts, "ts_readable": ts_readable},
+    }
+    with _lock:
+        if correlation_id in _progress:
+            _progress[correlation_id]["thinking"].append(line)
+            _progress[correlation_id]["events"].append(ev)
+    _publish_progress_event(correlation_id, ev)
 
 
 def get_progress_events_from_db(correlation_id: str, after_id: int = 0) -> list[tuple[int, dict[str, Any]]]:

@@ -287,9 +287,6 @@ def test_non_patient_rag_sources_have_confidence_when_chunks_injected():
         },
     ]
 
-    async def fake_gen(prompt):
-        return ("Yes, prior auth is required.", {})
-
     mock_rag = type("RAG", (), {
         "vertex_index_endpoint_id": "ep",
         "vertex_deployed_index_id": "idx",
@@ -308,11 +305,12 @@ def test_non_patient_rag_sources_have_confidence_when_chunks_injected():
     with (
         patch("app.chat_config.get_chat_config", return_value=mock_cfg_val),
         patch("app.services.retriever_backend.retrieve_for_chat", return_value=(fake_chunks, None)),
-        patch("app.services.llm_provider.get_llm_provider") as mock_llm,
+        patch(
+            "app.services.llm_manager.generate_sync",
+            return_value=("Yes, prior auth is required.", {"input_tokens": 1, "output_tokens": 2, "stage": "rag"}),
+        ),
     ):
         from app.services.non_patient_rag import answer_non_patient
-        mock_provider = type("Provider", (), {"generate_with_usage": lambda self, prompt: fake_gen(prompt)})()
-        mock_llm.return_value = mock_provider
         full_msg, sources, usage, _ = answer_non_patient("Does eligibility require prior auth?")
 
     assert len(sources) == 1

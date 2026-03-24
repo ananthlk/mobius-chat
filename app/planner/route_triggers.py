@@ -28,12 +28,14 @@ TRIGGERS_WEB: tuple[str, ...] = (
     "what can you do",
     "what can you help with",
     "your capabilities",
-    # Roster / credentialing (orchestrator)
+    # Roster / credentialing (orchestrator + report Q&A)
     "provider roster",
     "credentialing report",
     "roster report",
     "medicaid roster",
     "medicaid npi report",
+    "latest report",
+    "report for ",
     "create a medicaid npi report",
     "create medicaid npi report",
     "create a credentialing report",

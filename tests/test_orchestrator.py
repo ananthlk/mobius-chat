@@ -6,7 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
-from app.pipeline.orchestrator import run_pipeline, _publish_failed
+from app.pipeline.context import PipelineContext
+from app.pipeline.orchestrator import run_pipeline, _publish_failed, _emit_model_summary
 
 USE_REACT = os.environ.get("MOBIUS_USE_REACT", "").lower() in ("1", "true", "yes")
 
@@ -76,14 +77,44 @@ def test_clarify_stage_error_publishes_failed():
         ctx.refined_query = "x"
         ctx.blueprint = [{"agent": "RAG"}]
 
-    with patch("app.pipeline.orchestrator.run_plan", side_effect=_set_plan):
-        with patch("app.pipeline.orchestrator.run_clarify") as mock_clarify:
-            mock_clarify.side_effect = RuntimeError("clarify crash")
-            with patch("app.pipeline.orchestrator.get_queue") as mock_q:
-                with patch("app.pipeline.orchestrator.clear_progress"):
-                    with patch("app.pipeline.orchestrator.store_response"):
-                        run_pipeline("test-clarify-fail", "test msg", None)
+    with patch.dict(os.environ, {"MOBIUS_USE_REACT": "0"}, clear=False):
+        with patch("app.pipeline.orchestrator.run_plan", side_effect=_set_plan):
+            with patch("app.pipeline.orchestrator.run_clarify") as mock_clarify:
+                mock_clarify.side_effect = RuntimeError("clarify crash")
+                with patch("app.pipeline.orchestrator.get_queue") as mock_q:
+                    with patch("app.pipeline.orchestrator.clear_progress"):
+                        with patch("app.pipeline.orchestrator.store_response"):
+                            run_pipeline("test-clarify-fail", "test msg", None)
     mock_q.return_value.publish_response.assert_called_once()
     payload = mock_q.return_value.publish_response.call_args[0][1]
     assert payload["status"] == "failed"
     assert "clarify crash" in payload["llm_error"]
+
+
+def test_emit_model_summary_no_emitter():
+    """_emit_model_summary with emitter=None does nothing."""
+    ctx = PipelineContext(correlation_id="c", thread_id="t", message="m")
+    ctx.usages = [{"model": "gemini-2.5-flash", "provider": "vertex", "latency_s": 1.5}]
+    _emit_model_summary(ctx, 2.0, None)
+
+
+def test_emit_model_summary_with_usages():
+    """_emit_model_summary with usages emits model + latency."""
+    ctx = PipelineContext(correlation_id="c", thread_id="t", message="m")
+    ctx.usages = [{"model": "gemini-2.5-flash", "provider": "vertex", "latency_s": 1.5}]
+    emitted = []
+    _emit_model_summary(ctx, 2.0, emitted.append)
+    assert len(emitted) == 1
+    assert "Gemini Flash" in emitted[0]
+    assert "1.5s" in emitted[0]
+
+
+def test_emit_model_summary_answered_from_report():
+    """_emit_model_summary with no usages but active_skill_reference emits report line."""
+    ctx = PipelineContext(correlation_id="c", thread_id="t", message="m")
+    ctx.usages = []
+    ctx.active_skill_reference = True
+    emitted = []
+    _emit_model_summary(ctx, 0.2, emitted.append)
+    assert len(emitted) == 1
+    assert "Answered from report" in emitted[0]

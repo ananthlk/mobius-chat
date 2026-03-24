@@ -98,6 +98,16 @@
             </div>
 
             <div class="landing-section">
+              <div class="landing-section-header">Quick prompts</div>
+              <p class="landing-quick-lede">Start from a common task (edit in the box before sending if needed).</p>
+              <div class="landing-quick-actions" role="group" aria-label="Quick prompts">
+                <button type="button" class="landing-try-link landing-quick-btn" data-query="What is timely filing for participating providers with Sunshine Health?">Sunshine timely filing</button>
+                <button type="button" class="landing-try-link landing-quick-btn" data-query="Look up NPI 1669572290 and summarize practice location and taxonomy">NPI profile sample</button>
+                <button type="button" class="landing-try-link landing-quick-btn" data-query="What prior authorization rules apply to behavioral health for Sunshine Health?">BH prior auth</button>
+              </div>
+            </div>
+
+            <div class="landing-section">
               <div class="landing-section-header">Release updates</div>
               <div class="landing-updates" aria-label="Release updates">
                 <div class="landing-update">
@@ -122,10 +132,37 @@
           </div>
         </div>
       </div>
+      <div class="chat-status-banner" id="chatStatusBanner" role="status" aria-live="polite" hidden>
+        <span class="chat-status-banner-text" id="chatStatusBannerText"></span>
+        <button type="button" class="chat-status-banner-dismiss" id="chatStatusBannerDismiss" aria-label="Dismiss">×</button>
+      </div>
+      <div class="roster-receipt" id="rosterReceipt" role="region" aria-label="Upload summary" aria-live="polite" hidden>
+        <div class="roster-receipt__card">
+          <div class="roster-receipt__hero">
+            <span class="roster-receipt__badge" aria-hidden="true">✓</span>
+            <div class="roster-receipt__hero-text">
+              <h3 class="roster-receipt__title" id="rosterReceiptHeadline"></h3>
+              <p class="roster-receipt__sub" id="rosterReceiptSub"></p>
+            </div>
+            <button type="button" class="roster-receipt__dismiss" id="rosterReceiptDismiss" aria-label="Dismiss upload summary">×</button>
+          </div>
+          <ol class="roster-receipt__checks" id="rosterReceiptChecks"></ol>
+          <div class="roster-receipt__alerts" id="rosterReceiptAlerts" hidden></div>
+          <p class="roster-receipt__next" id="rosterReceiptNext"></p>
+          <details class="roster-receipt__details">
+            <summary>Details for your records</summary>
+            <dl class="roster-receipt__meta" id="rosterReceiptMeta"></dl>
+          </details>
+        </div>
+      </div>
       <div class="composer-wrap">
         <div class="composer">
           <input type="text" id="input" placeholder="Message Mobius Chat…" autocomplete="off" />
-          <button type="button" class="btn-composer-options" id="composerOptions" aria-label="More options" aria-haspopup="true" title="More options">⋯</button>
+          <button type="button" class="btn-composer-options" id="composerOptions" aria-label="More options" aria-haspopup="true" aria-expanded="false" title="More options">⋯</button>
+          <div class="composer-options-menu" id="composerOptionsMenu" hidden role="menu">
+            <button type="button" class="composer-option-item" id="composerOptionUploadFile" role="menuitem">Upload file</button>
+            <button type="button" class="composer-option-item composer-option-item--disabled" id="composerOptionAddLink" role="menuitem" disabled aria-disabled="true" title="Coming soon">Add link</button>
+          </div>
           <button type="button" class="btn-send" id="send" aria-label="Send">
             <svg class="send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>
           </button>
@@ -134,12 +171,61 @@
     </main>
   </div>
 
+  <div class="upload-overlay upload-overlay--sheet" id="uploadOverlay"></div>
+  <div class="upload-modal upload-modal--sheet" id="uploadModal" role="dialog" aria-labelledby="uploadModalTitle" aria-modal="true" hidden>
+    <h2 id="uploadModalTitle">Upload file</h2>
+    <p class="upload-modal-desc">Document upload skill — attach a file to <strong>this chat</strong> (you can upload more files anytime). What is this file for?</p>
+    <form id="uploadForm">
+      <label class="upload-modal-select-label">File purpose
+        <select id="uploadFilePurpose" aria-label="File purpose">
+          <option value="roster_reconciliation">Roster for reconciliation</option>
+          <option value="other" disabled title="Coming soon">Other (RAG / reference) — soon</option>
+        </select>
+      </label>
+      <div class="upload-modal-field upload-field-roster" id="uploadFieldRoster">
+        <label>Organization name <input type="text" id="uploadOrgName" placeholder="e.g. David Lawrence Center" required /></label>
+        <label class="upload-modal-checkbox-label">
+          <input type="checkbox" id="uploadAutoSendReconciliation" checked />
+          Send reconciliation request right after upload
+        </label>
+      </div>
+      <label>File <input type="file" id="uploadFile" accept=".csv,.xlsx,.xls" required /></label>
+      <div class="upload-modal-actions">
+        <button type="button" id="uploadCancel">Cancel</button>
+        <button type="submit" id="uploadSubmit" disabled>Upload</button>
+      </div>
+    </form>
+    <div class="upload-modal-progress-wrap" id="uploadProgressWrap" hidden>
+      <div class="upload-modal-progress-bar" aria-hidden="true">
+        <div class="upload-modal-progress-bar-fill"></div>
+      </div>
+    </div>
+    <p class="upload-modal-status" id="uploadStatus" aria-live="polite" aria-atomic="true"></p>
+  </div>
+
   <div class="drawer-overlay" id="drawerOverlay"></div>
   <aside class="drawer" id="drawer">
     <button type="button" class="drawer-close" id="drawerClose" aria-label="Close">&times;</button>
     <h2>Chat config</h2>
     <div class="drawer-config-sha" id="drawerConfigSha">
       <strong>Config version:</strong> <code id="configShaValue">—</code>
+    </div>
+
+    <div class="drawer-answer-insights-pref">
+      <label class="drawer-checkbox-label">
+        <input type="checkbox" id="prefShowAnswerInsights" />
+        Show <strong>LLM performance</strong> (admin: models, latency, cost, routing)
+      </label>
+      <p class="drawer-pref-hint">Visible when your profile includes <code>llm_performance</code> (or legacy <code>answer_insights</code> / <code>technical</code> / <code>developer</code>). This checkbox stores a browser override in <code>mobius_show_llm_performance</code>.</p>
+    </div>
+
+    <div class="drawer-llm-report-launch">
+      <button type="button" id="btnLlmRouterReport" class="drawer-llm-report-btn">
+        Model router &amp; quality report
+      </button>
+      <p class="drawer-pref-hint">
+        Per-stage models used, adjudicated scores (from <code>llm_calls</code>, rolling window), composite rank, and how Thompson sampling picks models.
+      </p>
     </div>
 
     <div class="config-preferences-panel" id="configPreferencesPanel">
@@ -329,7 +415,20 @@
     </div>
   </aside>
 
+  <div id="llmRouterReportModal" class="llm-router-report-modal" aria-hidden="true">
+    <div class="llm-router-report-modal__backdrop" id="llmRouterReportBackdrop"></div>
+    <div class="llm-router-report-modal__panel" role="dialog" aria-modal="true" aria-labelledby="llmRouterReportTitle">
+      <header class="llm-router-report-modal__head">
+        <h2 id="llmRouterReportTitle">Model router &amp; quality report</h2>
+        <button type="button" id="llmRouterReportClose" class="llm-router-report-modal__close" aria-label="Close">&times;</button>
+      </header>
+      <div id="llmRouterReportBody" class="llm-router-report-modal__body">
+        <p class="llm-router-report-loading">Loading…</p>
+      </div>
+    </div>
+  </div>
+
   <script>window.API_BASE = window.location.origin;</script>
-  <script type="module" src="static/app.js?v=27"></script>
+  <script type="module" src="static/app.js?v=29"></script>
 </body>
 </html>

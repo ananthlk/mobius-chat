@@ -99,6 +99,135 @@ def insert_source_feedback(correlation_id: str, source_index: int, rating: str) 
         raise
 
 
+def insert_llm_performance_feedback(correlation_id: str, rating: str, comment: str | None) -> None:
+    """Upsert LLM performance (model routing) feedback — separate from answer-quality chat_feedback."""
+    if rating not in ("up", "down"):
+        raise ValueError("rating must be 'up' or 'down'")
+    url = _get_db_url()
+    if not url:
+        logger.warning("CHAT_RAG_DATABASE_URL not set; LLM performance feedback not persisted")
+        return
+    try:
+        import psycopg2
+        conn = psycopg2.connect(url)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO llm_performance_feedback (correlation_id, rating, comment, created_at)
+            VALUES (%s, %s, %s, now())
+            ON CONFLICT (correlation_id) DO UPDATE SET
+                rating = EXCLUDED.rating,
+                comment = EXCLUDED.comment,
+                created_at = now()
+            """,
+            (correlation_id, rating, (comment or "").strip() or None),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        err = str(e).lower()
+        if "llm_performance_feedback" in err or ("relation" in err and "does not exist" in err):
+            logger.debug("llm_performance_feedback table missing (run migration 024): %s", e)
+            return
+        logger.exception("Failed to persist LLM performance feedback: %s", e)
+        raise
+
+
+def get_llm_performance_feedback(correlation_id: str) -> dict[str, Any] | None:
+    """Return { rating, comment } for routing/LLM performance panel, or None."""
+    url = _get_db_url()
+    if not url:
+        return None
+    try:
+        import psycopg2
+        import psycopg2.extras
+
+        conn = psycopg2.connect(url)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            "SELECT rating, comment FROM llm_performance_feedback WHERE correlation_id = %s",
+            (correlation_id,),
+        )
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if not row:
+            return None
+        return {"rating": row["rating"], "comment": row["comment"]}
+    except Exception as e:
+        err = str(e).lower()
+        if "llm_performance_feedback" in err or ("relation" in err and "does not exist" in err):
+            return None
+        logger.warning("get_llm_performance_feedback failed: %s", e)
+        return None
+
+
+def insert_adjudication_feedback(correlation_id: str, rating: str, comment: str | None) -> None:
+    """Upsert adjudicator / QA scorecard feedback (separate from answer-quality chat_feedback)."""
+    if rating not in ("up", "down"):
+        raise ValueError("rating must be 'up' or 'down'")
+    url = _get_db_url()
+    if not url:
+        logger.warning("CHAT_RAG_DATABASE_URL not set; adjudication feedback not persisted")
+        return
+    try:
+        import psycopg2
+
+        conn = psycopg2.connect(url)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO adjudication_feedback (correlation_id, rating, comment, created_at)
+            VALUES (%s, %s, %s, now())
+            ON CONFLICT (correlation_id) DO UPDATE SET
+                rating = EXCLUDED.rating,
+                comment = EXCLUDED.comment,
+                created_at = now()
+            """,
+            (correlation_id, rating, (comment or "").strip() or None),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        err = str(e).lower()
+        if "adjudication_feedback" in err or ("relation" in err and "does not exist" in err):
+            logger.debug("adjudication_feedback table missing (run migration 025): %s", e)
+            return
+        logger.exception("Failed to persist adjudication feedback: %s", e)
+        raise
+
+
+def get_adjudication_feedback(correlation_id: str) -> dict[str, Any] | None:
+    """Return { rating, comment } for QA scorecard panel, or None."""
+    url = _get_db_url()
+    if not url:
+        return None
+    try:
+        import psycopg2
+        import psycopg2.extras
+
+        conn = psycopg2.connect(url)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            "SELECT rating, comment FROM adjudication_feedback WHERE correlation_id = %s",
+            (correlation_id,),
+        )
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if not row:
+            return None
+        return {"rating": row["rating"], "comment": row["comment"]}
+    except Exception as e:
+        err = str(e).lower()
+        if "adjudication_feedback" in err or ("relation" in err and "does not exist" in err):
+            return None
+        logger.warning("get_adjudication_feedback failed: %s", e)
+        return None
+
+
 def get_source_feedback(correlation_id: str) -> list[dict[str, Any]]:
     """Return list of { source_index, rating } for this turn. Empty if none."""
     url = _get_db_url()

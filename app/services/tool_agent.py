@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import urllib.parse
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -578,6 +579,9 @@ def answer_tool(
     scrape_url: str | None = None,
     question_intent: str | None = None,
     active_context: dict | None = None,
+    reconciliation_upload_id: str | None = None,
+    reconciliation_org_id: str | None = None,
+    thread_id: str | None = None,
 ) -> tuple[str, list[dict], dict[str, Any] | None, str]:
     """Handle tool-path questions via MCP. Returns (answer_text, sources, llm_usage, retrieval_signal).
 
@@ -586,6 +590,8 @@ def answer_tool(
     question_intent: planner question_intent — used as qualifier in search query construction.
     active_context: active jurisdiction state — passed as qualifier ONLY to build_search_query(),
                     never used as a tool search target.
+    reconciliation_upload_id, reconciliation_org_id: for run_roster_reconciliation_report.
+    thread_id: current chat thread (for list_thread_document_uploads legacy path).
     """
     try:
         return _answer_tool_impl(
@@ -593,6 +599,9 @@ def answer_tool(
             user_message=user_message, extra_out=extra_out,
             tool_hint_override=tool_hint_override, scrape_url=scrape_url,
             question_intent=question_intent, active_context=active_context,
+            reconciliation_upload_id=reconciliation_upload_id,
+            reconciliation_org_id=reconciliation_org_id,
+            thread_id=thread_id,
         )
     except Exception as e:
         logger.exception("tool_agent failed: %s", e)
@@ -723,6 +732,40 @@ def _ensure_bq_env_for_daily_load() -> None:
     return
 
 
+def _last_reload_date_path() -> Path:
+    """Path to file storing last FL Medicaid reload date (YYYY-MM-DD)."""
+    this_dir = Path(__file__).resolve().parent
+    mobius_chat_root = this_dir.parent.parent
+    return mobius_chat_root / ".last_fl_medicaid_reload"
+
+
+def _get_last_reload_date() -> str | None:
+    """Return last reload date as YYYY-MM-DD, or None if never reloaded."""
+    p = _last_reload_date_path()
+    if not p.is_file():
+        return None
+    try:
+        return p.read_text().strip() or None
+    except Exception:
+        return None
+
+
+def _set_last_reload_date() -> None:
+    """Record that we ran the FL Medicaid daily load today."""
+    try:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        _last_reload_date_path().write_text(today)
+    except Exception as e:
+        logger.debug("Could not write last reload date: %s", e)
+
+
+def _should_run_first_of_day_reload() -> bool:
+    """True if we haven't reloaded FL Medicaid data today (first report of day)."""
+    last = _get_last_reload_date()
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return last != today
+
+
 def _run_fl_medicaid_daily_load(emitter) -> None:
     """Run FL Medicaid daily load (scrape PML/PPL, upload, clean, dbt). Forwards [EMIT] lines to emitter.
 
@@ -763,9 +806,11 @@ def _run_fl_medicaid_daily_load(emitter) -> None:
             _emit(emitter, "Reload finished with errors (check logs).")
         else:
             _emit(emitter, "Reload complete; data ready for report.")
+        _set_last_reload_date()  # record that we ran, so we don't retry on every report today
     except Exception as e:
         logger.warning("FL Medicaid daily load failed: %s", e, exc_info=True)
         _emit(emitter, f"Reload failed: {e}. Proceeding with existing data.")
+        _set_last_reload_date()  # still record so we don't retry repeatedly
 
 
 def _clean_org_name_for_search(name: str) -> str:
@@ -845,6 +890,144 @@ def _run_npi_by_address(
     )
 
 
+def _serve_cached_credentialing_report(
+    run: dict[str, Any], org_name: str, extra_out: dict[str, Any] | None
+) -> tuple[str, list[dict], None, str]:
+    """Return cached report in same format as orchestrator output."""
+    step_order = {
+        "ensure_benchmarks": 1,
+        "identify_org": 2,
+        "find_locations": 3,
+        "find_associated_providers": 4,
+        "org_benchmark": 5,
+        "find_services_by_location": 6,
+        "historic_billing_patterns": 7,
+        "step_6": 8,
+        "step_7": 9,
+        "opportunity_sizing": 10,
+        "build_report": 11,
+        "npi_profile": 12,
+    }
+    steps = run.get("step_outputs") or []
+    if extra_out is not None:
+        extra_out["roster_step_outputs"] = [
+            {
+                "step_id": s.get("step_id", ""),
+                "step_num": step_order.get(s.get("step_id", ""), 0),
+                "label": s.get("label", ""),
+                "csv_content": s.get("content", "") if (s.get("content_type") or "") == "csv" else "",
+                "row_count": s.get("row_count", 0) or 0,
+                "markdown_content": s.get("content", "") if "markdown" in (s.get("content_type") or "") else "",
+                "json_content": s.get("content", "") if (s.get("content_type") or "") == "json" else "",
+            }
+            for s in steps
+        ]
+        extra_out["report_run_id"] = (run.get("report_run_id") or "").strip()
+        extra_out["last_report_org"] = org_name
+        docs = run.get("documents") or {}
+        extra_out["roster_report_pdf_base64"] = docs.get("final_pdf_base64") or ""
+        extra_out["roster_report_final_md"] = docs.get("final_md") or ""
+    result_text = (run.get("documents") or {}).get("final_md") or "Report loaded from cache."
+    sources = [
+        {
+            "index": 1,
+            "document_name": "Provider Roster / Credentialing (cached)",
+            "text": (result_text or "")[:300],
+            "source_type": "external",
+        }
+    ]
+    return (result_text, sources, None, RETRIEVAL_SIGNAL_ROSTER_COMPLETE)
+
+
+def _get_latest_run_for_org(org_name: str):
+    """GET /report-runs/latest?org_name=... Return run dict or None."""
+    base = _provider_roster_base_url()
+    if not base or not (org_name or "").strip():
+        return None
+    url = f"{base.rstrip('/')}/report-runs/latest"
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.get(url, params={"org_name": (org_name or "").strip()})
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as e:
+        logger.debug("get_latest_run_for_org failed: %s", e)
+        return None
+
+
+def _get_org_name_candidates(org_name: str, limit: int = 10) -> list[str]:
+    """Call credentialing skill POST /search/org-names; return unique org names for plan-B matching.
+    Used when direct latest-run lookup fails (e.g. 'David Lawrence' vs stored 'David Lawrence Center')."""
+    base = _provider_roster_base_url()
+    if not base or not (org_name or "").strip():
+        return []
+    url = f"{base.rstrip('/')}/search/org-names"
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.post(
+                url,
+                json={"name": (org_name or "").strip(), "state": "FL", "limit": 20},
+            )
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+    except Exception as e:
+        logger.debug("get_org_name_candidates failed: %s", e)
+        return []
+    results = data.get("results") or []
+    seen: set[str] = set()
+    out: list[str] = []
+    for r in results:
+        name = (r.get("name") or "").strip()
+        if name and len(name) >= 2 and name not in seen:
+            seen.add(name)
+            out.append(name)
+            if len(out) >= limit:
+                break
+    return out
+
+
+def _is_plausible_org_name(org: str) -> bool:
+    """False if the string looks like a sentence or follow-up, not an organization name."""
+    s = (org or "").strip()
+    if not s or len(s) < 2:
+        return False
+    if len(s) > 55:
+        return False
+    lower = s.lower()
+    # Follow-up phrases that must not be treated as org name
+    if any(
+        x in lower
+        for x in (
+            "section a",
+            "section b",
+            "section c",
+            "section d",
+            "section e",
+            "explain section",
+            "i meant",
+            "of the credentialing report",
+            "of the report",
+            "what does the report",
+            "how many npi",
+            "how many providers",
+        )
+    ):
+        return False
+    return True
+
+
+# Generic NPI/credentialing answer when no report in context (credentialing_qa path)
+# Flow: thread → persisted → create? → don't have. Suggests NPPES fallback for NPI lookup.
+CREDENTIALING_QA_NO_REPORT = (
+    "I don't have a credentialing report in this conversation. "
+    "Say **Create a credentialing report for [organization name]** to generate one. "
+    "For basic NPI info (name, taxonomy, address) without PML status, I can look up from NPPES."
+)
+
+
 def _ask_credentialing_report(
     report_run_id: str,
     question: str,
@@ -893,6 +1076,9 @@ def _answer_tool_impl(
     scrape_url: str | None = None,
     question_intent: str | None = None,
     active_context: dict | None = None,
+    reconciliation_upload_id: str | None = None,
+    reconciliation_org_id: str | None = None,
+    thread_id: str | None = None,
 ) -> tuple[str, list[dict], dict[str, Any] | None, str]:
     """Implementation of answer_tool. When user_message is set, roster triggers and org name use user_message.
 
@@ -902,25 +1088,272 @@ def _answer_tool_impl(
     """
     from app.stages.agents.capabilities import get_capability_answer
 
-    # ── Ask about existing credentialing report (report_run_id from previous turn) ──
+    # Alias: ask_credentialing_npi (ReAct tool name) → credentialing_qa (internal hint)
+    if tool_hint_override and (tool_hint_override or "").strip().lower() == "ask_credentialing_npi":
+        tool_hint_override = "credentialing_qa"
+
+    # ── Roster reconciliation: upload vs outside-in ──
+    if tool_hint_override and (tool_hint_override or "").strip().lower() == "roster_reconciliation":
+        org_name = (question or "").strip()
+        upload_id = (reconciliation_upload_id or "").strip()
+        org_id = (reconciliation_org_id or "").strip()
+        base = _provider_roster_base_url()
+        if not base or not org_name or not upload_id or not org_id:
+            missing = []
+            if not base:
+                missing.append("CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL")
+            if not org_name:
+                missing.append("org_name")
+            if not upload_id:
+                missing.append("upload_id")
+            if not org_id:
+                missing.append("org_id")
+            hint = ""
+            if not org_id and org_name:
+                hint = (
+                    f" org_id is the organization's billing NPI — required to fetch the external roster "
+                    "(claims + address propensity). Use search_org_names to find the billing NPI for "
+                    f"'{org_name}', or ask the user to provide it."
+                )
+            return (
+                f"Roster reconciliation needs org_name, upload_id, and org_id. Missing: {', '.join(missing)}.{hint}",
+                [],
+                None,
+                RETRIEVAL_SIGNAL_NO_SOURCES,
+            )
+        try:
+            stream_url = f"{base.rstrip('/')}/roster-reconciliation-report/from-bq/stream"
+            json_url = f"{base.rstrip('/')}/roster-reconciliation-report/from-bq"
+            payload = {"org_name": org_name, "upload_id": upload_id, "org_id": org_id}
+            # Long read timeout: report LLM can run 5–15+ minutes; explicit connect/read avoids pool defaults.
+            timeout_long = httpx.Timeout(connect=60.0, read=900.0, write=120.0, pool=60.0)
+            data: dict[str, Any] | None = None
+
+            def _consume_sse_stream(client: httpx.Client) -> dict[str, Any] | None:
+                out: dict[str, Any] | None = None
+                with client.stream("POST", stream_url, json=payload) as r:
+                    r.raise_for_status()
+                    for line in r.iter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue
+                        try:
+                            import json as _json
+
+                            raw = line[5:].strip()
+                            ev = _json.loads(raw)
+                            evt = ev.get("event") or ""
+                            if evt == "progress" and emitter:
+                                msg = (ev.get("message") or "").strip()
+                                if msg:
+                                    emitter(msg)
+                            elif evt == "complete":
+                                out = ev.get("result") or {}
+                                break
+                            elif evt == "error":
+                                return {"__stream_error__": str(ev.get("message") or "Stream error")}
+                        except Exception:
+                            pass
+                return out
+
+            try:
+                with httpx.Client(timeout=timeout_long) as client:
+                    data = _consume_sse_stream(client)
+            except (httpx.ReadError, httpx.RemoteProtocolError, httpx.LocalProtocolError, httpx.StreamClosed) as stream_err:
+                # Common when proxies idle-timeout SSE during long LLM report (no bytes for minutes).
+                logger.warning(
+                    "Reconciliation SSE failed (%s); falling back to non-streaming from-bq",
+                    stream_err,
+                )
+                if emitter:
+                    emitter(
+                        "Live progress stream dropped (network idle timeout). "
+                        "Fetching the full report in one request — this may take several minutes with no interim updates…"
+                    )
+                with httpx.Client(timeout=timeout_long) as client:
+                    r2 = client.post(json_url, json=payload)
+                    r2.raise_for_status()
+                    data = r2.json()
+            except OSError as ose:
+                if "incomplete" in str(ose).lower() or "chunked" in str(ose).lower():
+                    logger.warning("Reconciliation stream OSError (%s); fallback to from-bq", ose)
+                    if emitter:
+                        emitter("Retrying reconciliation without the live progress stream…")
+                    with httpx.Client(timeout=timeout_long) as client:
+                        r2 = client.post(json_url, json=payload)
+                        r2.raise_for_status()
+                        data = r2.json()
+                else:
+                    raise
+
+            if isinstance(data, dict) and data.get("__stream_error__"):
+                return (str(data["__stream_error__"]), [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
+            if not data:
+                data = {}
+            result_text = (data.get("final_md") or data.get("draft_md") or "").strip()
+            summary = data.get("summary") or {}
+            if summary:
+                ib = summary.get("in_both_count", 0)
+                ext = summary.get("external_only_count", 0)
+                internal = summary.get("internal_only_count", 0)
+                result_text = f"Roster Reconciliation Report for {org_name}\n\n**Summary:** in_both={ib}, external_only={ext}, internal_only={internal}\n\n---\n\n{result_text}"
+            if extra_out is not None and data:
+                extra_out["report_run_id"] = (data.get("report_run_id") or "").strip()
+                extra_out["last_report_org"] = org_name
+                extra_out["roster_report_pdf_base64"] = (data.get("pdf_base64") or data.get("roster_report_pdf_base64") or "").strip()
+                extra_out["roster_report_final_md"] = (data.get("final_md") or "").strip()
+                step_outs = data.get("roster_step_outputs") or data.get("step_outputs") or []
+                extra_out["roster_step_outputs"] = [
+                    {"step_id": s.get("step_id"), "label": s.get("label"), "csv_content": s.get("csv_content") or "", "row_count": s.get("row_count", 0)}
+                    for s in step_outs
+                ]
+            if result_text:
+                sources = [{"index": 1, "document_name": "Roster Reconciliation Report", "text": result_text[:300], "source_type": "external"}]
+                return (result_text, sources, None, RETRIEVAL_SIGNAL_ROSTER_COMPLETE)
+            return ("Reconciliation report returned no content.", [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
+        except httpx.HTTPStatusError as e:
+            body = (e.response.text or "")[:500]
+            return (f"Reconciliation API error: {e.response.status_code}. {body}", [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
+        except Exception as e:
+            logger.warning("Reconciliation report failed: %s", e, exc_info=True)
+            return (f"Reconciliation failed: {e}. Ensure roster is uploaded, processed, and loaded to BigQuery.", [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
+
+    # ── Credentialing: persisted report vs new report ──
+    # We use a stored report (POST /report-runs/{id}/ask) when: credentialing intent AND NOT wants_new_report.
+    # wants_new_report = phrases like "create a credentialing report for X", "roster report for X".
+    # If credentialing_intent and not wants_new_report: resolve report_run_id (from state or GET latest by org),
+    # then return _ask_credentialing_report(...). Otherwise we may run the full 11-step orchestrator (new report).
+    # Blueprint also forces agent=reasoning when active_skill is roster_report and message refers to same org (no re-run).
+    msg = (user_message or question or "").strip()
+    msg_lower = msg.lower()
+    roster_triggers_new = (
+        "provider roster for", "credentialing report for", "roster report for",
+        "medicaid roster for", "roster for", "create a medicaid npi report for",
+        "create medicaid npi report for", "create a credentialing report for",
+        "create credentialing report for", "medicaid npi report for",
+    )
+    wants_new_report = any(t in msg_lower for t in roster_triggers_new)
+    # credentialing_qa = answer from report or generic only; never run the 11-step orchestrator
+    if tool_hint_override and (tool_hint_override or "").strip().lower() == "credentialing_qa":
+        wants_new_report = False
     report_run_id = (active_context or {}).get("report_run_id") if isinstance(active_context, dict) else None
-    if report_run_id and isinstance(report_run_id, str) and (report_run_id or "").strip():
-        roster_lower = (user_message or question or "").strip().lower()
-        roster_triggers = (
-            "provider roster for", "credentialing report for", "roster report for",
-            "medicaid roster for", "roster for", "create a medicaid npi report for",
-            "create medicaid npi report for", "create a credentialing report for",
-            "create credentialing report for", "medicaid npi report for",
-        )
-        wants_new_report = any(t in roster_lower for t in roster_triggers)
-        if not wants_new_report:
-            return _ask_credentialing_report(report_run_id.strip(), (question or user_message or "").strip(), emitter=emitter)
+    report_run_id = (report_run_id or "").strip() if isinstance(report_run_id, str) else None
+
+    # Credentialing intent: must mention credentialing / NPI / roster report (not just "report").
+    # Generic "the report" / "section c" only counts when we already have a run (same-thread follow-up).
+    explicit_credentialing = (
+        "latest report" in msg_lower or "report for " in msg_lower
+        or "npi ready" in msg_lower or "ready for pml" in msg_lower or "why is this npi" in msg_lower
+        or "npi valid" in msg_lower or "valid for florida" in msg_lower or "florida billing" in msg_lower
+        or "is this npi" in msg_lower or "npi in the report" in msg_lower
+        or "credentialing" in msg_lower or "nppes" in msg_lower
+        or any(t in msg_lower for t in ("roster report", "medicaid roster", "medicaid npi report"))
+    )
+    report_followup_phrases = (
+        "the report say", "the report says", "what does the report", "summarize section",
+        "section c", "section b", "section d", "section a", "at-risk", "executive summary",
+        "pml", "how many npi", "npis have", "issues with pml",
+    )
+    report_followup = any(t in msg_lower for t in report_followup_phrases)
+    credentialing_intent = explicit_credentialing or (report_run_id and report_followup) or (
+        bool((active_context or {}).get("last_report_org")) and report_followup
+    )
+    if tool_hint_override and (tool_hint_override or "").strip().lower() == "credentialing_qa":
+        credentialing_intent = True
+
+    if credentialing_intent and not wants_new_report:
+        # Resolve run: from state, or pull up latest for org (from message or last_report_org).
+        # Reports may not be persisted in thread; we "pull up" latest unless user asked for reload/new report.
+        run_id_to_use = report_run_id
+        org_name = None
+        for prefix in (
+            "latest report for ", "what is the latest report for ", "what's the latest report for ",
+            "latest for ", "report for ", "credentialing report for ", "medicaid npi report for ",
+            "tell me more about the credentialing report for ", "tell me about the credentialing report for ",
+        ):
+            if prefix in msg_lower:
+                org_name = msg[msg_lower.find(prefix) + len(prefix):].strip().rstrip("?.,;!")
+                break
+        if not org_name and " for " in msg_lower and "report" in msg_lower:
+            idx = msg_lower.rfind(" for ")
+            if idx >= 0:
+                org_name = msg[idx + 5:].strip().rstrip("?.,;!")
+        if not org_name and isinstance(active_context, dict) and (active_context.get("last_report_org") or "").strip():
+            org_name = (active_context.get("last_report_org") or "").strip()
+        if org_name:
+            org_name = _clean_org_name_for_credentialing(org_name)
+        if not run_id_to_use and org_name and len(org_name) >= 2:
+            _emit(emitter, f"Looking up latest report for {org_name}…")
+            run = _get_latest_run_for_org(org_name)
+            if run and run.get("report_run_id"):
+                run_id_to_use = run["report_run_id"]
+                if extra_out is not None:
+                    extra_out["report_run_id"] = run_id_to_use
+                    extra_out["last_report_org"] = org_name
+            else:
+                # Plan B: try org-name search candidates (e.g. "David Lawrence" → "David Lawrence Center")
+                candidates = _get_org_name_candidates(org_name, limit=8)
+                for candidate in candidates:
+                    if candidate == org_name:
+                        continue
+                    run = _get_latest_run_for_org(candidate)
+                    if run and run.get("report_run_id"):
+                        run_id_to_use = run["report_run_id"]
+                        if extra_out is not None:
+                            extra_out["report_run_id"] = run_id_to_use
+                            extra_out["last_report_org"] = candidate
+                        _emit(emitter, f"Using report for {candidate}.")
+                        break
+                if not run_id_to_use and credentialing_intent:
+                    if candidates:
+                        names = ", ".join(repr(c) for c in candidates[:5])
+                        return (
+                            f"No stored report found for {org_name!r}. Did you mean one of these: {names}? "
+                            f"Say 'Create a credentialing report for [exact name]' to generate one.",
+                            [],
+                            None,
+                            RETRIEVAL_SIGNAL_NO_SOURCES,
+                        )
+                    return (
+                        f"No stored report found for {org_name!r}. "
+                        f"Say 'Create a credentialing report for {org_name}' to generate one. "
+                        "Or I can look up basic NPI info from NPPES (no PML status).",
+                        [],
+                        None,
+                        RETRIEVAL_SIGNAL_NO_SOURCES,
+                    )
+        if run_id_to_use:
+            if extra_out is not None and org_name and len(org_name) >= 2:
+                extra_out["last_report_org"] = org_name
+            elif extra_out is not None and isinstance(active_context, dict) and (active_context.get("last_report_org") or "").strip():
+                extra_out["last_report_org"] = (active_context.get("last_report_org") or "").strip()
+            _emit(emitter, "Your report is stored. You can ask any question — answering from it.")
+            return _ask_credentialing_report(run_id_to_use, (question or user_message or "").strip(), emitter=emitter)
+        if credentialing_intent:
+            if tool_hint_override and (tool_hint_override or "").strip().lower() == "credentialing_qa":
+                return (CREDENTIALING_QA_NO_REPORT, [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
+            return (
+                "I don't have a report in this thread. Say which organization, e.g. 'What is the latest report for David Lawrence Center?' or run a credentialing report first.",
+                [],
+                None,
+                RETRIEVAL_SIGNAL_NO_SOURCES,
+            )
 
     # ── Intent-based dispatch (from planner blueprint) ────────────────────
     # tool_hint_override bypasses keyword matching entirely. Uses entity extraction
     # so active jurisdiction NEVER bleeds into tool search targets.
     if tool_hint_override:
         hint = tool_hint_override.lower().strip()
+
+        if hint == "document_upload_skill":
+            from app.skills.document_upload import DOCUMENT_UPLOAD_SKILL_MARKDOWN
+
+            return (DOCUMENT_UPLOAD_SKILL_MARKDOWN, [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
+
+        if hint == "list_thread_document_uploads":
+            from app.skills.document_upload import format_thread_uploads_markdown
+
+            tid = (thread_id or "").strip()
+            return (format_thread_uploads_markdown(tid), [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
 
         # Extract entity from question text — ALWAYS from question, never from active_context
         entity = extract_entity_from_question(text=(user_message or question or ""))
@@ -1119,7 +1552,25 @@ def _answer_tool_impl(
                     None,
                     RETRIEVAL_SIGNAL_NO_SOURCES,
                 )
+            # Don't run the full report when "org" is clearly a follow-up (e.g. "i meant section E of the credentialing report")
+            if not _is_plausible_org_name(org_name):
+                if isinstance(active_context, dict) and ((active_context.get("report_run_id") or "").strip() or (active_context.get("last_report_org") or "").strip()):
+                    run_id = (active_context.get("report_run_id") or "").strip()
+                    if not run_id and (active_context.get("last_report_org") or "").strip():
+                        run = _get_latest_run_for_org((active_context.get("last_report_org") or "").strip())
+                        if run and run.get("report_run_id"):
+                            run_id = run["report_run_id"]
+                    if run_id:
+                        _emit(emitter, "Your report is stored. You can ask any question — answering from it.")
+                        return _ask_credentialing_report(run_id, (question or roster_check_text or "").strip(), emitter=emitter)
+                return (
+                    CREDENTIALING_QA_NO_REPORT,
+                    [],
+                    None,
+                    RETRIEVAL_SIGNAL_NO_SOURCES,
+                )
             # "Reload and create credentialing report for X" / "reload data and run ..." → force FL Medicaid daily load first
+            # Also: first NPI report of the day → auto reload (so reports use fresh PML/dbt data)
             reload_triggers = (
                 "reload and",
                 "reload data",
@@ -1132,8 +1583,34 @@ def _answer_tool_impl(
                 "reload then create",
             )
             force_reload = any(r in roster_lower for r in reload_triggers)
-            if force_reload:
+            run_reload = force_reload or _should_run_first_of_day_reload()
+            if run_reload:
                 _run_fl_medicaid_daily_load(emitter)
+
+            # Subsequent same-day reports for this org → serve from cache (no full chain)
+            existing_run = _get_latest_run_for_org(org_name)
+            if existing_run and (existing_run.get("status") or "").lower() == "completed":
+                created_at = existing_run.get("created_at") or ""
+                if created_at:
+                    try:
+                        # Parse ISO datetime; compare date to today (UTC)
+                        if "T" in str(created_at):
+                            run_date = datetime.fromisoformat(
+                                str(created_at).replace("Z", "+00:00")
+                            ).date()
+                        else:
+                            run_date = datetime.strptime(
+                                str(created_at)[:10], "%Y-%m-%d"
+                            ).date()
+                        today_utc = datetime.now(timezone.utc).date()
+                        if run_date == today_utc:
+                            _emit(emitter, f"Serving cached report for {org_name} (from earlier today).")
+                            return _serve_cached_credentialing_report(
+                                existing_run, org_name, extra_out
+                            )
+                    except (ValueError, TypeError):
+                        pass
+
             _emit(emitter, f"Running the Medicaid NPI report for {org_name}…")
             try:
                 result_text, ostate = run_orchestrator(org_name, emitter=emitter)
@@ -1170,6 +1647,7 @@ def _answer_tool_impl(
                 ]
                 if getattr(ostate, "report_run_id", None):
                     extra_out["report_run_id"] = ostate.report_run_id
+                extra_out["last_report_org"] = org_name
                 if getattr(ostate, "report_pdf_base64", None):
                     extra_out["roster_report_pdf_base64"] = ostate.report_pdf_base64
                 if getattr(ostate, "report_final_md", None):

@@ -20,4 +20,5 @@ def run_classify(ctx: PipelineContext, emitter: Callable[[str], None] | None = N
             get_jurisdiction_from_active((ctx.merged_state or {}).get("active")),
         )
     else:
-        ctx.effective_message = ctx.message
+        # Preserve effective_message when already set by message resolver (conversational continuity)
+        ctx.effective_message = (ctx.effective_message or "").strip() or ctx.message

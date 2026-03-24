@@ -52,19 +52,22 @@ def build_blueprint(
 
     # Pre-check: if a report was just generated, answer from it — do NOT re-run
     deterministic_agent: AgentType | None = None
+    force_roster_tool_hint = False
     active_skill = rctx.get("active_skill")
+    # When parser chose a tool (e.g. credentialing_qa), honor it — don't override to reasoning
+    parser_tool_hint = (plan.subquestions[0].tool_hint if plan.subquestions else None) or ""
     if active_skill and (active_skill.get("skill") or "").strip().lower() == "roster_report":
-        if _message_refers_to_org(user_message, active_skill.get("org")):
+        if parser_tool_hint and str(parser_tool_hint).lower() == "credentialing_qa":
+            deterministic_agent = "tool"
+        elif _message_refers_to_org(user_message, active_skill.get("org")):
             deterministic_agent = "reasoning"
         else:
-            # Generic follow-up (e.g. "How many NPIs have PML issues?") with no org in message
             from app.pipeline.message_resolver import detect_skill_reference
             is_skill_ref, _ = detect_skill_reference(user_message, active_skill)
             if is_skill_ref:
                 deterministic_agent = "reasoning"
 
-    # Fallback: state has report_run_id/last_report_org but no active_skill (e.g. persistence missed) — still route to tool
-    force_roster_tool_hint = False
+    # Fallback: state has report_run_id/last_report_org but no active_skill — still route to tool
     if deterministic_agent is None:
         report_run_id = (rctx.get("report_run_id") or "").strip()
         last_report_org = (rctx.get("last_report_org") or "").strip()
@@ -85,6 +88,33 @@ def build_blueprint(
         route_agent, route_confidence, _ = detect_route(user_message)
         if route_confidence >= 1.0 and route_agent:
             deterministic_agent = route_agent
+
+    # Credentialing follow-up vs build: use credentialing_qa (answer from report) unless user clearly asked to build
+    msg_lower = (user_message or "").lower()
+    followup_phrases = (
+        "section a", "section b", "section c", "section d", "section e",
+        "explain section", "i meant", "of the credentialing report", "of the report",
+        "what does the report", "what is section", "can you explain section",
+    )
+    has_followup = any(p in msg_lower for p in followup_phrases)
+    has_report_ctx = bool(rctx.get("active_skill") or rctx.get("report_run_id") or rctx.get("last_report_org"))
+    build_phrases = (
+        "create a credentialing report for", "create credentialing report for",
+        "create a medicaid npi report for", "create medicaid npi report for",
+        "run the medicaid npi report for", "run credentialing report for",
+    )
+    has_build = any(p in msg_lower for p in build_phrases)
+    use_credentialing_qa = (
+        (parser_tool_hint and str(parser_tool_hint).lower() == "credentialing_qa")
+        or (has_followup and (has_report_ctx or not has_build))
+        or (
+            (deterministic_agent == "tool" or (plan.subquestions and getattr(plan.subquestions[0], "tool_hint", None) == "roster_report"))
+            and has_followup
+            and not (has_build and len((user_message or "").strip()) < 80)
+        )
+    )
+    if has_followup and (has_report_ctx or not has_build):
+        deterministic_agent = deterministic_agent or "tool"
 
     out: list[dict] = []
     for i, sq in enumerate(plan.subquestions):
@@ -128,6 +158,8 @@ def build_blueprint(
         tool_hint = getattr(sq, "tool_hint", None)
         if force_roster_tool_hint and i == 0 and agent == "tool":
             tool_hint = "roster_report"
+        if use_credentialing_qa and i == 0 and agent == "tool":
+            tool_hint = "credentialing_qa"
         skip_layer_4 = bool(getattr(sq, "skip_layer_4", False))
         question_intent = getattr(sq, "question_intent", None)
         out.append({

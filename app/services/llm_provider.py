@@ -126,6 +126,7 @@ class OllamaProvider(LLMProvider):
         self.num_predict = num_predict
 
     async def stream_generate(self, prompt: str, **kwargs) -> AsyncIterator[str]:
+        kwargs.pop("stage", None)
         opts = {"num_predict": self.num_predict}
         if "options" in kwargs:
             opts = {**opts, **kwargs.pop("options")}
@@ -155,6 +156,7 @@ class OllamaProvider(LLMProvider):
         return text
 
     async def generate_with_usage(self, prompt: str, **kwargs) -> tuple[str, LLMUsageDict]:
+        kwargs.pop("stage", None)
         opts = {"num_predict": self.num_predict}
         if "options" in kwargs:
             opts = {**opts, **kwargs.pop("options")}
@@ -256,7 +258,15 @@ class VertexAIProvider(LLMProvider):
             return 60.0
 
     def _generation_config(self, **kwargs) -> dict:
-        return {"temperature": 0.1, **kwargs}
+        # Gemini GenerationConfig uses max_output_tokens, not max_tokens
+        # llm_manager passes stage for Groq JSON mode — not a valid GenerationConfig field
+        kwargs.pop("stage", None)
+        cfg: dict = {"temperature": 0.1}
+        mt = kwargs.pop("max_tokens", None)
+        if mt is not None:
+            cfg["max_output_tokens"] = int(mt)
+        cfg.update(kwargs)
+        return cfg
 
     async def stream_generate(self, prompt: str, **kwargs) -> AsyncIterator[str]:
         gen_config = self._generation_config(**kwargs)
@@ -324,7 +334,7 @@ def _vertex_factory(config: Dict[str, Any]) -> LLMProvider:
     if not project_id:
         project_id = "mobiusos-new"
     location = vertex.get("location") or c.vertex_location
-    model = config.get("model") or c.vertex_model
+    model = vertex.get("model") or config.get("model") or c.vertex_model
     return VertexAIProvider(project_id=project_id, location=location, model=model)
 
 
@@ -332,20 +342,326 @@ register_provider("ollama", _ollama_factory)
 register_provider("vertex", _vertex_factory)
 
 
-def get_llm_provider() -> LLMProvider:
+# ── Groq / Anthropic / Together (Sprint -1) ─────────────────────────────────
+
+# Reasoning models require max_completion_tokens (not max_tokens); see Groq reasoning docs.
+_GROQ_REASONING_MODEL_IDS = frozenset({
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "openai/gpt-oss-safeguard-20b",
+    "qwen/qwen3-32b",
+})
+
+
+def _groq_is_reasoning_model(model_id: str) -> bool:
+    mid = (model_id or "").strip()
+    if mid in _GROQ_REASONING_MODEL_IDS:
+        return True
+    if mid.startswith("openai/gpt-oss-"):
+        return True
+    return False
+
+
+class GroqProvider(LLMProvider):
+    """Groq inference — OpenAI-compatible REST API. No SDK needed."""
+
+    def __init__(self, model: str = "llama-3.3-70b-versatile"):
+        import os
+        self.model = model
+        self.api_key = os.environ.get("GROQ_API_KEY", "").strip()
+        if not self.api_key:
+            raise ValueError(
+                "GROQ_API_KEY not set. Add to .env: GROQ_API_KEY=gsk_..."
+            )
+        self.base_url = "https://api.groq.com/openai/v1"
+        self.timeout = float(os.environ.get("LLM_TIMEOUT_SECONDS", "60"))
+
+    async def generate(self, prompt: str, **kwargs) -> str:
+        text, _ = await self.generate_with_usage(prompt, **kwargs)
+        return text
+
+    async def stream_generate(self, prompt: str, **kwargs):
+        text = await self.generate(prompt, **kwargs)
+        yield text
+
+    async def generate_with_usage(
+        self, prompt: str, **kwargs
+    ) -> tuple[str, LLMUsageDict]:
+        max_out = int(kwargs.get("max_tokens", 4096))
+        temp = float(kwargs.get("temperature", 0.1))
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": temp,
+        }
+        if _groq_is_reasoning_model(self.model):
+            # Groq reasoning models reject/ignore max_tokens for generation cap; use completion limit.
+            payload["max_completion_tokens"] = max_out
+            # Put final answer in message.content (not only in message.reasoning).
+            payload["reasoning_format"] = str(kwargs.get("reasoning_format") or "hidden")
+        else:
+            payload["max_tokens"] = max_out
+
+        # ReAct + planner expect a JSON object in message.content. Some Groq chat models otherwise emit
+        # OpenAI-style tool_calls; with no `tools` in the request Groq implies tool_choice none and returns
+        # 400 "Tool choice is none, but model called a tool". JSON mode keeps output in content.
+        # Groq reasoning models (gpt-oss, etc.) are excluded from planner/react in model_registry instead.
+        stage = str(kwargs.get("stage") or "")
+        if (
+            (stage == "planner" or stage.startswith("react_"))
+            and not _groq_is_reasoning_model(self.model)
+        ):
+            payload["response_format"] = {"type": "json_object"}
+
+        body = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+                "User-Agent": "MobiusChat/1.0",
+            },
+            method="POST",
+        )
+
+        def _call() -> tuple[str, LLMUsageDict]:
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                body_text = ""
+                try:
+                    body_text = e.read().decode("utf-8")
+                except Exception:
+                    pass
+                raise Exception(f"Groq API error {e.code}: {body_text}") from e
+            msg = (data.get("choices", [{}])[0].get("message") or {})
+            if not isinstance(msg, dict):
+                msg = {}
+            text = (msg.get("content") or "").strip()
+            if not text and msg.get("tool_calls"):
+                # Defensive: native tool_calls without JSON mode (or partial failure)
+                try:
+                    tc = msg.get("tool_calls")
+                    if isinstance(tc, list) and tc:
+                        first = tc[0] if isinstance(tc[0], dict) else {}
+                        fn = first.get("function") if isinstance(first.get("function"), dict) else {}
+                        name = (fn.get("name") or "").strip()
+                        raw_args = fn.get("arguments") or "{}"
+                        if isinstance(raw_args, str):
+                            args_obj = json.loads(raw_args) if raw_args.strip() else {}
+                        else:
+                            args_obj = raw_args if isinstance(raw_args, dict) else {}
+                        text = json.dumps(
+                            {
+                                "thought": "Native tool call mapped to ReAct shape",
+                                "tool": name or None,
+                                "inputs": args_obj if isinstance(args_obj, dict) else {},
+                                "is_complete": False,
+                            }
+                        )
+                except Exception:
+                    text = ""
+            if not text and msg.get("reasoning"):
+                text = str(msg.get("reasoning") or "").strip()
+            u = data.get("usage", {}) or {}
+            return text, usage_dict(
+                provider="groq",
+                model=self.model,
+                input_tokens=int(u.get("prompt_tokens") or u.get("input_tokens") or 0),
+                output_tokens=int(
+                    u.get("completion_tokens") or u.get("output_tokens") or 0
+                ),
+            )
+
+        return await asyncio.to_thread(_call)
+
+
+def _groq_factory(config: Dict[str, Any]) -> LLMProvider:
+    return GroqProvider(model=config.get("model") or "llama-3.3-70b-versatile")
+
+
+register_provider("groq", _groq_factory)
+
+
+class AnthropicProvider(LLMProvider):
+    """Anthropic Messages API — urllib, no SDK."""
+
+    def __init__(self, model: str = "claude-haiku-4-5-20251001"):
+        import os
+        self.model = model
+        self.api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        if not self.api_key:
+            raise ValueError(
+                "ANTHROPIC_API_KEY not set. Add to .env: ANTHROPIC_API_KEY=sk-ant-..."
+            )
+        self.base_url = "https://api.anthropic.com/v1"
+        self.timeout = float(os.environ.get("LLM_TIMEOUT_SECONDS", "60"))
+
+    async def generate(self, prompt: str, **kwargs) -> str:
+        text, _ = await self.generate_with_usage(prompt, **kwargs)
+        return text
+
+    async def stream_generate(self, prompt: str, **kwargs):
+        text = await self.generate(prompt, **kwargs)
+        yield text
+
+    async def generate_with_usage(
+        self, prompt: str, **kwargs
+    ) -> tuple[str, LLMUsageDict]:
+        body = json.dumps({
+            "model": self.model,
+            "max_tokens": int(kwargs.get("max_tokens", 4096)),
+            "messages": [{"role": "user", "content": prompt}],
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.base_url}/messages",
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+            },
+            method="POST",
+        )
+
+        def _call() -> tuple[str, LLMUsageDict]:
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                body_text = ""
+                try:
+                    body_text = e.read().decode("utf-8")
+                except Exception:
+                    pass
+                raise Exception(
+                    f"Anthropic API error {e.code}: {body_text}"
+                ) from e
+            text = ""
+            for block in data.get("content", []):
+                if block.get("type") == "text":
+                    text += block.get("text", "")
+            u = data.get("usage", {})
+            return text, usage_dict(
+                provider="anthropic",
+                model=self.model,
+                input_tokens=int(u.get("input_tokens", 0)),
+                output_tokens=int(u.get("output_tokens", 0)),
+            )
+
+        return await asyncio.to_thread(_call)
+
+
+def _anthropic_factory(config: Dict[str, Any]) -> LLMProvider:
+    return AnthropicProvider(
+        model=config.get("model") or "claude-haiku-4-5-20251001"
+    )
+
+
+register_provider("anthropic", _anthropic_factory)
+
+
+class TogetherProvider(LLMProvider):
+    """Together.ai — OpenAI-compatible REST API."""
+
+    def __init__(
+        self,
+        model: str = "meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo",
+    ):
+        import os
+        self.model = model
+        self.api_key = os.environ.get("TOGETHER_API_KEY", "").strip()
+        if not self.api_key:
+            raise ValueError(
+                "TOGETHER_API_KEY not set. Add to .env: TOGETHER_API_KEY=..."
+            )
+        self.base_url = "https://api.together.xyz/v1"
+        self.timeout = float(os.environ.get("LLM_TIMEOUT_SECONDS", "90"))
+
+    async def generate(self, prompt: str, **kwargs) -> str:
+        text, _ = await self.generate_with_usage(prompt, **kwargs)
+        return text
+
+    async def stream_generate(self, prompt: str, **kwargs):
+        text = await self.generate(prompt, **kwargs)
+        yield text
+
+    async def generate_with_usage(
+        self, prompt: str, **kwargs
+    ) -> tuple[str, LLMUsageDict]:
+        body = json.dumps({
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.1,
+            "max_tokens": int(kwargs.get("max_tokens", 4096)),
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+            method="POST",
+        )
+
+        def _call() -> tuple[str, LLMUsageDict]:
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                body_text = ""
+                try:
+                    body_text = e.read().decode("utf-8")
+                except Exception:
+                    pass
+                raise Exception(
+                    f"Together API error {e.code}: {body_text}"
+                ) from e
+            text = (
+                (data.get("choices", [{}])[0].get("message", {}).get("content", ""))
+                or ""
+            )
+            u = data.get("usage", {})
+            return text, usage_dict(
+                provider="together",
+                model=self.model,
+                input_tokens=int(u.get("prompt_tokens", 0)),
+                output_tokens=int(u.get("completion_tokens", 0)),
+            )
+
+        return await asyncio.to_thread(_call)
+
+
+def _together_factory(config: Dict[str, Any]) -> LLMProvider:
+    return TogetherProvider(
+        model=config.get("model")
+        or "meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo"
+    )
+
+
+register_provider("together", _together_factory)
+
+
+def get_llm_provider(parser: bool = False) -> LLMProvider:
     """Get LLM provider from chat config only (CHAT_LLM_*, VERTEX_*, OLLAMA_*). Does not use RAG config.
     Called by: worker (process_one → _answer_for_subquestion → answer_non_patient), planner (parse), responder (final).
+    When parser=True, uses parser_vertex_model (default gemini-2.5-pro) for Vertex so parser and rest of chat can use different rate limits.
     _vertex_factory always resolves project_id from config then os.getenv then default 'mobiusos-new' (never raises)."""
     trace_entered("services.llm_provider.get_llm_provider")
     from app.chat_config import get_chat_config
     c = get_chat_config().llm
+    parser_cfg = get_chat_config().parser
     provider_name = (c.provider or "ollama").lower()
+    vertex_model = getattr(parser_cfg, "parser_vertex_model", None) or c.vertex_model if parser and provider_name == "vertex" else c.vertex_model
     cfg = {
         "provider": provider_name,
-        "model": c.ollama_model if provider_name == "ollama" else c.vertex_model,
+        "model": c.ollama_model if provider_name == "ollama" else vertex_model,
         "options": {"num_predict": c.ollama_num_predict} if provider_name == "ollama" else {},
         "ollama": {"base_url": c.ollama_base_url},
-        "vertex": {"project_id": c.vertex_project_id, "location": c.vertex_location},
+        "vertex": {"project_id": c.vertex_project_id, "location": c.vertex_location, "model": vertex_model},
     }
     factory = _PROVIDER_REGISTRY.get(provider_name)
     if factory:
