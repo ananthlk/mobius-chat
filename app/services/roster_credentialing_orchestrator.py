@@ -47,6 +47,9 @@ ROSTER_CREDENTIALING_PLAN = [
     {"id": "build_report", "label": "Build credentialing report"},
 ]
 
+# Ordered step ids for co-pilot / single-step execution (must match ROSTER_CREDENTIALING_PLAN).
+ROSTER_CREDENTIALING_STEP_IDS: tuple[str, ...] = tuple(s["id"] for s in ROSTER_CREDENTIALING_PLAN)
+
 
 @dataclass
 class StepState:
@@ -1191,6 +1194,56 @@ def _run_step_build_report(
         return str(e)
 
 
+def run_credentialing_step(
+    org_name: str,
+    state: OrchestratorState,
+    step_id: str,
+    emitter: Callable[[str], None] | None = None,
+) -> str | None:
+    """Run a single credentialing pipeline step. Mutates ``state`` like the monolithic orchestrator.
+
+    Return value is step-specific (e.g. report text from ``build_report``, or an error string from
+    ``identify_org`` when the API fails). Callers that mirror legacy ``run_orchestrator`` behavior
+    may ignore non-final returns except for logging or co-pilot UI.
+
+    Raises:
+        ValueError: if ``step_id`` is not in the plan.
+    """
+    org_name = (org_name or "").strip()
+    if step_id == "ensure_benchmarks":
+        _run_step_0_ensure_benchmarks(state, emitter)
+        return None
+    if step_id == "identify_org":
+        return _run_step_1_identify_org(org_name, state, emitter)
+    if step_id == "find_locations":
+        _run_step_2_find_locations(state, emitter)
+        return None
+    if step_id == "find_associated_providers":
+        _run_step_3_find_associated_providers(state, emitter)
+        return None
+    if step_id == "org_benchmark":
+        _run_step_org_benchmark(state, emitter)
+        return None
+    if step_id == "find_services_by_location":
+        _run_step_4_find_services_by_location(state, emitter)
+        return None
+    if step_id == "historic_billing_patterns":
+        _run_step_5_historic_billing_patterns(state, emitter)
+        return None
+    if step_id == "step_6":
+        _run_step_6_pml_validation(state, emitter)
+        return None
+    if step_id == "step_7":
+        _run_step_7_missing_pml(state, emitter)
+        return None
+    if step_id == "opportunity_sizing":
+        _run_step_opportunity_sizing(state, emitter)
+        return None
+    if step_id == "build_report":
+        return _run_step_build_report(org_name, state, emitter)
+    raise ValueError(f"Unknown credentialing step_id: {step_id!r}")
+
+
 def run_orchestrator(
     org_input: str,
     emitter: Callable[[str], None] | None = None,
@@ -1220,17 +1273,11 @@ def run_orchestrator(
         return "No organization name provided. Try: 'Create a Medicaid NPI report for [org name]'.", state
 
     state.org_name = org_name
-    _run_step_0_ensure_benchmarks(state, emitter)
-    _run_step_1_identify_org(org_name, state, emitter)
-    _run_step_2_find_locations(state, emitter)
-    _run_step_3_find_associated_providers(state, emitter)
-    _run_step_org_benchmark(state, emitter)
-    _run_step_4_find_services_by_location(state, emitter)
-    _run_step_5_historic_billing_patterns(state, emitter)
-    _run_step_6_pml_validation(state, emitter)
-    _run_step_7_missing_pml(state, emitter)
-    _run_step_opportunity_sizing(state, emitter)
-    report_text = _run_step_build_report(org_name, state, emitter)
+    report_text: str | None = None
+    for sid in ROSTER_CREDENTIALING_STEP_IDS:
+        out = run_credentialing_step(org_name, state, sid, emitter)
+        if sid == "build_report":
+            report_text = out
 
     # Step outputs are passed via roster_step_outputs in the payload; frontend renders them as collapsible
     return (report_text or "Report could not be generated."), state
