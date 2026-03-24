@@ -73,12 +73,33 @@ def main() -> int:
     if eb is None or eb.status not in ("done", "skipped"):
         errors.append(f"ensure_benchmarks expected done/skipped, got {eb}")
 
+    # In-memory co-pilot / autopilot run service (no HTTP)
+    from app.services.credentialing_run_service import (
+        clear_runs_for_tests,
+        create_credentialing_run,
+        validate_and_advance_credentialing_run,
+    )
+
+    clear_runs_for_tests()
+    auto = create_credentialing_run("ValidateScriptOrg", "autopilot", thread_id=None)
+    if auto.get("phase") != "complete":
+        errors.append(f"autopilot run expected complete, got {auto.get('phase')}")
+    cop = create_credentialing_run("ValidateScriptOrg", "copilot", thread_id=None)
+    if cop.get("phase") != "awaiting_validation":
+        errors.append("copilot run expected awaiting_validation")
+    rid = cop["run_id"]
+    pid = cop["pending_step_id"]
+    nxt = validate_and_advance_credentialing_run(rid, pid, {})
+    if nxt.get("phase") != "awaiting_validation":
+        errors.append("after first validate expected still awaiting_validation")
+    clear_runs_for_tests()
+
     if errors:
         for e in errors:
             print("ERROR:", e, file=sys.stderr)
         return 1
 
-    print("OK: credentialing step list and runner invariants passed.")
+    print("OK: credentialing step list, runner, and run-service smoke passed.")
     return 0
 
 

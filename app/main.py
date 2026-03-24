@@ -5,7 +5,7 @@ import os
 import logging
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from dotenv import load_dotenv
 load_dotenv()  # load .env from project root (same pattern as Mobius RAG)
@@ -475,6 +475,68 @@ def get_thread_uploads(thread_id: str) -> dict[str, Any]:
         "reconciliation_org_id": (active.get("reconciliation_org_id") or "").strip() or None,
         "reconciliation_org_name": (active.get("reconciliation_org_name") or "").strip() or None,
     }
+
+
+class CredentialingRunCreateBody(BaseModel):
+    """Start credentialing report run: autopilot (full pipeline) or copilot (step-by-step validation)."""
+
+    org_name: str = ""
+    mode: Literal["autopilot", "copilot"] = "copilot"
+    thread_id: str | None = None
+
+
+class CredentialingValidateBody(BaseModel):
+    """Commit user-validated output for the pending step; server runs the next step."""
+
+    step_id: str = ""
+    validated_output: dict[str, Any] = {}
+
+
+@app.post("/chat/credentialing-runs")
+def post_credentialing_runs(body: CredentialingRunCreateBody) -> dict[str, Any]:
+    """
+    Create a credentialing pipeline run.
+    - autopilot: same as chat tool (full orchestrator), returns when complete.
+    - copilot: runs the first step only; use POST .../validate with validated_output, then repeat until phase=complete.
+    """
+    from app.services.credentialing_run_service import create_credentialing_run
+
+    org = (body.org_name or "").strip()
+    if not org:
+        raise HTTPException(status_code=400, detail="org_name is required")
+    tid = ensure_thread((body.thread_id or "").strip() or None)
+    try:
+        result = create_credentialing_run(org, body.mode, thread_id=tid)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    save_state(tid, {"active": {"credentialing_run_id": result.get("run_id"), "credentialing_run_mode": body.mode}})
+    result["thread_id"] = tid
+    return result
+
+
+@app.get("/chat/credentialing-runs/{run_id}")
+def get_credentialing_run(run_id: str, full: int = 0) -> dict[str, Any]:
+    from app.services.credentialing_run_service import get_credentialing_run
+
+    rec = get_credentialing_run(run_id, include_state=bool(full))
+    if not rec:
+        raise HTTPException(status_code=404, detail="run not found")
+    return rec
+
+
+@app.post("/chat/credentialing-runs/{run_id}/validate")
+def post_credentialing_run_validate(run_id: str, body: CredentialingValidateBody) -> dict[str, Any]:
+    from app.services.credentialing_run_service import validate_and_advance_credentialing_run
+
+    sid = (body.step_id or "").strip()
+    if not sid:
+        raise HTTPException(status_code=400, detail="step_id is required")
+    try:
+        return validate_and_advance_credentialing_run(run_id, sid, body.validated_output or {})
+    except KeyError:
+        raise HTTPException(status_code=404, detail="run not found") from None
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
 
 
 def _enrich_completed_response_from_db(resp: dict) -> dict:
