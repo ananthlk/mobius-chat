@@ -176,9 +176,28 @@ def create_credentialing_run(
     run_id = str(uuid.uuid4())
     tid = (thread_id or "").strip() or None
 
+    active: dict[str, Any] = {}
+    if tid:
+        try:
+            from app.storage.threads import get_state
+
+            st = get_state(tid)
+            active = (st or {}).get("active") or {}
+        except Exception:
+            active = {}
+    from app.pipeline.credentialing_envelope import resolve_step3_roster_merge_context
+
+    uid3, ext3, incl3 = resolve_step3_roster_merge_context(active, credentialing_options)
+
     if mode == "autopilot":
         try:
-            final_text, state = run_orchestrator(org_name, emitter=emitter)
+            final_text, state = run_orchestrator(
+                org_name,
+                emitter=emitter,
+                roster_upload_id=uid3,
+                external_only=ext3,
+                include_roster_members=incl3,
+            )
         except Exception as e:
             logger.exception("autopilot credentialing run failed")
             rec = {
