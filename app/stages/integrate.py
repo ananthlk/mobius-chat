@@ -13,7 +13,10 @@ from app.communication.assistant_envelope import (
     enrich_sources_open_hrefs,
     resolve_tool_fired,
 )
-from app.communication.followup_next_steps_quality import filter_next_steps_and_questions
+from app.communication.followup_next_steps_quality import (
+    filter_next_steps_and_questions,
+    normalize_followup_line_list,
+)
 from app.communication.workflow_selection import merge_clarification_option_lists
 from app.communication.json_display_sanitize import (
     DEFAULT_BLEED_FALLBACK,
@@ -479,8 +482,8 @@ def run_integrate(
     resolutions: list[dict[str, Any]] = []
     closed_task_ids: list[str] = []
     open_task_ids: list[str] = []
-    next_steps: list[str] = []
-    next_questions_for_user: list[str] = []
+    next_steps: list[dict[str, Any]] = []
+    next_questions_for_user: list[dict[str, Any]] = []
     integrator_ui_blocks: list[Any] = []
     # When we cannot parse the response (LLM error, plain text), show a friendly try-again card
     FALLBACK_TRY_AGAIN = DEFAULT_BLEED_FALLBACK
@@ -622,10 +625,10 @@ def run_integrate(
                 open_task_ids[:] = [str(x) for x in v if x]
             ns = parsed.get("next_steps")
             if isinstance(ns, list):
-                next_steps = [str(x) for x in ns if x]
+                next_steps = normalize_followup_line_list(ns, default_clickable=False)
             nq = parsed.get("next_questions_for_user")
             if isinstance(nq, list):
-                next_questions_for_user = [str(x) for x in nq if x]
+                next_questions_for_user = normalize_followup_line_list(nq, default_clickable=True)
     except (json.JSONDecodeError, TypeError, ValueError):
         # Unparseable response (e.g. integrator exception → plain text): show try-again as AnswerCard
         _raw_truncated = (final_message or "")[:2000] + ("..." if len(final_message or "") > 2000 else "")

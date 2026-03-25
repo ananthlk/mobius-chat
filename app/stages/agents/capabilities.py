@@ -42,6 +42,23 @@ TOOL_CAPABILITIES: dict[str, dict[str, Any]] = {
         "can_answer": ["NPI numbers for an organization by name (what is the NPI of David Lawrence Center?)"],
         "cannot_answer": "Lookup by NPI number; PML status",
     },
+    "find_org_locations": {
+        "can_answer": [
+            "Practice / service site addresses for one or more billing org (Type-2) NPIs (credentialing Step 2)",
+            "Where does this organization operate (NPPES + PML + DOGE; agentic may add web hints)",
+        ],
+        "requires": "CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL; billing NPI(s) or org name that resolves to one NPI",
+        "cannot_answer": "Full credentialing waterfall without run_credentialing_report; PML enrollment Q&A without a report",
+    },
+    "find_associated_providers_at_locations": {
+        "can_answer": [
+            "Operational roster: which NPIs are implicated at each practice site (credentialing Step 4)",
+            "Who bills / is tied to this location for Medicaid readiness (DOGE + NPPES/PML address + optional roster upload)",
+            "Natural phrasing: who practices at this site — as data-linked roster, not clinical staffing",
+        ],
+        "requires": "CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL; same org resolution as find_org_locations",
+        "cannot_answer": "Clinical schedules or guarantee every person physically at a site; full report without run_credentialing_report",
+    },
     "org_npi_lookup": {
         "can_answer": [
             "Organization NPI lookup by name via MCP org_npi_lookup (credentialing API + optional web variant discovery)",
@@ -122,6 +139,7 @@ PATH_CAPABILITIES = {
         "healthcare_query: ICD-10, CMS coverage, code lookups; NPI-by-number via registry",
         "healthcare_npi_lookup: NPPES by 10-digit NPI only (fallback label; prefer healthcare_query for codes/coverage)",
         "Provider Roster / Credentialing report",
+        "Providers at each practice site (operational roster; Step 4)",
         "Roster reconciliation report (upload vs outside-in)",
         "Document upload skill (attach files to thread; API + UI)",
         "List thread document uploads (what files are already attached)",
@@ -171,6 +189,8 @@ def available_capabilities_json() -> dict[str, Any]:
         "tools": [
             "google_search",
             "web_scrape",
+            "find_org_locations",
+            "find_associated_providers_at_locations",
             "org_npi_lookup",
             "search_org_names",
             "ask_credentialing_npi",
@@ -190,7 +210,9 @@ def available_capabilities_json() -> dict[str, Any]:
             "NPI + PML/enrollment → ask_credentialing_npi (requires report). "
             "ICD-10, HCPCS, CPT code meaning, Medicare/Medicaid coverage (NCD/LCD) → healthcare_query. "
             "10-digit NPI registry lookup (no PML) → healthcare_query or healthcare_npi_lookup. "
-            "NPI for org name → search_org_names / org_npi_lookup (MCP passes search_mode: copilot registry-first, agentic allows web escalation)."
+            "NPI for org name → search_org_names / org_npi_lookup (MCP passes search_mode: copilot registry-first, agentic allows web escalation). "
+            "Practice locations for org NPI(s) → find_org_locations. "
+            "Providers tied to each site (operational roster / Step 4) → find_associated_providers_at_locations."
         ),
     }
 

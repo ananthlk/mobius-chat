@@ -20,9 +20,12 @@ Payload shape — each element of ``clarification_options`` / ``pending_workflow
   min_choices: int | null  (optional; multiple only, default 1)
   max_choices: int | null  (optional; multiple only, default len(choices))
   context_type: str | null (optional hint: npi, route, jurisdiction, generic, …)
+  allow_free_text: bool (optional; default true when omitted — user may ignore chips and type in the composer)
+  free_text_hint: str | null (optional; shown under chips; when omitted the client uses a generic line)
 
-Jurisdiction clarification and route clash already use the same ``clarification_options`` key;
-this module normalizes and builds additional groups for NPI disambiguation and future flows.
+The next user turn is always normal chat text. Chip clicks may **prepend** a structured preface to the
+composer; typing only still produces a plain ``message`` — the parser/planner does not need a separate
+mode for “free text” beyond reading that string like any other user message.
 """
 from __future__ import annotations
 
@@ -82,6 +85,14 @@ def normalize_selection_group(raw: dict[str, Any] | None) -> dict[str, Any] | No
     ct = raw.get("context_type")
     if ct is not None and str(ct).strip():
         out["context_type"] = str(ct).strip()[:120]
+    aft = raw.get("allow_free_text")
+    if aft is False:
+        out["allow_free_text"] = False
+    elif aft is True:
+        out["allow_free_text"] = True
+    fth = raw.get("free_text_hint")
+    if isinstance(fth, str) and fth.strip():
+        out["free_text_hint"] = fth.strip()[:500]
     if mode == "multiple":
         if "min_choices" not in out:
             out["min_choices"] = 1
@@ -99,6 +110,8 @@ def workflow_selection_group(
     min_choices: int | None = None,
     max_choices: int | None = None,
     context_type: str | None = None,
+    allow_free_text: bool | None = None,
+    free_text_hint: str | None = None,
 ) -> dict[str, Any] | None:
     """Build one group; returns None if there are no valid choices."""
     raw: dict[str, Any] = {
@@ -113,6 +126,10 @@ def workflow_selection_group(
         raw["max_choices"] = max_choices
     if context_type:
         raw["context_type"] = context_type
+    if allow_free_text is not None:
+        raw["allow_free_text"] = bool(allow_free_text)
+    if free_text_hint:
+        raw["free_text_hint"] = (free_text_hint or "").strip()
     return normalize_selection_group(raw)
 
 
@@ -243,12 +260,17 @@ def build_npi_org_disambiguation_groups(
         return []
     g = workflow_selection_group(
         slot="npi_disambiguation",
-        label=f'Select one or more billing organizations for "{search_name[:60]}" (Continue), or type an NPI.',
+        label=f'Select one or more billing organizations for "{search_name[:60]}", then press Send.',
         choices=choices,
         selection_mode="multiple",
         min_choices=1,
         max_choices=len(choices),
         context_type="npi",
+        allow_free_text=True,
+        free_text_hint=(
+            "Nothing match? Type a different legal name, address, or 10-digit NPI in the box below, "
+            "then press Send—you can skip the buttons entirely."
+        ),
     )
     return [g] if g else []
 

@@ -1034,6 +1034,17 @@ body {
   border-color: var(--mobius-accent, var(--accent));
   color: var(--mobius-accent, var(--accent));
 }
+.answer-card-followup-line--static {
+  display: block;
+  width: 100%;
+  padding: 0.45rem 0.55rem;
+  margin: 0.2rem 0;
+  font-size: 0.88rem;
+  line-height: 1.35;
+  color: var(--thinking-muted-hover);
+  border: 1px dashed var(--assistant-border, rgba(0, 0, 0, 0.12));
+  border-radius: var(--radius-sm);
+}
 .answer-card-followups-chips .answer-card-followup-chip {
   margin: 0;
 }
@@ -1427,6 +1438,15 @@ body {
   flex: 1 1 8rem;
 }
 
+/* Explains that the main composer can be used instead of (or with) chips */
+.clarification-option-free-text-hint {
+  font-size: 0.75rem;
+  color: var(--thinking-muted-hover);
+  line-height: 1.4;
+  margin-top: 0.35rem;
+  max-width: 42rem;
+}
+
 .clarification-option-group > .clarification-option-multi-hint:last-child {
   margin-top: 0.35rem;
 }
@@ -1498,6 +1518,20 @@ body {
   border-color: var(--accent);
   background: rgba(59, 130, 246, 0.08);
   color: var(--accent);
+}
+
+.next-questions-line--static {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  text-align: left;
+  padding: 0.45rem 0.6rem;
+  font-size: 0.88rem;
+  line-height: 1.35;
+  color: var(--thinking-muted-hover);
+  border: 1px dashed var(--assistant-bubble-edge);
+  border-radius: var(--radius-sm);
+  background: transparent;
 }
 
 /* Roster step outputs: collapsible CSV sections for validation */
@@ -4816,6 +4850,20 @@ body {
 
 .envelope-step-chip:hover {
   border-color: var(--mobius-accent, #3b82f6);
+}
+
+.envelope-step-line--static,
+.envelope-suggested-line--static {
+  display: block;
+  width: 100%;
+  margin: 0.25rem 0;
+  padding: 0.45rem 0.55rem;
+  font-size: 0.88rem;
+  line-height: 1.35;
+  color: var(--thinking-muted-hover);
+  border: 1px dashed var(--assistant-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
 }
 
 .envelope-markdown-report {

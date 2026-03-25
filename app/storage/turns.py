@@ -98,12 +98,16 @@ def insert_turn(
     if not url:
         logger.warning("CHAT_RAG_DATABASE_URL not set; turn not persisted")
         return
+    thread_val = (thread_id or "").strip() or None
+    if thread_val:
+        from app.storage.threads import ensure_thread
+
+        ensure_thread(thread_val)
     try:
         import psycopg2
         conn = psycopg2.connect(url)
         cur = conn.cursor()
         strip_val = (source_confidence_strip or "").strip() or None
-        thread_val = (thread_id or "").strip() or None
         config_sha_val = (config_sha or "").strip() or None
         context_summary_val = build_context_summary(final_message or "", sources or [])
         cur.execute(

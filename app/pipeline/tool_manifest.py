@@ -10,8 +10,10 @@ AVAILABLE TOOLS — match the question to the tool whose capabilities fit.
 If the first tool fails (e.g. returns "no report"), try the next-best tool.
 
 WORKFLOW SELECTION (chat UI) — The server may attach **clarification_options** on the assistant
-response: clickable choices (single- or multi-select). When those appear, keep your summary short
-and point the user to the buttons; do not invent a separate prose-only list as the only way to proceed.
+response: clickable choices (single- or multi-select). Users may also type a normal message instead
+(or in addition, depending on UI); the next turn is still plain user text for you to interpret.
+When choice chips appear, keep your summary short and point the user to the buttons; do not invent
+a separate prose-only list as the only way to proceed.
 
 ════════════════════════════════════════════
 search_corpus(query)
@@ -53,6 +55,22 @@ lookup_npi(org_name)
   Cannot: Lookup by NPI number; PML status.
   Returns: NPIs with addresses and confidence tiers. When several billing orgs match, the **UI shows
     server-driven choice chips** (single- or multi-select + Continue); the detailed list is only there — do not rely on prose alone.
+
+find_org_locations(org_name optional, org_npi optional, org_npis optional array, state optional, include_web_enrichment optional)
+  Discover **practice / service locations** for one or more **billing organization (Type-2) NPIs** (credentialing Step 2).
+  Same capability as MCP tool **find_org_locations**: NPPES + Florida PML + DOGE; composer **agentic** mode may add web enrichment.
+  Use for: "Find practice locations for [org]", "Sites for NPI 1234567893", "Addresses tied to these NPIs" (put NPIs in **org_npis** or **org_npi**, or in the user message as 10-digit numbers; after **lookup_npi**, prior candidate text is used to resolve bare NPIs).
+  Inputs: **org_npis** (list of strings) and/or **org_npi** (single string) and/or **org_name** (resolves when uniquely matchable).
+  Cannot: Replace a full credentialing report; does not run Steps 3–11 alone.
+  Requires: Credentialing API configured on the server.
+
+find_associated_providers_at_locations(org_name optional, org_npi optional, org_npis optional, upload_id optional, include_roster_members optional, external_only optional, state optional, include_web_enrichment optional)
+  **Operational roster per practice site** (credentialing Step 4 / find_associated_providers). Same MCP skill name.
+  Answers "who is tied to this location" using **historic Medicaid servicing (DOGE)**, **NPPES + PML practice-address alignment**, and **optionally** members merged from a roster **upload_id** (or thread reconciliation upload when server fills context).
+  Use for: "Who practices at these sites?", "Providers at each location for [org]", "NPIs billing under this practice address".
+  **Not** a clinical staffing schedule — billing/enrollment-oriented linkage with confidence scores.
+  Cannot: Replace full credentialing report; does not run PML validation / waterfall alone.
+  Requires: Credentialing API (POST /find-locations then /find-associated-providers).
 
 run_credentialing_report(org_name, mode optional)
   Generate credentialing / PML enrollment pipeline for an organization.
@@ -115,6 +133,8 @@ PER-TOOL CAPABILITIES (explicit):
 # Which tools are entity tools (never receive jurisdiction context)
 ENTITY_TOOLS = frozenset({
     "lookup_npi",
+    "find_org_locations",
+    "find_associated_providers_at_locations",
     "run_credentialing_report",
     "validate_credentialing_step",
     "run_roster_reconciliation_report",
@@ -132,6 +152,8 @@ FOLLOW_UP_CAPABLE = frozenset({
     "validate_credentialing_step",
     "run_roster_reconciliation_report",
     "lookup_npi",
+    "find_org_locations",
+    "find_associated_providers_at_locations",
     "ask_credentialing_npi",
     "list_thread_document_uploads",
 })

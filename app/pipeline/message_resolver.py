@@ -210,6 +210,16 @@ SKILL_REFERENCE_SIGNALS = re.compile(
     re.I,
 )
 
+# Matches follow-ups after org NPI lookup (ReAct stores active_context["tool"] as "lookup_npi" — same pattern).
+_NPI_LOOKUP_FOLLOWUP = re.compile(
+    r"\b(npi|which one|the first one|the second one|"
+    r"the [a-z]+ location|that npi|those npis|these npis|"
+    r"practice location|practice locations|"
+    r"find locations?|list locations?|sites? for|addresses? for|"
+    r"tied to these|tied to those|tied to the)\b",
+    re.I,
+)
+
 SKILL_TERMS = {
     "roster_report": re.compile(
         r"\b(pml|provider master list|enrollment gap|"
@@ -220,12 +230,16 @@ SKILL_TERMS = {
         r"section c|section d|section e)\b",
         re.I,
     ),
-    "npi_lookup": re.compile(
-        r"\b(npi|which one|the first one|the second one|"
-        r"the [a-z]+ location|that npi|those npis)\b",
-        re.I,
-    ),
+    "npi_lookup": _NPI_LOOKUP_FOLLOWUP,
+    "lookup_npi": _NPI_LOOKUP_FOLLOWUP,
 }
+
+
+_WORKFLOW_BILLING_NPI_LINE = re.compile(r"use\s+billing\s+npi\s+\d{10}", re.I)
+_LOCATION_FOLLOWUP_WITH_NPIS = re.compile(
+    r"\b(location|locations|locate|practice site|sites?|addresses?|find the)\b",
+    re.I,
+)
 
 
 def detect_skill_reference(
@@ -246,6 +260,12 @@ def detect_skill_reference(
         return False, None
 
     text = (message or "").strip()
+    npi_in_msg = bool(re.search(r"\b\d{10}\b", text))
+    user_sent_chip_payload = bool(_WORKFLOW_BILLING_NPI_LINE.search(text))
+    if skill_name in ("lookup_npi", "npi_lookup"):
+        if user_sent_chip_payload or (npi_in_msg and _LOCATION_FOLLOWUP_WITH_NPIS.search(text)):
+            return False, None
+
     has_reference_signal = bool(SKILL_REFERENCE_SIGNALS.search(text))
     skill_pattern = SKILL_TERMS.get(skill_name)
     has_skill_term = bool(skill_pattern and skill_pattern.search(text))

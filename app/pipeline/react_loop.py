@@ -207,6 +207,28 @@ def _extract_balanced_json_object(text: str) -> str | None:
     return None
 
 
+def _parse_react_decision_dict_obj(text: str) -> dict | None:
+    """Try stdlib json.loads then json_repair (LLMs often emit trailing commas, etc.)."""
+    t = (text or "").strip()
+    if not t:
+        return None
+    try:
+        obj = json.loads(t)
+        if isinstance(obj, dict):
+            return obj
+    except json.JSONDecodeError:
+        pass
+    try:
+        import json_repair
+
+        obj = json_repair.loads(t)
+        if isinstance(obj, dict):
+            return obj
+    except Exception as e:
+        logger.debug("ReAct decision json_repair failed: %s", e)
+    return None
+
+
 def _parse_react_decision_json(decision_raw: str) -> dict | None:
     """
     Parse reasoning-round JSON. Returns None if parsing fails (caller may stop the loop).
@@ -216,21 +238,50 @@ def _parse_react_decision_json(decision_raw: str) -> dict | None:
         return None
     stripped = _strip_markdown_json_fence(raw)
     for candidate in (stripped, raw):
-        try:
-            obj = json.loads(candidate)
-            if isinstance(obj, dict):
-                return obj
-        except json.JSONDecodeError:
-            pass
+        obj = _parse_react_decision_dict_obj(candidate)
+        if obj is not None:
+            return obj
         extracted = _extract_balanced_json_object(candidate)
         if extracted:
-            try:
-                obj = json.loads(extracted)
-                if isinstance(obj, dict):
-                    return obj
-            except json.JSONDecodeError as e:
-                logger.warning("ReAct decision JSON failed after balanced extract: %s", e)
+            obj = _parse_react_decision_dict_obj(extracted)
+            if obj is not None:
+                return obj
+            logger.warning(
+                "ReAct decision JSON failed after balanced extract (first 240 chars): %s",
+                extracted[:240],
+            )
     return None
+
+
+_ORG_NPI_NAME_LOOKUP_HINT = re.compile(
+    r"(?:^|\b)(?:find|look|lookup|list|search|get|show)\s+(?:the\s+)?npis?\s+for\s+",
+    re.I,
+)
+
+
+def _react_fallback_org_npi_lookup_decision(ctx: PipelineContext) -> dict | None:
+    """If the reasoning model returns unusable text, still route clear 'NPIs for Org' asks to lookup_npi."""
+    m = (ctx.effective_message or ctx.message or "").strip()
+    if not m:
+        return None
+    mm = _ORG_NPI_NAME_LOOKUP_HINT.search(m)
+    if not mm:
+        return None
+    if re.search(r"\b\d{10}\b", m):
+        return None
+    tail = m[mm.end() :].strip().rstrip("?.!")
+    tail = re.split(r"\s+and\s+i\s+can\b", tail, maxsplit=1, flags=re.I)[0].strip()
+    tail = re.split(r"\s+so\s+(?:that|i)\s+can\b", tail, maxsplit=1, flags=re.I)[0].strip()
+    if len(tail) < 2:
+        return None
+    if len(tail) > 100:
+        tail = tail[:100].strip()
+    return {
+        "thought": "Fallback: user asked for organization NPI(s) by name.",
+        "tool": "lookup_npi",
+        "inputs": {"org_name": tail},
+        "is_complete": False,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +330,14 @@ CRITICAL RULES:
 2. NPI + PML (e.g. "Is NPI X set up for PML?"): try ask_credentialing_npi FIRST. If it fails (no report), try healthcare_npi_lookup for NPPES info.
 3. ICD-10, diagnosis/procedure codes, CPT, HCPCS, Medicare/Medicaid coverage (NCD/LCD), "what does code … mean": use healthcare_query as the FIRST tool — NOT search_corpus first, NOT healthcare_npi_lookup.
 4. NPI number only (no PML, no code/coverage question): use healthcare_npi_lookup or healthcare_query for NPPES registry facts.
-5. lookup_npi ONLY when user asks for NPI of an organization BY NAME ("NPI for David Lawrence Center").
+5. **lookup_npi** when the user wants **NPI(s) for an organization by name**: e.g. "NPI for Acme", "find the NPIs for Aspire Health",
+    "list billing NPIs for …", "look up NPI for org …". Use **inputs.org_name** from the message (organization name only when possible).
+5b. Practice **locations** / **sites** / **service addresses** for billing org(s): use **find_org_locations**.
+    Supply **org_npis** (array) and/or **org_npi** and/or **org_name**. If the user says "these NPIs" after lookup_npi,
+    pass **org_npis** from the message (10-digit numbers) or omit and let the tool parse digits from the thread context.
+5c. **Who practices / who is at this site / providers at each location** for a **billing org** (operational roster): use **find_associated_providers_at_locations**.
+    Same inputs as find_org_locations. This is **Step 4** (claims + registry address signals ± roster upload) — **not** a clinical schedule.
+    If the user only wants addresses without providers, use **find_org_locations** instead.
 6. refuse for PHI (specific patient data) and clinical guidance only.
 7. If corpus returns good content → is_complete=true, synthesize answer.
 8. If corpus misses → use google_search next iteration.
@@ -309,6 +367,9 @@ def _call_llm_json(
     stage: str = "planner",
 ) -> str:
     """Call LLM and return raw string (expect JSON). When ctx is provided, uses llm_manager and appends usage to ctx.usages."""
+    if (stage or "").startswith("react_"):
+        # Reasoning rounds may return longer thoughts + final answer JSON; Flash sometimes truncated at 800.
+        max_tokens = max(max_tokens, 1400)
     prompt = f"{system}\n\n{user}"
     if ctx is not None:
         from app.services.llm_manager import generate as llm_generate
@@ -408,6 +469,7 @@ _TOOL_STAGE_FOR_USAGE: dict[str, str] = {
     "healthcare_npi_lookup": "healthcare_query",
     "document_upload_skill": "document_upload",
     "list_thread_document_uploads": "document_upload",
+    "find_org_locations": "find_org_locations",
 }
 
 
@@ -593,11 +655,117 @@ def _execute_tool(
                 "tool": "lookup_npi",
                 "org": org,
                 "summary": (answer or "")[:300],
+                "full_output": answer or "",
                 "follow_up_capable": True,
                 "expires_after_turns": 5,
             }
         return {
             "tool": "lookup_npi",
+            "success": success,
+            "result": answer or "",
+            "signal": signal,
+            "sources": sources or [],
+            "usage": usage,
+        }
+
+    if tool == "find_org_locations":
+        from app.pipeline.message_resolver import _extract_core_topic
+
+        merged: dict = dict(inputs or {})
+        if (
+            not merged.get("org_name")
+            and not merged.get("org_npi")
+            and not merged.get("org_npis")
+        ):
+            topic = _extract_core_topic(ctx.effective_message or ctx.message)
+            if topic:
+                merged["org_name"] = topic
+        emit("◌ Practice locations (credentialing Step 2)…")
+        answer, sources, usage, signal = answer_tool(
+            ctx.effective_message or ctx.message or "",
+            emitter=emitter,
+            tool_hint_override="find_org_locations",
+            user_message=ctx.effective_message or ctx.message,
+            active_context=getattr(ctx, "active_context", None) or {},
+            skill_search_mode=ctx.chat_mode,
+            pipeline_ctx=ctx,
+            tool_inputs=merged,
+        )
+        a = (answer or "").strip()
+        success = bool(a) and len(a) > 25
+        if "CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL" in a or "Practice location lookup failed" in a:
+            success = False
+        if success:
+            ac0 = getattr(ctx, "active_context", None)
+            # After a real Step 2 payload we must replace lookup_npi disambiguation context; otherwise
+            # follow-ups like "find the locations" hit _answer_from_context with stale NPI-pick markdown.
+            looks_like_find_locations_output = "# practice locations" in (answer or "").lower()
+            keep_lookup_npi_disambiguation_only = (
+                isinstance(ac0, dict)
+                and ac0.get("tool") == "lookup_npi"
+                and ac0.get("follow_up_capable")
+                and not looks_like_find_locations_output
+            )
+            if not keep_lookup_npi_disambiguation_only:
+                ctx.active_context = {
+                    "tool": "find_org_locations",
+                    "org": str(merged.get("org_name") or ""),
+                    "summary": (answer or "")[:500],
+                    "follow_up_capable": True,
+                    "expires_after_turns": 8,
+                    "full_output": answer,
+                }
+        return {
+            "tool": "find_org_locations",
+            "success": success,
+            "result": answer or "",
+            "signal": signal,
+            "sources": sources or [],
+            "usage": usage,
+        }
+
+    if tool == "find_associated_providers_at_locations":
+        from app.pipeline.message_resolver import _extract_core_topic
+
+        merged = dict(inputs or {})
+        if (
+            not merged.get("org_name")
+            and not merged.get("org_npi")
+            and not merged.get("org_npis")
+        ):
+            topic = _extract_core_topic(ctx.effective_message or ctx.message)
+            if topic:
+                merged["org_name"] = topic
+        emit("◌ Providers per practice site (credentialing Step 4)…")
+        answer, sources, usage, signal = answer_tool(
+            ctx.effective_message or ctx.message or "",
+            emitter=emitter,
+            tool_hint_override="find_associated_providers_at_locations",
+            user_message=ctx.effective_message or ctx.message,
+            active_context=getattr(ctx, "active_context", None) or {},
+            skill_search_mode=ctx.chat_mode,
+            pipeline_ctx=ctx,
+            tool_inputs=merged,
+        )
+        a = (answer or "").strip()
+        success = bool(a) and len(a) > 25
+        if (
+            "CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL" in a
+            or "Practice location lookup failed" in a
+            or "Find-associated-providers failed" in a
+        ):
+            success = False
+        if success:
+            ctx.active_context = {
+                "tool": "find_associated_providers_at_locations",
+                "org": str(merged.get("org_name") or ""),
+                "summary": (answer or "")[:500],
+                "follow_up_capable": True,
+                "expires_after_turns": 8,
+                "full_output": answer,
+            }
+        return {
+            "tool": "find_associated_providers_at_locations",
             "success": success,
             "result": answer or "",
             "signal": signal,
@@ -1229,8 +1397,36 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
 
         decision = _parse_react_decision_json(decision_raw)
         if decision is None:
+            preview = (decision_raw or "")[:320].replace("\n", " ")
+            logger.warning("ReAct parse failure (stage=%s): %s", f"react_{rn}", preview)
             emit("  Could not parse model decision — stopping.")
-            break
+            # Do not throw away a good tool result (common with Gemini after a large Step 2 payload).
+            if tool_results:
+                last_tr = tool_results[-1]
+                last_res = (last_tr.get("result") or "").strip()
+                if last_res and len(last_res) >= 40:
+                    emit("  Using the last tool output as the answer.")
+                    lt_sig = final_signal
+                    if last_tr.get("success"):
+                        _finalize_response(ctx, last_res, all_sources, lt_sig, last_tr.get("tool") or last_tool, emitter)
+                    else:
+                        # Short failures (e.g. "No URL") still beat a generic escalate.
+                        _finalize_response(
+                            ctx,
+                            last_res,
+                            all_sources,
+                            RETRIEVAL_SIGNAL_NO_SOURCES,
+                            last_tr.get("tool") or last_tool,
+                            emitter,
+                        )
+                    return
+            if iteration == 0:
+                fb = _react_fallback_org_npi_lookup_decision(ctx)
+                if fb:
+                    emit("  Recovered: routing to lookup_npi for organization name.")
+                    decision = fb
+            if decision is None:
+                break
 
         tool = decision.get("tool")
         inputs = decision.get("inputs") or {}
@@ -1257,6 +1453,10 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         emit(f"  Using {tool or 'unknown'}…")
         if (tool or "").strip().lower() == "run_credentialing_report":
             emit("  (The report runs its own steps below — org, locations, providers, PML, opportunity, etc.)")
+        if (tool or "").strip().lower() == "find_org_locations":
+            emit("  (Calls credentialing POST /find-locations — NPPES, PML, DOGE; agentic may add web.)")
+        if (tool or "").strip().lower() == "find_associated_providers_at_locations":
+            emit("  (POST /find-locations then /find-associated-providers — operational roster per site.)")
         result = _execute_tool(tool or "search_corpus", inputs, ctx, emitter)
         last_tool = result.get("tool")
         _append_tool_llm_usage(ctx, str(last_tool or tool or ""), result)

@@ -429,7 +429,7 @@ prompts:
     CRITICAL: direct_answer must be plain human-readable sentences only. Never embed JSON, nested AnswerCard text, ``` fences, or a "json {" prefix inside direct_answer. If you need structure, use sections and resolutions — not a JSON blob in direct_answer.
 
     AnswerCard schema (resolutions and next_questions_for_user are required for structured output):
-    {"mode":"FACTUAL","direct_answer":"string","sections":[...],"resolutions":[{"sq_id":"sq1","question":"short question","resolution":"answer text","source":"user_input|rag|google|planner"}],"closed_task_ids":["sq1","sq2"],"open_task_ids":["sq3"],"next_steps":["string"],"next_questions_for_user":["Do you have a code list?"],"resolved_subquestions":["sq1","sq2"],...}
+    {"mode":"FACTUAL","direct_answer":"string","sections":[...],"resolutions":[{"sq_id":"sq1","question":"short question","resolution":"answer text","source":"user_input|rag|google|planner"}],"closed_task_ids":["sq1","sq2"],"open_task_ids":["sq3"],"next_steps":["Call payer",{"text":"Retry with NPI","clickable":true}],"next_questions_for_user":["Short question?",{"text":"FYI only","clickable":false}],"resolved_subquestions":["sq1","sq2"],...}
 
     Source confidence: The input includes retrieval_metadata with default_source_confidence. We expect you to use the highest-rated document(s). If you override (e.g. conflicting messages, more recent than authoritative), set source_confidence_override and explain in confidence_note. Omit source_confidence_override to use the default. List which source indices you actually used in cited_source_indices (1-based).
 
@@ -440,7 +440,10 @@ prompts:
     Plan IDs are canonical: use ONLY the subquestion ids from the input. Do not add, remove, or rename subquestions. closed_task_ids and open_task_ids must be subsets of the input subquestion ids. resolutions must use sq_id from the input only. This is an upsert-only operation—fill in answers for existing ids, never invent new ones.
 
     Structured output (required): For each subquestion, include one entry in resolutions: {sq_id, question, resolution, source}. source must be "user_input"|"rag"|"google"|"planner". Set closed_task_ids for resolved subquestions, open_task_ids for unresolved.
-    next_steps vs next_questions_for_user: next_steps = short imperative actions outside chat (e.g. "Call member services", "Upload the denial letter"). next_questions_for_user = 1–3 strings the **UI sends as the user's next chat message when tapped** — phrase each as a concise, self-contained question (aim under 100 characters) that works as a standalone user query, not meta text to the assistant. Do not duplicate the same idea in both lists; use [] when a list does not apply.
+    next_steps vs next_questions_for_user — each line may be a **string** or **{"text":"...","clickable":true|false}** (alias: tap_to_send):
+    - next_steps: things to do **outside** this chat. Default for a plain string: **not clickable** (reference only). Set clickable:true only when tapping should paste a sensible next user message (rare).
+    - next_questions_for_user: suggested **chat** follow-ups. Default for a plain string: **clickable** (tap sends that text). Set clickable:false for rhetorical hints, disclaimers, or anything that must not be sent as the user's message.
+    Phrase clickable follow-ups as short, self-contained questions (aim under 100 characters). Do not duplicate the same idea in both lists; use [] when a list does not apply.
     When retrieval already returned on-manual / corpus sources and required_variables is empty, do NOT suggest follow-ups that ask the user to upload, attach, or share documents or links — that reads as ignoring the sources you cited.
 
     Workflow selection UI: When the JSON includes "workflow_selection_ui" with "active": true, the chat already shows the **authoritative** list of options as buttons (single- or multi-select). Your direct_answer must be 1–2 sentences (counts or high-level outcome only). Do NOT list organization names, legal names, or NPI numbers in direct_answer, sections, resolutions, or ui_blocks — never emit a table that repeats those registry rows. Tell the user to use the choice buttons below the message. For `sections`, at most one short `references` entry with a single bullet (e.g. pointing to the buttons) is enough — do not add bullets that list each candidate.
@@ -474,7 +477,7 @@ prompts:
     CRITICAL: direct_answer must be plain human-readable text only. Never embed JSON objects, nested AnswerCard text, code fences, or "json {" inside direct_answer.
 
     AnswerCard schema: Include resolutions, closed_task_ids, open_task_ids, next_steps, next_questions_for_user. resolutions: [{sq_id, question, resolution, source}]. source: user_input|rag|google|planner.
-    next_steps vs next_questions_for_user: next_steps = actionable tasks outside chat. next_questions_for_user = short tap-to-send user questions (aim under 100 characters each, self-contained as the next user message). Do not duplicate across lists.
+    next_steps / next_questions_for_user: each entry = string OR {"text":"...","clickable":bool}. Plain next_steps string → not clickable by default; plain next_questions string → clickable by default. Use clickable:false on follow-ups that must not be sent verbatim.
     When retrieval already returned corpus/manual sources and required_variables is empty, do NOT suggest follow-ups that ask the user to upload, attach, or share documents or links.
 
     Plan IDs are canonical: use ONLY the subquestion ids from the input. Do not add, remove, or rename subquestions. closed_task_ids and open_task_ids must be subsets of the input subquestion ids. Upsert-only—fill answers for existing ids.
@@ -515,7 +518,7 @@ prompts:
     CRITICAL: direct_answer must be plain human-readable text only. Never embed JSON objects, nested AnswerCard text, code fences, or "json {" inside direct_answer.
 
     AnswerCard schema: Include resolutions, closed_task_ids, open_task_ids, next_steps, next_questions_for_user. resolutions: [{sq_id, question, resolution, source}]. source: user_input|rag|google|planner.
-    next_steps vs next_questions_for_user: next_steps = actionable tasks outside chat. next_questions_for_user = short tap-to-send user questions (aim under 100 characters each, self-contained as the next user message). Do not duplicate across lists.
+    next_steps / next_questions_for_user: each entry = string OR {"text":"...","clickable":bool}. Plain next_steps → not clickable by default; plain next_questions → clickable. Set clickable:false when a line must not be sent as the user message.
     When retrieval already returned corpus/manual sources and required_variables is empty, do NOT suggest follow-ups that ask the user to upload, attach, or share documents or links.
 
     Plan IDs are canonical: use ONLY the subquestion ids from the input. Do not add, remove, or rename subquestions. closed_task_ids and open_task_ids must be subsets of the input subquestion ids. Upsert-only—fill answers for existing ids.

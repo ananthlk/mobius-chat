@@ -20,6 +20,10 @@ interface ClarificationOption {
   min_choices?: number;
   max_choices?: number;
   context_type?: string;
+  /** When not false, UI explains that the composer can be used without chips (default: true). */
+  allow_free_text?: boolean;
+  /** Shown under chips; client uses a short fallback if omitted and allow_free_text is not false. */
+  free_text_hint?: string;
 }
 
 /** Live chip state merged into the next composer Send (see buildWorkflowSelectionPreface). */
@@ -275,8 +279,10 @@ interface ChatResponse {
   cost_usd?: number;
   open_slots?: string[];
   clarification_options?: ClarificationOption[];
-  /** Suggested follow-up questions from integrator (clickable options) */
-  next_questions_for_user?: string[];
+  /** Suggested follow-up questions; string or { text, clickable? } — see normalizeFollowupLineList */
+  next_questions_for_user?: unknown[];
+  /** Next steps outside chat; string or { text, clickable? } — strings default non-clickable on server */
+  next_steps?: unknown[];
   /** Last ReAct / skill tool name (server-resolved) */
   tool_fired?: string;
   /** Server-built UI envelope (v1) */
@@ -296,6 +302,54 @@ interface ChatResponse {
   qc_audit?: QcAuditInfo;
   /** DB-backed routing + adjudicator thumbs (merged on poll for completed turns). */
   technical_feedback?: TechnicalFeedback;
+}
+
+/** One line in envelope next_steps / suggested_questions blocks */
+interface FollowupEnvelopeItem {
+  text: string;
+  clickable: boolean;
+}
+
+/** Normalized follow-up line from API payload */
+interface FollowupLineNormalized {
+  text: string;
+  clickable: boolean;
+}
+
+function normalizeFollowupLineItem(raw: unknown, defaultClickable: boolean): FollowupLineNormalized | null {
+  if (typeof raw === "string") {
+    const t = raw.trim();
+    return t ? { text: t, clickable: defaultClickable } : null;
+  }
+  if (raw && typeof raw === "object") {
+    const o = raw as Record<string, unknown>;
+    const text = String(o.text ?? o.label ?? o.line ?? "").trim();
+    if (!text) return null;
+    let clickable = defaultClickable;
+    if (typeof o.clickable === "boolean") clickable = o.clickable;
+    else if (typeof o.tap_to_send === "boolean") clickable = o.tap_to_send;
+    return { text, clickable };
+  }
+  return null;
+}
+
+function normalizeFollowupLineList(raw: unknown, defaultClickable: boolean): FollowupLineNormalized[] {
+  if (!Array.isArray(raw)) return [];
+  const out: FollowupLineNormalized[] = [];
+  for (const x of raw) {
+    const n = normalizeFollowupLineItem(x, defaultClickable);
+    if (n) out.push(n);
+  }
+  return out;
+}
+
+function followupListHintLines(items: FollowupLineNormalized[]): string {
+  if (!items.length) return "";
+  const anyClick = items.some((i) => i.clickable);
+  const allStatic = !anyClick;
+  if (allStatic) return "Reference only—not sent as a message unless you copy or type below.";
+  if (items.every((i) => i.clickable)) return "Tap a line to send it as your next message, or type below.";
+  return "Tap lines marked as actions to send; others are for reference only.";
 }
 
 /** Server payload for co-pilot credentialing validation UI */
@@ -333,8 +387,8 @@ type EnvelopeBlock =
         open?: { kind: string; href: string };
       }>;
     }
-  | { type: "next_steps"; items: string[]; collapsed_default?: boolean }
-  | { type: "suggested_questions"; items: string[]; collapsed_default?: boolean }
+  | { type: "next_steps"; items: FollowupEnvelopeItem[]; collapsed_default?: boolean }
+  | { type: "suggested_questions"; items: FollowupEnvelopeItem[]; collapsed_default?: boolean }
   | { type: "markdown_report"; markdown: string }
   | { type: "attachments"; has_pdf?: boolean }
   | { type: "pipeline_human_gate"; version?: number; gate: CredentialingCopilotPayload & { plan_kind?: string; thread_id?: string | null } };
@@ -1411,7 +1465,7 @@ function renderAnswerCard(
     sourceConfidenceStrip?: string;
     showConfidenceBadge?: boolean;
     suppressFollowups?: boolean;
-    nextQuestions?: string[];
+    nextQuestions?: FollowupLineNormalized[];
     qcAudit?: QcAuditInfo;
     /** When true (admin + QA fail), omit source confidence badge */
     suppressConfidenceForAdminQcFail?: boolean;
@@ -1506,7 +1560,7 @@ function renderAnswerCard(
 
   // Suggested follow-ups inside the card (unified with next_questions_for_user)
   const followupQuestions = opts?.nextQuestions ?? [];
-  if (followupQuestions.length > 0 && opts?.onFollowupClick) {
+  if (followupQuestions.length > 0) {
     const followupWrap = document.createElement("div");
     followupWrap.className = "answer-card-followups";
     const label = document.createElement("div");
@@ -1515,19 +1569,26 @@ function renderAnswerCard(
     followupWrap.appendChild(label);
     const hint = document.createElement("div");
     hint.className = "answer-card-followups-hint";
-    hint.textContent = "Tap a line to send it as your next message.";
+    hint.textContent = followupListHintLines(followupQuestions);
     followupWrap.appendChild(hint);
     const chips = document.createElement("div");
     chips.className = "answer-card-followups-chips answer-card-followups-chips--stacked";
-    followupQuestions.slice(0, 6).forEach((q) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      const text = q.trim() || "Ask this";
-      btn.className = "answer-card-followup-chip answer-card-followup-chip--row";
-      btn.textContent = text;
-      btn.setAttribute("aria-label", "Send: " + text);
-      btn.addEventListener("click", () => opts!.onFollowupClick!(text));
-      chips.appendChild(btn);
+    followupQuestions.slice(0, 6).forEach((line) => {
+      const text = line.text.trim() || "Ask this";
+      if (line.clickable && opts?.onFollowupClick) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "answer-card-followup-chip answer-card-followup-chip--row";
+        btn.textContent = text;
+        btn.setAttribute("aria-label", "Send: " + text);
+        btn.addEventListener("click", () => opts!.onFollowupClick!(text));
+        chips.appendChild(btn);
+      } else {
+        const row = document.createElement("div");
+        row.className = "answer-card-followup-line answer-card-followup-line--static";
+        row.textContent = text;
+        chips.appendChild(row);
+      }
     });
     followupWrap.appendChild(chips);
     bubble.appendChild(followupWrap);
@@ -1548,7 +1609,7 @@ function renderAssistantContent(
     sourceConfidenceStrip?: string;
     showConfidenceBadge?: boolean;
     suppressFollowups?: boolean;
-    nextQuestions?: string[];
+    nextQuestions?: FollowupLineNormalized[];
     /** When true, render body as markdown (e.g. credentialing report) */
     renderAsMarkdown?: boolean;
     qcAudit?: QcAuditInfo;
@@ -2060,9 +2121,9 @@ function renderThinkingBlock(
   };
 }
 
-/** Reusable: next questions / follow-ups (clickable — shown outside envelope on legacy turns). */
+/** Reusable: next questions / follow-ups (clickable per item — legacy non-envelope turns). */
 function renderNextQuestions(
-  questions: string[],
+  questions: FollowupLineNormalized[],
   onSelect: (question: string) => void
 ): HTMLElement {
   if (!questions.length) return document.createElement("div");
@@ -2074,19 +2135,26 @@ function renderNextQuestions(
   wrap.appendChild(label);
   const hint = document.createElement("div");
   hint.className = "next-questions-hint";
-  hint.textContent = "Tap a line to send it as your next message.";
+  hint.textContent = followupListHintLines(questions);
   wrap.appendChild(hint);
   const chips = document.createElement("div");
   chips.className = "next-questions-chips next-questions-chips--stacked";
-  questions.slice(0, 6).forEach((q) => {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    const text = q.trim() || "Ask this";
-    btn.className = "next-questions-chip next-questions-chip--row";
-    btn.textContent = text;
-    btn.setAttribute("aria-label", "Send: " + text);
-    btn.addEventListener("click", () => onSelect(text));
-    chips.appendChild(btn);
+  questions.slice(0, 6).forEach((line) => {
+    const text = line.text.trim() || "Ask this";
+    if (line.clickable) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "next-questions-chip next-questions-chip--row";
+      btn.textContent = text;
+      btn.setAttribute("aria-label", "Send: " + text);
+      btn.addEventListener("click", () => onSelect(text));
+      chips.appendChild(btn);
+    } else {
+      const row = document.createElement("div");
+      row.className = "next-questions-line next-questions-line--static";
+      row.textContent = text;
+      chips.appendChild(row);
+    }
   });
   wrap.appendChild(chips);
   return wrap;
@@ -2095,6 +2163,22 @@ function renderNextQuestions(
 function clarificationSelectionIsMultiple(opt: ClarificationOption): boolean {
   const m = (opt.selection_mode || "single").toLowerCase();
   return m === "multiple" || m === "multi";
+}
+
+const CLARIFICATION_FREE_TEXT_FALLBACK =
+  "You can also type your own answer in the box below (optional), then press Send.";
+
+function clarificationShowsFreeTextHint(opt: ClarificationOption): boolean {
+  return opt.allow_free_text !== false;
+}
+
+/** Line to show under chip groups; null when chips-only (allow_free_text === false). */
+function clarificationFreeTextHintLine(opt: ClarificationOption): string | null {
+  if (!clarificationShowsFreeTextHint(opt)) {
+    return null;
+  }
+  const h = (opt.free_text_hint || "").trim();
+  return h || CLARIFICATION_FREE_TEXT_FALLBACK;
 }
 
 /** Multi-select: toggle chips; user presses main Send to submit selection + composer text. */
@@ -2231,8 +2315,10 @@ function renderClarificationOptions(opts: ClarificationOption[]): HTMLElement {
       chips.appendChild(btn);
     }
     const hintSingle = document.createElement("div");
-    hintSingle.className = "clarification-option-multi-hint";
-    hintSingle.textContent = "Tap a choice (optional), type in the box below, then press Send.";
+    hintSingle.className = "clarification-option-free-text-hint";
+    const freeLn = clarificationFreeTextHintLine(opt);
+    hintSingle.textContent =
+      freeLn || "Tap a choice, then press Send.";
     group.appendChild(hintSingle);
     wrap.appendChild(group);
   }
@@ -3569,9 +3655,9 @@ function renderAssistantFromEnvelope(
         bubble.appendChild(renderSourceCiter(parsed, undefined, opts.correlationId ?? null));
       }
     } else if (t === "next_steps") {
-      const b = block as { items: string[]; collapsed_default?: boolean };
-      const items = (b.items || []).filter((x) => typeof x === "string" && x.trim());
-      if (items.length && opts.onFollowupClick) {
+      const b = block as { items: unknown[]; collapsed_default?: boolean };
+      const items = normalizeFollowupLineList(b.items || [], false);
+      if (items.length) {
         const expanded = b.collapsed_default === false;
         const disclosure = document.createElement("details");
         disclosure.className = "envelope-followups-disclosure";
@@ -3584,23 +3670,32 @@ function renderAssistantFromEnvelope(
         w.className = "envelope-next-steps";
         const hint = document.createElement("div");
         hint.className = "envelope-next-steps-hint";
-        hint.textContent = "Things to try outside this chat. Tap a line to paste into your message.";
+        hint.textContent = followupListHintLines(items);
         w.appendChild(hint);
-        for (const q of items) {
-          const btn = document.createElement("button");
-          btn.type = "button";
-          btn.className = "envelope-step-chip";
-          btn.textContent = q.trim();
-          btn.addEventListener("click", () => opts.onFollowupClick!(q.trim()));
-          w.appendChild(btn);
+        for (const line of items.slice(0, 8)) {
+          const text = line.text.trim();
+          if (!text) continue;
+          if (line.clickable && opts.onFollowupClick) {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "envelope-step-chip";
+            btn.textContent = text;
+            btn.addEventListener("click", () => opts.onFollowupClick!(text));
+            w.appendChild(btn);
+          } else {
+            const row = document.createElement("div");
+            row.className = "envelope-step-line envelope-step-line--static";
+            row.textContent = text;
+            w.appendChild(row);
+          }
         }
         disclosure.appendChild(w);
         bubble.appendChild(disclosure);
       }
     } else if (t === "suggested_questions") {
-      const b = block as { items: string[]; collapsed_default?: boolean };
-      const items = (b.items || []).filter((x) => typeof x === "string" && x.trim());
-      if (items.length && opts.onFollowupClick) {
+      const b = block as { items: unknown[]; collapsed_default?: boolean };
+      const items = normalizeFollowupLineList(b.items || [], true);
+      if (items.length) {
         const expanded = b.collapsed_default === false;
         const disclosure = document.createElement("details");
         disclosure.className = "envelope-followups-disclosure";
@@ -3613,19 +3708,27 @@ function renderAssistantFromEnvelope(
         w.className = "envelope-suggested";
         const hint = document.createElement("div");
         hint.className = "envelope-suggested-hint";
-        hint.textContent = "Tap a line to send it as your next message.";
+        hint.textContent = followupListHintLines(items);
         w.appendChild(hint);
         const chips = document.createElement("div");
         chips.className = "envelope-suggested-chips";
-        for (const q of items.slice(0, 6)) {
-          const btn = document.createElement("button");
-          btn.type = "button";
-          btn.className = "envelope-suggested-chip";
-          const text = q.trim();
-          btn.textContent = text;
-          btn.setAttribute("aria-label", "Send: " + text);
-          btn.addEventListener("click", () => opts.onFollowupClick!(text));
-          chips.appendChild(btn);
+        for (const line of items.slice(0, 6)) {
+          const text = line.text.trim();
+          if (!text) continue;
+          if (line.clickable && opts.onFollowupClick) {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "envelope-suggested-chip";
+            btn.textContent = text;
+            btn.setAttribute("aria-label", "Send: " + text);
+            btn.addEventListener("click", () => opts.onFollowupClick!(text));
+            chips.appendChild(btn);
+          } else {
+            const row = document.createElement("div");
+            row.className = "envelope-suggested-line envelope-suggested-line--static";
+            row.textContent = text;
+            chips.appendChild(row);
+          }
         }
         w.appendChild(chips);
         disclosure.appendChild(w);
@@ -4521,17 +4624,20 @@ function run(): void {
         if (cidForTurn) turnWrap.setAttribute("data-correlation-id", cidForTurn);
 
         // 3. Next questions (unified: payload + AnswerCard followups) – computed first so we can suppress inline followups
-        let nextQuestions: string[] = Array.isArray(data.next_questions_for_user)
-          ? data.next_questions_for_user.filter((x: unknown): x is string => typeof x === "string" && x.trim().length > 0)
-          : data.user_ask && String(data.user_ask).trim()
-            ? [String(data.user_ask).trim()]
-            : [];
+        let nextQuestions: FollowupLineNormalized[] = normalizeFollowupLineList(
+          data.next_questions_for_user,
+          true
+        );
+        if (nextQuestions.length === 0 && data.user_ask && String(data.user_ask).trim()) {
+          nextQuestions = [{ text: String(data.user_ask).trim(), clickable: true }];
+        }
         if (nextQuestions.length === 0) {
           const card = tryParseAnswerCard(body || "");
           if (card?.followups?.length) {
             nextQuestions = card.followups
               .map((f) => (f.question || f.reason || f.field || "").trim())
-              .filter(Boolean);
+              .filter(Boolean)
+              .map((text) => ({ text, clickable: true }));
           }
         }
 

@@ -181,6 +181,8 @@ def _answer_for_subquestion(
     if detected_urls and agent == "tool" and tool_hint not in (
         "web_scrape", "roster_report", "roster_reconciliation",
         "npi_lookup", "search_org_names", "healthcare_query",
+        "find_org_locations",
+        "find_associated_providers_at_locations",
         "document_upload_skill", "list_thread_document_uploads",
     ):
         if tool_hint in (None, "google_search"):
@@ -222,6 +224,8 @@ def _answer_for_subquestion(
         layer_num = 2 if tool_hint in (
             "npi_lookup", "search_org_names", "healthcare_query",
             "roster_report", "search_org_by_address", "roster_reconciliation",
+            "find_org_locations",
+            "find_associated_providers_at_locations",
             "document_upload_skill", "list_thread_document_uploads",
         ) else 3
 

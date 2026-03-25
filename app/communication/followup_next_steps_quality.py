@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+# Normalized item shape for API + envelope: {"text": str, "clickable": bool}
+
 # When we already have RAG hits and the card does not ask for missing user inputs,
 # strip meta-requests that ask the user to supply documents (common LLM boilerplate).
 _RE_REDUNDANT_DOC_ASK = re.compile(
@@ -44,6 +46,42 @@ def has_corpus_sources(sources: list[dict[str, Any]] | None) -> bool:
     return False
 
 
+def normalize_followup_line_item(raw: Any, *, default_clickable: bool) -> dict[str, Any] | None:
+    """Coerce integrator output to ``{"text": str, "clickable": bool}``.
+
+    - Plain string → ``text`` trimmed, ``clickable`` = ``default_clickable``.
+    - Object → ``text`` from ``text`` | ``label`` | ``line``; ``clickable`` from
+      ``clickable`` or ``tap_to_send`` if present, else ``default_clickable``.
+    """
+    if isinstance(raw, str):
+        t = raw.strip()
+        if not t:
+            return None
+        return {"text": t[:500], "clickable": default_clickable}
+    if isinstance(raw, dict):
+        text = raw.get("text") or raw.get("label") or raw.get("line")
+        if not isinstance(text, str) or not text.strip():
+            return None
+        clickable: bool
+        if "clickable" in raw:
+            clickable = bool(raw.get("clickable"))
+        elif "tap_to_send" in raw:
+            clickable = bool(raw.get("tap_to_send"))
+        else:
+            clickable = default_clickable
+        return {"text": text.strip()[:500], "clickable": clickable}
+    return None
+
+
+def normalize_followup_line_list(items: list[Any], *, default_clickable: bool) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for x in items or []:
+        n = normalize_followup_line_item(x, default_clickable=default_clickable)
+        if n:
+            out.append(n)
+    return out
+
+
 def answer_card_needs_user_documents(answer_card: dict[str, Any] | None) -> bool:
     """True when the card explicitly lists missing variables the user must supply."""
     if not isinstance(answer_card, dict):
@@ -55,37 +93,44 @@ def answer_card_needs_user_documents(answer_card: dict[str, Any] | None) -> bool
 
 
 def filter_next_steps_and_questions(
-    next_steps: list[str],
-    next_questions_for_user: list[str],
+    next_steps: list[dict[str, Any]],
+    next_questions_for_user: list[dict[str, Any]],
     *,
     response_sources: list[dict[str, Any]],
     answer_card: dict[str, Any] | None,
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """
     Drop document-upload style suggestions when we already have corpus sources and the
     answer card is not asking for required_variables.
+
+    Each list element is ``{"text": str, "clickable": bool}`` (from
+    :func:`normalize_followup_line_list`).
     """
     corpus = has_corpus_sources(response_sources)
     need_docs = answer_card_needs_user_documents(answer_card)
     strip_doc_asks = corpus and not need_docs
 
-    out_steps: list[str] = []
-    for x in next_steps or []:
-        if not isinstance(x, str) or not x.strip():
+    out_steps: list[dict[str, Any]] = []
+    for item in next_steps or []:
+        if not isinstance(item, dict):
             continue
-        t = x.strip()
+        t = (item.get("text") or "").strip()
+        if not t:
+            continue
         if strip_doc_asks and _RE_NEXT_STEP_DOC_BOILERPLATE.search(t):
             continue
-        out_steps.append(t)
+        out_steps.append(dict(item))
 
-    out_q: list[str] = []
-    for x in next_questions_for_user or []:
-        if not isinstance(x, str) or not x.strip():
+    out_q: list[dict[str, Any]] = []
+    for item in next_questions_for_user or []:
+        if not isinstance(item, dict):
             continue
-        t = x.strip()
+        t = (item.get("text") or "").strip()
+        if not t:
+            continue
         if strip_doc_asks and _RE_REDUNDANT_DOC_ASK.search(t):
             continue
-        out_q.append(t)
+        out_q.append(dict(item))
 
     return out_steps, out_q
 

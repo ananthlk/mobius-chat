@@ -291,14 +291,33 @@ def _validate_ui_block(block: Any, *, max_source_index: int) -> dict[str, Any] |
     return None
 
 
+def _followup_items_for_envelope(items: list[Any], *, fallback_clickable: bool) -> list[dict[str, Any]]:
+    """Build ``[{text, clickable}, ...]`` for envelope blocks (accepts normalized dicts or legacy strings)."""
+    out: list[dict[str, Any]] = []
+    for x in items or []:
+        if isinstance(x, dict):
+            t = (x.get("text") or "").strip()
+            if not t:
+                continue
+            c = x.get("clickable")
+            if c is None:
+                c = fallback_clickable
+            out.append({"text": t[:500], "clickable": bool(c)})
+        elif isinstance(x, str) and x.strip():
+            out.append({"text": x.strip()[:500], "clickable": fallback_clickable})
+        if len(out) >= 8:
+            break
+    return out
+
+
 def build_assistant_envelope_v1(
     *,
     answer_card: dict[str, Any] | None,
     ui_blocks_raw: list[Any] | None,
     tool_fired: str,
     response_sources: list[dict[str, Any]],
-    next_steps: list[str],
-    next_questions_for_user: list[str],
+    next_steps: list[Any],
+    next_questions_for_user: list[Any],
     roster_report_final_md: str | None,
     has_roster_pdf: bool,
     resolutions: list[Any] | None = None,
@@ -374,19 +393,21 @@ def build_assistant_envelope_v1(
     blocks.append({"type": "sources", "refs": refs})
 
     followups_collapsed = followup_blocks_collapsed_default(source_confidence_strip)
-    if next_steps:
+    step_items = _followup_items_for_envelope(next_steps, fallback_clickable=False)
+    if step_items:
         blocks.append(
             {
                 "type": "next_steps",
-                "items": [str(x)[:500] for x in next_steps[:8] if str(x).strip()],
+                "items": step_items,
                 "collapsed_default": followups_collapsed,
             }
         )
-    if next_questions_for_user:
+    q_items = _followup_items_for_envelope(next_questions_for_user, fallback_clickable=True)
+    if q_items:
         blocks.append(
             {
                 "type": "suggested_questions",
-                "items": [str(x)[:500] for x in next_questions_for_user[:8] if str(x).strip()],
+                "items": q_items,
                 "collapsed_default": followups_collapsed,
             }
         )

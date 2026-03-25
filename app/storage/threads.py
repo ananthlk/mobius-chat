@@ -74,9 +74,13 @@ def ensure_thread(thread_id: str | None) -> str:
 
 def append_user_message(thread_id: str, turn_id: str, content: str) -> None:
     """Insert one user message row. Call at start of process_one."""
+    tid = (thread_id or "").strip()
+    if not tid:
+        return
     url = _get_db_url()
     if not url:
         return
+    ensure_thread(tid)
     try:
         import psycopg2
         conn = psycopg2.connect(url)
@@ -87,7 +91,7 @@ def append_user_message(thread_id: str, turn_id: str, content: str) -> None:
             VALUES (%s, %s, 'user', %s, now())
             ON CONFLICT (turn_id, role) DO UPDATE SET content = EXCLUDED.content, created_at = now()
             """,
-            (turn_id, thread_id, (content or "").strip() or ""),
+            (turn_id, tid, (content or "").strip() or ""),
         )
         conn.commit()
         cur.close()
@@ -98,7 +102,10 @@ def append_user_message(thread_id: str, turn_id: str, content: str) -> None:
 
 
 def append_assistant_message(thread_id: str, turn_id: str, content: str) -> None:
-    """Insert one assistant message row. Call at end of process_one."""
+    """Insert one assistant message row. Call at end of process_one (after append_user_message for same turn)."""
+    tid = (thread_id or "").strip()
+    if not tid:
+        return
     url = _get_db_url()
     if not url:
         return
@@ -112,7 +119,7 @@ def append_assistant_message(thread_id: str, turn_id: str, content: str) -> None
             VALUES (%s, %s, 'assistant', %s, now())
             ON CONFLICT (turn_id, role) DO UPDATE SET content = EXCLUDED.content, created_at = now()
             """,
-            (turn_id, thread_id, (content or "").strip() or ""),
+            (turn_id, tid, (content or "").strip() or ""),
         )
         conn.commit()
         cur.close()
@@ -227,11 +234,16 @@ def get_state(thread_id: str) -> dict[str, Any] | None:
 
 def save_state(thread_id: str, patch: dict[str, Any]) -> None:
     """Read current state (or default), apply patch shallowly, increment state_version, write back."""
+    tid = (thread_id or "").strip()
+    if not tid:
+        logger.warning("save_state called with empty thread_id; skipping persistence")
+        return
     url = _get_db_url()
     if not url:
         logger.warning("CHAT_RAG_DATABASE_URL not set; state not persisted")
         return
-    current = get_state(thread_id)
+    ensure_thread(tid)
+    current = get_state(tid)
     if current is None:
         current = json.loads(json.dumps(DEFAULT_STATE))
     for k, v in patch.items():
@@ -252,7 +264,7 @@ def save_state(thread_id: str, patch: dict[str, Any]) -> None:
                 state_version = chat_state.state_version + 1,
                 updated_at = now()
             """,
-            (thread_id, json.dumps(current),),
+            (tid, json.dumps(current),),
         )
         conn.commit()
         cur.close()
@@ -264,10 +276,15 @@ def save_state(thread_id: str, patch: dict[str, Any]) -> None:
 
 def save_state_full(thread_id: str, state: dict[str, Any]) -> None:
     """Replace state entirely (no merge). Use with ThreadState.to_dict() for explicit state model."""
+    tid = (thread_id or "").strip()
+    if not tid:
+        logger.warning("save_state_full called with empty thread_id; skipping persistence")
+        return
     url = _get_db_url()
     if not url:
         logger.warning("CHAT_RAG_DATABASE_URL not set; state not persisted")
         return
+    ensure_thread(tid)
     try:
         import psycopg2
         conn = psycopg2.connect(url)
@@ -281,7 +298,7 @@ def save_state_full(thread_id: str, state: dict[str, Any]) -> None:
                 state_version = chat_state.state_version + 1,
                 updated_at = now()
             """,
-            (thread_id, json.dumps(state),),
+            (tid, json.dumps(state),),
         )
         conn.commit()
         cur.close()

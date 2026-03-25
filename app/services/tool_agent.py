@@ -4,6 +4,7 @@ Uses MCP manager to call skills (google_search, web_scrape_review). As we add
 tools to mobius-skills-mcp, they are discovered via list_tools—no code changes.
 """
 import asyncio
+import json
 import logging
 import os
 import re
@@ -30,6 +31,26 @@ from app.services.mcp_manager import call_mcp_tool
 from app.services.roster_credentialing_orchestrator import run_orchestrator, _provider_roster_base_url
 
 logger = logging.getLogger(__name__)
+
+# Maps step_id → ordinal for UI labels ("Step N: …"). Reconciliation from-bq adds master_roster_wide.
+_ROSTER_STEP_OUTPUT_NUM: dict[str, int] = {
+    "ensure_benchmarks": 1,
+    "identify_org": 2,
+    "find_locations": 3,
+    "find_associated_providers": 4,
+    "master_roster_wide": 5,
+    "org_benchmark": 5,
+    "find_services_by_location": 6,
+    "historic_billing_patterns": 7,
+    "historic_billing_by_npi": 7,
+    "step_6": 8,
+    "step_7": 9,
+    "opportunity_sizing": 10,
+    "opportunity_sizing_detail": 10,
+    "taxonomy_benchmarks": 10,
+    "build_report": 11,
+    "npi_profile": 12,
+}
 
 _URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 # For cleaning org names: remove URL-like strings including typos (hhttps, htttp) and www.domain
@@ -591,9 +612,11 @@ def answer_tool(
     credentialing_options: dict | None = None,
     skill_search_mode: str | None = None,
     pipeline_ctx: Any | None = None,
+    tool_inputs: dict[str, Any] | None = None,
 ) -> tuple[str, list[dict], dict[str, Any] | None, str]:
     """Handle tool-path questions via MCP. Returns (answer_text, sources, llm_usage, retrieval_signal).
 
+    tool_inputs: structured inputs for tools invoked via ReAct (e.g. find_org_locations: org_npis, org_npi).
     tool_hint_override: from planner blueprint — bypasses keyword matching.
     scrape_url: explicit URL for web_scrape (detected in resolve.py).
     question_intent: planner question_intent — used as qualifier in search query construction.
@@ -617,6 +640,7 @@ def answer_tool(
             credentialing_options=credentialing_options,
             skill_search_mode=skill_search_mode,
             pipeline_ctx=pipeline_ctx,
+            tool_inputs=tool_inputs,
         )
     except Exception as e:
         logger.exception("tool_agent failed: %s", e)
@@ -958,6 +982,504 @@ def _run_npi_lookup_by_name(
     )
 
 
+def _normalize_org_npi_digits(raw: str) -> str | None:
+    if not raw or not str(raw).strip():
+        return None
+    d = re.sub(r"\D", "", str(raw).strip())
+    if not d:
+        return None
+    if len(d) < 10:
+        d = d.zfill(10)
+    if len(d) != 10:
+        return None
+    return d
+
+
+def _collect_npis_from_texts(*texts: str) -> list[str]:
+    seen: list[str] = []
+    pat = re.compile(r"\b(\d{10})\b")
+    for t in texts:
+        if not t:
+            continue
+        for m in pat.findall(t):
+            n = _normalize_org_npi_digits(m)
+            if n and n not in seen:
+                seen.append(n)
+    return seen
+
+
+def _resolve_org_npis_for_find_locations(
+    org_name: str,
+    org_npi: str,
+    org_npis_in: list[Any] | None,
+    user_message: str,
+    prior_lookup_text: str,
+    skill_search_mode: str,
+    emitter,
+) -> tuple[list[str], str, str, list[dict[str, Any]] | None]:
+    """Returns (billing org npi list, org_name hint, error markdown or "", disambiguation rows or None).
+
+    When the name matches several billing org NPIs, ``disambiguation_rows`` is the candidate list
+    for the same ``clarification_options`` / workflow selection UX as ``lookup_npi``.
+    """
+    out: list[str] = []
+    if org_npis_in:
+        for x in org_npis_in:
+            n = _normalize_org_npi_digits(str(x))
+            if n:
+                out.append(n)
+        out = list(dict.fromkeys(out))
+        if out:
+            return out, (org_name or "").strip(), "", None
+    n1 = _normalize_org_npi_digits(org_npi)
+    if n1:
+        return [n1], (org_name or "").strip(), "", None
+    from_text = _collect_npis_from_texts(user_message or "", prior_lookup_text or "", org_name or "")
+    if from_text:
+        return from_text, (org_name or "").strip(), "", None
+    name = (org_name or "").strip()
+    if not name:
+        return (
+            [],
+            "",
+            "I need at least one **billing organization NPI** (10 digits) or an **organization name** that resolves "
+            "to a single NPI. You can paste NPI(s) from the list above or say e.g. "
+            "**Find practice locations for NPI 1234567893**.",
+            None,
+        )
+    envelope = _fetch_org_search_full(name, skill_search_mode=skill_search_mode, limit=25)
+    results = envelope.get("results") or []
+    exact = [r for r in results if (r.get("match_type") or "") == "exact"]
+    if len(exact) == 1:
+        n = _normalize_org_npi_digits(str(exact[0].get("npi") or ""))
+        if n:
+            return [n], name, "", None
+    if len(exact) > 1:
+        body = format_npi_org_search_markdown(name, exact[:20])
+        return (
+            [],
+            "",
+            f"Several billing organizations match «{name}» exactly. Pick one **NPI** and ask again "
+            f"(e.g. *Find practice locations for NPI …*).\n\n{body}",
+            exact[:20],
+        )
+    if len(results) == 1:
+        n = _normalize_org_npi_digits(str(results[0].get("npi") or ""))
+        if n:
+            return [n], name, "", None
+    if not results:
+        return (
+            [],
+            "",
+            f"No NPPES/PML organization candidates for «{name}». Try `lookup_npi` first or paste a 10-digit billing NPI.",
+            None,
+        )
+    body = format_npi_org_search_markdown(name, results[:18])
+    return (
+        [],
+        "",
+        f"Could not pick a single billing NPI for «{name}». Narrow the name or paste an NPI.\n\n{body}",
+        results[:18],
+    )
+
+
+def _format_find_locations_markdown_chat(data: dict[str, Any]) -> str:
+    locs = data.get("locations") or []
+    lines: list[str] = [f"# Practice locations ({len(locs)} site(s))", ""]
+    mode = (data.get("search_mode") or "").strip()
+    if mode:
+        lines.append(f"**search_mode:** {mode}")
+        lines.append("")
+    prog = data.get("progress") or []
+    if prog:
+        lines.append("## Progress")
+        for p in prog[:40]:
+            lines.append(f"- {p}")
+        lines.append("")
+    stried = data.get("sources_tried") or []
+    if stried:
+        lines.append("**Sources tried:** " + ", ".join(str(x) for x in stried[:20]))
+        lines.append("")
+    if not locs:
+        lines.append("_No locations returned._")
+    else:
+        lines.append("## Sites")
+        lines.append("")
+        for i, loc in enumerate(locs, 1):
+            if not isinstance(loc, dict):
+                continue
+            a1 = loc.get("site_address_line_1") or ""
+            city = loc.get("site_city") or ""
+            st = loc.get("site_state") or ""
+            z = loc.get("site_zip5") or loc.get("site_zip") or ""
+            lines.append(f"{i}. **{a1}**, {city}, {st} {z}".strip())
+            lid = loc.get("location_id") or ""
+            src = loc.get("site_source") or ""
+            lname = loc.get("name")
+            if lname:
+                lines.append(f"   - Name: {lname}")
+            lines.append(f"   - `location_id`: `{lid}` · `site_source`: {src}")
+            lines.append("")
+    pml = data.get("org_npis_pml_status")
+    if pml:
+        lines.append("## Org NPI Medicaid (PML) status snapshot")
+        lines.append("")
+        lines.append("```json")
+        lines.append(json.dumps(pml, default=str, indent=2)[:8000])
+        lines.append("```")
+    return "\n".join(lines).strip()
+
+
+def _run_find_org_locations_for_chat(
+    tool_inputs: dict[str, Any] | None,
+    *,
+    question: str,
+    user_message: str,
+    active_context: dict[str, Any] | None,
+    skill_search_mode: str,
+    emitter=None,
+    pipeline_ctx: Any | None = None,
+) -> tuple[str, list[dict], dict[str, Any] | None, str]:
+    """POST /find-locations (Step 2) — same backend as MCP ``find_org_locations``."""
+    ins = dict(tool_inputs or {})
+    org_name = str(ins.get("org_name") or "").strip()
+    org_npi = str(ins.get("org_npi") or "").strip()
+    raw_list = ins.get("org_npis")
+    org_npis_in = raw_list if isinstance(raw_list, list) else None
+    state = str(ins.get("state") or "FL").strip().upper() or "FL"
+    include_web = bool(ins.get("include_web_enrichment", False))
+
+    prior = ""
+    if isinstance(active_context, dict) and (active_context.get("tool") == "lookup_npi"):
+        prior = (
+            str(active_context.get("full_output") or "")
+            or str(active_context.get("summary") or "")
+        )[:12000]
+
+    org_npis, name_hint, err, disambig_rows = _resolve_org_npis_for_find_locations(
+        org_name,
+        org_npi,
+        org_npis_in,
+        user_message or "",
+        prior,
+        skill_search_mode,
+        emitter,
+    )
+    if err:
+        label = (name_hint or org_name or "").strip()
+        if (
+            pipeline_ctx is not None
+            and disambig_rows
+            and len(disambig_rows) > 1
+            and label
+        ):
+            groups = build_npi_org_disambiguation_groups(disambig_rows, label) or []
+            if groups:
+                attach_workflow_selection(pipeline_ctx, groups)
+                brief = format_npi_org_search_summary_for_disambiguation(label, disambig_rows)
+                pipeline_ctx.active_context = {
+                    "tool": "lookup_npi",
+                    "org": label,
+                    "summary": brief[:300],
+                    "full_output": err,
+                    "follow_up_capable": True,
+                    "expires_after_turns": 8,
+                }
+                return (brief, [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
+        return (err, [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
+
+    base = _provider_roster_base_url()
+    if not base:
+        return (
+            "Practice location lookup requires the credentialing API. Set CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL.",
+            [],
+            None,
+            RETRIEVAL_SIGNAL_NO_SOURCES,
+        )
+
+    _emit(
+        emitter,
+        f"◌ Finding practice locations for {len(org_npis)} billing NPI(s) "
+        f"(POST /find-locations, search_mode={skill_search_mode})…",
+    )
+    url = f"{base.rstrip('/')}/find-locations"
+    payload: dict[str, Any] = {
+        "org_npis": org_npis,
+        "state": state,
+        "search_mode": skill_search_mode,
+        "include_web_enrichment": include_web,
+    }
+    if name_hint:
+        payload["org_name"] = name_hint
+    timeout_sec = 120.0 if skill_search_mode == "agentic" else 75.0
+    try:
+        with httpx.Client(timeout=timeout_sec) as client:
+            resp = client.post(url, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.HTTPStatusError as e:
+        body = (e.response.text or "")[:800]
+        logger.warning("find_org_locations HTTP %s %s", e.response.status_code, body)
+        return (
+            f"Practice location lookup failed ({e.response.status_code}): {body or str(e)}",
+            [],
+            None,
+            RETRIEVAL_SIGNAL_NO_SOURCES,
+        )
+    except Exception as e:
+        logger.warning("find_org_locations failed: %s", e, exc_info=True)
+        return (
+            f"Practice location lookup failed: {e}. Ensure provider-roster-credentialing is running.",
+            [],
+            None,
+            RETRIEVAL_SIGNAL_NO_SOURCES,
+        )
+
+    if isinstance(data, dict):
+        for line in (data.get("progress") or [])[:35]:
+            s = str(line).strip()
+            if s:
+                _emit(emitter, s if s.startswith("◌") else f"◌ {s}")
+        tried = data.get("sources_tried") or []
+        if isinstance(tried, list) and tried:
+            _emit(emitter, "◌ Sources tried: " + ", ".join(str(x) for x in tried[:15]))
+
+    text = _format_find_locations_markdown_chat(data if isinstance(data, dict) else {})
+    sources = [
+        {
+            "index": 1,
+            "document_name": "Practice locations (credentialing API)",
+            "text": text[:400],
+            "source_type": "external",
+        }
+    ]
+    sig = RETRIEVAL_SIGNAL_GOOGLE_ONLY if skill_search_mode == "agentic" else RETRIEVAL_SIGNAL_NO_SOURCES
+    return (text, sources, None, sig)
+
+
+def _format_associated_providers_markdown_chat(data: dict[str, Any]) -> str:
+    """Step 4 output: providers implicated per site (operational roster, not clinical staffing)."""
+    lines: list[str] = [
+        "# Providers implicated at each practice site",
+        "",
+        "_**Operational roster** (credentialing Step 4): NPIs tied to each site from historic Medicaid servicing "
+        "(DOGE), NPPES + Florida PML practice-address alignment, and optionally your **uploaded roster** on this thread. "
+        "Use this for billing / enrollment alignment — **not** as a definitive clinical “who practices here today.”_",
+        "",
+    ]
+    cutoff = data.get("active_roster_cutoff")
+    if cutoff is not None:
+        lines.append(f"**Active roster cutoff:** association score ≥ {cutoff} (`roster_status=active`).")
+        lines.append("")
+    loc_detail = data.get("location_details") or {}
+    active = data.get("active_roster") or {}
+    assoc = data.get("associated_providers") or {}
+    if not active and not assoc:
+        lines.append("_No providers returned._")
+        return "\n".join(lines).strip()
+    loc_ids = list(dict.fromkeys([*list(active.keys()), *list(assoc.keys())]))
+    for lid in loc_ids:
+        det = loc_detail.get(lid) or {}
+        addr = det.get("location_address") or str(lid)
+        lines.append(f"## {addr}")
+        lines.append(f"`location_id`: `{lid}`")
+        lines.append("")
+        plist = active.get(lid) or assoc.get(lid) or []
+        tag = "Active roster" if active.get(lid) else "Associated (all scored)"
+        lines.append(f"_{tag}_ — **{len(plist)}** row(s)")
+        lines.append("")
+        for j, p in enumerate(plist[:50], 1):
+            if not isinstance(p, dict):
+                continue
+            npi = p.get("npi", "")
+            name = p.get("name", "")
+            score = p.get("association_likelihood", "")
+            mt = p.get("match_type", "")
+            rs = p.get("roster_status", "")
+            lines.append(
+                f"{j}. **NPI {npi}** — {name} — score {score} — {rs or '—'} — _{mt}_"
+            )
+        if len(plist) > 50:
+            lines.append(f"... _{len(plist) - 50} more_")
+        lines.append("")
+    pc = data.get("providers_count")
+    if pc is not None:
+        lines.append(f"**Total provider rows (all locations):** {pc}")
+    return "\n".join(lines).strip()
+
+
+def _run_find_associated_providers_for_chat(
+    tool_inputs: dict[str, Any] | None,
+    *,
+    question: str,
+    user_message: str,
+    active_context: dict[str, Any] | None,
+    skill_search_mode: str,
+    emitter=None,
+    pipeline_ctx: Any | None = None,
+) -> tuple[str, list[dict], dict[str, Any] | None, str]:
+    """POST /find-locations then /find-associated-providers — same backend as MCP ``find_associated_providers_at_locations``."""
+    ins = dict(tool_inputs or {})
+    org_name = str(ins.get("org_name") or "").strip()
+    org_npi = str(ins.get("org_npi") or "").strip()
+    raw_list = ins.get("org_npis")
+    org_npis_in = raw_list if isinstance(raw_list, list) else None
+    state = str(ins.get("state") or "FL").strip().upper() or "FL"
+    include_web = bool(ins.get("include_web_enrichment", False))
+    upload_id = str(ins.get("upload_id") or "").strip()
+    if not upload_id and isinstance(active_context, dict):
+        upload_id = (active_context.get("reconciliation_upload_id") or "").strip()
+    include_roster = ins.get("include_roster_members")
+    if include_roster is None:
+        include_roster = True
+    external_only = bool(ins.get("external_only", False))
+
+    prior = ""
+    if isinstance(active_context, dict) and (active_context.get("tool") == "lookup_npi"):
+        prior = (
+            str(active_context.get("full_output") or "")
+            or str(active_context.get("summary") or "")
+        )[:12000]
+
+    org_npis, name_hint, err, disambig_rows = _resolve_org_npis_for_find_locations(
+        org_name,
+        org_npi,
+        org_npis_in,
+        user_message or "",
+        prior,
+        skill_search_mode,
+        emitter,
+    )
+    if err:
+        label = (name_hint or org_name or "").strip()
+        if (
+            pipeline_ctx is not None
+            and disambig_rows
+            and len(disambig_rows) > 1
+            and label
+        ):
+            groups = build_npi_org_disambiguation_groups(disambig_rows, label) or []
+            if groups:
+                attach_workflow_selection(pipeline_ctx, groups)
+                brief = format_npi_org_search_summary_for_disambiguation(label, disambig_rows)
+                pipeline_ctx.active_context = {
+                    "tool": "lookup_npi",
+                    "org": label,
+                    "summary": brief[:300],
+                    "full_output": err,
+                    "follow_up_capable": True,
+                    "expires_after_turns": 8,
+                }
+                return (brief, [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
+        return (err, [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
+
+    base = _provider_roster_base_url()
+    if not base:
+        return (
+            "Provider–location lookup requires the credentialing API. Set CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL.",
+            [],
+            None,
+            RETRIEVAL_SIGNAL_NO_SOURCES,
+        )
+
+    _emit(
+        emitter,
+        f"◌ Finding practice locations, then providers per site (POST /find-locations + /find-associated-providers)…",
+    )
+    url = f"{base.rstrip('/')}/find-locations"
+    payload: dict[str, Any] = {
+        "org_npis": org_npis,
+        "state": state,
+        "search_mode": skill_search_mode,
+        "include_web_enrichment": include_web,
+    }
+    if name_hint:
+        payload["org_name"] = name_hint
+    timeout_sec = 120.0 if skill_search_mode == "agentic" else 75.0
+    try:
+        with httpx.Client(timeout=timeout_sec) as client:
+            resp = client.post(url, json=payload)
+            resp.raise_for_status()
+            loc_data = resp.json()
+    except httpx.HTTPStatusError as e:
+        body = (e.response.text or "")[:800]
+        logger.warning("find_associated (find-locations) HTTP %s %s", e.response.status_code, body)
+        return (
+            f"Practice location lookup failed ({e.response.status_code}): {body or str(e)}",
+            [],
+            None,
+            RETRIEVAL_SIGNAL_NO_SOURCES,
+        )
+    except Exception as e:
+        logger.warning("find_associated find-locations failed: %s", e, exc_info=True)
+        return (
+            f"Practice location lookup failed: {e}. Ensure provider-roster-credentialing is running.",
+            [],
+            None,
+            RETRIEVAL_SIGNAL_NO_SOURCES,
+        )
+
+    locations = loc_data.get("locations") if isinstance(loc_data, dict) else None
+    if not locations:
+        return (
+            "No practice locations returned — cannot list providers per site.",
+            [],
+            None,
+            RETRIEVAL_SIGNAL_NO_SOURCES,
+        )
+
+    if isinstance(loc_data, dict):
+        for line in (loc_data.get("progress") or [])[:20]:
+            s = str(line).strip()
+            if s:
+                _emit(emitter, s if s.startswith("◌") else f"◌ {s}")
+
+    assoc_url = f"{base.rstrip('/')}/find-associated-providers"
+    assoc_payload: dict[str, Any] = {
+        "org_npis": org_npis,
+        "locations": locations,
+        "org_name": name_hint or org_name,
+        "include_roster_members": bool(include_roster),
+        "external_only": external_only,
+    }
+    if upload_id:
+        assoc_payload["upload_id"] = upload_id
+    try:
+        with httpx.Client(timeout=180.0) as client:
+            aresp = client.post(assoc_url, json=assoc_payload)
+            aresp.raise_for_status()
+            ap_data = aresp.json()
+    except httpx.HTTPStatusError as e:
+        body = (e.response.text or "")[:800]
+        logger.warning("find_associated HTTP %s %s", e.response.status_code, body)
+        return (
+            f"Find-associated-providers failed ({e.response.status_code}): {body or str(e)}",
+            [],
+            None,
+            RETRIEVAL_SIGNAL_NO_SOURCES,
+        )
+    except Exception as e:
+        logger.warning("find_associated failed: %s", e, exc_info=True)
+        return (
+            f"Find-associated-providers failed: {e}.",
+            [],
+            None,
+            RETRIEVAL_SIGNAL_NO_SOURCES,
+        )
+
+    text = _format_associated_providers_markdown_chat(ap_data if isinstance(ap_data, dict) else {})
+    sources = [
+        {
+            "index": 1,
+            "document_name": "Providers per site (credentialing API)",
+            "text": text[:400],
+            "source_type": "external",
+        }
+    ]
+    sig = RETRIEVAL_SIGNAL_GOOGLE_ONLY if skill_search_mode == "agentic" else RETRIEVAL_SIGNAL_NO_SOURCES
+    return (text, sources, None, sig)
+
+
 def _run_npi_by_address(
     address: str,
     emitter=None,
@@ -985,20 +1507,7 @@ def _serve_cached_credentialing_report(
     run: dict[str, Any], org_name: str, extra_out: dict[str, Any] | None
 ) -> tuple[str, list[dict], None, str]:
     """Return cached report in same format as orchestrator output."""
-    step_order = {
-        "ensure_benchmarks": 1,
-        "identify_org": 2,
-        "find_locations": 3,
-        "find_associated_providers": 4,
-        "org_benchmark": 5,
-        "find_services_by_location": 6,
-        "historic_billing_patterns": 7,
-        "step_6": 8,
-        "step_7": 9,
-        "opportunity_sizing": 10,
-        "build_report": 11,
-        "npi_profile": 12,
-    }
+    step_order = dict(_ROSTER_STEP_OUTPUT_NUM)
     steps = run.get("step_outputs") or []
     if extra_out is not None:
         extra_out["roster_step_outputs"] = [
@@ -1249,6 +1758,7 @@ def _answer_tool_impl(
     credentialing_options: dict | None = None,
     skill_search_mode: str | None = None,
     pipeline_ctx: Any | None = None,
+    tool_inputs: dict[str, Any] | None = None,
 ) -> tuple[str, list[dict], dict[str, Any] | None, str]:
     """Implementation of answer_tool. When user_message is set, roster triggers and org name use user_message.
 
@@ -1263,6 +1773,28 @@ def _answer_tool_impl(
     # Alias: ask_credentialing_npi (ReAct tool name) → credentialing_qa (internal hint)
     if tool_hint_override and (tool_hint_override or "").strip().lower() == "ask_credentialing_npi":
         tool_hint_override = "credentialing_qa"
+
+    if tool_hint_override and (tool_hint_override or "").strip().lower() == "find_org_locations":
+        return _run_find_org_locations_for_chat(
+            tool_inputs,
+            question=(question or ""),
+            user_message=(user_message or question or ""),
+            active_context=active_context if isinstance(active_context, dict) else None,
+            skill_search_mode=_org_skill_mode,
+            emitter=emitter,
+            pipeline_ctx=pipeline_ctx,
+        )
+
+    if tool_hint_override and (tool_hint_override or "").strip().lower() == "find_associated_providers_at_locations":
+        return _run_find_associated_providers_for_chat(
+            tool_inputs,
+            question=(question or ""),
+            user_message=(user_message or question or ""),
+            active_context=active_context if isinstance(active_context, dict) else None,
+            skill_search_mode=_org_skill_mode,
+            emitter=emitter,
+            pipeline_ctx=pipeline_ctx,
+        )
 
     # ── Roster reconciliation: upload vs outside-in ──
     if tool_hint_override and (tool_hint_override or "").strip().lower() == "roster_reconciliation":
@@ -1375,7 +1907,15 @@ def _answer_tool_impl(
                 extra_out["roster_report_final_md"] = (data.get("final_md") or "").strip()
                 step_outs = data.get("roster_step_outputs") or data.get("step_outputs") or []
                 extra_out["roster_step_outputs"] = [
-                    {"step_id": s.get("step_id"), "label": s.get("label"), "csv_content": s.get("csv_content") or "", "row_count": s.get("row_count", 0)}
+                    {
+                        "step_id": s.get("step_id"),
+                        "step_num": _ROSTER_STEP_OUTPUT_NUM.get((s.get("step_id") or "").strip(), 0),
+                        "label": s.get("label"),
+                        "csv_content": s.get("csv_content") or "",
+                        "row_count": s.get("row_count", 0),
+                        "markdown_content": (s.get("markdown_content") or "").strip(),
+                        "json_content": (s.get("json_content") or "").strip(),
+                    }
                     for s in step_outs
                 ]
             if result_text:
@@ -1846,20 +2386,7 @@ def _answer_tool_impl(
                 return (f"I ran into an issue running the plan. {e}. Please try again.", [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
             result_text = result_text or ""
             if extra_out is not None:
-                step_order = {
-                    "ensure_benchmarks": 1,
-                    "identify_org": 2,
-                    "find_locations": 3,
-                    "find_associated_providers": 4,
-                    "org_benchmark": 5,
-                    "find_services_by_location": 6,
-                    "historic_billing_patterns": 7,
-                    "step_6": 8,
-                    "step_7": 9,
-                    "opportunity_sizing": 10,
-                    "build_report": 11,
-                    "npi_profile": 12,
-                }
+                step_order = dict(_ROSTER_STEP_OUTPUT_NUM)
                 extra_out["roster_step_outputs"] = [
                     {
                         "step_id": s.step_id,

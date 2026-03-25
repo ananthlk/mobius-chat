@@ -11,6 +11,7 @@ from app.pipeline.react_loop import (
     _finalize_response,
     _make_react_plan,
     _parse_react_decision_json,
+    _react_fallback_org_npi_lookup_decision,
     run_react,
     MAX_ITERATIONS,
 )
@@ -235,6 +236,72 @@ def test_execute_tool_lookup_npi_passes_pipeline_ctx():
     assert mock_tool.call_args[1].get("pipeline_ctx") is ctx
 
 
+def test_execute_tool_find_org_locations_passes_hint_and_inputs():
+    """find_org_locations calls answer_tool with find_org_locations hint and merged tool_inputs."""
+    ctx = PipelineContext(
+        correlation_id="c",
+        thread_id=None,
+        message="Find practice locations for 1234567893",
+    )
+    ctx.merged_state = {"active": {}}
+    ctx.effective_message = ctx.message
+    ctx.chat_mode = "copilot"
+
+    with patch("app.pipeline.react_loop.answer_tool") as mock_tool:
+        mock_tool.return_value = (
+            "# Practice locations (1 site(s))\n\n## Sites\n\n1. **1 Main**, Tampa, FL 33601",
+            [],
+            None,
+            "no_sources",
+        )
+        r = _execute_tool(
+            "find_org_locations",
+            {"org_npis": ["1234567893"]},
+            ctx,
+            None,
+        )
+
+    assert r["tool"] == "find_org_locations"
+    assert r["success"] is True
+    mock_tool.assert_called_once()
+    call_kw = mock_tool.call_args[1]
+    assert call_kw.get("tool_hint_override") == "find_org_locations"
+    assert call_kw.get("tool_inputs") == {"org_npis": ["1234567893"]}
+
+
+def test_execute_tool_find_associated_providers_at_locations_passes_hint_and_inputs():
+    """find_associated_providers_at_locations calls answer_tool with matching hint and merged tool_inputs."""
+    ctx = PipelineContext(
+        correlation_id="c",
+        thread_id=None,
+        message="Who practices at each site for org NPI 1234567893",
+    )
+    ctx.merged_state = {"active": {}}
+    ctx.effective_message = ctx.message
+    ctx.chat_mode = "copilot"
+
+    with patch("app.pipeline.react_loop.answer_tool") as mock_tool:
+        mock_tool.return_value = (
+            "# Providers implicated at each practice site\n\n## 1 Main St\n\n1. **NPI 1111111111**",
+            [],
+            None,
+            "no_sources",
+        )
+        r = _execute_tool(
+            "find_associated_providers_at_locations",
+            {"org_npis": ["1234567893"]},
+            ctx,
+            None,
+        )
+
+    assert r["tool"] == "find_associated_providers_at_locations"
+    assert r["success"] is True
+    mock_tool.assert_called_once()
+    call_kw = mock_tool.call_args[1]
+    assert call_kw.get("tool_hint_override") == "find_associated_providers_at_locations"
+    assert call_kw.get("tool_inputs") == {"org_npis": ["1234567893"]}
+
+
 def test_execute_tool_healthcare_npi_lookup_calls_answer_tool():
     """healthcare_npi_lookup calls answer_tool with healthcare_query hint."""
     ctx = PipelineContext(
@@ -292,6 +359,26 @@ def test_parse_react_decision_json_prefixed_and_braces_in_answer():
     assert "}" in (d.get("answer") or "")
 
 
+def test_react_fallback_org_npi_lookup_extracts_name():
+    ctx = PipelineContext(correlation_id="c", thread_id="t", message="")
+    ctx.effective_message = (
+        "okay find the NPIs for Aspire Health and I can help you select the right ones"
+    )
+    d = _react_fallback_org_npi_lookup_decision(ctx)
+    assert d is not None
+    assert d.get("tool") == "lookup_npi"
+    assert d.get("inputs", {}).get("org_name") == "Aspire Health"
+
+
+def test_parse_react_decision_json_trailing_comma_repaired():
+    """LLMs often emit trailing commas; json_repair should recover."""
+    raw = '{"thought": "ok", "tool": null, "inputs": {}, "is_complete": true, "answer": "Hi",}'
+    d = _parse_react_decision_json(raw)
+    assert d is not None
+    assert d.get("is_complete") is True
+    assert d.get("answer") == "Hi"
+
+
 def test_envelope_routes_to_reconciliation_roster_on_thread():
     ctx = PipelineContext(correlation_id="c", thread_id="t", message="credentialing report for Org")
     ctx.credentialing_options = {"org_name": "Org", "mode": "autopilot"}
@@ -332,3 +419,43 @@ def test_envelope_routes_to_reconciliation_no_envelope_ignored():
         "active": {"reconciliation_upload_id": "u1", "reconciliation_org_id": "1234567890"}
     }
     assert _envelope_routes_to_reconciliation(ctx) is False
+
+
+def test_detect_skill_reference_lookup_npi_practice_locations_follow_up():
+    """active_context.tool is lookup_npi — must match SKILL_TERMS['lookup_npi'] for location follow-ups."""
+    from app.pipeline.message_resolver import detect_skill_reference
+
+    skill_like = {"skill": "lookup_npi", "org": "Aspire Health", "summary": "candidates…"}
+    ok, name = detect_skill_reference(
+        "Can you find the practice locations tied to these NPIs?",
+        skill_like,
+    )
+    assert ok is True
+    assert name == "lookup_npi"
+
+
+def test_detect_skill_reference_not_when_chip_payload_and_locations():
+    """Workflow chip text includes billing NPI lines — must run tools, not _answer_from_context."""
+    from app.pipeline.message_resolver import detect_skill_reference
+
+    skill_like = {"skill": "lookup_npi", "org": "Aspire Health", "summary": "candidates…"}
+    msg = (
+        "[Mobius workflow_selection]\n"
+        "• Use billing NPI 1366813586 for ASPIRE HEALTH PARTNERS\n"
+        "find the locations"
+    )
+    ok, name = detect_skill_reference(msg, skill_like)
+    assert ok is False
+    assert name is None
+
+
+def test_detect_skill_reference_not_when_10digit_npi_and_find_locations():
+    from app.pipeline.message_resolver import detect_skill_reference
+
+    skill_like = {"skill": "lookup_npi", "org": "Aspire Health", "summary": "candidates…"}
+    ok, name = detect_skill_reference(
+        "Find practice locations for NPI 1366813586",
+        skill_like,
+    )
+    assert ok is False
+    assert name is None

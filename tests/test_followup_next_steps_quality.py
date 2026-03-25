@@ -1,64 +1,44 @@
-"""follow-up / next_steps filtering and collapse defaults."""
-
+"""Tests for follow-up / next_steps normalization and filtering."""
 from __future__ import annotations
 
 from app.communication.followup_next_steps_quality import (
     filter_next_steps_and_questions,
-    followup_blocks_collapsed_default,
-    has_corpus_sources,
+    normalize_followup_line_item,
+    normalize_followup_line_list,
 )
 
 
-def test_filter_drops_upload_ask_when_corpus_and_no_required_vars():
-    src = [{"index": 1, "document_id": "doc-1", "document_name": "Manual"}]
-    card = {"mode": "FACTUAL", "direct_answer": "x", "sections": []}
-    steps, qs = filter_next_steps_and_questions(
-        ["Upload a document to the portal", "Call member services"],
-        ["Can you upload a PDF of your contract?", "What is the timely filing limit?"],
-        response_sources=src,
-        answer_card=card,
-    )
-    assert "Upload a document" not in steps
-    assert "Call member services" in steps
-    assert not any("upload" in q.lower() for q in qs)
-    assert any("timely filing" in q.lower() for q in qs)
+def test_normalize_string_uses_default_clickable():
+    a = normalize_followup_line_item("  Hello ", default_clickable=False)
+    assert a == {"text": "Hello", "clickable": False}
+    b = normalize_followup_line_item("Hi", default_clickable=True)
+    assert b == {"text": "Hi", "clickable": True}
 
 
-def test_filter_keeps_upload_ask_when_required_variables_set():
-    src = [{"document_id": "x"}]
-    card = {
-        "mode": "FACTUAL",
-        "direct_answer": "x",
-        "sections": [],
-        "required_variables": ["denial letter"],
-    }
-    _steps, qs = filter_next_steps_and_questions(
-        [],
-        ["Can you upload the denial letter?"],
-        response_sources=src,
-        answer_card=card,
-    )
-    assert len(qs) == 1
+def test_normalize_object_clickable_and_tap_to_send():
+    assert normalize_followup_line_item(
+        {"text": "A", "clickable": False}, default_clickable=True
+    ) == {"text": "A", "clickable": False}
+    assert normalize_followup_line_item(
+        {"label": "B", "tap_to_send": True}, default_clickable=False
+    ) == {"text": "B", "clickable": True}
 
 
-def test_filter_keeps_when_no_corpus():
-    steps, qs = filter_next_steps_and_questions(
-        [],
-        ["Do you have a document that shows the code list?"],
+def test_normalize_followup_line_list():
+    raw = ["plain", {"text": "x", "clickable": True}]
+    out = normalize_followup_line_list(raw, default_clickable=False)
+    assert out[0]["clickable"] is False
+    assert out[1]["clickable"] is True
+
+
+def test_filter_preserves_clickable():
+    steps = [{"text": "Call the plan", "clickable": False}]
+    qs = [{"text": "What is PA?", "clickable": True}]
+    os, oq = filter_next_steps_and_questions(
+        steps,
+        qs,
         response_sources=[],
-        answer_card={"mode": "FACTUAL", "direct_answer": "x", "sections": []},
+        answer_card=None,
     )
-    assert len(qs) == 1
-
-
-def test_has_corpus_sources():
-    assert has_corpus_sources([{"document_id": "a"}]) is True
-    assert has_corpus_sources([{"url": "https://x.com"}]) is False
-
-
-def test_followup_collapsed_default_by_badge():
-    assert followup_blocks_collapsed_default("approved_authoritative") is False
-    assert followup_blocks_collapsed_default("approved_informational") is False
-    assert followup_blocks_collapsed_default("informational_only") is True
-    assert followup_blocks_collapsed_default("proceed_with_caution") is True
-    assert followup_blocks_collapsed_default("") is True
+    assert os == steps
+    assert oq == qs

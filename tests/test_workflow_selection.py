@@ -75,6 +75,36 @@ def test_build_npi_org_disambiguation_groups_multi():
     assert groups[0].get("min_choices") == 1
     assert len(groups[0]["choices"]) == 2
     assert groups[0]["choices"][0]["choice_id"] == "1111111111"
+    assert groups[0].get("allow_free_text") is True
+    assert (groups[0].get("free_text_hint") or "").strip()
+
+
+def test_normalize_allow_free_text_and_hint():
+    g = normalize_selection_group(
+        {
+            "slot": "x",
+            "label": "L",
+            "selection_mode": "single",
+            "choices": [{"value": "a", "label": "A"}],
+            "allow_free_text": False,
+            "free_text_hint": "Type below",
+        }
+    )
+    assert g is not None
+    assert g.get("allow_free_text") is False
+    assert g.get("free_text_hint") == "Type below"
+    g2 = normalize_selection_group(
+        {
+            "slot": "y",
+            "label": "L",
+            "selection_mode": "single",
+            "choices": [{"value": "b", "label": "B"}],
+            "allow_free_text": True,
+        }
+    )
+    assert g2 is not None
+    assert g2.get("allow_free_text") is True
+    assert "free_text_hint" not in g2
 
 
 def test_workflow_selection_group_helper():

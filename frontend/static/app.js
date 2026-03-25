@@ -697,6 +697,47 @@ function adjudicationVerdictUi(qc) {
   }
   return qc.passed ? { shortLabel: "PASS", verdictBadgeText: "Verdict: PASS", badgeVariant: "pass" } : { shortLabel: "FAIL", verdictBadgeText: "Verdict: FAIL", badgeVariant: "fail" };
 }
+function normalizeFollowupLineItem(raw, defaultClickable) {
+  if (typeof raw === "string") {
+    const t = raw.trim();
+    return t ? { text: t, clickable: defaultClickable } : null;
+  }
+  if (raw && typeof raw === "object") {
+    const o = raw;
+    const text = String(o.text ?? o.label ?? o.line ?? "").trim();
+    if (!text)
+      return null;
+    let clickable = defaultClickable;
+    if (typeof o.clickable === "boolean")
+      clickable = o.clickable;
+    else if (typeof o.tap_to_send === "boolean")
+      clickable = o.tap_to_send;
+    return { text, clickable };
+  }
+  return null;
+}
+function normalizeFollowupLineList(raw, defaultClickable) {
+  if (!Array.isArray(raw))
+    return [];
+  const out = [];
+  for (const x of raw) {
+    const n = normalizeFollowupLineItem(x, defaultClickable);
+    if (n)
+      out.push(n);
+  }
+  return out;
+}
+function followupListHintLines(items) {
+  if (!items.length)
+    return "";
+  const anyClick = items.some((i) => i.clickable);
+  const allStatic = !anyClick;
+  if (allStatic)
+    return "Reference only\u2014not sent as a message unless you copy or type below.";
+  if (items.every((i) => i.clickable))
+    return "Tap a line to send it as your next message, or type below.";
+  return "Tap lines marked as actions to send; others are for reference only.";
+}
 var CREDENTIALING_ROSTER_TRIGGERS = [
   "provider roster",
   "credentialing report",
@@ -1606,7 +1647,7 @@ function renderAnswerCard(card, isError, opts) {
     bubble.appendChild(note);
   }
   const followupQuestions = opts?.nextQuestions ?? [];
-  if (followupQuestions.length > 0 && opts?.onFollowupClick) {
+  if (followupQuestions.length > 0) {
     const followupWrap = document.createElement("div");
     followupWrap.className = "answer-card-followups";
     const label = document.createElement("div");
@@ -1615,19 +1656,26 @@ function renderAnswerCard(card, isError, opts) {
     followupWrap.appendChild(label);
     const hint = document.createElement("div");
     hint.className = "answer-card-followups-hint";
-    hint.textContent = "Tap a line to send it as your next message.";
+    hint.textContent = followupListHintLines(followupQuestions);
     followupWrap.appendChild(hint);
     const chips = document.createElement("div");
     chips.className = "answer-card-followups-chips answer-card-followups-chips--stacked";
-    followupQuestions.slice(0, 6).forEach((q) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      const text = q.trim() || "Ask this";
-      btn.className = "answer-card-followup-chip answer-card-followup-chip--row";
-      btn.textContent = text;
-      btn.setAttribute("aria-label", "Send: " + text);
-      btn.addEventListener("click", () => opts.onFollowupClick(text));
-      chips.appendChild(btn);
+    followupQuestions.slice(0, 6).forEach((line) => {
+      const text = line.text.trim() || "Ask this";
+      if (line.clickable && opts?.onFollowupClick) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "answer-card-followup-chip answer-card-followup-chip--row";
+        btn.textContent = text;
+        btn.setAttribute("aria-label", "Send: " + text);
+        btn.addEventListener("click", () => opts.onFollowupClick(text));
+        chips.appendChild(btn);
+      } else {
+        const row = document.createElement("div");
+        row.className = "answer-card-followup-line answer-card-followup-line--static";
+        row.textContent = text;
+        chips.appendChild(row);
+      }
     });
     followupWrap.appendChild(chips);
     bubble.appendChild(followupWrap);
@@ -2087,19 +2135,26 @@ function renderNextQuestions(questions, onSelect) {
   wrap.appendChild(label);
   const hint = document.createElement("div");
   hint.className = "next-questions-hint";
-  hint.textContent = "Tap a line to send it as your next message.";
+  hint.textContent = followupListHintLines(questions);
   wrap.appendChild(hint);
   const chips = document.createElement("div");
   chips.className = "next-questions-chips next-questions-chips--stacked";
-  questions.slice(0, 6).forEach((q) => {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    const text = q.trim() || "Ask this";
-    btn.className = "next-questions-chip next-questions-chip--row";
-    btn.textContent = text;
-    btn.setAttribute("aria-label", "Send: " + text);
-    btn.addEventListener("click", () => onSelect(text));
-    chips.appendChild(btn);
+  questions.slice(0, 6).forEach((line) => {
+    const text = line.text.trim() || "Ask this";
+    if (line.clickable) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "next-questions-chip next-questions-chip--row";
+      btn.textContent = text;
+      btn.setAttribute("aria-label", "Send: " + text);
+      btn.addEventListener("click", () => onSelect(text));
+      chips.appendChild(btn);
+    } else {
+      const row = document.createElement("div");
+      row.className = "next-questions-line next-questions-line--static";
+      row.textContent = text;
+      chips.appendChild(row);
+    }
   });
   wrap.appendChild(chips);
   return wrap;
@@ -2107,6 +2162,17 @@ function renderNextQuestions(questions, onSelect) {
 function clarificationSelectionIsMultiple(opt) {
   const m = (opt.selection_mode || "single").toLowerCase();
   return m === "multiple" || m === "multi";
+}
+var CLARIFICATION_FREE_TEXT_FALLBACK = "You can also type your own answer in the box below (optional), then press Send.";
+function clarificationShowsFreeTextHint(opt) {
+  return opt.allow_free_text !== false;
+}
+function clarificationFreeTextHintLine(opt) {
+  if (!clarificationShowsFreeTextHint(opt)) {
+    return null;
+  }
+  const h = (opt.free_text_hint || "").trim();
+  return h || CLARIFICATION_FREE_TEXT_FALLBACK;
 }
 function renderClarificationMultiGroup(opt) {
   const group = document.createElement("div");
@@ -2228,8 +2294,9 @@ function renderClarificationOptions(opts) {
       chips.appendChild(btn);
     }
     const hintSingle = document.createElement("div");
-    hintSingle.className = "clarification-option-multi-hint";
-    hintSingle.textContent = "Tap a choice (optional), type in the box below, then press Send.";
+    hintSingle.className = "clarification-option-free-text-hint";
+    const freeLn = clarificationFreeTextHintLine(opt);
+    hintSingle.textContent = freeLn || "Tap a choice, then press Send.";
     group.appendChild(hintSingle);
     wrap.appendChild(group);
   }
@@ -3364,8 +3431,8 @@ function renderAssistantFromEnvelope(envelope, opts) {
       }
     } else if (t === "next_steps") {
       const b = block;
-      const items = (b.items || []).filter((x) => typeof x === "string" && x.trim());
-      if (items.length && opts.onFollowupClick) {
+      const items = normalizeFollowupLineList(b.items || [], false);
+      if (items.length) {
         const expanded = b.collapsed_default === false;
         const disclosure = document.createElement("details");
         disclosure.className = "envelope-followups-disclosure";
@@ -3378,23 +3445,33 @@ function renderAssistantFromEnvelope(envelope, opts) {
         w.className = "envelope-next-steps";
         const hint = document.createElement("div");
         hint.className = "envelope-next-steps-hint";
-        hint.textContent = "Things to try outside this chat. Tap a line to paste into your message.";
+        hint.textContent = followupListHintLines(items);
         w.appendChild(hint);
-        for (const q of items) {
-          const btn = document.createElement("button");
-          btn.type = "button";
-          btn.className = "envelope-step-chip";
-          btn.textContent = q.trim();
-          btn.addEventListener("click", () => opts.onFollowupClick(q.trim()));
-          w.appendChild(btn);
+        for (const line of items.slice(0, 8)) {
+          const text = line.text.trim();
+          if (!text)
+            continue;
+          if (line.clickable && opts.onFollowupClick) {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "envelope-step-chip";
+            btn.textContent = text;
+            btn.addEventListener("click", () => opts.onFollowupClick(text));
+            w.appendChild(btn);
+          } else {
+            const row = document.createElement("div");
+            row.className = "envelope-step-line envelope-step-line--static";
+            row.textContent = text;
+            w.appendChild(row);
+          }
         }
         disclosure.appendChild(w);
         bubble.appendChild(disclosure);
       }
     } else if (t === "suggested_questions") {
       const b = block;
-      const items = (b.items || []).filter((x) => typeof x === "string" && x.trim());
-      if (items.length && opts.onFollowupClick) {
+      const items = normalizeFollowupLineList(b.items || [], true);
+      if (items.length) {
         const expanded = b.collapsed_default === false;
         const disclosure = document.createElement("details");
         disclosure.className = "envelope-followups-disclosure";
@@ -3407,19 +3484,28 @@ function renderAssistantFromEnvelope(envelope, opts) {
         w.className = "envelope-suggested";
         const hint = document.createElement("div");
         hint.className = "envelope-suggested-hint";
-        hint.textContent = "Tap a line to send it as your next message.";
+        hint.textContent = followupListHintLines(items);
         w.appendChild(hint);
         const chips = document.createElement("div");
         chips.className = "envelope-suggested-chips";
-        for (const q of items.slice(0, 6)) {
-          const btn = document.createElement("button");
-          btn.type = "button";
-          btn.className = "envelope-suggested-chip";
-          const text = q.trim();
-          btn.textContent = text;
-          btn.setAttribute("aria-label", "Send: " + text);
-          btn.addEventListener("click", () => opts.onFollowupClick(text));
-          chips.appendChild(btn);
+        for (const line of items.slice(0, 6)) {
+          const text = line.text.trim();
+          if (!text)
+            continue;
+          if (line.clickable && opts.onFollowupClick) {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "envelope-suggested-chip";
+            btn.textContent = text;
+            btn.setAttribute("aria-label", "Send: " + text);
+            btn.addEventListener("click", () => opts.onFollowupClick(text));
+            chips.appendChild(btn);
+          } else {
+            const row = document.createElement("div");
+            row.className = "envelope-suggested-line envelope-suggested-line--static";
+            row.textContent = text;
+            chips.appendChild(row);
+          }
         }
         w.appendChild(chips);
         disclosure.appendChild(w);
@@ -4202,11 +4288,17 @@ ${message}`;
       const cidForTurn = (data.correlation_id || activeCorrelationId || "").trim();
       if (cidForTurn)
         turnWrap.setAttribute("data-correlation-id", cidForTurn);
-      let nextQuestions = Array.isArray(data.next_questions_for_user) ? data.next_questions_for_user.filter((x) => typeof x === "string" && x.trim().length > 0) : data.user_ask && String(data.user_ask).trim() ? [String(data.user_ask).trim()] : [];
+      let nextQuestions = normalizeFollowupLineList(
+        data.next_questions_for_user,
+        true
+      );
+      if (nextQuestions.length === 0 && data.user_ask && String(data.user_ask).trim()) {
+        nextQuestions = [{ text: String(data.user_ask).trim(), clickable: true }];
+      }
       if (nextQuestions.length === 0) {
         const card = tryParseAnswerCard(body || "");
         if (card?.followups?.length) {
-          nextQuestions = card.followups.map((f) => (f.question || f.reason || f.field || "").trim()).filter(Boolean);
+          nextQuestions = card.followups.map((f) => (f.question || f.reason || f.field || "").trim()).filter(Boolean).map((text) => ({ text, clickable: true }));
         }
       }
       if (messageWrapEl) {

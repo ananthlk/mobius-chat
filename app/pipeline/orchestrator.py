@@ -366,7 +366,11 @@ def run_pipeline(
             # Prefer integrator's next_questions_for_user when available (more specific)
             nq = ctx.response_payload.get("next_questions_for_user")
             if nq and isinstance(nq, list) and nq:
-                ctx.response_payload["user_ask"] = str(nq[0])
+                first = nq[0]
+                if isinstance(first, dict):
+                    ctx.response_payload["user_ask"] = str(first.get("text") or "").strip() or ask_msg
+                else:
+                    ctx.response_payload["user_ask"] = str(first)
             elif ask_msg:
                 ctx.response_payload["user_ask"] = ask_msg
 
@@ -464,6 +468,10 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
                 "label": "How would you like to search?",
                 "selection_mode": "single",
                 "choices": ctx.route_clarification_choices,
+                "allow_free_text": True,
+                "free_text_hint": (
+                    "Or describe what you want in your own words below (e.g. “policy manual only”), then press Send."
+                ),
             }
         ]
         response_payload = {

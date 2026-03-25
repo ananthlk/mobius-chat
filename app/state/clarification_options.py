@@ -59,5 +59,9 @@ def build_clarification_options(missing_slots: list[str]) -> list[dict[str, Any]
             "label": _SLOT_LABELS.get(slot, slot.replace("jurisdiction.", "")),
             "selection_mode": "single",
             "choices": choices,
+            "allow_free_text": True,
+            "free_text_hint": (
+                "You can tap a button or type the payor, state, program, or other detail below, then press Send."
+            ),
         })
     return out
