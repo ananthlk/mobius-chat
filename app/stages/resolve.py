@@ -61,6 +61,9 @@ def _is_roster_request(text: str) -> bool:
         "create credentialing report",
         "i want to create a medicaid npi report",
         "i want to create a credentialing report",
+        "reconciliation report",
+        "roster reconciliation",
+        "reconcile roster",
     )
     return any(tr in t for tr in roster_triggers)
 
@@ -153,6 +156,9 @@ def _answer_for_subquestion(
     thread_id: str | None = None,
     phi_detected: bool = False,
     config_sha: str | None = None,
+    skill_search_mode: str = "copilot",
+    pipeline_ctx: Any | None = None,
+    credentialing_options: dict[str, Any] | None = None,
 ) -> tuple[str, LLMUsageDict | None, list[dict], str, int]:
     """Answer one subquestion with fallback cascade.
     Returns (answer, usage, sources, retrieval_signal, layer_used).
@@ -266,6 +272,9 @@ def _answer_for_subquestion(
             reconciliation_upload_id=rec_uid,
             reconciliation_org_id=rec_oid,
             thread_id=thread_id,
+            skill_search_mode=skill_search_mode,
+            pipeline_ctx=pipeline_ctx,
+            credentialing_options=credentialing_options,
         )
         is_valid, _ = validate_tool_result(agent, tool_hint, answer, sources, signal, text)
         if is_valid:
@@ -442,6 +451,9 @@ def run_resolve(
                 thread_id=ctx.thread_id,
                 phi_detected=False,
                 config_sha=resolve_config_sha,
+                skill_search_mode=getattr(ctx, "chat_mode", None) or "copilot",
+                pipeline_ctx=ctx,
+                credentialing_options=getattr(ctx, "credentialing_options", None),
             )
         if extra_out and extra_out.get("roster_step_outputs"):
             ctx.roster_step_outputs = extra_out["roster_step_outputs"]

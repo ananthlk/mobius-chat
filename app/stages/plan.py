@@ -6,6 +6,7 @@ from app.chat_config import get_chat_config, get_config_sha
 from app.pipeline.context import PipelineContext
 from app.planner import parse
 from app.planner.blueprint import build_blueprint
+from app.planner.credentialing_flow_intent import parse_credentialing_flow_intent
 from app.planner.schemas import Plan, SubQuestion
 from app.state.master_objective import MasterObjective
 from app.state.refined_query import compute_refined_query, is_followup_continuation
@@ -17,9 +18,12 @@ logger = logging.getLogger(__name__)
 def _minimal_plan(message: str) -> Plan:
     """Fallback plan when parse fails: single subquestion with raw message, kind=non_patient."""
     text = (message or "").strip() or "What can you help with?"
-    return Plan(subquestions=[
-        SubQuestion(id="sq1", text=text, kind="non_patient", question_intent="canonical", intent_score=0.5),
-    ])
+    return Plan(
+        subquestions=[
+            SubQuestion(id="sq1", text=text, kind="non_patient", question_intent="canonical", intent_score=0.5),
+        ],
+        credentialing_flow_intent=parse_credentialing_flow_intent(text),
+    )
 
 
 def _plan_from_master_objective(obj: MasterObjective) -> Plan:
@@ -34,7 +38,11 @@ def _plan_from_master_objective(obj: MasterObjective) -> Plan:
                 question_intent="factual",
                 intent_score=0.6,
             ))
-    return Plan(subquestions=subs)
+    joined = " ".join(so.text.strip() for so in (obj.sub_objectives or []) if (so.text or "").strip())
+    return Plan(
+        subquestions=subs,
+        credentialing_flow_intent=parse_credentialing_flow_intent(joined),
+    )
 
 
 def run_plan(ctx: PipelineContext, emitter: Callable[[str], None] | None = None) -> None:

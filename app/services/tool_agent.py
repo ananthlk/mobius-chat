@@ -20,6 +20,12 @@ from app.services.doc_assembly import (
     RETRIEVAL_SIGNAL_GOOGLE_ONLY,
     RETRIEVAL_SIGNAL_ROSTER_COMPLETE,
 )
+from app.communication.workflow_selection import (
+    attach_workflow_selection,
+    build_npi_org_disambiguation_groups,
+    format_npi_org_search_markdown,
+    format_npi_org_search_summary_for_disambiguation,
+)
 from app.services.mcp_manager import call_mcp_tool
 from app.services.roster_credentialing_orchestrator import run_orchestrator, _provider_roster_base_url
 
@@ -582,6 +588,9 @@ def answer_tool(
     reconciliation_upload_id: str | None = None,
     reconciliation_org_id: str | None = None,
     thread_id: str | None = None,
+    credentialing_options: dict | None = None,
+    skill_search_mode: str | None = None,
+    pipeline_ctx: Any | None = None,
 ) -> tuple[str, list[dict], dict[str, Any] | None, str]:
     """Handle tool-path questions via MCP. Returns (answer_text, sources, llm_usage, retrieval_signal).
 
@@ -592,6 +601,9 @@ def answer_tool(
                     never used as a tool search target.
     reconciliation_upload_id, reconciliation_org_id: for run_roster_reconciliation_report.
     thread_id: current chat thread (for list_thread_document_uploads legacy path).
+    credentialing_options: from POST /chat envelope (force_refresh, org_name, mode) for roster_report.
+    pipeline_ctx: when set, tools may append server-authored choice groups to ctx.pending_workflow_selection
+        (merged into response clarification_options in integrate).
     """
     try:
         return _answer_tool_impl(
@@ -602,6 +614,9 @@ def answer_tool(
             reconciliation_upload_id=reconciliation_upload_id,
             reconciliation_org_id=reconciliation_org_id,
             thread_id=thread_id,
+            credentialing_options=credentialing_options,
+            skill_search_mode=skill_search_mode,
+            pipeline_ctx=pipeline_ctx,
         )
     except Exception as e:
         logger.exception("tool_agent failed: %s", e)
@@ -829,29 +844,105 @@ def _clean_org_name_for_search(name: str) -> str:
     return s
 
 
+def _emit_org_name_search_envelope(emitter, envelope: dict[str, Any]) -> None:
+    """Forward credentialing /search/org-names progress and metadata to the UI."""
+    for line in envelope.get("progress") or []:
+        if not isinstance(line, str):
+            continue
+        s = line.strip()
+        if not s:
+            continue
+        _emit(emitter, s if s[:1] in ("◌", "✓", "→") else f"◌ {s}")
+
+    st = envelope.get("sources_tried") or []
+    if isinstance(st, list) and st:
+        shown = [str(x) for x in st[:15] if x]
+        if shown:
+            suffix = "…" if len(st) > 15 else ""
+            _emit(emitter, "◌ Web / tool sources used: " + ", ".join(shown) + suffix)
+
+    rc = envelope.get("registry_confidence")
+    if isinstance(rc, dict) and rc.get("sufficiently_clean") is not None:
+        clean = bool(rc["sufficiently_clean"])
+        best = rc.get("best_score")
+        tier = rc.get("best_tier")
+        msg = (
+            "◌ Registry signal: top match is strong and separated from alternatives."
+            if clean
+            else "◌ Registry signal: ambiguous or close ties — please confirm which legal entity you mean."
+        )
+        extras: list[str] = []
+        if tier:
+            extras.append(f"tier {tier}")
+        if isinstance(best, (int, float)):
+            extras.append(f"top score {float(best):.2f}")
+        if extras:
+            msg = msg.rstrip(".") + " (" + "; ".join(extras) + ")."
+        _emit(emitter, msg)
+
+
 def _run_npi_lookup_by_name(
     org_name: str,
     emitter=None,
     extract_candidate: str = "",
+    skill_search_mode: str | None = None,
+    pipeline_ctx: Any | None = None,
 ) -> tuple[str, list[dict], dict[str, Any] | None, str]:
-    """Enriched NPI lookup: NPPES/PML + web discovery via org_npi_lookup MCP tool.
-
-    Calls the org_npi_lookup orchestrator which:
-      1. Searches NPPES + PML directly (fast path for exact matches)
-      2. Google-searches for the org's official website
-      3. Scrapes the site to discover entity/DBA name variants and locations
-      4. Runs NPPES + PML for each discovered variant
-      5. Returns a deduplicated, confidence-ranked result
-    """
+    """Enriched NPI lookup: NPPES/PML via credentialing JSON API when available (UI chips), else MCP."""
     org_name = _clean_org_name_for_search(org_name)
     if not org_name or len(org_name) < 2:
         return ("I need an organization name to look up NPIs. Try: 'What is the NPI for [org name]?'", [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
 
-    _emit(emitter, f"◌ Looking up NPIs for {org_name}…")
+    sm = skill_search_mode if skill_search_mode in ("copilot", "agentic") else "copilot"
+    base = _provider_roster_base_url()
+    if base:
+        _emit(
+            emitter,
+            f"◌ Querying credentialing org-name API (NPPES + Florida Medicaid PML, organization NPIs only), search_mode={sm} — «{org_name}»…",
+        )
+    else:
+        _emit(
+            emitter,
+            "◌ Credentialing service URL not configured — using MCP org_npi_lookup only (no PML merge from this host)…",
+        )
+
+    envelope = _fetch_org_search_full(org_name, skill_search_mode=sm, limit=25)
+    http_st = envelope.get("http_status")
+    if base and http_st is not None and http_st != 200:
+        _emit(emitter, f"◌ Credentialing org-name API returned HTTP {http_st} — will try MCP fallback.")
+    elif base and envelope.get("api_error") and not envelope.get("results"):
+        _emit(emitter, "◌ Credentialing org-name request failed — will try MCP fallback.")
+
+    _emit_org_name_search_envelope(emitter, envelope)
+
+    results = envelope.get("results") or []
+    if results:
+        exact_n = sum(1 for r in results if (r.get("match_type") or "") == "exact")
+        partial_n = sum(1 for r in results if (r.get("match_type") or "") == "partial")
+        fuzzy_n = sum(1 for r in results if (r.get("match_type") or "") in ("fuzzy", "none"))
+        _emit(
+            emitter,
+            f"◌ Credentialing API: {len(results)} candidate row(s) after merge — exact {exact_n}, partial {partial_n}, other {fuzzy_n}. Formatting answer…",
+        )
+        groups: list[dict[str, Any]] = []
+        if pipeline_ctx is not None and len(results) > 1:
+            groups = build_npi_org_disambiguation_groups(results, org_name) or []
+            attach_workflow_selection(pipeline_ctx, groups)
+        if groups:
+            body = format_npi_org_search_summary_for_disambiguation(org_name, results)
+        else:
+            body = format_npi_org_search_markdown(org_name, results)
+        sources = [{"index": 1, "document_name": "NPPES / PML (enriched)", "text": body[:300], "source_type": "external"}]
+        return (body, sources, None, RETRIEVAL_SIGNAL_NO_SOURCES)
+
+    if base and http_st == 200:
+        _emit(emitter, f"◌ No organization candidates from credentialing API for «{org_name}» — trying MCP org_npi_lookup…")
+
     try:
+        _emit(emitter, "◌ MCP: calling org_npi_lookup…")
         result_text, success = call_mcp_tool(
             TOOL_ORG_NPI_LOOKUP,
-            {"name": org_name, "state": "FL", "limit": 10},
+            {"name": org_name, "state": "FL", "limit": 10, "search_mode": sm},
         )
     except Exception as e:
         logger.warning("call_mcp_tool org_npi_lookup failed: %s", e, exc_info=True)
@@ -957,18 +1048,94 @@ def _get_latest_run_for_org(org_name: str):
         return None
 
 
-def _get_org_name_candidates(org_name: str, limit: int = 10) -> list[str]:
+def _fetch_org_search_full(
+    org_name: str,
+    *,
+    skill_search_mode: str | None = None,
+    limit: int = 25,
+) -> dict[str, Any]:
+    """POST /search/org-names; return results plus progress/sources_tried/registry_confidence from the skill."""
+    sm = skill_search_mode if skill_search_mode in ("copilot", "agentic") else "copilot"
+    empty: dict[str, Any] = {
+        "results": [],
+        "progress": [],
+        "sources_tried": [],
+        "registry_confidence": None,
+        "search_mode": sm,
+        "http_status": None,
+        "api_error": None,
+    }
+    base = _provider_roster_base_url()
+    if not base or not (org_name or "").strip():
+        return empty
+    url = f"{base.rstrip('/')}/search/org-names"
+    payload = {
+        "name": (org_name or "").strip(),
+        "state": "FL",
+        "limit": min(50, max(1, limit)),
+        "include_pml": True,
+        "entity_type_filter": "2",
+        "search_mode": sm,
+    }
+    read_timeout = 75.0 if sm == "agentic" else 35.0
+    try:
+        with httpx.Client(timeout=read_timeout) as client:
+            resp = client.post(url, json=payload)
+            empty["http_status"] = resp.status_code
+            if resp.status_code != 200:
+                empty["api_error"] = (resp.text or "")[:500]
+                return empty
+            data = resp.json()
+    except Exception as e:
+        logger.debug("fetch org search full failed: %s", e)
+        empty["api_error"] = str(e)
+        return empty
+    raw = data.get("results") or []
+    empty["results"] = raw if isinstance(raw, list) else []
+    prog = data.get("progress")
+    empty["progress"] = prog if isinstance(prog, list) else []
+    st = data.get("sources_tried")
+    empty["sources_tried"] = st if isinstance(st, list) else []
+    empty["registry_confidence"] = data.get("registry_confidence")
+    sm_out = data.get("search_mode")
+    if isinstance(sm_out, str) and sm_out.strip():
+        empty["search_mode"] = sm_out.strip()
+    return empty
+
+
+def _fetch_org_search_results_full(
+    org_name: str,
+    *,
+    skill_search_mode: str | None = None,
+    limit: int = 25,
+) -> list[dict[str, Any]]:
+    """POST /search/org-names; return raw ``results`` list only (same contract as MCP org search)."""
+    return _fetch_org_search_full(org_name, skill_search_mode=skill_search_mode, limit=limit)["results"]
+
+
+def _get_org_name_candidates(
+    org_name: str,
+    limit: int = 10,
+    *,
+    skill_search_mode: str | None = None,
+) -> list[str]:
     """Call credentialing skill POST /search/org-names; return unique org names for plan-B matching.
     Used when direct latest-run lookup fails (e.g. 'David Lawrence' vs stored 'David Lawrence Center')."""
     base = _provider_roster_base_url()
     if not base or not (org_name or "").strip():
         return []
     url = f"{base.rstrip('/')}/search/org-names"
+    sm = skill_search_mode if skill_search_mode in ("copilot", "agentic") else "copilot"
     try:
         with httpx.Client(timeout=15.0) as client:
             resp = client.post(
                 url,
-                json={"name": (org_name or "").strip(), "state": "FL", "limit": 20},
+                json={
+                    "name": (org_name or "").strip(),
+                    "state": "FL",
+                    "limit": 20,
+                    "search_mode": sm,
+                },
             )
             if resp.status_code != 200:
                 return []
@@ -1079,6 +1246,9 @@ def _answer_tool_impl(
     reconciliation_upload_id: str | None = None,
     reconciliation_org_id: str | None = None,
     thread_id: str | None = None,
+    credentialing_options: dict | None = None,
+    skill_search_mode: str | None = None,
+    pipeline_ctx: Any | None = None,
 ) -> tuple[str, list[dict], dict[str, Any] | None, str]:
     """Implementation of answer_tool. When user_message is set, roster triggers and org name use user_message.
 
@@ -1086,6 +1256,8 @@ def _answer_tool_impl(
     in build_search_query(). It is never the search target. Entity tools extract their target
     exclusively from question text via extract_entity_from_question().
     """
+    _org_skill_mode = skill_search_mode if skill_search_mode in ("copilot", "agentic") else "copilot"
+
     from app.stages.agents.capabilities import get_capability_answer
 
     # Alias: ask_credentialing_npi (ReAct tool name) → credentialing_qa (internal hint)
@@ -1226,10 +1398,20 @@ def _answer_tool_impl(
     msg = (user_message or question or "").strip()
     msg_lower = msg.lower()
     roster_triggers_new = (
-        "provider roster for", "credentialing report for", "roster report for",
-        "medicaid roster for", "roster for", "create a medicaid npi report for",
-        "create medicaid npi report for", "create a credentialing report for",
-        "create credentialing report for", "medicaid npi report for",
+        "run roster reconciliation report for",
+        "roster reconciliation report for",
+        "reconciliation report for",
+        "run reconciliation report for",
+        "provider roster for",
+        "credentialing report for",
+        "roster report for",
+        "medicaid roster for",
+        "roster for",
+        "create a medicaid npi report for",
+        "create medicaid npi report for",
+        "create a credentialing report for",
+        "create credentialing report for",
+        "medicaid npi report for",
     )
     wants_new_report = any(t in msg_lower for t in roster_triggers_new)
     # credentialing_qa = answer from report or generic only; never run the 11-step orchestrator
@@ -1246,7 +1428,16 @@ def _answer_tool_impl(
         or "npi valid" in msg_lower or "valid for florida" in msg_lower or "florida billing" in msg_lower
         or "is this npi" in msg_lower or "npi in the report" in msg_lower
         or "credentialing" in msg_lower or "nppes" in msg_lower
-        or any(t in msg_lower for t in ("roster report", "medicaid roster", "medicaid npi report"))
+        or any(
+            t in msg_lower
+            for t in (
+                "roster report",
+                "roster reconciliation",
+                "reconciliation report",
+                "medicaid roster",
+                "medicaid npi report",
+            )
+        )
     )
     report_followup_phrases = (
         "the report say", "the report says", "what does the report", "summarize section",
@@ -1291,7 +1482,7 @@ def _answer_tool_impl(
                     extra_out["last_report_org"] = org_name
             else:
                 # Plan B: try org-name search candidates (e.g. "David Lawrence" → "David Lawrence Center")
-                candidates = _get_org_name_candidates(org_name, limit=8)
+                candidates = _get_org_name_candidates(org_name, limit=8, skill_search_mode=_org_skill_mode)
                 for candidate in candidates:
                     if candidate == org_name:
                         continue
@@ -1441,8 +1632,13 @@ def _answer_tool_impl(
             # Entity from question ONLY — active payer is never the org being looked up
             org = entity.get('org_name') or entity.get('raw', '')[:80]
             if org and len(org.strip()) > 1:
-                return _run_npi_lookup_by_name(org.strip(), emitter=emitter,
-                                               extract_candidate=(user_message or question or ""))
+                return _run_npi_lookup_by_name(
+                    org.strip(),
+                    emitter=emitter,
+                    extract_candidate=(user_message or question or ""),
+                    skill_search_mode=_org_skill_mode,
+                    pipeline_ctx=pipeline_ctx,
+                )
             # No extractable org — fall through to keyword path
 
         if hint == "search_org_by_address":
@@ -1512,6 +1708,8 @@ def _answer_tool_impl(
         "provider roster",
         "credentialing report",
         "roster report",
+        "roster reconciliation",
+        "reconciliation report",
         "medicaid roster",
         "roster for",
         "medicaid npi report",
@@ -1526,6 +1724,10 @@ def _answer_tool_impl(
     if wants_roster:
         org_name = roster_check_text
         for t in (
+            "run roster reconciliation report for",
+            "roster reconciliation report for",
+            "reconciliation report for",
+            "run reconciliation report for",
             "provider roster for",
             "credentialing report for",
             "roster report for",
@@ -1582,14 +1784,21 @@ def _answer_tool_impl(
                 "reload; then",
                 "reload then create",
             )
-            force_reload = any(r in roster_lower for r in reload_triggers)
+            force_reload = bool((credentialing_options or {}).get("force_refresh")) or any(
+                r in roster_lower for r in reload_triggers
+            )
             run_reload = force_reload or _should_run_first_of_day_reload()
             if run_reload:
                 _run_fl_medicaid_daily_load(emitter)
 
             # Subsequent same-day reports for this org → serve from cache (no full chain)
+            skip_same_day_cache = bool((credentialing_options or {}).get("prefer_fresh_report"))
             existing_run = _get_latest_run_for_org(org_name)
-            if existing_run and (existing_run.get("status") or "").lower() == "completed":
+            if (
+                not skip_same_day_cache
+                and existing_run
+                and (existing_run.get("status") or "").lower() == "completed"
+            ):
                 created_at = existing_run.get("created_at") or ""
                 if created_at:
                     try:
@@ -1613,7 +1822,25 @@ def _answer_tool_impl(
 
             _emit(emitter, f"Running the Medicaid NPI report for {org_name}…")
             try:
-                result_text, ostate = run_orchestrator(org_name, emitter=emitter)
+                active_merge: dict[str, Any] = {}
+                if (thread_id or "").strip():
+                    try:
+                        from app.storage.threads import get_state
+
+                        st = get_state((thread_id or "").strip())
+                        active_merge = (st or {}).get("active") or {}
+                    except Exception:
+                        active_merge = {}
+                from app.pipeline.credentialing_envelope import resolve_step3_roster_merge_context
+
+                uid3, ext3, incl3 = resolve_step3_roster_merge_context(active_merge, credentialing_options)
+                result_text, ostate = run_orchestrator(
+                    org_name,
+                    emitter=emitter,
+                    roster_upload_id=uid3,
+                    external_only=ext3,
+                    include_roster_members=incl3,
+                )
             except Exception as e:
                 logger.warning("run_orchestrator failed: %s", e, exc_info=True)
                 return (f"I ran into an issue running the plan. {e}. Please try again.", [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
@@ -1701,7 +1928,13 @@ def _answer_tool_impl(
 
     org_name = _extract_org_from(extract_text) or (_extract_org_from(extract_candidate) if extract_candidate != extract_text else None)
     if org_name and len(org_name) > 1:
-        return _run_npi_lookup_by_name(org_name, emitter=emitter, extract_candidate=extract_candidate)
+        return _run_npi_lookup_by_name(
+            org_name,
+            emitter=emitter,
+            extract_candidate=extract_candidate,
+            skill_search_mode=_org_skill_mode,
+            pipeline_ctx=pipeline_ctx,
+        )
 
     # Healthcare query: NPI lookup by number, ICD-10, CMS coverage — use subquestion text
     healthcare_triggers = (

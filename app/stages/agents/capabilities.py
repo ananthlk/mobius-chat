@@ -20,18 +20,40 @@ TOOL_CAPABILITIES: dict[str, dict[str, Any]] = {
         "requires": "report_run_id or last_report_org in context (user must have run a credentialing report first)",
         "cannot_answer": "NPPES-only lookup; questions when no report exists",
     },
+    "healthcare_query": {
+        "can_answer": [
+            "ICD-10-CM code meaning and description (e.g. what is F32.1)",
+            "Medicare/Medicaid coverage context (NCD/LCD) from healthcare APIs",
+            "10-digit NPI registry facts (name, taxonomy, address) when question is NPI-by-number",
+            "Diagnosis/procedure code questions, HCPCS/CPT wording when structured lookup applies",
+        ],
+        "cannot_answer": "PML status without credentialing report; NPI for an organization by name",
+    },
     "healthcare_npi_lookup": {
         "can_answer": [
-            "NPPES lookup by 10-digit NPI (provider name, taxonomy, address)",
-            "Basic NPI info from national registry",
-            "ICD-10 code lookup and description",
-            "Medicare/Medicaid coverage (NCD/LCD)",
+            "NPPES lookup by 10-digit NPI only (provider name, taxonomy, address from national registry)",
         ],
-        "cannot_answer": "PML status, Florida Medicaid enrollment, credentialing report data",
+        "cannot_answer": (
+            "ICD-10, diagnosis codes, CPT, HCPCS, coverage/NCD/LCD questions (use healthcare_query); "
+            "PML status, Florida Medicaid enrollment, credentialing report data"
+        ),
     },
     "lookup_npi": {
         "can_answer": ["NPI numbers for an organization by name (what is the NPI of David Lawrence Center?)"],
         "cannot_answer": "Lookup by NPI number; PML status",
+    },
+    "org_npi_lookup": {
+        "can_answer": [
+            "Organization NPI lookup by name via MCP org_npi_lookup (credentialing API + optional web variant discovery)",
+        ],
+        "requires": "MCP server; chat passes search_mode from composer (copilot=registry-only path, agentic=full web enrichment)",
+        "cannot_answer": "PML status from credentialing report without report context (use ask_credentialing_npi)",
+    },
+    "search_org_names": {
+        "can_answer": [
+            "Org / billing NPI disambiguation by name (NPPES + PML); MCP search_org_names with search_mode copilot vs agentic",
+        ],
+        "cannot_answer": "10-digit NPI registry row only (use healthcare_query); PML enrollment from report (use ask_credentialing_npi)",
     },
     "run_credentialing_report": {
         "can_answer": [
@@ -97,9 +119,8 @@ PATH_CAPABILITIES = {
         "web scrape",
         "NPI lookup by org name (what is the NPI of X)",
         "ask_credentialing_npi: NPI + PML status from credentialing report (requires report in context)",
-        "healthcare_npi_lookup: NPPES lookup by NPI number (no PML)",
-        "ICD-10 code lookup",
-        "Medicare/Medicaid coverage (NCD/LCD)",
+        "healthcare_query: ICD-10, CMS coverage, code lookups; NPI-by-number via registry",
+        "healthcare_npi_lookup: NPPES by 10-digit NPI only (fallback label; prefer healthcare_query for codes/coverage)",
         "Provider Roster / Credentialing report",
         "Roster reconciliation report (upload vs outside-in)",
         "Document upload skill (attach files to thread; API + UI)",
@@ -167,8 +188,9 @@ def available_capabilities_json() -> dict[str, Any]:
         "routing_rule": (
             "Match question to tool capabilities. "
             "NPI + PML/enrollment → ask_credentialing_npi (requires report). "
-            "NPI number only (no PML) → healthcare_npi_lookup. "
-            "NPI for org name → search_org_names."
+            "ICD-10, HCPCS, CPT code meaning, Medicare/Medicaid coverage (NCD/LCD) → healthcare_query. "
+            "10-digit NPI registry lookup (no PML) → healthcare_query or healthcare_npi_lookup. "
+            "NPI for org name → search_org_names / org_npi_lookup (MCP passes search_mode: copilot registry-first, agentic allows web escalation)."
         ),
     }
 
@@ -217,11 +239,14 @@ def planner_input_json(
     user_message: str, context: str = "", last_master_plan: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     """Build full planner input payload (user_message, context, available_capabilities, defaults_policy, last_master_plan)."""
+    from app.planner.credentialing_flow_intent import credentialing_flow_intent_for_planner
+
     payload: dict[str, Any] = {
         "user_message": user_message,
         "context": context or "",
         "available_capabilities": available_capabilities_json(),
         "defaults_policy": defaults_policy_json(),
+        "credentialing_flow_intent": credentialing_flow_intent_for_planner(user_message),
     }
     if last_master_plan and isinstance(last_master_plan, dict):
         payload["last_master_plan"] = slim_master_plan(last_master_plan)

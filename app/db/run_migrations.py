@@ -6,7 +6,8 @@ import sys
 from pathlib import Path
 
 # Load .env before reading CHAT_RAG_DATABASE_URL (module .env first, then mobius-config/.env)
-_chat_root = Path(__file__).resolve().parent.parent
+# This file lives at app/db/run_migrations.py — repo root is three levels up (same as seed.py / db __main__).
+_chat_root = Path(__file__).resolve().parent.parent.parent
 _config_dir = _chat_root.parent / "mobius-config"
 if _config_dir.exists() and str(_config_dir) not in sys.path:
     sys.path.insert(0, str(_config_dir))
@@ -35,6 +36,44 @@ def _get_db_url() -> str:
         or os.environ.get("CHAT_DATABASE_URL")  # used by mobius-dbt as chat destination URL
         or ""
     ).strip()
+
+
+def _is_connection_slot_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "connection slots" in msg or "too many clients" in msg
+
+
+def _slot_exhaustion_hint() -> str:
+    return (
+        "No free PostgreSQL connection slots (the server is not accepting new connections). "
+        "Stop other clients (other machines, CI, dashboards), then run `mstart --restart-db` "
+        "to restart the Cloud SQL instance, or increase max_connections for this instance in GCP."
+    )
+
+
+def _merge_admin_for_migrate(admin_url: str, app_url: str) -> str:
+    """Use superuser credentials/host from admin_url with database name from app_url (e.g. mobius_chat)."""
+    import urllib.parse
+
+    au = admin_url.strip().replace("postgresql+asyncpg://", "postgresql://")
+    pu = app_url.strip().replace("postgresql+asyncpg://", "postgresql://")
+    try:
+        from sqlalchemy.engine import make_url
+
+        a = make_url(au)
+        p = make_url(pu)
+        db = (p.database or "mobius_chat").lstrip("/")
+        # str(URL) masks password as "***" — never parse that; psycopg2 would send wrong password.
+        merged = a.set(database=db)
+        rs = getattr(merged, "render_as_string", None)
+        if callable(rs):
+            return rs(hide_password=False)
+        return str(merged)
+    except Exception:
+        ap = urllib.parse.urlparse(au)
+        pp = urllib.parse.urlparse(pu)
+        app_db = (pp.path or "/mobius_chat").strip("/") or "mobius_chat"
+        return urllib.parse.urlunparse((ap.scheme, ap.netloc, "/" + app_db, "", "", ""))
 
 
 def _connect_db(url: str):
@@ -76,6 +115,52 @@ def _connect_db(url: str):
     )
 
 
+def _connect_for_migrations(app_url: str):
+    """Connect for migrations: prefer superuser merge when CHAT_RAG_DATABASE_ADMIN_URL is set (slot exhaustion)."""
+    import psycopg2
+
+    admin = (os.environ.get("CHAT_RAG_DATABASE_ADMIN_URL") or "").strip()
+    if admin:
+        try:
+            merged = _merge_admin_for_migrate(admin, app_url)
+            return _connect_db(merged)
+        except psycopg2.OperationalError as e:
+            if _is_connection_slot_error(e):
+                logger.error("%s %s", e, _slot_exhaustion_hint())
+                raise
+            logger.warning(
+                "CHAT_RAG_DATABASE_ADMIN_URL connect failed (%s); falling back to app URL",
+                e,
+            )
+        except Exception as e:
+            if _is_connection_slot_error(e):
+                logger.error("%s %s", e, _slot_exhaustion_hint())
+                raise
+            logger.warning(
+                "CHAT_RAG_DATABASE_ADMIN_URL connect failed (%s); falling back to app URL",
+                e,
+            )
+
+    try:
+        return _connect_db(app_url)
+    except psycopg2.OperationalError as e:
+        if not _is_connection_slot_error(e):
+            raise
+        if not admin:
+            logger.error("%s %s", e, _slot_exhaustion_hint())
+            raise
+        merged = _merge_admin_for_migrate(admin, app_url)
+        logger.warning(
+            "Primary DB connect failed (connection limit); retrying migrations with CHAT_RAG_DATABASE_ADMIN_URL"
+        )
+        try:
+            return _connect_db(merged)
+        except psycopg2.OperationalError as e2:
+            if _is_connection_slot_error(e2):
+                logger.error("%s %s", e2, _slot_exhaustion_hint())
+            raise
+
+
 def run_migrations() -> bool:
     """Run each .sql in db/schema/ in sorted order. Returns True if ran, False if skipped (no URL)."""
     url = _get_db_url()
@@ -96,9 +181,7 @@ def run_migrations() -> bool:
         logger.info("No .sql files in db/schema; skipping migrations")
         return False
 
-    import psycopg2
-
-    conn = _connect_db(url)
+    conn = _connect_for_migrations(url)
     conn.autocommit = True
     cur = conn.cursor()
     try:

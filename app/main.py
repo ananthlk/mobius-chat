@@ -227,9 +227,29 @@ def maybe_start_worker():
         pass
 
 
+class CredentialingOptions(BaseModel):
+    """Structured choices from the credentialing envelope (POST /chat)."""
+
+    org_name: str | None = None
+    mode: Literal["autopilot", "copilot"] | None = None
+    force_refresh: bool | None = None
+    report_kind: Literal["auto", "credentialing", "reconciliation"] | None = None
+    """auto: server picks reconciliation if thread has a roster upload, else outside-in credentialing."""
+    prefer_outside_in: bool | None = None
+    """True: run Medicaid NPI / credentialing pipeline even when a roster exists on the thread."""
+    prefer_fresh_report: bool | None = None
+    """True: skip same-day cached credentialing report and run full orchestrator (outside-in path)."""
+
+
 class ChatRequest(BaseModel):
     message: str = ""
     thread_id: str | None = None  # When provided, load state for jurisdiction/context
+    credentialing_options: CredentialingOptions | None = None
+    """When set (e.g. after envelope confirm), worker merges into run_credentialing_report."""
+    use_react: bool | None = None
+    """Per-request override for MOBIUS_USE_REACT; when None, worker uses env."""
+    chat_mode: Literal["copilot", "agentic"] | None = None
+    """Composer UI: agentic enables skill-side web escalation; copilot is registry-first. Persisted per thread."""
 
 
 class ChatResponse(BaseModel):
@@ -243,6 +263,7 @@ class OrgNameCandidatesRequest(BaseModel):
     name: str = ""
     state: str = "FL"
     limit: int = 12
+    search_mode: Literal["copilot", "agentic"] | None = None
 
 
 @app.post("/chat/org-name-candidates")
@@ -262,17 +283,17 @@ def post_chat_org_name_candidates(body: OrgNameCandidatesRequest) -> dict[str, A
     url = f"{base}/search/org-names"
     try:
         with httpx.Client(timeout=45.0) as client:
-            resp = client.post(
-                url,
-                json={
-                    "name": name,
-                    "state": body.state,
-                    "limit": min(max(body.limit, 1), 25),
-                    "include_pml": True,
-                    "entity_type_filter": "2",
-                    "include_practice_address": True,
-                },
-            )
+            req_body: dict[str, Any] = {
+                "name": name,
+                "state": body.state,
+                "limit": min(max(body.limit, 1), 25),
+                "include_pml": True,
+                "entity_type_filter": "2",
+                "include_practice_address": True,
+            }
+            if body.search_mode is not None:
+                req_body["search_mode"] = body.search_mode
+            resp = client.post(url, json=req_body)
             resp.raise_for_status()
             return resp.json()
     except httpx.HTTPStatusError as e:
@@ -288,6 +309,12 @@ def post_chat(body: ChatRequest):
     correlation_id = str(uuid.uuid4())
     thread_id = ensure_thread((body.thread_id or "").strip() or None)
     payload: dict = {"message": body.message or "", "thread_id": thread_id}
+    if body.credentialing_options is not None:
+        payload["credentialing_options"] = body.credentialing_options.model_dump(exclude_none=True)
+    if body.use_react is not None:
+        payload["use_react"] = body.use_react
+    if body.chat_mode is not None:
+        payload["chat_mode"] = body.chat_mode
     get_queue().publish_request(correlation_id, payload)
     return ChatResponse(correlation_id=correlation_id, thread_id=thread_id)
 
@@ -463,14 +490,29 @@ def get_thread_uploads(thread_id: str) -> dict[str, Any]:
         return {
             "thread_id": tid,
             "uploaded_files": [],
+            "roster_reconciliation_files": [],
             "reconciliation_upload_id": None,
             "reconciliation_org_id": None,
             "reconciliation_org_name": None,
         }
     active = raw.get("active") or {}
+    uploaded = active.get("uploaded_files") or []
+    roster_reconciliation_files = [
+        {
+            "upload_id": (u.get("upload_id") or "").strip(),
+            "org_id": (u.get("org_id") or "").strip(),
+            "org_name": (u.get("org_name") or "").strip(),
+            "filename": (u.get("filename") or "").strip(),
+            "purpose": (u.get("purpose") or "").strip(),
+            "row_count": u.get("row_count"),
+        }
+        for u in uploaded
+        if isinstance(u, dict) and (u.get("purpose") or "").strip() == "roster_reconciliation"
+    ]
     return {
         "thread_id": tid,
-        "uploaded_files": active.get("uploaded_files") or [],
+        "uploaded_files": uploaded,
+        "roster_reconciliation_files": roster_reconciliation_files,
         "reconciliation_upload_id": (active.get("reconciliation_upload_id") or "").strip() or None,
         "reconciliation_org_id": (active.get("reconciliation_org_id") or "").strip() or None,
         "reconciliation_org_name": (active.get("reconciliation_org_name") or "").strip() or None,
@@ -904,13 +946,23 @@ async def internal_skill_llm(
     prompt = f"{body.system}\n\n{body.user}"
     from app.services import llm_manager
 
-    text, usage = await llm_manager.generate(
-        prompt,
-        stage=stage,
-        max_tokens=int(body.max_tokens),
-        correlation_id=(body.correlation_id or "").strip() or None,
-        thread_id=(body.thread_id or "").strip() or None,
-    )
+    try:
+        text, usage = await llm_manager.generate(
+            prompt,
+            stage=stage,
+            max_tokens=int(body.max_tokens),
+            correlation_id=(body.correlation_id or "").strip() or None,
+            thread_id=(body.thread_id or "").strip() or None,
+        )
+    except asyncio.TimeoutError as e:
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "message": "Skill LLM timed out (Vertex generate exceeded wait_for). "
+                "Raise CREDENTIALING_LLM_TIMEOUT_SECONDS on mobius-chat if credentialing compose is slow.",
+                "stage": stage,
+            },
+        ) from e
     return {"text": text, "usage": usage}
 
 

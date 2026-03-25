@@ -43,6 +43,11 @@ from app.pipeline.stages import (
 
 logger = logging.getLogger(__name__)
 
+
+def _normalize_chat_mode(raw: str | None) -> str:
+    return "agentic" if (raw or "").strip().lower() == "agentic" else "copilot"
+
+
 # Human-readable labels for model emit (thinking panel)
 _MODEL_LABELS = {
     "gemini-2.5-pro": "Gemini Pro",
@@ -140,6 +145,9 @@ def run_pipeline(
     message: str,
     thread_id: str | None,
     t0_start: float | None = None,
+    credentialing_options: dict | None = None,
+    use_react_override: bool | None = None,
+    chat_mode: str | None = None,
 ) -> None:
     """Run the full pipeline: state_load -> classify -> plan -> clarify -> [resolve -> integrate] | early_exit.
 
@@ -149,12 +157,20 @@ def run_pipeline(
     start_progress(correlation_id)
 
     # Read at request time so we use current env (worker may have set MOBIUS_USE_REACT=1 after load_dotenv)
-    use_react = (os.environ.get("MOBIUS_USE_REACT") or "1").strip().lower() in ("1", "true", "yes")
+    env_use_react = (os.environ.get("MOBIUS_USE_REACT") or "1").strip().lower() in ("1", "true", "yes")
+    if credentialing_options is not None:
+        # Credentialing tools require ReAct; ignore client use_react=false for this turn
+        use_react = True
+    elif use_react_override is not None:
+        use_react = use_react_override
+    else:
+        use_react = env_use_react
 
     ctx = PipelineContext(
         correlation_id=correlation_id,
         thread_id=(thread_id or "").strip() or None,
         message=(message or "").strip(),
+        credentialing_options=dict(credentialing_options) if credentialing_options is not None else None,
     )
 
     def on_thinking(chunk: str) -> None:
@@ -168,6 +184,26 @@ def run_pipeline(
 
         trace_entered(f"pipeline.stage.{STATE_LOAD}", correlation_id=correlation_id[:8])
         run_state_load(ctx)
+
+        prev_mode = (ctx.merged_state or {}).get("last_chat_mode")
+        if chat_mode is not None and str(chat_mode).strip():
+            ctx.chat_mode = _normalize_chat_mode(str(chat_mode))
+        else:
+            ctx.chat_mode = _normalize_chat_mode(prev_mode if isinstance(prev_mode, str) else None)
+        ctx.merged_state = {**(ctx.merged_state or {}), "last_chat_mode": ctx.chat_mode}
+
+        if getattr(ctx, "credentialing_options", None):
+            from app.pipeline.credentialing_envelope import build_canonical_credentialing_message
+
+            co = ctx.credentialing_options or {}
+            canonical = build_canonical_credentialing_message(
+                ctx.message or "",
+                ctx.merged_state or {},
+                co,
+            )
+            if canonical:
+                ctx.refined_query = canonical
+                ctx.message = canonical
 
         obj_raw = (ctx.merged_state or {}).get("master_objective")
         has_active = bool(obj_raw and (obj_raw.get("status") or "active") == "active")

@@ -7,8 +7,10 @@ from app.pipeline.context import PipelineContext
 from app.pipeline.react_loop import (
     build_reasoning_context,
     _execute_tool,
+    _envelope_routes_to_reconciliation,
     _finalize_response,
     _make_react_plan,
+    _parse_react_decision_json,
     run_react,
     MAX_ITERATIONS,
 )
@@ -215,6 +217,24 @@ def test_execute_tool_ask_credentialing_npi_no_report_returns_failure():
     assert call_kw.get("tool_hint_override") == "credentialing_qa"
 
 
+def test_execute_tool_lookup_npi_passes_pipeline_ctx():
+    """lookup_npi forwards PipelineContext so NPI disambiguation can attach clarification_options."""
+    ctx = PipelineContext(correlation_id="c", thread_id=None, message="NPI for Test Org Inc")
+    ctx.merged_state = {"active": {}}
+    ctx.effective_message = ctx.message
+
+    with patch("app.pipeline.react_loop.answer_tool") as mock_tool:
+        mock_tool.return_value = ("## NPI lookup\n`123`", [], None, "no_sources")
+        _execute_tool(
+            "lookup_npi",
+            {"org_name": "Test Org Inc"},
+            ctx,
+            None,
+        )
+    mock_tool.assert_called_once()
+    assert mock_tool.call_args[1].get("pipeline_ctx") is ctx
+
+
 def test_execute_tool_healthcare_npi_lookup_calls_answer_tool():
     """healthcare_npi_lookup calls answer_tool with healthcare_query hint."""
     ctx = PipelineContext(
@@ -244,3 +264,71 @@ def test_execute_tool_healthcare_npi_lookup_calls_answer_tool():
     mock_tool.assert_called_once()
     call_kw = mock_tool.call_args[1]
     assert call_kw.get("tool_hint_override") == "healthcare_query"
+
+
+def test_parse_react_decision_json_plain():
+    raw = '{"thought": "x", "tool": "search_corpus", "inputs": {"query": "a"}, "is_complete": false}'
+    d = _parse_react_decision_json(raw)
+    assert d is not None
+    assert d.get("tool") == "search_corpus"
+
+
+def test_parse_react_decision_json_markdown_fence():
+    raw = '```json\n{"is_complete": true, "answer": "Done"}\n```'
+    d = _parse_react_decision_json(raw)
+    assert d is not None
+    assert d.get("is_complete") is True
+
+
+def test_parse_react_decision_json_prefixed_and_braces_in_answer():
+    """Prose before JSON + `}` inside a string value must not confuse extraction."""
+    import json as _json
+
+    obj = {"thought": "Grounding", "is_complete": True, "answer": "Line with } and { in markdown."}
+    raw = "Here is my analysis:\n\n" + _json.dumps(obj)
+    d = _parse_react_decision_json(raw)
+    assert d is not None
+    assert d.get("is_complete") is True
+    assert "}" in (d.get("answer") or "")
+
+
+def test_envelope_routes_to_reconciliation_roster_on_thread():
+    ctx = PipelineContext(correlation_id="c", thread_id="t", message="credentialing report for Org")
+    ctx.credentialing_options = {"org_name": "Org", "mode": "autopilot"}
+    ctx.merged_state = {
+        "active": {
+            "reconciliation_upload_id": "u1",
+            "reconciliation_org_id": "1234567890",
+            "reconciliation_org_name": "Org",
+        }
+    }
+    assert _envelope_routes_to_reconciliation(ctx) is True
+
+
+def test_envelope_routes_to_reconciliation_prefer_outside_in():
+    ctx = PipelineContext(correlation_id="c", thread_id="t", message="run report")
+    ctx.credentialing_options = {
+        "org_name": "Org",
+        "prefer_outside_in": True,
+    }
+    ctx.merged_state = {
+        "active": {"reconciliation_upload_id": "u1", "reconciliation_org_id": "1234567890"}
+    }
+    assert _envelope_routes_to_reconciliation(ctx) is False
+
+
+def test_envelope_routes_to_reconciliation_message_outside_in():
+    ctx = PipelineContext(correlation_id="c", thread_id="t", message="outside-in medicaid npi report for Org")
+    ctx.credentialing_options = {"org_name": "Org"}
+    ctx.merged_state = {
+        "active": {"reconciliation_upload_id": "u1", "reconciliation_org_id": "1234567890"}
+    }
+    assert _envelope_routes_to_reconciliation(ctx) is False
+
+
+def test_envelope_routes_to_reconciliation_no_envelope_ignored():
+    ctx = PipelineContext(correlation_id="c", thread_id="t", message="hi")
+    ctx.merged_state = {
+        "active": {"reconciliation_upload_id": "u1", "reconciliation_org_id": "1234567890"}
+    }
+    assert _envelope_routes_to_reconciliation(ctx) is False

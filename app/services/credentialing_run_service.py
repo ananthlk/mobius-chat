@@ -65,11 +65,20 @@ def _store_get(run_id: str) -> dict[str, Any] | None:
         return _runs.get(rid)
 
 
-def _fresh_state(org_name: str) -> OrchestratorState:
+def _fresh_state(
+    org_name: str,
+    *,
+    step3_upload_id: str | None = None,
+    step3_external_only: bool = False,
+    step3_include_roster_members: bool = True,
+) -> OrchestratorState:
     return OrchestratorState(
         steps=[StepState(id=s["id"], label=s["label"]) for s in ROSTER_CREDENTIALING_PLAN],
         org_npis=[],
         org_name=(org_name or "").strip(),
+        step3_roster_upload_id=(step3_upload_id or "").strip(),
+        step3_external_only=bool(step3_external_only),
+        step3_include_roster_members=bool(step3_include_roster_members),
     )
 
 
@@ -154,6 +163,7 @@ def create_credentialing_run(
     mode: Mode,
     thread_id: str | None = None,
     emitter: Callable[[str], None] | None = None,
+    credentialing_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Start a run. Autopilot completes in one shot. Copilot runs first step then waits for validate.
 
@@ -204,7 +214,12 @@ def create_credentialing_run(
         return _public_view(rec)
 
     # copilot: run first step only
-    state = _fresh_state(org_name)
+    state = _fresh_state(
+        org_name,
+        step3_upload_id=uid3,
+        step3_external_only=ext3,
+        step3_include_roster_members=incl3,
+    )
     first_sid = ROSTER_CREDENTIALING_STEP_IDS[0]
     try:
         run_credentialing_step(org_name, state, first_sid, emitter=emitter)

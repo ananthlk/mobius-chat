@@ -1411,6 +1411,42 @@ body {
   color: var(--accent);
 }
 
+.clarification-option-chip--toggle.clarification-option-chip--selected {
+  border-color: var(--accent);
+  background: rgba(59, 130, 246, 0.14);
+  color: var(--accent);
+}
+
+.clarification-option-multi-footer {
+  margin-top: 0.4rem;
+}
+
+.clarification-option-multi-hint {
+  font-size: 0.75rem;
+  color: var(--thinking-muted-hover);
+  flex: 1 1 8rem;
+}
+
+.clarification-option-group > .clarification-option-multi-hint:last-child {
+  margin-top: 0.35rem;
+}
+
+.clarification-option-submit {
+  padding: 0.35rem 0.85rem;
+  font-size: 0.8125rem;
+  font-family: var(--font-sans);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+.clarification-option-submit:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 /* Next questions / suggested follow-ups (consistent with clarification chips) */
 .next-questions {
   align-self: flex-start;
@@ -3080,6 +3116,121 @@ body {
 }
 .composer-options-menu .composer-option-item--disabled:hover {
   background: none;
+}
+
+.composer-agentic-label {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding-right: 0.35rem;
+  font-size: var(--text-xs);
+  color: var(--sidebar-text-muted);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.composer-agentic-label input {
+  width: auto;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.credentialing-envelope-field {
+  display: block;
+  margin-bottom: 0.75rem;
+  font-size: 0.875rem;
+}
+.credentialing-envelope-fieldset {
+  border: none;
+  margin: 0 0 0.75rem;
+  padding: 0;
+}
+.credentialing-envelope-fieldset legend {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  margin-bottom: 0.35rem;
+  color: var(--main-text);
+}
+.credentialing-radio {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+.credentialing-envelope-checkbox {
+  display: block;
+  margin-bottom: 0.75rem;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+.credentialing-envelope-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  margin-top: 0.35rem;
+}
+.btn-credentialing-primary {
+  padding: 0.45rem 0.9rem;
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn-credentialing-primary:hover {
+  background: var(--accent-hover);
+}
+.btn-credentialing-secondary {
+  padding: 0.45rem 0.75rem;
+  border: 1px solid var(--assistant-border);
+  border-radius: var(--radius-md);
+  background: var(--main-bg);
+  color: var(--main-text);
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+.btn-credentialing-secondary:hover {
+  background: var(--thinking-bg);
+}
+
+.credentialing-roster-hint {
+  margin: 0 0 0.65rem;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: var(--sidebar-text-muted);
+}
+
+.credentialing-roster-panel {
+  margin-bottom: 0.75rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: var(--radius-md);
+  background: var(--thinking-bg);
+  border: 1px solid var(--assistant-border);
+}
+.credentialing-roster-panel__title {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  margin-bottom: 0.35rem;
+  color: var(--main-text);
+}
+.credentialing-roster-list {
+  margin: 0 0 0.5rem 1rem;
+  padding: 0;
+  font-size: 0.8125rem;
+  color: var(--main-text);
+}
+.credentialing-roster-list li {
+  margin-bottom: 0.25rem;
+}
+.credentialing-roster-list li.credentialing-roster-list__match {
+  color: var(--accent);
+}
+.credentialing-roster-upload-btn {
+  margin-top: 0.35rem;
 }
 
 /* Upload modal — compact bottom sheet; strong backdrop so sheet reads clearly */

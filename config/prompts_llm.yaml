@@ -113,7 +113,8 @@ prompts:
         → skip_layer_4 = false
 
       • NPI/credentialing: match to tool capabilities. credentialing_qa for PML, enrollment, report;
-        healthcare_query for NPPES-only lookup (no PML).
+        healthcare_query for ICD-10/code/coverage lookups and for NPPES lookup by 10-digit NPI (no PML).
+        Do not route code or coverage questions to healthcare_npi_lookup — that name is NPI-by-number only in ReAct.
 
       • 10-digit NPI present, no credentialing/PML context
         → primary = "tools"
@@ -246,6 +247,10 @@ prompts:
     "What is an ICD-10 code?"
     → RULE 2: rag, skip_layer_4: false
     → Conceptual question, no specific payer
+
+    "What is ICD-10 F32.1?" / "What does ICD-10 code F32.1 mean?"
+    → RULE 1: healthcare_query
+    → Specific code lookup — not corpus-first; not healthcare_npi_lookup
 
     "Is member 12345678 eligible for Sunshine Health?"
     → RULE 0: refuse
@@ -438,6 +443,8 @@ prompts:
     next_steps vs next_questions_for_user: next_steps = short imperative actions outside chat (e.g. "Call member services", "Upload the denial letter"). next_questions_for_user = 1–3 strings the **UI sends as the user's next chat message when tapped** — phrase each as a concise, self-contained question (aim under 100 characters) that works as a standalone user query, not meta text to the assistant. Do not duplicate the same idea in both lists; use [] when a list does not apply.
     When retrieval already returned on-manual / corpus sources and required_variables is empty, do NOT suggest follow-ups that ask the user to upload, attach, or share documents or links — that reads as ignoring the sources you cited.
 
+    Workflow selection UI: When the JSON includes "workflow_selection_ui" with "active": true, the chat already shows the **authoritative** list of options as buttons (single- or multi-select). Your direct_answer must be 1–2 sentences (counts or high-level outcome only). Do NOT list organization names, legal names, or NPI numbers in direct_answer, sections, resolutions, or ui_blocks — never emit a table that repeats those registry rows. Tell the user to use the choice buttons below the message. For `sections`, at most one short `references` entry with a single bullet (e.g. pointing to the buttons) is enough — do not add bullets that list each candidate.
+
     Rules for FACTUAL mode:
     - direct_answer is required and must stand alone.
     - REQUIRED sections: whenever the input includes retrieved RAG/manual sources, `sections` MUST have at least 1 and at most 3 entries (never `[]`). Put supporting bullets there (key quotes, exclusions, document-backed facts) with intent `references` or `definitions` so the UI "Details" panel is useful. If you had no retrieval and only user_provided_context, one short `references` section is still recommended.
@@ -478,6 +485,8 @@ prompts:
 
     User-provided context: When user_provided_context is present, the user is authoritative. Use it; set source="user_input" in resolutions. Include resolutions, closed/open_task_ids, next_questions_for_user.
 
+    Workflow selection UI: When the JSON includes "workflow_selection_ui" with "active": true, the chat shows choice buttons for the full list. Keep direct_answer to 1–2 sentences (counts only). Do NOT list names, NPIs, or duplicate rows in ui_blocks tables.
+
     Rules for CANONICAL mode:
     - direct_answer is required and must stand alone. Classify each section with exactly one intent: process, requirements, definitions, exceptions, or references. The UI will show direct_answer and all sections.
     - Facts in the input include retrieved context and user_provided_context. Use both.
@@ -516,6 +525,8 @@ prompts:
     Jurisdiction: When jurisdiction_summary is present in the input, include a short jurisdiction line for the answer (e.g. "For Sunshine Health in Florida …"). If different subanswers apply to different payers or states, add a one-line hint when jurisdiction changes (e.g. "Note: the following applies to United Healthcare, not Sunshine.").
 
     User-provided context: When user_provided_context is present, the user is authoritative. Use it; set source="user_input" in resolutions. Include resolutions, closed/open_task_ids, next_questions_for_user.
+
+    Workflow selection UI: When the JSON includes "workflow_selection_ui" with "active": true, the chat shows choice buttons for the full list. Keep direct_answer to 1–2 sentences (counts only). Do NOT list names, NPIs, or duplicate rows in ui_blocks tables.
 
     Rules for BLENDED mode:
     - direct_answer is required and must stand alone. Classify each section with exactly one intent: process, requirements, definitions, exceptions, or references. The UI will show direct_answer and requirements sections; process, definitions, exceptions, and references will be behind 'Show details'.

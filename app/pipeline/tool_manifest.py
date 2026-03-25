@@ -9,6 +9,10 @@ TOOL_MANIFEST = f"""
 AVAILABLE TOOLS — match the question to the tool whose capabilities fit.
 If the first tool fails (e.g. returns "no report"), try the next-best tool.
 
+WORKFLOW SELECTION (chat UI) — The server may attach **clarification_options** on the assistant
+response: clickable choices (single- or multi-select). When those appear, keep your summary short
+and point the user to the buttons; do not invent a separate prose-only list as the only way to proceed.
+
 ════════════════════════════════════════════
 search_corpus(query)
   Search Mobius knowledge base (payer manuals, policy docs).
@@ -26,18 +30,29 @@ ask_credentialing_npi(question)
   If no report exists: returns failure — try healthcare_npi_lookup next for NPPES info.
   Cannot: NPPES-only lookup; does not have PML data without a report.
 
+healthcare_query(question)
+  Healthcare data lookup: ICD-10-CM codes (meaning of F32.1, Z00.00, etc.),
+    Medicare/Medicaid coverage summaries (NCD/LCD), CPT/HCPCS wording, diagnosis/procedure codes.
+  Also: NPI registry facts when the question is a 10-digit NPI number (same backend as registry lookup).
+  Use when: User asks what a code means, ICD-10, HCPCS, coverage, or NPI-by-number without PML context.
+  Do NOT use for: PML enrollment status (use ask_credentialing_npi when a report exists),
+    or finding an org's NPI by name (use lookup_npi).
+  Cannot: PML status without credentialing report; org NPI by name.
+
 healthcare_npi_lookup(question)
-  NPPES lookup by 10-digit NPI number (national registry).
-  Can answer: Basic provider info (name, taxonomy, address) from NPI number.
-  Also: ICD-10 codes, Medicare/Medicaid coverage (NCD/LCD).
+  NPPES registry lookup ONLY when the user gives or asks about a 10-digit NPI number
+    (name, taxonomy, address from the national registry).
+  Do NOT use for: ICD-10, diagnosis codes, CPT, HCPCS, "what is code …", Medicare coverage, NCD/LCD —
+    those are healthcare_query.
   Cannot: PML status, Florida Medicaid enrollment, credentialing data.
-  Use when: NPI number in question, and ask_credentialing_npi failed or not applicable.
+  Use when: ask_credentialing_npi failed or not applicable AND the question is specifically NPI-registry lookup by number.
 
 lookup_npi(org_name)
   Look up NPI numbers for an organization BY NAME.
   Use for: "What is the NPI for David Lawrence Center?", "NPIs for Aspire Health".
   Cannot: Lookup by NPI number; PML status.
-  Returns: NPIs with addresses and confidence tiers.
+  Returns: NPIs with addresses and confidence tiers. When several billing orgs match, the **UI shows
+    server-driven choice chips** (single- or multi-select + Continue); the detailed list is only there — do not rely on prose alone.
 
 run_credentialing_report(org_name, mode optional)
   Generate credentialing / PML enrollment pipeline for an organization.
@@ -105,6 +120,7 @@ ENTITY_TOOLS = frozenset({
     "run_roster_reconciliation_report",
     "web_scrape",
     "ask_credentialing_npi",
+    "healthcare_query",
     "healthcare_npi_lookup",
     "document_upload_skill",
     "list_thread_document_uploads",

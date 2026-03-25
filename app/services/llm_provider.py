@@ -17,6 +17,82 @@ logger = logging.getLogger(__name__)
 
 _PROVIDER_REGISTRY: Dict[str, Callable[[Dict[str, Any]], "LLMProvider"]] = {}
 
+# Stages that expect structured JSON from the model — do not attach Vertex AI Search grounding in "general" mode.
+_VERTEX_SEARCH_GROUNDING_GENERAL_EXCLUDE_EXACT: frozenset[str] = frozenset({
+    "planner",
+    "integrator",
+    "integrator_roster",
+    "rag",
+    "context",
+    "critique",
+    "badge",
+    "classifier",
+    "adjudicator",
+    "phi_detector",
+})
+
+
+def expand_vertex_ai_search_datastore_path(
+    configured: str,
+    *,
+    project_id: str,
+) -> str:
+    """Resolve full Discovery Engine datastore resource name from config or env.
+
+    - If ``configured`` or env ``VERTEX_AI_SEARCH_DATASTORE`` is set, use it as-is.
+    - Else if ``VERTEX_AI_SEARCH_DATASTORE_ID`` is set, build:
+      ``projects/{project}/locations/{VERTEX_AI_SEARCH_LOCATION}/collections/default_collection/dataStores/{id}``.
+    """
+    import os
+
+    path = (configured or "").strip()
+    if not path:
+        path = (os.getenv("VERTEX_AI_SEARCH_DATASTORE") or "").strip()
+    if path:
+        return path
+    store_id = (os.getenv("VERTEX_AI_SEARCH_DATASTORE_ID") or "").strip()
+    if not store_id:
+        return ""
+    loc = (os.getenv("VERTEX_AI_SEARCH_LOCATION") or "global").strip() or "global"
+    pid = (project_id or "").strip()
+    if not pid:
+        return ""
+    return (
+        f"projects/{pid}/locations/{loc}/collections/default_collection/dataStores/{store_id}"
+    )
+
+
+def should_attach_vertex_search_grounding(stage: str | None) -> bool:
+    """Return whether to pass Vertex AI Search retrieval tool for this ``stage``."""
+    import os
+
+    mode = (os.getenv("VERTEX_AI_SEARCH_GROUNDING_MODE") or "credentialing").strip().lower()
+    if mode in ("0", "off", "false", "no", "none"):
+        return False
+    st = (stage or "").strip()
+    if mode == "credentialing":
+        return st.startswith("credentialing_")
+    if mode == "general":
+        if st == "planner" or st.startswith("react_"):
+            return False
+        if st in _VERTEX_SEARCH_GROUNDING_GENERAL_EXCLUDE_EXACT:
+            return False
+        return True
+    logger.warning("Unknown VERTEX_AI_SEARCH_GROUNDING_MODE=%r; use credentialing or general", mode)
+    return False
+
+
+def build_vertex_ai_search_tools(datastore_path: str) -> list | None:
+    """Build ``Tool`` list for Gemini grounding, or ``None`` if path empty."""
+    ds = (datastore_path or "").strip()
+    if not ds:
+        return None
+    from vertexai.generative_models import Tool
+    from vertexai.generative_models import grounding
+
+    retrieval = grounding.Retrieval(grounding.VertexAISearch(datastore=ds))
+    return [Tool.from_retrieval(retrieval)]
+
 
 def register_provider(name: str, factory: Callable[[Dict[str, Any]], "LLMProvider"]) -> None:
     name = (name or "").lower().strip()
@@ -169,16 +245,24 @@ class OllamaProvider(LLMProvider):
         return (text, usage if usage else zero_usage("ollama", self.model))
 
 
-def _vertex_stream_producer(model_name: str, prompt: str, gen_config: dict, out: queue.Queue) -> None:
+def _vertex_stream_producer(
+    model_name: str,
+    prompt: str,
+    gen_config: dict,
+    out: queue.Queue,
+    tools: list | None = None,
+) -> None:
     """Runs in a thread. Streams Vertex AI (Gemini) response into out. Puts delta text only (Gemini may return cumulative .text). Puts None when done; puts ('error', msg) on failure."""
     try:
         from vertexai.generative_models import GenerativeModel
         model = GenerativeModel(model_name)
-        response = model.generate_content(
-            prompt,
-            generation_config=gen_config,
-            stream=True,
-        )
+        kwargs: Dict[str, Any] = {
+            "generation_config": gen_config,
+            "stream": True,
+        }
+        if tools:
+            kwargs["tools"] = tools
+        response = model.generate_content(prompt, **kwargs)
         so_far = ""
         for chunk in response:
             text = getattr(chunk, "text", None) if chunk else None
@@ -199,14 +283,29 @@ def _vertex_stream_producer(model_name: str, prompt: str, gen_config: dict, out:
         out.put(("error", str(e)))
 
 
-def _vertex_generate_sync(model_name: str, prompt: str, gen_config: dict) -> tuple[str, LLMUsageDict]:
+def _vertex_generate_sync(
+    model_name: str,
+    prompt: str,
+    gen_config: dict,
+    tools: list | None = None,
+) -> tuple[str, LLMUsageDict]:
     import time as _time
     t0 = _time.perf_counter()
-    logger.info("[vertex] calling generate_content model=%s prompt_len=%d", model_name, len(prompt))
+    logger.info(
+        "[vertex] calling generate_content model=%s prompt_len=%d grounded=%s",
+        model_name,
+        len(prompt),
+        bool(tools),
+    )
     from vertexai.generative_models import GenerativeModel
     model = GenerativeModel(model_name)
     try:
-        response = model.generate_content(prompt, generation_config=gen_config)
+        if tools:
+            response = model.generate_content(
+                prompt, generation_config=gen_config, tools=tools
+            )
+        else:
+            response = model.generate_content(prompt, generation_config=gen_config)
     except Exception as e:
         logger.error("[vertex] generate_content raised: %s (elapsed=%.1fs)", e, _time.perf_counter() - t0)
         raise
@@ -230,7 +329,13 @@ def _vertex_generate_sync(model_name: str, prompt: str, gen_config: dict) -> tup
 
 
 class VertexAIProvider(LLMProvider):
-    def __init__(self, project_id: str, location: str = "us-central1", model: str = "gemini-2.5-flash"):
+    def __init__(
+        self,
+        project_id: str,
+        location: str = "us-central1",
+        model: str = "gemini-2.5-flash",
+        vertex_ai_search_datastore: str = "",
+    ):
         import os
         trace_entered("services.llm_provider.VertexAIProvider.__init__", project_id=(project_id or "")[:20] or "(empty)")
         # Never pass None/empty to Vertex SDK; resolve at last moment (handles env not loaded yet or wrong run path)
@@ -239,6 +344,11 @@ class VertexAIProvider(LLMProvider):
             pid = (os.getenv("VERTEX_PROJECT_ID") or os.getenv("CHAT_VERTEX_PROJECT_ID") or "mobiusos-new").strip()
         if not pid:
             pid = "mobiusos-new"
+        self._vertex_ai_search_datastore = expand_vertex_ai_search_datastore_path(
+            vertex_ai_search_datastore,
+            project_id=pid,
+        )
+        self._vertex_search_tools: list | None = None
         try:
             import vertexai
             vertexai.init(project=pid, location=location)
@@ -250,12 +360,56 @@ class VertexAIProvider(LLMProvider):
         except Exception as e:
             raise Exception(f"Failed to initialize Vertex AI: {e}") from e
 
-    def _timeout_seconds(self) -> float:
+    def _tools_for_vertex_search(self, stage: str | None) -> list | None:
+        if not self._vertex_ai_search_datastore:
+            return None
+        if not should_attach_vertex_search_grounding(stage):
+            return None
+        if self._vertex_search_tools is None:
+            try:
+                self._vertex_search_tools = build_vertex_ai_search_tools(
+                    self._vertex_ai_search_datastore
+                )
+            except Exception as e:
+                logger.warning("Vertex AI Search tools unavailable: %s", e)
+                self._vertex_search_tools = []
+        if not self._vertex_search_tools:
+            return None
+        return self._vertex_search_tools
+
+    def _timeout_seconds(
+        self,
+        *,
+        stage: str | None = None,
+        max_tokens: int | None = None,
+    ) -> float:
+        """Wall-clock cap for Vertex generate_content (asyncio.wait_for).
+
+        Credentialing skill calls (stage credentialing_*) and large max_output_tokens
+        need far more than the default 60s — otherwise /internal/skill-llm returns 500
+        mid-compose while the model is still generating.
+        """
         import os
+
         try:
-            return float(os.getenv("LLM_TIMEOUT_SECONDS", "60") or 60)
+            base = float(os.getenv("LLM_TIMEOUT_SECONDS", "60") or 60)
         except (TypeError, ValueError):
-            return 60.0
+            base = 60.0
+        st = (stage or "").strip()
+        if st.startswith("credentialing_") or st == "integrator_roster":
+            try:
+                cred = float(os.getenv("CREDENTIALING_LLM_TIMEOUT_SECONDS", "900") or 900)
+            except (TypeError, ValueError):
+                cred = 900.0
+            return max(base, cred)
+        try:
+            mt = int(max_tokens) if max_tokens is not None else 0
+        except (TypeError, ValueError):
+            mt = 0
+        if mt > 8192:
+            scaled = min(900.0, base + mt / 100.0)
+            return max(base, scaled)
+        return base
 
     def _generation_config(self, **kwargs) -> dict:
         # Gemini GenerationConfig uses max_output_tokens, not max_tokens
@@ -269,10 +423,14 @@ class VertexAIProvider(LLMProvider):
         return cfg
 
     async def stream_generate(self, prompt: str, **kwargs) -> AsyncIterator[str]:
-        gen_config = self._generation_config(**kwargs)
+        kw = dict(kwargs)
+        stage_kw = kw.get("stage")
+        max_kw = kw.get("max_tokens")
+        gen_config = self._generation_config(**kw)
+        tools = self._tools_for_vertex_search(stage_kw)
         loop = asyncio.get_running_loop()
         q: queue.Queue = queue.Queue()
-        timeout_s = self._timeout_seconds()
+        timeout_s = self._timeout_seconds(stage=stage_kw, max_tokens=max_kw)
         start = time.monotonic()
 
         def get() -> object:
@@ -280,7 +438,7 @@ class VertexAIProvider(LLMProvider):
 
         t = threading.Thread(
             target=_vertex_stream_producer,
-            args=(self.model_name, prompt, gen_config, q),
+            args=(self.model_name, prompt, gen_config, q, tools),
             daemon=True,
         )
         t.start()
@@ -302,10 +460,16 @@ class VertexAIProvider(LLMProvider):
         return text
 
     async def generate_with_usage(self, prompt: str, **kwargs) -> tuple[str, LLMUsageDict]:
-        gen_config = self._generation_config(**kwargs)
-        timeout_s = self._timeout_seconds()
+        kw = dict(kwargs)
+        stage_kw = kw.get("stage")
+        max_kw = kw.get("max_tokens")
+        gen_config = self._generation_config(**kw)
+        tools = self._tools_for_vertex_search(stage_kw)
+        timeout_s = self._timeout_seconds(stage=stage_kw, max_tokens=max_kw)
         return await asyncio.wait_for(
-            asyncio.to_thread(_vertex_generate_sync, self.model_name, prompt, gen_config),
+            asyncio.to_thread(
+                _vertex_generate_sync, self.model_name, prompt, gen_config, tools
+            ),
             timeout=timeout_s,
         )
 
@@ -335,7 +499,16 @@ def _vertex_factory(config: Dict[str, Any]) -> LLMProvider:
         project_id = "mobiusos-new"
     location = vertex.get("location") or c.vertex_location
     model = vertex.get("model") or config.get("model") or c.vertex_model
-    return VertexAIProvider(project_id=project_id, location=location, model=model)
+    v_store = (
+        (vertex.get("vertex_ai_search_datastore") or "").strip()
+        or (getattr(c, "vertex_ai_search_datastore", None) or "")
+    )
+    return VertexAIProvider(
+        project_id=project_id,
+        location=location,
+        model=model,
+        vertex_ai_search_datastore=v_store,
+    )
 
 
 register_provider("ollama", _ollama_factory)
@@ -661,7 +834,15 @@ def get_llm_provider(parser: bool = False) -> LLMProvider:
         "model": c.ollama_model if provider_name == "ollama" else vertex_model,
         "options": {"num_predict": c.ollama_num_predict} if provider_name == "ollama" else {},
         "ollama": {"base_url": c.ollama_base_url},
-        "vertex": {"project_id": c.vertex_project_id, "location": c.vertex_location, "model": vertex_model},
+        "vertex": {
+            "project_id": c.vertex_project_id,
+            "location": c.vertex_location,
+            "model": vertex_model,
+            "vertex_ai_search_datastore": getattr(
+                c, "vertex_ai_search_datastore", ""
+            )
+            or "",
+        },
     }
     factory = _PROVIDER_REGISTRY.get(provider_name)
     if factory:

@@ -73,6 +73,9 @@ class ChatLLMConfig:
     vertex_project_id: str | None = None
     vertex_location: str = "us-central1"
     vertex_model: str = "gemini-2.5-flash"
+    # Vertex AI Search (Discovery Engine) datastore for Gemini grounding — full resource name or set
+    # VERTEX_AI_SEARCH_DATASTORE / VERTEX_AI_SEARCH_DATASTORE_ID in env (see llm_provider).
+    vertex_ai_search_datastore: str = ""
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b"
@@ -348,6 +351,8 @@ def _chat_config_from_prompts_llm(pl: dict, rag: ChatRAGConfig) -> ChatConfig:
     vertex_project = (llm_d.get("vertex_project_id") or "").strip() or None
     if not vertex_project:
         vertex_project = (_env("CHAT_VERTEX_PROJECT_ID") or get_env_or("VERTEX_PROJECT_ID", "mobiusos-new") or "mobiusos-new").strip() or "mobiusos-new"
+    ds_yaml = _str(llm_d, "vertex_ai_search_datastore")
+    ds_env = _env("VERTEX_AI_SEARCH_DATASTORE")
     llm = ChatLLMConfig(
         provider=(_str(llm_d, "provider") or "vertex").lower(),
         model=_str(llm_d, "model") or "gemini-2.5-flash",
@@ -355,6 +360,7 @@ def _chat_config_from_prompts_llm(pl: dict, rag: ChatRAGConfig) -> ChatConfig:
         vertex_project_id=vertex_project or None,
         vertex_location=_str(llm_d, "vertex_location") or "us-central1",
         vertex_model=_str(llm_d, "vertex_model") or "gemini-2.5-flash",
+        vertex_ai_search_datastore=(ds_yaml or ds_env),
         ollama_base_url=_str(llm_d, "ollama_base_url") or "http://localhost:11434",
         ollama_model=_str(llm_d, "ollama_model") or "llama3.1:8b",
         ollama_num_predict=_int(llm_d, "ollama_num_predict", 8192),
@@ -417,6 +423,7 @@ def get_chat_config() -> ChatConfig:
         vertex_project_id=(_env("CHAT_VERTEX_PROJECT_ID") or get_env_or("VERTEX_PROJECT_ID", "mobiusos-new") or os.getenv("VERTEX_PROJECT_ID") or os.getenv("CHAT_VERTEX_PROJECT_ID") or "mobiusos-new").strip() or "mobiusos-new",
         vertex_location=_env("CHAT_VERTEX_LOCATION") or os.getenv("VERTEX_LOCATION", "us-central1"),
         vertex_model=_env("CHAT_VERTEX_MODEL") or os.getenv("VERTEX_MODEL", "gemini-2.5-flash"),
+        vertex_ai_search_datastore=_env("VERTEX_AI_SEARCH_DATASTORE"),
         ollama_base_url=_env("CHAT_OLLAMA_BASE_URL") or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
         ollama_model=_env("CHAT_OLLAMA_MODEL") or os.getenv("OLLAMA_MODEL", "llama3.1:8b"),
         ollama_num_predict=int(os.getenv("CHAT_OLLAMA_NUM_PREDICT") or os.getenv("OLLAMA_NUM_PREDICT", "8192")),
@@ -480,6 +487,9 @@ def chat_config_for_api() -> dict:
             "vertex_project_id": c.llm.vertex_project_id,
             "vertex_location": c.llm.vertex_location,
             "vertex_model": c.llm.vertex_model,
+            "vertex_ai_search_grounding_configured": bool(
+                (getattr(c.llm, "vertex_ai_search_datastore", "") or "").strip()
+            ),
             "ollama_base_url": c.llm.ollama_base_url,
             "ollama_model": c.llm.ollama_model,
             "ollama_num_predict": c.llm.ollama_num_predict,

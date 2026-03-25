@@ -29,6 +29,9 @@ def orchestrator_state_to_dict(state: OrchestratorState) -> dict[str, Any]:
         "report_pdf_base64": state.report_pdf_base64,
         "report_run_id": state.report_run_id,
         "report_summary": dict(state.report_summary) if isinstance(state.report_summary, dict) else state.report_summary,
+        "step3_roster_upload_id": getattr(state, "step3_roster_upload_id", "") or "",
+        "step3_external_only": bool(getattr(state, "step3_external_only", False)),
+        "step3_include_roster_members": bool(getattr(state, "step3_include_roster_members", True)),
         "steps": [
             {"id": s.id, "label": s.label, "status": s.status, "result_summary": s.result_summary}
             for s in state.steps
@@ -86,6 +89,9 @@ def orchestrator_state_from_dict(data: dict[str, Any]) -> OrchestratorState:
         org_name=str(data.get("org_name", "") or ""),
         locations_count=int(data.get("locations_count", 0) or 0),
         locations=locs,
+        step3_roster_upload_id=str(data.get("step3_roster_upload_id", "") or ""),
+        step3_external_only=bool(data.get("step3_external_only", False)),
+        step3_include_roster_members=bool(data.get("step3_include_roster_members", True)),
         associated_providers=_dict_maybe(data.get("associated_providers")),
         active_roster=_dict_maybe(data.get("active_roster")),
         org_benchmark=_dict_maybe(data.get("org_benchmark")),

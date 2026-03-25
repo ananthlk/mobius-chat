@@ -9,6 +9,7 @@ import re
 from collections.abc import Callable
 
 from app.planner.adapter import task_plan_to_plan
+from app.planner.credentialing_flow_intent import parse_credentialing_flow_intent
 from app.planner.mobius_parse import parse_task_plan_from_json
 from app.planner.schemas import Plan, SubQuestion, QuestionIntent
 from app.stages.agents.capabilities import planner_input_json
@@ -258,6 +259,7 @@ def parse(
         if mobius_plan and mobius_plan.subquestions:
             # Plan breakdown emitted later via format_execution_plan (My plan: 1. ...) for consistency
             mobius_plan.thinking_log = thinking_log
+            mobius_plan.credentialing_flow_intent = parse_credentialing_flow_intent(text)
             return mobius_plan
 
     triples, plan_usage = _llm_decompose(
@@ -280,4 +282,9 @@ def parse(
         score = llm_score if llm_score is not None else intent_to_score(intent)
         subquestions.append(SubQuestion(id=sq_id, text=sq_text, kind=kind, question_intent=intent, intent_score=score))
 
-    return Plan(subquestions=subquestions, thinking_log=thinking_log, llm_usage=plan_usage)
+    return Plan(
+        subquestions=subquestions,
+        thinking_log=thinking_log,
+        llm_usage=plan_usage,
+        credentialing_flow_intent=parse_credentialing_flow_intent(text),
+    )

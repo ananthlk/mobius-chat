@@ -3,6 +3,7 @@
 import json
 import logging
 from collections.abc import Callable
+from typing import Any
 
 from app.communication.json_display_sanitize import (
     DEFAULT_BLEED_FALLBACK,
@@ -64,6 +65,7 @@ def _build_consolidator_input_json(
     sources_summary: list[dict] | None = None,
     jurisdiction_summary: str | None = None,
     user_provided_context: str | None = None,
+    workflow_selection_ui: dict[str, Any] | None = None,
 ) -> str:
     """Build JSON payload for consolidator: user_message, subquestions, answers, retrieval_metadata, sources_summary, jurisdiction_summary, user_provided_context."""
     _subs = getattr(plan, "subquestions", None) or []
@@ -86,6 +88,8 @@ def _build_consolidator_input_json(
         payload["jurisdiction_summary"] = jurisdiction_summary.strip()
     if user_provided_context and user_provided_context.strip():
         payload["user_provided_context"] = user_provided_context.strip()
+    if workflow_selection_ui:
+        payload["workflow_selection_ui"] = workflow_selection_ui
     return json.dumps(payload, indent=2)
 
 
@@ -258,6 +262,7 @@ def format_response(
     sources_summary: list[dict] | None = None,
     jurisdiction_summary: str | None = None,
     user_provided_context: str | None = None,
+    workflow_selection_ui: dict[str, Any] | None = None,
     correlation_id: str | None = None,
     thread_id: str | None = None,
     config_sha: str | None = None,
@@ -285,6 +290,7 @@ def format_response(
             sources_summary=sources_summary,
             jurisdiction_summary=jurisdiction_summary,
             user_provided_context=user_provided_context,
+            workflow_selection_ui=workflow_selection_ui,
         )
         canonical_score = blended_canonical_score(plan)
         consolidator_type = choose_consolidator_type(

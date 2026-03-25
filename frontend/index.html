@@ -157,6 +157,10 @@
       </div>
       <div class="composer-wrap">
         <div class="composer">
+          <label class="composer-agentic-label" title="ReAct reasoning and tools (recommended for most questions)">
+            <input type="checkbox" id="composerAgentic" checked />
+            <span class="composer-agentic-text">Agentic</span>
+          </label>
           <input type="text" id="input" placeholder="Message Mobius Chat…" autocomplete="off" />
           <button type="button" class="btn-composer-options" id="composerOptions" aria-label="More options" aria-haspopup="true" aria-expanded="false" title="More options">⋯</button>
           <div class="composer-options-menu" id="composerOptionsMenu" hidden role="menu">
@@ -201,6 +205,47 @@
       </div>
     </div>
     <p class="upload-modal-status" id="uploadStatus" aria-live="polite" aria-atomic="true"></p>
+  </div>
+
+  <div class="upload-overlay upload-overlay--sheet" id="credentialingOverlay"></div>
+  <div class="upload-modal upload-modal--sheet credentialing-envelope-modal" id="credentialingModal" role="dialog" aria-labelledby="credentialingModalTitle" aria-modal="true" hidden>
+    <h2 id="credentialingModalTitle">Credentialing / roster report</h2>
+    <p class="upload-modal-desc">Confirm organization and run options. With a roster file on this chat we default to <strong>reconciliation</strong> (your file vs external); otherwise we run the outside-in <strong>Medicaid NPI</strong> pipeline.</p>
+    <form id="credentialingForm">
+      <label class="credentialing-envelope-field">Organization name
+        <input type="text" id="credentialingOrgName" required placeholder="e.g. David Lawrence Center" autocomplete="organization" />
+      </label>
+      <div class="credentialing-roster-panel" id="credentialingRosterPanel" hidden>
+        <div class="credentialing-roster-panel__title" id="credentialingRosterTitle"></div>
+        <ul class="credentialing-roster-list" id="credentialingRosterList" hidden></ul>
+        <p class="credentialing-roster-hint" id="credentialingRosterHint"></p>
+        <button type="button" class="btn-credentialing-secondary credentialing-roster-upload-btn" id="credentialingUploadRoster">
+          Upload roster file…
+        </button>
+      </div>
+      <label class="credentialing-envelope-checkbox" id="credentialingPreferOutsideInWrap" hidden>
+        <input type="checkbox" id="credentialingPreferOutsideIn" />
+        Outside-in Medicaid NPI only (ignore linked roster for this run)
+      </label>
+      <label class="credentialing-envelope-checkbox" id="credentialingPreferFreshWrap">
+        <input type="checkbox" id="credentialingPreferFresh" />
+        Run full pipeline fresh (do not use today’s cached outside-in report if one exists)
+      </label>
+      <fieldset class="credentialing-envelope-fieldset">
+        <legend>Run style</legend>
+        <label class="credentialing-radio"><input type="radio" name="credentialingMode" value="autopilot" checked /> Full run (autopilot)</label>
+        <label class="credentialing-radio"><input type="radio" name="credentialingMode" value="copilot" /> Step-by-step (co-pilot)</label>
+      </fieldset>
+      <label class="credentialing-envelope-checkbox">
+        <input type="checkbox" id="credentialingForceRefresh" />
+        Refresh Florida Medicaid / PML data before run
+      </label>
+      <div class="credentialing-envelope-actions">
+        <button type="button" id="credentialingDefaults" class="btn-credentialing-secondary">Use defaults</button>
+        <button type="button" id="credentialingCancel" class="btn-credentialing-secondary">Cancel</button>
+        <button type="submit" id="credentialingConfirm" class="btn-credentialing-primary">Run</button>
+      </div>
+    </form>
   </div>
 
   <div class="drawer-overlay" id="drawerOverlay"></div>

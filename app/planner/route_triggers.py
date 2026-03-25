@@ -42,6 +42,11 @@ TRIGGERS_WEB: tuple[str, ...] = (
     "create credentialing report",
     "i want to create a medicaid npi report",
     "i want to create a credentialing report",
+    # Roster reconciliation (upload vs outside-in)
+    "reconciliation report",
+    "roster reconciliation",
+    "reconcile roster",
+    "reconcile my roster",
     # Org / NPI lookup
     "npi of ",
     "npis for ",

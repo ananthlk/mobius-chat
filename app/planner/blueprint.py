@@ -116,6 +116,8 @@ def build_blueprint(
     if has_followup and (has_report_ctx or not has_build):
         deterministic_agent = deterministic_agent or "tool"
 
+    cf_intent = getattr(plan, "credentialing_flow_intent", None)
+
     out: list[dict] = []
     for i, sq in enumerate(plan.subquestions):
         # Apply deterministic override to first subquestion when single-intent
@@ -136,6 +138,12 @@ def build_blueprint(
                 agent = "RAG"
             else:
                 agent = "patient_stub"
+        # Parser module: roster inventory / reconciliation data-path (not autopilot/copilot)
+        if cf_intent and i == 0 and sq.kind != "patient":
+            if cf_intent.request_upload_inventory:
+                agent = "tool"
+            elif cf_intent.data_path == "reconciliation" and not use_credentialing_qa:
+                agent = "tool"
         sensitivity = _sensitivity_for(sq)
         rag_k = rag_default_k if agent == "RAG" else 0
         retrieval_config = "standard"
@@ -160,6 +168,11 @@ def build_blueprint(
             tool_hint = "roster_report"
         if use_credentialing_qa and i == 0 and agent == "tool":
             tool_hint = "credentialing_qa"
+        if cf_intent and i == 0 and sq.kind != "patient" and agent == "tool" and not use_credentialing_qa:
+            if cf_intent.request_upload_inventory:
+                tool_hint = "list_thread_document_uploads"
+            elif cf_intent.data_path == "reconciliation":
+                tool_hint = "roster_reconciliation"
         skip_layer_4 = bool(getattr(sq, "skip_layer_4", False))
         question_intent = getattr(sq, "question_intent", None)
         out.append({

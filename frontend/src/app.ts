@@ -11,12 +11,53 @@ interface MobiusChatUserProfile {
   activities?: string[];
 }
 
-/** Clarification option: clickable choice for slot fill */
+/** Clarification option: server-authored choices (jurisdiction, NPI pick, future workflows) */
 interface ClarificationOption {
   slot: string;
   label: string;
   selection_mode: string;
-  choices: Array<{ value: string; label: string }>;
+  choices: Array<{ value: string; label: string; choice_id?: string }>;
+  min_choices?: number;
+  max_choices?: number;
+  context_type?: string;
+}
+
+/** Live chip state merged into the next composer Send (see buildWorkflowSelectionPreface). */
+interface ClarificationDraftGroup {
+  slot: string;
+  mode: "single" | "multiple";
+  multiSelected: Set<string>;
+  singleSelected: string | null;
+  minChoices: number;
+  maxChoices: number;
+}
+
+let activeClarificationDraft: ClarificationDraftGroup[] | null = null;
+
+function buildWorkflowSelectionPreface(): string | null {
+  if (!activeClarificationDraft?.length) {
+    return null;
+  }
+  const blocks: string[] = [];
+  for (const g of activeClarificationDraft) {
+    if (g.mode === "multiple") {
+      const n = g.multiSelected.size;
+      if (n < g.minChoices || n > g.maxChoices) {
+        continue;
+      }
+      const lines = [...g.multiSelected].map((v) => `• ${v}`);
+      blocks.push(`[Mobius workflow_selection slot="${g.slot}"]\n` + lines.join("\n"));
+    } else {
+      const v = (g.singleSelected || "").trim();
+      if (v) {
+        blocks.push(v);
+      }
+    }
+  }
+  if (!blocks.length) {
+    return null;
+  }
+  return blocks.join("\n\n");
 }
 
 /** Roster/credentialing step output (CSV for validation) */
@@ -363,6 +404,105 @@ interface ConfigHistoryEntry {
 interface ChatPostResponse {
   correlation_id: string;
   thread_id?: string;
+}
+
+/** POST /chat — optional envelope fields (mobius-chat ChatRequest) */
+interface CredentialingOptionsPayload {
+  org_name: string;
+  mode: "autopilot" | "copilot";
+  force_refresh: boolean;
+  /** True = outside-in Medicaid NPI pipeline even when a roster exists on the thread */
+  prefer_outside_in?: boolean;
+  /** True = skip same-day cached outside-in credentialing report and run full pipeline */
+  prefer_fresh_report?: boolean;
+}
+
+interface SendMessageOpts {
+  credentialing_options?: CredentialingOptionsPayload;
+  /** When true, do not intercept with credentialing envelope */
+  skipCredentialingEnvelope?: boolean;
+  use_react?: boolean;
+}
+
+/** Aligned with mobius-chat/app/services/tool_agent.py roster_triggers + roster_triggers_new */
+const CREDENTIALING_ROSTER_TRIGGERS: string[] = [
+  "provider roster",
+  "credentialing report",
+  "roster report",
+  "roster reconciliation",
+  "reconciliation report",
+  "medicaid roster",
+  "roster for",
+  "medicaid npi report",
+  "create a medicaid npi report",
+  "create medicaid npi report",
+  "create a credentialing report",
+  "create credentialing report",
+  "i want to create a medicaid npi report",
+  "i want to create a credentialing report",
+];
+
+const CREDENTIALING_ORG_PREFIXES: string[] = [
+  "run roster reconciliation report for",
+  "roster reconciliation report for",
+  "reconciliation report for",
+  "run reconciliation report for",
+  "provider roster for",
+  "credentialing report for",
+  "roster report for",
+  "medicaid roster for",
+  "roster for",
+  "create a medicaid npi report for",
+  "create medicaid npi report for",
+  "create a credentialing report for",
+  "create credentialing report for",
+  "i want to create a medicaid npi report for",
+  "i want to create a credentialing report for",
+  "medicaid npi report for",
+];
+
+function isCredentialingReportIntent(text: string): boolean {
+  const lower = (text || "").trim().toLowerCase();
+  const wantsNewReport = [
+    "run roster reconciliation report for",
+    "roster reconciliation report for",
+    "reconciliation report for",
+    "run reconciliation report for",
+    "provider roster for",
+    "credentialing report for",
+    "roster report for",
+    "medicaid roster for",
+    "roster for",
+    "create a medicaid npi report for",
+    "create medicaid npi report for",
+    "create a credentialing report for",
+    "create credentialing report for",
+    "medicaid npi report for",
+  ];
+  if (wantsNewReport.some((t) => lower.includes(t))) return true;
+  return CREDENTIALING_ROSTER_TRIGGERS.some((t) => lower.includes(t));
+}
+
+/** Match org hint to roster upload row (same heuristic as server classify_org_vs_uploads). */
+function orgHintMatchesUploadOrg(orgHint: string, uploadOrg: string): boolean {
+  const a = (orgHint || "").trim().toLowerCase();
+  const b = (uploadOrg || "").trim().toLowerCase();
+  if (!a || !b) return false;
+  return a.includes(b) || b.includes(a);
+}
+
+function extractCredentialingOrgHint(text: string): string {
+  const rosterLower = text.trim().toLowerCase();
+  const rosterCheckText = text.trim();
+  for (const t of CREDENTIALING_ORG_PREFIXES) {
+    if (rosterLower.includes(t)) {
+      return rosterCheckText
+        .slice(rosterLower.indexOf(t) + t.length)
+        .trim()
+        .replace(/[?.,;!]+$/, "");
+    }
+  }
+  return "";
 }
 
 /** POST /chat/roster-upload — TurboTax-style recap payload */
@@ -1952,14 +2092,104 @@ function renderNextQuestions(
   return wrap;
 }
 
-/** Reusable: clarification options (buttons/chips for slot fill). */
-function renderClarificationOptions(
-  opts: ClarificationOption[],
-  onSelect: (value: string) => void
-): HTMLElement {
+function clarificationSelectionIsMultiple(opt: ClarificationOption): boolean {
+  const m = (opt.selection_mode || "single").toLowerCase();
+  return m === "multiple" || m === "multi";
+}
+
+/** Multi-select: toggle chips; user presses main Send to submit selection + composer text. */
+function renderClarificationMultiGroup(opt: ClarificationOption): HTMLElement {
+  const group = document.createElement("div");
+  group.className = "clarification-option-group clarification-option-group--multi";
+  const labelEl = document.createElement("div");
+  labelEl.className = "clarification-option-label";
+  labelEl.textContent = opt.label;
+  group.appendChild(labelEl);
+
+  const n = opt.choices.length;
+  let minC = opt.min_choices != null ? Math.max(0, opt.min_choices) : 1;
+  let maxC = opt.max_choices != null ? Math.max(0, opt.max_choices) : n;
+  minC = Math.min(minC, n);
+  maxC = Math.min(maxC, n);
+  if (maxC < minC) {
+    maxC = minC;
+  }
+
+  const selected = new Set<string>();
+  const chips = document.createElement("div");
+  chips.className = "clarification-option-chips clarification-option-chips--multi";
+
+  const hint = document.createElement("div");
+  hint.className = "clarification-option-multi-hint";
+
+  const slot = (opt.slot || "workflow_selection").trim();
+  const draft: ClarificationDraftGroup = {
+    slot,
+    mode: "multiple",
+    multiSelected: selected,
+    singleSelected: null,
+    minChoices: minC,
+    maxChoices: maxC,
+  };
+  if (activeClarificationDraft) {
+    activeClarificationDraft.push(draft);
+  }
+
+  function syncHintOnly() {
+    if (minC === maxC) {
+      hint.textContent = `Select exactly ${minC} option(s), add a message in the box below if you like, then press Send.`;
+    } else {
+      hint.textContent = `Select ${minC}–${maxC} option(s), type below (optional), then press Send.`;
+    }
+  }
+
+  function toggleChoice(value: string, btn: HTMLButtonElement) {
+    if (selected.has(value)) {
+      selected.delete(value);
+      btn.classList.remove("clarification-option-chip--selected");
+      btn.setAttribute("aria-pressed", "false");
+    } else {
+      if (selected.size >= maxC) {
+        return;
+      }
+      selected.add(value);
+      btn.classList.add("clarification-option-chip--selected");
+      btn.setAttribute("aria-pressed", "true");
+    }
+    syncHintOnly();
+  }
+
+  for (const c of opt.choices) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "clarification-option-chip clarification-option-chip--toggle";
+    btn.textContent = c.label;
+    btn.setAttribute("aria-pressed", "false");
+    const val = c.value;
+    btn.addEventListener("click", () => toggleChoice(val, btn));
+    chips.appendChild(btn);
+  }
+
+  group.appendChild(chips);
+
+  const footer = document.createElement("div");
+  footer.className = "clarification-option-multi-footer";
+  footer.appendChild(hint);
+  group.appendChild(footer);
+  syncHintOnly();
+  return group;
+}
+
+/** Reusable: clarification chips; selections merge into the next composer Send. */
+function renderClarificationOptions(opts: ClarificationOption[]): HTMLElement {
+  activeClarificationDraft = [];
   const wrap = document.createElement("div");
   wrap.className = "clarification-options";
   for (const opt of opts) {
+    if (clarificationSelectionIsMultiple(opt)) {
+      wrap.appendChild(renderClarificationMultiGroup(opt));
+      continue;
+    }
     const group = document.createElement("div");
     group.className = "clarification-option-group";
     const labelEl = document.createElement("div");
@@ -1968,16 +2198,46 @@ function renderClarificationOptions(
     group.appendChild(labelEl);
     const chips = document.createElement("div");
     chips.className = "clarification-option-chips";
+    group.appendChild(chips);
+
+    const slot = (opt.slot || "workflow_selection").trim();
+    const draft: ClarificationDraftGroup = {
+      slot,
+      mode: "single",
+      multiSelected: new Set(),
+      singleSelected: null,
+      minChoices: 0,
+      maxChoices: 1,
+    };
+    if (activeClarificationDraft) {
+      activeClarificationDraft.push(draft);
+    }
+
     for (const c of opt.choices) {
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = "clarification-option-chip";
+      btn.className = "clarification-option-chip clarification-option-chip--toggle";
+      btn.setAttribute("aria-pressed", "false");
       btn.textContent = c.label;
-      btn.addEventListener("click", () => onSelect(c.value));
+      btn.addEventListener("click", () => {
+        chips.querySelectorAll("button.clarification-option-chip").forEach((b) => {
+          b.classList.remove("clarification-option-chip--selected");
+          b.setAttribute("aria-pressed", "false");
+        });
+        btn.classList.add("clarification-option-chip--selected");
+        btn.setAttribute("aria-pressed", "true");
+        draft.singleSelected = c.value;
+      });
       chips.appendChild(btn);
     }
-    group.appendChild(chips);
+    const hintSingle = document.createElement("div");
+    hintSingle.className = "clarification-option-multi-hint";
+    hintSingle.textContent = "Tap a choice (optional), type in the box below, then press Send.";
+    group.appendChild(hintSingle);
     wrap.appendChild(group);
+  }
+  if (!activeClarificationDraft.length) {
+    activeClarificationDraft = null;
   }
   return wrap;
 }
@@ -3940,10 +4200,208 @@ function run(): void {
 
   const chatEmpty = document.getElementById("chatEmpty");
 
-  function sendMessage(overrideMessage?: string): void {
-    const message = (overrideMessage ?? (inputEl.value ?? "").trim()).trim();
+  let credentialingPendingMessage: string | null = null;
+  /** When set, successful roster upload re-opens the credentialing modal with this message. */
+  let credentialingReopenMessage: string | null = null;
+
+  function hideCredentialingEnvelope(): void {
+    credentialingPendingMessage = null;
+    document.getElementById("credentialingModal")?.setAttribute("hidden", "");
+    document.getElementById("credentialingOverlay")?.classList.remove("open");
+  }
+
+  interface ThreadUploadsRosterRow {
+    upload_id?: string;
+    org_id?: string;
+    org_name?: string;
+    filename?: string;
+    purpose?: string;
+    row_count?: number;
+  }
+
+  function refreshCredentialingRosterUi(): void {
+    const panel = document.getElementById("credentialingRosterPanel");
+    const titleEl = document.getElementById("credentialingRosterTitle");
+    const listEl = document.getElementById("credentialingRosterList");
+    const hintEl = document.getElementById("credentialingRosterHint");
+    const outsideWrap = document.getElementById("credentialingPreferOutsideInWrap");
+    const outsideCb = document.getElementById("credentialingPreferOutsideIn") as HTMLInputElement | null;
+    const freshWrap = document.getElementById("credentialingPreferFreshWrap");
+    const freshCb = document.getElementById("credentialingPreferFresh") as HTMLInputElement | null;
+    const orgEl = document.getElementById("credentialingOrgName") as HTMLInputElement | null;
+    if (!panel || !titleEl || !listEl || !hintEl || !outsideWrap || !outsideCb || !freshWrap || !freshCb) return;
+
+    const orgHint = (orgEl?.value ?? "").trim();
+
+    const tid = (currentThreadId || "").trim();
+    if (!tid) {
+      panel.removeAttribute("hidden");
+      titleEl.textContent = "Roster files on this chat";
+      listEl.innerHTML = "";
+      listEl.setAttribute("hidden", "");
+      hintEl.textContent =
+        "No thread yet — send once so uploads attach to this chat. Without a roster file we run the outside-in Medicaid NPI pipeline.";
+      hintEl.hidden = false;
+      outsideWrap.setAttribute("hidden", "");
+      freshWrap.removeAttribute("hidden");
+      return;
+    }
+
+    fetch(API_BASE + "/chat/thread/" + encodeURIComponent(tid) + "/uploads")
+      .then(
+        (r) =>
+          r.json() as Promise<{
+            roster_reconciliation_files?: ThreadUploadsRosterRow[];
+            uploaded_files?: Array<{ purpose?: string; upload_id?: string; org_id?: string }>;
+            reconciliation_upload_id?: string | null;
+            reconciliation_org_id?: string | null;
+            reconciliation_org_name?: string | null;
+          }>
+      )
+      .then((data) => {
+        let rows: ThreadUploadsRosterRow[] = Array.isArray(data.roster_reconciliation_files)
+          ? [...data.roster_reconciliation_files]
+          : [];
+        const hasTop = !!(data.reconciliation_upload_id && data.reconciliation_org_id);
+        const files = Array.isArray(data.uploaded_files) ? data.uploaded_files : [];
+        const hasFile = files.some(
+          (u) =>
+            (u.purpose || "").trim() === "roster_reconciliation" &&
+            !!(u.upload_id || "").trim() &&
+            !!(u.org_id || "").trim()
+        );
+        const hasRoster = rows.length > 0 || hasTop || hasFile;
+        if (rows.length === 0 && hasTop) {
+          const rn = (data.reconciliation_org_name || "").trim();
+          const rup = (data.reconciliation_upload_id || "").trim();
+          const rid = (data.reconciliation_org_id || "").trim();
+          if (rup && rn) {
+            rows = [{ upload_id: rup, org_id: rid, org_name: rn, filename: "", purpose: "roster_reconciliation" }];
+          }
+        }
+
+        const recName = (data.reconciliation_org_name || "").trim();
+        let classification: "matched" | "ambiguous" | "no_files" = "no_files";
+        if (!hasRoster) {
+          classification = "no_files";
+        } else if (!orgHint) {
+          classification = "ambiguous";
+        } else {
+          let matches = 0;
+          for (const u of rows) {
+            if (orgHintMatchesUploadOrg(orgHint, u.org_name || "")) matches += 1;
+          }
+          if (recName && orgHintMatchesUploadOrg(orgHint, recName)) matches += 1;
+          classification = matches >= 1 ? "matched" : "ambiguous";
+        }
+
+        panel.removeAttribute("hidden");
+        listEl.innerHTML = "";
+        if (rows.length > 0) {
+          listEl.removeAttribute("hidden");
+          for (const u of rows) {
+            const li = document.createElement("li");
+            const fn = (u.filename || "").trim() || "upload";
+            const on = (u.org_name || "").trim() || "—";
+            const match = orgHint ? orgHintMatchesUploadOrg(orgHint, on) : false;
+            if (match) li.classList.add("credentialing-roster-list__match");
+            li.textContent = `${fn} — ${on}`;
+            listEl.appendChild(li);
+          }
+        } else {
+          listEl.setAttribute("hidden", "");
+        }
+
+        if (classification === "no_files") {
+          titleEl.textContent = "No roster file on this chat";
+          hintEl.textContent =
+            "We will run the outside-in Medicaid NPI pipeline. Upload a roster below if you want reconciliation (your file vs external data), or use ⋯ → Upload file.";
+        } else if (classification === "matched") {
+          titleEl.textContent = "Roster files linked to this chat";
+          hintEl.textContent =
+            "Matching rows are highlighted. Default run is roster reconciliation unless you check “Outside-in Medicaid NPI only” below.";
+        } else {
+          titleEl.textContent = "Roster files on this chat";
+          hintEl.textContent =
+            "No upload row matches the organization name above (or it is empty). Upload a roster or run with the server’s latest reconciliation upload — we will pick the latest when appropriate.";
+        }
+        hintEl.hidden = false;
+        if (hasRoster) {
+          outsideWrap.removeAttribute("hidden");
+        } else {
+          outsideWrap.setAttribute("hidden", "");
+        }
+        const outsideInPath = !hasRoster || outsideCb.checked;
+        if (outsideInPath) {
+          freshWrap.removeAttribute("hidden");
+        } else {
+          freshWrap.setAttribute("hidden", "");
+          freshCb.checked = false;
+        }
+      })
+      .catch(() => {
+        panel.removeAttribute("hidden");
+        titleEl.textContent = "Roster status";
+        listEl.innerHTML = "";
+        listEl.setAttribute("hidden", "");
+        hintEl.textContent =
+          "Could not load upload status; the server still chooses reconciliation vs outside-in from thread state.";
+        hintEl.hidden = false;
+        outsideWrap.setAttribute("hidden", "");
+        freshWrap.setAttribute("hidden", "");
+        freshCb.checked = false;
+      });
+  }
+
+  function openCredentialingEnvelope(message: string): void {
+    credentialingPendingMessage = message;
+    const orgEl = document.getElementById("credentialingOrgName") as HTMLInputElement | null;
+    const modal = document.getElementById("credentialingModal");
+    const overlay = document.getElementById("credentialingOverlay");
+    if (!orgEl || !modal || !overlay) {
+      sendMessage(message, { skipCredentialingEnvelope: true });
+      return;
+    }
+    const hint = extractCredentialingOrgHint(message);
+    orgEl.value = hint;
+    const ap = document.querySelector('input[name="credentialingMode"][value="autopilot"]') as HTMLInputElement | null;
+    if (ap) ap.checked = true;
+    const fr = document.getElementById("credentialingForceRefresh") as HTMLInputElement | null;
+    if (fr) fr.checked = false;
+    const po = document.getElementById("credentialingPreferOutsideIn") as HTMLInputElement | null;
+    if (po) po.checked = false;
+    const pf = document.getElementById("credentialingPreferFresh") as HTMLInputElement | null;
+    if (pf) pf.checked = false;
+    refreshCredentialingRosterUi();
+    modal.removeAttribute("hidden");
+    overlay.classList.add("open");
+    orgEl.focus();
+  }
+
+  function sendMessage(overrideMessage?: string, opts?: SendMessageOpts): void {
+    let message = (overrideMessage ?? (inputEl.value ?? "").trim()).trim();
+    if (overrideMessage !== undefined && overrideMessage !== null) {
+      activeClarificationDraft = null;
+    } else if (activeClarificationDraft?.length) {
+      const preface = buildWorkflowSelectionPreface();
+      if (preface && message) {
+        message = `${preface}\n\n${message}`;
+      } else if (preface && !message) {
+        message = preface;
+      }
+    }
     if (!message) return;
     if (sendBtn.disabled) return;
+    activeClarificationDraft = null;
+
+    if (
+      !opts?.credentialing_options &&
+      !opts?.skipCredentialingEnvelope &&
+      isCredentialingReportIntent(message)
+    ) {
+      openCredentialingEnvelope(message);
+      return;
+    }
 
     if (chatEmpty) chatEmpty.classList.add("hidden");
 
@@ -3996,8 +4454,26 @@ function run(): void {
       scrollToBottom(messagesEl);
     }
 
-    const payload: { message: string; thread_id?: string } = { message };
+    const payload: {
+      message: string;
+      thread_id?: string;
+      credentialing_options?: CredentialingOptionsPayload;
+      use_react?: boolean;
+      chat_mode?: "copilot" | "agentic";
+    } = { message };
     if (currentThreadId) payload.thread_id = currentThreadId;
+    if (opts?.credentialing_options) {
+      payload.credentialing_options = opts.credentialing_options;
+    }
+    const agenticToggle = document.getElementById("composerAgentic") as HTMLInputElement | null;
+    payload.chat_mode = agenticToggle?.checked ? "agentic" : "copilot";
+    if (opts?.use_react !== undefined) {
+      payload.use_react = opts.use_react;
+    } else {
+      if (agenticToggle && !agenticToggle.checked) {
+        payload.use_react = false;
+      }
+    }
     let activeCorrelationId = "";
     fetch(API_BASE + "/chat", {
       method: "POST",
@@ -4180,9 +4656,9 @@ function run(): void {
 
         // 7. Clarification options (clickable buttons for slot fill)
         if (data.clarification_options && data.clarification_options.length > 0) {
-          turnWrap.appendChild(
-            renderClarificationOptions(data.clarification_options, (value) => sendMessage(value))
-          );
+          turnWrap.appendChild(renderClarificationOptions(data.clarification_options));
+        } else {
+          activeClarificationDraft = null;
         }
 
         // 8. Sources: prefer API response.sources (from RAG) so source cards show even when integrator drops them
@@ -4339,6 +4815,66 @@ function run(): void {
   }
   setupComposerOptionsMenu();
 
+  function setupCredentialingEnvelope(): void {
+    const form = document.getElementById("credentialingForm") as HTMLFormElement | null;
+    const credOverlay = document.getElementById("credentialingOverlay");
+    const cancel = document.getElementById("credentialingCancel");
+    const defaultsBtn = document.getElementById("credentialingDefaults");
+    form?.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const pending = credentialingPendingMessage;
+      if (!pending) return;
+      const org = (document.getElementById("credentialingOrgName") as HTMLInputElement | null)?.value?.trim();
+      if (!org) return;
+      const modeEl = document.querySelector('input[name="credentialingMode"]:checked') as HTMLInputElement | null;
+      const mode: "autopilot" | "copilot" = modeEl?.value === "copilot" ? "copilot" : "autopilot";
+      const forceRefresh = !!(document.getElementById("credentialingForceRefresh") as HTMLInputElement | null)?.checked;
+      const preferOutside = !!(document.getElementById("credentialingPreferOutsideIn") as HTMLInputElement | null)?.checked;
+      const preferFresh = !!(document.getElementById("credentialingPreferFresh") as HTMLInputElement | null)?.checked;
+      const freshHidden = document.getElementById("credentialingPreferFreshWrap")?.hasAttribute("hidden");
+      hideCredentialingEnvelope();
+      const credOpts: CredentialingOptionsPayload = {
+        org_name: org,
+        mode,
+        force_refresh: forceRefresh,
+      };
+      if (preferOutside) credOpts.prefer_outside_in = true;
+      if (preferFresh && !freshHidden) credOpts.prefer_fresh_report = true;
+      sendMessage(pending, {
+        credentialing_options: credOpts,
+        use_react: true,
+      });
+    });
+    cancel?.addEventListener("click", () => hideCredentialingEnvelope());
+    credOverlay?.addEventListener("click", () => hideCredentialingEnvelope());
+    defaultsBtn?.addEventListener("click", () => {
+      const ap = document.querySelector('input[name="credentialingMode"][value="autopilot"]') as HTMLInputElement | null;
+      if (ap) ap.checked = true;
+      const fr = document.getElementById("credentialingForceRefresh") as HTMLInputElement | null;
+      if (fr) fr.checked = false;
+      const po = document.getElementById("credentialingPreferOutsideIn") as HTMLInputElement | null;
+      if (po) po.checked = false;
+      const pf = document.getElementById("credentialingPreferFresh") as HTMLInputElement | null;
+      if (pf) pf.checked = false;
+      refreshCredentialingRosterUi();
+    });
+    const orgNameField = document.getElementById("credentialingOrgName") as HTMLInputElement | null;
+    orgNameField?.addEventListener("input", () => refreshCredentialingRosterUi());
+    document.getElementById("credentialingPreferOutsideIn")?.addEventListener("change", () => refreshCredentialingRosterUi());
+    document.getElementById("credentialingUploadRoster")?.addEventListener("click", () => {
+      const pending = credentialingPendingMessage;
+      credentialingReopenMessage = pending;
+      const orgEl = document.getElementById("credentialingOrgName") as HTMLInputElement | null;
+      const uploadOrg = document.getElementById("uploadOrgName") as HTMLInputElement | null;
+      if (uploadOrg && orgEl) uploadOrg.value = orgEl.value.trim();
+      const auto = document.getElementById("uploadAutoSendReconciliation") as HTMLInputElement | null;
+      if (auto) auto.checked = false;
+      hideCredentialingEnvelope();
+      openUploadModal();
+    });
+  }
+  setupCredentialingEnvelope();
+
   function setupUploadModal(): void {
     const uploadModal = document.getElementById("uploadModal");
     const uploadOverlay = document.getElementById("uploadOverlay");
@@ -4450,6 +4986,14 @@ function run(): void {
             inputEl.value = `Run reconciliation report for ${org}`;
             updateSendState();
             hideUploadModal();
+            const reopen = credentialingReopenMessage;
+            if (reopen) {
+              credentialingReopenMessage = null;
+              window.setTimeout(() => {
+                openCredentialingEnvelope(reopen);
+              }, 0);
+              return;
+            }
             const auto = document.getElementById("uploadAutoSendReconciliation") as HTMLInputElement | null;
             if ((uploadFilePurpose?.value || "roster_reconciliation").trim() === "roster_reconciliation" && auto?.checked) {
               window.setTimeout(() => sendMessage(), 0);

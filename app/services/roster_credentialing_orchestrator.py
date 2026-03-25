@@ -93,6 +93,10 @@ class OrchestratorState:
     report_pdf_base64: str = ""
     report_run_id: str = ""
     report_summary: dict = field(default_factory=dict)
+    # Step 3: merge persisted roster (thread upload) with external/registry associations
+    step3_roster_upload_id: str = ""
+    step3_external_only: bool = False
+    step3_include_roster_members: bool = True
 
     def step_by_id(self, step_id: str) -> StepState | None:
         for s in self.steps:
@@ -394,11 +398,17 @@ def _run_step_3_find_associated_providers(
         _emit(emitter, f"✓ Step {step_num} skipped. {reason}")
         return ""
     url = f"{base}/find-associated-providers"
-    payload = json.dumps({
+    uid = (state.step3_roster_upload_id or "").strip()
+    body: dict = {
         "org_npis": state.org_npis[:50],
         "locations": state.locations,
         "org_name": state.org_name or "",
-    }).encode("utf-8")
+        "include_roster_members": state.step3_include_roster_members,
+        "external_only": state.step3_external_only,
+    }
+    if uid:
+        body["upload_id"] = uid
+    payload = json.dumps(body).encode("utf-8")
     try:
         req = urllib.request.Request(
             url,
@@ -415,12 +425,34 @@ def _run_step_3_find_associated_providers(
         state.associated_providers = associated
         state.active_roster = active_roster if active_roster else associated
         # Step output: location_address first (from API location_details), then roster_rationale for "why active"
-        prov_cols = ["location_address", "location_id", "npi", "name", "entity_type", "match_type", "association_likelihood", "roster_status", "roster_rationale", "name_status"]
+        prov_cols = [
+            "location_address",
+            "location_id",
+            "npi",
+            "name",
+            "entity_type",
+            "match_type",
+            "association_likelihood",
+            "roster_status",
+            "inclusion_reasons",
+            "provenance_json",
+            "roster_rationale",
+            "name_status",
+        ]
         prov_rows = []
         for loc_id, providers in associated.items():
             loc_addr = (location_details.get(loc_id) or {}).get("location_address", loc_id)
             for p in providers or []:
                 name_val = p.get("name", p.get("provider_name", "")) or ""
+                reasons = p.get("inclusion_reasons") or []
+                if isinstance(reasons, str):
+                    ir_s = reasons
+                else:
+                    ir_s = ";".join(str(x) for x in reasons if x)
+                try:
+                    prov_json = json.dumps(p.get("provenance") or {}, default=str)
+                except Exception:
+                    prov_json = "{}"
                 prov_rows.append(
                     {
                         "location_address": loc_addr,
@@ -431,11 +463,13 @@ def _run_step_3_find_associated_providers(
                         "match_type": p.get("match_type", ""),
                         "association_likelihood": p.get("association_likelihood", ""),
                         "roster_status": p.get("roster_status", ""),
+                        "inclusion_reasons": ir_s,
+                        "provenance_json": prov_json,
                         "roster_rationale": p.get("roster_rationale", ""),
                         "name_status": p.get("name_status", ""),
                     }
                 )
-        csv_content = _to_csv(prov_rows, prov_cols) if prov_rows else "location_address,location_id,npi,name,entity_type,match_type,association_likelihood,roster_status,roster_rationale,name_status\n(no providers)"
+        csv_content = _to_csv(prov_rows, prov_cols) if prov_rows else ",".join(prov_cols) + "\n(no providers)"
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Associated providers", csv_content=csv_content, row_count=total)
         )
@@ -1247,6 +1281,10 @@ def run_credentialing_step(
 def run_orchestrator(
     org_input: str,
     emitter: Callable[[str], None] | None = None,
+    *,
+    roster_upload_id: str | None = None,
+    external_only: bool = False,
+    include_roster_members: bool = True,
 ) -> tuple[str, OrchestratorState]:
     """Run the Provider Roster / Credentialing plan and emit progress to chat.
 
@@ -1260,6 +1298,9 @@ def run_orchestrator(
     state = OrchestratorState(
         steps=[StepState(id=s["id"], label=s["label"]) for s in ROSTER_CREDENTIALING_PLAN],
         org_npis=[],
+        step3_roster_upload_id=(roster_upload_id or "").strip(),
+        step3_external_only=bool(external_only),
+        step3_include_roster_members=bool(include_roster_members),
     )
     # Emit 9-step plan
     plan_lines = ["Steps:"]

@@ -14,6 +14,7 @@ from app.communication.assistant_envelope import (
     resolve_tool_fired,
 )
 from app.communication.followup_next_steps_quality import filter_next_steps_and_questions
+from app.communication.workflow_selection import merge_clarification_option_lists
 from app.communication.json_display_sanitize import (
     DEFAULT_BLEED_FALLBACK,
     finalize_answer_card_json_for_client,
@@ -406,6 +407,17 @@ def run_integrate(
 
     _cfg_sha = get_config_sha() or None
     _integ_stage = integrator_llm_stage(ctx)
+    _pws_pre = getattr(ctx, "pending_workflow_selection", None)
+    _workflow_selection_ui: dict[str, Any] | None = None
+    if isinstance(_pws_pre, list) and len(_pws_pre) > 0:
+        _workflow_selection_ui = {
+            "active": True,
+            "slots": [
+                str(g.get("slot") or "").strip()
+                for g in _pws_pre
+                if isinstance(g, dict) and (g.get("slot") or "").strip()
+            ],
+        }
     final_message, integrator_usage = format_response(
         plan,
         answers,
@@ -416,6 +428,7 @@ def run_integrate(
         sources_summary=sources_summary,
         jurisdiction_summary=jurisdiction_summary,
         user_provided_context=getattr(ctx, "user_provided_context", None),
+        workflow_selection_ui=_workflow_selection_ui,
         correlation_id=ctx.correlation_id,
         thread_id=ctx.thread_id,
         config_sha=_cfg_sha,
@@ -834,5 +847,13 @@ def run_integrate(
         source_confidence_strip=source_confidence_strip,
         pipeline_human_gate=_pipeline_gate,
     )
+
+    pws = getattr(ctx, "pending_workflow_selection", None)
+    if isinstance(pws, list) and pws:
+        payload["clarification_options"] = merge_clarification_option_lists(
+            payload.get("clarification_options"),
+            pws,
+        )
+        ctx.pending_workflow_selection = []
 
     ctx.response_payload = payload

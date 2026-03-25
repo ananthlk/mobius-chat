@@ -48,6 +48,10 @@ def _provider_from_spec(spec) -> "Any":
             project_id=c.vertex_project_id,
             location=c.vertex_location,
             model=spec.model_id,
+            vertex_ai_search_datastore=getattr(
+                c, "vertex_ai_search_datastore", ""
+            )
+            or "",
         )
     elif spec.provider == "ollama":
         return OllamaProvider(

@@ -48,6 +48,8 @@ class PipelineContext:
     needs_clarification: bool = False
     clarification_message: str | None = None
     missing_slots: list[str] = field(default_factory=list)
+    # Server-authored choice groups merged into response ``clarification_options`` (NPI pick, future workflows).
+    pending_workflow_selection: list[dict[str, Any]] = field(default_factory=list)
 
     needs_route_clarification: bool = False
     """Route clash: multiple conflicting deterministic triggers (web vs RAG)."""
@@ -102,6 +104,12 @@ class PipelineContext:
     roster_report_final_md: str | None = None
     # Co-pilot credentialing: run_id, pending_step_id, draft_output for validation UI
     credentialing_copilot: dict[str, Any] | None = None
+
+    # Client envelope (POST /chat credentialing_options): merged into run_credentialing_report
+    credentialing_options: dict[str, Any] | None = None
+
+    # UI chat mode (POST /chat chat_mode): copilot vs agentic — passed to org search / credentialing skill
+    chat_mode: str = "copilot"
 
     # Post-run adjudication (integrator llm_calls row for quality_score attachment)
     integrator_llm_call_id: str | None = None

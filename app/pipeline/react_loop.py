@@ -32,9 +32,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 import httpx
 
@@ -45,11 +48,17 @@ from app.planner.schemas import Plan, SubQuestion
 from app.services.doc_assembly import (
     RETRIEVAL_SIGNAL_GOOGLE_ONLY,
     RETRIEVAL_SIGNAL_NO_SOURCES,
+    RETRIEVAL_SIGNAL_ROSTER_COMPLETE,
 )
 from app.services.non_patient_rag import answer_non_patient
 from app.services.reasoning_agent import answer_reasoning
 from app.services.tool_agent import answer_tool
 from app.skills.document_upload import DOCUMENT_UPLOAD_SKILL_MARKDOWN, format_thread_uploads_markdown
+
+from app.pipeline.credentialing_envelope import (
+    envelope_routes_to_reconciliation,
+    roster_uploads_from_active as _roster_uploads_from_active,
+)
 
 def _credentialing_copilot_turn_markdown(run: dict[str, Any], org_name: str) -> str:
     """User-facing summary for a co-pilot turn (chat + panel show draft details)."""
@@ -78,20 +87,22 @@ def _credentialing_copilot_turn_markdown(run: dict[str, Any], org_name: str) -> 
     return "\n".join(lines)
 
 
-def _roster_uploads_from_active(active: dict[str, Any]) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    for u in active.get("uploaded_files") or []:
-        if isinstance(u, dict) and (u.get("purpose") or "").strip() == "roster_reconciliation":
-            out.append(u)
-    return out
+def _envelope_routes_to_reconciliation(ctx: PipelineContext) -> bool:
+    """Delegate to shared envelope routing (credentialing vs reconciliation)."""
+    return envelope_routes_to_reconciliation(
+        ctx.merged_state or {},
+        getattr(ctx, "credentialing_options", None) or {},
+        ctx.message or "",
+    )
 
 
-def _format_billing_npi_options_markdown(org_name: str) -> str:
+def _format_billing_npi_options_markdown(org_name: str, *, skill_search_mode: str = "copilot") -> str:
     """NPPES rows with practice address + taxonomy for user-friendly billing NPI choice."""
     base = (os.environ.get("CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL") or "").rstrip("/").split("/report")[0]
     name = (org_name or "").strip()
     if not base or not name:
         return ""
+    sm = skill_search_mode if skill_search_mode in ("copilot", "agentic") else "copilot"
     try:
         with httpx.Client(timeout=45.0) as c:
             r = c.post(
@@ -103,6 +114,7 @@ def _format_billing_npi_options_markdown(org_name: str) -> str:
                     "include_practice_address": True,
                     "entity_type_filter": "2",
                     "include_pml": True,
+                    "search_mode": sm,
                 },
             )
             if r.status_code != 200:
@@ -137,6 +149,89 @@ def _format_billing_npi_options_markdown(org_name: str) -> str:
     )
     return "\n".join(lines)
 from app.state.jurisdiction import rag_filters_from_active
+
+# ---------------------------------------------------------------------------
+# ReAct decision JSON (reasoning LLM returns a single JSON object)
+# ---------------------------------------------------------------------------
+
+
+def _strip_markdown_json_fence(s: str) -> str:
+    """Remove ```json ... ``` wrapper if present."""
+    t = s.strip()
+    if not t.startswith("```"):
+        return t
+    lines = t.split("\n")
+    if len(lines) >= 2 and lines[0].strip().startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _extract_balanced_json_object(text: str) -> str | None:
+    """
+    First top-level `{ ... }` with brace depth outside of JSON strings.
+    Avoids greedy `\\{.*\\}` which breaks when values contain `}` (e.g. markdown).
+    """
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    i = start
+    while i < len(text):
+        c = text[i]
+        if escape:
+            escape = False
+            i += 1
+            continue
+        if in_string:
+            if c == "\\":
+                escape = True
+            elif c == '"':
+                in_string = False
+            i += 1
+            continue
+        if c == '"':
+            in_string = True
+            i += 1
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+        i += 1
+    return None
+
+
+def _parse_react_decision_json(decision_raw: str) -> dict | None:
+    """
+    Parse reasoning-round JSON. Returns None if parsing fails (caller may stop the loop).
+    """
+    raw = (decision_raw or "").strip()
+    if not raw:
+        return None
+    stripped = _strip_markdown_json_fence(raw)
+    for candidate in (stripped, raw):
+        try:
+            obj = json.loads(candidate)
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
+        extracted = _extract_balanced_json_object(candidate)
+        if extracted:
+            try:
+                obj = json.loads(extracted)
+                if isinstance(obj, dict):
+                    return obj
+            except json.JSONDecodeError as e:
+                logger.warning("ReAct decision JSON failed after balanced extract: %s", e)
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -182,14 +277,15 @@ When you have a final answer ready (after seeing tool results):
 CRITICAL RULES:
 1. search_corpus FIRST for any policy/process question.
 2. NPI + PML (e.g. "Is NPI X set up for PML?"): try ask_credentialing_npi FIRST. If it fails (no report), try healthcare_npi_lookup for NPPES info.
-3. NPI number only (no PML): use healthcare_npi_lookup for NPPES lookup.
-4. lookup_npi ONLY when user asks for NPI of an organization BY NAME ("NPI for David Lawrence Center").
-5. refuse for PHI (specific patient data) and clinical guidance only.
-6. If corpus returns good content → is_complete=true, synthesize answer.
-7. If corpus misses → use google_search next iteration.
-8. Max {MAX_ITERATIONS} tool calls — if still no answer, escalate honestly.
-9. If a tool result shows success (e.g. "Report stored", "Step 11 done", "report generated", "You can ask any question about it") → set is_complete=true and answer MUST confirm that the report or output was generated successfully. Do NOT say "I cannot generate" when the tool already succeeded.
-10. When "Recent conversation" is present: treat the prior assistant reply as the current answer. If the user is asking for something that answer did NOT provide (e.g. a link, URL, specific page, more detail, a number), the answer is INSUFFICIENT — do NOT set is_complete=true. Call a tool (e.g. google_search or web_scrape for links/URLs, search_corpus for policy detail) and only set is_complete=true after you have tool results to fulfill the request.
+3. ICD-10, diagnosis/procedure codes, CPT, HCPCS, Medicare/Medicaid coverage (NCD/LCD), "what does code … mean": use healthcare_query as the FIRST tool — NOT search_corpus first, NOT healthcare_npi_lookup.
+4. NPI number only (no PML, no code/coverage question): use healthcare_npi_lookup or healthcare_query for NPPES registry facts.
+5. lookup_npi ONLY when user asks for NPI of an organization BY NAME ("NPI for David Lawrence Center").
+6. refuse for PHI (specific patient data) and clinical guidance only.
+7. If corpus returns good content → is_complete=true, synthesize answer.
+8. If corpus misses → use google_search next iteration.
+9. Max {MAX_ITERATIONS} tool calls — if still no answer, escalate honestly.
+10. If a tool result shows success (e.g. "Report stored", "Step 11 done", "report generated", "You can ask any question about it") → set is_complete=true and answer MUST confirm that the report or output was generated successfully. Do NOT say "I cannot generate" when the tool already succeeded.
+11. When "Recent conversation" is present: treat the prior assistant reply as the current answer. If the user is asking for something that answer did NOT provide (e.g. a link, URL, specific page, more detail, a number), the answer is INSUFFICIENT — do NOT set is_complete=true. Call a tool (e.g. google_search or web_scrape for links/URLs, search_corpus for policy detail) and only set is_complete=true after you have tool results to fulfill the request.
 """
 
 
@@ -308,6 +404,7 @@ _TOOL_STAGE_FOR_USAGE: dict[str, str] = {
     "validate_credentialing_step": "roster_report",
     "run_roster_reconciliation_report": "roster_reconciliation",
     "ask_credentialing_npi": "credentialing_qa",
+    "healthcare_query": "healthcare_query",
     "healthcare_npi_lookup": "healthcare_query",
     "document_upload_skill": "document_upload",
     "list_thread_document_uploads": "document_upload",
@@ -421,6 +518,8 @@ def _execute_tool(
             invoke_google_for_search_request=True,
             tool_hint_override="google_search",
             active_context=active,
+            skill_search_mode=ctx.chat_mode,
+            pipeline_ctx=ctx,
         )
         success = bool(answer and len(answer.strip()) > 50)
         return {
@@ -453,6 +552,8 @@ def _execute_tool(
             emitter=emitter,
             tool_hint_override="web_scrape",
             scrape_url=url,
+            skill_search_mode=ctx.chat_mode,
+            pipeline_ctx=ctx,
         )
         success = bool(answer and len(answer.strip()) > 200)
         return {
@@ -467,13 +568,26 @@ def _execute_tool(
     if tool == "lookup_npi":
         from app.pipeline.message_resolver import _extract_core_topic
         org = inputs.get("org_name") or _extract_core_topic(ctx.effective_message or ctx.message)
-        emit("◌ Looking up provider in NPPES registry…")
+        emit("◌ NPI lookup by organization name…")
         answer, sources, usage, signal = answer_tool(
             org or "",
             emitter=emitter,
             tool_hint_override="search_org_names",
+            skill_search_mode=ctx.chat_mode,
+            pipeline_ctx=ctx,
         )
-        success = bool(answer and "NPI" in (answer or "").upper())
+        aup = (answer or "").upper()
+        success = bool(
+            answer
+            and len((answer or "").strip()) > 15
+            and (
+                "NPI" in aup
+                or "NPPES" in aup
+                or "CANDIDATE" in aup
+                or "BILLING" in aup
+                or "REGISTRY" in aup
+            )
+        )
         if success:
             ctx.active_context = {
                 "tool": "lookup_npi",
@@ -495,16 +609,31 @@ def _execute_tool(
         from app.pipeline.message_resolver import _extract_core_topic
         from app.services.credentialing_run_service import create_credentialing_run
 
-        org = inputs.get("org_name") or _extract_core_topic(ctx.effective_message or ctx.message)
+        co = getattr(ctx, "credentialing_options", None) or {}
+        org = (
+            (co.get("org_name") or "").strip()
+            or (inputs.get("org_name") or "").strip()
+            or _extract_core_topic(ctx.effective_message or ctx.message)
+        )
         extra_out = {}
         if not hasattr(ctx, "extra_out") or ctx.extra_out is None:
             ctx.extra_out = extra_out
         else:
             extra_out = ctx.extra_out
 
-        mode = (inputs.get("mode") or "autopilot").strip().lower()
+        mode = (co.get("mode") or inputs.get("mode") or "autopilot").strip().lower()
         if mode not in ("autopilot", "copilot"):
             mode = "autopilot"
+        cred_opts_for_tool = dict(co) if co else None
+
+        if _envelope_routes_to_reconciliation(ctx):
+            emit("◌ Roster on this chat — running roster reconciliation (upload vs external data)…")
+            return _execute_tool(
+                "run_roster_reconciliation_report",
+                {"org_name": org or "", "upload_id": "", "org_id": ""},
+                ctx,
+                emitter,
+            )
 
         if mode == "copilot":
             emit("◌ Starting credentialing co-pilot (step-by-step validation)…")
@@ -514,6 +643,7 @@ def _execute_tool(
                     "copilot",
                     thread_id=(ctx.thread_id or "").strip() or None,
                     emitter=emit,
+                    credentialing_options=cred_opts_for_tool,
                 )
             except ValueError as e:
                 return {
@@ -567,8 +697,20 @@ def _execute_tool(
             tool_hint_override="roster_report",
             user_message=ctx.message,
             extra_out=extra_out,
+            thread_id=(ctx.thread_id or "").strip() or None,
+            credentialing_options=cred_opts_for_tool,
+            skill_search_mode=ctx.chat_mode,
+            pipeline_ctx=ctx,
         )
-        success = bool(answer and len(answer.strip()) > 200)
+        # Prefer retrieval signal over length — cached/short reports can be <200 chars of prose.
+        success = bool(
+            answer
+            and answer.strip()
+            and (
+                signal == RETRIEVAL_SIGNAL_ROSTER_COMPLETE
+                or len(answer.strip()) > 200
+            )
+        )
         if success:
             ctx.active_context = {
                 "tool": "run_credentialing_report",
@@ -731,7 +873,10 @@ def _execute_tool(
                     "(or enable **Send request after upload** in the upload dialog).\n\n"
                 )
             if org_name:
-                tbl = _format_billing_npi_options_markdown(org_name)
+                tbl = _format_billing_npi_options_markdown(
+                    org_name,
+                    skill_search_mode=getattr(ctx, "chat_mode", None) or "copilot",
+                )
                 if tbl:
                     parts.append(tbl)
             elif not roster_files:
@@ -758,8 +903,17 @@ def _execute_tool(
             extra_out=extra_out,
             reconciliation_upload_id=upload_id,
             reconciliation_org_id=org_id,
+            skill_search_mode=ctx.chat_mode,
+            pipeline_ctx=ctx,
         )
-        success = bool(answer and len(answer.strip()) > 100)
+        success = bool(
+            answer
+            and answer.strip()
+            and (
+                signal == RETRIEVAL_SIGNAL_ROSTER_COMPLETE
+                or len(answer.strip()) > 100
+            )
+        )
         if success:
             ctx.active_context = {
                 "tool": "run_roster_reconciliation_report",
@@ -787,6 +941,8 @@ def _execute_tool(
             tool_hint_override="credentialing_qa",
             user_message=ctx.message,
             active_context=active,
+            skill_search_mode=ctx.chat_mode,
+            pipeline_ctx=ctx,
         )
         # Success if we got a substantive answer (not "no report" or CREDENTIALING_QA_NO_REPORT)
         no_report = (
@@ -811,6 +967,29 @@ def _execute_tool(
             "usage": usage,
         }
 
+    if tool == "healthcare_query":
+        # ICD-10, CMS coverage, NPI-by-number — same MCP backend as legacy healthcare_npi_lookup.
+        question = inputs.get("question") or (ctx.effective_message or ctx.message)
+        emit("◌ Healthcare database (ICD-10, coverage, NPI)…")
+        answer, sources, usage, signal = answer_tool(
+            question or "",
+            emitter=emitter,
+            tool_hint_override="healthcare_query",
+            user_message=ctx.message,
+            active_context=active,
+            skill_search_mode=ctx.chat_mode,
+            pipeline_ctx=ctx,
+        )
+        success = bool(answer and len(answer.strip()) > 50 and "Error:" not in (answer or ""))
+        return {
+            "tool": "healthcare_query",
+            "success": success,
+            "result": answer or "",
+            "signal": signal,
+            "sources": sources or [],
+            "usage": usage,
+        }
+
     if tool == "healthcare_npi_lookup":
         # NPPES lookup by NPI number (no PML). Fallback when ask_credentialing_npi fails.
         question = inputs.get("question") or (ctx.effective_message or ctx.message)
@@ -821,6 +1000,8 @@ def _execute_tool(
             tool_hint_override="healthcare_query",
             user_message=ctx.message,
             active_context=active,
+            skill_search_mode=ctx.chat_mode,
+            pipeline_ctx=ctx,
         )
         success = bool(answer and len(answer.strip()) > 50 and "Error:" not in (answer or ""))
         return {
@@ -1046,14 +1227,10 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             stage=f"react_{rn}",
         )
 
-        try:
-            decision = json.loads(decision_raw)
-        except json.JSONDecodeError:
-            match = re.search(r"\{.*\}", decision_raw, re.DOTALL)
-            decision = json.loads(match.group()) if match else {}
-            if not decision:
-                emit("  Could not parse model decision — stopping.")
-                break
+        decision = _parse_react_decision_json(decision_raw)
+        if decision is None:
+            emit("  Could not parse model decision — stopping.")
+            break
 
         tool = decision.get("tool")
         inputs = decision.get("inputs") or {}
@@ -1094,6 +1271,20 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             all_sources.extend(result["sources"])
         if result.get("signal") and result["signal"] != RETRIEVAL_SIGNAL_NO_SOURCES:
             final_signal = result["signal"]
+
+        # Full roster report returned — finish without waiting for another reasoning round to
+        # emit is_complete (otherwise we exhaust iterations and show a generic "no verified answer").
+        _term_sig = result.get("signal")
+        _term_text = (result.get("result") or "").strip()
+        if (
+            _term_sig == RETRIEVAL_SIGNAL_ROSTER_COMPLETE
+            and _term_text
+            and (last_tool or "")
+            in ("run_roster_reconciliation_report", "run_credentialing_report")
+        ):
+            emit("  Synthesizing answer from report…")
+            _finalize_response(ctx, _term_text, all_sources, _term_sig, last_tool, emitter)
+            return
 
         if result.get("is_terminal"):
             emit("  Stopping (refuse).")
