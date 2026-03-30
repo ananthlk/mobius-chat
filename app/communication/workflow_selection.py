@@ -151,7 +151,12 @@ def merge_clarification_option_lists(
 
 
 def attach_workflow_selection(ctx: Any, groups: list[dict[str, Any]] | None) -> None:
-    """Extend ``ctx.pending_workflow_selection`` with normalized groups."""
+    """Extend ``ctx.pending_workflow_selection`` with normalized groups.
+
+    Groups that reuse an existing **slot** (e.g. ``npi_disambiguation``) **replace** prior groups
+    for that slot so one ReAct turn does not stack duplicate billing-org pickers (lookup_npi then
+    find_org_locations disambiguation).
+    """
     if not groups:
         return
     merged: list[dict[str, Any]] = []
@@ -164,7 +169,13 @@ def attach_workflow_selection(ctx: Any, groups: list[dict[str, Any]] | None) -> 
     prev = getattr(ctx, "pending_workflow_selection", None)
     if not isinstance(prev, list):
         prev = []
-    ctx.pending_workflow_selection = list(prev) + merged
+    new_slots = {str(g.get("slot") or "").strip() for g in merged if isinstance(g, dict)}
+    filtered = [
+        g
+        for g in prev
+        if isinstance(g, dict) and str(g.get("slot") or "").strip() not in new_slots
+    ]
+    ctx.pending_workflow_selection = filtered + merged
 
 
 def format_npi_org_search_markdown(search_name: str, results: list[dict[str, Any]]) -> str:

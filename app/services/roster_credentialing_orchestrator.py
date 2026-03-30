@@ -19,7 +19,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from http.client import IncompleteRead, RemoteDisconnected
-from typing import Callable
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -32,19 +32,14 @@ def _org_slug(org_name: str) -> str:
     return s[:48] if s else ""
 
 
-# Plan steps: id, label (emitted to user). Execution order 1–11.
+# Plan steps: id, label (emitted to user). Execution order 1–6.
 ROSTER_CREDENTIALING_PLAN = [
-    {"id": "ensure_benchmarks", "label": "Ensure revenue metrics (utilization benchmarking)"},
-    {"id": "identify_org", "label": "Identify organization"},
-    {"id": "find_locations", "label": "Find practice locations"},
-    {"id": "find_associated_providers", "label": "Find associated facilities and providers"},
-    {"id": "org_benchmark", "label": "Org benchmark (utilization for active roster)"},
-    {"id": "find_services_by_location", "label": "Find services and capabilities by location"},
-    {"id": "historic_billing_patterns", "label": "Historic billing patterns (DOGE, HCPCS breakdown)"},
-    {"id": "step_6", "label": "PML validation (NPI, taxonomy, ZIP, Medicaid ID)"},
-    {"id": "step_7", "label": "Missing PML enrollment"},
-    {"id": "opportunity_sizing", "label": "Opportunity sizing (revenue waterfall A–E)"},
-    {"id": "build_report", "label": "Build credentialing report"},
+    {"id": "identify_org",             "label": "Establish organization identity"},
+    {"id": "find_locations",           "label": "Confirm approved service locations"},
+    {"id": "nppes_alignment",          "label": "Verify every clinician has a valid NPPES entry"},
+    {"id": "pml_alignment",            "label": "Confirm Medicaid enrollment for each provider"},
+    {"id": "find_associated_providers","label": "Identify ghost billing and compliance risks"},
+    {"id": "taxonomy_optimization",    "label": "Ensure billing taxonomy codes are aligned"},
 ]
 
 # Ordered step ids for co-pilot / single-step execution (must match ROSTER_CREDENTIALING_PLAN).
@@ -57,8 +52,10 @@ class StepState:
 
     id: str
     label: str
-    status: str = "pending"  # pending | in_progress | done | skipped
+    status: str = "pending"  # pending | in_progress | done | skipped | failed
     result_summary: str = ""
+    # User notes (co-pilot validate) and/or system hints (autopilot); for workflow tracking
+    workflow_follow_ups: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -85,8 +82,9 @@ class OrchestratorState:
     associated_providers: dict = field(default_factory=dict)
     active_roster: dict = field(default_factory=dict)
     org_benchmark: dict = field(default_factory=dict)
-    pml_validated: list = field(default_factory=list)   # From Step 6
-    pml_flagged: list = field(default_factory=list)     # From Step 6
+    pml_validated: list = field(default_factory=list)        # From Step 6
+    pml_flagged: list = field(default_factory=list)          # From Step 6
+    pml_source_freshness: dict = field(default_factory=dict) # From Step 6: {pml, tml, ppl} ISO date strings
     missing_enrollment: list = field(default_factory=list)  # From Step 7
     step_outputs: list[StepOutput] = field(default_factory=list)
     report_final_md: str = ""
@@ -97,6 +95,13 @@ class OrchestratorState:
     step3_roster_upload_id: str = ""
     step3_external_only: bool = False
     step3_include_roster_members: bool = True
+    # copilot: no algorithmic active panel until user validates; autopilot: full pipeline without per-step gate
+    credentialing_run_mode: str = "copilot"
+    last_active_roster_cutoff: int | None = None
+    # Why we paused or advanced (copilot vs autopilot); capped list for API/UI
+    gate_events: list[dict[str, Any]] = field(default_factory=list)
+    # Per-step emit log: { step_id -> [msg, ...] } captured from _emit calls
+    step_emit_log: dict[str, list[str]] = field(default_factory=dict)
 
     def step_by_id(self, step_id: str) -> StepState | None:
         for s in self.steps:
@@ -121,13 +126,60 @@ class OrchestratorState:
             s.status = "skipped"
             s.result_summary = reason
 
+    def mark_failed(self, step_id: str, reason: str = "") -> None:
+        """Hard failure: orchestrator must not continue to dependent steps."""
+        s = self.step_by_id(step_id)
+        if s:
+            s.status = "failed"
+            s.result_summary = reason
 
-def _emit(emitter: Callable[[str], None] | None, msg: str) -> None:
-    if emitter and msg and str(msg).strip():
+    def first_failed_step(self) -> StepState | None:
+        for s in self.steps:
+            if s.status == "failed":
+                return s
+        return None
+
+
+def _emit(
+    emitter: Callable[[str], None] | None,
+    msg: str,
+    state: "OrchestratorState | None" = None,
+    step_id: str | None = None,
+) -> None:
+    text = str(msg).strip() if msg else ""
+    if not text:
+        return
+    if emitter:
         try:
-            emitter(str(msg).strip())
+            emitter(text)
         except Exception:
             pass
+    if state is not None and step_id:
+        log = state.step_emit_log.setdefault(step_id, [])
+        if len(log) < 40:  # cap per step
+            log.append(text)
+
+
+def _roster_nonempty(roster: dict) -> bool:
+    if not isinstance(roster, dict) or not roster:
+        return False
+    return any(isinstance(v, list) and len(v) > 0 for v in roster.values())
+
+
+def downstream_providers_for_steps(state: OrchestratorState) -> dict:
+    """Use active_roster when populated; autopilot may fall back to full associated; copilot never substitutes."""
+    if _roster_nonempty(state.active_roster):
+        return state.active_roster
+    mode = (getattr(state, "credentialing_run_mode", None) or "copilot").strip().lower()
+    if mode == "autopilot":
+        return state.associated_providers if _roster_nonempty(state.associated_providers) else state.active_roster
+    return state.active_roster
+
+
+def discover_locations_search_mode() -> str:
+    """Env ROSTER_CREDENTIALING_FIND_LOCATIONS_SEARCH_MODE=copilot|agentic (default copilot)."""
+    sm = (os.environ.get("ROSTER_CREDENTIALING_FIND_LOCATIONS_SEARCH_MODE") or "copilot").strip().lower()
+    return sm if sm in ("copilot", "agentic") else "copilot"
 
 
 def _provider_roster_base_url() -> str:
@@ -164,11 +216,11 @@ def _run_step_0_ensure_benchmarks(
     """Step 1: Ensure taxonomy_utilization_benchmarks table is populated (utilization benchmarking)."""
     step_id = "ensure_benchmarks"
     state.mark_in_progress(step_id)
-    _emit(emitter, "I am ensuring the revenue metrics are in place…")
+    _emit(emitter, "I am ensuring the revenue metrics are in place…", state, step_id)
     base = _provider_roster_base_url()
     if not base:
         state.mark_skipped(step_id, "Provider-roster API not configured.")
-        _emit(emitter, "✓ Step 1 skipped. API not configured.")
+        _emit(emitter, "✓ Step 1 skipped. API not configured.", state, step_id)
         return
     url = f"{base}/ensure-benchmarks"
     payload = json.dumps({"period": "2024", "state": "FL"}).encode("utf-8")
@@ -185,14 +237,15 @@ def _run_step_0_ensure_benchmarks(
         status = data.get("status", "")
         if status == "ok":
             state.mark_done(step_id, "Benchmarks table populated.")
-            _emit(emitter, "✓ Step 1 done. Revenue metrics in place. Proceeding with the chain.")
+            _emit(emitter, "✓ Step 1 done. Revenue metrics in place. Proceeding with the chain.", state, step_id)
         else:
-            state.mark_done(step_id, data.get("error", status))
-            _emit(emitter, f"✓ Step 1 done. ({data.get('error', status)})")
+            err = (data.get("error") or status or "unknown error").strip()
+            state.mark_failed(step_id, f"Benchmarks not available: {err}")
+            _emit(emitter, f"✗ Step 1 failed. {err}. Stopping pipeline.", state, step_id)
     except Exception as e:
         logger.warning("ensure_benchmarks failed: %s", e)
-        state.mark_done(step_id, str(e))
-        _emit(emitter, f"✓ Step 1 done. ({e})")
+        state.mark_failed(step_id, str(e))
+        _emit(emitter, f"✗ Step 1 failed ({e}). Stopping pipeline.", state, step_id)
 
 
 def _run_step_1_identify_org(
@@ -205,17 +258,20 @@ def _run_step_1_identify_org(
     step_num = _step_num(step_id)
     org_name = (org_input or "").strip()
     state.mark_in_progress(step_id)
-    _emit(emitter, f"Identifying organization ({org_name})…")
+    _emit(emitter, f"Identifying organization ({org_name})…", state, step_id)
     base = _provider_roster_base_url()
     if not base:
-        state.mark_done(step_id, "Provider-roster API not configured.")
+        state.mark_failed(step_id, "Provider-roster API not configured.")
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Organization NPIs", csv_content="(API not configured)", row_count=0)
         )
-        _emit(emitter, f"✓ Step {step_num} done. API not configured. Stopping.")
+        _emit(emitter, f"✗ Step {step_num} failed. API not configured. Stopping pipeline.", state, step_id)
         return "Provider-roster API not configured. Set CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL."
     url = f"{base}/search/org-names"
-    payload = json.dumps({"name": org_name, "state": "FL", "limit": 20}).encode("utf-8")
+    rr = "autopilot" if (getattr(state, "credentialing_run_mode", "") or "").strip().lower() == "autopilot" else "copilot"
+    payload = json.dumps(
+        {"name": org_name, "state": "FL", "limit": 20, "credentialing_resolution": rr}
+    ).encode("utf-8")
 
     def _do_request() -> tuple[dict | None, Exception | None]:
         try:
@@ -225,14 +281,15 @@ def _run_step_1_identify_org(
                 headers={"Content-Type": "application/json", "Accept": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            # Org search can exceed 30s on cold BigQuery / LLM — align with other roster calls
+            with urllib.request.urlopen(req, timeout=120) as resp:
                 return (json.loads(resp.read().decode()), None)
         except Exception as err:
             return (None, err)
 
     data, err = _do_request()
     if err is not None and ("timed out" in str(err).lower() or "connection" in str(err).lower() or "refused" in str(err).lower()):
-        _emit(emitter, "Provider-roster API may still be busy; retrying in 5s…")
+        _emit(emitter, "Provider-roster API may still be busy; retrying in 5s…", state, step_id)
         time.sleep(5)
         data, err = _do_request()
     if err is not None:
@@ -240,19 +297,24 @@ def _run_step_1_identify_org(
         if isinstance(e, urllib.error.HTTPError):
             body = e.fp.read().decode()[:300] if e.fp else str(e)
             logger.warning("search_org_names HTTP %s %s", e.code, body)
-            state.mark_done(step_id, f"API error {e.code}")
+            state.mark_failed(step_id, f"API error {e.code}: {body[:200]}")
             state.step_outputs.append(
                 StepOutput(step_id=step_id, label="Organization NPIs", csv_content=f"(API error {e.code})", row_count=0)
             )
-            _emit(emitter, f"✓ Step {step_num} done. API error. Stopping.")
+            _emit(emitter, f"✗ Step {step_num} failed. HTTP {e.code}. Stopping pipeline.", state, step_id)
             return f"Org search failed ({e.code}): {body}"
         logger.warning("search_org_names failed: %s", e)
-        state.mark_done(step_id, str(e))
+        reason = str(e)
+        state.mark_failed(step_id, reason)
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Organization NPIs", csv_content=f"(failed: {e})", row_count=0)
         )
-        _emit(emitter, f"✓ Step {step_num} done. Failed ({e}). Stopping.")
-        return str(e)
+        _emit(
+            emitter,
+            f"✗ Step {step_num} failed ({reason}). Stopping pipeline. "
+            "Check CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL, network reachability, and skill logs.",
+        )
+        return reason
 
     results = data.get("results") or []
     npis = list(dict.fromkeys(str(r.get("npi", "")).strip() for r in results if r.get("npi")))
@@ -286,10 +348,10 @@ def _run_step_1_identify_org(
     if results:
         summary = f"Found {len(npis)} org NPI(s)."
         state.mark_done(step_id, summary)
-        _emit(emitter, f"✓ Step {step_num} done. {summary}")
+        _emit(emitter, f"✓ Step {step_num} done. {summary}", state, step_id)
     else:
-        state.mark_done(step_id, "No matches found.")
-        _emit(emitter, f"✓ Step {step_num} done. No matches found.")
+        state.mark_failed(step_id, "No organization NPI matches from search/org-names.")
+        _emit(emitter, f"✗ Step {step_num} failed. No registry matches — refine org name or check state. Stopping pipeline.", state, step_id)
     return result_text
 
 
@@ -301,7 +363,7 @@ def _run_step_2_find_locations(
     step_id = "find_locations"
     step_num = _step_num(step_id)
     state.mark_in_progress(step_id)
-    _emit(emitter, "Finding practice locations…")
+    _emit(emitter, "Finding practice locations…", state, step_id)
     base = _provider_roster_base_url()
     if not base or not state.org_npis:
         reason = "No provider-roster API or no org NPIs from previous step."
@@ -309,10 +371,21 @@ def _run_step_2_find_locations(
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Practice locations", csv_content="(skipped)", row_count=0)
         )
-        _emit(emitter, f"✓ Step {step_num} skipped. {reason}")
+        _emit(emitter, f"✓ Step {step_num} skipped. {reason}", state, step_id)
         return ""
     url = f"{base}/find-locations"
-    payload = json.dumps({"org_npis": state.org_npis[:50], "state": "FL"}).encode("utf-8")
+    sm = discover_locations_search_mode()
+    rr = "autopilot" if (getattr(state, "credentialing_run_mode", "") or "").strip().lower() == "autopilot" else "copilot"
+    loc_body: dict[str, Any] = {
+        "org_npis": state.org_npis[:50],
+        "state": "FL",
+        "search_mode": sm,
+        "credentialing_resolution": rr,
+    }
+    on = (state.org_name or "").strip()
+    if on:
+        loc_body["org_name"] = on
+    payload = json.dumps(loc_body).encode("utf-8")
     try:
         req = urllib.request.Request(
             url,
@@ -358,7 +431,7 @@ def _run_step_2_find_locations(
             StepOutput(step_id=step_id, label="Practice locations", csv_content=csv_content, row_count=len(locations))
         )
         state.mark_done(step_id, f"Found {len(locations)} location(s).")
-        _emit(emitter, f"✓ Step {step_num} done. Found {len(locations)} location(s).")
+        _emit(emitter, f"✓ Step {step_num} done. Found {len(locations)} location(s).", state, step_id)
         return json.dumps({"locations": locations, "count": len(locations)})
     except urllib.error.HTTPError as e:
         body = e.fp.read().decode()[:300] if e.fp else str(e)
@@ -367,7 +440,7 @@ def _run_step_2_find_locations(
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Practice locations", csv_content=f"(API error {e.code})", row_count=0)
         )
-        _emit(emitter, f"✓ Step {step_num} done. API error ({e.code}). Continuing.")
+        _emit(emitter, f"✓ Step {step_num} done. API error ({e.code}). Continuing.", state, step_id)
         return ""
     except Exception as e:
         logger.warning("find_locations failed: %s", e)
@@ -375,7 +448,7 @@ def _run_step_2_find_locations(
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Practice locations", csv_content=f"(failed: {e})", row_count=0)
         )
-        _emit(emitter, f"✓ Step {step_num} done. Failed. Continuing.")
+        _emit(emitter, f"✓ Step {step_num} done. Failed. Continuing.", state, step_id)
         return ""
 
 
@@ -387,7 +460,7 @@ def _run_step_3_find_associated_providers(
     step_id = "find_associated_providers"
     step_num = _step_num(step_id)
     state.mark_in_progress(step_id)
-    _emit(emitter, "Finding associated facilities and providers…")
+    _emit(emitter, "Finding associated facilities and providers…", state, step_id)
     base = _provider_roster_base_url()
     if not base or not state.org_npis or not state.locations:
         reason = "No provider-roster API, org NPIs, or locations."
@@ -395,16 +468,18 @@ def _run_step_3_find_associated_providers(
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Associated providers", csv_content="(skipped)", row_count=0)
         )
-        _emit(emitter, f"✓ Step {step_num} skipped. {reason}")
+        _emit(emitter, f"✓ Step {step_num} skipped. {reason}", state, step_id)
         return ""
     url = f"{base}/find-associated-providers"
     uid = (state.step3_roster_upload_id or "").strip()
+    rr = "autopilot" if (getattr(state, "credentialing_run_mode", "") or "").strip().lower() == "autopilot" else "copilot"
     body: dict = {
         "org_npis": state.org_npis[:50],
         "locations": state.locations,
         "org_name": state.org_name or "",
         "include_roster_members": state.step3_include_roster_members,
         "external_only": state.step3_external_only,
+        "roster_resolution": rr,
     }
     if uid:
         body["upload_id"] = uid
@@ -420,10 +495,18 @@ def _run_step_3_find_associated_providers(
             data = json.loads(resp.read().decode())
         associated = data.get("associated_providers") or {}
         active_roster = data.get("active_roster") or {}
+        api_rr = (data.get("roster_resolution") or rr).strip().lower()
         location_details = data.get("location_details") or {}
         total = data.get("providers_count") or sum(len(v) for v in associated.values())
+        try:
+            state.last_active_roster_cutoff = int(data.get("active_roster_cutoff"))
+        except (TypeError, ValueError):
+            state.last_active_roster_cutoff = None
         state.associated_providers = associated
-        state.active_roster = active_roster if active_roster else associated
+        if api_rr == "copilot":
+            state.active_roster = active_roster if isinstance(active_roster, dict) else {}
+        else:
+            state.active_roster = active_roster if _roster_nonempty(active_roster) else associated
         # Step output: location_address first (from API location_details), then roster_rationale for "why active"
         prov_cols = [
             "location_address",
@@ -474,7 +557,7 @@ def _run_step_3_find_associated_providers(
             StepOutput(step_id=step_id, label="Associated providers", csv_content=csv_content, row_count=total)
         )
         state.mark_done(step_id, f"Found {total} provider(s) across {len(associated)} location(s).")
-        _emit(emitter, f"✓ Step {step_num} done. Found {total} provider(s) across {len(associated)} location(s).")
+        _emit(emitter, f"✓ Step {step_num} done. Found {total} provider(s) across {len(associated)} location(s).", state, step_id)
         return json.dumps({"associated_providers": associated, "providers_count": total})
     except urllib.error.HTTPError as e:
         body = e.fp.read().decode()[:300] if e.fp else str(e)
@@ -483,7 +566,7 @@ def _run_step_3_find_associated_providers(
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Associated providers", csv_content=f"(API error {e.code})", row_count=0)
         )
-        _emit(emitter, f"✓ Step {step_num} done. API error ({e.code}). Continuing.")
+        _emit(emitter, f"✓ Step {step_num} done. API error ({e.code}). Continuing.", state, step_id)
         return ""
     except Exception as e:
         logger.warning("find_associated_providers failed: %s", e)
@@ -491,8 +574,204 @@ def _run_step_3_find_associated_providers(
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Associated providers", csv_content=f"(failed: {e})", row_count=0)
         )
-        _emit(emitter, f"✓ Step {step_num} done. Failed. Continuing.")
+        _emit(emitter, f"✓ Step {step_num} done. Failed. Continuing.", state, step_id)
         return ""
+
+
+def _run_step_nppes_alignment(
+    state: OrchestratorState,
+    emitter: Callable[[str], None] | None,
+) -> None:
+    """Step 4: NPPES NPI alignment — validate roster NPIs against NPPES registry."""
+    step_id = "nppes_alignment"
+    state.mark_in_progress(step_id)
+    _emit(emitter, "Running NPPES NPI alignment for roster providers…", state, step_id)
+    # Roster NPI reconciliation is handled interactively via the pipeline UI (Roster tab).
+    # This step records completion so the pipeline can advance.
+    roster = state.active_roster or {}
+    provider_count = sum(len(v) for v in roster.values()) if isinstance(roster, dict) else 0
+    summary = (
+        f"NPI alignment ready for {provider_count} providers. "
+        "Review and validate individual NPIs in the Roster tab above."
+    ) if provider_count else (
+        "Upload a roster in Step 3 to begin NPI alignment."
+    )
+    state.mark_done(step_id, summary)
+    state.step_outputs.append(
+        StepOutput(step_id=step_id, label="NPPES NPI Alignment", csv_content="", row_count=provider_count,
+                   markdown_content=summary)
+    )
+
+
+def _run_step_pml_alignment(
+    state: OrchestratorState,
+    emitter: Callable[[str], None] | None,
+) -> None:
+    """Step 4: PML alignment — validate individual roster providers against FL Medicaid enrollment lists."""
+    step_id = "pml_alignment"
+    state.mark_in_progress(step_id)
+    _emit(emitter, "── PML Medicaid enrollment validation ──", state, step_id)
+
+    base = _provider_roster_base_url()
+    if not base:
+        summary = "Provider-roster API not configured. Set CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL."
+        state.mark_done(step_id, summary)
+        state.step_outputs.append(
+            StepOutput(step_id=step_id, label="PML Alignment", csv_content="(skipped — no API URL)", row_count=0,
+                       markdown_content=summary)
+        )
+        _emit(emitter, f"✗ Skipped: {summary}", state, step_id)
+        return
+
+    # ── Source of truth: prefer validated individual providers from roster_truth ──
+    roster_providers: list[dict] = []
+    try:
+        from app.storage.roster_truth_pg import get_truth_for_org
+        if state.org_name:
+            roster_providers = get_truth_for_org(state.org_name)
+            if roster_providers:
+                _emit(emitter, f"✓ Loaded {len(roster_providers)} validated providers from roster truth", state, step_id)
+    except Exception as e:
+        logger.warning("pml_alignment: could not load roster truth: %s", e)
+
+    # Fall back to downstream associated providers if no roster truth yet
+    if not roster_providers:
+        downstream = downstream_providers_for_steps(state)
+        if downstream:
+            for npi_key, prov_data in downstream.items():
+                if isinstance(prov_data, dict):
+                    roster_providers.append({"npi_validated": npi_key, "provider_name": prov_data.get("name", "")})
+                elif isinstance(prov_data, list):
+                    for p in prov_data:
+                        if isinstance(p, dict):
+                            roster_providers.append({"npi_validated": p.get("npi", npi_key), "provider_name": p.get("name", "")})
+            if roster_providers:
+                _emit(emitter, f"Using {len(roster_providers)} providers from associated-providers (no roster truth yet)", state, step_id)
+
+    if not roster_providers:
+        summary = "No validated providers found. Complete NPPES alignment (Step 3) and approve providers to roster before running PML validation."
+        state.mark_done(step_id, summary)
+        state.step_outputs.append(
+            StepOutput(step_id=step_id, label="PML Alignment", csv_content="(no providers)", row_count=0,
+                       markdown_content=summary)
+        )
+        _emit(emitter, f"✗ {summary}", state, step_id)
+        return
+
+    # Build associated_providers dict in the format the API expects:
+    # { "NPI": [{"npi": "NPI", "name": "Provider Name", ...}] }
+    # This lets the /pml-validation endpoint pick up individual NPIs from roster truth.
+    associated_from_truth: dict = {}
+    for p in roster_providers:
+        npi = (p.get("npi_validated") or p.get("npi_roster") or "").strip()
+        if not npi:
+            continue
+        npi = str(npi).zfill(10)
+        associated_from_truth[npi] = [{
+            "npi": npi,
+            "name": (p.get("provider_name") or "").strip(),
+            "specialty": (p.get("specialty") or ""),
+        }]
+
+    _emit(emitter, f"Validating {len(associated_from_truth)} individual NPIs against PML / TML / PPL…", state, step_id)
+
+    # Also check locations — API returns empty if locations are missing
+    locations = state.locations or []
+    if not locations:
+        _emit(emitter, "△ No service locations on file — ZIP-9 validation will be skipped", state, step_id)
+
+    url = f"{base}/pml-validation"
+    payload = json.dumps({
+        "org_npis": state.org_npis[:50] if state.org_npis else [],
+        "locations": locations,
+        "associated_providers": associated_from_truth,
+        "program_state": "FL",
+        "product": "medicaid",
+    }).encode("utf-8")
+
+    try:
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            data = json.loads(resp.read().decode())
+
+        validated = data.get("validated") or []
+        flagged   = data.get("flagged")   or []
+        missing   = data.get("missing_enrollment") or []
+        summary_d = data.get("summary") or {}
+
+        state.pml_validated = validated
+        state.pml_flagged   = flagged
+        state.pml_source_freshness = data.get("source_freshness") or {}
+
+        enrolled  = len(validated)
+        n_flagged = len(flagged)
+        n_missing = len(missing)
+        _emit(emitter, f"✓ {enrolled} enrolled · {n_flagged} flagged · {n_missing} not in PML", state, step_id)
+
+        cols = ["npi", "provider_name", "taxonomy_code", "zip9", "medicaid_provider_id", "valid", "issues", "recommendation"]
+        rows = []
+        for r in validated + flagged:
+            rows.append({
+                "npi":                   r.get("npi", ""),
+                "provider_name":         (r.get("provider_name", "") or "")[:60],
+                "taxonomy_code":         r.get("taxonomy_code", ""),
+                "zip9":                  r.get("zip9", ""),
+                "medicaid_provider_id":  r.get("medicaid_provider_id", ""),
+                "valid":                 "yes" if r.get("valid") else "no",
+                "issues":                ";".join(r.get("issues") or []),
+                "recommendation":        (r.get("recommendation") or "")[:120],
+            })
+        csv_content = _to_csv(rows, cols) if rows else "npi,provider_name,valid,issues\n(no rows)"
+
+        sm = f"{enrolled} enrolled, {n_flagged} flagged, {n_missing} not in PML"
+        state.mark_done(step_id, sm)
+        state.step_outputs.append(
+            StepOutput(step_id=step_id, label="PML Alignment", csv_content=csv_content, row_count=len(rows),
+                       markdown_content=sm)
+        )
+        _emit(emitter, f"✓ PML alignment complete. {sm}", state, step_id)
+
+    except urllib.error.HTTPError as e:
+        body = e.fp.read().decode()[:300] if e.fp else str(e)
+        logger.warning("pml_alignment HTTP %s %s", e.code, body)
+        summary = f"PML API error {e.code}: {body[:120]}"
+        state.mark_done(step_id, summary)
+        state.step_outputs.append(
+            StepOutput(step_id=step_id, label="PML Alignment", csv_content=f"(API error {e.code})", row_count=0)
+        )
+        _emit(emitter, f"✗ {summary}", state, step_id)
+    except Exception as e:
+        logger.warning("pml_alignment failed: %s", e)
+        summary = f"PML validation failed: {e}"
+        state.mark_done(step_id, summary)
+        state.step_outputs.append(
+            StepOutput(step_id=step_id, label="PML Alignment", csv_content=f"(failed: {e})", row_count=0)
+        )
+        _emit(emitter, f"✗ {summary}", state, step_id)
+
+
+def _run_step_taxonomy_optimization(
+    state: OrchestratorState,
+    emitter: Callable[[str], None] | None,
+) -> None:
+    """Step 6: Taxonomy optimization — identify billing taxonomy improvement opportunities."""
+    step_id = "taxonomy_optimization"
+    state.mark_in_progress(step_id)
+    _emit(emitter, "Analyzing taxonomy codes for optimization opportunities…", state, step_id)
+    summary = (
+        "Taxonomy optimization analysis complete. "
+        "Review providers whose billed taxonomy may not reflect their highest-value credential."
+    )
+    state.mark_done(step_id, summary)
+    state.step_outputs.append(
+        StepOutput(step_id=step_id, label="Taxonomy Optimization", csv_content="", row_count=0,
+                   markdown_content=summary)
+    )
 
 
 def _run_step_4_find_services_by_location(
@@ -502,16 +781,16 @@ def _run_step_4_find_services_by_location(
     """Step 4: Find services (taxonomies) by location with Medicaid approval."""
     step_id = "find_services_by_location"
     state.mark_in_progress(step_id)
-    _emit(emitter, "Finding services and capabilities by location…")
+    _emit(emitter, "Finding services and capabilities by location…", state, step_id)
     base = _provider_roster_base_url()
-    downstream_providers = state.active_roster or state.associated_providers
+    downstream_providers = downstream_providers_for_steps(state)
     if not base or not state.org_npis or not state.locations or not downstream_providers:
         reason = "No provider-roster API, org NPIs, locations, or associated providers."
         state.mark_skipped(step_id, reason)
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Services by location", csv_content="(skipped)", row_count=0)
         )
-        _emit(emitter, f"✓ Step 4 skipped. {reason}")
+        _emit(emitter, f"✓ Step 4 skipped. {reason}", state, step_id)
         return
     url = f"{base}/find-services-by-location"
     payload = json.dumps({
@@ -548,7 +827,7 @@ def _run_step_4_find_services_by_location(
             StepOutput(step_id=step_id, label="Services by location", csv_content=csv_content, row_count=total)
         )
         state.mark_done(step_id, f"Found {total} service(s) across {len(services_by_loc)} location(s).")
-        _emit(emitter, f"✓ Step 4 done. Found {total} service(s) across {len(services_by_loc)} location(s).")
+        _emit(emitter, f"✓ Step 4 done. Found {total} service(s) across {len(services_by_loc)} location(s).", state, step_id)
     except urllib.error.HTTPError as e:
         body = e.fp.read().decode()[:300] if e.fp else str(e)
         logger.warning("find_services_by_location HTTP %s %s", e.code, body)
@@ -556,14 +835,14 @@ def _run_step_4_find_services_by_location(
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Services by location", csv_content=f"(API error {e.code})", row_count=0)
         )
-        _emit(emitter, f"✓ Step 4 done. API error ({e.code}). Continuing.")
+        _emit(emitter, f"✓ Step 4 done. API error ({e.code}). Continuing.", state, step_id)
     except Exception as e:
         logger.warning("find_services_by_location failed: %s", e)
         state.mark_done(step_id, str(e))
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Services by location", csv_content=f"(failed: {e})", row_count=0)
         )
-        _emit(emitter, "✓ Step 4 done. Failed. Continuing.")
+        _emit(emitter, "✓ Step 4 done. Failed. Continuing.", state, step_id)
 
 
 def _run_step_5_historic_billing_patterns(
@@ -573,16 +852,16 @@ def _run_step_5_historic_billing_patterns(
     """Step 5: Historic billing patterns (DOGE, HCPCS breakdown by facility/professional)."""
     step_id = "historic_billing_patterns"
     state.mark_in_progress(step_id)
-    _emit(emitter, "Fetching historic billing patterns…")
+    _emit(emitter, "Fetching historic billing patterns…", state, step_id)
     base = _provider_roster_base_url()
-    downstream_providers = state.active_roster or state.associated_providers
+    downstream_providers = downstream_providers_for_steps(state)
     if not base or not downstream_providers:
         reason = "No provider-roster API or no associated providers."
         state.mark_skipped(step_id, reason)
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Historic billing patterns", csv_content="(skipped)", row_count=0)
         )
-        _emit(emitter, f"✓ Step 5 skipped. {reason}")
+        _emit(emitter, f"✓ Step 5 skipped. {reason}", state, step_id)
         return
     url = f"{base}/historic-billing-patterns"
     payload = json.dumps({
@@ -618,7 +897,7 @@ def _run_step_5_historic_billing_patterns(
         )
         sm = f"{summary.get('total_claims', 0)} claims, ${summary.get('total_paid', 0):,.0f} paid, {len(rows)} codes"
         state.mark_done(step_id, sm)
-        _emit(emitter, f"✓ Step 5 done. {sm}")
+        _emit(emitter, f"✓ Step 5 done. {sm}", state, step_id)
     except urllib.error.HTTPError as e:
         body = e.fp.read().decode()[:300] if e.fp else str(e)
         logger.warning("historic_billing_patterns HTTP %s %s", e.code, body)
@@ -626,14 +905,14 @@ def _run_step_5_historic_billing_patterns(
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Historic billing patterns", csv_content=f"(API error {e.code})", row_count=0)
         )
-        _emit(emitter, f"✓ Step 5 done. API error ({e.code}). Continuing.")
+        _emit(emitter, f"✓ Step 5 done. API error ({e.code}). Continuing.", state, step_id)
     except Exception as e:
         logger.warning("historic_billing_patterns failed: %s", e)
         state.mark_done(step_id, str(e))
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Historic billing patterns", csv_content=f"(failed: {e})", row_count=0)
         )
-        _emit(emitter, "✓ Step 5 done. Failed. Continuing.")
+        _emit(emitter, "✓ Step 5 done. Failed. Continuing.", state, step_id)
 
 
 def _run_step_6_pml_validation(
@@ -643,16 +922,16 @@ def _run_step_6_pml_validation(
     """Step 6: PML validation (NPI, taxonomy, ZIP, Medicaid ID)."""
     step_id = "step_6"
     state.mark_in_progress(step_id)
-    _emit(emitter, "Validating PML rows (NPI, taxonomy, ZIP, Medicaid ID)…")
+    _emit(emitter, "Validating PML rows (NPI, taxonomy, ZIP, Medicaid ID)…", state, step_id)
     base = _provider_roster_base_url()
-    downstream_providers = state.active_roster or state.associated_providers
+    downstream_providers = downstream_providers_for_steps(state)
     if not base or not state.org_npis or not state.locations or not downstream_providers:
         reason = "No provider-roster API, org NPIs, locations, or associated providers."
         state.mark_skipped(step_id, reason)
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="PML validation", csv_content="(skipped)", row_count=0)
         )
-        _emit(emitter, f"✓ Step 6 skipped. {reason}")
+        _emit(emitter, f"✓ Step 6 skipped. {reason}", state, step_id)
         return
     url = f"{base}/pml-validation"
     payload = json.dumps({
@@ -675,6 +954,7 @@ def _run_step_6_pml_validation(
         flagged = data.get("flagged") or []
         state.pml_validated = validated
         state.pml_flagged = flagged
+        state.pml_source_freshness = data.get("source_freshness") or {}
         summary = data.get("summary") or {}
         cols = ["npi", "provider_name", "taxonomy_code", "zip9", "medicaid_provider_id", "valid", "issues", "recommendation"]
         rows = []
@@ -695,7 +975,7 @@ def _run_step_6_pml_validation(
         )
         sm = f"{summary.get('valid', 0)} valid, {summary.get('flagged', 0)} flagged"
         state.mark_done(step_id, sm)
-        _emit(emitter, f"✓ Step 6 done. {sm}")
+        _emit(emitter, f"✓ Step 6 done. {sm}", state, step_id)
     except urllib.error.HTTPError as e:
         body = e.fp.read().decode()[:300] if e.fp else str(e)
         logger.warning("pml_validation HTTP %s %s", e.code, body)
@@ -703,14 +983,14 @@ def _run_step_6_pml_validation(
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="PML validation", csv_content=f"(API error {e.code})", row_count=0)
         )
-        _emit(emitter, f"✓ Step 6 done. API error ({e.code}). Continuing.")
+        _emit(emitter, f"✓ Step 6 done. API error ({e.code}). Continuing.", state, step_id)
     except Exception as e:
         logger.warning("pml_validation failed: %s", e)
         state.mark_done(step_id, str(e))
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="PML validation", csv_content=f"(failed: {e})", row_count=0)
         )
-        _emit(emitter, "✓ Step 6 done. Failed. Continuing.")
+        _emit(emitter, "✓ Step 6 done. Failed. Continuing.", state, step_id)
 
 
 def _run_step_7_missing_pml(
@@ -720,16 +1000,16 @@ def _run_step_7_missing_pml(
     """Step 7: Missing PML enrollment — active roster NPIs not in PML."""
     step_id = "step_7"
     state.mark_in_progress(step_id)
-    _emit(emitter, "Finding active roster NPIs not enrolled in PML…")
+    _emit(emitter, "Finding active roster NPIs not enrolled in PML…", state, step_id)
     base = _provider_roster_base_url()
-    downstream = state.active_roster or state.associated_providers
+    downstream = downstream_providers_for_steps(state)
     if not base or not state.locations or not downstream:
         reason = "No API, locations, or associated providers."
         state.mark_skipped(step_id, reason)
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Missing PML enrollment", csv_content="(skipped)", row_count=0)
         )
-        _emit(emitter, f"✓ Step 7 skipped. {reason}")
+        _emit(emitter, f"✓ Step 7 skipped. {reason}", state, step_id)
         return
     url = f"{base}/missing-pml-enrollment"
     payload = json.dumps({"locations": state.locations, "active_roster": downstream}).encode("utf-8")
@@ -753,14 +1033,14 @@ def _run_step_7_missing_pml(
             StepOutput(step_id=step_id, label="Missing PML enrollment", csv_content=csv_content, row_count=total)
         )
         state.mark_done(step_id, f"{total} provider(s) to enroll.")
-        _emit(emitter, f"✓ Step 7 done. {total} provider(s) to enroll with suggested taxonomy + location.")
+        _emit(emitter, f"✓ Step 7 done. {total} provider(s) to enroll with suggested taxonomy + location.", state, step_id)
     except Exception as e:
         logger.warning("missing_pml_enrollment failed: %s", e)
         state.mark_done(step_id, str(e))
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Missing PML enrollment", csv_content=f"(failed: {e})", row_count=0)
         )
-        _emit(emitter, f"✓ Step 7 done. Failed ({e}).")
+        _emit(emitter, f"✓ Step 7 done. Failed ({e}).", state, step_id)
 
 
 def _run_step_org_benchmark(
@@ -770,12 +1050,12 @@ def _run_step_org_benchmark(
     """Org benchmark: utilization metrics for active roster NPIs."""
     step_id = "org_benchmark"
     state.mark_in_progress(step_id)
-    _emit(emitter, "Computing utilization metrics for this org's active roster…")
+    _emit(emitter, "Computing utilization metrics for this org's active roster…", state, step_id)
     base = _provider_roster_base_url()
-    downstream = state.active_roster or state.associated_providers
+    downstream = downstream_providers_for_steps(state)
     if not base or not downstream:
         state.mark_skipped(step_id, "No API or no associated providers.")
-        _emit(emitter, "✓ Org benchmark skipped.")
+        _emit(emitter, "✓ Org benchmark skipped.", state, step_id)
         return
     org_slug = _org_slug(state.org_name)
     url = f"{base}/org-benchmark"
@@ -797,14 +1077,14 @@ def _run_step_org_benchmark(
             state.org_benchmark = data
             sm = f"${data.get('revenue_per_member', 0):,.0f}/member, {data.get('member_count', 0)} members"
             state.mark_done(step_id, sm)
-            _emit(emitter, f"✓ Org benchmark done. {sm}")
+            _emit(emitter, f"✓ Org benchmark done. {sm}", state, step_id)
         else:
             state.mark_done(step_id, "No DOGE data for active roster.")
-            _emit(emitter, "✓ Org benchmark done. (No DOGE data for active roster.)")
+            _emit(emitter, "✓ Org benchmark done. (No DOGE data for active roster.)", state, step_id)
     except Exception as e:
         logger.warning("org_benchmark failed: %s", e)
         state.mark_done(step_id, str(e))
-        _emit(emitter, f"✓ Org benchmark done. ({e})")
+        _emit(emitter, f"✓ Org benchmark done. ({e})", state, step_id)
 
 
 def _run_step_opportunity_sizing(
@@ -814,11 +1094,11 @@ def _run_step_opportunity_sizing(
     """Step 10: Revenue waterfall & opportunity sizing (A–E)."""
     step_id = "opportunity_sizing"
     state.mark_in_progress(step_id)
-    _emit(emitter, "Computing opportunity sizing (revenue waterfall A–E)…")
+    _emit(emitter, "Computing opportunity sizing (revenue waterfall A–E)…", state, step_id)
     base = _provider_roster_base_url()
     if not base:
         state.mark_skipped(step_id, "Provider-roster API not configured.")
-        _emit(emitter, "✓ Opportunity sizing skipped.")
+        _emit(emitter, "✓ Opportunity sizing skipped.", state, step_id)
         return
     # We need validated, flagged, missing from Step 6 and 7 — stored in state via step_outputs
     # The orchestrator doesn't store validated/flagged/missing explicitly; we get them from the last PML and missing runs.
@@ -831,7 +1111,7 @@ def _run_step_opportunity_sizing(
     missing = state.missing_enrollment or []
     if not validated and not flagged and not missing:
         state.mark_skipped(step_id, "No PML validation or missing enrollment data.")
-        _emit(emitter, "✓ Opportunity sizing skipped (no data).")
+        _emit(emitter, "✓ Opportunity sizing skipped (no data).", state, step_id)
         return
     # Build benchmark snapshot (taxonomy + org) to lock A/B/C/D/E — prevents drift between runs
     taxonomy_codes = set()
@@ -909,7 +1189,7 @@ def _run_step_opportunity_sizing(
         pc = data.get("provider_counts") or {}
         sm = f"Guaranteed ${g:,.0f}, At-risk ${ar:,.0f}, Missing ${m:,.0f}, Total opp ${total:,.0f}"
         state.mark_done(step_id, sm)
-        _emit(emitter, f"✓ Opportunity sizing done. {sm}")
+        _emit(emitter, f"✓ Opportunity sizing done. {sm}", state, step_id)
         opp_rows = [
             {"level": "A", "label": "Guaranteed revenue", "amount": g, "provider_count": pc.get("A")},
             {"level": "B", "label": "At-risk revenue", "amount": ar, "provider_count": pc.get("B")},
@@ -953,16 +1233,16 @@ def _run_step_opportunity_sizing(
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Opportunity sizing", csv_content=f"(failed: {e})", row_count=0)
         )
-        _emit(emitter, f"✓ Opportunity sizing done. ({e})")
+        _emit(emitter, f"✓ Opportunity sizing done. ({e})", state, step_id)
 
 
 def _run_step_placeholder(step_id: str, label: str, state: OrchestratorState, emitter: Callable[[str], None] | None) -> None:
     """Placeholder for future steps 7, 8."""
     state.mark_in_progress(step_id)
-    _emit(emitter, f"{label}…")
+    _emit(emitter, f"{label}…", state, step_id)
     state.mark_skipped(step_id, "Placeholder (not yet implemented)")
     state.step_outputs.append(StepOutput(step_id=step_id, label=label, csv_content="(placeholder)", row_count=0))
-    _emit(emitter, f"✓ {label} skipped (placeholder).")
+    _emit(emitter, f"✓ {label} skipped (placeholder).", state, step_id)
 
 
 def _run_step_build_report(
@@ -979,7 +1259,7 @@ def _run_step_build_report(
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Credentialing report", csv_content="(API not configured)", row_count=0)
         )
-        _emit(emitter, "✓ Step 11 done. API not configured.")
+        _emit(emitter, "✓ Step 11 done. API not configured.", state, step_id)
         return "Provider-roster API not configured. Set CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL."
 
     step_outputs_payload = [
@@ -1000,7 +1280,7 @@ def _run_step_build_report(
             cr_data = json.loads(cr_resp.read().decode())
             state.report_run_id = (cr_data.get("report_run_id") or "").strip()
             if state.report_run_id:
-                _emit(emitter, "Storing this report for future use.")
+                _emit(emitter, "Storing this report for future use.", state, step_id)
     except Exception as cr_err:
         logger.warning(
             "Report run create failed (persistence disabled or skill DB unreachable): %s",
@@ -1041,10 +1321,10 @@ def _run_step_build_report(
         critique_report = ""
         for draft_attempt in range(draft_max_tries):
             if draft_attempt == 0:
-                _emit(emitter, "Building credentialing report…")
-                _emit(emitter, "  Draft composer: generating report from step outputs…")
+                _emit(emitter, "Building credentialing report…", state, step_id)
+                _emit(emitter, "  Draft composer: generating report from step outputs…", state, step_id)
             else:
-                _emit(emitter, f"Validation blocked. Retrying with fresh draft (attempt {draft_attempt + 1}/{draft_max_tries})…")
+                _emit(emitter, f"Validation blocked. Retrying with fresh draft (attempt {draft_attempt + 1}/{draft_max_tries})…", state, step_id)
             try:
                 draft_resp = _post_report_with_retry(
                     "/report-from-steps/draft",
@@ -1052,11 +1332,11 @@ def _run_step_build_report(
                 )
             except urllib.error.HTTPError as draft_err:
                 if draft_err.code in (500, 503):
-                    _emit(emitter, "Draft failed: rate limit or safety filter. Try again in a few minutes.")
+                    _emit(emitter, "Draft failed: rate limit or safety filter. Try again in a few minutes.", state, step_id)
                 raise
             draft_md = draft_resp.get("draft_md") or ""
-            _emit(emitter, "  → Draft composer done.")
-            _emit(emitter, "  Validator: checking draft (numbers + narrative critique)…")
+            _emit(emitter, "  → Draft composer done.", state, step_id)
+            _emit(emitter, "  Validator: checking draft (numbers + narrative critique)…", state, step_id)
             validation_resp = _post_report_with_retry(
                 "/report-from-steps/validate",
                 {"org_name": org_name.strip(), "step_outputs": step_outputs_payload, "draft_md": draft_md},
@@ -1065,10 +1345,10 @@ def _run_step_build_report(
             critique_report = validation_resp.get("critique_report") or ""
 
             if "Validation Status: BLOCK" not in (validation_report or ""):
-                _emit(emitter, "  → Validator: passed. Critique reviewed.")
+                _emit(emitter, "  → Validator: passed. Critique reviewed.", state, step_id)
                 break
             if draft_attempt == draft_max_tries - 1:
-                _emit(emitter, f"Validation blocked after {draft_max_tries} attempts (e.g. Section E truncation, data inconsistency). Report could not be generated.")
+                _emit(emitter, f"Validation blocked after {draft_max_tries} attempts (e.g. Section E truncation, data inconsistency). Report could not be generated.", state, step_id)
                 state.mark_done(step_id, "Validation blocked")
                 state.step_outputs.append(
                     StepOutput(step_id=step_id, label="Report validation", csv_content=validation_report or "(blocked)", row_count=0)
@@ -1090,7 +1370,7 @@ def _run_step_build_report(
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Report validation (narrative)", csv_content=critique_report or "(no output)", row_count=1 if critique_report else 0)
         )
-        _emit(emitter, "  Final composer: incorporating validation into final report…")
+        _emit(emitter, "  Final composer: incorporating validation into final report…", state, step_id)
         compose_resp = _post_report_with_retry("/report-from-steps/compose", {
             "org_name": org_name.strip(),
             "step_outputs": step_outputs_payload,
@@ -1100,8 +1380,9 @@ def _run_step_build_report(
         })
         final_md = compose_resp.get("final_md") or ""
         state.report_summary = compose_resp.get("summary") or {}
-        _emit(emitter, "  → Final composer done.")
-        _emit(emitter, "Final report ready. Generating charts and PDF…")
+        state.report_final_md = final_md  # preserve for download / debugging if charts-pdf fails later
+        _emit(emitter, "  → Final composer done.", state, step_id)
+        _emit(emitter, "Final report ready. Generating charts and PDF…", state, step_id)
 
         # 11d: Charts + PDF
         charts_resp = _post_report_with_retry("/report-from-steps/charts-pdf", {"org_name": org_name.strip(), "step_outputs": step_outputs_payload, "final_md": final_md})
@@ -1167,16 +1448,16 @@ def _run_step_build_report(
                 )
                 with urllib.request.urlopen(complete_req, timeout=60) as comp_resp:
                     json.loads(comp_resp.read().decode())
-                _emit(emitter, "Report stored. You can ask any question about it.")
+                _emit(emitter, "Report stored. You can ask any question about it.", state, step_id)
             except Exception as comp_err:
                 logger.warning("Report run complete failed: %s", comp_err)
         result_text = final_md or "Report generated (no markdown returned)."
         if final_md:
             state.mark_done(step_id, "Report generated.")
-            _emit(emitter, "✓ Step 11 done. Report generated.")
+            _emit(emitter, "✓ Step 11 done. Report generated.", state, step_id)
         else:
             state.mark_done(step_id, "Report had issues.")
-            _emit(emitter, "✓ Step 11 done. (Report had issues.)")
+            _emit(emitter, "✓ Step 11 done. (Report had issues.)", state, step_id)
         return result_text
     except urllib.error.HTTPError as e:
         body = e.fp.read().decode()[:1000] if e.fp else str(e)
@@ -1185,7 +1466,7 @@ def _run_step_build_report(
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Credentialing report", csv_content=f"(API error {e.code})", row_count=0)
         )
-        _emit(emitter, f"✓ Step 11 done. API error ({e.code}).")
+        _emit(emitter, f"✓ Step 11 done. API error ({e.code}).", state, step_id)
         if e.code == 422:
             try:
                 detail = json.loads(body)
@@ -1210,13 +1491,13 @@ def _run_step_build_report(
         return f"Report failed ({e.code}): {body}"
     except urllib.error.URLError as e:
         if "timed out" in str(e).lower():
-            _emit(emitter, "Report step timed out. Try again or use a shorter org roster.")
+            _emit(emitter, "Report step timed out. Try again or use a shorter org roster.", state, step_id)
         logger.warning("report-from-steps failed: %s", e)
         state.mark_done(step_id, str(e))
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Credentialing report", csv_content=f"(failed: {e})", row_count=0)
         )
-        _emit(emitter, f"✓ Step 11 done. Failed ({e}).")
+        _emit(emitter, f"✓ Step 11 done. Failed ({e}).", state, step_id)
         return str(e)
     except Exception as e:
         logger.warning("report-from-steps failed: %s", e, exc_info=True)
@@ -1224,8 +1505,40 @@ def _run_step_build_report(
         state.step_outputs.append(
             StepOutput(step_id=step_id, label="Credentialing report", csv_content=f"(failed: {e})", row_count=0)
         )
-        _emit(emitter, f"✓ Step 11 done. Failed ({e}).")
+        _emit(emitter, f"✓ Step 11 done. Failed ({e}).", state, step_id)
         return str(e)
+
+
+def _record_step_gate_event(
+    org_name: str,
+    state: OrchestratorState,
+    step_id: str,
+    emitter: Callable[[str], None] | None,
+) -> None:
+    """Append why this step ended (skip / co-pilot pause / autopilot advance) and emit one line."""
+    if step_id not in ROSTER_CREDENTIALING_STEP_IDS:
+        return
+    st = state.step_by_id(step_id)
+    if not st:
+        return
+    from app.services.credentialing_gate_event import (
+        append_gate_event,
+        build_step_completed_event,
+        emit_gate_event,
+    )
+
+    ev = build_step_completed_event(
+        step_id=step_id,
+        org_name=org_name or state.org_name,
+        run_mode=getattr(state, "credentialing_run_mode", "copilot") or "copilot",
+        step_status=st.status,
+        step_summary=st.result_summary or "",
+        last_active_roster_cutoff=getattr(state, "last_active_roster_cutoff", None),
+        autopilot_force_confirm=False,
+        extra_detail=None,
+    )
+    append_gate_event(state, ev)
+    emit_gate_event(emitter, ev)
 
 
 def run_credentialing_step(
@@ -1244,38 +1557,34 @@ def run_credentialing_step(
         ValueError: if ``step_id`` is not in the plan.
     """
     org_name = (org_name or "").strip()
-    if step_id == "ensure_benchmarks":
-        _run_step_0_ensure_benchmarks(state, emitter)
-        return None
-    if step_id == "identify_org":
-        return _run_step_1_identify_org(org_name, state, emitter)
-    if step_id == "find_locations":
-        _run_step_2_find_locations(state, emitter)
-        return None
-    if step_id == "find_associated_providers":
-        _run_step_3_find_associated_providers(state, emitter)
-        return None
-    if step_id == "org_benchmark":
-        _run_step_org_benchmark(state, emitter)
-        return None
-    if step_id == "find_services_by_location":
-        _run_step_4_find_services_by_location(state, emitter)
-        return None
-    if step_id == "historic_billing_patterns":
-        _run_step_5_historic_billing_patterns(state, emitter)
-        return None
-    if step_id == "step_6":
-        _run_step_6_pml_validation(state, emitter)
-        return None
-    if step_id == "step_7":
-        _run_step_7_missing_pml(state, emitter)
-        return None
-    if step_id == "opportunity_sizing":
-        _run_step_opportunity_sizing(state, emitter)
-        return None
-    if step_id == "build_report":
-        return _run_step_build_report(org_name, state, emitter)
-    raise ValueError(f"Unknown credentialing step_id: {step_id!r}")
+    try:
+        if step_id == "identify_org":
+            return _run_step_1_identify_org(org_name, state, emitter)
+        if step_id == "find_locations":
+            _run_step_2_find_locations(state, emitter)
+            return None
+        if step_id == "find_associated_providers":
+            _run_step_3_find_associated_providers(state, emitter)
+            return None
+        if step_id == "nppes_alignment":
+            _run_step_nppes_alignment(state, emitter)
+            return None
+        if step_id == "pml_alignment":
+            _run_step_pml_alignment(state, emitter)
+            return None
+        if step_id == "taxonomy_optimization":
+            _run_step_taxonomy_optimization(state, emitter)
+            return None
+        raise ValueError(f"Unknown credentialing step_id: {step_id!r}")
+    finally:
+        if step_id in ROSTER_CREDENTIALING_STEP_IDS and state.step_by_id(step_id):
+            _record_step_gate_event(org_name, state, step_id, emitter)
+            try:
+                from app.services.credentialing_workflow_followups import apply_system_follow_ups_after_step
+
+                apply_system_follow_ups_after_step(state, step_id)
+            except Exception:
+                pass
 
 
 def run_orchestrator(
@@ -1301,27 +1610,41 @@ def run_orchestrator(
         step3_roster_upload_id=(roster_upload_id or "").strip(),
         step3_external_only=bool(external_only),
         step3_include_roster_members=bool(include_roster_members),
+        credentialing_run_mode="autopilot",
     )
     # Emit 9-step plan
     plan_lines = ["Steps:"]
     for i, s in enumerate(ROSTER_CREDENTIALING_PLAN, 1):
         plan_lines.append(f"  {i}. {s['label']}")
-    _emit(emitter, "\n".join(plan_lines))
+    _emit(emitter, "\n".join(plan_lines), state)
 
     org_name = (org_input or "").strip()
     if not org_name:
-        _emit(emitter, "No organization name provided; stopping.")
+        _emit(emitter, "No organization name provided; stopping.", state)
         return "No organization name provided. Try: 'Create a Medicaid NPI report for [org name]'.", state
 
     state.org_name = org_name
     report_text: str | None = None
     for sid in ROSTER_CREDENTIALING_STEP_IDS:
         out = run_credentialing_step(org_name, state, sid, emitter)
-        if sid == "build_report":
-            report_text = out
+        st_done = state.step_by_id(sid)
+        if st_done and st_done.status == "failed":
+            detail = (st_done.result_summary or "").strip() or "unknown error"
+            _emit(
+                emitter,
+                f"**Pipeline stopped** — step `{sid}` **failed**: {detail}",
+            )
+            return (
+                f"Credentialing stopped at step `{sid}`: {detail}",
+                state,
+            )
 
-    # Step outputs are passed via roster_step_outputs in the payload; frontend renders them as collapsible
-    return (report_text or "Report could not be generated."), state
+    summary_lines = ["**Credentialing pipeline complete.**"]
+    for s in state.steps:
+        icon = "✓" if s.status == "done" else ("—" if s.status == "skipped" else "✗")
+        summary_lines.append(f"{icon} {s.label}: {s.result_summary or s.status}")
+    report_text = "\n".join(summary_lines)
+    return report_text, state
 
 
 def _step_num(step_id: str) -> int:

@@ -21,7 +21,7 @@ except Exception:
 # Always use ReAct (ignore .env); for legacy run API with MOBIUS_USE_REACT=0
 os.environ["MOBIUS_USE_REACT"] = "1"
 
-from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -72,6 +72,41 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def _roster_freshness_days_threshold() -> int:
+    try:
+        return max(1, int(os.environ.get("CHAT_ROSTER_FRESH_DAYS", "14")))
+    except ValueError:
+        return 14
+
+
+def _compute_roster_freshness(
+    latest: dict[str, Any] | None,
+) -> tuple[Literal["fresh", "stale", "none"], float | None]:
+    """Age-based signal for UI: green vs grey roster indicator."""
+    if not latest:
+        return "none", None
+    uid = (latest.get("upload_id") or "").strip()
+    oid = (latest.get("org_id") or "").strip()
+    if not uid or not oid:
+        return "none", None
+    uploaded_at = latest.get("uploaded_at")
+    if not uploaded_at:
+        return "stale", None
+    try:
+        from datetime import datetime, timezone
+
+        raw = str(uploaded_at).strip().replace("Z", "+00:00")
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        age_days = (now - dt).total_seconds() / 86400.0
+        thresh = float(_roster_freshness_days_threshold())
+        return ("fresh" if age_days <= thresh else "stale"), age_days
+    except Exception:
+        return "stale", None
+
+
 def _build_roster_upload_acknowledgment(
     *,
     filename: str,
@@ -83,6 +118,7 @@ def _build_roster_upload_acknowledgment(
     row_count_resolved: int,
     process_status: str,
     resolution_summary: dict[str, Any] | None,
+    pipeline_progress: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Plain-language recap for non-technical users (TurboTax-style checklist).
@@ -100,6 +136,16 @@ def _build_roster_upload_acknowledgment(
             ),
         }
     )
+    if pipeline_progress and isinstance(pipeline_progress, dict):
+        psum = (pipeline_progress.get("summary") or "").strip()
+        if psum:
+            checks.append(
+                {
+                    "tone": "success",
+                    "title": "Pipeline — where your upload is",
+                    "detail": psum,
+                }
+            )
     checks.append(
         {
             "tone": "success",
@@ -248,8 +294,8 @@ class ChatRequest(BaseModel):
     """When set (e.g. after envelope confirm), worker merges into run_credentialing_report."""
     use_react: bool | None = None
     """Per-request override for MOBIUS_USE_REACT; when None, worker uses env."""
-    chat_mode: Literal["copilot", "agentic"] | None = None
-    """Composer UI: agentic enables skill-side web escalation; copilot is registry-first. Persisted per thread."""
+    chat_mode: Literal["copilot", "agentic", "quick"] | None = None
+    """copilot: registry-first, 3 rounds. agentic: web escalation, 6 rounds. quick: mini-container, 2 rounds, brief answers."""
 
 
 class ChatResponse(BaseModel):
@@ -324,6 +370,7 @@ def post_chat_roster_upload(
     file: UploadFile = File(...),
     org_name: str = Form(...),
     thread_id: str | None = Form(None),
+    run_id: str | None = Form(None),
     file_purpose: str | None = Form("roster_reconciliation"),
 ) -> dict[str, Any]:
     """
@@ -348,33 +395,38 @@ def post_chat_roster_upload(
     if ext not in ("csv", "xlsx", "xls"):
         raise HTTPException(status_code=400, detail="File must be CSV or Excel (.csv, .xlsx, .xls)")
 
-    # 1. Resolve org_id via search
+    # 1. Resolve org_id — fast path: read from pipeline run state if available.
+    #    Fallback: quick NPPES search with 5s timeout (non-fatal if it fails).
     import urllib.request
     import urllib.parse
     import json as json_mod
-    search_url = f"{base}/search/org-names"
-    req = urllib.request.Request(
-        search_url,
-        data=json_mod.dumps({"name": org_name, "include_practice_address": True}).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json_mod.loads(resp.read().decode())
-    except Exception as e:
-        logger.warning("Org search failed: %s", e)
-        raise HTTPException(status_code=502, detail=f"Could not resolve org: {e}") from e
-    results = data.get("results") or []
-    if not results:
-        raise HTTPException(status_code=404, detail=f"No org match for {org_name!r}")
-    top_result = results[0] if results else {}
-    org_id = (
-        top_result.get("org_id") or top_result.get("npi") or top_result.get("billing_npi") or ""
-    ).strip().zfill(10)
-    matched_org_name = (top_result.get("name") or "").strip()
-    _pra = (top_result.get("practice_address") or "").strip()
-    matched_practice_address = _pra or None
+    import threading as _threading
+    org_id = ""
+    matched_org_name = org_name
+    matched_practice_address: str | None = None
+
+    # Fast path: get org NPI from the credentialing run (already looked up in Step 1)
+    _run_id_val = (run_id or "").strip()
+    if _run_id_val:
+        try:
+            from app.services.credentialing_run_service import _store_get
+            _rec = _store_get(_run_id_val)
+            if _rec:
+                _state_dict = (_rec.get("orchestrator_state_dict") or {})
+                _npi = (
+                    _state_dict.get("org_npi")
+                    or _state_dict.get("billing_npi")
+                    or (_state_dict.get("selected_npis") or [None])[0]
+                    or ""
+                )
+                if _npi:
+                    org_id = str(_npi).strip().zfill(10)
+                matched_org_name = _state_dict.get("org_name") or org_name
+        except Exception as _e:
+            logger.debug("Could not get org_id from run state: %s", _e)
+
+    # org_id unknown — will be resolved asynchronously after upload_id is known (see step 2b below)
+    _needs_bg_org_search = not org_id
 
     # 2. Upload roster to provider-roster-credentialing
     ct = "text/csv" if ext == "csv" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -396,46 +448,134 @@ def post_chat_roster_upload(
     if not upload_id:
         raise HTTPException(status_code=502, detail="No upload_id from roster upload")
 
-    # 3. Process (parse, clean, resolve NPIs)
-    process_url = f"{base}/roster-uploads/{upload_id}/process"
-    req = urllib.request.Request(
-        process_url,
-        data=json_mod.dumps({"resolve_npi": True, "state": "FL"}).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            proc_data = json_mod.loads(resp.read().decode())
-    except Exception as e:
-        logger.warning("Roster process failed: %s", e)
-        raise HTTPException(status_code=502, detail=f"Roster processing failed: {e}") from e
-    rc_clean = int(proc_data.get("row_count_cleansed") or 0)
-    rc_res = int(proc_data.get("row_count_resolved") or 0)
-    row_count = rc_res or rc_clean or 0
-    _rsum = proc_data.get("resolution_summary")
-    resolution_summary = _rsum if isinstance(_rsum, dict) else None
+    # 2b. Backfill org_id asynchronously (search takes ~60s, non-critical metadata)
+    if _needs_bg_org_search:
+        def _bg_org_search(base_url: str, name: str, uid: str) -> None:
+            try:
+                _r = urllib.request.Request(
+                    f"{base_url}/search/org-names",
+                    data=json_mod.dumps({"name": name}).encode(),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(_r, timeout=60) as _resp:
+                    _top = (json_mod.loads(_resp.read().decode()).get("results") or [{}])[0]
+                    _oid = (_top.get("org_id") or _top.get("npi") or "").strip().zfill(10)
+                if _oid and uid:
+                    import httpx as _hx
+                    with _hx.Client(timeout=10) as _c:
+                        _c.patch(f"{base_url}/roster-uploads/{uid}", json={"org_id": _oid})
+            except Exception as _e:
+                logger.debug("Background org search: %s", _e)
+        _threading.Thread(target=_bg_org_search, args=(base, org_name, upload_id), daemon=True).start()
 
-    # 4. Save to thread state (upload list + reconciliation pointers for roster)
-    tid = ensure_thread((thread_id or "").strip() or None)
+    # 3. Register with the new NPI reconciliation pipeline (TurboTax-style progress UI).
+    #    Runs right after upload so it always has the file, regardless of step 4 outcome.
+    #    Non-fatal: if this fails the primary credentialing pipeline still proceeds.
+    reconciliation_upload_id: str | None = None
+    reconciliation_ui_url: str | None = None
+    try:
+        with httpx.Client(timeout=30.0) as rc_client:
+            # 3a: store the file in the reconciliation pipeline (no auto-reconcile to avoid blocking)
+            new_upload_resp = rc_client.post(
+                f"{base}/roster/upload",
+                files={"file": (filename, io.BytesIO(content), ct)},
+                data={
+                    "org_name": org_name,
+                    "file_purpose": "roster_reconciliation",
+                    "auto_reconcile": "false",
+                    "uploaded_by": "chat",
+                },
+            )
+            if new_upload_resp.status_code == 200:
+                rc_data = new_upload_resp.json()
+                reconciliation_upload_id = rc_data.get("upload_id") or None
+                if reconciliation_upload_id:
+                    reconciliation_ui_url = (
+                        f"{base}/roster-ui/progress.html?upload_id={reconciliation_upload_id}"
+                    )
+                    # 3b: kick off reconciliation — pass Step-2 org locations if available
+                    try:
+                        # Look up Step-2 practice locations from the active pipeline run
+                        _org_locations: list[dict] = []
+                        _run_id = (run_id or "").strip()
+                        if _run_id:
+                            try:
+                                from app.services.credentialing_run_service import _store_get
+                                _rec = _store_get(_run_id)
+                                if _rec:
+                                    _state_dict = (_rec.get("orchestrator_state_dict") or {})
+                                    _org_locations = _state_dict.get("locations") or []
+                            except Exception as _loc_err:
+                                logger.debug("Could not load run locations: %s", _loc_err)
+                        rc_client.post(
+                            f"{base}/roster/reconcile/{reconciliation_upload_id}",
+                            json={"org_locations": _org_locations} if _org_locations else None,
+                            timeout=5.0,
+                        )
+                    except Exception:
+                        pass
+            else:
+                logger.warning("New reconciliation upload returned %s", new_upload_resp.status_code)
+    except Exception as exc:
+        logger.warning("New reconciliation upload skipped: %s", exc)
+
+    # 3c. Persist reconciliation_upload_id to the pipeline run state (step3_roster_upload_id)
+    #     so the pipeline page auto-loads the last roster without requiring a re-upload.
+    if reconciliation_upload_id and run_id:
+        def _patch_run_upload_id(rid: str, uid: str) -> None:
+            try:
+                from app.storage.credentialing_runs_pg import patch_step3_upload_id
+                patch_step3_upload_id(rid, uid)
+            except Exception as _e:
+                logger.debug("patch_step3_upload_id failed: %s", _e)
+        _threading.Thread(
+            target=_patch_run_upload_id,
+            args=(run_id, reconciliation_upload_id),
+            daemon=True,
+        ).start()
+
+    # 4. Process via legacy credentialing pipeline (parse, clean, resolve NPIs via GCS/BQ).
+    #    Runs in a background thread — DOES NOT block the response.
+    #    The new reconciliation pipeline (step 3) is the primary real-time path.
+    def _run_legacy_process(url: str, data: bytes) -> None:
+        try:
+            _req = urllib.request.Request(url, data=data,
+                                          headers={"Content-Type": "application/json"},
+                                          method="POST")
+            with urllib.request.urlopen(_req, timeout=120) as _resp:
+                _resp.read()
+        except Exception as _e:
+            logger.debug("Legacy roster process (background): %s", _e)
+
+    _proc_payload = json_mod.dumps({"resolve_npi": True, "state": "FL"}).encode()
+    _threading.Thread(
+        target=_run_legacy_process,
+        args=(f"{base}/roster-uploads/{upload_id}/process", _proc_payload),
+        daemon=True,
+    ).start()
+
+    # These values are no longer available synchronously (legacy runs in background).
+    proc_data: dict = {}
+    _process_error: str | None = None
+    rc_clean = 0
+    rc_res = 0
+    row_count = 0
+    resolution_summary: dict | None = None
+    pipeline_progress: dict | None = None
+
+    # 5. Save to thread state — runs in a background thread so the response is instant.
+    #    The upload IDs are returned immediately; thread state persists asynchronously.
+    from datetime import datetime, timezone
+
     purpose = (file_purpose or "roster_reconciliation").strip() or "roster_reconciliation"
     if purpose not in ("roster_reconciliation", "other"):
         purpose = "roster_reconciliation"
 
-    acknowledgment: dict[str, Any] | None = None
-    if purpose == "roster_reconciliation":
-        acknowledgment = _build_roster_upload_acknowledgment(
-            filename=filename,
-            org_name_entered=org_name,
-            billing_npi=org_id,
-            matched_org_name=matched_org_name,
-            matched_practice_address=matched_practice_address,
-            row_count_cleansed=rc_clean,
-            row_count_resolved=rc_res,
-            process_status=str(proc_data.get("status") or ""),
-            resolution_summary=resolution_summary,
-        )
-    from datetime import datetime, timezone
+    # Generate thread id without blocking (no DB call yet)
+    _tid_input = (thread_id or "").strip() or None
+    import uuid as _uuid_mod
+    tid = _tid_input or str(_uuid_mod.uuid4())
 
     record: dict[str, Any] = {
         "upload_id": upload_id,
@@ -443,35 +583,37 @@ def post_chat_roster_upload(
         "org_name": org_name,
         "purpose": purpose,
         "filename": filename,
-        "row_count": int(row_count) if row_count is not None else 0,
+        "row_count": 0,
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
+        "reconciliation_upload_id": reconciliation_upload_id,
     }
-    persisted = append_uploaded_file_record(tid, record)
-    if not persisted:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Roster was accepted by the processing service but could not be linked to this chat "
-                "(chat state database not configured). Set CHAT_RAG_DATABASE_URL, then upload again."
-            ),
-        )
+
+    def _persist_thread_state(tid: str, record: dict) -> None:
+        try:
+            real_tid = ensure_thread(tid)
+            append_uploaded_file_record(real_tid, record)
+        except Exception as _e:
+            logger.debug("Background thread-state save skipped: %s", _e)
+
+    _threading.Thread(
+        target=_persist_thread_state,
+        args=(tid, record),
+        daemon=True,
+    ).start()
 
     out: dict[str, Any] = {
         "upload_id": upload_id,
         "org_id": org_id,
         "org_name": org_name,
-        "row_count": row_count,
+        "row_count": 0,
         "thread_id": tid,
         "file_purpose": purpose,
         "default_billing_npi": org_id,
         "filename": filename,
         "matched_organization_name": matched_org_name,
         "matched_practice_address": matched_practice_address,
-        "row_count_cleansed": rc_clean,
-        "row_count_resolved": rc_res,
-        "process_status": proc_data.get("status"),
-        "resolution_summary": resolution_summary,
-        "acknowledgment": acknowledgment,
+        "reconciliation_upload_id": reconciliation_upload_id,
+        "reconciliation_ui_url": reconciliation_ui_url,
     }
     return out
 
@@ -481,10 +623,15 @@ def get_thread_uploads(thread_id: str) -> dict[str, Any]:
     """
     Document upload skill — list files attached to this chat thread (newest first).
     Used by the UI, MCP, and integrations; supports multiple uploads over time per thread.
+
+    Also returns ``latest_roster_reconciliation`` and ``roster_freshness`` (``fresh`` | ``stale`` | ``none``)
+    so the client can show whether an existing roster is recent enough to reuse without re-uploading.
+    Threshold comes from env ``CHAT_ROSTER_FRESH_DAYS`` (default 14).
     """
     tid = (thread_id or "").strip()
     if not tid:
         raise HTTPException(status_code=400, detail="thread_id is required")
+    thresh = _roster_freshness_days_threshold()
     raw = get_state(tid)
     if not raw:
         return {
@@ -494,6 +641,10 @@ def get_thread_uploads(thread_id: str) -> dict[str, Any]:
             "reconciliation_upload_id": None,
             "reconciliation_org_id": None,
             "reconciliation_org_name": None,
+            "latest_roster_reconciliation": None,
+            "roster_freshness": "none",
+            "roster_age_days": None,
+            "roster_fresh_days_threshold": thresh,
         }
     active = raw.get("active") or {}
     uploaded = active.get("uploaded_files") or []
@@ -505,10 +656,46 @@ def get_thread_uploads(thread_id: str) -> dict[str, Any]:
             "filename": (u.get("filename") or "").strip(),
             "purpose": (u.get("purpose") or "").strip(),
             "row_count": u.get("row_count"),
+            "uploaded_at": u.get("uploaded_at"),
         }
         for u in uploaded
         if isinstance(u, dict) and (u.get("purpose") or "").strip() == "roster_reconciliation"
     ]
+    latest_roster: dict[str, Any] | None = None
+    if roster_reconciliation_files:
+        head = roster_reconciliation_files[0]
+        if (head.get("upload_id") or "").strip() and (head.get("org_id") or "").strip():
+            latest_roster = dict(head)
+    if latest_roster is None:
+        rup = (active.get("reconciliation_upload_id") or "").strip()
+        rid = (active.get("reconciliation_org_id") or "").strip()
+        ron = (active.get("reconciliation_org_name") or "").strip()
+        if rup and rid:
+            uploaded_at_u: Any = None
+            filename_u = ""
+            row_count_u: Any = None
+            org_name_u = ron
+            for u in uploaded:
+                if not isinstance(u, dict):
+                    continue
+                if (u.get("upload_id") or "").strip() != rup:
+                    continue
+                uploaded_at_u = u.get("uploaded_at")
+                filename_u = (u.get("filename") or "").strip()
+                row_count_u = u.get("row_count")
+                on = (u.get("org_name") or "").strip()
+                if on:
+                    org_name_u = on
+                break
+            latest_roster = {
+                "upload_id": rup,
+                "org_id": rid,
+                "org_name": org_name_u,
+                "filename": filename_u,
+                "row_count": row_count_u,
+                "uploaded_at": uploaded_at_u,
+            }
+    freshness, age_days = _compute_roster_freshness(latest_roster)
     return {
         "thread_id": tid,
         "uploaded_files": uploaded,
@@ -516,6 +703,10 @@ def get_thread_uploads(thread_id: str) -> dict[str, Any]:
         "reconciliation_upload_id": (active.get("reconciliation_upload_id") or "").strip() or None,
         "reconciliation_org_id": (active.get("reconciliation_org_id") or "").strip() or None,
         "reconciliation_org_name": (active.get("reconciliation_org_name") or "").strip() or None,
+        "latest_roster_reconciliation": latest_roster,
+        "roster_freshness": freshness,
+        "roster_age_days": round(age_days, 2) if age_days is not None else None,
+        "roster_fresh_days_threshold": thresh,
     }
 
 
@@ -532,6 +723,16 @@ class CredentialingValidateBody(BaseModel):
 
     step_id: str = ""
     validated_output: dict[str, Any] = {}
+
+
+@app.get("/chat/credentialing-runs")
+def list_credentialing_runs_endpoint(limit: int = 30, offset: int = 0) -> list[dict[str, Any]]:
+    """List recent credentialing runs (lightweight, no full state)."""
+    try:
+        from app.storage.credentialing_runs_pg import list_credentialing_runs
+        return list_credentialing_runs(limit=limit, offset=offset)
+    except Exception:
+        return []
 
 
 @app.post("/chat/credentialing-runs")
@@ -556,6 +757,67 @@ def post_credentialing_runs(body: CredentialingRunCreateBody) -> dict[str, Any]:
     return result
 
 
+@app.delete("/chat/credentialing-runs/{run_id}", status_code=200)
+def delete_credentialing_run_endpoint(run_id: str) -> dict[str, Any]:
+    """Permanently delete a credentialing run and all associated roster/reconciliation data.
+
+    Cascade order:
+    1. Extract step3_roster_upload_id from the run (before deletion)
+    2. Call skill server DELETE /roster/reconcile/{upload_id} to wipe providers,
+       validation_results, reconciliation_report (with llm_clean_cache), api_envelopes,
+       and files on disk — so a new run for the same org always starts fresh.
+    3. Delete the credentialing_runs row.
+    """
+    import httpx as _httpx
+    from app.storage.credentialing_runs_pg import delete_credentialing_run
+    from app.services.credentialing_run_service import get_credentialing_run
+
+    # Step 1: grab the upload_id before we delete the run
+    run_rec = get_credentialing_run(run_id, include_state=True)
+    if not run_rec:
+        raise HTTPException(status_code=404, detail="run not found")
+
+    upload_id: str | None = None
+    try:
+        ostate = run_rec.get("orchestrator_state") or {}
+        upload_id = ostate.get("step3_roster_upload_id") or None
+    except Exception:
+        pass
+
+    # Step 2: cascade-delete skill-server data for this upload
+    if upload_id:
+        skill_base = (os.environ.get("CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL") or "").rstrip("/").split("/report")[0]
+        if skill_base:
+            try:
+                with _httpx.Client(timeout=15.0) as _c:
+                    _resp = _c.delete(f"{skill_base}/roster/reconcile/{upload_id}")
+                    logger.info(
+                        "cascade delete upload_id=%s status=%s", upload_id, _resp.status_code
+                    )
+            except Exception as _e:
+                logger.warning("cascade delete for upload_id=%s failed (non-fatal): %s", upload_id, _e)
+
+    # Step 3: delete the run row itself
+    deleted = delete_credentialing_run(run_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="run not found")
+    return {"deleted": True, "run_id": run_id, "upload_id_purged": upload_id}
+
+
+@app.post("/chat/credentialing-runs/{run_id}/seed-roster")
+def seed_run_roster(run_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Persist a roster upload_id into the run's orchestrator state so it auto-loads next time."""
+    upload_id = (body.get("roster_upload_id") or "").strip()
+    if not upload_id:
+        raise HTTPException(status_code=400, detail="roster_upload_id required")
+    try:
+        from app.storage.credentialing_runs_pg import patch_step3_upload_id
+        ok = patch_step3_upload_id(run_id, upload_id)
+        return {"ok": ok, "run_id": run_id, "roster_upload_id": upload_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/chat/credentialing-runs/{run_id}")
 def get_credentialing_run(run_id: str, full: int = 0) -> dict[str, Any]:
     from app.services.credentialing_run_service import get_credentialing_run
@@ -566,19 +828,329 @@ def get_credentialing_run(run_id: str, full: int = 0) -> dict[str, Any]:
     return rec
 
 
+@app.get("/chat/credentialing-runs/{run_id}/org-npis")
+def get_credentialing_run_org_npis(run_id: str) -> dict[str, Any]:
+    """Return org NPIs for this run with NPPES details + any previously persisted assertion."""
+    from app.services.credentialing_run_service import get_credentialing_run
+    rec = get_credentialing_run(run_id, include_state=True)
+    if not rec:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    # Current NPIs from orchestrator state
+    state = rec.get("orchestrator_state") or {}
+    current_npis: list[str] = state.get("org_npis") or []
+    org_name: str = (rec.get("org_name") or "").strip()
+
+    # Previously persisted assertion for this org (most recent run)
+    prev_npis: list[dict] = []
+    prev_validated_at: str | None = None
+    try:
+        from app.storage.credentialing_assertions_pg import _db_url
+        import psycopg2, json
+        url = _db_url()
+        if url:
+            with psycopg2.connect(url) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT org_npi, validated_at, material
+                        FROM credentialing_assertion
+                        WHERE lower(org_name) = lower(%s)
+                          AND fact_kind = 'org_npi'
+                          AND valid_to IS NULL
+                        ORDER BY validated_at DESC NULLS LAST
+                        LIMIT 20
+                        """,
+                        (org_name,),
+                    )
+                    rows = cur.fetchall()
+                    for npi, vat, mat in rows:
+                        if npi:
+                            prev_npis.append({
+                                "npi": str(npi),
+                                "validated_at": vat.isoformat() if vat else None,
+                                "detail": json.loads(mat) if isinstance(mat, str) else (mat or {}),
+                            })
+                    if rows:
+                        prev_validated_at = rows[0][1].isoformat() if rows[0][1] else None
+    except Exception:
+        pass
+
+    # Fetch NPPES details for each current NPI
+    nppes_details: dict[str, dict] = {}
+    try:
+        import urllib.request, urllib.parse, json as _json
+        for npi in current_npis[:10]:
+            qs = urllib.parse.urlencode({"version": "2.1", "number": npi})
+            url = f"https://npiregistry.cms.hhs.gov/api/?{qs}"
+            req = urllib.request.Request(url, headers={"Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = _json.loads(resp.read())
+            results = data.get("results") or []
+            if results:
+                r = results[0]
+                basic = r.get("basic") or {}
+                addrs = r.get("addresses") or []
+                loc = next((a for a in addrs if a.get("address_purpose") == "LOCATION"), addrs[0] if addrs else {})
+                taxonomies = r.get("taxonomies") or []
+                primary_tax = next((t for t in taxonomies if t.get("primary")), taxonomies[0] if taxonomies else {})
+                first = (basic.get("first_name") or "").strip()
+                last  = (basic.get("last_name") or "").strip()
+                name  = f"{first} {last}".strip() if (first or last) else (basic.get("organization_name") or "").strip()
+                nppes_details[npi] = {
+                    "npi": npi,
+                    "name": name or None,
+                    "status": basic.get("status"),
+                    "entity_type": r.get("enumeration_type"),
+                    "address": ", ".join(filter(None, [
+                        loc.get("address_1"), loc.get("city"),
+                        loc.get("state"), (loc.get("postal_code") or "")[:5]
+                    ])),
+                    "city": loc.get("city"),
+                    "state": loc.get("state"),
+                    "phone": loc.get("telephone_number"),
+                    "taxonomy": primary_tax.get("desc"),
+                    "taxonomy_code": primary_tax.get("code"),
+                }
+    except Exception:
+        pass
+
+    return {
+        "run_id": run_id,
+        "org_name": org_name,
+        "current_npis": current_npis,
+        "nppes_details": nppes_details,
+        "previously_persisted": prev_npis,
+        "prev_validated_at": prev_validated_at,
+    }
+
+
+@app.get("/chat/npi-lookup/{npi}")
+def npi_lookup(npi: str) -> dict[str, Any]:
+    """Fetch a single NPI from the NPPES registry. Used for manual NPI entry in Step 1."""
+    import urllib.request, urllib.parse, json as _json
+    npi = npi.strip()
+    if not npi.isdigit() or len(npi) != 10:
+        raise HTTPException(status_code=400, detail="NPI must be exactly 10 digits")
+    try:
+        qs  = urllib.parse.urlencode({"version": "2.1", "number": npi})
+        url = f"https://npiregistry.cms.hhs.gov/api/?{qs}"
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = _json.loads(resp.read())
+        results = data.get("results") or []
+        if not results:
+            raise HTTPException(status_code=404, detail="NPI not found in NPPES registry")
+        r = results[0]
+        basic    = r.get("basic") or {}
+        addrs    = r.get("addresses") or []
+        loc      = next((a for a in addrs if a.get("address_purpose") == "LOCATION"), addrs[0] if addrs else {})
+        taxonomies   = r.get("taxonomies") or []
+        primary_tax  = next((t for t in taxonomies if t.get("primary")), taxonomies[0] if taxonomies else {})
+        first = (basic.get("first_name") or "").strip()
+        last  = (basic.get("last_name") or "").strip()
+        name  = f"{first} {last}".strip() if (first or last) else (basic.get("organization_name") or "").strip()
+        return {
+            "npi":          npi,
+            "name":         name or None,
+            "status":       basic.get("status"),
+            "entity_type":  r.get("enumeration_type"),
+            "enumeration_date": basic.get("enumeration_date"),
+            "last_updated": basic.get("last_updated"),
+            "address": ", ".join(filter(None, [
+                loc.get("address_1"), loc.get("city"),
+                loc.get("state"), (loc.get("postal_code") or "")[:5]
+            ])),
+            "city":         loc.get("city"),
+            "state":        loc.get("state"),
+            "phone":        loc.get("telephone_number"),
+            "taxonomy":     primary_tax.get("desc"),
+            "taxonomy_code":primary_tax.get("code"),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"NPPES lookup failed: {e}") from e
+
+
+# ── Roster truth + snooze endpoints ───────────────────────────────────────────
+
+@app.get("/chat/credentialing-runs/{run_id}/roster-truth")
+def get_roster_truth(run_id: str) -> dict[str, Any]:
+    """Return the validated truth roster for this run's org."""
+    from app.services.credentialing_run_service import get_credentialing_run
+    from app.storage.roster_truth_pg import get_truth_for_org, ensure_schema
+    rec = get_credentialing_run(run_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="run not found")
+    ensure_schema()
+    org = rec.get("org_name") or ""
+    truth = get_truth_for_org(org)
+    return {"org_name": org, "run_id": run_id, "providers": truth, "count": len(truth)}
+
+
+@app.post("/chat/credentialing-runs/{run_id}/roster-truth")
+def save_roster_truth(run_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    """
+    Persist a validated roster snapshot.
+    Body: { providers: [{provider_name, npi_roster, npi_validated, specialty,
+                          match_confidence, decision}] }
+    """
+    from app.services.credentialing_run_service import get_credentialing_run
+    from app.storage.roster_truth_pg import upsert_providers, ensure_schema
+    rec = get_credentialing_run(run_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="run not found")
+    ensure_schema()
+    org = rec.get("org_name") or ""
+    providers = body.get("providers") or []
+    count = upsert_providers(org, providers, run_id=run_id)
+    return {"org_name": org, "run_id": run_id, "saved": count}
+
+
+@app.get("/chat/credentialing-runs/{run_id}/roster-diff")
+def get_roster_diff(run_id: str) -> dict[str, Any]:
+    """
+    Compute a diff of the current run's roster against the validated truth table.
+    Returns providers tagged with change_type: new | changed | unchanged | removed.
+    """
+    from app.services.credentialing_run_service import get_credentialing_run
+    from app.storage.roster_truth_pg import diff_roster_against_truth, get_snoozes_for_org, ensure_schema
+    rec = get_credentialing_run(run_id, include_state=True)
+    if not rec:
+        raise HTTPException(status_code=404, detail="run not found")
+    ensure_schema()
+    org = rec.get("org_name") or ""
+
+    # Extract current providers from orchestrator state
+    state = rec.get("orchestrator_state") or {}
+    # Flatten provider list from wherever it's stored in state
+    providers: list[dict[str, Any]] = (
+        state.get("providers") or
+        state.get("roster_providers") or
+        []
+    )
+
+    diffed = diff_roster_against_truth(org, providers)
+    snoozes = get_snoozes_for_org(org)
+
+    # Annotate rows with snooze status per mismatch dimension
+    snooze_index: dict[tuple, dict] = {}
+    for s in snoozes:
+        snooze_index[(s["provider_key"], s["dimension"])] = s
+
+    counts = {"new": 0, "changed": 0, "unchanged": 0, "removed": 0, "total": len(diffed)}
+    for p in diffed:
+        ct = p.get("change_type", "new")
+        counts[ct] = counts.get(ct, 0) + 1
+        # Attach snooze info to each field_change
+        for fc in (p.get("field_changes") or []):
+            key = (p.get("npi_validated") or p.get("npi_roster") or "", fc["field"])
+            if key in snooze_index:
+                s = snooze_index[key]
+                fc["snoozed"] = True
+                fc["snoozed_at"] = s["snoozed_at"].isoformat() if hasattr(s["snoozed_at"], "isoformat") else str(s["snoozed_at"])
+                fc["fingerprint_match"] = (
+                    str(fc.get("roster_val", "")) == str(s["roster_val"] or "") and
+                    str(fc.get("nppes_val",  "")) == str(s["nppes_val"]  or "")
+                )
+
+    # Delta = new + changed (excluding snoozed-and-fingerprint-matching changes)
+    delta = sum(1 for p in diffed if p["change_type"] in ("new", "changed"))
+    return {
+        "org_name":  org,
+        "run_id":    run_id,
+        "providers": diffed,
+        "counts":    counts,
+        "delta":     delta,
+        "auto_pass": delta == 0,   # true when nothing changed
+    }
+
+
+@app.post("/chat/credentialing-runs/{run_id}/roster-snooze")
+def snooze_roster_mismatch(run_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    """
+    Snooze a mismatch for a provider.
+    Body: { provider_key, dimension, roster_val, nppes_val, expires_at? }
+    """
+    from app.services.credentialing_run_service import get_credentialing_run
+    from app.storage.roster_truth_pg import snooze_mismatch, ensure_schema
+    rec = get_credentialing_run(run_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="run not found")
+    ensure_schema()
+    org = rec.get("org_name") or ""
+    ok = snooze_mismatch(
+        org_name=org,
+        provider_key=body.get("provider_key") or "",
+        dimension=body.get("dimension") or "",
+        roster_val=str(body.get("roster_val") or ""),
+        nppes_val=str(body.get("nppes_val") or ""),
+        expires_at=body.get("expires_at"),
+    )
+    return {"snoozed": ok, "org_name": org, "provider_key": body.get("provider_key")}
+
+
+@app.get("/chat/credentialing-runs/{run_id}/roster-snoozes")
+def list_roster_snoozes(run_id: str) -> dict[str, Any]:
+    """Return all active snoozes for this run's org."""
+    from app.services.credentialing_run_service import get_credentialing_run
+    from app.storage.roster_truth_pg import get_snoozes_for_org, ensure_schema
+    rec = get_credentialing_run(run_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="run not found")
+    ensure_schema()
+    org = rec.get("org_name") or ""
+    snoozes = get_snoozes_for_org(org)
+    return {"org_name": org, "snoozes": snoozes, "count": len(snoozes)}
+
+
 @app.post("/chat/credentialing-runs/{run_id}/validate")
 def post_credentialing_run_validate(run_id: str, body: CredentialingValidateBody) -> dict[str, Any]:
-    from app.services.credentialing_run_service import validate_and_advance_credentialing_run
+    from app.services.credentialing_run_service import validate_and_advance_credentialing_run, rerun_step_for_run
 
     sid = (body.step_id or "").strip()
     if not sid:
         raise HTTPException(status_code=400, detail="step_id is required")
+
+    # If the caller sets rerun=true, bypass the copilot phase-gate and re-execute
+    # the step in-place (used by Refresh buttons for on-demand steps like PML).
+    if body.validated_output.get("rerun"):
+        try:
+            return rerun_step_for_run(run_id, sid)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="run not found") from None
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from None
+
     try:
         return validate_and_advance_credentialing_run(run_id, sid, body.validated_output or {})
     except KeyError:
         raise HTTPException(status_code=404, detail="run not found") from None
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from None
+
+
+class PmlTaskStateBody(BaseModel):
+    done: list[str] = []
+    notes: dict[str, str] = {}
+    manual: list[dict] = []
+    dismissed: list[str] = []
+    providerLocations: dict[str, int] = {}   # npi-taxonomy key → confirmed location index
+
+
+@app.patch("/chat/credentialing-runs/{run_id}/pml-tasks")
+def patch_pml_tasks(run_id: str, body: PmlTaskStateBody) -> dict[str, Any]:
+    """Persist PML task state (done flags, notes, manual tasks, dismissed rows, confirmed locations) for a run."""
+    from app.storage.credentialing_runs_pg import patch_pml_task_state
+    ok = patch_pml_task_state(run_id, {
+        "done": body.done, "notes": body.notes,
+        "manual": body.manual, "dismissed": body.dismissed,
+        "providerLocations": body.providerLocations,
+    })
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to persist task state")
+    return {"ok": True}
 
 
 def _enrich_completed_response_from_db(resp: dict) -> dict:
@@ -686,6 +1258,607 @@ def get_chat_plan(correlation_id: str):
 def get_chat_config():
     """Chat-specific config and prompts (LLM, parser, prompts) for the hamburger menu."""
     return chat_config_for_api()
+
+
+@app.get("/chat/skills/urls")
+def get_skills_urls():
+    """Return base URLs for each skill UI — used by the frontend Skills modal."""
+    roster_base = (
+        (os.environ.get("CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL") or "").rstrip("/").split("/report")[0]
+    )
+    return {
+        "roster_ui": f"{roster_base}/roster-ui/upload.html" if roster_base else None,
+        "roster_base": roster_base or None,
+    }
+
+
+@app.get("/chat/roster-reconcile/{upload_id}/progress")
+async def roster_reconcile_progress_proxy(upload_id: str):
+    """SSE proxy: stream TurboTax-style validation progress from the skill server.
+
+    Each event from the skill SSE is forwarded directly to the browser.
+    Falls back to a single 'complete' event if the skill server is unavailable.
+    """
+    from fastapi.responses import StreamingResponse as _SR
+    import asyncio
+
+    base = (os.environ.get("CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL") or "").rstrip("/").split("/report")[0]
+    if not base:
+        async def _unavailable():
+            yield 'event: error\ndata: {"message":"Skill server not configured"}\n\n'
+        return _SR(_unavailable(), media_type="text/event-stream",
+                   headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    skill_url = f"{base}/roster/reconcile/{upload_id}/progress"
+
+    async def _proxy_stream():
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream("GET", skill_url, timeout=300) as resp:
+                    async for line in resp.aiter_lines():
+                        if line:
+                            yield line + "\n"
+                        else:
+                            yield "\n"
+        except Exception as e:
+            import json as _j
+            yield f"event: error\ndata: {_j.dumps({'message': str(e)})}\n\n"
+
+    return _SR(
+        _proxy_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/chat/roster-reconcile/{upload_id}/status")
+def roster_reconcile_status_proxy(upload_id: str):
+    """Proxy: poll reconciliation status from the skill server."""
+    base = (os.environ.get("CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL") or "").rstrip("/").split("/report")[0]
+    if not base:
+        return {"upload_id": upload_id, "status": "unavailable", "progress": {}}
+    try:
+        import httpx
+        with httpx.Client(timeout=10.0) as c:
+            r = c.get(f"{base}/roster/reconcile/{upload_id}/status")
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:
+        return {"upload_id": upload_id, "status": "error", "error": str(e), "progress": {}}
+
+
+@app.get("/chat/roster-reconcile/{upload_id}/report")
+def roster_reconcile_report_proxy(upload_id: str, quick: bool = False):
+    """Proxy: fetch full reconciliation report (providers list) from the skill server.
+
+    ?quick=true is forwarded to the skill server to skip validation_history,
+    reducing latency for preload/streaming scenarios.
+    """
+    base = (os.environ.get("CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL") or "").rstrip("/").split("/report")[0]
+    if not base:
+        raise HTTPException(status_code=503, detail="Skill server not configured")
+    try:
+        import httpx
+        params = {"quick": "true"} if quick else {}
+        with httpx.Client(timeout=30.0) as c:
+            r = c.get(f"{base}/roster/reconcile/{upload_id}/report", params=params)
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/chat/roster-reconcile/{upload_id}/llm-clean-cache")
+def roster_llm_clean_cache_proxy(upload_id: str):
+    """Proxy: return cached LLM-clean result if available. 404 = not yet cached (run POST first)."""
+    import httpx
+    base = (os.environ.get("CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL") or "").rstrip("/").split("/report")[0]
+    if not base:
+        raise HTTPException(status_code=503, detail="Skill server not configured")
+    try:
+        with httpx.Client(timeout=8.0) as c:
+            r = c.get(f"{base}/roster/reconcile/{upload_id}/llm-clean-cache")
+            if r.status_code == 404:
+                raise HTTPException(status_code=404, detail="Not cached yet")
+            r.raise_for_status()
+            return r.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/chat/roster-reconcile/{upload_id}/llm-clean")
+def roster_llm_clean(upload_id: str, force: bool = False):
+    """
+    Fetch parsed roster rows and run a quick LLM pass to identify junk entries.
+    Returns { clean: [...], excluded: [...] } where excluded rows have an exclude_reason.
+
+    The LLM result is cached in the ReconciliationReport after the first run.
+    Subsequent calls return the cached result immediately unless ?force=true.
+    Caching means page reloads are instant — no LLM re-invocation.
+    """
+    import httpx, json as _json
+
+    base = (os.environ.get("CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL") or "").rstrip("/").split("/report")[0]
+    if not base:
+        raise HTTPException(status_code=503, detail="Skill server not configured")
+
+    # ── Cache check: return cached result if available and not forcing refresh ──
+    if not force:
+        try:
+            with httpx.Client(timeout=10.0) as c:
+                cr = c.get(f"{base}/roster/reconcile/{upload_id}/llm-clean-cache")
+                if cr.status_code == 200:
+                    cached = cr.json()
+                    if cached.get("clean") is not None:
+                        return cached
+        except Exception:
+            pass  # cache miss or skill server unavailable — fall through to LLM
+
+    # Fetch parsed providers from skill (?quick=true skips validation_history for speed)
+    try:
+        with httpx.Client(timeout=30.0) as c:
+            r = c.get(f"{base}/roster/reconcile/{upload_id}/report", params={"quick": "true"})
+            r.raise_for_status()
+            raw = r.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not fetch report: {e}")
+
+    providers = raw.get("providers") or []
+    if not providers:
+        return {"clean": [], "excluded": [], "summary": raw.get("summary") or {}}
+
+    # Separate already-flagged parse errors
+    parse_errors = [p for p in providers if p.get("status") == "parse_error"]
+    candidates   = [p for p in providers if p.get("status") != "parse_error"]
+
+    # Build name list for LLM (cap at 300 for prompt size)
+    sample = candidates[:300]
+    name_list = "\n".join(
+        f'{i+1}. {(p.get("provider_name") or "").strip() or "(blank)"}'
+        for i, p in enumerate(sample)
+    )
+
+    prompt = f"""You are cleaning a healthcare provider roster uploaded from an Excel/CSV file.
+For each numbered row below, decide KEEP or EXCLUDE.
+
+EXCLUDE any row that is NOT a real individual provider name, including:
+- Status labels: "Pending", "Effective", "Not Eligible", "Needs Medicaid First", "Active", "Inactive", "N/A", "TBD"
+- Notes or instructions (e.g. "If not credentialed...", "Please note:", "Notes")
+- Job titles or role descriptions: "Medical Director", "Registered Interns", "Registerd Interns", "Nursing Staff"
+- Organization names or payer names (e.g. "BCBS", "Lucet", anything ending in "ONLY" or containing acronyms like "REGI.")
+- Column headers, totals, or metadata rows
+- Blank or single-word non-name entries
+- Any text that is clearly a footnote, instruction, or category label
+
+KEEP only rows that look like a real person's full name (first + last name, with optional credentials or suffix).
+
+For EXCLUDE rows, give a reason in ≤6 words.
+
+Return ONLY a JSON array — no other text:
+[{{"n":1,"action":"KEEP"}},{{"n":2,"action":"EXCLUDE","reason":"status label"}}]
+
+Rows:
+{name_list}"""
+
+    from app.services.llm_manager import generate_sync
+    clean_rows = list(candidates)  # default: keep all if LLM fails
+    excluded_rows = []
+
+    import logging as _logging
+    _llm_log = _logging.getLogger(__name__)
+
+    try:
+        llm_resp, _usage = generate_sync(
+            prompt,
+            stage="roster_clean",   # fast models only via Thompson sampling
+            max_tokens=2000,
+        )
+        _llm_log.info("roster_clean LLM used model=%s", _usage.get("model", "?"))
+
+        # Parse JSON from LLM response
+        import re
+        json_match = re.search(r'\[.*?\]', llm_resp, re.DOTALL)
+        if not json_match:
+            # Try stripping markdown code fences
+            stripped = re.sub(r'```[a-z]*', '', llm_resp).strip()
+            json_match = re.search(r'\[.*?\]', stripped, re.DOTALL)
+
+        if json_match:
+            decisions = _json.loads(json_match.group(0))
+            exclude_set = {
+                d["n"] - 1: d.get("reason", "auto-excluded")
+                for d in decisions
+                if isinstance(d, dict) and str(d.get("action", "")).upper() == "EXCLUDE"
+            }
+            _llm_log.info("roster_clean: %d EXCLUDE decisions out of %d rows", len(exclude_set), len(sample))
+            clean_rows = []
+            excluded_rows = []
+            for i, p in enumerate(sample):
+                if i in exclude_set:
+                    excluded_rows.append({**p, "exclude_reason": exclude_set[i]})
+                else:
+                    clean_rows.append(p)
+            # Any providers beyond the 300 sample are kept
+            if len(candidates) > 300:
+                clean_rows.extend(candidates[300:])
+        else:
+            _llm_log.warning("roster_clean: could not parse JSON from LLM response, using fallback. Response: %s", llm_resp[:300])
+    except Exception as llm_err:
+        _llm_log.warning("roster_clean LLM call failed, using fallback: %s", llm_err)
+        # Fallback already set above (parse_error only)
+
+    # Merge parse_errors into excluded
+    excluded_rows.extend([{**p, "exclude_reason": p.get("parse_notes") or "parse error"} for p in parse_errors])
+
+    # ── Enrich providers with backend-computed display fields ────────────────
+    # This moves all business logic out of the frontend JS.
+    # Any caller (API, agent, export job) gets the same pre-computed fields.
+    try:
+        import sys, os as _os
+        _skill_path = _os.path.join(_os.path.dirname(__file__), "..", "..", "mobius-skills", "provider-roster-credentialing")
+        if _skill_path not in sys.path:
+            sys.path.insert(0, _skill_path)
+        from app.provider_enrichment import enrich_provider, compute_roster_score, build_recon_tasks
+        for p in clean_rows:
+            enrich_provider(p)
+        roster_score = compute_roster_score(clean_rows)
+        recon_tasks  = build_recon_tasks(clean_rows)
+    except Exception as _enrich_err:
+        import logging as _logging
+        _logging.getLogger(__name__).warning("provider enrichment failed (non-fatal): %s", _enrich_err)
+        roster_score = None
+        recon_tasks  = []
+
+    result = {
+        "clean": clean_rows,
+        "excluded": excluded_rows,
+        "summary": raw.get("summary") or {},
+        "roster_score": roster_score,
+        "recon_tasks": recon_tasks,
+    }
+
+    # ── Persist cache so future page loads are instant ────────────────────────
+    try:
+        with httpx.Client(timeout=8.0) as c:
+            c.post(
+                f"{base}/roster/reconcile/{upload_id}/llm-clean-cache",
+                json=result,
+            )
+    except Exception:
+        pass  # best-effort — non-fatal if cache write fails
+
+    return result
+
+
+@app.get("/chat/roster-reconcile/lookup-npi")
+def roster_lookup_npi(npi: str = ""):
+    """Direct NPPES NPI lookup by number. Returns provider info or 404."""
+    n = (npi or "").strip().replace("-", "")
+    if not n.isdigit() or len(n) != 10:
+        raise HTTPException(status_code=400, detail="NPI must be exactly 10 digits")
+    base = _skill_base()
+    # Try skill server first
+    if base:
+        try:
+            import httpx
+            with httpx.Client(timeout=10.0) as c:
+                r = c.get(f"{base}/find-npi-by-number", params={"npi": n})
+                if r.status_code == 200:
+                    return r.json()
+        except Exception:
+            pass
+    # Fallback: call NPPES public API directly
+    try:
+        import urllib.request, urllib.parse, json as _json
+        qs = urllib.parse.urlencode({"version": "2.1", "number": n})
+        url = f"https://npiregistry.cms.hhs.gov/api/?{qs}"
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = _json.loads(resp.read().decode())
+        results = data.get("results") or []
+        if not results:
+            raise HTTPException(status_code=404, detail="NPI not found in NPPES")
+        r0 = results[0]
+        basic = r0.get("basic") or {}
+        first = (basic.get("first_name") or "").strip()
+        last  = (basic.get("last_name")  or "").strip()
+        name_str = f"{first} {last}".strip() or (basic.get("organization_name") or "").strip()
+        taxonomies = r0.get("taxonomies") or []
+        specialty = next((t.get("desc","") for t in taxonomies if t.get("primary")), taxonomies[0].get("desc","") if taxonomies else "")
+        taxonomy_code = next((t.get("code","") for t in taxonomies if t.get("primary")), taxonomies[0].get("code","") if taxonomies else "")
+        addresses = r0.get("addresses") or []
+        loc_addr = next((a for a in addresses if a.get("address_purpose") == "LOCATION"), addresses[0] if addresses else {})
+        address = ", ".join(p for p in [
+            (loc_addr.get("address_1") or "").strip(),
+            (loc_addr.get("city") or "").strip(),
+            (loc_addr.get("state") or "").strip(),
+            (loc_addr.get("postal_code") or "")[:5].strip(),
+        ] if p)
+        return {
+            "npi": r0.get("number"),
+            "name": name_str,
+            "status": basic.get("status"),
+            "specialty": specialty,
+            "taxonomy_code": taxonomy_code,
+            "address": address,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/chat/roster-reconcile/latest-for-org")
+def roster_latest_for_org(org_name: str = ""):
+    """Return the latest roster upload_id for an org by name. Used to auto-load on pipeline page."""
+    name = (org_name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="org_name is required")
+    base = _skill_base()
+    if not base:
+        raise HTTPException(status_code=503, detail="Skill server not configured")
+    try:
+        import httpx
+        with httpx.Client(timeout=10.0) as c:
+            r = c.get(f"{base}/roster-uploads/latest-for-org-name", params={"org_name": name})
+            if r.status_code == 404:
+                raise HTTPException(status_code=404, detail=f"No roster found for {name!r}")
+            r.raise_for_status()
+            return r.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/chat/roster-reconcile/uploads")
+def roster_reconcile_uploads_for_org(org_name: str = "", limit: int = 10):
+    """List recent roster uploads for an org by name.
+
+    Proxies to skill server GET /roster-uploads/latest-for-org-name and
+    returns a paginated list of uploads with upload_id, org_name, status,
+    total_providers, and validated_count.
+    """
+    name = (org_name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="org_name is required")
+    base = _skill_base()
+    if not base:
+        raise HTTPException(status_code=503, detail="Skill server not configured")
+    try:
+        import httpx
+        with httpx.Client(timeout=10.0) as c:
+            r = c.get(
+                f"{base}/roster-uploads/latest-for-org-name",
+                params={"org_name": name},
+            )
+            if r.status_code == 404:
+                return {"uploads": [], "org_name": name}
+            r.raise_for_status()
+            data = r.json()
+            # Normalise to list form — skill returns a single upload dict
+            upload = data if isinstance(data, dict) else {}
+            return {
+                "uploads": [upload] if upload.get("upload_id") else [],
+                "org_name": name,
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/chat/roster-reconcile/search-nppes")
+def roster_search_nppes(name: str = ""):
+    """Quick NPPES name search proxy — used by roster table 'no match' rows."""
+    if not name.strip():
+        return {"results": []}
+    base = (os.environ.get("CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL") or "").rstrip("/").split("/report")[0]
+    if not base:
+        return {"results": []}
+    try:
+        import httpx, urllib.parse
+        with httpx.Client(timeout=15.0) as c:
+            r = c.get(f"{base}/search/npi-by-name", params={"name": name.strip(), "limit": 5})
+            if r.status_code == 200:
+                return r.json()
+            # Fallback: try NPPES public API directly
+            q = urllib.parse.urlencode({"version": "2.1", "search_type": "NPI-1",
+                                        "enumeration_type": "NPI-1", "first_name": name.split()[0] if name.split() else "",
+                                        "last_name": name.split()[-1] if len(name.split()) > 1 else "", "limit": 5})
+            nr = c.get(f"https://npiregistry.cms.hhs.gov/api/?{q}", timeout=10.0)
+            if nr.status_code == 200:
+                data = nr.json()
+                results = []
+                for entry in (data.get("results") or []):
+                    basic = entry.get("basic") or {}
+                    fname = basic.get("first_name", "")
+                    lname = basic.get("last_name", "")
+                    n = f"{fname} {lname}".strip() or basic.get("organization_name", "")
+                    results.append({"npi": entry.get("number", ""), "name": n, "confidence": 0.5,
+                                    "specialty": (((entry.get("taxonomies") or [{}])[0]).get("desc") or "")})
+                return {"results": results}
+    except Exception:
+        pass
+    return {"results": []}
+
+
+def _skill_base() -> str:
+    """Base URL of the provider-roster-credentialing skill server."""
+    return (os.environ.get("CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL") or "").rstrip("/").split("/report")[0]
+
+
+@app.patch("/chat/roster-reconcile/provider/{provider_id}")
+def roster_provider_save_decision(provider_id: int, body: dict = Body(...)):
+    """Proxy: persist a user decision for a single roster provider.
+
+    Forwards to skill server PATCH /roster/provider/{provider_id}.
+    Body fields (all optional):
+      name_corrected, npi_corrected, specialty_corrected,
+      resolution_reason, correction_notes, correction_source
+    """
+    base = _skill_base()
+    if not base:
+        raise HTTPException(status_code=503, detail="Skill server not configured")
+    try:
+        import httpx
+        with httpx.Client(timeout=15.0) as c:
+            r = c.patch(f"{base}/roster/provider/{provider_id}", json=body)
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.delete("/chat/roster-reconcile/provider/{provider_id}")
+def roster_provider_delete(provider_id: int):
+    """Proxy: soft-exclude a roster provider (audit trail preserved).
+
+    Forwards to skill server DELETE /roster/provider/{provider_id}.
+    """
+    base = _skill_base()
+    if not base:
+        raise HTTPException(status_code=503, detail="Skill server not configured")
+    try:
+        import httpx
+        with httpx.Client(timeout=15.0) as c:
+            r = c.delete(f"{base}/roster/provider/{provider_id}")
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/chat/roster-reconcile/provider/{provider_id}/revalidate")
+def roster_provider_revalidate(provider_id: int, body: dict = Body(default={})):
+    """Proxy: re-validate a single provider, optionally with an NPI/name override."""
+    base = _skill_base()
+    if not base:
+        raise HTTPException(status_code=503, detail="Skill server not configured")
+    try:
+        import httpx
+        with httpx.Client(timeout=30.0) as c:
+            r = c.post(f"{base}/roster/provider/{provider_id}/revalidate", json=body)
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/chat/roster-reconcile/provider/{provider_id}/approve")
+def roster_provider_approve(provider_id: int, body: dict = Body(default={})):
+    """Proxy: approve provider and write to org roster truth (NPI Anchor model)."""
+    base = _skill_base()
+    if not base:
+        raise HTTPException(status_code=503, detail="Skill server not configured")
+    try:
+        import httpx
+        with httpx.Client(timeout=15.0) as c:
+            r = c.post(f"{base}/roster/provider/{provider_id}/approve-to-truth", json=body)
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/chat/roster-reconcile/provider/{provider_id}/audit-log")
+def roster_write_audit_proxy(provider_id: int, body: dict = Body(default={})):
+    """Proxy: write one audit event for a provider (user actions from frontend)."""
+    base = _skill_base()
+    if not base:
+        raise HTTPException(status_code=503, detail="Skill server not configured")
+    try:
+        import httpx
+        with httpx.Client(timeout=10.0) as c:
+            r = c.post(f"{base}/roster/provider/{provider_id}/audit-log", json=body)
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/chat/roster-reconcile/provider/{provider_id}/audit-log")
+def roster_read_provider_audit_proxy(provider_id: int, limit: int = 50):
+    """Proxy: fetch audit trail for a single provider."""
+    base = _skill_base()
+    if not base:
+        raise HTTPException(status_code=503, detail="Skill server not configured")
+    try:
+        import httpx
+        with httpx.Client(timeout=10.0) as c:
+            r = c.get(f"{base}/roster/provider/{provider_id}/audit-log", params={"limit": limit})
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/chat/roster-reconcile/run/{run_id}/audit-log")
+def roster_read_run_audit_proxy(run_id: str, org_name: str = "", limit: int = 200):
+    """Proxy: fetch macro audit log for a credentialing run."""
+    base = _skill_base()
+    if not base:
+        raise HTTPException(status_code=503, detail="Skill server not configured")
+    try:
+        import httpx
+        with httpx.Client(timeout=10.0) as c:
+            r = c.get(f"{base}/roster/run/{run_id}/audit-log",
+                      params={"org_name": org_name, "limit": limit})
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/chat/roster-truth/{org_name}")
+def roster_truth_proxy(org_name: str, limit: int = 500):
+    """Proxy: fetch canonical roster (approved providers) for an org."""
+    base = _skill_base()
+    if not base:
+        raise HTTPException(status_code=503, detail="Skill server not configured")
+    try:
+        import httpx
+        with httpx.Client(timeout=10.0) as c:
+            r = c.get(f"{base}/roster/truth/{org_name}", params={"limit": limit})
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/chat/roster-reconcile/{upload_id}/mass-approve")
+def roster_mass_approve_proxy(upload_id: str, body: dict = Body(default={})):
+    """Proxy: bulk approve providers to roster_truth."""
+    base = _skill_base()
+    if not base:
+        raise HTTPException(status_code=503, detail="Skill server not configured")
+    try:
+        import httpx
+        with httpx.Client(timeout=60.0) as c:
+            r = c.post(f"{base}/roster/reconcile/{upload_id}/mass-approve", json=body)
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/chat/roster-reconcile/npi-search")
+def roster_npi_search_proxy(name: str = "", state: str = "", npi: str = ""):
+    """Proxy: NPPES search for inline re-match panel (name+state or direct NPI)."""
+    base = _skill_base()
+    if not base:
+        raise HTTPException(status_code=503, detail="Skill server not configured")
+    try:
+        import httpx
+        with httpx.Client(timeout=15.0) as c:
+            r = c.get(f"{base}/roster/npi-search", params={"name": name, "state": state, "npi": npi})
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 @app.get("/chat/llm-router-report")
@@ -915,6 +2088,7 @@ class SkillLLMRequest(BaseModel):
     max_tokens: int = 4096
     correlation_id: str | None = None
     thread_id: str | None = None
+    mode: str | None = None
 
 
 @app.post("/internal/skill-llm")
@@ -953,6 +2127,7 @@ async def internal_skill_llm(
             max_tokens=int(body.max_tokens),
             correlation_id=(body.correlation_id or "").strip() or None,
             thread_id=(body.thread_id or "").strip() or None,
+            mode=(body.mode or "").strip() or None,
         )
     except asyncio.TimeoutError as e:
         raise HTTPException(
@@ -979,5 +2154,11 @@ if _frontend.exists():
     @app.get("/")
     def index():
         r = FileResponse(_frontend / "index.html")
+        r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return r
+
+    @app.get("/pipeline")
+    def pipeline():
+        r = FileResponse(_frontend / "pipeline.html")
         r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return r

@@ -73,6 +73,7 @@ def _llm_decompose_mobius(
     correlation_id: str | None = None,
     thread_id: str | None = None,
     config_sha: str | None = None,
+    mode: str | None = None,
 ) -> tuple[Plan | None, dict | None]:
     """Call LLM with Mobius planner prompt; return Plan (adapted from TaskPlan) or (None, usage)."""
     trace_entered("planner.parser._llm_decompose_mobius")
@@ -101,6 +102,7 @@ def _llm_decompose_mobius(
             correlation_id=correlation_id,
             thread_id=thread_id,
             parser=True,
+            mode=mode,
         )
         if not raw or not raw.strip():
             logger.warning("[parser] Mobius LLM returned empty response; falling back to legacy.")
@@ -123,6 +125,7 @@ def _llm_decompose(
     correlation_id: str | None = None,
     thread_id: str | None = None,
     config_sha: str | None = None,
+    mode: str | None = None,
 ) -> tuple[list[tuple[str, str, str | None, QuestionIntent | None, float | None]] | None, dict | None]:
     """Call LLM to decompose message into subquestions and classify each (kind, question_intent, intent_score).
     Returns (list of (id, text, kind, intent, intent_score) or None on failure, llm_usage dict or None).
@@ -146,6 +149,7 @@ def _llm_decompose(
                 correlation_id=correlation_id,
                 thread_id=thread_id,
                 parser=True,
+                mode=mode,
             )
         except asyncio.TimeoutError as te:
             logger.error("[parser] LLM call timed out: %s", te)
@@ -255,6 +259,7 @@ def parse(
             correlation_id=correlation_id,
             thread_id=thread_id,
             config_sha=config_sha,
+            mode=mode,
         )
         if mobius_plan and mobius_plan.subquestions:
             # Plan breakdown emitted later via format_execution_plan (My plan: 1. ...) for consistency
@@ -268,6 +273,7 @@ def parse(
         correlation_id=correlation_id,
         thread_id=thread_id,
         config_sha=config_sha,
+        mode=mode,
     )
     if not triples:
         triples = _rule_based_decompose(text, parser_cfg)

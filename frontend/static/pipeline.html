@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Credentialing Pipeline — Mobius</title>
+<link rel="stylesheet" href="/static/pipeline.css">
+</head>
+<body>
+
+<!-- ── Dashboard (TurboTax landing page) ────────────────────── -->
+<div id="startScreen">
+  <!-- Dashboard header -->
+  <div class="dash-header">
+    <div class="hd-brand">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 12c-2-2.5-4-4-6-4a4 4 0 0 0 0 8c2 0 4-1.5 6-4z"/><path d="M12 12c2 2.5 4 4 6 4a4 4 0 0 0 0-8c-2 0-4 1.5-6 4z"/></svg>
+      Mobius
+      <span style="font-weight:400;color:var(--text-3);font-size:.875rem">· Credentialing Pipeline</span>
+    </div>
+  </div>
+
+  <!-- Hero: what is this pipeline for -->
+  <div class="dash-hero">
+    <h1>Provider Credentialing Pipeline</h1>
+    <p>A systematic 6-step verification that every clinician in your organization is
+       properly registered, enrolled, and compliant — so you can bill with confidence
+       and catch compliance risks before they become problems.</p>
+    <div class="dash-hero-steps">
+      <div class="dash-hero-step"><div class="dash-hero-step-num">1</div><span class="dash-hero-step-label">Identity</span></div>
+      <div class="dash-hero-step-arrow">→</div>
+      <div class="dash-hero-step"><div class="dash-hero-step-num">2</div><span class="dash-hero-step-label">Locations</span></div>
+      <div class="dash-hero-step-arrow">→</div>
+      <div class="dash-hero-step"><div class="dash-hero-step-num">3</div><span class="dash-hero-step-label">NPPES</span></div>
+      <div class="dash-hero-step-arrow">→</div>
+      <div class="dash-hero-step"><div class="dash-hero-step-num">4</div><span class="dash-hero-step-label">Medicaid PML</span></div>
+      <div class="dash-hero-step-arrow">→</div>
+      <div class="dash-hero-step"><div class="dash-hero-step-num">5</div><span class="dash-hero-step-label">Compliance</span></div>
+      <div class="dash-hero-step-arrow">→</div>
+      <div class="dash-hero-step"><div class="dash-hero-step-num">6</div><span class="dash-hero-step-label">Taxonomy</span></div>
+    </div>
+  </div>
+
+  <!-- Dashboard body — two-column grid -->
+  <div class="dash-body">
+
+    <!-- Left column: run list -->
+    <div class="dash-runs-col">
+      <div class="dash-section-head">
+        <span class="dash-section-title">Your runs</span>
+        <span class="dash-run-count" id="dashRunCount"></span>
+      </div>
+      <div id="dashRunList">
+        <div style="padding:1.5rem;text-align:center;color:var(--text-3);font-size:.875rem;background:var(--surface);border-radius:12px;border:1.5px solid var(--border)">
+          <span class="spinner"></span> Loading runs…
+        </div>
+      </div>
+    </div>
+
+    <!-- Right column: new run form (sticky) -->
+    <div class="dash-newrun-col" id="newRunSection">
+      <div class="dash-section-head">
+        <span class="dash-section-title">New run</span>
+      </div>
+      <div class="new-run-card">
+        <h3>Start a credentialing run</h3>
+        <div>
+          <label style="font-size:.75rem;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--text-3);display:block;margin-bottom:.35rem">Organization</label>
+          <input class="start-input" id="orgInput" type="text" placeholder="e.g. David Lawrence Center" autocomplete="organization"
+            onkeydown="if(event.key==='Enter')startPipeline()" />
+        </div>
+        <div>
+          <label style="font-size:.75rem;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--text-3);display:block;margin-bottom:.5rem">Mode</label>
+          <div class="start-mode">
+            <label id="labelCopilot" class="selected">
+              <input type="radio" name="mode" value="copilot" checked onchange="selectMode(this)">
+              <div class="mode-title">🧭 Copilot</div>
+              <div class="mode-desc">Step-by-step. Review and continue.</div>
+            </label>
+            <label id="labelAutopilot">
+              <input type="radio" name="mode" value="autopilot" onchange="selectMode(this)">
+              <div class="mode-title">⚡ Autopilot</div>
+              <div class="mode-desc">Full pipeline, automatic.</div>
+            </label>
+          </div>
+        </div>
+        <button class="btn-primary" id="startBtn" onclick="startPipeline()">Start Pipeline →</button>
+        <p id="startError" style="color:var(--red);font-size:.8rem;display:none"></p>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ── Match-selection dialog ──────────────────────────────── -->
+<div id="pipelineMatchDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:3000;align-items:center;justify-content:center;backdrop-filter:blur(3px)">
+  <div style="background:#fff;border-radius:14px;box-shadow:0 24px 64px rgba(0,0,0,.24);width:min(600px,95vw);max-height:90vh;overflow-y:auto;display:flex;flex-direction:column">
+    <div style="padding:1.25rem 1.5rem .875rem;border-bottom:1px solid var(--border)">
+      <div id="pdTitle" style="font-size:1rem;font-weight:700;color:var(--text)"></div>
+      <div style="font-size:.8rem;color:var(--text-3);margin-top:.2rem">Click the correct provider to confirm — or close to decide later</div>
+    </div>
+    <div id="pdBody" style="padding:1rem 1.5rem;display:flex;flex-direction:column;gap:.5rem"></div>
+    <div style="padding:.875rem 1.5rem;border-top:1px solid var(--border);display:flex;gap:.5rem">
+      <button onclick="closePipelineMatchDialog()" style="margin-left:auto;font-size:.8125rem;color:var(--text-3);background:none;border:none;cursor:pointer;padding:.3rem .6rem;border-radius:5px">Skip for now</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Pipeline view ────────────────────────────────────────── -->
+<div id="pipelineView" hidden>
+
+  <!-- Pipeline header -->
+  <div class="pl-header">
+    <div class="hd">
+      <div class="hd-brand">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 12c-2-2.5-4-4-6-4a4 4 0 0 0 0 8c2 0 4-1.5 6-4z"/><path d="M12 12c2 2.5 4 4 6 4a4 4 0 0 0 0-8c-2 0-4 1.5-6 4z"/></svg>
+        Mobius
+        <span style="font-weight:400;color:var(--text-3);font-size:.875rem">· Credentialing Pipeline</span>
+      </div>
+      <div class="hd-org">
+        <strong id="hdOrg">—</strong>
+        <span id="hdMode" style="margin-left:.5rem;font-size:.75rem;padding:.15rem .5rem;border-radius:20px;border:1px solid var(--border)">—</span>
+      </div>
+      <div style="display:flex;gap:.5rem;align-items:center">
+        <span id="scProgress" style="font-size:.75rem;color:var(--text-3)"></span>
+        <button class="btn-action ghost" onclick="newRun()" style="font-size:.75rem;padding:.3rem .7rem">All runs</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sidebar + main body -->
+  <div class="pl-body">
+
+    <!-- Left sidebar: steps + tasks -->
+    <aside class="pl-sidebar" id="plSidebar">
+      <button class="pl-sb-toggle" onclick="togglePipelineSidebar()" id="plSbToggleBtn">
+        <span class="pl-sb-toggle-label">Steps</span>
+        <span id="plSbChevron">‹</span>
+      </button>
+      <div class="pl-step-list" id="plStepList"></div>
+      <div class="pl-task-section" id="plTaskSection" style="display:none"></div>
+    </aside>
+
+    <!-- Main content -->
+    <main class="pl-main">
+      <div id="phaseBanner"></div>
+      <div class="step-card" id="stepCard">
+        <div class="step-card-head">
+          <div class="step-card-head-row1">
+            <span class="step-card-title" id="scTitle">Loading…</span>
+          </div>
+          <div class="step-card-head-row2" id="scBadge"></div>
+        </div>
+        <div class="step-card-foot" id="scFoot"></div>
+        <div class="step-card-body" id="scBody"></div>
+      </div>
+    </main>
+
+  </div>
+
+  <!-- Legacy hidden stepper (renderStepper still targets this; now invisible) -->
+  <div style="display:none"><div id="stepper"></div></div>
+
+  <!-- ── Persistent task drawers (always in DOM — available from every step) ── -->
+  <!-- General / NPPES task drawer -->
+  <div class="task-drawer-backdrop" id="taskDrawerBackdrop" onclick="toggleTaskDrawer(false)"></div>
+  <div class="task-drawer" id="taskDrawer"></div>
+
+  <!-- PML task drawer (independent task system) -->
+  <div class="task-drawer-backdrop" id="pmlTaskDrawerBackdrop" onclick="togglePmlTaskDrawer(false)"></div>
+  <div class="pml-task-drawer" id="pmlTaskDrawer">
+    <div class="pml-task-drawer-head">
+      <span class="pml-task-drawer-title">⚕ PML Tasks</span>
+      <button onclick="togglePmlTaskDrawer(false)" style="background:none;border:none;cursor:pointer;font-size:1rem;color:var(--indigo);padding:0">✕</button>
+    </div>
+    <div class="pml-task-drawer-body" id="pmlTaskDrawerBody">
+      <div style="font-size:.75rem;color:var(--text-3);text-align:center;padding:2rem .5rem">Run PML validation to populate tasks.</div>
+    </div>
+    <div class="pml-task-drawer-footer" id="pmlTaskDrawerFooter"></div>
+  </div>
+
+</div>
+
+<!-- ── Floating chat drawer ──────────────────────────────────── -->
+<div id="chatDrawer">
+  <!-- Conversation pane (hidden until expanded) -->
+  <div id="chatPane">
+    <div class="chat-panel-head">
+      <span class="chat-panel-title">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 12c-2-2.5-4-4-6-4a4 4 0 0 0 0 8c2 0 4-1.5 6-4z"/><path d="M12 12c2 2.5 4 4 6 4a4 4 0 0 0 0-8c-2 0-4 1.5-6 4z"/></svg>
+        Mobius Chat
+      </span>
+      <div style="display:flex;align-items:center;gap:.6rem">
+        <span style="font-size:.7rem;color:var(--indigo);font-weight:500" id="chatOrgLabel">Ask about this org</span>
+        <button class="chat-close-btn" onclick="chatCollapse()" title="Collapse">×</button>
+      </div>
+    </div>
+    <div class="chat-progress-bar"><div class="chat-progress-fill" id="pipelineChatProgressFill"></div></div>
+    <div class="chat-msgs" id="chatMsgs">
+      <div class="chat-empty" id="chatEmpty">
+        Ask me anything about <strong id="chatOrgName">this organization</strong> — coverage, providers, locations, billing…<br><br>
+        I have access to RAG, web search, and everything from this pipeline run.
+      </div>
+    </div>
+    <div class="chat-input-wrap">
+      <textarea class="chat-input" id="chatInput" rows="1" placeholder="Ask about this org…" onkeydown="chatInputKeydown(event)"></textarea>
+      <button class="chat-send-btn" id="chatSendBtn" onclick="sendChatMessage()">Send</button>
+    </div>
+  </div>
+
+  <!-- Pill trigger -->
+  <button id="chatTrigger" onclick="chatToggle()">
+    <span class="trigger-dot"></span>
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="opacity:.85"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+    Ask Mobius
+    <span id="chatUnreadBadge" style="display:none;background:rgba(255,255,255,.25);border-radius:999px;padding:1px 6px;font-size:.68rem;font-weight:700;margin-left:.1rem"></span>
+  </button>
+</div>
+
+
+<!-- ── JS modules (load order matters) ──────────────────────── -->
+<script src="/static/pipeline-core.js"></script>
+<script src="/static/pipeline-utils.js"></script>
+<script src="/static/pipeline-render.js"></script>
+<script src="/static/pipeline-enrollment.js"></script>
+<script src="/static/pipeline-tasks.js"></script>
+<script src="/static/pipeline-nppes.js"></script>
+<script src="/static/pipeline-org-discovery.js"></script>
+<script src="/static/pipeline-chat.js"></script>
+<script>initPipeline();</script>
+
+<!-- Task creation popover (global, single instance) -->
+<div class="task-popover" id="taskPopover">
+  <div class="task-popover-head">
+    <span class="task-popover-head-title">📋 Create task</span>
+    <button class="task-popover-close" onclick="closeTaskPopover()">×</button>
+  </div>
+  <div class="task-popover-ctx">Context loads here…</div>
+  <!-- Suggestion chips — hidden when empty, shown as flex row when populated -->
+  <div id="tpSuggestions" style="display:none;padding:.4rem .875rem .3rem;border-bottom:1px solid var(--border);flex-wrap:wrap;gap:.25rem"></div>
+  <div class="task-popover-body">
+    <div>
+      <label class="task-popover-label">What needs to happen?</label>
+      <textarea id="tpText" rows="2" placeholder="Describe the task…" onkeydown="if(event.key==='Enter'&&(event.metaKey||event.ctrlKey))submitTaskPopover()"></textarea>
+    </div>
+    <div class="task-popover-row2">
+      <div>
+        <label class="task-popover-label">Who</label>
+        <input type="text" id="tpWho" placeholder="Assignee name">
+      </div>
+      <div>
+        <label class="task-popover-label">By when</label>
+        <input type="date" id="tpWhen">
+      </div>
+    </div>
+    <div>
+      <label class="task-popover-label">Priority</label>
+      <div class="task-priority-btns">
+        <button class="task-prio-btn" data-p="high"   onclick="setTaskPriority(this,'high')">High</button>
+        <button class="task-prio-btn sel" data-p="medium" onclick="setTaskPriority(this,'medium')">Medium</button>
+        <button class="task-prio-btn" data-p="low"    onclick="setTaskPriority(this,'low')">Low</button>
+      </div>
+    </div>
+  </div>
+  <div class="task-popover-foot">
+    <button class="task-popover-cancel" onclick="closeTaskPopover()">Cancel</button>
+    <button class="task-popover-submit" onclick="submitTaskPopover()">Add to task list</button>
+  </div>
+</div>
+
+<!-- ── Activity ticker bar ─────────────────────────────────────── -->
+<div id="feTickerBar" onclick="_feTickerClick(event)">
+  <div id="feTickerHead">
+    <span id="feTickerDot"></span>
+    <span id="feTickerLabel">Activity</span>
+    <span id="feTickerMsg">—</span>
+    <span id="feTickerCount"></span>
+    <span id="feTickerChevron">▾</span>
+  </div>
+  <div id="feTickerBody"></div>
+</div>
+
+</body>
+</html>

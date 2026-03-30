@@ -32,6 +32,66 @@ from app.services.roster_credentialing_orchestrator import run_orchestrator, _pr
 
 logger = logging.getLogger(__name__)
 
+# ReAct / reasoning: short line for parsers; full markdown remains the tool ``result`` string.
+# When merged into one assistant string, use ``compose_mobius_tool_envelope`` (Summary = internal,
+# Detail = user display & download) — see ``app.communication.tool_output_envelope``.
+REACT_TOOL_SUMMARY_KEY = "react_tool_summary"
+
+
+def _react_summary_find_locations_data(data: dict[str, Any], *, billing_npi_count: int) -> str:
+    locs = data.get("locations") if isinstance(data, dict) else None
+    n = len(locs) if isinstance(locs, list) else 0
+    sm = (data.get("search_mode") or "").strip() if isinstance(data, dict) else ""
+    smbit = f" mode={sm}" if sm else ""
+    return (
+        f"**Practice locations (Step 2):** {n} site(s) for **{billing_npi_count}** billing org NPI(s){smbit}. "
+        f"Registry + DOGE sources; full addresses and `location_id`s are in the markdown detail."
+    )
+
+
+def _react_summary_associated_providers_data(data: dict[str, Any], *, billing_npi_count: int) -> str:
+    if not isinstance(data, dict):
+        return "**Providers per site (Step 4):** (no structured counts). See markdown detail."
+    loc_detail = data.get("location_details") or {}
+    active = data.get("active_roster") or {}
+    assoc = data.get("associated_providers") or {}
+    loc_ids = list(dict.fromkeys([*list(active.keys()), *list(assoc.keys())]))
+    n_loc = len(loc_ids)
+    pc = data.get("providers_count")
+    cutoff = data.get("active_roster_cutoff")
+    rr = (data.get("roster_resolution") or "autopilot").strip().lower()
+    mv = (data.get("methodology") or {}).get("methodology_version") if isinstance(data.get("methodology"), dict) else None
+    parts = [
+        f"**Operational roster (Step 4):** {n_loc} location(s), **{billing_npi_count}** billing org NPI(s); "
+        f"resolution **{rr}**",
+    ]
+    if mv:
+        parts.append(f" (methodology {mv})")
+    parts.append(".")
+    if pc is not None:
+        parts.append(f" **{pc}** candidate row(s) across sites.")
+    if cutoff is not None and rr == "autopilot":
+        parts.append(f" Autopilot active panel: score ≥ **{cutoff}**.")
+    elif rr == "copilot":
+        parts.append(" Copilot: scores and rationales only; active panel set after human confirm.")
+    parts.append(" Not a clinical schedule.")
+    return "".join(parts)
+
+
+def _react_summary_from_long_markdown(text: str, *, heading: str, max_chars: int = 600) -> str:
+    """First-line / head trim for NPPES lookup, reports, healthcare — keeps ReAct context small."""
+    t = (text or "").strip()
+    if not t:
+        return ""
+    if len(t) <= max_chars:
+        return t
+    head = t[:max_chars]
+    cut = head.rfind("\n\n")
+    if cut > 200:
+        head = head[:cut]
+    return f"{heading}\n\n{head.strip()}\n\n*(Full output is in the markdown detail block in the user message / tool result.)*"
+
+
 # Maps step_id → ordinal for UI labels ("Step N: …"). Reconciliation from-bq adds master_roster_wide.
 _ROSTER_STEP_OUTPUT_NUM: dict[str, int] = {
     "ensure_benchmarks": 1,
@@ -63,6 +123,51 @@ _URL_CLEAN_RE = re.compile(
 TOOL_GOOGLE_SEARCH = "google_search"
 TOOL_WEB_SCRAPE_REVIEW = "web_scrape_review"
 TOOL_SEARCH_ORG_NAMES = "search_org_names"
+
+# Web scrape modes — keep in sync with mobius-skills-mcp web_scrape_review (scrape_mode + limits).
+WEB_SCRAPE_MODE_QUICK = "quick"
+WEB_SCRAPE_MODE_MEDIUM = "medium"
+WEB_SCRAPE_MODE_DETAILED = "detailed"
+WEB_SCRAPE_MODE_SPECS: dict[str, dict[str, int]] = {
+    WEB_SCRAPE_MODE_QUICK: {"max_depth": 1, "max_pages": 1, "max_doc_downloads": 0},
+    WEB_SCRAPE_MODE_MEDIUM: {"max_depth": 3, "max_pages": 6, "max_doc_downloads": 0},
+    WEB_SCRAPE_MODE_DETAILED: {"max_depth": 5, "max_pages": 50, "max_doc_downloads": 10},
+}
+_WEB_SCRAPE_RESULT_CAP = {WEB_SCRAPE_MODE_QUICK: 8000, WEB_SCRAPE_MODE_MEDIUM: 32000, WEB_SCRAPE_MODE_DETAILED: 120000}
+_WEB_SCRAPE_MCP_TIMEOUT = {WEB_SCRAPE_MODE_QUICK: 45.0, WEB_SCRAPE_MODE_MEDIUM: 120.0, WEB_SCRAPE_MODE_DETAILED: 300.0}
+
+
+def normalize_web_scrape_mode(mode: str | None) -> str:
+    """Map caller input to quick | medium | detailed (default quick)."""
+    m = (mode or "").strip().lower()
+    if not m or m in ("quick", "fast", "single", "1"):
+        return WEB_SCRAPE_MODE_QUICK
+    if m in ("medium", "standard", "tree"):
+        return WEB_SCRAPE_MODE_MEDIUM
+    if m in ("detailed", "deep", "full", "thorough"):
+        return WEB_SCRAPE_MODE_DETAILED
+    if m in WEB_SCRAPE_MODE_SPECS:
+        return m
+    return WEB_SCRAPE_MODE_QUICK
+
+
+def web_scrape_review_mcp_arguments(
+    url: str,
+    *,
+    include_summary: bool = False,
+    scrape_mode: str | None = None,
+) -> dict[str, Any]:
+    """Arguments for MCP tool web_scrape_review (and matching scraper HTTP API body)."""
+    mode = normalize_web_scrape_mode(scrape_mode)
+    spec = WEB_SCRAPE_MODE_SPECS[mode]
+    return {
+        "url": url,
+        "include_summary": bool(include_summary),
+        "scrape_mode": mode,
+        "max_depth": spec["max_depth"],
+        "max_pages": spec["max_pages"],
+        "max_doc_downloads": spec["max_doc_downloads"],
+    }
 TOOL_SEARCH_ORG_BY_ADDRESS = "search_org_by_address"
 TOOL_HEALTHCARE_QUERY = "healthcare_query"
 TOOL_ORG_NPI_LOOKUP = "org_npi_lookup"
@@ -450,8 +555,11 @@ def _scrape_via_mcp(url: str) -> tuple[str, bool]:
     Returns (content, success).
     """
     try:
+        args = web_scrape_review_mcp_arguments(url, include_summary=False, scrape_mode=WEB_SCRAPE_MODE_QUICK)
         result_text, success = call_mcp_tool(
-            TOOL_WEB_SCRAPE_REVIEW, {"url": url, "include_summary": False},
+            TOOL_WEB_SCRAPE_REVIEW,
+            args,
+            read_timeout=_WEB_SCRAPE_MCP_TIMEOUT[WEB_SCRAPE_MODE_QUICK],
         )
         content = (result_text or '').strip()
         if not content or len(content) < 200:
@@ -653,19 +761,38 @@ def answer_tool(
 
 
 def _run_web_scrape(
-    url: str, emitter=None
+    url: str,
+    emitter=None,
+    scrape_mode: str | None = None,
 ) -> tuple[str, list[dict], dict[str, Any] | None, str]:
     """Scrape a URL and return (answer, sources, usage, retrieval_signal)."""
+    mode = normalize_web_scrape_mode(scrape_mode)
+    domain = _extract_domain(url) or url[:40]
+    _emit(
+        emitter,
+        {
+            WEB_SCRAPE_MODE_QUICK: f"◌ Reading page: {domain}…",
+            WEB_SCRAPE_MODE_MEDIUM: f"◌ Site crawl (medium — depth ≤3, up to 6 pages): {domain}…",
+            WEB_SCRAPE_MODE_DETAILED: f"◌ Site crawl (detailed — depth ≤5, up to 50 pages, ≤10 doc downloads): {domain}…",
+        }[mode],
+    )
+    args = web_scrape_review_mcp_arguments(url, include_summary=False, scrape_mode=mode)
+    timeout = _WEB_SCRAPE_MCP_TIMEOUT[mode]
     try:
-        result_text, success = call_mcp_tool(TOOL_WEB_SCRAPE_REVIEW, {"url": url, "include_summary": False})
+        result_text, success = call_mcp_tool(
+            TOOL_WEB_SCRAPE_REVIEW,
+            args,
+            read_timeout=timeout,
+        )
     except Exception as e:
         logger.warning("call_mcp_tool web_scrape failed: %s", e, exc_info=True)
         return (f"I ran into an issue calling the tool. {e}. Please try again.", [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
     result_text = result_text or ""
     if success and result_text:
-        preview = (result_text[:2000] + "...") if len(result_text) > 2000 else result_text
-        domain = _extract_domain(url) or url[:40]
-        sources = [{"index": 1, "document_name": domain, "text": preview[:300], "source_type": "web", "url": url}]
+        cap = _WEB_SCRAPE_RESULT_CAP.get(mode, 8000)
+        preview = (result_text[:cap] + "\n\n[... truncated for context window ...]") if len(result_text) > cap else result_text
+        src_preview = preview[: min(2000, len(preview))]
+        sources = [{"index": 1, "document_name": domain, "text": src_preview[:300], "source_type": "web", "url": url}]
         return (preview, sources, None, RETRIEVAL_SIGNAL_GOOGLE_ONLY)
     return (
         result_text if result_text else "I tried to scrape that URL but ran into an issue. Ensure MCP server is running and CHAT_SKILLS_WEB_SCRAPER_URL is set.",
@@ -915,7 +1042,14 @@ def _run_npi_lookup_by_name(
     """Enriched NPI lookup: NPPES/PML via credentialing JSON API when available (UI chips), else MCP."""
     org_name = _clean_org_name_for_search(org_name)
     if not org_name or len(org_name) < 2:
-        return ("I need an organization name to look up NPIs. Try: 'What is the NPI for [org name]?'", [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
+        return (
+            _append_credentialing_adhoc_hint(
+                "I need an organization name to look up NPIs. Try: 'What is the NPI for [org name]?'"
+            ),
+            [],
+            None,
+            RETRIEVAL_SIGNAL_NO_SOURCES,
+        )
 
     sm = skill_search_mode if skill_search_mode in ("copilot", "agentic") else "copilot"
     base = _provider_roster_base_url()
@@ -956,6 +1090,7 @@ def _run_npi_lookup_by_name(
             body = format_npi_org_search_summary_for_disambiguation(org_name, results)
         else:
             body = format_npi_org_search_markdown(org_name, results)
+        body = _append_credentialing_adhoc_hint(body)
         sources = [{"index": 1, "document_name": "NPPES / PML (enriched)", "text": body[:300], "source_type": "external"}]
         return (body, sources, None, RETRIEVAL_SIGNAL_NO_SOURCES)
 
@@ -970,16 +1105,20 @@ def _run_npi_lookup_by_name(
         )
     except Exception as e:
         logger.warning("call_mcp_tool org_npi_lookup failed: %s", e, exc_info=True)
-        return (f"I ran into an issue looking up NPIs. {e}. Please try again.", [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
+        return (
+            _append_credentialing_adhoc_hint(f"I ran into an issue looking up NPIs. {e}. Please try again."),
+            [],
+            None,
+            RETRIEVAL_SIGNAL_NO_SOURCES,
+        )
 
     if success and result_text and "Error:" not in result_text:
-        sources = [{"index": 1, "document_name": "NPPES / PML (enriched)", "text": result_text[:300], "source_type": "external"}]
-        return (result_text, sources, None, RETRIEVAL_SIGNAL_NO_SOURCES)
+        out = _append_credentialing_adhoc_hint(result_text)
+        sources = [{"index": 1, "document_name": "NPPES / PML (enriched)", "text": out[:300], "source_type": "external"}]
+        return (out, sources, None, RETRIEVAL_SIGNAL_NO_SOURCES)
 
-    return (
-        result_text if result_text else f"No NPIs found for '{org_name}'. Try the exact legal name or an address.",
-        [], None, RETRIEVAL_SIGNAL_NO_SOURCES,
-    )
+    tail = result_text if result_text else f"No NPIs found for '{org_name}'. Try the exact legal name or an address."
+    return (_append_credentialing_adhoc_hint(tail), [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
 
 
 def _normalize_org_npi_digits(raw: str) -> str | None:
@@ -1083,6 +1222,25 @@ def _resolve_org_npis_for_find_locations(
     )
 
 
+# Ad-hoc tools mirror credentialing API steps but do not run the orchestrated workflow (no persisted assertions).
+_CREDENTIALING_ADHOC_WORKFLOW_HINT = (
+    "\n\n---\n\n"
+    "_**Ad-hoc lookup:** Same data sources as the credentialing pipeline, but this is **not** the orchestrated "
+    "workflow—nothing here is written to **credentialing assertions** or the **roster review** session. "
+    "To validate and persist org NPIs, locations, and providers step by step, run a **credentialing report in "
+    "co-pilot** mode; for a full pass without per-step review, use **autopilot**. To persist **upload vs "
+    "external** roster comparison, use **roster reconciliation**._"
+)
+
+
+def _append_credentialing_adhoc_hint(text: str) -> str:
+    """Append workflow-integrity footnote for any standalone credentialing-skill response."""
+    body = (text or "").rstrip()
+    if not body:
+        return _CREDENTIALING_ADHOC_WORKFLOW_HINT.strip()
+    return f"{body}{_CREDENTIALING_ADHOC_WORKFLOW_HINT}"
+
+
 def _format_find_locations_markdown_chat(data: dict[str, Any]) -> str:
     locs = data.get("locations") or []
     lines: list[str] = [f"# Practice locations ({len(locs)} site(s))", ""]
@@ -1127,7 +1285,23 @@ def _format_find_locations_markdown_chat(data: dict[str, Any]) -> str:
         lines.append("```json")
         lines.append(json.dumps(pml, default=str, indent=2)[:8000])
         lines.append("```")
-    return "\n".join(lines).strip()
+    body = "\n".join(lines).strip()
+    return _append_credentialing_adhoc_hint(body)
+
+
+def _roster_step_output_find_locations(data: dict[str, Any], *, row_count: int) -> list[dict[str, Any]]:
+    """Structured step for chat UI: full practice-location list (matches roster_step_outputs contract)."""
+    md = _format_find_locations_markdown_chat(data)
+    return [
+        {
+            "step_id": "find_locations",
+            "step_num": _ROSTER_STEP_OUTPUT_NUM.get("find_locations", 3),
+            "label": "Practice locations — full list",
+            "csv_content": "",
+            "row_count": row_count,
+            "markdown_content": md,
+        }
+    ]
 
 
 def _run_find_org_locations_for_chat(
@@ -1139,6 +1313,7 @@ def _run_find_org_locations_for_chat(
     skill_search_mode: str,
     emitter=None,
     pipeline_ctx: Any | None = None,
+    extra_out: dict[str, Any] | None = None,
 ) -> tuple[str, list[dict], dict[str, Any] | None, str]:
     """POST /find-locations (Step 2) — same backend as MCP ``find_org_locations``."""
     ins = dict(tool_inputs or {})
@@ -1185,13 +1360,15 @@ def _run_find_org_locations_for_chat(
                     "follow_up_capable": True,
                     "expires_after_turns": 8,
                 }
-                return (brief, [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
-        return (err, [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
+                return (_append_credentialing_adhoc_hint(brief), [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
+        return (_append_credentialing_adhoc_hint(err), [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
 
     base = _provider_roster_base_url()
     if not base:
         return (
-            "Practice location lookup requires the credentialing API. Set CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL.",
+            _append_credentialing_adhoc_hint(
+                "Practice location lookup requires the credentialing API. Set CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL."
+            ),
             [],
             None,
             RETRIEVAL_SIGNAL_NO_SOURCES,
@@ -1221,7 +1398,9 @@ def _run_find_org_locations_for_chat(
         body = (e.response.text or "")[:800]
         logger.warning("find_org_locations HTTP %s %s", e.response.status_code, body)
         return (
-            f"Practice location lookup failed ({e.response.status_code}): {body or str(e)}",
+            _append_credentialing_adhoc_hint(
+                f"Practice location lookup failed ({e.response.status_code}): {body or str(e)}"
+            ),
             [],
             None,
             RETRIEVAL_SIGNAL_NO_SOURCES,
@@ -1229,7 +1408,9 @@ def _run_find_org_locations_for_chat(
     except Exception as e:
         logger.warning("find_org_locations failed: %s", e, exc_info=True)
         return (
-            f"Practice location lookup failed: {e}. Ensure provider-roster-credentialing is running.",
+            _append_credentialing_adhoc_hint(
+                f"Practice location lookup failed: {e}. Ensure provider-roster-credentialing is running."
+            ),
             [],
             None,
             RETRIEVAL_SIGNAL_NO_SOURCES,
@@ -1245,6 +1426,10 @@ def _run_find_org_locations_for_chat(
             _emit(emitter, "◌ Sources tried: " + ", ".join(str(x) for x in tried[:15]))
 
     text = _format_find_locations_markdown_chat(data if isinstance(data, dict) else {})
+    locs = data.get("locations") if isinstance(data, dict) else None
+    n_locs = len(locs) if isinstance(locs, list) else 0
+    if extra_out is not None and isinstance(data, dict) and n_locs > 0:
+        extra_out["roster_step_outputs"] = _roster_step_output_find_locations(data, row_count=n_locs)
     sources = [
         {
             "index": 1,
@@ -1254,58 +1439,113 @@ def _run_find_org_locations_for_chat(
         }
     ]
     sig = RETRIEVAL_SIGNAL_GOOGLE_ONLY if skill_search_mode == "agentic" else RETRIEVAL_SIGNAL_NO_SOURCES
+    if isinstance(extra_out, dict) and isinstance(data, dict):
+        extra_out[REACT_TOOL_SUMMARY_KEY] = _react_summary_find_locations_data(
+            data, billing_npi_count=len(org_npis)
+        )
     return (text, sources, None, sig)
 
 
 def _format_associated_providers_markdown_chat(data: dict[str, Any]) -> str:
     """Step 4 output: providers implicated per site (operational roster, not clinical staffing)."""
+    meth = data.get("methodology") if isinstance(data.get("methodology"), dict) else {}
+    summary_m = (meth.get("methodology_summary") or "").strip()
+    rr = (data.get("roster_resolution") or "autopilot").strip().lower()
     lines: list[str] = [
         "# Providers implicated at each practice site",
         "",
-        "_**Operational roster** (credentialing Step 4): NPIs tied to each site from historic Medicaid servicing "
-        "(DOGE), NPPES + Florida PML practice-address alignment, and optionally your **uploaded roster** on this thread. "
-        "Use this for billing / enrollment alignment — **not** as a definitive clinical “who practices here today.”_",
+        "_**Operational roster** (credentialing Step 4): Billing / enrollment alignment only — "
+        "**not** who is clinically staffing a site today._",
+        "",
+        f"**Resolution mode:** **{rr}** — "
+        + (
+            "autopilot applies score cutoff to label an **active panel**."
+            if rr == "autopilot"
+            else "copilot returns **evidence and scores**; **active** labels wait for human confirmation."
+        ),
         "",
     ]
+    if summary_m:
+        lines.append(f"**How this list was built:** {summary_m}")
+        lines.append("")
+    glossary = meth.get("methodology_glossary") if isinstance(meth.get("methodology_glossary"), dict) else {}
+    if glossary:
+        lines.append("<details><summary>Match basis (plain language)</summary>")
+        lines.append("")
+        for code, entry in list(glossary.items())[:12]:
+            if not isinstance(entry, dict):
+                continue
+            lab = entry.get("user_label") or code
+            desc = (entry.get("user_description") or "").strip()
+            lines.append(f"- **{lab}** (`{code}`): {desc}")
+        lines.append("")
+        lines.append("</details>")
+        lines.append("")
     cutoff = data.get("active_roster_cutoff")
-    if cutoff is not None:
-        lines.append(f"**Active roster cutoff:** association score ≥ {cutoff} (`roster_status=active`).")
+    if cutoff is not None and rr == "autopilot":
+        lines.append(
+            f"**Autopilot active panel:** score ≥ **{cutoff}/100** after registry penalties "
+            f"(`roster_status=active` vs `historic`)."
+        )
+        lines.append("")
+    elif rr == "copilot":
+        lines.append(
+            "**Copilot:** each row shows **score /100** and **status `pending_review`** until you confirm an active panel."
+        )
         lines.append("")
     loc_detail = data.get("location_details") or {}
     active = data.get("active_roster") or {}
     assoc = data.get("associated_providers") or {}
     if not active and not assoc:
         lines.append("_No providers returned._")
-        return "\n".join(lines).strip()
+        return _append_credentialing_adhoc_hint("\n".join(lines).strip())
     loc_ids = list(dict.fromkeys([*list(active.keys()), *list(assoc.keys())]))
+    active_total = sum(len(active.get(lid) or []) for lid in loc_ids)
+    assoc_total = sum(len(assoc.get(lid) or []) for lid in loc_ids)
     for lid in loc_ids:
         det = loc_detail.get(lid) or {}
         addr = det.get("location_address") or str(lid)
+        alist = active.get(lid) or []
+        plist = assoc.get(lid) or []
         lines.append(f"## {addr}")
+        lines.append("")
         lines.append(f"`location_id`: `{lid}`")
         lines.append("")
-        plist = active.get(lid) or assoc.get(lid) or []
-        tag = "Active roster" if active.get(lid) else "Associated (all scored)"
-        lines.append(f"_{tag}_ — **{len(plist)}** row(s)")
+        if rr == "autopilot":
+            lines.append(
+                f"**At this site:** **{len(alist)}** in the autopilot **active** panel "
+                f"of **{len(plist)}** candidate row(s)."
+            )
+        else:
+            lines.append(f"**At this site:** **{len(plist)}** candidate row(s) (active panel **not** applied).")
         lines.append("")
-        for j, p in enumerate(plist[:50], 1):
+        show = plist
+        for j, p in enumerate(show[:50], 1):
             if not isinstance(p, dict):
                 continue
             npi = p.get("npi", "")
             name = p.get("name", "")
             score = p.get("association_likelihood", "")
-            mt = p.get("match_type", "")
+            basis = (p.get("basis_user") or "").strip() or str(p.get("match_type", "") or "—")
             rs = p.get("roster_status", "")
-            lines.append(
-                f"{j}. **NPI {npi}** — {name} — score {score} — {rs or '—'} — _{mt}_"
+            rs_disp = {"active": "active panel", "historic": "below cutoff", "pending_review": "pending review"}.get(
+                str(rs), str(rs) or "—"
             )
-        if len(plist) > 50:
-            lines.append(f"... _{len(plist) - 50} more_")
+            lines.append(
+                f"{j}. **NPI {npi}** — {name} — **Score {score}/100** — _{rs_disp}_ — basis: {basis}"
+            )
+        if len(show) > 50:
+            lines.append(f"... _{len(show) - 50} more at this site_")
         lines.append("")
     pc = data.get("providers_count")
     if pc is not None:
-        lines.append(f"**Total provider rows (all locations):** {pc}")
-    return "\n".join(lines).strip()
+        if rr == "autopilot":
+            lines.append(
+                f"**Across all listed sites:** **{assoc_total}** candidate row(s); **{active_total}** in autopilot active panel."
+            )
+        else:
+            lines.append(f"**Across all listed sites:** **{assoc_total}** candidate row(s) ({pc} reported by API).")
+    return _append_credentialing_adhoc_hint("\n".join(lines).strip())
 
 
 def _run_find_associated_providers_for_chat(
@@ -1317,6 +1557,7 @@ def _run_find_associated_providers_for_chat(
     skill_search_mode: str,
     emitter=None,
     pipeline_ctx: Any | None = None,
+    extra_out: dict[str, Any] | None = None,
 ) -> tuple[str, list[dict], dict[str, Any] | None, str]:
     """POST /find-locations then /find-associated-providers — same backend as MCP ``find_associated_providers_at_locations``."""
     ins = dict(tool_inputs or {})
@@ -1370,13 +1611,15 @@ def _run_find_associated_providers_for_chat(
                     "follow_up_capable": True,
                     "expires_after_turns": 8,
                 }
-                return (brief, [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
-        return (err, [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
+                return (_append_credentialing_adhoc_hint(brief), [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
+        return (_append_credentialing_adhoc_hint(err), [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
 
     base = _provider_roster_base_url()
     if not base:
         return (
-            "Provider–location lookup requires the credentialing API. Set CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL.",
+            _append_credentialing_adhoc_hint(
+                "Provider–location lookup requires the credentialing API. Set CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL."
+            ),
             [],
             None,
             RETRIEVAL_SIGNAL_NO_SOURCES,
@@ -1405,7 +1648,9 @@ def _run_find_associated_providers_for_chat(
         body = (e.response.text or "")[:800]
         logger.warning("find_associated (find-locations) HTTP %s %s", e.response.status_code, body)
         return (
-            f"Practice location lookup failed ({e.response.status_code}): {body or str(e)}",
+            _append_credentialing_adhoc_hint(
+                f"Practice location lookup failed ({e.response.status_code}): {body or str(e)}"
+            ),
             [],
             None,
             RETRIEVAL_SIGNAL_NO_SOURCES,
@@ -1413,7 +1658,9 @@ def _run_find_associated_providers_for_chat(
     except Exception as e:
         logger.warning("find_associated find-locations failed: %s", e, exc_info=True)
         return (
-            f"Practice location lookup failed: {e}. Ensure provider-roster-credentialing is running.",
+            _append_credentialing_adhoc_hint(
+                f"Practice location lookup failed: {e}. Ensure provider-roster-credentialing is running."
+            ),
             [],
             None,
             RETRIEVAL_SIGNAL_NO_SOURCES,
@@ -1422,7 +1669,9 @@ def _run_find_associated_providers_for_chat(
     locations = loc_data.get("locations") if isinstance(loc_data, dict) else None
     if not locations:
         return (
-            "No practice locations returned — cannot list providers per site.",
+            _append_credentialing_adhoc_hint(
+                "No practice locations returned — cannot list providers per site."
+            ),
             [],
             None,
             RETRIEVAL_SIGNAL_NO_SOURCES,
@@ -1435,12 +1684,14 @@ def _run_find_associated_providers_for_chat(
                 _emit(emitter, s if s.startswith("◌") else f"◌ {s}")
 
     assoc_url = f"{base.rstrip('/')}/find-associated-providers"
+    res_mode = "autopilot" if skill_search_mode == "agentic" else "copilot"
     assoc_payload: dict[str, Any] = {
         "org_npis": org_npis,
         "locations": locations,
         "org_name": name_hint or org_name,
         "include_roster_members": bool(include_roster),
         "external_only": external_only,
+        "roster_resolution": res_mode,
     }
     if upload_id:
         assoc_payload["upload_id"] = upload_id
@@ -1453,7 +1704,9 @@ def _run_find_associated_providers_for_chat(
         body = (e.response.text or "")[:800]
         logger.warning("find_associated HTTP %s %s", e.response.status_code, body)
         return (
-            f"Find-associated-providers failed ({e.response.status_code}): {body or str(e)}",
+            _append_credentialing_adhoc_hint(
+                f"Find-associated-providers failed ({e.response.status_code}): {body or str(e)}"
+            ),
             [],
             None,
             RETRIEVAL_SIGNAL_NO_SOURCES,
@@ -1461,7 +1714,7 @@ def _run_find_associated_providers_for_chat(
     except Exception as e:
         logger.warning("find_associated failed: %s", e, exc_info=True)
         return (
-            f"Find-associated-providers failed: {e}.",
+            _append_credentialing_adhoc_hint(f"Find-associated-providers failed: {e}."),
             [],
             None,
             RETRIEVAL_SIGNAL_NO_SOURCES,
@@ -1477,6 +1730,10 @@ def _run_find_associated_providers_for_chat(
         }
     ]
     sig = RETRIEVAL_SIGNAL_GOOGLE_ONLY if skill_search_mode == "agentic" else RETRIEVAL_SIGNAL_NO_SOURCES
+    if isinstance(extra_out, dict) and isinstance(ap_data, dict):
+        extra_out[REACT_TOOL_SUMMARY_KEY] = _react_summary_associated_providers_data(
+            ap_data, billing_npi_count=len(org_npis)
+        )
     return (text, sources, None, sig)
 
 
@@ -1493,14 +1750,18 @@ def _run_npi_by_address(
         )
     except Exception as e:
         logger.warning("call_mcp_tool search_org_by_address failed: %s", e, exc_info=True)
-        return (f"I ran into an issue with the address lookup. {e}. Please try again.", [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
+        return (
+            _append_credentialing_adhoc_hint(f"I ran into an issue with the address lookup. {e}. Please try again."),
+            [],
+            None,
+            RETRIEVAL_SIGNAL_NO_SOURCES,
+        )
     if success and result_text and "Error:" not in result_text and "No matches found" not in result_text:
-        sources = [{"index": 1, "document_name": "Address lookup", "text": result_text[:300], "source_type": "external"}]
-        return (result_text, sources, None, RETRIEVAL_SIGNAL_NO_SOURCES)
-    return (
-        result_text if result_text else f"No providers found at '{address}'. Try a more specific address.",
-        [], None, RETRIEVAL_SIGNAL_NO_SOURCES,
-    )
+        out = _append_credentialing_adhoc_hint(result_text)
+        sources = [{"index": 1, "document_name": "Address lookup", "text": out[:300], "source_type": "external"}]
+        return (out, sources, None, RETRIEVAL_SIGNAL_NO_SOURCES)
+    tail = result_text if result_text else f"No providers found at '{address}'. Try a more specific address."
+    return (_append_credentialing_adhoc_hint(tail), [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
 
 
 def _serve_cached_credentialing_report(
@@ -1527,6 +1788,8 @@ def _serve_cached_credentialing_report(
         docs = run.get("documents") or {}
         extra_out["roster_report_pdf_base64"] = docs.get("final_pdf_base64") or ""
         extra_out["roster_report_final_md"] = docs.get("final_md") or ""
+        if (docs.get("final_md") or "").strip() or (docs.get("final_pdf_base64") or "").strip():
+            extra_out["roster_report_attachments_kind"] = "credentialing"
     result_text = (run.get("documents") or {}).get("final_md") or "Report loaded from cache."
     sources = [
         {
@@ -1783,6 +2046,7 @@ def _answer_tool_impl(
             skill_search_mode=_org_skill_mode,
             emitter=emitter,
             pipeline_ctx=pipeline_ctx,
+            extra_out=extra_out,
         )
 
     if tool_hint_override and (tool_hint_override or "").strip().lower() == "find_associated_providers_at_locations":
@@ -1794,6 +2058,7 @@ def _answer_tool_impl(
             skill_search_mode=_org_skill_mode,
             emitter=emitter,
             pipeline_ctx=pipeline_ctx,
+            extra_out=extra_out if isinstance(extra_out, dict) else None,
         )
 
     # ── Roster reconciliation: upload vs outside-in ──
@@ -1801,6 +2066,10 @@ def _answer_tool_impl(
         org_name = (question or "").strip()
         upload_id = (reconciliation_upload_id or "").strip()
         org_id = (reconciliation_org_id or "").strip()
+        if org_id and not upload_id:
+            from app.services.roster_source_of_truth import resolve_reconciliation_upload_id_for_org
+
+            upload_id = resolve_reconciliation_upload_id_for_org(org_id, explicit_upload_id=None) or ""
         base = _provider_roster_base_url()
         if not base or not org_name or not upload_id or not org_id:
             missing = []
@@ -1819,6 +2088,11 @@ def _answer_tool_impl(
                     "(claims + address propensity). Use search_org_names to find the billing NPI for "
                     f"'{org_name}', or ask the user to provide it."
                 )
+            elif not upload_id and org_id:
+                hint = (
+                    " No resolved roster was found in the provider database for this billing NPI "
+                    "(source of truth). Upload and process a roster for this org, or verify the NPI."
+                )
             return (
                 f"Roster reconciliation needs org_name, upload_id, and org_id. Missing: {', '.join(missing)}.{hint}",
                 [],
@@ -1836,7 +2110,11 @@ def _answer_tool_impl(
             def _consume_sse_stream(client: httpx.Client) -> dict[str, Any] | None:
                 out: dict[str, Any] | None = None
                 with client.stream("POST", stream_url, json=payload) as r:
-                    r.raise_for_status()
+                    # Streaming responses must have the body read before raise_for_status
+                    # (otherwise HTTPStatusError.response.text raises ResponseNotRead).
+                    if r.is_error:
+                        r.read()
+                        r.raise_for_status()
                     for line in r.iter_lines():
                         if not line or not line.startswith("data:"):
                             continue
@@ -1899,7 +2177,24 @@ def _answer_tool_impl(
                 ib = summary.get("in_both_count", 0)
                 ext = summary.get("external_only_count", 0)
                 internal = summary.get("internal_only_count", 0)
-                result_text = f"Roster Reconciliation Report for {org_name}\n\n**Summary:** in_both={ib}, external_only={ext}, internal_only={internal}\n\n---\n\n{result_text}"
+                u_issues = int(summary.get("roster_upload_validation_issue_rows") or 0)
+                u_fix = int(summary.get("roster_upload_issues_must_fix") or 0)
+                u_ver = int(summary.get("roster_upload_issues_verify") or 0)
+                sum_line = (
+                    f"**Summary:** in_both={ib}, external_only={ext}, internal_only={internal}"
+                )
+                if u_issues:
+                    sum_line += (
+                        f"; **upload rows needing attention:** {u_issues} "
+                        f"(must_fix={u_fix}, verify={u_ver})"
+                    )
+                header = f"Roster alignment with NPPES (Phase 1) for {org_name}\n\n{sum_line}\n\n---\n\n"
+                if u_fix:
+                    header = (
+                        f"**Roster file:** {u_fix} line(s) need fixes (missing/invalid NPI or failed resolution). "
+                        "See **Roster file — rows to fix** in the report and step CSV `roster_upload_validation_issues`.\n\n"
+                    ) + header
+                result_text = header + result_text
             if extra_out is not None and data:
                 extra_out["report_run_id"] = (data.get("report_run_id") or "").strip()
                 extra_out["last_report_org"] = org_name
@@ -1918,12 +2213,27 @@ def _answer_tool_impl(
                     }
                     for s in step_outs
                 ]
+                extra_out["roster_report_attachments_kind"] = "reconciliation"
             if result_text:
-                sources = [{"index": 1, "document_name": "Roster Reconciliation Report", "text": result_text[:300], "source_type": "external"}]
+                sources = [
+                    {
+                        "index": 1,
+                        "document_name": "Roster alignment with NPPES (Phase 1)",
+                        "text": result_text[:300],
+                        "source_type": "external",
+                    }
+                ]
                 return (result_text, sources, None, RETRIEVAL_SIGNAL_ROSTER_COMPLETE)
             return ("Reconciliation report returned no content.", [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
         except httpx.HTTPStatusError as e:
-            body = (e.response.text or "")[:500]
+            try:
+                body = (e.response.text or "")[:500]
+            except httpx.ResponseNotRead:
+                try:
+                    e.response.read()
+                    body = (e.response.text or "")[:500]
+                except Exception:
+                    body = ""
             return (f"Reconciliation API error: {e.response.status_code}. {body}", [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
         except Exception as e:
             logger.warning("Reconciliation report failed: %s", e, exc_info=True)
@@ -2095,7 +2405,10 @@ def _answer_tool_impl(
             if not url:
                 url = _extract_url(question or "") or _extract_url(user_message or "")
             if url:
-                return _run_web_scrape(url, emitter=emitter)
+                ws_mode: str | None = None
+                if isinstance(tool_inputs, dict):
+                    ws_mode = tool_inputs.get("scrape_mode") or tool_inputs.get("mode")
+                return _run_web_scrape(url, emitter=emitter, scrape_mode=ws_mode)
             hint = "google_search"  # no URL — fall through to search
 
         if hint == "google_search":
@@ -2233,7 +2546,10 @@ def _answer_tool_impl(
     scrape_triggers = ("scrape", "scrape this", "scrape url", "scrape page", "scrape the")
     wants_scrape = any(t in q_lower for t in scrape_triggers)
     if wants_scrape and url:
-        return _run_web_scrape(url, emitter=emitter)
+        ws_mode_kw: str | None = None
+        if isinstance(tool_inputs, dict):
+            ws_mode_kw = tool_inputs.get("scrape_mode") or tool_inputs.get("mode")
+        return _run_web_scrape(url, emitter=emitter, scrape_mode=ws_mode_kw)
     if wants_scrape and not url:
         return (
             "I can scrape web pages when you give me a URL. Try: 'Scrape https://example.com' or paste the URL.",
@@ -2384,6 +2700,13 @@ def _answer_tool_impl(
             except Exception as e:
                 logger.warning("run_orchestrator failed: %s", e, exc_info=True)
                 return (f"I ran into an issue running the plan. {e}. Please try again.", [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
+            failed_early = ostate.first_failed_step() if ostate else None
+            if failed_early is not None:
+                msg = (
+                    f"Credentialing stopped at step **{failed_early.id}**: {failed_early.result_summary or 'failed'}. "
+                    "Fix the provider-roster skill / org resolution and try again."
+                )
+                return (msg, [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
             result_text = result_text or ""
             if extra_out is not None:
                 step_order = dict(_ROSTER_STEP_OUTPUT_NUM)
@@ -2406,6 +2729,7 @@ def _answer_tool_impl(
                     extra_out["roster_report_pdf_base64"] = ostate.report_pdf_base64
                 if getattr(ostate, "report_final_md", None):
                     extra_out["roster_report_final_md"] = ostate.report_final_md
+                extra_out["roster_report_attachments_kind"] = "credentialing"
             if result_text:
                 sources = [{"index": 1, "document_name": "Provider Roster / Credentialing", "text": result_text[:300], "source_type": "external"}]
                 return (result_text, sources, None, RETRIEVAL_SIGNAL_ROSTER_COMPLETE)

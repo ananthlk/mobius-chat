@@ -17,6 +17,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from app.communication.json_display_sanitize import plain_text_for_adjudication_from_chat_message
 from app.pipeline.context import PipelineContext
 
 logger = logging.getLogger(__name__)
@@ -114,7 +115,9 @@ async def _run_async(ctx: PipelineContext, payload: dict[str, Any]) -> None:
     _, sha = load_prompts_llm_config()
     config_sha = sha or None
     question = (ctx.refined_query or ctx.message or "").strip()
-    answer = (payload.get("message") or ctx.final_message or "")[:12000]
+    raw_assistant = (payload.get("message") or ctx.final_message or "").strip()
+    # Wire format is often AnswerCard JSON; adjudicator prompt says "what the user saw" — use plain text.
+    answer = plain_text_for_adjudication_from_chat_message(raw_assistant, max_chars=12000)
     thinking_lines = [str(x) for x in (payload.get("thinking_log") or getattr(ctx, "thinking_chunks", None) or [])]
     sources = payload.get("sources") if isinstance(payload.get("sources"), list) else []
     adjudication_sources = (

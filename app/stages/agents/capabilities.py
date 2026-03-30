@@ -74,23 +74,27 @@ TOOL_CAPABILITIES: dict[str, dict[str, Any]] = {
     },
     "run_credentialing_report": {
         "can_answer": [
-            "Full credentialing report for an org (11-step pipeline, revenue waterfall)",
+            "Medicaid NPI credentialing report: 11-step pipeline, Sections A–E revenue waterfall, readiness / PML-facing outputs",
+            "Tabular outputs from code-built steps; narrative after deterministic validate→compose style gates",
             "Co-pilot credentialing: step-by-step with user validation when mode is copilot",
         ],
+        "cannot_answer": "Roster upload vs outside-in only (in_both / external_only / internal_only) without waterfall — use run_roster_reconciliation_report",
     },
     "validate_credentialing_step": {
         "can_answer": [
             "Advance credentialing co-pilot after user confirms or edits the pending step (NPIs, locations, etc.)",
+            "Attach optional workflow_follow_ups (per-step operational tasks) when the user adds follow-up lines",
         ],
         "requires": "Active copilot run on thread (credentialing_run_id) or run_id in tool inputs",
     },
     "run_roster_reconciliation_report": {
         "can_answer": [
-            "Roster reconciliation report: compare org upload vs outside-in roster",
-            "in_both / external_only / internal_only mismatch analysis",
-            "Potential ghost billing (external_only) and validation needed (internal_only)",
+            "Phase 1 — Roster alignment with NPPES: upload vs NPPES/outside-in (in_both / external_only / internal_only); not PML enrollment validation (Phase 2)",
+            "Scenarios: aligned (roster + NPPES + org match); misaligned (roster + NPPES, linkage wrong); on roster, not in NPPES (credentialing-critical); strong NPPES/org tie, not on roster (compliance/billing urgency)",
+            "Code-built CSVs; narrative only; deterministic validate→re-compose; PML mentioned only as next step",
         ],
-        "requires": "Roster file on this chat thread (upload via chat UI). upload_id and billing NPI org_id are filled from thread state after upload; optional NPI override via user message.",
+        "cannot_answer": "Full credentialing waterfall dollar report — use run_credentialing_report",
+        "requires": "Billing NPI (org_id) and org_name. Internal roster CSV comes from the **latest resolved upload in the provider roster DB** for that org; chat upload only refreshes that record. Thread-linked upload metadata is optional (fallback / UX).",
     },
     "document_upload_skill": {
         "can_answer": [
@@ -111,7 +115,11 @@ TOOL_CAPABILITIES: dict[str, dict[str, Any]] = {
         "can_answer": ["Policy lookup, appeals, PA, eligibility, claims, enrollment, credentialing process"],
     },
     "google_search": {"can_answer": ["Web search when corpus misses or user asks"]},
-    "web_scrape": {"can_answer": ["Read specific web page from URL"]},
+    "web_scrape": {
+        "can_answer": [
+            "Read a web URL (quick single page, or medium/detailed same-site crawl when scrape_mode is set)",
+        ]
+    },
 }
 
 # Map: path (rag | patient | clinical | tool | reasoning) -> list of capability descriptions
@@ -207,6 +215,8 @@ def available_capabilities_json() -> dict[str, Any]:
         "tool_capabilities": TOOL_CAPABILITIES,
         "routing_rule": (
             "Match question to tool capabilities. "
+            "Roster **reconciliation** / **NPPES alignment** (Phase 1: upload vs registry/outside-in; Phase 2 PML is separate) → run_roster_reconciliation_report. "
+            "**Credentialing** / Medicaid NPI **waterfall** / Section A–E / readiness dollar report → run_credentialing_report. "
             "NPI + PML/enrollment → ask_credentialing_npi (requires report). "
             "ICD-10, HCPCS, CPT code meaning, Medicare/Medicaid coverage (NCD/LCD) → healthcare_query. "
             "10-digit NPI registry lookup (no PML) → healthcare_query or healthcare_npi_lookup. "

@@ -5,6 +5,8 @@ import pytest
 
 from app.pipeline.context import PipelineContext
 from app.pipeline.react_loop import (
+    REACT_MAX_ROUNDS_AGENTIC,
+    REACT_MAX_ROUNDS_COPILOT,
     build_reasoning_context,
     _execute_tool,
     _envelope_routes_to_reconciliation,
@@ -12,9 +14,34 @@ from app.pipeline.react_loop import (
     _make_react_plan,
     _parse_react_decision_json,
     _react_fallback_org_npi_lookup_decision,
+    _react_reasoning_system,
+    react_chat_mode_label,
+    react_max_iterations_for_mode,
     run_react,
-    MAX_ITERATIONS,
 )
+
+
+def test_react_max_iterations_respects_chat_mode():
+    assert react_max_iterations_for_mode("agentic") == REACT_MAX_ROUNDS_AGENTIC
+    assert react_max_iterations_for_mode("  AGENTIC ") == REACT_MAX_ROUNDS_AGENTIC
+    assert react_max_iterations_for_mode("copilot") == REACT_MAX_ROUNDS_COPILOT
+    assert react_max_iterations_for_mode(None) == REACT_MAX_ROUNDS_COPILOT
+
+
+def test_react_chat_mode_label():
+    assert react_chat_mode_label("agentic") == "agentic"
+    assert react_chat_mode_label("  AGENTIC ") == "agentic"
+    assert react_chat_mode_label("copilot") == "copilot"
+    assert react_chat_mode_label(None) == "copilot"
+
+
+def test_react_reasoning_system_includes_mode_quality_bar():
+    cop = _react_reasoning_system(3, "copilot")
+    assert "**copilot**" in cop
+    assert "reasonable" in cop.lower()
+    ag = _react_reasoning_system(6, "agentic")
+    assert "**agentic**" in ag
+    assert "precision" in ag.lower()
 
 
 def test_build_reasoning_context_includes_jurisdiction_and_message():

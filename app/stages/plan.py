@@ -99,6 +99,7 @@ def run_plan(ctx: PipelineContext, emitter: Callable[[str], None] | None = None)
             correlation_id=ctx.correlation_id,
             thread_id=ctx.thread_id,
             config_sha=_sha,
+            mode=getattr(ctx, "chat_mode", None),
         )
         if not plan or not plan.subquestions:
             logger.warning("Plan stage: parse returned empty plan, using minimal plan.")

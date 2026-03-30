@@ -3,7 +3,7 @@ import pytest
 from unittest.mock import patch
 
 from app.services.doc_assembly import RETRIEVAL_SIGNAL_NO_SOURCES, RETRIEVAL_SIGNAL_GOOGLE_ONLY
-from app.services.tool_agent import answer_tool
+from app.services.tool_agent import answer_tool, web_scrape_review_mcp_arguments
 
 
 def test_tool_agent_google_search_calls_mcp():
@@ -39,12 +39,39 @@ def test_tool_agent_web_scrape_calls_mcp():
             answer, sources, usage, signal = answer_tool(
                 "Scrape https://example.com/page",
             )
-            mock_mcp.assert_called_once_with(
-                "web_scrape_review",
-                {"url": "https://example.com/page", "include_summary": False},
-            )
+            mock_mcp.assert_called_once()
+            assert mock_mcp.call_args[0][0] == "web_scrape_review"
+            args = mock_mcp.call_args[0][1]
+            assert args["url"] == "https://example.com/page"
+            assert args["include_summary"] is False
+            assert args["scrape_mode"] == "quick"
+            assert args["max_depth"] == 1 and args["max_pages"] == 1
             assert "Page content" in answer
             assert signal == RETRIEVAL_SIGNAL_GOOGLE_ONLY
+
+
+def test_web_scrape_review_mcp_arguments_detailed():
+    d = web_scrape_review_mcp_arguments("https://a.gov/x", scrape_mode="detailed")
+    assert d["scrape_mode"] == "detailed"
+    assert d["max_depth"] == 5 and d["max_pages"] == 50 and d["max_doc_downloads"] == 10
+
+
+def test_tool_agent_web_scrape_detailed_passes_limits_and_timeout():
+    with patch("app.stages.agents.capabilities.get_capability_answer", return_value=None):
+        with patch("app.services.tool_agent.call_mcp_tool") as mock_mcp:
+            mock_mcp.return_value = ("long content " * 50, True)
+            answer_tool(
+                "x",
+                tool_hint_override="web_scrape",
+                scrape_url="https://example.com/site",
+                tool_inputs={"scrape_mode": "detailed"},
+            )
+            mock_mcp.assert_called_once()
+            args = mock_mcp.call_args[0][1]
+            assert args["scrape_mode"] == "detailed"
+            assert args["max_pages"] == 50
+            kw = mock_mcp.call_args[1]
+            assert kw.get("read_timeout") == 300.0
 
 
 def test_tool_agent_web_scrape_no_url():

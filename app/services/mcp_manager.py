@@ -27,11 +27,12 @@ def _get_mcp_url() -> str:
     return MCP_SERVER_URL
 
 
-def _create_http_client():
+def _create_http_client(*, read_timeout: float | None = None):
     """Create httpx AsyncClient with configurable timeouts for MCP."""
     import httpx
+    read = float(read_timeout) if read_timeout is not None else float(MCP_READ_TIMEOUT)
     return httpx.AsyncClient(
-        timeout=httpx.Timeout(MCP_READ_TIMEOUT, connect=MCP_CONNECT_TIMEOUT),
+        timeout=httpx.Timeout(read, connect=MCP_CONNECT_TIMEOUT),
         follow_redirects=True,
     )
 
@@ -49,8 +50,16 @@ def _run_async(coro):
     return asyncio.run(coro)
 
 
-async def _call_mcp_tool_async(tool_name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
-    """Call an MCP tool. Returns (result_text, success)."""
+async def _call_mcp_tool_async(
+    tool_name: str,
+    arguments: dict[str, Any],
+    *,
+    read_timeout: float | None = None,
+) -> tuple[str, bool]:
+    """Call an MCP tool. Returns (result_text, success).
+
+    read_timeout: optional longer read timeout (e.g. multi-page web scrape); defaults to MCP_READ_TIMEOUT.
+    """
     url = _get_mcp_url()
     last_error = None
     for attempt in range(MCP_MAX_RETRIES + 1):
@@ -58,7 +67,7 @@ async def _call_mcp_tool_async(tool_name: str, arguments: dict[str, Any]) -> tup
             from mcp.client.session import ClientSession
             from mcp.client.streamable_http import streamable_http_client
 
-            async with _create_http_client() as http_client:
+            async with _create_http_client(read_timeout=read_timeout) as http_client:
                 async with streamable_http_client(url, http_client=http_client) as (read_stream, write_stream, _):
                     async with ClientSession(read_stream, write_stream) as session:
                         await session.initialize()
@@ -98,10 +107,18 @@ async def _call_mcp_tool_async(tool_name: str, arguments: dict[str, Any]) -> tup
     return (f"MCP call failed after retries: {last_error}", False)
 
 
-def call_mcp_tool(tool_name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
-    """Synchronous wrapper for MCP tool calls."""
+def call_mcp_tool(
+    tool_name: str,
+    arguments: dict[str, Any],
+    *,
+    read_timeout: float | None = None,
+) -> tuple[str, bool]:
+    """Synchronous wrapper for MCP tool calls.
+
+    read_timeout: optional seconds for HTTP read (large / slow tools).
+    """
     try:
-        return _run_async(_call_mcp_tool_async(tool_name, arguments))
+        return _run_async(_call_mcp_tool_async(tool_name, arguments, read_timeout=read_timeout))
     except Exception as e:
         logger.warning("MCP tool call failed: %s (tool=%s)", e, tool_name, exc_info=True)
         return (f"Tool call failed: {e}", False)
@@ -114,7 +131,7 @@ async def _list_mcp_tools_async() -> list[dict[str, Any]]:
         from mcp.client.session import ClientSession
         from mcp.client.streamable_http import streamable_http_client
 
-        async with _create_http_client() as http_client:
+        async with _create_http_client(read_timeout=None) as http_client:
             async with streamable_http_client(url, http_client=http_client) as (read_stream, write_stream, _):
                 async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()

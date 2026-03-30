@@ -62,6 +62,7 @@ def answer_non_patient(
     thread_id: str | None = None,
     phi_detected: bool = False,
     config_sha: str | None = None,
+    mode: str | None = None,
 ) -> tuple[str, list[dict], dict[str, Any] | None, str]:
     """Answer a non-patient subquestion: RAG (blend of hierarchical + factual or single path) then LLM.
     Returns (answer_text, sources, llm_usage, retrieval_signal). retrieval_signal: corpus_only | corpus_plus_google | google_only | no_sources."""
@@ -267,6 +268,7 @@ def answer_non_patient(
             correlation_id=correlation_id,
             thread_id=thread_id,
             phi_detected=phi_detected,
+            mode=mode,
         )
     except Exception as e:
         logger.warning("Non-patient LLM failed: %s", e)

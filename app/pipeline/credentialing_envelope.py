@@ -27,6 +27,13 @@ def resolve_step3_roster_merge_context(
     if not upload_id and roster_files:
         latest = roster_files[0]
         upload_id = (latest.get("upload_id") or "").strip() or None
+    oid = (ac.get("reconciliation_org_id") or "").strip()
+    if not external_only and oid:
+        from app.services.roster_source_of_truth import resolve_reconciliation_upload_id_for_org
+
+        truth_uid = resolve_reconciliation_upload_id_for_org(oid, explicit_upload_id=None)
+        if truth_uid:
+            upload_id = truth_uid
     include = (not external_only) and bool(upload_id)
     return upload_id, external_only, include
 
@@ -49,6 +56,42 @@ def thread_has_roster_reconciliation_data(active: dict[str, Any]) -> bool:
         if (u.get("upload_id") or "").strip() and (u.get("org_id") or "").strip():
             return True
     return False
+
+
+def message_requests_roster_reconciliation(message: str) -> bool:
+    """Natural-language ask for upload vs outside-in reconciliation (not the revenue credentialing waterfall)."""
+    lower = (message or "").lower().strip()
+    if not lower:
+        return False
+    if message_prefers_outside_in_credentialing(lower):
+        return False
+    # Bare "credentialing report" (no roster reconciliation intent) → full waterfall
+    if (
+        "credentialing report" in lower
+        and "roster reconciliation" not in lower
+        and "reconcile" not in lower
+        and "reconciliation report" not in lower
+    ):
+        return False
+    if "roster reconciliation" in lower:
+        return True
+    if "reconciliation report" in lower and "roster" in lower:
+        return True
+    needles = (
+        "reconcile my roster",
+        "reconcile the roster",
+        "reconcile roster",
+        "reconcile an upload",
+        "reconcile upload",
+        "reconcile the upload",
+        "upload vs outside-in",
+        "upload vs outside in",
+        "upload vs external",
+        "internal_only",
+        "external_only",
+        "in_both",
+    )
+    return any(n in lower for n in needles)
 
 
 def message_prefers_outside_in_credentialing(message: str) -> bool:
@@ -78,8 +121,14 @@ def envelope_routes_to_reconciliation(
     roster on thread → reconciliation unless prefer_outside_in, explicit credentialing, or message asks outside-in.
     """
     co = credentialing_options or {}
+    active = (merged_state or {}).get("active") or {}
+    has_roster = thread_has_roster_reconciliation_data(active)
+
+    # ReAct often calls run_credentialing_report with an empty envelope; still route when the user
+    # clearly asked for roster reconciliation and this thread has upload_id + billing NPI.
     if not co:
-        return False
+        return bool(has_roster and message_requests_roster_reconciliation(message))
+
     rk = (co.get("report_kind") or "auto").strip().lower()
     if rk == "reconciliation":
         return True
@@ -89,8 +138,7 @@ def envelope_routes_to_reconciliation(
         return False
     if message_prefers_outside_in_credentialing(message):
         return False
-    active = (merged_state or {}).get("active") or {}
-    return thread_has_roster_reconciliation_data(active)
+    return has_roster
 
 
 def classify_org_vs_uploads(org_hint: str, active: dict[str, Any]) -> OrgUploadClass:

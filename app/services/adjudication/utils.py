@@ -211,12 +211,12 @@ DIMENSION_DEFINITIONS: dict[str, str] = {
   0.0 = completely miscalibrated (paragraph for yes/no, or 1 word for complex)""",
 
     "json_compliance": """json_compliance
-  Did the integrator produce clean formatted output with no raw JSON visible?
-  Check ANSWER for ```json blocks, raw {"resolutions":...} objects, or
-  incomplete JSON structures bleeding into the user-facing text.
-  1.0 = clean formatted answer, no JSON visible to user
+  Did the USER-VISIBLE answer contain raw JSON artifacts (```json fences, or a prose blob that is
+  mostly a {...} wire object)? FINAL_ANSWER should be plain prose or markdown-like text as shown
+  in the chat bubble — not the internal AnswerCard JSON payload.
+  Score 1.0 when the text is clearly human-readable sentences/bullets with no JSON paste.
   0.5 = minor formatting artifacts
-  0.0 = raw JSON visible in answer (JSON bleed — BUG-01)""",
+  0.0 = raw JSON / fenced JSON meant for machines visible as the answer (JSON bleed — BUG-01)""",
 
     "grounding": """grounding
   Are answer claims supported by RETRIEVED_SOURCES and THINKING_LOG?

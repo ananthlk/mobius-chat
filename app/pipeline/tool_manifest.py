@@ -9,6 +9,10 @@ TOOL_MANIFEST = f"""
 AVAILABLE TOOLS — match the question to the tool whose capabilities fit.
 If the first tool fails (e.g. returns "no report"), try the next-best tool.
 
+**Credentialing / NPPES tools** (locations, providers per site, org NPI lookup, reconciliation, credentialing report, report Q&A, registry lookups): outputs follow **Mobius tool output v1** — a **Summary** block (internal / ReAct & consistency) plus **Detail** (user display & user download). The server may also pass the short summary in structured fields; the full markdown is still the user artifact. When summarizing, do not assume an empty truncated view means the tool failed.
+
+**Operational roster (find_associated)** — Same data sources for **autopilot** and **copilot**: NPPES, Florida PML, DOGE servicing, optional roster upload / thread roster. **autopilot** (chat **agentic**): API sets an **active panel** when score ≥ cutoff after registry penalties. **copilot** (chat non-agentic path / credentialing co-pilot step): returns **scores and rationales** with `pending_review`; user confirms active panel via validate step. Plain-language basis labels (e.g. practice address match strong vs historical Medicaid servicing) appear in the tool detail; match technical codes only as secondary.
+
 WORKFLOW SELECTION (chat UI) — The server may attach **clarification_options** on the assistant
 response: clickable choices (single- or multi-select). Users may also type a normal message instead
 (or in addition, depending on UI); the next turn is still plain user text for you to interpret.
@@ -73,26 +77,30 @@ find_associated_providers_at_locations(org_name optional, org_npi optional, org_
   Requires: Credentialing API (POST /find-locations then /find-associated-providers).
 
 run_credentialing_report(org_name, mode optional)
-  Generate credentialing / PML enrollment pipeline for an organization.
-  mode: "autopilot" (default) = full 11-step report in one run (revenue waterfall A–E).
-  mode: "copilot" = run one step at a time; user validates each step (locations, NPIs, etc.) via the chat panel or validate_credentialing_step.
-  Use when user explicitly asks for a credentialing report, roster report, or step-by-step credentialing.
+  **Medicaid NPI credentialing report** — the **11-step pipeline** with **Sections A–E revenue waterfall**, readiness, and PML-facing outputs.
+  **Data tables** in outputs are **built by code** (step CSVs and deterministic transforms); the LLM only narrates. After the draft, the pipeline runs **deterministic validations** and can **re-compose** when checks fail (same family of guardrails as production credentialing).
+  mode: "autopilot" (default) = full report in one run.
+  mode: "copilot" = one step at a time with validate_credentialing_step.
+  Use when the user wants **credentialing / waterfall / readiness / Section A–E** language — **not** "upload vs outside-in reconciliation".
+  **Do not** use for "roster reconciliation", "reconcile upload vs external", or **in_both / external_only / internal_only** buckets — use **run_roster_reconciliation_report** instead when a roster file is (or will be) on the thread.
 
 validate_credentialing_step(step_id optional, validated_output, run_id optional)
   Advance the credentialing co-pilot after the user confirms or edits the pending step.
   run_id defaults to the active thread's credentialing run; step_id defaults to pending step.
   validated_output: JSON object — e.g. {{"org_npis":["1234567890"]}} after identify_org, {{"locations":[...]}} after find_locations.
+  Optional workflow_follow_ups: list of strings (one operational follow-up per line) stored on the validated step for tracking.
   For "accept draft as-is", pass the same fields as shown in the draft (or {{}} for benchmark-only steps).
   Use after run_credentialing_report(mode="copilot") when the user says proceed, continue, confirm, or supplies corrections.
 
 run_roster_reconciliation_report(org_name, upload_id, org_id)
-  Roster reconciliation: compare org upload vs outside-in roster.
-  Use when: user uploaded a roster and wants to reconcile it (in_both, external_only, internal_only).
-  Pass org_name from the user message. upload_id and org_id are OPTIONAL if the user already uploaded
-  a roster in this chat thread (server fills from thread state — newest upload wins). Do not ask for raw upload_id.
-  Billing NPI (org_id) is auto-selected at upload from NPPES/PML search; user can override with "Use billing NPI …".
+  **Phase 1 — Roster alignment with NPPES** (product: roster reconciliation): compares the **operational roster upload** to **NPPES / outside-in** association for the org — **not** the credentialing A–E waterfall and **not** a **PML enrollment** validation report. **Phase 2** (separate / later): **PML validation** after NPPES alignment is triaged.
+  Narrative distinguishes: **(1) Aligned** — on roster, in NPPES, org/linkage matches; **(2) Misaligned** — on roster, in NPPES, linkage/credentials don’t match org expectation; **(3) On roster, not in NPPES** — credentialing/registry critical; **(4) Strong NPPES/org tie, not on roster** — billing-integrity / compliance priority. **All CSVs** are **code-generated**; LLM is narrative-only; deterministic post-compose checks can **re-compose** on failure.
+  Buckets: **in_both**, **external_only**, **internal_only** (split **not-in-NPPES** vs **in NPPES, weak outside-in** in prose).
+  Use when: user says **"roster reconciliation"**, **"reconciliation report"** (with roster context), **reconcile my roster/upload**, or compare **upload vs external** roster.
+  Pass org_name from the user message. **org_id** (billing NPI) is required; **upload_id** is optional — the server uses the **latest resolved roster in the provider DB** for that org (source of truth), then thread upload metadata if needed. Uploading via chat only **updates** that master record; the report reads from it. Do not ask the user for raw upload_id.
+  Billing NPI (org_id) is usually from NPPES/PML search or upload flow; user can override with "Use billing NPI …".
   One billing NPI per run; multi-entity orgs can run again with another NPI.
-  Returns: reconciliation report with mismatch actions.
+  Returns: reconciliation narrative **plus** step CSVs (e.g. reconciliation_review, upload validation) as **server attachments** for download — not new tables invented by the model.
 
 document_upload_skill()
   First-class **document upload skill**: how to attach files to this chat thread for downstream tools.
@@ -113,10 +121,15 @@ google_search(query)
   Do NOT use as primary route — corpus goes first.
   Returns: URLs and snippets, then auto-scrapes top result.
 
-web_scrape(url)
-  Read a specific web page.
-  Use for: URL present in message, or top search result.
-  Returns: full page content.
+web_scrape(url, scrape_mode optional)
+  Read the web: **quick** (default), **medium**, or **detailed** crawl from the seed URL.
+  scrape_mode:
+    **quick** — single page, fastest (default when unsure).
+    **medium** — same-site tree crawl: depth up to **3**, up to **6** HTML pages (no doc download quota).
+    **detailed** — deeper crawl: depth up to **5**, up to **50** pages, up to **10** linked document downloads (e.g. PDFs) when the scraper supports it.
+  Use **quick** for one policy page or a direct link; **medium** for a small site section; **detailed** when the user needs broad coverage or many linked files and latency is acceptable.
+  Omit scrape_mode or use **quick** unless the user (or agentic mode) clearly needs more coverage.
+  Returns: extracted text (combined across pages when crawling).
 
 refuse(reason)
   Hard stop — no content returned.

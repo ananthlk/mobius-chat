@@ -102,14 +102,19 @@ class PipelineContext:
     roster_report_pdf_base64: str | None = None
     # Roster/credentialing: final report markdown for download when PDF unavailable
     roster_report_final_md: str | None = None
+    # Download filenames: "reconciliation" (roster upload vs outside-in) vs "credentialing" (11-step waterfall)
+    roster_report_attachments_kind: str | None = None
     # Co-pilot credentialing: run_id, pending_step_id, draft_output for validation UI
     credentialing_copilot: dict[str, Any] | None = None
 
     # Client envelope (POST /chat credentialing_options): merged into run_credentialing_report
     credentialing_options: dict[str, Any] | None = None
 
-    # UI chat mode (POST /chat chat_mode): copilot vs agentic — passed to org search / credentialing skill
+    # UI chat mode (POST /chat chat_mode): copilot | agentic | quick
     chat_mode: str = "copilot"
+
+    # Set True when quick mode hits max rounds or produces a long answer — client shows "Full answer" link
+    quick_truncated: bool = False
 
     # Post-run adjudication (integrator llm_calls row for quality_score attachment)
     integrator_llm_call_id: str | None = None

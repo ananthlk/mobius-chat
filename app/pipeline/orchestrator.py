@@ -646,6 +646,9 @@ def _publish_completed(ctx: PipelineContext, t0_start: float) -> None:
 
     # Large adjudication-only source blobs must not go to SSE/HTTP clients or in-memory response cache.
     client_payload = {k: v for k, v in payload.items() if k != "adjudication_sources"}
+    # quick_mode: pass truncation flag so mini container can show "Full answer" link
+    if getattr(ctx, "quick_truncated", False):
+        client_payload["quick_truncated"] = True
 
     try:
         config_sha = get_config_sha() or None

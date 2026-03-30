@@ -437,6 +437,7 @@ def run_integrate(
         config_sha=_cfg_sha,
         phi_detected=False,
         llm_stage=_integ_stage,
+        mode=getattr(ctx, "chat_mode", None),
     )
     ctx.final_message = final_message
 
@@ -801,6 +802,10 @@ def run_integrate(
         payload["roster_report_final_md"] = roster_report_final_md
         has_charts = "data:image/png;base64," in roster_report_final_md
         logger.info("Roster payload: final_md included (%d chars, charts=%s)", len(roster_report_final_md), has_charts)
+
+    _att_kind = getattr(ctx, "roster_report_attachments_kind", None)
+    if isinstance(_att_kind, str) and _att_kind.strip().lower() in ("reconciliation", "credentialing"):
+        payload["roster_report_attachments_kind"] = _att_kind.strip().lower()
 
     cred_copilot = getattr(ctx, "credentialing_copilot", None)
     if isinstance(cred_copilot, dict) and cred_copilot.get("run_id"):

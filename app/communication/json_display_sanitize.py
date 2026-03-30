@@ -249,3 +249,54 @@ def looks_like_raw_json_bleed(text: str) -> bool:
     if '"resolutions"' in t[:400]:
         return True
     return False
+
+
+def plain_text_for_adjudication_from_chat_message(message: str, *, max_chars: int = 12_000) -> str:
+    """
+    Stored assistant `message` is often AnswerCard JSON (`format_response` returns json.dumps(card)).
+    The UI parses that JSON and shows `direct_answer` plus section labels/bullets — not the raw wire object.
+
+    LLM adjudication must receive the same kind of plain text a user sees; otherwise it falsely flags
+    json_compliance and claims `sections` is empty when those details live in `direct_answer`.
+    """
+    s = (message or "").strip()
+    if not s:
+        return ""
+    if not (s.startswith("{") and '"mode"' in s):
+        return s[:max_chars]
+
+    try:
+        o = json.loads(s)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return s[:max_chars]
+
+    if not isinstance(o, dict) or o.get("mode") not in ("FACTUAL", "CANONICAL", "BLENDED"):
+        return s[:max_chars]
+
+    parts: list[str] = []
+    body = display_text_for_parsed_answer_card(o)
+    if body.strip():
+        parts.append(body.strip())
+
+    secs = o.get("sections")
+    if isinstance(secs, list):
+        for sec in secs:
+            if not isinstance(sec, dict):
+                continue
+            label = str(sec.get("label") or sec.get("title") or "").strip()
+            bullets = sec.get("bullets")
+            block: list[str] = []
+            if label:
+                block.append(label)
+            if isinstance(bullets, list):
+                for b in bullets:
+                    if isinstance(b, str) and b.strip():
+                        block.append("- " + b.strip())
+            if block:
+                parts.append("\n".join(block))
+
+    out = "\n\n".join(parts).strip()
+    if out:
+        return out[:max_chars]
+    fallback = extract_user_visible_text_from_integrator_raw(s).strip()
+    return (fallback or s)[:max_chars]

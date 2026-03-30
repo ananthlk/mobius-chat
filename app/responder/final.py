@@ -201,6 +201,7 @@ def _repair_json(
     config_sha: str | None = None,
     phi_detected: bool = False,
     llm_stage: str = "integrator",
+    mode: str | None = None,
 ) -> str:
     """One retry: call LLM with repair prompt via llm_manager (integrator stage), return new text."""
     from app.services.llm_manager import generate_sync
@@ -224,6 +225,7 @@ def _repair_json(
             correlation_id=correlation_id,
             thread_id=thread_id,
             phi_detected=phi_detected,
+            mode=mode,
         )
         return (text or "").strip()
     except Exception as e:
@@ -268,6 +270,7 @@ def format_response(
     config_sha: str | None = None,
     phi_detected: bool = False,
     llm_stage: str = "integrator",
+    mode: str | None = None,
 ) -> tuple[str, LLMUsageDict | None]:
     """Turn plan + answers into one chat-friendly message via llm_manager (integrator or integrator_roster).
     On LLM failure, returns fallback and None usage."""
@@ -325,6 +328,7 @@ def format_response(
             correlation_id=correlation_id,
             thread_id=thread_id,
             phi_detected=phi_detected,
+            mode=mode,
         )
         text = (text or "").strip()
 
@@ -342,6 +346,7 @@ def format_response(
                     config_sha=config_sha,
                     phi_detected=phi_detected,
                     llm_stage=llm_stage,
+                    mode=mode,
                 )
                 if repaired:
                     parsed = _parse_answer_card(repaired, emitter=emitter)

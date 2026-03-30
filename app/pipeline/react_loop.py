@@ -12,10 +12,10 @@ Emission map (thinking chunks sent to UI via emitter=on_thinking):
     [if follow-up to active context] "◌ Answering from the report we just generated…"
     [jurisdiction] emit_jurisdiction_context: "✓ Confirmed: …" | "? Payer not identified…" | etc.
     "I'm breaking down your question and choosing the right source…"
-    "  (Up to 4 reasoning rounds: each round I decide to use a tool or to give a final answer.)"
-  Per iteration (round 1..4):
-    "  Round N/4 — <headline: scoping | grounding | refinement | finalize>"
-    "  Reasoning round N/4…"
+    "  (Up to N reasoning rounds — N is 3 in copilot, 6 in agentic.)"
+  Per iteration (round 1..N):
+    "  Round N/M — <headline varies by round and mode>"
+    "  Reasoning round N/M…"
     [LLM thought] "  → Round N: <thought>"
     [if is_complete with answer] "  Synthesizing answer…" → then exit to integrate
     [else] "  Using <tool>…"
@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 import httpx
 
 from app.communication.plan_display import emit_jurisdiction_context, jurisdiction_summary
+from app.communication.tool_output_envelope import compose_mobius_tool_envelope
 from app.pipeline.context import PipelineContext
 from app.pipeline.tool_manifest import TOOL_MANIFEST
 from app.planner.schemas import Plan, SubQuestion
@@ -52,8 +53,36 @@ from app.services.doc_assembly import (
 )
 from app.services.non_patient_rag import answer_non_patient
 from app.services.reasoning_agent import answer_reasoning
-from app.services.tool_agent import answer_tool
+from app.services.tool_agent import (
+    REACT_TOOL_SUMMARY_KEY,
+    answer_tool,
+    _react_summary_from_long_markdown,
+)
 from app.skills.document_upload import DOCUMENT_UPLOAD_SKILL_MARKDOWN, format_thread_uploads_markdown
+
+# After these tools succeed, ReAct finalizes with summary + full markdown (avoids wasted rounds on huge payloads).
+_CREDENTIALING_DUAL_FINALIZE_TOOLS = frozenset({
+    "find_org_locations",
+    "find_associated_providers_at_locations",
+})
+
+
+def _attach_credentialing_result_summary(
+    out: dict[str, Any],
+    result_text: str,
+    *,
+    summary_heading: str,
+    long_threshold: int = 800,
+) -> dict[str, Any]:
+    """Add result_summary when prose is long (NPPES/credentialing/healthcare tools)."""
+    txt = (result_text or "").strip()
+    if len(txt) > long_threshold:
+        summ = _react_summary_from_long_markdown(txt, heading=summary_heading)
+        if summ:
+            out = dict(out)
+            out["result_summary"] = summ
+    return out
+
 
 from app.pipeline.credentialing_envelope import (
     envelope_routes_to_reconciliation,
@@ -288,20 +317,88 @@ def _react_fallback_org_npi_lookup_decision(ctx: PipelineContext) -> dict | None
 # Constants
 # ---------------------------------------------------------------------------
 
-MAX_ITERATIONS = 4
+REACT_MAX_ROUNDS_COPILOT = 3
+REACT_MAX_ROUNDS_AGENTIC = 6
+REACT_MAX_ROUNDS_QUICK   = 2   # mini-container: fail-fast, brief answer
 
-# User-facing headline per ReAct round (complements generic "Reasoning round N/4").
-_REACT_ROUND_HEADLINES: tuple[str, ...] = (
-    "Scoping — interpret the question and choose the first tool or answer",
-    "Grounding — use evidence from prior tool results",
-    "Refinement — close gaps or gather missing details",
-    "Finalize — answer or escalate honestly",
-)
+# Answers longer than this in quick mode signal that the user should follow up in full chat
+QUICK_MODE_TRUNCATED_CHARS = 500
 
-_REASONING_SYSTEM = f"""
+
+def react_chat_mode_label(chat_mode: str | None) -> str:
+    """Normalized ReAct mode for prompts and UI: copilot (default), agentic, or quick."""
+    m = (chat_mode or "").strip().lower()
+    if m == "agentic":
+        return "agentic"
+    if m == "quick":
+        return "quick"
+    return "copilot"
+
+
+def react_max_iterations_for_mode(chat_mode: str | None) -> int:
+    """Quick: 2 rounds (mini container). Copilot: 3. Agentic: 6."""
+    label = react_chat_mode_label(chat_mode)
+    if label == "agentic":
+        return REACT_MAX_ROUNDS_AGENTIC
+    if label == "quick":
+        return REACT_MAX_ROUNDS_QUICK
+    return REACT_MAX_ROUNDS_COPILOT
+
+
+def _react_round_headline(iteration: int, max_it: int) -> str:
+    """User-facing headline for this round index (0-based), depends on total rounds."""
+    if iteration == 0:
+        return "Scoping — interpret the question and choose the first tool or answer"
+    if iteration == 1:
+        return "Grounding — use evidence from prior tool results"
+    if iteration >= max_it - 1:
+        return "Finalize — answer or escalate honestly"
+    if iteration == 2:
+        return "Refinement — close gaps or gather missing details"
+    if iteration == 3:
+        return "Extended — alternate tools or queries if needed"
+    return "Extended — narrow or verify before answering"
+
+
+def _react_reasoning_system(max_iterations: int, chat_mode: str) -> str:
+    """Build reasoning system prompt; chat_mode is 'copilot', 'agentic', or 'quick'."""
+    mode = (chat_mode or "copilot").strip().lower()
+    if mode not in ("agentic", "quick"):
+        mode = "copilot"
+    if mode == "quick":
+        mode_block = f"""
+CHAT MODE: **quick** (mini-container, max {max_iterations} rounds — fail fast)
+
+Quality bar for this mode:
+- Answer in **2–4 sentences maximum**. Be direct and specific.
+- Use **at most 1 tool call**. If you can answer from context without a tool, do so immediately.
+- No bullet lists longer than 3 items. No section headers. No lengthy explanations.
+- If the full answer genuinely requires more detail, give the **key finding** in 1–2 sentences and end with "More detail available in full chat."
+- Prefer speed and directness over completeness. The user can open the full chat for deeper exploration.
+- Set **is_complete=true** as soon as you have a reasonable answer — do not run extra rounds for polish.
+"""
+    elif mode == "copilot":
+        mode_block = f"""
+CHAT MODE: **copilot** (fewer reasoning rounds: {max_iterations})
+
+Quality bar for this mode:
+- The user can follow up quickly. A **reasonable, practical** answer grounded in tool results is enough — do not chase perfection.
+- When the evidence clearly supports the gist of the answer, you may set **is_complete=true** with confidence **medium** or **high** as appropriate; **low** only if you must hedge and say what is uncertain.
+- Prefer finishing in fewer rounds when the question is answered well enough for a coordinator to act or ask a targeted follow-up.
+"""
+    else:
+        mode_block = f"""
+CHAT MODE: **agentic** (more reasoning rounds: {max_iterations})
+
+Quality bar for this mode:
+- Aim for **higher precision and confidence** than in copilot. Use the extra rounds to **verify**, narrow queries, or combine tools until the answer is **specific and well-supported**.
+- Before **is_complete=true**, resolve avoidable ambiguity (e.g. another targeted tool call) when the user asked for definitive facts, numbers, policy detail, or roster/registry accuracy.
+- Use **confidence: "high"** only when tool evidence backs it; otherwise **medium** with explicit limits, or **low** with clear caveats — avoid vague reassurance.
+"""
+    return f"""
 You are Mobius — an AI assistant for CMHC billing coordinators in Florida.
 You do NOT answer questions directly. You decide which tool to use.
-
+{mode_block}
 {TOOL_MANIFEST}
 
 Output ONLY valid JSON. No preamble, no markdown, no explanation.
@@ -341,7 +438,9 @@ CRITICAL RULES:
 6. refuse for PHI (specific patient data) and clinical guidance only.
 7. If corpus returns good content → is_complete=true, synthesize answer.
 8. If corpus misses → use google_search next iteration.
-9. Max {MAX_ITERATIONS} tool calls — if still no answer, escalate honestly.
+8b. **web_scrape**: pass **scrape_mode** in inputs — **quick** (one page, default), **medium** (≤3 depth, 6 pages), **detailed** (≤5 depth, 50 pages, ≤10 doc downloads). Use **quick** unless the question needs a broader crawl or many linked documents.
+9. Max {max_iterations} reasoning rounds — if still no answer, escalate honestly.
+9b. **Credentialing / NPPES tools** often include a **Summary** in the tool trace plus long **Result** markdown. If Success is true and the Summary answers the user, set **is_complete=true** immediately — do **not** call the same tool again in a new round.
 10. If a tool result shows success (e.g. "Report stored", "Step 11 done", "report generated", "You can ask any question about it") → set is_complete=true and answer MUST confirm that the report or output was generated successfully. Do NOT say "I cannot generate" when the tool already succeeded.
 11. When "Recent conversation" is present: treat the prior assistant reply as the current answer. If the user is asking for something that answer did NOT provide (e.g. a link, URL, specific page, more detail, a number), the answer is INSUFFICIENT — do NOT set is_complete=true. Call a tool (e.g. google_search or web_scrape for links/URLs, search_corpus for policy detail) and only set is_complete=true after you have tool results to fulfill the request.
 """
@@ -382,6 +481,7 @@ def _call_llm_json(
                 correlation_id=getattr(ctx, "correlation_id", None),
                 thread_id=getattr(ctx, "thread_id", None),
                 parser=False,
+                mode=getattr(ctx, "chat_mode", None),
             )
         )
         if not getattr(ctx, "usages", None):
@@ -390,7 +490,7 @@ def _call_llm_json(
         return (raw or "").strip()
     from app.services.llm_manager import generate_sync
 
-    raw, _ = generate_sync(prompt, stage="planner", max_tokens=max_tokens, parser=False)
+    raw, _ = generate_sync(prompt, stage="planner", max_tokens=max_tokens, parser=False, mode=None)
     return (raw or "").strip()
 
 
@@ -430,17 +530,28 @@ def build_reasoning_context(
 
     if tool_results:
         parts.append(f"\nIteration {iteration} — tools called this turn:")
+        parts.append(
+            "When **Summary** is present, treat it as the canonical short grounding; "
+            "**Result** may be long markdown for the user — do not re-run the same tool if Summary already answers the ask."
+        )
         for r in tool_results:
             raw = r.get("result") or ""
-            # For long results (e.g. credentialing), show head + tail so completion messages are visible
-            max_len = 600
-            if len(raw) > max_len:
-                head_len, tail_len = 320, 400
+            summ = (r.get("result_summary") or "").strip()
+            if summ:
                 result_preview = (
-                    raw[:head_len] + "\n... [truncated] ...\n" + raw[-tail_len:]
+                    f"[Summary for reasoning]\n{summ}\n\n"
+                    f"[Full markdown length: {len(raw)} chars — included in Result; do not assume truncation means failure.]"
                 )
             else:
-                result_preview = raw
+                # For long results (e.g. credentialing), show head + tail so completion messages are visible
+                max_len = 600
+                if len(raw) > max_len:
+                    head_len, tail_len = 320, 400
+                    result_preview = (
+                        raw[:head_len] + "\n... [truncated] ...\n" + raw[-tail_len:]
+                    )
+                else:
+                    result_preview = raw
             parts.append(
                 f"Tool: {r.get('tool', '')}\n"
                 f"Result: {result_preview}\n"
@@ -556,6 +667,7 @@ def _execute_tool(
             thread_id=ctx.thread_id,
             phi_detected=False,
             config_sha=_get_config_sha() or None,
+            mode=getattr(ctx, "chat_mode", None),
         )
         success = bool(
             answer and len(answer.strip()) > 80 and signal != RETRIEVAL_SIGNAL_NO_SOURCES
@@ -606,9 +718,6 @@ def _execute_tool(
                 "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
                 "sources": [],
             }
-        import urllib.parse
-        domain = urllib.parse.urlparse(url).netloc
-        emit(f"◌ Reading page: {domain}…")
         answer, sources, usage, signal = answer_tool(
             ctx.message or "",
             emitter=emitter,
@@ -616,6 +725,7 @@ def _execute_tool(
             scrape_url=url,
             skill_search_mode=ctx.chat_mode,
             pipeline_ctx=ctx,
+            tool_inputs=inputs,
         )
         success = bool(answer and len(answer.strip()) > 200)
         return {
@@ -659,7 +769,7 @@ def _execute_tool(
                 "follow_up_capable": True,
                 "expires_after_turns": 5,
             }
-        return {
+        out = {
             "tool": "lookup_npi",
             "success": success,
             "result": answer or "",
@@ -667,6 +777,11 @@ def _execute_tool(
             "sources": sources or [],
             "usage": usage,
         }
+        if success and answer:
+            out = _attach_credentialing_result_summary(
+                out, answer, summary_heading="**Organization / billing NPI lookup (NPPES + PML):**"
+            )
+        return out
 
     if tool == "find_org_locations":
         from app.pipeline.message_resolver import _extract_core_topic
@@ -681,6 +796,11 @@ def _execute_tool(
             if topic:
                 merged["org_name"] = topic
         emit("◌ Practice locations (credentialing Step 2)…")
+        extra_out: dict = {}
+        if not hasattr(ctx, "extra_out") or ctx.extra_out is None:
+            ctx.extra_out = extra_out
+        else:
+            extra_out = ctx.extra_out
         answer, sources, usage, signal = answer_tool(
             ctx.effective_message or ctx.message or "",
             emitter=emitter,
@@ -690,6 +810,7 @@ def _execute_tool(
             skill_search_mode=ctx.chat_mode,
             pipeline_ctx=ctx,
             tool_inputs=merged,
+            extra_out=extra_out,
         )
         a = (answer or "").strip()
         success = bool(a) and len(a) > 25
@@ -715,7 +836,12 @@ def _execute_tool(
                     "expires_after_turns": 8,
                     "full_output": answer,
                 }
-        return {
+                # Prior tool(s) in this turn may have attached NPI/org chips; drop them once we have sites.
+                ctx.pending_workflow_selection = []
+        rsum = ""
+        if isinstance(extra_out, dict):
+            rsum = (extra_out.pop(REACT_TOOL_SUMMARY_KEY, None) or "").strip()
+        out = {
             "tool": "find_org_locations",
             "success": success,
             "result": answer or "",
@@ -723,6 +849,9 @@ def _execute_tool(
             "sources": sources or [],
             "usage": usage,
         }
+        if rsum:
+            out["result_summary"] = rsum
+        return out
 
     if tool == "find_associated_providers_at_locations":
         from app.pipeline.message_resolver import _extract_core_topic
@@ -737,6 +866,11 @@ def _execute_tool(
             if topic:
                 merged["org_name"] = topic
         emit("◌ Providers per practice site (credentialing Step 4)…")
+        extra_out_a: dict = {}
+        if not hasattr(ctx, "extra_out") or ctx.extra_out is None:
+            ctx.extra_out = extra_out_a
+        else:
+            extra_out_a = ctx.extra_out
         answer, sources, usage, signal = answer_tool(
             ctx.effective_message or ctx.message or "",
             emitter=emitter,
@@ -746,6 +880,7 @@ def _execute_tool(
             skill_search_mode=ctx.chat_mode,
             pipeline_ctx=ctx,
             tool_inputs=merged,
+            extra_out=extra_out_a,
         )
         a = (answer or "").strip()
         success = bool(a) and len(a) > 25
@@ -764,7 +899,8 @@ def _execute_tool(
                 "expires_after_turns": 8,
                 "full_output": answer,
             }
-        return {
+        rsum = (extra_out_a.pop(REACT_TOOL_SUMMARY_KEY, None) or "").strip()
+        out = {
             "tool": "find_associated_providers_at_locations",
             "success": success,
             "result": answer or "",
@@ -772,6 +908,9 @@ def _execute_tool(
             "sources": sources or [],
             "usage": usage,
         }
+        if rsum:
+            out["result_summary"] = rsum
+        return out
 
     if tool == "run_credentialing_report":
         from app.pipeline.message_resolver import _extract_core_topic
@@ -836,6 +975,10 @@ def _execute_tool(
                 "draft_output": run.get("draft_output"),
                 "mode": "copilot",
                 "org_name": org,
+                "gate_events": run.get("gate_events"),
+                "last_gate_event": run.get("last_gate_event"),
+                "credentialing_prerequisites": run.get("credentialing_prerequisites"),
+                "workflow_follow_ups_by_step": run.get("workflow_follow_ups_by_step"),
             }
             answer = _credentialing_copilot_turn_markdown(run, org or "")
             ctx.active_context = {
@@ -849,13 +992,16 @@ def _execute_tool(
                 "credentialing_run_id": run["run_id"],
                 "pending_step_id": run.get("pending_step_id"),
             }
-            return {
+            out_c = {
                 "tool": "run_credentialing_report",
                 "success": True,
                 "result": answer,
                 "signal": RETRIEVAL_SIGNAL_GOOGLE_ONLY,
                 "sources": [],
             }
+            return _attach_credentialing_result_summary(
+                out_c, answer, summary_heading="**Credentialing co-pilot:**"
+            )
 
         emit("◌ Running credentialing report (this may take a minute)…")
         extra_out["credentialing_copilot_clear"] = True
@@ -888,7 +1034,7 @@ def _execute_tool(
                 "expires_after_turns": 10,
                 "full_output": answer,
             }
-        return {
+        out_r = {
             "tool": "run_credentialing_report",
             "success": success,
             "result": answer or "",
@@ -896,6 +1042,11 @@ def _execute_tool(
             "sources": sources or [],
             "usage": usage,
         }
+        if success and answer:
+            out_r = _attach_credentialing_result_summary(
+                out_r, answer, summary_heading="**Credentialing report:**"
+            )
+        return out_r
 
     if tool == "validate_credentialing_step":
         from app.services.credentialing_run_service import validate_and_advance_credentialing_run
@@ -970,6 +1121,11 @@ def _execute_tool(
             "mode": "copilot",
             "org_name": run.get("org_name"),
             "final_report_text": run.get("final_report_text"),
+            "credentialing_assertion_sync": run.get("credentialing_assertion_sync"),
+            "gate_events": run.get("gate_events"),
+            "last_gate_event": run.get("last_gate_event"),
+            "credentialing_prerequisites": run.get("credentialing_prerequisites"),
+            "workflow_follow_ups_by_step": run.get("workflow_follow_ups_by_step"),
         }
         answer = _credentialing_copilot_turn_markdown(run, run.get("org_name") or "")
         ctx.active_context = {
@@ -983,31 +1139,45 @@ def _execute_tool(
             "credentialing_run_id": run["run_id"],
             "pending_step_id": run.get("pending_step_id"),
         }
-        return {
+        out_v = {
             "tool": "validate_credentialing_step",
             "success": True,
             "result": answer,
             "signal": RETRIEVAL_SIGNAL_GOOGLE_ONLY,
             "sources": [],
         }
+        return _attach_credentialing_result_summary(
+            out_v, answer, summary_heading="**Credentialing co-pilot (step advanced):**"
+        )
 
     if tool == "run_roster_reconciliation_report":
         org_name = inputs.get("org_name") or ""
-        upload_id = inputs.get("upload_id") or ""
-        org_id = inputs.get("org_id") or ""
+        explicit_upload_id = (inputs.get("upload_id") or "").strip()
+        upload_id = explicit_upload_id
+        org_id = (inputs.get("org_id") or "").strip()
         active = (ctx.merged_state or {}).get("active") or {}
         roster_files = _roster_uploads_from_active(active)
         # Fallback to thread state (from roster upload via POST /chat/roster-upload)
         if not upload_id or not org_id:
-            upload_id = upload_id or (active.get("reconciliation_upload_id") or "").strip()
-            org_id = org_id or (active.get("reconciliation_org_id") or "").strip()
-            org_name = org_name or (active.get("reconciliation_org_name") or "").strip() or org_name
+            upload_id = (upload_id or (active.get("reconciliation_upload_id") or "").strip()).strip()
+            org_id = (org_id or (active.get("reconciliation_org_id") or "").strip()).strip()
+            org_name = (org_name or (active.get("reconciliation_org_name") or "").strip() or org_name).strip()
         # If still missing, use the most recent roster reconciliation upload on this thread (newest first in list)
         if (not upload_id or not org_id) and len(roster_files) >= 1:
             latest = roster_files[0]
-            upload_id = upload_id or (latest.get("upload_id") or "").strip()
-            org_id = org_id or (latest.get("org_id") or "").strip()
-            org_name = org_name or (latest.get("org_name") or "").strip() or org_name
+            upload_id = (upload_id or (latest.get("upload_id") or "").strip()).strip()
+            org_id = (org_id or (latest.get("org_id") or "").strip()).strip()
+            org_name = (org_name or (latest.get("org_name") or "").strip() or org_name).strip()
+        # Source of truth: latest resolved roster in provider skill DB for this billing NPI (not chat memory),
+        # unless the model passed an explicit upload_id.
+        if org_id:
+            from app.services.roster_source_of_truth import resolve_reconciliation_upload_id_for_org
+
+            tid = resolve_reconciliation_upload_id_for_org(
+                org_id, explicit_upload_id=explicit_upload_id or None
+            )
+            if tid:
+                upload_id = tid
         extra_out = {}
         if not hasattr(ctx, "extra_out") or ctx.extra_out is None:
             ctx.extra_out = extra_out
@@ -1035,11 +1205,18 @@ def _execute_tool(
                         "or upload again.\n"
                     )
             else:
-                parts.append(
-                    "No roster file is linked to **this chat** yet. Open **⋯** (next to Send) → **Upload file**, "
-                    "choose **Roster for reconciliation**, wait for **Upload complete** in the banner, then send your request "
-                    "(or enable **Send request after upload** in the upload dialog).\n\n"
-                )
+                if org_id:
+                    parts.append(
+                        "No **resolved** roster was found in the provider database for this billing NPI "
+                        "(latest processed upload for the org), and nothing is linked on this chat. "
+                        "Upload and process a roster, confirm the NPI, or check that the roster service URL is configured.\n\n"
+                    )
+                else:
+                    parts.append(
+                        "No roster file is linked to **this chat** yet. Open **⋯** (next to Send) → **Upload file**, "
+                        "choose **Roster for reconciliation**, wait for **Upload complete** in the banner, then send your request "
+                        "(or enable **Send request after upload** in the upload dialog).\n\n"
+                    )
             if org_name:
                 tbl = _format_billing_npi_options_markdown(
                     org_name,
@@ -1050,8 +1227,8 @@ def _execute_tool(
             elif not roster_files:
                 parts.append("Also tell me the **organization name** (e.g. David Lawrence Center) so we can list matching billing NPIs.")
             result = "\n".join(parts).strip() or (
-                "Roster reconciliation needs your org name and a roster file on this chat. "
-                "Use ⋯ → Upload file, wait for confirmation, then ask to run the reconciliation report."
+                "Roster reconciliation needs an organization name, a billing NPI (org_id), and a resolved roster "
+                "in the provider database (or a chat-linked upload). Use ⋯ → Upload file if you need to refresh data."
             )
             return {
                 "tool": "run_roster_reconciliation_report",
@@ -1090,7 +1267,7 @@ def _execute_tool(
                 "follow_up_capable": True,
                 "expires_after_turns": 5,
             }
-        return {
+        out_rec = {
             "tool": "run_roster_reconciliation_report",
             "success": success,
             "result": answer or "",
@@ -1098,6 +1275,11 @@ def _execute_tool(
             "sources": sources or [],
             "usage": usage,
         }
+        if success and answer:
+            out_rec = _attach_credentialing_result_summary(
+                out_rec, answer, summary_heading="**Roster reconciliation report:**"
+            )
+        return out_rec
 
     if tool == "ask_credentialing_npi":
         # NPI + PML from credentialing report. Requires report_run_id in context.
@@ -1126,7 +1308,7 @@ def _execute_tool(
             result_text = (answer or "No credentialing report in context.") + fallback_hint
         else:
             result_text = answer or ""
-        return {
+        out_q = {
             "tool": "ask_credentialing_npi",
             "success": success,
             "result": result_text,
@@ -1134,6 +1316,11 @@ def _execute_tool(
             "sources": sources or [],
             "usage": usage,
         }
+        if success and result_text:
+            out_q = _attach_credentialing_result_summary(
+                out_q, result_text, summary_heading="**Credentialing report Q&A (NPI / PML):**"
+            )
+        return out_q
 
     if tool == "healthcare_query":
         # ICD-10, CMS coverage, NPI-by-number — same MCP backend as legacy healthcare_npi_lookup.
@@ -1149,7 +1336,7 @@ def _execute_tool(
             pipeline_ctx=ctx,
         )
         success = bool(answer and len(answer.strip()) > 50 and "Error:" not in (answer or ""))
-        return {
+        out_h = {
             "tool": "healthcare_query",
             "success": success,
             "result": answer or "",
@@ -1157,6 +1344,11 @@ def _execute_tool(
             "sources": sources or [],
             "usage": usage,
         }
+        if success and answer:
+            out_h = _attach_credentialing_result_summary(
+                out_h, answer, summary_heading="**Healthcare lookup (codes / NPPES / coverage):**"
+            )
+        return out_h
 
     if tool == "healthcare_npi_lookup":
         # NPPES lookup by NPI number (no PML). Fallback when ask_credentialing_npi fails.
@@ -1172,7 +1364,7 @@ def _execute_tool(
             pipeline_ctx=ctx,
         )
         success = bool(answer and len(answer.strip()) > 50 and "Error:" not in (answer or ""))
-        return {
+        out_n = {
             "tool": "healthcare_npi_lookup",
             "success": success,
             "result": answer or "",
@@ -1180,6 +1372,11 @@ def _execute_tool(
             "sources": sources or [],
             "usage": usage,
         }
+        if success and answer:
+            out_n = _attach_credentialing_result_summary(
+                out_n, answer, summary_heading="**NPPES / registry (by NPI number):**"
+            )
+        return out_n
 
     return {
         "tool": tool,
@@ -1262,6 +1459,9 @@ def _sync_extra_out_to_context(ctx: PipelineContext, emitter=None) -> None:
         ctx.roster_report_final_md = md
     if extra.get("roster_step_outputs"):
         ctx.roster_step_outputs = extra["roster_step_outputs"]
+    _att_kind = (extra.get("roster_report_attachments_kind") or "").strip().lower()
+    if _att_kind in ("reconciliation", "credentialing"):
+        ctx.roster_report_attachments_kind = _att_kind
     cred = extra.get("credentialing_copilot")
     if isinstance(cred, dict) and cred.get("run_id"):
         ctx.credentialing_copilot = cred
@@ -1310,6 +1510,9 @@ def _finalize_response(
     ctx.final_message = final_answer
     ctx.sources = all_sources if all_sources is not None else []
     ctx.retrieval_signals = [final_signal] if final_signal else [RETRIEVAL_SIGNAL_NO_SOURCES]
+    # Quick mode: flag long answers so the mini container shows "Full answer →" link
+    if react_chat_mode_label(getattr(ctx, "chat_mode", None)) == "quick":
+        ctx.quick_truncated = len(final_answer) > QUICK_MODE_TRUNCATED_CHARS
     ctx.answer_set = {
         "react_main": {
             "answer": final_answer,
@@ -1375,21 +1578,27 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
     reset_reason = (ctx.merged_state or {}).get("_reset_reason")
     emit_jurisdiction_context(active, reset_reason, emitter)
 
+    mode_label = react_chat_mode_label(getattr(ctx, "chat_mode", None))
+    max_it = react_max_iterations_for_mode(getattr(ctx, "chat_mode", None))
     emit("I'm breaking down your question and choosing the right source…")
-    emit("  (Up to 4 reasoning rounds: each round I decide to use a tool or to give a final answer.)")
+    emit(
+        f"  (Up to {max_it} reasoning rounds — {mode_label}: "
+        f"{'more tool passes when needed' if mode_label == 'agentic' else 'faster path; you can steer on the next message'}.)"
+    )
     tool_results: list[dict] = []
     all_sources: list[dict] = []
     final_signal = RETRIEVAL_SIGNAL_NO_SOURCES
     last_tool: str | None = None
+    reasoning_system = _react_reasoning_system(max_it, mode_label)
 
-    for iteration in range(MAX_ITERATIONS):
+    for iteration in range(max_it):
         rn = iteration + 1
-        headline = _REACT_ROUND_HEADLINES[iteration]
-        emit(f"  Round {rn}/{MAX_ITERATIONS} — {headline}")
-        emit(f"  Reasoning round {rn}/{MAX_ITERATIONS}…")
+        headline = _react_round_headline(iteration, max_it)
+        emit(f"  Round {rn}/{max_it} — {headline}")
+        emit(f"  Reasoning round {rn}/{max_it}…")
         reasoning_context = build_reasoning_context(ctx, tool_results, rn)
         decision_raw = _call_llm_json(
-            _REASONING_SYSTEM,
+            reasoning_system,
             reasoning_context,
             ctx=ctx,
             stage=f"react_{rn}",
@@ -1404,16 +1613,21 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             if tool_results:
                 last_tr = tool_results[-1]
                 last_res = (last_tr.get("result") or "").strip()
-                if last_res and len(last_res) >= 40:
+                last_sum = (last_tr.get("result_summary") or "").strip()
+                usable = last_res if len(last_res) >= 40 else last_sum
+                if usable and (len(usable) >= 40 or (last_sum and last_tr.get("success"))):
                     emit("  Using the last tool output as the answer.")
                     lt_sig = final_signal
                     if last_tr.get("success"):
-                        _finalize_response(ctx, last_res, all_sources, lt_sig, last_tr.get("tool") or last_tool, emitter)
+                        body = last_res
+                        if last_sum and last_res and len(last_res) > len(last_sum) + 80:
+                            body = compose_mobius_tool_envelope(last_sum, last_res)
+                        _finalize_response(ctx, body, all_sources, lt_sig, last_tr.get("tool") or last_tool, emitter)
                     else:
                         # Short failures (e.g. "No URL") still beat a generic escalate.
                         _finalize_response(
                             ctx,
-                            last_res,
+                            last_res or last_sum,
                             all_sources,
                             RETRIEVAL_SIGNAL_NO_SOURCES,
                             last_tr.get("tool") or last_tool,
@@ -1461,11 +1675,15 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         last_tool = result.get("tool")
         _append_tool_llm_usage(ctx, str(last_tool or tool or ""), result)
 
-        tool_results.append({
+        tr_entry: dict[str, Any] = {
             "tool": last_tool,
             "success": result.get("success", False),
             "result": result.get("result", ""),
-        })
+        }
+        rsum_t = (result.get("result_summary") or "").strip()
+        if rsum_t:
+            tr_entry["result_summary"] = rsum_t
+        tool_results.append(tr_entry)
 
         if result.get("sources"):
             all_sources.extend(result["sources"])
@@ -1491,7 +1709,36 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             _finalize_response(ctx, "", [], RETRIEVAL_SIGNAL_NO_SOURCES, last_tool, emitter)
             return
 
+        # Credentialing / NPPES tools: summary + full markdown — finish immediately so ReAct does not burn rounds.
+        if (
+            last_tool in _CREDENTIALING_DUAL_FINALIZE_TOOLS
+            and result.get("success")
+            and (result.get("result_summary") or "").strip()
+            and (result.get("result") or "").strip()
+        ):
+            rs = (result.get("result_summary") or "").strip()
+            rm = (result.get("result") or "").strip()
+            combined = compose_mobius_tool_envelope(rs, rm)
+            emit("  Finishing: credentialing tool returned summary + full markdown.")
+            _finalize_response(ctx, combined, all_sources, final_signal, last_tool, emitter)
+            return
+
     # Exhausted iterations
+    if tool_results:
+        last_tr = tool_results[-1]
+        if last_tr.get("success") and (last_tr.get("result_summary") or "").strip() and (last_tr.get("result") or "").strip():
+            rs = (last_tr.get("result_summary") or "").strip()
+            rm = (last_tr.get("result") or "").strip()
+            emit("  Using last credentialing tool summary + full markdown after max rounds.")
+            _finalize_response(
+                ctx,
+                compose_mobius_tool_envelope(rs, rm),
+                all_sources,
+                final_signal,
+                last_tr.get("tool") or last_tool,
+                emitter,
+            )
+            return
     emit("  No verified answer after checking materials and web — escalating honestly.")
     honest = (
         "I wasn't able to find a verified answer to this question "

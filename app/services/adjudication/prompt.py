@@ -233,7 +233,7 @@ LLM_CHAIN (usage_breakdown — one row per model call):
 RETRIEVED_SOURCES:
 {sources_text}
 {meta_text}
-FINAL_ANSWER (what the user saw):
+FINAL_ANSWER (plain text as in the chat bubble — not API/JSON wire format):
 {answer[:6000]}
 {stage_scores_instruction}
 

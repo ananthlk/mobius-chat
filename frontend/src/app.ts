@@ -296,6 +296,8 @@ interface ChatResponse {
   roster_report_pdf_base64?: string | null;
   /** Roster/credentialing: final report markdown for download when PDF unavailable */
   roster_report_final_md?: string | null;
+  /** PDF/MD download filenames: reconciliation vs 11-step credentialing waterfall */
+  roster_report_attachments_kind?: "reconciliation" | "credentialing";
   /** Co-pilot credentialing: validate pending step (duplicate of envelope gate when present) */
   credentialing_copilot?: CredentialingCopilotPayload | null;
   /** Set when eval/QC audit posts to POST /chat/qc-audit/{id} */
@@ -352,6 +354,22 @@ function followupListHintLines(items: FollowupLineNormalized[]): string {
   return "Tap lines marked as actions to send; others are for reference only.";
 }
 
+/** Env checks for roster DB + skills (see credentialing_gate_event.get_credentialing_prerequisites_status) */
+interface CredentialingPrerequisitesStatus {
+  chat_database_configured?: boolean;
+  provider_roster_url_configured?: boolean;
+  redis_configured?: boolean;
+  ready_for_credentialing_api?: boolean;
+  ready_for_persisted_copilot_runs?: boolean;
+  recommendations?: string[];
+}
+
+/** Per-step workflow notes from server (user + system), for tracking follow-ups */
+interface CredentialingWorkflowStepRow {
+  step_id?: string | null;
+  workflow_follow_ups?: Array<Record<string, unknown>>;
+}
+
 /** Server payload for co-pilot credentialing validation UI */
 interface CredentialingCopilotPayload {
   run_id: string;
@@ -361,6 +379,10 @@ interface CredentialingCopilotPayload {
   mode?: string;
   org_name?: string | null;
   final_report_text?: string | null;
+  gate_events?: Array<Record<string, unknown>>;
+  last_gate_event?: Record<string, unknown> | null;
+  credentialing_prerequisites?: CredentialingPrerequisitesStatus;
+  workflow_follow_ups_by_step?: CredentialingWorkflowStepRow[] | null;
 }
 
 /** assistant_envelope v1 (server merges authoritative + validated LLM ui_blocks) */
@@ -568,6 +590,22 @@ interface RosterUploadAcknowledgment {
   next_step: string;
   process_status?: string;
 }
+
+/** From provider skill GET /roster-uploads/{id} and merged into POST /chat/roster-upload */
+interface RosterPipelineStage {
+  id: string;
+  label: string;
+  done: boolean;
+  detail: string;
+}
+interface RosterPipelineProgress {
+  summary?: string;
+  current_stage_id?: string;
+  reconciliation_ready?: boolean;
+  warehouse_loaded?: boolean;
+  stages?: RosterPipelineStage[];
+}
+
 interface RosterUploadResponse {
   upload_id?: string;
   org_id?: string;
@@ -583,6 +621,9 @@ interface RosterUploadResponse {
   process_status?: string;
   resolution_summary?: Record<string, number>;
   acknowledgment?: RosterUploadAcknowledgment | null;
+  pipeline_progress?: RosterPipelineProgress | null;
+  reconciliation_upload_id?: string | null;
+  reconciliation_ui_url?: string | null;
 }
 
 /** Section intent for visibility rules */
@@ -1659,6 +1700,13 @@ function renderAssistantContent(
   return wrap;
 }
 
+/** Safe filename for a roster step CSV download (from step_id). */
+function rosterStepCsvDownloadName(stepId: string): string {
+  const raw = (stepId || "roster_step").trim().replace(/[/\\]+/g, "_");
+  const base = raw.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "") || "roster_step";
+  return base.toLowerCase().endsWith(".csv") ? base : `${base}.csv`;
+}
+
 /** Render roster step outputs as collapsible sections (collapsed by default). */
 function renderRosterStepOutputs(stepOutputs: RosterStepOutput[]): HTMLElement {
   const wrap = document.createElement("div");
@@ -1671,7 +1719,11 @@ function renderRosterStepOutputs(stepOutputs: RosterStepOutput[]): HTMLElement {
   header.setAttribute("aria-expanded", "false");
   const headerTitle = document.createElement("span");
   headerTitle.className = "roster-step-outputs-title";
-  headerTitle.textContent = "Step outputs (for validation)";
+  const onlyLoc =
+    stepOutputs.length === 1 && (stepOutputs[0].step_id || "").trim() === "find_locations";
+  headerTitle.textContent = onlyLoc
+    ? "Practice locations (expand for full list)"
+    : "Step outputs (for validation)";
   const headerChevron = document.createElement("span");
   headerChevron.className = "roster-step-outputs-chevron";
   headerChevron.textContent = "▶";
@@ -1732,6 +1784,27 @@ function renderRosterStepOutputs(stepOutputs: RosterStepOutput[]): HTMLElement {
       pre.className = "roster-step-csv";
       pre.textContent = step.csv_content || "(no data)";
       sectionBody.appendChild(pre);
+      const csvRaw = (step.csv_content || "").trim();
+      if (csvRaw.length > 0) {
+        const csvBtn = document.createElement("button");
+        csvBtn.type = "button";
+        csvBtn.className = "roster-step-download-csv";
+        csvBtn.textContent = "Download CSV";
+        csvBtn.setAttribute(
+          "aria-label",
+          `Download ${rosterStepCsvDownloadName(step.step_id || step.label || "step")}`,
+        );
+        csvBtn.addEventListener("click", () => {
+          const blob = new Blob([step.csv_content || ""], { type: "text/csv;charset=utf-8" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = rosterStepCsvDownloadName(step.step_id || step.label || "step");
+          a.click();
+          URL.revokeObjectURL(url);
+        });
+        sectionBody.appendChild(csvBtn);
+      }
     }
 
     sectionHeader.addEventListener("click", () => {
@@ -1768,18 +1841,53 @@ function renderRosterStepOutputs(stepOutputs: RosterStepOutput[]): HTMLElement {
   return wrap;
 }
 
+function workflowFollowUpsDraftToLines(raw: unknown): string {
+  if (!Array.isArray(raw)) return "";
+  const lines: string[] = [];
+  for (const x of raw) {
+    if (typeof x === "string" && x.trim()) lines.push(x.trim());
+    else if (x && typeof x === "object" && typeof (x as Record<string, unknown>).text === "string") {
+      const t = String((x as Record<string, unknown>).text).trim();
+      if (t) lines.push(t);
+    }
+  }
+  return lines.join("\n");
+}
+
+function parseFollowUpLines(text: string): string[] {
+  return text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+}
+
+/** Omit workflow fields from main JSON editor (separate textarea). */
+function draftJsonForTextarea(draft: Record<string, unknown> | null | undefined): string {
+  const d = draft && typeof draft === "object" ? { ...draft } : {};
+  delete d.workflow_follow_ups;
+  delete d.workflow_follow_ups_hint;
+  return JSON.stringify(d, null, 2);
+}
+
+function attachWorkflowFromDraft(base: Record<string, unknown>, draft: Record<string, unknown>): Record<string, unknown> {
+  const wf = draft.workflow_follow_ups;
+  if (Array.isArray(wf) && wf.length > 0) {
+    return { ...base, workflow_follow_ups: wf };
+  }
+  return base;
+}
+
 function draftToValidatedOutput(
   draft: Record<string, unknown> | null | undefined,
   stepId: string
 ): Record<string, unknown> {
   const d = draft && typeof draft === "object" ? draft : {};
+  let result: Record<string, unknown> = {};
   if (stepId === "identify_org" && Array.isArray(d.org_npis)) {
-    return { org_npis: d.org_npis };
-  }
-  if (stepId === "find_locations" && Array.isArray(d.locations)) {
-    return { locations: d.locations };
-  }
-  if (stepId === "find_associated_providers") {
+    result = { org_npis: d.org_npis };
+  } else if (stepId === "find_locations" && Array.isArray(d.locations)) {
+    result = { locations: d.locations };
+  } else if (stepId === "find_associated_providers") {
     const out: Record<string, unknown> = {};
     if (d.associated_providers && typeof d.associated_providers === "object") {
       out.associated_providers = d.associated_providers;
@@ -1787,9 +1895,309 @@ function draftToValidatedOutput(
     if (d.active_roster && typeof d.active_roster === "object") {
       out.active_roster = d.active_roster;
     }
-    return out;
+    if (d.use_autopilot_active_cutoff === true) {
+      out.use_autopilot_active_cutoff = true;
+    }
+    if (d.allow_empty_active_roster === true) {
+      out.allow_empty_active_roster = true;
+    }
+    if (Array.isArray(d.roster_line_items)) {
+      out.roster_line_items = d.roster_line_items;
+    }
+    result = out;
   }
-  return {};
+  return attachWorkflowFromDraft(result, d as Record<string, unknown>);
+}
+
+function appendCredentialingWorkflowByStepSection(wrap: HTMLElement, cc: CredentialingCopilotPayload): void {
+  const rows = cc.workflow_follow_ups_by_step;
+  if (!Array.isArray(rows) || rows.length === 0) return;
+  const lines: string[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const sid = String(row.step_id ?? "").trim();
+    const wfu = row.workflow_follow_ups;
+    if (!Array.isArray(wfu) || wfu.length === 0) continue;
+    for (const item of wfu) {
+      if (item && typeof item === "object" && typeof (item as Record<string, unknown>).text === "string") {
+        const src = String((item as Record<string, unknown>).source ?? "").trim();
+        const tag = src ? ` [${src}]` : "";
+        lines.push(`${sid}: ${String((item as Record<string, unknown>).text)}${tag}`);
+      }
+    }
+  }
+  if (!lines.length) return;
+  const det = document.createElement("details");
+  det.className = "credentialing-copilot-gates";
+  const sum = document.createElement("summary");
+  sum.textContent = "Workflow follow-ups by step";
+  det.appendChild(sum);
+  const ul = document.createElement("ul");
+  ul.className = "credentialing-copilot-gates-list";
+  for (const ln of lines.slice(0, 80)) {
+    const li = document.createElement("li");
+    li.textContent = ln;
+    ul.appendChild(li);
+  }
+  det.appendChild(ul);
+  wrap.appendChild(det);
+}
+
+type AssocProviderRow = Record<string, unknown>;
+
+/** Build active_roster map from per-location NPI checkboxes (copilot confirm). */
+function buildActiveRosterFromPicks(
+  associated: Record<string, AssocProviderRow[]>,
+  picked: Map<string, Set<string>>
+): Record<string, AssocProviderRow[]> {
+  const out: Record<string, AssocProviderRow[]> = {};
+  for (const [locId, rows] of Object.entries(associated)) {
+    const want = picked.get(locId);
+    const acc: AssocProviderRow[] = [];
+    for (const r of rows || []) {
+      const npi = String(r.npi ?? "")
+        .trim()
+        .padStart(10, "0");
+      if (!npi || npi.length !== 10) continue;
+      if (want?.has(npi)) {
+        const c = { ...r };
+        c.roster_status = "active";
+        acc.push(c);
+      }
+    }
+    out[locId] = acc;
+  }
+  return out;
+}
+
+/** Roster review UI for find_associated_providers: checkboxes + sync JSON textarea. */
+function renderFindAssociatedRosterEditor(
+  draft: Record<string, unknown>,
+  ta: HTMLTextAreaElement
+): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "roster-review-editor";
+
+  const assoc = (draft.associated_providers || {}) as Record<string, AssocProviderRow[]>;
+  const cutoff = Number(draft.active_roster_cutoff ?? 50) || 50;
+  const picked = new Map<string, Set<string>>();
+
+  const syncTextarea = (flags?: { useCutoff?: boolean; allowEmpty?: boolean }) => {
+    const active = buildActiveRosterFromPicks(assoc, picked);
+    const payload: Record<string, unknown> = {
+      associated_providers: assoc,
+      active_roster: active,
+    };
+    if (flags?.useCutoff) payload.use_autopilot_active_cutoff = true;
+    if (flags?.allowEmpty) payload.allow_empty_active_roster = true;
+    ta.value = JSON.stringify(payload, null, 2);
+  };
+
+  const intro = document.createElement("p");
+  intro.className = "roster-review-intro";
+  intro.textContent =
+    "Select providers to include in the active panel for downstream steps. In copilot mode the server starts with evidence only; your selection becomes active_roster on Continue.";
+  wrap.appendChild(intro);
+
+  for (const [locId, rows] of Object.entries(assoc)) {
+    if (!rows?.length) continue;
+    const sec = document.createElement("div");
+    sec.className = "roster-review-location";
+
+    const h = document.createElement("div");
+    h.className = "roster-review-location-title";
+    h.textContent = `Location ${locId.slice(0, 12)}… (${rows.length} candidates)`;
+    sec.appendChild(h);
+
+    const tbl = document.createElement("table");
+    tbl.className = "roster-review-table";
+    const thead = document.createElement("thead");
+    thead.innerHTML =
+      "<tr><th>Active</th><th>NPI</th><th>Name</th><th>Score</th><th>Basis</th><th>Status</th></tr>";
+    tbl.appendChild(thead);
+    const tb = document.createElement("tbody");
+    const setForLoc = new Set<string>();
+    picked.set(locId, setForLoc);
+
+    for (const r of rows) {
+      const npi = String(r.npi ?? "")
+        .trim()
+        .padStart(10, "0");
+      if (npi.length !== 10) continue;
+      const score = Number(r.association_likelihood ?? 0);
+      const rs = String(r.roster_status ?? "");
+      const defaultOn = rs === "active" || (rs === "pending_review" && score >= cutoff);
+      if (defaultOn) setForLoc.add(npi);
+
+      const tr = document.createElement("tr");
+      const td0 = document.createElement("td");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = defaultOn;
+      cb.addEventListener("change", () => {
+        if (cb.checked) setForLoc.add(npi);
+        else setForLoc.delete(npi);
+        syncTextarea();
+      });
+      td0.appendChild(cb);
+      tr.appendChild(td0);
+      const tdNpi = document.createElement("td");
+      tdNpi.textContent = npi;
+      tr.appendChild(tdNpi);
+      const tdName = document.createElement("td");
+      tdName.textContent = String(r.name ?? "");
+      tr.appendChild(tdName);
+      const tdSc = document.createElement("td");
+      tdSc.textContent = String(score);
+      tr.appendChild(tdSc);
+      const tdBasis = document.createElement("td");
+      tdBasis.textContent = String(r.basis_user ?? r.match_type ?? "");
+      tr.appendChild(tdBasis);
+      const tdSt = document.createElement("td");
+      tdSt.textContent = rs || "—";
+      tr.appendChild(tdSt);
+      tb.appendChild(tr);
+    }
+    tbl.appendChild(tb);
+    sec.appendChild(tbl);
+    wrap.appendChild(sec);
+  }
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "roster-review-toolbar";
+
+  const btnCutoff = document.createElement("button");
+  btnCutoff.type = "button";
+  btnCutoff.className = "credentialing-copilot-btn credentialing-copilot-btn--secondary";
+  btnCutoff.textContent = `Check all with score ≥ ${cutoff}`;
+  btnCutoff.addEventListener("click", () => {
+    for (const [locId, rows] of Object.entries(assoc)) {
+      const setForLoc = picked.get(locId);
+      if (!setForLoc) continue;
+      setForLoc.clear();
+      for (const r of rows || []) {
+        const npi = String(r.npi ?? "")
+          .trim()
+          .padStart(10, "0");
+        if (npi.length !== 10) continue;
+        const score = Number(r.association_likelihood ?? 0);
+        if (score >= cutoff) setForLoc.add(npi);
+      }
+    }
+    wrap.querySelectorAll("tbody tr").forEach((tr) => {
+      const tds = tr.querySelectorAll("td");
+      const cb = tds[0]?.querySelector("input") as HTMLInputElement | undefined;
+      const sc = Number(tds[3]?.textContent ?? "");
+      if (cb) cb.checked = sc >= cutoff;
+    });
+    syncTextarea();
+  });
+
+  const btnAll = document.createElement("button");
+  btnAll.type = "button";
+  btnAll.className = "credentialing-copilot-btn credentialing-copilot-btn--secondary";
+  btnAll.textContent = "Check all candidates";
+  btnAll.addEventListener("click", () => {
+    for (const [locId, rows] of Object.entries(assoc)) {
+      const setForLoc = picked.get(locId);
+      if (!setForLoc) continue;
+      setForLoc.clear();
+      for (const r of rows || []) {
+        const npi = String(r.npi ?? "")
+          .trim()
+          .padStart(10, "0");
+        if (npi.length === 10) setForLoc.add(npi);
+      }
+    }
+    wrap.querySelectorAll<HTMLInputElement>("input[type=checkbox]").forEach((cb) => {
+      cb.checked = true;
+    });
+    syncTextarea();
+  });
+
+  const btnNone = document.createElement("button");
+  btnNone.type = "button";
+  btnNone.className = "credentialing-copilot-btn credentialing-copilot-btn--secondary";
+  btnNone.textContent = "Clear all";
+  btnNone.addEventListener("click", () => {
+    picked.forEach((s) => s.clear());
+    wrap.querySelectorAll<HTMLInputElement>("input[type=checkbox]").forEach((cb) => {
+      cb.checked = false;
+    });
+    syncTextarea();
+  });
+
+  toolbar.appendChild(btnCutoff);
+  toolbar.appendChild(btnAll);
+  toolbar.appendChild(btnNone);
+  wrap.appendChild(toolbar);
+
+  syncTextarea();
+  return wrap;
+}
+
+function appendCredentialingPrerequisitesSection(wrap: HTMLElement, cc: CredentialingCopilotPayload): void {
+  const pr = cc.credentialing_prerequisites;
+  if (!pr || typeof pr !== "object") return;
+  const recs = Array.isArray(pr.recommendations)
+    ? pr.recommendations.filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+    : [];
+  const det = document.createElement("details");
+  det.className = "credentialing-copilot-env";
+  const sum = document.createElement("summary");
+  sum.textContent = "Environment — what you need to run this";
+  det.appendChild(sum);
+  const body = document.createElement("div");
+  body.className = "credentialing-copilot-env-body";
+  if (recs.length) {
+    const ul = document.createElement("ul");
+    for (const r of recs) {
+      const li = document.createElement("li");
+      li.textContent = r;
+      ul.appendChild(li);
+    }
+    body.appendChild(ul);
+  } else {
+    const ok = document.createElement("p");
+    ok.className = "credentialing-copilot-env-ok";
+    if (pr.ready_for_persisted_copilot_runs) {
+      ok.textContent =
+        "Roster skill URL and chat database look configured; co-pilot runs should persist across API and worker.";
+    } else if (pr.ready_for_credentialing_api) {
+      ok.textContent =
+        "Roster skill URL is set. Add CHAT_RAG_DATABASE_URL (or RAG_DATABASE_URL) if you need persistence and DB-backed assertions.";
+    } else {
+      ok.textContent = "Set CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL before org/location/provider steps can call the skill API.";
+    }
+    body.appendChild(ok);
+  }
+  det.appendChild(body);
+  wrap.appendChild(det);
+}
+
+function appendCredentialingGateTimeline(wrap: HTMLElement, cc: CredentialingCopilotPayload): void {
+  const evs = cc.gate_events;
+  if (!Array.isArray(evs) || evs.length === 0) return;
+  const det = document.createElement("details");
+  det.className = "credentialing-copilot-gates";
+  const sum = document.createElement("summary");
+  sum.textContent = `Recent credentialing gates (${evs.length})`;
+  det.appendChild(sum);
+  const ol = document.createElement("ol");
+  ol.className = "credentialing-copilot-gates-list";
+  for (const raw of evs) {
+    if (!raw || typeof raw !== "object") continue;
+    const o = raw as Record<string, unknown>;
+    const li = document.createElement("li");
+    const sid = String(o.step_id ?? "").trim();
+    const code = String(o.reason_code ?? "").trim();
+    const detail = String(o.detail ?? "").trim();
+    const head = [sid, code].filter(Boolean).join(" — ");
+    li.textContent = head ? (detail ? `${head}. ${detail}` : head) : detail || "(gate)";
+    ol.appendChild(li);
+  }
+  det.appendChild(ol);
+  wrap.appendChild(det);
 }
 
 /** Co-pilot credentialing: edit draft JSON or accept as-is, POST /chat/credentialing-runs/.../validate */
@@ -1809,6 +2217,10 @@ function renderCredentialingCopilotPanel(
   meta.className = "credentialing-copilot-meta";
   meta.textContent = `${cc.org_name || "—"} · run ${cc.run_id.slice(0, 8)}… · ${cc.phase || "—"}`;
   wrap.appendChild(meta);
+
+  appendCredentialingPrerequisitesSection(wrap, cc);
+  appendCredentialingGateTimeline(wrap, cc);
+  appendCredentialingWorkflowByStepSection(wrap, cc);
 
   if (cc.phase === "complete") {
     const done = document.createElement("div");
@@ -1834,11 +2246,34 @@ function renderCredentialingCopilotPanel(
 
   const ta = document.createElement("textarea");
   ta.className = "credentialing-copilot-json";
-  ta.rows = 12;
+  ta.rows = pending === "find_associated_providers" ? 6 : 12;
   ta.spellcheck = false;
-  ta.value = JSON.stringify(cc.draft_output ?? {}, null, 2);
+  ta.value = draftJsonForTextarea(cc.draft_output ?? undefined);
   ta.setAttribute("aria-label", "Validated output JSON for this step");
+
+  if (pending === "find_associated_providers") {
+    wrap.appendChild(
+      renderFindAssociatedRosterEditor((cc.draft_output ?? {}) as Record<string, unknown>, ta)
+    );
+  }
+
   wrap.appendChild(ta);
+
+  const followHint = document.createElement("div");
+  followHint.className = "credentialing-copilot-meta";
+  const hintText = String((cc.draft_output as { workflow_follow_ups_hint?: string } | null)?.workflow_follow_ups_hint ?? "").trim();
+  followHint.textContent =
+    hintText ||
+    "Follow-up / next steps (optional, one per line) — stored on this step when you continue.";
+  wrap.appendChild(followHint);
+
+  const followTa = document.createElement("textarea");
+  followTa.className = "credentialing-copilot-json credentialing-copilot-followups";
+  followTa.rows = 3;
+  followTa.spellcheck = false;
+  followTa.value = workflowFollowUpsDraftToLines(cc.draft_output?.workflow_follow_ups);
+  followTa.setAttribute("aria-label", "Workflow follow-up lines for this step");
+  wrap.appendChild(followTa);
 
   const btnRow = document.createElement("div");
   btnRow.className = "credentialing-copilot-actions";
@@ -1848,7 +2283,8 @@ function renderCredentialingCopilotPanel(
   acceptBtn.className = "credentialing-copilot-btn credentialing-copilot-btn--secondary";
   acceptBtn.textContent = "Accept draft as-is";
   acceptBtn.addEventListener("click", () => {
-    ta.value = JSON.stringify(cc.draft_output ?? {}, null, 2);
+    ta.value = draftJsonForTextarea(cc.draft_output ?? undefined);
+    followTa.value = workflowFollowUpsDraftToLines(cc.draft_output?.workflow_follow_ups);
   });
 
   const submitBtn = document.createElement("button");
@@ -1863,6 +2299,8 @@ function renderCredentialingCopilotPanel(
       alert("Invalid JSON — fix the textarea or use Accept draft as-is.");
       return;
     }
+    const fuLines = parseFollowUpLines(followTa.value);
+    if (fuLines.length) validated.workflow_follow_ups = fuLines;
     submitBtn.disabled = true;
     acceptBtn.disabled = true;
     try {
@@ -1892,6 +2330,20 @@ function renderCredentialingCopilotPanel(
         mode: data.mode || "copilot",
         org_name: data.org_name ?? cc.org_name,
         final_report_text: data.final_report_text,
+        gate_events: Array.isArray(data.gate_events) ? (data.gate_events as Array<Record<string, unknown>>) : cc.gate_events,
+        last_gate_event:
+          data.last_gate_event && typeof data.last_gate_event === "object"
+            ? (data.last_gate_event as Record<string, unknown>)
+            : data.last_gate_event === null
+              ? null
+              : cc.last_gate_event,
+        credentialing_prerequisites:
+          data.credentialing_prerequisites && typeof data.credentialing_prerequisites === "object"
+            ? (data.credentialing_prerequisites as CredentialingPrerequisitesStatus)
+            : cc.credentialing_prerequisites,
+        workflow_follow_ups_by_step: Array.isArray(data.workflow_follow_ups_by_step)
+          ? (data.workflow_follow_ups_by_step as CredentialingWorkflowStepRow[])
+          : cc.workflow_follow_ups_by_step,
       };
       const parent = wrap.parentElement;
       const replacement = renderCredentialingCopilotPanel(next, threadId);
@@ -1909,7 +2361,9 @@ function renderCredentialingCopilotPanel(
   quickAccept.textContent = "Use curated fields only (recommended)";
   quickAccept.addEventListener("click", () => {
     const vo = draftToValidatedOutput(cc.draft_output ?? undefined, pending);
-    ta.value = JSON.stringify(Object.keys(vo).length ? vo : {}, null, 2);
+    const merged = { ...(cc.draft_output ?? {}), ...vo };
+    ta.value = draftJsonForTextarea(merged);
+    followTa.value = workflowFollowUpsDraftToLines(merged.workflow_follow_ups);
   });
 
   btnRow.appendChild(quickAccept);
@@ -1928,13 +2382,20 @@ function renderCredentialingCopilotPanel(
 }
 
 /** Render report download block: PDF and/or Markdown with icons. Shown when either is present. */
-function renderRosterReportDownload(pdfBase64?: string | null, reportMarkdown?: string | null): HTMLElement {
+function renderRosterReportDownload(
+  pdfBase64?: string | null,
+  reportMarkdown?: string | null,
+  attachmentsKind?: "reconciliation" | "credentialing" | null,
+): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "roster-report-download";
 
   const title = document.createElement("div");
   title.className = "roster-report-download-title";
-  title.textContent = "Report";
+  title.textContent =
+    attachmentsKind === "reconciliation"
+      ? "Roster alignment with NPPES (Phase 1)"
+      : "Credentialing report";
   wrap.appendChild(title);
 
   const btns = document.createElement("div");
@@ -1950,6 +2411,11 @@ function renderRosterReportDownload(pdfBase64?: string | null, reportMarkdown?: 
     return svg;
   };
 
+  const pdfName =
+    attachmentsKind === "reconciliation" ? "roster_reconciliation_report.pdf" : "credentialing_report.pdf";
+  const mdName =
+    attachmentsKind === "reconciliation" ? "roster_reconciliation_report.md" : "credentialing_report.md";
+
   if (pdfBase64 && typeof pdfBase64 === "string" && pdfBase64.length > 0) {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -1963,7 +2429,7 @@ function renderRosterReportDownload(pdfBase64?: string | null, reportMarkdown?: 
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = "credentialing_report.pdf";
+        a.download = pdfName;
         a.click();
         URL.revokeObjectURL(url);
       } catch (e) {
@@ -1984,7 +2450,7 @@ function renderRosterReportDownload(pdfBase64?: string | null, reportMarkdown?: 
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "credentialing_report.md";
+      a.download = mdName;
       a.click();
       URL.revokeObjectURL(url);
     });
@@ -2022,38 +2488,88 @@ function parseMessageAndSources(fullMessage: string): {
   return { body, sources };
 }
 
+/** First streamed assistant text that is not JSON placeholder → Answering phase. */
+function thinkingStreamSuggestsAnswering(raw: string): boolean {
+  const t = (raw ?? "").trim();
+  const sanitized = sanitizeDisplayMessage(raw);
+  const display = t.startsWith("{") ? "Formatting answer…" : normalizeMessageText(sanitized);
+  return display.trim().length > 0 && display !== "Formatting answer…";
+}
+
 /** Reusable: user message bubble (right-aligned). */
-function renderUserMessage(text: string): HTMLElement {
+const MODE_LABELS: Record<string, string> = {
+  quick:   "⚡ Fast",
+  copilot: "◉ Normal",
+  agentic: "✦ Thinking",
+};
+
+function renderUserMessage(text: string, mode?: string): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "message message--user";
   const bubble = document.createElement("div");
   bubble.className = "message-bubble";
   bubble.textContent = text;
   wrap.appendChild(bubble);
+  if (mode && MODE_LABELS[mode]) {
+    const badge = document.createElement("div");
+    badge.className = "msg-mode-badge";
+    badge.textContent = MODE_LABELS[mode];
+    wrap.appendChild(badge);
+  }
   return wrap;
 }
 
 /** Reusable: compact thinking line – streams in one line, collapses to summary when done.
- * Body shows max 3 lines, scrolls so last line is visible; auto-scrolls on each addLine. */
+ * Request phase (Queued → Working → Answering → Done) lives in the preview row with the pulsing dot — no separate rail.
+ * Body shows emit lines; auto-scrolls on each addLine. */
 function renderThinkingBlock(
   initialLines: string[],
   opts?: { onExpand?: () => void }
-): { el: HTMLElement; setPreview: (text: string) => void; addLine: (line: string) => void; done: (lineCount: number) => void } {
+): {
+  el: HTMLElement;
+  setPreview: (text: string) => void;
+  addLine: (line: string) => void;
+  done: (lineCount: number) => void;
+  onRequestCorrelationId: () => void;
+  onRequestStreamChunk: (accumulatedRaw: string) => void;
+  markRequestFailed: () => void;
+} {
   const block = document.createElement("div");
   block.className = "thinking-block thinking-block--compact" + (initialLines.length ? "" : " collapsed");
+  block.setAttribute("aria-busy", "true");
 
   const preview = document.createElement("div");
   preview.className = "thinking-preview";
   preview.setAttribute("role", "button");
   preview.setAttribute("tabindex", "0");
   preview.setAttribute("aria-expanded", initialLines.length > 0 ? "true" : "false");
-  const word = document.createElement("span");
-  word.className = "thinking-word";
-  word.textContent = "Thinking";
+
+  const phaseRow = document.createElement("span");
+  phaseRow.className = "thinking-phase thinking-phase--live";
+  phaseRow.setAttribute("aria-hidden", "true");
+  const phaseDot = document.createElement("span");
+  phaseDot.className = "thinking-phase-dot";
+  const phaseLabel = document.createElement("span");
+  phaseLabel.className = "thinking-phase-label";
+  phaseLabel.textContent = "Queued";
+  phaseRow.appendChild(phaseDot);
+  phaseRow.appendChild(phaseLabel);
+
+  const statusWord = document.createElement("span");
+  statusWord.className = "thinking-word";
+  statusWord.textContent = "Thinking";
+
   const lineEl = document.createElement("span");
   lineEl.className = "thinking-rule";
-  preview.appendChild(word);
+
+  preview.appendChild(phaseRow);
+  preview.appendChild(statusWord);
   preview.appendChild(lineEl);
+
+  const announcer = document.createElement("span");
+  announcer.className = "thinking-phase-announcer";
+  announcer.setAttribute("aria-live", "polite");
+  announcer.setAttribute("aria-atomic", "true");
 
   const body = document.createElement("div");
   body.className = "thinking-body";
@@ -2063,6 +2579,48 @@ function renderThinkingBlock(
     div.textContent = line;
     body.appendChild(div);
   });
+
+  let lastStatusLine = "";
+  let requestPhase: 0 | 1 | 2 | 3 = 0;
+  let failedRequest = false;
+
+  const PHASE_ARIA = [
+    "Request queued",
+    "Working on your request",
+    "Composing answer",
+    "Complete",
+  ] as const;
+
+  function announcePhase(): void {
+    if (failedRequest) {
+      announcer.textContent = "Request ended with an error";
+      return;
+    }
+    announcer.textContent = PHASE_ARIA[Math.min(requestPhase, 3)] ?? "";
+  }
+
+  function syncPhaseRow(): void {
+    phaseRow.classList.remove("thinking-phase--live", "thinking-phase--done", "thinking-phase--error");
+    if (failedRequest) {
+      phaseRow.classList.add("thinking-phase--error");
+      phaseLabel.textContent = "Error";
+    } else if (requestPhase >= 3) {
+      phaseRow.classList.add("thinking-phase--done");
+      phaseLabel.textContent = "Done";
+    } else {
+      phaseRow.classList.add("thinking-phase--live");
+      const labels = ["Queued", "Working", "Answering"] as const;
+      phaseLabel.textContent = labels[Math.min(requestPhase, 2)] ?? "Queued";
+    }
+    announcePhase();
+  }
+
+  syncPhaseRow();
+
+  if (initialLines.length) {
+    lastStatusLine = initialLines[initialLines.length - 1] ?? "";
+    if (lastStatusLine) statusWord.textContent = thinkingFriendlyStatus(lastStatusLine);
+  }
 
   function collapse(): void {
     block.classList.add("collapsed");
@@ -2084,25 +2642,19 @@ function renderThinkingBlock(
   });
 
   block.appendChild(preview);
+  block.appendChild(announcer);
   block.appendChild(body);
-
-  let lastStatusLine = "";
 
   return {
     el: block,
     setPreview(text: string) {
-      preview.replaceChildren();
-      const w = document.createElement("span");
-      w.className = "thinking-word";
-      w.textContent = thinkingFriendlyStatus(text);
-      const r = document.createElement("span");
-      r.className = "thinking-rule";
-      preview.appendChild(w);
-      preview.appendChild(r);
+      lastStatusLine = text;
+      statusWord.textContent = thinkingFriendlyStatus(text);
+      syncPhaseRow();
     },
     addLine(line: string) {
       lastStatusLine = line;
-      word.textContent = thinkingFriendlyStatus(line);
+      statusWord.textContent = thinkingFriendlyStatus(line);
       const div = document.createElement("div");
       div.className = "thinking-line";
       div.textContent = line;
@@ -2112,11 +2664,31 @@ function renderThinkingBlock(
       body.scrollTop = body.scrollHeight;
     },
     done(_lineCount: number) {
-      word.textContent = lastStatusLine ? thinkingFriendlyStatus(lastStatusLine) : "Ready";
+      if (!failedRequest) requestPhase = 3;
+      syncPhaseRow();
+      statusWord.textContent = lastStatusLine ? thinkingFriendlyStatus(lastStatusLine) : "Ready";
+      block.setAttribute("aria-busy", "false");
       block.classList.add("thinking-block--done");
       setTimeout(() => {
         collapse();
       }, 2500);
+    },
+    onRequestCorrelationId(): void {
+      if (failedRequest || requestPhase >= 1) return;
+      requestPhase = 1;
+      syncPhaseRow();
+    },
+    onRequestStreamChunk(accumulatedRaw: string): void {
+      if (failedRequest || requestPhase >= 2) return;
+      if (thinkingStreamSuggestsAnswering(accumulatedRaw)) {
+        requestPhase = 2;
+        syncPhaseRow();
+      }
+    },
+    markRequestFailed(): void {
+      failedRequest = true;
+      block.setAttribute("aria-busy", "false");
+      syncPhaseRow();
     },
   };
 }
@@ -3820,6 +4392,9 @@ function run(): void {
     const alertsEl = document.getElementById("rosterReceiptAlerts");
     const nextEl = document.getElementById("rosterReceiptNext");
     const metaEl = document.getElementById("rosterReceiptMeta");
+    const pipelineWrap = document.getElementById("rosterReceiptPipelineWrap");
+    const pipelineSummaryEl = document.getElementById("rosterReceiptPipelineSummary");
+    const pipelineListEl = document.getElementById("rosterReceiptPipeline");
     if (!root || !headline || !sub || !checksEl || !alertsEl || !nextEl || !metaEl) return;
 
     const ack = data.acknowledgment;
@@ -3901,6 +4476,55 @@ function run(): void {
         .filter(([, v]) => typeof v === "number" && v > 0)
         .map(([k, v]) => `${k}: ${v}`);
       if (parts.length) addMeta("NPI match breakdown", parts.join(", "));
+    }
+
+    const pipe = data.pipeline_progress;
+    const stages = pipe?.stages;
+    if (
+      pipelineWrap &&
+      pipelineSummaryEl &&
+      pipelineListEl &&
+      Array.isArray(stages) &&
+      stages.length > 0
+    ) {
+      pipelineWrap.removeAttribute("hidden");
+      pipelineSummaryEl.textContent = (pipe.summary ?? "").trim() || "Pipeline status";
+      pipelineListEl.replaceChildren();
+      const cur = (pipe.current_stage_id ?? "").trim();
+      for (const s of stages) {
+        const li = document.createElement("li");
+        const isDone = Boolean(s.done);
+        li.className = isDone
+          ? "roster-receipt__pipeline--done"
+          : "roster-receipt__pipeline--pending";
+        if (!isDone && cur && s.id === cur) {
+          li.classList.add("roster-receipt__pipeline--current");
+        }
+        const lab = document.createElement("span");
+        lab.className = "roster-receipt__pipeline-stage";
+        lab.textContent = s.label || s.id;
+        const det = document.createElement("span");
+        det.className = "roster-receipt__pipeline-detail";
+        det.textContent = s.detail || "";
+        li.appendChild(lab);
+        li.appendChild(det);
+        pipelineListEl.appendChild(li);
+      }
+    } else {
+      pipelineWrap?.setAttribute("hidden", "");
+      pipelineSummaryEl?.replaceChildren();
+      pipelineListEl?.replaceChildren();
+    }
+
+    // Reconciliation UI deep-link
+    const rcWrap = document.getElementById("rosterReceiptReconciliationWrap");
+    const rcLink = document.getElementById("rosterReceiptReconciliationLink") as HTMLAnchorElement | null;
+    const rcUrlData = (data as RosterUploadResponse).reconciliation_ui_url;
+    if (rcWrap && rcLink && rcUrlData) {
+      rcLink.href = rcUrlData;
+      rcWrap.removeAttribute("hidden");
+    } else {
+      rcWrap?.setAttribute("hidden", "");
     }
 
     const details = root.querySelector("details");
@@ -4320,10 +4944,90 @@ function run(): void {
     filename?: string;
     purpose?: string;
     row_count?: number;
+    uploaded_at?: string | null;
+  }
+
+  type RosterThreadFreshnessApi = "fresh" | "stale" | "none";
+  type RosterThreadSignalVariant = RosterThreadFreshnessApi | "muted";
+
+  function normalizeRosterFreshness(raw: unknown): RosterThreadFreshnessApi {
+    const s = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+    if (s === "fresh" || s === "stale" || s === "none") return s;
+    return "none";
+  }
+
+  function formatRosterUploadInstant(iso: string | null | undefined): string {
+    if (!iso || typeof iso !== "string") return "";
+    try {
+      const d = new Date(iso.trim().replace(/Z$/, "+00:00"));
+      if (Number.isNaN(d.getTime())) return "";
+      return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+    } catch {
+      return "";
+    }
+  }
+
+  function rosterLatestRowPresent(row: ThreadUploadsRosterRow | null | undefined): boolean {
+    return !!(row && (row.upload_id || "").trim() && (row.org_id || "").trim());
+  }
+
+  function messageForRosterThreadSignal(
+    freshness: RosterThreadFreshnessApi,
+    latest: ThreadUploadsRosterRow | null | undefined,
+    thresholdDays: number
+  ): string {
+    const org = (latest?.org_name || "").trim();
+    const fn = (latest?.filename || "").trim();
+    const when = formatRosterUploadInstant(latest?.uploaded_at ?? undefined);
+    const th = thresholdDays > 0 ? thresholdDays : 14;
+
+    if (freshness === "none") {
+      return (
+        "No roster on this chat yet — upload one to compare your file against external data, " +
+        "or continue with outside-in Medicaid NPI."
+      );
+    }
+    if (freshness === "fresh") {
+      const parts = ["Recent roster on this chat"];
+      if (when) parts.push(`(${when})`);
+      if (org) parts.push(`— ${org}`);
+      parts.push("— you can run reconciliation without uploading again.");
+      return parts.join(" ");
+    }
+    if (!when) {
+      return (
+        `A roster is linked${org ? ` (${org})` : ""}` +
+        (fn ? ` — ${fn}` : "") +
+        ", but the upload date is missing — re-upload if the file may be outdated."
+      );
+    }
+    return (
+      `Last roster upload ${when}${org ? ` · ${org}` : ""} — older than ${th} days. ` +
+      "You can still use it or upload a newer file."
+    );
+  }
+
+  function setRosterThreadSignalBanner(
+    root: HTMLElement | null,
+    variant: RosterThreadSignalVariant,
+    text: string
+  ): void {
+    if (!root) return;
+    root.classList.remove(
+      "roster-thread-signal--fresh",
+      "roster-thread-signal--stale",
+      "roster-thread-signal--none",
+      "roster-thread-signal--muted"
+    );
+    root.classList.add(`roster-thread-signal--${variant}`);
+    const p = root.querySelector(".roster-thread-signal__text");
+    if (p) p.textContent = text;
+    root.removeAttribute("hidden");
   }
 
   function refreshCredentialingRosterUi(): void {
     const panel = document.getElementById("credentialingRosterPanel");
+    const signalEl = document.getElementById("credentialingRosterSignal");
     const titleEl = document.getElementById("credentialingRosterTitle");
     const listEl = document.getElementById("credentialingRosterList");
     const hintEl = document.getElementById("credentialingRosterHint");
@@ -4339,6 +5043,11 @@ function run(): void {
     const tid = (currentThreadId || "").trim();
     if (!tid) {
       panel.removeAttribute("hidden");
+      setRosterThreadSignalBanner(
+        signalEl,
+        "muted",
+        "No chat thread yet — send a message first so roster uploads can attach here. Until then we treat this as outside-in Medicaid NPI only."
+      );
       titleEl.textContent = "Roster files on this chat";
       listEl.innerHTML = "";
       listEl.setAttribute("hidden", "");
@@ -4359,6 +5068,9 @@ function run(): void {
             reconciliation_upload_id?: string | null;
             reconciliation_org_id?: string | null;
             reconciliation_org_name?: string | null;
+            latest_roster_reconciliation?: ThreadUploadsRosterRow | null;
+            roster_freshness?: string;
+            roster_fresh_days_threshold?: number;
           }>
       )
       .then((data) => {
@@ -4382,6 +5094,26 @@ function run(): void {
             rows = [{ upload_id: rup, org_id: rid, org_name: rn, filename: "", purpose: "roster_reconciliation" }];
           }
         }
+
+        const th =
+          typeof data.roster_fresh_days_threshold === "number" && data.roster_fresh_days_threshold > 0
+            ? data.roster_fresh_days_threshold
+            : 14;
+        let latestRow: ThreadUploadsRosterRow | null =
+          data.latest_roster_reconciliation && rosterLatestRowPresent(data.latest_roster_reconciliation)
+            ? data.latest_roster_reconciliation
+            : null;
+        if (!latestRow && rows.length > 0 && rosterLatestRowPresent(rows[0])) {
+          latestRow = rows[0];
+        }
+        const apiFresh = normalizeRosterFreshness(data.roster_freshness);
+        const effectiveFresh: RosterThreadFreshnessApi =
+          hasRoster && latestRow ? apiFresh : "none";
+        setRosterThreadSignalBanner(
+          signalEl,
+          effectiveFresh,
+          messageForRosterThreadSignal(effectiveFresh, latestRow, th)
+        );
 
         const recName = (data.reconciliation_org_name || "").trim();
         let classification: "matched" | "ambiguous" | "no_files" = "no_files";
@@ -4444,6 +5176,11 @@ function run(): void {
       })
       .catch(() => {
         panel.removeAttribute("hidden");
+        setRosterThreadSignalBanner(
+          signalEl,
+          "muted",
+          "Could not load roster status from the server — reconciliation vs outside-in still follows thread state when you run."
+        );
         titleEl.textContent = "Roster status";
         listEl.innerHTML = "";
         listEl.setAttribute("hidden", "");
@@ -4508,16 +5245,20 @@ function run(): void {
 
     if (chatEmpty) chatEmpty.classList.add("hidden");
 
+    // Read mode before rendering user message (badge depends on it)
+    const modeSelect = document.getElementById("composerMode") as HTMLSelectElement | null;
+    const selectedMode = (modeSelect?.value || localStorage.getItem("_mobiusChatMode") || "copilot") as "quick" | "copilot" | "agentic";
+
     messagesEl.querySelectorAll(".thinking-block").forEach((block) => {
       block.classList.add("collapsed");
       const p = block.querySelector(".thinking-preview");
       if (p) p.setAttribute("aria-expanded", "false");
     });
 
-    // 1. User message
+    // 1. User message; phase + pulse live in thinking preview row (see renderThinkingBlock).
     const turnWrap = document.createElement("div");
     turnWrap.className = "chat-turn";
-    turnWrap.appendChild(renderUserMessage(message));
+    turnWrap.appendChild(renderUserMessage(message, selectedMode));
     messagesEl.appendChild(turnWrap);
     scrollToBottom(messagesEl);
 
@@ -4528,7 +5269,14 @@ function run(): void {
 
     // 2. Thinking block (compact line, streams then collapses)
     const thinkingLines: string[] = [];
-    const { el: thinkingBlockEl, addLine: addThinkingLine, done: thinkingDone } = renderThinkingBlock(["Sending request…"]);
+    const {
+      el: thinkingBlockEl,
+      addLine: addThinkingLine,
+      done: thinkingDone,
+      onRequestCorrelationId,
+      onRequestStreamChunk,
+      markRequestFailed,
+    } = renderThinkingBlock(["Sending request…"]);
     turnWrap.appendChild(thinkingBlockEl);
     scrollToBottom(messagesEl);
 
@@ -4546,6 +5294,7 @@ function run(): void {
       return normalizeMessageText(text);
     }
     function onStreamingMessage(text: string): void {
+      onRequestStreamChunk(text);
       const display = streamingDisplayText(sanitizeDisplayMessage(text));
       if (!messageWrapEl) {
         messageWrapEl = renderAssistantMessage(display);
@@ -4562,18 +5311,18 @@ function run(): void {
       thread_id?: string;
       credentialing_options?: CredentialingOptionsPayload;
       use_react?: boolean;
-      chat_mode?: "copilot" | "agentic";
+      chat_mode?: "copilot" | "agentic" | "quick";
     } = { message };
     if (currentThreadId) payload.thread_id = currentThreadId;
     if (opts?.credentialing_options) {
       payload.credentialing_options = opts.credentialing_options;
     }
-    const agenticToggle = document.getElementById("composerAgentic") as HTMLInputElement | null;
-    payload.chat_mode = agenticToggle?.checked ? "agentic" : "copilot";
+    payload.chat_mode = selectedMode;
     if (opts?.use_react !== undefined) {
       payload.use_react = opts.use_react;
     } else {
-      if (agenticToggle && !agenticToggle.checked) {
+      // copilot uses the registry-first non-ReAct path; quick and agentic use ReAct
+      if (selectedMode === "copilot") {
         payload.use_react = false;
       }
     }
@@ -4587,6 +5336,9 @@ function run(): void {
       .then((data) => {
         if (data.thread_id) currentThreadId = data.thread_id;
         activeCorrelationId = data.correlation_id ?? "";
+        if ((data.correlation_id || "").trim()) {
+          onRequestCorrelationId();
+        }
         addThinkingLineAndScroll("Request sent. Waiting for worker…");
         return streamResponse(data.correlation_id, addThinkingLineAndScroll, onStreamingMessage);
       })
@@ -4748,8 +5500,14 @@ function run(): void {
         // 5b. Roster report download (PDF and/or Markdown)
         const pdfBase64 = data.roster_report_pdf_base64;
         const reportMarkdown = data.roster_report_final_md;
+        const attachmentsKind: "reconciliation" | "credentialing" | undefined =
+          data.roster_report_attachments_kind === "reconciliation"
+            ? "reconciliation"
+            : data.roster_report_attachments_kind === "credentialing"
+              ? "credentialing"
+              : undefined;
         if ((pdfBase64 && typeof pdfBase64 === "string" && pdfBase64.length > 0) || (reportMarkdown && typeof reportMarkdown === "string" && reportMarkdown.trim().length > 0)) {
-          turnWrap.appendChild(renderRosterReportDownload(pdfBase64, reportMarkdown));
+          turnWrap.appendChild(renderRosterReportDownload(pdfBase64, reportMarkdown, attachmentsKind));
         }
 
         // 6. Next questions block (only when NOT an AnswerCard – card renders them inside; envelope has its own chips)
@@ -4846,6 +5604,7 @@ function run(): void {
         scrollToBottom(messagesEl);
       })
       .catch((err: Error) => {
+        markRequestFailed();
         thinkingDone(thinkingLines.length);
         turnWrap.appendChild(
           renderAssistantMessage("Error: " + (err?.message ?? String(err)), true, {})
@@ -4882,6 +5641,7 @@ function run(): void {
     const form = document.getElementById("uploadForm");
     const st = document.getElementById("uploadStatus");
     const progressWrap = document.getElementById("uploadProgressWrap");
+    const uploadSig = document.getElementById("uploadRosterThreadSignal");
     form?.removeAttribute("aria-busy");
     modal?.classList.remove("upload-modal--busy");
     if (st) {
@@ -4892,6 +5652,54 @@ function run(): void {
     progressWrap?.setAttribute("hidden", "");
     modal?.removeAttribute("hidden");
     overlay?.classList.add("open");
+    const utid = (currentThreadId || "").trim();
+    if (!utid) {
+      setRosterThreadSignalBanner(
+        uploadSig,
+        "muted",
+        "Send a message first so this upload attaches to a chat thread."
+      );
+    } else {
+      setRosterThreadSignalBanner(uploadSig, "muted", "Checking roster on this chat…");
+      fetch(API_BASE + "/chat/thread/" + encodeURIComponent(utid) + "/uploads")
+        .then(
+          (r) =>
+            r.json() as Promise<{
+              roster_reconciliation_files?: ThreadUploadsRosterRow[];
+              latest_roster_reconciliation?: ThreadUploadsRosterRow | null;
+              roster_freshness?: string;
+              roster_fresh_days_threshold?: number;
+            }>
+        )
+        .then((data) => {
+          const th =
+            typeof data.roster_fresh_days_threshold === "number" && data.roster_fresh_days_threshold > 0
+              ? data.roster_fresh_days_threshold
+              : 14;
+          let latest: ThreadUploadsRosterRow | null =
+            data.latest_roster_reconciliation && rosterLatestRowPresent(data.latest_roster_reconciliation)
+              ? data.latest_roster_reconciliation
+              : null;
+          const rows = Array.isArray(data.roster_reconciliation_files) ? data.roster_reconciliation_files : [];
+          if (!latest && rows.length > 0 && rosterLatestRowPresent(rows[0])) {
+            latest = rows[0];
+          }
+          const apiF = normalizeRosterFreshness(data.roster_freshness);
+          const effective: RosterThreadFreshnessApi = rosterLatestRowPresent(latest) ? apiF : "none";
+          setRosterThreadSignalBanner(
+            uploadSig,
+            effective,
+            messageForRosterThreadSignal(effective, latest, th)
+          );
+        })
+        .catch(() => {
+          setRosterThreadSignalBanner(
+            uploadSig,
+            "muted",
+            "Could not check for an existing roster — you can still upload a file."
+          );
+        });
+    }
     (document.getElementById("uploadOrgName") as HTMLInputElement | null)?.focus();
   }
 
@@ -5297,6 +6105,45 @@ function run(): void {
   loadSidebarHistory();
 
   updateSendState();
+
+  // ── Skills modal ────────────────────────────────────────────────────────────
+  (function setupSkillsModal(): void {
+    const overlay = document.getElementById("skillsOverlay");
+    const modal = document.getElementById("skillsModal");
+
+    function openSkillsModal(): void {
+      overlay?.removeAttribute("hidden");
+      modal?.removeAttribute("hidden");
+    }
+
+    function closeSkillsModal(): void {
+      overlay?.setAttribute("hidden", "");
+      modal?.setAttribute("hidden", "");
+    }
+
+    // Sidebar entry points
+    document.getElementById("btnOpenSkillPipeline")?.addEventListener("click", () => {
+      closeSkillsModal();
+      const base = (window as Window & typeof globalThis & { API_BASE?: string }).API_BASE || window.location.origin;
+      window.open(base + "/pipeline", "_blank", "noopener");
+    });
+
+    // Close button
+    document.getElementById("skillsModalClose")?.addEventListener("click", closeSkillsModal);
+    overlay?.addEventListener("click", closeSkillsModal);
+
+    // "Open Pipeline" from skills modal card
+    document.getElementById("skillPipelineOpen")?.addEventListener("click", () => {
+      closeSkillsModal();
+      const base = (window as Window & typeof globalThis & { API_BASE?: string }).API_BASE || window.location.origin;
+      window.open(base + "/pipeline", "_blank", "noopener");
+    });
+
+    // Keyboard escape
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !modal?.hasAttribute("hidden")) closeSkillsModal();
+    });
+  })();
 }
 
 run();

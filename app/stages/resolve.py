@@ -159,6 +159,7 @@ def _answer_for_subquestion(
     skill_search_mode: str = "copilot",
     pipeline_ctx: Any | None = None,
     credentialing_options: dict[str, Any] | None = None,
+    chat_mode: str | None = None,
 ) -> tuple[str, LLMUsageDict | None, list[dict], str, int]:
     """Answer one subquestion with fallback cascade.
     Returns (answer, usage, sources, retrieval_signal, layer_used).
@@ -208,6 +209,7 @@ def _answer_for_subquestion(
             thread_id=thread_id,
             phi_detected=phi_detected,
             config_sha=config_sha,
+            mode=chat_mode,
         )
         is_valid, _ = validate_tool_result("RAG", None, answer_text, sources, signal, text)
         if is_valid:
@@ -458,6 +460,7 @@ def run_resolve(
                 skill_search_mode=getattr(ctx, "chat_mode", None) or "copilot",
                 pipeline_ctx=ctx,
                 credentialing_options=getattr(ctx, "credentialing_options", None),
+                chat_mode=getattr(ctx, "chat_mode", None),
             )
         if extra_out and extra_out.get("roster_step_outputs"):
             ctx.roster_step_outputs = extra_out["roster_step_outputs"]

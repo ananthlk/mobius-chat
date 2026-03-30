@@ -24,6 +24,9 @@ Hard constraints (technical only — not quality assumptions):
   - stage phi_detector → only models with phi_detector in eligible_stages (prompt-guard)
   - planner + ReAct reasoning pool (react_*) → spec_context_k >= MIN_PLANNER_CONTEXT_K
   - gemini-2.0-flash-lite & similar → CHEAP_STAGES only (context too small for open routing)
+  - mode=copilot (chat) → Thompson pool excludes heavy ``benchmark_category`` values
+    (``frontier_reasoning``, ``open_large``); only faster tiers compete (Flash-class, groq_fast, open_mid, etc.).
+    mode=agentic or omitted → no extra category filter (legacy scripts omit ``mode``).
 
 Reasoning-capable models get CORE_REASONING_STAGES (planner through adjudicator); credentialing skill +
 roster-heavy integrator are Vertex Gemini–only; priors + PG
@@ -81,6 +84,7 @@ _COMPOSITE_LAT_CAP_MS_BY_BUCKET: dict[str, float] = {
     "phi_detector": 5000.0,
     "adjudicator": 40000.0,
     "credentialing": 120000.0,
+    "roster_clean":  10000.0,   # fast batch classification, should be < 10s
 }
 
 _COMPOSITE_COST_CAP_USD_BY_BUCKET: dict[str, float] = {
@@ -100,6 +104,7 @@ _COMPOSITE_COST_CAP_USD_BY_BUCKET: dict[str, float] = {
     "phi_detector": 0.001,
     "adjudicator": 0.035,
     "credentialing": 0.20,
+    "roster_clean":  0.004,  # ~300 names, flash-class models
 }
 
 
@@ -362,6 +367,22 @@ GROQ_MODEL_IDS_EXCLUDE_PLANNER_REACT: frozenset[str] = frozenset(
     }
 )
 
+# Thompson sampling: copilot chat mode must not draw frontier / large reasoning models.
+COPILOT_EXCLUDED_THOMPSON_BENCHMARK_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "frontier_reasoning",
+        "open_large",
+    }
+)
+COPILOT_ALLOWED_THOMPSON_FALLBACK_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "frontier_fast",
+        "tiny_classifier",
+        "groq_fast",
+        "open_mid",
+    }
+)
+
 
 # ── BENCHMARK PRIORS ─────────────────────────────────────────────────────────
 # Each model uses its benchmark (ema_quality) as prior mean, not a constant.
@@ -497,6 +518,11 @@ def integrator_llm_stage(ctx: Any) -> str:
 CHEAP_STAGES = ["badge", "classifier", "critique", "adjudicator"]
 PHI_SAFE_STAGES = ["phi_detector"]
 
+# roster_clean: lightweight batch classification (junk-row detection).
+# Fast/flash models only — no frontier reasoning models needed here.
+ROSTER_CLEAN_STAGE = "roster_clean"
+FAST_ONLY_STAGES = list(CHEAP_STAGES) + [ROSTER_CLEAN_STAGE]
+
 MODEL_ROSTER: dict[str, ModelSpec] = {
 
     # ── GOOGLE VERTEX (BAA eligible — already configured) ────────────────────
@@ -524,7 +550,7 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         display_name="Gemini 2.5 Flash",
         enabled=True,
         hipaa_eligible=True,
-        eligible_stages=vertex_roster_eligible_stages(),
+        eligible_stages=vertex_roster_eligible_stages() + [ROSTER_CLEAN_STAGE],
         spec_tokens_per_sec=300.0,
         spec_context_k=1000,
         spec_input_per_1m_usd=0.075,
@@ -541,7 +567,7 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         display_name="Gemini 2.0 Flash Lite",
         enabled=True,
         hipaa_eligible=True,
-        eligible_stages=CHEAP_STAGES,
+        eligible_stages=FAST_ONLY_STAGES,
         spec_tokens_per_sec=500.0,
         spec_context_k=32,
         spec_input_per_1m_usd=0.018,
@@ -560,7 +586,7 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         display_name="Llama 3.3 70B (Groq)",
         enabled=False,                             # enable when GROQ_API_KEY set
         hipaa_eligible=False,                      # no Groq BAA
-        eligible_stages=list(CORE_REASONING_STAGES),
+        eligible_stages=list(CORE_REASONING_STAGES) + [ROSTER_CLEAN_STAGE],
         spec_tokens_per_sec=280.0,
         spec_context_k=131,
         spec_input_per_1m_usd=0.59,
@@ -577,7 +603,7 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         display_name="Llama 3.1 8B Instant (Groq)",
         enabled=False,
         hipaa_eligible=False,
-        eligible_stages=list(CORE_REASONING_STAGES),
+        eligible_stages=list(CORE_REASONING_STAGES) + [ROSTER_CLEAN_STAGE],
         spec_tokens_per_sec=560.0,
         spec_context_k=131,
         spec_input_per_1m_usd=0.05,
@@ -611,7 +637,7 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         display_name="GPT OSS 20B (Groq)",
         enabled=False,
         hipaa_eligible=False,
-        eligible_stages=list(CORE_REASONING_STAGES),
+        eligible_stages=list(CORE_REASONING_STAGES) + [ROSTER_CLEAN_STAGE],
         spec_tokens_per_sec=1000.0,              # 1000 t/s — fastest on roster
         spec_context_k=131,
         spec_input_per_1m_usd=0.075,
@@ -645,7 +671,7 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         display_name="Llama 4 Scout 17B (Groq) — preview",
         enabled=False,
         hipaa_eligible=False,
-        eligible_stages=list(CORE_REASONING_STAGES),
+        eligible_stages=list(CORE_REASONING_STAGES) + [ROSTER_CLEAN_STAGE],
         spec_tokens_per_sec=750.0,
         spec_context_k=131,
         spec_input_per_1m_usd=0.11,
@@ -699,7 +725,7 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         display_name="Claude Haiku 4.5",
         enabled=False,
         hipaa_eligible=False,
-        eligible_stages=list(CORE_REASONING_STAGES),
+        eligible_stages=list(CORE_REASONING_STAGES) + [ROSTER_CLEAN_STAGE],
         spec_tokens_per_sec=300.0,
         spec_context_k=200,
         spec_input_per_1m_usd=0.80,
@@ -771,7 +797,7 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         display_name="Llama 3.1 8B (local)",
         enabled=True,                              # already configured
         hipaa_eligible=True,                       # self-hosted = data stays local
-        eligible_stages=list(CORE_REASONING_STAGES),
+        eligible_stages=list(CORE_REASONING_STAGES) + [ROSTER_CLEAN_STAGE],
         spec_tokens_per_sec=0.0,                   # depends on hardware
         spec_context_k=128,
         spec_input_per_1m_usd=0.0,
@@ -889,8 +915,12 @@ class ModelRouter:
         stage: str,
         phi_detected: bool = False,
         is_planner: bool = False,
+        mode: str | None = None,
     ) -> tuple[ModelSpec, dict[str, Any]]:
         """Select best model for this stage. Returns (spec, meta) for UI / usage_breakdown.
+
+        ``mode``: chat router mode — ``copilot`` restricts Thompson sampling to non–frontier-reasoning
+        benchmark categories; ``agentic`` or ``None`` leaves the full eligible pool.
 
         ``meta`` keys: mode, reason, router_stage, candidates_eligible,
         candidates_after_circuit_breaker, circuit_relief (bool), exploration_round (bool),
@@ -903,9 +933,14 @@ class ModelRouter:
         meta: dict[str, Any] = {
             "router_stage": effective_stage,
             "phi_safe_only": bool(phi_detected),
+            "router_mode": (mode or "").strip().lower() or None,
         }
         candidates = self._get_candidates(effective_stage, phi_detected)
         meta["candidates_eligible"] = len(candidates)
+        candidates, mode_note = self._apply_router_mode_filter(candidates, mode)
+        if mode_note:
+            meta["router_mode_filter_note"] = mode_note
+        meta["candidates_after_mode_filter"] = len(candidates)
 
         if not candidates:
             logger.error(
@@ -1062,6 +1097,29 @@ class ModelRouter:
         ]
 
     # ── Selection helpers ─────────────────────────────────────────────────────
+
+    def _apply_router_mode_filter(
+        self,
+        candidates: list[ModelSpec],
+        mode: str | None,
+    ) -> tuple[list[ModelSpec], str | None]:
+        """Copilot: drop heavy benchmark categories before Thompson / exploration."""
+        m = (mode or "").strip().lower()
+        if m != "copilot" or not candidates:
+            return candidates, None
+        excl = COPILOT_EXCLUDED_THOMPSON_BENCHMARK_CATEGORIES
+        filtered = [c for c in candidates if c.benchmark_category not in excl]
+        if filtered:
+            return filtered, None
+        allow = COPILOT_ALLOWED_THOMPSON_FALLBACK_CATEGORIES
+        fallback = [c for c in candidates if c.benchmark_category in allow]
+        if fallback:
+            return fallback, "copilot_relaxed_to_allowed_benchmark_categories"
+        logger.warning(
+            "Copilot router_mode: no candidate outside %s; using unfiltered pool for this pick",
+            excl,
+        )
+        return candidates, "copilot_fallback_unfiltered_pool"
 
     def _get_candidates(self, stage: str, phi_detected: bool) -> list[ModelSpec]:
         """Models eligible for ``stage``. ReAct ``react_*`` shares the same pool as ``planner``."""

@@ -32,8 +32,18 @@ def orchestrator_state_to_dict(state: OrchestratorState) -> dict[str, Any]:
         "step3_roster_upload_id": getattr(state, "step3_roster_upload_id", "") or "",
         "step3_external_only": bool(getattr(state, "step3_external_only", False)),
         "step3_include_roster_members": bool(getattr(state, "step3_include_roster_members", True)),
+        "credentialing_run_mode": getattr(state, "credentialing_run_mode", "copilot") or "copilot",
+        "last_active_roster_cutoff": getattr(state, "last_active_roster_cutoff", None),
+        "gate_events": list(getattr(state, "gate_events", None) or []),
+        "step_emit_log": dict(getattr(state, "step_emit_log", None) or {}),
         "steps": [
-            {"id": s.id, "label": s.label, "status": s.status, "result_summary": s.result_summary}
+            {
+                "id": s.id,
+                "label": s.label,
+                "status": s.status,
+                "result_summary": s.result_summary,
+                "workflow_follow_ups": list(getattr(s, "workflow_follow_ups", None) or []),
+            }
             for s in state.steps
         ],
         "step_outputs": [
@@ -54,15 +64,20 @@ def orchestrator_state_from_dict(data: dict[str, Any]) -> OrchestratorState:
     """Restore OrchestratorState from orchestrator_state_to_dict output."""
     steps_in = data.get("steps") or []
     if steps_in:
-        steps = [
-            StepState(
-                id=str(s.get("id", "")),
-                label=str(s.get("label", "")),
-                status=str(s.get("status", "pending")),
-                result_summary=str(s.get("result_summary", "")),
+        steps = []
+        for s in steps_in:
+            wf = s.get("workflow_follow_ups")
+            if not isinstance(wf, list):
+                wf = []
+            steps.append(
+                StepState(
+                    id=str(s.get("id", "")),
+                    label=str(s.get("label", "")),
+                    status=str(s.get("status", "pending")),
+                    result_summary=str(s.get("result_summary", "")),
+                    workflow_follow_ups=[dict(x) for x in wf if isinstance(x, dict)],
+                )
             )
-            for s in steps_in
-        ]
     else:
         steps = [StepState(id=s["id"], label=s["label"]) for s in ROSTER_CREDENTIALING_PLAN]
 
@@ -83,6 +98,14 @@ def orchestrator_state_from_dict(data: dict[str, Any]) -> OrchestratorState:
     if not isinstance(locs, list):
         locs = []
 
+    crm = str(data.get("credentialing_run_mode", "copilot") or "copilot").strip().lower()
+    if crm not in ("copilot", "autopilot"):
+        crm = "copilot"
+
+    gate_ev = data.get("gate_events")
+    if not isinstance(gate_ev, list):
+        gate_ev = []
+
     return OrchestratorState(
         steps=steps,
         org_npis=[str(x) for x in (data.get("org_npis") or [])],
@@ -92,6 +115,10 @@ def orchestrator_state_from_dict(data: dict[str, Any]) -> OrchestratorState:
         step3_roster_upload_id=str(data.get("step3_roster_upload_id", "") or ""),
         step3_external_only=bool(data.get("step3_external_only", False)),
         step3_include_roster_members=bool(data.get("step3_include_roster_members", True)),
+        credentialing_run_mode=crm,
+        last_active_roster_cutoff=_opt_int(data.get("last_active_roster_cutoff")),
+        gate_events=[dict(x) for x in gate_ev if isinstance(x, dict)],
+        step_emit_log={k: list(v) for k, v in (data.get("step_emit_log") or {}).items() if isinstance(v, list)},
         associated_providers=_dict_maybe(data.get("associated_providers")),
         active_roster=_dict_maybe(data.get("active_roster")),
         org_benchmark=_dict_maybe(data.get("org_benchmark")),
@@ -117,3 +144,12 @@ def _stringify_keys(obj: Any) -> Any:
 
 def _dict_maybe(v: Any) -> dict:
     return dict(v) if isinstance(v, dict) else {}
+
+
+def _opt_int(v: Any) -> int | None:
+    if v is None or v == "":
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None

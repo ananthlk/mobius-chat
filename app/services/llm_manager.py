@@ -83,11 +83,15 @@ async def generate(
     parser: bool = False,
     phi_detected: bool = False,
     complexity: str | None = None,
+    mode: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """
     Call LLM via dynamic model router, record to llm_calls.
     Returns (text, usage_dict).
     usage_dict includes: model, provider, latency_ms, latency_s, stage.
+
+    mode: chat router mode (e.g. copilot, agentic). ``copilot`` restricts Thompson sampling
+    to faster model tiers; ``None`` / ``agentic`` uses the full eligible pool per stage.
     """
     _ensure_env()
 
@@ -104,6 +108,7 @@ async def generate(
             stage=stage,
             phi_detected=phi_detected,
             is_planner=parser,
+            mode=mode,
         )
         provider = _provider_from_spec(spec)
     except Exception as e:
@@ -191,6 +196,14 @@ async def generate(
         if router_meta:
             out_usage["router_selection"] = router_meta.get("mode")
             out_usage["router_reason"] = router_meta.get("reason")
+            if router_meta.get("router_mode"):
+                out_usage["router_mode"] = router_meta.get("router_mode")
+            if router_meta.get("router_mode_filter_note"):
+                out_usage["router_mode_filter_note"] = router_meta.get("router_mode_filter_note")
+            if router_meta.get("candidates_after_mode_filter") is not None:
+                out_usage["router_candidates_after_mode_filter"] = int(
+                    router_meta["candidates_after_mode_filter"]
+                )
             if router_meta.get("exploration_round") is not None:
                 out_usage["router_exploration_round"] = bool(router_meta["exploration_round"])
             if router_meta.get("circuit_relief") is not None:
@@ -225,6 +238,7 @@ def generate_sync(
     parser: bool = False,
     phi_detected: bool = False,
     complexity: str | None = None,
+    mode: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Sync wrapper for scripts/eval (creates one event loop).
 
@@ -246,6 +260,7 @@ def generate_sync(
                 parser=parser,
                 phi_detected=phi_detected,
                 complexity=complexity,
+                mode=mode,
             )
         )
 
