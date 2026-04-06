@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Financial Strategy — Mobius</title>
+<link rel="icon" href="static/logo.svg" type="image/svg+xml" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="static/financial-strategy.css">
+<link rel="stylesheet" href="static/task-manager.css">
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+
+<!-- ── Landing screen ──────────────────────────────────────── -->
+<div id="startScreen">
+  <div class="fs-header">
+    <div class="hd-brand">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 12c-2-2.5-4-4-6-4a4 4 0 0 0 0 8c2 0 4-1.5 6-4z"/><path d="M12 12c2 2.5 4 4 6 4a4 4 0 0 0 0-8c-2 0-4 1.5-6 4z"/></svg>
+      Mobius
+      <span style="font-weight:400;color:var(--text-3);font-size:.875rem">· Financial Strategy</span>
+    </div>
+  </div>
+
+  <div class="fs-hero">
+    <h1>Financial Strategy Development</h1>
+    <p>Benchmark your organization against best-in-class FL Medicaid providers (Rest-of-FL P75).
+       Identify rate gaps, engagement opportunities, and capacity risks — then build an actionable plan.</p>
+    <div class="fs-hero-steps">
+      <div class="fs-hero-step"><div class="fs-hero-step-num">1</div><span class="fs-hero-step-label">Baseline</span></div>
+      <div class="fs-hero-step-arrow">&rarr;</div>
+      <div class="fs-hero-step"><div class="fs-hero-step-num">2</div><span class="fs-hero-step-label">Investigate</span></div>
+      <div class="fs-hero-step-arrow">&rarr;</div>
+      <div class="fs-hero-step"><div class="fs-hero-step-num">3</div><span class="fs-hero-step-label">Plan</span></div>
+    </div>
+  </div>
+
+  <div class="fs-start-body" style="grid-template-columns:1fr;max-width:560px">
+    <div class="fs-new-card">
+      <h3>Select an Organization</h3>
+      <div>
+        <label class="fs-label">FL Community Mental Health Centers</label>
+        <select class="fs-input fs-select" id="orgSelect" onchange="onOrgSelect()">
+          <option value="">Loading organizations...</option>
+        </select>
+        <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:13px;color:#666;cursor:pointer">
+          <input type="checkbox" id="cbhToggle" onchange="loadOrgs()"> Include Community BH organizations
+        </label>
+      </div>
+      <div id="orgPreview" class="fs-org-preview" style="display:none"></div>
+      <button class="btn-primary" id="startBtn" onclick="startAnalysis()" disabled>Generate Strategy Report &rarr;</button>
+      <p id="startError" class="fs-error"></p>
+    </div>
+  </div>
+</div>
+
+<!-- ── Report Generation Progress ─────────────────────────── -->
+<div id="reportProgress" hidden style="max-width:520px;margin:40px auto;padding:0 16px">
+  <div class="rp-panel" id="rpPanel"></div>
+</div>
+
+<!-- ── Analysis view ───────────────────────────────────────── -->
+<div id="analysisView" hidden>
+
+  <!-- Header -->
+  <div class="fs-header">
+    <div class="hd-brand">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 12c-2-2.5-4-4-6-4a4 4 0 0 0 0 8c2 0 4-1.5 6-4z"/><path d="M12 12c2 2.5 4 4 6 4a4 4 0 0 0 0-8c-2 0-4 1.5-6 4z"/></svg>
+      Mobius
+      <span style="font-weight:400;color:var(--text-3);font-size:.875rem">· Financial Strategy</span>
+    </div>
+    <div class="hd-org">
+      <strong id="hdOrg">—</strong>
+    </div>
+    <div style="display:flex;gap:.5rem;align-items:center">
+      <div class="fs-download-wrap">
+        <button class="btn-action" onclick="toggleDownloadMenu()" id="downloadBtn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Download PDF
+        </button>
+        <div class="fs-download-menu" id="downloadMenu" hidden>
+          <button onclick="downloadPDF('industry')">Industry Report Only</button>
+          <button onclick="downloadPDF('provider')">Provider Report Only</button>
+          <button onclick="downloadPDF('both')">Full Report (Both)</button>
+        </div>
+      </div>
+      <button class="btn-action ghost" onclick="backToStart()" style="font-size:.75rem;padding:.3rem .7rem">All orgs</button>
+    </div>
+  </div>
+
+  <!-- Sidebar + main body -->
+  <div class="fs-body">
+
+    <!-- Left sidebar: chapter nav -->
+    <aside class="fs-sidebar" id="fsSidebar">
+      <div class="fs-nav-list" id="fsNavList">
+        <div class="fs-nav-chapter-label">Chapter 1 — Industry</div>
+        <button class="fs-nav-item active" data-section="industry-landscape" onclick="navigateTo('industry-landscape')">
+          <span class="fs-nav-num">1</span> Sector Landscape
+        </button>
+        <button class="fs-nav-item" data-section="industry-rates" onclick="navigateTo('industry-rates')">
+          <span class="fs-nav-num">2</span> Rate Gaps
+        </button>
+        <button class="fs-nav-item" data-section="industry-leakage" onclick="navigateTo('industry-leakage')">
+          <span class="fs-nav-num">3</span> Leakage
+        </button>
+        <button class="fs-nav-item" data-section="industry-burnout" onclick="navigateTo('industry-burnout')">
+          <span class="fs-nav-num">4</span> Caseload
+        </button>
+        <button class="fs-nav-item" data-section="industry-trends" onclick="navigateTo('industry-trends')">
+          <span class="fs-nav-num">5</span> Trends
+        </button>
+
+        <div class="fs-nav-chapter-label" style="margin-top:.75rem">Chapter 2 — Your Org</div>
+        <button class="fs-nav-item" data-section="overview" onclick="navigateTo('overview')">
+          <span class="fs-nav-num">6</span> Overview
+        </button>
+        <button class="fs-nav-item" data-section="rates" onclick="navigateTo('rates')">
+          <span class="fs-nav-num">7</span> Rates vs Best-in-Class
+        </button>
+        <button class="fs-nav-item" data-section="engagement" onclick="navigateTo('engagement')">
+          <span class="fs-nav-num">8</span> Patient Engagement
+        </button>
+        <button class="fs-nav-item" data-section="burnout" onclick="navigateTo('burnout')">
+          <span class="fs-nav-num">9</span> Capacity & Burnout
+        </button>
+        <button class="fs-nav-item" data-section="verdicts" onclick="navigateTo('verdicts')">
+          <span class="fs-nav-num">10</span> Verdicts
+        </button>
+        <button class="fs-nav-item" data-section="priorities" onclick="navigateTo('priorities')">
+          <span class="fs-nav-num">11</span> Priorities
+        </button>
+      </div>
+
+      <!-- Task panel -->
+      <div class="fs-task-section" id="fsTaskSection" style="display:none">
+        <div class="fs-section-head" style="padding:.75rem 1rem .5rem">
+          <span class="fs-section-title" style="font-size:.75rem">Strategy Tasks</span>
+          <button class="btn-action ghost" style="font-size:.7rem;padding:.15rem .5rem" onclick="generatePlan()">Generate Plan</button>
+        </div>
+        <div id="fsTaskList"></div>
+      </div>
+    </aside>
+
+    <!-- Main content -->
+    <main class="fs-main" id="fsMain">
+      <div class="fs-loading" id="fsLoading"><span class="spinner"></span> Generating baseline analysis...</div>
+      <div id="fsContent" hidden></div>
+    </main>
+
+  </div>
+
+</div>
+
+<!-- ── Chat drawer ─────────────────────────────────────────── -->
+<div id="chatDrawer" class="fs-chat-drawer">
+  <div id="chatPane" class="fs-chat-pane">
+    <div class="fs-chat-resize" id="chatResize"></div>
+    <div class="fs-chat-head">
+      <span class="fs-chat-title">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 12c-2-2.5-4-4-6-4a4 4 0 0 0 0 8c2 0 4-1.5 6-4z"/><path d="M12 12c2 2.5 4 4 6 4a4 4 0 0 0 0-8c-2 0-4 1.5-6 4z"/></svg>
+        Ask about financials
+      </span>
+      <button class="fs-chat-close" onclick="chatCollapse()" title="Collapse">&times;</button>
+    </div>
+    <div class="fs-chat-messages" id="chatMessages"></div>
+    <div class="fs-chat-input-row">
+      <input class="fs-chat-input" id="chatInput" type="text" placeholder="Ask about rates, engagement, capacity..." onkeydown="if(event.key==='Enter')sendQuestion()" />
+      <button class="fs-chat-send" onclick="sendQuestion()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+      </button>
+    </div>
+  </div>
+  <button class="fs-chat-fab" id="chatFab" onclick="chatExpand()">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+  </button>
+</div>
+
+<!-- ── Selection → Chat toolbar ──────────────────────────── -->
+<div class="sel-toolbar" id="selToolbar">
+  <button class="sel-btn" data-action="explain">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+    Explain
+  </button>
+  <span class="sel-divider"></span>
+  <button class="sel-btn" data-action="dispute">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+    Dispute
+  </button>
+  <span class="sel-divider"></span>
+  <button class="sel-btn" data-action="ask">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+    Ask
+  </button>
+  <span class="sel-divider"></span>
+  <button class="sel-btn" data-action="bookmark">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg>
+    Bookmark
+  </button>
+  <span class="sel-divider"></span>
+  <button class="sel-btn" data-action="plan">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+    Add to Plan
+  </button>
+</div>
+
+<script src="static/financial-strategy.js"></script>
+</body>
+</html>
