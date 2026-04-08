@@ -2772,6 +2772,12 @@ def fs_org_story(body: dict = Body(...)):
     return _fs_proxy("POST", "/org-story", json_body=body, timeout=120.0)
 
 
+@app.post("/chat/org-story-v2")
+def fs_org_story_v2(body: dict = Body(...)):
+    """Proxy: org story v2 — pre-computed from v2 tables (<2s vs 30s)."""
+    return _fs_proxy("POST", "/org-story-v2", json_body=body, timeout=30.0)
+
+
 @app.get("/chat/market-map")
 def fs_market_map():
     """Proxy: FL BH market map data — all org locations with revenue."""
