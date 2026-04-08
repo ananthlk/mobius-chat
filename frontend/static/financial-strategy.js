@@ -55,12 +55,13 @@ async function loadOrgs() {
       opt.value = o.org_name;
       const city = o.org_city ? ` — ${o.org_city}` : '';
       opt.textContent = `${o.org_name}${city}`;
+      opt.dataset.slug = o.org_slug || '';
       opt.dataset.type = o.org_type || '';
       opt.dataset.revenue = o.total_revenue || '';
       opt.dataset.claims = o.total_claims || '';
       opt.dataset.city = o.org_city || '';
       opt.dataset.panel = o.panel_size || '';
-      opt.dataset.clinicians = o.servicing_npi_count || '';
+      opt.dataset.clinicians = o.servicing_npi_count || o.npi_count || '';
       opt.dataset.market = o.market_tier || '';
       opt.dataset.size = o.size_band || '';
       sel.appendChild(opt);
@@ -246,10 +247,12 @@ function _showIndustryReportEarly(orgName) {
 
 // ── Start analysis ───────────────────────────────────────────────────────────
 async function startAnalysis() {
-  const orgName = document.getElementById('orgSelect').value;
+  const sel = document.getElementById('orgSelect');
+  const orgName = sel.value;
   const errEl = document.getElementById('startError');
   if (!orgName) { errEl.textContent = 'Select an organization'; errEl.style.display = 'block'; return; }
   errEl.style.display = 'none';
+  const orgSlug = sel.selectedOptions[0]?.dataset?.slug || '';
 
   const btn = document.getElementById('startBtn');
   btn.disabled = true; btn.textContent = 'Generating...';
@@ -271,7 +274,7 @@ async function startAnalysis() {
     const baseR = await fetch(`${API}/chat/financial-strategy/generate-baseline`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ org_name: orgName, stream: true }),
+      body: JSON.stringify({ org_name: orgName, org_slug: orgSlug, stream: true }),
     });
     if (!baseR.ok) {
       const err = await baseR.json().catch(() => ({ detail: baseR.statusText }));
@@ -357,6 +360,8 @@ async function startAnalysis() {
       window.history.replaceState({}, '', url);
     }
 
+    // Re-render industry chapter now that _industry is loaded (replaces HTML fragment fallback)
+    _loadIndustryReport();
     // Replace the ch2Loading placeholder with the actual Chapter 2 content
     _renderChapter2(_baseline);
     document.getElementById('fsTaskSection').style.display = 'block';
@@ -376,9 +381,175 @@ async function startAnalysis() {
 
 function _sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+// ── Refresh baseline (force rebuild, same version) ──────────────────────────
+async function refreshBaseline() {
+  if (!_currentOrg || !_versionId || !_documentId) return;
+
+  const btn = document.getElementById('refreshBtn');
+  btn.disabled = true;
+  btn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="spin-icon"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg> Refreshing...`;
+
+  // Replace Chapter 2 content with progress steps
+  const ch2 = document.getElementById('ch2Loading');
+  const ch2Content = document.getElementById('ch2Content');
+  if (ch2Content) {
+    ch2Content.id = 'ch2Loading';
+    ch2Content.innerHTML = `<div class="rp-panel" id="rpRefreshPanel"></div>`;
+  } else if (ch2) {
+    ch2.innerHTML = `<div class="rp-panel" id="rpRefreshPanel"></div>`;
+  }
+
+  // Reset progress step state
+  _rpSteps = {};
+  _rpStartTime = Date.now() / 1000;
+
+  // Scroll to the progress panel
+  const rpPanel = document.getElementById('rpRefreshPanel');
+  if (rpPanel) rpPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  try {
+    const orgSlug = _baseline?.org_slug || '';
+    const r = await fetch(`${API}/chat/financial-strategy/refresh-baseline`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        org_name: _currentOrg,
+        org_slug: orgSlug,
+        version_id: _versionId,
+        document_id: _documentId,
+        thread_id: _threadId,
+      }),
+    });
+    if (!r.ok) throw new Error('Failed to start refresh');
+    const { correlation_id: cid, stream_url: streamUrl } = await r.json();
+
+    let result = null;
+
+    // SSE stream reader for live progress steps
+    const sseUrl = `${API}${streamUrl}`;
+    const sseAbort = new AbortController();
+    (async () => {
+      while (!result) {
+        try {
+          const evtR = await fetch(sseUrl, { signal: sseAbort.signal });
+          if (!evtR.ok) { await _sleep(500); continue; }
+          const reader = evtR.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                try {
+                  const evt = JSON.parse(line.slice(6));
+                  if (evt.event === 'step') {
+                    const s = evt.data;
+                    _rpSteps[s.step_id] = {
+                      phase: s.phase, status: s.status,
+                      title: s.label || (_STEP_DEFAULTS[s.step_id]?.title || s.step_id),
+                      edu: s.edu || (_STEP_DEFAULTS[s.step_id]?.edu || ''),
+                      duration: s.duration ? s.duration.toFixed(1) : '',
+                    };
+                    _rpRenderInline(_currentOrg);
+                  }
+                } catch (_) {}
+              }
+            }
+          }
+        } catch (_) {}
+        if (!result) await _sleep(500);
+      }
+    })();
+
+    // Poll for completion
+    while (!result) {
+      await _sleep(2000);
+      try {
+        const pollR = await fetch(`${API}/chat/financial-strategy/response/${cid}`);
+        if (pollR.ok) {
+          const pollData = await pollR.json();
+          if (pollData.status === 'completed') result = pollData;
+        }
+      } catch (_) {}
+    }
+    sseAbort.abort();
+
+    // Update state with refreshed baseline
+    _baseline = result;
+    _currentOrg = _baseline.org_name || _currentOrg;
+
+    // Re-render Chapter 2 with fresh data
+    // Restore the ch2Loading element for _renderChapter2
+    const panel = document.getElementById('rpRefreshPanel')?.parentElement;
+    if (panel) { panel.id = 'ch2Loading'; }
+    _renderChapter2(_baseline);
+
+  } catch (e) {
+    console.error('refreshBaseline error:', e);
+    const panel = document.getElementById('rpRefreshPanel');
+    if (panel) {
+      panel.innerHTML = `<div style="color:var(--red);padding:1rem">Refresh failed: ${esc(e.message || String(e))}</div>`;
+    }
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg> Refresh`;
+  }
+}
+
+// Render progress steps inline (within Chapter 2 area during refresh)
+function _rpRenderInline(orgName) {
+  const panel = document.getElementById('rpRefreshPanel');
+  if (!panel) return;
+
+  let html = `<div class="rp-header">
+    <span class="rp-header-icon">🔄</span>
+    <span class="rp-header-title">Rebuilding Report</span>
+    <span class="rp-header-sub">${esc(orgName)}</span>
+  </div>`;
+
+  for (const [phaseNum, phaseDef] of Object.entries(_PHASES)) {
+    const pn = parseInt(phaseNum);
+    const phaseSteps = phaseDef.steps.map(sid => _rpSteps[sid] || { step_id: sid, phase: pn, status: 'pending', ...(_STEP_DEFAULTS[sid] || {}) });
+    const allDone = phaseSteps.every(s => s.status === 'done');
+    const laterPhaseActive = Object.entries(_rpSteps).some(([, s]) => s.phase > pn && (s.status === 'running' || s.status === 'done'));
+    const collapsed = allDone && laterPhaseActive;
+
+    html += `<div class="rp-phase${collapsed ? ' collapsed' : ''}">`;
+    html += `<div class="rp-phase-label">Phase ${phaseNum} — ${phaseDef.label}${allDone ? ' ✓' : ''}</div>`;
+    html += `<div class="rp-phase-bar">`;
+    for (const s of phaseSteps) {
+      const cls = s.status === 'done' ? 'done' : s.status === 'running' ? 'running' : '';
+      html += `<div class="rp-seg ${cls}"></div>`;
+    }
+    html += `</div>`;
+
+    if (!collapsed) {
+      for (const s of phaseSteps) {
+        let icon = s.status === 'done' ? '✓' : s.status === 'running' ? '⚡' : '·';
+        const dur = s.duration ? `${s.duration}s` : '';
+        html += `<div class="rp-step ${s.status}">
+          <div class="rp-icon">${icon}</div>
+          <div class="rp-text">
+            <div class="rp-title">${esc(s.title || '')}</div>
+            <div class="rp-edu">${esc(s.edu || '')}</div>
+          </div>
+          ${dur ? `<div class="rp-dur">${dur}</div>` : ''}
+        </div>`;
+      }
+    }
+    html += `</div>`;
+  }
+  panel.innerHTML = html;
+}
+
 // Render org-specific Chapter 2 content into the existing page (replacing the loading placeholder)
 function _renderChapter2(b) {
-  const loading = document.getElementById('ch2Loading');
+  // Accept either ch2Loading (initial) or ch2Content (refresh/version switch)
+  let loading = document.getElementById('ch2Loading') || document.getElementById('ch2Content');
   if (!loading) return;
 
   let ch2Html = '';
@@ -411,7 +582,7 @@ function _renderChapter2(b) {
     `;
   }
 
-  loading.outerHTML = ch2Html;
+  loading.outerHTML = `<div id="ch2Content">${ch2Html}</div>`;
 }
 
 function backToStart() {
@@ -443,7 +614,7 @@ function downloadPDF(scope) {
   const pipelineReport = content.querySelector('.fs-pipeline-report');
 
   // Determine which sections are industry vs provider
-  const industrySections = ['sec-industry-landscape', 'sec-industry-rates', 'sec-industry-leakage', 'sec-industry-burnout', 'sec-industry-trends'];
+  const industrySections = ['sec-data-calibration', 'sec-industry-landscape', 'sec-industry-published-rates', 'sec-industry-rates', 'sec-industry-fqhc', 'sec-industry-leakage', 'sec-industry-burnout', 'sec-industry-market-archetypes', 'sec-industry-trends'];
 
   // Mark sections to hide based on scope
   sections.forEach(sec => {
@@ -528,30 +699,432 @@ function renderAll(ind, b) {
 async function _loadIndustryReport() {
   const container = document.getElementById('industryReportContainer');
   if (!container) return;
-  container.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--text-3)"><span class="spinner-sm"></span> Loading industry report…</div>';
-  try {
-    const r = await fetch(`${API}/chat/financial-strategy/industry-report-html`);
-    if (!r.ok) throw new Error('Failed to load industry report');
-    const html = await r.text();
-    container.innerHTML = html;
-    // Remove elements that don't belong in the embedded view
-    container.querySelectorAll('.report-header, .dl-btn-wrap, .review-note, [id="sel-toolbar"]').forEach(el => el.remove());
-    // Remove the closing footer (only direct children, not the report-wrap container itself)
-    container.querySelectorAll('.report-wrap > div').forEach(el => {
-      if (el.children.length === 0 && el.textContent.includes('Generated April 2026')) el.remove();
-    });
-    // Remove standalone scripts (selection toolbar etc)
-    container.querySelectorAll('script').forEach(el => el.remove());
-  } catch (e) {
-    // Fallback: render the old deterministic industry sections
-    container.innerHTML = '<div style="padding:1rem;color:var(--text-3);font-size:.8125rem">Industry report unavailable — showing summary view.</div>';
-    if (_industry) {
-      container.innerHTML = renderIndustryLandscape(_industry) + renderIndustryRates(_industry) + renderIndustryLeakage(_industry) + renderIndustryBurnout(_industry) + renderIndustryTrends(_industry);
+  // Render industry chapter from structured data (primary path)
+  if (_industry) {
+    container.innerHTML = renderDataCalibration(_industry) + renderIndustryLandscape(_industry) + renderIndustryPublishedRates(_industry) + renderIndustryRates(_industry) + renderIndustryFqhc(_industry) + renderIndustryLeakage(_industry) + renderIndustryBurnout(_industry) + renderIndustryMarketArchetypes(_industry) + renderIndustryTrends(_industry);
+  } else {
+    // Fallback: try loading from pre-rendered HTML fragment
+    container.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--text-3)"><span class="spinner-sm"></span> Loading industry report…</div>';
+    try {
+      const r = await fetch(`${API}/chat/financial-strategy/industry-report-html`);
+      if (!r.ok) throw new Error('Failed to load industry report');
+      const html = await r.text();
+      container.innerHTML = html;
+      container.querySelectorAll('.report-header, .dl-btn-wrap, .review-note, [id="sel-toolbar"]').forEach(el => el.remove());
+      container.querySelectorAll('.report-wrap > div').forEach(el => {
+        if (el.children.length === 0 && el.textContent.includes('Generated April 2026')) el.remove();
+      });
+      container.querySelectorAll('script').forEach(el => el.remove());
+    } catch (e) {
+      container.innerHTML = '<div style="padding:1rem;color:var(--text-3);font-size:.8125rem">Industry report unavailable.</div>';
     }
   }
 }
 
-// ── Chapter 1: Industry Landscape (legacy fallback) ─────────────────────────
+// ── 5 Service Categories (constant) ──────────────────────────────────────────
+const CATEGORY_ORDER = ['intake', 'high_acuity', 'ongoing_bh', 'eval_mgmt', 'med_mgmt'];
+const CATEGORY_META = {
+  intake:      { label: 'Intake / Assessment', short: 'Intake', color: 'blue' },
+  high_acuity: { label: 'High-Acuity / Stabilization', short: 'High Acuity', color: 'yellow' },
+  ongoing_bh:  { label: 'Ongoing BH Outpatient', short: 'Ongoing BH', color: 'green' },
+  eval_mgmt:   { label: 'Evaluation & Management', short: 'E&M', color: 'purple' },
+  med_mgmt:    { label: 'Medication Management', short: 'Med Mgmt', color: 'red' },
+};
+
+function _getCategoryMap(ind) {
+  // Build code→category lookup from industry data (supports both 'categories' and 'segments' keys)
+  const cats = ind.categories || ind.segments || {};
+  const map = {};
+  for (const [catKey, catDef] of Object.entries(cats)) {
+    for (const code of (catDef.codes || [])) map[code] = catKey;
+  }
+  // If data didn't have full 5 categories, fill from constant
+  if (Object.keys(map).length === 0) {
+    for (const [catKey, meta] of Object.entries(CATEGORY_META)) {
+      // Use hardcoded fallback codes
+      const fallbackCodes = {
+        intake: ['H0031','H0032','H2000','90791','90792'],
+        high_acuity: ['H0036','H2017','H0040','H2010'],
+        ongoing_bh: ['H2019','T1017','90832','90834','90837','H0004','H0048','T1007'],
+        eval_mgmt: ['99202','99203','99204','99205','99212','99213','99214','99215'],
+        med_mgmt: ['T1015','90863','90833','90836','90838','M0064'],
+      };
+      for (const code of (fallbackCodes[catKey] || [])) map[code] = catKey;
+    }
+  }
+  return map;
+}
+
+function _catOf(code, catMap) {
+  return catMap[code] || 'other';
+}
+
+function _groupByCategory(codes, catMap) {
+  const groups = {};
+  for (const cat of CATEGORY_ORDER) groups[cat] = [];
+  groups['other'] = [];
+  for (const item of codes) {
+    const cat = _catOf(item.code || item, catMap);
+    (groups[cat] || groups['other']).push(item);
+  }
+  return groups;
+}
+
+// ── Code description lookup ─────────────────────────────────────────────────
+const CODE_LABELS = {
+  'H0031': 'Intake Assessment', 'H0032': 'Plan Development', 'H2000': 'Comprehensive Eval',
+  '90791': 'Psych Diagnostic Eval', '90792': 'Psychiatric Eval w/ Med',
+  'H0036': 'Community Psych Support', 'H2017': 'Psychosocial Rehab (PSR)',
+  'H0040': 'FACT/ACT Per Diem', 'H2010': 'Comp Med Services',
+  'H2019': 'Individual/Family Therapy', 'T1017': 'Care Management',
+  '90832': 'Psychotherapy 30 min', '90834': 'Psychotherapy 45 min', '90837': 'Psychotherapy 60 min',
+  'H0004': 'BH Counseling', 'H0048': 'Alcohol/Drug Screening', 'T1007': 'Treatment Plan Review',
+  '99202': 'E&M New Pt Lv2', '99203': 'E&M New Pt Lv3', '99204': 'E&M New Pt Lv4', '99205': 'E&M New Pt Lv5',
+  '99212': 'E&M Estab Pt Lv2', '99213': 'E&M Estab Pt Lv3', '99214': 'E&M Estab Pt Lv4', '99215': 'E&M Estab Pt Lv5',
+  'T1015': 'Medication Mgmt', '90863': 'Pharmacologic Mgmt', '90833': 'Psychotherapy Add-on 30 min',
+  '90836': 'Psychotherapy Add-on 45 min', '90838': 'Psychotherapy Add-on 60 min', 'M0064': 'Brief Office Visit',
+};
+function _codeLabel(code) { return CODE_LABELS[code] || code; }
+
+// ── Service Line Coverage helpers ────────────────────────────────────────────
+function _renderCoverageTable(ind) {
+  const cov = ind.service_line_coverage || {};
+  const codes = cov.codes || {};
+  const total = cov.total_cmhcs || 86;
+  const catMap = _getCategoryMap(ind);
+  const items = Object.entries(codes).map(([code, d]) => ({code, ...d}));
+  const grouped = _groupByCategory(items, catMap);
+
+  let tableRows = '';
+  for (const cat of CATEGORY_ORDER) {
+    const rows = grouped[cat] || [];
+    if (!rows.length) continue;
+    const meta = CATEGORY_META[cat];
+    tableRows += `<tr class="fs-cat-header"><td colspan="5"><span class="fs-badge ${meta.color}">${esc(meta.short)}</span></td></tr>`;
+    tableRows += rows.sort((a,b) => (b.org_count||0) - (a.org_count||0)).map(d => {
+      const pct = d.pct || (d.org_count / total * 100);
+      const cls = pct >= 50 ? 'green' : pct >= 20 ? 'yellow' : 'red';
+      const barW = Math.min(100, pct);
+      return `<tr>
+        <td><strong>${esc(d.code)}</strong></td>
+        <td style="font-size:.75rem;color:var(--text-3)">${esc(d.label || '')}</td>
+        <td>${d.org_count} / ${total}</td>
+        <td style="width:140px"><div style="background:var(--bg-2);border-radius:4px;height:14px;position:relative"><div style="width:${barW}%;height:100%;border-radius:4px;background:var(--${cls === 'green' ? 'green' : cls === 'yellow' ? 'amber' : 'red'})"></div></div></td>
+        <td><span class="fs-badge ${cls}">${pct.toFixed(0)}%</span></td>
+      </tr>`;
+    }).join('');
+  }
+
+  return `<div class="fs-table-wrap">
+    <table class="fs-table" style="font-size:.8rem">
+      <thead><tr><th>Code</th><th>Service</th><th>CMHCs Billing</th><th style="width:140px">Coverage</th><th>%</th></tr></thead>
+      <tbody>${tableRows}</tbody>
+    </table>
+  </div>`;
+}
+
+function _renderSupplyRetentionCards(ind) {
+  const cov = ind.service_line_coverage || {};
+  const byCat = cov.by_category || {};
+  return `<div class="fs-card-grid" style="grid-template-columns:repeat(5,1fr)">
+    ${CATEGORY_ORDER.map(cat => {
+      const meta = CATEGORY_META[cat];
+      const c = byCat[cat] || {};
+      const avgCov = c.avg_coverage_pct || 0;
+      const supplyGaps = (c.supply_gap_codes || []);
+      const cls = avgCov >= 50 ? 'green' : avgCov >= 25 ? 'yellow' : 'red';
+      const diagnosis = avgCov < 25 ? 'Supply Gap' : avgCov < 50 ? 'Mixed' : 'Retention Gap';
+      return `<div class="fs-card ${meta.color}">
+        <div class="fs-card-title">${esc(meta.short)}</div>
+        <div class="fs-card-big">${avgCov.toFixed(0)}%</div>
+        <div class="fs-card-sub">avg coverage</div>
+        <div style="margin-top:.5rem"><span class="fs-badge ${cls}">${diagnosis}</span></div>
+        ${supplyGaps.length ? `<div style="font-size:.7rem;color:var(--text-3);margin-top:.35rem">Gaps: ${supplyGaps.join(', ')}</div>` : ''}
+        ${c.note ? `<div style="font-size:.7rem;color:var(--text-3);margin-top:.25rem">${esc(c.note)}</div>` : ''}
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+const COMP_COLORS = {intake:'#3b82f6',high_acuity:'#ef4444',ongoing_bh:'#22c55e',eval_mgmt:'#a855f7',med_mgmt:'#f59e0b',psr:'#16a34a',therapy:'#4ade80',care_mgmt:'#86efac'};
+
+function _renderMarketComposition(ind) {
+  const mc = ind.market_composition;
+  if (!mc || !mc.categories) return '';
+  const cats = mc.categories;
+  const em = cats['eval_mgmt'] || {};
+  // Exclude E&M from the BH market totals
+  const bhTotal = (mc.total_fl_op_market || 0) - (em.fl_market_dollars || 0);
+  const cmhcBhTotal = (mc.total_cmhc_revenue || 0) - (em.cmhc_dollars || 0);
+  const cmhcBhPct = bhTotal > 0 ? (cmhcBhTotal / bhTotal * 100).toFixed(1) : '0';
+  const catOrder = ['ongoing_bh','high_acuity','med_mgmt','intake'];
+
+  // Recompute % of BH total for each category
+  const bhPcts = {};
+  for (const k of catOrder) {
+    const c = cats[k];
+    if (c) bhPcts[k] = (c.fl_market_dollars / bhTotal * 100).toFixed(1);
+  }
+
+  // Build flat row list — expand subcategories for ongoing_bh
+  const SUB_COLORS = {psr:'#16a34a',therapy:'#4ade80',care_mgmt:'#86efac'};
+  const flatRows = [];
+  for (const k of catOrder) {
+    const c = cats[k];
+    if (!c) continue;
+    const subs = c.subcategories;
+    if (subs && Object.keys(subs).length) {
+      flatRows.push({key: k, label: c.label, mkt: c.fl_market_dollars, cmhc: c.cmhc_dollars, cap: c.cmhc_capture_pct, benes: c.fl_beneficiaries || 0, insight: c.insight, color: COMP_COLORS[k], isParent: true});
+      const subOrder = ['psr','therapy','care_mgmt'];
+      for (const sk of subOrder) {
+        const s = subs[sk];
+        if (!s) continue;
+        flatRows.push({key: sk, label: s.label, mkt: s.fl_market_dollars, cmhc: s.cmhc_dollars, cap: s.cmhc_capture_pct, benes: s.fl_beneficiaries || 0, insight: s.insight, color: SUB_COLORS[sk] || COMP_COLORS[k], isSub: true, codes: s.codes});
+      }
+    } else {
+      flatRows.push({key: k, label: c.label, mkt: c.fl_market_dollars, cmhc: c.cmhc_dollars, cap: c.cmhc_capture_pct, benes: c.fl_beneficiaries || 0, insight: c.insight, color: COMP_COLORS[k]});
+    }
+  }
+
+  // Stacked bar — use subcategory colors where available
+  const barItems = flatRows.filter(r => !r.isParent);
+  const barSegs = barItems.map(r => {
+    const pct = (r.mkt / bhTotal * 100);
+    if (pct < 0.5) return '';
+    return `<div style="width:${pct.toFixed(1)}%;background:${r.color};height:100%;display:inline-block" title="${esc(r.label)}: ${pct.toFixed(1)}%"></div>`;
+  }).join('');
+
+  // Table rows — benes shown as /mo (annual ÷ 12)
+  function fmtBenes(annual) {
+    const mo = Math.round(annual / 12);
+    return mo >= 1000 ? (mo / 1000).toFixed(1) + 'K' : mo.toLocaleString();
+  }
+  const rows = flatRows.map(r => {
+    const mktM = (r.mkt / 1e6).toFixed(0);
+    const cmhcM = (r.cmhc / 1e6).toFixed(1);
+    const bhPct = (r.mkt / bhTotal * 100).toFixed(1);
+    const capCls = r.cap >= 15 ? 'green' : r.cap >= 5 ? 'yellow' : 'red';
+    const benesCell = r.benes ? `<td style="text-align:right">${fmtBenes(r.benes)}</td>` : '<td style="text-align:right">—</td>';
+    if (r.isParent) {
+      return `<tr style="background:var(--bg-2);font-weight:600">
+        <td><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${r.color};margin-right:6px"></span>${esc(r.label)}</td>
+        ${benesCell}
+        <td style="text-align:right">$${mktM}M</td>
+        <td style="text-align:right">$${cmhcM}M</td>
+        <td style="text-align:center"><span class="fs-badge ${capCls}">${r.cap}%</span></td>
+        <td style="font-size:.75rem;color:var(--text-3)">${esc(r.insight || '')}</td>
+      </tr>`;
+    }
+    const indent = r.isSub ? 'padding-left:1.5rem' : '';
+    const codeHint = r.codes ? ` <span style="font-size:.65rem;color:var(--text-4)">${r.codes.join(', ')}</span>` : '';
+    return `<tr>
+      <td style="${indent}"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${r.color};margin-right:6px"></span>${esc(r.label)}${codeHint}</td>
+      ${benesCell}
+      <td style="text-align:right">$${mktM}M</td>
+      <td style="text-align:right">$${cmhcM}M</td>
+      <td style="text-align:center"><span class="fs-badge ${capCls}">${r.cap}%</span></td>
+      <td style="font-size:.75rem;color:var(--text-3)">${esc(r.insight || '')}</td>
+    </tr>`;
+  }).join('');
+
+  // E&M footnote
+  const emNote = em.fl_market_dollars
+    ? `<div style="font-size:.75rem;color:var(--text-3);margin-top:.75rem;border-top:1px solid var(--border-2);padding-top:.5rem">
+        <strong>*</strong> E&M codes (99202–99215) excluded — $${(em.fl_market_dollars/1e6).toFixed(0)}M market includes non-BH services (primary care, specialist visits). CMHCs bill $${(em.cmhc_dollars/1e6).toFixed(1)}M in E&M (${em.cmhc_capture_pct}% capture), mostly 99214.
+      </div>`
+    : '';
+
+  return `
+    <div class="fs-card blue" style="margin-bottom:1rem">
+      <div class="fs-card-title">Where the Money Is: FL Medicaid BH Market ($${(bhTotal/1e6).toFixed(0)}M)*</div>
+      <div class="fs-card-body">
+        <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:.75rem">
+          <div style="flex:1;height:24px;border-radius:4px;overflow:hidden;display:flex;background:#e5e7eb">${barSegs}</div>
+          <div style="font-size:.8rem;white-space:nowrap;color:var(--text-3)">CMHC share: <strong>${cmhcBhPct}%</strong> ($${(cmhcBhTotal/1e6).toFixed(0)}M)</div>
+        </div>
+        <table class="fs-table" style="font-size:.8rem">
+          <thead><tr><th>Category</th><th style="text-align:right">Benes/Mo</th><th style="text-align:right">FL Market</th><th style="text-align:right">CMHC Rev</th><th style="text-align:center">CMHC Capture</th><th>Insight</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        ${emNote}
+      </div>
+    </div>`;
+}
+
+// ── Chapter 1, Section 0: Data Calibration ────────────────────────────────────
+function renderDataCalibration(ind) {
+  const cal = ind.data_calibration;
+  if (!cal) return '';
+  const du = cal.doge_universe || {};
+  const pub = cal.fl_medicaid_published || {};
+  const tbl = cal.calibration_table || [];
+  const tots = cal.totals || {};
+
+  function fmtM(n) { return n == null ? '—' : '$' + Number(n).toLocaleString() + 'M'; }
+  function fmtB(n) { return n == null ? '—' : '$' + (n / 1e9).toFixed(1) + 'B'; }
+  function fmtK(n) { return n == null ? '—' : Math.round(n / 1000).toLocaleString() + 'K'; }
+  function confBadge(c) {
+    const map = {high:'🟢',medium:'🟡',very_low:'🔴',not_observable:'⬛',high_total_low_bh:'🟡'};
+    return map[c] || '⚪';
+  }
+  function rangePct(lo, hi) {
+    if (lo == null && hi == null) return '—';
+    if (lo === 0 && hi === 0) return '0%';
+    return lo + '–' + hi + '%';
+  }
+
+  // ── Extrapolation guidance per confidence level ──
+  function extrapLabel(conf, covLo, covHi) {
+    if (conf === 'high') return '<span style="color:var(--green-text)">Use as reported</span>';
+    if (conf === 'medium') return '<span style="color:var(--amber)">~1.1–1.3× adjustment</span>';
+    if (conf === 'very_low') return '<span style="color:var(--red)">' + (covLo != null ? `~${Math.round(100/covHi)}–${Math.round(100/covLo)}× (${covLo}–${covHi}% visible)` : 'Not extrapolable') + '</span>';
+    if (conf === 'not_observable') return '<span style="color:var(--text-3)">Not in dataset</span>';
+    if (conf === 'high_total_low_bh') return '<span style="color:var(--amber)">~1.0–1.3× (mostly non-BH)</span>';
+    return '—';
+  }
+
+  // ── Build the OP BH children rows ──
+  const opBh = tbl.find(r => r.id === 'op_bh');
+  let opRows = '';
+  if (opBh && opBh.children) {
+    opRows = opBh.children.map(c => `
+      <tr>
+        <td style="padding-left:1.5rem;font-size:.8rem">${esc(c.label)}</td>
+        <td class="num">${fmtM(c.doge_fl_M)}</td>
+        <td class="num">${fmtK(c.doge_benes)}</td>
+        <td class="num">${fmtM(c.cmhc_M)}</td>
+        <td class="num">${fmtK(c.cmhc_benes)}</td>
+        <td class="num"><strong>${c.cmhc_share_pct}%</strong></td>
+        <td class="num"><strong>${c.cmhc_bene_share_pct}%</strong></td>
+        <td class="num">${confBadge(c.confidence)}</td>
+        <td class="num" style="font-size:.75rem">${extrapLabel(c.confidence)}</td>
+      </tr>`).join('');
+  }
+
+  // ── Build non-OP rows ──
+  const otherRows = tbl.filter(r => r.id !== 'op_bh').map(r => {
+    const hasEst = r.est_fl_medicaid_lo_M != null;
+    const estCell = hasEst ? fmtM(r.est_fl_medicaid_lo_M) + '–' + fmtM(r.est_fl_medicaid_hi_M) : '—';
+    const covCell = rangePct(r.doge_coverage_lo_pct, r.doge_coverage_hi_pct);
+    return `
+      <tr style="border-top:1px solid var(--border)">
+        <td><strong>${esc(r.label)}</strong></td>
+        <td class="num">${fmtM(r.doge_fl_M)}</td>
+        <td class="num">${r.doge_benes ? fmtK(r.doge_benes) : '—'}</td>
+        <td class="num" colspan="2">${estCell}</td>
+        <td class="num">${covCell}</td>
+        <td class="num">${confBadge(r.confidence)}</td>
+        <td class="num" style="font-size:.75rem">${extrapLabel(r.confidence, r.doge_coverage_lo_pct, r.doge_coverage_hi_pct)}</td>
+      </tr>
+      <tr><td colspan="9" style="font-size:.75rem;color:var(--text-3);padding:.15rem .5rem .5rem 1rem">${esc(r.rationale)}</td></tr>`;
+  }).join('');
+
+  return `
+  <div class="fs-section" id="sec-data-calibration">
+    <div class="fs-section-header">
+      <span class="fs-section-tag blue">CHAPTER 1</span>
+      <h2 class="fs-section-h">Data Source & Calibration</h2>
+    </div>
+
+    <div class="fs-narrative" style="margin-bottom:1rem">
+      <p>This report uses the <strong>DOGE Medicaid Provider Spending</strong> dataset — outpatient and professional claims (HCPCS-coded) for all FL Medicaid-enrolled providers. Before analyzing any numbers, we calibrate what this data covers vs. the full FL Medicaid market.</p>
+    </div>
+
+    <div class="fs-stat-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:1.25rem">
+      <div class="fs-stat-card">
+        <div class="fs-stat-value">${fmtB(pub.total_spending?.value)}</div>
+        <div class="fs-stat-label">Total FL Medicaid (FY2024)</div>
+      </div>
+      <div class="fs-stat-card">
+        <div class="fs-stat-value">${fmtB(du.fl_paid)}</div>
+        <div class="fs-stat-label">DOGE FL Coverage (${cal.coverage_summary?.doge_vs_total_pct || '—'}%)</div>
+      </div>
+      <div class="fs-stat-card">
+        <div class="fs-stat-value">${(du.fl_providers || 0).toLocaleString()}</div>
+        <div class="fs-stat-label">FL Providers in DOGE</div>
+      </div>
+      <div class="fs-stat-card">
+        <div class="fs-stat-value">${(du.fl_pml_npis || 0).toLocaleString()}</div>
+        <div class="fs-stat-label">FL Medicaid-Enrolled NPIs</div>
+      </div>
+    </div>
+
+    <div class="fs-card blue" style="margin-bottom:.75rem">
+      <div class="fs-card-title">What DOGE Captures</div>
+      <div class="fs-card-body" style="font-size:.8125rem">
+        <strong>Includes:</strong> Fee-for-service claims + partial managed care encounter data, outpatient/professional HCPCS-coded services<br>
+        <strong>Excludes:</strong> Inpatient (DRGs), pharmacy, LTSS capitation, nursing facility per-diem, claims with <12 encounters (cell suppression)<br>
+        <strong>FL Medicaid split:</strong> ${pub.mco_pct || 65}% managed care (SMMC) / ${pub.ffs_pct || 35}% fee-for-service · ${(pub.enrollment?.value/1e6).toFixed(1)}M enrollees
+      </div>
+    </div>
+
+    <div class="fs-card" style="margin-bottom:1.25rem">
+      <div class="fs-card-title">Calibration: DOGE Visibility by Service Line</div>
+      <div class="fs-card-body" style="overflow-x:auto">
+        <table class="fs-table" style="width:100%;font-size:.8rem">
+          <thead>
+            <tr>
+              <th style="text-align:left">Service Line</th>
+              <th class="num">DOGE FL ($)</th>
+              <th class="num">DOGE Benes</th>
+              <th class="num">CMHC ($)</th>
+              <th class="num">CMHC Benes</th>
+              <th class="num">CMHC $ Share</th>
+              <th class="num">CMHC Bene Share</th>
+              <th class="num">Confidence</th>
+              <th class="num">Extrapolation</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr style="background:var(--bg-2);font-weight:600">
+              <td>Outpatient BH</td>
+              <td class="num">${fmtM(opBh?.doge_fl_M)}</td>
+              <td class="num">—</td>
+              <td class="num">${fmtM(opBh?.cmhc_M)}</td>
+              <td class="num">—</td>
+              <td class="num">${opBh?.cmhc_share_pct}%</td>
+              <td class="num">—</td>
+              <td class="num">${confBadge(opBh?.confidence)}</td>
+              <td class="num" style="font-size:.75rem"><span style="color:var(--green-text)">~1.2–1.4× (${opBh?.doge_coverage_lo_pct}–${opBh?.doge_coverage_hi_pct}% visible)</span></td>
+            </tr>
+            ${opRows}
+            <tr style="background:var(--bg-2);font-weight:600;border-top:2px solid var(--border)">
+              <td colspan="9" style="padding-top:.75rem;font-size:.8125rem;letter-spacing:.03em">OTHER FL MEDICAID BH (not in OP BH totals above)</td>
+            </tr>
+          </tbody>
+          <tbody>
+            ${otherRows}
+          </tbody>
+          <tfoot>
+            <tr style="border-top:2px solid var(--text-1);font-weight:700">
+              <td>Total FL Medicaid BH (est.)</td>
+              <td class="num">${fmtM(tots.doge_fl_visible_M)}</td>
+              <td class="num">—</td>
+              <td class="num" colspan="3">${fmtM(tots.est_fl_medicaid_bh_lo_M)}–${fmtM(tots.est_fl_medicaid_bh_hi_M)}</td>
+              <td class="num">${tots.doge_coverage_lo_pct}–${tots.doge_coverage_hi_pct}%</td>
+              <td></td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+
+    <div class="fs-card orange" style="margin-bottom:1rem">
+      <div class="fs-card-title">What This Report Covers vs. What It Can't See</div>
+      <div class="fs-card-body" style="font-size:.8125rem">
+        <strong>This report analyzes: Outpatient BH ($795M visible, est. 69–86% of true market)</strong> — where DOGE coverage is strong and CMHC market position is measurable.<br><br>
+        <strong>Not in this report:</strong><br>
+        · <strong>ABA ($111M visible / $1.5–2.6B est.)</strong> — 4–7% coverage. Legislature budgeted $1.52B; larger than all other OP BH combined. Moved from FFS to managed care Feb 2025.<br>
+        · <strong>SUD ($41M visible / $400–700M est.)</strong> — 6–10% coverage. Mostly residential, pharmacy (MAT), and MCO-routed. FL ranks 51st of 52 in per-capita MH spending.<br>
+        · <strong>Inpatient BH ($0 visible / $500M–1B est.)</strong> — DRG billing not in DOGE. 174K Baker Act exams/yr.<br>
+        · <strong>Pharmacy ($0 visible / $675–850M est.)</strong> — Antipsychotics alone est. $420–480M.
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── Chapter 1: Industry Landscape ───────────────────────────────────────────
 function renderIndustryLandscape(ind) {
   const sector = ind.sector || {};
   const hero = ind.hero_stats || {};
@@ -568,8 +1141,8 @@ function renderIndustryLandscape(ind) {
 
     <div class="fs-stat-grid" style="grid-template-columns:repeat(4,1fr)">
       <div class="fs-stat-card"><div class="fs-stat-value">${esc(hero.rate_gap?.value || '$8.1M')}</div><div class="fs-stat-label">${esc(hero.rate_gap?.label || 'Lost to Rate Gaps')}</div></div>
-      <div class="fs-stat-card"><div class="fs-stat-value">${esc(hero.leakage_gap?.value || '$157M')}</div><div class="fs-stat-label">${esc(hero.leakage_gap?.label || 'Lost to Leakage')}</div></div>
-      <div class="fs-stat-card"><div class="fs-stat-value">${esc(hero.ratio?.value || '19x')}</div><div class="fs-stat-label">${esc(hero.ratio?.label || 'Leakage vs Rate Impact')}</div></div>
+      <div class="fs-stat-card"><div class="fs-stat-value">${esc(hero.leakage_gap?.value || '$14.3M')}</div><div class="fs-stat-label">${esc(hero.leakage_gap?.label || 'Lost to Post-Crisis Leakage')}</div></div>
+      <div class="fs-stat-card"><div class="fs-stat-value">${esc(hero.ratio?.value || '1.8x')}</div><div class="fs-stat-label">${esc(hero.ratio?.label || 'Leakage vs Rate Impact')}</div></div>
       <div class="fs-stat-card"><div class="fs-stat-value">${esc(hero.caseload_imbalance?.value || '3.3x')}</div><div class="fs-stat-label">${esc(hero.caseload_imbalance?.label || 'Intake-to-Therapy Caseload')}</div></div>
     </div>
 
@@ -582,96 +1155,197 @@ function renderIndustryLandscape(ind) {
       </div>
     </div>
 
+    ${_renderMarketComposition(ind)}
+
     <div class="fs-narrative">
-      <p>Florida's 86 Community Mental Health Centers are the behavioral health safety net — the front door for Medicaid beneficiaries in crisis or seeking care for the first time. They handle nearly a quarter of all BH intake assessments statewide. But the data tells a story of a sector under structural pressure.</p>
-      <p>Three interconnected problems define the CMHC financial landscape. First, <strong>effective reimbursement rates lag the broader market</strong> on intake and high-acuity services, costing the sector an estimated $8.1M annually. Second — and far more consequential — <strong>patients who enter through CMHCs don't stay for ongoing care</strong>. The sector captures 23.6% of intake but only 5.0% of ongoing services, an engagement gap worth up to $157M. Third, these two forces combine to create <strong>unsustainable caseload imbalance</strong>: intake clinicians are stretched to 50% above industry norms while therapy panels sit at half capacity.</p>
-      <p>The comparison group throughout this report is <strong>Rest-of-FL Medicaid providers (excluding CMHCs)</strong>. The P75 of that group — best-in-class performance — is the transformation target. Performing at the CMHC median is not a sign of health; it may still represent underperformance relative to the broader market.</p>
+      <p>Florida's 86 Community Mental Health Centers are the behavioral health safety net — the front door for Medicaid beneficiaries in crisis or seeking care for the first time. This report analyzes the sector through <strong>three core metrics</strong> that together tell the full financial story:</p>
+      <ul style="margin:.5rem 0 .75rem 1.2rem">
+        <li><strong>Payment per Claim (PPC)</strong> — what you collect per service. Are your rates competitive?</li>
+        <li><strong>Beneficiaries per Clinician (BPC)</strong> — your panel size. Is your workforce capacity healthy?</li>
+        <li><strong>Market Share</strong> — what % of FL Medicaid BH patients you serve. Where are you losing patients?</li>
+      </ul>
+      <p>We measure these across <strong>5 service categories</strong> and benchmark against <strong>Rest-of-FL P75</strong> — best-in-class performance — as the transformation target. What emerges is a sector with an $8.1M rate gap, a $14.3M post-crisis leakage gap, and a caseload imbalance that compounds both.</p>
     </div>
 
-    <div class="fs-card-grid" style="grid-template-columns:repeat(3,1fr)">
-      ${Object.entries(ind.segments || {}).map(([key, seg]) => `
-        <div class="fs-card ${key === 'intake' ? 'blue' : key === 'high_acuity' ? 'yellow' : 'green'}">
-          <div class="fs-card-title">${esc(seg.label)}</div>
-          <div class="fs-card-big">${seg.cmhc_share || '—'}%</div>
+    <div class="fs-insight" style="margin-bottom:1rem">
+      <strong>💡 The big picture:</strong> The rate problem is real ($8.1M). Post-crisis leakage adds another $14.3M. CMHCs handle 32% of crisis/ACT but only 12% of ongoing BH — <em>post-crisis retention</em> is the hidden lever.
+    </div>
+
+    <div class="fs-card-grid" style="grid-template-columns:repeat(5,1fr)">
+      ${CATEGORY_ORDER.map(key => {
+        const cat = (ind.categories || ind.segments || {})[key] || {};
+        const meta = CATEGORY_META[key] || {};
+        return `
+        <div class="fs-card ${meta.color || 'blue'}">
+          <div class="fs-card-title">${esc(cat.label || meta.label)}</div>
+          <div class="fs-card-big">${cat.cmhc_share || '—'}%</div>
           <div class="fs-card-sub">CMHC market share</div>
           <div style="margin-top:.5rem;font-size:.75rem;color:var(--text-3)">
-            CMHC RPB: ${fmt$(seg.sector_rpb)} · Rest-of-FL RPB: ${fmt$(seg.rest_rpb)}
+            CMHC RPB: ${fmt$(cat.sector_rpb)} · Rest-of-FL RPB: ${fmt$(cat.rest_rpb)}
           </div>
-          <div style="font-size:.7rem;color:var(--text-3);margin-top:.25rem">${(seg.codes || []).join(', ')}</div>
-        </div>
-      `).join('')}
+          <div style="font-size:.7rem;color:var(--text-3);margin-top:.25rem">${(cat.codes || []).join(', ')}</div>
+        </div>`;
+      }).join('')}
     </div>
   </div>`;
 }
 
 function renderIndustryRates(ind) {
   const rates = ind.problems?.rates || {};
-  const byStage = rates.by_stage || {};
-  const gaps = rates.key_rate_gaps || [];
-  const strengths = rates.key_rate_strengths || [];
+  const benchmarks = ind.benchmark_table || [];
+  const catMap = _getCategoryMap(ind);
+  const panels = ind.problems?.burnout?.panel_gaps || [];
+  const engagement = ind.problems?.engagement || {};
+  const mktShare = engagement.market_share || {};
 
-  const stageRows = Object.entries(byStage).map(([stage, d]) => `
-    <tr>
-      <td><span class="fs-badge ${stage === 'intake' ? 'blue' : stage === 'high_acuity' ? 'yellow' : 'green'}">${esc(stage)}</span></td>
-      <td>${fmt$(d.cmhc_rpb)}</td>
-      <td>${fmt$(d.rest_rpb)}</td>
-      <td><span class="fs-badge ${d.gap_pct < 0 ? 'red' : 'green'}">${fmtPct(d.gap_pct)}</span></td>
-      <td style="font-size:.75rem;color:var(--text-3)">${esc(d.direction)}</td>
-    </tr>
-  `).join('');
+  // Build a unified row per code: rate + panel + leakage
+  const benchByCode = {};
+  for (const b of benchmarks) benchByCode[b.code] = b;
+  const panelByCode = {};
+  for (const p of panels) panelByCode[p.code] = p;
 
-  const benchRows = (ind.benchmark_table || []).map(b => `
-    <tr>
-      <td><strong>${esc(b.code)}</strong></td>
-      <td>${fmt$(b.cmhc_p50)}</td>
-      <td>${fmt$(b.rest_p50)}</td>
-      <td><strong>${fmt$(b.rest_p75)}</strong></td>
-      <td>${fmtN(b.rest_n)}</td>
-    </tr>
-  `).join('');
+  const allCodes = [...new Set([...benchmarks.map(b=>b.code), ...panels.map(p=>p.code)])];
+  const items = allCodes.map(code => ({code, ...benchByCode[code], panel: panelByCode[code]}));
+  const grouped = _groupByCategory(items, catMap);
+
+  function renderRow(d) {
+    const rateGap = d.cmhc_p50 && d.rest_p75 ? ((d.cmhc_p50 - d.rest_p75) / d.rest_p75 * 100) : null;
+    const rateCls = rateGap == null ? '' : rateGap >= 0 ? 'green' : rateGap >= -15 ? 'yellow' : 'red';
+    const p = d.panel;
+    const panelGap = p ? p.gap_pct : null;
+    const panelCls = panelGap == null ? '' : panelGap > 20 ? 'red' : panelGap > 0 ? 'yellow' : panelGap > -20 ? 'yellow' : 'green';
+    return `<tr>
+      <td><strong>${esc(d.code)}</strong><br><span style="font-size:.7rem;color:var(--text-3)">${esc(_codeLabel(d.code))}</span></td>
+      <td>${fmt$(d.cmhc_p50)}</td>
+      <td>${fmt$(d.rest_p50)}</td>
+      <td><strong>${fmt$(d.rest_p75)}</strong></td>
+      <td>${rateGap != null ? `<span class="fs-badge ${rateCls}">${rateGap > 0 ? '+' : ''}${rateGap.toFixed(1)}%</span>` : '—'}</td>
+      <td>${p ? fmtN(p.cmhc_panel) : '—'}</td>
+      <td>${p ? fmtN(p.rest_panel) : '—'}</td>
+      <td>${panelGap != null ? `<span class="fs-badge ${panelCls}">${panelGap > 0 ? '+' : ''}${panelGap.toFixed(0)}%</span>` : '—'}</td>
+      <td>${fmt$(d.rest_p50_rpb)}</td>
+    </tr>`;
+  }
+
+  let tableRows = '';
+  for (const cat of CATEGORY_ORDER) {
+    const rows = (grouped[cat] || []).sort((a,b) => (CMHC_REVENUE[b.code]||0) - (CMHC_REVENUE[a.code]||0));
+    if (!rows.length) continue;
+    const meta = CATEGORY_META[cat];
+    const share = mktShare[cat]?.cmhc_pct;
+    const shareLabel = share != null ? ` · CMHC share: ${share}%` : '';
+    tableRows += `<tr class="fs-cat-header"><td colspan="9"><span class="fs-badge ${meta.color}">${esc(meta.short)}</span>${shareLabel}</td></tr>`;
+    tableRows += rows.map(renderRow).join('');
+  }
 
   return `
   <div class="fs-section" id="sec-industry-rates">
     <div class="fs-section-header">
-      <span class="fs-section-tag problem">PROBLEM 1</span>
-      <h2 class="fs-section-h">${esc(rates.label || 'Lower Effective Rates')}</h2>
+      <span class="fs-section-tag problem">RATES · PANEL · LEAKAGE</span>
+      <h2 class="fs-section-h">CMHC vs Rest-of-FL by Category</h2>
     </div>
 
     <div class="fs-sector-ref">${esc(rates.description)}</div>
 
     <div class="fs-narrative">
-      <p>When a CMHC clinician performs the same service as a non-CMHC provider, the CMHC typically collects less. This isn't a billing error — it reflects a structural gap in effective reimbursement that compounds across thousands of encounters.</p>
-      <p>The damage is concentrated at the <strong>front door and the acute end of the spectrum</strong>. Intake assessments (H0031) pay CMHCs 15% less per beneficiary than the rest of the market. High-acuity services — crisis stabilization, psychosocial rehabilitation — show a 25% gap. These are exactly the services CMHCs are built to deliver, and they're being underpaid for them.</p>
-      <p>There is one bright spot: <strong>ongoing care rates actually favor CMHCs</strong>, with a +48.7% RPB advantage in sustained treatment. This likely reflects deeper engagement intensity when patients do stay — more visits, more wraparound services. The problem isn't what CMHCs earn per patient in ongoing care. It's that so few patients make it there.</p>
+      <p>Now we benchmark CMHCs against the broader market. This table consolidates <strong>all three core metrics</strong> — PPC (rate), BPC (panel), and market share — by service category. The key column is <strong>Gap to Rest-of-FL P75</strong>: this is the distance to best-in-class, and it's significant.</p>
+      <p>The P50→P75 spread in the Rest-of-FL market is often <strong>20-40%</strong>. That spread represents the difference between average and excellent. CMHCs that close this gap capture materially more revenue per claim without seeing more patients.</p>
     </div>
 
-    <h3 style="font-size:.875rem;font-weight:700;margin:1rem 0 .5rem">Rate Gap by Care Stage</h3>
+    <div class="fs-insight" style="margin-bottom:1rem">
+      <strong>💡 Aha:</strong> The spread between P50 and P75 is where the money is. On T1017 (care mgmt), P75 pays $78.88 vs P50 at $63.45 — a 24% premium. On T1015 (med mgmt), P75 pays $172.44 vs P50 at $70.86 — a <em>143%</em> premium. P75 is the benchmark worth chasing.
+    </div>
+
     <div class="fs-table-wrap">
-      <table class="fs-table">
-        <thead><tr><th>Stage</th><th>CMHC RPB</th><th>Rest-of-FL RPB</th><th>Gap</th><th>Direction</th></tr></thead>
-        <tbody>${stageRows}</tbody>
+      <table class="fs-table" style="font-size:.8rem">
+        <thead>
+          <tr>
+            <th rowspan="2">Code</th>
+            <th colspan="4" style="text-align:center;border-bottom:1px solid var(--border)">Rate (PPC)</th>
+            <th colspan="3" style="text-align:center;border-bottom:1px solid var(--border)">Panel (BPC)</th>
+            <th rowspan="2">RPB</th>
+          </tr>
+          <tr>
+            <th>CMHC</th><th>Rest P50</th><th>Rest P75</th><th>Gap</th>
+            <th>CMHC</th><th>Rest-FL</th><th>Gap</th>
+          </tr>
+        </thead>
+        <tbody>${tableRows}</tbody>
       </table>
     </div>
 
-    <h3 style="font-size:.875rem;font-weight:700;margin:1rem 0 .5rem">Market Benchmark Table (Rest-of-FL excl. CMHCs)</h3>
-    <div class="fs-table-wrap">
-      <table class="fs-table">
-        <thead><tr><th>Code</th><th>CMHC P50</th><th>Rest P50</th><th>Rest P75 (Target)</th><th>Providers</th></tr></thead>
-        <tbody>${benchRows}</tbody>
-      </table>
-    </div>
-
-    <div class="fs-card-grid-2" style="margin-top:1rem">
-      <div class="fs-card red">
-        <div class="fs-card-title">Key Rate Gaps</div>
-        <div class="fs-card-body">${gaps.map(g => `<strong>${g.code}</strong>: CMHC P50 ${fmt$(g.cmhc_p50)} vs Rest P50 ${fmt$(g.rest_p50)} (${fmtPct(g.gap_pct)})`).join('<br>')}</div>
-      </div>
-      <div class="fs-card green">
-        <div class="fs-card-title">Sector Strengths</div>
-        <div class="fs-card-body">${strengths.map(g => `<strong>${g.code}</strong>: CMHC P50 ${fmt$(g.cmhc_p50)} vs Rest P50 ${fmt$(g.rest_p50)} (${fmtPct(g.gap_pct)})`).join('<br>')}</div>
-      </div>
+    <div class="fs-insight" style="margin-top:1rem">
+      <strong>Reading this table:</strong> Green badges = CMHC outperforms the benchmark. Red = underperforms. The rate gap shows distance to Rest-of-FL P75 (the target). Panel gap shows clinician workload relative to the market. RPB shows revenue per beneficiary — a proxy for engagement depth.
     </div>
   </div>`;
+}
+
+function _renderMarketShareTrends(ind) {
+  const trends = ind.market_share_trends || {};
+  const years = Object.keys(trends).filter(y => !y.startsWith('_')).sort();
+  if (years.length < 2) return '';
+
+  const cats = [
+    {key: 'intake', label: 'Intake', color: '#3b82f6'},
+    {key: 'high_acuity', label: 'High Acuity', color: '#ef4444'},
+    {key: 'ongoing_bh', label: 'Ongoing BH', color: '#22c55e'},
+    {key: 'med_mgmt', label: 'Med Mgmt', color: '#f59e0b'},
+    {key: 'total', label: 'Total CMHC', color: '#6b7280'},
+  ];
+
+  // Build sparkline SVGs for each category
+  const W = 120, H = 32, PAD = 2;
+  function sparkline(key, color) {
+    const vals = years.map(y => trends[y]?.[key] || 0);
+    const mn = Math.min(...vals) * 0.8;
+    const mx = Math.max(...vals) * 1.1 || 1;
+    const pts = vals.map((v, i) => {
+      const x = PAD + (i / (vals.length - 1)) * (W - PAD * 2);
+      const y = H - PAD - ((v - mn) / (mx - mn)) * (H - PAD * 2);
+      return `${x},${y}`;
+    }).join(' ');
+    const first = vals[0], last = vals[vals.length - 1];
+    const delta = last - first;
+    const arrow = delta > 1 ? '↑' : delta < -1 ? '↓' : '→';
+    const deltaColor = delta > 1 ? 'var(--green, #16a34a)' : delta < -1 ? 'var(--red, #dc2626)' : '#6b7280';
+    return `<td style="text-align:center;padding:4px 8px">
+      <svg width="${W}" height="${H}" style="display:block;margin:0 auto"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2"/></svg>
+      <span style="font-size:.7rem;color:${deltaColor};font-weight:600">${arrow} ${first}% → ${last}% (${delta > 0 ? '+' : ''}${delta.toFixed(1)}pp)</span>
+    </td>`;
+  }
+
+  const headerRow = years.map(y => `<th style="font-size:.7rem;color:var(--text-3);padding:2px 6px;text-align:center">${y}</th>`).join('');
+  const dataRows = cats.map(c => {
+    const vals = years.map(y => {
+      const v = trends[y]?.[c.key];
+      return `<td style="text-align:center;padding:3px 6px;font-size:.8rem;font-weight:${c.key === 'total' ? '700' : '500'}">${v != null ? v + '%' : '—'}</td>`;
+    }).join('');
+    return `<tr${c.key === 'total' ? ' style="border-top:2px solid var(--border);background:var(--bg-2,#f8fafc)"' : ''}>
+      <td style="padding:3px 8px;font-size:.8rem;font-weight:600"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${c.color};margin-right:4px"></span>${c.label}</td>
+      ${vals}
+      ${sparkline(c.key, c.color)}
+    </tr>`;
+  }).join('');
+
+  return `
+    <h3 style="font-size:.9rem;font-weight:700;margin:1.5rem 0 .5rem">Market Share Trend: CMHC Capture by Category (2019–2024)</h3>
+    <div style="overflow-x:auto">
+      <table class="fs-table" style="width:100%">
+        <thead><tr>
+          <th style="text-align:left;padding:2px 8px;font-size:.7rem;color:var(--text-3)">Category</th>
+          ${headerRow}
+          <th style="font-size:.7rem;color:var(--text-3);text-align:center;padding:2px 8px">Trend</th>
+        </tr></thead>
+        <tbody>${dataRows}</tbody>
+      </table>
+    </div>
+    <div class="fs-insight" style="margin-top:.75rem">
+      <strong>💡 Key trend:</strong> High acuity share surged from 12% to 31% — CMHCs are becoming the crisis backbone.
+      Ongoing BH share recovered to 12% after a dip in 2022.
+      Med mgmt share nearly doubled (14.5% → 24.5%).
+      The sector is growing its market position, but primarily in acute and medication services.
+    </div>
+  `;
 }
 
 function renderIndustryLeakage(ind) {
@@ -690,27 +1364,39 @@ function renderIndustryLeakage(ind) {
     <div class="fs-sector-ref">${esc(eng.description)}</div>
 
     <div class="fs-narrative">
-      <p>This is the sector's defining problem — and it's not about rates. For every dollar CMHCs lose to lower reimbursement, they lose <strong>nineteen dollars to patients who walk in the front door and never come back</strong> for ongoing care.</p>
-      <p>CMHCs are the entry point for nearly 1 in 4 Medicaid BH beneficiaries in Florida. But by the time those patients need sustained therapy, care management, or medication follow-up, the vast majority are being seen elsewhere — or not at all. The sector's share drops from 23.6% at intake to just 5.0% in ongoing care. That cliff is the leakage problem.</p>
-      <p>The math is stark: CMHCs currently earn $38.6M in ongoing care revenue. If they retained patients at the same rate they acquire them, that figure would approach $183M. The gap — up to $157M — represents the single largest financial opportunity in the sector. And it comes with a counterintuitive insight: <strong>when patients do stay, CMHCs deliver more intensive, higher-value care</strong> than the rest of the market, earning 48.7% more per beneficiary. The sector doesn't have an ongoing care rate problem. It has a retention problem.</p>
+      <p>CMHCs capture 15% of intake and 12% of ongoing care — the retention gap is smaller than initially estimated. But the real signal is in <strong>high acuity</strong>: CMHCs handle <strong>32% of crisis/ACT services</strong> but only 12% of ongoing BH. The question is post-crisis retention — do patients step down to ongoing CMHC care or leave the system?</p>
+      <p>The critical question remains: <strong>why do patients leave after crisis stabilization?</strong> Is it a <em>supply gap</em> (CMHCs don't offer step-down services) or a <em>handoff gap</em> (they offer it, but the transition fails)?</p>
     </div>
 
-    <div class="fs-stat-grid" style="grid-template-columns:repeat(3,1fr);margin-top:1rem">
-      <div class="fs-stat-card">
-        <div class="fs-stat-value">${share.intake?.cmhc_pct || 23.6}%</div>
-        <div class="fs-stat-label">Intake Market Share</div>
-      </div>
-      <div class="fs-stat-card">
-        <div class="fs-stat-value">${share.high_acuity?.cmhc_pct || 14.4}%</div>
-        <div class="fs-stat-label">High-Acuity Share</div>
-      </div>
-      <div class="fs-stat-card" style="border-color:var(--red-border)">
-        <div class="fs-stat-value" style="color:var(--red)">${share.ongoing?.cmhc_pct || 5.0}%</div>
-        <div class="fs-stat-label">Ongoing Care Share</div>
-      </div>
+    <div class="fs-insight" style="margin-bottom:1rem">
+      <strong>💡 Aha:</strong> It's largely a <em>supply gap</em>. Only 1 of 25 codes (H2019) is offered by all 86 CMHCs. Care management (T1017) — an $18M revenue category — is offered by only 40% of CMHCs. High-acuity services average just 17% coverage. Patients can't stay for services that aren't offered.
     </div>
 
-    <div class="fs-card-grid-2" style="margin-top:1rem">
+    <h3 style="font-size:.9rem;font-weight:700;margin:1.5rem 0 .5rem">Market Share by Category</h3>
+    <div class="fs-stat-grid" style="grid-template-columns:repeat(5,1fr)">
+      ${CATEGORY_ORDER.map(cat => {
+        const meta = CATEGORY_META[cat];
+        const pct = share[cat]?.cmhc_pct ?? '—';
+        const isLow = typeof pct === 'number' && pct < 10;
+        return `<div class="fs-stat-card"${isLow ? ' style="border-color:var(--red-border)"' : ''}>
+          <div class="fs-stat-value"${isLow ? ' style="color:var(--red)"' : ''}>${pct}%</div>
+          <div class="fs-stat-label">${esc(meta.short)}</div>
+        </div>`;
+      }).join('')}
+    </div>
+
+    ${_renderMarketShareTrends(ind)}
+
+    <h3 style="font-size:.9rem;font-weight:700;margin:1.5rem 0 .5rem">Supply Gap: % of CMHCs Offering Each Service</h3>
+    <div class="fs-narrative" style="margin-bottom:.75rem">
+      <p>If patients leave because the CMHC <em>doesn't offer</em> the service, that's a supply gap. The table below shows how many of 86 CMHCs bill each code. Low coverage = supply gap = structural leakage that no amount of retention effort can fix.</p>
+    </div>
+    ${_renderCoverageTable(ind)}
+
+    <h3 style="font-size:.9rem;font-weight:700;margin:1.5rem 0 .5rem">Supply Gap vs Retention Gap by Category</h3>
+    ${_renderSupplyRetentionCards(ind)}
+
+    <div class="fs-card-grid-2" style="margin-top:1.25rem">
       <div class="fs-card red">
         <div class="fs-card-title">Leakage Math</div>
         <div class="fs-card-body">
@@ -721,7 +1407,7 @@ function renderIndustryLeakage(ind) {
         </div>
       </div>
       <div class="fs-card green">
-        <div class="fs-card-title">Surprising Finding</div>
+        <div class="fs-card-title">When Patients Stay, CMHCs Win</div>
         <div class="fs-card-body">
           CMHC ongoing RPB: <strong>${fmt$(surprise.cmhc_ongoing_rpb)}</strong><br>
           Rest-of-FL ongoing RPB: <strong>${fmt$(surprise.rest_ongoing_rpb)}</strong><br>
@@ -732,9 +1418,8 @@ function renderIndustryLeakage(ind) {
     </div>
 
     <div class="fs-insight" style="margin-top:1rem">
-      <strong>The rate problem is real — but leakage dwarfs it ${esc(eng.ratio_display || '19x')}.</strong>
-      CMHCs handle nearly a quarter of FL Medicaid BH intake but only 5% of ongoing care.
-      The strategic question isn't just "how do we get paid more per visit?" but "how do we keep patients in care after the front door?"
+      <strong>Rate gaps ($8.1M) + post-crisis leakage ($14.3M) = $22.4M total sector opportunity.</strong>
+      CMHCs dominate crisis care (32% capture) but lose patients in the step-down. Expanding service line coverage — especially care management, ongoing therapy, and CPT psychotherapy — is the highest-leverage move.
     </div>
   </div>`;
 }
@@ -748,16 +1433,25 @@ function renderIndustryBurnout(ind) {
   const ongoing = kpi.ongoing_underload || {};
   const careMgmt = kpi.care_mgmt_load || {};
 
-  const panelRows = panels.map(p => `
-    <tr>
-      <td><strong>${esc(p.code)}</strong></td>
-      <td>${fmtN(p.cmhc_panel)}</td>
-      <td>${fmtN(p.rest_panel)}</td>
-      <td><span class="fs-badge ${p.gap_pct > 0 ? 'red' : p.gap_pct > -20 ? 'yellow' : 'green'}">${p.gap_pct > 0 ? '+' : ''}${fmtPct(p.gap_pct)}</span></td>
-      <td><span class="fs-badge ${p.stage === 'intake' ? 'blue' : p.stage === 'high_acuity' ? 'yellow' : 'green'}">${esc(p.stage || '')}</span></td>
-      <td style="font-size:.75rem;color:var(--text-3)">${esc(p.note || '')}</td>
-    </tr>
-  `).join('');
+  const catMap = _getCategoryMap(ind);
+  const panelItems = panels.map(p => ({code: p.code, ...p}));
+  const panelGrouped = _groupByCategory(panelItems, catMap);
+
+  let panelRows = '';
+  for (const cat of CATEGORY_ORDER) {
+    const rows = panelGrouped[cat] || [];
+    if (!rows.length) continue;
+    const meta = CATEGORY_META[cat];
+    panelRows += `<tr class="fs-cat-header"><td colspan="5"><span class="fs-badge ${meta.color}">${esc(meta.short)}</span></td></tr>`;
+    panelRows += rows.map(p => `
+      <tr>
+        <td><strong>${esc(p.code)}</strong><br><span style="font-size:.7rem;color:var(--text-3)">${esc(_codeLabel(p.code))}</span></td>
+        <td>${fmtN(p.cmhc_panel)}</td>
+        <td>${fmtN(p.rest_panel)}</td>
+        <td><span class="fs-badge ${p.gap_pct > 0 ? 'red' : p.gap_pct > -20 ? 'yellow' : 'green'}">${p.gap_pct > 0 ? '+' : ''}${fmtPct(p.gap_pct)}</span></td>
+        <td style="font-size:.75rem;color:var(--text-3)">${esc(p.note || '')}</td>
+      </tr>`).join('');
+  }
 
   return `
   <div class="fs-section" id="sec-industry-burnout">
@@ -771,9 +1465,12 @@ function renderIndustryBurnout(ind) {
     </div>
 
     <div class="fs-narrative">
-      <p>Problems 1 and 2 don't just cost money — they break the people delivering care. Lower rates force higher volume to meet revenue targets. Patient leakage means intake clinicians are on a treadmill: constantly processing new patients who won't convert to sustained caseloads downstream.</p>
-      <p>The data shows this clearly. CMHC intake clinicians carry panels of <strong>115 patients — 50% more than the industry norm</strong> of 76.5. Meanwhile, therapy clinicians serve panels of just 123, barely half the market standard of 227. The system is lopsided: the front door is overwhelmed while the back end runs below capacity.</p>
-      <p>This 3.3x imbalance ratio — intake volume per clinician divided by therapy volume — is the signature metric of the burnout cycle. Intake staff burn out from volume. Therapy staff can't build sustainable panels because patients leave. Care managers at 275 patients per clinician absorb the coordination burden for the entire flow. The result is turnover, which creates capacity gaps, which drives further revenue loss — a self-reinforcing spiral.</p>
+      <p>Rate gaps and leakage don't just cost money — they break the people delivering care. Lower rates force higher volume. Leakage means intake clinicians are on a treadmill: constantly processing new patients who don't convert to sustained caseloads.</p>
+      <p>CMHC intake clinicians carry panels of <strong>115 patients — 50% more than the industry norm</strong>. Therapy panels sit at 123, barely half the market's 227. Care managers at 275 patients absorb the coordination burden. The 3.3x intake-to-therapy imbalance ratio is the signature of this cycle.</p>
+    </div>
+
+    <div class="fs-insight" style="margin-bottom:1rem">
+      <strong>💡 Aha:</strong> Burnout isn't a standalone problem — it's the <em>outcome</em> of Problems 1 and 2. Fix leakage (so patients stay) and rates (so you need fewer visits), and the caseload rebalances itself. The 3.3x intake-to-therapy ratio is the diagnostic metric.
     </div>
 
     <div class="fs-stat-grid" style="grid-template-columns:repeat(3,1fr);margin-top:1rem">
@@ -816,7 +1513,7 @@ function renderIndustryBurnout(ind) {
     <h3 style="font-size:.875rem;font-weight:700;margin:1.5rem 0 .5rem">Caseload by Service Code</h3>
     <div class="fs-table-wrap">
       <table class="fs-table">
-        <thead><tr><th>Code</th><th>CMHC Panel</th><th>Rest-of-FL</th><th>Gap</th><th>Stage</th><th>Note</th></tr></thead>
+        <thead><tr><th>Code</th><th>CMHC Panel</th><th>Rest-of-FL</th><th>Gap</th><th>Note</th></tr></thead>
         <tbody>${panelRows}</tbody>
       </table>
     </div>
@@ -903,10 +1600,11 @@ function renderIndustryTrends(ind) {
     </div>
 
     <div class="fs-narrative">
-      <p>The three problems above aren't static — they've been moving over the past six years. The question isn't just "how big is the gap?" but "is it getting better or worse?" The answer, for most metrics, is sobering.</p>
-      <p>The <strong>rate gap has widened</strong> since 2019. CMHCs were already earning less per claim than the rest of the market, and that disadvantage has grown — from roughly -3% to -14%. The broader market has seen rate increases that CMHCs haven't fully captured, whether due to payer mix, contract structures, or coding patterns.</p>
-      <p>The <strong>ongoing care RPB advantage has eroded</strong>. CMHCs still earn more per beneficiary than the market in sustained care, but that edge has shrunk. This is a warning signal: the one area where the sector outperforms is losing ground.</p>
-      <p>The <strong>caseload imbalance has remained stubbornly flat</strong>. Despite awareness of burnout pressures, the ratio of intake-to-therapy volume per clinician hasn't materially improved. The structural forces — leakage and rate pressure — continue to drive the same lopsided workload distribution.</p>
+      <p>Are these problems getting better or worse? The six-year trend data is sobering: the rate gap has widened (-3% → -14%), the RPB advantage is eroding, and the caseload imbalance persists. None of these problems are self-correcting.</p>
+    </div>
+
+    <div class="fs-insight" style="margin-bottom:1rem">
+      <strong>💡 Aha:</strong> The rate gap has widened from -3% to -14% since 2019. The broader market captured rate increases that CMHCs missed. Without deliberate intervention — rate renegotiation, service expansion, retention infrastructure — the gap compounds.
     </div>
 
     <div class="fs-stat-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:1.25rem">
@@ -966,6 +1664,279 @@ function renderIndustryTrends(ind) {
       Without deliberate intervention — rate renegotiation, retention infrastructure, caseload rebalancing — the sector's structural pressures will continue to compound.
       The next chapter positions <em>your</em> organization within these dynamics to identify where you have leverage and where you're most exposed.
     </div>
+  </div>`;
+}
+
+// ── CMHC revenue by code (for sort-by-relevance) ───────────────────────────
+const CMHC_REVENUE = {
+  'H2017':17601670,'H2019':16891459,'T1017':12132488,'T1015':5665842,
+  'H0032':2968865,'H0040':2528102,'H0031':1937619,'99214':1763947,
+  'H2000':1732101,'99213':754070,'90837':615566,'90833':348442,
+  '99215':181871,'90792':141435,'H2010':108540,'H0036':108270,
+  'H0048':46530,'T1007':36489,'90791':36420,'90834':35590,
+  '99203':29678,'90832':28947,'99204':26833,'99212':24898,'H0004':10889,
+  '99202':0,'99205':0,'90836':0,'90838':0,'M0064':0,'90863':0,
+};
+
+// Category-level takeaways for published rates table
+const CATEGORY_TAKEAWAYS = {
+  intake: 'CMHCs are the gateway — 23% market share on intake, but tiered billing means most bill at the lowest rate.',
+  high_acuity: 'High-acuity is CMHC-dominated where offered (H0036: 57%, H2010: 37% share) but only a handful of CMHCs bill these codes.',
+  ongoing_bh: 'H2019 therapy is the anchor ($16.9M) but CPT psychotherapy codes (90832-90837) are underutilized — CMHCs collect 33% less than market on 60-min sessions.',
+  eval_mgmt: 'E&M is not a CMHC business — <2% market share across all levels. 99214 is the only code with meaningful volume.',
+  med_mgmt: 'T1015 drives $5.7M in revenue but CMHCs collect 9% less than published. 90833 (add-on psychotherapy) is a bright spot at 24% share.',
+};
+
+// ── Section: Published Rate Comparison ───────────────────────────────────────
+function renderIndustryPublishedRates(ind) {
+  const pub = ind.published_rate_comparison || {};
+  const codes = pub.codes || {};
+  const findings = pub.key_findings || [];
+  if (!Object.keys(codes).length) return '';
+
+  const catMap = _getCategoryMap(ind);
+  const items = Object.entries(codes).map(([code, d]) => ({code, ...d}));
+  const grouped = _groupByCategory(items, catMap);
+
+  function renderRow(d) {
+    // Show range if available, else single rate
+    const pubDisplay = d.published_range ? esc(d.published_range) : fmt$(d.published_rate);
+    // % of all FL claims done by CMHCs
+    const claimShare = d.cmhc_claim_share_pct;
+    const shareCls = claimShare == null ? '' : claimShare >= 20 ? 'green' : claimShare >= 10 ? 'yellow' : 'red';
+    return `<tr>
+      <td><strong>${esc(d.code)}</strong><br><span style="font-size:.75rem;color:var(--text-3)">${esc(_codeLabel(d.code))}</span></td>
+      <td style="font-size:.8rem;color:var(--text-3)">${esc(d.unit)}</td>
+      <td style="font-size:.8rem">${pubDisplay}</td>
+      <td>${fmt$(d.cmhc_p50_ppc)}</td>
+      <td>${fmt$(d.all_fl_p50_ppc)}</td>
+      <td>${claimShare != null ? `<span class="fs-badge ${shareCls}">${claimShare.toFixed(1)}%</span>` : '—'}</td>
+    </tr>`;
+  }
+
+  let tableRows = '';
+  for (const cat of CATEGORY_ORDER) {
+    const rows = (grouped[cat] || []).sort((a,b) => (CMHC_REVENUE[b.code]||0) - (CMHC_REVENUE[a.code]||0));
+    if (!rows.length) continue;
+    const meta = CATEGORY_META[cat];
+    const takeaway = CATEGORY_TAKEAWAYS[cat] || '';
+    tableRows += `<tr class="fs-cat-header"><td colspan="6"><span class="fs-badge ${meta.color}">${esc(meta.short)}</span>${takeaway ? `<span style="margin-left:.75rem;font-size:.75rem;color:var(--text-3)">${esc(takeaway)}</span>` : ''}</td></tr>`;
+    tableRows += rows.map(renderRow).join('');
+  }
+
+  return `
+  <div class="fs-section" id="sec-industry-published-rates">
+    <div class="fs-section-header">
+      <span class="fs-section-tag blue">FEE SCHEDULE</span>
+      <h2 class="fs-section-h">Effective Rates vs Published Fee Schedule</h2>
+    </div>
+
+    <div class="fs-narrative">
+      <p>Before benchmarking against peers, we establish the <strong>baseline</strong>: what does the state actually pay? Florida Medicaid publishes fee schedule rates (AHCA Rule 59G-4.002). The table below shows that <strong>the broad market runs close to published rates</strong> — this is the floor, not the ceiling.</p>
+      <p>Time-based codes (therapy, PSR, care mgmt) show effective rates 3-14x their per-unit published rate due to bundled billing. Event-based codes (intake, med mgmt, E&M) show rates <em>at or below</em> published — these are the real pressure points.</p>
+    </div>
+
+    <div class="fs-insight" style="margin-bottom:1rem">
+      <strong>💡 Aha:</strong> The market runs <em>around</em> published rates — not above them. But notice the last column: many codes are offered by fewer than half of CMHCs. The published rate is accessible to everyone, yet most CMHCs leave revenue on the table by not billing these codes at all.
+    </div>
+
+    <div class="fs-table-wrap">
+      <table class="fs-table">
+        <thead>
+          <tr><th>Code</th><th>Unit</th><th>Published Rate</th><th>CMHC P50</th><th>All FL P50</th><th>CMHC Mkt Share</th></tr>
+        </thead>
+        <tbody>${tableRows}</tbody>
+      </table>
+    </div>
+
+    ${findings.length ? `
+    <div class="fs-card blue" style="margin-top:1rem">
+      <div class="fs-card-title">Key Findings</div>
+      <div class="fs-card-body">
+        <ul style="margin:0;padding-left:1.2rem">${findings.map(f => `<li>${esc(f)}</li>`).join('')}</ul>
+      </div>
+    </div>` : ''}
+  </div>`;
+}
+
+// ── Section: CMHC vs FQHC Comparison ────────────────────────────────────────
+function renderIndustryFqhc(ind) {
+  const fqhc = ind.fqhc_comparison || {};
+  const ratesData = fqhc.rates || {};
+  const prodData = fqhc.productivity || {};
+  const findings = fqhc.key_findings || [];
+  if (!Object.keys(ratesData).length) return '';
+
+  const catMap = _getCategoryMap(ind);
+  // Merge rates + productivity per code
+  const allCodes = [...new Set([...Object.keys(ratesData), ...Object.keys(prodData)])];
+  const items = allCodes.map(code => ({
+    code,
+    rate: ratesData[code] || null,
+    prod: prodData[code] || null,
+  }));
+  const grouped = _groupByCategory(items, catMap);
+
+  let tableRows = '';
+  for (const cat of CATEGORY_ORDER) {
+    const rows = grouped[cat] || [];
+    if (!rows.length) continue;
+    const meta = CATEGORY_META[cat];
+    tableRows += `<tr class="fs-cat-header"><td colspan="7"><span class="fs-badge ${meta.color}">${esc(meta.short)}</span></td></tr>`;
+    tableRows += rows.map(d => {
+      const r = d.rate;
+      const p = d.prod;
+      const rateCls = r ? (r.signal === 'green' ? 'green' : r.signal === 'red' ? 'red' : 'yellow') : '';
+      const rateAdv = r?.cmhc_advantage_pct != null ? `${r.cmhc_advantage_pct > 0 ? '+' : ''}${r.cmhc_advantage_pct.toFixed(1)}%` : '—';
+      const prodAdv = p?.cmhc_advantage_pct != null ? `${p.cmhc_advantage_pct > 0 ? '+' : ''}${p.cmhc_advantage_pct.toFixed(1)}%` : '—';
+      const prodCls = p ? (p.cmhc_advantage_pct > 0 ? 'green' : 'red') : '';
+      return `<tr>
+        <td><strong>${esc(d.code)}</strong><br><span style="font-size:.7rem;color:var(--text-3)">${esc(_codeLabel(d.code))}</span></td>
+        <td>${r ? fmt$(r.cmhc_p50) : '—'}</td>
+        <td>${r?.fqhc_p50 != null ? fmt$(r.fqhc_p50) : '<span style="color:var(--text-3)">N/A</span>'}</td>
+        <td>${r ? `<span class="fs-badge ${rateCls}">${rateAdv}</span>` : '—'}</td>
+        <td>${p ? fmtN(p.cmhc_bpc) : '—'}</td>
+        <td>${p ? fmtN(p.fqhc_bpc) : '—'}</td>
+        <td>${p ? `<span class="fs-badge ${prodCls}">${prodAdv}</span>` : '—'}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  return `
+  <div class="fs-section" id="sec-industry-fqhc">
+    <div class="fs-section-header">
+      <span class="fs-section-tag yellow">PEER COMPARISON</span>
+      <h2 class="fs-section-h">CMHC vs FQHC: Where Each Model Wins</h2>
+    </div>
+
+    <div class="fs-narrative">
+      <p>FQHCs operate under Prospective Payment System (PPS) — a fixed encounter rate. They compete for the same Medicaid BH patients but with a fundamentally different funding model. This comparison clarifies <strong>where CMHCs have a structural advantage</strong> and where they don't.</p>
+    </div>
+
+    <div class="fs-insight" style="margin-bottom:1rem">
+      <strong>💡 Aha:</strong> CMHCs win on BH-specific codes (therapy +70%, PSR +24%, intake +21%). FQHCs win on med mgmt (T1015: 2.7x higher due to PPS encounter rate). Don't try to out-FQHC the FQHCs — lean into BH specialization.
+    </div>
+
+    <div class="fs-table-wrap">
+      <table class="fs-table" style="font-size:.8rem">
+        <thead>
+          <tr>
+            <th rowspan="2">Code</th>
+            <th colspan="3" style="text-align:center;border-bottom:1px solid var(--border)">Rate (PPC)</th>
+            <th colspan="3" style="text-align:center;border-bottom:1px solid var(--border)">Panel (BPC)</th>
+          </tr>
+          <tr>
+            <th>CMHC</th><th>FQHC</th><th>Δ</th>
+            <th>CMHC</th><th>FQHC</th><th>Δ</th>
+          </tr>
+        </thead>
+        <tbody>${tableRows}</tbody>
+      </table>
+    </div>
+
+    ${findings.length ? `
+    <div class="fs-card yellow" style="margin-top:1rem">
+      <div class="fs-card-title">Key Findings</div>
+      <div class="fs-card-body">
+        <ul style="margin:0;padding-left:1.2rem">${findings.map(f => `<li>${esc(f)}</li>`).join('')}</ul>
+      </div>
+    </div>` : ''}
+
+    ${fqhc.strategic_implication ? `
+    <div class="fs-insight" style="margin-top:1rem">
+      <strong>Strategic implication:</strong> ${esc(fqhc.strategic_implication)}
+    </div>` : ''}
+  </div>`;
+}
+
+// ── Section: Market Archetype Comparison ─────────────────────────────────────
+function renderIndustryMarketArchetypes(ind) {
+  const mkt = ind.market_archetype_comparison || {};
+  const ratesPpc = mkt.rates_ppc || {};
+  const prodBpc = mkt.productivity_bpc || {};
+  const archetypes = mkt.archetypes || {};
+  const findings = mkt.key_findings || [];
+  if (!Object.keys(ratesPpc).length) return '';
+
+  const tiers = ['dense', 'moderate', 'sparse'];
+  const tierLabels = { dense: 'Dense', moderate: 'Mid-Size', sparse: 'Rural' };
+  const catMap = _getCategoryMap(ind);
+
+  // Merge rate and productivity data per code
+  const allCodes = [...new Set([...Object.keys(ratesPpc), ...Object.keys(prodBpc)])];
+  const items = allCodes.map(code => ({code, rate: ratesPpc[code], prod: prodBpc[code]}));
+  const grouped = _groupByCategory(items, catMap);
+
+  let tableRows = '';
+  for (const cat of CATEGORY_ORDER) {
+    const rows = grouped[cat] || [];
+    if (!rows.length) continue;
+    const meta = CATEGORY_META[cat];
+    tableRows += `<tr class="fs-cat-header"><td colspan="8"><span class="fs-badge ${meta.color}">${esc(meta.short)}</span></td></tr>`;
+    tableRows += rows.map(d => {
+      const r = d.rate;
+      const p = d.prod;
+      return `<tr>
+        <td><strong>${esc(d.code)}</strong><br><span style="font-size:.7rem;color:var(--text-3)">${esc(_codeLabel(d.code))}</span></td>
+        ${tiers.map(t => {
+          const rv = r ? r[t] : null;
+          const pv = p ? p[t] : null;
+          const rStr = rv != null ? fmt$(rv) : '';
+          const pStr = pv != null ? `<span style="font-size:.7rem;color:var(--text-3)">${fmtN(pv)} bpc</span>` : '';
+          return `<td>${rStr}${rStr && pStr ? '<br>' : ''}${pStr}</td>`;
+        }).join('')}
+        <td>${r ? `<span class="fs-badge ${r.spread_pct > 25 ? 'red' : r.spread_pct > 15 ? 'yellow' : 'green'}">${r.spread_pct}%</span>` : '—'}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  const archetypeCards = Object.entries(archetypes).map(([key, a]) => {
+    const cls = key === 'dense' ? 'blue' : key === 'moderate' ? 'green' : 'yellow';
+    return `
+      <div class="fs-card ${cls}">
+        <div class="fs-card-title">${esc(a.label)}</div>
+        <div style="font-size:.75rem;color:var(--text-3);margin-bottom:.5rem">${esc(a.examples)}</div>
+        <div class="fs-card-body" style="font-size:.85rem">${esc(a.profile)}</div>
+        <div style="margin-top:.5rem;font-size:.8rem"><strong>Key risk:</strong> ${esc(a.risk)}</div>
+      </div>`;
+  }).join('');
+
+  return `
+  <div class="fs-section" id="sec-industry-market-archetypes">
+    <div class="fs-section-header">
+      <span class="fs-section-tag green">MARKET GEOGRAPHY</span>
+      <h2 class="fs-section-h">Performance by Market Archetype</h2>
+    </div>
+
+    <div class="fs-narrative">
+      <p>Not all CMHCs face the same market dynamics. Dense metros, mid-size cities, and rural areas create fundamentally different competitive landscapes. Your market archetype contextualizes whether your rates and productivity are strong <em>for your market</em>.</p>
+    </div>
+
+    <div class="fs-insight" style="margin-bottom:1rem">
+      <strong>💡 Aha:</strong> Therapy rates (H2019) are surprisingly stable across markets — only 7% spread. But care management (T1017) shows a 35% gap: dense-market providers collect $67 vs rural at $50. Rural CMHCs face a double squeeze: lower rates AND smaller panels.
+    </div>
+
+    <div class="fs-card-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:1.25rem">
+      ${archetypeCards}
+    </div>
+
+    <h3 style="font-size:.9rem;margin:1rem 0 .5rem">Rate & Panel by Market Tier</h3>
+    <div class="fs-table-wrap">
+      <table class="fs-table" style="font-size:.8rem">
+        <thead>
+          <tr><th>Code</th>${tiers.map(t => `<th>${tierLabels[t]}</th>`).join('')}<th>Spread</th></tr>
+        </thead>
+        <tbody>${tableRows}</tbody>
+      </table>
+    </div>
+
+    ${findings.length ? `
+    <div class="fs-card green" style="margin-top:1rem">
+      <div class="fs-card-title">Key Findings</div>
+      <div class="fs-card-body">
+        <ul style="margin:0;padding-left:1.2rem">${findings.map(f => `<li>${esc(f)}</li>`).join('')}</ul>
+      </div>
+    </div>` : ''}
   </div>`;
 }
 
@@ -1030,7 +2001,7 @@ function renderOverview(b) {
     <div class="fs-sector-ref">
       <strong>Sector Context:</strong> Florida's 86 CMHCs collectively face three structural challenges.
       The sector loses <strong>${esc(ind.sector_gap || '$8.1M')}</strong> annually to rate gaps,
-      <strong>${esc(ind.leakage_gap || '$157M')}</strong> to patient leakage (${esc(ind.ratio || '19x')} the rate impact),
+      <strong>${esc(ind.leakage_gap || '$14.3M')}</strong> to post-crisis leakage (${esc(ind.ratio || '1.8x')} the rate impact),
       and clinician burnout driven by compressed capacity.
       <br><br>
       <strong>In this report, we don't benchmark you against the lagging sector — we benchmark you against the market.</strong>
@@ -1136,9 +2107,8 @@ function renderEngagement(codes, b, prose) {
     </div>
 
     <div class="fs-sector-ref">
-      CMHCs handle 23.6% of FL Medicaid BH intake but only 5.0% of ongoing care.
-      For every $1 lost to rates, <strong>$19 is lost to patients who enter the front door and don't stay.</strong>
-      The $157M leakage gap dwarfs the $8.1M rate gap.
+      CMHCs capture 15% of intake and 12% of ongoing care — but handle <strong>32% of crisis/ACT services</strong>.
+      Post-crisis retention is the key lever: the $14.3M leakage gap adds to the $8.1M rate gap for a combined $22.4M sector opportunity.
     </div>
 
     <div class="fs-card-grid">${rpbCards}</div>
@@ -2065,6 +3035,208 @@ function startTour() {
   overlay.addEventListener('click', endTour);
 
   renderStep(0);
+}
+
+// ── Version History ─────────────────────────────────────────────────────────
+
+async function toggleVersionHistory() {
+  const drawer = document.getElementById('versionHistoryDrawer');
+  if (!drawer) return;
+  if (drawer.classList.contains('vh-open')) {
+    drawer.classList.remove('vh-open');
+    return;
+  }
+  drawer.classList.add('vh-open');
+  // Close on backdrop click (only the overlay itself, not children)
+  drawer.onmousedown = (e) => { if (e.target === drawer) toggleVersionHistory(); };
+  await _loadVersionHistory();
+}
+
+async function _loadVersionHistory() {
+  const body = document.getElementById('versionHistoryBody');
+  if (!body) return;
+  body.innerHTML = '<div class="vh-loading"><span class="spinner"></span> Loading versions...</div>';
+
+  const q = _documentId ? `document_id=${_documentId}` : `org=${encodeURIComponent(_currentOrg)}`;
+  try {
+    const r = await fetch(`${API}/chat/financial-strategy/version-history?${q}`);
+    if (!r.ok) throw new Error('fetch failed');
+    const data = await r.json();
+    const versions = data.versions || [];
+    if (!versions.length) {
+      body.innerHTML = '<div class="vh-empty">No versions yet.<br>Generate a baseline to create the first version.</div>';
+      return;
+    }
+    // Action bar: Finalize current or create new version
+    const current = versions.find(v => v.version_id === _versionId);
+    let actionsHtml = '';
+    if (current && (current.status === 'draft' || current.status === 'active')) {
+      actionsHtml = `<div class="vh-actions">
+        <button class="vh-action-btn vh-finalize" onclick="event.stopPropagation(); finalizeCurrentVersion()">Finalize V${current.version_num}</button>
+        <span class="vh-action-hint">Lock this version and add notes</span>
+      </div>`;
+    } else if (current && current.status === 'finalized') {
+      actionsHtml = `<div class="vh-actions">
+        <button class="vh-action-btn vh-new-version" onclick="event.stopPropagation(); createNewVersion()">New Version</button>
+        <span class="vh-action-hint">Rebuild report incorporating your feedback</span>
+      </div>`;
+    } else if (!current && _documentId) {
+      // Viewing an old version — offer to create new
+      actionsHtml = `<div class="vh-actions">
+        <button class="vh-action-btn vh-new-version" onclick="event.stopPropagation(); createNewVersion()">New Version</button>
+        <span class="vh-action-hint">Rebuild report incorporating your feedback</span>
+      </div>`;
+    }
+    body.innerHTML = actionsHtml + versions.map(v => _renderVersionCard(v)).join('');
+  } catch (e) {
+    body.innerHTML = '<div class="vh-empty">Failed to load version history.</div>';
+  }
+}
+
+function _renderVersionCard(v) {
+  const isCurrent = v.version_id === _versionId;
+  const badgeCls = `vh-badge vh-badge-${v.status}`;
+  const date = v.updated_at ? new Date(v.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+
+  let statsHtml = '';
+  const parts = [];
+  if (v.chat_turns) parts.push(`<span>💬 ${v.chat_turns}</span>`);
+  if (v.bookmarks) parts.push(`<span>🔖 ${v.bookmarks}</span>`);
+  if (v.tasks) parts.push(`<span>☑ ${v.tasks}</span>`);
+  if (parts.length) statsHtml = `<div class="vh-card-stats">${parts.join('')}</div>`;
+
+  let notesHtml = '';
+  if (v.user_notes) notesHtml = `<div class="vh-card-notes" title="${esc(v.user_notes)}">${esc(v.user_notes)}</div>`;
+
+  return `
+    <div class="vh-card${isCurrent ? ' vh-current' : ''}" onclick="loadVersion('${v.version_id}')" title="Click to load this version">
+      <div class="vh-card-head">
+        <span class="vh-card-vnum">V${v.version_num}</span>
+        <span class="${badgeCls}">${v.status}</span>
+        ${isCurrent ? '<span class="vh-badge vh-badge-active">current</span>' : ''}
+        <span class="vh-card-date">${date}</span>
+      </div>
+      <div class="vh-card-summary">${esc(v.change_summary)}</div>
+      ${statsHtml}
+      ${notesHtml}
+    </div>
+  `;
+}
+
+async function loadVersion(versionId) {
+  if (versionId === _versionId) {
+    toggleVersionHistory();
+    return;
+  }
+  // Load version in-place via fetch (no page reload)
+  try {
+    const r = await fetch(`${API}/chat/financial-strategy/version/${versionId}`);
+    if (!r.ok) throw new Error('load failed');
+    const session = await r.json();
+    if (!session || !session.version_id) throw new Error('bad response');
+
+    // Update state
+    _documentId = session.document_id || _documentId;
+    _versionId = session.version_id;
+    _threadId = session.thread_id || '';
+    _currentOrg = session.org_name || _currentOrg;
+    _bookmarks = (session.body && session.body.bookmarks) || [];
+    _baseline = (session.body && session.body.baseline) || _baseline;
+
+    // Update URL without reload
+    const url = new URL(window.location);
+    url.searchParams.set('doc', _documentId);
+    url.searchParams.delete('v');
+    url.searchParams.delete('org');
+    window.history.replaceState({}, '', url);
+
+    // Re-render report if baseline changed
+    if (session.body && session.body.baseline) {
+      _renderChapter2(session.body.baseline);
+    }
+
+    // Restore tasks
+    const taskSnap = (session.body && session.body.tasks_snapshot) || [];
+    _tasks = taskSnap.map(t => ({ ...t, source: 'restored' }));
+    renderTaskList();
+
+    // Restore chat history
+    const history = session.chat_history || [];
+    const msgs = document.getElementById('chatMessages');
+    if (msgs) {
+      msgs.innerHTML = '';
+      for (const turn of history) {
+        if (turn.user) msgs.innerHTML += `<div class="fs-chat-msg user">${esc(turn.user)}</div>`;
+        if (turn.assistant) {
+          const rendered = (typeof renderMarkdown === 'function') ? renderMarkdown(turn.assistant) : esc(turn.assistant);
+          msgs.innerHTML += `<div class="fs-chat-msg system">${rendered}</div>`;
+        }
+      }
+      msgs.scrollTop = msgs.scrollHeight;
+    }
+
+    // Refresh drawer to show new current
+    await _loadVersionHistory();
+  } catch (e) {
+    alert('Failed to load version. Please try again.');
+  }
+}
+
+async function finalizeCurrentVersion() {
+  if (!_versionId) return;
+  const notes = prompt('Add finalization notes (what was decided, next steps):');
+  if (notes === null) return; // cancelled
+
+  const btn = document.querySelector('.vh-finalize');
+  if (btn) { btn.disabled = true; btn.textContent = 'Finalizing...'; }
+
+  try {
+    const r = await fetch(`${API}/chat/financial-strategy/finalize`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version_id: _versionId, user_notes: notes }),
+    });
+    if (!r.ok) throw new Error('finalize failed');
+    await _loadVersionHistory(); // refresh the drawer
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Finalize'; }
+    alert('Failed to finalize version.');
+  }
+}
+
+async function createNewVersion() {
+  if (!_documentId) return;
+  const btn = document.querySelector('.vh-new-version');
+  if (btn) { btn.disabled = true; btn.textContent = 'Rebuilding report...'; }
+
+  try {
+    const r = await fetch(`${API}/chat/financial-strategy/new-version`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ document_id: _documentId, stream: true }),
+    });
+    if (!r.ok) throw new Error('new-version failed');
+    const data = await r.json();
+    const cid = data.correlation_id;
+    const newVersionId = data.version_id;
+
+    if (cid) {
+      // Poll for completion (report is being regenerated with feedback)
+      if (btn) btn.textContent = `Regenerating report (V${data.version_num})...`;
+      let done = false;
+      while (!done) {
+        await new Promise(ok => setTimeout(ok, 2000));
+        const pr = await fetch(`${API}/chat/financial-strategy/response/${cid}`);
+        if (pr.ok) {
+          const pd = await pr.json();
+          if (pd.status === 'completed') done = true;
+        }
+      }
+    }
+    // Load the new version in-place
+    await loadVersion(newVersionId);
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'New Version'; }
+    alert('Failed to create new version.');
+  }
 }
 
 // ── Session resume ──────────────────────────────────────────────────────────

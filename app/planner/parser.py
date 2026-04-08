@@ -223,6 +223,7 @@ def parse(
     correlation_id: str | None = None,
     thread_id: str | None = None,
     config_sha: str | None = None,
+    mode: str | None = None,
 ) -> Plan:
     """Parse user message into a plan (subquestions + patient/non_patient).
     Uses LLM decomposition (JSON) when available; falls back to rule-based split.

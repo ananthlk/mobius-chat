@@ -84,10 +84,15 @@ class ChatLLMConfig:
 
 @dataclass
 class ChatRAGConfig:
-    """RAG for non-patient: Vertex AI Vector Search + Postgres published_rag_metadata (1536 dims)."""
-    # Vertex AI Vector Search (required for RAG)
+    """RAG for non-patient: vector search (Chroma or Vertex) + Postgres published_rag_metadata (1536 dims)."""
+    # Vector store backend: "chroma" (local, default) or "vertex" (GCP Matching Engine)
+    vector_store: str = "chroma"
+    # --- Vertex AI Vector Search (legacy / cloud) ---
     vertex_index_endpoint_id: str = ""   # e.g. projects/123/locations/us-central1/indexEndpoints/abc or short id
     vertex_deployed_index_id: str = ""   # deployed index id on the endpoint (e.g. mobius_chat_published_rag)
+    # --- ChromaDB (local, default) ---
+    chroma_persist_dir: str = ""         # local path for persistent ChromaDB (e.g. /Users/ananth/mobius-chroma)
+    chroma_collection: str = "published_rag"  # collection name in ChromaDB
     # Postgres for published_rag_metadata (metadata only; no embeddings in Postgres)
     database_url: str = ""   # e.g. postgresql://user:pass@host:port/mobius_chat
     top_k: int = 10
@@ -309,9 +314,17 @@ def _build_rag_from_env() -> ChatRAGConfig:
     # - mobius-dbt uses CHAT_DATABASE_URL as the destination (chat) Postgres URL
     rag_db_url = _env("CHAT_RAG_DATABASE_URL") or os.getenv("RAG_DATABASE_URL") or os.getenv("CHAT_DATABASE_URL")
     rag_k = int(os.getenv("CHAT_RAG_TOP_K") or os.getenv("RAG_TOP_K", "10"))
+    # ChromaDB config (local vector store, default)
+    chroma_persist_dir = _env("CHROMA_PERSIST_DIR") or os.getenv("CHROMA_PERSIST_DIR") or ""
+    chroma_collection = _env("CHROMA_COLLECTION") or os.getenv("CHROMA_COLLECTION") or "published_rag"
+    # Vector store switch: "chroma" (default) or "vertex"
+    vector_store = (_env("CHAT_VECTOR_STORE") or os.getenv("CHAT_VECTOR_STORE") or "chroma").strip().lower()
     return ChatRAGConfig(
+        vector_store=vector_store,
         vertex_index_endpoint_id=vertex_endpoint,
         vertex_deployed_index_id=vertex_deployed,
+        chroma_persist_dir=chroma_persist_dir,
+        chroma_collection=chroma_collection,
         database_url=rag_db_url,
         top_k=max(1, min(100, rag_k)),
         filter_payer=_env("CHAT_RAG_FILTER_PAYER"),
@@ -475,8 +488,11 @@ def chat_config_for_api() -> dict:
     out = {
         "config_sha": get_config_sha(),
         "rag": {
+            "vector_store": c.rag.vector_store,
             "vertex_index_endpoint_id_set": bool(c.rag.vertex_index_endpoint_id),
             "vertex_deployed_index_id_set": bool(c.rag.vertex_deployed_index_id),
+            "chroma_persist_dir_set": bool(c.rag.chroma_persist_dir),
+            "chroma_collection": c.rag.chroma_collection,
             "database_url_set": bool(c.rag.database_url),
             "top_k": c.rag.top_k,
         },

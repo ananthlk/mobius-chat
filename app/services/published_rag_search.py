@@ -1,10 +1,11 @@
-"""Published RAG search: Vertex AI Vector Search (1536 dims) + Postgres published_rag_metadata.
-Flow: embed query -> find_neighbors with filters -> fetch metadata by id.
+"""Published RAG search: ChromaDB (default) or Vertex AI Vector Search + Postgres published_rag_metadata.
+Flow: embed query -> vector search (Chroma or Vertex) with filters -> fetch metadata by id from Postgres.
 Two retrieval modes:
 - Factual: top-k by similarity + confidence_min (no source_type filter).
-- Hierarchical: ask Vertex for neighbors with source_type in [policy, section, chunk, hierarchical] via filter
+- Hierarchical: ask vector store for neighbors with source_type in [policy, section, chunk, hierarchical] via filter
   (mart may use "hierarchical" vs "fact"); if index returns 0, fall back to fetch-then-sort in code.
 """
+from __future__ import annotations
 import logging
 from typing import Any, Callable, List
 
@@ -32,35 +33,102 @@ def _hierarchy_rank(source_type: str | None) -> int:
     return len(SOURCE_TYPE_ORDER)
 
 
-def search_published_rag(
-    question: str,
-    k: int = 10,
-    confidence_min: float | None = None,
+# ---------------------------------------------------------------------------
+# ChromaDB vector search
+# ---------------------------------------------------------------------------
+
+_chroma_client = None
+_chroma_collection = None
+
+
+def _get_chroma_collection(persist_dir: str, collection_name: str):
+    """Lazy-init ChromaDB persistent client and collection (cosine space)."""
+    global _chroma_client, _chroma_collection
+    if _chroma_collection is not None:
+        return _chroma_collection
+    import chromadb
+    _chroma_client = chromadb.PersistentClient(path=persist_dir)
+    _chroma_collection = _chroma_client.get_or_create_collection(
+        name=collection_name,
+        metadata={"hnsw:space": "cosine"},
+    )
+    return _chroma_collection
+
+
+def _search_chroma(
+    query_embedding: List[float],
+    k: int,
+    cfg,
     source_type_allow: List[str] | None = None,
-    emitter: Callable[[str], None] | None = None,
-) -> List[dict[str, Any]]:
-    """Search published RAG: embed question (1536), query Vertex with filters, fetch metadata from Postgres by id.
-    If confidence_min is set, only return chunks with confidence >= confidence_min (after fetching k).
-    If source_type_allow is set, restrict Vertex results to those source_type values (index must expose source_type namespace).
-    Returns list of dicts with keys: text, document_id, document_name, page_number, source_type (same shape as legacy RAG).
-    """
-    from app.chat_config import get_chat_config
-    from app.services.embedding_provider import get_query_embedding
-
-    cfg = get_chat_config()
+) -> tuple[List[str], dict[str, float]]:
+    """Query ChromaDB, return (ids, id_to_distance). Applies metadata filters."""
     rag = cfg.rag
-    if not rag.vertex_index_endpoint_id or not rag.vertex_deployed_index_id or not rag.database_url:
-        logger.warning("Published RAG: vertex_index_endpoint_id, vertex_deployed_index_id, or database_url not set")
-        return []
+    coll = _get_chroma_collection(rag.chroma_persist_dir, rag.chroma_collection)
 
-    try:
-        _emit(emitter, "Getting your question ready to search...")
-        query_embedding = get_query_embedding(question)
-    except Exception as e:
-        logger.exception("Published RAG embedding failed: %s", e)
-        return []
+    # Build Chroma where filter (AND logic via $and)
+    conditions: List[dict] = []
+    if rag.filter_payer:
+        conditions.append({"document_payer": rag.filter_payer})
+    if rag.filter_state:
+        conditions.append({"document_state": rag.filter_state})
+    if rag.filter_program:
+        conditions.append({"document_program": rag.filter_program})
+    if rag.filter_authority_level:
+        conditions.append({"document_authority_level": rag.filter_authority_level})
+    if source_type_allow:
+        conditions.append({"source_type": {"$in": source_type_allow}})
 
-    # Build Vertex filter from config (Namespace uses allow_tokens / deny_tokens)
+    where = None
+    if len(conditions) == 1:
+        where = conditions[0]
+    elif len(conditions) > 1:
+        where = {"$and": conditions}
+
+    if where:
+        logger.info(
+            "RAG Chroma filters: payer=%s state=%s program=%s authority_level=%s source_type_allow=%s",
+            rag.filter_payer or "(none)", rag.filter_state or "(none)",
+            rag.filter_program or "(none)", rag.filter_authority_level or "(none)",
+            source_type_allow or "(none)",
+        )
+
+    result = coll.query(
+        query_embeddings=[query_embedding],
+        n_results=k,
+        where=where,
+        include=["distances"],
+    )
+
+    if not result or not result["ids"] or not result["ids"][0]:
+        return [], {}
+
+    ids = result["ids"][0]
+    id_to_distance: dict[str, float] = {}
+    if result.get("distances") and result["distances"][0]:
+        for i, id_ in enumerate(ids):
+            try:
+                id_to_distance[str(id_)] = float(result["distances"][0][i])
+            except (TypeError, ValueError, IndexError):
+                pass
+
+    logger.info("Chroma query returned %d id(s)", len(ids))
+    return ids, id_to_distance
+
+
+# ---------------------------------------------------------------------------
+# Vertex AI Vector Search (legacy / cloud path)
+# ---------------------------------------------------------------------------
+
+def _search_vertex(
+    query_embedding: List[float],
+    k: int,
+    cfg,
+    source_type_allow: List[str] | None = None,
+) -> tuple[List[str], dict[str, float]]:
+    """Query Vertex AI Vector Search, return (ids, id_to_distance)."""
+    rag = cfg.rag
+
+    # Build Vertex filter from config
     filters: List[Any] = []
     try:
         from google.cloud.aiplatform.matching_engine.matching_engine_index_endpoint import Namespace
@@ -72,7 +140,6 @@ def search_published_rag(
             filters.append(Namespace(name="document_program", allow_tokens=[rag.filter_program], deny_tokens=[]))
         if rag.filter_authority_level:
             filters.append(Namespace(name="document_authority_level", allow_tokens=[rag.filter_authority_level], deny_tokens=[]))
-        # Explicit hierarchical: ask Vertex for chunks with source_type in [policy, section, chunk, hierarchical]
         if source_type_allow:
             filters.append(Namespace(name=VERTEX_SOURCE_TYPE_NAMESPACE, allow_tokens=source_type_allow, deny_tokens=[]))
     except ImportError as e:
@@ -97,7 +164,6 @@ def search_published_rag(
             num_neighbors=k,
             filter=filters if filters else None,
         )
-        # response is List[List[MatchNeighbor]]; one query -> response[0]; neighbors have id and optionally distance
         neighbor_list = response[0] if response else []
         ids = [n.id for n in neighbor_list if n.id]
         id_to_distance: dict[str, float] = {}
@@ -111,28 +177,66 @@ def search_published_rag(
                     except (TypeError, ValueError):
                         pass
         logger.info("Vertex find_neighbors returned %d id(s)", len(ids))
-    except NotFound as e:
-        logger.exception(
-            "Vertex Vector Search 404 (index/deployed index not found): %s. "
-            "Check VERTEX_INDEX_ENDPOINT_ID and VERTEX_DEPLOYED_INDEX_ID: the deployed index id must match exactly what is shown in Vertex AI Console (Index Endpoints → your endpoint → Deployed indexes). It may differ from the display name.",
-            e,
-        )
-        return []
-    except ServiceUnavailable as e:
-        logger.exception(
-            "Vertex Vector Search unreachable (503): %s. "
-            "If the index endpoint is private (VPC), run the worker from the same VPC (e.g. GCE, Cloud Run) or use a public endpoint.",
-            e,
-        )
-        return []
+        return ids, id_to_distance
     except Exception as e:
         logger.exception("Vertex find_neighbors failed: %s", e)
+        return [], {}
+
+
+# ---------------------------------------------------------------------------
+# Main search entry point
+# ---------------------------------------------------------------------------
+
+def search_published_rag(
+    question: str,
+    k: int = 10,
+    confidence_min: float | None = None,
+    source_type_allow: List[str] | None = None,
+    emitter: Callable[[str], None] | None = None,
+) -> List[dict[str, Any]]:
+    """Search published RAG: embed question (1536), query vector store (Chroma or Vertex) with filters,
+    fetch metadata from Postgres by id.
+    If confidence_min is set, only return chunks with confidence >= confidence_min (after fetching k).
+    If source_type_allow is set, restrict results to those source_type values.
+    Returns list of dicts with keys: text, document_id, document_name, page_number, source_type.
+    """
+    from app.chat_config import get_chat_config
+    from app.services.embedding_provider import get_query_embedding
+
+    cfg = get_chat_config()
+    rag = cfg.rag
+
+    # Determine which vector store to use
+    use_chroma = rag.vector_store == "chroma"
+
+    if use_chroma:
+        if not rag.chroma_persist_dir or not rag.database_url:
+            logger.warning("Published RAG: chroma_persist_dir or database_url not set")
+            return []
+    else:
+        if not rag.vertex_index_endpoint_id or not rag.vertex_deployed_index_id or not rag.database_url:
+            logger.warning("Published RAG: vertex_index_endpoint_id, vertex_deployed_index_id, or database_url not set")
+            return []
+
+    try:
+        _emit(emitter, "Getting your question ready to search...")
+        query_embedding = get_query_embedding(question)
+    except Exception as e:
+        logger.exception("Published RAG embedding failed: %s", e)
         return []
 
+    # Vector search
+    if use_chroma:
+        ids, id_to_distance = _search_chroma(query_embedding, k, cfg, source_type_allow)
+    else:
+        ids, id_to_distance = _search_vertex(query_embedding, k, cfg, source_type_allow)
+
     if not ids:
+        store_name = "Chroma" if use_chroma else "Vertex"
         logger.warning(
-            "RAG: Vertex returned 0 neighbors. Check: (1) Vertex index has datapoints; "
-            "(2) If CHAT_RAG_FILTER_* are set, document_payer/state/program in index must match (e.g. Sunshine Health)."
+            "RAG: %s returned 0 neighbors. Check: (1) vector store has datapoints; "
+            "(2) If CHAT_RAG_FILTER_* are set, metadata must match.",
+            store_name,
         )
         return []
 
@@ -156,12 +260,12 @@ def search_published_rag(
     logger.info("Postgres published_rag_metadata returned %d row(s) for %d id(s)", len(rows), len(ids))
     if len(rows) < len(ids):
         logger.warning(
-            "RAG: Some Vertex ids not found in Postgres (%d ids, %d rows). "
+            "RAG: Some vector store ids not found in Postgres (%d ids, %d rows). "
             "Ensure sync job wrote to the same CHAT_RAG_DATABASE_URL.",
             len(ids), len(rows),
         )
 
-    # Preserve order by ids (Vertex returns by similarity); attach distance -> match_score, confidence
+    # Preserve order by ids (vector store returns by similarity); attach distance -> match_score, confidence
     id_to_row = {str(r["id"]): r for r in rows}
     ordered = []
     for id_ in ids:
@@ -214,11 +318,11 @@ def search_hierarchical(
     k: int = 3,
     emitter: Callable[[str], None] | None = None,
 ) -> List[dict[str, Any]]:
-    """Hierarchical retrieval: ask Vertex for neighbors with source_type in [policy, section, chunk, hierarchical].
+    """Hierarchical retrieval: ask vector store for neighbors with source_type in [policy, section, chunk, hierarchical].
     Mart may use "hierarchical" vs "fact"; we request all non-fact types. If the index exposes source_type,
-    we get k results from the vector DB. If 0 results, fall back to fetch more then sort in code.
+    we get k results from the vector store. If 0 results, fall back to fetch more then sort in code.
     """
-    # Exclude fact so vector DB returns only hierarchical types (policy, section, chunk, or hierarchical)
+    # Exclude fact so vector store returns only hierarchical types (policy, section, chunk, or hierarchical)
     hierarchical_types = [t for t in SOURCE_TYPE_ORDER if t != "fact"]
     chunks = search_published_rag(
         question,
@@ -237,7 +341,7 @@ def search_hierarchical(
     # Fallback: index may not have source_type namespace; fetch more and sort in code
     logger.info(
         "RAG: hierarchical filter returned 0 results; index may not have '%s' namespace. "
-        "Falling back to fetch-then-sort. Populate source_type in Vertex index for true hierarchical retrieval.",
+        "Falling back to fetch-then-sort. Populate source_type in vector store for true hierarchical retrieval.",
         VERTEX_SOURCE_TYPE_NAMESPACE,
     )
     fetch_k = max(20, 2 * k)

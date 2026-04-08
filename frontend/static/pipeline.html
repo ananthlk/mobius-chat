@@ -138,6 +138,18 @@
       </button>
       <div class="pl-step-list" id="plStepList"></div>
       <div class="pl-task-section" id="plTaskSection" style="display:none"></div>
+      <!-- Persistent Roster link — always visible, href updated when org loads -->
+      <div class="pl-sb-roster-link">
+        <a id="plRosterAnchor" href="/roster" target="_blank"
+          title="Open standalone Roster page"
+          style="display:flex;align-items:center;gap:.4rem;padding:.45rem .6rem;font-size:.75rem;font-weight:600;color:var(--indigo);text-decoration:none;border-top:1px solid var(--border);transition:background .1s"
+          onmouseenter="this.style.background='var(--indigo-bg,#eef2ff)'"
+          onmouseleave="this.style.background=''">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" style="flex-shrink:0"><circle cx="7" cy="6" r="3.5"/><path d="M1 14c0-3.3 2.7-6 6-6s6 2.7 6 6"/></svg>
+          <span class="pl-sb-roster-label">Roster</span>
+          <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" style="margin-left:auto;opacity:.5"><path d="M4 8h8M9 4l4 4-4 4"/></svg>
+        </a>
+      </div>
     </aside>
 
     <!-- Main content -->
@@ -176,6 +188,34 @@
       <div style="font-size:.75rem;color:var(--text-3);text-align:center;padding:2rem .5rem">Run PML validation to populate tasks.</div>
     </div>
     <div class="pml-task-drawer-footer" id="pmlTaskDrawerFooter"></div>
+  </div>
+
+  <!-- Taxonomy provider detail drawer -->
+  <div class="task-drawer-backdrop" id="taxProviderDrawerBackdrop" onclick="if(event.target===this)closeTaxProviderDrawer()"></div>
+  <div class="tax-provider-drawer" id="taxProviderDrawer">
+    <div class="pml-task-drawer-head">
+      <div>
+        <div class="pml-task-drawer-title" id="taxProviderDrawerTitle">Provider Detail</div>
+        <div style="font-size:.7rem;color:var(--text-3);font-family:monospace;margin-top:.1rem" id="taxProviderDrawerNpi"></div>
+      </div>
+      <button onclick="closeTaxProviderDrawer()" style="background:none;border:none;cursor:pointer;font-size:1rem;color:var(--indigo);padding:0">✕</button>
+    </div>
+    <div class="pml-task-drawer-body" id="taxProviderDrawerBody">
+      <div style="font-size:.75rem;color:var(--text-3);text-align:center;padding:2rem .5rem">Select a provider card to see details.</div>
+    </div>
+  </div>
+
+  <!-- Taxonomy task drawer -->
+  <div class="task-drawer-backdrop" id="taxTaskDrawerBackdrop" onclick="toggleTaxTaskDrawer(false)"></div>
+  <div class="pml-task-drawer" id="taxTaskDrawer">
+    <div class="pml-task-drawer-head">
+      <span class="pml-task-drawer-title">🏷 Taxonomy Tasks</span>
+      <button onclick="toggleTaxTaskDrawer(false)" style="background:none;border:none;cursor:pointer;font-size:1rem;color:var(--indigo);padding:0">✕</button>
+    </div>
+    <div class="pml-task-drawer-body" id="taxTaskDrawerBody">
+      <div style="font-size:.75rem;color:var(--text-3);text-align:center;padding:2rem .5rem">Run taxonomy optimization to populate tasks.</div>
+    </div>
+    <div class="pml-task-drawer-footer" id="taxTaskDrawerFooter"></div>
   </div>
 
 </div>

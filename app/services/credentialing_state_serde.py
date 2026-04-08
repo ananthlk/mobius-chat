@@ -32,10 +32,16 @@ def orchestrator_state_to_dict(state: OrchestratorState) -> dict[str, Any]:
         "step3_roster_upload_id": getattr(state, "step3_roster_upload_id", "") or "",
         "step3_external_only": bool(getattr(state, "step3_external_only", False)),
         "step3_include_roster_members": bool(getattr(state, "step3_include_roster_members", True)),
+        "compliance_candidates": list(getattr(state, "compliance_candidates", None) or []),
+        "compliance_rostered_excluded": int(getattr(state, "compliance_rostered_excluded", 0) or 0),
+        "run_id": getattr(state, "run_id", "") or "",
         "credentialing_run_mode": getattr(state, "credentialing_run_mode", "copilot") or "copilot",
         "last_active_roster_cutoff": getattr(state, "last_active_roster_cutoff", None),
         "gate_events": list(getattr(state, "gate_events", None) or []),
         "step_emit_log": dict(getattr(state, "step_emit_log", None) or {}),
+        "tml_codes": sorted(getattr(state, "tml_codes", None) or []),
+        "taxonomy_inventory": list(getattr(state, "taxonomy_inventory", None) or []),
+        "taxonomy_analysis": list(getattr(state, "taxonomy_analysis", None) or []),
         "steps": [
             {
                 "id": s.id,
@@ -54,6 +60,7 @@ def orchestrator_state_to_dict(state: OrchestratorState) -> dict[str, Any]:
                 "row_count": o.row_count,
                 "markdown_content": o.markdown_content,
                 "json_content": o.json_content,
+                "extra_data": getattr(o, "extra_data", None) or {},
             }
             for o in state.step_outputs
         ],
@@ -90,6 +97,7 @@ def orchestrator_state_from_dict(data: dict[str, Any]) -> OrchestratorState:
             row_count=int(o.get("row_count", 0)),
             markdown_content=str(o.get("markdown_content", "")),
             json_content=str(o.get("json_content", "")),
+            extra_data=dict(o.get("extra_data") or {}),
         )
         for o in outs_raw
     ]
@@ -115,6 +123,9 @@ def orchestrator_state_from_dict(data: dict[str, Any]) -> OrchestratorState:
         step3_roster_upload_id=str(data.get("step3_roster_upload_id", "") or ""),
         step3_external_only=bool(data.get("step3_external_only", False)),
         step3_include_roster_members=bool(data.get("step3_include_roster_members", True)),
+        compliance_candidates=list(data.get("compliance_candidates") or []),
+        compliance_rostered_excluded=int(data.get("compliance_rostered_excluded") or 0),
+        run_id=str(data.get("run_id", "") or ""),
         credentialing_run_mode=crm,
         last_active_roster_cutoff=_opt_int(data.get("last_active_roster_cutoff")),
         gate_events=[dict(x) for x in gate_ev if isinstance(x, dict)],
@@ -125,6 +136,9 @@ def orchestrator_state_from_dict(data: dict[str, Any]) -> OrchestratorState:
         pml_validated=list(data.get("pml_validated") or []),
         pml_flagged=list(data.get("pml_flagged") or []),
         missing_enrollment=list(data.get("missing_enrollment") or []),
+        tml_codes=sorted([str(c) for c in (data.get("tml_codes") or []) if c]),
+        taxonomy_inventory=list(data.get("taxonomy_inventory") or []),
+        taxonomy_analysis=list(data.get("taxonomy_analysis") or []),
         step_outputs=step_outputs,
         report_final_md=str(data.get("report_final_md", "") or ""),
         report_pdf_base64=str(data.get("report_pdf_base64", "") or ""),

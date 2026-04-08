@@ -76,7 +76,7 @@ def test_worker_process_one_passes_credentialing_into_run_pipeline(monkeypatch):
 
     captured: dict = {}
 
-    def fake_run_pipeline(cid, message, thread_id, t0_start=None, credentialing_options=None, use_react_override=None):
+    def fake_run_pipeline(cid, message, thread_id, t0_start=None, credentialing_options=None, use_react_override=None, chat_mode=None):
         captured["credentialing_options"] = credentialing_options
         captured["use_react_override"] = use_react_override
 

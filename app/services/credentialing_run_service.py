@@ -84,6 +84,50 @@ _run_lock = threading.Lock()
 _runs: dict[str, dict[str, Any]] = {}
 
 
+def _persist_compliance_findings(
+    run_id: str,
+    org_name: str,
+    candidates: list[dict[str, Any]],
+    agentic: bool = False,
+    emitter: Callable[[str], None] | None = None,
+) -> None:
+    """POST compliance findings to the skill server for Postgres persistence (best-effort)."""
+    if not candidates or not org_name:
+        return
+    import json as _json
+    import os as _os
+    import urllib.request as _ur
+
+    skill_url = (
+        _os.environ.get("CREDENTIALING_SKILL_URL", "http://localhost:8010").rstrip("/")
+    )
+    url = f"{skill_url}/compliance/{org_name}/findings/sync"
+    payload = _json.dumps(
+        {"run_id": run_id, "findings": candidates, "agentic": agentic}
+    ).encode("utf-8")
+    try:
+        req = _ur.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with _ur.urlopen(req, timeout=15) as resp:
+            result = _json.loads(resp.read().decode())
+        upserted = result.get("upserted", 0)
+        alerted = result.get("auto_billing_alerts", 0)
+        msg = f"◉ compliance: {upserted} finding(s) persisted"
+        if alerted:
+            msg += f", {alerted} billing alert(s) auto-created"
+        logger.info("compliance sync run_id=%s %s", run_id, msg)
+        if emitter:
+            emitter(msg + ".")
+    except Exception as e:
+        logger.debug("compliance findings persist skipped: %s", e)
+        if emitter:
+            emitter(f"◌ compliance: not persisted ({e}).")
+
+
 def _store_put(run_id: str, rec: dict[str, Any]) -> None:
     rid = (run_id or "").strip()
     if not rid:
@@ -169,10 +213,11 @@ def _step_output_for(step_id: str, state: OrchestratorState) -> dict[str, Any] |
     for so in reversed(state.step_outputs):
         if so.step_id == step_id:
             return {
-                "label": so.label,
-                "row_count": so.row_count,
+                "label":      so.label,
+                "row_count":  so.row_count,
                 "csv_preview": so.csv_content[:2000] if so.csv_content else None,
-                "markdown": so.markdown_content[:2000] if so.markdown_content else None,
+                "markdown":   so.markdown_content[:2000] if so.markdown_content else None,
+                "extra_data": getattr(so, "extra_data", None) or {},
             }
     return None
 
@@ -288,6 +333,12 @@ def extract_draft_for_step(step_id: str, state: OrchestratorState) -> dict[str, 
             buckets[fp["bucket"]] = buckets.get(fp["bucket"], 0) + 1
             for s in fp["sources"]:
                 source_counts[s] = source_counts.get(s, 0) + 1
+        # ── Compliance candidates (deduped, roster-filtered) ──────────────────
+        candidates = list(getattr(state, "compliance_candidates", None) or [])
+        rostered_excluded = int(getattr(state, "compliance_rostered_excluded", 0) or 0)
+        ghost_count = sum(1 for c in candidates if c.get("association_type") == "ghost_billing")
+        unrostered_count = sum(1 for c in candidates if c.get("association_type") == "unrostered_associate")
+        high_conf = sum(1 for c in candidates if int(c.get("score") or 0) >= 65)
         return {
             "step_id": step_id,
             "status": status,
@@ -299,6 +350,22 @@ def extract_draft_for_step(step_id: str, state: OrchestratorState) -> dict[str, 
             "associated_providers": copy.deepcopy(state.associated_providers),
             "active_roster": copy.deepcopy(state.active_roster),
             "active_roster_cutoff": getattr(state, "last_active_roster_cutoff", None),
+            # ── Compliance data ────────────────────────────────────────────────
+            "compliance_candidates": candidates[:200],
+            "compliance_candidate_count": len(candidates),
+            "compliance_rostered_excluded": rostered_excluded,
+            "compliance_ghost_billing_count": ghost_count,
+            "compliance_unrostered_count": unrostered_count,
+            "compliance_high_confidence_count": high_conf,
+            "compliance_methodology": {
+                "score_threshold_agentic": 65,
+                "score_threshold_display": 40,
+                "description": (
+                    "Providers found in DOGE/NPPES/PML with strong association to this org "
+                    "who are NOT in the approved roster_truth. "
+                    "Score ≥65 triggers agentic billing alerts."
+                ),
+            },
             "step_output": so, "step_emit_log": _emit_log(step_id),
             **_credentialing_assertion_envelope(step_id),
             **wf,
@@ -316,10 +383,37 @@ def extract_draft_for_step(step_id: str, state: OrchestratorState) -> dict[str, 
             "step_output": so, "step_emit_log": _emit_log(step_id), **wf,
         }
     if step_id == "taxonomy_optimization":
+        analysis = list(getattr(state, "taxonomy_analysis", None) or [])
+        n_restriction = sum(1 for a in analysis if a.get("result_type") == "restriction")
+        n_gap         = sum(1 for a in analysis if a.get("result_type") == "gap_only")
+        n_clean       = sum(1 for a in analysis if a.get("result_type") == "clean")
+        n_no_data     = sum(1 for a in analysis if a.get("result_type") == "no_nppes_taxonomies")
         return {
             "step_id": step_id, "status": status, "result_summary": summary,
+            "analyzed_count":     len(analysis),
+            "restriction_count":  n_restriction,
+            "gap_count":          n_gap,
+            "clean_count":        n_clean,
+            "no_data_count":      n_no_data,
+            "taxonomy_analysis":  analysis,
             "step_output": so, "step_emit_log": _emit_log(step_id), **wf,
         }
+    if step_id == "provider_summaries":
+        extra = (so or {}).get("extra_data") or {}
+        return {
+            "step_id": step_id, "status": status, "result_summary": summary,
+            "extra_data": extra,
+            "step_output": so, "step_emit_log": _emit_log(step_id), **wf,
+        }
+
+    if step_id == "org_summary":
+        extra = (so or {}).get("extra_data") or {}
+        return {
+            "step_id": step_id, "status": status, "result_summary": summary,
+            "extra_data": extra,
+            "step_output": so, "step_emit_log": _emit_log(step_id), **wf,
+        }
+
     # Legacy removed steps — kept for backward compat with old stored runs
     if step_id in ("ensure_benchmarks", "org_benchmark", "find_services_by_location",
                    "historic_billing_patterns", "step_6", "step_7", "opportunity_sizing", "build_report"):
@@ -337,6 +431,9 @@ def extract_draft_for_step(step_id: str, state: OrchestratorState) -> dict[str, 
 def apply_validated_output(state: OrchestratorState, step_id: str, validated: dict[str, Any]) -> None:
     """Merge user-validated payload into orchestrator state before the next step runs."""
     v = validated or {}
+
+    if "roster_upload_id" in v and v["roster_upload_id"]:
+        state.step3_roster_upload_id = str(v["roster_upload_id"]).strip()
 
     if "org_npis" in v and isinstance(v["org_npis"], list):
         state.org_npis = [str(x).strip() for x in v["org_npis"] if str(x).strip()]
@@ -372,16 +469,19 @@ def create_credentialing_run(
     thread_id: str | None = None,
     emitter: Callable[[str], None] | None = None,
     credentialing_options: dict[str, Any] | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """Start a run. Autopilot completes in one shot. Copilot runs first step then waits for validate.
 
     ``emitter`` streams orchestrator progress (same strings as chat tool) when provided.
+    ``run_id`` allows the caller to pre-seed a run record and pass its id so the orchestrator
+    updates the same record rather than creating a new one.
     """
     org_name = (org_name or "").strip()
     if not org_name:
         raise ValueError("org_name is required")
 
-    run_id = str(uuid.uuid4())
+    run_id = (run_id or "").strip() or str(uuid.uuid4())
     tid = (thread_id or "").strip() or None
 
     active: dict[str, Any] = {}
@@ -501,6 +601,12 @@ def create_credentialing_run(
                     assertion_sync.get("totals"),
                 )
             _emit_credentialing_assertion_sync(emitter, assertion_sync)
+
+        # Persist compliance findings for autopilot runs (agentic=True → auto billing alerts)
+        candidates = list(getattr(state, "compliance_candidates", None) or [])
+        if candidates:
+            _persist_compliance_findings(run_id, org_name, candidates, agentic=True, emitter=emitter)
+
         return _public_view(rec)
 
     # copilot: run first step only
@@ -510,6 +616,7 @@ def create_credentialing_run(
         step3_external_only=ext3,
         step3_include_roster_members=incl3,
     )
+    state.run_id = run_id
     first_sid = ROSTER_CREDENTIALING_STEP_IDS[0]
     try:
         run_credentialing_step(org_name, state, first_sid, emitter=emitter)
@@ -591,12 +698,13 @@ def validate_and_advance_credentialing_run(
         raise KeyError("run not found")
     if rec.get("mode") != "copilot":
         raise ValueError("validate only applies to copilot runs")
-    if rec.get("phase") != "awaiting_validation":
+    if rec.get("phase") not in ("awaiting_validation", "running"):
         raise ValueError(f"run is not awaiting validation (phase={rec.get('phase')})")
     if rec.get("pending_step_id") != sid:
         raise ValueError(f"pending step is {rec.get('pending_step_id')!r}, not {sid!r}")
 
     state = orchestrator_state_from_dict(rec["orchestrator_state_dict"])
+    state.run_id = run_id
     org_name = rec["org_name"]
     apply_validated_output(state, sid, validated_output)
     ev_val = build_user_validated_event(sid, org_name=org_name)
@@ -617,10 +725,13 @@ def validate_and_advance_credentialing_run(
 
         if not _roster_nonempty(state.active_roster):
             if not validated_output.get("allow_empty_active_roster"):
-                raise ValueError(
-                    "active_roster has no providers: confirm the active panel, pass use_autopilot_active_cutoff, "
-                    "or allow_empty_active_roster."
-                )
+                # Only enforce when there are associated providers to classify;
+                # if find_associated_providers was skipped (no API), both are empty — that's fine.
+                if _roster_nonempty(state.associated_providers):
+                    raise ValueError(
+                        "active_roster has no providers: confirm the active panel, pass use_autopilot_active_cutoff, "
+                        "or allow_empty_active_roster."
+                    )
         try:
             from app.storage.roster_review_pg import persist_roster_review_from_validate
 
@@ -637,6 +748,17 @@ def validate_and_advance_credentialing_run(
             )
         except Exception:
             logger.debug("roster review persist skipped", exc_info=True)
+
+        # Persist compliance findings (best-effort, non-blocking)
+        candidates = list(getattr(state, "compliance_candidates", None) or [])
+        if candidates:
+            _persist_compliance_findings(
+                rid,
+                org_name,
+                candidates,
+                agentic=(rec.get("mode") == "autopilot"),
+                emitter=emitter,
+            )
 
     if sid in ("identify_org", "find_locations", "find_associated_providers"):
         assertion_sync: dict[str, Any] | None = None
@@ -693,6 +815,14 @@ def validate_and_advance_credentialing_run(
         return _public_view(rec)
 
     next_sid = ROSTER_CREDENTIALING_STEP_IDS[idx + 1]
+
+    # Pre-announce the next step in the DB so the polling frontend transitions
+    # immediately rather than waiting for the (potentially long) step to finish.
+    rec["pending_step_id"] = next_sid
+    rec["phase"] = "running"
+    rec["orchestrator_state_dict"] = orchestrator_state_to_dict(state)
+    _store_put(rid, rec)
+
     try:
         out = run_credentialing_step(org_name, state, next_sid, emitter=emitter)
     except Exception as e:
@@ -715,8 +845,52 @@ def validate_and_advance_credentialing_run(
         _store_put(rid, rec)
         return _public_view(rec)
 
-    if next_sid is None:
+    # If a step set auto_advance=True, skip the copilot gate and immediately run the next step.
+    # Loop so that chained auto-advance (e.g. taxonomy→provider_summaries→org_summary) works.
+    # NOTE: next_sid is the step that JUST RAN; we advance to the step after it each iteration.
+    while getattr(state, "auto_advance", False) and next_sid is not None:
+        state.auto_advance = False
+        curr_idx = ROSTER_CREDENTIALING_STEP_IDS.index(next_sid)
+        if curr_idx + 1 >= len(ROSTER_CREDENTIALING_STEP_IDS):
+            # next_sid was the last step — mark complete and exit
+            next_sid = None
+            break
+        auto_sid = ROSTER_CREDENTIALING_STEP_IDS[curr_idx + 1]
+        rec["pending_step_id"] = auto_sid
+        rec["phase"] = "running"
+        rec["orchestrator_state_dict"] = orchestrator_state_to_dict(state)
+        _store_put(rid, rec)
+        try:
+            out = run_credentialing_step(org_name, state, auto_sid, emitter=emitter)
+        except Exception as e:
+            logger.exception("auto-advance step %s failed", auto_sid)
+            rec["phase"] = "error"
+            rec["error"] = str(e)
+            rec["pending_step_id"] = None
+            rec["draft_output"] = None
+            rec["orchestrator_state_dict"] = orchestrator_state_to_dict(state)
+            _store_put(rid, rec)
+            return _public_view(rec)
+        nst2 = state.step_by_id(auto_sid)
+        if nst2 and nst2.status == "failed":
+            rec["phase"] = "error"
+            rec["error"] = nst2.result_summary or f"{auto_sid} failed"
+            rec["pending_step_id"] = None
+            rec["draft_output"] = None
+            rec["orchestrator_state_dict"] = orchestrator_state_to_dict(state)
+            _store_put(rid, rec)
+            return _public_view(rec)
+        next_sid = auto_sid  # the step that just ran; loop checks if it set auto_advance again
+
+    # If auto-advance ran through the last step, complete the run without a Continue banner
+    _last_step = ROSTER_CREDENTIALING_STEP_IDS[-1]
+    if next_sid is None or next_sid == _last_step:
         rec["final_report_text"] = out
+        rec["pending_step_id"] = None
+        rec["phase"] = "complete"
+        rec["orchestrator_state_dict"] = orchestrator_state_to_dict(state)
+        _store_put(rid, rec)
+        return _public_view(rec)
 
     rec["pending_step_id"] = next_sid
     rec["draft_output"] = extract_draft_for_step(next_sid, state)
@@ -809,7 +983,7 @@ def clear_runs_for_tests() -> None:
 # ── On-demand step re-run (used by Refresh buttons) ────────────────────────────
 
 # Steps that are safe to re-run at any pipeline phase without disrupting flow.
-_RERUNNABLE_STEPS = {"pml_alignment", "nppes_alignment"}
+_RERUNNABLE_STEPS = {"pml_alignment", "nppes_alignment", "taxonomy_optimization"}
 
 
 def rerun_step_for_run(
@@ -842,6 +1016,7 @@ def rerun_step_for_run(
 
     state = orchestrator_state_from_dict(rec["orchestrator_state_dict"])
     org_name = rec.get("org_name", "")
+    state.run_id = run_id
 
     # Patch org_name onto state if not present (older runs may omit it)
     if not getattr(state, "org_name", None):

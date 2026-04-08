@@ -138,6 +138,43 @@ def patch_pml_task_state(run_id: str, task_state: dict) -> bool:
         return False
 
 
+def patch_taxonomy_task_state(run_id: str, task_state: dict) -> bool:
+    """Persist taxonomy task overrides (done set, notes, dismissed) into the run's orchestrator_state.
+
+    Stored as body->'orchestrator_state_dict'->'taxonomy_task_state' so it is returned
+    alongside orchestrator_state when the run is fetched.
+    task_state shape: { done: [task_id, ...], notes: {task_id: note}, dismissed: [task_id, ...] }
+    """
+    url = _db_url()
+    if not url or not run_id:
+        return False
+    try:
+        import psycopg2
+        conn = psycopg2.connect(url)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE credentialing_runs
+            SET body = jsonb_set(
+                COALESCE(body, '{}'::jsonb),
+                '{orchestrator_state_dict,taxonomy_task_state}',
+                %s::jsonb,
+                true
+            ),
+            updated_at = now()
+            WHERE run_id = %s
+            """,
+            (json.dumps(task_state), run_id),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.warning("patch_taxonomy_task_state failed: %s", e)
+        return False
+
+
 def list_credentialing_runs(limit: int = 30, offset: int = 0) -> list[dict[str, Any]]:
     """Return lightweight run summaries (no full_state) ordered by most recently updated."""
     url = _db_url()

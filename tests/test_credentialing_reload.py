@@ -107,11 +107,12 @@ def test_ensure_bq_env_loads_from_example():
 # ---------------------------------------------------------------------------
 
 def test_step_num_locations_and_associated_providers():
-    """find_locations is Step 3 and find_associated_providers is Step 4 in emitted messages."""
+    """ensure_benchmarks is Step 1; identify_org Step 2; find_locations Step 3; find_associated_providers Step 6."""
+    assert _step_num("ensure_benchmarks") == 1
     assert _step_num("identify_org") == 2
     assert _step_num("find_locations") == 3
-    assert _step_num("find_associated_providers") == 4
-    assert _step_num("build_report") == 11
+    assert _step_num("find_associated_providers") == 6
+    assert _step_num("build_report") == 16
 
 
 # ---------------------------------------------------------------------------

@@ -120,6 +120,33 @@ TOOL_CAPABILITIES: dict[str, dict[str, Any]] = {
             "Read a web URL (quick single page, or medium/detailed same-site crawl when scrape_mode is set)",
         ]
     },
+    "list_tasks": {
+        "can_answer": [
+            "Show all open tasks for an org",
+            "What tasks are pending for this credentialing run?",
+            "List tasks assigned to a specific user",
+            "What roster reconciliation tasks are open?",
+        ],
+        "requires": "CHAT_SKILLS_TASK_MANAGER_URL; org_name recommended",
+        "cannot_answer": "Task content that hasn't been created yet",
+    },
+    "create_task": {
+        "can_answer": [
+            "Create a follow-up task for a provider issue",
+            "Add a manual task to the task list",
+            "Log an action item from this conversation",
+        ],
+        "requires": "CHAT_SKILLS_TASK_MANAGER_URL; org_name and text required",
+        "cannot_answer": "Tasks that require pipeline data to populate automatically",
+    },
+    "resolve_task": {
+        "can_answer": [
+            "Mark a task as resolved",
+            "Close out a follow-up item",
+        ],
+        "requires": "CHAT_SKILLS_TASK_MANAGER_URL; task_id required",
+        "cannot_answer": "Batch resolution of multiple tasks in one call",
+    },
 }
 
 # Map: path (rag | patient | clinical | tool | reasoning) -> list of capability descriptions
@@ -151,6 +178,7 @@ PATH_CAPABILITIES = {
         "Roster reconciliation report (upload vs outside-in)",
         "Document upload skill (attach files to thread; API + UI)",
         "List thread document uploads (what files are already attached)",
+        "Task management: list, create, resolve tasks (list_tasks, create_task, resolve_task)",
     ],
     "reasoning": [
         "conceptual explanation",
@@ -209,6 +237,9 @@ def available_capabilities_json() -> dict[str, Any]:
             "roster_reconciliation",
             "document_upload_skill",
             "list_thread_document_uploads",
+            "list_tasks",
+            "create_task",
+            "resolve_task",
         ],
         "web_allowed": True,
         "reasoning_allowed": True,

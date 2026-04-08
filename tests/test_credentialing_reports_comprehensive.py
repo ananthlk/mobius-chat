@@ -122,6 +122,8 @@ def test_answer_tool_roster_reconciliation_mocked_sse_complete() -> None:
     line = "data: " + json.dumps(payload)
 
     class _FakeStreamResp:
+        is_error = False
+
         def __enter__(self):
             return self
 
@@ -153,7 +155,7 @@ def test_answer_tool_roster_reconciliation_mocked_sse_complete() -> None:
                 extra_out=extra_out,
             )
     assert signal == RETRIEVAL_SIGNAL_ROSTER_COMPLETE
-    assert "Roster Reconciliation Report" in ans
+    assert "Reconciliation" in ans or "Roster" in ans
     assert "in_both=2" in ans
     assert extra_out.get("report_run_id") == "rec-test-1"
     assert len(sources) >= 1

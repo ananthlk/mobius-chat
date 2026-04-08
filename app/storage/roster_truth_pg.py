@@ -42,6 +42,19 @@ CREATE TABLE IF NOT EXISTS roster_truth (
     UNIQUE (org_name, provider_key)
 );
 
+-- Expand columns added post-initial schema (idempotent)
+ALTER TABLE roster_truth ADD COLUMN IF NOT EXISTS ai_summary JSONB;
+
+CREATE TABLE IF NOT EXISTS org_summary (
+    id           SERIAL PRIMARY KEY,
+    org_name     TEXT NOT NULL,
+    run_id       TEXT NOT NULL,
+    summary      JSONB NOT NULL,
+    generated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (org_name, run_id)
+);
+CREATE INDEX IF NOT EXISTS idx_org_summary_org ON org_summary(lower(org_name));
+
 CREATE TABLE IF NOT EXISTS roster_snooze (
     id              SERIAL PRIMARY KEY,
     org_name        TEXT    NOT NULL,
@@ -90,6 +103,32 @@ def _provider_key(npi: str | None, name: str) -> str:
 
 # ── roster_truth CRUD ──────────────────────────────────────────────────────────
 
+def delete_roster_truth_for_org(org_name: str) -> int:
+    """Hard-delete ALL roster_truth rows for an org (dev/test only).
+
+    Returns the number of rows deleted.  This is intentionally destructive —
+    call only from the admin/dev clear-roster endpoint.
+    """
+    url = _db_url()
+    if not url:
+        return 0
+    try:
+        import psycopg2
+        with psycopg2.connect(url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM roster_truth WHERE lower(org_name) = lower(%s)",
+                    (org_name,),
+                )
+                deleted = cur.rowcount
+            conn.commit()
+        logger.info("delete_roster_truth_for_org: deleted %d rows for org=%r", deleted, org_name)
+        return deleted
+    except Exception as e:
+        logger.error("delete_roster_truth_for_org failed: %s", e)
+        raise
+
+
 def get_truth_for_org(org_name: str) -> list[dict[str, Any]]:
     """Return all active validated providers for an org."""
     url = _db_url()
@@ -101,8 +140,9 @@ def get_truth_for_org(org_name: str) -> list[dict[str, Any]]:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT provider_key, provider_name, npi_roster, npi_validated,
-                           specialty, match_confidence, decision, run_id, validated_at
+                    SELECT id, provider_key, provider_name, npi_roster, npi_validated,
+                           specialty, match_confidence, decision, run_id, validated_at,
+                           invalidated_at, nppes_snapshot
                     FROM roster_truth
                     WHERE lower(org_name) = lower(%s)
                       AND invalidated_at IS NULL
@@ -314,6 +354,200 @@ def get_snoozes_for_org(org_name: str) -> list[dict[str, Any]]:
     except Exception as e:
         logger.warning("get_snoozes_for_org failed: %s", e)
         return []
+
+
+def merge_pipeline_tasks(org_name: str, npi: str, new_tasks: list[dict]) -> bool:
+    """Merge pipeline-generated tasks into roster_truth.open_tasks.
+
+    Existing tasks with the same (dim, type) compound key are preserved
+    (no duplicates across runs).  Manually created tasks are never overwritten.
+    Returns True if the row was found and updated.
+    """
+    url = _db_url()
+    if not url or not npi or not new_tasks:
+        return False
+    try:
+        import json as _json
+        import psycopg2
+        with psycopg2.connect(url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, open_tasks
+                    FROM roster_truth
+                    WHERE lower(org_name) = lower(%s)
+                      AND (npi_validated = %s OR npi_roster = %s)
+                      AND invalidated_at IS NULL
+                    LIMIT 1
+                    """,
+                    (org_name, npi, npi),
+                )
+                row = cur.fetchone()
+                if not row:
+                    logger.warning("merge_pipeline_tasks: no roster_truth row for npi=%s", npi)
+                    return False
+                row_id, existing_raw = row
+                # psycopg2 may return jsonb columns as already-parsed Python objects
+                if existing_raw is None:
+                    existing: list[dict] = []
+                elif isinstance(existing_raw, list):
+                    existing = existing_raw
+                elif isinstance(existing_raw, str):
+                    existing = _json.loads(existing_raw)
+                else:
+                    try:
+                        existing = _json.loads(_json.dumps(existing_raw))
+                    except Exception:
+                        existing = []
+                if not isinstance(existing, list):
+                    existing = []
+
+                # Dedup: skip incoming task if (dim, type) already present
+                existing_keys = {
+                    (t.get("dim", ""), t.get("type", "")) for t in existing
+                }
+                merged = list(existing)
+                for t in new_tasks:
+                    key = (t.get("dim", ""), t.get("type", ""))
+                    if key not in existing_keys:
+                        merged.append(t)
+                        existing_keys.add(key)
+
+                # Recompute pml_gap flag from merged tasks so list-view counts stay accurate.
+                # A "gap" is any open pml-dim task with severity != 'info'.
+                _has_pml_gap = any(
+                    t.get("dim") == "pml" and t.get("severity", "warning") != "info"
+                    for t in merged
+                )
+                cur.execute(
+                    """
+                    UPDATE roster_truth
+                       SET open_tasks     = CAST(%s AS jsonb),
+                           nppes_snapshot = jsonb_set(
+                               COALESCE(nppes_snapshot, '{}'::jsonb),
+                               '{pml_gap}',
+                               %s::jsonb
+                           )
+                     WHERE id = %s
+                    """,
+                    (_json.dumps(merged), _json.dumps(_has_pml_gap), row_id),
+                )
+            conn.commit()
+
+        # Mirror into unified task-manager (best-effort, non-fatal)
+        try:
+            from app.sub_skills.task_management import bulk_import_tasks as _bulk_import
+            enriched = []
+            for t in new_tasks:
+                enriched.append({
+                    **t,
+                    "org_name": org_name,
+                    "npi": npi,
+                    "source_module": "roster_open",
+                    "source_ref": npi,
+                })
+            _bulk_import(enriched, org_name=org_name, source_module="roster_open")
+        except Exception as _tm_err:
+            logger.debug("merge_pipeline_tasks: task-manager mirror failed (non-fatal): %s", _tm_err)
+
+        return True
+    except Exception as e:
+        logger.warning("merge_pipeline_tasks failed for npi=%s: %s", npi, e)
+        return False
+
+
+def upsert_org_summary(org_name: str, run_id: str, summary: dict) -> bool:
+    """Persist organization-level credential health summary after a pipeline run."""
+    url = _db_url()
+    if not url or not org_name or not summary:
+        return False
+    try:
+        import json as _json
+        import psycopg2
+        with psycopg2.connect(url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO org_summary (org_name, run_id, summary, generated_at)
+                    VALUES (%s, %s, CAST(%s AS jsonb), NOW())
+                    ON CONFLICT (org_name, run_id)
+                    DO UPDATE SET summary = EXCLUDED.summary, generated_at = NOW()
+                    """,
+                    (org_name, run_id or "manual", _json.dumps(summary)),
+                )
+            conn.commit()
+        return True
+    except Exception as e:
+        logger.warning("upsert_org_summary failed for org=%s: %s", org_name, e)
+        return False
+
+
+def get_org_summary(org_name: str) -> dict | None:
+    """Return the most recent org-level summary for the given org."""
+    url = _db_url()
+    if not url:
+        return None
+    try:
+        import json as _json
+        import psycopg2
+        with psycopg2.connect(url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT run_id, summary, generated_at
+                      FROM org_summary
+                     WHERE lower(org_name) = lower(%s)
+                     ORDER BY generated_at DESC
+                     LIMIT 1
+                    """,
+                    (org_name,),
+                )
+                row = cur.fetchone()
+        if not row:
+            return None
+        run_id, summary_raw, generated_at = row
+        summary = _json.loads(summary_raw) if isinstance(summary_raw, str) else (summary_raw or {})
+        summary["run_id"] = run_id
+        summary["generated_at"] = generated_at.isoformat() if generated_at else None
+        return summary
+    except Exception as e:
+        logger.warning("get_org_summary failed for org=%s: %s", org_name, e)
+        return None
+
+
+def upsert_ai_summary(org_name: str, npi: str, summary: dict) -> bool:
+    """Persist pre-computed AI summary into roster_truth.ai_summary.
+
+    `summary` should contain: one_liner, brief, detailed, chat_profile,
+    model, generated_at, run_id.
+    Returns True if the row was found and updated.
+    """
+    url = _db_url()
+    if not url or not npi or not summary:
+        return False
+    try:
+        import json as _json
+        import psycopg2
+        with psycopg2.connect(url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE roster_truth
+                       SET ai_summary = CAST(%s AS jsonb)
+                     WHERE lower(org_name) = lower(%s)
+                       AND (npi_validated = %s OR npi_roster = %s)
+                       AND invalidated_at IS NULL
+                    """,
+                    (_json.dumps(summary), org_name, npi, npi),
+                )
+                updated = cur.rowcount > 0
+            conn.commit()
+        if not updated:
+            logger.warning("upsert_ai_summary: no roster_truth row for org=%s npi=%s", org_name, npi)
+        return updated
+    except Exception as e:
+        logger.warning("upsert_ai_summary failed for npi=%s: %s", npi, e)
+        return False
 
 
 def wake_up_stale_snoozes(

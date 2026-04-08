@@ -1178,12 +1178,12 @@ function _buildPayorTabHtml() {
 function _applyRosterTabDisplay(tab) {
   // Sections keyed by tab
   const show = {
-    workspace: ['workspaceSection','sessionBanner','rosterActivityLink'],
+    workspace: ['workspaceSection','sessionBanner','rosterActivityLink','macroAuditBar'],
     upload:    ['uploadSection'],
     roster:    ['rosterSection'],
   };
   // Hide all managed sections first
-  ['workspaceSection','sessionBanner','rosterActivityLink','uploadSection','rosterSection'].forEach(id => {
+  ['workspaceSection','sessionBanner','rosterActivityLink','uploadSection','rosterSection','macroAuditBar'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.style.display = 'none';
   });
@@ -1199,7 +1199,7 @@ function _applyRosterTabDisplay(tab) {
     if (fb) fb.style.display = 'none';
   }
   // Update tab button active states
-  ['workspace','upload','roster'].forEach(t => {
+  ['upload','workspace','roster'].forEach(t => {
     const btn = document.querySelector(`.roster-tab[onclick="rosterTabSwitch('${t}')"]`);
     if (btn) btn.classList.toggle('active', t === tab);
   });
@@ -1568,6 +1568,210 @@ async function refreshPmlData(btn) {
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = 'Refresh'; }
   }
+}
+
+// ── Taxonomy Task State (Step 6) ─────────────────────────────────────────────
+// Mirrors the PML task state pattern: in-memory cache, localStorage fallback, DB PATCH.
+
+let _taxTaskState = { done: [], notes: {}, dismissed: [] };
+
+function _taxTaskStateKey() { return `mobius-tax-ts-${lastRun?.run_id || 'default'}`; }
+
+function _loadTaxTaskState() {
+  const dbState = window.lastRun?.orchestrator_state?.taxonomy_task_state;
+  if (dbState && (dbState.done?.length || Object.keys(dbState.notes||{}).length)) {
+    _taxTaskState = { done: dbState.done||[], notes: dbState.notes||{}, dismissed: dbState.dismissed||[] };
+    try { localStorage.setItem(_taxTaskStateKey(), JSON.stringify(_taxTaskState)); } catch {}
+    return;
+  }
+  try {
+    const ls = JSON.parse(localStorage.getItem(_taxTaskStateKey()) || 'null');
+    if (ls) { _taxTaskState = ls; return; }
+  } catch {}
+}
+
+let _taxPatchTimer = null;
+function _saveTaxTaskState() {
+  try { localStorage.setItem(_taxTaskStateKey(), JSON.stringify(_taxTaskState)); } catch {}
+  if (_taxPatchTimer) clearTimeout(_taxPatchTimer);
+  _taxPatchTimer = setTimeout(_flushTaxTaskState, 600);
+}
+
+async function _flushTaxTaskState() {
+  const rid = lastRun?.run_id;
+  if (!rid) return;
+  try {
+    await fetch(`${API}/chat/credentialing-runs/${encodeURIComponent(rid)}/taxonomy-tasks`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(_taxTaskState),
+    });
+  } catch (e) {
+    console.warn('Taxonomy task state PATCH failed:', e.message);
+  }
+}
+
+function _loadTaxTaskDone()      { return new Set(_taxTaskState.done || []); }
+function _loadTaxTaskDismissed() { return new Set(_taxTaskState.dismissed || []); }
+function _persistTaxTaskDone(id) {
+  if (!_taxTaskState.done.includes(id)) _taxTaskState.done.push(id);
+  _saveTaxTaskState();
+}
+function _clearTaxTaskDone(id) {
+  _taxTaskState.done = (_taxTaskState.done||[]).filter(d => d !== id);
+  _saveTaxTaskState();
+}
+function _dismissTaxTask(id) {
+  if (!(_taxTaskState.dismissed||[]).includes(id)) {
+    if (!_taxTaskState.dismissed) _taxTaskState.dismissed = [];
+    _taxTaskState.dismissed.push(id);
+    _saveTaxTaskState();
+  }
+}
+
+/** Derive taxonomy tasks from orchestrator_state.taxonomy_analysis.
+ *
+ * Severity calibration based on delta_billing_pct:
+ *   > 20% at risk → high  (critical task, shown in drawer)
+ *   5–20%         → medium (standard task, shown in drawer)
+ *   < 5% or no delta → low (inline warning only, not queued)
+ *
+ * result_type:
+ *   'restriction' = gap codes cover HCPC codes that approved codes don't → task
+ *   'gap_only'    = enrollment/TML gap but no procedure delta → warning only
+ *   'clean'       = no issues
+ */
+function _buildTaxonomyAutoTasks() {
+  const analysis = window.lastRun?.orchestrator_state?.taxonomy_analysis || [];
+  const dismissed = _loadTaxTaskDismissed();
+  const tasks = [];
+
+  analysis.forEach(a => {
+    const npi  = a.npi  || '';
+    const name = a.provider_name || npi || '—';
+    const rt   = a.result_type || 'clean';
+    const delta = parseFloat(a.delta_billing_pct || 0);
+    const deltaHcpcs = a.delta_hcpcs || [];
+
+    if (rt === 'clean' || rt === 'no_nppes_taxonomies') return;
+
+    // Determine severity and whether to queue a task or only show inline warning
+    let sev, text, det, inlineOnly = false;
+    if (rt === 'restriction') {
+      if (delta > 20) {
+        sev = 'high';
+        text = `Billing restriction: ${deltaHcpcs.length} HCPC code(s) at risk (${delta.toFixed(1)}% of billing)`;
+      } else if (delta >= 5) {
+        sev = 'medium';
+        text = `Taxonomy gap: ${deltaHcpcs.length} HCPC code(s) may be unbillable (${delta.toFixed(1)}% of billing)`;
+      } else {
+        sev = 'low';
+        inlineOnly = true;
+        text = `Minor taxonomy gap (${delta.toFixed(1)}% of billing — below threshold)`;
+      }
+      const codes = (a.codes||[]).filter(c => c.status !== 'approved_enrolled').map(c => c.code).join(', ');
+      det = `Gap codes: ${codes || 'unknown'}. ${deltaHcpcs.slice(0,3).map(h=>h.hcpcs_code).join(', ')}${deltaHcpcs.length>3?'…':''}`;
+    } else if (rt === 'gap_only') {
+      sev = 'low';
+      inlineOnly = true;
+      const codes = (a.codes||[]).filter(c => c.status !== 'approved_enrolled').map(c => c.code).join(', ');
+      text = `Enrollment gap: ${codes || 'taxonomy code'} — TML approved but missing PML enrollment`;
+      det = 'No billing impact detected. Recommend enrolling the missing taxonomy code in PML.';
+    } else {
+      return;
+    }
+
+    const taskId = `tax-${npi}-${rt}`;
+    if (dismissed.has(taskId)) return;
+    if (inlineOnly) return;  // <5% or gap_only — warn inline, don't queue a task
+
+    tasks.push({ id: taskId, prov: name, npi, sev, text, det, result_type: rt, delta, deltaHcpcs, manual: false });
+  });
+
+  return tasks;
+}
+
+function toggleTaxTaskDrawer(open) {
+  const drawer   = document.getElementById('taxTaskDrawer');
+  const backdrop = document.getElementById('taxTaskDrawerBackdrop');
+  if (!drawer) return;
+  const shouldOpen = (open === undefined) ? !drawer.classList.contains('open') : !!open;
+  drawer.classList.toggle('open', shouldOpen);
+  if (backdrop) backdrop.classList.toggle('open', shouldOpen);
+  if (shouldOpen) {
+    _loadTaxTaskState();
+    _renderTaxTaskDrawer();
+  }
+}
+
+function _renderTaxTaskDrawer() {
+  const tasks = _buildTaxonomyAutoTasks() || [];
+  const done  = _loadTaxTaskDone();
+  const openT = tasks.filter(t => !done.has(t.id));
+  const doneT = tasks.filter(t =>  done.has(t.id));
+
+  const sevColor = sev => sev === 'high' ? 'var(--red)' : sev === 'medium' ? 'var(--amber,#d97706)' : 'var(--text-3)';
+  const renderItem = (t, isDone) => `
+    <div style="border:1px solid var(--border);border-left:3px solid ${isDone?'var(--border)':sevColor(t.sev)};border-radius:7px;padding:.45rem .6rem;margin-bottom:.3rem;background:${isDone?'var(--surface)':'var(--bg)'}">
+      <div style="display:flex;align-items:flex-start;gap:.4rem">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:.78rem;font-weight:600;color:${isDone?'var(--text-3)':'var(--text)'}${isDone?';text-decoration:line-through':''}">${esc(t.prov)}</div>
+          <div style="font-size:.72rem;color:${isDone?'var(--text-3)':'var(--text-2)'};margin-top:.1rem">${esc(t.text)}</div>
+          ${t.det?`<div style="font-size:.68rem;color:var(--text-3);margin-top:.15rem">${esc(t.det)}</div>`:''}
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:.2rem;flex-shrink:0">
+          <span style="font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:${sevColor(t.sev)}">${t.sev}</span>
+          <button onclick="taxToggleTask('${esc(t.id)}')"
+            style="font-size:.68rem;padding:.15rem .45rem;border-radius:5px;border:1px solid var(--border);background:${isDone?'var(--green-bg)':'var(--surface)'};color:${isDone?'var(--green)':'var(--text-2)'};cursor:pointer">
+            ${isDone ? '✓ Done' : 'Resolve'}
+          </button>
+          ${t.npi?`<a href="../roster/index.html?org=${encodeURIComponent(lastRun?.org_name||'')}&npi=${encodeURIComponent(t.npi)}" target="_blank" style="font-size:.65rem;color:var(--indigo);text-decoration:none">Roster →</a>`:''}
+        </div>
+      </div>
+    </div>`;
+
+  const body = document.getElementById('taxTaskDrawerBody');
+  if (!body) return;
+  let html = '';
+  if (!tasks.length) {
+    html = `<div style="font-size:.75rem;color:var(--green);text-align:center;padding:2rem .5rem">✓ No billing restrictions detected.</div>`;
+  } else {
+    if (openT.length) {
+      html += `<div style="font-size:.7rem;font-weight:700;color:var(--text-3);margin-bottom:.15rem">Open (${openT.length})</div>`;
+      html += openT.map(t => renderItem(t, false)).join('');
+    }
+    if (doneT.length) {
+      html += `<div style="font-size:.7rem;color:var(--text-3);margin:.55rem 0 .15rem;font-weight:600">Done (${doneT.length})</div>`;
+      html += doneT.map(t => renderItem(t, true)).join('');
+    }
+  }
+  body.innerHTML = html;
+}
+
+function taxToggleTask(tid) {
+  const done = _loadTaxTaskDone();
+  if (done.has(tid)) _clearTaxTaskDone(tid);
+  else               _persistTaxTaskDone(tid);
+  const drawer = document.getElementById('taxTaskDrawer');
+  if (drawer?.classList.contains('open')) _renderTaxTaskDrawer();
+}
+
+/** Build inline chip for taxonomy step header (mirrors _buildPmlTaskChipHtml). */
+function _buildTaxTaskChipHtml() {
+  const tasks = _buildTaxonomyAutoTasks() || [];
+  const done  = _loadTaxTaskDone();
+  const open  = tasks.filter(t => !done.has(t.id));
+  if (!tasks.length) return '';
+  const allDone = open.length === 0;
+  const critCount = open.filter(t => t.sev === 'high').length;
+  const medCount  = open.filter(t => t.sev === 'medium').length;
+  const parts = [];
+  if (critCount) parts.push(`<span style="color:var(--red)">✗ ${critCount} critical</span>`);
+  if (medCount)  parts.push(`<span style="color:var(--amber,#d97706)">⚠ ${medCount} standard</span>`);
+  const label = allDone ? '✓ All resolved'
+    : parts.length ? parts.join('<span style="opacity:.4;margin:0 .2rem">·</span>')
+    : `⚠ ${open.length} open`;
+  return `<span style="font-size:.72rem;cursor:pointer;border:1px solid var(--border);border-radius:6px;padding:.12rem .45rem;background:var(--surface)"
+    onclick="toggleTaxTaskDrawer(true)" title="Open taxonomy task drawer">${label}</span>`;
 }
 
 // ── END Payor Enrollment helpers ──────────────────────────────────────────────

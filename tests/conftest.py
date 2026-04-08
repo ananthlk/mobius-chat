@@ -11,6 +11,15 @@ from __future__ import annotations
 
 import pytest
 
+# Eagerly import chat_config so load_dotenv(override=True) fires BEFORE any test body
+# runs (and before any monkeypatch.delenv). Without this, lazy imports inside
+# production code can trigger chat_config after monkeypatch has removed env vars,
+# causing load_dotenv to restore them from .env mid-test.
+try:
+    import app.chat_config  # noqa: F401
+except Exception:
+    pass
+
 
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(

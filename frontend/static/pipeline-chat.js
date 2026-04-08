@@ -3,6 +3,95 @@ let _chatThreadId = null;
 let _chatSending  = false;
 let _chatUnread   = 0;
 
+// Configurable context function — pages can override via initMobiusChatWidget()
+let _chatContextFn = null;
+// Page label shown in the pane header (e.g. "Roster", "Pipeline")
+let _chatPageLabel = 'this org';
+
+/**
+ * _ensureChatWidget(opts)
+ *
+ * Self-injects the #chatDrawer HTML and the pipeline.css stylesheet into any
+ * page that loads pipeline-chat.js.  Call this once at page-init time.
+ *
+ * opts.contextFn  — () => string  — returns a context hint prepended to every
+ *                   message sent to the LLM.  Defaults to reading lastRun.
+ * opts.pageName   — string label shown in the pane header (default "this org")
+ * opts.placeholder — textarea placeholder text
+ *
+ * If #chatDrawer already exists in the DOM (i.e. pipeline.html which has it
+ * inline) this is a no-op so no double-injection happens.
+ */
+function initMobiusChatWidget(opts = {}) {
+  // Respect caller options
+  if (typeof opts.contextFn === 'function') _chatContextFn = opts.contextFn;
+  if (opts.pageName) _chatPageLabel = opts.pageName;
+  const placeholder = opts.placeholder || `Ask about ${_chatPageLabel}…`;
+
+  // ── 1. Ensure pipeline.css is loaded (idempotent) ───────────────────
+  if (!document.querySelector('link[href*="pipeline.css"]')) {
+    const link = document.createElement('link');
+    link.rel = 'stylesheet'; link.href = '/static/pipeline.css';
+    document.head.appendChild(link);
+  }
+
+  // ── 2. Inject HTML if drawer is missing ──────────────────────────────
+  if (document.getElementById('chatDrawer')) return; // already present
+
+  const html = `
+<div id="chatDrawer">
+  <div id="chatPane">
+    <div class="chat-panel-head">
+      <span class="chat-panel-title">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+          <path d="M12 12c-2-2.5-4-4-6-4a4 4 0 0 0 0 8c2 0 4-1.5 6-4z"/>
+          <path d="M12 12c2 2.5 4 4 6 4a4 4 0 0 0 0-8c-2 0-4 1.5-6 4z"/>
+        </svg>
+        Mobius Chat
+      </span>
+      <div style="display:flex;align-items:center;gap:.6rem">
+        <span style="font-size:.7rem;color:var(--indigo);font-weight:500" id="chatOrgLabel">Ask about ${esc(_chatPageLabel)}</span>
+        <button class="chat-close-btn" onclick="chatCollapse()" title="Collapse">&times;</button>
+      </div>
+    </div>
+    <div class="chat-progress-bar"><div class="chat-progress-fill" id="pipelineChatProgressFill"></div></div>
+    <div class="chat-msgs" id="chatMsgs">
+      <div class="chat-empty" id="chatEmpty">
+        Ask me anything about <strong id="chatOrgName">${esc(_chatPageLabel)}</strong> — providers, credentialing, billing, coverage, and more.<br><br>
+        I have access to RAG, web search, and all pipeline run data.
+      </div>
+    </div>
+    <div class="chat-input-wrap">
+      <textarea class="chat-input" id="chatInput" rows="1"
+        placeholder="${esc(placeholder)}"
+        onkeydown="chatInputKeydown(event)"></textarea>
+      <button class="chat-send-btn" id="chatSendBtn" onclick="sendChatMessage()">Send</button>
+    </div>
+  </div>
+  <button id="chatTrigger" onclick="chatToggle()">
+    <span class="trigger-dot"></span>
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="opacity:.85">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+    </svg>
+    Ask Mobius
+    <span id="chatUnreadBadge" style="display:none;background:rgba(255,255,255,.25);border-radius:999px;padding:1px 6px;font-size:.68rem;font-weight:700;margin-left:.1rem"></span>
+  </button>
+</div>`;
+
+  const wrapper = document.createElement('div');
+  wrapper.innerHTML = html.trim();
+  document.body.appendChild(wrapper.firstElementChild);
+}
+
+/** Update the org label in the chat header dynamically */
+function setChatOrgLabel(label) {
+  _chatPageLabel = label || _chatPageLabel;
+  const el = document.getElementById('chatOrgLabel');
+  if (el) el.textContent = `Ask about ${label}`;
+  const nameEl = document.getElementById('chatOrgName');
+  if (nameEl) nameEl.textContent = label;
+}
+
 function chatToggle() {
   const drawer = document.getElementById('chatDrawer');
   const isOpen = drawer.classList.contains('open');
@@ -168,10 +257,15 @@ async function sendChatMessage() {
 
   chatAppend('user', msg);
 
-  // Build context hint about current pipeline state
-  const org = lastRun?.org_name || '';
-  const step = lastRun?.pending_step_id || '';
-  const contextHint = org ? `[Pipeline context: org="${org}"${step ? `, current step="${step}"` : ''}] ` : '';
+  // Build context hint — use caller-supplied contextFn if available, else fall back to pipeline state
+  let contextHint = '';
+  if (typeof _chatContextFn === 'function') {
+    try { contextHint = _chatContextFn() || ''; } catch { /* ignore */ }
+  } else {
+    const org  = (typeof lastRun !== 'undefined' && lastRun?.org_name) || '';
+    const step = (typeof lastRun !== 'undefined' && lastRun?.pending_step_id) || '';
+    contextHint = org ? `[Pipeline context: org="${org}"${step ? `, current step="${step}"` : ''}] ` : '';
+  }
   const fullMsg = contextHint + msg;
 
   const thinkingId = 'chat-thinking-' + Date.now();

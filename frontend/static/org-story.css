@@ -1,0 +1,108 @@
+/* ── Org Story Dashboard ─────────────────────────────────────────────── */
+:root {
+  --bg: #0f1117;
+  --bg2: #161822;
+  --bg3: #1e2030;
+  --border: #2a2d3e;
+  --text1: #e2e8f0;
+  --text2: #94a3b8;
+  --text3: #64748b;
+  --accent: #818cf8;
+  --green: #34d399;
+  --red: #f87171;
+  --yellow: #fbbf24;
+  --blue: #60a5fa;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'DM Sans', system-ui, sans-serif; background: var(--bg); color: var(--text1); line-height: 1.5; }
+
+/* Header */
+.os-header { display: flex; align-items: center; justify-content: space-between; padding: .75rem 1.5rem; background: var(--bg2); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 100; }
+.os-brand { display: flex; align-items: center; gap: .5rem; font-weight: 600; font-size: 1rem; }
+.os-brand svg { color: var(--accent); }
+.os-brand-sub { font-weight: 400; color: var(--text3); font-size: .875rem; }
+.os-org-name { font-size: .875rem; color: var(--text2); }
+
+/* Selector */
+.os-selector { display: flex; justify-content: center; padding: 3rem 1rem; }
+.os-selector-inner { max-width: 540px; width: 100%; }
+.os-selector-inner h2 { font-size: 1.25rem; margin-bottom: .5rem; }
+.os-selector-inner p { color: var(--text2); font-size: .875rem; margin-bottom: 1.25rem; }
+.os-select-row { display: flex; gap: .75rem; }
+.os-select { flex: 1; padding: .5rem .75rem; background: var(--bg3); color: var(--text1); border: 1px solid var(--border); border-radius: 6px; font-size: .875rem; font-family: inherit; }
+.os-btn { padding: .5rem 1.25rem; background: var(--accent); color: #fff; border: none; border-radius: 6px; font-weight: 600; font-size: .875rem; cursor: pointer; white-space: nowrap; }
+.os-btn:disabled { opacity: .4; cursor: not-allowed; }
+.os-btn:hover:not(:disabled) { filter: brightness(1.1); }
+.os-error { color: var(--red); font-size: .8rem; margin-top: .5rem; }
+
+/* Dashboard */
+.os-dashboard { max-width: 1200px; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
+
+/* Narrative banner */
+.os-narrative { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem 1.5rem; margin-bottom: 1.25rem; }
+.os-narrative h3 { font-size: .875rem; color: var(--accent); text-transform: uppercase; letter-spacing: .05em; margin-bottom: .75rem; }
+.os-narrative ul { list-style: none; padding: 0; }
+.os-narrative li { padding: .3rem 0; font-size: .875rem; color: var(--text2); border-bottom: 1px solid var(--border); }
+.os-narrative li:last-child { border: none; }
+
+/* KPI row */
+.os-kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: .75rem; margin-bottom: 1.25rem; }
+.os-kpi { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; text-align: center; }
+.os-kpi-value { font-size: 1.5rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+.os-kpi-label { font-size: .75rem; color: var(--text3); margin-top: .25rem; }
+.os-kpi-sub { font-size: .7rem; color: var(--text3); margin-top: .15rem; }
+.os-kpi-value.green { color: var(--green); }
+.os-kpi-value.red { color: var(--red); }
+.os-kpi-value.yellow { color: var(--yellow); }
+.os-kpi-value.blue { color: var(--blue); }
+
+/* Sections */
+.os-section { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem 1.5rem; margin-bottom: 1.25rem; }
+.os-section-title { font-size: .875rem; color: var(--accent); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 1rem; }
+
+/* Tables */
+.os-table { width: 100%; border-collapse: collapse; font-size: .8rem; font-family: 'JetBrains Mono', monospace; }
+.os-table th { text-align: right; padding: .4rem .6rem; color: var(--text3); font-weight: 500; font-size: .7rem; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--border); }
+.os-table th:first-child { text-align: left; }
+.os-table td { text-align: right; padding: .4rem .6rem; border-bottom: 1px solid rgba(42,45,62,.5); }
+.os-table td:first-child { text-align: left; color: var(--text2); }
+.os-table tr:hover { background: rgba(129,140,248,.05); }
+.os-table .divider-row td { border-bottom: 2px solid var(--border); }
+
+/* Signal colors in cells */
+.os-cell-green { color: var(--green); }
+.os-cell-red { color: var(--red); }
+.os-cell-yellow { color: var(--yellow); }
+.os-cell-muted { color: var(--text3); }
+
+/* Bridge bars */
+.os-bridge-row { display: flex; align-items: center; gap: .75rem; padding: .5rem 0; border-bottom: 1px solid rgba(42,45,62,.5); }
+.os-bridge-label { width: 140px; font-size: .8rem; color: var(--text2); flex-shrink: 0; }
+.os-bridge-bar-wrap { flex: 1; height: 24px; position: relative; }
+.os-bridge-bar { height: 100%; border-radius: 3px; min-width: 2px; position: absolute; }
+.os-bridge-bar.positive { background: var(--green); left: 50%; }
+.os-bridge-bar.negative { background: var(--red); right: 50%; }
+.os-bridge-value { width: 100px; text-align: right; font-size: .8rem; font-family: 'JetBrains Mono', monospace; flex-shrink: 0; }
+.os-bridge-pct { width: 60px; text-align: right; font-size: .75rem; color: var(--text3); flex-shrink: 0; }
+
+/* Loading */
+.os-loading { text-align: center; padding: 3rem; color: var(--text3); }
+.os-spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .6s linear infinite; margin-right: .5rem; vertical-align: middle; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Map */
+.os-map-popup { font-family: 'DM Sans', system-ui, sans-serif; font-size: .8rem; line-height: 1.4; }
+.os-map-popup strong { color: #818cf8; }
+.os-map-popup .pop-val { font-family: 'JetBrains Mono', monospace; }
+.os-map-legend { display: flex; gap: 1.5rem; flex-wrap: wrap; font-size: .75rem; color: var(--text3); }
+.os-map-legend span { display: inline-flex; align-items: center; gap: .3rem; }
+.os-map-legend .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+
+/* County cards */
+.os-county-card { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 1rem; margin-bottom: .75rem; }
+.os-county-card h4 { font-size: .85rem; color: var(--accent); margin-bottom: .5rem; }
+.os-county-card .os-county-stats { display: flex; gap: 1.5rem; margin-bottom: .5rem; font-size: .8rem; }
+.os-county-card .os-county-stats .stat-val { font-family: 'JetBrains Mono', monospace; font-weight: 600; }
+.os-county-competitors { font-size: .75rem; }
+.os-county-competitors .comp-row { display: flex; justify-content: space-between; padding: .2rem 0; border-bottom: 1px solid rgba(42,45,62,.3); }
+.os-county-competitors .comp-row:last-child { border: none; }

@@ -34,6 +34,9 @@ TOOL_ATTRIBUTION: dict[str, tuple[str, str]] = {
     "refuse": ("block", "Not answerable"),
     "web_search": ("globe", "Web search"),
     "credentialing_qa": ("doc", "Credentialing Q&A"),
+    "list_tasks": ("task", "Task manager"),
+    "create_task": ("task", "Task manager"),
+    "resolve_task": ("task", "Task manager"),
 }
 
 
@@ -287,6 +290,19 @@ def _validate_ui_block(block: Any, *, max_source_index: int) -> dict[str, Any] |
         if not isinstance(md, str) or not md.strip():
             return None
         return {"type": "detail", "markdown": md.strip()[:80000], "collapsed_default": bool(block.get("collapsed_default", True))}
+    if btype == "task_list":
+        tasks = block.get("tasks")
+        if not isinstance(tasks, list):
+            return None
+        # Trim tasks to avoid huge payloads
+        safe_tasks = tasks[:100]
+        out: dict[str, Any] = {"type": "task_list", "tasks": safe_tasks}
+        filters = block.get("filters")
+        if isinstance(filters, dict):
+            out["filters"] = filters
+        out["allow_create"] = bool(block.get("allow_create", False))
+        out["allow_resolve"] = bool(block.get("allow_resolve", True))
+        return out
     # ignore unknown / unsupported types
     return None
 

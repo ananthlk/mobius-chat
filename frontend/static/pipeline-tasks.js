@@ -299,9 +299,15 @@ function reconToggleTask(taskId, checked) {
   if (!t) return;
   t.done = checked;
   feEmit((checked ? '✓ Task done — ' : '· Task reopened — ') + (t.providerName || taskId), checked ? 'ok' : 'info');
-  // Persist across page reloads
+  // Persist in localStorage (offline fallback)
   if (checked) _persistTaskDone(taskId);
   else          _clearPersistedTaskDone(taskId);
+  // Mirror to task-manager API (best-effort — taskId may be a stable UUID if tasks were bulk-imported)
+  if (checked && t._apiId) {
+    fetch(`/chat/tasks/${t._apiId}/resolve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
+  } else if (!checked && t._apiId) {
+    fetch(`/chat/tasks/${t._apiId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'open' }) }).catch(() => {});
+  }
   // Update just the task item styling
   const el = document.getElementById(`task-${taskId}`);
   if (el) el.className = el.className.replace(/\bdone\b/, '').trim() + (checked ? ' done' : '');
@@ -320,6 +326,10 @@ function reconDismissTask(taskId) {
   t.done = true;
   feEmit('Task dismissed — ' + (t.providerName || t.text || taskId));
   _persistTaskDone(taskId);  // survive page reload
+  // Mirror to task-manager API (best-effort)
+  if (t._apiId) {
+    fetch(`/chat/tasks/${t._apiId}/dismiss`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
+  }
   // Full re-render of queue
   _refreshTaskQueueFull();
 }
@@ -352,6 +362,8 @@ function _openStepTaskDrawer() {
   const stepId = lastRun?.pending_step_id || window._viewStepId;
   if (stepId === 'pml_alignment') {
     togglePmlTaskDrawer(true);
+  } else if (stepId === 'taxonomy_optimization') {
+    toggleTaxTaskDrawer(true);
   } else {
     toggleTaskDrawer(true);
   }

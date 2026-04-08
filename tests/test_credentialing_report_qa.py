@@ -240,7 +240,9 @@ def test_create_credentialing_report_runs_orchestrator_not_ask():
     extra_out = {}
     with patch.dict("os.environ", {"CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL": "http://test:8011"}, clear=False):
         with patch("app.services.tool_agent.run_orchestrator") as mock_orch:
-            mock_orch.return_value = ("Report done.", MagicMock(step_outputs=[], report_run_id="new-run"))
+            mock_state = MagicMock(step_outputs=[], report_run_id="new-run")
+            mock_state.first_failed_step.return_value = None
+            mock_orch.return_value = ("Report done.", mock_state)
             ans, _, signal, _ = answer_tool(
                 question="Create a credentialing report for Aspire Health",
                 user_message="Create a credentialing report for Aspire Health",

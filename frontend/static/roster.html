@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Provider Roster — Mobius</title>
+<link rel="stylesheet" href="/static/pipeline.css">
+<style>
+/* ── Roster page layout ────────────────────────────────────────── */
+html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font-family: var(--font-sans, 'DM Sans', system-ui, sans-serif); }
+
+.roster-layout { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+/* ── Top bar ───────────────────────────────────────────────────── */
+.roster-topbar {
+  display: flex; align-items: center; gap: .75rem;
+  padding: .6rem 1.25rem; background: var(--surface);
+  border-bottom: 1px solid var(--border); flex-shrink: 0;
+  min-height: 52px;
+}
+.roster-brand {
+  display: flex; align-items: center; gap: .4rem;
+  font-size: .875rem; font-weight: 600; color: var(--text);
+  text-decoration: none;
+}
+.roster-brand svg { opacity: .7; }
+.roster-brand-sep { color: var(--text-3); font-weight: 400; }
+.roster-org-pill {
+  display: flex; align-items: center; gap: .35rem;
+  font-size: .8rem; font-weight: 600; color: var(--indigo);
+  background: var(--indigo-bg, #eef2ff); border: 1px solid var(--indigo-border, #c7d2fe);
+  border-radius: 6px; padding: .2rem .6rem;
+}
+.roster-topbar-spacer { flex: 1; }
+.roster-topbar-actions { display: flex; align-items: center; gap: .5rem; }
+
+/* ── Stats bar ─────────────────────────────────────────────────── */
+.roster-stats-bar {
+  display: flex; align-items: stretch; gap: 0;
+  background: var(--surface); border-bottom: 1px solid var(--border);
+  padding: 0 1.25rem; flex-shrink: 0; overflow-x: auto;
+}
+.roster-stat {
+  display: flex; flex-direction: column; align-items: flex-start;
+  padding: .65rem 1.1rem .65rem 0; border-right: 1px solid var(--border);
+  margin-right: 1.1rem; min-width: 90px;
+}
+.roster-stat:last-child { border-right: none; margin-right: 0; }
+.roster-stat-val { font-size: 1.35rem; font-weight: 700; color: var(--text); line-height: 1.1; }
+.roster-stat-val.green { color: var(--green, #16a34a); }
+.roster-stat-val.amber { color: var(--amber, #d97706); }
+.roster-stat-val.red   { color: var(--red, #dc2626); }
+.roster-stat-label { font-size: .67rem; font-weight: 500; color: var(--text-3); text-transform: uppercase; letter-spacing: .04em; margin-top: .15rem; }
+
+/* ── Body: filter rail + list ──────────────────────────────────── */
+.roster-body { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+
+.roster-filter-rail {
+  width: 200px; min-width: 200px; background: var(--surface);
+  border-right: 1px solid var(--border);
+  padding: .75rem .5rem; overflow-y: auto; flex-shrink: 0;
+}
+.roster-filter-section { margin-bottom: 1rem; }
+.roster-filter-label {
+  font-size: .62rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--text-3); padding: 0 .35rem; margin-bottom: .35rem;
+}
+.roster-filter-btn {
+  display: flex; align-items: center; justify-content: space-between;
+  width: 100%; padding: .3rem .5rem; border: none; background: none;
+  text-align: left; cursor: pointer; border-radius: 5px;
+  font-size: .78rem; color: var(--text-2); transition: background .1s;
+}
+.roster-filter-btn:hover { background: var(--grey-bg); }
+.roster-filter-btn.active { background: var(--indigo-bg, #eef2ff); color: var(--indigo); font-weight: 600; }
+.roster-filter-count {
+  font-size: .65rem; font-weight: 600; color: var(--text-3);
+  background: var(--grey-bg); border-radius: 8px; padding: .05rem .35rem;
+}
+.roster-filter-btn.active .roster-filter-count { background: var(--indigo-border, #c7d2fe); color: var(--indigo); }
+
+/* ── Provider list area ─────────────────────────────────────────── */
+.roster-list-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+.roster-list-toolbar {
+  display: flex; align-items: center; gap: .5rem;
+  padding: .6rem 1rem; border-bottom: 1px solid var(--border);
+  background: var(--surface); flex-shrink: 0;
+}
+.roster-search {
+  flex: 1; max-width: 320px; padding: .35rem .65rem;
+  border: 1px solid var(--border); border-radius: 7px;
+  font-size: .82rem; color: var(--text); background: var(--bg);
+  outline: none; transition: border-color .15s;
+}
+.roster-search:focus { border-color: var(--indigo); }
+.roster-count-label { font-size: .75rem; color: var(--text-3); margin-left: auto; }
+
+/* ── Cards list ──────────────────────────────────────────────────── */
+.roster-list-scroll { flex: 1; overflow-y: auto; padding: .75rem 1rem; }
+
+/* Empty / loading states */
+.roster-empty {
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; padding: 3rem 1rem; color: var(--text-3);
+  font-size: .85rem; text-align: center; gap: .5rem;
+}
+
+/* ── Override rt-card to fill list area nicely ───────────────────── */
+#rosterLiveList.rt-card-list { border-radius: 8px; border: 1px solid var(--border); }
+
+/* ── Drawer ──────────────────────────────────────────────────────── */
+/* backdrop must be BELOW the drawer (z-index 999 < drawer 1000) so drawer clicks are not intercepted */
+.task-drawer-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.18); z-index: 999; display: none; }
+.task-drawer-backdrop.open { display: block; }
+
+/* ── Responsive ──────────────────────────────────────────────────── */
+@media (max-width: 680px) {
+  .roster-filter-rail { display: none; }
+}
+</style>
+</head>
+<body>
+
+<div class="roster-layout">
+
+  <!-- ── Top bar ────────────────────────────────────────────── -->
+  <header class="roster-topbar">
+    <a class="roster-brand" href="/pipeline" title="Back to Pipeline">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+        <path d="M12 12c-2-2.5-4-4-6-4a4 4 0 0 0 0 8c2 0 4-1.5 6-4z"/>
+        <path d="M12 12c2 2.5 4 4 6 4a4 4 0 0 0 0-8c-2 0-4 1.5-6 4z"/>
+      </svg>
+      Mobius
+      <span class="roster-brand-sep">·</span>
+      <span style="font-weight:400;color:var(--text-3)">Provider Roster</span>
+    </a>
+
+    <div class="roster-org-pill" id="rosterOrgPill" style="display:none">
+      <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="7" width="12" height="8" rx="1.5"/><path d="M5 7V5a3 3 0 0 1 6 0v2"/></svg>
+      <span id="rosterOrgName">—</span>
+    </div>
+
+    <div id="rosterOrgSelectorWrap" style="display:none">
+      <select id="rosterOrgSelector" onchange="rosterOrgSelected(this.value)"
+        style="font-size:.8rem;padding:.28rem .55rem;border:1px solid var(--border);border-radius:6px;color:var(--text);background:var(--surface);cursor:pointer">
+        <option value="">Select organization…</option>
+      </select>
+    </div>
+
+    <div class="roster-topbar-spacer"></div>
+
+    <div class="roster-topbar-actions">
+      <button onclick="rosterExportCsv()"
+        style="font-size:.75rem;padding:.3rem .75rem;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text-2);cursor:pointer;font-weight:500">
+        Export CSV
+      </button>
+      <button onclick="rosterAddProvider()"
+        style="font-size:.75rem;padding:.3rem .75rem;border:1px solid var(--indigo-border,#c7d2fe);border-radius:6px;background:var(--indigo-bg,#eef2ff);color:var(--indigo);cursor:pointer;font-weight:600">
+        + Add Provider
+      </button>
+      <button onclick="rosterRunCredentialing()"
+        style="font-size:.75rem;padding:.3rem .75rem;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text-2);cursor:pointer;font-weight:500">
+        Run Credentialing →
+      </button>
+    </div>
+  </header>
+
+  <!-- ── Stats bar ──────────────────────────────────────────── -->
+  <div class="roster-stats-bar" id="rosterStatsBar">
+    <div class="roster-stat">
+      <span class="roster-stat-val" id="statTotal">—</span>
+      <span class="roster-stat-label">Total</span>
+    </div>
+    <div class="roster-stat">
+      <span class="roster-stat-val green" id="statActive">—</span>
+      <span class="roster-stat-label">NPPES Active</span>
+    </div>
+    <div class="roster-stat">
+      <span class="roster-stat-val amber" id="statPmlGaps">—</span>
+      <span class="roster-stat-label">PML Gaps</span>
+    </div>
+    <div class="roster-stat">
+      <span class="roster-stat-val" id="statOpenTasks">—</span>
+      <span class="roster-stat-label">Open Tasks</span>
+    </div>
+    <div class="roster-stat">
+      <span class="roster-stat-val" id="statLastRun" style="font-size:.9rem">—</span>
+      <span class="roster-stat-label">Last Run</span>
+    </div>
+  </div>
+
+  <!-- ── Main body: filter rail + list ─────────────────────── -->
+  <div class="roster-body">
+
+    <!-- Filter rail -->
+    <aside class="roster-filter-rail" id="rosterFilterRail">
+      <div class="roster-filter-section">
+        <div class="roster-filter-label">Status</div>
+        <button class="roster-filter-btn active" data-filter="all" onclick="rosterSetFilter('all',this)">
+          All providers <span class="roster-filter-count" id="fc-all">—</span>
+        </button>
+        <button class="roster-filter-btn" data-filter="active" onclick="rosterSetFilter('active',this)">
+          NPPES Active <span class="roster-filter-count" id="fc-active">—</span>
+        </button>
+        <button class="roster-filter-btn" data-filter="deactivated" onclick="rosterSetFilter('deactivated',this)">
+          Deactivated <span class="roster-filter-count" id="fc-deactivated">—</span>
+        </button>
+      </div>
+      <div class="roster-filter-section">
+        <div class="roster-filter-label">Tasks</div>
+        <button class="roster-filter-btn" data-filter="open-tasks" onclick="rosterSetFilter('open-tasks',this)">
+          Has open tasks <span class="roster-filter-count" id="fc-open-tasks">—</span>
+        </button>
+        <button class="roster-filter-btn" data-filter="clean" onclick="rosterSetFilter('clean',this)">
+          Clean <span class="roster-filter-count" id="fc-clean">—</span>
+        </button>
+      </div>
+      <div class="roster-filter-section">
+        <div class="roster-filter-label">Enrollment</div>
+        <button class="roster-filter-btn" data-filter="pml-gap" onclick="rosterSetFilter('pml-gap',this)">
+          Missing PML <span class="roster-filter-count" id="fc-pml-gap">—</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- List area -->
+    <div class="roster-list-area">
+      <div class="roster-list-toolbar">
+        <input type="text" class="roster-search" id="rosterSearch"
+          placeholder="Search by name or NPI…"
+          oninput="rosterSearch(this.value)" />
+        <span class="roster-count-label" id="rosterCountLabel"></span>
+      </div>
+
+      <div class="roster-list-scroll">
+        <div id="rosterLoadingState" class="roster-empty">
+          <span class="spinner" style="width:20px;height:20px;border-width:2.5px"></span>
+          <span>Loading roster…</span>
+        </div>
+        <div id="rosterNoOrg" class="roster-empty" style="display:none">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity=".3"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M8 7V5a4 4 0 0 1 8 0v2"/></svg>
+          <span>Select an organization to view its roster.</span>
+        </div>
+        <div id="rosterEmptyState" class="roster-empty" style="display:none">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity=".3"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+          <span>No providers in roster yet.</span>
+          <span style="font-size:.78rem">Run the credentialing pipeline to add providers.</span>
+          <a href="/pipeline" target="_blank"
+            style="font-size:.8rem;color:var(--indigo);font-weight:600;margin-top:.25rem">
+            Open Pipeline →
+          </a>
+        </div>
+        <div id="rosterLiveList" class="rt-card-list" style="display:none"></div>
+      </div>
+    </div>
+
+  </div><!-- /.roster-body -->
+
+</div><!-- /.roster-layout -->
+
+<!-- ── Provider detail drawer (built dynamically) ──────── -->
+<div class="task-drawer-backdrop" id="rosterProviderDrawerBackdrop" onclick="if(event.target===this)closeRosterProviderDrawer()"></div>
+<div class="tax-provider-drawer" id="rosterProviderDrawer">
+  <div class="pml-task-drawer-head" style="padding:.8rem 1rem 0">
+    <div style="flex:1;min-width:0">
+      <div style="font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--indigo,#4f46e5);margin-bottom:.15rem">Provider Profile</div>
+      <div class="pml-task-drawer-title" id="rosterProvDrawerTitle" style="font-size:1rem;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">—</div>
+      <div style="font-size:.72rem;color:var(--text-3);font-family:monospace;margin-top:.1rem" id="rosterProvDrawerNpi"></div>
+    </div>
+    <button onclick="closeRosterProviderDrawer()" style="background:none;border:none;cursor:pointer;font-size:1.1rem;color:var(--text-3);padding:.25rem .4rem;margin-left:.5rem;flex-shrink:0;border-radius:4px" title="Close">✕</button>
+  </div>
+  <div style="height:1px;background:var(--border);margin:.7rem 0 0"></div>
+  <div class="pml-task-drawer-body" id="rosterProvDrawerBody" style="padding:.8rem 1rem">
+    <div style="padding:2rem;text-align:center;color:var(--text-3)">
+      <span class="spinner"></span> Loading…
+    </div>
+  </div>
+</div>
+
+<!-- ── Activity ticker (reused) ─────────────────────────── -->
+<div id="feTickerBar" onclick="_feTickerClick(event)">
+  <div id="feTickerHead">
+    <span id="feTickerDot"></span>
+    <span id="feTickerLabel">Activity</span>
+    <span id="feTickerMsg">—</span>
+    <span id="feTickerCount"></span>
+    <span id="feTickerChevron">▾</span>
+  </div>
+  <div id="feTickerBody"></div>
+</div>
+
+<!-- ── Scripts ────────────────────────────────────────────── -->
+<!-- Minimal shims so pipeline-nppes.js functions work standalone -->
+<script>
+  // Shim: lastRun — the roster page reads org_name from here
+  window.lastRun = null;
+  // Shim: runId — not used on this page
+  window.runId   = null;
+  // Shim: API base
+  const API = '';
+  // Shim: feEmit — route to the ticker bar
+  function feEmit(msg, level) {
+    const el = document.getElementById('feTickerMsg');
+    if (el) el.textContent = msg || '';
+    const dot = document.getElementById('feTickerDot');
+    if (dot) { dot.style.background = level === 'error' ? 'var(--red)' : level === 'warn' ? '#d97706' : level === 'ok' ? 'var(--green)' : 'var(--indigo)'; }
+    // Push to body
+    const body = document.getElementById('feTickerBody');
+    if (body) {
+      const d = document.createElement('div');
+      d.style.cssText = 'padding:.2rem .75rem;font-size:.73rem;border-top:1px solid var(--border);color:var(--text-2)';
+      d.textContent = msg;
+      body.prepend(d);
+      if (body.children.length > 60) body.removeChild(body.lastChild);
+    }
+  }
+  function _feTickerClick(e) {
+    const bar = document.getElementById('feTickerBar');
+    if (bar) bar.classList.toggle('open');
+  }
+  // Shim: esc — HTML escape
+  function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  // Shim: titleCase
+  function titleCase(s) { return (s||'').replace(/\w\S*/g, t => t.charAt(0).toUpperCase() + t.slice(1).toLowerCase()); }
+</script>
+
+<!-- ── Add Provider Modal ──────────────────────────────────────── -->
+<div id="addProviderOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:500;align-items:center;justify-content:center" onclick="if(event.target===this)closeAddProvider()">
+  <div style="background:var(--surface);border-radius:12px;width:420px;max-width:95vw;padding:1.5rem;box-shadow:0 8px 40px rgba(0,0,0,.2)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.1rem">
+      <div>
+        <div style="font-size:.65rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--indigo);margin-bottom:.2rem">Roster</div>
+        <h3 style="margin:0;font-size:1rem;font-weight:700;color:var(--text)">Add Provider</h3>
+      </div>
+      <button onclick="closeAddProvider()" style="background:none;border:none;cursor:pointer;font-size:1.1rem;color:var(--text-3);padding:.2rem .4rem;border-radius:4px">✕</button>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:.75rem">
+      <div>
+        <label style="font-size:.72rem;font-weight:600;color:var(--text-2);display:block;margin-bottom:.3rem">NPI <span style="color:var(--red)">*</span></label>
+        <input id="apNpi" type="text" maxlength="10" placeholder="10-digit NPI"
+          style="width:100%;box-sizing:border-box;padding:.45rem .65rem;border:1.5px solid var(--border);border-radius:7px;font-size:.84rem;background:var(--surface);color:var(--text);outline:none"
+          oninput="apLookupNpi(this.value)" />
+        <div id="apNpiHint" style="font-size:.7rem;color:var(--text-3);margin-top:.2rem"></div>
+      </div>
+      <div>
+        <label style="font-size:.72rem;font-weight:600;color:var(--text-2);display:block;margin-bottom:.3rem">Provider Name <span style="color:var(--red)">*</span></label>
+        <input id="apName" type="text" placeholder="Full legal name"
+          style="width:100%;box-sizing:border-box;padding:.45rem .65rem;border:1.5px solid var(--border);border-radius:7px;font-size:.84rem;background:var(--surface);color:var(--text);outline:none" />
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">
+        <div>
+          <label style="font-size:.72rem;font-weight:600;color:var(--text-2);display:block;margin-bottom:.3rem">City</label>
+          <input id="apCity" type="text" placeholder="City"
+            style="width:100%;box-sizing:border-box;padding:.45rem .65rem;border:1.5px solid var(--border);border-radius:7px;font-size:.84rem;background:var(--surface);color:var(--text);outline:none" />
+        </div>
+        <div>
+          <label style="font-size:.72rem;font-weight:600;color:var(--text-2);display:block;margin-bottom:.3rem">State</label>
+          <input id="apState" type="text" maxlength="2" placeholder="FL"
+            style="width:100%;box-sizing:border-box;padding:.45rem .65rem;border:1.5px solid var(--border);border-radius:7px;font-size:.84rem;background:var(--surface);color:var(--text);outline:none" />
+        </div>
+      </div>
+      <div>
+        <label style="font-size:.72rem;font-weight:600;color:var(--text-2);display:block;margin-bottom:.3rem">Specialty / Taxonomy</label>
+        <input id="apSpecialty" type="text" placeholder="e.g. Mental Health Counselor"
+          style="width:100%;box-sizing:border-box;padding:.45rem .65rem;border:1.5px solid var(--border);border-radius:7px;font-size:.84rem;background:var(--surface);color:var(--text);outline:none" />
+      </div>
+    </div>
+
+    <div style="margin-top:1.1rem;display:flex;gap:.6rem;justify-content:flex-end">
+      <button onclick="closeAddProvider()" style="padding:.4rem .9rem;border:1px solid var(--border);border-radius:7px;background:var(--surface);font-size:.8rem;cursor:pointer;color:var(--text-2)">Cancel</button>
+      <button onclick="submitAddProvider()" id="apSubmitBtn"
+        style="padding:.4rem 1rem;border:none;border-radius:7px;background:var(--indigo,#4f46e5);color:#fff;font-size:.8rem;font-weight:600;cursor:pointer">
+        Add to Roster
+      </button>
+    </div>
+    <div id="apError" style="margin-top:.6rem;font-size:.74rem;color:var(--red);display:none"></div>
+  </div>
+</div>
+
+<script src="/static/pipeline-nppes.js"></script>
+<script src="/static/pipeline-chat.js"></script>
+<script src="/static/roster-page.js"></script>
+
+</body>
+</html>

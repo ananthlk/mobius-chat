@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Roster – Mobius</title>
+  <link rel="icon" type="image/svg+xml" href="/static/logo.svg" />
+  <link rel="stylesheet" href="/static/tokens-dark.css" />
+  <link rel="stylesheet" href="/static/components.css" />
+  <style>
+    /* ── Page shell ── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--mobius-bg-primary);
+      color: var(--mobius-text-primary);
+      line-height: 1.5;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Top header ── */
+    .ru-header {
+      display: flex; align-items: center; gap: 0.75rem;
+      padding: 0.65rem 1.25rem;
+      border-bottom: 1px solid var(--mobius-border-medium);
+      background: var(--mobius-bg-tertiary);
+      flex-shrink: 0;
+    }
+    .ru-brand { font-size: 0.9rem; font-weight: 600; color: var(--mobius-text-secondary); }
+    .ru-brand span { color: var(--mobius-text-primary); }
+    .ru-org-pill {
+      display: flex; align-items: center; gap: 0.4rem;
+      background: var(--mobius-bg-secondary);
+      border: 1px solid var(--mobius-border);
+      border-radius: 5px; padding: 0.25rem 0.65rem;
+      font-size: 0.8rem; cursor: pointer;
+      transition: border-color 0.12s;
+    }
+    .ru-org-pill:hover { border-color: var(--mobius-accent); }
+
+    /* ── Command bar ── */
+    .ru-cmd-bar {
+      padding: 0.65rem 1.25rem 0;
+      flex-shrink: 0;
+    }
+    .ru-cmd-chips {
+      display: flex; gap: 0.35rem; flex-wrap: wrap;
+      padding: 0.4rem 0 0 0;
+    }
+
+    /* ── Stats strip ── */
+    .ru-stats {
+      display: flex; gap: 0.75rem;
+      padding: 0.65rem 1.25rem;
+      flex-shrink: 0;
+    }
+    .ru-stat {
+      display: flex; flex-direction: column; align-items: center;
+      background: var(--mobius-bg-card); border: 1px solid var(--mobius-border);
+      border-radius: 7px; padding: 0.5rem 1rem; min-width: 80px;
+    }
+    .ru-stat-n     { font-size: 1.4rem; font-weight: 700; line-height: 1.1; }
+    .ru-stat-label { font-size: 0.68rem; color: var(--mobius-text-secondary); margin-top: 0.1rem; }
+
+    /* ── Step strip ── */
+    .ru-pipeline {
+      padding: 0 1.25rem 0.5rem;
+      flex-shrink: 0;
+    }
+    .ru-pipeline-label {
+      font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.07em;
+      color: var(--mobius-text-secondary); margin-bottom: 0.3rem;
+    }
+
+    /* ── Table area ── */
+    .ru-table-area {
+      flex: 1; overflow: hidden;
+      padding: 0 1.25rem 1.25rem;
+      display: flex; flex-direction: column;
+    }
+
+    /* ── Org selector state ── */
+    .ru-org-selector-wrap {
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; flex: 1; gap: 0.75rem;
+    }
+    .ru-org-selector-label { font-size: 0.85rem; color: var(--mobius-text-secondary); }
+
+    /* ── Loading / empty / error states ── */
+    .ru-state-center {
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; flex: 1; gap: 0.6rem;
+      color: var(--mobius-text-secondary); font-size: 0.85rem;
+    }
+    .ru-spinner {
+      width: 24px; height: 24px; border: 2px solid var(--mobius-border-medium);
+      border-top-color: var(--mobius-accent); border-radius: 50%;
+      animation: mbx-spin 0.7s linear infinite;
+    }
+
+    /* ── Table fills available height ── */
+    .mbx-table-wrap { flex: 1; overflow-y: auto; }
+    .mbx-table thead th { position: sticky; top: 0; z-index: 1; }
+
+    /* ── Responsive ── */
+    @media (max-width: 600px) {
+      .ru-stats { flex-wrap: wrap; }
+      .ru-stat  { min-width: 70px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ══ Header ══ -->
+  <header class="ru-header">
+    <div class="ru-brand"><span>Mobius</span> &nbsp;·&nbsp; Roster</div>
+    <div class="mbx-spacer"></div>
+
+    <!-- Org pill / selector -->
+    <div class="ru-org-pill" onclick="document.getElementById('ru-org-select-inline').style.display='block'; this.style.display='none';">
+      <span class="mbx-dot mbx-dot-up"></span>
+      <span id="ru-org-name">—</span>
+      <span style="color:var(--mobius-text-secondary);font-size:0.7rem;">▾</span>
+    </div>
+    <select id="ru-org-select-inline" style="display:none;font-size:0.8rem;background:var(--mobius-bg-secondary);border:1px solid var(--mobius-border);border-radius:5px;padding:0.3rem 0.5rem;color:var(--mobius-text-primary);"
+      onchange="onOrgSelected(this.value); this.style.display='none'; document.querySelector('.ru-org-pill').style.display='flex';">
+    </select>
+
+    <button class="mbx-btn mbx-btn-success mbx-btn-sm" onclick="runCredentialing()">▶ Run credentialing</button>
+    <button class="mbx-btn mbx-btn-secondary mbx-btn-sm" onclick="exportCSV()">Export CSV</button>
+    <button class="mbx-btn mbx-btn-ghost mbx-btn-sm" onclick="openAddProviderModal()">+ Add provider</button>
+  </header>
+
+  <!-- ══ Command bar ══ -->
+  <div class="ru-cmd-bar">
+    <div class="mbx-cmd">
+      <span class="mbx-cmd-prompt">›</span>
+      <input id="ru-cmd-input" class="mbx-cmd-input"
+        placeholder="search providers, run credentialing, export CSV, add provider…" autocomplete="off" />
+      <span class="mbx-cmd-hint">↵</span>
+    </div>
+    <div class="ru-cmd-chips">
+      <span class="mbx-chip ru-cmd-chip" data-cmd="run credentialing">run credentialing</span>
+      <span class="mbx-chip ru-cmd-chip" data-cmd="export csv">export CSV</span>
+      <span class="mbx-chip ru-cmd-chip" data-cmd="add provider">+ add provider</span>
+      <span class="mbx-chip ru-cmd-chip" data-cmd="upload roster">upload roster</span>
+    </div>
+  </div>
+
+  <!-- ══ Stats strip ══ -->
+  <div class="ru-stats" id="ru-state-content" style="display:none;">
+    <div class="ru-stat">
+      <span class="ru-stat-n" id="ru-stat-total" style="color:var(--mobius-accent);">—</span>
+      <span class="ru-stat-label">total</span>
+    </div>
+    <div class="ru-stat">
+      <span class="ru-stat-n" id="ru-stat-nppes" style="color:var(--mobius-success);">—</span>
+      <span class="ru-stat-label">NPPES ok</span>
+    </div>
+    <div class="ru-stat">
+      <span class="ru-stat-n" id="ru-stat-pml" style="color:var(--mobius-warning);">—</span>
+      <span class="ru-stat-label">PML gaps</span>
+    </div>
+    <div class="ru-stat">
+      <span class="ru-stat-n" id="ru-stat-tasks" style="color:var(--mobius-accent);">—</span>
+      <span class="ru-stat-label">open tasks</span>
+    </div>
+  </div>
+
+  <!-- ══ Pipeline step strip ══ (inside content state) -->
+  <div class="ru-pipeline" id="ru-pipeline-strip" style="display:none;">
+    <div class="ru-pipeline-label">Credentialing pipeline</div>
+    <div class="mbx-steps" id="ru-steps">
+      <!-- rendered by renderSteps() -->
+    </div>
+  </div>
+
+  <!-- ══ Loading state ══ -->
+  <div id="ru-state-loading" class="ru-state-center" style="flex:1;">
+    <div class="ru-spinner"></div>
+    <span>Loading roster…</span>
+  </div>
+
+  <!-- ══ Error state ══ -->
+  <div id="ru-state-error" class="ru-state-center mbx-hidden" style="flex:1;">
+    <div class="mbx-alert mbx-alert-error" style="max-width:420px;">
+      <span>⚠</span>
+      <span id="ru-error-msg">Something went wrong.</span>
+    </div>
+    <button class="mbx-btn mbx-btn-secondary mbx-btn-sm" onclick="location.reload()">Retry</button>
+  </div>
+
+  <!-- ══ Empty state ══ -->
+  <div id="ru-state-empty" class="ru-state-center mbx-hidden" style="flex:1;">
+    <p>No providers found. Upload a roster or run credentialing to get started.</p>
+    <div style="display:flex;gap:0.5rem;">
+      <button class="mbx-btn mbx-btn-primary mbx-btn-sm" onclick="location.href='/roster-ui/upload.html'">Upload roster</button>
+      <button class="mbx-btn mbx-btn-secondary mbx-btn-sm" onclick="runCredentialing()">Run credentialing</button>
+    </div>
+  </div>
+
+  <!-- ══ Org selector state ══ -->
+  <div id="ru-state-selector" class="mbx-hidden" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:0.75rem;">
+    <p class="ru-org-selector-label">Select an organization to view its roster:</p>
+    <select id="ru-org-selector" class="mbx-select" style="max-width:320px;"
+      onchange="onOrgSelected(this.value)">
+      <option value="">— choose org —</option>
+    </select>
+  </div>
+
+  <!-- ══ Table (shown inside content state) ══ -->
+  <div class="ru-table-area" id="ru-table-area" style="display:none;">
+    <div class="mbx-table-wrap">
+      <!-- Toolbar -->
+      <div class="mbx-table-toolbar">
+        <div class="mbx-chips">
+          <button class="mbx-chip ru-filter-chip ru-chip-active" data-filter="all"   onclick="setFilter('all')">All <span id="ru-fc-all">—</span></button>
+          <button class="mbx-chip ru-filter-chip"                data-filter="ok"    onclick="setFilter('ok')">NPPES ok <span id="ru-fc-ok">—</span></button>
+          <button class="mbx-chip ru-filter-chip"                data-filter="pml"   onclick="setFilter('pml')">PML gaps <span id="ru-fc-pml">—</span></button>
+          <button class="mbx-chip ru-filter-chip"                data-filter="tasks" onclick="setFilter('tasks')">Open tasks <span id="ru-fc-tasks">—</span></button>
+        </div>
+        <input id="ru-search" class="mbx-table-search" placeholder="Search by name, NPI, specialty…"
+          oninput="onSearch(this.value)" style="max-width:220px;" />
+      </div>
+
+      <!-- Table -->
+      <table class="mbx-table">
+        <thead>
+          <tr>
+            <th class="ru-th-sort" data-col="npi"  data-label="NPI"       onclick="sortBy('npi')">NPI</th>
+            <th class="ru-th-sort" data-col="name" data-label="Provider ↕" onclick="sortBy('name')">Provider ↑</th>
+            <th class="ru-th-sort" data-col="spec" data-label="Specialty"  onclick="sortBy('spec')">Specialty</th>
+            <th>NPPES</th>
+            <th>PML / Tasks</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="ru-table-body">
+          <!-- rendered by renderTable() -->
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ══ Provider detail drawer ══ -->
+  <div id="ru-drawer-backdrop" class="mbx-drawer-backdrop mbx-hidden" onclick="closeProviderDrawer()"></div>
+  <div id="ru-drawer" class="mbx-drawer mbx-hidden">
+    <div class="mbx-drawer-header">
+      <span id="ru-drawer-title" class="mbx-drawer-title">Provider</span>
+      <button class="mbx-modal-close" onclick="closeProviderDrawer()">×</button>
+    </div>
+    <div id="ru-drawer-body" class="mbx-drawer-body">
+      <!-- populated by openProviderDrawer() -->
+    </div>
+    <div class="mbx-drawer-footer">
+      <button class="mbx-btn mbx-btn-secondary mbx-btn-sm" onclick="closeProviderDrawer()">Close</button>
+    </div>
+  </div>
+
+  <!-- ══ Add provider modal ══ -->
+  <div id="ru-add-modal" class="mbx-modal-backdrop mbx-hidden" onclick="if(event.target===this)closeAddProviderModal()">
+    <div class="mbx-modal">
+      <div class="mbx-modal-header">
+        <span class="mbx-modal-title">Add Provider</span>
+        <button class="mbx-modal-close" onclick="closeAddProviderModal()">×</button>
+      </div>
+      <div class="mbx-modal-body" style="display:flex;flex-direction:column;gap:0.9rem;">
+        <div class="mbx-field">
+          <label class="mbx-label">NPI <span style="color:var(--mobius-error);">*</span></label>
+          <input id="ru-ap-npi" class="mbx-input mbx-mono" placeholder="10-digit NPI"
+            maxlength="10" oninput="onNpiInput(this.value)" />
+          <span id="ru-ap-npi-hint" style="font-size:0.75rem;"></span>
+        </div>
+        <div class="mbx-field">
+          <label class="mbx-label">Provider name</label>
+          <input id="ru-ap-name" class="mbx-input" placeholder="Auto-filled from NPPES" />
+        </div>
+      </div>
+      <div class="mbx-modal-footer">
+        <button class="mbx-btn mbx-btn-ghost mbx-btn-sm" onclick="closeAddProviderModal()">Cancel</button>
+        <button id="ru-ap-submit" class="mbx-btn mbx-btn-primary mbx-btn-sm" onclick="submitAddProvider()">Add Provider</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- JS: content state wiring -->
+  <script>
+    // When content loads, show the right sections
+    const _origShowState = null;
+    document.addEventListener('DOMContentLoaded', () => {
+      // Monkey-patch showState to also toggle table + pipeline strip
+      const origShowState = window.showState;
+      window.showState = function(state) {
+        origShowState(state);
+        const isContent = state === 'content';
+        document.getElementById('ru-table-area').style.display     = isContent ? 'flex' : 'none';
+        document.getElementById('ru-pipeline-strip').style.display = isContent ? 'block' : 'none';
+        // also reshow stats strip (it was part of content section, now separate)
+        document.getElementById('ru-state-content').style.display  = isContent ? 'flex' : 'none';
+      };
+
+      // Populate org selector inline dropdown as orgs are discovered
+      const origRenderOrgSelector = window.renderOrgSelector;
+      window.renderOrgSelector = function(orgs) {
+        origRenderOrgSelector(orgs);
+        const inline = document.getElementById('ru-org-select-inline');
+        if (inline) {
+          inline.innerHTML = orgs.map(o =>
+            `<option value="${o}">${o}</option>`
+          ).join('');
+        }
+      };
+    });
+  </script>
+  <script src="/static/roster-unified.js"></script>
+</body>
+</html>

@@ -286,6 +286,8 @@ async function poll() {
         pml_alignment:             'Step 4 — PML / Medicaid check',
         find_associated_providers: 'Step 5 — Associated providers',
         taxonomy_optimization:     'Step 6 — Taxonomy optimization',
+        provider_summaries:        'Step 7 — Provider AI summaries',
+        org_summary:               'Step 8 — Organization health report',
       };
       feEmit(`Pipeline moved to: ${stepFriendly[newPending] || newPending}`);
     }
@@ -306,6 +308,12 @@ function render(data) {
   window.lastRun = data;          // expose for functions that access window.lastRun
   window._lastRunId = data.run_id;
   document.getElementById('hdOrg').textContent = data.org_name || '—';
+  // Keep the sidebar Roster link org-scoped
+  const _rosterAnchor = document.getElementById('plRosterAnchor');
+  if (_rosterAnchor && data.org_name) {
+    _rosterAnchor.href = `/roster?org=${encodeURIComponent(data.org_name)}`;
+    if (data.org_name) localStorage.setItem('lastOrg', data.org_name);
+  }
   document.getElementById('hdMode').textContent = data.mode === 'autopilot' ? '⚡ Autopilot' : '🧭 Copilot';
   // Update chat context
   document.getElementById('chatOrgName').textContent = data.org_name || 'this organization';
@@ -327,6 +335,27 @@ function render(data) {
   renderBanner(data);
   // Sidebar tasks must come after renderCurrentStep so _reconTasks is populated
   setTimeout(renderSidebarTasks, 0);
+  // Mount task feed once per run_id (re-mount on run change)
+  _mountTaskFeed(data);
+}
+
+function _mountTaskFeed(data) {
+  const el = document.getElementById('plTaskFeed');
+  if (!el) return;
+  const rid = data.run_id;
+  if (!rid) { el.style.display = 'none'; return; }
+  // Only re-mount when run changes; rely on widget's own Refresh button otherwise
+  if (el.dataset.mountedRunId === rid) return;
+  el.dataset.mountedRunId = rid;
+  el.style.display = '';
+  if (typeof TaskManager !== 'undefined') {
+    TaskManager.mount(el, {
+      run_id: rid,
+      org: data.org_name || '',
+      allowCreate: false,
+      allowResolve: true,
+    });
+  }
 }
 
 function stepStatusFromState(stepId, steps) {
@@ -392,7 +421,8 @@ function renderSidebarTasks() {
 
   // Step short labels for sidebar tags
   const stepShort = { identify_org: 'Identity', find_locations: 'Locations', nppes_alignment: 'NPPES',
-    pml_alignment: 'PML', find_associated_providers: 'Compliance', taxonomy_optimization: 'Taxonomy' };
+    pml_alignment: 'PML', find_associated_providers: 'Compliance', taxonomy_optimization: 'Taxonomy',
+    provider_summaries: 'Summaries', org_summary: 'Org Report' };
 
   // Group by step so user sees where tasks came from
   const byStep = {};
@@ -401,7 +431,7 @@ function renderSidebarTasks() {
     (byStep[key] = byStep[key] || []).push(t);
   }
 
-  const stepOrder = ['identify_org','find_locations','nppes_alignment','pml_alignment','find_associated_providers','taxonomy_optimization'];
+  const stepOrder = ['identify_org','find_locations','nppes_alignment','pml_alignment','find_associated_providers','taxonomy_optimization','provider_summaries','org_summary'];
   let body = '';
   let shown = 0;
   for (const sid of stepOrder) {
@@ -483,6 +513,8 @@ function renderCurrentStep(data, steps) {
     pml_alignment:            'Is every clinician enrolled with the payors they need to bill?',
     find_associated_providers:'Are there providers billing under this org\'s NPI who aren\'t on the approved roster?',
     taxonomy_optimization:    'Are all billing taxonomy codes correctly aligned to each provider\'s credentials and services?',
+    provider_summaries:       'What is each provider\'s credential health and billability status?',
+    org_summary:              'What is the overall credential health of this organization?',
   };
   const questionText = _stepQuestions[displayPlan?.id] || displayPlan?.label || '—';
   // Step label is a small eyebrow above the question — not inline with the question text
@@ -611,6 +643,16 @@ const STEP_TASK_TEMPLATES = {
     { label: '🔍 Request re-credentialing', text: 'Request re-credentialing review for taxonomy update' },
     { label: '+ Add taxonomy code',     text: 'Add additional taxonomy code for dual-specialty provider' },
   ],
+  provider_summaries: [
+    { label: '✎ Update provider record', text: 'Update provider record based on AI summary findings' },
+    { label: '⚠ Escalate for review',    text: 'Escalate flagged provider to compliance team' },
+    { label: '✓ Mark as reviewed',        text: 'Mark provider summary as reviewed — no action needed' },
+  ],
+  org_summary: [
+    { label: '📋 Share org report',     text: 'Share organization health report with leadership' },
+    { label: '⚠ Schedule credentialing review', text: 'Schedule full credentialing review — org health below threshold' },
+    { label: '✓ Approve for submission', text: 'Approve organization credential file for payor submission' },
+  ],
 };
 
 function buildStepTaskBuilder(stepId) {
@@ -729,6 +771,8 @@ function buildStepMission(stepId, draft, planEntry, stepStatus) {
     pml_alignment:            'Is every clinician enrolled with the payors they need to bill?',
     find_associated_providers:'Are there providers billing under this organization\'s NPI who aren\'t on the approved roster?',
     taxonomy_optimization:    'Are all billing taxonomy codes correctly aligned to each provider\'s credentials and services?',
+    provider_summaries:       'What is each provider\'s credential health and billability status?',
+    org_summary:              'What is the overall credential health of this organization?',
   };
 
   const chips = buildMissionStatusChips(stepId, draft, stepStatus);
@@ -818,18 +862,471 @@ function buildMissionStatusChips(stepId, draft, stepStatus) {
       return `<span class="step-status-chip grey">Complete earlier steps to enable audit</span>`;
     }
     case 'taxonomy_optimization': {
-      const so = draft.step_output || {};
-      if (so.opportunity_count > 0) {
-        return `<span class="step-status-chip amber">⚠ ${so.opportunity_count} optimization opportunit${so.opportunity_count !== 1 ? 'ies' : 'y'} found</span>`;
-      }
-      if (so.analyzed_count > 0) {
-        return `<span class="step-status-chip green">✓ ${so.analyzed_count} providers analyzed — codes aligned</span>`;
-      }
+      const nR = draft.restriction_count || 0;
+      const nG = draft.gap_count || 0;
+      const nA = draft.analyzed_count || 0;
+      if (nR > 0) return `<span class="step-status-chip red">✗ ${nR} billing restriction${nR!==1?'s':''}</span>`;
+      if (nG > 0) return `<span class="step-status-chip amber">⚠ ${nG} enrollment gap${nG!==1?'s':''}</span>`;
+      if (nA > 0) return `<span class="step-status-chip green">✓ ${nA} providers analyzed — codes aligned</span>`;
       return `<span class="step-status-chip grey">Awaiting taxonomy analysis</span>`;
+    }
+    case 'provider_summaries': {
+      const ex = draft.extra_data || {};
+      const tot   = ex.total       || 0;
+      const clean = ex.clean_count || 0;
+      const risk  = ex.risk_count  || 0;
+      if (risk  > 0) return `<span class="step-status-chip amber">⚠ ${risk} flagged</span><span class="step-status-chip green" style="margin-left:.25rem">✦ ${tot} summaries</span>`;
+      if (clean > 0) return `<span class="step-status-chip green">✦ ${tot} summaries — ${clean} fully credentialed</span>`;
+      if (tot   > 0) return `<span class="step-status-chip green">✦ ${tot} summaries generated</span>`;
+      return `<span class="step-status-chip grey">Awaiting provider summaries</span>`;
+    }
+    case 'org_summary': {
+      const ex  = draft.extra_data || {};
+      const met = (ex.org_summary || {}).metrics || ex.metrics || {};
+      const pct = met.billable_pct || 0;
+      const ot  = met.open_tasks  || 0;
+      if (pct > 0) return `<span class="step-status-chip ${pct>=90?'green':pct>=70?'amber':'red'}">${pct}% billable</span>${ot>0?`<span class="step-status-chip amber" style="margin-left:.25rem">⚠ ${ot} open tasks</span>`:''}`;
+      return `<span class="step-status-chip grey">Awaiting org health report</span>`;
     }
     default:
       return `<span class="step-status-chip grey">Complete</span>`;
   }
+}
+
+// ── Taxonomy provider detail drawer ──────────────────────────────────────────
+// Stores the full analysis array so the drawer can access any provider by index.
+window._taxAnalysisData = [];
+
+function openTaxProviderDrawer(idx) {
+  const a = window._taxAnalysisData[idx];
+  if (!a) return;
+
+  // Ensure the drawer exists in the DOM. If the page was loaded from cache
+  // before this drawer was added to pipeline.html, create it on first use.
+  if (!document.getElementById('taxProviderDrawer')) {
+    const backdrop = document.createElement('div');
+    backdrop.className = 'task-drawer-backdrop';
+    backdrop.id = 'taxProviderDrawerBackdrop';
+    backdrop.addEventListener('click', e => { if (e.target === backdrop) closeTaxProviderDrawer(); });
+
+    const drawer = document.createElement('div');
+    drawer.className = 'tax-provider-drawer';
+    drawer.id = 'taxProviderDrawer';
+    drawer.innerHTML = `
+      <div class="pml-task-drawer-head">
+        <div>
+          <div class="pml-task-drawer-title" id="taxProviderDrawerTitle">Provider Detail</div>
+          <div style="font-size:.7rem;color:var(--text-3);font-family:monospace;margin-top:.1rem" id="taxProviderDrawerNpi"></div>
+        </div>
+        <button onclick="closeTaxProviderDrawer()" style="background:none;border:none;cursor:pointer;font-size:1rem;color:var(--indigo);padding:0">✕</button>
+      </div>
+      <div class="pml-task-drawer-body" id="taxProviderDrawerBody"></div>`;
+
+    const container = document.getElementById('drawerContainer') || document.body;
+    container.appendChild(backdrop);
+    container.appendChild(drawer);
+  }
+
+  const drawerEl = document.getElementById('taxProviderDrawer');
+  const titleEl  = document.getElementById('taxProviderDrawerTitle');
+  const npiEl    = document.getElementById('taxProviderDrawerNpi');
+
+  const rt    = a.result_type || 'clean';
+  const name  = a.provider_name || a.npi || 'Unknown';
+  const npi   = a.npi || '';
+  const delta = parseFloat(a.delta_billing_pct || 0);
+  const codes = a.codes || [];
+  const deltaHcpcs = a.delta_hcpcs || [];
+
+  // ── Header ──
+  titleEl.textContent = name;
+  npiEl.textContent   = npi;
+
+  // ── Status badge ──
+  const statusBadge = rt === 'restriction'
+    ? `<span class="step-status-chip ${delta > 20 ? 'red' : 'amber'}" style="font-size:.68rem">${delta > 0 ? `✗ ${delta.toFixed(1)}% billing at risk` : '✗ Billing restriction'}</span>`
+    : rt === 'gap_only'
+    ? `<span class="step-status-chip amber" style="font-size:.68rem">⚠ Enrollment gap</span>`
+    : rt === 'no_nppes_taxonomies'
+    ? `<span class="step-status-chip grey" style="font-size:.68rem">No NPPES taxonomy data</span>`
+    : `<span class="step-status-chip green" style="font-size:.68rem">✓ All codes aligned</span>`;
+
+  // ── Taxonomy codes section ──
+  let taxSection = '';
+  if (codes.length) {
+    const codeRows = codes.map(c => {
+      const icon  = c.status === 'approved_enrolled'    ? '✅'
+                  : c.status === 'approved_missing_pml' ? '⚠️' : '❌';
+      const tmlLbl = (c.status === 'approved_enrolled' || c.status === 'approved_missing_pml')
+                   ? `<span style="color:var(--green,#16a34a);font-size:.65rem">✓ In TML</span>`
+                   : `<span style="color:var(--red,#dc2626);font-size:.65rem">✗ Not in TML</span>`;
+      const pmlLbl = c.status === 'approved_enrolled'
+                   ? `<span style="color:var(--green,#16a34a);font-size:.65rem">✓ PML enrolled</span>`
+                   : c.status === 'approved_missing_pml'
+                   ? `<span style="color:var(--amber,#d97706);font-size:.65rem">⚠ Not in PML</span>`
+                   : `<span style="color:var(--text-3);font-size:.65rem">— PML N/A</span>`;
+      return `<div style="display:flex;align-items:flex-start;gap:.5rem;padding:.45rem .6rem;border:1px solid var(--border);border-radius:7px;background:var(--bg)">
+        <span style="font-size:1rem;line-height:1.3;flex-shrink:0">${icon}</span>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:.8rem;font-family:monospace;font-weight:600;color:var(--text)">${esc(c.code)}</div>
+          <div style="font-size:.72rem;color:var(--text-2);margin:.1rem 0">${esc(c.desc || '—')}</div>
+          <div style="display:flex;gap:.6rem;flex-wrap:wrap;margin-top:.2rem">${tmlLbl}${pmlLbl}</div>
+        </div>
+      </div>`;
+    }).join('');
+    taxSection = `
+      <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-3);margin-bottom:.4rem">NPPES Taxonomy Codes</div>
+      <div style="display:flex;flex-direction:column;gap:.35rem;margin-bottom:.75rem">${codeRows}</div>`;
+  } else if (rt === 'no_nppes_taxonomies') {
+    taxSection = `<div style="font-size:.78rem;color:var(--text-3);padding:.5rem 0">No NPPES taxonomy codes found for this provider in the NPPES registry.</div>`;
+  }
+
+  // ── Delta / restriction alert ──
+  let alertSection = '';
+  if (rt === 'restriction' && deltaHcpcs.length) {
+    const atRiskRows = deltaHcpcs.map(h => {
+      const pct = h.billing_pct ? `${parseFloat(h.billing_pct).toFixed(1)}%` : '—';
+      return `<div style="display:flex;align-items:center;gap:.5rem;padding:.3rem .5rem;border-bottom:1px solid var(--border)">
+        <code style="font-size:.72rem;font-weight:700;flex:1;color:var(--red,#dc2626)">${esc(h.hcpcs_code)}</code>
+        <span style="font-size:.68rem;color:var(--text-3)">${pct} of billing</span>
+      </div>`;
+    }).join('');
+    alertSection = `
+      <div style="background:rgba(220,38,38,.05);border:1px solid rgba(220,38,38,.2);border-radius:8px;padding:.55rem .65rem;margin-bottom:.75rem">
+        <div style="font-size:.75rem;font-weight:700;color:var(--red,#dc2626);margin-bottom:.35rem">
+          ✗ Billing Restriction — ${delta.toFixed(1)}% of billing at risk
+        </div>
+        <div style="font-size:.7rem;color:var(--text-2);margin-bottom:.35rem">
+          The following HCPC codes are billed under taxonomies that are either not TML-approved or not enrolled in PML.
+          These services can no longer be billed until the taxonomy issue is resolved.
+        </div>
+        <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--bg)">${atRiskRows}</div>
+      </div>`;
+  } else if (rt === 'gap_only') {
+    alertSection = `
+      <div style="background:rgba(217,119,6,.05);border:1px solid rgba(217,119,6,.2);border-radius:8px;padding:.55rem .65rem;margin-bottom:.75rem">
+        <div style="font-size:.75rem;font-weight:600;color:var(--amber,#d97706)">⚠ Enrollment gap — no billing impact detected</div>
+        <div style="font-size:.7rem;color:var(--text-2);margin-top:.25rem">A taxonomy code is TML-approved but missing from PML enrollment. Enroll the missing taxonomy in PML to resolve.</div>
+      </div>`;
+  }
+
+  // ── Heatmap ──
+  const heatmapHtml = _buildTaxHeatmap(a);
+  const heatSection = heatmapHtml
+    ? `<div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-3);margin-bottom:.35rem">HCPC × Taxonomy Coverage</div>
+       <div style="font-size:.68rem;color:var(--text-3);margin-bottom:.4rem">HCPC codes this provider has billed, mapped to taxonomy coverage. ⚠ = at-risk codes only covered by gap taxonomies.</div>
+       ${heatmapHtml}` : '';
+
+  // ── CTA ──
+  const _rosterUrl = `/roster${npi ? '?org=' + encodeURIComponent(window.lastRun?.org_name||'') : ''}`;
+  const ctaSection = `
+    <div style="margin-top:.75rem;padding-top:.6rem;border-top:1px solid var(--border);display:flex;align-items:center;gap:.6rem">
+      <a href="${_rosterUrl}" target="_blank"
+        style="font-size:.78rem;color:var(--indigo,#4f46e5);font-weight:700;text-decoration:none;padding:.28rem .75rem;border:1px solid var(--indigo-border,#c7d2fe);border-radius:6px;background:var(--indigo-bg,#eef2ff)">
+        Open in Roster →
+      </a>
+      <span style="font-size:.68rem;color:var(--text-3)">Update taxonomy codes on the roster to resolve issues.</span>
+    </div>`;
+
+  const bodyEl = document.getElementById('taxProviderDrawerBody');
+  if (bodyEl) bodyEl.innerHTML =
+    `<div>${statusBadge}</div>
+     <div style="margin-top:.75rem">${taxSection}</div>
+     ${alertSection}
+     ${heatSection}
+     ${ctaSection}`;
+
+  // Open the drawer + backdrop
+  drawerEl.classList.add('open');
+  const backdropEl = document.getElementById('taxProviderDrawerBackdrop');
+  if (backdropEl) backdropEl.classList.add('open');
+}
+
+function closeTaxProviderDrawer() {
+  document.getElementById('taxProviderDrawer').classList.remove('open');
+  document.getElementById('taxProviderDrawerBackdrop').classList.remove('open');
+}
+
+// ── Taxonomy heatmap builder ──────────────────────────────────────────────────
+function _buildTaxHeatmap(analysis) {
+  const heatmapRows = analysis.heatmap_rows || [];
+  const codes       = analysis.codes || [];
+  if (!heatmapRows.length || !codes.length) return '';
+
+  const colHtml = codes.map(c => {
+    const icon = c.status === 'approved_enrolled' ? '✅' : c.status === 'approved_missing_pml' ? '⚠️' : '❌';
+    return `<th style="font-size:.62rem;font-family:monospace;padding:.2rem .3rem;text-align:center;border-bottom:1px solid var(--border);color:var(--text-2);white-space:nowrap" title="${esc(c.desc||c.code)}">${icon} ${esc(c.code.slice(-5))}</th>`;
+  }).join('') + `<th style="font-size:.62rem;padding:.2rem .3rem;text-align:right;border-bottom:1px solid var(--border);color:var(--text-3)">% billing</th>`;
+
+  const rowHtml = heatmapRows.map(row => {
+    const isDelta = row.is_delta;
+    const cells = codes.map(c => {
+      const covered = row.cells?.[c.code];
+      return `<td style="text-align:center;padding:.18rem .3rem;font-size:.7rem">${covered ? '✓' : ''}</td>`;
+    }).join('');
+    const vol = row.total_volume ? (row.total_volume > 1000 ? `${(row.total_volume/1000).toFixed(1)}k` : row.total_volume) : '—';
+    return `<tr style="background:${isDelta ? 'rgba(220,38,38,.06)' : 'transparent'}">
+      <td style="font-size:.68rem;font-family:monospace;padding:.18rem .3rem;color:${isDelta?'var(--red)':'var(--text-2)'}${isDelta?';font-weight:600':''}">
+        ${esc(row.hcpcs_code)} ${isDelta ? '<span title="At risk — only covered by gap taxonomy">⚠</span>' : ''}
+      </td>
+      ${cells}
+      <td style="font-size:.68rem;text-align:right;padding:.18rem .3rem;color:var(--text-3)">${vol}</td>
+    </tr>`;
+  }).join('');
+
+  return `<div style="overflow-x:auto;margin:.4rem 0">
+    <table style="border-collapse:collapse;width:100%;font-size:.72rem">
+      <thead><tr><th style="font-size:.62rem;padding:.2rem .3rem;text-align:left;border-bottom:1px solid var(--border);color:var(--text-3)">HCPC</th>${colHtml}</tr></thead>
+      <tbody>${rowHtml}</tbody>
+    </table>
+  </div>`;
+}
+
+// ── Taxonomy provider card (summary row — click opens detail drawer) ───────────
+function _buildTaxProviderCard(a, idx) {
+  const rt    = a.result_type || 'clean';
+  const name  = a.provider_name || a.npi || 'Unknown';
+  const npi   = a.npi || '';
+  const delta = parseFloat(a.delta_billing_pct || 0);
+  const deltaHcpcs = a.delta_hcpcs || [];
+  const codes = a.codes || [];
+
+  // Compact code pills (just icons + last 5 chars of code)
+  const codeChips = codes.slice(0, 4).map(c => {
+    const icon = c.status === 'approved_enrolled' ? '✅' : c.status === 'approved_missing_pml' ? '⚠️' : '❌';
+    return `<span style="font-size:.63rem;font-family:monospace;padding:.1rem .3rem;border-radius:5px;background:var(--grey-bg,#f3f4f6);border:1px solid var(--border)">${icon} ${esc(c.code.slice(-7))}</span>`;
+  }).join('') + (codes.length > 4 ? `<span style="font-size:.63rem;color:var(--text-3)">+${codes.length-4}</span>` : '');
+
+  // Border + badge per result type
+  const borderColor =
+    rt === 'restriction' ? (delta > 20 ? 'var(--red,#dc2626)' : 'var(--amber,#d97706)')
+    : rt === 'gap_only'  ? 'var(--amber,#d97706)'
+    : rt === 'clean'     ? 'var(--green,#16a34a)'
+    : 'var(--border)';
+
+  const badge =
+    rt === 'restriction'
+      ? `<span class="step-status-chip ${delta>20?'red':'amber'}" style="font-size:.63rem">${delta.toFixed(1)}% at risk · ${deltaHcpcs.length} HCPC${deltaHcpcs.length!==1?'s':''}</span>`
+    : rt === 'gap_only'
+      ? `<span class="step-status-chip amber" style="font-size:.63rem">⚠ Enrollment gap</span>`
+    : rt === 'no_nppes_taxonomies'
+      ? `<span class="step-status-chip grey" style="font-size:.63rem">No taxonomy data</span>`
+    : `<span class="step-status-chip green" style="font-size:.63rem">✓ Aligned</span>`;
+
+  return `<div onclick="openTaxProviderDrawer(${idx})"
+    style="border:1px solid var(--border);border-left:3px solid ${borderColor};border-radius:8px;
+           padding:.5rem .75rem;background:var(--bg);cursor:pointer;transition:box-shadow .12s;display:flex;align-items:center;gap:.5rem"
+    onmouseenter="this.style.boxShadow='0 2px 12px rgba(79,70,229,.12)'"
+    onmouseleave="this.style.boxShadow=''">
+    <div style="flex:1;min-width:0">
+      <div style="font-size:.8125rem;font-weight:600;color:var(--text)">${esc(name)}</div>
+      <div style="display:flex;align-items:center;gap:.3rem;flex-wrap:wrap;margin-top:.2rem">
+        <span style="font-size:.7rem;font-family:monospace;color:var(--text-3)">${esc(npi)}</span>
+        ${codeChips}
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:.4rem;flex-shrink:0">
+      ${badge}
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--text-3)"><path d="M6 4l4 4-4 4"/></svg>
+    </div>
+  </div>`;
+}
+
+// ── Compliance card builder ────────────────────────────────────────────────────
+function _buildComplianceCard(c) {
+  const score      = Math.round(c.score || 0);
+  const npi        = c.npi || '';
+  const name       = c.provider_name || c.name || 'Unknown provider';
+  const phone      = c.contact_phone || '';
+  const locCount   = c.location_count || 1;
+  const chips      = (c.rationale_chips || []).slice(0, 5);
+  const isGhost    = c.association_type === 'ghost_billing';
+  const isHighConf = score >= 65;
+  const action     = c.action || 'pending';
+  const cardId     = `cc-${npi}`;
+
+  const scoreColor = score >= 65 ? 'var(--red,#dc2626)' : score >= 45 ? 'var(--amber,#d97706)' : 'var(--text-3)';
+  const borderColor= isGhost ? 'var(--red,#dc2626)' : 'var(--amber,#d97706)';
+
+  const chipHtml = chips.map(ch =>
+    `<span style="display:inline-block;font-size:.63rem;padding:.1rem .4rem;border-radius:9px;background:var(--grey-bg);border:1px solid var(--border);color:var(--text-3);white-space:nowrap">${esc(ch)}</span>`
+  ).join('');
+
+  const actionBadge = action !== 'pending' ? `
+    <span style="font-size:.63rem;padding:.1rem .4rem;border-radius:9px;border:1px solid var(--border);color:var(--text-3);white-space:nowrap;background:var(--bg)">
+      ${action === 'moved_to_roster' ? '✓ Moved to roster' :
+        action === 'contact_created' ? '📬 Outreach created' :
+        action === 'ignored'         ? 'Ignored'            :
+        action === 'dismissed'       ? 'Dismissed'          : action}
+    </span>` : '';
+
+  const locLine = locCount > 1
+    ? `<span style="font-size:.72rem;color:var(--text-3)">Seen at ${locCount} location${locCount!==1?'s':''}</span>`
+    : '';
+
+  const phoneHint = phone
+    ? `<span style="font-size:.72rem;color:var(--text-3)" title="NPPES phone (use as contact hint)">📞 ${esc(phone)}</span>`
+    : '';
+
+  const rationale = c.roster_rationale || '';
+
+  return `<div id="${cardId}" style="border:1px solid var(--border);border-left:3px solid ${borderColor};border-radius:8px;background:var(--bg);overflow:hidden">
+    <!-- Card header row -->
+    <div style="display:flex;align-items:center;gap:.5rem;padding:.5rem .75rem;cursor:pointer" onclick="_toggleComplianceCard('${cardId}')">
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;gap:.4rem;flex-wrap:wrap">
+          <span style="font-size:.8125rem;font-weight:600;color:var(--text)">${esc(name)}</span>
+          <span style="font-size:.7rem;font-family:monospace;color:var(--text-3)">${esc(npi)}</span>
+          ${actionBadge}
+        </div>
+        <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin-top:.2rem">
+          ${chipHtml}
+          ${locLine}
+          ${phoneHint}
+        </div>
+      </div>
+      <!-- Score badge -->
+      <div style="flex-shrink:0;text-align:center;min-width:44px">
+        <div style="font-size:1rem;font-weight:700;color:${scoreColor};line-height:1">${score}%</div>
+        <div style="font-size:.6rem;color:var(--text-3);text-transform:uppercase;letter-spacing:.05em">confidence</div>
+      </div>
+      <!-- Expand toggle -->
+      <div class="cc-chevron-${cardId}" style="flex-shrink:0;color:var(--text-3);transition:transform .15s">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6l4 4 4-4"/></svg>
+      </div>
+    </div>
+
+    <!-- Expanded detail (hidden by default) -->
+    <div id="${cardId}-detail" style="display:none;border-top:1px solid var(--border);padding:.5rem .75rem">
+      ${rationale ? `<div style="font-size:.78rem;color:var(--text-2);margin-bottom:.5rem">${esc(rationale)}</div>` : ''}
+      ${(c.locations||[]).length > 0 ? `<div style="font-size:.72rem;color:var(--text-3);margin-bottom:.35rem">
+        <strong style="color:var(--text-2)">Seen at:</strong>
+        ${(c.locations||[]).map(l => esc(l.location_address||l.location_id||'')).join(' · ')}
+      </div>` : ''}
+      ${phone ? `<div style="font-size:.72rem;color:var(--text-3);margin-bottom:.5rem">
+        <strong style="color:var(--text-2)">Phone hint (NPPES):</strong> ${esc(phone)}
+        <span style="opacity:.6"> — enter updated contact info when creating outreach task</span>
+      </div>` : ''}
+
+      <!-- Action buttons -->
+      ${action === 'pending' ? `<div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.35rem">
+        <button onclick="_complianceAction('${npi}','moved_to_roster')" style="font-size:.72rem;padding:.3rem .65rem;border-radius:6px;border:1px solid var(--border);background:var(--bg);cursor:pointer;color:var(--text-2);white-space:nowrap">✓ Move to roster</button>
+        <button onclick="_complianceAction('${npi}','contact_created')" style="font-size:.72rem;padding:.3rem .65rem;border-radius:6px;border:1px solid var(--border);background:var(--bg);cursor:pointer;color:var(--text-2);white-space:nowrap">📬 Create outreach task</button>
+        <button onclick="_complianceAction('${npi}','ignored')" style="font-size:.72rem;padding:.3rem .65rem;border-radius:6px;border:1px solid var(--border);background:var(--bg);cursor:pointer;color:var(--text-3);white-space:nowrap">Ignore</button>
+        <button onclick="_complianceAction('${npi}','dismissed')" style="font-size:.72rem;padding:.3rem .65rem;border-radius:6px;border:1px solid var(--border);background:var(--bg);cursor:pointer;color:var(--text-3);white-space:nowrap">Dismiss</button>
+      </div>` : `<div style="margin-top:.35rem;display:flex;gap:.4rem">
+        <button onclick="_complianceAction('${npi}','pending')" style="font-size:.72rem;padding:.3rem .65rem;border-radius:6px;border:1px solid var(--border);background:var(--bg);cursor:pointer;color:var(--text-3)">↩ Reset to pending</button>
+      </div>`}
+    </div>
+  </div>`;
+}
+
+function _toggleComplianceCard(cardId) {
+  const detail  = document.getElementById(cardId + '-detail');
+  const chevron = document.querySelector('.' + 'cc-chevron-' + cardId);
+  if (!detail) return;
+  const open = detail.style.display !== 'none';
+  detail.style.display = open ? 'none' : 'block';
+  if (chevron) chevron.style.transform = open ? '' : 'rotate(180deg)';
+}
+
+async function _complianceAction(npi, action) {
+  const candidates = window._complianceCandidates || [];
+  const candidate  = candidates.find(c => c.npi === npi || c.npi === npi.padStart(10, '0'));
+  if (!candidate) return;
+
+  // Optimistic UI update
+  candidate.action = action;
+  const cardId = 'cc-' + npi;
+  const card   = document.getElementById(cardId);
+
+  // Contact action: show a small inline task prompt
+  if (action === 'contact_created') {
+    const contactNote = prompt(
+      `Create outreach task for ${candidate.provider_name || npi}.\n\n` +
+      `Enter contact info (phone/email) or leave blank for a generic task:`,
+      candidate.contact_phone || ''
+    );
+    if (contactNote === null) return; // cancelled
+    candidate.action_notes = contactNote;
+  }
+
+  const promote = action === 'moved_to_roster';
+  const skillBase = window.API || '/api/v1';
+  // Derive skill URL from API base — use credentialing skill endpoint
+  const skillUrl  = skillBase.replace('/api/v1', '').replace('/chat', '') || '';
+
+  // Find finding_id if we have it, otherwise need to look it up
+  // For now use the NPI as a fallback key via org summary (best-effort PATCH)
+  const orgName = window._runData?.org_name || '';
+
+  try {
+    // We don't have finding IDs in the frontend cache, so patch via a
+    // lookup endpoint instead — hit the org findings list to find the ID
+    const findingsUrl = `${skillUrl}/compliance/${encodeURIComponent(orgName)}/findings`;
+    const resp = await fetch(findingsUrl + `?run_id=${encodeURIComponent(window._complianceRunId||'')}`, { method: 'GET' });
+    if (resp.ok) {
+      const data = await resp.json();
+      const finding = (data.findings || []).find(f => f.npi === npi || f.npi === npi.padStart(10,'0'));
+      if (finding) {
+        await fetch(`${skillUrl}/compliance/finding/${finding.id}/action`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action,
+            action_notes: candidate.action_notes || null,
+            promote_to_roster: promote,
+          }),
+        });
+      }
+    }
+  } catch (e) {
+    console.warn('compliance action persist failed:', e);
+  }
+
+  // Re-render card in place
+  if (card) {
+    const newCard = document.createElement('div');
+    newCard.innerHTML = _buildComplianceCard(candidate);
+    const built = newCard.firstElementChild;
+    if (built) {
+      card.replaceWith(built);
+      // Auto-expand detail so user sees the action confirmation
+      _toggleComplianceCard('cc-' + npi);
+    }
+  }
+
+  // Toast feedback
+  const msgs = {
+    moved_to_roster:  '✓ Provider queued for roster addition.',
+    contact_created:  '📬 Outreach task created.',
+    ignored:          'Provider marked as ignored.',
+    dismissed:        'Provider dismissed.',
+    pending:          'Reset to pending.',
+  };
+  if (typeof _showToast === 'function') _showToast(msgs[action] || 'Action saved.');
+}
+
+
+// ── Activity-bar piping ───────────────────────────────────────────────────────
+// Emits server-side step_emit_log lines to the global feEmit activity bar,
+// deduplicated per step so repeated render cycles don't re-emit old lines.
+window._emittedStepLogs = window._emittedStepLogs || {};
+function _pipeStepLogToTicker(stepId, lines) {
+  if (!lines || !lines.length) return;
+  const key = stepId;
+  const already = window._emittedStepLogs[key] || 0;
+  if (lines.length <= already) return;
+  for (let i = already; i < lines.length; i++) {
+    const raw = (lines[i] || '').trim();
+    if (!raw) continue;
+    const lvl = (raw.startsWith('✗') || /fail|error/i.test(raw)) ? 'error'
+              : (raw.startsWith('△') || /warn/i.test(raw))        ? 'warn'
+              : (raw.startsWith('✓') || /done|complete|ok/i.test(raw)) ? 'ok'
+              : 'info';
+    feEmit(raw, lvl);
+  }
+  window._emittedStepLogs[key] = lines.length;
 }
 
 function buildStepBody(stepId, draft, data, steps) {
@@ -853,11 +1350,9 @@ function buildStepBody(stepId, draft, data, steps) {
   // result_summary paragraph so the page doesn't open with an instructional placeholder.
   if (summary && stepId !== 'nppes_alignment') parts.push(`<p class="result-text">${esc(summary)}</p>`);
 
-  // Emit log — shown on every step (collapsible)
+  // Pipe step emit log lines to the bottom activity bar (deduplicated per step)
   const emitLog = draft.step_emit_log || [];
-  if (emitLog.length && stepId !== 'find_locations') { // find_locations renders it inline
-    parts.push(buildEmitLog(emitLog));
-  }
+  _pipeStepLogToTicker(stepId, emitLog);
 
   switch (stepId) {
 
@@ -897,8 +1392,6 @@ function buildStepBody(stepId, draft, data, steps) {
     case 'find_locations': {
       if (_isStepSealed('find_locations')) parts.push(_buildSealedBanner('find_locations'));
       const locs = draft.locations || [];
-      const emitLog = draft.step_emit_log || [];
-      if (emitLog.length) parts.push(buildEmitLog(emitLog));
       if (locs.length) {
         parts.push(statRow([{ val: locs.length, lbl: `location${locs.length !== 1 ? 's' : ''} found` }]));
         parts.push(`<div id="locGrid" class="loc-grid">${locs.map((l, i) => buildLocCard(l, i)).join('')}</div>`);
@@ -914,82 +1407,96 @@ function buildStepBody(stepId, draft, data, steps) {
     }
 
     case 'find_associated_providers': {
-      // Step 5: Ghost billing & compliance audit
-      // Find external providers billing under the org's NPI who are NOT on the approved roster.
-      const providers = draft.providers || [];
-      const srcCounts = draft.source_counts || {};
-      const bc        = draft.bucket_counts || {};
-      const total     = draft.provider_count || providers.length || 0;
+      // Step 5: Compliance — unrostered individuals audit
+      // Shows providers with strong association to this org who are NOT on roster_truth.
+      // Deduplicated by NPI, sorted by score, two sections: ghost billing / unrostered associate.
+      const candidates = draft.compliance_candidates || [];
+      const candidateCount = draft.compliance_candidate_count || candidates.length || 0;
+      const ghostCount     = draft.compliance_ghost_billing_count || 0;
+      const unrosteredCount= draft.compliance_unrostered_count || 0;
+      const highConf       = draft.compliance_high_confidence_count || 0;
+      const excluded       = draft.compliance_rostered_excluded || 0;
+      const methodology    = draft.compliance_methodology || {};
 
-      if (total) {
-        const chips = [];
-        if (bc.aligned)          chips.push({ val: bc.aligned,         lbl: 'on roster + confirmed', cls: 'green' });
-        if (bc.external_only)    chips.push({ val: bc.external_only,   lbl: 'billing but not on roster', cls: 'amber' });
-        if (bc.anomaly)          chips.push({ val: bc.anomaly,         lbl: 'anomalies — review required', cls: 'red' });
-        if (bc.needs_attention)  chips.push({ val: bc.needs_attention, lbl: 'need attention', cls: 'amber' });
-        if (chips.length) parts.push(statRow(chips));
+      // Store globally for action callbacks
+      window._complianceCandidates = candidates;
+      window._complianceRunId      = draft.step_id ? (window._runId || '') : '';
 
-        if (bc.external_only > 0) {
-          // Warning: left-border only, no heavy amber background
-          parts.push(`<div style="border-left:3px solid var(--amber,#d97706);padding:.5rem .75rem;font-size:.8125rem;color:var(--text-2);background:var(--grey-bg);border-radius:0 6px 6px 0;margin-top:.25rem">
-            <strong style="color:var(--text)">⚠ ${bc.external_only} provider${bc.external_only !== 1 ? 's' : ''} in external billing but not on your approved roster.</strong>
-            Review each one — these represent potential ghost billing exposure.
+      if (candidateCount > 0) {
+        // ── Stats bar ─────────────────────────────────────────────────────────
+        const statChips = [];
+        if (ghostCount)      statChips.push({ val: ghostCount,      lbl: 'ghost billing suspects',    cls: 'red'   });
+        if (unrosteredCount) statChips.push({ val: unrosteredCount, lbl: 'unrostered associates',     cls: 'amber' });
+        if (highConf)        statChips.push({ val: highConf,        lbl: 'high confidence (≥65%)',    cls: 'amber' });
+        if (excluded)        statChips.push({ val: excluded,        lbl: 'already rostered (filtered)', cls: 'green' });
+        if (statChips.length) parts.push(statRow(statChips));
+
+        // ── Threshold note ────────────────────────────────────────────────────
+        if (highConf > 0) {
+          parts.push(`<div style="border-left:3px solid var(--amber,#d97706);padding:.4rem .75rem;font-size:.78rem;color:var(--text-2);background:var(--grey-bg);border-radius:0 6px 6px 0;margin:.25rem 0">
+            <strong style="color:var(--text)">⚡ ${highConf} high-confidence finding${highConf!==1?'s':''} auto-flagged</strong> — billing alerts created.
+            Review and choose an action for each.
           </div>`);
         }
 
-        // Provider table
-        const rows = providers.slice(0, 50).map(p => {
-          const isGhost = p.bucket === 'external_only';
-          const isAnom  = p.bucket === 'anomaly';
-          // No row background coloring — use left-border stripe for signal instead
-          const rowStyle = isGhost ? 'style="border-left:2px solid var(--amber,#d97706)"'
-                         : isAnom  ? 'style="border-left:2px solid var(--red)"' : '';
-          const cIssue  = isGhost ? 'Billing under org NPI — not on approved roster' : isAnom ? 'Anomaly — review required' : '';
-          const cCtx    = JSON.stringify({ stepId:'find_associated_providers', type:'billing_provider', name: p.name||'', npi: p.npi||'', issue: cIssue, suggestedText: cIssue ? `${p.name||'Provider'} — ${cIssue}` : `Review compliance status for ${p.name||'provider'}` });
-          return `<tr ${rowStyle}>
-            <td style="font-size:.8rem;padding:.35rem .5rem;font-weight:500;color:var(--text)">${esc(p.name || '—')}</td>
-            <td style="font-size:.75rem;padding:.35rem .5rem;color:var(--text-3);font-family:monospace">${esc(p.npi || '—')}</td>
-            <td style="font-size:.78rem;padding:.35rem .5rem;color:var(--text-2)">${esc(p.specialty || '—')}</td>
-            <td style="font-size:.75rem;padding:.35rem .5rem;color:var(--text-3)">${p.sources?.join(', ') || '—'}</td>
-            <td style="padding:.35rem .5rem">
-              ${isGhost ? `<span style="font-size:.67rem;color:var(--amber,#d97706);font-weight:600">Not on roster</span>` : ''}
-              ${p.bucket === 'aligned' ? `<span style="font-size:.67rem;color:var(--green);font-weight:600">Aligned</span>` : ''}
-              ${isAnom ? `<span style="font-size:.67rem;color:var(--red);font-weight:600">Anomaly</span>` : ''}
-            </td>
-            <td style="padding:.3rem .5rem">
-              <button class="row-task-btn" onclick="openTaskPopover(JSON.parse(this.dataset.ctx),event)" data-ctx="${esc(cCtx)}" title="Create task">
-                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="2" width="10" height="12" rx="1.5"/><path d="M6 6h4M6 9h4M6 12h2"/></svg>
-              </button>
-            </td>
-          </tr>`;
-        }).join('');
-        const thS5 = 'padding:.35rem .5rem;text-align:left;font-size:.65rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-3)';
-        parts.push(`<div style="overflow-x:auto;margin-top:.5rem;border:1px solid var(--border);border-radius:8px">
-          <table style="width:100%;border-collapse:collapse;font-size:.8rem">
-            <thead><tr style="border-bottom:1px solid var(--border);background:var(--grey-bg)">
-              <th style="${thS5}">Provider</th>
-              <th style="${thS5}">NPI</th>
-              <th style="${thS5}">Specialty</th>
-              <th style="${thS5}">Sources</th>
-              <th style="${thS5}">Status</th>
-              <th style="padding:.35rem .5rem;width:36px"></th>
-            </tr></thead>
-            <tbody>${rows}</tbody>
-          </table>
-          ${providers.length > 50 ? `<div style="font-size:.72rem;color:var(--text-3);padding:.35rem .5rem">+${providers.length - 50} more providers</div>` : ''}
-        </div>`);
+        // ── Section builder ───────────────────────────────────────────────────
+        const _buildComplianceSection = (title, icon, items, borderColor) => {
+          if (!items.length) return '';
+          const cards = items.map(c => _buildComplianceCard(c)).join('');
+          return `<div style="margin-top:.75rem">
+            <div style="font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-3);display:flex;align-items:center;gap:.4rem;margin-bottom:.4rem">
+              <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${borderColor}"></span>
+              ${icon} ${esc(title)} <span style="font-weight:400;color:var(--text-3)">(${items.length})</span>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:.375rem">${cards}</div>
+          </div>`;
+        };
+
+        const ghostItems      = candidates.filter(c => c.association_type === 'ghost_billing');
+        const unrosteredItems = candidates.filter(c => c.association_type !== 'ghost_billing');
+
+        parts.push(_buildComplianceSection('Ghost Billing Suspects',      '💳', ghostItems,      'var(--red,#dc2626)'));
+        parts.push(_buildComplianceSection('Unrostered Associates',        '🔗', unrosteredItems, 'var(--amber,#d97706)'));
+
+        if (candidates.length > 50) {
+          parts.push(`<div style="font-size:.72rem;color:var(--text-3);margin-top:.4rem;text-align:center">
+            Showing top 50 of ${candidates.length} findings. Resolve high-confidence items first.
+          </div>`);
+        }
+      } else if (draft.status === 'complete' || draft.status === 'done') {
+        // The compliance scan is considered to have run if:
+        //   - draft.compliance_rostered_excluded > 0 (filter executed against roster_truth), OR
+        //   - draft.compliance_methodology is present (new code path executed)
+        // If neither is set, this is an old run that predates the compliance feature.
+        const complianceWasPopulated = (draft.compliance_rostered_excluded > 0) || !!draft.compliance_methodology;
+        if (complianceWasPopulated) {
+          parts.push(`<div style="padding:.75rem 1rem;background:var(--grey-bg);border-radius:8px;border:1px solid var(--border);font-size:.8125rem;color:var(--text-2)">
+            <strong style="color:var(--text)">✓ No compliance concerns found.</strong>
+            All associated providers are either on the approved roster or have insufficient evidence of current affiliation.
+            ${excluded ? `<br><span style="color:var(--text-3)">${excluded} already-rostered provider${excluded!==1?'s':''} filtered out.</span>` : ''}
+          </div>`);
+        } else {
+          // Old run — compliance data was never collected
+          parts.push(`<div style="padding:.75rem 1rem;background:var(--grey-bg);border-radius:8px;border:1px solid var(--border);font-size:.8125rem;color:var(--text-2)">
+            <strong style="color:var(--text)">⚠ Compliance data not available for this run.</strong><br>
+            This run was completed before the compliance audit feature was added.
+            To see unrostered-individual findings, start a new pipeline run — Step 5 will
+            automatically filter against the approved roster, deduplicate by NPI, and persist results.
+          </div>`);
+        }
       } else {
         parts.push(`<div class="coming-soon-box">
           <div style="font-size:1.1rem;margin-bottom:.5rem;opacity:.4">🔍</div>
-          <div class="cs-title">Ghost Billing & Compliance Audit</div>
+          <div class="cs-title">Compliance Audit — Unrostered Individuals</div>
           <div class="cs-body">
-            Complete Steps 1–4 to enable this audit. We'll cross-reference your
-            approved roster against external billing sources to surface unauthorized billers.
+            Complete Steps 1–4 to enable this audit. We'll cross-reference
+            DOGE billing records, NPPES, and PML against your approved roster to
+            surface providers associated with this org who should be credentialed.
           </div>
         </div>`);
       }
 
-      setTimeout(() => { window._provData = providers; }, 0);
+      setTimeout(() => { window._provData = draft.providers || []; }, 0);
       break;
     }
 
@@ -998,9 +1505,11 @@ function buildStepBody(stepId, draft, data, steps) {
       const _rsu = window._rosterUploadState;
       const _isActive = ['uploading','parsing','cleaning'].includes(_rsu?.phase);
 
-      // Auto-switch to upload tab when an upload is in progress
+      // Default: Upload tab if no roster loaded yet; Workspace once data is ready
       if (_isActive && window._rosterTab !== 'upload') window._rosterTab = 'upload';
-      if (!window._rosterTab) window._rosterTab = 'workspace';
+      if (!window._rosterTab) {
+        window._rosterTab = (_rsu?.phase === 'done') ? 'workspace' : 'upload';
+      }
       const _tab = window._rosterTab;
 
       // ── Sealed banner (when step is signed off) ──────────────────
@@ -1008,14 +1517,14 @@ function buildStepBody(stepId, draft, data, steps) {
         parts.push(_buildSealedBanner('nppes_alignment'));
       }
 
-      // ── Tab bar ───────────────────────────────────────────────────
+      // ── Tab bar — order: Upload → Workspace → Roster ─────────────
       const _pendingUpload = _rsu && _rsu.phase !== 'done' && _rsu.phase !== 'none';
       parts.push(`<div class="roster-tab-bar" id="rosterTabBar">
-        <button class="roster-tab ${_tab==='workspace'?'active':''}" onclick="rosterTabSwitch('workspace')">
-          Workspace
-        </button>
         <button class="roster-tab ${_tab==='upload'?'active':''}" onclick="rosterTabSwitch('upload')">
           ↑ Upload${_pendingUpload?`<span class="rt-badge">!</span>`:''}
+        </button>
+        <button class="roster-tab ${_tab==='workspace'?'active':''}" onclick="rosterTabSwitch('workspace')">
+          Workspace
         </button>
         <button class="roster-tab ${_tab==='roster'?'active':''}" onclick="rosterTabSwitch('roster')">
           Roster
@@ -1063,7 +1572,6 @@ function buildStepBody(stepId, draft, data, steps) {
           <div class="sec-body">
             <div id="rosterFileZone">${buildRosterFileZoneHtml()}</div>
             <div id="rosterParseProgress">${buildRosterProgressHtml()}</div>
-            <div id="rosterEmissionsSection">${buildRosterEmissionsHtml()}</div>
           </div>
         </div>
       </div>`);
@@ -1087,6 +1595,9 @@ function buildStepBody(stepId, draft, data, steps) {
           _syncRosterToAllSources();
         }
         _loadRosterDiff();
+        // Load org-level dismissals from postgres on every workspace render so
+        // dismissed dims are honoured across runs and page reloads.
+        _loadOrgDismissals();
         if (window._rosterUploadState?.phase === 'done') {
           setTimeout(_loadSessionBanner, 600);
           setTimeout(_loadRosterTruth, 800);
@@ -1105,14 +1616,242 @@ function buildStepBody(stepId, draft, data, steps) {
     }
 
     case 'taxonomy_optimization': {
-      parts.push(`<div class="coming-soon-box">
-        <div style="font-size:1.1rem;margin-bottom:.5rem;opacity:.4">🏷️</div>
-        <div class="cs-title">Taxonomy Optimization</div>
-        <div class="cs-body">
-          Analyze provider taxonomy codes to surface opportunities —
-          credentialing at higher-value specialties or correcting billing taxonomy mismatches.
+      _loadTaxTaskState();
+      const taxAnalysis = draft.taxonomy_analysis || [];
+      // Expose to the provider detail drawer (openTaxProviderDrawer uses this)
+      window._taxAnalysisData = taxAnalysis;
+      const nRestriction = draft.restriction_count || 0;
+      const nGap         = draft.gap_count || 0;
+      const nClean       = draft.clean_count || 0;
+      const nAnalyzed    = draft.analyzed_count || 0;
+
+      if (!nAnalyzed && status !== 'in_progress') {
+        parts.push(`<div class="coming-soon-box">
+          <div style="font-size:1.1rem;margin-bottom:.5rem;opacity:.4">🏷</div>
+          <div class="cs-title">Taxonomy Optimization</div>
+          <div class="cs-body">
+            Awaiting analysis — complete NPPES alignment and PML validation first.
+          </div>
+          ${summary ? `<div style="margin-top:.75rem;font-size:.8rem;color:var(--text-3)">${esc(summary)}</div>` : ''}
+        </div>`);
+        break;
+      }
+
+      // step_emit_log lines already piped to activity bar via _pipeStepLogToTicker above
+
+      // ── Stats bar ──────────────────────────────────────────────────────────
+      const taskChip = _buildTaxTaskChipHtml ? _buildTaxTaskChipHtml() : '';
+      parts.push(`
+        <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin-bottom:.75rem">
+          ${nRestriction > 0 ? `<span class="step-status-chip red">✗ ${nRestriction} billing restriction${nRestriction!==1?'s':''}</span>` : ''}
+          ${nGap > 0        ? `<span class="step-status-chip amber">⚠ ${nGap} enrollment gap${nGap!==1?'s':''}</span>` : ''}
+          ${nClean > 0      ? `<span class="step-status-chip green">✓ ${nClean} clean</span>` : ''}
+          ${nAnalyzed > 0 && nRestriction === 0 && nGap === 0 ? `<span class="step-status-chip green">All ${nAnalyzed} providers aligned</span>` : ''}
+          ${taskChip}
+          ${nRestriction > 0 || nGap > 0 ? `<button onclick="toggleTaxTaskDrawer(true)" style="margin-left:auto;display:flex;align-items:center;gap:.3rem;font-size:.72rem;font-weight:600;padding:.22rem .65rem;border-radius:6px;border:1px solid var(--indigo-border,#6366f1);background:var(--indigo-bg,#eef2ff);color:var(--indigo,#4f46e5);cursor:pointer">
+            View Tasks →
+          </button>` : ''}
+        </div>`);
+
+      // ── Provider cards (sorted by severity, keeping original index for drawer) ─
+      if (taxAnalysis.length) {
+        const indexed = taxAnalysis.map((a, i) => ({ a, i }));
+        indexed.sort((x, y) => {
+          const sev = r => r.result_type === 'restriction' ? (r.delta_billing_pct > 20 ? 0 : r.delta_billing_pct >= 5 ? 1 : 2) : r.result_type === 'gap_only' ? 3 : 4;
+          return sev(x.a) - sev(y.a);
+        });
+        const cards = indexed.map(({ a, i }) => _buildTaxProviderCard(a, i)).join('');
+        parts.push(`<div style="display:flex;flex-direction:column;gap:.5rem">${cards}</div>`);
+      }
+
+      // ── Rate comparison: coming soon ───────────────────────────────────────
+      parts.push(`<div class="coming-soon-box" style="margin-top:.75rem">
+        <div style="font-size:.85rem;font-weight:600;color:var(--text-3);margin-bottom:.2rem">Rate Optimization</div>
+        <div style="font-size:.78rem;color:var(--text-3)">
+          Taxonomy-level reimbursement rate comparison — coming soon.
         </div>
-        ${summary ? `<div style="margin-top:.75rem;font-size:.8rem;color:var(--text-3)">${esc(summary)}</div>` : ''}
+      </div>`);
+      break;
+    }
+
+    case 'provider_summaries': {
+      const extra = draft.extra_data || {};
+      const summaries = extra.summaries || [];
+      const total     = extra.total     || summaries.length;
+      const clean     = extra.clean_count || 0;
+      const risk      = extra.risk_count  || 0;
+      const orgName   = (window.lastRun?.org_name || '').trim();
+
+      // ── Live progress view when step is running ───────────────────────────
+      if (status === 'running' || status === 'in_progress') {
+        // Parse emit log for per-provider lines like "✓ 3/55 — Jane Doe (billable)"
+        const emitLines = (data?.orchestrator_state?.step_emit_log?.provider_summaries || []);
+        const providerLines = emitLines.filter(l => /\d+\/\d+\s*—/.test(l));
+        const lastLine = emitLines[emitLines.length - 1] || '';
+        // Extract done/total from lines like "✓ 12/55 — …"
+        const countMatch = lastLine.match(/(\d+)\/(\d+)/);
+        const doneN  = countMatch ? parseInt(countMatch[1]) : providerLines.length;
+        const totalN = countMatch ? parseInt(countMatch[2]) : (total || '?');
+        const pct    = totalN > 0 ? Math.round((doneN / totalN) * 100) : 0;
+
+        parts.push(`
+          <div style="margin-bottom:1rem">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.4rem">
+              <span style="font-size:.78rem;font-weight:600;color:var(--text)">
+                <span class="spinner" style="width:10px;height:10px;border-width:1.5px;display:inline-block;vertical-align:middle;margin-right:4px"></span>
+                Generating AI summaries… ${doneN}/${totalN}
+              </span>
+              <span style="font-size:.72rem;color:var(--text-3)">${pct}%</span>
+            </div>
+            <div style="height:6px;border-radius:3px;background:var(--border);overflow:hidden">
+              <div style="height:100%;border-radius:3px;background:var(--indigo,#6366f1);width:${pct}%;transition:width .4s ease"></div>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:.25rem;max-height:14rem;overflow-y:auto">
+            ${providerLines.slice(-20).reverse().map(l => {
+              const isOk  = l.startsWith('✓');
+              const isWarn= l.startsWith('⚠') || l.startsWith('△');
+              const isRisk= l.startsWith('🚨');
+              const col   = isRisk ? 'var(--red,#dc2626)' : isWarn ? 'var(--amber,#d97706)' : isOk ? 'var(--green,#16a34a)' : 'var(--text-2)';
+              return `<div style="font-size:.72rem;color:${col};padding:.15rem 0;border-bottom:1px solid var(--border)">${esc(l)}</div>`;
+            }).join('')}
+          </div>
+          ${doneN === 0 ? `<div style="font-size:.72rem;color:var(--text-3);font-style:italic;margin-top:.5rem">Fetching provider profiles from roster…</div>` : ''}
+        `);
+        break;
+      }
+
+      if (!total && status !== 'in_progress') {
+        parts.push(`<div class="coming-soon-box">
+          <div style="font-size:1.1rem;margin-bottom:.5rem;opacity:.4">✦</div>
+          <div class="cs-title">Provider Summaries</div>
+          <div class="cs-body">
+            Run the credentialing pipeline through Step 6 to generate AI summaries.
+          </div>
+        </div>`);
+        break;
+      }
+
+      // Stats bar
+      parts.push(`
+        <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin-bottom:.85rem">
+          ${total > 0     ? `<span class="step-status-chip green">✦ ${total} summaries generated</span>` : ''}
+          ${clean > 0     ? `<span class="step-status-chip green">✓ ${clean} fully credentialed</span>` : ''}
+          ${risk  > 0     ? `<span class="step-status-chip red">⚠ ${risk} flagged for review</span>` : ''}
+          <a href="/roster?org=${encodeURIComponent(orgName)}" target="_blank"
+            style="margin-left:auto;font-size:.72rem;font-weight:600;padding:.22rem .65rem;border-radius:6px;border:1px solid var(--indigo-border,#6366f1);background:var(--indigo-bg,#eef2ff);color:var(--indigo,#4f46e5);cursor:pointer;text-decoration:none">
+            Open Roster Page →
+          </a>
+        </div>`);
+
+      // Provider summary cards — clicking opens the roster drawer
+      const BILL_COLOR = { billable:'green', warning:'amber', risk:'red', at_risk:'red', blocked:'red', inactive:'red' };
+      const BILL_LABEL = { billable:'✓ Billable', warning:'⚠ Warning', risk:'⚠ At Risk', at_risk:'⚠ At Risk', blocked:'✗ Blocked', inactive:'✗ Inactive' };
+      const cards = summaries.slice(0, 60).map(s => {
+        const bill   = (s.billability || 'unknown').toLowerCase();
+        const color  = BILL_COLOR[bill] || 'grey';
+        const label  = BILL_LABEL[bill] || bill;
+        const tasks  = s.open_tasks || 0;
+        return `<div class="rt-card" style="padding:.55rem .75rem;cursor:pointer;animation:none"
+            onclick="openRosterProviderByNpi('${esc(s.npi||'')}','${esc(orgName)}')"
+            onmouseenter="this.style.background='var(--grey-bg)'"
+            onmouseleave="this.style.background=''">
+          <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">
+            <span style="font-size:.8rem;font-weight:600;color:var(--text)">${esc(s.name || s.npi || '—')}</span>
+            <span style="font-size:.67rem;font-family:monospace;color:var(--text-3)">${esc(s.npi||'')}</span>
+            <span class="step-status-chip ${color}" style="font-size:.65rem;margin-left:auto">${esc(label)}</span>
+            ${tasks > 0 ? `<span style="font-size:.65rem;color:var(--text-3)">${tasks} task${tasks!==1?'s':''}</span>` : ''}
+          </div>
+          <div class="ai-oneliner-summary" id="sum-card-${esc(s.npi||'')}"></div>
+        </div>`;
+      }).join('');
+
+      if (cards) parts.push(`<div style="display:flex;flex-direction:column;gap:.4rem">${cards}</div>`);
+
+      // Lazy-load one-liners from already-stored summaries via the roster API
+      if (summaries.length && orgName) {
+        const _org = orgName;
+        setTimeout(() => _injectSummaryOneLiners(summaries, _org), 300);
+      }
+
+      parts.push(`<div style="margin-top:.75rem;font-size:.75rem;color:var(--text-3);text-align:center">
+        <a href="/roster?org=${encodeURIComponent(orgName)}" target="_blank"
+          style="color:var(--indigo,#4f46e5);text-decoration:none;font-weight:500">
+          Open full Roster page to view complete provider profiles and billing exposure →
+        </a>
+      </div>`);
+      break;
+    }
+
+    case 'org_summary': {
+      const extra   = draft.extra_data || {};
+      const orgSum  = extra.org_summary || {};
+      const metrics = orgSum.metrics || extra.metrics || {};
+      const narrative = orgSum.narrative || extra.narrative || '';
+      const orgName   = (window.lastRun?.org_name || '').trim();
+
+      if (!narrative && !metrics.total && status !== 'in_progress') {
+        parts.push(`<div class="coming-soon-box">
+          <div style="font-size:1.1rem;margin-bottom:.5rem;opacity:.4">🏛</div>
+          <div class="cs-title">Organization Summary</div>
+          <div class="cs-body">
+            Complete Steps 1–7 to generate the organization health report.
+          </div>
+        </div>`);
+        break;
+      }
+
+      const total   = metrics.total    || 0;
+      const bill    = metrics.billable  || 0;
+      const billPct = metrics.billable_pct || (total > 0 ? Math.round(100*bill/total) : 0);
+      const atRisk  = metrics.at_risk   || 0;
+      const blocked = metrics.blocked   || 0;
+      const pmlGaps = metrics.pml_gaps  || 0;
+      const openT   = metrics.open_tasks|| 0;
+
+      // Health score color
+      const healthColor = billPct >= 90 ? 'green' : billPct >= 70 ? 'amber' : 'red';
+
+      parts.push(`
+        <div style="display:flex;align-items:stretch;gap:.75rem;flex-wrap:wrap;margin-bottom:1rem">
+          <div style="flex:1;min-width:160px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:.75rem 1rem;text-align:center">
+            <div style="font-size:1.8rem;font-weight:700;color:var(--${healthColor === 'green' ? 'green' : healthColor === 'amber' ? 'amber-text,#d97706' : 'red,#dc2626'})">${billPct}%</div>
+            <div style="font-size:.72rem;color:var(--text-3);margin-top:.1rem">Fully Billable</div>
+          </div>
+          <div style="flex:1;min-width:100px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:.75rem 1rem;text-align:center">
+            <div style="font-size:1.4rem;font-weight:700;color:var(--text)">${bill}<span style="font-size:.8rem;color:var(--text-3)">/${total}</span></div>
+            <div style="font-size:.72rem;color:var(--text-3);margin-top:.1rem">Providers</div>
+          </div>
+          <div style="flex:1;min-width:100px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:.75rem 1rem;text-align:center">
+            <div style="font-size:1.4rem;font-weight:700;color:${atRisk>0||blocked>0?'var(--red,#dc2626)':'var(--text)'}">${atRisk + blocked}</div>
+            <div style="font-size:.72rem;color:var(--text-3);margin-top:.1rem">At-Risk / Blocked</div>
+          </div>
+          <div style="flex:1;min-width:100px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:.75rem 1rem;text-align:center">
+            <div style="font-size:1.4rem;font-weight:700;color:${pmlGaps>0?'var(--amber-text,#d97706)':'var(--text)'}">${pmlGaps}</div>
+            <div style="font-size:.72rem;color:var(--text-3);margin-top:.1rem">PML Gaps</div>
+          </div>
+          <div style="flex:1;min-width:100px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:.75rem 1rem;text-align:center">
+            <div style="font-size:1.4rem;font-weight:700;color:${openT>0?'var(--amber-text,#d97706)':'var(--text)'}">${openT}</div>
+            <div style="font-size:.72rem;color:var(--text-3);margin-top:.1rem">Open Tasks</div>
+          </div>
+        </div>`);
+
+      // Narrative (markdown → HTML via _mdToHtml if available)
+      if (narrative) {
+        const htmlNarrative = (typeof _mdToHtml === 'function') ? _mdToHtml(narrative) : narrative.replace(/\n/g, '<br>');
+        parts.push(`
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1rem;margin-bottom:.75rem;font-size:.82rem;line-height:1.6">
+            <div style="font-size:.68rem;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--indigo,#4f46e5);margin-bottom:.5rem">✦ Mobius AI — Organization Health Assessment</div>
+            ${htmlNarrative}
+          </div>`);
+      }
+
+      parts.push(`<div style="margin-top:.5rem;font-size:.75rem;color:var(--text-3);text-align:center">
+        <a href="/roster?org=${encodeURIComponent(orgName)}" target="_blank"
+          style="color:var(--indigo,#4f46e5);text-decoration:none;font-weight:500">
+          Open full Roster page →
+        </a>
+        ${orgSum.generated_at ? `<span style="margin-left:.75rem;opacity:.6">Generated ${new Date(orgSum.generated_at).toLocaleString()}</span>` : ''}
       </div>`);
       break;
     }
@@ -1384,5 +2123,61 @@ function provFilter(filter) {
   if (wrap) {
     wrap.innerHTML = buildProvTable(_getMergedProviders(), filter);
   }
+}
+
+
+// ── Step 7: provider summary one-liner injection ──────────────────────────────
+
+/**
+ * After Step 7 cards render, populate the .ai-oneliner-summary divs with
+ * the stored one-liners from the roster API (already in the list payload).
+ * Falls back to sessionStorage cache if the list is already loaded.
+ */
+async function _injectSummaryOneLiners(summaries, orgName) {
+  if (!summaries || !summaries.length || !orgName) return;
+  try {
+    const resp = await fetch(`/chat/roster-truth/${encodeURIComponent(orgName)}`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const byNpi = {};
+    for (const p of (data.providers || [])) {
+      const npi = p.npi_validated || p.npi_roster || '';
+      if (npi && p.ai_summary_short) byNpi[npi] = p.ai_summary_short;
+    }
+    for (const s of summaries) {
+      const npi = s.npi || '';
+      const ol  = byNpi[npi] || ((() => {
+        try { const c = sessionStorage.getItem(`mobius_summary_${s.roster_id || ''}`); return c ? JSON.parse(c).summary_short : ''; } catch(e) { return ''; }
+      })());
+      if (!ol) continue;
+      const el = document.getElementById(`sum-card-${npi}`);
+      if (el) {
+        el.innerHTML = `<div style="font-size:.69rem;color:var(--indigo,#4f46e5);margin-top:.2rem;font-style:italic;opacity:.85;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">✦ ${esc(ol)}</div>`;
+      }
+    }
+  } catch(e) { /* non-fatal */ }
+}
+
+/**
+ * Navigate to /roster page and open the drawer for the given NPI.
+ * If we are already on the roster page, opens the drawer directly.
+ */
+function openRosterProviderByNpi(npi, orgName) {
+  if (!npi) return;
+  const rosterBase = `/roster?org=${encodeURIComponent(orgName || '')}`;
+  // If the openRosterProviderDrawer function is available we are on the pipeline page
+  // which shares the drawer via pipeline-nppes.js — try to find the provider ID from
+  // the already-loaded roster truth.
+  if (typeof window._rosterTruth !== 'undefined' && window._rosterTruth) {
+    const match = window._rosterTruth.find(p =>
+      (p.npi_validated || p.npi_roster || '') === npi
+    );
+    if (match && typeof openRosterProviderDrawer === 'function') {
+      openRosterProviderDrawer(match.id);
+      return;
+    }
+  }
+  // Fall back: open roster page with deep-link anchor
+  window.open(`${rosterBase}&npi=${encodeURIComponent(npi)}`, '_blank');
 }
 

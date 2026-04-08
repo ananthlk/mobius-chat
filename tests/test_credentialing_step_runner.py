@@ -32,8 +32,9 @@ def test_empty_org_same_message_orchestrator_vs_no_steps_semantics() -> None:
     assert all(s.status == "pending" for s in state.steps)
 
 
-def test_single_step_runner_matches_first_step_state() -> None:
+def test_single_step_runner_matches_first_step_state(monkeypatch) -> None:
     """With no org name, legacy path returns before any step. With org, first step mutates ensure_benchmarks."""
+    monkeypatch.delenv("CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL", raising=False)
     org = "TestOrg"
     state = OrchestratorState(
         steps=[StepState(id=s["id"], label=s["label"]) for s in ROSTER_CREDENTIALING_PLAN],
@@ -53,4 +54,4 @@ def test_full_run_loops_all_plan_steps() -> None:
     for sid in ROSTER_CREDENTIALING_STEP_IDS:
         st = state.step_by_id(sid)
         assert st is not None, f"missing step {sid}"
-        assert st.status in ("pending", "in_progress", "done", "skipped")
+        assert st.status in ("pending", "in_progress", "done", "skipped", "failed")

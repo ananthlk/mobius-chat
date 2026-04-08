@@ -1378,6 +1378,103 @@ def _execute_tool(
             )
         return out_n
 
+    # ── Task manager tools ────────────────────────────────────────────────────
+    if tool in ("list_tasks", "create_task", "resolve_task"):
+        import os as _os
+        import httpx as _httpx
+
+        _task_base = (
+            _os.environ.get("CHAT_SKILLS_TASK_MANAGER_URL") or "http://localhost:8015"
+        ).rstrip("/")
+
+        emit(f"◌ Task manager: {tool}…")
+
+        try:
+            if not _task_base:
+                raise ValueError("CHAT_SKILLS_TASK_MANAGER_URL not configured")
+
+            with _httpx.Client(timeout=10.0) as _c:
+                if tool == "list_tasks":
+                    _params = {k: v for k, v in {
+                        "org_name": inputs.get("org") or inputs.get("org_name"),
+                        "module": inputs.get("module"),
+                        "status": inputs.get("status"),
+                        "assignee": inputs.get("assignee"),
+                        "npi": inputs.get("npi"),
+                        "run_id": inputs.get("run_id"),
+                        "limit": inputs.get("limit", 50),
+                    }.items() if v is not None}
+                    _r = _c.get(f"{_task_base}/tasks", params=_params)
+                    _r.raise_for_status()
+                    _data = _r.json()
+                    tasks = _data.get("tasks") or []
+                    count = _data.get("count", len(tasks))
+                    if tasks:
+                        lines = [f"**{count} task(s) found**\n"]
+                        for t in tasks[:20]:
+                            sev = (t.get("severity") or "").upper()
+                            st = t.get("status", "open")
+                            prov = t.get("provider_name") or t.get("npi") or ""
+                            prov_str = f" — {prov}" if prov else ""
+                            lines.append(f"- [{sev}] {t.get('text', '')} ({st}){prov_str} `{t.get('task_id','')[:8]}`")
+                        result_text = "\n".join(lines)
+                    else:
+                        result_text = "No tasks found matching the given filters."
+                    # Attach raw tasks to context for envelope rendering
+                    ctx.react_task_list_data = {"tasks": tasks, "filters": _params}
+                    return {
+                        "tool": "list_tasks",
+                        "success": True,
+                        "result": result_text,
+                        "signal": "corpus_only",
+                        "sources": [],
+                    }
+
+                elif tool == "create_task":
+                    _body = {
+                        "org_name": inputs.get("org") or inputs.get("org_name") or "",
+                        "text": inputs.get("text") or inputs.get("description") or "",
+                        "source_module": inputs.get("module") or "manual",
+                        "severity": inputs.get("severity") or "low",
+                        "provider_name": inputs.get("provider_name"),
+                        "npi": inputs.get("npi"),
+                    }
+                    _r = _c.post(f"{_task_base}/tasks", json=_body)
+                    _r.raise_for_status()
+                    created = _r.json()
+                    ctx.react_task_list_data = {"tasks": [created], "filters": {}, "allow_create": False}
+                    return {
+                        "tool": "create_task",
+                        "success": True,
+                        "result": f"Task created: **{created.get('text','')}** (ID: `{str(created.get('task_id',''))[:8]}`, severity: {created.get('severity','low')})",
+                        "signal": "corpus_only",
+                        "sources": [],
+                    }
+
+                elif tool == "resolve_task":
+                    _tid = inputs.get("task_id") or ""
+                    if not _tid:
+                        return {"tool": "resolve_task", "success": False, "result": "task_id is required", "signal": RETRIEVAL_SIGNAL_NO_SOURCES, "sources": []}
+                    _body = {"resolved_by": "chat", "note": inputs.get("note")}
+                    _r = _c.post(f"{_task_base}/tasks/{_tid}/resolve", json=_body)
+                    _r.raise_for_status()
+                    return {
+                        "tool": "resolve_task",
+                        "success": True,
+                        "result": f"Task `{_tid[:8]}` marked as resolved.",
+                        "signal": "corpus_only",
+                        "sources": [],
+                    }
+
+        except Exception as _te:
+            return {
+                "tool": tool,
+                "success": False,
+                "result": f"Task manager error: {_te}",
+                "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
+                "sources": [],
+            }
+
     return {
         "tool": tool,
         "success": False,

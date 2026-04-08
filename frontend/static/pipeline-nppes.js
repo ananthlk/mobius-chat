@@ -1,3 +1,30 @@
+// ── Dev / test utilities ──────────────────────────────────────────────────────
+// Dev mode: set ?dev=1 in the URL or localStorage.mobius_dev='1' to enable.
+function _isDevMode() {
+  return new URLSearchParams(window.location.search).get('dev') === '1'
+      || localStorage.getItem('mobius_dev') === '1';
+}
+
+async function _devClearRoster() {
+  const orgName = window.lastRun?.org_name;
+  if (!orgName) { alert('No org loaded — open a credentialing run first.'); return; }
+  if (!confirm(`DEV: Hard-delete ALL roster_truth rows for "${orgName}"?\nThis cannot be undone.`)) return;
+  try {
+    const r = await fetch(`/chat/roster-truth?org_name=${encodeURIComponent(orgName)}`, { method: 'DELETE' });
+    const d = await r.json();
+    if (r.ok) {
+      feEmit(`DEV: Cleared ${d.deleted} roster rows for ${orgName}`, 'warn');
+      // Refresh the live list
+      window._rosterTruth = [];
+      _loadRosterTruth();
+    } else {
+      feEmit(`DEV: Clear failed — ${d.detail || r.status}`, 'error');
+    }
+  } catch (e) {
+    feEmit('DEV: Clear roster error — ' + e.message, 'error');
+  }
+}
+
 // ── Roster ↔ All Sources merge ────────────────────────────────
 // Returns a copy of window._provData enriched with live roster decisions.
 // Providers validated in the Roster tab get _rosterDecision='validated' so
@@ -120,7 +147,11 @@ function _syncRosterToAllSources() {
 
   // ── NPI Reconciliation tab — refresh live sub-sections ──────
   const rosterSec = document.getElementById('rosterSection');
-  if (rosterSec) rosterSec.innerHTML = _buildRosterSectionHtml();
+  if (rosterSec) {
+    rosterSec.innerHTML = _buildRosterSectionHtml();
+    // Re-populate the live list (uses cache if already loaded, no extra fetch)
+    setTimeout(_loadRosterTruth, 0);
+  }
   const s3 = document.getElementById('reconSection3');
   if (s3) s3.innerHTML = _buildReconSection3Html(window._reconFilter || 'needs-help');
   _refreshTaskQueueFull();
@@ -600,6 +631,59 @@ function _buildReconSection3Html(filter) {
     </tr>`;
   }).join('');
 
+  // ── Dismissed providers section ────────────────────────────────
+  // Providers where ALL previously-active drift dims have been dismissed.
+  // They are shown collapsed at the bottom so users know they were honoured,
+  // and can restore any dim if the decision turns out to be wrong.
+  const allDismissed = workspace.filter(p => {
+    const allDims  = _driftDims(p);
+    const dismissed = p._dismissedDims || [];
+    // Provider has dismissals AND every original drift dim is dismissed
+    return dismissed.length > 0 && allDims.length > 0
+        && allDims.every(d => dismissed.includes(d));
+  });
+
+  let dismissedSection = '';
+  if (allDismissed.length > 0) {
+    const dismissedRows = allDismissed.map(p => {
+      const idx  = clean.indexOf(p);
+      const npi  = p.latest_validation?.npi_validated || p.npi_uploaded || '—';
+      const dims = p._dismissedDims || [];
+      const dimChips = dims.map(d =>
+        `<span style="font-size:.63rem;padding:.05rem .3rem;border-radius:4px;background:var(--grey-bg);border:1px solid var(--border);color:var(--text-3)">${d}</span>`
+      ).join(' ');
+      return `<tr>
+        <td style="font-size:.78rem;color:var(--text-2)">${esc(titleCase(p.provider_name || '—'))}</td>
+        <td style="font-family:monospace;font-size:.75rem;color:var(--text-3)">${esc(npi)}</td>
+        <td>${dimChips}</td>
+        <td><button class="link-btn" onclick="reconRestoreAllDims(${idx})"
+          style="font-size:.68rem;color:var(--indigo);border:1px solid var(--indigo-border);padding:.1rem .4rem;border-radius:4px;background:var(--indigo-bg)">
+          Restore
+        </button></td>
+      </tr>`;
+    }).join('');
+
+    dismissedSection = `
+      <details style="margin-top:.6rem" id="dismissedSection">
+        <summary style="cursor:pointer;font-size:.73rem;color:var(--text-3);font-weight:600;list-style:none;display:flex;align-items:center;gap:.4rem;padding:.2rem 0;user-select:none">
+          <span style="font-size:.65rem">▸</span>
+          <span>${allDismissed.length} dismissed</span>
+          <span style="font-weight:400;font-size:.68rem">— previously reviewed &amp; honoured</span>
+        </summary>
+        <div style="margin-top:.35rem;border:1px solid var(--border);border-radius:7px;overflow:hidden">
+          <table style="width:100%;border-collapse:collapse;font-size:.8rem">
+            <thead><tr style="background:var(--grey-bg)">
+              <th style="padding:.3rem .6rem;text-align:left;font-size:.68rem;color:var(--text-3);font-weight:600">Provider</th>
+              <th style="padding:.3rem .6rem;text-align:left;font-size:.68rem;color:var(--text-3);font-weight:600">NPI</th>
+              <th style="padding:.3rem .6rem;text-align:left;font-size:.68rem;color:var(--text-3);font-weight:600">Dismissed flags</th>
+              <th style="padding:.3rem .6rem"></th>
+            </tr></thead>
+            <tbody>${dismissedRows}</tbody>
+          </table>
+        </div>
+      </details>`;
+  }
+
   return `${streamBanner}
     <div class="recon-table-wrap">
       <table class="recon-table">
@@ -612,7 +696,16 @@ function _buildReconSection3Html(filter) {
         </tr></thead>
         <tbody>${tableRows}</tbody>
       </table>
-    </div>`;
+    </div>
+    ${dismissedSection}`;
+}
+
+// Restore all dismissed dims for a provider in one click (from dismissed section)
+function reconRestoreAllDims(idx) {
+  const p = window._rosterUploadState?.report?.clean?.[idx];
+  if (!p || !p._dismissedDims?.length) return;
+  const dims = [...p._dismissedDims];
+  dims.forEach(dim => reconUndoDismissDim(idx, dim));
 }
 
 function reconRowCheckChanged(idx, checked) {
@@ -770,6 +863,41 @@ function _activeDriftDims(p) {
   return _driftDims(p).filter(d => !dismissed.includes(d));
 }
 
+// ── Dismissal helpers ─────────────────────────────────────────────────────────
+// Dismissals are persisted in postgres (provider_audit_log) keyed by NPI so
+// they survive page reloads, run re-opens, and even different upload IDs.
+// _orgDismissals: { [npi]: Set<dim> } — loaded once per org on workspace open.
+window._orgDismissals = window._orgDismissals || {};
+
+async function _loadOrgDismissals() {
+  const org = lastRun?.org_name;
+  if (!org) return;
+  try {
+    const r = await fetch(`/chat/roster-org/${encodeURIComponent(org)}/dismissals`);
+    if (!r.ok) return;
+    const d = await r.json();
+    const map = d.dismissals || {};
+    window._orgDismissals = {};
+    for (const [npi, dims] of Object.entries(map)) {
+      window._orgDismissals[npi] = new Set(dims);
+    }
+    // Hydrate _dismissedDims on every provider in the workspace
+    _hydrateProviderDismissals();
+  } catch { /* non-fatal */ }
+}
+
+function _hydrateProviderDismissals() {
+  const clean = window._rosterUploadState?.report?.clean || [];
+  clean.forEach(p => {
+    const npi = p.latest_validation?.npi_validated || p.npi_uploaded || '';
+    if (!npi) return;
+    const dbDims = window._orgDismissals[npi];
+    if (dbDims && dbDims.size > 0) {
+      p._dismissedDims = [...dbDims];
+    }
+  });
+}
+
 // Dismiss a single discrepancy dimension — "expected / not a real problem"
 function reconDismissDim(providerIdx, dim) {
   const p = window._rosterUploadState?.report?.clean?.[providerIdx];
@@ -777,7 +905,13 @@ function reconDismissDim(providerIdx, dim) {
   if (!p._dismissedDims) p._dismissedDims = [];
   if (!p._dismissedDims.includes(dim)) p._dismissedDims.push(dim);
   feEmit('Flag dismissed — ' + dim + ' for ' + (p.provider_name || 'provider #' + providerIdx));
-  // Persist dismiss event to audit log
+  // Update in-memory org map
+  const npi = p.latest_validation?.npi_validated || p.npi_uploaded || '';
+  if (npi) {
+    if (!window._orgDismissals[npi]) window._orgDismissals[npi] = new Set();
+    window._orgDismissals[npi].add(dim);
+  }
+  // Persist to postgres via audit log — include npi so get_org_dismissals can query by NPI
   if (p.id) {
     fetch(`/chat/roster-reconcile/provider/${p.id}/audit-log`, {
       method: 'POST',
@@ -785,6 +919,7 @@ function reconDismissDim(providerIdx, dim) {
       body: JSON.stringify({
         event_type: 'dismissed',
         actor: 'user',
+        npi,
         run_id: lastRun?.run_id || '',
         org_name: lastRun?.org_name || '',
         event_data: { dim, reason: `User dismissed ${dim} drift` },
@@ -796,12 +931,30 @@ function reconDismissDim(providerIdx, dim) {
   _refreshReconView();
 }
 
-// Undo a dimension dismiss
+// Undo a dimension dismiss — writes an 'undismissed' event so DB state is correct
 function reconUndoDismissDim(providerIdx, dim) {
   const p = window._rosterUploadState?.report?.clean?.[providerIdx];
   if (!p || !p._dismissedDims) return;
   p._dismissedDims = p._dismissedDims.filter(d => d !== dim);
   feEmit('Flag restored — ' + dim + ' for ' + (p.provider_name || 'provider #' + providerIdx));
+  // Update in-memory org map
+  const npi = p.latest_validation?.npi_validated || p.npi_uploaded || '';
+  if (npi && window._orgDismissals[npi]) window._orgDismissals[npi].delete(dim);
+  // Persist undismissal so get_org_dismissals picks the latest event
+  if (p.id) {
+    fetch(`/chat/roster-reconcile/provider/${p.id}/audit-log`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event_type: 'undismissed',
+        actor: 'user',
+        npi,
+        run_id: lastRun?.run_id || '',
+        org_name: lastRun?.org_name || '',
+        event_data: { dim, reason: `User restored ${dim} drift` },
+      }),
+    }).catch(() => {});
+  }
   const panelEl = document.getElementById(`recon-panel-${providerIdx}`);
   if (panelEl) _renderNppesDetail(providerIdx, panelEl);
   _refreshReconView();
@@ -927,13 +1080,12 @@ function _buildRosterSectionHtml() {
         : ''}
     </div>` : '';
 
-  // (tableHtml removed — roster now renders as expandable card list via _renderRosterTruthRows)
-
   // Count tracking tasks from roster truth
   const trackingCount = (window._rosterTruth || [])
     .reduce((n, p) => n + (Array.isArray(p.open_tasks) ? p.open_tasks.length : 0), 0);
 
-  const approvedCount = (window._rosterTruth || []).length;
+  const approvedProviders = window._rosterTruth || [];
+  const approvedCount = approvedProviders.length;
   const approvedLabel = approvedCount > 0 ? `· ${approvedCount} approved` : '· no providers yet';
 
   // Roster section is open by default if there are promoted providers,
@@ -943,12 +1095,40 @@ function _buildRosterSectionHtml() {
   }
   const isOpen = window._rosterSectionOpen;
 
-  // Score badge — shows the number with its label; "ⓘ" opens the tooltip explaining what it means
+  // Score badge
   const scoreHtml = currentScore !== null
     ? `<span style="font-size:.8125rem;font-weight:700;color:${scoreCol};cursor:help" title="${esc(tip)}">${currentScore}</span>
        <span style="font-size:.72rem;font-weight:400;color:var(--text-3);cursor:help" title="${esc(tip)}"> billable score · </span>
        <span style="font-size:.72rem;font-weight:500;color:${scoreCol};cursor:help" title="${esc(tip)}">${bandLabel}</span>`
     : '';
+
+  // Roster link
+  const orgName = window.lastRun?.org_name || '';
+  const rosterHref = `/roster${orgName ? '?org=' + encodeURIComponent(orgName) : ''}`;
+
+  // Summary stats row
+  const nppsActive  = approvedProviders.filter(p => (p.nppes_snapshot?.nppes_status || '').toUpperCase() === 'A').length;
+  const withTasks   = approvedProviders.filter(p => Array.isArray(p.open_tasks) && p.open_tasks.length > 0).length;
+
+  // Top 5 preview cards (compact — just name + NPI + status chip)
+  const previewCards = approvedProviders.slice(0, 5).map(p => {
+    const npi    = p.npi_validated || p.npi_roster || '—';
+    const st     = (p.nppes_snapshot?.nppes_status || '').toUpperCase();
+    const stChip = st === 'A'
+      ? `<span style="font-size:.62rem;font-weight:600;color:var(--green)">Active</span>`
+      : st === 'D'
+        ? `<span style="font-size:.62rem;font-weight:600;color:var(--red)">Deact.</span>`
+        : '';
+    const tasks  = Array.isArray(p.open_tasks) && p.open_tasks.length > 0
+      ? `<span style="font-size:.62rem;color:var(--amber)">◎ ${p.open_tasks.length}</span>`
+      : '';
+    return `<div onclick="openRosterProviderDrawer(${p.id})" style="display:flex;align-items:center;gap:.5rem;padding:.3rem .5rem;border-radius:5px;cursor:pointer;transition:background .1s"
+      onmouseenter="this.style.background='var(--grey-bg)'" onmouseleave="this.style.background=''">
+      <span style="font-size:.78rem;font-weight:600;color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(titleCase(p.provider_name||'—'))}</span>
+      <span style="font-family:monospace;font-size:.68rem;color:var(--text-3);flex-shrink:0">${esc(npi)}</span>
+      ${stChip}${tasks}
+    </div>`;
+  }).join('');
 
   return `
     <details id="rosterSectionDetails" class="sec-card" ${isOpen ? 'open' : ''}
@@ -966,11 +1146,52 @@ function _buildRosterSectionHtml() {
       </summary>
       <div class="sec-body">
         ${storyHtml}
-        <div id="rosterLiveList" class="rt-card-list" style="margin-top:.3rem">
-          <div style="padding:.65rem .5rem;font-size:.8rem;color:var(--text-3)">
-            <span class="spinner" style="width:11px;height:11px;border-width:1.5px;display:inline-block;vertical-align:middle;margin-right:5px"></span>Loading roster…
+
+        <!-- Summary stats -->
+        ${approvedCount > 0 ? `
+        <div style="display:flex;gap:.75rem;margin-bottom:.6rem;padding:.4rem .5rem;background:var(--grey-bg);border-radius:6px;border:1px solid var(--border)">
+          <div style="text-align:center">
+            <div style="font-size:1rem;font-weight:700;color:var(--text)">${approvedCount}</div>
+            <div style="font-size:.62rem;color:var(--text-3)">Total</div>
+          </div>
+          <div style="text-align:center">
+            <div style="font-size:1rem;font-weight:700;color:var(--green)">${nppsActive}</div>
+            <div style="font-size:.62rem;color:var(--text-3)">NPPES Active</div>
+          </div>
+          <div style="text-align:center">
+            <div style="font-size:1rem;font-weight:700;color:${withTasks > 0 ? 'var(--amber)' : 'var(--text)'}">${withTasks}</div>
+            <div style="font-size:.62rem;color:var(--text-3)">Open Tasks</div>
+          </div>
+          <div style="margin-left:auto;display:flex;align-items:center">
+            <a href="${rosterHref}" target="_blank"
+              style="font-size:.75rem;font-weight:700;color:var(--indigo);text-decoration:none;padding:.25rem .65rem;border:1px solid var(--indigo-border,#c7d2fe);border-radius:6px;background:var(--indigo-bg,#eef2ff);white-space:nowrap">
+              View all ${approvedCount} in Roster →
+            </a>
           </div>
         </div>
+
+        <!-- Top 5 preview -->
+        <div style="margin-bottom:.5rem;font-size:.68rem;font-weight:600;color:var(--text-3);text-transform:uppercase;letter-spacing:.04em;padding:0 .2rem">
+          Recent providers
+        </div>
+        <div style="margin-bottom:.45rem">${previewCards}</div>
+        ${approvedCount > 5 ? `<div style="text-align:center;padding:.2rem 0">
+          <a href="${rosterHref}" target="_blank" style="font-size:.73rem;color:var(--indigo);font-weight:600;text-decoration:none">
+            + ${approvedCount - 5} more — open full Roster →
+          </a>
+        </div>` : ''}` : ''}
+
+        <!-- DEV clear button -->
+        <div style="display:flex;align-items:center;gap:.5rem;margin-top:.5rem;padding:.3rem .5rem;background:rgba(220,38,38,.04);border:1px dashed rgba(220,38,38,.25);border-radius:6px">
+          <span style="font-size:.65rem;font-weight:700;color:var(--red,#dc2626);opacity:.7">DEV</span>
+          <button onclick="_devClearRoster()" style="font-size:.68rem;padding:.18rem .55rem;border-radius:5px;border:1px solid rgba(220,38,38,.4);background:rgba(220,38,38,.06);color:var(--red,#dc2626);cursor:pointer;font-weight:600">
+            Clear Roster Table
+          </button>
+          <span style="font-size:.62rem;color:var(--text-3)">Wipes all roster_truth rows for this org — test use only</span>
+        </div>
+
+        <!-- Hidden list — still needed for _renderRosterTruthRows / openRosterProviderDrawer -->
+        <div id="rosterLiveList" class="rt-card-list" style="display:none"></div>
       </div>
     </details>`;
 }
@@ -1079,9 +1300,37 @@ function _renderRosterTruthRows(providers) {
       : '';
 
     // ── Header status indicators ──────────────────────────────
-    const taskStatus = openTasks.length > 0
-      ? `<span class="rt-task-chip">◎ ${openTasks.length} tracked</span>`
-      : `<span style="font-size:.67rem;color:var(--green);flex-shrink:0">✓ clean</span>`;
+    // "clean" means: NPPES active, no open tasks, billability is billable
+    const _billSt   = (p.billability_status || '').toLowerCase();
+    const _nppesSt  = (snap.nppes_status || '').toUpperCase();
+    const _nppesDead = _nppesSt === 'D' || _billSt === 'inactive';
+    const _isCritical = _billSt === 'blocked' || _billSt === 'risk' || _billSt === 'at_risk';
+    const _isWarning  = _billSt === 'warning';
+    const _hasIssues = openTasks.length > 0 || _nppesDead || _isCritical || _isWarning;
+    // Task count chip — shown as a clear count badge; styled by severity
+    const _taskPillBase = 'font-size:.62rem;font-weight:700;border-radius:4px;padding:.05rem .35rem;white-space:nowrap;flex-shrink:0;text-align:center';
+    const taskStatus = openTasks.length === 0
+      ? `<span style="${_taskPillBase};color:var(--green,#16a34a);background:transparent">✓ clean</span>`
+      : (_isCritical || _nppesDead)
+        ? `<span style="${_taskPillBase};color:var(--red,#dc2626);background:var(--red-bg,#fef2f2);border:1px solid var(--red-border,#fca5a5)">${openTasks.length} task${openTasks.length > 1 ? 's' : ''}</span>`
+        : _isWarning
+          ? `<span style="${_taskPillBase};color:var(--amber,#92400e);background:var(--amber-bg,#fffbeb);border:1px solid var(--amber-border,#fde68a)">${openTasks.length} task${openTasks.length > 1 ? 's' : ''}</span>`
+          : `<span style="${_taskPillBase};color:var(--text-2);background:var(--surface-2);border:1px solid var(--border)">${openTasks.length} task${openTasks.length > 1 ? 's' : ''}</span>`;
+
+    // Billability pill shown in card header
+    const _bsCard = p.billability_status || 'unknown';
+    const _bsCardConf = {
+      billable: { label:'Billable', color:'var(--green,#16a34a)',  bg:'var(--green-bg,#f0fdf4)',  border:'var(--green-border,#86efac)' },
+      warning:  { label:'⚠ Warning', color:'var(--amber,#d97706)', bg:'var(--amber-bg,#fffbeb)', border:'var(--amber-border,#fde68a)' },
+      at_risk:  { label:'⚠ At Risk',  color:'var(--amber,#d97706)', bg:'var(--amber-bg,#fffbeb)', border:'var(--amber-border,#fde68a)' },
+      risk:     { label:'🚨 At Risk',  color:'var(--red,#dc2626)',   bg:'var(--red-bg,#fef2f2)',   border:'var(--red-border,#fecaca)'   },
+      blocked:  { label:'🚫 Blocked', color:'var(--red,#dc2626)',   bg:'var(--red-bg,#fef2f2)',   border:'var(--red-border,#fecaca)'   },
+      inactive: { label:'Inactive',   color:'var(--red,#dc2626)',   bg:'var(--red-bg,#fef2f2)',   border:'var(--red-border,#fecaca)'   },
+    };
+    const _bsCardInfo = _bsCardConf[_bsCard];
+    const billabilityBadge = _bsCardInfo
+      ? `<span style="font-size:.62rem;font-weight:700;color:${_bsCardInfo.color};background:${_bsCardInfo.bg};border:1px solid ${_bsCardInfo.border};border-radius:4px;padding:.06rem .35rem;flex-shrink:0;white-space:nowrap">${_bsCardInfo.label}</span>`
+      : '';
 
     const nppesSt  = (snap.nppes_status || al.status?.nppes || '').toUpperCase();
     const stBadge  = nppesSt === 'D'
@@ -1090,10 +1339,31 @@ function _renderRosterTruthRows(providers) {
         ? `<span style="font-size:.65rem;font-weight:700;color:var(--green);background:var(--green-bg,#f0fdf4);border:1px solid var(--green-border,#86efac);border-radius:4px;padding:.05rem .3rem;flex-shrink:0">Active</span>`
         : '';
 
-    const confPct = Math.round((snap.match_confidence || p.match_confidence || 0) * 100);
-    const confBadge = confPct > 0
-      ? `<span style="font-size:.65rem;color:var(--text-3);flex-shrink:0">${confPct}% match</span>`
-      : '';
+    // ── "Why is this provider in the roster?" source label ──────────────────
+    // Derives a human-readable reason from decision + NPPES status + task state.
+    const _decision   = (p.decision || '').toLowerCase();
+    const _confRaw    = snap.match_confidence || p.match_confidence || 0;
+    const _confPct    = Math.round(_confRaw * 100);
+    let sourceBadge   = '';
+    if (_decision === 'rejected') {
+      sourceBadge = `<span style="font-size:.63rem;font-weight:600;color:var(--red,#dc2626);background:var(--red-bg,#fef2f2);border:1px solid var(--red-border,#fca5a5);border-radius:4px;padding:.04rem .3rem;flex-shrink:0">Excluded</span>`;
+    } else if (_nppesDead) {
+      sourceBadge = `<span style="font-size:.63rem;font-weight:600;color:var(--red,#dc2626);background:var(--red-bg,#fef2f2);border:1px solid var(--red-border,#fca5a5);border-radius:4px;padding:.04rem .3rem;flex-shrink:0">NPPES inactive</span>`;
+    } else if (_decision === 'approved' && !_hasIssues) {
+      sourceBadge = `<span style="font-size:.63rem;color:var(--green,#16a34a);background:var(--green-bg,#f0fdf4);border:1px solid var(--green-border,#86efac);border-radius:4px;padding:.04rem .3rem;flex-shrink:0">No issues found</span>`;
+    } else if (_decision === 'approved' && _hasIssues) {
+      sourceBadge = `<span style="font-size:.63rem;color:var(--amber,#92400e);background:var(--amber-bg,#fffbeb);border:1px solid var(--amber-border,#fde68a);border-radius:4px;padding:.04rem .3rem;flex-shrink:0">Action needed</span>`;
+    } else if (_decision === 'user_validated' || _decision === 'user-validated') {
+      sourceBadge = `<span style="font-size:.63rem;color:var(--indigo,#4f46e5);background:var(--indigo-bg,#eef2ff);border:1px solid var(--indigo-border,#c7d2fe);border-radius:4px;padding:.04rem .3rem;flex-shrink:0">User validated</span>`;
+    } else if (_decision === 'auto_approved' || _decision === 'auto-approved') {
+      sourceBadge = `<span style="font-size:.63rem;color:var(--text-2);background:var(--surface-2);border:1px solid var(--border);border-radius:4px;padding:.04rem .3rem;flex-shrink:0">Auto-approved</span>`;
+    } else if (_decision === 'pending' || _decision === 'pending_validation') {
+      sourceBadge = `<span style="font-size:.63rem;color:var(--amber,#92400e);background:var(--amber-bg,#fffbeb);border:1px solid var(--amber-border,#fde68a);border-radius:4px;padding:.04rem .3rem;flex-shrink:0">Pending review</span>`;
+    } else if (_confPct >= 90) {
+      sourceBadge = `<span style="font-size:.63rem;color:var(--green,#16a34a);background:var(--green-bg,#f0fdf4);border:1px solid var(--green-border,#86efac);border-radius:4px;padding:.04rem .3rem;flex-shrink:0">Mobius confident</span>`;
+    } else if (_confPct > 0) {
+      sourceBadge = `<span style="font-size:.63rem;color:var(--text-2);background:var(--surface-2);border:1px solid var(--border);border-radius:4px;padding:.04rem .3rem;flex-shrink:0">In roster</span>`;
+    }
 
     const entityType = snap.entity_type || '';
     const entityBadge = entityType
@@ -1184,28 +1454,1484 @@ function _renderRosterTruthRows(providers) {
         </div>`
       : `<div style="margin-top:.4rem;padding-top:.4rem;border-top:1px solid var(--border);font-size:.72rem;color:var(--green)">✓ No open items — all clear</div>`;
 
-    return `<div class="rt-card roster-live-row" id="roster-row-prov-${p.id}" style="animation-delay:${i*18}ms">
-      <div class="rt-card-head" onclick="_toggleRosterCard(this)">
-        <span class="rt-card-name">${esc(titleCase(p.provider_name || '—'))}</span>
-        <span class="rt-card-npi">${esc(p.npi_validated || '')}</span>
-        <span class="rt-card-loc">${esc(loc)}</span>
-        ${taskStatus}
-        <span class="rt-card-chevron">▾</span>
-      </div>
-      <div class="rt-card-body" style="padding:.6rem .8rem .5rem">
-        ${identityHtml}
-        ${credHtml}
-        ${taxHtml}
-        ${contactHtml}
-        ${taskList}
+    // ── Taxonomy chips for collapsed header ──────────────────────
+    const taxChipsHtml = taxEntries.length
+      ? taxEntries.slice(0, 4).map(t => {
+          const isPri = t.primary;
+          const code  = t.code || '';
+          const desc  = t.desc ? t.desc.split(/[,;]/)[0].trim().slice(0, 28) : '';
+          return `<span style="font-size:.6rem;font-family:monospace;padding:.06rem .28rem;border-radius:4px;background:var(--indigo-bg,#eef2ff);border:1px solid var(--indigo-border,#c7d2fe);color:var(--indigo,#4f46e5);white-space:nowrap" title="${esc(t.desc||'')}">
+            ${isPri ? '★ ' : ''}${esc(code)}${desc ? ` — ${esc(desc)}` : ''}
+          </span>`;
+        }).join('') + (taxEntries.length > 4 ? `<span style="font-size:.6rem;color:var(--text-3)">+${taxEntries.length-4}</span>` : '')
+      : (p.specialty ? `<span style="font-size:.62rem;color:var(--text-3);font-style:italic">${esc(p.specialty)}</span>` : '');
+
+    // AI one-liner: prefer server-persisted value, fall back to sessionStorage cache
+    const _serverOneliner = p.ai_summary_short || '';
+    const _cachedOneliner = (() => { try { const c = sessionStorage.getItem(`mobius_summary_${p.id}`); return c ? (JSON.parse(c).summary_short || '') : ''; } catch(e) { return ''; } })();
+    const cachedSum = _serverOneliner || _cachedOneliner;
+
+    return `<div class="rt-card roster-live-row" id="roster-row-prov-${p.id}"
+        style="animation-delay:${i*18}ms;cursor:pointer"
+        data-name="${esc(p.provider_name||'')}" data-npi="${esc(p.npi_validated||p.npi||'')}"
+        onclick="openRosterProviderDrawer(${p.id})"
+        onmouseenter="this.style.background='var(--grey-bg)'"
+        onmouseleave="this.style.background=''">
+      <div class="rt-card-head" style="pointer-events:none">
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;align-items:center;gap:.4rem;flex-wrap:wrap">
+            <span class="rt-card-name">${esc(titleCase(p.provider_name || '—'))}</span>
+            <span class="rt-card-npi">${esc(p.npi_validated || '')}</span>
+            ${loc !== '—' ? `<span class="rt-card-loc">${esc(loc)}</span>` : ''}
+            ${stBadge}
+            ${sourceBadge}
+          </div>
+          ${taxChipsHtml ? `<div style="display:flex;gap:.25rem;flex-wrap:wrap;margin-top:.25rem">${taxChipsHtml}</div>` : ''}
+          ${cachedSum ? `<div class="ai-oneliner" style="font-size:.69rem;color:var(--indigo,#4f46e5);margin-top:.22rem;font-style:italic;opacity:.85;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">✦ ${esc(cachedSum)}</div>` : '<div class="ai-oneliner" style="font-size:.69rem;color:var(--indigo,#4f46e5);margin-top:.22rem;font-style:italic;opacity:.85;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>'}
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:.3rem;flex-shrink:0;margin-left:.5rem;min-width:5rem">
+          ${billabilityBadge}
+          ${taskStatus}
+        </div>
+        <span class="rt-card-chevron" style="color:var(--text-3);font-size:.7rem">›</span>
       </div>
     </div>`;
   }).join('');
 }
 
-function _toggleRosterCard(headEl) {
-  const card = headEl.closest('.rt-card');
-  if (card) card.classList.toggle('rt-open');
+// ── Roster Provider Detail Drawer ─────────────────────────────────────────────
+// Opens a rich right-side drawer with the full profile fetched from postgres.
+
+function _ensureRosterProviderDrawer() {
+  if (document.getElementById('rosterProviderDrawer')) return;
+  const backdrop = document.createElement('div');
+  backdrop.className = 'task-drawer-backdrop';
+  backdrop.id = 'rosterProviderDrawerBackdrop';
+  // Only close when clicking the backdrop itself, not when clicks bubble up from the drawer
+  backdrop.addEventListener('click', e => { if (e.target === backdrop) closeRosterProviderDrawer(); });
+
+  const drawer = document.createElement('div');
+  drawer.className = 'tax-provider-drawer';  // reuse same wide-drawer CSS
+  drawer.id = 'rosterProviderDrawer';
+  drawer.innerHTML = `
+    <div class="pml-task-drawer-head" style="padding:.8rem 1rem 0">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--indigo,#4f46e5);margin-bottom:.15rem">Provider Profile</div>
+        <div class="pml-task-drawer-title" id="rosterProvDrawerTitle" style="font-size:1rem;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">—</div>
+        <div style="font-size:.72rem;color:var(--text-3);font-family:monospace;margin-top:.1rem" id="rosterProvDrawerNpi"></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:.4rem;flex-shrink:0;margin-left:.5rem">
+        <button id="rosterProvSummaryBtn" onclick="_drawerRegenerateSummary()"
+          style="display:none;padding:.28rem .65rem;font-size:.7rem;font-weight:600;border:1px solid var(--indigo,#4f46e5);color:var(--indigo,#4f46e5);background:var(--indigo-bg,#eef2ff);border-radius:6px;cursor:pointer;white-space:nowrap"
+          title="Re-generate AI summary">✦ Mobius Summary</button>
+        <button id="rosterProvChatBtn" onclick="_drawerAskMobius()" style="display:none;padding:.28rem .65rem;font-size:.7rem;font-weight:600;border:1px solid var(--border);color:var(--text-2);background:var(--surface);border-radius:6px;cursor:pointer;white-space:nowrap" title="Ask Mobius about this provider">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="vertical-align:-.1em"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          Ask Mobius
+        </button>
+        <button onclick="closeRosterProviderDrawer()" style="background:none;border:none;cursor:pointer;font-size:1.1rem;color:var(--text-3);padding:.25rem .4rem;border-radius:4px" title="Close">✕</button>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin:.7rem 0 0"></div>
+    <div class="pml-task-drawer-body" id="rosterProvDrawerBody" style="padding:.8rem 1rem">
+      <div style="padding:2rem;text-align:center;color:var(--text-3)"><span class="spinner"></span> Loading…</div>
+    </div>`;
+
+  const container = document.getElementById('drawerContainer') || document.body;
+  container.appendChild(backdrop);
+  container.appendChild(drawer);
+}
+
+function closeRosterProviderDrawer() {
+  const d = document.getElementById('rosterProviderDrawer');
+  const b = document.getElementById('rosterProviderDrawerBackdrop');
+  if (d) d.classList.remove('open');
+  if (b) b.classList.remove('open');
+  // Hide header action buttons
+  const summaryBtn = document.getElementById('rosterProvSummaryBtn');
+  if (summaryBtn) summaryBtn.style.display = 'none';
+  const chatBtn = document.getElementById('rosterProvChatBtn');
+  if (chatBtn) chatBtn.style.display = 'none';
+  // Clear selection so chat context no longer references this provider
+  document.querySelectorAll('.rt-card.selected').forEach(c => c.classList.remove('selected'));
+}
+
+// Current provider loaded in the drawer (for inline edit)
+window._rosterDrawerProvider = null;
+
+async function openRosterProviderDrawer(providerId) {
+  _ensureRosterProviderDrawer();
+  const drawer   = document.getElementById('rosterProviderDrawer');
+  const backdrop = document.getElementById('rosterProviderDrawerBackdrop');
+  const bodyEl   = document.getElementById('rosterProvDrawerBody');
+  const titleEl  = document.getElementById('rosterProvDrawerTitle');
+  const npiEl    = document.getElementById('rosterProvDrawerNpi');
+
+  drawer.classList.add('open');
+  backdrop.classList.add('open');
+  bodyEl.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--text-3)"><span class="spinner"></span> Loading profile…</div>`;
+
+  // Mark the selected card so the chat context function knows who is open
+  document.querySelectorAll('.rt-card.selected').forEach(c => c.classList.remove('selected'));
+  const selCard = document.getElementById(`roster-row-prov-${providerId}`);
+  if (selCard) selCard.classList.add('selected');
+
+  const orgName = window.lastRun?.org_name || '';
+  try {
+    const resp = await fetch(`/chat/roster-truth/${encodeURIComponent(orgName)}/provider/${providerId}`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const p = await resp.json();
+    window._rosterDrawerProvider = p;
+    _renderRosterProvDrawer(p, titleEl, npiEl, bodyEl);
+  } catch (e) {
+    bodyEl.innerHTML = `<div style="padding:1rem;color:var(--red);font-size:.8rem">Failed to load profile — ${esc(String(e))}</div>`;
+  }
+}
+
+function _renderRosterProvDrawer(p, titleEl, npiEl, bodyEl) {
+  titleEl = titleEl || document.getElementById('rosterProvDrawerTitle');
+  npiEl   = npiEl   || document.getElementById('rosterProvDrawerNpi');
+  bodyEl  = bodyEl  || document.getElementById('rosterProvDrawerBody');
+  if (!titleEl || !bodyEl) return;
+
+  titleEl.textContent = titleCase(p.provider_name || 'Provider');
+  const bsColors = { billable:'var(--green)', warning:'var(--amber)', at_risk:'var(--amber)', risk:'var(--red)', blocked:'var(--red)', inactive:'var(--red)', unknown:'var(--text-3)' };
+  const bsLabels = { billable:'Billable', warning:'Warning', at_risk:'At Risk', risk:'At Risk', blocked:'Blocked', inactive:'Inactive', unknown:'—' };
+  const bs = p.billability_status || 'unknown';
+  if (npiEl) npiEl.innerHTML = `
+    <span style="font-family:monospace">${esc(p.npi_validated||p.npi_roster||'—')}</span>
+    ${bs !== 'unknown' ? `<span style="margin-left:.5rem;font-size:.65rem;font-weight:700;color:${bsColors[bs]||'var(--text-3)'}">${bsLabels[bs]||bs}</span>` : ''}
+    ${p.billability_score != null ? `<span style="margin-left:.3rem;font-size:.65rem;color:var(--text-3)" title="Billability score: ${p.billability_score}/100 — composite of NPPES status, PML enrollment, and taxonomy coverage">· ${p.billability_score}/100</span>` : ''}
+    <button onclick="_openRosterProvEdit()" style="margin-left:.6rem;font-size:.65rem;padding:.1rem .45rem;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text-2);cursor:pointer;font-weight:500">Edit</button>`;
+
+  // Show header action buttons once provider is loaded
+  const summaryBtn = document.getElementById('rosterProvSummaryBtn');
+  if (summaryBtn) summaryBtn.style.display = '';
+  const chatBtn = document.getElementById('rosterProvChatBtn');
+  if (chatBtn) chatBtn.style.display = '';
+
+  bodyEl.innerHTML = _buildRosterProvDrawerHtml(p);
+
+  const orgName  = p.org_name || window.lastRun?.org_name || '';
+  const cacheKey = `mobius_summary_${p.id}`;
+
+  // 1. Use server-persisted summary (pre-computed by post-run AI flush) — instant, no spinner
+  const serverSummary = p.ai_summary;
+  if (serverSummary && serverSummary.detailed && !p.ai_summary_stale) {
+    const syntheticData = {
+      summary:            serverSummary.detailed,
+      summary_short:      serverSummary.one_liner || '',
+      billability_status: p.billability_status,
+      model:              serverSummary.model || 'cached',
+      input_tokens:       serverSummary.input_tokens || 0,
+      output_tokens:      serverSummary.output_tokens || 0,
+      latency_ms:         0,
+      from_cache:         true,
+    };
+    // Store in sessionStorage so other parts of the UI can reference it
+    try { sessionStorage.setItem(cacheKey, JSON.stringify(syntheticData)); } catch(e) {}
+    const summaryBodyEl = document.getElementById(`ai-summary-body-${p.id}`);
+    if (summaryBodyEl) _renderSummaryIntoBody(summaryBodyEl, syntheticData, p.id, encodeURIComponent(orgName));
+    return;
+  }
+
+  // 2. Fall back to sessionStorage cache (same tab session)
+  const cached = sessionStorage.getItem(cacheKey);
+  if (cached) {
+    _injectCachedSummary(p.id, cached, orgName);
+    return;
+  }
+
+  // 3. No pre-computed summary — fetch on demand (triggers LLM + persists to DB)
+  generateProviderSummary(p.id, encodeURIComponent(orgName));
+}
+
+function _drawerRegenerateSummary() {
+  const p = window._rosterDrawerProvider;
+  if (!p) return;
+  const orgName = p.org_name || window.lastRun?.org_name || '';
+  // Clear all caches so it forces a fresh LLM call and writes back to DB
+  sessionStorage.removeItem(`mobius_summary_${p.id}`);
+  if (p.ai_summary) p.ai_summary = null;  // clear local copy so stale check doesn't short-circuit
+  generateProviderSummary(p.id, encodeURIComponent(orgName), true);
+}
+
+/**
+ * Open the floating Mobius chat widget pre-loaded with a question about the
+ * currently-open provider in the drawer.
+ */
+function _drawerAskMobius() {
+  const p = window._rosterDrawerProvider;
+  if (!p) return;
+
+  // Ensure the chat widget exists (no-op if already present)
+  if (typeof initMobiusChatWidget === 'function') initMobiusChatWidget({});
+
+  const inp = document.getElementById('chatInput');
+  if (!inp) return;
+
+  const name  = p.provider_name || '';
+  const npi   = p.npi_validated || p.npi_roster || '';
+  const bs    = p.billability_status || '';
+  const tasks = (p.open_tasks || []).length;
+  const hint  = bs === 'risk'     ? 'they will lose active billing codes — what is the impact and how to fix?'
+              : bs === 'warning'  ? 'they have enrollment gaps — which taxonomies are missing and what is needed?'
+              : bs === 'at_risk'  ? 'they are at risk — what are the billing gaps?'
+              : bs === 'blocked'  ? 'they have no PML enrollment — what steps are needed to get them enrolled?'
+              : tasks > 0         ? `they have ${tasks} open task(s) — what is needed?`
+              :                     'give me a full credentialing status summary';
+
+  inp.value = `Tell me about provider ${name}${npi ? ` (NPI: ${npi})` : ''} — ${hint}`;
+  inp.style.height = 'auto';
+  inp.style.height = Math.min(inp.scrollHeight, 120) + 'px';
+
+  // Open and focus
+  if (typeof chatExpand === 'function') chatExpand();
+}
+
+function _injectCachedSummary(providerId, cached, orgName) {
+  const bodyEl = document.getElementById(`ai-summary-body-${providerId}`);
+  if (!bodyEl) return;
+  try {
+    const data = JSON.parse(cached);
+    _renderSummaryIntoBody(bodyEl, data, providerId, encodeURIComponent(orgName));
+  } catch(e) {
+    generateProviderSummary(providerId, encodeURIComponent(orgName));
+  }
+}
+
+// ── Inline edit panel for provider details ─────────────────────────────────
+function _openRosterProvEdit() {
+  const p = window._rosterDrawerProvider;
+  if (!p) return;
+  const bodyEl = document.getElementById('rosterProvDrawerBody');
+  if (!bodyEl) return;
+
+  bodyEl.innerHTML = `
+    <div style="padding:.25rem 0">
+      <div style="font-size:.65rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--indigo);margin-bottom:.75rem">Edit Provider Details</div>
+      <div style="display:flex;flex-direction:column;gap:.65rem">
+        <div>
+          <label style="font-size:.72rem;font-weight:600;color:var(--text-2);display:block;margin-bottom:.25rem">Provider Name</label>
+          <input id="editProvName" value="${esc(p.provider_name||'')}" type="text"
+            style="width:100%;box-sizing:border-box;padding:.4rem .6rem;border:1.5px solid var(--border);border-radius:7px;font-size:.84rem;background:var(--surface);color:var(--text)" />
+        </div>
+        <div>
+          <label style="font-size:.72rem;font-weight:600;color:var(--text-2);display:block;margin-bottom:.25rem">NPI (validated)</label>
+          <input id="editProvNpi" value="${esc(p.npi_validated||p.npi_roster||'')}" type="text" maxlength="10"
+            style="width:100%;box-sizing:border-box;padding:.4rem .6rem;border:1.5px solid var(--border);border-radius:7px;font-size:.84rem;font-family:monospace;background:var(--surface);color:var(--text)" />
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">
+          <div>
+            <label style="font-size:.72rem;font-weight:600;color:var(--text-2);display:block;margin-bottom:.25rem">City</label>
+            <input id="editProvCity" value="${esc(p.city||'')}" type="text"
+              style="width:100%;box-sizing:border-box;padding:.4rem .6rem;border:1.5px solid var(--border);border-radius:7px;font-size:.84rem;background:var(--surface);color:var(--text)" />
+          </div>
+          <div>
+            <label style="font-size:.72rem;font-weight:600;color:var(--text-2);display:block;margin-bottom:.25rem">State</label>
+            <input id="editProvState" value="${esc(p.state_cd||'')}" type="text" maxlength="2"
+              style="width:100%;box-sizing:border-box;padding:.4rem .6rem;border:1.5px solid var(--border);border-radius:7px;font-size:.84rem;background:var(--surface);color:var(--text)" />
+          </div>
+        </div>
+        <div>
+          <label style="font-size:.72rem;font-weight:600;color:var(--text-2);display:block;margin-bottom:.25rem">Address</label>
+          <input id="editProvAddr" value="${esc(p.address_line1||'')}" type="text"
+            style="width:100%;box-sizing:border-box;padding:.4rem .6rem;border:1.5px solid var(--border);border-radius:7px;font-size:.84rem;background:var(--surface);color:var(--text)" />
+        </div>
+        <div>
+          <label style="font-size:.72rem;font-weight:600;color:var(--text-2);display:block;margin-bottom:.25rem">Phone</label>
+          <input id="editProvPhone" value="${esc(p.phone||'')}" type="text"
+            style="width:100%;box-sizing:border-box;padding:.4rem .6rem;border:1.5px solid var(--border);border-radius:7px;font-size:.84rem;background:var(--surface);color:var(--text)" />
+        </div>
+        <div>
+          <label style="font-size:.72rem;font-weight:600;color:var(--text-2);display:block;margin-bottom:.25rem">Specialty</label>
+          <input id="editProvSpecialty" value="${esc(p.specialty||'')}" type="text"
+            style="width:100%;box-sizing:border-box;padding:.4rem .6rem;border:1.5px solid var(--border);border-radius:7px;font-size:.84rem;background:var(--surface);color:var(--text)" />
+        </div>
+      </div>
+      <div style="display:flex;gap:.6rem;margin-top:1rem;justify-content:flex-end">
+        <button onclick="_renderRosterProvDrawer(window._rosterDrawerProvider)" style="padding:.38rem .85rem;border:1px solid var(--border);border-radius:7px;background:var(--surface);font-size:.8rem;cursor:pointer;color:var(--text-2)">Cancel</button>
+        <button onclick="_saveRosterProvEdit(${p.id})" id="editProvSaveBtn"
+          style="padding:.38rem 1rem;border:none;border-radius:7px;background:var(--indigo,#4f46e5);color:#fff;font-size:.8rem;font-weight:600;cursor:pointer">Save Changes</button>
+      </div>
+      <div id="editProvErr" style="margin-top:.5rem;font-size:.73rem;color:var(--red);display:none"></div>
+    </div>`;
+  document.getElementById('editProvName')?.focus();
+}
+
+async function _saveRosterProvEdit(providerId) {
+  const p    = window._rosterDrawerProvider;
+  const org  = window.lastRun?.org_name || '';
+  const btn  = document.getElementById('editProvSaveBtn');
+  const errEl= document.getElementById('editProvErr');
+  if (errEl) errEl.style.display = 'none';
+
+  const payload = {};
+  const name  = document.getElementById('editProvName')?.value.trim();
+  const npi   = document.getElementById('editProvNpi')?.value.trim();
+  const city  = document.getElementById('editProvCity')?.value.trim();
+  const state = document.getElementById('editProvState')?.value.trim().toUpperCase();
+  const addr  = document.getElementById('editProvAddr')?.value.trim();
+  const phone = document.getElementById('editProvPhone')?.value.trim();
+  const spec  = document.getElementById('editProvSpecialty')?.value.trim();
+
+  if (name  && name  !== (p.provider_name  || '')) payload.provider_name = name;
+  if (npi   && npi   !== (p.npi_validated  || '')) payload.npi_validated = npi;
+  if (city  !== undefined && city  !== (p.city      || '')) payload.city = city;
+  if (state !== undefined && state !== (p.state_cd  || '')) payload.state_cd = state;
+  if (addr  !== undefined && addr  !== (p.address_line1 || '')) payload.address_line1 = addr;
+  if (phone !== undefined && phone !== (p.phone     || '')) payload.phone = phone;
+  if (spec  !== undefined && spec  !== (p.specialty || '')) payload.specialty = spec;
+
+  if (!Object.keys(payload).length) {
+    _renderRosterProvDrawer(p);
+    return;
+  }
+
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  try {
+    const resp = await fetch(`/chat/roster-truth/${encodeURIComponent(org)}/provider/${providerId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      const d = await resp.json().catch(() => ({}));
+      throw new Error(d.detail || `HTTP ${resp.status}`);
+    }
+    // Merge edits into cached provider and re-render
+    Object.assign(window._rosterDrawerProvider, payload);
+    if (payload.provider_name) {
+      const titleEl = document.getElementById('rosterProvDrawerTitle');
+      if (titleEl) titleEl.textContent = titleCase(payload.provider_name);
+    }
+    _renderRosterProvDrawer(window._rosterDrawerProvider);
+    if (typeof feEmit === 'function') feEmit('Provider details updated', 'ok');
+  } catch (e) {
+    if (errEl) { errEl.textContent = e.message; errEl.style.display = ''; }
+    if (btn) { btn.disabled = false; btn.textContent = 'Save Changes'; }
+  }
+}
+
+// ── Resolve a task from the provider drawer ────────────────────────────────
+async function _resolveRosterTask(providerId, dim) {
+  const p   = window._rosterDrawerProvider;
+  const org = window.lastRun?.org_name || '';
+  const npi = p?.npi_validated || p?.npi_roster || '';
+  const note = document.getElementById(`task-note-${dim}`)?.value?.trim() || '';
+  try {
+    // Write audit event (best-effort)
+    fetch(`/chat/roster-truth/${encodeURIComponent(org)}/provider/${providerId}/audit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event_type: 'task_resolved', dim, note, org_name: org }),
+    }).catch(() => {});
+
+    // Remove from open_tasks in the cached provider (optimistic UI)
+    if (p && Array.isArray(p.open_tasks)) {
+      p.open_tasks = p.open_tasks.filter(t => (t.dim || t.type) !== dim);
+    }
+
+    // Resolve via task-manager API — find the task by org+npi+dim then resolve it
+    try {
+      const params = new URLSearchParams({ org_name: org, npi, module: 'roster_open', status: 'open' });
+      const resp = await fetch(`/chat/tasks?${params}`);
+      if (resp.ok) {
+        const data = await resp.json();
+        const matching = (data.tasks || []).filter(t => (t.dim || t.type) === dim);
+        await Promise.all(matching.map(t =>
+          fetch(`/chat/tasks/${t.task_id}/resolve`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ resolved_by: 'roster_drawer', note: note || undefined }),
+          }).catch(() => {})
+        ));
+      }
+    } catch (_e) { /* non-fatal */ }
+
+    if (p) _renderRosterProvDrawer(p);
+    if (typeof feEmit === 'function') feEmit(`Task "${dim}" resolved`, 'ok');
+  } catch (e) {
+    if (typeof feEmit === 'function') feEmit(`Failed to resolve task: ${e.message}`, 'error');
+  }
+}
+
+function _buildRosterProvDrawerHtml(p) {
+  const snap   = p.nppes_snapshot || {};
+  const fmt    = iso => iso ? new Date(iso).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '—';
+  const fmtTs  = iso => iso ? new Date(iso).toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}) : '—';
+  const fmtD   = iso => { if (!iso) return '—'; const d = new Date(iso); return isNaN(d)?String(iso).slice(0,10):d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); };
+
+  // Top-level collapsible section — optional badgeHtml shown in header
+  const sec = (label, content, badgeHtml, openByDefault) => content ? `
+    <details${openByDefault ? ' open' : ''} style="border-radius:9px;border:1px solid var(--border);overflow:hidden;margin-bottom:.45rem">
+      <summary style="cursor:pointer;list-style:none;padding:.42rem .75rem;background:var(--grey-bg,#f9fafb);display:flex;align-items:center;gap:.5rem;user-select:none">
+        <span style="font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-3);flex:1">${label}</span>
+        ${badgeHtml || ''}
+        <span style="font-size:.65rem;color:var(--text-3);opacity:.5">▾</span>
+      </summary>
+      <div style="padding:.6rem .75rem .7rem">${content}</div>
+    </details>` : '';
+
+  // Collapsible sub-section (history blocks inside a section)
+  const hist = (label, content, open) => content ? `
+    <details${open?' open':''} style="margin-top:.55rem;border-radius:6px;border:1px solid var(--border);overflow:hidden">
+      <summary style="cursor:pointer;list-style:none;padding:.3rem .55rem;background:var(--grey-bg);font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-3);user-select:none;display:flex;align-items:center;gap:.4rem">
+        <span style="opacity:.6">▸</span>${label}
+      </summary>
+      <div style="padding:.4rem .55rem .5rem">${content}</div>
+    </details>` : '';
+
+  const kv = (label, value, mono) => (value !== null && value !== undefined && value !== '')
+    ? `<div class="rpd-kv">
+         <span class="rpd-kv-label">${label}</span>
+         <span class="rpd-kv-value${mono?' rpd-mono':''}">${esc(String(value))}</span>
+       </div>`
+    : '';
+
+  // ── 1. HEALTH SUMMARY BAR ─────────────────────────────────
+  const bs     = p.billability_status || 'unknown';
+  const score  = p.billability_score ?? null;
+  const bsMap  = {
+    billable:  { label:'Billable',   color:'var(--green)',  bg:'var(--green-bg,#f0fdf4)',   border:'var(--green-border,#bbf7d0)' },
+    warning:   { label:'Warning',    color:'var(--amber)',  bg:'var(--amber-bg,#fffbeb)',   border:'var(--amber-border,#fde68a)' },
+    at_risk:   { label:'At Risk',    color:'var(--amber)',  bg:'var(--amber-bg,#fffbeb)',   border:'var(--amber-border,#fde68a)' },
+    risk:      { label:'At Risk',    color:'var(--red)',    bg:'var(--red-bg,#fef2f2)',     border:'var(--red-border,#fecaca)'   },
+    blocked:   { label:'Blocked',    color:'var(--red)',    bg:'var(--red-bg,#fef2f2)',     border:'var(--red-border,#fecaca)'   },
+    inactive:  { label:'Inactive',   color:'var(--red)',    bg:'var(--red-bg,#fef2f2)',     border:'var(--red-border,#fecaca)'   },
+    unknown:   { label:'Unknown',    color:'var(--text-3)', bg:'var(--grey-bg)',            border:'var(--border)'               },
+  };
+  const bsInfo = bsMap[bs] || bsMap.unknown;
+  const nppesSt  = (snap.nppes_status || '').toUpperCase();
+  const nppesOk  = nppesSt === 'A';
+
+  const annTax   = p.annotated_taxonomies || [];
+  const cleanCnt = annTax.filter(t=>t.status==='clean').length;
+  const gapCnt   = annTax.filter(t=>t.status==='enrollment_gap').length;
+  const badCnt   = annTax.filter(t=>t.status==='not_approved').length;
+
+  const openTasks = p.open_tasks || [];
+  const driftFlags = p.drift_flags || [];
+
+  // ── helpers ───────────────────────────────────────────────
+  const dimNames = {name:'Name',taxonomy:'Taxonomy',address:'Address',zip:'ZIP',phone:'Phone',
+                    status:'NPI Status',npi:'NPI',credential:'Credentials',specialty:'Specialty'};
+
+  // ── 2. SOURCE RECORD ──────────────────────────────────────
+  const src = p.source_provider;
+  const editEvents = (p.audit_log||[]).filter(e=>(e.event_type||'').toLowerCase().includes('edit'));
+  const sourceCurrentHtml = src ? `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:.25rem .6rem">
+      ${kv('Name on file',   src.provider_name)}
+      ${kv('NPI uploaded',   src.npi_uploaded, true)}
+      ${kv('License #',      src.license_number, true)}
+      ${kv('Specialty',      src.specialty_uploaded)}
+      ${kv('State',          src.state)}
+      ${kv('File status',    src.status)}
+    </div>
+    ${src.parse_notes ? `<div style="margin-top:.4rem;font-size:.71rem;color:var(--amber);background:var(--amber-bg,#fffbeb);border:1px solid var(--amber-border,#fde68a);border-radius:5px;padding:.3rem .5rem">⚠ Parser note: ${esc(src.parse_notes)}</div>` : ''}
+    <div style="margin-top:.3rem;font-size:.68rem;color:var(--text-3)">Uploaded ${fmtTs(src.uploaded_at)} · Promoted ${fmtTs(p.promoted_at)}</div>
+  ` : `<div style="font-size:.75rem;color:var(--text-3);font-style:italic">No source file data</div>`;
+
+  const editHistHtml = editEvents.length ? editEvents.map(e=>`
+    <div style="display:flex;gap:.5rem;align-items:flex-start;padding:.22rem 0;border-bottom:1px solid var(--border);font-size:.71rem">
+      <span style="color:var(--indigo);flex-shrink:0">✎</span>
+      <span style="color:var(--text-2);flex:1">${esc(e.event_data?.field||'field')} changed${e.event_data?.old_value?` from <em>${esc(String(e.event_data.old_value))}</em>`:''} to <strong>${esc(String(e.event_data?.new_value||e.event_data?.value||'—'))}</strong></span>
+      <span style="color:var(--text-3);flex-shrink:0;white-space:nowrap">${fmtTs(e.created_at)}</span>
+    </div>`).join('') : null;
+
+  const sourceContent = sourceCurrentHtml + hist('Edit History', editHistHtml);
+
+  // ── 3. NPPES RECORD ───────────────────────────────────────
+  const gender  = snap.gender==='M'?'Male':snap.gender==='F'?'Female':(snap.gender||'');
+  const confPct = Math.round((snap.match_confidence||p.match_confidence||0)*100);
+  // safe zip extraction — snap.zip is the alignment check object, not a string
+  const zip5str = (typeof snap.zip5==='string'?snap.zip5:'') ||
+                  (typeof snap.zip9==='string'?snap.zip9.split('-')[0]:'') ||
+                  p.zip_code || '';
+  const addrNppes = (typeof snap.address_nppes==='string'?snap.address_nppes:'') ||
+                    (typeof snap.address==='object'?snap.address?.nppes||'':'') || '';
+  const addrLine  = p.address_line1||'';
+  const city      = p.city||'';
+  const stateCd   = p.state_cd||(typeof snap.address==='object'?snap.address?.nppes_state||'':'')||'';
+  const fullAddr  = addrLine
+    ? [addrLine,city,[stateCd,zip5str].filter(Boolean).join(' ')].filter(Boolean).join(', ')
+    : addrNppes;
+  const phone = p.phone||(typeof snap.phone_nppes==='string'?snap.phone_nppes:'')||(typeof snap.phone==='string'?snap.phone:'')||'';
+  const credRaw = snap.credentials_list
+    ||(Array.isArray(snap.credential?.nppes)?snap.credential.nppes
+      :snap.credential?.nppes?String(snap.credential.nppes).split(',').map(c=>c.trim()):[]);
+  const creds = Array.isArray(credRaw)?credRaw.filter(Boolean):[];
+
+  const nppesCurrentHtml = `
+    <div style="display:flex;flex-wrap:wrap;gap:.3rem;align-items:center;margin-bottom:.5rem">
+      <span style="font-family:monospace;font-size:.88rem;font-weight:700;color:var(--text)">${esc(p.npi_validated||p.npi_roster||'—')}</span>
+      <span style="font-size:.68rem;font-weight:600;padding:.06rem .4rem;border-radius:4px;${nppesOk?'color:var(--green);background:var(--green-bg,#f0fdf4);border:1px solid var(--green-border,#bbf7d0)':'color:var(--red);background:var(--red-bg,#fef2f2);border:1px solid var(--red-border,#fecaca)'}">
+        ${nppesOk?'✓ Active':nppesSt==='D'?'✗ Deactivated':nppesSt||'—'}
+      </span>
+      ${confPct>0?`<span style="font-size:.66rem;color:var(--text-3);background:var(--grey-bg);border:1px solid var(--border);border-radius:4px;padding:.06rem .4rem">${confPct}% match</span>`:''}
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:.22rem .6rem">
+      ${kv('Legal name',       snap.provider_name_nppes||snap.name_nppes||'')}
+      ${kv('Entity type',      snap.entity_type||snap.enumeration_type||'')}
+      ${kv('Gender',           gender)}
+      ${kv('Enumeration date', snap.enumeration_date||'')}
+      ${kv('Last updated',     snap.last_updated||'')}
+      ${kv('Certification',    snap.certification_date||'')}
+    </div>
+    ${(fullAddr||phone)?`
+    <div style="margin-top:.4rem;padding:.4rem .5rem;background:var(--grey-bg);border-radius:6px;border:1px solid var(--border)">
+      ${fullAddr?`<div style="font-size:.76rem;color:var(--text-2)">📍 ${esc(fullAddr)}</div>`:''}
+      ${phone?`<div style="font-size:.76rem;color:var(--text-2);margin-top:.12rem">📞 ${esc(phone)}</div>`:''}
+    </div>`:''}
+    ${creds.length?`<div style="margin-top:.4rem;display:flex;flex-wrap:wrap;gap:.25rem">
+      ${creds.map(c=>`<span style="font-size:.72rem;font-weight:600;color:var(--indigo);background:var(--indigo-bg,#eef2ff);border:1px solid var(--indigo-border,#c7d2fe);border-radius:4px;padding:.15rem .45rem">${esc(c)}</span>`).join('')}
+    </div>`:''}
+    ${p.invalidated_at?`<div style="margin-top:.35rem;font-size:.71rem;color:var(--red);font-weight:600">⚠ Record invalidated ${fmtTs(p.invalidated_at)}</div>`:''}`;
+
+  // Drift flags inline in NPPES section  (driftFlags declared above in outer scope)
+  const driftHtml = driftFlags.length ? `
+    <div style="display:flex;flex-direction:column;gap:.25rem">
+      ${driftFlags.map(f=>{
+        // Severity: hard = drift/mismatch (amber warning row)
+        //           soft = warn/info/no_roster_data (grey info row)
+        const isHard = ['drift','mismatch'].includes(f.flag);
+        const isSoft = !isHard;
+        const rowBg     = isHard ? 'var(--amber-bg,#fffbeb)' : 'var(--grey-bg,#f9fafb)';
+        const rowBorder = isHard ? 'var(--amber-border,#fde68a)' : 'var(--border)';
+        const icon      = isHard ? '△' : 'ℹ';
+        const iconColor = isHard ? 'var(--amber,#d97706)' : 'var(--text-3)';
+        const labelColor= isHard ? 'var(--amber,#d97706)' : 'var(--text-3)';
+        const dimLabel  = dimNames[f.dim||f.field] || f.dim || f.field || '';
+        // Soft flags show a single "NPPES shows: X" description instead of two columns
+        if (isSoft) {
+          return `
+          <div style="display:flex;align-items:center;gap:.45rem;padding:.3rem .5rem;border-radius:6px;background:${rowBg};border:1px solid ${rowBorder};font-size:.71rem">
+            <span style="font-weight:700;color:${iconColor};flex-shrink:0">${icon}</span>
+            <span style="font-weight:600;color:${labelColor};flex-shrink:0">${esc(dimLabel)}</span>
+            <span style="color:var(--text-3)">${esc(f.description || ('NPPES: ' + (f.nppes||'—')))}</span>
+          </div>`;
+        }
+        return `
+        <div style="display:grid;grid-template-columns:90px 1fr 1fr;gap:.3rem .5rem;padding:.35rem .5rem;border-radius:6px;background:${rowBg};border:1px solid ${rowBorder};font-size:.71rem">
+          <span style="font-weight:700;color:${iconColor}">△ ${esc(dimLabel)}</span>
+          <span style="color:var(--text-3)">Uploaded: <span style="color:var(--text)">${esc(String(f.uploaded||'—'))}</span></span>
+          <span style="color:var(--text-3)">NPPES: <span style="color:var(--text)">${esc(String(f.nppes||'—'))}</span></span>
+        </div>`;
+      }).join('')}
+    </div>` : null;
+
+  // NPPES check history — combine version_history rows with nppes_validated audit events
+  const history = p.version_history||[];
+  const nppesAuditEvents = (p.audit_log||[]).filter(e=>e.event_type==='nppes_validated');
+  const nppesHistHtml = (history.length||nppesAuditEvents.length) ? `
+    <div style="display:flex;flex-direction:column;gap:.2rem">
+      ${history.map(h=>{
+        const isCur = h.is_current;
+        const decColor = h.decision==='validated'?'var(--green)':h.decision==='needs_review'?'var(--amber)':h.invalidated_at?'var(--red)':'var(--text-3)';
+        return `<div style="display:flex;align-items:center;gap:.45rem;padding:.28rem .5rem;border-radius:5px;font-size:.7rem;${isCur?'background:var(--indigo-bg,#eef2ff);border:1px solid var(--indigo-border,#c7d2fe)':'background:var(--grey-bg);border:1px solid var(--border)'}">
+          <span style="width:7px;height:7px;border-radius:50%;flex-shrink:0;background:${isCur?'var(--indigo)':h.invalidated_at?'var(--red)':'var(--text-3)'}"></span>
+          <span style="font-family:monospace;color:var(--text-3);flex-shrink:0">${esc((h.run_id||'').slice(-8)||'manual')}</span>
+          <span style="font-weight:700;color:${decColor}">${esc(h.decision||'—')}</span>
+          ${(h.match_confidence||0)>0?`<span style="color:var(--text-3)">${Math.round((h.match_confidence||0)*100)}% conf</span>`:''}
+          ${isCur?`<span style="font-size:.58rem;font-weight:700;color:var(--indigo);background:var(--surface);border:1px solid var(--indigo-border,#c7d2fe);border-radius:3px;padding:.03rem .28rem">CURRENT</span>`:''}
+          ${h.invalidated_at?`<span style="color:var(--red);font-size:.67rem">invalidated</span>`:''}
+          <span style="color:var(--text-3);margin-left:auto;flex-shrink:0">${fmt(h.promoted_at||h.validated_at)}</span>
+        </div>`;
+      }).join('')}
+      ${nppesAuditEvents.map(e=>{
+        const d = e.event_data||{};
+        const conf = d.match_confidence? Math.round(d.match_confidence*100)+'% conf' : '';
+        const driftCount = (d.drift_flags||[]).length;
+        const taxCount   = (d.all_taxonomies||[]).length;
+        return `<div style="padding:.3rem .5rem;border-radius:5px;font-size:.7rem;background:var(--grey-bg);border:1px solid var(--border)">
+          <div style="display:flex;align-items:center;gap:.45rem">
+            <span style="color:var(--green)">🔍</span>
+            <span style="font-weight:700;color:var(--text-2)">NPPES check — ${esc(d.decision||'checked')}</span>
+            ${conf?`<span style="color:var(--text-3)">${esc(conf)}</span>`:''}
+            ${driftCount?`<span style="color:var(--amber)">△ ${driftCount} drift</span>`:''}
+            ${taxCount?`<span style="color:var(--text-3)">${taxCount} taxonomies</span>`:''}
+            <span style="color:var(--text-3);margin-left:auto;flex-shrink:0">${e.created_at?new Date(e.created_at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):''}</span>
+          </div>
+          ${d.enumeration_date||d.last_updated?`<div style="margin-top:.18rem;display:flex;gap:.7rem;font-size:.66rem;color:var(--text-3)">
+            ${d.enumeration_date?`<span>Enumerated ${esc(d.enumeration_date)}</span>`:''}
+            ${d.last_updated?`<span>Updated ${esc(d.last_updated)}</span>`:''}
+            ${d.certification_date?`<span>Certified ${esc(d.certification_date)}</span>`:''}
+          </div>`:''}
+          ${(d.drift_flags||[]).length?`<div style="margin-top:.2rem;display:flex;flex-wrap:wrap;gap:.2rem">
+            ${(d.drift_flags||[]).map(f=>`<span style="font-size:.63rem;color:var(--amber);background:var(--amber-bg,#fffbeb);border:1px solid var(--amber-border,#fde68a);border-radius:3px;padding:.02rem .28rem">△ ${esc(f.dim||f||'flag')}</span>`).join('')}
+          </div>`:''}
+        </div>`;
+      }).join('')}
+    </div>` : null;
+
+  const nppesContent = nppesCurrentHtml
+    + hist('Validation History', nppesHistHtml, (history.length+nppesAuditEvents.length)<=3);
+
+  // ── 4. TAXONOMY COVERAGE ──────────────────────────────────
+  const taxStatusIcon  = s=>s==='clean'?'✅':s==='enrollment_gap'?'⚠️':s==='not_approved'?'❌':'·';
+  // ── Taxonomy: taxonomy_profile is now a rich dict {codes, delta_hcpcs, top_hcpcs, ...} ──
+  const taxProfileObj = (p.taxonomy_profile && typeof p.taxonomy_profile === 'object' && !Array.isArray(p.taxonomy_profile))
+    ? p.taxonomy_profile : {};
+  const taxProfile  = taxProfileObj.codes || (Array.isArray(p.taxonomy_profile) ? p.taxonomy_profile : []);
+  const taxRows     = taxProfile.length
+    ? taxProfile
+    : (annTax.length ? annTax.map(t=>({...t, source:'nppes_snapshot'}))
+      : (snap.all_taxonomies||[]).map(t=>({...t, status:'unknown', in_tml:null, pml_enrolled:false, source:'nppes_snapshot'})));
+
+  const taxStatusLabel = s => s==='approved_enrolled'?'TML ✓ · PML ✓' : s==='approved_missing_pml'?'TML ✓ · PML missing'
+    : s==='not_tml'?'Not TML-approved' : s==='clean'?'TML ✓ · PML ✓' : s==='enrollment_gap'?'TML ✓ · PML missing'
+    : s==='not_approved'?'Not TML-approved' : '—';
+  const taxStatusColor = s => ['approved_enrolled','clean'].includes(s)?'var(--green)'
+    : ['approved_missing_pml','enrollment_gap'].includes(s)?'var(--amber)'
+    : ['not_tml','not_approved'].includes(s)?'var(--red)':'var(--text-3)';
+  const taxStatusBg = s => ['approved_enrolled','clean'].includes(s)?'var(--green-bg,#f0fdf4)'
+    : ['approved_missing_pml','enrollment_gap'].includes(s)?'var(--amber-bg,#fffbeb)'
+    : ['not_tml','not_approved'].includes(s)?'var(--red-bg,#fef2f2)':'var(--grey-bg)';
+  const srcBadge = src => {
+    if (!src) return '';
+    const map = {nppes_snapshot:'NPPES',nppes_bigquery:'NPPES (BQ)',pml_enrolled:'PML enrolled',pml_flagged:'PML flagged'};
+    const col = src.startsWith('pml')?'var(--blue,#3b82f6)':'var(--indigo)';
+    return `<span style="font-size:.56rem;padding:.02rem .25rem;border-radius:3px;background:var(--indigo-bg,#eef2ff);border:1px solid var(--indigo-border,#c7d2fe);color:${col};font-weight:600;text-transform:uppercase;letter-spacing:.03em">${map[src]||src}</span>`;
+  };
+
+  // Latest taxonomy_checked audit event for billing codes and delta info
+  const taxCheckedEvents = (p.audit_log||[]).filter(e=>e.event_type==='taxonomy_checked');
+  const latestTaxCheck = taxCheckedEvents[0];
+  const latestTaxData  = latestTaxCheck?.event_data || {};
+  // Real provider billing history (from billing_servicing_pairs BQ table)
+  const billingCodes   = (p.billing_codes || []).filter(b => b.hcpcs_code);
+  const totalClaims    = billingCodes.reduce((s,b) => s + (b.claim_count||0), 0);
+  // Prefer rich taxonomy_profile dict fields over raw audit event fallback
+  const deltaHcpcs     = taxProfileObj.delta_hcpcs || latestTaxData.delta_hcpcs || [];
+  const deltaCodeSet   = new Set(deltaHcpcs.map(h => h.code || h.hcpcs_code || h));
+  const taxResultType  = taxProfileObj.result_type  || latestTaxData.result_type  || '';
+  const taxDeltaPct    = taxProfileObj.delta_billing_pct || latestTaxData.delta_billing_pct || 0;
+  const taxHcpcCoverage= taxProfileObj.hcpc_coverage || latestTaxData.hcpc_coverage || [];
+  // Identify gap taxonomy codes (approved_missing_pml or not_tml)
+  const gapTaxCodes    = new Set(taxRows.filter(t => ['approved_missing_pml','not_tml','enrollment_gap','not_approved'].includes(t.status)).map(t => t.code));
+
+  const taxCurrentHtml = taxRows.length ? `
+    ${!p.tml_loaded && !latestTaxCheck ? `<div style="font-size:.69rem;color:var(--text-3);font-style:italic;margin-bottom:.3rem">TML/PML validation pending — run credentialing pipeline to compute full status</div>` : ''}
+    <div style="display:flex;flex-direction:column;gap:.35rem">
+      ${taxRows.map(t => {
+        const status = t.status || (t.pml_enrolled ? 'approved_enrolled' : t.in_tml === false ? 'not_tml' : t.in_tml === true ? 'approved_missing_pml' : 'unknown');
+        const pmlIssues = t.pml_issues || [];
+        // Find HCPC codes for this taxonomy from audit event
+        const tHcpcs = (taxProfile).find(tp => tp.code === t.code);
+        return `
+        <div style="border-radius:8px;background:${taxStatusBg(status)};border:1px solid var(--border);overflow:hidden">
+          <div style="display:grid;grid-template-columns:1.1rem 1fr auto;gap:.4rem;align-items:start;padding:.4rem .55rem">
+            <span style="font-size:.9rem;line-height:1.4">${taxStatusIcon(status)}</span>
+            <div>
+              <div style="display:flex;align-items:center;gap:.35rem;flex-wrap:wrap">
+                <span style="font-family:monospace;font-size:.78rem;font-weight:700;color:var(--text-2)">${esc(t.code||'—')}</span>
+                ${t.primary ? `<span style="font-size:.58rem;font-weight:700;color:var(--indigo);background:var(--indigo-bg,#eef2ff);border:1px solid var(--indigo-border,#c7d2fe);border-radius:3px;padding:.03rem .28rem">PRIMARY</span>` : ''}
+                ${srcBadge(t.source)}
+              </div>
+              <div style="font-size:.75rem;color:var(--text);margin-top:.08rem">${esc(t.desc||'—')}</div>
+              <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.1rem">
+                ${t.license ? `<span style="font-size:.65rem;color:var(--text-3)">License: ${esc(t.license)}</span>` : ''}
+                ${t.state   ? `<span style="font-size:.65rem;color:var(--text-3)">State: ${esc(t.state)}</span>` : ''}
+                ${t.pml_status ? `<span style="font-size:.65rem;color:${t.pml_status==='enrolled'?'var(--green)':t.pml_status==='flagged'?'var(--amber)':'var(--text-3)'};font-weight:600">PML: ${esc(t.pml_status)}</span>` : ''}
+              </div>
+              ${pmlIssues.length ? `<div style="margin-top:.1rem;font-size:.64rem;color:var(--amber)">${pmlIssues.map(i=>`⚠ ${esc(i)}`).join(' · ')}</div>` : ''}
+            </div>
+            <div style="text-align:right;font-size:.65rem;font-weight:600;color:${taxStatusColor(status)};white-space:nowrap">${taxStatusLabel(status)}</div>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+    ${billingCodes.length ? `
+      <div style="margin-top:.75rem">
+        <div style="display:flex;align-items:baseline;gap:.5rem;margin-bottom:.18rem;flex-wrap:wrap">
+          <span style="font-size:.68rem;font-weight:700;color:var(--text-2);text-transform:uppercase;letter-spacing:.05em">Billing Exposure — Taxonomy Gap Impact</span>
+          <span style="font-size:.69rem;font-weight:400;color:var(--text-3)">${totalClaims.toLocaleString()} historical claims</span>
+          ${deltaHcpcs.length ? `<span style="font-size:.69rem;font-weight:700;color:var(--red);margin-left:auto">${deltaHcpcs.length} code${deltaHcpcs.length>1?'s':''} blocked</span>` : ''}
+        </div>
+        <div style="font-size:.67rem;color:var(--text-3);margin-bottom:.4rem;font-style:italic">
+          ${gapTaxCodes.size > 0
+            ? `Historical claims billed under ${[...gapTaxCodes].map(c=>`<code style="font-style:normal;background:var(--amber-bg,#fffbeb);border:1px solid var(--amber-border,#fde68a);border-radius:3px;padding:.01rem .22rem;font-size:.65rem;color:var(--amber-text,#92400e)">${esc(c)}</code>`).join(' / ')} — not enrolled in FL Medicaid PML. Codes marked ✗ cannot be billed until enrollment is resolved.`
+            : deltaHcpcs.length > 0
+              ? `Historical claims showing billing codes at risk from taxonomy gap. Codes marked ✗ will be blocked under current enrollment status.`
+              : `Historical FL Medicaid claims for this provider. All codes are billable under the current enrolled taxonomy.`
+          }
+        </div>
+        ${(() => {
+          // Determine status confidence level:
+          //   'known'   — taxonomy pipeline ran and computed delta_hcpcs (authoritative)
+          //   'nogap'   — pipeline ran, result_type is clean, no gaps → all ✓
+          //   'unknown' — no pipeline result yet → can't say
+          const taxResultType = latestTaxData.result_type || '';
+          const hasDeltaData  = deltaHcpcs.length > 0 || taxResultType !== '';
+          const allClean      = taxResultType === 'clean' && deltaHcpcs.length === 0;
+
+          return `<table style="width:100%;border-collapse:collapse;font-size:.72rem">
+            <thead>
+              <tr style="border-bottom:2px solid var(--border)">
+                <th style="text-align:left;padding:.22rem .5rem .22rem .3rem;font-weight:600;color:var(--text-3);font-size:.6rem;text-transform:uppercase;white-space:nowrap">Code · Description</th>
+                <th style="text-align:right;padding:.22rem .4rem;font-weight:600;color:var(--text-3);font-size:.6rem;text-transform:uppercase">Claims</th>
+                <th style="text-align:right;padding:.22rem .4rem;font-weight:600;color:var(--text-3);font-size:.6rem;text-transform:uppercase">% Billing</th>
+                <th style="text-align:right;padding:.22rem .4rem;font-weight:600;color:var(--text-3);font-size:.6rem;text-transform:uppercase">Paid</th>
+                <th style="text-align:center;padding:.22rem .4rem;font-weight:600;color:var(--text-3);font-size:.6rem;text-transform:uppercase" title="Billable under currently enrolled PML taxonomy">Billable</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${billingCodes.slice(0,20).map(b => {
+                // ── Status per code ────────────────────────────────────
+                // ✗ Blocked  — pipeline confirms code will be lost (in delta_hcpcs)
+                // ✓ OK       — pipeline ran clean OR code not in delta list
+                // ? Unknown  — no taxonomy pipeline run yet; can't determine
+                const isBlocked = deltaCodeSet.has(b.hcpcs_code);
+                let statusCell, rowBg, codeCls, barColor;
+                if (isBlocked) {
+                  statusCell = `<span style="font-size:.75rem;font-weight:800;color:var(--red,#dc2626)" title="This code will no longer be billable under the enrolled taxonomy">✗</span>`;
+                  rowBg  = 'var(--red-bg,#fef2f2)';
+                  codeCls = 'color:var(--red,#dc2626);font-weight:700';
+                  barColor = 'var(--red,#dc2626)';
+                } else if (allClean || hasDeltaData) {
+                  statusCell = `<span style="font-size:.75rem;font-weight:700;color:var(--green,#16a34a)" title="Billable under enrolled taxonomy">✓</span>`;
+                  rowBg  = '';
+                  codeCls = 'color:var(--text-2)';
+                  barColor = 'var(--indigo)';
+                } else {
+                  // No pipeline result — cannot determine
+                  statusCell = `<span style="font-size:.7rem;color:var(--text-3)" title="Run credentialing pipeline to determine billability">?</span>`;
+                  rowBg  = '';
+                  codeCls = 'color:var(--text-2)';
+                  barColor = 'var(--text-3)';
+                }
+                const desc    = b.short_description || b.long_description || '';
+                const paidStr = b.total_paid >= 1000 ? `$${(b.total_paid/1000).toFixed(1)}K` : `$${Math.round(b.total_paid)}`;
+                return `<tr style="border-bottom:1px solid var(--border);background:${rowBg}">
+                  <td style="padding:.25rem .4rem .25rem .3rem;vertical-align:middle">
+                    <div style="display:flex;flex-direction:column;gap:.04rem">
+                      <span style="font-family:monospace;font-size:.73rem;${codeCls}">${esc(b.hcpcs_code)}</span>
+                      ${desc ? `<span style="font-size:.63rem;color:var(--text-3);line-height:1.25;max-width:200px" title="${esc(desc)}">${esc(desc.length > 42 ? desc.slice(0,42)+'…' : desc)}</span>` : ''}
+                    </div>
+                  </td>
+                  <td style="padding:.25rem .4rem;text-align:right;color:var(--text-2);vertical-align:middle">${(b.claim_count||0).toLocaleString()}</td>
+                  <td style="padding:.25rem .4rem;text-align:right;vertical-align:middle">
+                    <div style="display:flex;align-items:center;justify-content:flex-end;gap:.3rem">
+                      <div style="width:36px;height:4px;background:var(--border);border-radius:3px;overflow:hidden;flex-shrink:0">
+                        <div style="height:100%;width:${Math.min(100,b.billing_pct||0)}%;background:${barColor};border-radius:3px"></div>
+                      </div>
+                      <span style="color:var(--text-2);min-width:2.4rem;text-align:right;font-size:.71rem">${(b.billing_pct||0).toFixed(1)}%</span>
+                    </div>
+                  </td>
+                  <td style="padding:.25rem .4rem;text-align:right;color:var(--text-3);font-size:.69rem;vertical-align:middle">${paidStr}</td>
+                  <td style="padding:.25rem .4rem;text-align:center;vertical-align:middle">${statusCell}</td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>`;
+        })()}
+        ${gapTaxCodes.size > 0 ? `
+          <div style="margin-top:.5rem;padding:.32rem .6rem;border-radius:6px;background:var(--amber-bg,#fffbeb);border:1px solid var(--amber-border,#fde68a);font-size:.68rem;color:var(--amber-text,#92400e)">
+            <strong>⚠ Enrollment gap:</strong> taxonomy ${[...gapTaxCodes].join(', ')} not enrolled in PML.
+            Codes billed under this taxonomy may be denied until enrollment is completed.
+          </div>` : ''}
+        ${taxDeltaPct > 0 ? `
+          <div style="margin-top:.3rem;font-size:.67rem;color:var(--red);font-weight:600">⚠ ${taxDeltaPct}% of this provider's billing volume will be blocked by the taxonomy gap</div>` : ''}
+      </div>` : `
+      <div style="margin-top:.5rem;font-size:.72rem;color:var(--text-3);font-style:italic">
+        No FL Medicaid claims history found — unable to assess billing exposure from taxonomy gap.
+      </div>`}
+  ` : `<div style="font-size:.75rem;color:var(--text-3);font-style:italic">No NPPES taxonomy data — approve provider in NPPES step to load</div>`;
+
+  const taxHistHtml = taxCheckedEvents.length ? `
+    <div style="display:flex;flex-direction:column;gap:.22rem">
+      ${taxCheckedEvents.map(e=>{
+        const d = e.event_data||{};
+        const rtMap = {billing_restriction:'🔴 Billing restriction',gap_only:'🟡 Enrollment gap',clean:'✅ Clean',no_nppes_taxonomies:'⚪ No NPPES data'};
+        const rtColor = {billing_restriction:'var(--red)',gap_only:'var(--amber)',clean:'var(--green)',no_nppes_taxonomies:'var(--text-3)'};
+        const rt = d.result_type||'checked';
+        const delta = d.delta_hcpcs||[];
+        return `<div style="padding:.3rem .5rem;border-radius:5px;font-size:.7rem;background:var(--grey-bg);border:1px solid var(--border)">
+          <div style="display:flex;align-items:center;gap:.45rem;flex-wrap:wrap">
+            <span style="font-weight:700;color:${rtColor[rt]||'var(--text-2)'}">${rtMap[rt]||esc(rt)}</span>
+            ${d.taxonomy_count?`<span style="color:var(--text-3)">${d.taxonomy_count} taxonomy code${d.taxonomy_count>1?'s':''}</span>`:''}
+            ${d.tml_code_count?`<span style="color:var(--text-3)">${d.tml_code_count} TML codes</span>`:''}
+            ${d.delta_billing_pct?`<span style="color:var(--red)">Δ ${d.delta_billing_pct}% billing</span>`:''}
+            <span style="color:var(--text-3);margin-left:auto;white-space:nowrap;flex-shrink:0">${e.created_at?new Date(e.created_at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):''}</span>
+          </div>
+          ${(()=>{const _profCodes=(d.taxonomy_profile&&Array.isArray(d.taxonomy_profile.codes)?d.taxonomy_profile.codes:Array.isArray(d.taxonomy_profile)?d.taxonomy_profile:d.codes)||[];return _profCodes.length?`<div style="margin-top:.15rem;display:flex;flex-wrap:wrap;gap:.15rem">${_profCodes.map(c=>{const s=c.status||'unknown';const ci=['approved_enrolled','clean'].includes(s)?'✅':['approved_missing_pml','enrollment_gap'].includes(s)?'⚠️':['not_tml','not_approved'].includes(s)?'❌':'·';return `<span style="font-size:.62rem;font-family:monospace;border-radius:3px;padding:.02rem .28rem;border:1px solid var(--border);background:var(--surface)">${ci} ${esc(c.code||'')}</span>`;}).join('')}</div>`:'';})()}
+          ${delta.length?`<div style="margin-top:.15rem;font-size:.65rem;color:var(--red)">At-risk: ${delta.slice(0,8).map(h=>esc(h.code||h)).join(', ')}${delta.length>8?` +${delta.length-8} more`:''}</div>`:''}
+        </div>`;
+      }).join('')}
+    </div>` : null;
+
+  const taxContent = taxCurrentHtml + hist('Taxonomy Check History', taxHistHtml);
+
+  // ── 5. PML ENROLLMENT ─────────────────────────────────────
+  const pmlRows = p.pml_rows||[];
+
+  // Issue → human label + claim field impact mapping
+  const _pmlIssueLabel = issue => {
+    const s = (issue||'').toLowerCase();
+    if (s.startsWith('taxonomy_not_in_nppes') || s.includes('pml taxonomy') && s.includes('not in nppes'))
+      return { label:'WARN-TAX-001: Taxonomy not in NPPES', impact:'PML taxonomy is Medicaid-approved but missing from NPPES. Update NPPES to add this taxonomy — required for federal compliance alignment.', sev:'warning' };
+    if (s.includes('zip_mismatch') || s.includes('zip mismatch'))
+      return { label:'ZIP mismatch', impact:'Loop 2310C NM1/N3/N4 must use ZIP+9 from PML record', sev:'error' };
+    if (s.includes('address_mismatch_multiple') || s.includes('address mismatch'))
+      return { label:'DENIAL-1120: Address mismatch', impact:'FLMMIS Step 5 — PML address does not match confirmed service location. Causes DENIAL edit 1120.', sev:'error' };
+    if (s.includes('address_missing_multiple'))
+      return { label:'DENIAL-1120: Address missing', impact:'FLMMIS Step 5 — No Address Line 1 on PML record; FLMMIS may deny when multiple locations share ZIP5.', sev:'warning' };
+    if (s.includes('multiple_enrollment') || s.includes('multiple_active') || s.includes('multiple enrollment'))
+      return { label:'PAY-1980: Multiple enrollments', impact:'FLMMIS Step 6 — Multiple active Medicaid enrollments. FLMMIS defaults to oldest contract (PAY edit 1980; may convert to DENIAL). Terminate stale enrollment or ensure distinct ZIP+4.', sev:'warning' };
+    if (s.includes('zip4_zeros') || s.includes('zip+4 is all zeros'))
+      return { label:'PAY-1980: ZIP+4 zeros', impact:'ZIP+4 is 0000 — if multiple enrollments share ZIP5, FLMMIS defaults to oldest contract (PAY edit 1980).', sev:'warning' };
+    if (s.includes('npi_mismatch') || s.includes('npi mismatch'))
+      return { label:'NPI mismatch', impact:'Loop 2010BB NM109 must match PML-enrolled NPI', sev:'error' };
+    if (s.includes('taxonomy') && s.includes('not') && (s.includes('enroll') || s.includes('approv')))
+      return { label:'Taxonomy not enrolled', impact:'Loop 2000B PRV02 taxonomy must be enrolled in Medicaid; claims will deny', sev:'error' };
+    if (s.includes('taxonomy_mismatch') || (s.includes('taxonomy') && s.includes('mismatch')))
+      return { label:'Taxonomy mismatch', impact:'Claim taxonomy (Loop 2000B PRV02) must match PML-enrolled code', sev:'error' };
+    if (s.includes('medicaid_id') || s.includes('provider_id'))
+      return { label:'Medicaid ID issue', impact:'Loop 2010BB NM109 must use Medicaid-assigned Provider ID', sev:'error' };
+    if (s.includes('inactive') || s.includes('terminated'))
+      return { label:'Enrollment inactive', impact:'Claims will deny — provider not active in FL Medicaid roster', sev:'error' };
+    if (s.includes('location') || s.includes('site'))
+      return { label:'Location mismatch', impact:'Service location (Loop 2310C) must match an approved site on PML record', sev:'error' };
+    if (s.includes('duplicate'))
+      return { label:'Duplicate PML row', impact:'Stale duplicate enrollment may cause unpredictable FLMMIS routing. Terminate the duplicate.', sev:'warning' };
+    return { label: issue.replace(/_/g,' '), impact: '', sev:'warning' };
+  };
+
+  const pmlTableHtml = pmlRows.length ? `
+    <div style="display:flex;flex-direction:column;gap:.55rem">
+      ${pmlRows.map(r=>{
+        const enrollStatus = (r.enrollment_status||'').toLowerCase();
+        const active  = r.is_active!==false&&(!r.termination_date||new Date(r.termination_date)>new Date());
+        const flagged = r.source==='pml_flagged'||enrollStatus.includes('flag');
+        const withWarnings = enrollStatus.includes('enrolled_with_warnings') || enrollStatus==='enrolled_with_warnings';
+        const issues   = Array.isArray(r.issues)   ? r.issues   : (r.notes ? r.notes.split(';').map(s=>s.trim()).filter(Boolean) : []);
+        const warnings = Array.isArray(r.warnings) ? r.warnings : [];
+        const editCodes= Array.isArray(r.edit_codes)? r.edit_codes : [];
+        // Colour: green=clean enrolled, amber=enrolled with warnings OR flagged, red=not enrolled/inactive
+        const isAmber = flagged || withWarnings;
+        const isGreen = active && !isAmber;
+        const statusColor  = isGreen?'var(--green)':isAmber?'var(--amber,#d97706)':'var(--red)';
+        const statusBg     = isGreen?'var(--green-bg,#f0fdf4)':isAmber?'var(--amber-bg,#fffbeb)':'var(--red-bg,#fef2f2)';
+        const statusBorder = isGreen?'var(--green-border,#bbf7d0)':isAmber?'var(--amber-border,#fde68a)':'var(--red-border,#fecaca)';
+        const statusIcon   = isGreen?'✓':isAmber?'⚠':'✗';
+        // Merge hard issues + soft warnings into a single display list with severity tag
+        const allAlerts = [
+          ...issues.map(i=>({text:i, sev:'error'})),
+          ...warnings.map(w=>({text:w, sev:'warning'})),
+        ];
+        const hasAlerts = allAlerts.length > 0;
+        // Edit code pills (DENIAL-1120, PAY-1980)
+        const editCodePills = editCodes.length ? editCodes.map(ec=>{
+          const code = typeof ec==='object'?(ec.code||''):String(ec||'');
+          const isDenial = code.includes('DENIAL');
+          return `<span style="font-size:.61rem;font-weight:700;padding:.05rem .35rem;border-radius:4px;background:${isDenial?'var(--red-bg,#fef2f2)':'var(--amber-bg,#fffbeb)'};color:${isDenial?'var(--red)':'var(--amber,#d97706)'};border:1px solid ${isDenial?'var(--red-border,#fecaca)':'var(--amber-border,#fde68a)'}">⚑ ${esc(code)}</span>`;
+        }).join('') : '';
+        return `
+        <div style="border:1px solid ${statusBorder};border-radius:8px;background:${statusBg};overflow:hidden">
+          <!-- Header row: identity fields -->
+          <div style="display:grid;grid-template-columns:auto 1fr 1fr 1fr;gap:.3rem .8rem;padding:.45rem .7rem;align-items:center;border-bottom:1px solid ${statusBorder}">
+            <span style="font-size:.8rem;line-height:1;color:${statusColor}">${statusIcon}</span>
+            <div>
+              <div style="font-size:.58rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3)">Taxonomy</div>
+              <div style="font-family:monospace;font-size:.78rem;font-weight:700;color:var(--text-2)">${esc(r.taxonomy_code||'—')}</div>
+            </div>
+            <div>
+              <div style="font-size:.58rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3)">Medicaid ID</div>
+              <div style="font-family:monospace;font-size:.76rem;color:${r.medicaid_id?'var(--text-2)':'var(--red)'};font-weight:${r.medicaid_id?'600':'400'}">${esc(r.medicaid_id||'⚠ missing')}</div>
+            </div>
+            <div>
+              <div style="font-size:.58rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3)">ZIP+9</div>
+              <div style="font-family:monospace;font-size:.76rem;color:${r.zip9?'var(--text-2)':'var(--red)'};font-weight:${r.zip9?'600':'400'}">${esc(r.zip9||'⚠ missing')}</div>
+            </div>
+          </div>
+          <!-- Sub-row: NPI, enrollment status, dates, edit code pills -->
+          <div style="display:flex;flex-wrap:wrap;gap:.3rem 1rem;padding:.28rem .7rem;border-bottom:${hasAlerts?`1px solid ${statusBorder}`:'none'};font-size:.68rem;align-items:center">
+            <span style="color:var(--text-3)">NPI: <span style="font-family:monospace;color:var(--text-2)">${esc(r.npi||'—')}</span></span>
+            <span style="font-weight:600;color:${statusColor}">${esc(enrollStatus||'—')}</span>
+            ${r.effective_date?`<span style="color:var(--text-3)">Effective: <span style="color:var(--text-2)">${fmtD(r.effective_date)}</span></span>`:''}
+            ${r.termination_date?`<span style="color:var(--amber,#d97706)">Terminates: ${fmtD(r.termination_date)}</span>`:''}
+            ${r.enrollment_type?`<span style="color:var(--text-3)">Type: ${esc(r.enrollment_type)}</span>`:''}
+            ${editCodePills}
+            ${r.source==='audit_log'?`<span style="font-size:.6rem;color:var(--text-3);background:var(--grey-bg);border:1px solid var(--border);border-radius:3px;padding:.02rem .25rem">from audit log</span>`:''}
+          </div>
+          <!-- Claim edit impact rows (hard issues + soft warnings) -->
+          ${hasAlerts ? `
+          <div style="padding:.35rem .7rem;display:flex;flex-direction:column;gap:.22rem">
+            <div style="font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:${statusColor};margin-bottom:.05rem">${issues.length?'Claim Edit Required':'Compliance Warnings'}</div>
+            ${allAlerts.map(({text,sev})=>{
+              const {label, impact} = _pmlIssueLabel(text);
+              const alertColor = sev==='error'?'var(--red)':'var(--amber,#d97706)';
+              const alertIcon  = sev==='error'?'✗':'⚠';
+              return `<div style="display:grid;grid-template-columns:1fr 1fr;gap:.2rem .7rem;font-size:.69rem">
+                <div><span style="font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:${alertColor}">${alertIcon} ${esc(label)}</span></div>
+                <div style="color:var(--text-3);font-size:.67rem;line-height:1.4">${impact?`→ ${esc(impact)}`:''}</div>
+              </div>`;
+            }).join('')}
+            ${r.recommendation?`<div style="margin-top:.2rem;font-size:.68rem;color:var(--indigo);font-style:italic">💡 ${esc(r.recommendation)}</div>`:''}
+          </div>` : ''}
+        </div>`;
+      }).join('')}
+    </div>` : `<div style="font-size:.76rem;color:var(--text-3);font-style:italic">Not found in PML — complete Step 4 (PML Alignment) to populate enrollment data</div>`;
+
+  // PML check events from audit log — specifically pml_checked events
+  const pmlCheckedEvents = (p.audit_log||[]).filter(e=>e.event_type==='pml_checked');
+  const pmlAuditHtml = pmlCheckedEvents.length ? `
+    <div style="display:flex;flex-direction:column;gap:.22rem">
+      ${pmlCheckedEvents.map(e=>{
+        const d = e.event_data||{};
+        const hasWarnings = d.result==='enrolled_with_warnings';
+        const resultColor = d.result==='enrolled'?'var(--green)':(d.result==='flagged'||d.result==='partial'||hasWarnings)?'var(--amber)':'var(--red)';
+        const resultIcon  = d.result==='enrolled'?'✓':(d.result==='flagged'||d.result==='partial'||hasWarnings)?'⚠':'✗';
+        const codes   = (d.taxonomy_codes||[]).join(', ');
+        const issues  = (d.issues||[]);
+        const warnings= (d.warnings||[]);
+        const editCodes=(d.edit_codes||[]);
+        return `<div style="padding:.3rem .5rem;border-radius:5px;font-size:.7rem;background:var(--grey-bg);border:1px solid var(--border)">
+          <div style="display:flex;align-items:center;gap:.45rem;flex-wrap:wrap">
+            <span style="color:${resultColor};font-weight:700">${resultIcon} ${esc(d.result||'checked')}</span>
+            ${codes?`<span style="font-family:monospace;font-size:.66rem;color:var(--text-3)">${esc(codes)}</span>`:''}
+            ${editCodes.map(ec=>{const c=typeof ec==='object'?(ec.code||''):String(ec||'');const isDenial=c.includes('DENIAL');return c?`<span style="font-size:.61rem;font-weight:700;padding:.02rem .3rem;border-radius:3px;background:${isDenial?'var(--red-bg,#fef2f2)':'var(--amber-bg,#fffbeb)'};color:${isDenial?'var(--red)':'var(--amber,#d97706)'};border:1px solid ${isDenial?'var(--red-border,#fecaca)':'var(--amber-border,#fde68a)'}">⚑ ${esc(c)}</span>`:''}).join('')}
+            <span style="color:var(--text-3);margin-left:auto;white-space:nowrap;flex-shrink:0">${e.created_at?new Date(e.created_at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):''}</span>
+          </div>
+          ${issues.length?`<div style="margin-top:.15rem;display:flex;flex-wrap:wrap;gap:.15rem">
+            ${issues.map(i=>`<span style="font-size:.62rem;color:var(--red);background:var(--red-bg,#fef2f2);border:1px solid var(--red-border,#fecaca);border-radius:3px;padding:.02rem .28rem">✗ ${esc(i)}</span>`).join('')}
+          </div>`:''}
+          ${warnings.length?`<div style="margin-top:.1rem;display:flex;flex-wrap:wrap;gap:.15rem">
+            ${warnings.slice(0,3).map(w=>{const{label}=_pmlIssueLabel(w);return`<span style="font-size:.62rem;color:var(--amber,#d97706);background:var(--amber-bg,#fffbeb);border:1px solid var(--amber-border,#fde68a);border-radius:3px;padding:.02rem .28rem">⚠ ${esc(label)}</span>`;}).join('')}
+            ${warnings.length>3?`<span style="font-size:.62rem;color:var(--text-3)">+${warnings.length-3} more</span>`:''}
+          </div>`:''}
+        </div>`;
+      }).join('')}
+    </div>` : null;
+
+  const pmlContent = pmlTableHtml + hist('PML Check History', pmlAuditHtml);
+
+  // ── 6. TASKS + FLAGS (merged, unified) ────────────────────
+  const closedTasks = (p.audit_log||[]).filter(e=>
+    (e.event_type||'').toLowerCase().includes('task_resolv')||
+    (e.event_type||'').toLowerCase().includes('task_clos')||
+    (e.event_type||'').toLowerCase().includes('resolved')
+  );
+
+  // Severity map for task types
+  const _taskSeverity = t => {
+    const tp = (t.type||t.dim||'').toLowerCase();
+    if (['billing_restriction','not_enrolled','blocked'].includes(tp)) return 'critical';
+    if (['enrollment_gap','pml_enrollment_gap','not_tml_approved','drift'].includes(tp)) return 'warning';
+    return (t.severity||'info');
+  };
+
+  // Source → human label
+  const _taskSourceLabel = s => ({promote:'NPPES alignment',mass_approve:'Mass approval',pipeline:'Pipeline run',audit_log:'Prior run'})[s]||s||'';
+
+  // Per-step icon
+  const _taskStepIcon = t => {
+    const step = (t.step||t.source||'');
+    if (step.includes('pml')) return '🏥';
+    if (step.includes('tax')) return '🏷';
+    if (step.includes('nppes')||step.includes('promot')) return '🔍';
+    return '📌';
+  };
+
+  // _taskCard(t, isOpen, driftDetail?)
+  // driftDetail = matching drift flag object (has .uploaded, .nppes, .flag, .dim etc.)
+  const _taskCard = (t, isOpen, driftDetail) => {
+    const dim      = t.dim||t.type||t.event_data?.dim||'issue';
+    const reason   = t.note||t.reason||t.event_data?.reason||'';
+    const source   = t.source||t.event_data?.source||'';
+    const runId    = t.run_id||t.event_data?.run_id||'';
+    const ts       = t.created_at||t.event_data?.created_at||'';
+    const sev      = _taskSeverity(t);
+    const stepIcon = _taskStepIcon(t);
+    const isHardDrift = driftDetail && ['drift','mismatch'].includes(driftDetail.flag);
+    const isSoftFlag  = driftDetail && !isHardDrift;
+
+    const bg     = isOpen ? (sev==='critical'?'var(--red-bg,#fef2f2)':'var(--amber-bg,#fffbeb)') : 'var(--grey-bg)';
+    const border = isOpen ? (sev==='critical'?'var(--red-border,#fecaca)':'var(--amber-border,#fde68a)') : 'var(--border)';
+    const iconEl = isOpen ? (sev==='critical'?'🔴':'◎') : '✓';
+    const hdrColor = isOpen ? (sev==='critical'?'var(--red,#dc2626)':'var(--amber,#d97706)') : 'var(--text-3)';
+    const sevBadge = isOpen && sev==='critical'
+      ? `<span style="font-size:.58rem;font-weight:700;color:var(--red);background:var(--red-bg,#fef2f2);border:1px solid var(--red-border,#fecaca);border-radius:3px;padding:.02rem .28rem;flex-shrink:0">CRITICAL</span>`
+      : isSoftFlag
+        ? `<span style="font-size:.58rem;color:var(--text-3);background:var(--grey-bg);border:1px solid var(--border);border-radius:3px;padding:.02rem .28rem;flex-shrink:0">INFO</span>`
+        : '';
+
+    // Drift comparison detail (shown in expanded body)
+    const driftBody = driftDetail ? (() => {
+      if (isSoftFlag) {
+        return `<div style="margin-top:.35rem;padding:.3rem .45rem;border-radius:6px;background:var(--grey-bg);border:1px solid var(--border);font-size:.7rem">
+          <span style="color:var(--text-3)">ℹ NPPES has: </span>
+          <span style="color:var(--text-2)">${esc(String(driftDetail.nppes||driftDetail.description||'—'))}</span>
+          <span style="color:var(--text-3);display:block;margin-top:.1rem;font-size:.65rem">Not present in uploaded roster. Consider updating the roster file.</span>
+        </div>`;
+      }
+      return `<div style="margin-top:.35rem;border-radius:6px;border:1px solid var(--amber-border,#fde68a);overflow:hidden;font-size:.7rem">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
+          <div style="padding:.3rem .45rem;background:var(--amber-bg,#fffbeb);border-right:1px solid var(--amber-border,#fde68a)">
+            <div style="font-size:.58rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);margin-bottom:.1rem">Uploaded</div>
+            <div style="color:var(--text-2);font-weight:600">${esc(String(driftDetail.uploaded||driftDetail.roster||'—'))}</div>
+          </div>
+          <div style="padding:.3rem .45rem;background:var(--surface)">
+            <div style="font-size:.58rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);margin-bottom:.1rem">NPPES</div>
+            <div style="color:var(--text-2);font-weight:600">${esc(String(driftDetail.nppes||'—'))}</div>
+          </div>
+        </div>
+      </div>`;
+    })() : '';
+
+    // Extra detail for PML/taxonomy tasks
+    const extraBody = (() => {
+      const taskType = t.type||'';
+      const codes    = t.codes||t.at_risk_codes||[];
+      const taxCode  = t.taxonomy_code||'';
+      const issues   = t.issues||[];
+      const warnings = t.warnings||[];
+      const editCodes= t.edit_codes||[];
+      const delta    = t.delta_billing_pct;
+      const parts    = [];
+
+      // WARN-TAX-001: taxonomy enrolled in PML but missing from NPPES — show NPPES action
+      if (taskType==='pml_taxonomy_not_in_nppes') {
+        const npiForLink = p.npi||p.npi_validated||'';
+        return `<div style="margin-top:.3rem;padding:.4rem .55rem;border-radius:6px;background:var(--amber-bg,#fffbeb);border:1px solid var(--amber-border,#fde68a);font-size:.7rem">
+          <div style="font-weight:700;color:var(--amber,#d97706);margin-bottom:.2rem">⚑ WARN-TAX-001 — Taxonomy not in NPPES</div>
+          ${taxCode?`<div style="margin-bottom:.15rem">Taxonomy <span style="font-family:monospace;font-weight:700">${esc(taxCode)}</span> is active in FL Medicaid PML but <strong>not listed in NPPES</strong>.</div>`:''}
+          <div style="color:var(--text-3);margin-bottom:.2rem">Provider can still bill Medicaid today, but the federal registry (NPPES) is out of sync. Requires action for long-term compliance.</div>
+          <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.25rem">
+            ${npiForLink?`<a href="https://npiregistry.cms.hhs.gov/provider-view/${npiForLink}" target="_blank" rel="noopener"
+                style="font-size:.65rem;padding:.1rem .4rem;border-radius:4px;background:var(--surface);border:1px solid var(--amber-border,#fde68a);color:var(--amber,#d97706);text-decoration:none;font-weight:600">→ Open NPPES Profile</a>`:''}
+            <span style="font-size:.65rem;color:var(--text-3)">Add taxonomy in NPPES, or remove from PML if no longer in use</span>
+          </div>
+        </div>`;
+      }
+
+      // DENIAL-1120 / PAY-1980 compliance warnings
+      if (taskType==='pml_address_mismatch'||taskType==='pml_multiple_enrollments'||taskType==='pml_compliance_warning') {
+        const relevantWarnings = warnings.filter(w=>w.startsWith('address')||w.startsWith('multiple')||w.startsWith('zip4')||w.startsWith('taxonomy'));
+        const editPills = editCodes.map(ec=>{const isDenial=(ec||'').includes('DENIAL');return`<span style="font-size:.6rem;font-weight:700;padding:.02rem .3rem;border-radius:3px;background:${isDenial?'var(--red-bg,#fef2f2)':'var(--amber-bg,#fffbeb)'};color:${isDenial?'var(--red)':'var(--amber,#d97706)'};border:1px solid ${isDenial?'var(--red-border,#fecaca)':'var(--amber-border,#fde68a)'}">${esc(ec)}</span>`;}).join('');
+        return `<div style="margin-top:.3rem;padding:.35rem .5rem;border-radius:6px;background:var(--amber-bg,#fffbeb);border:1px solid var(--amber-border,#fde68a);font-size:.69rem">
+          ${editPills?`<div style="display:flex;gap:.3rem;flex-wrap:wrap;margin-bottom:.2rem">${editPills}</div>`:''}
+          ${relevantWarnings.slice(0,2).map(w=>{const{label,impact}=_pmlIssueLabel(w);return`<div style="margin-bottom:.12rem"><span style="font-weight:600;color:var(--amber,#d97706)">⚠ ${esc(label)}</span>${impact?`<span style="color:var(--text-3)"> — ${esc(impact)}</span>`:''}</div>`;}).join('')}
+          ${warnings.length>2?`<div style="color:var(--text-3);font-size:.64rem">+${warnings.length-2} more warnings — see PML Enrollment section below</div>`:''}
+        </div>`;
+      }
+
+      if (taxCode) parts.push(`<span style="color:var(--text-3)">Taxonomy: <span style="font-family:monospace;font-weight:600;color:var(--text-2)">${esc(taxCode)}</span></span>`);
+      if (issues.length) parts.push(`<span style="color:var(--amber,#d97706)">${issues.slice(0,3).map(i=>esc(i)).join(' · ')}</span>`);
+      if (codes.length) parts.push(`<span style="color:var(--red)">At risk: ${codes.slice(0,5).map(c=>esc(c)).join(', ')}</span>`);
+      if (delta) parts.push(`<span style="color:var(--red)">Δ ${delta}% billing volume</span>`);
+      return parts.length ? `<div style="margin-top:.3rem;display:flex;flex-wrap:wrap;gap:.4rem;font-size:.68rem">${parts.join('')}</div>` : '';
+    })();
+
+    return `<details style="border-radius:8px;background:${bg};border:1px solid ${border};overflow:hidden">
+      <summary style="cursor:pointer;list-style:none;padding:.4rem .6rem;display:flex;align-items:center;gap:.4rem;user-select:none">
+        <span style="font-size:.8rem;line-height:1;flex-shrink:0">${stepIcon}</span>
+        <span style="font-size:.77rem;font-weight:600;color:${hdrColor};flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(dimNames[dim]||dim)}</span>
+        ${sevBadge}
+        ${isOpen
+          ? `<button onclick="event.preventDefault();event.stopPropagation();_resolveRosterTask(${p.id},'${esc(dim)}')"
+               style="font-size:.62rem;padding:.12rem .45rem;border:1px solid ${sev==='critical'?'var(--red-border,#fecaca)':'var(--amber-border,#fde68a)'};border-radius:4px;background:var(--surface);color:${hdrColor};cursor:pointer;font-weight:700;flex-shrink:0;white-space:nowrap">
+               Resolve
+             </button>`
+          : `<span style="font-size:.62rem;color:var(--green,#16a34a);font-weight:600;flex-shrink:0">✓ Resolved</span>`
+        }
+        <span style="font-size:.62rem;color:var(--text-3);flex-shrink:0">${ts?new Date(ts).toLocaleDateString('en-US',{month:'short',day:'numeric'}):''}</span>
+        <span style="color:var(--text-3);font-size:.7rem;flex-shrink:0">▾</span>
+      </summary>
+      <div style="padding:.4rem .6rem .5rem;border-top:1px solid ${border};font-size:.71rem">
+        ${reason ? `<div style="color:var(--text-2);margin-bottom:.25rem;line-height:1.4">${esc(reason)}</div>` : ''}
+        ${driftBody}
+        ${extraBody}
+        <div style="display:flex;gap:.8rem;flex-wrap:wrap;color:var(--text-3);margin-top:.28rem;font-size:.65rem">
+          ${source ? `<span>Detected by: ${esc(_taskSourceLabel(source))}</span>` : ''}
+          ${runId  ? `<span>Run: <span style="font-family:monospace">${esc(runId.slice(-8))}</span></span>` : ''}
+          ${ts     ? `<span>Opened: ${fmtTs(ts)}</span>` : ''}
+        </div>
+        ${isOpen ? `<div style="margin-top:.5rem">
+          <textarea id="task-note-${esc(dim)}" placeholder="Add a resolution note…" rows="2"
+            style="width:100%;box-sizing:border-box;font-size:.71rem;padding:.28rem .45rem;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text);resize:vertical"></textarea>
+        </div>` : ''}
+      </div>
+    </details>`;
+  };
+
+  // ── Build merged task list ──────────────────────────────────
+  // 1. Open tasks enriched with their corresponding drift flag (for comparison view)
+  const _taskDims = new Set(openTasks.map(t => (t.dim||t.type||'').toLowerCase()));
+  const _enrichedOpen = openTasks.map(t => {
+    const dim = (t.dim||t.type||'').toLowerCase();
+    const flag = driftFlags.find(f => (f.dim||f.field||'').toLowerCase() === dim);
+    return { task: t, flag: flag||null };
+  });
+
+  // 2. Drift flags that don't have a corresponding open task yet (untracked / info only)
+  const _untrackedFlags = driftFlags.filter(f => {
+    const fd = (f.dim||f.field||'').toLowerCase();
+    return !_taskDims.has(fd);
+  });
+
+  // ── 7. AUDIT LOG ──────────────────────────────────────────
+  const auditEvents = p.audit_log||[];
+  const auditIconMap = {
+    approved:'✓', mass_approved:'⚡', validated:'🔍', uploaded:'↑',
+    dismissed:'~', undismissed:'↩', task_created:'📌', task_resolved:'✓',
+    rejected:'✗', npi_overridden:'✎', edited:'✎', provider_edited:'✎',
+    nppes_validated:'🔍', pml_checked:'🏥', taxonomy_checked:'🏷',
+  };
+  // Human-readable label for each event type
+  const auditLabelMap = {
+    approved: 'Approved to roster', mass_approved: 'Mass approved',
+    validated: 'Validated', uploaded: 'File uploaded',
+    dismissed: 'Dismissed', undismissed: 'Restored',
+    task_created: 'Task created', task_resolved: 'Task resolved',
+    rejected: 'Rejected', npi_overridden: 'NPI overridden',
+    edited: 'Edited', provider_edited: 'Provider edited',
+    nppes_validated: 'NPPES alignment checked',
+    pml_checked: 'PML enrollment checked',
+    taxonomy_checked: 'Taxonomy analysis run',
+  };
+  const _auditDetail = (e) => {
+    const d = e.event_data||{};
+    const et = e.event_type||'';
+    if (et === 'nppes_validated') {
+      const conf = d.match_confidence ? Math.round(d.match_confidence*100)+'% match' : '';
+      const driftCnt = (d.drift_flags||[]).length;
+      const taxCnt = (d.all_taxonomies||[]).length;
+      return [conf, driftCnt?`△ ${driftCnt} drift flags`:'', taxCnt?`${taxCnt} taxonomies`:''].filter(Boolean).join(' · ');
+    }
+    if (et === 'pml_checked') {
+      const result = d.result||'';
+      const codes  = (d.taxonomy_codes||[]).join(', ');
+      return [result, codes ? `codes: ${codes}`:'' , (d.issues||[]).slice(0,2).join('; ')].filter(Boolean).join(' · ');
+    }
+    if (et === 'taxonomy_checked') {
+      const rt   = d.result_type||'';
+      const rtLbl = {restriction:'billing restriction',gap_only:'enrollment gap',clean:'clean',no_nppes_taxonomies:'no NPPES data'}[rt]||rt;
+      const delta = d.delta_billing_pct ? `Δ${d.delta_billing_pct}% billing` : '';
+      return [rtLbl, delta].filter(Boolean).join(' · ');
+    }
+    if (d.dim) return `dim: ${d.dim}${d.reason?' — '+d.reason.substring(0,80):''}`;
+    if (d.reason) return d.reason.substring(0,100);
+    return '';
+  };
+  const auditContent = auditEvents.length
+    ? `<div style="display:flex;flex-direction:column;gap:0;border:1px solid var(--border);border-radius:7px;overflow:hidden">
+        ${auditEvents.map((e,i)=>{
+          const et = e.event_type||'';
+          const isTask = et.includes('task');
+          const isPipeline = et==='nppes_validated'||et==='pml_checked'||et==='taxonomy_checked';
+          const bg = isTask?'background:var(--amber-bg,#fffbeb)':isPipeline?'background:var(--indigo-bg,#eef2ff)':'';
+          const detail = _auditDetail(e);
+          return `<div style="display:flex;align-items:flex-start;gap:.4rem;padding:.22rem .5rem;font-size:.69rem;${i>0?'border-top:1px solid var(--border)':''}${bg?';'+bg:''}">
+            <span style="color:var(--text-3);flex-shrink:0;width:.9rem;text-align:center;opacity:.7">${auditIconMap[et]||'·'}</span>
+            <div style="flex:1;min-width:0">
+              <span style="font-weight:500;color:${isPipeline?'var(--indigo)':isTask?'var(--amber,#d97706)':'var(--text-2)'}">${esc(auditLabelMap[et]||et)}</span>
+              ${e.actor_label&&e.actor!=='mobius'?` <span style="font-size:.62rem;color:var(--text-3)">· ${esc(e.actor_label)}</span>`:''}
+              ${detail?`<span style="font-size:.64rem;color:var(--text-3);margin-left:.3rem" title="${esc(detail)}">${esc(detail.length>70?detail.slice(0,70)+'…':detail)}</span>`:''}
+            </div>
+            <span style="color:var(--text-3);flex-shrink:0;font-size:.63rem;white-space:nowrap;opacity:.7">${e.created_at?new Date(e.created_at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):''}</span>
+          </div>`;
+        }).join('')}
+      </div>`
+    : `<div style="font-size:.76rem;color:var(--text-3);font-style:italic">No audit events yet</div>`;
+
+  // ── 8. AI SUMMARY PANEL (top of drawer) ───────────────────────
+  const _aiOrg = encodeURIComponent(p.org_name || window.lastRun?.org_name || '');
+  const _bs  = p.billability_status || 'unknown';
+  const _bsConf = {
+    billable:  { label:'Billable',  icon:'✅', bg:'var(--green-bg,#f0fdf4)',   border:'var(--green-border,#86efac)', color:'var(--green,#16a34a)'  },
+    warning:   { label:'Warning',   icon:'⚠️', bg:'var(--amber-bg,#fffbeb)',   border:'var(--amber-border,#fde68a)', color:'var(--amber,#d97706)'  },
+    at_risk:   { label:'At Risk',   icon:'⚠️', bg:'var(--amber-bg,#fffbeb)',   border:'var(--amber-border,#fde68a)', color:'var(--amber,#d97706)'  },
+    risk:      { label:'At Risk',   icon:'🚨', bg:'var(--red-bg,#fef2f2)',     border:'var(--red-border,#fecaca)',   color:'var(--red,#dc2626)'    },
+    blocked:   { label:'Blocked',   icon:'🚫', bg:'var(--red-bg,#fef2f2)',     border:'var(--red-border,#fecaca)',   color:'var(--red,#dc2626)'    },
+    inactive:  { label:'Inactive',  icon:'⛔', bg:'var(--red-bg,#fef2f2)',     border:'var(--red-border,#fecaca)',   color:'var(--red,#dc2626)'    },
+    unknown:   { label:'Unknown',   icon:'—',  bg:'var(--grey-bg)',            border:'var(--border)',               color:'var(--text-3)'         },
+  };
+  const _bsc = _bsConf[_bs] || _bsConf.unknown;
+  const _score = p.billability_score != null ? p.billability_score : null;
+  const _nTasks = (p.open_tasks || []).length;
+
+  // Small inline badge helper for section headers
+  const _secBadge = (label, color, bg, border) =>
+    `<span style="font-size:.6rem;font-weight:700;color:${color};background:${bg};border:1px solid ${border};border-radius:10px;padding:.1rem .45rem;white-space:nowrap">${label}</span>`;
+
+  // Section-level badges (shown in collapsible headers — not repeated in AI panel)
+  const _snap   = p.nppes_snapshot || {};
+  const _nppesSt = (_snap.nppes_status || '').toUpperCase();
+  const _nppesBadge = _nppesSt === 'A'
+    ? _secBadge('Active',      'var(--green,#16a34a)',  'var(--green-bg,#f0fdf4)',  'var(--green-border,#86efac)')
+    : _nppesSt === 'D'
+      ? _secBadge('Deactivated','var(--red,#dc2626)',    'var(--red-bg,#fef2f2)',    'var(--red-border,#fecaca)')
+      : _secBadge('Unknown',    'var(--text-3)',          'var(--grey-bg)',            'var(--border)');
+
+  // Taxonomy section badge
+  const _taxCodes = (p.taxonomy_profile && !Array.isArray(p.taxonomy_profile) && p.taxonomy_profile.codes)
+    ? p.taxonomy_profile.codes
+    : (Array.isArray(p.taxonomy_profile) ? p.taxonomy_profile : []);
+  const _taxGaps = _taxCodes.filter(t =>
+    ['approved_missing_pml','not_tml','enrollment_gap','not_approved'].includes(t.status));
+  const _taxBadge = _taxGaps.length > 0
+    ? _secBadge(`${_taxGaps.length} gap${_taxGaps.length > 1 ? 's' : ''}`, 'var(--amber,#d97706)', 'var(--amber-bg,#fffbeb)', 'var(--amber-border,#fde68a)')
+    : _secBadge('OK', 'var(--green,#16a34a)', 'var(--green-bg,#f0fdf4)', 'var(--green-border,#86efac)');
+
+  // PML section badge — derive from open tasks with dim=pml
+  const _pmlTasks = (p.open_tasks || []).filter(t => t.dim === 'pml' || (t.type||'').startsWith('pml'));
+  const _pmlRows  = p.pml_rows || [];
+  const _pmlBadge = _pmlTasks.some(t => t.severity === 'critical')
+    ? _secBadge('Issues', 'var(--red,#dc2626)', 'var(--red-bg,#fef2f2)', 'var(--red-border,#fecaca)')
+    : _pmlTasks.length > 0
+      ? _secBadge('Warnings', 'var(--amber,#d97706)', 'var(--amber-bg,#fffbeb)', 'var(--amber-border,#fde68a)')
+      : _pmlRows.length > 0
+        ? _secBadge('Enrolled', 'var(--green,#16a34a)', 'var(--green-bg,#f0fdf4)', 'var(--green-border,#86efac)')
+        : _secBadge('Not found', 'var(--text-3)', 'var(--grey-bg)', 'var(--border)');
+
+  // AI panel: only ONE macro status badge + task count (section details live in section headers)
+  const _macroBadge = `<span style="display:inline-flex;align-items:center;gap:.3rem;padding:.22rem .65rem;border-radius:20px;font-size:.72rem;font-weight:700;background:${_bsc.bg};border:1px solid ${_bsc.border};color:${_bsc.color};white-space:nowrap"${_score != null ? ` title="Billability score: ${_score}/100 — composite of NPPES status, PML enrollment, and taxonomy coverage"` : ''}>${_bsc.icon} ${_bsc.label}</span>`;
+  const _tasksBadge = _nTasks > 0
+    ? `<span style="display:inline-flex;align-items:center;gap:.25rem;padding:.22rem .55rem;border-radius:20px;font-size:.68rem;font-weight:600;background:var(--amber-bg,#fffbeb);border:1px solid var(--amber-border,#fde68a);color:var(--amber,#d97706);white-space:nowrap">◎ ${_nTasks} open task${_nTasks > 1 ? 's' : ''}</span>`
+    : '';
+
+  const aiSummaryContent = `
+    <div style="background:linear-gradient(135deg,var(--indigo-bg,#eef2ff) 0%,var(--surface,#fff) 100%);border:1px solid var(--indigo-border,#c7d2fe);border-radius:10px;padding:.85rem 1rem;margin-bottom:.9rem">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.55rem">
+        <span style="font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--indigo,#4f46e5)">✦ Mobius AI Analysis</span>
+        <span style="font-size:.6rem;color:var(--text-3)">FL Medicaid · NPI Initiative</span>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:.35rem;margin-bottom:.55rem;align-items:center">
+        ${_macroBadge}${_tasksBadge}
+      </div>
+      <div id="ai-summary-body-${p.id}" style="min-height:1.8rem">
+        <div style="display:flex;align-items:center;gap:.5rem;font-size:.76rem;color:var(--text-3);padding:.35rem 0">
+          <span class="spinner" style="width:12px;height:12px;border-width:1.5px;display:inline-block;vertical-align:middle"></span>
+          Analyzing with Mobius AI…
+        </div>
+      </div>
+    </div>`;
+
+  // ── Compact identity strip (always visible) ─────────────────
+  const specialty = p.specialty || snap.specialty || '';
+  const identityStrip = `
+    <div style="display:flex;align-items:flex-start;gap:.65rem;padding:.6rem .75rem;background:var(--surface);border:1px solid var(--border);border-radius:9px;margin-bottom:.6rem">
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;gap:.45rem;flex-wrap:wrap;margin-bottom:.15rem">
+          <span style="font-size:.82rem;font-weight:700;color:var(--text)">${esc(p.provider_name||'—')}</span>
+          <span style="font-family:monospace;font-size:.72rem;color:var(--text-3);background:var(--grey-bg);padding:.04rem .35rem;border-radius:4px;border:1px solid var(--border)">${esc(p.npi_validated||p.npi_roster||'—')}</span>
+        </div>
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+          ${specialty ? `<span style="font-size:.72rem;color:var(--text-2)">${esc(specialty)}</span>` : ''}
+          ${fullAddr ? `<span style="font-size:.7rem;color:var(--text-3)">📍 ${esc(fullAddr)}</span>` : ''}
+          ${phone ? `<span style="font-size:.7rem;color:var(--text-3)">📞 ${esc(phone)}</span>` : ''}
+        </div>
+      </div>
+      ${creds.length ? `<div style="display:flex;gap:.2rem;flex-wrap:wrap;align-items:flex-start;flex-shrink:0">${creds.slice(0,3).map(c=>`<span style="font-size:.62rem;font-weight:600;color:var(--indigo);background:var(--indigo-bg,#eef2ff);border:1px solid var(--indigo-border,#c7d2fe);border-radius:3px;padding:.1rem .3rem">${esc(c)}</span>`).join('')}</div>` : ''}
+    </div>`;
+
+  // ── Tasks + Flags panel (merged, always visible) ──────────
+  const _totalIssues = _enrichedOpen.length + _untrackedFlags.length;
+  const tasksPanel = `
+    <div style="margin-bottom:.6rem">
+      <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.35rem">
+        <span style="font-size:.63rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:${_totalIssues ? 'var(--amber,#d97706)' : 'var(--text-3)'}">
+          ${_totalIssues
+            ? `◎ ${_enrichedOpen.length} Task${_enrichedOpen.length!==1?'s':''}${_untrackedFlags.length?` · ${_untrackedFlags.length} Flag${_untrackedFlags.length!==1?'s':''} detected`:''}`
+            : '✓ No Open Tasks'}
+        </span>
+        ${closedTasks.length ? `<span style="font-size:.62rem;color:var(--text-3);margin-left:auto">${closedTasks.length} resolved</span>` : ''}
+      </div>
+
+      ${_enrichedOpen.length || _untrackedFlags.length ? `
+        <div style="display:flex;flex-direction:column;gap:.28rem">
+          ${_enrichedOpen.map(({task:t, flag:f}) => _taskCard(t, true, f)).join('')}
+          ${_untrackedFlags.length ? `
+            <div style="font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-3);margin:.15rem 0 .1rem .05rem">
+              Detected flags — no task created yet
+            </div>
+            ${_untrackedFlags.map(f => {
+              const isHard = ['drift','mismatch'].includes(f.flag);
+              const fd = f.dim||f.field||'flag';
+              const flagAsTask = {
+                dim: fd,
+                type: isHard ? 'drift' : 'soft_drift',
+                reason: isHard
+                  ? `${dimNames[fd]||fd} mismatch detected — uploaded value differs from NPPES`
+                  : `${dimNames[fd]||fd} not in uploaded roster — NPPES shows: ${String(f.nppes||f.description||'').slice(0,80)}`,
+                source: 'nppes_alignment',
+                severity: isHard ? 'warning' : 'info',
+                created_at: null,
+              };
+              return _taskCard(flagAsTask, true, f);
+            }).join('')}
+          ` : ''}
+        </div>`
+        : `<div style="font-size:.73rem;color:var(--green,#16a34a);padding:.3rem .5rem;background:var(--green-bg,#f0fdf4);border:1px solid var(--green-border,#bbf7d0);border-radius:6px">✓ All clear — no outstanding tasks or flags for this provider</div>`
+      }
+
+      ${closedTasks.length ? `
+        <details style="margin-top:.35rem;border-radius:6px;border:1px solid var(--border);overflow:hidden">
+          <summary style="cursor:pointer;list-style:none;padding:.28rem .55rem;background:var(--grey-bg);font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-3);user-select:none;display:flex;align-items:center;gap:.4rem">
+            <span style="opacity:.6">▸</span>${closedTasks.length} Resolved Task${closedTasks.length>1?'s':''}
+          </summary>
+          <div style="padding:.35rem .5rem .45rem;display:flex;flex-direction:column;gap:.25rem">${closedTasks.map(t=>_taskCard(t,false,null)).join('')}</div>
+        </details>` : ''}
+    </div>`;
+
+  return `
+    ${identityStrip}
+    ${aiSummaryContent}
+    ${tasksPanel}
+    <div style="margin-top:.1rem">
+      ${sec('NPPES Record', nppesContent, _nppesBadge)}
+      ${sec('Taxonomy & Billing Exposure', taxContent, _taxBadge)}
+      ${sec('PML Enrollment (FL Medicaid)', pmlContent, _pmlBadge)}
+      ${sec('Source Record — Uploaded File', sourceContent)}
+      ${sec('Audit Log', hist('Activity', auditContent))}
+    </div>`;
+}
+
+// ── AI Provider Summary Generator ─────────────────────────────
+function _mdToHtml(raw) {
+  // Lightweight markdown → HTML converter for LLM summary output.
+  // Handles: ## / ### headings, --- hr, **bold**, *italic*,
+  //          - / * bullet lists, 1. numbered lists, blank-line paragraphs.
+  const lines = raw.split('\n');
+  const out   = [];
+  let inUl    = false;
+  let inOl    = false;
+
+  const closeList = () => {
+    if (inUl) { out.push('</ul>'); inUl = false; }
+    if (inOl) { out.push('</ol>'); inOl = false; }
+  };
+
+  const inline = s =>
+    s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+     .replace(/\*(.+?)\*/g,     '<em>$1</em>')
+     .replace(/`(.+?)`/g,       '<code style="font-size:.88em;background:var(--grey-bg);padding:.01rem .25rem;border-radius:3px;border:1px solid var(--border)">$1</code>');
+
+  for (const line of lines) {
+    const t = line.trim();
+
+    if (!t) {
+      closeList();
+      out.push('<div style="height:.45rem"></div>');
+      continue;
+    }
+
+    // HR / separator
+    if (/^---+$/.test(t) || /^\*\*\*+$/.test(t)) {
+      closeList();
+      out.push('<hr style="border:none;border-top:1px solid var(--indigo-border,#c7d2fe);margin:.55rem 0">');
+      continue;
+    }
+
+    // H2
+    if (t.startsWith('## ')) {
+      closeList();
+      out.push(`<div style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--indigo,#4f46e5);margin:1rem 0 .25rem;padding-top:.55rem;border-top:1px solid var(--indigo-border,#c7d2fe)">${inline(t.slice(3))}</div>`);
+      continue;
+    }
+
+    // H3
+    if (t.startsWith('### ')) {
+      closeList();
+      out.push(`<div style="font-size:.75rem;font-weight:700;color:var(--text);margin:.6rem 0 .15rem">${inline(t.slice(4))}</div>`);
+      continue;
+    }
+
+    // Bullet list item
+    if (/^[-*] /.test(t)) {
+      if (inOl) { out.push('</ol>'); inOl = false; }
+      if (!inUl) { out.push('<ul style="margin:.2rem 0 .2rem .9rem;padding:0;list-style:disc">'); inUl = true; }
+      out.push(`<li style="margin-bottom:.18rem;font-size:.79rem;line-height:1.55;color:var(--text-2)">${inline(t.slice(2))}</li>`);
+      continue;
+    }
+
+    // Numbered list item
+    const numM = t.match(/^(\d+)\.\s+(.+)/);
+    if (numM) {
+      if (inUl) { out.push('</ul>'); inUl = false; }
+      if (!inOl) { out.push('<ol style="margin:.2rem 0 .2rem 1rem;padding:0">'); inOl = true; }
+      out.push(`<li style="margin-bottom:.18rem;font-size:.79rem;line-height:1.55;color:var(--text-2)">${inline(numM[2])}</li>`);
+      continue;
+    }
+
+    // Plain paragraph line
+    closeList();
+    out.push(`<p style="margin:.1rem 0;font-size:.79rem;line-height:1.6;color:var(--text-2)">${inline(t)}</p>`);
+  }
+
+  closeList();
+  return out.join('');
+}
+
+function _renderSummaryIntoBody(bodyEl, data, providerId, orgNameEncoded) {
+  const raw = (data.summary || '').trim();
+
+  const htmlSummary = _mdToHtml(raw);
+
+  const meta = data.model
+    ? `<div style="margin-top:.65rem;padding-top:.4rem;border-top:1px solid var(--indigo-border,#c7d2fe);font-size:.6rem;color:var(--text-3);display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">
+         <span>✦ ${esc(data.model)}</span>
+         <span>·</span>
+         <span>${data.input_tokens||0} in / ${data.output_tokens||0} out</span>
+         ${data.latency_ms ? `<span>·</span><span>${data.latency_ms}ms</span>` : ''}
+       </div>`
+    : '';
+
+  // Scrollable container with max-height so long summaries don't push tasks off screen
+  bodyEl.innerHTML = `
+    <div style="max-height:18rem;overflow-y:auto;padding-right:.2rem;scrollbar-width:thin;scrollbar-color:var(--indigo-border,#c7d2fe) transparent">
+      ${htmlSummary}
+    </div>
+    ${meta}`;
+
+  // Update the list card one-liner if visible
+  if (data.summary_short) {
+    const cardEl = document.getElementById(`roster-row-prov-${providerId}`);
+    if (cardEl) {
+      let oneliner = cardEl.querySelector('.ai-oneliner');
+      if (!oneliner) {
+        oneliner = document.createElement('div');
+        oneliner.className = 'ai-oneliner';
+        oneliner.style.cssText = 'font-size:.69rem;color:var(--indigo,#4f46e5);margin-top:.25rem;font-style:italic;opacity:.85;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+        const head = cardEl.querySelector('.rt-card-head > div');
+        if (head) head.appendChild(oneliner);
+      }
+      oneliner.textContent = '✦ ' + data.summary_short;
+    }
+  }
+}
+
+async function generateProviderSummary(providerId, orgNameEncoded, force = false) {
+  const orgName = decodeURIComponent(orgNameEncoded) || window.lastRun?.org_name || '';
+  const bodyEl  = document.getElementById(`ai-summary-body-${providerId}`);
+  if (!bodyEl) return;
+
+  bodyEl.innerHTML = `<div style="display:flex;align-items:center;gap:.5rem;font-size:.76rem;color:var(--text-3)">
+    <span class="spinner" style="width:12px;height:12px;border-width:1.5px;display:inline-block;vertical-align:middle"></span>
+    Analyzing with Mobius AI…
+  </div>`;
+
+  const summaryUrl = `/chat/roster-truth/${encodeURIComponent(orgName)}/provider/${providerId}/summary`
+    + (force ? '?force=true' : '');
+
+  try {
+    const resp = await fetch(summaryUrl, { method: 'POST' });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+
+    // Cache in sessionStorage for this tab session
+    try { sessionStorage.setItem(`mobius_summary_${providerId}`, JSON.stringify(data)); } catch(e) {}
+
+    _renderSummaryIntoBody(bodyEl, data, providerId, orgNameEncoded);
+  } catch (err) {
+    bodyEl.innerHTML = `
+      <div style="font-size:.75rem;color:var(--red,#e53935);margin-bottom:.4rem">Analysis failed — ${esc(err.message)}</div>
+      <button onclick="generateProviderSummary(${providerId},'${orgNameEncoded}')"
+        style="padding:.25rem .65rem;font-size:.7rem;border:1px solid var(--border);color:var(--text-3);background:transparent;border-radius:5px;cursor:pointer">
+        ↺ Retry
+      </button>`;
+  }
 }
 
 // ── Recon table search filter ──────────────────────────────────
@@ -1756,7 +3482,11 @@ function setReconFilter(f) {
 function _refreshNppesSection() {
   // Refresh roster section (score story) after approvals or changes
   const rosterSec = document.getElementById('rosterSection');
-  if (rosterSec) rosterSec.innerHTML = _buildRosterSectionHtml();
+  if (rosterSec) {
+    rosterSec.innerHTML = _buildRosterSectionHtml();
+    // Re-populate the live list immediately using cached data (no extra fetch)
+    setTimeout(_loadRosterTruth, 0);
+  }
   // Update workspace header counts
   _refreshWorkspaceHeader();
   _refreshReconPillCounts();
@@ -2131,14 +3861,12 @@ function _emitRosterLog(type, message, detail) {
   const entry = { ts: Date.now(), type, message, detail: detail || null, phase };
   window._rosterEmissions = window._rosterEmissions || [];
   window._rosterEmissions.push(entry);
-  // Mirror milestone events to the global feEmit activity ticker
-  if (type === 'success' || type === 'error' || type === 'warn' ||
-      message.startsWith('✓') || message.startsWith('✗') || message.startsWith('⚠') ||
-      message.includes('complete') || message.includes('ready') || message.includes('failed') ||
-      message.includes('providers') || message.includes('workspace') || message.includes('roster')) {
-    const feLevel = type === 'error' ? 'error' : type === 'warn' ? 'warn' : 'ok';
-    feEmit(message, feLevel);
-  }
+  // Always mirror to the global activity bar (bottom ticker)
+  const feLevel = type === 'error' ? 'error'
+                : type === 'warn'  ? 'warn'
+                : (type === 'success' || message.startsWith('✓')) ? 'ok'
+                : 'info';
+  feEmit(message, feLevel);
   // Live-update the body if open
   const logEl = document.getElementById('rosterEmissionsLog');
   if (logEl && logEl.classList.contains('open')) _renderEmissionsInto(logEl);
@@ -2295,11 +4023,14 @@ function _setRosterState(patch) {
     if (uploadDetails) uploadDetails.setAttribute('open', '');
   }
 
-  // When phase transitions to 'done', collapse upload section and remember that state
+  // When phase transitions to 'done', auto-switch to workspace tab so the user
+  // immediately sees the reviewed provider list rather than the upload zone.
   if (patch.phase === 'done' && prevPhase !== 'done') {
     window._uploadSectionOpenState = false;
     const uploadDetails = document.getElementById('uploadSection');
     if (uploadDetails) uploadDetails.removeAttribute('open');
+    // Switch to workspace tab
+    window._rosterTab = 'workspace';
     const reconContent = document.getElementById('reconContent');
     if (reconContent) {
       console.log('[setRosterState] phase→done: refreshing reconContent');
@@ -2309,6 +4040,8 @@ function _setRosterState(patch) {
       // populated (no extra network fetch), or fetch fresh if not.
       setTimeout(_loadRosterTruth, 600);
     }
+    // Apply tab display after DOM update
+    setTimeout(() => _applyRosterTabDisplay('workspace'), 0);
     // Roster is ready — enable the top action button if we're on the nppes_alignment step
     if (lastRun?.pending_step_id === 'nppes_alignment') {
       const foot = document.getElementById('scFoot');
@@ -2647,6 +4380,8 @@ function _streamRosterValidation(uploadId, fileName) {
   // Providers become visible after parsing commits (~5-15 s for large files).
   // As soon as we have ≥1 provider row, show the table immediately.
   let _preloadShown = false;
+  let _preloadFailCount = 0;
+  const _stopPreload = () => { clearInterval(window._rosterPreloadTimer); window._rosterPreloadTimer = null; };
   const _tryPreload = async () => {
     if (_preloadShown) return;
     const s = window._rosterUploadState || {};
@@ -2654,7 +4389,14 @@ function _streamRosterValidation(uploadId, fileName) {
     try {
       // ?quick=true skips validation_history → 2 DB round trips instead of 3 (~2x faster)
       const rr = await fetch(`/chat/roster-reconcile/${uploadId}/report?quick=true`);
-      if (!rr.ok) return; // 404 = reconcile not yet started; keep retrying
+      if (!rr.ok) {
+        // 404 = upload deleted (e.g. DB cleared) — stop immediately, don't keep retrying
+        if (rr.status === 404) { _stopPreload(); return; }
+        // 5xx server error — give up after 4 consecutive failures
+        if (++_preloadFailCount >= 4) { _stopPreload(); }
+        return;
+      }
+      _preloadFailCount = 0;
       const raw = await rr.json();
       const providers = raw.providers || [];
       if (providers.length === 0) return; // parsed but empty; keep retrying
@@ -2673,14 +4415,21 @@ function _streamRosterValidation(uploadId, fileName) {
 
   let _lastProgressEmit = 0;
 
+  sse.addEventListener('waiting', () => {
+    _resetHb();
+    // Report row not yet visible — validation is initialising (DB transaction not committed yet).
+    // Show a gentle pulse so the user knows something is happening.
+    _emitRosterLog('info', 'Initializing — waiting for validation to start…');
+  });
+
   sse.addEventListener('progress', (e) => {
     _resetHb();
     try {
       const d = JSON.parse(e.data);
       const s = window._rosterUploadState || {};
-      // Emit a progress event every 10 providers (avoid flooding)
+      // Emit for every provider (threshold=1) so users see real-time movement on any file size.
       const processed = d.processed || 0;
-      if (processed > 0 && processed - _lastProgressEmit >= 10) {
+      if (processed > 0 && processed - _lastProgressEmit >= 1) {
         _lastProgressEmit = processed;
         const total = d.total || '?';
         feEmit(`Validating providers… ${processed} / ${total}`);
@@ -2900,6 +4649,13 @@ async function _autoLoadRosterIfNeeded() {
         console.log('[autoload] fast path done');
         return;
       }
+      // 404 = upload was deleted (e.g. DB cleared) — clear saved state so we don't retry it
+      if (checkResp.status === 404) {
+        feEmit('Previous roster no longer available — please upload again', 'warn');
+        _setRosterState(null);
+        if (zone) zone.innerHTML = buildRosterFileZoneHtml();
+        return;
+      }
       console.warn('[autoload] fast path report not ok — falling to slow path');
     } catch(err) {
       console.warn('[autoload] fast path error:', err);
@@ -3079,6 +4835,9 @@ async function loadAndCleanRoster(uploadId, fileName, forceRefresh = false) {
     _setRosterState({ phase: 'done', _streaming: false, report, uploadId });
     console.log('[loadAndClean] done — clean:', report.clean?.length, 'excluded:', report.excluded?.length);
     _updateUploadSummary();
+    // Hydrate dismissals from postgres — must run after report is in _rosterUploadState
+    // so _hydrateProviderDismissals can iterate report.clean
+    _loadOrgDismissals();
     setTimeout(_syncRosterToAllSources, 100);
   } catch(e) {
     console.error('[loadAndClean] error:', e);

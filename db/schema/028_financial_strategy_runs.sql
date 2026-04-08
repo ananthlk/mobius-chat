@@ -7,11 +7,13 @@
 CREATE TABLE IF NOT EXISTS financial_strategy_documents (
     document_id  TEXT PRIMARY KEY,
     org_name     TEXT NOT NULL,
+    org_slug     TEXT,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_fsd_org ON financial_strategy_documents (LOWER(org_name));
+CREATE INDEX IF NOT EXISTS idx_fsd_slug ON financial_strategy_documents (org_slug);
 
 -- ── Versions: each refinement cycle under a document ──────────────────────
 CREATE TABLE IF NOT EXISTS financial_strategy_versions (

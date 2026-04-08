@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Revenue Story — Mobius</title>
+<link rel="icon" href="static/logo.svg" type="image/svg+xml" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="static/org-story.css">
+</head>
+<body>
+
+<!-- Header -->
+<header class="os-header">
+  <div class="os-brand">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" width="22" height="22"><path d="M12 12c-2-2.5-4-4-6-4a4 4 0 0 0 0 8c2 0 4-1.5 6-4z"/><path d="M12 12c2 2.5 4 4 6 4a4 4 0 0 0 0-8c-2 0-4 1.5-6 4z"/></svg>
+    Mobius <span class="os-brand-sub">Revenue Story</span>
+  </div>
+  <div class="os-org-name" id="headerOrg">Select an organization</div>
+</header>
+
+<!-- Org selector -->
+<div class="os-selector" id="selectorPanel">
+  <div class="os-selector-inner">
+    <h2>Revenue Decomposition Dashboard</h2>
+    <p>5-factor Laspeyres decomposition: understand exactly what drives your revenue vs the FL Medicaid BH market.</p>
+    <div class="os-select-row">
+      <select id="orgSelect" class="os-select">
+        <option value="">Loading organizations...</option>
+      </select>
+      <button id="loadBtn" class="os-btn" onclick="loadStory()" disabled>Load Dashboard</button>
+    </div>
+    <div id="selectorError" class="os-error" hidden></div>
+  </div>
+</div>
+
+<!-- Dashboard (hidden until loaded) -->
+<div id="dashboard" class="os-dashboard" hidden>
+
+  <!-- Narrative banner -->
+  <section class="os-narrative" id="narrativeBanner"></section>
+
+  <!-- KPI cards row -->
+  <section class="os-kpi-row" id="kpiRow"></section>
+
+  <!-- Revenue bridge -->
+  <section class="os-section" id="revenueBridge">
+    <h3 class="os-section-title">Revenue Bridge</h3>
+    <div id="bridgeContent"></div>
+  </section>
+
+  <!-- 5-Factor index table -->
+  <section class="os-section" id="factorTable">
+    <h3 class="os-section-title">5-Factor Decomposition (base 2020 = 1.0)</h3>
+    <div id="factorContent"></div>
+  </section>
+
+  <!-- Relative position -->
+  <section class="os-section" id="relativeSection">
+    <h3 class="os-section-title">Org vs Market — Relative Position</h3>
+    <div id="relativeContent"></div>
+  </section>
+
+  <!-- YoY changes -->
+  <section class="os-section" id="yoySection">
+    <h3 class="os-section-title">Year-over-Year Change</h3>
+    <div id="yoyContent"></div>
+  </section>
+
+  <!-- Conversion -->
+  <section class="os-section" id="conversionSection">
+    <h3 class="os-section-title">Conversion (Intake to Treatment)</h3>
+    <div id="conversionContent"></div>
+  </section>
+
+  <!-- Leakage -->
+  <section class="os-section" id="leakageSection">
+    <h3 class="os-section-title">Market Share in Catchment</h3>
+    <div id="leakageContent"></div>
+  </section>
+
+  <!-- Service Mix -->
+  <section class="os-section" id="mixSection">
+    <h3 class="os-section-title">Service Mix Shift</h3>
+    <div id="mixContent"></div>
+  </section>
+
+  <!-- County Competition -->
+  <section class="os-section" id="countySection">
+    <h3 class="os-section-title">County Competition</h3>
+    <div id="countyContent"></div>
+  </section>
+
+</div>
+
+<script src="static/org-story.js"></script>
+</body>
+</html>

@@ -79,13 +79,14 @@ def test_copilot_user_filters_locations_persisted(monkeypatch) -> None:
         "find_locations",
         {"locations": [fake_locs[0]]},
     )
-    assert out["pending_step_id"] == "find_associated_providers"
+    assert out["pending_step_id"] == "nppes_alignment"
     full2 = get_credentialing_run(run_id, include_state=True)
     assert len(full2["orchestrator_state"]["locations"]) == 1
     assert full2["orchestrator_state"]["locations"][0]["location_id"] == "a"
 
 
-def test_validate_wrong_pending_raises() -> None:
+def test_validate_wrong_pending_raises(monkeypatch) -> None:
+    monkeypatch.delenv("CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL", raising=False)
     out = create_credentialing_run("O", "copilot", thread_id=None)
     with pytest.raises(ValueError, match="pending step"):
         validate_and_advance_credentialing_run(out["run_id"], "build_report", {})

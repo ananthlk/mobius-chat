@@ -6,6 +6,8 @@ const PLAN = [
   { id: 'pml_alignment',            short: 'Payor',       label: 'Payor Enrollment',                                     desc: 'Validate enrollment status across payors — Medicaid PML and others.' },
   { id: 'find_associated_providers',short: 'Compliance',  label: 'Identify ghost billing and compliance risks',          desc: 'Find providers billing under your NPI who are not on your approved roster.' },
   { id: 'taxonomy_optimization',    short: 'Taxonomy',    label: 'Ensure billing taxonomy codes are perfectly aligned',  desc: 'Audit taxonomy codes — wrong codes leave revenue on the table.' },
+  { id: 'provider_summaries',       short: 'Summaries',   label: 'Generate AI provider credential summaries',            desc: 'AI-generated one-liner, brief, and detailed summary per provider — stored for instant access.' },
+  { id: 'org_summary',              short: 'Org Report',  label: 'Compile organization-wide credential health report',   desc: 'Aggregate metrics and AI narrative for the full organization — billability %, PML gaps, open tasks.' },
 ];
 
 let runId = null;

@@ -4198,6 +4198,282 @@ function renderAssistantFromEnvelope(
       }
       table.appendChild(tbody);
       bubble.appendChild(table);
+    } else if (t === "task_list") {
+      const b = block as {
+        tasks: Array<{
+          task_id: string; text: string; detail?: string; status: string;
+          severity: string; source_module?: string; provider_name?: string;
+          npi?: string; assignee?: string; deadline?: string;
+          created_at?: string; org_name?: string; dim?: string; type?: string;
+        }>;
+        filters?: Record<string, string>;
+        allow_create?: boolean;
+        allow_resolve?: boolean;
+      };
+
+      // ── helpers ────────────────────────────────────────────────────────────
+      const SEV_LABEL: Record<string, string> = { critical: "Critical", warning: "Warning", info: "Info", low: "Low", none: "None" };
+      const SEV_ORDER: Record<string, number> = { critical: 0, warning: 1, info: 2, low: 3, none: 4 };
+      const MOD_LABEL: Record<string, string> = {
+        roster_open: "Roster", roster_recon: "Reconciliation",
+        credentialing: "Credentialing", manual: "Manual",
+      };
+
+      // Parse detail: if JSON, extract readable recommendation + issues
+      function parseDetail(raw: string | undefined): { summary: string; lines: string[] } | null {
+        if (!raw) return null;
+        try {
+          const d = JSON.parse(raw);
+          const rec: string = d.recommendation || "";
+          const issues: string[] = (d.issues || []).map((x: unknown) => String(x));
+          const warns: string[] = (d.warnings || []).map((x: unknown) => String(x));
+          const lines = [...issues, ...warns].filter(Boolean).slice(0, 6);
+          return { summary: rec || lines[0] || raw.slice(0, 120), lines };
+        } catch {
+          return { summary: raw.slice(0, 200), lines: [] };
+        }
+      }
+
+      function fmtModule(s: string): string {
+        return MOD_LABEL[s] || s.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+      }
+
+      const tasks = (b.tasks || []).slice().sort(
+        (a, b2) => (SEV_ORDER[a.severity] ?? 3) - (SEV_ORDER[b2.severity] ?? 3)
+      );
+
+      const wrap = document.createElement("div");
+      wrap.className = "tm-envelope-wrap";
+
+      // ── Header ─────────────────────────────────────────────────────────────
+      const hdr = document.createElement("div");
+      hdr.className = "tm-env-header";
+
+      const hdrLeft = document.createElement("div");
+      hdrLeft.className = "tm-env-header-left";
+      const hdrTitle = document.createElement("span");
+      hdrTitle.className = "tm-env-title";
+      hdrTitle.textContent = "Tasks";
+      hdrLeft.appendChild(hdrTitle);
+      // Severity summary chips
+      const sevCounts: Record<string, number> = {};
+      for (const tk of tasks) sevCounts[tk.severity || "low"] = (sevCounts[tk.severity || "low"] || 0) + 1;
+      for (const sev of ["critical", "warning", "info", "low"] as const) {
+        if (!sevCounts[sev]) continue;
+        const chip = document.createElement("span");
+        chip.className = `tm-env-sev-chip tm-env-sev-chip--${sev}`;
+        chip.textContent = `${sevCounts[sev]} ${SEV_LABEL[sev]}`;
+        hdrLeft.appendChild(chip);
+      }
+      hdr.appendChild(hdrLeft);
+
+      const hdrRight = document.createElement("div");
+      hdrRight.className = "tm-env-header-right";
+      hdrRight.textContent = `${tasks.length} task${tasks.length !== 1 ? "s" : ""}`;
+      hdr.appendChild(hdrRight);
+      wrap.appendChild(hdr);
+
+      // ── Filter strip ────────────────────────────────────────────────────────
+      const activeFilters = Object.entries(b.filters || {})
+        .filter(([, v]) => v != null && v !== "")
+        .map(([k, v]) => `${k}: ${v}`);
+      if (activeFilters.length) {
+        const strip = document.createElement("div");
+        strip.className = "tm-env-filter-strip";
+        strip.textContent = `Filtered by: ${activeFilters.join(" · ")}`;
+        wrap.appendChild(strip);
+      }
+
+      // ── Task list ───────────────────────────────────────────────────────────
+      if (tasks.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "tm-env-empty";
+        empty.textContent = "No tasks found.";
+        wrap.appendChild(empty);
+      } else {
+        const list = document.createElement("div");
+        list.className = "tm-env-list";
+
+        for (const task of tasks) {
+          const sev = task.severity || "low";
+          const status = task.status || "open";
+          const card = document.createElement("div");
+          card.className = `tm-env-card tm-env-sev-${sev} tm-env-status-${status}`;
+          card.setAttribute("data-task-id", task.task_id);
+
+          // Left accent bar (severity colour)
+          const accent = document.createElement("div");
+          accent.className = `tm-env-accent tm-env-accent--${sev}`;
+          card.appendChild(accent);
+
+          // Card inner
+          const inner = document.createElement("div");
+          inner.className = "tm-env-card-inner";
+
+          // ── Top row: severity badge + module tag + status ─────────────────
+          const topRow = document.createElement("div");
+          topRow.className = "tm-env-top-row";
+
+          const sevBadge = document.createElement("span");
+          sevBadge.className = `tm-env-badge tm-env-badge--${sev}`;
+          sevBadge.textContent = SEV_LABEL[sev] || sev;
+          topRow.appendChild(sevBadge);
+
+          if (task.source_module) {
+            const modTag = document.createElement("span");
+            modTag.className = "tm-env-mod-tag";
+            modTag.textContent = fmtModule(task.source_module);
+            topRow.appendChild(modTag);
+          }
+
+          if (task.dim) {
+            const dimTag = document.createElement("span");
+            dimTag.className = "tm-env-dim-tag";
+            dimTag.textContent = task.dim.replace(/_/g, " ");
+            topRow.appendChild(dimTag);
+          }
+
+          const spacer = document.createElement("span");
+          spacer.style.flex = "1";
+          topRow.appendChild(spacer);
+
+          const statusDot = document.createElement("span");
+          statusDot.className = `tm-env-status-dot tm-env-status-dot--${status}`;
+          statusDot.title = status === "in_progress" ? "In Progress" : status.charAt(0).toUpperCase() + status.slice(1);
+          topRow.appendChild(statusDot);
+
+          inner.appendChild(topRow);
+
+          // ── Task title ────────────────────────────────────────────────────
+          const title = document.createElement("div");
+          title.className = "tm-env-card-title";
+          title.textContent = task.text || "(no title)";
+          inner.appendChild(title);
+
+          // ── Provider / NPI row ────────────────────────────────────────────
+          if (task.provider_name || task.npi) {
+            const provRow = document.createElement("div");
+            provRow.className = "tm-env-prov-row";
+            if (task.provider_name) {
+              const icon = document.createElement("span");
+              icon.className = "tm-env-prov-icon";
+              icon.textContent = "person";  // material icon name resolved via CSS
+              provRow.appendChild(icon);
+              const nameSpan = document.createElement("span");
+              nameSpan.textContent = task.provider_name;
+              provRow.appendChild(nameSpan);
+            }
+            if (task.npi) {
+              const npiSpan = document.createElement("span");
+              npiSpan.className = "tm-env-npi";
+              npiSpan.textContent = `NPI ${task.npi}`;
+              provRow.appendChild(npiSpan);
+            }
+            if (task.assignee) {
+              const aSpan = document.createElement("span");
+              aSpan.className = "tm-env-assignee";
+              aSpan.textContent = `→ ${task.assignee}`;
+              provRow.appendChild(aSpan);
+            }
+            inner.appendChild(provRow);
+          }
+
+          // ── Detail disclosure (parse JSON detail cleanly) ─────────────────
+          const parsed = parseDetail(task.detail);
+          if (parsed) {
+            const det = document.createElement("details");
+            det.className = "tm-env-detail";
+            // summary = first 100 chars of recommendation
+            const sum = document.createElement("summary");
+            sum.className = "tm-env-detail-summary";
+            const summaryText = parsed.summary.length > 100
+              ? parsed.summary.slice(0, 100) + "…"
+              : parsed.summary;
+            sum.textContent = summaryText || "Detail";
+            det.appendChild(sum);
+
+            // Full detail body
+            const detBody = document.createElement("div");
+            detBody.className = "tm-env-detail-body";
+            if (parsed.lines.length) {
+              const ul = document.createElement("ul");
+              ul.className = "tm-env-detail-list";
+              for (const line of parsed.lines) {
+                const li = document.createElement("li");
+                li.textContent = line;
+                ul.appendChild(li);
+              }
+              detBody.appendChild(ul);
+              // Full recommendation below issues list
+              if (parsed.summary && parsed.lines.length) {
+                const rec = document.createElement("p");
+                rec.className = "tm-env-detail-rec";
+                rec.textContent = parsed.summary;
+                detBody.appendChild(rec);
+              }
+            } else {
+              detBody.textContent = parsed.summary;
+            }
+            det.appendChild(detBody);
+            inner.appendChild(det);
+          }
+
+          card.appendChild(inner);
+
+          // ── Resolve button ────────────────────────────────────────────────
+          if ((b.allow_resolve !== false) && (status === "open" || status === "in_progress")) {
+            const actions = document.createElement("div");
+            actions.className = "tm-env-card-actions";
+            const statusIcon = document.createElement("span"); // keep ref for post-resolve update
+            const resolveBtn = document.createElement("button");
+            resolveBtn.type = "button";
+            resolveBtn.className = "tm-env-btn tm-env-btn--resolve";
+            resolveBtn.textContent = "Resolve";
+            resolveBtn.addEventListener("click", async (e) => {
+              e.stopPropagation();
+              resolveBtn.disabled = true;
+              resolveBtn.textContent = "…";
+              try {
+                await fetch(`/chat/tasks/${task.task_id}/resolve`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ resolved_by: "chat" }),
+                });
+                card.classList.remove("tm-env-status-open", "tm-env-status-in_progress");
+                card.classList.add("tm-env-status-resolved");
+                statusDot.className = "tm-env-status-dot tm-env-status-dot--resolved";
+                resolveBtn.remove();
+              } catch {
+                resolveBtn.disabled = false;
+                resolveBtn.textContent = "Resolve";
+              }
+            });
+            actions.appendChild(resolveBtn);
+            card.appendChild(actions);
+          }
+
+          list.appendChild(card);
+        }
+        wrap.appendChild(list);
+      }
+
+      // ── Footer ──────────────────────────────────────────────────────────────
+      const footer = document.createElement("div");
+      footer.className = "tm-env-footer";
+      const countNote = document.createElement("span");
+      countNote.className = "tm-env-footer-note";
+      countNote.textContent = tasks.length >= 50 ? `Showing first 50 · more may exist` : `${tasks.length} task${tasks.length !== 1 ? "s" : ""} total`;
+      footer.appendChild(countNote);
+      const exportLink = document.createElement("a");
+      exportLink.href = "/chat/tasks/export";
+      exportLink.className = "tm-env-view-all";
+      exportLink.target = "_blank";
+      exportLink.rel = "noopener";
+      exportLink.textContent = "↓ Export CSV";
+      footer.appendChild(exportLink);
+      wrap.appendChild(footer);
+
+      bubble.appendChild(wrap);
     } else if (t === "callout") {
       const b = block as { body: string; variant?: string };
       const c = document.createElement("div");
@@ -4431,8 +4707,11 @@ function run(): void {
       }
       nextEl.textContent = ack.next_step || "";
     } else {
-      headline.textContent = "Upload complete";
-      sub.textContent = "Your file was saved to this chat.";
+      const isRAG = (data as any).file_purpose === "instant_rag" || (data as any).verification_tier === "instant";
+      headline.textContent = isRAG ? "Document ingested for RAG" : "Upload complete";
+      sub.textContent = isRAG
+        ? "Your document has been chunked, embedded, and is now queryable in this chat."
+        : "Your file was saved to this chat.";
       checksEl.replaceChildren();
       const li = document.createElement("li");
       const t = document.createElement("span");
@@ -4440,14 +4719,17 @@ function run(): void {
       t.textContent = "Summary";
       const d = document.createElement("span");
       d.className = "roster-receipt__check-detail";
-      d.textContent = `${data.filename ?? "File"} — ${data.row_count ?? 0} row(s) for ${data.org_name ?? ""}. Billing NPI ${data.default_billing_npi || data.org_id || "—"}.`;
+      d.textContent = isRAG
+        ? `${data.filename ?? "File"} — ${(data as any).chunks_count ?? data.row_count ?? 0} chunk(s) indexed. Verification tier: instant (7-day TTL).`
+        : `${data.filename ?? "File"} — ${data.row_count ?? 0} row(s) for ${data.org_name ?? ""}. Billing NPI ${data.default_billing_npi || data.org_id || "—"}.`;
       li.appendChild(t);
       li.appendChild(d);
       checksEl.appendChild(li);
       alertsEl.replaceChildren();
       alertsEl.setAttribute("hidden", "");
-      nextEl.textContent =
-        "Press Send to run reconciliation, or wait if you turned on automatic send after upload.";
+      nextEl.textContent = isRAG
+        ? "Ask a question about this document — it's ready for retrieval now."
+        : "Press Send to run reconciliation, or wait if you turned on automatic send after upload.";
     }
 
     function addMeta(label: string, value: string): void {
@@ -4460,14 +4742,23 @@ function run(): void {
       metaEl.appendChild(dd);
     }
     metaEl.replaceChildren();
+    const _isRAG = (data as any).file_purpose === "instant_rag" || (data as any).verification_tier === "instant";
     addMeta("File", (data.filename ?? "").trim());
-    if (data.row_count_cleansed != null) addMeta("Rows after cleanup", String(data.row_count_cleansed));
-    if (data.row_count_resolved != null) addMeta("Rows checked in NPI registry", String(data.row_count_resolved));
-    addMeta("Billing NPI", (data.default_billing_npi || data.org_id || "").trim());
-    addMeta("Matched organization (registry)", (data.matched_organization_name ?? "").trim());
-    if ((data.matched_practice_address ?? "").trim())
-      addMeta("Practice address on file", (data.matched_practice_address ?? "").trim());
-    addMeta("Process status", (data.process_status ?? "").trim());
+    if (_isRAG) {
+      addMeta("Chunks indexed", String((data as any).chunks_count ?? data.row_count ?? 0));
+      addMeta("Verification tier", (data as any).verification_tier ?? "instant");
+      addMeta("Status", (data as any).status ?? "live");
+      if ((data as any).envelope_id) addMeta("Envelope ID", (data as any).envelope_id);
+      if ((data as any).document_id) addMeta("Document ID", (data as any).document_id);
+    } else {
+      if (data.row_count_cleansed != null) addMeta("Rows after cleanup", String(data.row_count_cleansed));
+      if (data.row_count_resolved != null) addMeta("Rows checked in NPI registry", String(data.row_count_resolved));
+      addMeta("Billing NPI", (data.default_billing_npi || data.org_id || "").trim());
+      addMeta("Matched organization (registry)", (data.matched_organization_name ?? "").trim());
+      if ((data.matched_practice_address ?? "").trim())
+        addMeta("Practice address on file", (data.matched_practice_address ?? "").trim());
+      addMeta("Process status", (data.process_status ?? "").trim());
+    }
     addMeta("Upload ID", (data.upload_id ?? "").trim());
     addMeta("Chat thread ID", (data.thread_id ?? "").trim());
     const rs = data.resolution_summary;
@@ -5809,6 +6100,15 @@ function run(): void {
       uploadPhaseTimers = [];
     }
 
+    const rosterFields = document.getElementById("uploadFieldRoster");
+    // Toggle roster-specific fields based on purpose
+    uploadFilePurpose?.addEventListener("change", () => {
+      const isRoster = uploadFilePurpose.value === "roster_reconciliation";
+      if (rosterFields) rosterFields.hidden = !isRoster;
+      if (uploadOrgName) uploadOrgName.required = isRoster;
+      updateSubmitState();
+    });
+
     function startUploadPhaseEmits(purpose: string): void {
       stopUploadPhaseEmits();
       const roster = purpose === "roster_reconciliation";
@@ -5819,7 +6119,12 @@ function run(): void {
             { ms: 7000, text: "Step 3 of 3 — Parsing rows and resolving NPIs (often 30s–2 min)…" },
             { ms: 45000, text: "Still working — large rosters can take a bit longer…" },
           ]
-        : [{ ms: 0, text: "Uploading file…" }];
+        : [
+            { ms: 0, text: "Step 1 of 3 — Extracting text from document…" },
+            { ms: 3000, text: "Step 2 of 3 — Chunking and generating embeddings…" },
+            { ms: 8000, text: "Step 3 of 3 — Publishing to RAG corpus…" },
+            { ms: 30000, text: "Still working — large documents take a bit longer…" },
+          ];
 
       phases.forEach(({ ms, text }) => {
         const id = window.setTimeout(() => setStatus(text, false, true), ms);
@@ -5857,26 +6162,28 @@ function run(): void {
 
     function updateSubmitState(): void {
       const hasFile = !!(uploadFile?.files?.length);
+      const isRoster = (uploadFilePurpose?.value || "roster_reconciliation") === "roster_reconciliation";
       const hasOrg = !!(uploadOrgName?.value?.trim());
-      if (uploadSubmit) uploadSubmit.disabled = !(hasFile && hasOrg);
+      if (uploadSubmit) uploadSubmit.disabled = !(hasFile && (hasOrg || !isRoster));
     }
     uploadOrgName?.addEventListener("input", updateSubmitState);
     uploadFile?.addEventListener("change", updateSubmitState);
 
     uploadForm?.addEventListener("submit", (e) => {
       e.preventDefault();
-      const orgName = uploadOrgName?.value?.trim();
+      const orgName = uploadOrgName?.value?.trim() || "";
       const file = uploadFile?.files?.[0];
-      if (!orgName || !file) return;
+      const purpose = (uploadFilePurpose?.value || "roster_reconciliation").trim();
+      const isRoster = purpose === "roster_reconciliation";
+      if (!file || (isRoster && !orgName)) return;
       uploadSubmit?.setAttribute("disabled", "");
       uploadModal?.classList.add("upload-modal--busy");
       uploadForm?.setAttribute("aria-busy", "true");
       uploadProgressWrap?.removeAttribute("hidden");
-      const purpose = (uploadFilePurpose?.value || "roster_reconciliation").trim();
       startUploadPhaseEmits(purpose);
       const formData = new FormData();
       formData.append("file", file);
-      formData.append("org_name", orgName);
+      formData.append("org_name", orgName || "instant-rag");
       formData.append("file_purpose", purpose);
       if (currentThreadId) formData.append("thread_id", currentThreadId);
       uploadAbort = new AbortController();
@@ -5895,11 +6202,25 @@ function run(): void {
             uploadProgressWrap?.setAttribute("hidden", "");
             uploadAbort = null;
             showRosterUploadReceipt(data);
+            // Capture purpose BEFORE form reset (reset reverts select to first option)
+            const uploadPurpose = purpose;
             uploadForm?.reset();
             updateSubmitState();
-            inputEl.value = `Run reconciliation report for ${org}`;
+            if (uploadPurpose === "instant_rag") {
+              const fname = data.filename ?? file?.name ?? "document";
+              inputEl.value = `I just uploaded "${fname}" — what does it say about eligibility and coverage?`;
+            } else {
+              inputEl.value = `Run reconciliation report for ${org}`;
+            }
             updateSendState();
             hideUploadModal();
+            // Reset roster fields visibility
+            if (rosterFields) rosterFields.hidden = false;
+            if (uploadOrgName) uploadOrgName.required = true;
+            // For instant_rag: skip credentialing envelope and auto-send
+            if (uploadPurpose === "instant_rag") {
+              return;
+            }
             const reopen = credentialingReopenMessage;
             if (reopen) {
               credentialingReopenMessage = null;
@@ -5909,7 +6230,7 @@ function run(): void {
               return;
             }
             const auto = document.getElementById("uploadAutoSendReconciliation") as HTMLInputElement | null;
-            if ((uploadFilePurpose?.value || "roster_reconciliation").trim() === "roster_reconciliation" && auto?.checked) {
+            if (uploadPurpose === "roster_reconciliation" && auto?.checked) {
               window.setTimeout(() => sendMessage(), 0);
             }
           }
@@ -6124,8 +6445,12 @@ function run(): void {
     // Sidebar entry points
     document.getElementById("btnOpenSkillPipeline")?.addEventListener("click", () => {
       closeSkillsModal();
-      const base = (window as Window & typeof globalThis & { API_BASE?: string }).API_BASE || window.location.origin;
-      window.open(base + "/pipeline", "_blank", "noopener");
+      window.open("http://localhost:3999/credentialing-home.html", "_blank", "noopener");
+    });
+
+    document.getElementById("btnOpenFinancialStrategy")?.addEventListener("click", () => {
+      closeSkillsModal();
+      window.open("http://localhost:8099/financial-strategy", "_blank", "noopener");
     });
 
     // Close button
@@ -6135,17 +6460,251 @@ function run(): void {
     // "Open Pipeline" from skills modal card
     document.getElementById("skillPipelineOpen")?.addEventListener("click", () => {
       closeSkillsModal();
-      const base = (window as Window & typeof globalThis & { API_BASE?: string }).API_BASE || window.location.origin;
-      window.open(base + "/pipeline", "_blank", "noopener");
+      window.open("http://localhost:3999/credentialing-home.html", "_blank", "noopener");
     });
 
     // Keyboard escape
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && !modal?.hasAttribute("hidden")) closeSkillsModal();
     });
+
+    // ── Roster buttons (sidebar + skill card) ──────────────
+    function openRosterPage(): void {
+      closeSkillsModal();
+      const base = (window as Window & typeof globalThis & { API_BASE?: string }).API_BASE || window.location.origin;
+      const lastOrg = localStorage.getItem("lastOrg") || "";
+      const url = base + "/roster" + (lastOrg ? "?org=" + encodeURIComponent(lastOrg) : "");
+      window.open(url, "_blank", "noopener");
+    }
+    document.getElementById("btnOpenRoster")?.addEventListener("click", openRosterPage);
+    document.getElementById("skillRosterOpen")?.addEventListener("click", openRosterPage);
   })();
+
+  // ── Boot landing dashboard ──────────────────────────────────
+  _initLandingDashboard();
 }
 
 run();
+
+// ════════════════════════════════════════════════════════════════
+// LANDING DASHBOARD  (ld-* namespace)
+// ════════════════════════════════════════════════════════════════
+
+let _ldAllRuns: any[] = [];
+
+function _initLandingDashboard(): void {
+  function _openPipeline(): void {
+    window.open("http://localhost:3999/credentialing-home.html", "_blank", "noopener");
+  }
+  function _openRoster(): void {
+    const base = (window as any).API_BASE || window.location.origin;
+    const lastOrg = localStorage.getItem("lastOrg") || "";
+    window.open(base + "/roster" + (lastOrg ? "?org=" + encodeURIComponent(lastOrg) : ""), "_blank", "noopener");
+  }
+  document.getElementById("ldNewRunBtn")?.addEventListener("click", _openPipeline);
+  document.getElementById("ldStartRunBtn")?.addEventListener("click", _openPipeline);
+  document.getElementById("ldSetupBtn")?.addEventListener("click", _openPipeline);
+
+  document.getElementById("ldOrgSelect")?.addEventListener("change", function(this: HTMLSelectElement) {
+    const org = this.value;
+    if (!org) return;
+    localStorage.setItem("lastOrg", org);
+    _ldOnOrgSelected(org, (window as any).API_BASE || window.location.origin);
+  });
+
+  // roster link in dashboard
+  document.getElementById("ldRosterOpenBtn")?.addEventListener("click", _openRoster);
+
+  _ldBootstrap((window as any).API_BASE || window.location.origin);
+}
+
+async function _ldBootstrap(base: string): Promise<void> {
+  const sel = document.getElementById("ldOrgSelect") as HTMLSelectElement | null;
+  try {
+    const r = await fetch(`${base}/chat/credentialing-runs?limit=50`);
+    if (r.ok) _ldAllRuns = await r.json();
+  } catch { _ldAllRuns = []; }
+
+  const seen = new Set<string>(), orgs: string[] = [];
+  for (const run of _ldAllRuns) {
+    const o = (run.org_name || "").trim();
+    if (o && !seen.has(o)) { seen.add(o); orgs.push(o); }
+  }
+
+  if (sel) {
+    sel.innerHTML = orgs.length
+      ? orgs.map(o => `<option value="${_ldEsc(o)}">${_ldEsc(o)}</option>`).join("")
+      : '<option value="">No orgs yet — start a run</option>';
+    const last = localStorage.getItem("lastOrg") || "";
+    if (last && orgs.includes(last)) sel.value = last;
+  }
+
+  const activeOrg = sel?.value || orgs[0] || "";
+  if (activeOrg) {
+    if (activeOrg !== localStorage.getItem("lastOrg")) localStorage.setItem("lastOrg", activeOrg);
+    _ldOnOrgSelected(activeOrg, base);
+  } else {
+    _ldRenderRunList([], base);
+    _ldRosterNoData("Start your first credentialing run to populate.");
+  }
+}
+
+function _ldOnOrgSelected(org: string, base: string): void {
+  const link = document.getElementById("ldRosterLink") as HTMLAnchorElement | null;
+  if (link) link.href = `${base}/roster?org=${encodeURIComponent(org)}`;
+  const orgRuns = _ldAllRuns.filter((r: any) => (r.org_name || "").trim() === org);
+  _ldRenderRunList(orgRuns, base);
+  _ldRenderOrgSteps(orgRuns);
+  _ldFetchRosterStats(org, base);
+}
+
+function _ldRenderOrgSteps(orgRuns: any[]): void {
+  const vo = orgRuns[0]?.validated_outputs || {};
+  const steps = [
+    { chipId: "ldStep1Chip", valId: "ldStep1Val", key: "identify_org" },
+    { chipId: "ldStep2Chip", valId: "ldStep2Val", key: "find_locations" },
+  ];
+  for (const s of steps) {
+    const done = !!vo[s.key];
+    const chip = document.getElementById(s.chipId);
+    const val  = document.getElementById(s.valId);
+    if (chip) chip.className = "ld-step-chip " + (done ? "ld-step-chip--done" : "ld-step-chip--idle");
+    if (val) {
+      if (s.key === "identify_org") {
+        const npi = (typeof vo.identify_org === "object" && vo.identify_org?.npi) ? vo.identify_org.npi : "";
+        val.textContent = done ? (npi || "✓") : "—";
+      } else {
+        const d = typeof vo.find_locations === "object" ? vo.find_locations : {} as any;
+        const n = d.row_count ?? d.location_count ?? null;
+        val.textContent = done ? (n != null ? n + " loc" : "✓") : "—";
+      }
+    }
+  }
+}
+
+function _ldRenderRunList(runs: any[], base: string): void {
+  const listEl = document.getElementById("ldRunList");
+  if (!listEl) return;
+  if (!runs.length) {
+    listEl.innerHTML = '<div class="ld-empty-note">No runs for this org yet.</div>';
+    return;
+  }
+  const STEP_META = [
+    { id: "nppes_alignment",            short: "NPPES",      num: 3 },
+    { id: "pml_alignment",              short: "PML",        num: 4 },
+    { id: "find_associated_providers",  short: "Compliance", num: 5 },
+    { id: "taxonomy_optimization",      short: "Taxonomy",   num: 6 },
+  ];
+  listEl.innerHTML = runs.slice(0, 8).map((run: any) => {
+    const phase = run.phase || "pending";
+    const vo    = run.validated_outputs || {};
+    const badgeCls = phase === "complete" ? "ld-cap-badge--complete"
+                   : (phase === "error" || phase === "failed") ? "ld-cap-badge--error"
+                   : (phase === "running" || phase === "in_progress") ? "ld-cap-badge--running"
+                   : "ld-cap-badge--pending";
+    const badgeLbl = phase === "complete" ? "✓ Complete"
+                   : (phase === "error" || phase === "failed") ? "✗ Error"
+                   : phase === "running" ? "● Running"
+                   : phase === "in_progress" ? "→ In progress" : "Pending";
+    const capCls = phase === "complete" ? "ld-run-capsule--complete"
+                 : (phase === "error" || phase === "failed") ? "ld-run-capsule--error"
+                 : "ld-run-capsule--active";
+    const mode = run.mode === "autopilot" ? "autopilot" : run.mode === "copilot" ? "co-pilot" : (run.mode || "");
+    const dt   = run.updated_at ? new Date(run.updated_at).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "";
+    const pills = STEP_META.map(s =>
+      `<span class="ld-step-pill${vo[s.id] ? " ld-step-pill--done" : ""}" title="Step ${s.num}: ${s.short}">${s.short}</span>`
+    ).join("");
+    const runUrl = `${base}/pipeline?run_id=${encodeURIComponent(run.run_id)}`;
+    return `<a class="ld-run-capsule ${capCls}" href="${runUrl}" target="_blank" rel="noopener">
+      <div class="ld-cap-head">
+        <div class="ld-cap-date">${dt}${mode ? " · " + _ldEsc(mode) : ""}</div>
+        <span class="ld-cap-badge ${badgeCls}">${badgeLbl}</span>
+      </div>
+      <div class="ld-cap-steps-row">${pills}</div>
+    </a>`;
+  }).join("");
+}
+
+async function _ldFetchRosterStats(org: string, base: string): Promise<void> {
+  ["ldStatTotal", "ldStatBillable", "ldStatAtRisk", "ldStatBlocked", "ldStatTasks"]
+    .forEach(id => { const el = document.getElementById(id); if (el) el.textContent = "…"; });
+  try {
+    const r = await fetch(`${base}/chat/roster-truth/${encodeURIComponent(org)}?limit=500`);
+    if (!r.ok) throw new Error(String(r.status));
+    const data = await r.json();
+    _ldRenderRosterStats(Array.isArray(data) ? data : (data.providers || data.items || []));
+  } catch { _ldRosterNoData("Could not load roster."); }
+}
+
+function _ldRenderRosterStats(providers: any[]): void {
+  const total = providers.length;
+  const tasks = providers.filter((p: any) => { const t = p.open_tasks; return Array.isArray(t) ? t.length > 0 : false; }).length;
+  let billable = 0, atRisk = 0, blocked = 0;
+  for (const p of providers) {
+    const snap    = (typeof p.nppes_snapshot === "object" && p.nppes_snapshot) ? p.nppes_snapshot : {} as any;
+    const nppesOk = (snap.nppes_status || "").toUpperCase() === "A";
+    const openCnt = Array.isArray(p.open_tasks) ? p.open_tasks.length : 0;
+    const valid   = p.decision === "validated";
+    if (valid && nppesOk && openCnt === 0) billable++;
+    else if (valid) atRisk++;
+    else blocked++;
+  }
+  if (billable + atRisk + blocked === 0 && total > 0) {
+    billable = providers.filter((p: any) => p.decision === "validated").length;
+    atRisk   = providers.filter((p: any) => p.decision === "flagged" || p.decision === "review").length;
+    blocked  = total - billable - atRisk;
+  }
+  const ids: Record<string, number> = { ldStatTotal: total, ldStatBillable: billable, ldStatAtRisk: atRisk, ldStatBlocked: blocked, ldStatTasks: tasks };
+  Object.entries(ids).forEach(([id, v]) => { const el = document.getElementById(id); if (el) _ldCountUp(el, v); });
+  if (total > 0) {
+    const bw = document.getElementById("ldBarWrap");
+    if (bw) {
+      bw.style.display = "";
+      setTimeout(() => {
+        const g = document.getElementById("ldBarGreen"), a = document.getElementById("ldBarAmber"), rd = document.getElementById("ldBarRed");
+        if (g)  g.style.width = ((billable / total) * 100).toFixed(1) + "%";
+        if (a)  a.style.width = ((atRisk / total) * 100).toFixed(1) + "%";
+        if (rd) rd.style.width = ((blocked / total) * 100).toFixed(1) + "%";
+      }, 30);
+      const leg = document.getElementById("ldBarLegend");
+      if (leg) leg.textContent = `${Math.round((billable / total) * 100)}% billable · ${atRisk} at risk · ${blocked} blocked`;
+    }
+  }
+  const issueEl = document.getElementById("ldIssueList");
+  if (issueEl) {
+    const chips: { cls: string; icon: string; text: string }[] = [];
+    if (blocked > 0) chips.push({ cls: "ld-issue-chip--crit", icon: "✗", text: `${blocked} provider${blocked > 1 ? "s" : ""} blocked from billing` });
+    if (atRisk  > 0) chips.push({ cls: "ld-issue-chip--warn", icon: "⚠", text: `${atRisk} provider${atRisk > 1 ? "s" : ""} at risk — gaps exist` });
+    if (tasks   > 0) chips.push({ cls: "ld-issue-chip--warn", icon: "◎", text: `${tasks} open credentialing task${tasks > 1 ? "s" : ""}` });
+    if (!chips.length && total > 0) chips.push({ cls: "ld-issue-chip--ok", icon: "✓", text: "All providers clean — no gaps detected" });
+    if (!total) chips.push({ cls: "ld-issue-chip", icon: "·", text: "No providers in roster yet" });
+    issueEl.innerHTML = chips.map(c => `<div class="ld-issue-chip ${c.cls}"><span>${c.icon}</span><span>${c.text}</span></div>`).join("");
+  }
+  const lr = document.getElementById("ldLastRun");
+  if (lr) lr.textContent = `${total} provider${total !== 1 ? "s" : ""} on record`;
+}
+
+function _ldRosterNoData(msg: string): void {
+  ["ldStatTotal", "ldStatBillable", "ldStatAtRisk", "ldStatBlocked", "ldStatTasks"]
+    .forEach(id => { const el = document.getElementById(id); if (el) el.textContent = "—"; });
+  const issueEl = document.getElementById("ldIssueList");
+  if (issueEl) issueEl.innerHTML = `<div class="ld-issue-chip">${_ldEsc(msg)}</div>`;
+}
+
+function _ldCountUp(el: HTMLElement, target: number): void {
+  el.textContent = "0";
+  if (!target) { el.textContent = "0"; return; }
+  const steps = 18, dur = 500;
+  let cur = 0;
+  const iv = setInterval(() => {
+    cur = Math.min(cur + Math.ceil(target / steps), target);
+    el.textContent = String(cur);
+    if (cur >= target) clearInterval(iv);
+  }, dur / steps);
+}
+
+function _ldEsc(str: string): string {
+  return String(str || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
 
 export {};

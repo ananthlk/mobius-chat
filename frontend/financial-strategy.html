@@ -86,6 +86,14 @@
           <button onclick="downloadPDF('both')">Full Report (Both)</button>
         </div>
       </div>
+      <button class="btn-action ghost" onclick="refreshBaseline()" id="refreshBtn" style="font-size:.75rem;padding:.3rem .7rem" title="Rebuild report from latest data (bypasses cache)">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+        Refresh
+      </button>
+      <button class="btn-action ghost" onclick="toggleVersionHistory()" id="versionHistBtn" style="font-size:.75rem;padding:.3rem .7rem">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        Versions
+      </button>
       <button class="btn-action ghost" onclick="backToStart()" style="font-size:.75rem;padding:.3rem .7rem">All orgs</button>
     </div>
   </div>
@@ -97,40 +105,52 @@
     <aside class="fs-sidebar" id="fsSidebar">
       <div class="fs-nav-list" id="fsNavList">
         <div class="fs-nav-chapter-label">Chapter 1 — Industry</div>
-        <button class="fs-nav-item active" data-section="industry-landscape" onclick="navigateTo('industry-landscape')">
-          <span class="fs-nav-num">1</span> Sector Landscape
+        <button class="fs-nav-item active" data-section="data-calibration" onclick="navigateTo('data-calibration')">
+          <span class="fs-nav-num">1</span> Data Calibration
+        </button>
+        <button class="fs-nav-item" data-section="industry-landscape" onclick="navigateTo('industry-landscape')">
+          <span class="fs-nav-num">2</span> Sector Landscape
+        </button>
+        <button class="fs-nav-item" data-section="industry-published-rates" onclick="navigateTo('industry-published-rates')">
+          <span class="fs-nav-num">3</span> Fee Schedule
         </button>
         <button class="fs-nav-item" data-section="industry-rates" onclick="navigateTo('industry-rates')">
-          <span class="fs-nav-num">2</span> Rate Gaps
+          <span class="fs-nav-num">4</span> Rate Gaps
+        </button>
+        <button class="fs-nav-item" data-section="industry-fqhc" onclick="navigateTo('industry-fqhc')">
+          <span class="fs-nav-num">5</span> CMHC vs FQHC
         </button>
         <button class="fs-nav-item" data-section="industry-leakage" onclick="navigateTo('industry-leakage')">
-          <span class="fs-nav-num">3</span> Leakage
+          <span class="fs-nav-num">6</span> Leakage
         </button>
         <button class="fs-nav-item" data-section="industry-burnout" onclick="navigateTo('industry-burnout')">
-          <span class="fs-nav-num">4</span> Caseload
+          <span class="fs-nav-num">7</span> Caseload
+        </button>
+        <button class="fs-nav-item" data-section="industry-market-archetypes" onclick="navigateTo('industry-market-archetypes')">
+          <span class="fs-nav-num">8</span> Market Archetypes
         </button>
         <button class="fs-nav-item" data-section="industry-trends" onclick="navigateTo('industry-trends')">
-          <span class="fs-nav-num">5</span> Trends
+          <span class="fs-nav-num">9</span> Trends
         </button>
 
         <div class="fs-nav-chapter-label" style="margin-top:.75rem">Chapter 2 — Your Org</div>
         <button class="fs-nav-item" data-section="overview" onclick="navigateTo('overview')">
-          <span class="fs-nav-num">6</span> Overview
+          <span class="fs-nav-num">10</span> Overview
         </button>
         <button class="fs-nav-item" data-section="rates" onclick="navigateTo('rates')">
-          <span class="fs-nav-num">7</span> Rates vs Best-in-Class
+          <span class="fs-nav-num">11</span> Rates vs Best-in-Class
         </button>
         <button class="fs-nav-item" data-section="engagement" onclick="navigateTo('engagement')">
-          <span class="fs-nav-num">8</span> Patient Engagement
+          <span class="fs-nav-num">12</span> Patient Engagement
         </button>
         <button class="fs-nav-item" data-section="burnout" onclick="navigateTo('burnout')">
-          <span class="fs-nav-num">9</span> Capacity & Burnout
+          <span class="fs-nav-num">13</span> Capacity & Burnout
         </button>
         <button class="fs-nav-item" data-section="verdicts" onclick="navigateTo('verdicts')">
-          <span class="fs-nav-num">10</span> Verdicts
+          <span class="fs-nav-num">14</span> Verdicts
         </button>
         <button class="fs-nav-item" data-section="priorities" onclick="navigateTo('priorities')">
-          <span class="fs-nav-num">11</span> Priorities
+          <span class="fs-nav-num">15</span> Priorities
         </button>
       </div>
 
@@ -204,6 +224,19 @@
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
     Add to Plan
   </button>
+</div>
+
+<!-- ── Version History Drawer ──────────────────────────────── -->
+<div id="versionHistoryDrawer" class="vh-drawer">
+  <div class="vh-panel">
+    <div class="vh-head">
+      <span class="vh-title">Version History</span>
+      <button class="vh-close" onclick="event.stopPropagation(); toggleVersionHistory()">&times;</button>
+    </div>
+    <div class="vh-body" id="versionHistoryBody">
+      <div class="vh-loading"><span class="spinner"></span> Loading versions...</div>
+    </div>
+  </div>
 </div>
 
 <script src="static/financial-strategy.js"></script>
