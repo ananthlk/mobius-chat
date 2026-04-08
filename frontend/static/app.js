@@ -2910,6 +2910,182 @@ function openDocumentOrSnippet(s) {
     window.open(url, "_blank", "noopener,noreferrer");
   }
 }
+function _ensureDocReaderDOM() {
+  if (document.getElementById("doc-reader-panel"))
+    return;
+  const overlay = document.createElement("div");
+  overlay.id = "doc-reader-overlay";
+  overlay.addEventListener("click", closeDocReaderPanel);
+  document.body.appendChild(overlay);
+  const panel = document.createElement("div");
+  panel.id = "doc-reader-panel";
+  panel.innerHTML = '<div class="doc-reader-header"><span class="doc-reader-title">Document Viewer</span><div class="doc-reader-header-actions"><a class="doc-reader-rag-link" href="#" target="_blank" rel="noopener noreferrer">Open in RAG &#8599;</a><button class="doc-reader-close" title="Close">&times;</button></div></div><div class="doc-reader-iframe-wrap"><div class="doc-reader-loading">Loading document\u2026</div></div>';
+  panel.querySelector(".doc-reader-close").addEventListener("click", closeDocReaderPanel);
+  document.body.appendChild(panel);
+}
+function openDocReaderPanel(documentId, pageNumber, citeText) {
+  if (!documentId)
+    return;
+  _ensureDocReaderDOM();
+  const panel = document.getElementById("doc-reader-panel");
+  const overlay = document.getElementById("doc-reader-overlay");
+  const iframeWrap = panel.querySelector(".doc-reader-iframe-wrap");
+  const titleEl = panel.querySelector(".doc-reader-title");
+  const ragLink = panel.querySelector(".doc-reader-rag-link");
+  requestAnimationFrame(() => {
+    overlay.classList.add("open");
+    panel.classList.add("open");
+  });
+  iframeWrap.innerHTML = '<div class="doc-reader-loading">Loading document\u2026</div>';
+  titleEl.textContent = "Document Viewer";
+  const ragUrl = getRagDocumentUrl(documentId, pageNumber, citeText ?? null);
+  if (ragUrl) {
+    ragLink.href = ragUrl;
+    ragLink.style.display = "";
+  } else {
+    ragLink.style.display = "none";
+  }
+  const ragBase = (typeof window.RAG_APP_BASE === "string" ? window.RAG_APP_BASE : "").trim().replace(/\/$/, "");
+  if (!ragBase) {
+    iframeWrap.innerHTML = '<div class="doc-reader-error">RAG_APP_BASE not configured. Cannot load document viewer.</div>';
+    return;
+  }
+  const params = new URLSearchParams({ embed: "true", tab: "read", documentId });
+  if (pageNumber != null)
+    params.set("pageNumber", String(pageNumber));
+  if (citeText && citeText.trim())
+    params.set("citeText", citeText.trim().slice(0, 400));
+  const embedUrl = `${ragBase}?${params.toString()}`;
+  const iframe = document.createElement("iframe");
+  iframe.className = "doc-reader-iframe";
+  iframe.src = embedUrl;
+  iframe.setAttribute("frameborder", "0");
+  iframe.setAttribute("allow", "clipboard-write");
+  iframe.addEventListener("load", () => {
+    titleEl.textContent = "Document Viewer";
+  });
+  iframeWrap.innerHTML = "";
+  iframeWrap.appendChild(iframe);
+}
+function closeDocReaderPanel() {
+  const panel = document.getElementById("doc-reader-panel");
+  const overlay = document.getElementById("doc-reader-overlay");
+  if (panel)
+    panel.classList.remove("open");
+  if (overlay)
+    overlay.classList.remove("open");
+}
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape")
+    closeDocReaderPanel();
+});
+var _activeToolbar = null;
+var _BOOKMARKS_KEY = "mobius_bookmarks";
+function _svgIcon(name) {
+  const icons = {
+    copy: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25z"/></svg>',
+    bookmark: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M3 2.75C3 1.784 3.784 1 4.75 1h6.5c.966 0 1.75.784 1.75 1.75v11.5a.75.75 0 01-1.227.579L8 11.722l-3.773 3.107A.75.75 0 013 14.25zm1.75-.25a.25.25 0 00-.25.25v9.91l3.023-2.489a.75.75 0 01.954 0l3.023 2.49V2.75a.25.25 0 00-.25-.25z"/></svg>',
+    cite: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.75 2h12.5c.966 0 1.75.784 1.75 1.75v8.5A1.75 1.75 0 0114.25 14H1.75A1.75 1.75 0 010 12.25v-8.5C0 2.784.784 2 1.75 2zm0 1.5a.25.25 0 00-.25.25v8.5c0 .138.112.25.25.25h12.5a.25.25 0 00.25-.25v-8.5a.25.25 0 00-.25-.25zM3.5 6.25a.75.75 0 01.75-.75h7.5a.75.75 0 010 1.5h-7.5a.75.75 0 01-.75-.75zm.75 2.25a.75.75 0 000 1.5h4a.75.75 0 000-1.5z"/></svg>'
+  };
+  return icons[name] || "";
+}
+function _removeToolbar() {
+  if (_activeToolbar) {
+    _activeToolbar.remove();
+    _activeToolbar = null;
+  }
+}
+function _showToast(msg) {
+  const t = document.createElement("div");
+  t.className = "tst-toast";
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 1800);
+}
+function _getDocContextFromElement(el2) {
+  const envelope = el2.closest(".assistant-envelope");
+  if (envelope) {
+    const sourceDoc = envelope.querySelector(".source-doc");
+    if (sourceDoc)
+      return { docName: sourceDoc.textContent || "Document", docId: "" };
+  }
+  return { docName: "Document", docId: "" };
+}
+function initTextSelectionToolbar() {
+  document.addEventListener("mouseup", () => {
+    setTimeout(() => {
+      _removeToolbar();
+      const sel = window.getSelection();
+      const text = (sel?.toString() || "").trim();
+      if (!text || text.length < 3)
+        return;
+      const anchor = sel.anchorNode;
+      if (!anchor)
+        return;
+      const container = anchor.nodeType === 3 ? anchor.parentElement : anchor;
+      if (!container)
+        return;
+      if (!container.closest(".envelope-detail-body"))
+        return;
+      const range = sel.getRangeAt(0);
+      const rect = range.getBoundingClientRect();
+      const ctx = _getDocContextFromElement(container);
+      const toolbar = document.createElement("div");
+      toolbar.className = "text-selection-toolbar";
+      toolbar.style.top = window.scrollY + rect.top - 42 + "px";
+      toolbar.style.left = window.scrollX + rect.left + rect.width / 2 - 100 + "px";
+      const copyBtn = document.createElement("button");
+      copyBtn.innerHTML = _svgIcon("copy") + " Copy";
+      copyBtn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        navigator.clipboard.writeText(text).then(() => _showToast("Copied to clipboard"));
+        _removeToolbar();
+      });
+      toolbar.appendChild(copyBtn);
+      const d1 = document.createElement("span");
+      d1.className = "tst-divider";
+      toolbar.appendChild(d1);
+      const bmBtn = document.createElement("button");
+      bmBtn.innerHTML = _svgIcon("bookmark") + " Bookmark";
+      bmBtn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const bm = JSON.parse(localStorage.getItem(_BOOKMARKS_KEY) || "[]");
+        bm.unshift({ text: text.slice(0, 500), documentName: ctx.docName, documentId: ctx.docId, timestamp: (/* @__PURE__ */ new Date()).toISOString() });
+        if (bm.length > 50)
+          bm.length = 50;
+        localStorage.setItem(_BOOKMARKS_KEY, JSON.stringify(bm));
+        _showToast("Bookmarked");
+        _removeToolbar();
+      });
+      toolbar.appendChild(bmBtn);
+      const d2 = document.createElement("span");
+      d2.className = "tst-divider";
+      toolbar.appendChild(d2);
+      const citeBtn = document.createElement("button");
+      citeBtn.innerHTML = _svgIcon("cite") + " Cite";
+      citeBtn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const citation = "\u201C" + text.slice(0, 300) + "\u201D \u2014 " + ctx.docName;
+        navigator.clipboard.writeText(citation).then(() => _showToast("Citation copied"));
+        _removeToolbar();
+      });
+      toolbar.appendChild(citeBtn);
+      document.body.appendChild(toolbar);
+      _activeToolbar = toolbar;
+    }, 10);
+  });
+  document.addEventListener("mousedown", (e) => {
+    if (_activeToolbar && !_activeToolbar.contains(e.target))
+      _removeToolbar();
+  });
+}
+if (typeof document !== "undefined") {
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initTextSelectionToolbar);
+  } else {
+    initTextSelectionToolbar();
+  }
+}
 var LLM_PERF_LS = "mobius_show_llm_performance";
 var LEGACY_LLM_INSIGHTS_LS = "mobius_show_answer_insights";
 var LLM_PERF_ACTIVITY = "llm_performance";
@@ -3698,13 +3874,27 @@ function renderSourceCiter(sources, citedSourceIndices, correlationId) {
     if (ragUrl || ragApi && docId) {
       const actions = document.createElement("div");
       actions.className = "source-doc-actions";
+      if (docId) {
+        const readerLink = document.createElement("a");
+        readerLink.href = "#";
+        readerLink.className = "source-open-doc-link";
+        readerLink.textContent = "Open document";
+        readerLink.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          openDocReaderPanel(docId, s.page_number, (s.cite_text ?? s.snippet ?? "").slice(0, 100));
+        });
+        actions.appendChild(readerLink);
+      }
       if (ragUrl) {
         const link = document.createElement("a");
         link.href = ragUrl;
         link.target = "_blank";
         link.rel = "noopener noreferrer";
         link.className = "source-open-doc-link";
-        link.textContent = "Open full document";
+        link.textContent = "Open in RAG \u2197";
+        link.style.opacity = "0.6";
+        link.style.fontSize = "11px";
         link.addEventListener("click", (e) => e.stopPropagation());
         actions.appendChild(link);
       }
