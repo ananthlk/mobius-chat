@@ -2910,6 +2910,21 @@ function openDocumentOrSnippet(s) {
     window.open(url, "_blank", "noopener,noreferrer");
   }
 }
+function _ensureDocReaderDOM(){if(document.getElementById("doc-reader-panel"))return;var o=document.createElement("div");o.id="doc-reader-overlay";o.addEventListener("click",closeDocReaderPanel);document.body.appendChild(o);var p=document.createElement("div");p.id="doc-reader-panel";p.innerHTML='<div class="doc-reader-header"><span class="doc-reader-title"></span><span class="doc-reader-meta"></span><div class="doc-reader-header-actions"><button class="bookmarks-btn" title="Bookmarks">Bookmarks <span class="bm-count">0</span></button><a class="doc-reader-rag-link" href="#" target="_blank" rel="noopener noreferrer">Open in RAG &#8599;</a><button class="doc-reader-close" title="Close">&times;</button></div></div><div class="doc-reader-body"><nav class="doc-reader-toc"></nav><div class="doc-reader-content"></div></div>';p.querySelector(".doc-reader-close").addEventListener("click",closeDocReaderPanel);p.querySelector(".bookmarks-btn").addEventListener("click",function(){_toggleBookmarksDrawer(this)});document.body.appendChild(p)}
+function openDocReaderPanel(documentId,pageNumber,citeText){if(!documentId)return;_ensureDocReaderDOM();var panel=document.getElementById("doc-reader-panel"),overlay=document.getElementById("doc-reader-overlay"),content=panel.querySelector(".doc-reader-content"),tocEl=panel.querySelector(".doc-reader-toc"),titleEl=panel.querySelector(".doc-reader-title"),metaEl=panel.querySelector(".doc-reader-meta"),ragLink=panel.querySelector(".doc-reader-rag-link");requestAnimationFrame(function(){overlay.classList.add("open");panel.classList.add("open")});content.innerHTML='<div class="doc-reader-loading">Loading document\u2026</div>';tocEl.innerHTML="";titleEl.textContent="Loading\u2026";metaEl.textContent="";var ragUrl=getRagDocumentUrl(documentId,pageNumber,citeText);if(ragUrl){ragLink.href=ragUrl;ragLink.style.display=""}else{ragLink.style.display="none"}_updateBookmarksBadge(panel);var apiBase=(typeof API_BASE==="string"?API_BASE:"").replace(/\/$/,"");fetch(apiBase+"/chat/doc-reader/read",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({document_id:documentId,view:"full"})}).then(function(r){if(!r.ok)throw new Error(r.status);return r.json()}).then(function(env){_renderDocReaderEnvelope(env,pageNumber,citeText)}).catch(function(err){content.innerHTML='<div class="doc-reader-error">Failed to load: '+err.message+'</div>';titleEl.textContent="Error"})}
+function _renderDocReaderEnvelope(env,scrollToPage,highlightText){var panel=document.getElementById("doc-reader-panel"),content=panel.querySelector(".doc-reader-content"),tocEl=panel.querySelector(".doc-reader-toc"),titleEl=panel.querySelector(".doc-reader-title"),metaEl=panel.querySelector(".doc-reader-meta");titleEl.textContent=env.display_name||"Document";var parts=[];if(env.payer)parts.push(env.payer);if(env.authority_level)parts.push(env.authority_level);if(env.sections)parts.push(env.sections.length+" sections");metaEl.textContent=parts.join(" \u00b7 ");panel.dataset.docId=env.document_id||"";panel.dataset.docName=env.display_name||"";tocEl.innerHTML="";(env.toc||[]).forEach(function(t){var a=document.createElement("a");a.className="doc-reader-toc-item"+(t.depth>1?" depth-"+t.depth:"");a.textContent=t.heading;a.title=t.page_range||"";a.addEventListener("click",function(){var target=content.querySelector('[data-section-id="'+t.section_id+'"]');if(target)target.scrollIntoView({behavior:"smooth",block:"start"});tocEl.querySelectorAll(".active").forEach(function(el){el.classList.remove("active")});a.classList.add("active")});tocEl.appendChild(a)});content.innerHTML="";var scrollTarget=null;(env.sections||[]).forEach(function(sec){var card=document.createElement("div");card.className="doc-reader-section";card.dataset.sectionId=sec.section_id||"";card.dataset.pageStart=sec.page_start||"";var header=document.createElement("div");header.className="doc-reader-section-header";var hs=document.createElement("span");hs.textContent=sec.heading||"Section";var ps=document.createElement("span");ps.className="doc-reader-section-page";ps.textContent=sec.page_start?"p."+sec.page_start:"";header.appendChild(hs);header.appendChild(ps);header.addEventListener("click",function(){var b=card.querySelector(".doc-reader-section-body");b.style.display=b.style.display==="none"?"":"none"});card.appendChild(header);var body=document.createElement("div");body.className="doc-reader-section-body";var html=simpleMarkdownToHtml(sec.body_markdown||"");if(highlightText&&highlightText.trim()){var esc=highlightText.trim().replace(/[.*+?^${}()|[\]\\]/g,"\\$&").slice(0,100);try{html=html.replace(new RegExp("("+esc+")","gi"),'<mark class="doc-reader-highlight">$1</mark>')}catch(_){}}body.innerHTML=html;card.appendChild(body);if(sec.citations&&sec.citations.length>0){var cr=document.createElement("div");cr.className="doc-reader-section-citations";sec.citations.forEach(function(c){var badge=document.createElement("span");badge.className="doc-reader-cite-badge";badge.textContent=c.display||("p."+c.page);badge.title=(c.snippet||"").slice(0,150);cr.appendChild(badge)});card.appendChild(cr)}content.appendChild(card);if(scrollToPage&&String(sec.page_start)===String(scrollToPage))scrollTarget=card});if(scrollTarget)setTimeout(function(){scrollTarget.scrollIntoView({behavior:"smooth",block:"start"})},100)}
+function closeDocReaderPanel(){var p=document.getElementById("doc-reader-panel"),o=document.getElementById("doc-reader-overlay");if(p)p.classList.remove("open");if(o)o.classList.remove("open")}
+document.addEventListener("keydown",function(e){if(e.key==="Escape")closeDocReaderPanel()});
+var _activeToolbar=null,_BOOKMARKS_KEY="mobius_bookmarks";
+function _svgIcon(n){var i={copy:'<svg viewBox="0 0 16 16" fill="currentColor"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25z"/></svg>',bookmark:'<svg viewBox="0 0 16 16" fill="currentColor"><path d="M3 2.75C3 1.784 3.784 1 4.75 1h6.5c.966 0 1.75.784 1.75 1.75v11.5a.75.75 0 01-1.227.579L8 11.722l-3.773 3.107A.75.75 0 013 14.25zm1.75-.25a.25.25 0 00-.25.25v9.91l3.023-2.489a.75.75 0 01.954 0l3.023 2.49V2.75a.25.25 0 00-.25-.25z"/></svg>',cite:'<svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.75 2h12.5c.966 0 1.75.784 1.75 1.75v8.5A1.75 1.75 0 0114.25 14H1.75A1.75 1.75 0 010 12.25v-8.5C0 2.784.784 2 1.75 2zm0 1.5a.25.25 0 00-.25.25v8.5c0 .138.112.25.25.25h12.5a.25.25 0 00.25-.25v-8.5a.25.25 0 00-.25-.25zM3.5 6.25a.75.75 0 01.75-.75h7.5a.75.75 0 010 1.5h-7.5a.75.75 0 01-.75-.75zm.75 2.25a.75.75 0 000 1.5h4a.75.75 0 000-1.5z"/></svg>'};return i[n]||""}
+function _removeToolbar(){if(_activeToolbar){_activeToolbar.remove();_activeToolbar=null}}
+function _showToast(msg){var t=document.createElement("div");t.className="tst-toast";t.textContent=msg;document.body.appendChild(t);setTimeout(function(){t.remove()},1800)}
+function _getDocContextFromElement(el){var p=el.closest("#doc-reader-panel");if(p)return{docName:p.dataset.docName||"Document",docId:p.dataset.docId||""};var e=el.closest(".assistant-envelope");if(e){var s=e.querySelector(".source-doc");if(s)return{docName:s.textContent||"Document",docId:""}}return{docName:"Document",docId:""}}
+function _getPageFromElement(el){var s=el.closest("[data-page-start]");return s?s.dataset.pageStart:null}
+function initTextSelectionToolbar(){document.addEventListener("mouseup",function(){setTimeout(function(){_removeToolbar();var sel=window.getSelection();var text=(sel&&sel.toString()||"").trim();if(!text||text.length<3)return;var anchor=sel.anchorNode;if(!anchor)return;var container=anchor.nodeType===3?anchor.parentElement:anchor;if(!container)return;if(!container.closest("#doc-reader-panel .doc-reader-content")&&!container.closest(".envelope-detail-body"))return;var range=sel.getRangeAt(0);var rect=range.getBoundingClientRect();var ctx=_getDocContextFromElement(container);var page=_getPageFromElement(container);var toolbar=document.createElement("div");toolbar.className="text-selection-toolbar";toolbar.style.top=(window.scrollY+rect.top-42)+"px";toolbar.style.left=(window.scrollX+rect.left+rect.width/2-100)+"px";var copyBtn=document.createElement("button");copyBtn.innerHTML=_svgIcon("copy")+" Copy";copyBtn.addEventListener("click",function(ev){ev.stopPropagation();navigator.clipboard.writeText(text).then(function(){_showToast("Copied to clipboard")});_removeToolbar()});toolbar.appendChild(copyBtn);var d1=document.createElement("span");d1.className="tst-divider";toolbar.appendChild(d1);var bmBtn=document.createElement("button");bmBtn.innerHTML=_svgIcon("bookmark")+" Bookmark";bmBtn.addEventListener("click",function(ev){ev.stopPropagation();var bm=JSON.parse(localStorage.getItem(_BOOKMARKS_KEY)||"[]");bm.unshift({text:text.slice(0,500),documentName:ctx.docName,documentId:ctx.docId,page:page,timestamp:new Date().toISOString()});if(bm.length>50)bm.length=50;localStorage.setItem(_BOOKMARKS_KEY,JSON.stringify(bm));_showToast("Bookmarked");_removeToolbar();var p=document.getElementById("doc-reader-panel");if(p)_updateBookmarksBadge(p)});toolbar.appendChild(bmBtn);var d2=document.createElement("span");d2.className="tst-divider";toolbar.appendChild(d2);var citeBtn=document.createElement("button");citeBtn.innerHTML=_svgIcon("cite")+" Cite";citeBtn.addEventListener("click",function(ev){ev.stopPropagation();var citation="\u201c"+text.slice(0,300)+"\u201d \u2014 "+ctx.docName+(page?", p."+page:"");navigator.clipboard.writeText(citation).then(function(){_showToast("Citation copied")});_removeToolbar()});toolbar.appendChild(citeBtn);document.body.appendChild(toolbar);_activeToolbar=toolbar},10)});document.addEventListener("mousedown",function(e){if(_activeToolbar&&!_activeToolbar.contains(e.target))_removeToolbar()})}
+function _updateBookmarksBadge(panel){var btn=panel.querySelector(".bookmarks-btn .bm-count");if(!btn)return;var bm=JSON.parse(localStorage.getItem(_BOOKMARKS_KEY)||"[]");btn.textContent=String(bm.length)}
+function _toggleBookmarksDrawer(btn){var existing=btn.parentElement.querySelector(".bookmarks-drawer");if(existing){existing.remove();return}var drawer=document.createElement("div");drawer.className="bookmarks-drawer";var bm=JSON.parse(localStorage.getItem(_BOOKMARKS_KEY)||"[]");if(bm.length===0){drawer.innerHTML='<div class="bookmarks-drawer-empty">No bookmarks yet. Select text and click Bookmark.</div>'}else{bm.forEach(function(b,idx){var item=document.createElement("div");item.className="bookmark-item";var te=document.createElement("div");te.className="bookmark-text";te.textContent=b.text;var me=document.createElement("div");me.className="bookmark-meta";var info=document.createElement("span");info.textContent=(b.documentName||"Doc")+(b.page?", p."+b.page:"")+" \u00b7 "+new Date(b.timestamp).toLocaleDateString();var del=document.createElement("button");del.className="bookmark-delete";del.textContent="Remove";del.addEventListener("click",function(e){e.stopPropagation();bm.splice(idx,1);localStorage.setItem(_BOOKMARKS_KEY,JSON.stringify(bm));item.remove();if(bm.length===0)drawer.innerHTML='<div class="bookmarks-drawer-empty">No bookmarks.</div>';var p=document.getElementById("doc-reader-panel");if(p)_updateBookmarksBadge(p)});me.appendChild(info);me.appendChild(del);item.appendChild(te);item.appendChild(me);item.addEventListener("click",function(){if(b.documentId)openDocReaderPanel(b.documentId,b.page,b.text.slice(0,50));drawer.remove()});drawer.appendChild(item)})}btn.parentElement.appendChild(drawer);var closeHandler=function(e){if(!drawer.contains(e.target)&&e.target!==btn){drawer.remove();document.removeEventListener("click",closeHandler)}};setTimeout(function(){document.addEventListener("click",closeHandler)},0)}
+if(typeof document!=="undefined"){if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",initTextSelectionToolbar)}else{initTextSelectionToolbar()}}
 var LLM_PERF_LS = "mobius_show_llm_performance";
 var LEGACY_LLM_INSIGHTS_LS = "mobius_show_answer_insights";
 var LLM_PERF_ACTIVITY = "llm_performance";
@@ -3698,13 +3713,23 @@ function renderSourceCiter(sources, citedSourceIndices, correlationId) {
     if (ragUrl || ragApi && docId) {
       const actions = document.createElement("div");
       actions.className = "source-doc-actions";
+      if (docId) {
+        const readerLink = document.createElement("a");
+        readerLink.href = "#";
+        readerLink.className = "source-open-doc-link";
+        readerLink.textContent = "Open document";
+        readerLink.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); openDocReaderPanel(docId, s.page_number, (s.cite_text ?? s.snippet ?? "").slice(0, 100)); });
+        actions.appendChild(readerLink);
+      }
       if (ragUrl) {
         const link = document.createElement("a");
         link.href = ragUrl;
         link.target = "_blank";
         link.rel = "noopener noreferrer";
         link.className = "source-open-doc-link";
-        link.textContent = "Open full document";
+        link.textContent = "Open in RAG \u2197";
+        link.style.opacity = "0.6";
+        link.style.fontSize = "11px";
         link.addEventListener("click", (e) => e.stopPropagation());
         actions.appendChild(link);
       }
@@ -3865,6 +3890,227 @@ function renderAssistantFromEnvelope(envelope, opts) {
       }
       table.appendChild(tbody);
       bubble.appendChild(table);
+    } else if (t === "task_list") {
+      let parseDetail2 = function(raw) {
+        if (!raw)
+          return null;
+        try {
+          const d = JSON.parse(raw);
+          const rec = d.recommendation || "";
+          const issues = (d.issues || []).map((x) => String(x));
+          const warns = (d.warnings || []).map((x) => String(x));
+          const lines = [...issues, ...warns].filter(Boolean).slice(0, 6);
+          return { summary: rec || lines[0] || raw.slice(0, 120), lines };
+        } catch {
+          return { summary: raw.slice(0, 200), lines: [] };
+        }
+      }, fmtModule2 = function(s) {
+        return MOD_LABEL[s] || s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+      };
+      var parseDetail = parseDetail2, fmtModule = fmtModule2;
+      const b = block;
+      const SEV_LABEL = { critical: "Critical", warning: "Warning", info: "Info", low: "Low", none: "None" };
+      const SEV_ORDER = { critical: 0, warning: 1, info: 2, low: 3, none: 4 };
+      const MOD_LABEL = {
+        roster_open: "Roster",
+        roster_recon: "Reconciliation",
+        credentialing: "Credentialing",
+        manual: "Manual"
+      };
+      const tasks = (b.tasks || []).slice().sort(
+        (a, b2) => (SEV_ORDER[a.severity] ?? 3) - (SEV_ORDER[b2.severity] ?? 3)
+      );
+      const wrap = document.createElement("div");
+      wrap.className = "tm-envelope-wrap";
+      const hdr = document.createElement("div");
+      hdr.className = "tm-env-header";
+      const hdrLeft = document.createElement("div");
+      hdrLeft.className = "tm-env-header-left";
+      const hdrTitle = document.createElement("span");
+      hdrTitle.className = "tm-env-title";
+      hdrTitle.textContent = "Tasks";
+      hdrLeft.appendChild(hdrTitle);
+      const sevCounts = {};
+      for (const tk of tasks)
+        sevCounts[tk.severity || "low"] = (sevCounts[tk.severity || "low"] || 0) + 1;
+      for (const sev of ["critical", "warning", "info", "low"]) {
+        if (!sevCounts[sev])
+          continue;
+        const chip = document.createElement("span");
+        chip.className = `tm-env-sev-chip tm-env-sev-chip--${sev}`;
+        chip.textContent = `${sevCounts[sev]} ${SEV_LABEL[sev]}`;
+        hdrLeft.appendChild(chip);
+      }
+      hdr.appendChild(hdrLeft);
+      const hdrRight = document.createElement("div");
+      hdrRight.className = "tm-env-header-right";
+      hdrRight.textContent = `${tasks.length} task${tasks.length !== 1 ? "s" : ""}`;
+      hdr.appendChild(hdrRight);
+      wrap.appendChild(hdr);
+      const activeFilters = Object.entries(b.filters || {}).filter(([, v]) => v != null && v !== "").map(([k, v]) => `${k}: ${v}`);
+      if (activeFilters.length) {
+        const strip = document.createElement("div");
+        strip.className = "tm-env-filter-strip";
+        strip.textContent = `Filtered by: ${activeFilters.join(" \xB7 ")}`;
+        wrap.appendChild(strip);
+      }
+      if (tasks.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "tm-env-empty";
+        empty.textContent = "No tasks found.";
+        wrap.appendChild(empty);
+      } else {
+        const list = document.createElement("div");
+        list.className = "tm-env-list";
+        for (const task of tasks) {
+          const sev = task.severity || "low";
+          const status = task.status || "open";
+          const card = document.createElement("div");
+          card.className = `tm-env-card tm-env-sev-${sev} tm-env-status-${status}`;
+          card.setAttribute("data-task-id", task.task_id);
+          const accent = document.createElement("div");
+          accent.className = `tm-env-accent tm-env-accent--${sev}`;
+          card.appendChild(accent);
+          const inner = document.createElement("div");
+          inner.className = "tm-env-card-inner";
+          const topRow = document.createElement("div");
+          topRow.className = "tm-env-top-row";
+          const sevBadge = document.createElement("span");
+          sevBadge.className = `tm-env-badge tm-env-badge--${sev}`;
+          sevBadge.textContent = SEV_LABEL[sev] || sev;
+          topRow.appendChild(sevBadge);
+          if (task.source_module) {
+            const modTag = document.createElement("span");
+            modTag.className = "tm-env-mod-tag";
+            modTag.textContent = fmtModule2(task.source_module);
+            topRow.appendChild(modTag);
+          }
+          if (task.dim) {
+            const dimTag = document.createElement("span");
+            dimTag.className = "tm-env-dim-tag";
+            dimTag.textContent = task.dim.replace(/_/g, " ");
+            topRow.appendChild(dimTag);
+          }
+          const spacer = document.createElement("span");
+          spacer.style.flex = "1";
+          topRow.appendChild(spacer);
+          const statusDot = document.createElement("span");
+          statusDot.className = `tm-env-status-dot tm-env-status-dot--${status}`;
+          statusDot.title = status === "in_progress" ? "In Progress" : status.charAt(0).toUpperCase() + status.slice(1);
+          topRow.appendChild(statusDot);
+          inner.appendChild(topRow);
+          const title = document.createElement("div");
+          title.className = "tm-env-card-title";
+          title.textContent = task.text || "(no title)";
+          inner.appendChild(title);
+          if (task.provider_name || task.npi) {
+            const provRow = document.createElement("div");
+            provRow.className = "tm-env-prov-row";
+            if (task.provider_name) {
+              const icon = document.createElement("span");
+              icon.className = "tm-env-prov-icon";
+              icon.textContent = "person";
+              provRow.appendChild(icon);
+              const nameSpan = document.createElement("span");
+              nameSpan.textContent = task.provider_name;
+              provRow.appendChild(nameSpan);
+            }
+            if (task.npi) {
+              const npiSpan = document.createElement("span");
+              npiSpan.className = "tm-env-npi";
+              npiSpan.textContent = `NPI ${task.npi}`;
+              provRow.appendChild(npiSpan);
+            }
+            if (task.assignee) {
+              const aSpan = document.createElement("span");
+              aSpan.className = "tm-env-assignee";
+              aSpan.textContent = `\u2192 ${task.assignee}`;
+              provRow.appendChild(aSpan);
+            }
+            inner.appendChild(provRow);
+          }
+          const parsed = parseDetail2(task.detail);
+          if (parsed) {
+            const det = document.createElement("details");
+            det.className = "tm-env-detail";
+            const sum = document.createElement("summary");
+            sum.className = "tm-env-detail-summary";
+            const summaryText = parsed.summary.length > 100 ? parsed.summary.slice(0, 100) + "\u2026" : parsed.summary;
+            sum.textContent = summaryText || "Detail";
+            det.appendChild(sum);
+            const detBody = document.createElement("div");
+            detBody.className = "tm-env-detail-body";
+            if (parsed.lines.length) {
+              const ul = document.createElement("ul");
+              ul.className = "tm-env-detail-list";
+              for (const line of parsed.lines) {
+                const li = document.createElement("li");
+                li.textContent = line;
+                ul.appendChild(li);
+              }
+              detBody.appendChild(ul);
+              if (parsed.summary && parsed.lines.length) {
+                const rec = document.createElement("p");
+                rec.className = "tm-env-detail-rec";
+                rec.textContent = parsed.summary;
+                detBody.appendChild(rec);
+              }
+            } else {
+              detBody.textContent = parsed.summary;
+            }
+            det.appendChild(detBody);
+            inner.appendChild(det);
+          }
+          card.appendChild(inner);
+          if (b.allow_resolve !== false && (status === "open" || status === "in_progress")) {
+            const actions = document.createElement("div");
+            actions.className = "tm-env-card-actions";
+            const statusIcon = document.createElement("span");
+            const resolveBtn = document.createElement("button");
+            resolveBtn.type = "button";
+            resolveBtn.className = "tm-env-btn tm-env-btn--resolve";
+            resolveBtn.textContent = "Resolve";
+            resolveBtn.addEventListener("click", async (e) => {
+              e.stopPropagation();
+              resolveBtn.disabled = true;
+              resolveBtn.textContent = "\u2026";
+              try {
+                await fetch(`/chat/tasks/${task.task_id}/resolve`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ resolved_by: "chat" })
+                });
+                card.classList.remove("tm-env-status-open", "tm-env-status-in_progress");
+                card.classList.add("tm-env-status-resolved");
+                statusDot.className = "tm-env-status-dot tm-env-status-dot--resolved";
+                resolveBtn.remove();
+              } catch {
+                resolveBtn.disabled = false;
+                resolveBtn.textContent = "Resolve";
+              }
+            });
+            actions.appendChild(resolveBtn);
+            card.appendChild(actions);
+          }
+          list.appendChild(card);
+        }
+        wrap.appendChild(list);
+      }
+      const footer = document.createElement("div");
+      footer.className = "tm-env-footer";
+      const countNote = document.createElement("span");
+      countNote.className = "tm-env-footer-note";
+      countNote.textContent = tasks.length >= 50 ? `Showing first 50 \xB7 more may exist` : `${tasks.length} task${tasks.length !== 1 ? "s" : ""} total`;
+      footer.appendChild(countNote);
+      const exportLink = document.createElement("a");
+      exportLink.href = "/chat/tasks/export";
+      exportLink.className = "tm-env-view-all";
+      exportLink.target = "_blank";
+      exportLink.rel = "noopener";
+      exportLink.textContent = "\u2193 Export CSV";
+      footer.appendChild(exportLink);
+      wrap.appendChild(footer);
+      bubble.appendChild(wrap);
     } else if (t === "callout") {
       const b = block;
       const c = document.createElement("div");
@@ -4080,8 +4326,9 @@ function run() {
       }
       nextEl.textContent = ack.next_step || "";
     } else {
-      headline.textContent = "Upload complete";
-      sub.textContent = "Your file was saved to this chat.";
+      const isRAG = data.file_purpose === "instant_rag" || data.verification_tier === "instant";
+      headline.textContent = isRAG ? "Document ingested for RAG" : "Upload complete";
+      sub.textContent = isRAG ? "Your document has been chunked, embedded, and is now queryable in this chat." : "Your file was saved to this chat.";
       checksEl.replaceChildren();
       const li = document.createElement("li");
       const t = document.createElement("span");
@@ -4089,13 +4336,13 @@ function run() {
       t.textContent = "Summary";
       const d = document.createElement("span");
       d.className = "roster-receipt__check-detail";
-      d.textContent = `${data.filename ?? "File"} \u2014 ${data.row_count ?? 0} row(s) for ${data.org_name ?? ""}. Billing NPI ${data.default_billing_npi || data.org_id || "\u2014"}.`;
+      d.textContent = isRAG ? `${data.filename ?? "File"} \u2014 ${data.chunks_count ?? data.row_count ?? 0} chunk(s) indexed. Verification tier: instant (7-day TTL).` : `${data.filename ?? "File"} \u2014 ${data.row_count ?? 0} row(s) for ${data.org_name ?? ""}. Billing NPI ${data.default_billing_npi || data.org_id || "\u2014"}.`;
       li.appendChild(t);
       li.appendChild(d);
       checksEl.appendChild(li);
       alertsEl.replaceChildren();
       alertsEl.setAttribute("hidden", "");
-      nextEl.textContent = "Press Send to run reconciliation, or wait if you turned on automatic send after upload.";
+      nextEl.textContent = isRAG ? "Ask a question about this document \u2014 it's ready for retrieval now." : "Press Send to run reconciliation, or wait if you turned on automatic send after upload.";
     }
     function addMeta(label, value) {
       if (!value)
@@ -4108,16 +4355,27 @@ function run() {
       metaEl.appendChild(dd);
     }
     metaEl.replaceChildren();
+    const _isRAG = data.file_purpose === "instant_rag" || data.verification_tier === "instant";
     addMeta("File", (data.filename ?? "").trim());
-    if (data.row_count_cleansed != null)
-      addMeta("Rows after cleanup", String(data.row_count_cleansed));
-    if (data.row_count_resolved != null)
-      addMeta("Rows checked in NPI registry", String(data.row_count_resolved));
-    addMeta("Billing NPI", (data.default_billing_npi || data.org_id || "").trim());
-    addMeta("Matched organization (registry)", (data.matched_organization_name ?? "").trim());
-    if ((data.matched_practice_address ?? "").trim())
-      addMeta("Practice address on file", (data.matched_practice_address ?? "").trim());
-    addMeta("Process status", (data.process_status ?? "").trim());
+    if (_isRAG) {
+      addMeta("Chunks indexed", String(data.chunks_count ?? data.row_count ?? 0));
+      addMeta("Verification tier", data.verification_tier ?? "instant");
+      addMeta("Status", data.status ?? "live");
+      if (data.envelope_id)
+        addMeta("Envelope ID", data.envelope_id);
+      if (data.document_id)
+        addMeta("Document ID", data.document_id);
+    } else {
+      if (data.row_count_cleansed != null)
+        addMeta("Rows after cleanup", String(data.row_count_cleansed));
+      if (data.row_count_resolved != null)
+        addMeta("Rows checked in NPI registry", String(data.row_count_resolved));
+      addMeta("Billing NPI", (data.default_billing_npi || data.org_id || "").trim());
+      addMeta("Matched organization (registry)", (data.matched_organization_name ?? "").trim());
+      if ((data.matched_practice_address ?? "").trim())
+        addMeta("Practice address on file", (data.matched_practice_address ?? "").trim());
+      addMeta("Process status", (data.process_status ?? "").trim());
+    }
     addMeta("Upload ID", (data.upload_id ?? "").trim());
     addMeta("Chat thread ID", (data.thread_id ?? "").trim());
     const rs = data.resolution_summary;
@@ -5217,6 +5475,15 @@ ${message}`;
       uploadPhaseTimers.forEach((id) => window.clearTimeout(id));
       uploadPhaseTimers = [];
     }
+    const rosterFields = document.getElementById("uploadFieldRoster");
+    uploadFilePurpose?.addEventListener("change", () => {
+      const isRoster = uploadFilePurpose.value === "roster_reconciliation";
+      if (rosterFields)
+        rosterFields.hidden = !isRoster;
+      if (uploadOrgName)
+        uploadOrgName.required = isRoster;
+      updateSubmitState();
+    });
     function startUploadPhaseEmits(purpose) {
       stopUploadPhaseEmits();
       const roster = purpose === "roster_reconciliation";
@@ -5225,7 +5492,12 @@ ${message}`;
         { ms: 2800, text: "Step 2 of 3 \u2014 Sending file to the roster service\u2026" },
         { ms: 7e3, text: "Step 3 of 3 \u2014 Parsing rows and resolving NPIs (often 30s\u20132 min)\u2026" },
         { ms: 45e3, text: "Still working \u2014 large rosters can take a bit longer\u2026" }
-      ] : [{ ms: 0, text: "Uploading file\u2026" }];
+      ] : [
+        { ms: 0, text: "Step 1 of 3 \u2014 Extracting text from document\u2026" },
+        { ms: 3e3, text: "Step 2 of 3 \u2014 Chunking and generating embeddings\u2026" },
+        { ms: 8e3, text: "Step 3 of 3 \u2014 Publishing to RAG corpus\u2026" },
+        { ms: 3e4, text: "Still working \u2014 large documents take a bit longer\u2026" }
+      ];
       phases.forEach(({ ms, text }) => {
         const id = window.setTimeout(() => setStatus(text, false, true), ms);
         uploadPhaseTimers.push(id);
@@ -5259,27 +5531,29 @@ ${message}`;
     uploadOverlay?.addEventListener("click", hideUploadModal);
     function updateSubmitState() {
       const hasFile = !!uploadFile?.files?.length;
+      const isRoster = (uploadFilePurpose?.value || "roster_reconciliation") === "roster_reconciliation";
       const hasOrg = !!uploadOrgName?.value?.trim();
       if (uploadSubmit)
-        uploadSubmit.disabled = !(hasFile && hasOrg);
+        uploadSubmit.disabled = !(hasFile && (hasOrg || !isRoster));
     }
     uploadOrgName?.addEventListener("input", updateSubmitState);
     uploadFile?.addEventListener("change", updateSubmitState);
     uploadForm?.addEventListener("submit", (e) => {
       e.preventDefault();
-      const orgName = uploadOrgName?.value?.trim();
+      const orgName = uploadOrgName?.value?.trim() || "";
       const file = uploadFile?.files?.[0];
-      if (!orgName || !file)
+      const purpose = (uploadFilePurpose?.value || "roster_reconciliation").trim();
+      const isRoster = purpose === "roster_reconciliation";
+      if (!file || isRoster && !orgName)
         return;
       uploadSubmit?.setAttribute("disabled", "");
       uploadModal?.classList.add("upload-modal--busy");
       uploadForm?.setAttribute("aria-busy", "true");
       uploadProgressWrap?.removeAttribute("hidden");
-      const purpose = (uploadFilePurpose?.value || "roster_reconciliation").trim();
       startUploadPhaseEmits(purpose);
       const formData = new FormData();
       formData.append("file", file);
-      formData.append("org_name", orgName);
+      formData.append("org_name", orgName || "instant-rag");
       formData.append("file_purpose", purpose);
       if (currentThreadId)
         formData.append("thread_id", currentThreadId);
@@ -5300,11 +5574,24 @@ ${message}`;
           uploadProgressWrap?.setAttribute("hidden", "");
           uploadAbort = null;
           showRosterUploadReceipt(data);
+          const uploadPurpose = purpose;
           uploadForm?.reset();
           updateSubmitState();
-          inputEl.value = `Run reconciliation report for ${org}`;
+          if (uploadPurpose === "instant_rag") {
+            const fname = data.filename ?? file?.name ?? "document";
+            inputEl.value = `I just uploaded "${fname}" \u2014 what does it say about eligibility and coverage?`;
+          } else {
+            inputEl.value = `Run reconciliation report for ${org}`;
+          }
           updateSendState();
           hideUploadModal();
+          if (rosterFields)
+            rosterFields.hidden = false;
+          if (uploadOrgName)
+            uploadOrgName.required = true;
+          if (uploadPurpose === "instant_rag") {
+            return;
+          }
           const reopen = credentialingReopenMessage;
           if (reopen) {
             credentialingReopenMessage = null;
@@ -5314,7 +5601,7 @@ ${message}`;
             return;
           }
           const auto = document.getElementById("uploadAutoSendReconciliation");
-          if ((uploadFilePurpose?.value || "roster_reconciliation").trim() === "roster_reconciliation" && auto?.checked) {
+          if (uploadPurpose === "roster_reconciliation" && auto?.checked) {
             window.setTimeout(() => sendMessage(), 0);
           }
         }
@@ -5509,20 +5796,267 @@ ${message}`;
     }
     document.getElementById("btnOpenSkillPipeline")?.addEventListener("click", () => {
       closeSkillsModal();
-      const base = window.API_BASE || window.location.origin;
-      window.open(base + "/pipeline", "_blank", "noopener");
+      window.open("http://localhost:3999/credentialing-home.html", "_blank", "noopener");
+    });
+    document.getElementById("btnOpenFinancialStrategy")?.addEventListener("click", () => {
+      closeSkillsModal();
+      window.open("http://localhost:8099/financial-strategy", "_blank", "noopener");
     });
     document.getElementById("skillsModalClose")?.addEventListener("click", closeSkillsModal);
     overlay?.addEventListener("click", closeSkillsModal);
     document.getElementById("skillPipelineOpen")?.addEventListener("click", () => {
       closeSkillsModal();
-      const base = window.API_BASE || window.location.origin;
-      window.open(base + "/pipeline", "_blank", "noopener");
+      window.open("http://localhost:3999/credentialing-home.html", "_blank", "noopener");
     });
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && !modal2?.hasAttribute("hidden"))
         closeSkillsModal();
     });
+    function openRosterPage() {
+      closeSkillsModal();
+      const base = window.API_BASE || window.location.origin;
+      const lastOrg = localStorage.getItem("lastOrg") || "";
+      const url = base + "/roster" + (lastOrg ? "?org=" + encodeURIComponent(lastOrg) : "");
+      window.open(url, "_blank", "noopener");
+    }
+    document.getElementById("btnOpenRoster")?.addEventListener("click", openRosterPage);
+    document.getElementById("skillRosterOpen")?.addEventListener("click", openRosterPage);
   })();
+  _initLandingDashboard();
 }
 run();
+var _ldAllRuns = [];
+function _initLandingDashboard() {
+  function _openPipeline() {
+    window.open("http://localhost:3999/credentialing-home.html", "_blank", "noopener");
+  }
+  function _openRoster() {
+    const base = window.API_BASE || window.location.origin;
+    const lastOrg = localStorage.getItem("lastOrg") || "";
+    window.open(base + "/roster" + (lastOrg ? "?org=" + encodeURIComponent(lastOrg) : ""), "_blank", "noopener");
+  }
+  document.getElementById("ldNewRunBtn")?.addEventListener("click", _openPipeline);
+  document.getElementById("ldStartRunBtn")?.addEventListener("click", _openPipeline);
+  document.getElementById("ldSetupBtn")?.addEventListener("click", _openPipeline);
+  document.getElementById("ldOrgSelect")?.addEventListener("change", function() {
+    const org = this.value;
+    if (!org)
+      return;
+    localStorage.setItem("lastOrg", org);
+    _ldOnOrgSelected(org, window.API_BASE || window.location.origin);
+  });
+  document.getElementById("ldRosterOpenBtn")?.addEventListener("click", _openRoster);
+  _ldBootstrap(window.API_BASE || window.location.origin);
+}
+async function _ldBootstrap(base) {
+  const sel = document.getElementById("ldOrgSelect");
+  try {
+    const r = await fetch(`${base}/chat/credentialing-runs?limit=50`);
+    if (r.ok)
+      _ldAllRuns = await r.json();
+  } catch {
+    _ldAllRuns = [];
+  }
+  const seen = /* @__PURE__ */ new Set(), orgs = [];
+  for (const run2 of _ldAllRuns) {
+    const o = (run2.org_name || "").trim();
+    if (o && !seen.has(o)) {
+      seen.add(o);
+      orgs.push(o);
+    }
+  }
+  if (sel) {
+    sel.innerHTML = orgs.length ? orgs.map((o) => `<option value="${_ldEsc(o)}">${_ldEsc(o)}</option>`).join("") : '<option value="">No orgs yet \u2014 start a run</option>';
+    const last = localStorage.getItem("lastOrg") || "";
+    if (last && orgs.includes(last))
+      sel.value = last;
+  }
+  const activeOrg = sel?.value || orgs[0] || "";
+  if (activeOrg) {
+    if (activeOrg !== localStorage.getItem("lastOrg"))
+      localStorage.setItem("lastOrg", activeOrg);
+    _ldOnOrgSelected(activeOrg, base);
+  } else {
+    _ldRenderRunList([], base);
+    _ldRosterNoData("Start your first credentialing run to populate.");
+  }
+}
+function _ldOnOrgSelected(org, base) {
+  const link = document.getElementById("ldRosterLink");
+  if (link)
+    link.href = `${base}/roster?org=${encodeURIComponent(org)}`;
+  const orgRuns = _ldAllRuns.filter((r) => (r.org_name || "").trim() === org);
+  _ldRenderRunList(orgRuns, base);
+  _ldRenderOrgSteps(orgRuns);
+  _ldFetchRosterStats(org, base);
+}
+function _ldRenderOrgSteps(orgRuns) {
+  const vo = orgRuns[0]?.validated_outputs || {};
+  const steps = [
+    { chipId: "ldStep1Chip", valId: "ldStep1Val", key: "identify_org" },
+    { chipId: "ldStep2Chip", valId: "ldStep2Val", key: "find_locations" }
+  ];
+  for (const s of steps) {
+    const done = !!vo[s.key];
+    const chip = document.getElementById(s.chipId);
+    const val = document.getElementById(s.valId);
+    if (chip)
+      chip.className = "ld-step-chip " + (done ? "ld-step-chip--done" : "ld-step-chip--idle");
+    if (val) {
+      if (s.key === "identify_org") {
+        const npi = typeof vo.identify_org === "object" && vo.identify_org?.npi ? vo.identify_org.npi : "";
+        val.textContent = done ? npi || "\u2713" : "\u2014";
+      } else {
+        const d = typeof vo.find_locations === "object" ? vo.find_locations : {};
+        const n = d.row_count ?? d.location_count ?? null;
+        val.textContent = done ? n != null ? n + " loc" : "\u2713" : "\u2014";
+      }
+    }
+  }
+}
+function _ldRenderRunList(runs, base) {
+  const listEl = document.getElementById("ldRunList");
+  if (!listEl)
+    return;
+  if (!runs.length) {
+    listEl.innerHTML = '<div class="ld-empty-note">No runs for this org yet.</div>';
+    return;
+  }
+  const STEP_META = [
+    { id: "nppes_alignment", short: "NPPES", num: 3 },
+    { id: "pml_alignment", short: "PML", num: 4 },
+    { id: "find_associated_providers", short: "Compliance", num: 5 },
+    { id: "taxonomy_optimization", short: "Taxonomy", num: 6 }
+  ];
+  listEl.innerHTML = runs.slice(0, 8).map((run2) => {
+    const phase = run2.phase || "pending";
+    const vo = run2.validated_outputs || {};
+    const badgeCls = phase === "complete" ? "ld-cap-badge--complete" : phase === "error" || phase === "failed" ? "ld-cap-badge--error" : phase === "running" || phase === "in_progress" ? "ld-cap-badge--running" : "ld-cap-badge--pending";
+    const badgeLbl = phase === "complete" ? "\u2713 Complete" : phase === "error" || phase === "failed" ? "\u2717 Error" : phase === "running" ? "\u25CF Running" : phase === "in_progress" ? "\u2192 In progress" : "Pending";
+    const capCls = phase === "complete" ? "ld-run-capsule--complete" : phase === "error" || phase === "failed" ? "ld-run-capsule--error" : "ld-run-capsule--active";
+    const mode = run2.mode === "autopilot" ? "autopilot" : run2.mode === "copilot" ? "co-pilot" : run2.mode || "";
+    const dt = run2.updated_at ? new Date(run2.updated_at).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "";
+    const pills = STEP_META.map(
+      (s) => `<span class="ld-step-pill${vo[s.id] ? " ld-step-pill--done" : ""}" title="Step ${s.num}: ${s.short}">${s.short}</span>`
+    ).join("");
+    const runUrl = `${base}/pipeline?run_id=${encodeURIComponent(run2.run_id)}`;
+    return `<a class="ld-run-capsule ${capCls}" href="${runUrl}" target="_blank" rel="noopener">
+      <div class="ld-cap-head">
+        <div class="ld-cap-date">${dt}${mode ? " \xB7 " + _ldEsc(mode) : ""}</div>
+        <span class="ld-cap-badge ${badgeCls}">${badgeLbl}</span>
+      </div>
+      <div class="ld-cap-steps-row">${pills}</div>
+    </a>`;
+  }).join("");
+}
+async function _ldFetchRosterStats(org, base) {
+  ["ldStatTotal", "ldStatBillable", "ldStatAtRisk", "ldStatBlocked", "ldStatTasks"].forEach((id) => {
+    const el2 = document.getElementById(id);
+    if (el2)
+      el2.textContent = "\u2026";
+  });
+  try {
+    const r = await fetch(`${base}/chat/roster-truth/${encodeURIComponent(org)}?limit=500`);
+    if (!r.ok)
+      throw new Error(String(r.status));
+    const data = await r.json();
+    _ldRenderRosterStats(Array.isArray(data) ? data : data.providers || data.items || []);
+  } catch {
+    _ldRosterNoData("Could not load roster.");
+  }
+}
+function _ldRenderRosterStats(providers) {
+  const total = providers.length;
+  const tasks = providers.filter((p) => {
+    const t = p.open_tasks;
+    return Array.isArray(t) ? t.length > 0 : false;
+  }).length;
+  let billable = 0, atRisk = 0, blocked = 0;
+  for (const p of providers) {
+    const snap = typeof p.nppes_snapshot === "object" && p.nppes_snapshot ? p.nppes_snapshot : {};
+    const nppesOk = (snap.nppes_status || "").toUpperCase() === "A";
+    const openCnt = Array.isArray(p.open_tasks) ? p.open_tasks.length : 0;
+    const valid = p.decision === "validated";
+    if (valid && nppesOk && openCnt === 0)
+      billable++;
+    else if (valid)
+      atRisk++;
+    else
+      blocked++;
+  }
+  if (billable + atRisk + blocked === 0 && total > 0) {
+    billable = providers.filter((p) => p.decision === "validated").length;
+    atRisk = providers.filter((p) => p.decision === "flagged" || p.decision === "review").length;
+    blocked = total - billable - atRisk;
+  }
+  const ids = { ldStatTotal: total, ldStatBillable: billable, ldStatAtRisk: atRisk, ldStatBlocked: blocked, ldStatTasks: tasks };
+  Object.entries(ids).forEach(([id, v]) => {
+    const el2 = document.getElementById(id);
+    if (el2)
+      _ldCountUp(el2, v);
+  });
+  if (total > 0) {
+    const bw = document.getElementById("ldBarWrap");
+    if (bw) {
+      bw.style.display = "";
+      setTimeout(() => {
+        const g = document.getElementById("ldBarGreen"), a = document.getElementById("ldBarAmber"), rd = document.getElementById("ldBarRed");
+        if (g)
+          g.style.width = (billable / total * 100).toFixed(1) + "%";
+        if (a)
+          a.style.width = (atRisk / total * 100).toFixed(1) + "%";
+        if (rd)
+          rd.style.width = (blocked / total * 100).toFixed(1) + "%";
+      }, 30);
+      const leg = document.getElementById("ldBarLegend");
+      if (leg)
+        leg.textContent = `${Math.round(billable / total * 100)}% billable \xB7 ${atRisk} at risk \xB7 ${blocked} blocked`;
+    }
+  }
+  const issueEl = document.getElementById("ldIssueList");
+  if (issueEl) {
+    const chips = [];
+    if (blocked > 0)
+      chips.push({ cls: "ld-issue-chip--crit", icon: "\u2717", text: `${blocked} provider${blocked > 1 ? "s" : ""} blocked from billing` });
+    if (atRisk > 0)
+      chips.push({ cls: "ld-issue-chip--warn", icon: "\u26A0", text: `${atRisk} provider${atRisk > 1 ? "s" : ""} at risk \u2014 gaps exist` });
+    if (tasks > 0)
+      chips.push({ cls: "ld-issue-chip--warn", icon: "\u25CE", text: `${tasks} open credentialing task${tasks > 1 ? "s" : ""}` });
+    if (!chips.length && total > 0)
+      chips.push({ cls: "ld-issue-chip--ok", icon: "\u2713", text: "All providers clean \u2014 no gaps detected" });
+    if (!total)
+      chips.push({ cls: "ld-issue-chip", icon: "\xB7", text: "No providers in roster yet" });
+    issueEl.innerHTML = chips.map((c) => `<div class="ld-issue-chip ${c.cls}"><span>${c.icon}</span><span>${c.text}</span></div>`).join("");
+  }
+  const lr = document.getElementById("ldLastRun");
+  if (lr)
+    lr.textContent = `${total} provider${total !== 1 ? "s" : ""} on record`;
+}
+function _ldRosterNoData(msg) {
+  ["ldStatTotal", "ldStatBillable", "ldStatAtRisk", "ldStatBlocked", "ldStatTasks"].forEach((id) => {
+    const el2 = document.getElementById(id);
+    if (el2)
+      el2.textContent = "\u2014";
+  });
+  const issueEl = document.getElementById("ldIssueList");
+  if (issueEl)
+    issueEl.innerHTML = `<div class="ld-issue-chip">${_ldEsc(msg)}</div>`;
+}
+function _ldCountUp(el2, target) {
+  el2.textContent = "0";
+  if (!target) {
+    el2.textContent = "0";
+    return;
+  }
+  const steps = 18, dur = 500;
+  let cur = 0;
+  const iv = setInterval(() => {
+    cur = Math.min(cur + Math.ceil(target / steps), target);
+    el2.textContent = String(cur);
+    if (cur >= target)
+      clearInterval(iv);
+  }, dur / steps);
+}
+function _ldEsc(str) {
+  return String(str || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}

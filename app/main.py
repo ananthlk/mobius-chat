@@ -365,6 +365,125 @@ def post_chat(body: ChatRequest):
     return ChatResponse(correlation_id=correlation_id, thread_id=thread_id)
 
 
+def _handle_instant_rag_upload(
+    content: bytes, filename: str, org_name: str,
+    thread_id: str | None, file_purpose: str,
+) -> dict[str, Any]:
+    """Route document uploads to the instant-rag skill for immediate RAG availability."""
+    import json as json_mod
+    import uuid as _uuid_mod
+    import io
+    import urllib.request
+    import threading as _threading
+    from datetime import datetime, timezone
+
+    instant_rag_url = (os.environ.get("INSTANT_RAG_URL") or "http://localhost:8040").rstrip("/")
+
+    # Extract text from the file based on type
+    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    text = ""
+
+    if ext == "pdf":
+        try:
+            import pymupdf
+            doc = pymupdf.open(stream=content, filetype="pdf")
+            text = "\n\n".join(page.get_text("text") for page in doc if page.get_text("text").strip())
+            doc.close()
+        except ImportError:
+            try:
+                import fitz
+                doc = fitz.open(stream=content, filetype="pdf")
+                text = "\n\n".join(page.get_text("text") for page in doc if page.get_text("text").strip())
+                doc.close()
+            except ImportError:
+                raise HTTPException(status_code=500, detail="PDF extraction requires pymupdf: pip install pymupdf")
+    elif ext in ("html", "htm"):
+        raw = content.decode("utf-8", errors="replace")
+        try:
+            from bs4 import BeautifulSoup
+            text = BeautifulSoup(raw, "html.parser").get_text(separator="\n\n", strip=True)
+        except ImportError:
+            import re
+            text = re.sub(r"<[^>]+>", " ", raw)
+            text = re.sub(r"\s+", " ", text).strip()
+    elif ext == "docx":
+        try:
+            from docx import Document
+            doc = Document(io.BytesIO(content))
+            text = "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        except ImportError:
+            raise HTTPException(status_code=500, detail="DOCX extraction requires python-docx: pip install python-docx")
+    else:
+        # Treat as plain text (txt, csv, md, etc.)
+        text = content.decode("utf-8", errors="replace").strip()
+
+    if not text.strip():
+        raise HTTPException(status_code=422, detail="No text content could be extracted from the file")
+
+    # Call instant-rag skill /ingest/from-text
+    payload = json_mod.dumps({
+        "text": text,
+        "content_type": "text/html" if ext in ("html", "htm") else "text/plain",
+        "display_name": filename,
+        "payer": org_name if org_name and org_name != "instant-rag" else "",
+        "agent_scope_tags": ["chat"],
+    }).encode()
+
+    try:
+        req = urllib.request.Request(
+            f"{instant_rag_url}/ingest/from-text",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            rag_result = json_mod.loads(resp.read())
+    except Exception as e:
+        logger.warning("Instant-RAG ingest failed: %s", e)
+        raise HTTPException(status_code=502, detail=f"Instant-RAG ingest failed: {str(e)[:200]}")
+
+    # Save to thread state (same pattern as roster)
+    tid = (thread_id or "").strip() or str(_uuid_mod.uuid4())
+    upload_id = rag_result.get("envelope_id") or str(_uuid_mod.uuid4())
+    record: dict[str, Any] = {
+        "upload_id": upload_id,
+        "org_id": "",
+        "org_name": org_name,
+        "purpose": file_purpose,
+        "filename": filename,
+        "row_count": rag_result.get("chunks_count", 0),
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+        "reconciliation_upload_id": None,
+        "envelope_id": rag_result.get("envelope_id"),
+        "document_id": rag_result.get("document_id"),
+    }
+
+    def _persist(tid: str, rec: dict) -> None:
+        try:
+            real_tid = ensure_thread(tid)
+            append_uploaded_file_record(real_tid, rec)
+        except Exception as _e:
+            logger.debug("Thread state save (instant-rag): %s", _e)
+
+    _threading.Thread(target=_persist, args=(tid, record), daemon=True).start()
+
+    return {
+        "upload_id": upload_id,
+        "org_id": "",
+        "org_name": org_name,
+        "row_count": rag_result.get("chunks_count", 0),
+        "thread_id": tid,
+        "file_purpose": file_purpose,
+        "filename": filename,
+        "envelope_id": rag_result.get("envelope_id"),
+        "document_id": rag_result.get("document_id"),
+        "verification_tier": rag_result.get("verification_tier", "instant"),
+        "status": rag_result.get("status", "live"),
+        "chunks_count": rag_result.get("chunks_count", 0),
+        "message": rag_result.get("message", ""),
+    }
+
+
 @app.post("/chat/roster-upload")
 def post_chat_roster_upload(
     file: UploadFile = File(...),
@@ -374,26 +493,42 @@ def post_chat_roster_upload(
     file_purpose: str | None = Form("roster_reconciliation"),
 ) -> dict[str, Any]:
     """
-    Upload a roster file (CSV or Excel) for credentialing/reconciliation reports.
-    Proxies to provider-roster-credentialing, processes, saves upload_id and org_id to thread state.
-    file_purpose: roster_reconciliation | other (stored for future RAG / workflows).
+    Upload a file for credentialing/reconciliation or instant RAG ingestion.
+    Proxies to provider-roster-credentialing (roster) or instant-rag skill (documents).
+    file_purpose: roster_reconciliation | instant_rag | other.
     Returns { upload_id, org_id, org_name, row_count, thread_id }.
     """
+    content = file.file.read()
+    filename = file.filename or "upload"
+    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    purpose = (file_purpose or "roster_reconciliation").strip()
+
+    # Block dangerous file types
+    _BLOCKED_EXTS = {"exe", "bat", "sh", "dll", "so", "dylib", "com", "msi", "scr"}
+    if ext in _BLOCKED_EXTS:
+        raise HTTPException(status_code=400, detail=f"File type '.{ext}' is not allowed")
+
+    org_name = (org_name or "").strip()
+
+    # ── Instant RAG path ─────────────────────────────────────────────────
+    if purpose == "instant_rag":
+        return _handle_instant_rag_upload(
+            content=content, filename=filename, org_name=org_name,
+            thread_id=thread_id, file_purpose=purpose,
+        )
+
+    # ── Roster path (original) ───────────────────────────────────────────
+    if ext not in ("csv", "xlsx", "xls"):
+        raise HTTPException(status_code=400, detail="Roster files must be CSV or Excel (.csv, .xlsx, .xls)")
+
     base = (os.environ.get("CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL") or "").rstrip("/").split("/report")[0]
     if not base:
         raise HTTPException(
             status_code=503,
             detail="Roster upload not configured. Set CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL.",
         )
-    org_name = (org_name or "").strip()
     if not org_name:
-        raise HTTPException(status_code=400, detail="org_name is required")
-
-    content = file.file.read()
-    filename = file.filename or "roster.csv"
-    ext = filename.lower().split(".")[-1]
-    if ext not in ("csv", "xlsx", "xls"):
-        raise HTTPException(status_code=400, detail="File must be CSV or Excel (.csv, .xlsx, .xls)")
+        raise HTTPException(status_code=400, detail="org_name is required for roster uploads")
 
     # 1. Resolve org_id — fast path: read from pipeline run state if available.
     #    Fallback: quick NPPES search with 5s timeout (non-fatal if it fails).
@@ -569,7 +704,7 @@ def post_chat_roster_upload(
     from datetime import datetime, timezone
 
     purpose = (file_purpose or "roster_reconciliation").strip() or "roster_reconciliation"
-    if purpose not in ("roster_reconciliation", "other"):
+    if purpose not in ("roster_reconciliation", "instant_rag", "other"):
         purpose = "roster_reconciliation"
 
     # Generate thread id without blocking (no DB call yet)
@@ -600,6 +735,39 @@ def post_chat_roster_upload(
         args=(tid, record),
         daemon=True,
     ).start()
+
+    # Log roster upload event to audit log (fire-and-forget, non-fatal)
+    def _log_upload_audit(skill_base: str, org: str, fname: str, uid: str, rc_uid: str | None) -> None:
+        try:
+            import urllib.request as _ur
+            evt = [{
+                "org_name":    org,
+                "event_type":  "uploaded",
+                "upload_id":   uid,
+                "actor":       "user",
+                "actor_label": "Roster file upload",
+                "event_data": {
+                    "filename":                fname,
+                    "upload_id":               uid,
+                    "reconciliation_upload_id": rc_uid,
+                },
+            }]
+            _req = _ur.Request(
+                f"{skill_base}/roster/log-events",
+                data=json_mod.dumps(evt).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with _ur.urlopen(_req, timeout=8):
+                pass
+        except Exception as _e:
+            logger.debug("Upload audit log (non-fatal): %s", _e)
+    if base:
+        _threading.Thread(
+            target=_log_upload_audit,
+            args=(base, org_name, filename, upload_id, reconciliation_upload_id),
+            daemon=True,
+        ).start()
 
     out: dict[str, Any] = {
         "upload_id": upload_id,
@@ -739,8 +907,8 @@ def list_credentialing_runs_endpoint(limit: int = 30, offset: int = 0) -> list[d
 def post_credentialing_runs(body: CredentialingRunCreateBody) -> dict[str, Any]:
     """
     Create a credentialing pipeline run.
-    - autopilot: same as chat tool (full orchestrator), returns when complete.
-    - copilot: runs the first step only; use POST .../validate with validated_output, then repeat until phase=complete.
+    - autopilot: seeds a run record immediately, runs full orchestrator in background thread.
+    - copilot: runs the first step synchronously; use POST .../validate with validated_output, then repeat until phase=complete.
     """
     from app.services.credentialing_run_service import create_credentialing_run
 
@@ -748,6 +916,42 @@ def post_credentialing_runs(body: CredentialingRunCreateBody) -> dict[str, Any]:
     if not org:
         raise HTTPException(status_code=400, detail="org_name is required")
     tid = ensure_thread((body.thread_id or "").strip() or None)
+
+    if body.mode == "autopilot":
+        # Seed a run record immediately so the frontend can start polling,
+        # then run the full orchestrator in a background thread.
+        import threading as _threading
+        import uuid as _uuid
+        from app.services.credentialing_run_service import _store_put, _public_view
+
+        run_id = str(_uuid.uuid4())
+        stub: dict[str, Any] = {
+            "run_id": run_id,
+            "thread_id": tid,
+            "org_name": org,
+            "mode": "autopilot",
+            "phase": "running",
+            "pending_step_id": None,
+            "draft_output": None,
+            "validated_outputs": {},
+            "error": None,
+            "final_report_text": None,
+            "orchestrator_state_dict": None,
+        }
+        _store_put(run_id, stub)
+        save_state(tid, {"active": {"credentialing_run_id": run_id, "credentialing_run_mode": "autopilot"}})
+
+        def _bg():
+            try:
+                create_credentialing_run(org, "autopilot", thread_id=tid, run_id=run_id)
+            except Exception as _e:
+                import logging
+                logging.getLogger(__name__).warning("autopilot bg run failed: %s", _e)
+
+        _threading.Thread(target=_bg, daemon=True, name=f"autopilot-{run_id[:8]}").start()
+        stub["thread_id"] = tid
+        return _public_view(stub)
+
     try:
         result = create_credentialing_run(org, body.mode, thread_id=tid)
     except ValueError as e:
@@ -1107,7 +1311,12 @@ def list_roster_snoozes(run_id: str) -> dict[str, Any]:
 
 @app.post("/chat/credentialing-runs/{run_id}/validate")
 def post_credentialing_run_validate(run_id: str, body: CredentialingValidateBody) -> dict[str, Any]:
-    from app.services.credentialing_run_service import validate_and_advance_credentialing_run, rerun_step_for_run
+    from app.services.credentialing_run_service import (
+        validate_and_advance_credentialing_run,
+        rerun_step_for_run,
+        _store_get,
+    )
+    import threading as _threading
 
     sid = (body.step_id or "").strip()
     if not sid:
@@ -1123,12 +1332,37 @@ def post_credentialing_run_validate(run_id: str, body: CredentialingValidateBody
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from None
 
-    try:
-        return validate_and_advance_credentialing_run(run_id, sid, body.validated_output or {})
-    except KeyError:
-        raise HTTPException(status_code=404, detail="run not found") from None
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from None
+    # Verify run exists before going async
+    from app.services.credentialing_run_service import _store_get, _store_put, _public_view
+    rec = _store_get(run_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="run not found")
+
+    validated_output = body.validated_output or {}
+
+    # Mark the run as "running" in the DB immediately so the polling frontend
+    # sees the transition right away (not after the heavy step finishes).
+    rec["phase"] = "running"
+    _store_put(run_id, rec)
+
+    # Run the heavy orchestrator work in a background thread so the server
+    # stays responsive for other requests (roster page, health checks, etc.).
+    # The frontend polls GET /chat/credentialing-runs/{run_id} for progress.
+    def _bg():
+        try:
+            validate_and_advance_credentialing_run(run_id, sid, validated_output)
+        except Exception as _e:
+            import logging
+            logging.getLogger(__name__).warning("validate background task failed run=%s: %s", run_id, _e)
+
+    t = _threading.Thread(target=_bg, daemon=True, name=f"validate-{run_id[:8]}")
+    t.start()
+
+    # Return the updated record immediately so frontend starts polling.
+    view = _public_view(rec)
+    view["phase"] = "running"
+    view["pending_step_id"] = sid
+    return view
 
 
 class PmlTaskStateBody(BaseModel):
@@ -1143,13 +1377,62 @@ class PmlTaskStateBody(BaseModel):
 def patch_pml_tasks(run_id: str, body: PmlTaskStateBody) -> dict[str, Any]:
     """Persist PML task state (done flags, notes, manual tasks, dismissed rows, confirmed locations) for a run."""
     from app.storage.credentialing_runs_pg import patch_pml_task_state
-    ok = patch_pml_task_state(run_id, {
+    state = {
         "done": body.done, "notes": body.notes,
         "manual": body.manual, "dismissed": body.dismissed,
         "providerLocations": body.providerLocations,
-    })
+    }
+    ok = patch_pml_task_state(run_id, state)
     if not ok:
         raise HTTPException(status_code=500, detail="Failed to persist task state")
+
+    # Mirror resolved/dismissed into task-manager (best-effort)
+    try:
+        base = _task_manager_base()
+        if base:
+            import httpx as _httpx
+            with _httpx.Client(timeout=5.0) as _c:
+                for tid in (body.done or []):
+                    _c.post(f"{base}/tasks/{tid}/resolve", json={"resolved_by": "pml_patch", "note": body.notes.get(tid)})
+                for tid in (body.dismissed or []):
+                    _c.post(f"{base}/tasks/{tid}/dismiss", json={"dismissed_by": "pml_patch"})
+    except Exception:
+        pass
+
+    return {"ok": True}
+
+
+class TaxonomyTaskStateBody(BaseModel):
+    done: list[str] = []
+    notes: dict[str, str] = {}
+    dismissed: list[str] = []
+
+
+@app.patch("/chat/credentialing-runs/{run_id}/taxonomy-tasks")
+def patch_taxonomy_tasks(run_id: str, body: TaxonomyTaskStateBody) -> dict[str, Any]:
+    """Persist taxonomy task state (done flags, notes, dismissed) for a run."""
+    from app.storage.credentialing_runs_pg import patch_taxonomy_task_state
+    state = {
+        "done": body.done, "notes": body.notes,
+        "dismissed": body.dismissed,
+    }
+    ok = patch_taxonomy_task_state(run_id, state)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to persist taxonomy task state")
+
+    # Mirror resolved/dismissed into task-manager (best-effort)
+    try:
+        base = _task_manager_base()
+        if base:
+            import httpx as _httpx
+            with _httpx.Client(timeout=5.0) as _c:
+                for tid in (body.done or []):
+                    _c.post(f"{base}/tasks/{tid}/resolve", json={"resolved_by": "taxonomy_patch", "note": body.notes.get(tid)})
+                for tid in (body.dismissed or []):
+                    _c.post(f"{base}/tasks/{tid}/dismiss", json={"dismissed_by": "taxonomy_patch"})
+    except Exception:
+        pass
+
     return {"ok": True}
 
 
@@ -1343,8 +1626,14 @@ def roster_reconcile_report_proxy(upload_id: str, quick: bool = False):
         params = {"quick": "true"} if quick else {}
         with httpx.Client(timeout=30.0) as c:
             r = c.get(f"{base}/roster/reconcile/{upload_id}/report", params=params)
+            # Pass 4xx responses through as-is so the frontend can distinguish
+            # "upload not found / deleted" (404) from a real server error (5xx).
+            if r.status_code == 404:
+                raise HTTPException(status_code=404, detail=f"Upload {upload_id} not found")
             r.raise_for_status()
             return r.json()
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -1506,6 +1795,22 @@ Rows:
             enrich_provider(p)
         roster_score = compute_roster_score(clean_rows)
         recon_tasks  = build_recon_tasks(clean_rows)
+
+        # Mirror recon_tasks into unified task-manager (best-effort)
+        try:
+            _tm_base = _task_manager_base()
+            if _tm_base and recon_tasks:
+                import httpx as _httpx
+                _org = (raw.get("org_name") or "").strip()
+                _enriched_tasks = [
+                    {**t, "org_name": _org, "source_module": "roster_recon"}
+                    for t in recon_tasks
+                ]
+                with _httpx.Client(timeout=5.0) as _c:
+                    _c.post(f"{_tm_base}/tasks/bulk-import", json={"tasks": _enriched_tasks})
+        except Exception:
+            pass
+
     except Exception as _enrich_err:
         import logging as _logging
         _logging.getLogger(__name__).warning("provider enrichment failed (non-fatal): %s", _enrich_err)
@@ -1713,6 +2018,22 @@ def roster_provider_save_decision(provider_id: int, body: dict = Body(...)):
         raise HTTPException(status_code=502, detail=str(e))
 
 
+@app.delete("/chat/roster-truth")
+def dev_clear_roster_truth(org_name: str):
+    """DEV / TEST ONLY — hard-delete all roster_truth rows for an org.
+
+    Not exposed in production UI.  Protected only by obscurity — remove or
+    gate behind auth before any public release.
+    """
+    try:
+        from app.storage.roster_truth_pg import delete_roster_truth_for_org, ensure_schema
+        ensure_schema()
+        deleted = delete_roster_truth_for_org(org_name)
+        return {"deleted": deleted, "org_name": org_name}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.delete("/chat/roster-reconcile/provider/{provider_id}")
 def roster_provider_delete(provider_id: int):
     """Proxy: soft-exclude a roster provider (audit trail preserved).
@@ -1781,15 +2102,18 @@ def roster_write_audit_proxy(provider_id: int, body: dict = Body(default={})):
 
 
 @app.get("/chat/roster-reconcile/provider/{provider_id}/audit-log")
-def roster_read_provider_audit_proxy(provider_id: int, limit: int = 50):
-    """Proxy: fetch audit trail for a single provider."""
+def roster_read_provider_audit_proxy(provider_id: int, npi: str = "", limit: int = 100):
+    """Proxy: fetch audit trail for a single provider — passes npi so orchestrator events are included."""
     base = _skill_base()
     if not base:
         raise HTTPException(status_code=503, detail="Skill server not configured")
     try:
         import httpx
+        params: dict = {"limit": limit}
+        if npi:
+            params["npi"] = npi
         with httpx.Client(timeout=10.0) as c:
-            r = c.get(f"{base}/roster/provider/{provider_id}/audit-log", params={"limit": limit})
+            r = c.get(f"{base}/roster/provider/{provider_id}/audit-log", params=params)
             r.raise_for_status()
             return r.json()
     except Exception as e:
@@ -1809,6 +2133,256 @@ def roster_read_run_audit_proxy(run_id: str, org_name: str = "", limit: int = 20
                       params={"org_name": org_name, "limit": limit})
             r.raise_for_status()
             return r.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/chat/roster-truth/{org_name}/provider/{provider_id}/summary")
+def roster_provider_summary_proxy(org_name: str, provider_id: int, force: bool = False):
+    """Generate AI-written credentialing summary using llm_manager (Thompson sampling).
+
+    If a pre-computed (non-stale) summary exists in roster_truth.ai_summary it is
+    served immediately without an LLM call.  Pass ?force=true to regenerate.
+
+    Architecture: this proxy fetches the structured profile from the skill server,
+    then calls llm_manager here (in the chat process) so the request participates in
+    the same Thompson-sampling bandit and usage tracking as all other LLM calls.
+    """
+    import time
+    import re as _re
+
+    base = _skill_base()
+    if not base:
+        raise HTTPException(status_code=503, detail="Skill server not configured")
+
+    # 1. Fetch full provider profile from skill server
+    try:
+        import httpx
+        with httpx.Client(timeout=20.0) as c:
+            r = c.get(f"{base}/roster/truth/{org_name}/provider/{provider_id}")
+            if r.status_code == 404:
+                raise HTTPException(status_code=404, detail="Provider not found")
+            r.raise_for_status()
+            detail = r.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not fetch provider profile: {e}")
+
+    # 2. Check for a pre-computed (non-stale) summary in the DB — serve it instantly.
+    stored_summary = detail.get("ai_summary") or {}
+    if not force and stored_summary.get("detailed") and not detail.get("ai_summary_stale", True):
+        return {
+            "provider_id":        provider_id,
+            "provider_name":      detail.get("provider_name"),
+            "org_name":           org_name,
+            "summary":            stored_summary["detailed"],
+            "summary_short":      stored_summary.get("one_liner", ""),
+            "billability_status": detail.get("billability_status"),
+            "billability_score":  detail.get("billability_score"),
+            "model":              stored_summary.get("model", "cached"),
+            "stage":              "integrator_roster",
+            "input_tokens":       stored_summary.get("input_tokens", 0),
+            "output_tokens":      stored_summary.get("output_tokens", 0),
+            "latency_ms":         0,
+            "from_cache":         True,
+        }
+
+    # 3. No stored summary or stale — generate via LLM and persist back to DB.
+    from app.services.provider_summary import (
+        build_detailed_prompt, build_oneliner_prompt,
+        build_chat_profile, parse_oneliner, parse_brief_and_oneliner,
+        is_clean_provider, CLEAN_SUMMARY_TEMPLATE,
+    )
+
+    # For clean providers: use a static template (no LLM cost)
+    if is_clean_provider(detail):
+        one_liner    = CLEAN_SUMMARY_TEMPLATE.format(name=detail.get("provider_name","Provider"))
+        summary_text = f"## Credential Status\n{one_liner}\n\n## Key Risks\n- None\n\n## Recommended Actions\n1. No action required.\n"
+        usage_meta   = {"model": "template", "input_tokens": 0, "output_tokens": 0, "latency_ms": 0}
+    else:
+        full_prompt = build_detailed_prompt(detail)
+        try:
+            from app.services.llm_manager import generate_sync as _llm_gen
+            t0 = time.perf_counter()
+            raw_text, usage_meta = _llm_gen(
+                prompt=full_prompt,
+                stage="integrator_roster",
+                max_tokens=8192,
+            )
+            # Prompt already primed with "## Credential Status\n" so prepend it back
+            summary_text = "## Credential Status\n" + raw_text
+            usage_meta["latency_ms"] = int((time.perf_counter() - t0) * 1000)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"LLM generation failed: {exc}")
+
+        one_liner = parse_oneliner(summary_text)
+
+    # Generate brief via a separate short LLM call
+    brief = ""
+    try:
+        from app.services.llm_manager import generate_sync as _llm_gen2
+        ol_raw, _ = _llm_gen2(
+            prompt=build_oneliner_prompt(detail),
+            stage="integrator_roster",
+            max_tokens=256,
+        )
+        _, brief = parse_brief_and_oneliner(ol_raw)
+    except Exception:
+        brief = one_liner
+
+    # Persist to DB (fire-and-forget via thread — don't block the HTTP response)
+    import threading as _threading
+    import datetime as _datetime
+    _summary_payload = {
+        "one_liner":     one_liner,
+        "brief":         brief,
+        "detailed":      summary_text,
+        "chat_profile":  build_chat_profile(detail, run_id=detail.get("run_id")),
+        "model":         usage_meta.get("model", ""),
+        "input_tokens":  usage_meta.get("input_tokens", 0),
+        "output_tokens": usage_meta.get("output_tokens", 0),
+        "generated_at":  _datetime.datetime.utcnow().isoformat() + "Z",
+        "run_id":        detail.get("run_id") or "",
+    }
+    _npi = detail.get("npi") or detail.get("npi_validated") or detail.get("npi_roster") or ""
+
+    def _persist():
+        try:
+            from app.storage.roster_truth_pg import upsert_ai_summary
+            upsert_ai_summary(org_name, _npi, _summary_payload)
+        except Exception as _e:
+            import logging; logging.getLogger(__name__).warning("summary persist failed: %s", _e)
+
+    _threading.Thread(target=_persist, daemon=True).start()
+
+    return {
+        "provider_id":        provider_id,
+        "provider_name":      detail.get("provider_name"),
+        "org_name":           org_name,
+        "summary":            summary_text,
+        "summary_short":      one_liner,
+        "billability_status": detail.get("billability_status"),
+        "billability_score":  detail.get("billability_score"),
+        "model":              usage_meta.get("model", ""),
+        "stage":              "integrator_roster",
+        "input_tokens":       usage_meta.get("input_tokens", 0),
+        "output_tokens":      usage_meta.get("output_tokens", 0),
+        "latency_ms":         usage_meta.get("latency_ms", 0),
+        "from_cache":         False,
+    }
+
+
+@app.get("/chat/roster-truth/{org_name}/provider/{provider_id}")
+def roster_provider_detail_proxy(org_name: str, provider_id: int):
+    """Proxy: full provider profile — roster_truth + PML + audit log + version history."""
+    base = _skill_base()
+    if not base:
+        raise HTTPException(status_code=503, detail="Skill server not configured")
+    try:
+        import httpx
+        with httpx.Client(timeout=15.0) as c:
+            r = c.get(f"{base}/roster/truth/{org_name}/provider/{provider_id}")
+            if r.status_code == 404:
+                raise HTTPException(status_code=404, detail="Provider not found")
+            r.raise_for_status()
+            return r.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+class _AddProviderBody(BaseModel):
+    npi:           str
+    provider_name: str
+    city:          str = ""
+    state_cd:      str = ""
+    specialty:     str = ""
+
+@app.post("/chat/roster-truth/{org_name}/provider")
+async def roster_provider_add_proxy(org_name: str, body: _AddProviderBody):
+    """Proxy: manually add a single provider to the roster."""
+    import httpx
+    base = _skill_base()
+    if not base:
+        raise HTTPException(status_code=503, detail="Skill server not configured")
+    try:
+        with httpx.Client(timeout=15.0) as c:
+            r = c.post(f"{base}/roster/truth/{org_name}/provider", json=body.dict())
+            if r.status_code == 422:
+                raise HTTPException(status_code=422, detail=r.json())
+            r.raise_for_status()
+            return r.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+class _EditProviderBody(BaseModel):
+    provider_name: str | None = None
+    npi_validated: str | None = None
+    city:          str | None = None
+    state_cd:      str | None = None
+    zip_code:      str | None = None
+    phone:         str | None = None
+    specialty:     str | None = None
+    address_line1: str | None = None
+
+@app.patch("/chat/roster-truth/{org_name}/provider/{provider_id}")
+async def roster_provider_edit_proxy(org_name: str, provider_id: int, body: _EditProviderBody):
+    """Proxy: edit provider fields (name, NPI, location) in roster_truth."""
+    import httpx
+    base = _skill_base()
+    if not base:
+        raise HTTPException(status_code=503, detail="Skill server not configured")
+    try:
+        with httpx.Client(timeout=15.0) as c:
+            r = c.patch(f"{base}/roster/truth/{org_name}/provider/{provider_id}",
+                        json={k: v for k, v in body.dict().items() if v is not None})
+            if r.status_code == 404:
+                raise HTTPException(status_code=404, detail="Provider not found")
+            r.raise_for_status()
+            return r.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/chat/roster-org/{org_name}/dismissals")
+def roster_org_dismissals_proxy(org_name: str):
+    """Proxy: fetch map of npi → [dismissed dim] for all providers in an org."""
+    base = _skill_base()
+    if not base:
+        raise HTTPException(status_code=503, detail="Skill server not configured")
+    try:
+        import httpx
+        with httpx.Client(timeout=10.0) as c:
+            r = c.get(f"{base}/roster/org/{org_name}/dismissals")
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/chat/roster-truth/{org_name}/org-summary")
+def roster_org_summary_proxy(org_name: str):
+    """Proxy: org-level credential health summary generated by Step 8."""
+    base = _skill_base()
+    if not base:
+        raise HTTPException(status_code=503, detail="Skill server not configured")
+    try:
+        import httpx
+        with httpx.Client(timeout=15.0) as c:
+            r = c.get(f"{base}/roster/truth/{org_name}/org-summary")
+            if r.status_code == 404:
+                raise HTTPException(status_code=404, detail="No org summary found — run the pipeline first.")
+            r.raise_for_status()
+            return r.json()
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -2141,6 +2715,355 @@ async def internal_skill_llm(
     return {"text": text, "usage": usage}
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Financial Strategy skill proxy — /chat/financial-strategy/* → provider-roster-credentialing
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _fs_proxy(method: str, path: str, *, json_body=None, timeout: float = 30.0):
+    """Proxy helper for financial-strategy routes on the credentialing skill server."""
+    import httpx
+    base = _skill_base()
+    if not base:
+        raise HTTPException(status_code=503, detail="Skill server not configured")
+    try:
+        with httpx.Client(timeout=timeout) as c:
+            r = c.request(method, f"{base}{path}", json=json_body)
+            r.raise_for_status()
+            return r.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Skill server error: {e}") from e
+
+
+@app.get("/chat/financial-strategy/orgs")
+def fs_list_orgs():
+    """Proxy: list available orgs with canonical data."""
+    return _fs_proxy("GET", "/financial-strategy/orgs")
+
+
+@app.get("/chat/financial-strategy/industry")
+def fs_industry():
+    """Proxy: static industry landscape chapter."""
+    return _fs_proxy("GET", "/financial-strategy/industry")
+
+
+@app.post("/chat/financial-strategy/generate-baseline")
+def fs_generate_baseline(body: dict = Body(...)):
+    """Proxy: generate industry + org baseline chapter."""
+    return _fs_proxy("POST", "/financial-strategy/generate-baseline", json_body=body)
+
+
+@app.post("/chat/financial-strategy/ask")
+def fs_ask(body: dict = Body(...)):
+    """Proxy: Q&A over org's financial position (includes LLM reframe)."""
+    return _fs_proxy("POST", "/financial-strategy/ask", json_body=body, timeout=60.0)
+
+
+@app.post("/chat/financial-strategy/generate-plan")
+def fs_generate_plan(body: dict = Body(...)):
+    """Proxy: convert findings into investigation tasks."""
+    return _fs_proxy("POST", "/financial-strategy/generate-plan", json_body=body)
+
+
+@app.post("/chat/org-story")
+def fs_org_story(body: dict = Body(...)):
+    """Proxy: 5-factor Laspeyres decomposition + conversion + leakage dashboard."""
+    return _fs_proxy("POST", "/org-story", json_body=body, timeout=120.0)
+
+
+@app.get("/chat/market-map")
+def fs_market_map():
+    """Proxy: FL BH market map data — all org locations with revenue."""
+    return _fs_proxy("GET", "/market-map", timeout=60.0)
+
+
+@app.get("/chat/industry-report-data")
+def fs_industry_report_data():
+    """Proxy: Industry report data — archetype distributions, code metrics, trends, CMHC."""
+    return _fs_proxy("GET", "/industry-report-data", timeout=120.0)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Doc Reader skill proxy — /chat/doc-reader/* → mobius-skills/doc-reader
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _doc_reader_proxy(method: str, path: str, *, json_body=None, timeout: float = 30.0):
+    """Proxy helper for doc-reader skill routes."""
+    import httpx
+    base = (os.environ.get("CHAT_SKILLS_DOC_READER_URL") or "http://localhost:8018").rstrip("/")
+    try:
+        with httpx.Client(timeout=timeout) as c:
+            r = c.request(method, f"{base}{path}", json=json_body)
+            r.raise_for_status()
+            return r.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Doc-reader skill error: {e}") from e
+
+
+@app.post("/chat/doc-reader/read")
+def dr_read(body: dict = Body(...)):
+    """Proxy: read/reassemble a published document."""
+    return _doc_reader_proxy("POST", "/read", json_body=body)
+
+
+@app.post("/chat/doc-reader/extract")
+def dr_extract(body: dict = Body(...)):
+    """Proxy: query-targeted extraction from a document."""
+    return _doc_reader_proxy("POST", "/extract", json_body=body, timeout=60.0)
+
+
+@app.post("/chat/doc-reader/summarize")
+def dr_summarize(body: dict = Body(...)):
+    """Proxy: generate LLM summary of a document."""
+    return _doc_reader_proxy("POST", "/summarize", json_body=body, timeout=60.0)
+
+
+@app.get("/chat/doc-reader/health")
+def dr_health():
+    """Proxy: doc-reader health check."""
+    return _doc_reader_proxy("GET", "/health")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Task Manager skill proxy — /chat/tasks/* → mobius-skills/task-manager
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _task_manager_base() -> str:
+    """Base URL of the task-manager skill server."""
+    return (
+        os.environ.get("CHAT_SKILLS_TASK_MANAGER_URL") or "http://localhost:8015"
+    ).rstrip("/")
+
+
+def _task_proxy(method: str, path: str, *, params=None, json_body=None, timeout: float = 15.0):
+    """Generic proxy helper for task-manager skill calls. Raises HTTPException on failure."""
+    import httpx
+    base = _task_manager_base()
+    if not base:
+        raise HTTPException(status_code=503, detail="Task manager skill not configured (CHAT_SKILLS_TASK_MANAGER_URL)")
+    try:
+        with httpx.Client(timeout=timeout) as c:
+            r = c.request(method, f"{base}{path}", params=params, json=json_body)
+            if r.status_code == 404:
+                raise HTTPException(status_code=404, detail="Task not found")
+            if r.status_code == 422:
+                raise HTTPException(status_code=422, detail=r.json())
+            r.raise_for_status()
+            return r
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Task manager error: {e}")
+
+
+_STEP_LABELS: dict[str, str] = {
+    "ensure_benchmarks":        "Ensuring revenue metrics",
+    "identify_org":             "Identifying organization",
+    "find_locations":           "Mapping practice locations",
+    "find_associated_providers":"Finding associated providers",
+    "nppes_alignment":          "Aligning NPPES data",
+    "medicaid_enrollment":      "Checking Medicaid enrollment",
+    "compliance_check":         "Running compliance check",
+    "taxonomy_optimization":    "Optimizing taxonomy codes",
+}
+_STEP_TOTAL = len(_STEP_LABELS)
+
+
+@app.get("/chat/runs")
+def chat_runs_list(
+    status: str | None = None,   # active | complete | all (default all)
+    limit: int = 20,
+) -> dict[str, Any]:
+    """
+    Aggregate credentialing runs with task counts for the credentialing home page.
+    Merges /chat/credentialing-runs with task-manager counts in two bulk calls.
+    """
+    from collections import defaultdict
+    from app.storage.credentialing_runs_pg import list_credentialing_runs
+
+    runs = list_credentialing_runs(limit=limit)
+
+    # Bulk-fetch all open tasks + resolved info tasks across all runs in two calls
+    try:
+        open_tasks = _task_proxy("GET", "/tasks", params={
+            "status": "open", "workflow": "credentialing", "limit": 500,
+        }).json().get("tasks", [])
+    except Exception:
+        open_tasks = []
+
+    try:
+        resolved_info = _task_proxy("GET", "/tasks", params={
+            "status": "resolved", "workflow": "credentialing", "limit": 500,
+        }).json().get("tasks", [])
+    except Exception:
+        resolved_info = []
+
+    # Group by run_id
+    open_by_run: dict[str, list] = defaultdict(list)
+    for t in open_tasks:
+        if t.get("run_id"):
+            open_by_run[t["run_id"]].append(t)
+
+    resolved_info_by_run: dict[str, int] = defaultdict(int)
+    for t in resolved_info:
+        if t.get("run_id") and t.get("type") == "info":
+            resolved_info_by_run[t["run_id"]] += 1
+
+    def _phase_to_status(phase: str) -> str:
+        if phase in ("running", "awaiting_validation"):
+            return "running"
+        if phase == "complete":
+            return "complete"
+        if phase == "error":
+            return "error"
+        return "paused"
+
+    result: list[dict[str, Any]] = []
+    for run in runs:
+        phase     = run.get("phase", "")
+        run_id    = run["run_id"]
+        run_status = _phase_to_status(phase)
+
+        if status == "active" and run_status not in ("running", "paused"):
+            continue
+        if status == "complete" and run_status != "complete":
+            continue
+
+        run_tasks      = open_by_run.get(run_id, [])
+        open_decisions = sum(1 for t in run_tasks if t.get("type") == "decision")
+        open_blockers  = sum(1 for t in run_tasks if t.get("type") == "blocker")
+        resolved_steps = resolved_info_by_run.get(run_id, 0)
+        pending_step   = run.get("pending_step_id") or ""
+        pending_label  = _STEP_LABELS.get(pending_step, pending_step.replace("_", " ").title() if pending_step else "")
+
+        result.append({
+            "run_id":            run_id,
+            "org_name":          run.get("org_name", ""),
+            "run_status":        run_status,
+            "phase":             phase,
+            "started_at":        run.get("created_at") or run.get("updated_at"),
+            "provider_count":    None,
+            "step_current":      resolved_steps,
+            "step_total":        _STEP_TOTAL,
+            "pending_step_label": pending_label,
+            "open_decisions":    open_decisions,
+            "open_blockers":     open_blockers,
+            "resolved_steps":    resolved_steps,
+        })
+
+    return {"runs": result}
+
+
+@app.get("/chat/tasks")
+def chat_tasks_list(
+    org_name: str | None = None,
+    module: str | None = None,
+    status: str | None = None,
+    assignee: str | None = None,
+    npi: str | None = None,
+    run_id: str | None = None,
+    severity: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
+):
+    """Proxy: list tasks from task-manager skill. Injects run_status when run_id provided."""
+    params = {k: v for k, v in {
+        "org_name": org_name, "module": module, "status": status,
+        "assignee": assignee, "npi": npi, "run_id": run_id,
+        "severity": severity, "limit": limit, "offset": offset,
+    }.items() if v is not None}
+    result = _task_proxy("GET", "/tasks", params=params).json()
+
+    # When querying cross-run (no run_id) with status=open, sort blockers first
+    # then decisions, then others — all ordered by created_at ascending.
+    if not run_id and status == "open":
+        _TYPE_PRIORITY = {"blocker": 0, "decision": 1}
+        result["tasks"] = sorted(
+            result.get("tasks", []),
+            key=lambda t: (
+                _TYPE_PRIORITY.get(t.get("type", ""), 2),
+                t.get("created_at", ""),
+            ),
+        )
+
+    # Inject run_status so the frontend knows when to stop polling
+    if run_id:
+        try:
+            from app.services.credentialing_run_service import get_credentialing_run
+            rec = get_credentialing_run(run_id)
+            rec_data = rec or {}
+            phase = rec_data.get("phase", "")
+            pending_step = rec_data.get("pending_step_id") or ""
+            if phase == "running":
+                run_status = "running"
+            elif phase == "awaiting_validation":
+                run_status = "awaiting_validation"
+                result["pending_step_id"] = pending_step
+            elif phase == "complete":
+                run_status = "complete"
+            elif phase == "error":
+                run_status = "error"
+            else:
+                run_status = "paused"
+        except Exception:
+            run_status = "unknown"
+        result["run_status"] = run_status
+
+    return result
+
+
+@app.post("/chat/tasks")
+def chat_tasks_create(body: dict = Body(...)):
+    """Proxy: create a manual task."""
+    return _task_proxy("POST", "/tasks", json_body=body).json()
+
+
+@app.get("/chat/tasks/export")
+def chat_tasks_export(org_name: str | None = None, module: str | None = None, status: str | None = None):
+    """Proxy: export tasks as CSV."""
+    from fastapi.responses import PlainTextResponse
+    params = {k: v for k, v in {"org_name": org_name, "module": module, "status": status}.items() if v is not None}
+    r = _task_proxy("GET", "/tasks/export", params=params)
+    return PlainTextResponse(
+        content=r.text,
+        media_type="text/csv",
+        headers={"Content-Disposition": r.headers.get("Content-Disposition", 'attachment; filename="tasks.csv"')},
+    )
+
+
+@app.post("/chat/tasks/bulk-import")
+def chat_tasks_bulk_import(body: dict = Body(...)):
+    """Proxy: bulk upsert tasks (used by orchestrator and skills)."""
+    return _task_proxy("POST", "/tasks/bulk-import", json_body=body).json()
+
+
+@app.get("/chat/tasks/{task_id}")
+def chat_tasks_get(task_id: str):
+    """Proxy: fetch a single task."""
+    return _task_proxy("GET", f"/tasks/{task_id}").json()
+
+
+@app.patch("/chat/tasks/{task_id}")
+def chat_tasks_patch(task_id: str, body: dict = Body(...)):
+    """Proxy: update task fields (status, assignee, deadline, notes, etc.)."""
+    return _task_proxy("PATCH", f"/tasks/{task_id}", json_body=body).json()
+
+
+@app.post("/chat/tasks/{task_id}/resolve")
+def chat_tasks_resolve(task_id: str, body: dict = Body(default={})):
+    """Proxy: mark a task resolved."""
+    return _task_proxy("POST", f"/tasks/{task_id}/resolve", json_body=body).json()
+
+
+@app.post("/chat/tasks/{task_id}/dismiss")
+def chat_tasks_dismiss(task_id: str, body: dict = Body(default={})):
+    """Proxy: dismiss a task."""
+    return _task_proxy("POST", f"/tasks/{task_id}/dismiss", json_body=body).json()
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -2160,5 +3083,37 @@ if _frontend.exists():
     @app.get("/pipeline")
     def pipeline():
         r = FileResponse(_frontend / "pipeline.html")
+        r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return r
+
+    @app.get("/financial-strategy")
+    def financial_strategy():
+        r = FileResponse(_frontend / "financial-strategy.html")
+        r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return r
+
+    @app.get("/org-story")
+    def org_story_page():
+        r = FileResponse(_frontend / "org-story.html")
+        r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return r
+
+    @app.get("/market-map")
+    def market_map_page():
+        r = FileResponse(_frontend / "market-map.html")
+        r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return r
+
+    @app.get("/industry-report")
+    def industry_report_page():
+        r = FileResponse(_frontend / "static" / "fl-bh-industry-report.html")
+        r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return r
+
+    @app.get("/roster")
+    def roster():
+        # roster.html lives in static/ (not the top-level frontend/ dir)
+        p = _frontend / "static" / "roster.html"
+        r = FileResponse(p)
         r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return r
