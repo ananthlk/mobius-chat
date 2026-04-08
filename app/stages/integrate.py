@@ -478,45 +478,6 @@ def run_integrate(
     )
     adjudication_sources = _adjudication_sources_payload(all_sources)
 
-    # ── Doc-reader enrichment (non-fatal) ────────────────────────────────
-    # For each RAG source with a document_id, call doc-reader /extract to
-    # get structured sections + citations. Merge into response_sources and
-    # add detail blocks for the assistant envelope.
-    _dr_detail_blocks: list[dict[str, Any]] = []
-    _dr_extra_refs: list[dict[str, Any]] = []
-    try:
-        _dr_enabled = os.environ.get("DOC_READER_ENRICH", "1") == "1"
-        if _dr_enabled and response_sources:
-            from app.sub_skills.doc_reader import extract as dr_extract, read_envelope_to_blocks
-            _seen_doc_ids: set[str] = set()
-            effective_query = getattr(ctx, "effective_message", "") or getattr(ctx, "message", "") or ""
-            for src in response_sources:
-                doc_id = src.get("document_id")
-                if not doc_id or str(doc_id) in _seen_doc_ids:
-                    continue
-                _seen_doc_ids.add(str(doc_id))
-                if len(_seen_doc_ids) > 2:
-                    break  # limit to top 2 source documents
-                dr_result = dr_extract(str(doc_id), effective_query, max_sections=3)
-                if dr_result and dr_result.get("sections"):
-                    blocks, refs = read_envelope_to_blocks(dr_result)
-                    _dr_detail_blocks.extend(blocks)
-                    # Re-index refs so they don't collide with existing sources
-                    for r in refs:
-                        r["index"] = len(response_sources) + len(_dr_extra_refs)
-                        # Enrich with open_href
-                        if r.get("document_id"):
-                            r["document_name"] = r.get("title", "Source")
-                            r["page_number"] = r.get("page")
-                    _dr_extra_refs.extend(refs)
-            if _dr_extra_refs:
-                _dr_extra_refs = enrich_sources_open_hrefs(_dr_extra_refs)
-                response_sources = list(response_sources) + _dr_extra_refs
-                logger.info("doc-reader enriched %d detail blocks, %d extra sources",
-                            len(_dr_detail_blocks), len(_dr_extra_refs))
-    except Exception as _dr_exc:
-        logger.debug("doc-reader enrichment failed (non-fatal): %s", _dr_exc)
-
     source_confidence_strip = default_source_confidence
     cited_source_indices: list[int] = []
     resolutions: list[dict[str, Any]] = []
@@ -893,10 +854,6 @@ def run_integrate(
                 "allow_resolve": bool(_task_data.get("allow_resolve", True)),
             }
         ] + integrator_ui_blocks
-
-    # Inject doc-reader detail blocks (structured document sections with citations)
-    if _dr_detail_blocks:
-        integrator_ui_blocks = integrator_ui_blocks + _dr_detail_blocks
 
     payload["assistant_envelope"] = build_assistant_envelope_v1(
         answer_card=answer_card_dict,
