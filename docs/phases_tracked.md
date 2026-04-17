@@ -33,9 +33,10 @@ each phase live in `tests/test_<phase_feature>.py`.
 | 1b | Feedback + QC router — 6 endpoints extracted to `app/api/feedback.py`; each endpoint audited against its migration for Postgres persistence | `refactor(api): extract /chat feedback + QC router with PG persistence audit` |
 | 1c | Credentialing-runs + NPI lookup router — 15 endpoints extracted to `app/api/credentialing.py`. **main.py: 3,125 → 2,401 lines (−23% across 1a+1b+1c).** Staging ground for Phase 3 (credentialing → own package) | `refactor(api): extract credentialing-runs + NPI lookup router` |
 | 1d | Roster router — 26 endpoints (`/chat/roster-reconcile/*`, `/chat/roster-truth/*`, `/chat/roster-org/*`) extracted to `app/api/roster.py` via mechanical block-extraction. **main.py: 2,401 → 1,527 lines (−51% total across 1a-1d).** | `refactor(api): extract roster-reconcile + roster-truth + roster-org router` |
+| 1e | Shared helper consolidation + CI-style hygiene guard. `_task_manager_base` was duplicated in main.py + 2 routers — now single-sourced in `app/api/_common.py`. New `test_api_hygiene_guard.py` scans main.py for stray `@app.*` decorators on chat paths AND for helper re-duplication; both fail the suite. **main.py: 1,527 → 1,524 lines.** | `refactor(api): consolidate shared helpers + hygiene guard` |
 
-**Total unit tests across these phases: 204/204 green.**
-**main.py shrinkage across Phase 1: 3,125 → 1,527 lines (−51%).**
+**Total unit tests across these phases: 209/209 green.**
+**main.py shrinkage across Phase 1: 3,125 → 1,524 lines (−51%).**
 
 ### Feedback persistence audit (done during 1b)
 

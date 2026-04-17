@@ -41,6 +41,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from app.api._common import task_manager_base_url as _task_manager_base
 from app.storage.threads import ensure_thread, save_state
 
 logger = logging.getLogger(__name__)
@@ -83,17 +84,8 @@ class TaxonomyTaskStateBody(BaseModel):
 # ── Local helpers ──────────────────────────────────────────────────────────
 
 
-def _task_manager_base() -> str:
-    """Base URL of the task-manager skill server.
-
-    Duplicated from main.py during the Phase 1c extraction — it's a 4-line
-    env-var helper also used by a few non-credentialing endpoints still in
-    main.py. Consolidation into a shared ``app.api._common`` helper is a
-    Phase 1 finishing task (see phases_tracked.md).
-    """
-    return (
-        os.environ.get("CHAT_SKILLS_TASK_MANAGER_URL") or "http://localhost:8015"
-    ).rstrip("/")
+# Phase 1e: _task_manager_base consolidated into app.api._common — imported
+# above under its original name for call-site stability.
 
 
 def _fetch_nppes_single(npi: str) -> dict[str, Any] | None:
