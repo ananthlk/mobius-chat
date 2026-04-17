@@ -36,9 +36,12 @@ each phase live in `tests/test_<phase_feature>.py`.
 | 1e | Shared helper consolidation + CI-style hygiene guard. `_task_manager_base` was duplicated in main.py + 2 routers — now single-sourced in `app/api/_common.py`. New `test_api_hygiene_guard.py` scans main.py for stray `@app.*` decorators on chat paths AND for helper re-duplication; both fail the suite. **main.py: 1,527 → 1,524 lines.** | `refactor(api): consolidate shared helpers + hygiene guard` |
 | 3a | Gate credentialing routers behind `CHAT_CREDENTIALING_ENABLED` flag (default true). Chat-without-credentialing deployment path unblocked. 5 subprocess-based tests verify both modes. | `feat(deploy): gate credentialing routers behind CHAT_CREDENTIALING_ENABLED` |
 | 3b | Audit of the 41 credentialing/roster endpoints → classification: **25 pure proxy**, **4 mixed**, **12 chat-only**. Output: `docs/phase_3b_credentialing_audit.md` with per-endpoint detail and recommended 3c/3d/3e work. Discovery-only; no code change. | `docs(audit): phase 3b credentialing audit` |
+| 3c | **Full deletion of chat's credentialing HTTP surface** — all 41 endpoints removed from chat per the user's "credentialing is a skill, not a chat interface" direction (user accepted the FE breakage — will reintegrate via direct skill calls or new `/credentialing/*` router later). Files deleted: `app/api/credentialing.py`, `app/api/roster.py`, `tests/test_api_credentialing_router.py`, `tests/test_api_roster_router.py`, `tests/test_credentialing_gated.py`. `CHAT_CREDENTIALING_ENABLED` flag no longer relevant (moot — credentialing isn't in chat). Hygiene guards strengthened to lock in the removal. | `refactor(api): remove chat's credentialing + roster HTTP surface` |
 
-**Total unit tests across these phases: 214/214 green.**
-**main.py shrinkage across Phase 1: 3,125 → 1,524 lines (−51%).**
+**Total unit tests after Phase 3c: 185/185 green.** (Lost 32 tests that asserted the removed surface; gained 3 new guard tests that assert it STAYS removed.)
+
+**main.py shrinkage across Phase 1: 3,125 → ~1,528 lines (−51%).**
+**Chat router surface after 3c: 2 routers (history, feedback) mounting 10 endpoints. The 51 routes mounted after 1d → 10 after 3c.**
 
 ### Feedback persistence audit (done during 1b)
 
