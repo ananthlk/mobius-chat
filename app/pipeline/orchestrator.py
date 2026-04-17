@@ -731,13 +731,28 @@ def _publish_failed(
     except Exception:
         _env = None
     chunks = list(thinking_chunks) if thinking_chunks is not None else []
+    # Phase 0.12: tighten the user message. The 0.6b version always suffixed
+    # "Please try again." to whatever the classifier produced, which combined
+    # poorly with classifier messages that already implied a retry
+    # (e.g. "The model is temporarily busy — trying another option. Please
+    # try again."). Per code-path:
+    #   - recoverable errors (rate_limit, timeout, provider_error, scrape_failed)
+    #     already include a retry hint in their message → pass through as-is
+    #   - non-recoverable errors (auth_error, validation_error, internal_error)
+    #     get a soft rephrase nudge.
+    if _env is None:
+        _user_message = (
+            "I hit a problem finishing that answer. Please try rephrasing your question."
+        )
+    elif _env.is_recoverable:
+        _user_message = _env.user_facing_message
+    else:
+        _user_message = (
+            f"{_env.user_facing_message} Please try rephrasing your question."
+        )
     response_payload = {
         "status": "failed",
-        "message": (
-            f"{_env.user_facing_message} Please try again."
-            if _env is not None
-            else "Something went wrong. Please try again."
-        ),
+        "message": _user_message,
         "error_envelope": _env.model_dump() if _env is not None else None,
         "plan": None,
         "thinking_log": chunks,

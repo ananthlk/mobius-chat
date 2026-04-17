@@ -11,9 +11,31 @@ logger = logging.getLogger(__name__)
 
 _MAX_RECURSE = 4
 
+# Phase 0.12: the fallback string shown when the integrator's JSON output is
+# unparseable. Softer than the prior "Something went wrong. Please try again,
+# or start a new chat." — that message conflated a transient formatting issue
+# with a "the whole thing is broken" failure mode, and nudged users into a
+# destructive action (start over) when rephrasing would usually work.
 DEFAULT_BLEED_FALLBACK = (
-    "Something went wrong. Please try again, or start a new chat."
+    "I had trouble formatting the answer. Please try rephrasing your question."
 )
+
+
+def _log_fallback(site: str, raw: str) -> None:
+    """Structured log line for every fallback fire — so integrator parse
+    failures are debuggable in production instead of silently swallowed.
+
+    We log the first 400 chars of the raw input at WARNING so a grep of
+    "integrator_fallback site=" surfaces every incident with enough context
+    to reproduce.
+    """
+    preview = (raw or "")[:400].replace("\n", "\\n")
+    logger.warning(
+        "integrator_fallback site=%s raw_preview=%r raw_len=%d",
+        site,
+        preview,
+        len(raw or ""),
+    )
 
 
 def _strip_fences_and_json_prefix(raw: str) -> str:
@@ -138,6 +160,7 @@ def finalize_answer_card_json_for_client(
 def display_text_for_parsed_answer_card(parsed: dict[str, Any]) -> str:
     """Plain text to stream/store for a validated AnswerCard dict (scrub DA; else resolutions/message)."""
     if not isinstance(parsed, dict):
+        _log_fallback("display_text_for_parsed_answer_card.not_dict", repr(parsed)[:400])
         return DEFAULT_BLEED_FALLBACK
     raw = str(parsed.get("direct_answer") or "")
     clean = sanitize_direct_answer_string(raw)
@@ -152,6 +175,7 @@ def display_text_for_parsed_answer_card(parsed: dict[str, Any]) -> str:
             return alt.strip()[:8000]
     if not raw.strip():
         return ""
+    _log_fallback("display_text_for_parsed_answer_card.bleed", raw)
     return DEFAULT_BLEED_FALLBACK
 
 
@@ -217,9 +241,10 @@ def extract_user_visible_text_from_integrator_raw(raw: str) -> str:
     try:
         parsed = json.loads(s)
     except (json.JSONDecodeError, TypeError, ValueError):
-        logger.warning("extract_user_visible_text_from_integrator_raw: invalid JSON (brace-prefixed); using fallback")
+        _log_fallback("extract_user_visible_text_from_integrator_raw.invalid_json", s)
         return DEFAULT_BLEED_FALLBACK
     if not isinstance(parsed, dict):
+        _log_fallback("extract_user_visible_text_from_integrator_raw.not_dict", s)
         return DEFAULT_BLEED_FALLBACK
     if parsed.get("mode") in ("FACTUAL", "CANONICAL", "BLENDED") and isinstance(parsed.get("direct_answer"), str):
         da = sanitize_direct_answer_string(parsed["direct_answer"])
@@ -232,6 +257,7 @@ def extract_user_visible_text_from_integrator_raw(raw: str) -> str:
             return out.strip()[:8000]
         if h.strip() and not looks_like_raw_json_bleed(h):
             return h.strip()[:8000]
+    _log_fallback("extract_user_visible_text_from_integrator_raw.no_usable_text", s)
     return DEFAULT_BLEED_FALLBACK
 
 
