@@ -1,0 +1,161 @@
+# Phases Tracked — Chat module production readiness
+
+Living list of phase-sized work items for the Chat module, carried across
+sessions. This supplements `CHAT_MODULE_REFACTOR_PLAN.md` (the architectural
+plan) with a tactical, session-to-session snapshot of what's done, what's
+next, and what's deliberately parked.
+
+Last updated: 2026-04-17 (after Phase 0.15 merge + test session).
+
+---
+
+## ✅ Shipped (on `credentialing-with-roster`)
+
+Each row is a merged phase with a commit SHA you can `git show`. Tests for
+each phase live in `tests/test_<phase_feature>.py`.
+
+| Phase | What | Commit line |
+|------:|:-----|:-----|
+| 2.1 | `mobius-contracts` package: `AssistantEnvelope`, `ToolOutputEnvelope`, `CredentialingOptions` | `feat(contracts): scaffold mobius-contracts` |
+| 0.6a | `ErrorEnvelope` contract (12-code union, user-safe/internal-detail split) | `feat(contracts): add ErrorEnvelope` |
+| 2.5 | Token-aware Thompson sampling — Groq-tier TPM filter before bandit draw | `feat(router): token-aware Thompson sampling` |
+| 0.6b | `ErrorEnvelope` wired into chat failure paths — no more raw provider JSON in UI | `feat(errors): wire ErrorEnvelope into chat failure paths` |
+| 0.7 | ReAct smart-retry guard: don't repeat (tool, inputs) that failed; fail-fast on all-rounds-failed | `feat(react): smart-retry guard + fail-fast` |
+| 0.8 | Source hygiene: drop sources from failed tool runs, dedup by `(doc, page)`, 30s scrape timeout | `feat(react): source hygiene + scrape timeout` |
+| 2.3 | Thread-level sidebar with rule-based titles (schema migration 030) | `feat(threads): thread-level sidebar with real titles` |
+| 0.10 | Stop PG pool thrash — `pg_pool` single-loop binding + `append_entry` no-op on sync contexts | `fix(db): stop pool-thrash that was hanging ReAct tool execution` |
+| 0.11 | Neighbor-expansion page constraint + per-doc & total caps; citation index renumbering | `fix(rag): neighbor expansion page constraint + caps` |
+| 0.12 | Softer integrator-fallback message, structured logging at every fallback | `feat(errors): soften fallback string` (part of 0.12+0.13 merge) |
+| 0.13 | Auto-retry on recoverable `ErrorEnvelope` codes — honors `retry_after_seconds` (≤30s), one retry | `feat(errors): auto-retry recoverable errors` |
+| 0.14 | BLENDED `direct_answer` includes inline specifics; UI surfaces `definitions` section by default | `fix(answer): richer BLENDED direct_answer + expanded default visibility` |
+| 0.15 | Mode gradient: FACTUAL 1-line / BLENDED 1-3 sentences / CANONICAL paragraph; substantive bullets across all modes | `fix(answer): mode-gradient for direct_answer length + substantive sections` |
+
+**Total unit tests across these phases: 149/149 green.**
+
+Observed end-to-end impact (per the 2026-04-17 test session):
+
+- Citation count per turn dropped from **1,078 → ~5**.
+- ReAct tool hangs gone (pool thrash eliminated).
+- No Groq JSON reaches the chat UI; rate-limit-class errors render as
+  "The model is temporarily busy…" then auto-retry once.
+- Bandit correctly avoids Groq models for large prompts; rotates cleanly
+  across Gemini Flash / Haiku / Gemini Pro.
+
+---
+
+## 🎯 Next up — structural phases
+
+Order is intentional: each unlocks the next.
+
+### Phase 1 — Split `main.py` into routers
+Current `app/main.py` is 3,125 LOC with 86 FastAPI endpoints. Splitting it
+into `app/api/{chat,tasks,credentialing,strategy,rag,admin,pages,health}.py`
+is the wedge that makes subsequent refactors safe — the main.py monolith is
+currently the single blocker for both (a) enforcing typed `response_model=`
+contracts on every endpoint and (b) extracting credentialing cleanly.
+
+Estimated: 3–5 days. No user-visible change.
+
+### Phase 3 — Extract credentialing into its own package
+Credentialing currently lives in `mobius-chat/app/services/credentialing_*`
+and represents ~30% of the chat codebase. Goal: a `credentialing/` package
+that Chat talks to via a typed client (`CredentialingClient`), starting
+in-process and flipping to HTTP via a `CREDENTIALING_MODE` switch.
+
+Unlocks: Chat-without-credentialing can go to prod as its own deployable,
+matching the user's module sequencing ("Chat first, Credentialing later").
+
+Estimated: 3 days after Phase 1.
+
+---
+
+## 📋 Tracked — smaller items
+
+### 0.16 — Tighten web_scrape timeout + JSON-repair provider swap
+- Scrape observed to run ~38s on one test turn despite the 30s guard
+  (Phase 0.8); the `ThreadPoolExecutor` wait races setup time. Move
+  the timeout to wrap from "Using web_scrape…" emit onward.
+- JSON-repair path still hits Groq `llama-3.3-70b-versatile` and
+  exhausted its **daily** TPD quota during the test session. Either
+  route repair calls through a non-Groq model unconditionally, or
+  declare Groq daily TPD limits on the `ModelSpec` so Phase 2.5's
+  filter can keep them out of repair too.
+- Scope: ~1 hour.
+
+### 1.2 — Typed DB contract + shared pool
+Follow-up to Phase 0.10 (pool thrash fix). Move all DB access through a
+typed client interface per domain (chat, credentialing, rag, strategy,
+task-manager) with one shared pool per process. Mirrors the mobius-contracts
+pattern. Best done with Phase 3 so the credentialing DB seam is designed
+from the start.
+
+Scope: ~2 days.
+
+### 2.3b — Thread restoration UI + LLM titles + backfill
+Sidebar currently shows thread titles (Phase 2.3) but clicking one pre-fills
+the input with the title rather than re-opening the thread. Follow-ups:
+- Click-to-restore: load turns from `chat_turn_messages`, render them in
+  the main pane.
+- LLM-generated titles for threads where the rule-based title is thin
+  (e.g. `"Lookup: H0036"` → `"H0036 coverage under Sunshine Health"`).
+- One-time backfill script for pre-migration-030 threads.
+
+Scope: ~1 day.
+
+---
+
+## 🌱 Tracked — product-level capabilities
+
+### Real-time RAG (Instant RAG skill)
+Per `project_instant_rag_skill.md` in user memory.
+
+**Use case:** user uploads a PDF/doc and queries against it in the current
+chat without waiting for batch ingest.
+
+**Expected architecture:**
+- Standalone skill producing typed envelopes for agent consumers.
+- Ephemeral 7-day TTL on uploaded docs.
+- Reuses chat upload path + task-manager + Path B retrieval.
+
+**How it touches Chat:**
+- New ReAct tool: `search_uploaded_document(upload_id, query)`.
+- Tool registry entry in `tool_manifest.py` + handler in
+  `react_loop._execute_tool`.
+- UI: upload widget → emit `thread_document_uploaded` → upload_id
+  available to the next turn's reasoning context.
+- Envelope: define a new `InstantRagEnvelope` in
+  `mobius-contracts/envelopes/instant_rag.py` that follows the same
+  typed-contract patterns as `ToolOutputEnvelope`.
+
+**Why it matters for prod-readiness:**
+- The H0036 test session showed the integrator refusing on thin corpus.
+  Real-time RAG is the highest-leverage fix — instead of waiting for
+  docs to be ingested, the user brings them on demand.
+- Turns a retrieval-quality problem into a user-agency feature.
+
+**Corpus coverage** (separate from real-time RAG) is a RAG-team concern,
+out of scope for the Chat module's production-readiness refactor.
+
+---
+
+## 🔮 Later
+
+| Phase | What |
+|------:|:-----|
+| 4 | Frontend thinning — pure-presentation JS, TS types generated from OpenAPI |
+| 5 | Prod hardening — prod deploy script, CI/CD, uptime/5xx monitoring, Cloud Armor rate-limit |
+
+---
+
+## How to use this doc
+
+- Before picking up work, skim "Next up" and "Tracked" to see what's
+  queued. Don't re-plan from scratch.
+- When a phase ships, move its row from "Tracked" to "Shipped" and add
+  the commit line.
+- When a new capability surfaces, add it to "Tracked — product-level"
+  or "Tracked — smaller items" with enough detail that a fresh session
+  can pick it up without re-investigating.
+- This doc is read by humans AND by future agent sessions that lose
+  chat context. Keep it self-contained — describe scope in enough
+  detail to start work from, not just name it.
