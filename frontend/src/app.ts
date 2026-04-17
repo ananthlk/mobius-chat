@@ -3130,10 +3130,12 @@ function openDocReaderPanel(documentId: string, pageNumber?: number | null, cite
   else { ragLink.style.display = "none"; }
 
   // Build embed URL for RAG frontend
-  const ragBase = (typeof (window as any).RAG_APP_BASE === "string" ? (window as any).RAG_APP_BASE : "").trim().replace(/\/$/, "");
+  // Try window.RAG_APP_BASE, then derive from current host (dev: port 5173, prod: /rag)
+  let ragBase = (typeof (window as any).RAG_APP_BASE === "string" ? (window as any).RAG_APP_BASE : "").trim().replace(/\/$/, "");
   if (!ragBase) {
-    iframeWrap.innerHTML = '<div class="doc-reader-error">RAG_APP_BASE not configured. Cannot load document viewer.</div>';
-    return;
+    // Dev default: RAG frontend on port 5173 of same host
+    const loc = window.location;
+    ragBase = `${loc.protocol}//${loc.hostname}:5173`;
   }
 
   const params = new URLSearchParams({ embed: "true", tab: "read", documentId });
@@ -6491,8 +6493,12 @@ function run(): void {
       (q ?? "").trim().slice(0, max) + ((q ?? "").length > max ? "…" : "");
 
     Promise.all([
-      fetch(API_BASE + "/chat/history/recent?limit=20").then(
-        (r) => r.json() as Promise<HistoryTurnItem[]>
+      // Phase 2.3: sidebar now shows deduplicated *threads* with real titles
+      // instead of per-turn rows that exposed raw URLs / tool inputs. Endpoint
+      // returns {thread_id, title, updated_at, turn_count}. Gracefully returns
+      // [] if migration 030 hasn't run, so the list is empty rather than broken.
+      fetch(API_BASE + "/chat/history/threads?limit=20").then(
+        (r) => r.json() as Promise<Array<{ thread_id: string; title: string; updated_at: string; turn_count: number }>>
       ),
       helpfulList
         ? fetch(API_BASE + "/chat/history/most-helpful-searches?limit=10").then(
@@ -6505,23 +6511,28 @@ function run(): void {
           )
         : Promise.resolve([] as HistoryDocumentItem[]),
     ])
-      .then(([recent, helpful, documents]) => {
+      .then(([recentThreads, helpful, documents]) => {
         recentList.innerHTML = "";
-        for (const t of recent) {
+        for (const th of recentThreads) {
           const li = document.createElement("li");
           li.className = "recent-item";
-          li.textContent = snippet(t.question || "(empty)");
-          li.title = t.question || "";
+          const label = th.title || "Untitled chat";
+          const countSuffix = th.turn_count > 1 ? `  (${th.turn_count})` : "";
+          li.textContent = snippet(label) + countSuffix;
+          li.title = label;
           li.setAttribute("role", "button");
           li.setAttribute("tabindex", "0");
+          li.setAttribute("data-thread-id", th.thread_id);
+          // Click: pre-fill input with the thread title for discoverability
+          // (thread-restore UI is a future phase — 2.3b).
           li.addEventListener("click", () => {
-            (inputEl as HTMLInputElement).value = t.question ?? "";
+            (inputEl as HTMLInputElement).value = label;
             updateSendState();
           });
           li.addEventListener("keydown", (e) => {
             if (e.key === "Enter" || e.key === " ") {
               e.preventDefault();
-              (inputEl as HTMLInputElement).value = t.question ?? "";
+              (inputEl as HTMLInputElement).value = label;
               updateSendState();
             }
           });

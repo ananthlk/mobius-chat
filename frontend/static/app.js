@@ -2945,10 +2945,10 @@ function openDocReaderPanel(documentId, pageNumber, citeText) {
   } else {
     ragLink.style.display = "none";
   }
-  const ragBase = (typeof window.RAG_APP_BASE === "string" ? window.RAG_APP_BASE : "").trim().replace(/\/$/, "");
+  let ragBase = (typeof window.RAG_APP_BASE === "string" ? window.RAG_APP_BASE : "").trim().replace(/\/$/, "");
   if (!ragBase) {
-    iframeWrap.innerHTML = '<div class="doc-reader-error">RAG_APP_BASE not configured. Cannot load document viewer.</div>';
-    return;
+    const loc = window.location;
+    ragBase = `${loc.protocol}//${loc.hostname}:5173`;
   }
   const params = new URLSearchParams({ embed: "true", tab: "read", documentId });
   if (pageNumber != null)
@@ -5815,7 +5815,8 @@ ${message}`;
       return;
     const snippet = (q, max = 80) => (q ?? "").trim().slice(0, max) + ((q ?? "").length > max ? "\u2026" : "");
     Promise.all([
-      fetch(API_BASE + "/chat/history/recent?limit=20").then(
+      // Phase 2.3: sidebar switches from per-turn to thread-level rollup.
+      fetch(API_BASE + "/chat/history/threads?limit=20").then(
         (r) => r.json()
       ),
       helpfulList ? fetch(API_BASE + "/chat/history/most-helpful-searches?limit=10").then(
@@ -5824,23 +5825,26 @@ ${message}`;
       documentsList ? fetch(API_BASE + "/chat/history/most-helpful-documents?limit=10").then(
         (r) => r.json()
       ) : Promise.resolve([])
-    ]).then(([recent, helpful, documents]) => {
+    ]).then(([recentThreads, helpful, documents]) => {
       recentList.innerHTML = "";
-      for (const t of recent) {
+      for (const th of recentThreads) {
         const li = document.createElement("li");
         li.className = "recent-item";
-        li.textContent = snippet(t.question || "(empty)");
-        li.title = t.question || "";
+        const label = th.title || "Untitled chat";
+        const countSuffix = th.turn_count > 1 ? `  (${th.turn_count})` : "";
+        li.textContent = snippet(label) + countSuffix;
+        li.title = label;
         li.setAttribute("role", "button");
         li.setAttribute("tabindex", "0");
+        li.setAttribute("data-thread-id", th.thread_id);
         li.addEventListener("click", () => {
-          inputEl.value = t.question ?? "";
+          inputEl.value = label;
           updateSendState();
         });
         li.addEventListener("keydown", (e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
-            inputEl.value = t.question ?? "";
+            inputEl.value = label;
             updateSendState();
           }
         });

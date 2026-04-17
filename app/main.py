@@ -2468,8 +2468,26 @@ def _parse_limit(limit: int | None) -> int:
 
 @app.get("/chat/history/recent")
 def get_chat_history_recent(limit: int | None = 10):
-    """Recent chat turns for sidebar: { correlation_id, question, created_at }."""
+    """Recent chat turns for sidebar: { correlation_id, question, created_at }.
+
+    Legacy endpoint — returns every turn verbatim. Kept for back-compat with
+    clients that haven't migrated to ``/chat/history/threads`` yet.
+    """
     return get_recent_turns(_parse_limit(limit))
+
+
+@app.get("/chat/history/threads")
+def get_chat_history_threads(limit: int | None = 10):
+    """Phase 2.3: recent *threads* for the sidebar.
+
+    Returns ``[{thread_id, title, updated_at, turn_count}]`` deduplicated at
+    the thread level — replaces the legacy per-turn list that was dumping
+    raw URLs and tool-invocation fragments as "helpful searches."
+
+    Falls back to an empty list (not a 500) if migration 030 hasn't run yet.
+    """
+    from app.storage.threads import get_recent_threads
+    return get_recent_threads(_parse_limit(limit))
 
 
 @app.get("/chat/history/most-helpful-searches")

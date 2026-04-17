@@ -100,9 +100,13 @@ def insert_turn(
         return
     thread_val = (thread_id or "").strip() or None
     if thread_val:
-        from app.storage.threads import ensure_thread
+        from app.storage.threads import ensure_thread, set_thread_title_if_empty
 
         ensure_thread(thread_val)
+        # Phase 2.3: set the sidebar title on the thread's first turn, and
+        # bump turn_count / updated_at on every subsequent turn. Idempotent:
+        # the title is only written when it's currently NULL.
+        set_thread_title_if_empty(thread_val, question or "")
     try:
         import psycopg2
         conn = psycopg2.connect(url)
