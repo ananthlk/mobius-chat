@@ -5,7 +5,7 @@ sessions. This supplements `CHAT_MODULE_REFACTOR_PLAN.md` (the architectural
 plan) with a tactical, session-to-session snapshot of what's done, what's
 next, and what's deliberately parked.
 
-Last updated: 2026-04-17 (after Phase 0.15 merge + test session).
+Last updated: 2026-04-17 (after Phase 1f.1 — tasks router extracted).
 
 ---
 
@@ -40,6 +40,8 @@ each phase live in `tests/test_<phase_feature>.py`.
 | 0.17 | **Feedback fail-closed** — closes the silent-data-loss pattern from the 1b audit. New `CHAT_ENV` env var (default `dev`) gates behavior: missing `CHAT_RAG_DATABASE_URL` or missing `adjudication_feedback` / `llm_performance_feedback` tables now *raise* `FeedbackPersistenceError` in staging/prod (500 to caller) instead of logging DEBUG and returning. Dev ergonomics preserved. Error messages include the chat DB migration number (024 / 025) so ops debugging is one step. | `feat(storage): feedback fail-closed on missing DB / table` |
 | 0.16 | Two production bugs from the 2026-04-17 test logs. **0.16a:** web_scrape timeout actually fires at the cap (was 30s + 8s worker-drain due to `ThreadPoolExecutor` `with` block waiting on `__exit__`; now uses explicit `shutdown(wait=False)` on timeout). **0.16b:** LLM-based JSON repair tier deleted — `_parse_answer_card` already ran stdlib+json_repair library, the third LLM call was pure overhead AND was responsible for hitting Groq daily-TPD quota. Saves ~$0.01 + 2-5s per malformed turn. | `fix: web_scrape timeout fires at cap + delete overhead LLM-repair tier` |
 | 0.18 | **Silent retrieval-killer fixed.** Live-test log showed `after normalize: len=5 → before context build: len=0` — RAG API returned 5 relevant chunks but the `confidence_min=0.5` filter in `non_patient_rag.py` only checked `match_score` / `confidence` field names (legacy inline-BM25 shape). RAG API chunks carry `rerank_score` + `confidence_label` — so every one scored as 0.0 and got silently dropped. Every ReAct turn was pivoting to google_search + web_scrape as if the corpus were empty. Fix: `_score_chunk_for_confidence_filter` helper falls through `match_score` → `confidence` → `rerank_score` → `confidence_label`-to-numeric map. | `fix(rag): confidence_min filter respects RAG API chunk shape` |
+| 0.19 | **Tool-exhaustion block in ReAct retry guard.** 2026-04-17 live test exposed a gap in Phase 0.7: guard only blocks identical `(tool, inputs_sig)` pairs, so R1 `search_corpus` query="A" (5→0 kept) and R2 `search_corpus` query="B" (5→0 kept) both ran because the reasoner reformulated the query between rounds. Fix: per-tool consecutive-failure counter; after 2 failures with no intervening success, tool is blocked regardless of inputs_sig. `failure_hint_for_prompt` surfaces "Exhausted tools (pick a DIFFERENT tool, not a re-phrased query)" to the planner. | `feat(react): tool-exhaustion block in retry guard` |
+| 1f.1 | **Tasks router extracted.** 8 `/chat/tasks/*` endpoints moved to `app/api/tasks.py`; `_task_proxy` consolidated into `app.api._common.task_proxy` (also used by `/chat/runs` aggregator). Hygiene guard gained a ratcheting `MAX_MAIN_PY_LOC` / `MAX_MAIN_PY_ENDPOINTS` ceiling so regression is impossible. **main.py: 1,528 → 1,408 LOC, 36 → 28 endpoints.** 15 new router tests + 10 hygiene tests green. | `refactor(api): extract /chat/tasks router (Phase 1f.1)` |
 
 **Total unit tests after Phase 0.18: 234/234 green** (221 + 15 new, minus -2 for tests that were already passing from the 0.16 suite).
 
@@ -115,6 +117,33 @@ Estimated: 3 days after Phase 1.
   declare Groq daily TPD limits on the `ModelSpec` so Phase 2.5's
   filter can keep them out of repair too.
 - Scope: ~1 hour.
+
+### Emit → task-manager event migration (user flagged 2026-04-17)
+The ReAct loop currently emits progress as transient UI strings
+(`emit("◌ Searching the web…")`, `emit("  ⊘ web_scrape timed out")`,
+`emit("  ⊘ search_corpus exhausted — pivoting…")`). These are visible
+during the turn but *lost after the stream closes* — there's no
+persistent trail of what tools fired, what retried, what got blocked
+by the exhaustion guard, or what evidence was ultimately used.
+
+The fix is to post structured events to `task-manager` (the skill we
+just wired `_task_proxy` into) alongside the emits, so every turn
+leaves a queryable timeline. Minimum event shape:
+
+    {"turn_id", "round", "kind": "tool_start|tool_ok|tool_skip|tool_fail",
+     "tool", "inputs_sig", "error_code", "skip_reason", "elapsed_ms",
+     "chunks_kept", "chunks_dropped"}
+
+Scope: one tiny `react_events` helper that both emits (unchanged UI
+behavior) AND posts to task-manager. Wire it at the 4-5 places in
+`react_loop.py` that already call `emit()` with a status glyph. Keep
+it best-effort (don't let a task-manager failure crash the turn).
+
+Unlocks: observability for the retry guard + exhaustion block
+(Phase 0.19) — without this we can't answer "how often does
+tool_exhausted actually fire in prod" from data.
+
+Scope: ~2 hours.
 
 ### 1.2 — Typed DB contract + shared pool
 Follow-up to Phase 0.10 (pool thrash fix). Move all DB access through a
