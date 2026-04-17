@@ -1030,15 +1030,36 @@ def get_chat_config_by_sha(config_sha: str):
 # Phase 1b: feedback + QC endpoints extracted to app.api.feedback.
 # Phase 1c: credentialing-runs + NPI lookup extracted to app.api.credentialing.
 # Phase 1d: roster-reconcile + roster-truth + roster-org extracted to app.api.roster.
+# Phase 3a: credentialing is now optional — ``CHAT_CREDENTIALING_ENABLED=false``
+#   skips mounting both credentialing and roster routers AND skips importing
+#   their modules. This is the first wedge toward deploying Chat without the
+#   credentialing code path. Default remains "true" for back-compat.
 # Router mounts below preserve external URLs.
-from app.api.credentialing import router as _credentialing_router
 from app.api.feedback import router as _feedback_router
 from app.api.history import router as _history_router
-from app.api.roster import router as _roster_router
 app.include_router(_history_router)
 app.include_router(_feedback_router)
-app.include_router(_credentialing_router)
-app.include_router(_roster_router)
+
+_CREDENTIALING_ENABLED = (
+    os.environ.get("CHAT_CREDENTIALING_ENABLED", "true").strip().lower()
+    not in ("false", "0", "no", "off")
+)
+if _CREDENTIALING_ENABLED:
+    from app.api.credentialing import router as _credentialing_router
+    from app.api.roster import router as _roster_router
+
+    app.include_router(_credentialing_router)
+    app.include_router(_roster_router)
+    logger.info("Credentialing enabled: credentialing + roster routers mounted")
+else:
+    # Chat-without-credentialing deployment path. Any /chat/credentialing-runs/*,
+    # /chat/roster-reconcile/*, /chat/roster-truth/*, /chat/roster-org/* or
+    # /chat/npi-lookup/* request returns 404 (no mounted route) — the FE sees
+    # a clean "not found" and can degrade gracefully.
+    logger.info(
+        "Credentialing disabled (CHAT_CREDENTIALING_ENABLED=false): "
+        "credentialing + roster routers skipped; 42 URLs will return 404"
+    )
 
 
 # Phase 1b: feedback / QC endpoints moved to app.api.feedback.
