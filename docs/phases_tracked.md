@@ -34,8 +34,10 @@ each phase live in `tests/test_<phase_feature>.py`.
 | 1c | Credentialing-runs + NPI lookup router — 15 endpoints extracted to `app/api/credentialing.py`. **main.py: 3,125 → 2,401 lines (−23% across 1a+1b+1c).** Staging ground for Phase 3 (credentialing → own package) | `refactor(api): extract credentialing-runs + NPI lookup router` |
 | 1d | Roster router — 26 endpoints (`/chat/roster-reconcile/*`, `/chat/roster-truth/*`, `/chat/roster-org/*`) extracted to `app/api/roster.py` via mechanical block-extraction. **main.py: 2,401 → 1,527 lines (−51% total across 1a-1d).** | `refactor(api): extract roster-reconcile + roster-truth + roster-org router` |
 | 1e | Shared helper consolidation + CI-style hygiene guard. `_task_manager_base` was duplicated in main.py + 2 routers — now single-sourced in `app/api/_common.py`. New `test_api_hygiene_guard.py` scans main.py for stray `@app.*` decorators on chat paths AND for helper re-duplication; both fail the suite. **main.py: 1,527 → 1,524 lines.** | `refactor(api): consolidate shared helpers + hygiene guard` |
+| 3a | Gate credentialing routers behind `CHAT_CREDENTIALING_ENABLED` flag (default true). Chat-without-credentialing deployment path unblocked. 5 subprocess-based tests verify both modes. | `feat(deploy): gate credentialing routers behind CHAT_CREDENTIALING_ENABLED` |
+| 3b | Audit of the 41 credentialing/roster endpoints → classification: **25 pure proxy**, **4 mixed**, **12 chat-only**. Output: `docs/phase_3b_credentialing_audit.md` with per-endpoint detail and recommended 3c/3d/3e work. Discovery-only; no code change. | `docs(audit): phase 3b credentialing audit` |
 
-**Total unit tests across these phases: 209/209 green.**
+**Total unit tests across these phases: 214/214 green.**
 **main.py shrinkage across Phase 1: 3,125 → 1,524 lines (−51%).**
 
 ### Feedback persistence audit (done during 1b)
