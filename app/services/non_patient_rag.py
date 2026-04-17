@@ -48,18 +48,31 @@ def _emit(emitter, chunk: str) -> None:
 
 
 # Phase 0.18 — confidence-label → numeric fallback mapping.
-# Values chosen so the default ``confidence_min=0.5`` admits high/informational
-# but excludes low. Tune here if label semantics change.
+# Values chosen so the default ``confidence_min=0.5`` admits useful chunks
+# and excludes abstain-tier content. Tune here if label semantics change.
+#
+# The canonical labels set by ``doc_assembly.assign_confidence_*`` are:
+#   "abstain"              — rerank_score < cfg.confidence_abstain_max (0.5)
+#   "process_with_caution" — middle band (~0.5–0.75)
+#   "process_confident"    — rerank_score >= cfg.confidence_process_confident_min
+# Those are the ones that matter for the RAG API path. Other labels here
+# are defensive defaults for other pipelines (Vertex-direct, google-only)
+# that have emitted different labels historically.
 _CONFIDENCE_LABEL_SCORE: dict[str, float] = {
+    # Canonical doc_assembly labels (the ones that actually flow through):
+    "process_confident":      0.9,
+    "process_with_caution":   0.55,
+    "abstain":                0.3,   # intentionally below default 0.5 threshold
+    # Historical / alternative label spellings — keep for back-compat:
     "approved_authoritative": 1.0,
-    "authoritative": 1.0,
+    "authoritative":          1.0,
     "approved_informational": 0.8,
-    "informational": 0.8,
-    "high": 0.9,
-    "medium": 0.6,
-    "proceed_with_caution": 0.55,
-    "low": 0.3,
-    "augmented_with_google": 0.5,
+    "informational":          0.8,
+    "high":                   0.9,
+    "medium":                 0.6,
+    "proceed_with_caution":   0.55,  # alternate spelling
+    "low":                    0.3,
+    "augmented_with_google":  0.5,
 }
 
 
@@ -175,19 +188,26 @@ def answer_non_patient(
             if confidence_min is not None and chunks:
                 # Phase 0.18: when the RAG API path is active, chunks have
                 # ``rerank_score`` + ``confidence_label`` but no ``match_score``
-                # or ``confidence``. The original filter only checked the
-                # legacy inline-BM25 field names and silently dropped EVERY
-                # RAG-API chunk to 0.0, which made every ReAct turn pivot to
-                # google_search / web_scrape as if the corpus were empty.
-                # ``_score_chunk_for_confidence_filter`` is defensive: tries
-                # numeric fields in order, then falls back to a label→numeric
-                # mapping so ``high``/``informational`` chunks clear a 0.5
-                # threshold even if no explicit numeric was returned.
-                chunks = [
-                    c for c in chunks
-                    if isinstance(c, dict)
-                    and _score_chunk_for_confidence_filter(c) >= confidence_min
-                ]
+                # or ``confidence``. ``_score_chunk_for_confidence_filter``
+                # falls through numeric fields and then a label→numeric map.
+                _pre_filter = len(chunks)
+                _scored: list[tuple[dict, float]] = []
+                for c in chunks:
+                    if not isinstance(c, dict):
+                        continue
+                    s = _score_chunk_for_confidence_filter(c)
+                    _scored.append((c, s))
+                chunks = [c for c, s in _scored if s >= confidence_min]
+                if _DEBUG_RAG:
+                    # Log what actually got dropped so invisible retrieval-kills
+                    # (the 2026-04-17 bug) stay visible going forward.
+                    dropped = [(s, (c.get("confidence_label") or ""), c.get("rerank_score")) for c, s in _scored if s < confidence_min]
+                    kept = [(s, (c.get("confidence_label") or ""), c.get("rerank_score")) for c, s in _scored if s >= confidence_min]
+                    logger.info(
+                        "[DEBUG_RAG] confidence_min=%.2f filter: %d → %d (kept=%s dropped=%s)",
+                        confidence_min, _pre_filter, len(chunks),
+                        kept[:5], dropped[:5],
+                    )
             if not chunks:
                 _emit(emitter, "I didn't find anything specific; I'll answer from what I know.")
                 if on_rag_fail and "search_google" in [str(x).lower() for x in on_rag_fail]:

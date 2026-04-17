@@ -51,16 +51,33 @@ class TestLegacyBM25Shape:
 
 class TestRagApiShape:
     def test_rerank_score_used(self):
-        """The exact chunk shape observed in the 2026-04-17 production log."""
+        """Exact chunk shape observed in the 2026-04-17 production log."""
         c = {
             "text": "H0036 is …",
             "document_name": "Sunshine Provider Manual",
             "source_type": "chunk",
-            "confidence_label": "high",
+            "confidence_label": "process_confident",
             "llm_guidance": "…",
             "rerank_score": 0.87,
         }
         assert _score_chunk_for_confidence_filter(c) == 0.87
+
+    def test_canonical_process_confident_clears_default(self):
+        """REGRESSION for the silent-filter bug. The RAG API emits
+        ``process_confident`` for high-score chunks; must clear 0.5.
+        """
+        c = {"confidence_label": "process_confident"}
+        assert _score_chunk_for_confidence_filter(c) >= 0.5
+
+    def test_canonical_process_with_caution_clears_default(self):
+        """Middle-tier chunks should still reach the LLM at 0.5 threshold."""
+        c = {"confidence_label": "process_with_caution"}
+        assert _score_chunk_for_confidence_filter(c) >= 0.5
+
+    def test_canonical_abstain_below_default(self):
+        """``abstain`` chunks (rerank < 0.5) are filtered at the default threshold."""
+        c = {"confidence_label": "abstain"}
+        assert _score_chunk_for_confidence_filter(c) < 0.5
 
     def test_confidence_label_fallback_when_no_numeric_fields(self):
         c = {"confidence_label": "informational"}
@@ -70,8 +87,6 @@ class TestRagApiShape:
         )
 
     def test_high_label_clears_default_threshold(self):
-        """Default confidence_min=0.5 MUST admit 'high'-labeled chunks —
-        this is the regression case from the production log."""
         c = {"confidence_label": "high"}
         assert _score_chunk_for_confidence_filter(c) >= 0.5
 
@@ -80,7 +95,6 @@ class TestRagApiShape:
         assert _score_chunk_for_confidence_filter(c) < 0.5
 
     def test_unknown_label_returns_zero(self):
-        """A label we haven't mapped = conservative 0.0 (filtered out)."""
         c = {"confidence_label": "random_new_label_we_never_saw"}
         assert _score_chunk_for_confidence_filter(c) == 0.0
 
@@ -89,8 +103,8 @@ class TestRagApiShape:
         assert _score_chunk_for_confidence_filter(c) == 0.0
 
     def test_label_is_case_insensitive(self):
-        c1 = {"confidence_label": "HIGH"}
-        c2 = {"confidence_label": "high"}
+        c1 = {"confidence_label": "PROCESS_CONFIDENT"}
+        c2 = {"confidence_label": "process_confident"}
         assert _score_chunk_for_confidence_filter(c1) == _score_chunk_for_confidence_filter(c2)
 
 
@@ -105,12 +119,14 @@ class TestProductionRegressionOf20260417:
 
     def _sample_chunks(self) -> list[dict]:
         # Minimal reproduction of the real chunk shape from the worker log.
+        # Uses the CANONICAL ``process_confident`` label that doc_assembly
+        # actually emits (not the ``"high"`` label I first mistakenly assumed).
         return [
             {
                 "text": f"chunk text {i}",
                 "document_name": "Sunshine Provider Manual",
                 "source_type": "chunk",
-                "confidence_label": "high",
+                "confidence_label": "process_confident",
                 "llm_guidance": "Use this chunk.",
                 "rerank_score": 0.7 + (i * 0.03),
             }
@@ -168,8 +184,23 @@ class TestLabelScoreTable:
         )
 
     def test_default_threshold_admits_informational(self):
-        """Keep this assertion tight to the ``confidence_min=0.5`` default the
-        ReAct loop uses. If someone lowers "informational" below 0.5 we
-        reintroduce the silent-filter bug.
-        """
         assert _CONFIDENCE_LABEL_SCORE["informational"] >= 0.5
+
+    def test_canonical_labels_order(self):
+        """The three canonical doc_assembly labels must rank in the expected
+        order: process_confident > process_with_caution > abstain.
+        """
+        conf = _CONFIDENCE_LABEL_SCORE["process_confident"]
+        caut = _CONFIDENCE_LABEL_SCORE["process_with_caution"]
+        absta = _CONFIDENCE_LABEL_SCORE["abstain"]
+        assert conf > caut > absta, (
+            f"canonical label order regressed: got process_confident={conf}, "
+            f"process_with_caution={caut}, abstain={absta}"
+        )
+
+    def test_canonical_labels_straddle_default_threshold(self):
+        """process_with_caution admits at 0.5; abstain rejects at 0.5.
+        This is what makes the default filter semantically right.
+        """
+        assert _CONFIDENCE_LABEL_SCORE["process_with_caution"] >= 0.5
+        assert _CONFIDENCE_LABEL_SCORE["abstain"] < 0.5
