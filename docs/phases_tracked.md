@@ -31,8 +31,9 @@ each phase live in `tests/test_<phase_feature>.py`.
 | 0.15 | Mode gradient: FACTUAL 1-line / BLENDED 1-3 sentences / CANONICAL paragraph; substantive bullets across all modes | `fix(answer): mode-gradient for direct_answer length + substantive sections` |
 | 1a | First main-split slice — `/chat/history/*` extracted to `app/api/history.py` as proof-of-pattern | `refactor(api): extract /chat/history router` |
 | 1b | Feedback + QC router — 6 endpoints extracted to `app/api/feedback.py`; each endpoint audited against its migration for Postgres persistence | `refactor(api): extract /chat feedback + QC router with PG persistence audit` |
+| 1c | Credentialing-runs + NPI lookup router — 15 endpoints extracted to `app/api/credentialing.py`. **main.py: 3,125 → 2,401 lines (−23% across 1a+1b+1c).** Staging ground for Phase 3 (credentialing → own package) | `refactor(api): extract credentialing-runs + NPI lookup router` |
 
-**Total unit tests across these phases: 177/177 green.**
+**Total unit tests across these phases: 192/192 green.**
 
 ### Feedback persistence audit (done during 1b)
 
