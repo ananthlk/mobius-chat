@@ -192,45 +192,17 @@ def _json_repair_loads(text: str) -> object:
     return json_repair.loads(text)
 
 
-def _repair_json(
-    cfg,
-    invalid_text: str,
-    *,
-    correlation_id: str | None = None,
-    thread_id: str | None = None,
-    config_sha: str | None = None,
-    phi_detected: bool = False,
-    llm_stage: str = "integrator",
-    mode: str | None = None,
-) -> str:
-    """One retry: call LLM with repair prompt via llm_manager (integrator stage), return new text."""
-    from app.services.llm_manager import generate_sync
-
-    repair_system = getattr(cfg.prompts, "integrator_repair_system", None) or (
-        "You returned invalid JSON. Return ONLY valid JSON that matches the AnswerCard schema. "
-        "Do not include any commentary or markdown. Ensure all strings are quoted and arrays/objects are valid. "
-        "Use the same content as before; do not add new facts."
-    )
-    repair_user = (
-        "Your previous invalid output:\n\n" + invalid_text[:8000] + "\n\n"
-        "Return ONLY valid JSON that matches the AnswerCard schema. Do not include any commentary or markdown."
-    )
-    prompt = f"{repair_system}\n\n{repair_user}"
-    try:
-        text, _ = generate_sync(
-            prompt,
-            stage=llm_stage,
-            max_tokens=4096,
-            config_sha=config_sha,
-            correlation_id=correlation_id,
-            thread_id=thread_id,
-            phi_detected=phi_detected,
-            mode=mode,
-        )
-        return (text or "").strip()
-    except Exception as e:
-        logger.warning("Repair JSON call failed: %s", e)
-        return ""
+# Phase 0.16b: the LLM-based ``_repair_json`` tier was deleted.
+# ``_parse_answer_card`` already runs ``json.loads`` followed by the
+# ``json_repair`` library (line ~172) — between them they handle the
+# malformed shapes an LLM re-emission pass would have caught, without an
+# additional API call. The LLM repair path was responsible for the
+# Groq ``daily TPD exhausted`` leak (see worker logs 2026-04-17) and
+# added $0.01 + 2-5s per malformed turn. If both stdlib + json_repair
+# fail, the flow below now goes straight to
+# ``extract_user_visible_text_from_integrator_raw`` which wraps the
+# prose as FACTUAL and emits via the Phase 0.12 envelope — clean
+# failure, no extra LLM burn.
 
 
 def _emit_integrator_chunks(text: str, message_chunk_callback: Callable[[str], None] | None) -> None:
@@ -335,23 +307,9 @@ def format_response(
         if text:
             _emit(emitter, "  Validator: checking answer card (mode, direct_answer, sections)…")
             parsed = _parse_answer_card(text, emitter=emitter)
-            if parsed is None and (text.strip().startswith("{") or "```" in text):
-                logger.debug("Repairing invalid JSON via LLM")
-                _emit(emitter, "  Validator: retrying after JSON repair…")
-                repaired = _repair_json(
-                    cfg,
-                    text,
-                    correlation_id=correlation_id,
-                    thread_id=thread_id,
-                    config_sha=config_sha,
-                    phi_detected=phi_detected,
-                    llm_stage=llm_stage,
-                    mode=mode,
-                )
-                if repaired:
-                    parsed = _parse_answer_card(repaired, emitter=emitter)
-                    if parsed is not None:
-                        text = repaired
+            # Phase 0.16b: no LLM-based repair tier. _parse_answer_card already
+            # tries json.loads then json_repair — if both fail, fall straight
+            # through to the FACTUAL-wrap fallback below.
             if parsed is not None:
                 _emit(emitter, "  Final composer: answer card ready.")
                 logger.debug("Emitting canonical AnswerCard JSON to frontend")
