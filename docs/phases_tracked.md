@@ -149,6 +149,55 @@ Scope: ~1 day.
 
 ## 🌱 Tracked — product-level capabilities
 
+### Skill UI integration pattern (architecture decision, not yet executed)
+
+**Decision date:** 2026-04-17 after Phase 3c.
+
+**Chosen approach: Option D — envelope-first with progressive depth.**
+
+Skills publish typed envelopes only (data contracts), not UI components.
+Chat FE renders them inline using its own components for the common case.
+For deep workflows, chat links out to the skill's standalone UI (which
+reads the same envelopes). This is the pattern for every future skill
+integration, not just credentialing.
+
+Shape:
+
+```
+mobius-contracts/envelopes/
+    assistant.py        # already exists — chat's outer envelope
+    credentialing.py    # typed outputs of credentialing skill
+    task_manager.py     # typed outputs of task-manager skill
+    …                   # one per skill
+```
+
+- ReAct tool returns a typed skill envelope.
+- Chat wraps it in a new `AssistantEnvelope` UIBlock variant
+  (e.g. `CredentialingReportBlock(envelope=...)`).
+- Chat FE renders the block inline (summary card + metrics + deep link).
+- "Open full report →" navigates to the skill's standalone UI at
+  `envelope.deep_link_url`.
+
+**Principles:**
+- Envelopes are the ONLY cross-service contract.
+- Skills never push DOM/CSS/JS into chat (no microfrontend complexity).
+- Chat FE owns inline rendering — one unified look across the thread.
+- Skills own standalone UIs — ops/admin/deep-workflow control panels.
+- `mobius-contracts` is the schema registry; every envelope has a
+  Pydantic model with `schema_name` + `version`.
+
+**What this blocks for now:**
+- The credentialing skill still returns prose from its ReAct tools.
+  Typing its outputs as envelopes is a 0.5-day move when we're ready.
+- The 65+ chat-FE callers that broke in Phase 3c will eventually be
+  re-integrated either by (a) calling the skill URL directly, or (b)
+  reading typed envelopes from ReAct tool responses and rendering new
+  UIBlock variants. Decision per-caller when we get to it.
+
+**When to execute:** when the first skill integration actually needs it.
+Likely triggers: re-enabling the credentialing UI flows that broke in
+3c, or standing up a new skill that needs chat display.
+
 ### Real-time RAG (Instant RAG skill)
 Per `project_instant_rag_skill.md` in user memory.
 
