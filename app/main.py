@@ -45,10 +45,11 @@ from app.config import get_config
 from app.queue import get_queue
 from app.storage import (
     fetch_turn_qc_audit,
-    get_most_helpful_documents,
-    get_most_helpful_turns,
+    # Phase 1a: get_most_helpful_documents / get_most_helpful_turns /
+    # get_recent_turns moved to app.api.history. Left here for any code
+    # that still imports them from app.storage — but main.py itself no
+    # longer needs them.
     get_plan,
-    get_recent_turns,
     get_response,
     insert_adjudication_feedback,
     insert_feedback,
@@ -2459,47 +2460,11 @@ def get_chat_config_by_sha(config_sha: str):
     return config
 
 
-def _parse_limit(limit: int | None) -> int:
-    """Parse and clamp limit query param. Default 10, max 100."""
-    if limit is None:
-        return 10
-    return max(1, min(limit, 100))
-
-
-@app.get("/chat/history/recent")
-def get_chat_history_recent(limit: int | None = 10):
-    """Recent chat turns for sidebar: { correlation_id, question, created_at }.
-
-    Legacy endpoint — returns every turn verbatim. Kept for back-compat with
-    clients that haven't migrated to ``/chat/history/threads`` yet.
-    """
-    return get_recent_turns(_parse_limit(limit))
-
-
-@app.get("/chat/history/threads")
-def get_chat_history_threads(limit: int | None = 10):
-    """Phase 2.3: recent *threads* for the sidebar.
-
-    Returns ``[{thread_id, title, updated_at, turn_count}]`` deduplicated at
-    the thread level — replaces the legacy per-turn list that was dumping
-    raw URLs and tool-invocation fragments as "helpful searches."
-
-    Falls back to an empty list (not a 500) if migration 030 hasn't run yet.
-    """
-    from app.storage.threads import get_recent_threads
-    return get_recent_threads(_parse_limit(limit))
-
-
-@app.get("/chat/history/most-helpful-searches")
-def get_chat_history_most_helpful_searches(limit: int | None = 10):
-    """Turns with positive feedback for sidebar."""
-    return get_most_helpful_turns(_parse_limit(limit))
-
-
-@app.get("/chat/history/most-helpful-documents")
-def get_chat_history_most_helpful_documents(limit: int | None = 10):
-    """Documents most cited in liked answers."""
-    return get_most_helpful_documents(_parse_limit(limit))
+# Phase 1a: /chat/history/* endpoints extracted into app.api.history. The
+# router mount below preserves external URLs; this is the first slice of
+# the main-split refactor.
+from app.api.history import router as _history_router
+app.include_router(_history_router)
 
 
 class FeedbackBody(BaseModel):
