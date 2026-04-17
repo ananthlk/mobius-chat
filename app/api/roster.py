@@ -40,16 +40,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["roster"])
 
-
-def _task_manager_base() -> str:
-    """Base URL of the task-manager skill server.
-
-    Duplicated from main.py / app.api.credentialing. Consolidation into a
-    shared ``app.api._common`` helper is a Phase 1e finishing task.
-    """
-    return (
-        os.environ.get("CHAT_SKILLS_TASK_MANAGER_URL") or "http://localhost:8015"
-    ).rstrip("/")
+# Phase 1e: _task_manager_base consolidated into app.api._common — imported
+# under its original name so existing call sites below don't need changes.
+from app.api._common import task_manager_base_url as _task_manager_base
 
 
 @router.get("/chat/roster-reconcile/{upload_id}/progress")

@@ -1239,11 +1239,8 @@ def dr_health():
 # Task Manager skill proxy — /chat/tasks/* → mobius-skills/task-manager
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _task_manager_base() -> str:
-    """Base URL of the task-manager skill server."""
-    return (
-        os.environ.get("CHAT_SKILLS_TASK_MANAGER_URL") or "http://localhost:8015"
-    ).rstrip("/")
+# Phase 1e: _task_manager_base consolidated into app.api._common.
+from app.api._common import task_manager_base_url as _task_manager_base
 
 
 def _task_proxy(method: str, path: str, *, params=None, json_body=None, timeout: float = 15.0):
