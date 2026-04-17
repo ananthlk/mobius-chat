@@ -29,8 +29,9 @@ each phase live in `tests/test_<phase_feature>.py`.
 | 0.13 | Auto-retry on recoverable `ErrorEnvelope` codes — honors `retry_after_seconds` (≤30s), one retry | `feat(errors): auto-retry recoverable errors` |
 | 0.14 | BLENDED `direct_answer` includes inline specifics; UI surfaces `definitions` section by default | `fix(answer): richer BLENDED direct_answer + expanded default visibility` |
 | 0.15 | Mode gradient: FACTUAL 1-line / BLENDED 1-3 sentences / CANONICAL paragraph; substantive bullets across all modes | `fix(answer): mode-gradient for direct_answer length + substantive sections` |
+| 1a | First main-split slice — `/chat/history/*` extracted to `app/api/history.py` as proof-of-pattern | `refactor(api): extract /chat/history router` |
 
-**Total unit tests across these phases: 149/149 green.**
+**Total unit tests across these phases: 162/162 green.**
 
 Observed end-to-end impact (per the 2026-04-17 test session):
 
