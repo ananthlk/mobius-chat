@@ -85,15 +85,39 @@ class TestBlendedPromptContract:
 
 
 class TestOtherModesUnchanged:
-    """Sanity — we only changed BLENDED; FACTUAL and CANONICAL prompts are unaffected."""
+    """FACTUAL stays terse; CANONICAL goes to a full paragraph (Phase 0.15).
+
+    These tests lock in the mode-gradient the user wanted:
+        FACTUAL  = 1 line (shortest)
+        BLENDED  = 1–3 sentences (middle)
+        CANONICAL = short paragraph (longest)
+    """
 
     def test_factual_still_one_sentence_operational(self):
         p = ChatPromptsConfig().integrator_factual_system
         assert "one sentence, operational" in p
 
-    def test_canonical_still_one_sentence_summary(self):
+    def test_factual_is_declared_shortest(self):
+        """Phase 0.15: prompt explicitly tells the LLM FACTUAL is the shortest mode."""
+        p = ChatPromptsConfig().integrator_factual_system
+        assert "SHORTEST of the three modes" in p
+
+    def test_canonical_allows_paragraph_not_one_sentence(self):
+        """Phase 0.15: CANONICAL permits 3–6 sentence direct_answer.
+
+        Regression: the old "one-sentence summary" rule kept CANONICAL
+        direct_answer as thin as FACTUAL, eliminating the mode gradient.
+        """
         p = ChatPromptsConfig().integrator_canonical_system
-        assert "one-sentence summary" in p
+        assert "3–6 sentences" in p, (
+            "CANONICAL direct_answer must be a short paragraph, not one sentence"
+        )
+        assert "one-sentence summary" not in p, (
+            "old one-sentence CANONICAL rule must be gone"
+        )
+        assert "most detailed display mode" in p, (
+            "prompt must signal that CANONICAL is the most-expansive mode"
+        )
 
 
 class TestDocumentedWorkedExample:
@@ -113,3 +137,41 @@ class TestDocumentedWorkedExample:
         p = ChatPromptsConfig().integrator_blended_system
         # The bad example is the shape we actually saw in production.
         assert "uses InterQual criteria to evaluate H0036" in p
+
+
+class TestSectionsRequireSubstantiveBullets:
+    """Phase 0.15: across ALL three modes, section bullets must carry real content.
+
+    The bug was sections with bullets like "required", "see manual", "applicable" —
+    technically valid JSON but useless when the user clicks through to details.
+    Every mode's prompt now forbids stub bullets.
+    """
+
+    def test_factual_requires_substantive_bullets(self):
+        p = ChatPromptsConfig().integrator_factual_system
+        assert "substantive bullets" in p
+        assert "stub bullets" in p
+
+    def test_blended_requires_substantive_bullets(self):
+        p = ChatPromptsConfig().integrator_blended_system
+        assert "substantive bullets" in p
+        assert "stub bullets" in p
+
+    def test_canonical_requires_substantive_bullets(self):
+        p = ChatPromptsConfig().integrator_canonical_system
+        assert "substantive bullets" in p
+        assert "stub bullets" in p
+
+    def test_factual_sections_must_hold_detail_because_hidden(self):
+        """FACTUAL sections are hidden by default — the prompt must call this out."""
+        p = ChatPromptsConfig().integrator_factual_system
+        assert "hides sections behind" in p.lower() or "show details" in p.lower()
+
+    def test_bullets_per_section_increased(self):
+        """Phase 0.15: 3-6 bullets (was 2-4) so sections carry real coverage."""
+        for p in (
+            ChatPromptsConfig().integrator_factual_system,
+            ChatPromptsConfig().integrator_blended_system,
+            ChatPromptsConfig().integrator_canonical_system,
+        ):
+            assert "3–6 substantive bullets" in p
