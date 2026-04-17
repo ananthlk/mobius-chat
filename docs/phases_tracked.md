@@ -30,8 +30,27 @@ each phase live in `tests/test_<phase_feature>.py`.
 | 0.14 | BLENDED `direct_answer` includes inline specifics; UI surfaces `definitions` section by default | `fix(answer): richer BLENDED direct_answer + expanded default visibility` |
 | 0.15 | Mode gradient: FACTUAL 1-line / BLENDED 1-3 sentences / CANONICAL paragraph; substantive bullets across all modes | `fix(answer): mode-gradient for direct_answer length + substantive sections` |
 | 1a | First main-split slice — `/chat/history/*` extracted to `app/api/history.py` as proof-of-pattern | `refactor(api): extract /chat/history router` |
+| 1b | Feedback + QC router — 6 endpoints extracted to `app/api/feedback.py`; each endpoint audited against its migration for Postgres persistence | `refactor(api): extract /chat feedback + QC router with PG persistence audit` |
 
-**Total unit tests across these phases: 162/162 green.**
+**Total unit tests across these phases: 177/177 green.**
+
+### Feedback persistence audit (done during 1b)
+
+All six feedback endpoints verified to write to Postgres:
+
+| Endpoint | Storage fn | Table | Migration |
+|---|---|---|---|
+| `POST /chat/feedback/{cid}` | `insert_feedback` | `chat_feedback` | 003 |
+| `POST /chat/source-feedback/{cid}` | `insert_source_feedback` | `chat_source_feedback` | 006 |
+| `POST /chat/adjudication-feedback/{cid}` | `insert_adjudication_feedback` | `adjudication_feedback` | 025 |
+| `POST /chat/llm-performance-feedback/{cid}` | `insert_llm_performance_feedback` | `llm_performance_feedback` | 024 |
+| `POST /chat/qc-audit/{cid}` | `update_turn_qc_audit` | `chat_turns.qc_audit` JSONB | 023 |
+| `POST /chat/qc-user-score/{cid}` | `update_turn_qc_audit` | `chat_turns.qc_audit` JSONB | 023 |
+
+Softness observed (tracked as Phase 0.17 below):
+- All `insert_*` silently return if `CHAT_RAG_DATABASE_URL` is unset.
+- `adjudication_feedback` + `llm_performance_feedback` swallow "relation does not
+  exist" as DEBUG — silent data loss if migrations 024/025 never ran.
 
 Observed end-to-end impact (per the 2026-04-17 test session):
 
@@ -71,6 +90,20 @@ Estimated: 3 days after Phase 1.
 ---
 
 ## 📋 Tracked — smaller items
+
+### 0.17 — Feedback persistence hardening
+Two softness patterns discovered during Phase 1b's persistence audit:
+
+1. **Silent `CHAT_RAG_DATABASE_URL` unset.** All five `insert_*` fns in
+   `app/storage/feedback.py` log a WARNING and silently return when the env
+   var isn't set. Correct for dev-without-DB but dangerous in prod — a
+   misconfigured env = silent feedback loss. Fix: fail-closed in non-dev.
+2. **Silent "relation does not exist".** `insert_adjudication_feedback` and
+   `insert_llm_performance_feedback` swallow the error as DEBUG, so if
+   migrations 024/025 never ran the feedback silently vanishes. Fix: raise
+   a typed error the first time, or at minimum log at WARNING.
+
+Scope: ~30 min.
 
 ### 0.16 — Tighten web_scrape timeout + JSON-repair provider swap
 - Scrape observed to run ~38s on one test turn despite the 30s guard
