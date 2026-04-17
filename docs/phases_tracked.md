@@ -37,8 +37,9 @@ each phase live in `tests/test_<phase_feature>.py`.
 | 3a | Gate credentialing routers behind `CHAT_CREDENTIALING_ENABLED` flag (default true). Chat-without-credentialing deployment path unblocked. 5 subprocess-based tests verify both modes. | `feat(deploy): gate credentialing routers behind CHAT_CREDENTIALING_ENABLED` |
 | 3b | Audit of the 41 credentialing/roster endpoints → classification: **25 pure proxy**, **4 mixed**, **12 chat-only**. Output: `docs/phase_3b_credentialing_audit.md` with per-endpoint detail and recommended 3c/3d/3e work. Discovery-only; no code change. | `docs(audit): phase 3b credentialing audit` |
 | 3c | **Full deletion of chat's credentialing HTTP surface** — all 41 endpoints removed from chat per the user's "credentialing is a skill, not a chat interface" direction (user accepted the FE breakage — will reintegrate via direct skill calls or new `/credentialing/*` router later). Files deleted: `app/api/credentialing.py`, `app/api/roster.py`, `tests/test_api_credentialing_router.py`, `tests/test_api_roster_router.py`, `tests/test_credentialing_gated.py`. `CHAT_CREDENTIALING_ENABLED` flag no longer relevant (moot — credentialing isn't in chat). Hygiene guards strengthened to lock in the removal. | `refactor(api): remove chat's credentialing + roster HTTP surface` |
+| 0.17 | **Feedback fail-closed** — closes the silent-data-loss pattern from the 1b audit. New `CHAT_ENV` env var (default `dev`) gates behavior: missing `CHAT_RAG_DATABASE_URL` or missing `adjudication_feedback` / `llm_performance_feedback` tables now *raise* `FeedbackPersistenceError` in staging/prod (500 to caller) instead of logging DEBUG and returning. Dev ergonomics preserved. Error messages include the chat DB migration number (024 / 025) so ops debugging is one step. | `feat(storage): feedback fail-closed on missing DB / table` |
 
-**Total unit tests after Phase 3c: 185/185 green.** (Lost 32 tests that asserted the removed surface; gained 3 new guard tests that assert it STAYS removed.)
+**Total unit tests after Phase 0.17: 210/210 green.** (185 before 0.17 + 25 new.)
 
 **main.py shrinkage across Phase 1: 3,125 → ~1,528 lines (−51%).**
 **Chat router surface after 3c: 2 routers (history, feedback) mounting 10 endpoints. The 51 routes mounted after 1d → 10 after 3c.**
@@ -99,20 +100,6 @@ Estimated: 3 days after Phase 1.
 ---
 
 ## 📋 Tracked — smaller items
-
-### 0.17 — Feedback persistence hardening
-Two softness patterns discovered during Phase 1b's persistence audit:
-
-1. **Silent `CHAT_RAG_DATABASE_URL` unset.** All five `insert_*` fns in
-   `app/storage/feedback.py` log a WARNING and silently return when the env
-   var isn't set. Correct for dev-without-DB but dangerous in prod — a
-   misconfigured env = silent feedback loss. Fix: fail-closed in non-dev.
-2. **Silent "relation does not exist".** `insert_adjudication_feedback` and
-   `insert_llm_performance_feedback` swallow the error as DEBUG, so if
-   migrations 024/025 never ran the feedback silently vanishes. Fix: raise
-   a typed error the first time, or at minimum log at WARNING.
-
-Scope: ~30 min.
 
 ### 0.16 — Tighten web_scrape timeout + JSON-repair provider swap
 - Scrape observed to run ~38s on one test turn despite the 30s guard
