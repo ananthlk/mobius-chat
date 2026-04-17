@@ -38,8 +38,9 @@ each phase live in `tests/test_<phase_feature>.py`.
 | 3b | Audit of the 41 credentialing/roster endpoints → classification: **25 pure proxy**, **4 mixed**, **12 chat-only**. Output: `docs/phase_3b_credentialing_audit.md` with per-endpoint detail and recommended 3c/3d/3e work. Discovery-only; no code change. | `docs(audit): phase 3b credentialing audit` |
 | 3c | **Full deletion of chat's credentialing HTTP surface** — all 41 endpoints removed from chat per the user's "credentialing is a skill, not a chat interface" direction (user accepted the FE breakage — will reintegrate via direct skill calls or new `/credentialing/*` router later). Files deleted: `app/api/credentialing.py`, `app/api/roster.py`, `tests/test_api_credentialing_router.py`, `tests/test_api_roster_router.py`, `tests/test_credentialing_gated.py`. `CHAT_CREDENTIALING_ENABLED` flag no longer relevant (moot — credentialing isn't in chat). Hygiene guards strengthened to lock in the removal. | `refactor(api): remove chat's credentialing + roster HTTP surface` |
 | 0.17 | **Feedback fail-closed** — closes the silent-data-loss pattern from the 1b audit. New `CHAT_ENV` env var (default `dev`) gates behavior: missing `CHAT_RAG_DATABASE_URL` or missing `adjudication_feedback` / `llm_performance_feedback` tables now *raise* `FeedbackPersistenceError` in staging/prod (500 to caller) instead of logging DEBUG and returning. Dev ergonomics preserved. Error messages include the chat DB migration number (024 / 025) so ops debugging is one step. | `feat(storage): feedback fail-closed on missing DB / table` |
+| 0.16 | Two production bugs from the 2026-04-17 test logs. **0.16a:** web_scrape timeout actually fires at the cap (was 30s + 8s worker-drain due to `ThreadPoolExecutor` `with` block waiting on `__exit__`; now uses explicit `shutdown(wait=False)` on timeout). **0.16b:** LLM-based JSON repair tier deleted — `_parse_answer_card` already ran stdlib+json_repair library, the third LLM call was pure overhead AND was responsible for hitting Groq daily-TPD quota. Saves ~$0.01 + 2-5s per malformed turn. | `fix: web_scrape timeout fires at cap + delete overhead LLM-repair tier` |
 
-**Total unit tests after Phase 0.17: 210/210 green.** (185 before 0.17 + 25 new.)
+**Total unit tests after Phase 0.16: 221/221 green (210 + 9 new across 0.16a/b) + 1 pre-existing Vertex-billing test deselected (unrelated).**
 
 **main.py shrinkage across Phase 1: 3,125 → ~1,528 lines (−51%).**
 **Chat router surface after 3c: 2 routers (history, feedback) mounting 10 endpoints. The 51 routes mounted after 1d → 10 after 3c.**
@@ -101,7 +102,9 @@ Estimated: 3 days after Phase 1.
 
 ## 📋 Tracked — smaller items
 
-### 0.16 — Tighten web_scrape timeout + JSON-repair provider swap
+### (0.16 shipped — see the Shipped table above)
+
+### (reserved for future hardening items)
 - Scrape observed to run ~38s on one test turn despite the 30s guard
   (Phase 0.8); the `ThreadPoolExecutor` wait races setup time. Move
   the timeout to wrap from "Using web_scrape…" emit onward.

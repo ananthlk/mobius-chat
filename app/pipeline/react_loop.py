@@ -718,11 +718,21 @@ def _execute_tool(
                 "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
                 "sources": [],
             }
-        # Phase 0.8: hard wall-clock cap on the scrape. Production traces showed
-        # a single depth-3 crawl eating ~233s of turn time because per-page LLM
-        # summarization ran sequentially on 6 pages. The cap aborts and returns
-        # a typed scrape_failed envelope so the ReAct loop can move on rather
-        # than burning the whole turn on one slow scrape.
+        # Phase 0.8 + 0.16a: hard wall-clock cap on the scrape.
+        #
+        # 0.8 introduced the timeout but used ``with ThreadPoolExecutor(...) as _pool``.
+        # That pattern has a subtle bug: ``__exit__`` waits for the worker to
+        # finish even after ``future.result(timeout=...)`` raises TimeoutError,
+        # which means a scrape that exceeded the cap by N seconds STILL held
+        # the tool handler for N extra seconds (one production turn overran
+        # the 30s cap by 8s for this reason).
+        #
+        # 0.16a fix: construct the pool manually and call
+        # ``shutdown(wait=False, cancel_futures=True)`` on timeout. The worker
+        # thread may keep running in the background (Python has no clean way
+        # to kill a thread), but our tool handler returns immediately — the
+        # ReAct loop can move on, and the worker's side effects (an LLM call
+        # that's already in-flight) complete or error silently.
         import concurrent.futures as _cf
         _SCRAPE_TIMEOUT_S = int(os.environ.get("MOBIUS_WEB_SCRAPE_TIMEOUT_S", "30"))
 
@@ -737,11 +747,15 @@ def _execute_tool(
                 tool_inputs=inputs,
             )
 
+        _pool = _cf.ThreadPoolExecutor(max_workers=1)
+        _future = _pool.submit(_run_scrape)
         try:
-            with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
-                _future = _pool.submit(_run_scrape)
-                answer, sources, usage, signal = _future.result(timeout=_SCRAPE_TIMEOUT_S)
+            answer, sources, usage, signal = _future.result(timeout=_SCRAPE_TIMEOUT_S)
+            _pool.shutdown(wait=True)  # normal completion → clean up synchronously
         except _cf.TimeoutError:
+            # Do NOT wait on the pool — let the worker keep running in the
+            # background while we return immediately.
+            _pool.shutdown(wait=False, cancel_futures=True)
             emit(f"  ⊘ web_scrape timed out after {_SCRAPE_TIMEOUT_S}s — moving on.")
             from app.communication.error_emit import classify_exception
             env = classify_exception(
