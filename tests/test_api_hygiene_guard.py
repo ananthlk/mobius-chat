@@ -61,7 +61,9 @@ ALLOWED_MAIN_PY_PATH_PREFIXES: tuple[str, ...] = (
     "/chat/llm-router-report", # not yet moved
     "/chat/org-name-candidates",  # not yet moved
     "/chat",                   # POST /chat — core ask endpoint, not yet moved
-    "/chat/tasks/",            # not yet moved (proxy to task-manager)
+    # Phase 1f.1: /chat/tasks/* moved to app.api.tasks — prefix REMOVED from
+    # allowlist. The deleted-paths guard below also forbids re-introducing
+    # any /chat/tasks/* decorator in main.py.
 )
 
 
@@ -122,6 +124,8 @@ class TestNoChatEndpointsInlineInMain:
             "/chat/llm-performance-feedback/",
             "/chat/qc-audit/",
             "/chat/qc-user-score/",
+            # Phase 1f.1 — extracted to app.api.tasks
+            "/chat/tasks",
             # Phase 3c — deleted outright
             "/chat/credentialing-runs",
             "/chat/npi-lookup/",
@@ -197,7 +201,47 @@ class TestSharedHelpersConsolidated:
         )
 
 
-# ── Guard 3: credentialing HTTP surface stays removed ─────────────────────
+# ── Guard 3: ratcheting main.py size + endpoint count ────────────────────
+
+
+class TestMainPySizeRatchet:
+    """Phase 1f introduces a ratcheting ceiling on main.py so the split
+    can't quietly reverse itself.
+
+    After each sub-phase extracts a router, we tighten the LOC + endpoint
+    bounds here. Tests fail if main.py grows back past the ceiling — which
+    means either the extraction got undone, or new endpoints were added
+    inline instead of to a router.
+
+    Sub-phase log:
+      pre-1f      1528 LOC, 36 endpoints (37 with /health)
+      post-1f.1   1408 LOC, 28 endpoints (tasks router extracted; /health kept)
+    """
+
+    # Current ceilings. Tighten these as 1f.2, 1f.3, ... land. Never loosen.
+    MAX_MAIN_PY_LOC = 1420
+    MAX_MAIN_PY_ENDPOINTS = 30
+
+    def test_main_py_loc_under_ceiling(self):
+        main_py = CHAT_REPO_ROOT / "app" / "main.py"
+        loc = len(main_py.read_text().splitlines())
+        assert loc <= self.MAX_MAIN_PY_LOC, (
+            f"main.py is {loc} LOC, over the Phase 1f ceiling "
+            f"({self.MAX_MAIN_PY_LOC}). Either finish extracting the next "
+            f"router, or tighten the ceiling deliberately if something grew "
+            f"for a good reason (don't just bump it on autopilot)."
+        )
+
+    def test_main_py_endpoint_count_under_ceiling(self):
+        count = len(_main_py_endpoint_paths())
+        assert count <= self.MAX_MAIN_PY_ENDPOINTS, (
+            f"main.py exposes {count} @app.* endpoints, over the Phase 1f "
+            f"ceiling ({self.MAX_MAIN_PY_ENDPOINTS}). Move the new one to a "
+            f"router in app/api/ instead of adding it inline."
+        )
+
+
+# ── Guard 4: credentialing HTTP surface stays removed ─────────────────────
 
 
 class TestCredentialingRouterRemoved:

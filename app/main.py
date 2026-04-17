@@ -1041,8 +1041,10 @@ def get_chat_config_by_sha(config_sha: str):
 # server-side orchestration — only the public HTTP surface was removed.
 from app.api.feedback import router as _feedback_router
 from app.api.history import router as _history_router
+from app.api.tasks import router as _tasks_router
 app.include_router(_history_router)
 app.include_router(_feedback_router)
+app.include_router(_tasks_router)
 
 
 # Phase 1b: feedback / QC endpoints moved to app.api.feedback.
@@ -1244,28 +1246,10 @@ def dr_health():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Phase 1e: _task_manager_base consolidated into app.api._common.
+# Phase 1f.1: _task_proxy also consolidated there (the tasks router uses it,
+# and the /chat/runs aggregator below still needs it for its bulk task fetch).
 from app.api._common import task_manager_base_url as _task_manager_base
-
-
-def _task_proxy(method: str, path: str, *, params=None, json_body=None, timeout: float = 15.0):
-    """Generic proxy helper for task-manager skill calls. Raises HTTPException on failure."""
-    import httpx
-    base = _task_manager_base()
-    if not base:
-        raise HTTPException(status_code=503, detail="Task manager skill not configured (CHAT_SKILLS_TASK_MANAGER_URL)")
-    try:
-        with httpx.Client(timeout=timeout) as c:
-            r = c.request(method, f"{base}{path}", params=params, json=json_body)
-            if r.status_code == 404:
-                raise HTTPException(status_code=404, detail="Task not found")
-            if r.status_code == 422:
-                raise HTTPException(status_code=422, detail=r.json())
-            r.raise_for_status()
-            return r
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Task manager error: {e}")
+from app.api._common import task_proxy as _task_proxy  # noqa: F401 — used by /chat/runs
 
 
 _STEP_LABELS: dict[str, str] = {
@@ -1366,111 +1350,7 @@ def chat_runs_list(
     return {"runs": result}
 
 
-@app.get("/chat/tasks")
-def chat_tasks_list(
-    org_name: str | None = None,
-    module: str | None = None,
-    status: str | None = None,
-    assignee: str | None = None,
-    npi: str | None = None,
-    run_id: str | None = None,
-    severity: str | None = None,
-    limit: int = 200,
-    offset: int = 0,
-):
-    """Proxy: list tasks from task-manager skill. Injects run_status when run_id provided."""
-    params = {k: v for k, v in {
-        "org_name": org_name, "module": module, "status": status,
-        "assignee": assignee, "npi": npi, "run_id": run_id,
-        "severity": severity, "limit": limit, "offset": offset,
-    }.items() if v is not None}
-    result = _task_proxy("GET", "/tasks", params=params).json()
-
-    # When querying cross-run (no run_id) with status=open, sort blockers first
-    # then decisions, then others — all ordered by created_at ascending.
-    if not run_id and status == "open":
-        _TYPE_PRIORITY = {"blocker": 0, "decision": 1}
-        result["tasks"] = sorted(
-            result.get("tasks", []),
-            key=lambda t: (
-                _TYPE_PRIORITY.get(t.get("type", ""), 2),
-                t.get("created_at", ""),
-            ),
-        )
-
-    # Inject run_status so the frontend knows when to stop polling
-    if run_id:
-        try:
-            from app.services.credentialing_run_service import get_credentialing_run
-            rec = get_credentialing_run(run_id)
-            rec_data = rec or {}
-            phase = rec_data.get("phase", "")
-            pending_step = rec_data.get("pending_step_id") or ""
-            if phase == "running":
-                run_status = "running"
-            elif phase == "awaiting_validation":
-                run_status = "awaiting_validation"
-                result["pending_step_id"] = pending_step
-            elif phase == "complete":
-                run_status = "complete"
-            elif phase == "error":
-                run_status = "error"
-            else:
-                run_status = "paused"
-        except Exception:
-            run_status = "unknown"
-        result["run_status"] = run_status
-
-    return result
-
-
-@app.post("/chat/tasks")
-def chat_tasks_create(body: dict = Body(...)):
-    """Proxy: create a manual task."""
-    return _task_proxy("POST", "/tasks", json_body=body).json()
-
-
-@app.get("/chat/tasks/export")
-def chat_tasks_export(org_name: str | None = None, module: str | None = None, status: str | None = None):
-    """Proxy: export tasks as CSV."""
-    from fastapi.responses import PlainTextResponse
-    params = {k: v for k, v in {"org_name": org_name, "module": module, "status": status}.items() if v is not None}
-    r = _task_proxy("GET", "/tasks/export", params=params)
-    return PlainTextResponse(
-        content=r.text,
-        media_type="text/csv",
-        headers={"Content-Disposition": r.headers.get("Content-Disposition", 'attachment; filename="tasks.csv"')},
-    )
-
-
-@app.post("/chat/tasks/bulk-import")
-def chat_tasks_bulk_import(body: dict = Body(...)):
-    """Proxy: bulk upsert tasks (used by orchestrator and skills)."""
-    return _task_proxy("POST", "/tasks/bulk-import", json_body=body).json()
-
-
-@app.get("/chat/tasks/{task_id}")
-def chat_tasks_get(task_id: str):
-    """Proxy: fetch a single task."""
-    return _task_proxy("GET", f"/tasks/{task_id}").json()
-
-
-@app.patch("/chat/tasks/{task_id}")
-def chat_tasks_patch(task_id: str, body: dict = Body(...)):
-    """Proxy: update task fields (status, assignee, deadline, notes, etc.)."""
-    return _task_proxy("PATCH", f"/tasks/{task_id}", json_body=body).json()
-
-
-@app.post("/chat/tasks/{task_id}/resolve")
-def chat_tasks_resolve(task_id: str, body: dict = Body(default={})):
-    """Proxy: mark a task resolved."""
-    return _task_proxy("POST", f"/tasks/{task_id}/resolve", json_body=body).json()
-
-
-@app.post("/chat/tasks/{task_id}/dismiss")
-def chat_tasks_dismiss(task_id: str, body: dict = Body(default={})):
-    """Proxy: dismiss a task."""
-    return _task_proxy("POST", f"/tasks/{task_id}/dismiss", json_body=body).json()
+# Phase 1f.1: /chat/tasks/* moved to app.api.tasks. Router included below.
 
 
 @app.get("/health")
