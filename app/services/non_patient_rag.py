@@ -166,8 +166,12 @@ def answer_non_patient(
                 except Exception as ep:
                     logger.debug("Retrieval persistence failed: %s", ep)
         except Exception as e:
-            logger.warning("Retrieval failed: %s", e, exc_info=True)
-            _emit(emitter, f"Search didn’t work ({e}). Answering without our materials.")
+            from app.communication.error_emit import classify_exception
+            env = classify_exception(e, tool="search_corpus")
+            logger.warning(
+                "Retrieval failed [%s]: %s", env.error_code, env.internal_detail, exc_info=True
+            )
+            _emit(emitter, f"{env.user_facing_message} Answering without our materials.")
     else:
         _emit(emitter, "I don’t have access to our materials right now; I’ll answer from what I know.")
         logger.info("RAG: database_url not set; skipping RAG")
@@ -271,9 +275,15 @@ def answer_non_patient(
             mode=mode,
         )
     except Exception as e:
-        logger.warning("Non-patient LLM failed: %s", e)
-        answer = f"[LLM failed: {e}]"
-        _emit(emitter, f"I couldn’t answer this part: {e}.")
+        from app.communication.error_emit import classify_exception
+        env = classify_exception(e, tool="non_patient_rag_llm")
+        logger.warning(
+            "Non-patient LLM failed [%s]: %s", env.error_code, env.internal_detail
+        )
+        # ``answer`` goes into downstream formatting; keep it short and clean.
+        # It is NOT a user-facing bubble on its own — still gate it behind the envelope.
+        answer = f"[{env.error_code}]"
+        _emit(emitter, f"I couldn’t answer this part — {env.user_facing_message.lower()}")
 
     # Format response: answer + sources section
     if sources:
