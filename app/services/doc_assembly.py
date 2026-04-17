@@ -216,14 +216,40 @@ def apply_google_fallback(
     return ([], RETRIEVAL_SIGNAL_NO_SOURCES)
 
 
+# Phase 0.11: post-expansion caps to keep the citation list sane.
+# Before this phase, a ~20-seed retrieval was ballooning to ~1,000+ chunks because
+# ``paragraph_index`` is not globally monotonic in ``published_rag_metadata`` —
+# it appears to reset per page, so ``paragraph_index BETWEEN N-2 AND N+2`` with no
+# page constraint matched ~5 rows on EVERY page of the document. These caps are
+# a defense-in-depth layer on top of the page-constrained sibling query below.
+NEIGHBOR_TOTAL_CAP = 50          # hard ceiling on post-expansion chunk count
+NEIGHBOR_PER_DOC_CAP = 8         # max chunks kept from any one document
+
+
 def _fetch_sibling_paragraphs(
     database_url: str,
     document_id: str,
     paragraph_index: int,
     chunk_id: Any,
     window: int = 2,
+    page_number: int | None = None,
+    page_window: int = 1,
 ) -> list[dict[str, Any]]:
-    """Fetch +/- window paragraphs (siblings) from same document. Excludes chunk_id."""
+    """Fetch +/- ``window`` paragraphs (siblings) from same document, restricted to
+    pages within ``page_window`` of the seed's page.
+
+    Page constraint (Phase 0.11)
+    ----------------------------
+    Without a page constraint this query was hemorrhaging rows: because
+    ``paragraph_index`` is not globally unique per document (it resets per page
+    or many rows share a value), ``paragraph_index BETWEEN lo AND hi`` matched
+    ~5 rows per page × N pages. For a 139-page manual a single seed could pull
+    ~700 siblings. We now restrict to the seed's page ± ``page_window`` (default
+    ±1), which still captures the natural "last-line-of-page-N continues at
+    top-of-page-N+1" case without raking the whole document.
+
+    Excludes the seed ``chunk_id``.
+    """
     if not database_url or not document_id:
         return []
     try:
@@ -233,13 +259,38 @@ def _fetch_sibling_paragraphs(
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         lo = max(0, (paragraph_index or 0) - window)
         hi = (paragraph_index or 0) + window
-        cur.execute(
-            """SELECT id, document_id, text, page_number, paragraph_index, document_display_name, document_filename
-               FROM published_rag_metadata
-               WHERE document_id::text = %s AND paragraph_index BETWEEN %s AND %s AND id::text != %s
-               ORDER BY paragraph_index""",
-            (str(document_id), lo, hi, str(chunk_id) if chunk_id else ""),
-        )
+        chunk_id_str = str(chunk_id) if chunk_id else ""
+        if page_number is not None:
+            # ±page_window pages around the seed — captures the "seed is the
+            # last paragraph of page N, real continuation is first paragraph
+            # of page N+1" case without raking the whole document.
+            page_lo = max(0, page_number - page_window)
+            page_hi = page_number + page_window
+            sql = (
+                "SELECT id, document_id, text, page_number, paragraph_index, "
+                "document_display_name, document_filename "
+                "FROM published_rag_metadata "
+                "WHERE document_id::text = %s "
+                "  AND paragraph_index BETWEEN %s AND %s "
+                "  AND page_number BETWEEN %s AND %s "
+                "  AND id::text != %s "
+                "ORDER BY page_number, paragraph_index"
+            )
+            params = (str(document_id), lo, hi, page_lo, page_hi, chunk_id_str)
+        else:
+            # Seed has no page_number — degrade to the old query. The caps in
+            # ``_apply_chunk_caps`` still contain the blast radius.
+            sql = (
+                "SELECT id, document_id, text, page_number, paragraph_index, "
+                "document_display_name, document_filename "
+                "FROM published_rag_metadata "
+                "WHERE document_id::text = %s "
+                "  AND paragraph_index BETWEEN %s AND %s "
+                "  AND id::text != %s "
+                "ORDER BY page_number, paragraph_index"
+            )
+            params = (str(document_id), lo, hi, chunk_id_str)
+        cur.execute(sql, params)
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -263,17 +314,65 @@ def _fetch_sibling_paragraphs(
         return []
 
 
+def _apply_chunk_caps(
+    chunks: list[dict[str, Any]],
+    *,
+    total_cap: int = NEIGHBOR_TOTAL_CAP,
+    per_doc_cap: int = NEIGHBOR_PER_DOC_CAP,
+) -> list[dict[str, Any]]:
+    """Apply post-expansion caps. Keeps seeds (``is_neighbor`` not True) ahead of neighbors
+    and orders within each doc by match_score desc, paragraph_index asc.
+
+    Phase 0.11 defense-in-depth: even with the page-constrained neighbor query,
+    a bad data shape (e.g. huge seeds from blend selection) could still oversize
+    the citation list. These caps keep the UI citation count in double digits.
+    """
+    if not chunks:
+        return []
+
+    def _score(c: dict[str, Any]) -> float:
+        try:
+            s = c.get("match_score")
+            if s is None:
+                s = c.get("rerank_score") or c.get("confidence") or 0.0
+            return float(s)
+        except (TypeError, ValueError):
+            return 0.0
+
+    # Seeds first (preserving retrieval order), then neighbors sorted by score desc.
+    seeds = [c for c in chunks if isinstance(c, dict) and not c.get("is_neighbor")]
+    neighbors = [c for c in chunks if isinstance(c, dict) and c.get("is_neighbor")]
+    neighbors.sort(key=_score, reverse=True)
+
+    per_doc: dict[str, int] = {}
+    out: list[dict[str, Any]] = []
+    for c in seeds + neighbors:
+        if len(out) >= total_cap:
+            break
+        doc_key = str(c.get("document_id") or c.get("document_name") or "_unknown")
+        if per_doc.get(doc_key, 0) >= per_doc_cap:
+            continue
+        per_doc[doc_key] = per_doc.get(doc_key, 0) + 1
+        out.append(c)
+    return out
+
+
 def assemble_with_neighbors(
     chunks: list[dict[str, Any]],
     database_url: str,
     *,
     config: DocAssemblyConfig | None = None,
     window: int = 2,
+    page_window: int = 1,
+    total_cap: int = NEIGHBOR_TOTAL_CAP,
+    per_doc_cap: int = NEIGHBOR_PER_DOC_CAP,
 ) -> list[dict[str, Any]]:
-    """Expand each chunk with +/- window sibling paragraphs from same document.
+    """Expand each chunk with sibling paragraphs within ``page_window`` pages
+    and ``window`` paragraph indices, then apply per-doc and total caps.
 
-    Neighbors are appended after each core chunk. No JPD overlap filter in this version
-    (can be added when line_tags/doc_tags available).
+    Neighbors are appended after each core chunk (preserving seed ordering).
+    Phase 0.11: page-constrained query + output caps keep a 20-seed retrieval
+    from ballooning past ``total_cap`` chunks.
     """
     cfg = config or DocAssemblyConfig()
     seen_ids: set[str] = set()
@@ -288,6 +387,7 @@ def assemble_with_neighbors(
         out.append(dict(c))
         doc_id = c.get("document_id")
         para_idx = c.get("paragraph_index")
+        page_num = c.get("page_number")
         if database_url and doc_id is not None:
             siblings = _fetch_sibling_paragraphs(
                 database_url,
@@ -295,13 +395,15 @@ def assemble_with_neighbors(
                 para_idx if para_idx is not None else 0,
                 c.get("id"),
                 window=window,
+                page_number=page_num if isinstance(page_num, int) else None,
+                page_window=page_window,
             )
             for s in siblings:
                 sid = str(s.get("id") or "")
                 if sid and sid not in seen_ids:
                     seen_ids.add(sid)
                     out.append(s)
-    return out
+    return _apply_chunk_caps(out, total_cap=total_cap, per_doc_cap=per_doc_cap)
 
 
 def assemble_docs(
