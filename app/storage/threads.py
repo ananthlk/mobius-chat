@@ -72,6 +72,103 @@ def ensure_thread(thread_id: str | None) -> str:
         return str(uuid.uuid4())
 
 
+def set_thread_title_if_empty(thread_id: str, question: str) -> None:
+    """Phase 2.3: set the sidebar title on a thread's first turn.
+
+    Only updates when ``title IS NULL`` — later turns don't overwrite the
+    first-message-derived title. ``turn_count`` is also incremented here so a
+    single write covers both fields.
+
+    Safe to call on every turn: the ``ON CONFLICT``-style guard uses a WHERE
+    clause so subsequent turns only bump the counter, not the title.
+    """
+    tid = (thread_id or "").strip()
+    if not tid:
+        return
+    url = _get_db_url()
+    if not url:
+        return
+    from app.storage.thread_title import generate_thread_title
+    title = generate_thread_title(question or "")
+    try:
+        import psycopg2
+        conn = psycopg2.connect(url)
+        cur = conn.cursor()
+        # Atomic: only set the title if it's currently NULL; always bump the
+        # turn counter and updated_at stamp.
+        cur.execute(
+            """
+            UPDATE chat_threads
+            SET title = COALESCE(title, %s),
+                turn_count = turn_count + 1,
+                updated_at = now()
+            WHERE thread_id = %s
+            """,
+            (title, tid),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        # Fall back gracefully if the migration hasn't run yet (column missing).
+        err = str(e).lower()
+        if "title" in err or "turn_count" in err or "column" in err:
+            logger.debug(
+                "chat_threads.title/turn_count missing (run migration 030); skipping title update"
+            )
+            return
+        logger.warning("Failed to set thread title: %s", e)
+
+
+def get_recent_threads(limit: int = 10) -> list[dict[str, Any]]:
+    """Return distinct threads for the sidebar: ``[{thread_id, title, updated_at, turn_count}]``.
+
+    Replaces the legacy ``get_recent_turns`` sidebar query which dumped every
+    ``chat_turns.question`` verbatim. Threads without a title (e.g. old data
+    pre-migration) are filtered out so the sidebar never shows raw URLs or
+    tool-invocation fragments.
+    """
+    url = _get_db_url()
+    if not url:
+        return []
+    try:
+        import psycopg2
+        import psycopg2.extras
+        conn = psycopg2.connect(url)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            """
+            SELECT thread_id, title, updated_at, turn_count
+            FROM chat_threads
+            WHERE title IS NOT NULL
+            ORDER BY updated_at DESC
+            LIMIT %s
+            """,
+            (max(1, min(limit, 100)),),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return [
+            {
+                "thread_id": str(r["thread_id"]),
+                "title": r["title"] or "",
+                "updated_at": r["updated_at"].isoformat() if r.get("updated_at") else None,
+                "turn_count": int(r.get("turn_count") or 0),
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        err = str(e).lower()
+        if "title" in err or "turn_count" in err or "column" in err:
+            logger.debug(
+                "chat_threads.title/turn_count missing (run migration 030); returning empty thread list"
+            )
+            return []
+        logger.warning("Failed to get recent threads: %s", e)
+        return []
+
+
 def append_user_message(thread_id: str, turn_id: str, content: str) -> None:
     """Insert one user message row. Call at start of process_one."""
     tid = (thread_id or "").strip()
