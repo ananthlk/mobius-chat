@@ -1284,12 +1284,15 @@ function splitSectionsByVisibility(
   const all = sections.slice(0, MAX_SECTIONS);
   if (mode === "FACTUAL") return { visible: [], hidden: all };
   if (mode === "CANONICAL") return { visible: all, hidden: [] };
-  const requirements = all.filter((s) => (s.intent ?? "process") === "requirements");
-  const hidden = all.filter((s) => {
-    const i = s.intent ?? "process";
-    return i === "process" || i === "definitions" || i === "exceptions" || i === "references";
-  });
-  return { visible: requirements, hidden };
+  // Phase 0.14: BLENDED now surfaces both "requirements" AND "definitions"
+  // by default. Definitions contain things like "H0036 = Community
+  // Psychiatric Supportive Treatment" — content the user asked about
+  // directly, not supplementary background. Hiding them behind a click
+  // was the primary cause of the "thin one-liner" complaint.
+  const visibleIntents = new Set(["requirements", "definitions"]);
+  const visible = all.filter((s) => visibleIntents.has(s.intent ?? "process"));
+  const hidden = all.filter((s) => !visibleIntents.has(s.intent ?? "process"));
+  return { visible, hidden };
 }
 
 function renderOneSection(sec: AnswerCardSection): HTMLElement {
