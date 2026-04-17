@@ -332,6 +332,74 @@ def _bandit_priors_only() -> bool:
     return os.environ.get("MOBIUS_BANDIT_PRIORS_ONLY", "").strip().lower() in ("1", "true", "yes")
 
 
+# Safety margin on capacity estimates — accounts for tokenizer mismatch between our
+# client-side counter and the provider's server-side tokenizer.
+_TOKEN_BUDGET_SAFETY = 1.05
+
+
+def _filter_by_token_budget(
+    candidates: list["ModelSpec"],
+    *,
+    estimated_prompt_tokens: int,
+    expected_output_tokens: int | None,
+) -> tuple[list["ModelSpec"], dict[str, Any]]:
+    """Remove candidates that can't fit this request.
+
+    Two independent budgets are checked:
+
+    1. **Context window** (``spec_context_k * 1000``): hard ceiling — the model can't
+       physically accept more tokens than this in a single request.
+    2. **Per-minute TPM** (``spec_tpm_limit``): soft ceiling from the provider's
+       rate-limit tier. Requests larger than TPM trigger 413 "Request too large"
+       regardless of context window. Models with ``None`` here are treated as
+       unlimited (unknown budget; trust the context window only).
+
+    Returns ``(surviving_candidates, meta)``. ``meta`` always contains
+    ``estimated_prompt_tokens``, ``expected_output_tokens``, ``request_tokens``,
+    ``candidates_trimmed_by_context``, ``candidates_trimmed_by_tpm``.
+    """
+    meta: dict[str, Any] = {
+        "estimated_prompt_tokens": estimated_prompt_tokens,
+        "expected_output_tokens": expected_output_tokens,
+    }
+
+    after_ctx: list[ModelSpec] = []
+    trimmed_ctx = 0
+    for c in candidates:
+        out_t = expected_output_tokens if expected_output_tokens is not None else c.default_max_output_tokens
+        request_tokens = int((estimated_prompt_tokens + out_t) * _TOKEN_BUDGET_SAFETY)
+        if c.spec_context_k * 1000 >= request_tokens:
+            after_ctx.append(c)
+        else:
+            trimmed_ctx += 1
+
+    after_tpm: list[ModelSpec] = []
+    trimmed_tpm = 0
+    for c in after_ctx:
+        out_t = expected_output_tokens if expected_output_tokens is not None else c.default_max_output_tokens
+        request_tokens = int((estimated_prompt_tokens + out_t) * _TOKEN_BUDGET_SAFETY)
+        # None TPM = unknown/unlimited; keep the candidate.
+        if c.spec_tpm_limit is None or c.spec_tpm_limit >= request_tokens:
+            after_tpm.append(c)
+        else:
+            trimmed_tpm += 1
+
+    # Use a representative request size in meta (uses the first surviving candidate's
+    # output default, or 1024 as a neutral baseline).
+    representative_out = (
+        expected_output_tokens
+        if expected_output_tokens is not None
+        else (after_tpm[0].default_max_output_tokens if after_tpm else 1024)
+    )
+    meta["request_tokens"] = int(
+        (estimated_prompt_tokens + representative_out) * _TOKEN_BUDGET_SAFETY
+    )
+    meta["candidates_trimmed_by_context"] = trimmed_ctx
+    meta["candidates_trimmed_by_tpm"] = trimmed_tpm
+
+    return after_tpm, meta
+
+
 def _react_deep_rounds_min_context_k() -> int:
     """If > 0, ReAct rounds 3+ require at least this spec_context_k (favor larger models when context grows)."""
     raw = os.environ.get("MOBIUS_REACT_DEEP_ROUNDS_MIN_CONTEXT_K", "").strip()
@@ -430,6 +498,15 @@ class ModelSpec:
     spec_context_k:         int   = 32     # context window in K tokens
     spec_input_per_1m_usd:  float = 0.0
     spec_output_per_1m_usd: float = 0.0
+
+    # Rate-limit budget (provider TPM/RPM for OUR key/tier). ``None`` = unknown/unlimited.
+    # This is the *per-minute* budget, not the context window — distinct constraints.
+    # Groq free tier: gpt-oss-20b = 8_000 TPM, llama-3.3-70b = 12_000 TPM, etc.
+    spec_tpm_limit:             int | None = None
+    spec_rpm_limit:             int | None = None
+    # Expected completion size for capacity-planning (request = prompt + completion).
+    # Callers may override per-stage; this is the registry default.
+    default_max_output_tokens:  int        = 1024
 
     # Benchmark category → drives prior
     benchmark_category: str = "frontier_fast"
@@ -591,6 +668,8 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         spec_context_k=131,
         spec_input_per_1m_usd=0.59,
         spec_output_per_1m_usd=0.79,
+        spec_tpm_limit=12_000,                     # Groq on_demand free tier
+        spec_rpm_limit=30,
         benchmark_category="groq_fast",
         ema_quality=0.72,
         ema_latency_ms=1200.0,
@@ -608,6 +687,8 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         spec_context_k=131,
         spec_input_per_1m_usd=0.05,
         spec_output_per_1m_usd=0.08,
+        spec_tpm_limit=30_000,                     # Groq on_demand free tier (smaller model)
+        spec_rpm_limit=30,
         benchmark_category="groq_fast",
         ema_quality=0.62,
         ema_latency_ms=400.0,
@@ -625,6 +706,8 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         spec_context_k=131,
         spec_input_per_1m_usd=0.15,
         spec_output_per_1m_usd=0.60,
+        spec_tpm_limit=8_000,                      # Groq on_demand free tier
+        spec_rpm_limit=30,
         benchmark_category="open_large",
         ema_quality=0.78,
         ema_latency_ms=600.0,
@@ -642,6 +725,8 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         spec_context_k=131,
         spec_input_per_1m_usd=0.075,
         spec_output_per_1m_usd=0.30,
+        spec_tpm_limit=8_000,                      # Groq on_demand free tier — observed 413 at 8907 tokens
+        spec_rpm_limit=30,
         benchmark_category="open_mid",
         ema_quality=0.68,
         ema_latency_ms=300.0,
@@ -916,16 +1001,31 @@ class ModelRouter:
         phi_detected: bool = False,
         is_planner: bool = False,
         mode: str | None = None,
+        *,
+        estimated_prompt_tokens: int | None = None,
+        expected_output_tokens: int | None = None,
     ) -> tuple[ModelSpec, dict[str, Any]]:
         """Select best model for this stage. Returns (spec, meta) for UI / usage_breakdown.
 
         ``mode``: chat router mode — ``copilot`` restricts Thompson sampling to non–frontier-reasoning
         benchmark categories; ``agentic`` or ``None`` leaves the full eligible pool.
 
+        ``estimated_prompt_tokens`` — token count of the assembled prompt. When provided,
+        candidates whose context window or per-minute TPM budget can't hold
+        ``estimated_prompt_tokens + expected_output_tokens`` are filtered BEFORE Thompson
+        sampling runs. This prevents the classic failure mode where the bandit picks a
+        model the request physically can't fit into (e.g. Groq gpt-oss-20b with an 8_000
+        TPM ceiling gets picked for a 9_000-token request → 413). Leave ``None`` to skip
+        the filter (legacy behavior).
+
         ``meta`` keys: mode, reason, router_stage, candidates_eligible,
         candidates_after_circuit_breaker, circuit_relief (bool), exploration_round (bool),
         router_composite_at_pick, router_composite_breakdown (PG row at decision time),
         model_avg_quality, model_quality_samples (when known from PG).
+
+        Additional meta keys when ``estimated_prompt_tokens`` is set:
+        ``estimated_prompt_tokens``, ``expected_output_tokens``, ``request_tokens``,
+        ``candidates_trimmed_by_context``, ``candidates_trimmed_by_tpm``.
         """
         self._maybe_refresh()
 
@@ -941,6 +1041,40 @@ class ModelRouter:
         if mode_note:
             meta["router_mode_filter_note"] = mode_note
         meta["candidates_after_mode_filter"] = len(candidates)
+
+        # ── Token-aware filter ─────────────────────────────────────────────────
+        # Runs before circuit breakers and Thompson draw so the bandit only
+        # explores models that can physically handle this request.
+        if estimated_prompt_tokens is not None:
+            n_before = len(candidates)
+            candidates, budget_meta = _filter_by_token_budget(
+                candidates,
+                estimated_prompt_tokens=int(estimated_prompt_tokens),
+                expected_output_tokens=expected_output_tokens,
+            )
+            meta.update(budget_meta)
+            # If every candidate was trimmed, fall back to the one with the largest
+            # effective budget rather than erroring — degraded-mode is better than none.
+            if not candidates and n_before > 0:
+                # Unfiltered list (pre-budget) — pick the model with the largest
+                # per-minute budget (TPM or context*1000 as proxy).
+                fallback_pool = self._get_candidates(effective_stage, phi_detected)
+                fallback_pool.sort(
+                    key=lambda c: (
+                        c.spec_tpm_limit if c.spec_tpm_limit is not None else c.spec_context_k * 1000
+                    ),
+                    reverse=True,
+                )
+                chosen = fallback_pool[0]
+                meta["mode"] = "budget_fallback"
+                meta["reason"] = (
+                    f"No model can fit this request ({meta.get('request_tokens')} tokens). "
+                    f"Falling back to largest-budget eligible model: {chosen.model_id}."
+                )
+                meta["candidates_after_circuit_breaker"] = 1
+                meta["circuit_relief"] = False
+                meta["exploration_round"] = False
+                return chosen, meta
 
         if not candidates:
             logger.error(
