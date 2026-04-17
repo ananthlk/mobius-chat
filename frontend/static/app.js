@@ -1384,12 +1384,11 @@ function splitSectionsByVisibility(sections, mode) {
     return { visible: [], hidden: all };
   if (mode === "CANONICAL")
     return { visible: all, hidden: [] };
-  const requirements = all.filter((s) => (s.intent ?? "process") === "requirements");
-  const hidden = all.filter((s) => {
-    const i = s.intent ?? "process";
-    return i === "process" || i === "definitions" || i === "exceptions" || i === "references";
-  });
-  return { visible: requirements, hidden };
+  // Phase 0.14: BLENDED now shows requirements + definitions by default.
+  const visibleIntents = new Set(["requirements", "definitions"]);
+  const visible = all.filter((s) => visibleIntents.has(s.intent ?? "process"));
+  const hidden = all.filter((s) => !visibleIntents.has(s.intent ?? "process"));
+  return { visible, hidden };
 }
 function renderOneSection(sec) {
   const sectionEl = document.createElement("div");
@@ -5815,7 +5814,10 @@ ${message}`;
       return;
     const snippet = (q, max = 80) => (q ?? "").trim().slice(0, max) + ((q ?? "").length > max ? "\u2026" : "");
     Promise.all([
-      // Phase 2.3: sidebar switches from per-turn to thread-level rollup.
+      // Phase 2.3: sidebar now shows deduplicated *threads* with real titles
+      // instead of per-turn rows that exposed raw URLs / tool inputs. Endpoint
+      // returns {thread_id, title, updated_at, turn_count}. Gracefully returns
+      // [] if migration 030 hasn't run, so the list is empty rather than broken.
       fetch(API_BASE + "/chat/history/threads?limit=20").then(
         (r) => r.json()
       ),
