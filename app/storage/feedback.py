@@ -1,14 +1,88 @@
 """Persist chat feedback (thumbs up/down + optional comment) in PostgreSQL.
-Uses CHAT_RAG_DATABASE_URL (same DB as published_rag_metadata)."""
+Uses CHAT_RAG_DATABASE_URL (same DB as published_rag_metadata).
+
+Phase 0.17 — fail-closed in non-dev
+-----------------------------------
+Before 0.17, every ``insert_*`` fn silently returned when ``CHAT_RAG_DATABASE_URL``
+was unset (logged WARNING, caller saw success). Two of them (``insert_adjudication_feedback``,
+``insert_llm_performance_feedback``) also swallowed "relation does not
+exist" at DEBUG level, so if migrations 024/025 never ran, user thumbs
+vanished silently.
+
+The fix keeps dev ergonomics while making prod honest:
+
+- ``CHAT_ENV`` env var: ``dev`` (default) / ``staging`` / ``prod``.
+- In ``dev``: missing URL or missing table still degrade to a log line
+  and return, so local dev without Postgres keeps working.
+- In ``staging`` / ``prod``: missing URL → ``FeedbackPersistenceError``
+  at the storage layer; missing table → same. Callers get a real
+  500 at the HTTP boundary instead of feedback silently vanishing.
+
+The storage layer does NOT decide how to respond at the HTTP level —
+it just fails loudly when the environment claims to be hosted. The
+``app.api.feedback`` router keeps the same shape; the error surfaces
+naturally via FastAPI's unhandled-exception → 500 path.
+"""
+from __future__ import annotations
+
 import logging
+import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
+class FeedbackPersistenceError(RuntimeError):
+    """Raised in non-dev when a feedback write can't reach its target.
+
+    Storage-layer exception; the router catches nothing by default so
+    FastAPI returns 500 to the caller. Dev callers never see this —
+    the storage fn degrades to a log + return when ``CHAT_ENV=dev``.
+    """
+
+
+def _env_is_hosted() -> bool:
+    """True when we're in staging or prod (missing persistence = hard error).
+
+    Default ``dev`` keeps local workflows identical to the pre-0.17 behavior.
+    Any value that isn't 'dev' or 'development' is treated as hosted — prefer
+    to err on the side of loud failure.
+    """
+    env = (os.environ.get("CHAT_ENV") or "dev").strip().lower()
+    return env not in ("dev", "development", "local")
+
+
 def _get_db_url() -> str:
     from app.chat_config import get_chat_config
     return (get_chat_config().rag.database_url or "").strip()
+
+
+def _handle_missing_db_url(kind: str) -> None:
+    """Called from every insert_* when the URL is unset. Raises in hosted envs."""
+    msg = f"CHAT_RAG_DATABASE_URL not set; {kind} cannot be persisted"
+    if _env_is_hosted():
+        logger.error("[fail-closed] %s (CHAT_ENV=%r)", msg, os.environ.get("CHAT_ENV"))
+        raise FeedbackPersistenceError(msg)
+    logger.warning(msg)
+
+
+def _handle_missing_relation(kind: str, migration_num: str, e: Exception) -> None:
+    """Called when Postgres reports 'relation does not exist'. Raises in hosted envs.
+
+    ``migration_num`` is the chat DB migration that creates the table
+    (024 for llm_performance_feedback, 025 for adjudication_feedback).
+    Mentioning it in the error makes ops debugging obvious: "the migration
+    didn't run on this deploy" is a clear next step.
+    """
+    msg = (
+        f"{kind} table missing — run chat DB migration {migration_num}. "
+        f"Underlying error: {e}"
+    )
+    if _env_is_hosted():
+        logger.error("[fail-closed] %s", msg)
+        raise FeedbackPersistenceError(msg) from e
+    # Dev: warn (was DEBUG pre-0.17) so it's visible but non-fatal.
+    logger.warning(msg)
 
 
 def insert_feedback(correlation_id: str, rating: str, comment: str | None) -> None:
@@ -17,7 +91,7 @@ def insert_feedback(correlation_id: str, rating: str, comment: str | None) -> No
         raise ValueError("rating must be 'up' or 'down'")
     url = _get_db_url()
     if not url:
-        logger.warning("CHAT_RAG_DATABASE_URL not set; feedback not persisted")
+        _handle_missing_db_url("feedback")
         return
     try:
         import psycopg2
@@ -75,7 +149,7 @@ def insert_source_feedback(correlation_id: str, source_index: int, rating: str) 
         raise ValueError("source_index must be >= 1")
     url = _get_db_url()
     if not url:
-        logger.warning("CHAT_RAG_DATABASE_URL not set; source feedback not persisted")
+        _handle_missing_db_url("source feedback")
         return
     try:
         import psycopg2
@@ -105,7 +179,7 @@ def insert_llm_performance_feedback(correlation_id: str, rating: str, comment: s
         raise ValueError("rating must be 'up' or 'down'")
     url = _get_db_url()
     if not url:
-        logger.warning("CHAT_RAG_DATABASE_URL not set; LLM performance feedback not persisted")
+        _handle_missing_db_url("LLM performance feedback")
         return
     try:
         import psycopg2
@@ -128,7 +202,7 @@ def insert_llm_performance_feedback(correlation_id: str, rating: str, comment: s
     except Exception as e:
         err = str(e).lower()
         if "llm_performance_feedback" in err or ("relation" in err and "does not exist" in err):
-            logger.debug("llm_performance_feedback table missing (run migration 024): %s", e)
+            _handle_missing_relation("llm_performance_feedback", "024", e)
             return
         logger.exception("Failed to persist LLM performance feedback: %s", e)
         raise
@@ -169,7 +243,7 @@ def insert_adjudication_feedback(correlation_id: str, rating: str, comment: str 
         raise ValueError("rating must be 'up' or 'down'")
     url = _get_db_url()
     if not url:
-        logger.warning("CHAT_RAG_DATABASE_URL not set; adjudication feedback not persisted")
+        _handle_missing_db_url("adjudication feedback")
         return
     try:
         import psycopg2
@@ -193,7 +267,7 @@ def insert_adjudication_feedback(correlation_id: str, rating: str, comment: str 
     except Exception as e:
         err = str(e).lower()
         if "adjudication_feedback" in err or ("relation" in err and "does not exist" in err):
-            logger.debug("adjudication_feedback table missing (run migration 025): %s", e)
+            _handle_missing_relation("adjudication_feedback", "025", e)
             return
         logger.exception("Failed to persist adjudication feedback: %s", e)
         raise
