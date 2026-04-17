@@ -47,6 +47,46 @@ def _emit(emitter, chunk: str) -> None:
         logger.debug("Emit failed (non-fatal): %s", e)
 
 
+# Phase 0.18 — confidence-label → numeric fallback mapping.
+# Values chosen so the default ``confidence_min=0.5`` admits high/informational
+# but excludes low. Tune here if label semantics change.
+_CONFIDENCE_LABEL_SCORE: dict[str, float] = {
+    "approved_authoritative": 1.0,
+    "authoritative": 1.0,
+    "approved_informational": 0.8,
+    "informational": 0.8,
+    "high": 0.9,
+    "medium": 0.6,
+    "proceed_with_caution": 0.55,
+    "low": 0.3,
+    "augmented_with_google": 0.5,
+}
+
+
+def _score_chunk_for_confidence_filter(c: dict) -> float:
+    """Return a 0.0–1.0 numeric score usable by ``confidence_min`` filtering.
+
+    Works for both chunk shapes the retrieval layer produces:
+
+    - **Inline BM25** — keys include ``match_score`` (normalized BM25 sigmoid) and/or
+      ``confidence`` (numeric). Pre-0.18 filter only looked at these.
+    - **RAG API** — keys include ``rerank_score`` (numeric) and ``confidence_label``
+      (string: "high" / "informational" / etc.). Pre-0.18 filter missed both and
+      treated every RAG-API chunk as 0.0 confidence → silently filtered the entire
+      corpus answer out of the ReAct turn.
+
+    Lookup order: ``match_score`` → ``confidence`` → ``rerank_score`` →
+    ``confidence_label`` (via ``_CONFIDENCE_LABEL_SCORE``). First numeric hit
+    wins. Non-numeric / unknown values fall through.
+    """
+    for field in ("match_score", "confidence", "rerank_score"):
+        v = c.get(field)
+        if isinstance(v, (int, float)) and v >= 0:
+            return float(v)
+    lbl = (c.get("confidence_label") or "").strip().lower()
+    return _CONFIDENCE_LABEL_SCORE.get(lbl, 0.0)
+
+
 def answer_non_patient(
     question: str,
     k: int | None = None,
@@ -133,9 +173,20 @@ def answer_non_patient(
             chunks = _normalized
             _debug_chunks("after normalize", chunks)
             if confidence_min is not None and chunks:
+                # Phase 0.18: when the RAG API path is active, chunks have
+                # ``rerank_score`` + ``confidence_label`` but no ``match_score``
+                # or ``confidence``. The original filter only checked the
+                # legacy inline-BM25 field names and silently dropped EVERY
+                # RAG-API chunk to 0.0, which made every ReAct turn pivot to
+                # google_search / web_scrape as if the corpus were empty.
+                # ``_score_chunk_for_confidence_filter`` is defensive: tries
+                # numeric fields in order, then falls back to a label→numeric
+                # mapping so ``high``/``informational`` chunks clear a 0.5
+                # threshold even if no explicit numeric was returned.
                 chunks = [
                     c for c in chunks
-                    if isinstance(c, dict) and (c.get("match_score") or c.get("confidence") or 0.0) >= confidence_min
+                    if isinstance(c, dict)
+                    and _score_chunk_for_confidence_filter(c) >= confidence_min
                 ]
             if not chunks:
                 _emit(emitter, "I didn't find anything specific; I'll answer from what I know.")
