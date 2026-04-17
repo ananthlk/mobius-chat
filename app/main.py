@@ -239,7 +239,29 @@ def _build_roster_upload_acknowledgment(
     }
 
 app = FastAPI(title="Mobius Chat", version="0.1.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# Phase 1h: front-door hardening.
+# - CORS is env-driven (CHAT_CORS_ORIGINS). Dev default: '*'; staging/prod
+#   MUST set an explicit allowlist or the app refuses to start.
+# - Rate limit is opt-in via CHAT_RATE_LIMIT_PER_MINUTE; hosted envs get a
+#   30 req/min/IP default on /chat paths.
+# - See app/api/front_door.py for the full contract. All env-var lookups
+#   for front-door config live there so the surface is auditable from one file.
+from app.api.front_door import (
+    InMemoryRateLimitMiddleware,
+    resolve_cors_config,
+    resolve_rate_limit_config,
+)
+
+_cors_cfg = resolve_cors_config()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_cfg.allow_origins,
+    allow_methods=_cors_cfg.allow_methods,
+    allow_headers=_cors_cfg.allow_headers,
+    allow_credentials=_cors_cfg.allow_credentials,
+)
+app.add_middleware(InMemoryRateLimitMiddleware, config=resolve_rate_limit_config())
 
 # Start worker in background only for in-memory queue (single process). For Redis, run worker separately.
 _worker_started = False
@@ -1375,29 +1397,8 @@ if _frontend.exists():
         r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return r
 
-    @app.get("/financial-strategy")
-    def financial_strategy():
-        r = FileResponse(_frontend / "financial-strategy.html")
-        r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        return r
-
-    @app.get("/org-story")
-    def org_story_page():
-        r = FileResponse(_frontend / "org-story.html")
-        r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        return r
-
-    @app.get("/market-map")
-    def market_map_page():
-        r = FileResponse(_frontend / "market-map.html")
-        r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        return r
-
-    @app.get("/industry-report")
-    def industry_report_page():
-        r = FileResponse(_frontend / "static" / "fl-bh-industry-report.html")
-        r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        return r
+    # DEPRECATED: financial-strategy, org-story, market-map, industry-report
+    # All consolidated into displacement.html on skill server (/roster-ui/displacement.html)
 
     @app.get("/roster")
     def roster():
