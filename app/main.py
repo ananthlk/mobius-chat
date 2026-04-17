@@ -46,15 +46,13 @@ from app.queue import get_queue
 from app.storage import (
     fetch_turn_qc_audit,
     # Phase 1a: get_most_helpful_documents / get_most_helpful_turns /
-    # get_recent_turns moved to app.api.history. Left here for any code
-    # that still imports them from app.storage — but main.py itself no
-    # longer needs them.
+    # get_recent_turns moved to app.api.history.
+    # Phase 1b: insert_adjudication_feedback / insert_feedback /
+    # insert_llm_performance_feedback / insert_source_feedback moved to
+    # app.api.feedback. fetch_turn_qc_audit stays — still used by the
+    # response-fetch endpoint (see /chat/response/{cid}).
     get_plan,
     get_response,
-    insert_adjudication_feedback,
-    insert_feedback,
-    insert_llm_performance_feedback,
-    insert_source_feedback,
 )
 from app.storage.feedback import get_adjudication_feedback, get_llm_performance_feedback
 from app.storage.threads import append_uploaded_file_record, ensure_thread, get_state, save_state, save_state_full
@@ -63,10 +61,8 @@ from app.storage.progress import (
     get_progress,
     get_progress_events_from_db,
     get_progress_from_db,
-    publish_quality_audit_event,
 )
 from app.storage.llm_router_report import fetch_llm_router_report
-from app.storage.turns import update_turn_qc_audit
 from app.worker import start_worker_background
 
 logging.basicConfig(level=logging.INFO)
@@ -2461,169 +2457,17 @@ def get_chat_config_by_sha(config_sha: str):
 
 
 # Phase 1a: /chat/history/* endpoints extracted into app.api.history. The
-# router mount below preserves external URLs; this is the first slice of
-# the main-split refactor.
+# Phase 1a: /chat/history/* extracted to app.api.history.
+# Phase 1b: feedback + QC endpoints extracted to app.api.feedback.
+# Router mounts below preserve external URLs.
+from app.api.feedback import router as _feedback_router
 from app.api.history import router as _history_router
 app.include_router(_history_router)
+app.include_router(_feedback_router)
 
 
-class FeedbackBody(BaseModel):
-    rating: str  # "up" | "down"
-    comment: str | None = None
-
-
-class QcAuditBody(BaseModel):
-    passed: bool
-    reason: str | None = None
-    source: str = "eval_adjudicator"
-    score: float | None = None  # automated 0–1; defaults from passed if omitted
-    sub_scores: dict[str, float] | None = None
-    adjudicator_full_response: str | None = None
-    adjudicator_model: str | None = None
-    adjudicator_llm_call_id: str | None = None
-
-
-class QcUserScoreBody(BaseModel):
-    """Human override for adjudicator score; merged into chat_turns.qc_audit JSON."""
-
-    user_score: float
-    user_score_comment: str | None = None
-
-
-class AdjudicationFeedbackBody(BaseModel):
-    rating: str
-    comment: str | None = None
-
-
-class SourceFeedbackBody(BaseModel):
-    source_index: int  # 1-based
-    rating: str  # "up" | "down"
-
-
-@app.post("/chat/qc-audit/{correlation_id}")
-def post_chat_qc_audit(
-    correlation_id: str,
-    body: QcAuditBody,
-    x_mobius_qc_audit_secret: str | None = Header(None, alias="X-Mobius-QC-Audit-Secret"),
-):
-    """Merge QC / eval adjudication into the live response, turn row, and progress stream (thinking)."""
-    secret = (os.environ.get("MOBIUS_QC_AUDIT_SECRET") or "").strip()
-    if secret and (x_mobius_qc_audit_secret or "").strip() != secret:
-        raise HTTPException(status_code=403, detail="Invalid or missing QC audit secret")
-    from datetime import datetime, timezone
-
-    audited_at = datetime.now(timezone.utc).isoformat()
-    src = (body.source or "eval_adjudicator").strip()[:200] or "eval_adjudicator"
-    reason_str = (body.reason or "").strip()[:2000]
-    auto_score = body.score
-    if auto_score is not None:
-        auto_score = max(0.0, min(1.0, float(auto_score)))
-    else:
-        auto_score = 1.0 if body.passed else 0.0
-    qc_dict: dict[str, Any] = {
-        "passed": body.passed,
-        "reason": reason_str,
-        "source": src,
-        "audited_at": audited_at,
-        "automated_score": round(auto_score, 4),
-    }
-    if body.sub_scores:
-        cleaned: dict[str, float] = {}
-        for k, v in body.sub_scores.items():
-            ks = str(k).strip()[:120]
-            if not ks:
-                continue
-            try:
-                fv = float(v)
-                cleaned[ks] = round(max(0.0, min(1.0, fv)), 4)
-            except (TypeError, ValueError):
-                pass
-        if cleaned:
-            qc_dict["sub_scores"] = cleaned
-    if body.adjudicator_full_response and str(body.adjudicator_full_response).strip():
-        qc_dict["adjudicator_full_response"] = str(body.adjudicator_full_response).strip()[:8000]
-    if body.adjudicator_model and str(body.adjudicator_model).strip():
-        qc_dict["adjudicator_model"] = str(body.adjudicator_model).strip()[:200]
-    if body.adjudicator_llm_call_id and str(body.adjudicator_llm_call_id).strip():
-        qc_dict["adjudicator_llm_call_id"] = str(body.adjudicator_llm_call_id).strip()[:120]
-    sym = "✓" if body.passed else "⚠"
-    label = "passed" if body.passed else "flagged"
-    reason_bit = f" — {reason_str[:180]}" if reason_str else ""
-    line = f"{sym} Quality audit {label}{reason_bit}"
-    update_turn_qc_audit(correlation_id, qc_dict)
-    full_qc = fetch_turn_qc_audit(correlation_id) or qc_dict
-    publish_quality_audit_event(
-        correlation_id,
-        {"passed": body.passed, "source": src},
-        line,
-    )
-    get_queue().patch_response_merge(
-        correlation_id,
-        {"qc_audit": full_qc, "thinking_log": [line]},
-    )
-    return {"status": "ok", "qc_audit": full_qc}
-
-
-@app.post("/chat/qc-user-score/{correlation_id}")
-def post_qc_user_score(correlation_id: str, body: QcUserScoreBody):
-    """Persist edited quality score (0–1) + optional note into qc_audit; patches live response for poll/SSE."""
-    if body.user_score < 0.0 or body.user_score > 1.0:
-        raise HTTPException(status_code=400, detail="user_score must be between 0 and 1")
-    from datetime import datetime, timezone
-
-    merge = {
-        "user_score": round(float(body.user_score), 4),
-        "user_score_comment": (body.user_score_comment or "").strip()[:2000] or None,
-        "user_score_updated_at": datetime.now(timezone.utc).isoformat(),
-    }
-    update_turn_qc_audit(correlation_id, merge)
-    full = fetch_turn_qc_audit(correlation_id)
-    if isinstance(full, dict) and full:
-        get_queue().patch_response_merge(correlation_id, {"qc_audit": full})
-    return {"status": "ok", "qc_audit": full or merge}
-
-
-@app.post("/chat/adjudication-feedback/{correlation_id}")
-def post_adjudication_feedback_route(correlation_id: str, body: AdjudicationFeedbackBody):
-    """Thumbs + comment on the adjudicator / QA scorecard (technical users)."""
-    if body.rating not in ("up", "down"):
-        raise HTTPException(status_code=400, detail="rating must be 'up' or 'down'")
-    insert_adjudication_feedback(correlation_id, body.rating, body.comment or None)
-    return {"status": "ok"}
-
-
-@app.post("/chat/feedback/{correlation_id}")
-def post_chat_feedback(correlation_id: str, body: FeedbackBody):
-    """Persist turn-level feedback (thumbs up/down + optional comment)."""
-    if body.rating not in ("up", "down"):
-        raise HTTPException(status_code=400, detail="rating must be 'up' or 'down'")
-    insert_feedback(correlation_id, body.rating, body.comment or None)
-    return {"status": "ok"}
-
-
-class LlmPerformanceFeedbackBody(BaseModel):
-    rating: str
-    comment: str | None = None
-
-
-@app.post("/chat/llm-performance-feedback/{correlation_id}")
-def post_llm_performance_feedback(correlation_id: str, body: LlmPerformanceFeedbackBody):
-    """Model routing / efficiency feedback (separate from answer-quality thumbs)."""
-    if body.rating not in ("up", "down"):
-        raise HTTPException(status_code=400, detail="rating must be 'up' or 'down'")
-    insert_llm_performance_feedback(correlation_id, body.rating, body.comment or None)
-    return {"status": "ok"}
-
-
-@app.post("/chat/source-feedback/{correlation_id}")
-def post_chat_source_feedback(correlation_id: str, body: SourceFeedbackBody):
-    """Persist per-source feedback (thumbs up/down)."""
-    if body.rating not in ("up", "down"):
-        raise HTTPException(status_code=400, detail="rating must be 'up' or 'down'")
-    if body.source_index < 1:
-        raise HTTPException(status_code=400, detail="source_index must be >= 1")
-    insert_source_feedback(correlation_id, body.source_index, body.rating)
-    return {"status": "ok"}
+# Phase 1b: feedback / QC endpoints moved to app.api.feedback.
+# Kept inline code here for 100+ lines; now just a router mount at the top.
 
 
 # --- Internal: credentialing / other skills use chat's ModelRouter + llm_calls (no shared Python package name) ---
