@@ -1688,12 +1688,23 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
     last_tool: str | None = None
     reasoning_system = _react_reasoning_system(max_it, mode_label)
 
+    # Phase 0.7: smart-retry guard — tracks failed attempts so we don't repeat
+    # the same (tool, inputs) when no new evidence has come in, and enables
+    # fail-fast when every round errors.
+    from app.pipeline.react_retry_guard import ReactRetryGuard
+    retry_guard = ReactRetryGuard()
+
     for iteration in range(max_it):
         rn = iteration + 1
         headline = _react_round_headline(iteration, max_it)
         emit(f"  Round {rn}/{max_it} — {headline}")
         emit(f"  Reasoning round {rn}/{max_it}…")
         reasoning_context = build_reasoning_context(ctx, tool_results, rn)
+        # Inject already-failed attempts into the prompt so the LLM sees
+        # them and picks differently.
+        hint = retry_guard.failure_hint_for_prompt()
+        if hint:
+            reasoning_context = f"{reasoning_context}\n\n{hint}"
         decision_raw = _call_llm_json(
             reasoning_system,
             reasoning_context,
@@ -1761,6 +1772,28 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 return
             # Empty answer but claimed complete — fall through to next iteration or exhaust
 
+        # Phase 0.7: block repeat call if (tool, inputs) already failed and
+        # no new evidence has come in since.
+        blocked_by = retry_guard.should_block(
+            tool=tool or "search_corpus",
+            inputs=inputs,
+            current_results_count=len(tool_results),
+        )
+        if blocked_by is not None:
+            emit(
+                f"  ⊘ Already tried {blocked_by.tool} with these inputs "
+                f"(round {blocked_by.round}, {blocked_by.error_code or 'failed'}) "
+                f"— picking a different path."
+            )
+            # Record a synthetic result so the LLM sees we acknowledged the skip
+            # and won't re-pick the same thing next round.
+            tool_results.append({
+                "tool": tool or "search_corpus",
+                "success": False,
+                "result": "(skipped — previously failed with no new evidence since)",
+            })
+            continue
+
         emit(f"  Using {tool or 'unknown'}…")
         if (tool or "").strip().lower() == "run_credentialing_report":
             emit("  (The report runs its own steps below — org, locations, providers, PML, opportunity, etc.)")
@@ -1768,9 +1801,26 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             emit("  (Calls credentialing POST /find-locations — NPPES, PML, DOGE; agentic may add web.)")
         if (tool or "").strip().lower() == "find_associated_providers_at_locations":
             emit("  (POST /find-locations then /find-associated-providers — operational roster per site.)")
-        result = _execute_tool(tool or "search_corpus", inputs, ctx, emitter)
+        results_before = len(tool_results)
+        # Phase 0.7: convert raised exceptions into a typed failed-tool result
+        # so the guard can track them and the UI never sees raw tracebacks.
+        try:
+            result = _execute_tool(tool or "search_corpus", inputs, ctx, emitter)
+        except Exception as tool_exc:
+            from app.communication.error_emit import tool_result_from_exception
+            result = tool_result_from_exception(
+                tool_exc, tool=tool or "search_corpus", round=rn
+            )
+            emit(f"  ⊘ {result['result']}")
         last_tool = result.get("tool")
         _append_tool_llm_usage(ctx, str(last_tool or tool or ""), result)
+        retry_guard.record_result(
+            tool=last_tool or tool or "search_corpus",
+            inputs=inputs,
+            result=result,
+            round=rn,
+            results_count_before=results_before,
+        )
 
         tr_entry: dict[str, Any] = {
             "tool": last_tool,
@@ -1836,6 +1886,30 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 emitter,
             )
             return
+    # Phase 0.7: if every round failed and nothing succeeded, emit a clean
+    # typed refusal instead of the generic "no verified answer" string —
+    # avoids pretending we looked everywhere when the pipeline was broken.
+    if retry_guard.all_rounds_failed(rounds_completed=max_it):
+        emit("  ⊘ All reasoning rounds errored — stopping before burning more tokens.")
+        # Use the most-common error code from the failed attempts for the message.
+        codes = [fa.error_code for fa in retry_guard.failed_attempts if fa.error_code]
+        dominant = max(set(codes), key=codes.count) if codes else "internal_error"
+        user_msg_by_code = {
+            "rate_limit":      "The models are temporarily busy. Please try again in a minute.",
+            "token_budget":    "Your question needs a larger-context model that's not currently available.",
+            "context_too_long":"This conversation is too long for the available models — start a new chat.",
+            "auth_error":      "A service is mis-configured. The team has been notified.",
+            "scrape_failed":   "I couldn't reach the external sources I needed for this answer.",
+            "timeout":         "Requests kept timing out. Please try again in a moment.",
+            "provider_error":  "The model services had trouble — please try again shortly.",
+        }
+        refusal = user_msg_by_code.get(
+            dominant,
+            "Every attempt to answer this hit an error. Please try again or rephrase.",
+        )
+        _finalize_response(ctx, refusal, all_sources, RETRIEVAL_SIGNAL_NO_SOURCES, last_tool, emitter)
+        return
+
     emit("  No verified answer after checking materials and web — escalating honestly.")
     honest = (
         "I wasn't able to find a verified answer to this question "
