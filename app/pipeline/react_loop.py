@@ -1621,14 +1621,15 @@ def _sync_extra_out_to_context(ctx: PipelineContext, emitter=None) -> None:
 
 
 def _dedupe_sources(sources: list) -> list:
-    """Phase 0.8: collapse near-duplicate source entries before rendering.
+    """Phase 0.8 / 0.11: collapse near-duplicate source entries before rendering
+    and renumber surviving ``index`` fields so the UI shows consecutive citations.
 
-    When multiple tool rounds each return sources from the same document
-    (e.g. R1 pulled 300 chunks from the Sunshine Provider Manual and R3's
-    web scrape hit the same manual's pages), the final card can balloon to
-    500-1000+ citations, all pointing to the same document. This helper
-    keeps only the FIRST source seen for each (document_id, page_number)
-    pair — order is preserved so the original citation indices stay stable.
+    Before Phase 0.11 the dedup worked correctly, but the surviving sources
+    kept their pre-dedup ``index`` values (set upstream in non_patient_rag.py
+    when iterating chunks). So when dedup collapsed 1,073 raw chunks down to
+    139 unique (doc, page) pairs, the UI still rendered ``[1] [2] [3] [5] [7]
+    [10] …`` with confusing gaps. This pass renumbers the survivors so the
+    rendered list starts at ``[1]`` and increments by 1.
 
     Fallback dedup key order (first one that exists wins):
         1. (document_id, page_number)  — RAG / corpus citations
@@ -1661,6 +1662,13 @@ def _dedupe_sources(sources: list) -> list:
             continue
         seen.add(key)
         out.append(s)
+
+    # Phase 0.11: renumber the ``index`` field so the FE shows [1][2][3]… with
+    # no gaps. Non-dict entries and dicts without an existing index are left
+    # untouched (they never render a bracket number anyway).
+    for i, s in enumerate(out, start=1):
+        if isinstance(s, dict) and "index" in s:
+            s["index"] = i
     return out
 
 
