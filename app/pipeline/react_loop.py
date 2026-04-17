@@ -718,15 +718,44 @@ def _execute_tool(
                 "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
                 "sources": [],
             }
-        answer, sources, usage, signal = answer_tool(
-            ctx.message or "",
-            emitter=emitter,
-            tool_hint_override="web_scrape",
-            scrape_url=url,
-            skill_search_mode=ctx.chat_mode,
-            pipeline_ctx=ctx,
-            tool_inputs=inputs,
-        )
+        # Phase 0.8: hard wall-clock cap on the scrape. Production traces showed
+        # a single depth-3 crawl eating ~233s of turn time because per-page LLM
+        # summarization ran sequentially on 6 pages. The cap aborts and returns
+        # a typed scrape_failed envelope so the ReAct loop can move on rather
+        # than burning the whole turn on one slow scrape.
+        import concurrent.futures as _cf
+        _SCRAPE_TIMEOUT_S = int(os.environ.get("MOBIUS_WEB_SCRAPE_TIMEOUT_S", "30"))
+
+        def _run_scrape():
+            return answer_tool(
+                ctx.message or "",
+                emitter=emitter,
+                tool_hint_override="web_scrape",
+                scrape_url=url,
+                skill_search_mode=ctx.chat_mode,
+                pipeline_ctx=ctx,
+                tool_inputs=inputs,
+            )
+
+        try:
+            with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
+                _future = _pool.submit(_run_scrape)
+                answer, sources, usage, signal = _future.result(timeout=_SCRAPE_TIMEOUT_S)
+        except _cf.TimeoutError:
+            emit(f"  ⊘ web_scrape timed out after {_SCRAPE_TIMEOUT_S}s — moving on.")
+            from app.communication.error_emit import classify_exception
+            env = classify_exception(
+                TimeoutError(f"web_scrape exceeded {_SCRAPE_TIMEOUT_S}s"),
+                tool="web_scrape",
+            )
+            return {
+                "tool": "web_scrape",
+                "success": False,
+                "result": env.user_facing_message,
+                "error": env.model_dump(),
+                "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
+                "sources": [],
+            }
         success = bool(answer and len(answer.strip()) > 200)
         return {
             "tool": "web_scrape",
@@ -1591,6 +1620,50 @@ def _sync_extra_out_to_context(ctx: PipelineContext, emitter=None) -> None:
             pass
 
 
+def _dedupe_sources(sources: list) -> list:
+    """Phase 0.8: collapse near-duplicate source entries before rendering.
+
+    When multiple tool rounds each return sources from the same document
+    (e.g. R1 pulled 300 chunks from the Sunshine Provider Manual and R3's
+    web scrape hit the same manual's pages), the final card can balloon to
+    500-1000+ citations, all pointing to the same document. This helper
+    keeps only the FIRST source seen for each (document_id, page_number)
+    pair — order is preserved so the original citation indices stay stable.
+
+    Fallback dedup key order (first one that exists wins):
+        1. (document_id, page_number)  — RAG / corpus citations
+        2. (url, page_number)          — web scrape results
+        3. (title, page_number)        — fallback for loose formats
+        4. str(source)                 — last resort for opaque items
+    """
+    if not sources:
+        return []
+    seen: set = set()
+    out: list = []
+    for s in sources:
+        if isinstance(s, dict):
+            doc_id = s.get("document_id") or s.get("doc_id")
+            url = s.get("url") or s.get("href")
+            title = s.get("title") or s.get("label")
+            page = s.get("page_number") or s.get("page")
+            if doc_id is not None:
+                key = ("doc", str(doc_id), page)
+            elif url is not None:
+                key = ("url", str(url), page)
+            elif title is not None:
+                key = ("title", str(title), page)
+            else:
+                # Opaque dict — fall back to full-content hash via repr.
+                key = ("repr", repr(sorted(s.items())))
+        else:
+            key = ("repr", str(s))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+    return out
+
+
 def _finalize_response(
     ctx: PipelineContext,
     final_answer: str,
@@ -1605,7 +1678,9 @@ def _finalize_response(
     ctx.answers = [final_answer]
     ctx.usages = getattr(ctx, "usages", []) or []
     ctx.final_message = final_answer
-    ctx.sources = all_sources if all_sources is not None else []
+    # Phase 0.8: dedupe sources by (document_id, page_number) so the citation
+    # list doesn't explode when multiple rounds cite the same document.
+    ctx.sources = _dedupe_sources(all_sources) if all_sources else []
     ctx.retrieval_signals = [final_signal] if final_signal else [RETRIEVAL_SIGNAL_NO_SOURCES]
     # Quick mode: flag long answers so the mini container shows "Full answer →" link
     if react_chat_mode_label(getattr(ctx, "chat_mode", None)) == "quick":
@@ -1832,7 +1907,14 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             tr_entry["result_summary"] = rsum_t
         tool_results.append(tr_entry)
 
-        if result.get("sources"):
+        # Phase 0.8: do NOT emit sources from failed tool runs. When an LLM
+        # step inside a retrieval tool fails (e.g. corpus search's LLM call
+        # hits a rate limit AFTER the retriever already pulled hundreds of
+        # chunks), the raw chunks were being attached to all_sources, landing
+        # up to 1_000+ near-duplicate citations in the final answer card.
+        if result.get("sources") and not (
+            result.get("success") is False or result.get("error") is not None
+        ):
             all_sources.extend(result["sources"])
         if result.get("signal") and result["signal"] != RETRIEVAL_SIGNAL_NO_SOURCES:
             final_signal = result["signal"]
