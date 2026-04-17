@@ -722,10 +722,23 @@ def _publish_failed(
         err_str = str(err) if err is not None else "Unknown error"
     except Exception:
         err_str = "Unknown error"
+    # Classify the exception so the UI message is user-safe and the internal
+    # detail (which may contain provider org IDs, tracebacks, etc.) stays out
+    # of the outgoing payload.
+    try:
+        from app.communication.error_emit import classify_exception
+        _env = classify_exception(err, tool="orchestrator") if err is not None else None
+    except Exception:
+        _env = None
     chunks = list(thinking_chunks) if thinking_chunks is not None else []
     response_payload = {
         "status": "failed",
-        "message": f"Something went wrong: {err_str}. Please try again.",
+        "message": (
+            f"{_env.user_facing_message} Please try again."
+            if _env is not None
+            else "Something went wrong. Please try again."
+        ),
+        "error_envelope": _env.model_dump() if _env is not None else None,
         "plan": None,
         "thinking_log": chunks,
         "response_source": "error",
