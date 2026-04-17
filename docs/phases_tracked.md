@@ -32,8 +32,10 @@ each phase live in `tests/test_<phase_feature>.py`.
 | 1a | First main-split slice — `/chat/history/*` extracted to `app/api/history.py` as proof-of-pattern | `refactor(api): extract /chat/history router` |
 | 1b | Feedback + QC router — 6 endpoints extracted to `app/api/feedback.py`; each endpoint audited against its migration for Postgres persistence | `refactor(api): extract /chat feedback + QC router with PG persistence audit` |
 | 1c | Credentialing-runs + NPI lookup router — 15 endpoints extracted to `app/api/credentialing.py`. **main.py: 3,125 → 2,401 lines (−23% across 1a+1b+1c).** Staging ground for Phase 3 (credentialing → own package) | `refactor(api): extract credentialing-runs + NPI lookup router` |
+| 1d | Roster router — 26 endpoints (`/chat/roster-reconcile/*`, `/chat/roster-truth/*`, `/chat/roster-org/*`) extracted to `app/api/roster.py` via mechanical block-extraction. **main.py: 2,401 → 1,527 lines (−51% total across 1a-1d).** | `refactor(api): extract roster-reconcile + roster-truth + roster-org router` |
 
-**Total unit tests across these phases: 192/192 green.**
+**Total unit tests across these phases: 204/204 green.**
+**main.py shrinkage across Phase 1: 3,125 → 1,527 lines (−51%).**
 
 ### Feedback persistence audit (done during 1b)
 
