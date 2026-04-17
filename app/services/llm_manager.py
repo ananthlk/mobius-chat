@@ -100,7 +100,11 @@ async def generate(
     provider: Any = None
     router_meta: dict[str, Any] | None = None
 
-    # Select model via router
+    # Select model via router — with token budget so the bandit can't pick a model
+    # the request physically can't fit into (prevents Groq 413/429 class of failures).
+    # Estimator: chars/4 is a standard client-side heuristic for English/code prompts.
+    # It's intentionally coarse — we only need to filter candidates, not bill tokens.
+    estimated_prompt_tokens = max(1, len(prompt) // 4)
     try:
         from app.services.model_registry import get_router
         router = get_router()
@@ -109,6 +113,8 @@ async def generate(
             phi_detected=phi_detected,
             is_planner=parser,
             mode=mode,
+            estimated_prompt_tokens=estimated_prompt_tokens,
+            expected_output_tokens=max_tokens,
         )
         provider = _provider_from_spec(spec)
     except Exception as e:
