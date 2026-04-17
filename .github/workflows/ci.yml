@@ -84,7 +84,9 @@ jobs:
             tests/test_react_retry_guard.py \
             tests/test_react_retry_guard_exhaustion.py \
             tests/test_rag_api_chunk_filter.py \
-            tests/test_scrape_timeout_and_repair_removed.py
+            tests/test_scrape_timeout_and_repair_removed.py \
+            tests/test_ci_baseline.py \
+            tests/test_front_door.py
 
       - name: Report summary
         if: always()

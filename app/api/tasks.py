@@ -24,12 +24,24 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, Depends
 from fastapi.responses import PlainTextResponse
 
 from app.api._common import task_proxy
+from app.api.front_door import require_user
 
 router = APIRouter()
+
+
+# Phase 1h: write-path endpoints go through ``require_user``. Behavior is
+# mode-driven (see front_door.auth_mode):
+#   - CHAT_AUTH_MODE=off       (dev default) — dependency returns None, all
+#                              routes execute as before.
+#   - CHAT_AUTH_MODE=optional  — decodes JWT when present but doesn't 401.
+#   - CHAT_AUTH_MODE=required  (hosted default) — 401 if no valid JWT.
+# Read endpoints (list/export/get) intentionally aren't guarded yet; first
+# tighten writes, then widen to reads in a follow-up once we see what the
+# frontend actually needs to send.
 
 
 @router.get("/chat/tasks")
@@ -96,7 +108,10 @@ def chat_tasks_list(
 
 
 @router.post("/chat/tasks")
-def chat_tasks_create(body: dict = Body(...)) -> dict[str, Any]:
+def chat_tasks_create(
+    body: dict = Body(...),
+    _user_id: str | None = Depends(require_user),
+) -> dict[str, Any]:
     """Proxy: create a manual task."""
     return task_proxy("POST", "/tasks", json_body=body).json()
 
@@ -130,7 +145,10 @@ def chat_tasks_export(
 
 
 @router.post("/chat/tasks/bulk-import")
-def chat_tasks_bulk_import(body: dict = Body(...)) -> dict[str, Any]:
+def chat_tasks_bulk_import(
+    body: dict = Body(...),
+    _user_id: str | None = Depends(require_user),
+) -> dict[str, Any]:
     """Proxy: bulk upsert tasks (used by orchestrator and skills)."""
     return task_proxy("POST", "/tasks/bulk-import", json_body=body).json()
 
@@ -142,18 +160,30 @@ def chat_tasks_get(task_id: str) -> dict[str, Any]:
 
 
 @router.patch("/chat/tasks/{task_id}")
-def chat_tasks_patch(task_id: str, body: dict = Body(...)) -> dict[str, Any]:
+def chat_tasks_patch(
+    task_id: str,
+    body: dict = Body(...),
+    _user_id: str | None = Depends(require_user),
+) -> dict[str, Any]:
     """Proxy: update task fields (status, assignee, deadline, notes, etc.)."""
     return task_proxy("PATCH", f"/tasks/{task_id}", json_body=body).json()
 
 
 @router.post("/chat/tasks/{task_id}/resolve")
-def chat_tasks_resolve(task_id: str, body: dict = Body(default={})) -> dict[str, Any]:
+def chat_tasks_resolve(
+    task_id: str,
+    body: dict = Body(default={}),
+    _user_id: str | None = Depends(require_user),
+) -> dict[str, Any]:
     """Proxy: mark a task resolved."""
     return task_proxy("POST", f"/tasks/{task_id}/resolve", json_body=body).json()
 
 
 @router.post("/chat/tasks/{task_id}/dismiss")
-def chat_tasks_dismiss(task_id: str, body: dict = Body(default={})) -> dict[str, Any]:
+def chat_tasks_dismiss(
+    task_id: str,
+    body: dict = Body(default={}),
+    _user_id: str | None = Depends(require_user),
+) -> dict[str, Any]:
     """Proxy: dismiss a task."""
     return task_proxy("POST", f"/tasks/{task_id}/dismiss", json_body=body).json()
