@@ -1710,6 +1710,87 @@ def _finalize_response(
 # ---------------------------------------------------------------------------
 
 
+# Phase 0.13: cap on auto-retry sleep so a stale retry_after_seconds from a
+# provider can't stall the whole turn. 30s is tight enough to preserve UX and
+# wide enough to cover typical rate-limit windows.
+_MAX_AUTO_RETRY_SLEEP_S = 30
+
+
+def _execute_tool_with_retry(
+    tool: str,
+    inputs: dict,
+    ctx: PipelineContext,
+    round_num: int,
+    emit_fn,
+    tool_emitter,
+) -> dict:
+    """Run ``_execute_tool`` with a single auto-retry on recoverable errors.
+
+    Phase 0.13: closes the loop on the ErrorEnvelope contract from Phase 0.6a.
+    ``is_recoverable`` is set on rate_limit / timeout / provider_error /
+    scrape_failed. When we get one of these we sleep ``retry_after_seconds``
+    (capped) and re-run the same call once. If the retry also fails, the
+    failed result is returned as-is — the retry guard will record it and
+    subsequent rounds will pick a different tool per Phase 0.7.
+
+    Args:
+        emit_fn: adds the reasoning-round "  " prefix; used for retry-status
+            lines that belong to the ReAct loop, not the tool.
+        tool_emitter: unprefixed emitter passed through to ``_execute_tool``
+            so the tool's own emits look the same as before this phase.
+
+    Rules:
+    - Max 1 retry per call (no spirals).
+    - Sleep bounded by ``_MAX_AUTO_RETRY_SLEEP_S``.
+    - Non-recoverable codes (refusal, auth_error, context_too_long,
+      validation_error, internal_error) return immediately.
+    - Raised exceptions are classified via ``tool_result_from_exception``.
+    """
+    from app.communication.error_emit import tool_result_from_exception
+
+    def _run_once() -> dict:
+        try:
+            return _execute_tool(tool, inputs, ctx, tool_emitter)
+        except Exception as exc:
+            r = tool_result_from_exception(exc, tool=tool, round=round_num)
+            emit_fn(f"  ⊘ {r['result']}")
+            return r
+
+    result = _run_once()
+
+    err = result.get("error") if isinstance(result, dict) else None
+    if not (isinstance(err, dict) and err.get("schema_name") == "error_envelope"):
+        return result
+
+    # Only these error_codes auto-retry. Mirrors ErrorEnvelope.is_recoverable.
+    if err.get("error_code") not in {
+        "rate_limit",
+        "timeout",
+        "provider_error",
+        "scrape_failed",
+    }:
+        return result
+
+    retry_after = err.get("retry_after_seconds")
+    try:
+        wait_s = int(retry_after) if retry_after is not None else 3
+    except (TypeError, ValueError):
+        wait_s = 3
+    wait_s = max(1, min(_MAX_AUTO_RETRY_SLEEP_S, wait_s))
+
+    emit_fn(
+        f"  ↻ {tool} hit {err.get('error_code')} — retrying in {wait_s}s…"
+    )
+    import time as _time
+    _time.sleep(wait_s)
+    retry_result = _run_once()
+    # Whether or not the retry succeeded, attach a marker so telemetry can
+    # distinguish auto-retried turns from clean first-try turns.
+    if isinstance(retry_result, dict):
+        retry_result["auto_retried"] = True
+    return retry_result
+
+
 def run_react(ctx: PipelineContext, emitter=None) -> None:
     """
     ReAct loop: Reason → Act → Observe → Repeat.
@@ -1885,16 +1966,14 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         if (tool or "").strip().lower() == "find_associated_providers_at_locations":
             emit("  (POST /find-locations then /find-associated-providers — operational roster per site.)")
         results_before = len(tool_results)
-        # Phase 0.7: convert raised exceptions into a typed failed-tool result
-        # so the guard can track them and the UI never sees raw tracebacks.
-        try:
-            result = _execute_tool(tool or "search_corpus", inputs, ctx, emitter)
-        except Exception as tool_exc:
-            from app.communication.error_emit import tool_result_from_exception
-            result = tool_result_from_exception(
-                tool_exc, tool=tool or "search_corpus", round=rn
-            )
-            emit(f"  ⊘ {result['result']}")
+        # Phase 0.7 + 0.13: convert raised exceptions into a typed failed-tool
+        # result AND auto-retry recoverable errors once, honoring the
+        # retry_after_seconds hint on the classifier envelope. One retry per
+        # call keeps the blast radius small; if it still fails, the retry
+        # guard + fail-fast machinery take over.
+        result = _execute_tool_with_retry(
+            tool or "search_corpus", inputs, ctx, rn, emit, emitter
+        )
         last_tool = result.get("tool")
         _append_tool_llm_usage(ctx, str(last_tool or tool or ""), result)
         retry_guard.record_result(
