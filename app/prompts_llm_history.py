@@ -1,4 +1,25 @@
-"""Append-only history for prompts+LLM config. PostgreSQL-backed (llm_config_versions)."""
+"""Append-only history for prompts+LLM config. PostgreSQL-backed (llm_config_versions).
+
+Phase 0.10 — process-level dedup to stop pool thrash
+----------------------------------------------------
+``append_entry`` used to fall back to ``asyncio.run`` when called from sync
+code with no running loop. Each ``asyncio.run`` created a fresh event loop,
+which invalidated :mod:`app.services.pg_pool`'s cached pool and forced a
+pool create → write → destroy cycle every few seconds. The churn was
+visible in worker logs as a stream of ``asyncpg pool created max_size=2``
+/ ``pool is closed`` / ``connection was closed in the middle of operation``
+messages.
+
+The fix:
+
+1. When called from sync code with no running loop, **skip** the append
+   rather than spinning up a disposable loop. This is telemetry — dropping
+   a config-history row is strictly better than thrashing the pool.
+2. Client-side dedup on ``config_sha`` per process: once we've successfully
+   appended a sha in this process we short-circuit further calls. The
+   server-side ``ON CONFLICT (config_sha) DO NOTHING`` already makes this
+   idempotent; the client-side cache eliminates the connection round-trip.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -9,6 +30,11 @@ from typing import Any
 from app.prompts_llm_config import compute_config_sha
 
 logger = logging.getLogger(__name__)
+
+# Process-level cache of SHAs we've already tried to append. The config is
+# effectively immutable per-process (only changes when the worker restarts
+# with new prompt/model config), so one successful write per sha is enough.
+_appended_shas: set[str] = set()
 
 
 def _model_provider_prompt_count(config: dict[str, Any]) -> tuple[str | None, str | None, int]:
@@ -26,13 +52,18 @@ def _model_provider_prompt_count(config: dict[str, Any]) -> tuple[str | None, st
 
 async def _append_async(config: dict[str, Any], created_by: str, notes: str | None) -> None:
     """Insert one row into llm_config_versions. ON CONFLICT (config_sha) DO NOTHING."""
+    sha = compute_config_sha(config)
+    if sha in _appended_shas:
+        # Already successfully appended this sha in this process — skip the
+        # round-trip entirely. Prevents pool thrash when many callers load
+        # the same config in quick succession.
+        return
     try:
         from app.services.pg_pool import get_pool
         pool = await get_pool()
         if not pool:
             logger.debug("pg_pool unavailable; skip config history append")
             return
-        sha = compute_config_sha(config)
         model, provider, prompt_count = _model_provider_prompt_count(config)
         config_json = json.dumps(config)
         async with pool.acquire() as conn:
@@ -51,6 +82,7 @@ async def _append_async(config: dict[str, Any], created_by: str, notes: str | No
                 provider,
                 prompt_count,
             )
+        _appended_shas.add(sha)
         logger.info("Appended config history entry config_sha=%s", sha)
     except Exception as e:
         logger.warning("Failed to append config history: %s", e)
@@ -61,7 +93,21 @@ def append_entry(
     created_by: str = "api",
     notes: str | None = None,
 ) -> None:
-    """Append one config snapshot to history (PG). Fire-and-forget when loop exists."""
+    """Append one config snapshot to history (PG).
+
+    Fire-and-forget when a running event loop exists. **Skips silently**
+    when there is no running loop — previous behavior was to call
+    ``asyncio.run``, which created a disposable loop for each call and
+    invalidated the asyncpg pool cache (see module docstring).
+
+    The process-level dedup cache means each unique ``config_sha`` is
+    written at most once per worker lifetime, so dropping a call when no
+    loop exists is safe: a later call with the same sha will be a no-op
+    anyway.
+    """
+    sha = compute_config_sha(config)
+    if sha in _appended_shas:
+        return
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -69,10 +115,13 @@ def append_entry(
     if loop and loop.is_running():
         loop.create_task(_append_async(config, created_by or "api", notes))
     else:
-        try:
-            asyncio.run(_append_async(config, created_by or "api", notes))
-        except Exception as e:
-            logger.warning("prompts_llm_history append_entry (no loop): %s", e)
+        # Phase 0.10: no-op instead of asyncio.run. Telemetry is best-effort;
+        # the next call from an async context will persist it.
+        logger.debug(
+            "prompts_llm_history.append_entry called with no running loop; "
+            "skipping to avoid pool thrash (sha=%s)",
+            sha,
+        )
 
 
 async def _list_entries_async(limit: int) -> list[dict[str, Any]]:
