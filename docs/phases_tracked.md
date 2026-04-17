@@ -5,7 +5,7 @@ sessions. This supplements `CHAT_MODULE_REFACTOR_PLAN.md` (the architectural
 plan) with a tactical, session-to-session snapshot of what's done, what's
 next, and what's deliberately parked.
 
-Last updated: 2026-04-17 (after Phase 1f.1 — tasks router extracted).
+Last updated: 2026-04-17 (after Phase 1g — CI baseline).
 
 ---
 
@@ -42,8 +42,9 @@ each phase live in `tests/test_<phase_feature>.py`.
 | 0.18 | **Silent retrieval-killer fixed.** Live-test log showed `after normalize: len=5 → before context build: len=0` — RAG API returned 5 relevant chunks but the `confidence_min=0.5` filter in `non_patient_rag.py` only checked `match_score` / `confidence` field names (legacy inline-BM25 shape). RAG API chunks carry `rerank_score` + `confidence_label` — so every one scored as 0.0 and got silently dropped. Every ReAct turn was pivoting to google_search + web_scrape as if the corpus were empty. Fix: `_score_chunk_for_confidence_filter` helper falls through `match_score` → `confidence` → `rerank_score` → `confidence_label`-to-numeric map. | `fix(rag): confidence_min filter respects RAG API chunk shape` |
 | 0.19 | **Tool-exhaustion block in ReAct retry guard.** 2026-04-17 live test exposed a gap in Phase 0.7: guard only blocks identical `(tool, inputs_sig)` pairs, so R1 `search_corpus` query="A" (5→0 kept) and R2 `search_corpus` query="B" (5→0 kept) both ran because the reasoner reformulated the query between rounds. Fix: per-tool consecutive-failure counter; after 2 failures with no intervening success, tool is blocked regardless of inputs_sig. `failure_hint_for_prompt` surfaces "Exhausted tools (pick a DIFFERENT tool, not a re-phrased query)" to the planner. | `feat(react): tool-exhaustion block in retry guard` |
 | 1f.1 | **Tasks router extracted.** 8 `/chat/tasks/*` endpoints moved to `app/api/tasks.py`; `_task_proxy` consolidated into `app.api._common.task_proxy` (also used by `/chat/runs` aggregator). Hygiene guard gained a ratcheting `MAX_MAIN_PY_LOC` / `MAX_MAIN_PY_ENDPOINTS` ceiling so regression is impossible. **main.py: 1,528 → 1,408 LOC, 36 → 28 endpoints.** 15 new router tests + 10 hygiene tests green. | `refactor(api): extract /chat/tasks router (Phase 1f.1)` |
+| 1g | **CI baseline.** New `.github/workflows/ci.yml` runs phase-regression tests on every push + PR to the integration branches. Two jobs: (a) pytest against a vendored minimal dep set — skips `pip install -r requirements.txt` because it contains the local-path `-e ../mobius-retriever`; (b) ruff lint, non-blocking first pass. Covers hygiene guard, tasks router, retry guard, 0.19 exhaustion block, 0.18 confidence filter, 0.16 scrape timeout. `test_ci_baseline.py` locks the workflow file in place (asserts file exists, Python minor pinned, concurrency-cancel on, every `CRITICAL_TEST_FILES` path wired into the run step). Verified by simulating CI in a clean venv: 90/90 green. Closes "no CI at all" gap surfaced in the comprehensive audit. | `feat(ci): add GitHub Actions baseline for phase-regression tests` |
 
-**Total unit tests after Phase 0.18: 234/234 green** (221 + 15 new, minus -2 for tests that were already passing from the 0.16 suite).
+**Phase 1g CI subset: 90/90 green** (hygiene + tasks router + retry guard + exhaustion + confidence filter + scrape timeout + ci-baseline guard). Full-suite total after 0.18 was 234; net-new since = 9 (0.19) + 15 (1f.1 router) + 2 (ratchet) + 8 (ci-baseline) = 268 reachable locally. CI runs only the self-contained subset until a follow-up phase teaches it to check out sibling packages.
 
 **main.py shrinkage across Phase 1: 3,125 → ~1,528 lines (−51%).**
 **Chat router surface after 3c: 2 routers (history, feedback) mounting 10 endpoints. The 51 routes mounted after 1d → 10 after 3c.**

@@ -1,0 +1,120 @@
+# Phase 1g — CI baseline for Mobius Chat.
+#
+# This workflow is intentionally conservative. Mobius Chat lives in a monorepo
+# alongside sibling packages (`mobius-retriever`, `mobius-user`, `mobius-contracts`)
+# that are installed via `pip install -e ../sibling` from the local filesystem.
+# GitHub Actions can't check out sibling repos without knowing the GitHub org or
+# adding secrets, so this baseline runs the subset of tests that are
+# self-contained — the phase-regression tests that lock in hardening work done
+# during the 0.x / 1.x refactor.
+#
+# What this gates today:
+#   - Hygiene guard (main.py LOC + endpoint-count ceilings; deleted paths don't
+#     come back; shared helpers stay single-sourced).
+#   - /chat/tasks router proxy behavior (Phase 1f.1).
+#   - ReAct retry guard + Phase 0.19 tool-exhaustion block.
+#   - Phase 0.18 confidence-filter regression test.
+#   - Phase 0.16 scrape-timeout + LLM-repair-removal regression test.
+#
+# What it doesn't yet cover:
+#   - Full test suite (blocked on CI checkouts of sibling packages).
+#   - Integration tests that need real Postgres / skills / LLM providers.
+#     Those stay gated behind pytest markers and run locally / in staging.
+#
+# Follow-up phase (1g.2): teach this workflow to check out the three sibling
+# packages and run the full suite. That requires either the org name + auth
+# or a vendored-monorepo approach.
+
+name: CI
+
+on:
+  push:
+    branches: [main, credentialing-with-roster]
+  pull_request:
+    branches: [main, credentialing-with-roster]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  phase-regression-tests:
+    name: Phase-regression tests (self-contained)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          # Cache pip downloads across runs. Key is the requirements file
+          # content plus workflow file hash, so changes to either invalidate.
+          cache: pip
+
+      - name: Install minimal test deps
+        # NOTE: we deliberately don't `pip install -r requirements.txt` here
+        # because it contains `-e ../mobius-retriever` which isn't present in
+        # the CI checkout. The test subset below only needs the packages listed
+        # explicitly. If a future test needs more, add it here.
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            "fastapi>=0.104.0" \
+            "httpx>=0.25.0" \
+            "pydantic>=2.0.0" \
+            "pytest>=7.0.0" \
+            "pytest-mock>=3.10.0" \
+            "anyio>=4.0.0" \
+            "PyYAML>=6.0.0" \
+            "python-dotenv>=1.0.0" \
+            "json-repair>=0.55.0"
+
+      - name: Run phase-regression test subset
+        # These tests are self-contained — they don't require a live Postgres,
+        # any skill server, or any of the sibling packages (mobius-retriever
+        # etc.). If an import here starts failing in CI but not locally, a
+        # dependency crept into the subset — fix it before expanding CI scope.
+        run: |
+          pytest -v \
+            tests/test_api_hygiene_guard.py \
+            tests/test_api_tasks_router.py \
+            tests/test_react_retry_guard.py \
+            tests/test_react_retry_guard_exhaustion.py \
+            tests/test_rag_api_chunk_filter.py \
+            tests/test_scrape_timeout_and_repair_removed.py
+
+      - name: Report summary
+        if: always()
+        run: |
+          echo "### Phase-regression tests" >> "$GITHUB_STEP_SUMMARY"
+          echo "Covered: hygiene guard, tasks router, retry guard," >> "$GITHUB_STEP_SUMMARY"
+          echo "exhaustion block (0.19), confidence filter (0.18)," >> "$GITHUB_STEP_SUMMARY"
+          echo "scrape timeout (0.16)." >> "$GITHUB_STEP_SUMMARY"
+
+  lint:
+    name: Lint (ruff, non-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Lint app/ (non-blocking — first pass surfaces noise only)
+        # continue-on-error so the first lint run doesn't block PRs. After one
+        # pass to see the baseline we'll either clean the warnings and flip
+        # this to a hard gate, or commit to a narrower ruleset.
+        continue-on-error: true
+        run: |
+          ruff check app/ tests/ --output-format=github || true
