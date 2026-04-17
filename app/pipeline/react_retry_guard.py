@@ -18,6 +18,12 @@ Rules
    no successful tool result was recorded, the loop short-circuits the final
    "escalate honestly" path and emits a typed refusal envelope instead.
 
+3. **Tool-exhaustion block (Phase 0.19).** If a tool has failed N consecutive
+   times (``_TOOL_EXHAUSTION_THRESHOLD``) with no successful call in between,
+   block further uses of that tool for the rest of the turn regardless of the
+   input signature. This forces the planner to pivot instead of burning a
+   round re-phrasing a query for a tool that's already proven unfruitful.
+
 The state lives on ``ReactRetryGuard`` so the ReAct loop can call it
 idempotently and test seams stay tight.
 """
@@ -72,12 +78,25 @@ def inputs_signature(inputs: dict[str, Any] | None) -> str:
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
 
 
+# Phase 0.19: after this many consecutive failures of the *same tool*
+# (regardless of inputs_sig) with no successful call in between, block further
+# uses of that tool for the remainder of the turn. The reasoner is forced to
+# pivot to a different tool instead of burning another round re-phrasing the
+# query for a tool that's already proven unfruitful.
+#
+# Two is the right threshold: one failure is noise, two is a pattern.
+_TOOL_EXHAUSTION_THRESHOLD = 2
+
+
 @dataclass
 class ReactRetryGuard:
     """Track failed attempts and advise the ReAct loop on retry / fail-fast."""
 
     failed_attempts: list[FailedAttempt] = field(default_factory=list)
     successful_attempts: int = 0
+    # Phase 0.19: per-tool consecutive-failure counter. Reset to 0 whenever a
+    # successful call to that tool lands.
+    consecutive_failures_per_tool: dict[str, int] = field(default_factory=dict)
 
     # ── Public API ──────────────────────────────────────────────────────────
 
@@ -101,8 +120,16 @@ class ReactRetryGuard:
                     results_before=results_count_before,
                 )
             )
+            # Phase 0.19: bump per-tool consecutive-failure counter. This is
+            # what powers the "tool exhausted" block — inputs_sig differences
+            # don't reset it, only a successful call of the same tool does.
+            self.consecutive_failures_per_tool[tool] = (
+                self.consecutive_failures_per_tool.get(tool, 0) + 1
+            )
         else:
             self.successful_attempts += 1
+            # Phase 0.19: a successful call clears the per-tool failure streak.
+            self.consecutive_failures_per_tool[tool] = 0
 
     def should_block(
         self,
@@ -127,6 +154,24 @@ class ReactRetryGuard:
             if fa.tool == tool and fa.inputs_sig == sig:
                 if current_results_count <= fa.results_before:
                     return fa
+        # Phase 0.19: tool-exhaustion block. If the reasoner has already failed
+        # N times on this tool with no intervening success, the planner should
+        # pivot to a different tool — even if the new query string produces a
+        # different inputs_sig. This is the pattern that burned rounds in the
+        # 2026-04-17 live test (search_corpus R1 → 0 kept, search_corpus R2 →
+        # 0 kept, different queries, both empty).
+        streak = self.consecutive_failures_per_tool.get(tool, 0)
+        if streak >= _TOOL_EXHAUSTION_THRESHOLD:
+            # Return the most recent failure for this tool to cite in the hint.
+            for fa in reversed(self.failed_attempts):
+                if fa.tool == tool:
+                    return FailedAttempt(
+                        tool=tool,
+                        inputs_sig=sig,
+                        error_code="tool_exhausted",
+                        round=fa.round,
+                        results_before=fa.results_before,
+                    )
         return None
 
     def all_rounds_failed(self, rounds_completed: int) -> bool:
@@ -155,6 +200,16 @@ class ReactRetryGuard:
         for fa in self.failed_attempts:
             code = fa.error_code or "error"
             lines.append(f"  - round {fa.round}: {fa.tool} [{code}]")
+        # Phase 0.19: call out exhausted tools explicitly so the planner knows
+        # re-phrasing the inputs won't help — it must pick a different tool.
+        exhausted = [
+            t for t, n in self.consecutive_failures_per_tool.items()
+            if n >= _TOOL_EXHAUSTION_THRESHOLD
+        ]
+        if exhausted:
+            lines.append(
+                f"Exhausted tools (pick a DIFFERENT tool, not a re-phrased query): {', '.join(sorted(exhausted))}"
+            )
         return "\n".join(lines)
 
     # ── Helpers ─────────────────────────────────────────────────────────────

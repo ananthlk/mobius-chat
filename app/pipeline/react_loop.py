@@ -1958,17 +1958,29 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             current_results_count=len(tool_results),
         )
         if blocked_by is not None:
-            emit(
-                f"  ⊘ Already tried {blocked_by.tool} with these inputs "
-                f"(round {blocked_by.round}, {blocked_by.error_code or 'failed'}) "
-                f"— picking a different path."
-            )
+            # Phase 0.19: distinguish tool-exhaustion ("this tool has failed
+            # twice — re-phrasing won't help, pick a different tool") from
+            # the Phase 0.7 same-signature block ("this exact call already
+            # failed with no new evidence since").
+            if blocked_by.error_code == "tool_exhausted":
+                emit(
+                    f"  ⊘ {blocked_by.tool} exhausted ({blocked_by.round} failures, no new evidence) "
+                    f"— pivoting to a different tool."
+                )
+                skip_reason = "(skipped — tool exhausted; pick a different tool)"
+            else:
+                emit(
+                    f"  ⊘ Already tried {blocked_by.tool} with these inputs "
+                    f"(round {blocked_by.round}, {blocked_by.error_code or 'failed'}) "
+                    f"— picking a different path."
+                )
+                skip_reason = "(skipped — previously failed with no new evidence since)"
             # Record a synthetic result so the LLM sees we acknowledged the skip
             # and won't re-pick the same thing next round.
             tool_results.append({
                 "tool": tool or "search_corpus",
                 "success": False,
-                "result": "(skipped — previously failed with no new evidence since)",
+                "result": skip_reason,
             })
             continue
 
