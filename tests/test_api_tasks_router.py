@@ -109,44 +109,32 @@ class TestTaskListProxy:
             {"id": "a", "type": "info"},
             {"id": "b", "type": "blocker"},
         ]}
-        with patch("httpx.Client") as hc, \
-             patch("app.services.credentialing_run_service.get_credentialing_run", return_value=None):
+        with patch("httpx.Client") as hc:
             hc.return_value.__enter__.return_value.request.return_value = (
                 _mock_httpx_response(json_body=body)
             )
             resp = client.get("/chat/tasks", params={"run_id": "r-123", "status": "open"})
         assert [t["id"] for t in resp.json()["tasks"]] == ["a", "b"]
 
-    def test_run_status_injected_from_phase(self, client):
-        """run_id present → run_status merged from credentialing_run_service."""
-        body = {"tasks": []}
-        with patch("httpx.Client") as hc, \
-             patch(
-                 "app.services.credentialing_run_service.get_credentialing_run",
-                 return_value={"phase": "awaiting_validation", "pending_step_id": "step-7"},
-             ):
+    def test_run_status_not_injected_post_disconnect(self, client):
+        """2026-04-18 disconnect: credentialing_run_service was removed,
+        so the /chat/tasks handler no longer injects run_status /
+        pending_step_id on run-scoped queries. Returns the task-manager
+        body unchanged. If a future credentialing skill wants run-polling,
+        it'll expose its own endpoint or push through task-manager."""
+        body = {"tasks": [{"id": "t-1", "type": "info"}]}
+        with patch("httpx.Client") as hc:
             hc.return_value.__enter__.return_value.request.return_value = (
                 _mock_httpx_response(json_body=body)
             )
             resp = client.get("/chat/tasks", params={"run_id": "r-1"})
         j = resp.json()
-        assert j["run_status"] == "awaiting_validation"
-        assert j["pending_step_id"] == "step-7"
-
-    def test_run_status_unknown_on_service_error(self, client):
-        """The run_status lookup is a polling optimization — a service
-        exception must degrade to "unknown", not 500 the whole request."""
-        with patch("httpx.Client") as hc, \
-             patch(
-                 "app.services.credentialing_run_service.get_credentialing_run",
-                 side_effect=RuntimeError("db down"),
-             ):
-            hc.return_value.__enter__.return_value.request.return_value = (
-                _mock_httpx_response(json_body={"tasks": []})
-            )
-            resp = client.get("/chat/tasks", params={"run_id": "r-1"})
-        assert resp.status_code == 200
-        assert resp.json()["run_status"] == "unknown"
+        assert "run_status" not in j, (
+            "run_status injection was removed in the credentialing "
+            "disconnect — if it's back, the credentialing_run_service "
+            "coupling has been reintroduced. Don't."
+        )
+        assert "pending_step_id" not in j
 
 
 class TestTaskExportPathOrdering:

@@ -192,18 +192,10 @@ def run_pipeline(
             ctx.chat_mode = _normalize_chat_mode(prev_mode if isinstance(prev_mode, str) else None)
         ctx.merged_state = {**(ctx.merged_state or {}), "last_chat_mode": ctx.chat_mode}
 
-        if getattr(ctx, "credentialing_options", None):
-            from app.pipeline.credentialing_envelope import build_canonical_credentialing_message
-
-            co = ctx.credentialing_options or {}
-            canonical = build_canonical_credentialing_message(
-                ctx.message or "",
-                ctx.merged_state or {},
-                co,
-            )
-            if canonical:
-                ctx.refined_query = canonical
-                ctx.message = canonical
+        # 2026-04-18 disconnect — credentialing_envelope removed. The
+        # pre-ReAct "rewrite the user message into a canonical
+        # credentialing request" step is gone; ctx.credentialing_options
+        # is deprecated and no chat UI sets it anymore.
 
         obj_raw = (ctx.merged_state or {}).get("master_objective")
         has_active = bool(obj_raw and (obj_raw.get("status") or "active") == "active")

@@ -77,33 +77,13 @@ def chat_tasks_list(
             ),
         )
 
-    # Inject run_status so the frontend knows when to stop polling. Cheap
-    # cross-skill join — kept here (not in task-manager) because the phase
-    # state lives in chat's credentialing_runs_pg, not in task-manager.
-    if run_id:
-        try:
-            from app.services.credentialing_run_service import get_credentialing_run
-            rec = get_credentialing_run(run_id)
-            rec_data = rec or {}
-            phase = rec_data.get("phase", "")
-            pending_step = rec_data.get("pending_step_id") or ""
-            if phase == "running":
-                run_status = "running"
-            elif phase == "awaiting_validation":
-                run_status = "awaiting_validation"
-                result["pending_step_id"] = pending_step
-            elif phase == "complete":
-                run_status = "complete"
-            elif phase == "error":
-                run_status = "error"
-            else:
-                run_status = "paused"
-        except Exception:
-            # Intentionally swallow — this field is a frontend polling
-            # optimization, not semantic. Missing == "unknown" is safe.
-            run_status = "unknown"
-        result["run_status"] = run_status
-
+    # 2026-04-18 disconnect: removed the credentialing_run_service
+    # lookup that injected run_status ("running"/"awaiting_validation"/
+    # "complete"/"error"/"paused"). The frontend polling loop that
+    # consumed that field also got removed in commit 1. When
+    # credentialing rebuilds as a proper skill integration, this
+    # cross-skill join belongs in task-manager (or is replaced by a
+    # polling endpoint on the credentialing skill itself), not here.
     return result
 
 
