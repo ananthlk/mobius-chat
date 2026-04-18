@@ -115,6 +115,22 @@ list_thread_document_uploads(thread_id optional)
   thread_id defaults to the current conversation when omitted (server fills from context).
   Returns: Markdown table of uploads + reconciliation defaults if set.
 
+search_uploaded_document(upload_id optional, query)
+  **Instant-RAG** — search *inside* a user-uploaded document on this thread.
+  Use when: the user refers to a document they attached (e.g. "what does my
+    uploaded doc say about X", "summarize the PDF I just sent", "find the
+    prior-auth rules in this manual") AND there is at least one instant_rag
+    upload on the thread (see list_thread_document_uploads).
+  upload_id: if omitted and exactly one instant_rag upload exists on the
+    thread, the server auto-resolves. If multiple uploads exist, pick the
+    one the user's question references (use list_thread_document_uploads
+    to see filenames).
+  This tool does NOT search the curated corpus — use search_corpus for that.
+  Chunks returned are scoped to the one document, no tag filters. Use this
+  tool BEFORE search_corpus when the user's question is self-referential
+  to an upload; otherwise prefer search_corpus.
+  Returns: matched chunks with page citations from the uploaded document.
+
 google_search(query)
   Search the web for current information.
   Use for: corpus misses, or user explicitly asks to search web.

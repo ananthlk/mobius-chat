@@ -111,6 +111,15 @@ TOOL_CAPABILITIES: dict[str, dict[str, Any]] = {
         ],
         "requires": "An active chat thread (thread_id); filled from context in Mobius Chat",
     },
+    "search_uploaded_document": {
+        "can_answer": [
+            "What does MY uploaded document say about <topic>",
+            "Summarize the PDF I just uploaded",
+            "Find <specific thing> in the manual I attached",
+        ],
+        "requires": "At least one instant_rag upload on this thread; document_id is auto-resolved when only one upload exists",
+        "cannot_answer": "Anything not contained in the uploaded document — use search_corpus or google_search for those",
+    },
     "search_corpus": {
         "can_answer": ["Policy lookup, appeals, PA, eligibility, claims, enrollment, credentialing process"],
     },
