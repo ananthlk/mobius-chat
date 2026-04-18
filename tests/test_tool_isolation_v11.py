@@ -17,9 +17,6 @@ from app.services.tool_agent import (
     _parse_search_result_urls,
     TOOL_GOOGLE_SEARCH,
     TOOL_HEALTHCARE_QUERY,
-    TOOL_ORG_NPI_LOOKUP,
-    TOOL_SEARCH_ORG_NAMES,
-    TOOL_SEARCH_ORG_BY_ADDRESS,
     TOOL_WEB_SCRAPE_REVIEW,
 )
 
@@ -228,47 +225,11 @@ class TestAnswerToolEntityIsolation:
 
     _active = {"jurisdiction": "Florida", "program": "Medicaid", "payer": "Sunshine Health"}
 
-    def test_npi_lookup_uses_question_entity_not_active_payer(self):
-        """Class A+B: 'NPI for David Lawrence Center' with active payer Sunshine Health
-        must call org_npi_lookup (or search_org_names) with 'David Lawrence Center', NOT 'Sunshine Health'."""
-        with patch("app.services.tool_agent.call_mcp_tool") as mock_mcp:
-            mock_mcp.return_value = ("Found 1 match: David Lawrence Center | NPI: 1234567890", True)
-            answer_tool(
-                "What is the NPI for David Lawrence Center?",
-                tool_hint_override="npi_lookup",
-                active_context=self._active,
-            )
-        calls = mock_mcp.call_args_list
-        assert len(calls) >= 1
-        # Implementation may use org_npi_lookup or search_org_names
-        org_search_call = next(
-            (c for c in calls if c[0][0] in (TOOL_ORG_NPI_LOOKUP, TOOL_SEARCH_ORG_NAMES)),
-            None,
-        )
-        assert org_search_call is not None, "org_npi_lookup / search_org_names was never called"
-        name_arg = org_search_call[0][1].get("name", "")
-        assert "David Lawrence" in name_arg, f"Expected 'David Lawrence' in name arg, got: {name_arg!r}"
-        assert "Sunshine" not in name_arg, f"Active payer leaked into entity lookup: {name_arg!r}"
-
-    def test_npi_lookup_aspire_not_united(self):
-        """Class B: 'NPI for Aspire Health' with active payer UnitedHealthcare → searches for Aspire."""
-        united_active = {"jurisdiction": "Florida", "payer": "UnitedHealthcare", "program": "Medicaid"}
-        with patch("app.services.tool_agent.call_mcp_tool") as mock_mcp:
-            mock_mcp.return_value = ("Found 1 match: Aspire Health Partners | NPI: 9876543210", True)
-            answer_tool(
-                "Find the NPI for Aspire Health",
-                tool_hint_override="npi_lookup",
-                active_context=united_active,
-            )
-        calls = mock_mcp.call_args_list
-        org_search_call = next(
-            (c for c in calls if c[0][0] in (TOOL_ORG_NPI_LOOKUP, TOOL_SEARCH_ORG_NAMES)),
-            None,
-        )
-        assert org_search_call is not None
-        name_arg = org_search_call[0][1].get("name", "")
-        assert "Aspire" in name_arg
-        assert "United" not in name_arg
+    # Phase 2a (2026-04-18): tests for tool_hint_override="npi_lookup" /
+    # "search_org_names" were removed along with those dispatch branches
+    # — the credentialing disconnect retired org_npi_lookup /
+    # search_org_names as chat-reachable tools. Entity-isolation for
+    # NPI-by-number and address lookups is still covered below.
 
     def test_npi_by_number_no_payer_contamination(self):
         """Class A: 'Look up NPI 1234567890' → healthcare_query with NPI number, no payer passed."""
@@ -286,21 +247,8 @@ class TestAnswerToolEntityIsolation:
         assert "1234567890" in question_arg
         assert "Sunshine" not in question_arg
 
-    def test_address_lookup_uses_address_from_question(self):
-        """Class A+B: address from question, not from active jurisdiction."""
-        with patch("app.services.tool_agent.call_mcp_tool") as mock_mcp:
-            mock_mcp.return_value = ("Found 2 matches at 1234 Main St Naples FL", True)
-            answer_tool(
-                "Find providers at 1234 Main St Naples FL",
-                tool_hint_override="search_org_by_address",
-                active_context=self._active,
-            )
-        calls = mock_mcp.call_args_list
-        addr_call = next((c for c in calls if c[0][0] == TOOL_SEARCH_ORG_BY_ADDRESS), None)
-        assert addr_call is not None, "search_org_by_address was never called"
-        addr_arg = addr_call[0][1].get("address_raw", "")
-        assert "1234" in addr_arg
-        assert "Sunshine" not in addr_arg
+    # Phase 2a: test_address_lookup_uses_address_from_question removed
+    # with the search_org_by_address dispatch branch.
 
 
 class TestAnswerToolAutoScrape:
