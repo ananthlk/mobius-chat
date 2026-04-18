@@ -87,7 +87,8 @@ jobs:
             tests/test_scrape_timeout_and_repair_removed.py \
             tests/test_ci_baseline.py \
             tests/test_front_door.py \
-            tests/test_instant_rag_search.py
+            tests/test_instant_rag_search.py \
+            tests/test_composer_attach.py
 
       - name: Report summary
         if: always()

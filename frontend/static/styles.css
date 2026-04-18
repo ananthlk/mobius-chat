@@ -4085,6 +4085,82 @@ body {
   background: var(--thinking-bg);
   color: var(--accent);
 }
+.composer .btn-composer-attach[aria-pressed="true"] {
+  color: var(--accent);
+  background: var(--thinking-bg);
+}
+
+/* Phase B.1a: chip shown above the composer when a file is staged.
+   Sits in the composer-wrap so it scrolls with the composer but isn't
+   clipped by the composer's rounded border. */
+.composer-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px 0;
+  padding: 6px 8px 6px 10px;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--thinking-bg);
+  color: var(--text);
+  font-size: 0.9rem;
+  line-height: 1.2;
+}
+.composer-attachment-chip[hidden] {
+  display: none;
+}
+.composer-attachment-chip__icon {
+  flex-shrink: 0;
+  font-size: 1rem;
+  line-height: 1;
+}
+.composer-attachment-chip__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer-attachment-chip__remove {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--sidebar-text-muted);
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
+}
+.composer-attachment-chip__remove:hover {
+  background: rgba(0, 0, 0, 0.08);
+  color: var(--text);
+}
+/* Uploading spinner while the pre-send upload runs. Pulses the chip border
+   and swaps the × for an hourglass-ish ⟳ via the .is-uploading class. */
+.composer-attachment-chip.is-uploading {
+  border-color: var(--accent);
+  animation: composer-attach-pulse 1.4s ease-in-out infinite;
+}
+@keyframes composer-attach-pulse {
+  0%, 100% { opacity: 0.75; }
+  50%      { opacity: 1; }
+}
+
+/* Drag-over target: the whole composer-wrap highlights when a file is
+   dragged over it. Subtle — we want to signal "drop OK here" without
+   shouting at the user. */
+.composer-wrap.composer-wrap--dragover .composer {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+}
 .composer .btn-composer-options {
   flex-shrink: 0;
   width: 36px;
