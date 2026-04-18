@@ -1221,78 +1221,14 @@ async def internal_skill_llm(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Financial Strategy skill proxy — /chat/financial-strategy/* → provider-roster-credentialing
+# Financial Strategy proxies REMOVED 2026-04-18.
+# Nine /chat/financial-strategy/*, /chat/org-story, /chat/org-story-v2,
+# /chat/market-map, /chat/industry-report-data routes plus their shared
+# _fs_proxy helper were cut as part of the credentialing/roster/strategy
+# disconnect. These will rebuild cleanly as a separate skill integration
+# when that work lands; chat should not proxy into the credentialing
+# skill server.
 # ═══════════════════════════════════════════════════════════════════════════════
-
-def _fs_proxy(method: str, path: str, *, json_body=None, timeout: float = 30.0):
-    """Proxy helper for financial-strategy routes on the credentialing skill server."""
-    import httpx
-    base = _skill_base()
-    if not base:
-        raise HTTPException(status_code=503, detail="Skill server not configured")
-    try:
-        with httpx.Client(timeout=timeout) as c:
-            r = c.request(method, f"{base}{path}", json=json_body)
-            r.raise_for_status()
-            return r.json()
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Skill server error: {e}") from e
-
-
-@app.get("/chat/financial-strategy/orgs")
-def fs_list_orgs():
-    """Proxy: list available orgs with canonical data."""
-    return _fs_proxy("GET", "/financial-strategy/orgs")
-
-
-@app.get("/chat/financial-strategy/industry")
-def fs_industry():
-    """Proxy: static industry landscape chapter."""
-    return _fs_proxy("GET", "/financial-strategy/industry")
-
-
-@app.post("/chat/financial-strategy/generate-baseline")
-def fs_generate_baseline(body: dict = Body(...)):
-    """Proxy: generate industry + org baseline chapter."""
-    return _fs_proxy("POST", "/financial-strategy/generate-baseline", json_body=body)
-
-
-@app.post("/chat/financial-strategy/ask")
-def fs_ask(body: dict = Body(...)):
-    """Proxy: Q&A over org's financial position (includes LLM reframe)."""
-    return _fs_proxy("POST", "/financial-strategy/ask", json_body=body, timeout=60.0)
-
-
-@app.post("/chat/financial-strategy/generate-plan")
-def fs_generate_plan(body: dict = Body(...)):
-    """Proxy: convert findings into investigation tasks."""
-    return _fs_proxy("POST", "/financial-strategy/generate-plan", json_body=body)
-
-
-@app.post("/chat/org-story")
-def fs_org_story(body: dict = Body(...)):
-    """Proxy: 5-factor Laspeyres decomposition + conversion + leakage dashboard."""
-    return _fs_proxy("POST", "/org-story", json_body=body, timeout=120.0)
-
-
-@app.post("/chat/org-story-v2")
-def fs_org_story_v2(body: dict = Body(...)):
-    """Proxy: org story v2 — pre-computed from v2 tables (<2s vs 30s)."""
-    return _fs_proxy("POST", "/org-story-v2", json_body=body, timeout=30.0)
-
-
-@app.get("/chat/market-map")
-def fs_market_map():
-    """Proxy: FL BH market map data — all org locations with revenue."""
-    return _fs_proxy("GET", "/market-map", timeout=60.0)
-
-
-@app.get("/chat/industry-report-data")
-def fs_industry_report_data():
-    """Proxy: Industry report data — archetype distributions, code metrics, trends, CMHC."""
-    return _fs_proxy("GET", "/industry-report-data", timeout=120.0)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1472,13 +1408,9 @@ if _frontend.exists():
         r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return r
 
-    # DEPRECATED: financial-strategy, org-story, market-map, industry-report
-    # All consolidated into displacement.html on skill server (/roster-ui/displacement.html)
-
-    @app.get("/roster")
-    def roster():
-        # roster.html lives in static/ (not the top-level frontend/ dir)
-        p = _frontend / "static" / "roster.html"
-        r = FileResponse(p)
-        r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        return r
+    # REMOVED 2026-04-18: financial-strategy / org-story / market-map /
+    # industry-report / roster page serves. These pages + their data
+    # proxies were part of the credentialing+strategy chat integration
+    # that's being disconnected for a clean rebuild. If the user lands
+    # on one of these URLs, they'll get a 404 — acceptable since nothing
+    # in the UI links to them anymore (skill cards removed from landing).

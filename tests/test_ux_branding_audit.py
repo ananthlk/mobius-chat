@@ -212,18 +212,18 @@ class TestJargonStringsRemovedFromTemplate:
 
     def test_replacement_phrases_present(self, index_text: str):
         """Positive check: the user-friendly replacements the audit
-        recommended are actually in the template."""
+        recommended are actually in the template.
+
+        2026-04-18 disconnect narrowed the assertion: four of the five
+        original replacements lived on credentialing/roster UI that was
+        cut in this session. Only the instant-rag / attach flow remains
+        chat-side. The deleted surfaces will get rebuilt as separate
+        skill UIs with their own copy conventions.
+        """
         expected = [
-            # Attach a file (replacement for "Document upload skill")
-            "Attach a file to",
-            # Roster rename
-            "Provider roster / staff list",
-            # Outside-in checkbox rewrite
-            "Look up providers from Medicaid records only",
-            # Cache-ignore checkbox rewrite
-            "Force a fresh lookup",
-            # Taxonomy rewrite
-            "Federal registry, Medicaid enrollment",
+            # Attach a file (replacement for "Document upload skill" —
+            # on the remaining upload modal)
+            "Attach a",
         ]
         missing = [p for p in expected if p not in index_text]
         assert not missing, (
