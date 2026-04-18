@@ -511,14 +511,21 @@ def _handle_instant_rag_upload(
         "document_id": rag_result.get("document_id"),
     }
 
-    def _persist(tid: str, rec: dict) -> None:
-        try:
-            real_tid = ensure_thread(tid)
-            append_uploaded_file_record(real_tid, rec)
-        except Exception as _e:
-            logger.debug("Thread state save (instant-rag): %s", _e)
-
-    _threading.Thread(target=_persist, args=(tid, record), daemon=True).start()
+    # 2026-04-17 fix: persist SYNCHRONOUSLY before returning. Previously this
+    # ran in a daemon thread, which raced the frontend's sendMessage() call
+    # — by the time the ReAct loop read thread state for the next turn,
+    # the uploaded_files[] entry might not have been written yet. The
+    # upload path is already synchronous (blocks on urlopen for the skill
+    # call), so adding a sub-second PG write to the tail is negligible
+    # and removes a whole class of "invisible upload" bugs.
+    try:
+        real_tid = ensure_thread(tid)
+        append_uploaded_file_record(real_tid, record)
+    except Exception as _e:
+        # Keep the upload itself successful even if thread-state persistence
+        # fails — the chunks are already in Chroma + PG, so search works.
+        # Log loud (not debug) so this shows up in ops dashboards.
+        logger.warning("Thread state save (instant-rag) failed for thread=%s: %s", tid, _e)
 
     return {
         "upload_id": upload_id,

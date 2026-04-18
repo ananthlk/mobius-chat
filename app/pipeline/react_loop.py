@@ -507,6 +507,38 @@ def build_reasoning_context(
     if j:
         parts.append(f"Active jurisdiction: {j}")
 
+    # Phase B.1 — surface thread-scoped uploads so the planner knows to
+    # prefer search_uploaded_document when the user's question is self-
+    # referential ("this document", "the PDF I uploaded", "my file").
+    #
+    # Without this block, the planner is blind to active.uploaded_files[]
+    # and defaults to search_corpus, which silently misses because instant-
+    # RAG chunks don't have the tag metadata corpus-wide search filters on.
+    #
+    # 2026-04-17: a user uploaded a provider manual, asked "what is in
+    # this document", and got "I was unable to find information about the
+    # document" because the planner never knew it was there.
+    _uploads = [
+        u for u in (active.get("uploaded_files") or [])
+        if isinstance(u, dict)
+        and (u.get("purpose") == "instant_rag")
+        and u.get("document_id")
+    ]
+    if _uploads:
+        upload_lines = ["Documents attached to this thread (searchable via search_uploaded_document):"]
+        for u in _uploads[:10]:  # cap — a thread with >10 uploads is rare and the first 10 are enough context
+            fname = str(u.get("filename") or "upload")
+            uid = str(u.get("upload_id") or "")
+            chunks = u.get("row_count") or u.get("chunks_count") or 0
+            chunks_s = f", {chunks} chunks" if chunks else ""
+            upload_lines.append(f"  - {fname} (upload_id={uid}{chunks_s})")
+        upload_lines.append(
+            "When the user's question refers to an attached document ('this document', "
+            "'the PDF', 'my upload', 'what does it say'), call search_uploaded_document "
+            "BEFORE search_corpus. search_corpus does not find these user uploads."
+        )
+        parts.append("\n".join(upload_lines))
+
     if getattr(ctx, "active_context", None):
         ac = ctx.active_context
         tool = ac.get("tool", "")

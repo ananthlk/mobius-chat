@@ -318,6 +318,161 @@ class TestLazyRagSearchChromaQuery:
 # ── ReAct tool wiring — manifest + capability presence ─────────────────────
 
 
+class TestReasoningContextSurfacesUploads:
+    """Regression for the 2026-04-17 planner-is-blind bug.
+
+    When a thread has instant_rag uploads in active.uploaded_files[], the
+    reasoning context passed to the planner LLM MUST mention them, along
+    with a nudge to prefer search_uploaded_document over search_corpus
+    for self-referential questions. Otherwise the user uploads a doc,
+    asks "what is in this document", and the planner goes hunting in
+    the main corpus — returns "I was unable to find information about
+    the document."
+    """
+
+    def _build_ctx(self, active: dict) -> "Any":
+        """Minimal PipelineContext-shaped object for build_reasoning_context."""
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            merged_state={"active": active},
+            active_context=None,
+            failed_query=None,
+            last_turns=None,
+            effective_message="what is in this document",
+            message="what is in this document",
+        )
+
+    def test_planner_sees_upload_when_one_exists(self):
+        from app.pipeline.react_loop import build_reasoning_context
+        active = {
+            "uploaded_files": [
+                {
+                    "upload_id": "u-1",
+                    "document_id": "doc-abc",
+                    "filename": "Sunshine-Provider-Manual.pdf",
+                    "purpose": "instant_rag",
+                    "row_count": 287,
+                },
+            ],
+        }
+        ctx_reasoning = build_reasoning_context(self._build_ctx(active), [], iteration=1)
+        assert "Documents attached to this thread" in ctx_reasoning, (
+            "Reasoning context doesn't mention uploaded docs — the planner "
+            "won't know search_uploaded_document is relevant. This is the "
+            "2026-04-17 blind-planner regression."
+        )
+        assert "Sunshine-Provider-Manual.pdf" in ctx_reasoning, (
+            "Filename not surfaced — planner can't discriminate when multiple uploads exist."
+        )
+        assert "search_uploaded_document" in ctx_reasoning, (
+            "Reasoning context must tell the planner which tool to pick; "
+            "otherwise it defaults to search_corpus and misses."
+        )
+        assert "search_corpus does not find" in ctx_reasoning, (
+            "Must explicitly warn that search_corpus misses these. Without "
+            "the negative nudge, planner may still pick search_corpus first."
+        )
+
+    def test_no_upload_section_when_none_attached(self):
+        """Don't noise up the reasoning context when there are no uploads."""
+        from app.pipeline.react_loop import build_reasoning_context
+        active = {"uploaded_files": []}
+        ctx_reasoning = build_reasoning_context(self._build_ctx(active), [], iteration=1)
+        assert "Documents attached to this thread" not in ctx_reasoning
+
+    def test_roster_uploads_skipped(self):
+        """Only instant_rag uploads are searchable via the tool. Roster-
+        reconciliation uploads have no document_id (no chunks) — surfacing
+        them would make the planner pick search_uploaded_document and fail."""
+        from app.pipeline.react_loop import build_reasoning_context
+        active = {
+            "uploaded_files": [
+                {"upload_id": "r-1", "purpose": "roster_reconciliation", "filename": "roster.csv"},
+            ],
+        }
+        ctx_reasoning = build_reasoning_context(self._build_ctx(active), [], iteration=1)
+        assert "Documents attached to this thread" not in ctx_reasoning
+
+    def test_only_records_with_document_id_surfaced(self):
+        """An instant_rag record without a document_id is unsearchable —
+        likely a partial upload that never completed ingest. Don't advertise it."""
+        from app.pipeline.react_loop import build_reasoning_context
+        active = {
+            "uploaded_files": [
+                {"upload_id": "u-bad", "purpose": "instant_rag", "filename": "broken.pdf"},  # no document_id
+                {"upload_id": "u-ok", "purpose": "instant_rag", "document_id": "doc-ok", "filename": "good.pdf"},
+            ],
+        }
+        ctx_reasoning = build_reasoning_context(self._build_ctx(active), [], iteration=1)
+        assert "good.pdf" in ctx_reasoning
+        assert "broken.pdf" not in ctx_reasoning
+
+    def test_more_than_10_uploads_caps_at_10(self):
+        """Threads with many uploads shouldn't fill the reasoning context
+        with the whole list — the first 10 is enough to cue the planner."""
+        from app.pipeline.react_loop import build_reasoning_context
+        active = {
+            "uploaded_files": [
+                {"upload_id": f"u-{i}", "purpose": "instant_rag",
+                 "document_id": f"doc-{i}", "filename": f"file-{i}.pdf"}
+                for i in range(25)
+            ],
+        }
+        ctx_reasoning = build_reasoning_context(self._build_ctx(active), [], iteration=1)
+        # First 10 present:
+        for i in range(10):
+            assert f"file-{i}.pdf" in ctx_reasoning
+        # 11th onwards NOT present:
+        assert "file-15.pdf" not in ctx_reasoning
+
+
+class TestUploadPersistenceIsSynchronous:
+    """2026-04-17 race-condition fix. The instant-rag upload handler used
+    to fire the thread-state save on a daemon thread and return
+    immediately. The frontend's sendMessage() could win the race and
+    start a chat turn before the uploaded_files[] record was written —
+    then the ReAct loop would read empty thread state and the planner
+    never saw the upload.
+
+    Lock in that the persistence is synchronous by grepping the source
+    for the anti-pattern.
+    """
+
+    def test_instant_rag_upload_does_not_use_daemon_thread(self):
+        from pathlib import Path
+        import re
+
+        main_py = Path(__file__).parent.parent / "app" / "main.py"
+        text = main_py.read_text()
+
+        # Find the _handle_instant_rag_upload function body — we need to
+        # scope the check to that function specifically, since other
+        # upload paths legitimately use daemon threads for bg work.
+        match = re.search(
+            r"def _handle_instant_rag_upload\b.*?(?=\n(?:def |@app\.)|\Z)",
+            text,
+            re.DOTALL,
+        )
+        assert match, "_handle_instant_rag_upload function not found in main.py"
+        body = match.group(0)
+
+        # The append_uploaded_file_record call must NOT be in a daemon
+        # thread within this function. Pre-fix pattern was:
+        #   _threading.Thread(target=_persist, ...).start()
+        assert "_threading.Thread" not in body or "append_uploaded_file_record" not in body.split("_threading.Thread")[0] + body.split("_threading.Thread")[-1], (
+            "instant-rag upload handler wraps append_uploaded_file_record "
+            "in a daemon thread — that's the race condition that made the "
+            "chat turn fire before the upload was in thread state."
+        )
+
+        # Stronger positive check: synchronous call to
+        # append_uploaded_file_record must be present.
+        assert "append_uploaded_file_record(" in body, (
+            "instant-rag upload handler doesn't persist the upload record "
+            "at all — the next chat turn won't see it."
+        )
+
+
 class TestToolRegistration:
     """The tool is inert unless the planner LLM sees it listed in the
     manifest and capabilities. These tests lock in that registration."""
