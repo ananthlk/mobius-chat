@@ -158,13 +158,16 @@ def mark_rate_limited_until(model_id: str, until_monotonic_ts: float) -> None:
 
 
 def parse_retry_after_seconds(error_body: str) -> float | None:
-    """Parse Groq/OpenAI/Anthropic 429 "try again in X" hints.
+    """Parse Groq/OpenAI/Anthropic 429 and 413 rate-limit hints.
 
     Handles the common forms observed in the wild:
-      - "Please try again in 1h28m56.928s"
-      - "Please try again in 9m29.376s"
-      - "Please try again in 45s"
-      - "Retry-After: 120"
+      - "Please try again in 1h28m56.928s"       (Groq TPD exhaustion, 429)
+      - "Please try again in 9m29.376s"          (Groq TPD, smaller window)
+      - "Please try again in 45s"                (Groq TPM)
+      - "Retry-After: 120"                       (generic HTTP)
+      - "tokens per minute (TPM): Limit N..."    (Groq 413 — no explicit
+                                                   retry time, so we return 60s
+                                                   because TPM resets every minute)
 
     Returns float seconds, or None if no parseable hint is present. The
     caller converts to a monotonic deadline via
@@ -196,6 +199,23 @@ def parse_retry_after_seconds(error_body: str) -> float | None:
     m2 = re.search(r"Retry-After[:\s]+(\d+)", error_body, re.IGNORECASE)
     if m2:
         return float(m2.group(1))
+
+    # 2026-04-17 Phase 2.5b follow-up: Groq's 413 TPM-overflow response
+    # doesn't include an explicit retry-after — just "please reduce your
+    # message size and try again". But TPM is a per-minute window, so a
+    # 60-second hold is the correct default: by then the previous minute's
+    # tokens have aged out and the bandit can try again (or pick another
+    # model, which is what the hold is really protecting).
+    #
+    # Watch for "tokens per minute (TPM)" as the marker; don't want to
+    # false-positive on TPD (per-day) which is handled above with the
+    # actual retry-in hint.
+    if re.search(
+        r"tokens per minute\s*\(TPM\)",
+        error_body,
+        re.IGNORECASE,
+    ):
+        return 60.0
 
     return None
 

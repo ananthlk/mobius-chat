@@ -718,7 +718,9 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         spec_context_k=131,
         spec_input_per_1m_usd=0.05,
         spec_output_per_1m_usd=0.08,
-        spec_tpm_limit=30_000,                     # Groq on_demand free tier (smaller model)
+        spec_tpm_limit=6_000,                      # Groq on_demand free tier — observed 413
+                                                   # "Limit 6000, Requested 7649" on 2026-04-17
+                                                   # (prior spec was 30_000, pre-calibration).
         spec_rpm_limit=30,
         spec_tpd_limit=500_000,                    # Groq free tier — higher daily cap for 8b instant
         benchmark_category="groq_fast",
