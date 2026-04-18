@@ -42,7 +42,6 @@ dispatches. Flag goes away in commit 3 once all skills are migrated.
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -264,23 +263,63 @@ def follow_up_capable() -> frozenset[str]:
     return frozenset(s.name for s in _REGISTRY.values() if s.follow_up_capable)
 
 
-# ── Feature flag (commit 1 only) ──────────────────────────────────────
+def manifest_text(names: tuple[str, ...] | None = None) -> str:
+    """Format registered skills as the prose block the planner LLM reads.
+
+    Each skill renders as ``name(inputs)\\n  <description>\\n\\n`` —
+    the same shape the legacy hand-maintained ``TOOL_MANIFEST`` used,
+    so the planner prompt doesn't change behavior when we flip from
+    hand-maintained to computed.
+
+    ``names`` restricts output to a subset, in the given order. Useful
+    because ``TOOL_MANIFEST`` in tool_manifest.py interleaves registry
+    skills with non-registry tools (search_corpus, refuse,
+    healthcare_npi_lookup, search_uploaded_document) — the caller
+    decides ordering, we just emit the blocks we own.
+
+    Descriptions are multi-line; ``SkillSpec.description`` carries the
+    full "Use when / Do NOT use for / Returns" paragraph formerly
+    hand-maintained in tool_manifest.py.
+    """
+    iter_names = names if names is not None else tuple(sorted(_REGISTRY.keys()))
+    chunks: list[str] = []
+    for name in iter_names:
+        spec = _REGISTRY.get(name)
+        if spec is None:
+            continue
+        # Signature: top-level keys in inputs_schema.properties, if any.
+        props = (spec.inputs_schema or {}).get("properties") or {}
+        required = set((spec.inputs_schema or {}).get("required") or [])
+        if props:
+            parts: list[str] = []
+            for key in props.keys():
+                parts.append(key if key in required else f"{key} optional")
+            sig = "(" + ", ".join(parts) + ")"
+        else:
+            sig = "()"
+
+        body_lines = [f"{name}{sig}"]
+        for ln in (spec.description or "").strip().splitlines():
+            body_lines.append(f"  {ln}" if ln.strip() else "")
+        chunks.append("\n".join(body_lines))
+    return "\n\n".join(chunks)
+
+
+# ── Feature flag retired ──────────────────────────────────────────────
 #
-# Lets us land the registry wiring while keeping the old
-# ``if hint == "X"`` branches in tool_agent.py for the two migrated
-# skills. Default ON — if the registry misfires for any reason in
-# production, set ``MOBIUS_USE_SKILL_REGISTRY=0`` and chat falls back
-# to the legacy dispatch until the bug is fixed. Flag deletes in
-# commit 3 once all skills are on the registry.
+# ``MOBIUS_USE_SKILL_REGISTRY`` existed during commits 1+2 so the
+# migration was rollback-safe. Commit 3 deleted the legacy
+# ``if hint == "X"`` cascade in tool_agent.py; there's no second
+# dispatch path to fall back to, so the flag has no meaning. Removed.
+# ``registry_enabled()`` stays as a compatibility stub returning True
+# so any caller that imported it doesn't break; commit 4+ will delete
+# the stub too.
 
 
 def registry_enabled() -> bool:
-    return (os.environ.get("MOBIUS_USE_SKILL_REGISTRY") or "1").strip().lower() not in (
-        "0",
-        "false",
-        "no",
-        "off",
-    )
+    """Back-compat stub. Was the migration flag; now always True.
+    Remove once no caller references it."""
+    return True
 
 
 # Trigger skill registration. Each builtin file calls register() at
@@ -293,6 +332,7 @@ def _load_builtins() -> None:
     from app.skills.builtin import document_uploads  # noqa: F401
     from app.skills.builtin import healthcare  # noqa: F401
     from app.skills.builtin import web  # noqa: F401
+    from app.skills.builtin import web_search  # noqa: F401
 
 
 _load_builtins()

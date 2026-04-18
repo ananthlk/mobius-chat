@@ -101,11 +101,12 @@ register(
     SkillSpec(
         name="healthcare_query",
         description=(
-            "Answer healthcare lookup questions: NPI lookup by number, "
-            "ICD-10 code meaning, CMS coverage (NCD/LCD), prior-auth status. "
-            "Uses the mobius-healthcare MCP (NPPES + CMS data). Does NOT "
-            "take jurisdiction — jurisdiction would produce wrong NPIs for "
-            "entity lookups."
+            "Healthcare data lookup: ICD-10-CM codes (meaning of F32.1, Z00.00, etc.),\n"
+            "  Medicare/Medicaid coverage summaries (NCD/LCD), CPT/HCPCS wording, diagnosis/procedure codes.\n"
+            "Also: NPI registry facts when the question is a 10-digit NPI number (same backend as registry lookup).\n"
+            "Use when: User asks what a code means, ICD-10, HCPCS, coverage, or NPI-by-number without PML context.\n"
+            "Do NOT use for: PML enrollment status (skill is being rebuilt — not available in chat currently).\n"
+            "Cannot: PML status without credentialing report; org NPI by name."
         ),
         handler=_run,
         inputs_schema={

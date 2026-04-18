@@ -206,25 +206,25 @@ class TestDispatch:
         assert env.signal == "no_sources"
 
 
-# ── Feature flag (the migration safety net) ──────────────────────────
+# ── Feature flag retired in commit 3 ─────────────────────────────────
 
 
-class TestFeatureFlag:
-    def test_registry_enabled_default_on(self):
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("MOBIUS_USE_SKILL_REGISTRY", None)
-            assert registry.registry_enabled() is True
+class TestFeatureFlagStub:
+    """Commit 3 retired MOBIUS_USE_SKILL_REGISTRY when the legacy
+    dispatch cascade was deleted. ``registry_enabled()`` remains as a
+    compatibility stub returning True so any outside caller that
+    imported it keeps working — a later commit can delete the stub
+    itself. These tests just lock the stub behavior."""
 
-    @pytest.mark.parametrize("val", ["0", "false", "False", "NO", "off"])
-    def test_registry_disabled_values(self, val):
-        with patch.dict(os.environ, {"MOBIUS_USE_SKILL_REGISTRY": val}):
-            assert registry.registry_enabled() is False
+    def test_registry_enabled_is_stub_true(self):
+        """Stub always returns True regardless of env."""
+        assert registry.registry_enabled() is True
 
-    @pytest.mark.parametrize("val", ["1", "true", "TRUE", "yes", "on", ""])
-    def test_registry_enabled_values(self, val):
-        """Empty string → default (enabled). Any truthy value → enabled.
-        We're permissive here because the flag only exists during
-        migration; strict parsing isn't worth the user confusion."""
+    @pytest.mark.parametrize("val", ["0", "false", "1", "", "anything"])
+    def test_registry_enabled_ignores_env(self, val):
+        """The env var is dead — setting it has no effect. Locking
+        this so nobody re-introduces the dispatch branch on the
+        assumption that the flag still gates behavior."""
         with patch.dict(os.environ, {"MOBIUS_USE_SKILL_REGISTRY": val}):
             assert registry.registry_enabled() is True
 
@@ -290,34 +290,31 @@ class TestDerivedViews:
 
 
 class TestAnswerToolIntegration:
-    """End-to-end: ``answer_tool(..., tool_hint_override="X")`` goes
-    through the registry when flag is on, through the legacy branch
-    when flag is off, and both produce the same output."""
+    """End-to-end: ``answer_tool(..., tool_hint_override="X")`` dispatches
+    through the registry. Post-commit-3 there's no second path to
+    compare — the registry IS the dispatcher — so these tests just lock
+    the external API shape (4-tuple return, stable signal/sources/usage)
+    and assert the planner's hint string reaches a handler."""
 
-    def test_answer_tool_registry_path(self):
+    def test_answer_tool_registry_path_document_upload_skill(self):
         from app.services.tool_agent import answer_tool
 
-        with patch.dict(os.environ, {"MOBIUS_USE_SKILL_REGISTRY": "1"}):
-            text, sources, usage, signal = answer_tool(
-                "how do I upload?",
-                tool_hint_override="document_upload_skill",
-            )
+        text, sources, usage, signal = answer_tool(
+            "how do I upload?",
+            tool_hint_override="document_upload_skill",
+        )
         assert "upload" in text.lower()
         assert signal == "no_sources"
         assert sources == []
         assert usage is None
 
-    def test_answer_tool_legacy_path_produces_identical_output(self):
-        """Flag-off gate-test. If the flag stops routing through the
-        registry, output must be identical to the flag-on path."""
+    def test_answer_tool_registry_path_list_thread_uploads(self):
         from app.services.tool_agent import answer_tool
 
-        with patch.dict(os.environ, {"MOBIUS_USE_SKILL_REGISTRY": "1"}):
-            r1 = answer_tool("x", tool_hint_override="document_upload_skill")
-        with patch.dict(os.environ, {"MOBIUS_USE_SKILL_REGISTRY": "0"}):
-            r2 = answer_tool("x", tool_hint_override="document_upload_skill")
-        assert r1 == r2, (
-            "registry and legacy paths diverged — the migration is not "
-            "behavior-preserving and commit 2/3 must not delete the "
-            "legacy branch yet"
+        text, sources, usage, signal = answer_tool(
+            "what have I uploaded?",
+            tool_hint_override="list_thread_document_uploads",
+            thread_id="",
         )
+        assert isinstance(text, str)
+        assert signal == "no_sources"

@@ -54,9 +54,11 @@ register(
     SkillSpec(
         name="document_upload_skill",
         description=(
-            "Explain how to upload a document (PDF / DOCX / CSV) into this "
-            "thread for retrieval or roster reconciliation. Use when the "
-            "user asks how to attach a file or what formats are supported."
+            "First-class **document upload skill**: how to attach files to this chat thread for downstream tools.\n"
+            "Use when: user asks how to upload, attach a roster, send a file, supported formats, API/MCP integration,\n"
+            "  or what the upload flow does. Multiple documents may be uploaded over time on the same thread.\n"
+            "Does NOT transfer bytes — returns instructions (UI: ⋯ → Upload file; HTTP: POST /chat/roster-upload).\n"
+            "Returns: Markdown with purposes, endpoints, and relation to roster reconciliation."
         ),
         handler=_run_document_upload_skill,
         requires_jurisdiction=False,
@@ -68,10 +70,20 @@ register(
     SkillSpec(
         name="list_thread_document_uploads",
         description=(
-            "List the documents the user has uploaded to the current thread, "
-            "with filename, purpose, and upload time. Use when the user asks "
-            "'what files have I uploaded?' or similar."
+            "List documents already attached to the chat thread (purpose, filename, org, rows, time).\n"
+            "Use when: user asks what they uploaded, what's on file, or to confirm prior uploads.\n"
+            "thread_id defaults to the current conversation when omitted (server fills from context).\n"
+            "Returns: Markdown table of uploads + reconciliation defaults if set."
         ),
+        inputs_schema={
+            "type": "object",
+            "properties": {
+                "thread_id": {
+                    "type": "string",
+                    "description": "Optional; server fills from context when omitted.",
+                },
+            },
+        },
         handler=_run_list_thread_document_uploads,
         requires_jurisdiction=False,
         follow_up_capable=True,

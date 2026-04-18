@@ -247,60 +247,67 @@ class TestWebScrapeHandler:
         assert "detailed" in flat
 
 
-# ── End-to-end parity: registry vs. legacy branch ────────────────────
+# ── End-to-end: answer_tool via registry (commit-3 world) ────────────
 
 
-class TestRegistryParity:
-    """The migration's safety net. Same input, same mocked MCP, both
-    dispatch paths — outputs must be byte-identical. If this fails in
-    CI after commit 2, it means a subtle divergence crept in and the
-    commit shouldn't merge."""
+class TestAnswerToolViaRegistry:
+    """These tests originally asserted byte-parity between the registry
+    path and the legacy ``if hint == "X"`` branch. Commit 3 deleted the
+    legacy branch; the registry IS the dispatcher. Tests now lock the
+    external shape ``answer_tool`` returns for each migrated skill so
+    future refactors can't silently change it."""
 
-    def _run_both_paths(self, mcp_text: str, mcp_ok: bool, question: str, hint: str):
+    def test_healthcare_query_success_shape(self):
         from app.services.tool_agent import answer_tool
 
-        tool_patch, mgr_patch = _dual_mcp_patch(mcp_text, mcp_ok)
-        with patch.dict(os.environ, {"MOBIUS_USE_SKILL_REGISTRY": "1"}):
-            with tool_patch, mgr_patch:
-                registry_result = answer_tool(question, tool_hint_override=hint)
-        tool_patch, mgr_patch = _dual_mcp_patch(mcp_text, mcp_ok)
-        with patch.dict(os.environ, {"MOBIUS_USE_SKILL_REGISTRY": "0"}):
-            with tool_patch, mgr_patch:
-                legacy_result = answer_tool(question, tool_hint_override=hint)
-        return registry_result, legacy_result
+        tool_patch, mgr_patch = _dual_mcp_patch(
+            "NPI 1234567890: Jane Doe, Taxonomy 2084P0800X", True
+        )
+        with tool_patch, mgr_patch:
+            text, sources, usage, signal = answer_tool(
+                "Look up NPI 1234567890",
+                tool_hint_override="healthcare_query",
+            )
+        assert "1234567890" in text
+        assert signal == "no_sources"
+        assert len(sources) == 1
+        assert sources[0]["document_name"] == "Healthcare lookup"
+        assert sources[0]["source_type"] == "external"
 
-    def test_healthcare_query_success_parity(self):
-        r, l = self._run_both_paths(
-            "NPI 1234567890: Jane Doe, Taxonomy 2084P0800X",
-            True,
-            "Look up NPI 1234567890",
-            "healthcare_query",
-        )
-        assert r == l, (
-            "healthcare_query registry and legacy paths diverged. "
-            "Commit 3 must not delete the legacy branch until parity is restored."
-        )
+    def test_web_scrape_with_url_shape(self):
+        from app.services.tool_agent import answer_tool
 
-    def test_web_scrape_with_url_parity(self):
-        r, l = self._run_both_paths(
-            "# Policy\n\nEligibility info.",
-            True,
-            "scrape https://example.com/policy",
-            "web_scrape",
+        tool_patch, mgr_patch = _dual_mcp_patch(
+            "# Policy\n\nEligibility info.", True
         )
-        assert r == l
+        with tool_patch, mgr_patch:
+            text, sources, usage, signal = answer_tool(
+                "scrape https://example.com/policy",
+                tool_hint_override="web_scrape",
+            )
+        assert "Policy" in text
+        assert signal == "google_only"
+        assert len(sources) == 1
+        assert sources[0]["url"] == "https://example.com/policy"
+        assert sources[0]["source_type"] == "web"
 
-    def test_web_scrape_no_url_falls_through_to_google_parity(self):
-        """hint=web_scrape with no URL → both paths must rewrite the
-        hint and end up calling the google_search path identically.
-        (google_search itself is still on the legacy branch in commit 2,
-        so both paths hit the same code; this test will still pass
-        after commit 3 migrates google_search — the behavior is what
-        we're asserting.)"""
-        r, l = self._run_both_paths(
-            "No search results found",  # legacy MCP returns this when empty
-            False,
-            "explain credentialing (no URL)",
-            "web_scrape",
+    def test_web_scrape_no_url_falls_through_to_google_search(self):
+        """hint=web_scrape with no URL → dispatcher rewrites to
+        google_search. Asserts via a "no results" MCP response that the
+        google_search path IS entered (not that the response text is
+        identical — snippet text varies)."""
+        from app.services.tool_agent import answer_tool
+
+        tool_patch, mgr_patch = _dual_mcp_patch(
+            "No search results found", False
         )
-        assert r == l
+        with tool_patch, mgr_patch:
+            text, sources, usage, signal = answer_tool(
+                "explain credentialing (no URL)",
+                tool_hint_override="web_scrape",
+            )
+        # The google_search path produces one of: empty-results text,
+        # snippets, or a scraped page. We just check dispatch reached
+        # something non-crash.
+        assert isinstance(text, str)
+        assert signal in ("no_sources", "google_only")

@@ -75,10 +75,14 @@ register(
     SkillSpec(
         name="web_scrape",
         description=(
-            "Scrape a web page for its content. Use when the user supplies a "
-            "URL or when a provider manual / payer policy page must be read "
-            "verbatim. Optional ``scrape_mode`` = quick | medium | detailed "
-            "controls crawl depth."
+            "Read the web: **quick** (default), **medium**, or **detailed** crawl from the seed URL.\n"
+            "scrape_mode:\n"
+            "  **quick** — single page, fastest (default when unsure).\n"
+            "  **medium** — same-site tree crawl: depth up to **3**, up to **6** HTML pages (no doc download quota).\n"
+            "  **detailed** — deeper crawl: depth up to **5**, up to **50** pages, up to **10** linked document downloads (e.g. PDFs) when the scraper supports it.\n"
+            "Use **quick** for one policy page or a direct link; **medium** for a small site section; **detailed** when the user needs broad coverage or many linked files and latency is acceptable.\n"
+            "Omit scrape_mode or use **quick** unless the user (or agentic mode) clearly needs more coverage.\n"
+            "Returns: extracted text (combined across pages when crawling)."
         ),
         handler=_run,
         inputs_schema={

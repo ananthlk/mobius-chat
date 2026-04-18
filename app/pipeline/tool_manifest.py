@@ -1,57 +1,56 @@
+"""TOOL_MANIFEST — the planner prompt's catalog of dispatchable tools.
+
+Hybrid shape after skill-registry commit 3:
+
+  - Five tools are now **registry-owned** (document_upload_skill,
+    list_thread_document_uploads, healthcare_query, web_scrape,
+    google_search). Their descriptions live on ``SkillSpec.description``
+    and we render them here via ``registry.manifest_text(...)``. Adding
+    a new answer_tool-dispatched skill is one file — no edit here.
+
+  - Four tools are **router-owned**: ``search_corpus``,
+    ``healthcare_npi_lookup``, ``search_uploaded_document``, and
+    ``refuse`` dispatch in ``app/pipeline/react_loop.py``, not through
+    ``answer_tool``. They don't fit the ``SkillSpec`` contract cleanly
+    yet (search_corpus is the RAG pipeline; refuse is a terminal
+    short-circuit). Their manifest prose stays here until a future
+    refactor unifies react_loop's dispatch behind the same registry.
+
+  - ``ENTITY_TOOLS`` and ``FOLLOW_UP_CAPABLE`` are union sets:
+    registry-derived for the five migrated skills, plus hand-listed
+    additions for the router-owned ones. When healthcare_npi_lookup
+    etc. get their own ``SkillSpec``s, the hand-listed parts shrink.
+
+The planner sees the same text it saw before commit 3 — order
+preserved, prose preserved. This is deliberate: any drift in the
+planner prompt is a behavior change, and behavior changes aren't what
+this refactor is about.
 """
-TOOL_MANIFEST — the model reads this and picks tools.
-Each tool declares what it CAN and CANNOT do. Match the question to the best tool.
-If a tool fails (e.g. "no report in context"), try the next-best tool.
-"""
+
+from app.skills import registry
 from app.stages.agents.capabilities import tool_capabilities_for_parser
 
-TOOL_MANIFEST = f"""
-AVAILABLE TOOLS — match the question to the tool whose capabilities fit.
-If the first tool fails (e.g. returns no results), try the next-best tool.
 
-WORKFLOW SELECTION (chat UI) — The server may attach **clarification_options** on the assistant
-response: clickable choices (single- or multi-select). Users may also type a normal message instead
-(or in addition, depending on UI); the next turn is still plain user text for you to interpret.
-When choice chips appear, keep your summary short and point the user to the buttons; do not invent
-a separate prose-only list as the only way to proceed.
+# ── Router-owned prose (search_corpus, healthcare_npi_lookup, etc.) ──
 
-════════════════════════════════════════════
+_SEARCH_CORPUS_BLOCK = """\
 search_corpus(query)
   Search Mobius knowledge base (payer manuals, policy docs).
   Use for: ANY question not requiring structured data.
   This includes: enrollment, PA, appeals, credentialing process,
     timely filing, covered services, claims process.
   Try this FIRST for everything except the tools below.
-  Returns: answer with page citations and confidence score.
+  Returns: answer with page citations and confidence score."""
 
-healthcare_query(question)
-  Healthcare data lookup: ICD-10-CM codes (meaning of F32.1, Z00.00, etc.),
-    Medicare/Medicaid coverage summaries (NCD/LCD), CPT/HCPCS wording, diagnosis/procedure codes.
-  Also: NPI registry facts when the question is a 10-digit NPI number (same backend as registry lookup).
-  Use when: User asks what a code means, ICD-10, HCPCS, coverage, or NPI-by-number without PML context.
-  Do NOT use for: PML enrollment status (skill is being rebuilt — not available in chat currently).
-  Cannot: PML status without credentialing report; org NPI by name.
-
+_HEALTHCARE_NPI_LOOKUP_BLOCK = """\
 healthcare_npi_lookup(question)
   NPPES registry lookup ONLY when the user gives or asks about a 10-digit NPI number
     (name, taxonomy, address from the national registry).
   Do NOT use for: ICD-10, diagnosis codes, CPT, HCPCS, "what is code …", Medicare coverage, NCD/LCD —
     those are healthcare_query.
-  Use when: question is specifically NPI-registry lookup by number.
+  Use when: question is specifically NPI-registry lookup by number."""
 
-document_upload_skill()
-  First-class **document upload skill**: how to attach files to this chat thread for downstream tools.
-  Use when: user asks how to upload, attach a roster, send a file, supported formats, API/MCP integration,
-    or what the upload flow does. Multiple documents may be uploaded over time on the same thread.
-  Does NOT transfer bytes — returns instructions (UI: ⋯ → Upload file; HTTP: POST /chat/roster-upload).
-  Returns: Markdown with purposes, endpoints, and relation to roster reconciliation.
-
-list_thread_document_uploads(thread_id optional)
-  List documents already attached to the chat thread (purpose, filename, org, rows, time).
-  Use when: user asks what they uploaded, what's on file, or to confirm prior uploads.
-  thread_id defaults to the current conversation when omitted (server fills from context).
-  Returns: Markdown table of uploads + reconciliation defaults if set.
-
+_SEARCH_UPLOADED_DOCUMENT_BLOCK = """\
 search_uploaded_document(upload_id optional, query)
   **Instant-RAG** — search *inside* a user-uploaded document on this thread.
   Use when: the user refers to a document they attached (e.g. "what does my
@@ -66,48 +65,76 @@ search_uploaded_document(upload_id optional, query)
   Chunks returned are scoped to the one document, no tag filters. Use this
   tool BEFORE search_corpus when the user's question is self-referential
   to an upload; otherwise prefer search_corpus.
-  Returns: matched chunks with page citations from the uploaded document.
+  Returns: matched chunks with page citations from the uploaded document."""
 
-google_search(query)
-  Search the web for current information.
-  Use for: corpus misses, or user explicitly asks to search web.
-  Do NOT use as primary route — corpus goes first.
-  Returns: URLs and snippets, then auto-scrapes top result.
-
-web_scrape(url, scrape_mode optional)
-  Read the web: **quick** (default), **medium**, or **detailed** crawl from the seed URL.
-  scrape_mode:
-    **quick** — single page, fastest (default when unsure).
-    **medium** — same-site tree crawl: depth up to **3**, up to **6** HTML pages (no doc download quota).
-    **detailed** — deeper crawl: depth up to **5**, up to **50** pages, up to **10** linked document downloads (e.g. PDFs) when the scraper supports it.
-  Use **quick** for one policy page or a direct link; **medium** for a small site section; **detailed** when the user needs broad coverage or many linked files and latency is acceptable.
-  Omit scrape_mode or use **quick** unless the user (or agentic mode) clearly needs more coverage.
-  Returns: extracted text (combined across pages when crawling).
-
+_REFUSE_BLOCK = """\
 refuse(reason)
   Hard stop — no content returned.
   Use for: any question about a specific patient (PHI),
     any clinical treatment recommendation.
   "Is member 12345 eligible?" → refuse (PHI)
-  "What are eligibility rules?" → search_corpus (not PHI)
+  "What are eligibility rules?" → search_corpus (not PHI)"""
+
+# Registry skills, in the order the legacy manifest listed them so the
+# planner prompt byte-diff stays minimal across the refactor.
+_REGISTRY_ORDER: tuple[str, ...] = (
+    "healthcare_query",
+    "document_upload_skill",
+    "list_thread_document_uploads",
+    "google_search",
+    "web_scrape",
+)
+
+
+def _compose_manifest() -> str:
+    """Splice router-owned prose with registry-rendered skill blocks."""
+    blocks = [
+        _SEARCH_CORPUS_BLOCK,
+        registry.manifest_text(names=("healthcare_query",)),
+        _HEALTHCARE_NPI_LOOKUP_BLOCK,
+        registry.manifest_text(names=("document_upload_skill",)),
+        registry.manifest_text(names=("list_thread_document_uploads",)),
+        _SEARCH_UPLOADED_DOCUMENT_BLOCK,
+        registry.manifest_text(names=("google_search",)),
+        registry.manifest_text(names=("web_scrape",)),
+        _REFUSE_BLOCK,
+    ]
+    joined = "\n\n".join(b for b in blocks if b.strip())
+    return f"""
+AVAILABLE TOOLS — match the question to the tool whose capabilities fit.
+If the first tool fails (e.g. returns no results), try the next-best tool.
+
+WORKFLOW SELECTION (chat UI) — The server may attach **clarification_options** on the assistant
+response: clickable choices (single- or multi-select). Users may also type a normal message instead
+(or in addition, depending on UI); the next turn is still plain user text for you to interpret.
+When choice chips appear, keep your summary short and point the user to the buttons; do not invent
+a separate prose-only list as the only way to proceed.
+
+════════════════════════════════════════════
+{joined}
 
 PER-TOOL CAPABILITIES (explicit):
 {tool_capabilities_for_parser()}
 ════════════════════════════════════════════
 """
 
-# Which tools are entity tools (never receive jurisdiction context)
-# 2026-04-18 disconnect: credentialing/roster tools removed from the set
-# (their dispatch branches in react_loop.py are gone too).
-ENTITY_TOOLS = frozenset({
-    "web_scrape",
-    "healthcare_query",
+
+TOOL_MANIFEST = _compose_manifest()
+
+
+# ── Sets: union of registry-derived + router-owned ────────────────────
+#
+# ``healthcare_npi_lookup`` dispatches in react_loop and never takes
+# jurisdiction; it belongs to ENTITY_TOOLS until it gets its own
+# SkillSpec. search_corpus / refuse / search_uploaded_document aren't
+# entity tools so they don't appear here.
+
+_NON_REGISTRY_ENTITY_TOOLS = frozenset({
     "healthcare_npi_lookup",
-    "document_upload_skill",
-    "list_thread_document_uploads",
 })
 
-# Which tools can answer follow-up questions from their output
-FOLLOW_UP_CAPABLE = frozenset({
-    "list_thread_document_uploads",
-})
+ENTITY_TOOLS = registry.entity_tools() | _NON_REGISTRY_ENTITY_TOOLS
+
+# Post-disconnect, only list_thread_document_uploads is follow-up-capable.
+# That comes from the registry via the SkillSpec.follow_up_capable flag.
+FOLLOW_UP_CAPABLE = registry.follow_up_capable()

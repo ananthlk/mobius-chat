@@ -776,37 +776,39 @@ def _answer_tool_impl(
     _org_skill_mode = skill_search_mode if skill_search_mode in ("copilot", "agentic") else "copilot"
 
     from app.stages.agents.capabilities import get_capability_answer
-
+    from app.skills import registry as _skill_registry
 
     # ── Intent-based dispatch (from planner blueprint) ────────────────────
-    # tool_hint_override bypasses keyword matching entirely. Uses entity extraction
-    # so active jurisdiction NEVER bleeds into tool search targets.
+    # tool_hint_override bypasses keyword matching entirely. When the
+    # planner picks a tool, the registry dispatches it — all five
+    # answer_tool-dispatched skills (document_upload_skill,
+    # list_thread_document_uploads, healthcare_query, web_scrape,
+    # google_search) live as SkillSpec registrations in
+    # app/skills/builtin/*. Tool isolation (jurisdiction never leaking
+    # into entity lookups) is encoded per-skill via
+    # SkillSpec.requires_jurisdiction, so the dispatcher doesn't
+    # enforce it here.
     if tool_hint_override:
         hint = tool_hint_override.lower().strip()
-
-        # ── Registry dispatch (commits 1+2 of skill-registry refactor) ──
-        # Migrated so far: document_upload_skill, list_thread_document_uploads
-        # (commit 1); healthcare_query, web_scrape (commit 2). The legacy
-        # `if hint == "X"` branches below stay as a fallback when
-        # MOBIUS_USE_SKILL_REGISTRY=0 so the migration is rollback-safe.
-        # Commit 3 migrates google_search and deletes the legacy branches.
-        from app.skills import registry as _skill_registry
-
-        # web_scrape needs URL detection BEFORE registry dispatch so the
-        # legacy fall-through ("no URL → try google_search") survives the
-        # migration. The skill handler could check URL presence itself,
-        # but then the fall-through becomes registry-aware logic in
-        # tool_agent — cleaner to keep dispatcher responsible for rewriting
-        # the hint and skill responsible for executing it.
         skill_inputs: dict[str, Any] = dict(tool_inputs) if isinstance(tool_inputs, dict) else {}
+
+        # web_scrape fall-through: no URL → rewrite hint to google_search
+        # so the planner's "read this page or find it on the web" intent
+        # still gets a search when no URL was extractable.
         if hint == "web_scrape":
             url = scrape_url or _extract_url(question or "") or _extract_url(user_message or "")
             if not url:
-                hint = "google_search"  # no URL — legacy fall-through preserved
+                hint = "google_search"
             else:
                 skill_inputs["url"] = url
 
-        if _skill_registry.registry_enabled() and _skill_registry.has(hint):
+        # Pass question_intent through so google_search's query
+        # construction can use it (planner may set it via the planner
+        # blueprint; tool_inputs may also carry it directly).
+        if question_intent and "question_intent" not in skill_inputs:
+            skill_inputs["question_intent"] = question_intent
+
+        if _skill_registry.has(hint):
             call = _skill_registry.SkillCall(
                 name=hint,
                 inputs=skill_inputs,
@@ -820,128 +822,13 @@ def _answer_tool_impl(
                 extra_out=extra_out,
             )
             return _skill_registry.dispatch(call).to_legacy_tuple()
+        # Unknown hint → fall through to keyword dispatch below.
 
-        # Legacy dispatch (fallback when registry disabled or skill not
-        # yet migrated):
-        if hint == "document_upload_skill":
-            from app.skills.document_upload import DOCUMENT_UPLOAD_SKILL_MARKDOWN
-
-            return (DOCUMENT_UPLOAD_SKILL_MARKDOWN, [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
-
-        if hint == "list_thread_document_uploads":
-            from app.skills.document_upload import format_thread_uploads_markdown
-
-            tid = (thread_id or "").strip()
-            return (format_thread_uploads_markdown(tid), [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
-
-        # Extract entity from question text — ALWAYS from question, never from active_context
-        entity = extract_entity_from_question(text=(user_message or question or ""))
-        active = active_context or {}
-
-        if hint == "web_scrape":
-            url = scrape_url
-            if not url:
-                url = _extract_url(question or "") or _extract_url(user_message or "")
-            if url:
-                ws_mode: str | None = None
-                if isinstance(tool_inputs, dict):
-                    ws_mode = tool_inputs.get("scrape_mode") or tool_inputs.get("mode")
-                return _run_web_scrape(url, emitter=emitter, scrape_mode=ws_mode)
-            hint = "google_search"  # no URL — fall through to search
-
-        if hint == "google_search":
-            query = build_search_query(entity, active, intent=question_intent)
-            if not query.strip():
-                query = (question or "").strip()
-
-            # Emit the search query so the user can see what we're looking for
-            if emitter:
-                emitter(f'◌ Searching the web for: {query[:70]}')
-
-            # Fetch raw results with full URL list for scraping
-            raw_results, snippets, usage, signal = _run_google_search(
-                query, emitter=emitter, return_raw_results=True,
-            )
-
-            # Auto-scrape: score URLs and read the best page
-            org_name = entity.get('org_name') or (active or {}).get('payer') or None
-            state = (active or {}).get('jurisdiction') or (active or {}).get('state') or 'FL'
-
-            content, source_url, ok = score_and_scrape_top_result(
-                raw_results,
-                org_name=org_name,
-                state=state,
-                max_attempts=3,
-                emitter=emitter,
-            )
-
-            if ok and content:
-                domain = _extract_domain(source_url) or (source_url or "")[:40]
-                scraped_sources = [{
-                    "url": source_url,
-                    "source_type": "web",
-                    "document_name": domain,
-                    "confidence_label": "process_confident",
-                }]
-                return (content, scraped_sources, usage, RETRIEVAL_SIGNAL_GOOGLE_ONLY)
-
-            # All scrapes failed — LLM-summarise snippets with disclaimer
-            if snippets and "No search results" not in snippets:
-                _emit(emitter, "Summarizing search results...")
-                try:
-                    from app.services.llm_provider import get_llm_provider
-                    provider = get_llm_provider()
-                    prompt = (
-                        f"Use the following web search results to answer the user's question. "
-                        f"Cite sources by number [1], [2], etc.\n\nResults:\n{snippets}\n\n"
-                        f"Question: {question}\n\nAnswer:"
-                    )
-                    raw_ans, llm_usage = asyncio.run(provider.generate_with_usage(prompt))
-                    answer = (raw_ans or "").strip()
-                    disclaimer = (
-                        "\n\n[Note: Full page content could not be retrieved. "
-                        "These are search result summaries only — "
-                        "verify details directly with the payer.]"
-                    )
-                    return (
-                        answer + disclaimer,
-                        [{"document_name": "Web search", "source_type": "external"}],
-                        llm_usage,
-                        RETRIEVAL_SIGNAL_GOOGLE_ONLY,
-                    )
-                except Exception as e:
-                    logger.warning("LLM summarization of search snippets failed: %s", e)
-                    return (
-                        snippets + "\n\n[Note: These are search result summaries only — verify directly with the payer.]",
-                        [{"document_name": "Web search", "source_type": "external"}],
-                        None,
-                        RETRIEVAL_SIGNAL_GOOGLE_ONLY,
-                    )
-            return (snippets or "No relevant information found on the web for this query.", [], usage, RETRIEVAL_SIGNAL_NO_SOURCES)
-
-        if hint == "healthcare_query":
-            npi = entity.get('npi_number')
-            icd = entity.get('icd10_code')
-            state = active.get('jurisdiction', '') or active.get('state', '')
-            hc_question = npi or icd or entity.get('raw', '')[:120]
-            try:
-                result_text, success = call_mcp_tool(
-                    TOOL_HEALTHCARE_QUERY,
-                    {"question": hc_question},
-                )
-            except Exception as e:
-                logger.warning("call_mcp_tool healthcare_query (hint) failed: %s", e, exc_info=True)
-                return (f"I ran into an issue. {e}. Please try again.", [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
-            if success and result_text and "Error:" not in result_text:
-                sources = [{"index": 1, "document_name": "Healthcare lookup", "text": result_text[:300], "source_type": "external"}]
-                return (result_text, sources, None, RETRIEVAL_SIGNAL_NO_SOURCES)
-            return (
-                result_text if result_text else "Healthcare lookup failed. Ensure mobius-healthcare API is running.",
-                [],
-                None,
-                RETRIEVAL_SIGNAL_NO_SOURCES,
-            )
-    # ── Existing keyword-based dispatch continues below ───────────────────
+    # ── Keyword-based dispatch (non-ReAct fallback) ──────────────────────
+    # ReAct mode drives everything via tool_hint_override; the keyword
+    # triggers below only fire when the planner didn't set a hint or
+    # the caller explicitly wants keyword intent matching. Kept for
+    # resolve.py's non-ReAct path; a later refactor can retire them.
 
     q_lower = (question or "").strip().lower()
     roster_check_text = (user_message or question or "").strip()
