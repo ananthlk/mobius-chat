@@ -92,7 +92,8 @@ jobs:
             tests/test_parallel_retrieval.py \
             tests/test_tpd_tracker.py \
             tests/test_instant_rag_catalog.py \
-            tests/test_react_split_phase_1i.py
+            tests/test_react_split_phase_1i.py \
+            tests/test_b1d_restoration_banner.py
 
       - name: Report summary
         if: always()

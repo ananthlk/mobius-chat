@@ -5729,6 +5729,134 @@ ${message}`;
     },
     { capture: true }
   );
+  const uploadRestoreBanner = document.getElementById("uploadRestoreBanner");
+  const uploadRestoreBannerList = document.getElementById("uploadRestoreBannerList");
+  const uploadRestoreBannerDismiss = document.getElementById("uploadRestoreBannerDismiss");
+  const restoreInFlight = /* @__PURE__ */ new Set();
+  function hideRestoreBanner() {
+    if (uploadRestoreBanner)
+      uploadRestoreBanner.hidden = true;
+  }
+  function userDismissedRestoreBanner() {
+    try {
+      return sessionStorage.getItem("_mobiusRestoreBannerDismissed") === "1";
+    } catch {
+      return false;
+    }
+  }
+  uploadRestoreBannerDismiss?.addEventListener("click", () => {
+    hideRestoreBanner();
+    try {
+      sessionStorage.setItem("_mobiusRestoreBannerDismissed", "1");
+    } catch {
+    }
+  });
+  async function linkUploadToCurrentThread(documentId, filename, button) {
+    if (!currentThreadId) {
+      return;
+    }
+    if (restoreInFlight.has(documentId))
+      return;
+    restoreInFlight.add(documentId);
+    const originalText = button.textContent || "Attach";
+    button.disabled = true;
+    button.textContent = "Attaching\u2026";
+    try {
+      const resp = await fetch(
+        API_BASE + "/chat/uploads/" + encodeURIComponent(documentId) + "/link-to-thread",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ thread_id: currentThreadId })
+        }
+      );
+      if (!resp.ok) {
+        const detail = await resp.json().catch(() => null);
+        throw new Error(detail?.detail || `Attach failed (${resp.status})`);
+      }
+      await resp.json();
+      button.textContent = "Attached \u2713";
+      showChatStatusBanner(`\u2713 "${filename}" attached to this chat \u2014 ask away.`, 5e3);
+      setTimeout(() => {
+        const row = button.closest(".upload-restore-banner__row");
+        row?.remove();
+        if (uploadRestoreBannerList && uploadRestoreBannerList.children.length === 0) {
+          hideRestoreBanner();
+        }
+      }, 600);
+    } catch (err) {
+      console.error("[restore-banner] link failed:", err);
+      showChatStatusBanner(`\u2717 Couldn't attach "${filename}": ${err?.message || err}`, 1e4);
+      button.disabled = false;
+      button.textContent = originalText;
+    } finally {
+      restoreInFlight.delete(documentId);
+    }
+  }
+  async function maybeShowRestoreBanner() {
+    if (!uploadRestoreBanner || !uploadRestoreBannerList)
+      return;
+    if (userDismissedRestoreBanner())
+      return;
+    if (currentThreadId) {
+      try {
+        const r = await fetch(
+          API_BASE + "/chat/thread/" + encodeURIComponent(currentThreadId) + "/uploads"
+        );
+        if (r.ok) {
+          const body = await r.json().catch(() => ({}));
+          const md = String(body?.markdown || body?.result || body || "");
+          if (/instant[-_ ]?rag|\.pdf\b|\.docx\b/i.test(md)) {
+            hideRestoreBanner();
+            return;
+          }
+        }
+      } catch {
+      }
+    }
+    let uploads = [];
+    try {
+      const params = new URLSearchParams({ limit: "5" });
+      if (currentThreadId)
+        params.set("current_thread_id", currentThreadId);
+      const r = await fetch(API_BASE + "/chat/uploads/recent/for-restoration?" + params.toString());
+      if (!r.ok)
+        return;
+      const body = await r.json();
+      uploads = body?.uploads || [];
+    } catch {
+      return;
+    }
+    if (!uploads.length) {
+      hideRestoreBanner();
+      return;
+    }
+    uploadRestoreBannerList.replaceChildren();
+    for (const u of uploads) {
+      const row = document.createElement("div");
+      row.className = "upload-restore-banner__row";
+      const name = document.createElement("span");
+      name.className = "upload-restore-banner__filename";
+      name.textContent = String(u.filename || "upload");
+      name.title = String(u.filename || "");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "upload-restore-banner__attach";
+      btn.textContent = "Attach to this chat";
+      btn.addEventListener("click", () => {
+        void linkUploadToCurrentThread(
+          String(u.document_id || ""),
+          String(u.filename || "upload"),
+          btn
+        );
+      });
+      row.appendChild(name);
+      row.appendChild(btn);
+      uploadRestoreBannerList.appendChild(row);
+    }
+    uploadRestoreBanner.hidden = false;
+  }
+  void maybeShowRestoreBanner();
   function openUploadModal() {
     hideRosterUploadReceipt();
     const modal2 = document.getElementById("uploadModal");

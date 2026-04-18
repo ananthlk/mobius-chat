@@ -22,8 +22,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.api.front_door import auth_mode, require_user
 from app.storage.instant_rag_catalog import (
     STATUS_ACTIVE,
     get_by_document_id,
@@ -88,3 +89,156 @@ def get_upload(document_id: str) -> dict[str, Any]:
     if not row:
         raise HTTPException(status_code=404, detail="Upload not found in catalog.")
     return _to_payload(row)
+
+
+@router.get("/chat/uploads/recent/for-restoration")
+def list_recent_for_restoration(
+    current_thread_id: str | None = Query(None, description="Exclude uploads that belong to this thread"),
+    limit: int = Query(10, ge=1, le=50),
+    user_id: str | None = Depends(require_user),
+) -> dict[str, Any]:
+    """Phase B.1d — power the "you have recent uploads" banner.
+
+    Returns the user's most recent instant-rag uploads that are NOT
+    already on the current thread. Used by the frontend on page load /
+    new-thread to offer a one-click restore for a doc that was uploaded
+    on a different thread earlier.
+
+    Scoping by auth mode (Phase 1h):
+      - auth=required: ``user_id`` is guaranteed non-null (dependency 401s
+        without a valid JWT); we scope catalog reads to that user.
+      - auth=off (dev): ``user_id`` is None. We fall back to returning the
+        globally most-recent active uploads. That's safe in dev because no
+        other users exist; in prod this branch never runs because
+        auth_mode() is 'required' by default.
+      - auth=optional: returns user-scoped when the caller is authed,
+        global-scoped when they're not — matches the optional-auth intent
+        of letting anonymous callers still see their own recent uploads
+        (nothing to scope by, so show recent).
+
+    The banner is strictly advisory; clicking "Attach to this chat" goes
+    through link_upload_to_thread below which is the single write path.
+    """
+    from app.storage.instant_rag_catalog import _conn, _SELECT_SQL, _row_to_dict
+
+    if user_id:
+        rows = list_for_user(user_id, include_inactive=False, limit=limit * 2)
+    else:
+        # Dev / auth-off branch — query catalog without user scope.
+        # Keeping the SQL here (vs adding another catalog helper) because
+        # this case is auth-mode-specific, not a general pattern.
+        try:
+            conn = _conn()
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    f"{_SELECT_SQL} WHERE status = 'active' "
+                    f"ORDER BY created_at DESC LIMIT %s",
+                    (limit * 2,),
+                )
+                rows = [_row_to_dict(r) for r in cur.fetchall()]
+                cur.close()
+            finally:
+                conn.close()
+        except Exception:
+            rows = []
+
+    # Filter out uploads already on the current thread so the banner only
+    # offers things the user genuinely needs to restore.
+    if current_thread_id:
+        rows = [r for r in rows if r.get("thread_id") != current_thread_id]
+
+    rows = rows[:limit]
+    return {
+        "auth_scope": "user" if user_id else "global",
+        "current_thread_id": current_thread_id,
+        "count": len(rows),
+        "uploads": [_to_payload(r) for r in rows],
+    }
+
+
+@router.post("/chat/uploads/{document_id}/link-to-thread")
+def link_upload_to_thread(
+    document_id: str,
+    body: dict[str, Any],
+    user_id: str | None = Depends(require_user),
+) -> dict[str, Any]:
+    """Phase B.1d — attach an existing upload to another thread without
+    re-uploading the bytes.
+
+    The catalog row stays put (``thread_id`` field records the *origin*
+    thread); we only write a JSONB reference into the target thread's
+    ``active.uploaded_files[]`` so the ReAct loop's
+    ``_resolve_upload_document_id`` fast-path finds it.
+
+    Why not just change catalog.thread_id? Because one upload can be
+    useful on many threads — the user might want to reference
+    "Sunshine_Manual.pdf" from three different chats. The catalog
+    records origin; thread-level JSONB records usage. This keeps the
+    two dimensions separate.
+
+    Security: auth_mode=required users can only link THEIR OWN uploads
+    (catalog.user_id match). In auth=off the check is skipped (dev).
+    """
+    target_thread_id = (body.get("thread_id") or "").strip()
+    if not target_thread_id:
+        raise HTTPException(status_code=400, detail="thread_id required in body.")
+
+    row = get_by_document_id(document_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Upload not found in catalog.")
+    if row.get("status") != STATUS_ACTIVE:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Upload is not active (status={row.get('status')}); cannot link.",
+        )
+
+    # Ownership check when auth is on. In auth=off dev mode, skip.
+    if auth_mode() == "required":
+        if not user_id:
+            # Shouldn't get here — require_user would have 401'd — but
+            # defense in depth.
+            raise HTTPException(status_code=401, detail="Authentication required.")
+        if row.get("user_id") and row.get("user_id") != user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="This upload belongs to another user.",
+            )
+
+    # Write a JSONB entry into the target thread's active.uploaded_files[].
+    # Re-use the same shape _handle_instant_rag_upload writes so the
+    # ReAct loop + _resolve_upload_document_id don't need to know the
+    # entry came from a link operation.
+    from datetime import datetime, timezone
+
+    from app.storage.threads import append_uploaded_file_record, ensure_thread
+
+    record = {
+        "upload_id": row.get("upload_id") or "",
+        "org_id": "",
+        "org_name": "instant-rag",
+        "purpose": "instant_rag",
+        "filename": row.get("filename") or "upload",
+        "row_count": row.get("chunks_count") or 0,
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+        "reconciliation_upload_id": None,
+        "envelope_id": row.get("envelope_id"),
+        "document_id": document_id,
+        # Mark this specific record as a link so future read paths can
+        # distinguish "original upload on this thread" from "linked-in".
+        "linked_from_thread": row.get("thread_id"),
+    }
+
+    try:
+        real_tid = ensure_thread(target_thread_id) or target_thread_id
+        ok = append_uploaded_file_record(real_tid, record)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Link failed: {e}") from e
+
+    return {
+        "linked": bool(ok),
+        "document_id": document_id,
+        "target_thread_id": real_tid,
+        "origin_thread_id": row.get("thread_id"),
+        "filename": row.get("filename"),
+    }

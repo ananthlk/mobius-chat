@@ -6493,6 +6493,178 @@ function run(): void {
     { capture: true },
   );
 
+  // ─────────────────────────────────────────────────────────────────────
+  // Phase B.1d — restoration banner.
+  //
+  // When the current thread has no instant_rag uploads but the catalog
+  // has recent ones, show a strip above the composer offering one-click
+  // "Attach to this chat" for each. No bytes re-uploaded — the click
+  // goes through /chat/uploads/{doc_id}/link-to-thread which writes a
+  // JSONB reference into the target thread's active.uploaded_files[]
+  // so search_uploaded_document finds the same chunks already in
+  // Chroma+PG.
+  //
+  // Fires on: page load, thread creation (currentThreadId becomes truthy).
+  // Skips: sessionStorage "dismissed" flag, threads that already have
+  // uploads, empty catalog.
+  // ─────────────────────────────────────────────────────────────────────
+  const uploadRestoreBanner = document.getElementById("uploadRestoreBanner") as HTMLElement | null;
+  const uploadRestoreBannerList = document.getElementById("uploadRestoreBannerList") as HTMLElement | null;
+  const uploadRestoreBannerDismiss = document.getElementById("uploadRestoreBannerDismiss") as HTMLButtonElement | null;
+
+  // Tracks doc_ids currently being linked so double-clicks don't duplicate.
+  const restoreInFlight = new Set<string>();
+
+  function hideRestoreBanner(): void {
+    if (uploadRestoreBanner) uploadRestoreBanner.hidden = true;
+  }
+
+  function userDismissedRestoreBanner(): boolean {
+    try {
+      return sessionStorage.getItem("_mobiusRestoreBannerDismissed") === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  uploadRestoreBannerDismiss?.addEventListener("click", () => {
+    hideRestoreBanner();
+    try {
+      sessionStorage.setItem("_mobiusRestoreBannerDismissed", "1");
+    } catch {
+      // sessionStorage can fail in private-mode browsers; banner just
+      // re-shows on next navigation — acceptable degradation.
+    }
+  });
+
+  async function linkUploadToCurrentThread(
+    documentId: string,
+    filename: string,
+    button: HTMLButtonElement,
+  ): Promise<void> {
+    if (!currentThreadId) {
+      // No thread yet — send a stub chat turn first so the server
+      // creates one, or just ignore. Simplest: ignore and let the user
+      // send a message or attach a fresh file. Banner stays.
+      return;
+    }
+    if (restoreInFlight.has(documentId)) return;
+    restoreInFlight.add(documentId);
+    const originalText = button.textContent || "Attach";
+    button.disabled = true;
+    button.textContent = "Attaching…";
+    try {
+      const resp = await fetch(
+        API_BASE + "/chat/uploads/" + encodeURIComponent(documentId) + "/link-to-thread",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ thread_id: currentThreadId }),
+        },
+      );
+      if (!resp.ok) {
+        const detail = await resp.json().catch(() => null as any);
+        throw new Error(detail?.detail || `Attach failed (${resp.status})`);
+      }
+      await resp.json();
+      // Success: flash a banner and remove the just-attached row from
+      // the list (if the user has more recent uploads, those stay).
+      button.textContent = "Attached ✓";
+      showChatStatusBanner(`✓ "${filename}" attached to this chat — ask away.`, 5000);
+      // Remove the row after a short delay so the "Attached ✓" state is
+      // visible for a moment.
+      setTimeout(() => {
+        const row = button.closest(".upload-restore-banner__row");
+        row?.remove();
+        // If the list is now empty, hide the whole banner.
+        if (uploadRestoreBannerList && uploadRestoreBannerList.children.length === 0) {
+          hideRestoreBanner();
+        }
+      }, 600);
+    } catch (err: any) {
+      console.error("[restore-banner] link failed:", err);
+      showChatStatusBanner(`✗ Couldn't attach "${filename}": ${err?.message || err}`, 10000);
+      button.disabled = false;
+      button.textContent = originalText;
+    } finally {
+      restoreInFlight.delete(documentId);
+    }
+  }
+
+  async function maybeShowRestoreBanner(): Promise<void> {
+    if (!uploadRestoreBanner || !uploadRestoreBannerList) return;
+    if (userDismissedRestoreBanner()) return;
+    // If the current thread already has instant-rag uploads, the user
+    // isn't looking for a restore — don't nag them.
+    if (currentThreadId) {
+      try {
+        const r = await fetch(
+          API_BASE + "/chat/thread/" + encodeURIComponent(currentThreadId) + "/uploads",
+        );
+        if (r.ok) {
+          const body = await r.json().catch(() => ({} as any));
+          // The existing /chat/thread/{id}/uploads returns markdown;
+          // we just need to know "does it mention an upload?". Markdown
+          // for an empty thread starts with "No documents" or similar.
+          const md = String(body?.markdown || body?.result || body || "");
+          if (/instant[-_ ]?rag|\.pdf\b|\.docx\b/i.test(md)) {
+            // Thread has uploads already — no banner.
+            hideRestoreBanner();
+            return;
+          }
+        }
+      } catch {
+        // Can't tell either way; fall through and try to show anyway.
+      }
+    }
+
+    // Fetch recent uploads not on this thread.
+    let uploads: any[] = [];
+    try {
+      const params = new URLSearchParams({ limit: "5" });
+      if (currentThreadId) params.set("current_thread_id", currentThreadId);
+      const r = await fetch(API_BASE + "/chat/uploads/recent/for-restoration?" + params.toString());
+      if (!r.ok) return;
+      const body = await r.json();
+      uploads = body?.uploads || [];
+    } catch {
+      return;
+    }
+    if (!uploads.length) {
+      hideRestoreBanner();
+      return;
+    }
+
+    // Render rows.
+    uploadRestoreBannerList.replaceChildren();
+    for (const u of uploads) {
+      const row = document.createElement("div");
+      row.className = "upload-restore-banner__row";
+      const name = document.createElement("span");
+      name.className = "upload-restore-banner__filename";
+      name.textContent = String(u.filename || "upload");
+      name.title = String(u.filename || "");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "upload-restore-banner__attach";
+      btn.textContent = "Attach to this chat";
+      btn.addEventListener("click", () => {
+        void linkUploadToCurrentThread(
+          String(u.document_id || ""),
+          String(u.filename || "upload"),
+          btn,
+        );
+      });
+      row.appendChild(name);
+      row.appendChild(btn);
+      uploadRestoreBannerList.appendChild(row);
+    }
+    uploadRestoreBanner.hidden = false;
+  }
+
+  // Fire once on load, and whenever the thread id changes (new chat).
+  void maybeShowRestoreBanner();
+
   /** Reset upload UI and show sheet (⋯ → Upload file). */
   function openUploadModal(): void {
     hideRosterUploadReceipt();
