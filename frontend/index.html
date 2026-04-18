@@ -252,6 +252,32 @@
     </main>
   </div>
 
+  <!-- Phase B.1a: large-file confirm dialog.
+       Shown BEFORE upload when the staged file exceeds the "likely large"
+       threshold (~500 KB, which maps roughly to the user's "10-15 pages"
+       intuition for text-heavy PDFs). Gives the user a choice instead of
+       silently committing them to a 30-60s wait. The batch option is
+       surfaced disabled for now — wiring lives in Phase B.7 (promote
+       envelope to the full batch pipeline). -->
+  <div class="upload-overlay upload-overlay--sheet" id="largeUploadOverlay"></div>
+  <div class="upload-modal upload-modal--sheet" id="largeUploadModal" role="dialog" aria-labelledby="largeUploadModalTitle" aria-modal="true" hidden>
+    <h2 id="largeUploadModalTitle">Large document</h2>
+    <p class="upload-modal-desc" id="largeUploadModalBody">
+      <!-- Body text filled in by JS with concrete filename + size + estimated pages. -->
+    </p>
+    <div class="upload-modal-actions" style="display:flex; flex-direction:column; gap:8px; margin-top:16px;">
+      <button type="button" class="btn-primary" id="largeUploadProceedInstant">
+        Upload now (instant search in this chat)
+      </button>
+      <button type="button" class="btn-primary" id="largeUploadProceedBatch" disabled
+              title="Coming soon — the batch pipeline gives the document full tags + cross-corpus visibility."
+              style="opacity:0.55; cursor:not-allowed;">
+        Queue for batch processing (coming soon)
+      </button>
+      <button type="button" class="btn-secondary" id="largeUploadCancel">Cancel</button>
+    </div>
+  </div>
+
   <div class="upload-overlay upload-overlay--sheet" id="uploadOverlay"></div>
   <div class="upload-modal upload-modal--sheet" id="uploadModal" role="dialog" aria-labelledby="uploadModalTitle" aria-modal="true" hidden>
     <h2 id="uploadModalTitle">Upload file</h2>

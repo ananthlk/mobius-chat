@@ -6227,6 +6227,79 @@ function run(): void {
     });
   }
 
+  // ── Large-file confirm gate ───────────────────────────────────────────
+  //
+  // Above this size, show a modal before upload so the user can choose
+  // between instant (wait 30-60s) and batch (queued, coming soon in B.7).
+  // 500KB ≈ 10-15 pages of text-heavy PDF — matches the user's intuition
+  // of what counts as "large enough to warrant a prompt." Image-heavy
+  // PDFs trip this at fewer pages, but that's fine: the prompt is a
+  // heads-up, not a hard rejection.
+  const LARGE_FILE_THRESHOLD_BYTES = 500 * 1024;
+
+  // Rough page estimate for the prompt body. Users grok "N pages" better
+  // than "N bytes." 4KB/page is the instant-rag skill's chunking unit;
+  // for PDFs the real extracted text is ~3-8KB per page but this gives
+  // a defensible ballpark for the prompt.
+  function estimatePageCount(file: File): number {
+    const bytesPerPage = 4 * 1024;
+    return Math.max(1, Math.round(file.size / bytesPerPage));
+  }
+
+  function showLargeUploadConfirm(file: File): Promise<"instant" | "batch" | "cancel"> {
+    return new Promise((resolve) => {
+      const overlay = document.getElementById("largeUploadOverlay") as HTMLElement | null;
+      const modal = document.getElementById("largeUploadModal") as HTMLElement | null;
+      const bodyEl = document.getElementById("largeUploadModalBody") as HTMLElement | null;
+      const proceedInstant = document.getElementById("largeUploadProceedInstant") as HTMLButtonElement | null;
+      const proceedBatch = document.getElementById("largeUploadProceedBatch") as HTMLButtonElement | null;
+      const cancelBtn = document.getElementById("largeUploadCancel") as HTMLButtonElement | null;
+      // Defensive: if the modal DOM is missing (older cached HTML), fall
+      // through to instant without blocking the user.
+      if (!modal || !overlay || !proceedInstant || !cancelBtn) {
+        resolve("instant");
+        return;
+      }
+      const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+      const pages = estimatePageCount(file);
+      if (bodyEl) {
+        bodyEl.innerHTML =
+          `"<strong>${file.name}</strong>" is <strong>${sizeMb} MB</strong> ` +
+          `(roughly <strong>${pages} pages</strong>). Instant upload extracts, ` +
+          `chunks, and embeds it right now so you can search it in this chat — ` +
+          `that typically takes <strong>30 to 60 seconds</strong> for a document this size.` +
+          `<br><br>` +
+          `Batch processing runs the full ingestion pipeline (tags, cross-corpus ` +
+          `visibility, permanent storage) asynchronously — not yet wired up.`;
+      }
+      const cleanup = () => {
+        modal.setAttribute("hidden", "");
+        overlay.classList.remove("open");
+        proceedInstant.removeEventListener("click", onInstant);
+        proceedBatch?.removeEventListener("click", onBatch);
+        cancelBtn.removeEventListener("click", onCancel);
+        overlay.removeEventListener("click", onCancel);
+        document.removeEventListener("keydown", onKey);
+      };
+      const onInstant = () => { cleanup(); resolve("instant"); };
+      const onBatch = () => { cleanup(); resolve("batch"); };
+      const onCancel = () => { cleanup(); resolve("cancel"); };
+      const onKey = (e: KeyboardEvent) => {
+        if (e.key === "Escape") onCancel();
+        if (e.key === "Enter") onInstant();
+      };
+      proceedInstant.addEventListener("click", onInstant);
+      proceedBatch?.addEventListener("click", onBatch);
+      cancelBtn.addEventListener("click", onCancel);
+      overlay.addEventListener("click", onCancel);
+      document.addEventListener("keydown", onKey);
+      modal.removeAttribute("hidden");
+      overlay.classList.add("open");
+      // Focus the primary action so Enter confirms.
+      proceedInstant.focus();
+    });
+  }
+
   // Phase-emit timers for the composer upload. Parallels the upload-modal
   // progression the user already sees in ⋯ → Upload file, but routed
   // through the chat status banner instead of the modal's status field.
@@ -6307,6 +6380,32 @@ function run(): void {
     if (!composerStagedFile) {
       sendMessage();
       return;
+    }
+    // Large-file gate: prompt BEFORE the upload starts so the user can
+    // cancel or defer to a (future) batch path. Small files skip the
+    // prompt entirely — the common "small doc + quick ask" flow stays
+    // one-click.
+    if (composerStagedFile.size > LARGE_FILE_THRESHOLD_BYTES) {
+      const choice = await showLargeUploadConfirm(composerStagedFile);
+      if (choice === "cancel") {
+        // User backed out. Leave the chip in place so they can adjust
+        // (pick a different doc, type a different question, or ×).
+        return;
+      }
+      if (choice === "batch") {
+        // Batch path is stubbed — the instant-rag skill's
+        // /envelope/{id}/promote endpoint returns "promote not yet
+        // connected to batch pipeline" today (Phase B.7 future work).
+        // Until then, tell the user it's coming and don't proceed.
+        showChatStatusBanner(
+          `Batch processing for "${composerStagedFile.name}" is queued — but the ` +
+          `batch pipeline isn't wired up yet (coming in Phase B.7). For now, ` +
+          `pick "Upload now" to use the doc in this chat immediately.`,
+          15000,
+        );
+        return;
+      }
+      // choice === "instant" → fall through to the normal upload path.
     }
     sendBtn.disabled = true;
     try {

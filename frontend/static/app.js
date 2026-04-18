@@ -5551,6 +5551,65 @@ ${message}`;
       }
     });
   }
+  const LARGE_FILE_THRESHOLD_BYTES = 500 * 1024;
+  function estimatePageCount(file) {
+    const bytesPerPage = 4 * 1024;
+    return Math.max(1, Math.round(file.size / bytesPerPage));
+  }
+  function showLargeUploadConfirm(file) {
+    return new Promise((resolve) => {
+      const overlay = document.getElementById("largeUploadOverlay");
+      const modal2 = document.getElementById("largeUploadModal");
+      const bodyEl = document.getElementById("largeUploadModalBody");
+      const proceedInstant = document.getElementById("largeUploadProceedInstant");
+      const proceedBatch = document.getElementById("largeUploadProceedBatch");
+      const cancelBtn = document.getElementById("largeUploadCancel");
+      if (!modal2 || !overlay || !proceedInstant || !cancelBtn) {
+        resolve("instant");
+        return;
+      }
+      const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+      const pages = estimatePageCount(file);
+      if (bodyEl) {
+        bodyEl.innerHTML = `"<strong>${file.name}</strong>" is <strong>${sizeMb} MB</strong> (roughly <strong>${pages} pages</strong>). Instant upload extracts, chunks, and embeds it right now so you can search it in this chat \u2014 that typically takes <strong>30 to 60 seconds</strong> for a document this size.<br><br>Batch processing runs the full ingestion pipeline (tags, cross-corpus visibility, permanent storage) asynchronously \u2014 not yet wired up.`;
+      }
+      const cleanup = () => {
+        modal2.setAttribute("hidden", "");
+        overlay.classList.remove("open");
+        proceedInstant.removeEventListener("click", onInstant);
+        proceedBatch?.removeEventListener("click", onBatch);
+        cancelBtn.removeEventListener("click", onCancel);
+        overlay.removeEventListener("click", onCancel);
+        document.removeEventListener("keydown", onKey);
+      };
+      const onInstant = () => {
+        cleanup();
+        resolve("instant");
+      };
+      const onBatch = () => {
+        cleanup();
+        resolve("batch");
+      };
+      const onCancel = () => {
+        cleanup();
+        resolve("cancel");
+      };
+      const onKey = (e) => {
+        if (e.key === "Escape")
+          onCancel();
+        if (e.key === "Enter")
+          onInstant();
+      };
+      proceedInstant.addEventListener("click", onInstant);
+      proceedBatch?.addEventListener("click", onBatch);
+      cancelBtn.addEventListener("click", onCancel);
+      overlay.addEventListener("click", onCancel);
+      document.addEventListener("keydown", onKey);
+      modal2.removeAttribute("hidden");
+      overlay.classList.add("open");
+      proceedInstant.focus();
+    });
+  }
   let composerUploadPhaseTimers = [];
   function stopComposerUploadPhaseEmits() {
     composerUploadPhaseTimers.forEach((id) => window.clearTimeout(id));
@@ -5607,6 +5666,19 @@ ${message}`;
     if (!composerStagedFile) {
       sendMessage();
       return;
+    }
+    if (composerStagedFile.size > LARGE_FILE_THRESHOLD_BYTES) {
+      const choice = await showLargeUploadConfirm(composerStagedFile);
+      if (choice === "cancel") {
+        return;
+      }
+      if (choice === "batch") {
+        showChatStatusBanner(
+          `Batch processing for "${composerStagedFile.name}" is queued \u2014 but the batch pipeline isn't wired up yet (coming in Phase B.7). For now, pick "Upload now" to use the doc in this chat immediately.`,
+          15e3
+        );
+        return;
+      }
     }
     sendBtn.disabled = true;
     try {

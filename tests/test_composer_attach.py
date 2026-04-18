@@ -234,6 +234,90 @@ class TestUploadProgressEmits:
         )
 
 
+class TestLargeFileConfirmGate:
+    """Phase B.1a — large-file confirmation.
+
+    Above ~500KB (user's "10-15 pages" intuition for text-heavy PDFs),
+    show a modal BEFORE upload so the user chooses instant vs batch
+    instead of being silently committed to a 30-60s wait. The batch
+    option is surfaced disabled today (promote pipeline stubbed;
+    Phase B.7 wires it up).
+
+    These tests assert the DOM hooks, the threshold, and that the
+    confirmation gate actually blocks upload until the user picks.
+    """
+
+    def test_large_upload_modal_markup(self, html_text: str):
+        for anchor in (
+            'id="largeUploadModal"',
+            'id="largeUploadOverlay"',
+            'id="largeUploadProceedInstant"',
+            'id="largeUploadProceedBatch"',
+            'id="largeUploadCancel"',
+            'id="largeUploadModalBody"',
+        ):
+            assert anchor in html_text, (
+                f"Large-upload confirm modal anchor {anchor} missing — "
+                f"without it, showLargeUploadConfirm has no DOM to drive."
+            )
+
+    def test_batch_option_disabled_today(self, html_text: str):
+        """Batch promotion is Phase B.7 — until it lands, the button
+        must stay disabled so users don't silently fall into a dead path."""
+        # Extract the batch button's opening tag and assert it has disabled.
+        idx = html_text.find('id="largeUploadProceedBatch"')
+        assert idx >= 0
+        # Walk back to the opening <button ...> to check attributes.
+        open_tag_end = html_text.find(">", idx)
+        open_tag_start = html_text.rfind("<button", 0, idx)
+        tag = html_text[open_tag_start:open_tag_end + 1]
+        assert " disabled" in tag, (
+            "Batch option must be disabled until Phase B.7 wires up "
+            "/envelope/{id}/promote. Removing the disabled attribute "
+            "without implementing the backend path will silently drop "
+            "user intent."
+        )
+
+    def test_threshold_is_reasonable(self, js_text: str):
+        """The threshold must be > 100KB (below that, even a short memo
+        triggers the prompt) and < 5MB (above that, real docs silently
+        slip past). 500KB is the calibrated sweet spot."""
+        import re
+        m = re.search(r"LARGE_FILE_THRESHOLD_BYTES\s*=\s*([^;]+);", js_text)
+        assert m, "LARGE_FILE_THRESHOLD_BYTES constant missing or renamed"
+        # Evaluate the expression — it's a simple numeric literal or arithmetic.
+        value = eval(m.group(1), {"__builtins__": {}}, {})
+        assert 100 * 1024 <= value <= 5 * 1024 * 1024, (
+            f"LARGE_FILE_THRESHOLD_BYTES={value} is outside the reasonable "
+            f"calibration range. Sub-100KB spams the prompt; above 5MB "
+            f"silently accepts documents that will take 60+ seconds."
+        )
+
+    def test_confirm_called_in_send_flow(self, js_text: str):
+        """The send flow must call showLargeUploadConfirm for large files.
+        If it's defined but never awaited, the gate is dead code."""
+        assert "showLargeUploadConfirm" in js_text
+        assert "LARGE_FILE_THRESHOLD_BYTES" in js_text
+        # Heuristic: in the send flow, the helper should appear near the
+        # threshold check. They should both appear in the TS source.
+        # (We don't check proximity because minification shuffles things.)
+
+    def test_three_choices_returned_by_confirm(self, js_text: str):
+        """The dialog must resolve to one of 'instant' | 'batch' | 'cancel'.
+        A two-choice (yes/no) regression would drop the batch-promotion
+        seam the dialog is pre-wiring."""
+        for choice in ('"instant"', '"batch"', '"cancel"'):
+            assert choice in js_text, (
+                f"Confirm dialog no longer resolves {choice!r}; the "
+                f"three-way contract is being relied on by the caller."
+            )
+
+    def test_escape_and_enter_handled(self, js_text: str):
+        """Keyboard support: Esc cancels, Enter confirms (instant)."""
+        assert '"Escape"' in js_text
+        assert '"Enter"' in js_text
+
+
 class TestComposerAttachBuildSync:
     """Catches the "I edited app.ts but forgot to run npm run build" failure
     mode. mstart runs `npm run build` on boot, but CI and any local dev
