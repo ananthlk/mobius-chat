@@ -5551,10 +5551,31 @@ ${message}`;
       }
     });
   }
+  let composerUploadPhaseTimers = [];
+  function stopComposerUploadPhaseEmits() {
+    composerUploadPhaseTimers.forEach((id) => window.clearTimeout(id));
+    composerUploadPhaseTimers = [];
+  }
+  function startComposerUploadPhaseEmits(filename) {
+    stopComposerUploadPhaseEmits();
+    const phases = [
+      { ms: 0, text: `\u23F3 Uploading "${filename}" \u2014 extracting text\u2026` },
+      { ms: 3e3, text: `\u23F3 Uploading "${filename}" \u2014 chunking + generating embeddings\u2026` },
+      { ms: 12e3, text: `\u23F3 Uploading "${filename}" \u2014 publishing to RAG\u2026` },
+      { ms: 3e4, text: `\u23F3 Still processing "${filename}" \u2014 large documents can take up to a minute\u2026` },
+      { ms: 6e4, text: `\u23F3 Still processing "${filename}" \u2014 nearly done or retrying\u2026` }
+    ];
+    phases.forEach(({ ms, text }) => {
+      const id = window.setTimeout(() => showChatStatusBanner(text, 0), ms);
+      composerUploadPhaseTimers.push(id);
+    });
+  }
   async function uploadStagedAttachmentForInstantRag() {
     if (!composerStagedFile)
       return null;
+    const filename = composerStagedFile.name;
     composerAttachmentChip?.classList.add("is-uploading");
+    startComposerUploadPhaseEmits(filename);
     try {
       const formData = new FormData();
       formData.append("file", composerStagedFile);
@@ -5573,8 +5594,12 @@ ${message}`;
       const data = await resp.json();
       if (data.thread_id)
         currentThreadId = data.thread_id;
+      const chunks = typeof data.chunks_count === "number" ? data.chunks_count : 0;
+      const chunksLabel = chunks > 0 ? ` (${chunks} chunk${chunks === 1 ? "" : "s"})` : "";
+      showChatStatusBanner(`\u2713 "${filename}" ingested${chunksLabel} \u2014 searching\u2026`, 4e3);
       return data;
     } finally {
+      stopComposerUploadPhaseEmits();
       composerAttachmentChip?.classList.remove("is-uploading");
     }
   }
@@ -5595,7 +5620,10 @@ ${message}`;
       sendMessage();
     } catch (err) {
       console.error("[composer-attach] upload failed:", err);
-      alert(`Upload failed: ${err?.message || err}`);
+      stopComposerUploadPhaseEmits();
+      const msg = err?.message || String(err);
+      showChatStatusBanner(`\u2717 Upload failed: ${msg}`, 2e4);
+      alert(`Upload failed: ${msg}`);
       sendBtn.disabled = false;
     }
   }

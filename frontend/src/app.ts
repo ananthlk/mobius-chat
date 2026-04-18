@@ -6227,9 +6227,44 @@ function run(): void {
     });
   }
 
+  // Phase-emit timers for the composer upload. Parallels the upload-modal
+  // progression the user already sees in ⋯ → Upload file, but routed
+  // through the chat status banner instead of the modal's status field.
+  // Without these, the user sees only a pulsing chip and can't tell
+  // whether the 30-60s pause is progress or a hang.
+  let composerUploadPhaseTimers: ReturnType<typeof setTimeout>[] = [];
+  function stopComposerUploadPhaseEmits(): void {
+    composerUploadPhaseTimers.forEach((id) => window.clearTimeout(id));
+    composerUploadPhaseTimers = [];
+  }
+  function startComposerUploadPhaseEmits(filename: string): void {
+    stopComposerUploadPhaseEmits();
+    // Same three-step story as the upload modal for instant_rag, adapted
+    // for the composer context. The skill's actual timing varies with
+    // doc size: extraction 1-3s, chunking+embedding 5-30s, publish 1-2s.
+    // Messages are time-gated rather than progress-driven because we
+    // don't get intermediate signals back from the urlopen().
+    const phases: Array<{ ms: number; text: string }> = [
+      { ms: 0,     text: `⏳ Uploading "${filename}" — extracting text…` },
+      { ms: 3000,  text: `⏳ Uploading "${filename}" — chunking + generating embeddings…` },
+      { ms: 12000, text: `⏳ Uploading "${filename}" — publishing to RAG…` },
+      { ms: 30000, text: `⏳ Still processing "${filename}" — large documents can take up to a minute…` },
+      { ms: 60000, text: `⏳ Still processing "${filename}" — nearly done or retrying…` },
+    ];
+    phases.forEach(({ ms, text }) => {
+      // autoHideMs=0 keeps each message up until the next phase replaces it
+      // or the success/failure handler clears the banner. The real upload
+      // completion always runs the cleanup path.
+      const id = window.setTimeout(() => showChatStatusBanner(text, 0), ms);
+      composerUploadPhaseTimers.push(id);
+    });
+  }
+
   async function uploadStagedAttachmentForInstantRag(): Promise<any | null> {
     if (!composerStagedFile) return null;
+    const filename = composerStagedFile.name;
     composerAttachmentChip?.classList.add("is-uploading");
+    startComposerUploadPhaseEmits(filename);
     try {
       const formData = new FormData();
       formData.append("file", composerStagedFile);
@@ -6249,8 +6284,16 @@ function run(): void {
       }
       const data = await resp.json();
       if (data.thread_id) currentThreadId = data.thread_id;
+      // Success: flash a short confirmation (chunks_count reported by
+      // the skill gives the user concrete feedback that ingest worked)
+      // then let it auto-hide. The chat-turn thinking block takes over
+      // from here.
+      const chunks = typeof data.chunks_count === "number" ? data.chunks_count : 0;
+      const chunksLabel = chunks > 0 ? ` (${chunks} chunk${chunks === 1 ? "" : "s"})` : "";
+      showChatStatusBanner(`✓ "${filename}" ingested${chunksLabel} — searching…`, 4000);
       return data;
     } finally {
+      stopComposerUploadPhaseEmits();
       composerAttachmentChip?.classList.remove("is-uploading");
     }
   }
@@ -6276,7 +6319,16 @@ function run(): void {
       sendMessage();
     } catch (err: any) {
       console.error("[composer-attach] upload failed:", err);
-      alert(`Upload failed: ${err?.message || err}`);
+      // Stop the phase timers so the "still processing" message doesn't
+      // flash after the error. Then put the failure in the banner with
+      // a longer dwell so the user can read it before it auto-hides.
+      stopComposerUploadPhaseEmits();
+      const msg = err?.message || String(err);
+      showChatStatusBanner(`✗ Upload failed: ${msg}`, 20000);
+      // Keep the alert too — the banner can be dismissed or missed if
+      // the user is looking elsewhere, and upload failure is a hard
+      // block that deserves an interrupt.
+      alert(`Upload failed: ${msg}`);
       sendBtn.disabled = false;
     }
   }

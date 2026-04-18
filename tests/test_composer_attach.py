@@ -171,6 +171,69 @@ class TestComposerAttachJSWiring:
         assert "composerAttachmentChipRemove" in js_text
 
 
+class TestUploadProgressEmits:
+    """Phase B.1a progress UX — users need visible feedback during the
+    30-60s ingest pause. A silent pulsing chip felt like a hang.
+
+    Locked in: the upload path must (a) surface phase messages via
+    showChatStatusBanner on a staged timer, (b) emit a success message
+    with chunks_count on completion, (c) clear the phase timers in
+    both success and failure paths.
+    """
+
+    def test_phase_emits_helper_present(self, js_text: str):
+        assert "startComposerUploadPhaseEmits" in js_text, (
+            "startComposerUploadPhaseEmits was removed — users will see "
+            "a silent pulsing chip during a 30-60s ingest. Restore the "
+            "phase-emit pattern (parallels the upload-modal flow)."
+        )
+        assert "stopComposerUploadPhaseEmits" in js_text, (
+            "Stop helper missing — phase timers leak past upload completion."
+        )
+
+    def test_phase_messages_include_filename(self, js_text: str):
+        """Bare 'Extracting…' is ambiguous when the user might have
+        multiple things in flight. Filename in the phase message is
+        disambiguating."""
+        # Look for the template literal interpolation with filename.
+        assert "${filename}" in js_text
+
+    def test_phase_emits_cover_realistic_timing(self, js_text: str):
+        """Real ingests land between 3s (small HTML) and 60s+ (large PDFs
+        with embedding calls). The phase schedule must run past 30s — if
+        the latest emit is sub-10s, the user sees "Still processing" 20s
+        before the skill actually returns and assumes it's hung."""
+        # Look for a phase timer at >= 30000ms. We only assert the
+        # existence of at least one large ms value in the source.
+        import re
+        ms_values = [int(m) for m in re.findall(r"ms:\s*(\d+)", js_text)]
+        assert any(v >= 30000 for v in ms_values), (
+            "No phase emit at 30s+ — long uploads will feel dead. "
+            f"Found ms values: {sorted(set(ms_values))}"
+        )
+
+    def test_success_banner_mentions_chunks(self, js_text: str):
+        """On success, the banner should surface chunks_count so the
+        user knows the skill actually did the work. Silent success
+        (just "done") leaves them guessing whether retrieval has any
+        content to find."""
+        assert "chunks_count" in js_text
+        assert "ingested" in js_text
+
+    def test_phase_timers_stopped_on_failure(self, js_text: str):
+        """Failure path must call stopComposerUploadPhaseEmits or the
+        "still processing" message keeps flashing after the alert."""
+        # Both branches (finally in uploadStagedAttachmentForInstantRag
+        # AND the catch in sendMessageWithAttachment) call stop — either
+        # one fires covers the failure path.
+        assert js_text.count("stopComposerUploadPhaseEmits") >= 2, (
+            "stopComposerUploadPhaseEmits not called in both the finally "
+            "block AND the catch handler — phase timers will leak past "
+            "upload failure and the banner will keep showing progress "
+            "messages over the error."
+        )
+
+
 class TestComposerAttachBuildSync:
     """Catches the "I edited app.ts but forgot to run npm run build" failure
     mode. mstart runs `npm run build` on boot, but CI and any local dev
