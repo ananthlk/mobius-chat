@@ -392,6 +392,7 @@ def _handle_instant_rag_upload(
     import json as json_mod
     import uuid as _uuid_mod
     import io
+    import urllib.error
     import urllib.request
     import threading as _threading
     from datetime import datetime, timezone
@@ -457,6 +458,39 @@ def _handle_instant_rag_upload(
         )
         with urllib.request.urlopen(req, timeout=120) as resp:
             rag_result = json_mod.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        # Surface upstream skill errors with the actual status code so
+        # the user gets actionable info — 413 (too large), 422 (bad
+        # request body), 500 (skill crashed) all look very different
+        # from the user's perspective. 2026-04-17: a large provider
+        # manual triggered the skill's 50-page cap and the alert just
+        # said "HTTP Error 413" with no next step.
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            body = ""
+        logger.warning("Instant-RAG ingest failed: %s — %s", e, body)
+        if e.code == 413:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    "Document too large for instant upload. "
+                    "The skill's page cap is controlled by INSTANT_RAG_MAX_PAGES "
+                    "(default 300 pages of ~4KB each). For larger docs, either "
+                    "raise the env var on the instant-rag skill or use the batch "
+                    f"ingest pipeline. Skill said: {body or str(e)}"
+                ),
+            )
+        if e.code == 422:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Instant-RAG rejected the upload: {body or str(e)}",
+            )
+        raise HTTPException(
+            status_code=502,
+            detail=f"Instant-RAG ingest failed ({e.code}): {body or str(e)[:200]}",
+        )
     except Exception as e:
         logger.warning("Instant-RAG ingest failed: %s", e)
         raise HTTPException(status_code=502, detail=f"Instant-RAG ingest failed: {str(e)[:200]}")
