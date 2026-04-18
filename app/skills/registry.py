@@ -288,7 +288,11 @@ def registry_enabled() -> bool:
 # needs ``from app.skills import registry`` to pick everything up.
 def _load_builtins() -> None:
     # Import side-effect: each module registers its skills.
+    # Keep in alphabetical order; each entry is a single line so a
+    # commit that adds a new builtin is a one-line diff.
     from app.skills.builtin import document_uploads  # noqa: F401
+    from app.skills.builtin import healthcare  # noqa: F401
+    from app.skills.builtin import web  # noqa: F401
 
 
 _load_builtins()

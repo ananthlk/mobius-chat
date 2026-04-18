@@ -784,18 +784,32 @@ def _answer_tool_impl(
     if tool_hint_override:
         hint = tool_hint_override.lower().strip()
 
-        # ── Registry dispatch (commit 1 of skill-registry refactor) ──
-        # Two skills migrated: document_upload_skill +
-        # list_thread_document_uploads. The legacy `if hint == "X"` branches
-        # below stay as a fallback when MOBIUS_USE_SKILL_REGISTRY=0 so the
-        # migration is rollback-safe. Commits 2+3 migrate the rest then
-        # delete the legacy branches and this flag.
+        # ── Registry dispatch (commits 1+2 of skill-registry refactor) ──
+        # Migrated so far: document_upload_skill, list_thread_document_uploads
+        # (commit 1); healthcare_query, web_scrape (commit 2). The legacy
+        # `if hint == "X"` branches below stay as a fallback when
+        # MOBIUS_USE_SKILL_REGISTRY=0 so the migration is rollback-safe.
+        # Commit 3 migrates google_search and deletes the legacy branches.
         from app.skills import registry as _skill_registry
+
+        # web_scrape needs URL detection BEFORE registry dispatch so the
+        # legacy fall-through ("no URL → try google_search") survives the
+        # migration. The skill handler could check URL presence itself,
+        # but then the fall-through becomes registry-aware logic in
+        # tool_agent — cleaner to keep dispatcher responsible for rewriting
+        # the hint and skill responsible for executing it.
+        skill_inputs: dict[str, Any] = dict(tool_inputs) if isinstance(tool_inputs, dict) else {}
+        if hint == "web_scrape":
+            url = scrape_url or _extract_url(question or "") or _extract_url(user_message or "")
+            if not url:
+                hint = "google_search"  # no URL — legacy fall-through preserved
+            else:
+                skill_inputs["url"] = url
 
         if _skill_registry.registry_enabled() and _skill_registry.has(hint):
             call = _skill_registry.SkillCall(
                 name=hint,
-                inputs=tool_inputs or {},
+                inputs=skill_inputs,
                 question=question or "",
                 user_message=user_message,
                 thread_id=thread_id,

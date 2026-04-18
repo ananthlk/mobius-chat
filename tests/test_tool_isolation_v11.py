@@ -232,17 +232,25 @@ class TestAnswerToolEntityIsolation:
     # NPI-by-number and address lookups is still covered below.
 
     def test_npi_by_number_no_payer_contamination(self):
-        """Class A: 'Look up NPI 1234567890' → healthcare_query with NPI number, no payer passed."""
-        with patch("app.services.tool_agent.call_mcp_tool") as mock_mcp:
-            mock_mcp.return_value = ("Provider: Jane Doe, NPI: 1234567890, Specialty: Psychiatry", True)
+        """Class A: 'Look up NPI 1234567890' → healthcare_query with NPI number, no payer passed.
+
+        Patches both MCP import sites: the legacy branch in tool_agent
+        uses ``app.services.tool_agent.call_mcp_tool``; the registry
+        handler (commit 2 of skill-registry migration) lazy-imports from
+        ``app.services.mcp_manager``. Patching both means the test works
+        whether the registry flag is on or off."""
+        with patch("app.services.tool_agent.call_mcp_tool") as mock_tool, \
+             patch("app.services.mcp_manager.call_mcp_tool") as mock_mgr:
+            mock_tool.return_value = ("Provider: Jane Doe, NPI: 1234567890, Specialty: Psychiatry", True)
+            mock_mgr.return_value = ("Provider: Jane Doe, NPI: 1234567890, Specialty: Psychiatry", True)
             answer, sources, _, signal = answer_tool(
                 "Look up NPI 1234567890",
                 tool_hint_override="healthcare_query",
                 active_context=self._active,
             )
-        calls = mock_mcp.call_args_list
+        calls = list(mock_tool.call_args_list) + list(mock_mgr.call_args_list)
         hc_call = next((c for c in calls if c[0][0] == TOOL_HEALTHCARE_QUERY), None)
-        assert hc_call is not None, "healthcare_query was never called"
+        assert hc_call is not None, "healthcare_query was never called on either import path"
         question_arg = hc_call[0][1].get("question", "")
         assert "1234567890" in question_arg
         assert "Sunshine" not in question_arg
