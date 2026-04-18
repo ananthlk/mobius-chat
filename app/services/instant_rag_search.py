@@ -157,6 +157,23 @@ def lazy_rag_search(
     distances = (result.get("distances") or [[]])[0]
 
     if not ids:
+        # 2026-04-17 diagnostic: empty Chroma result has two very different
+        # causes — (a) no vectors for this document_id (ingest failed to
+        # write to Chroma, e.g. dimension mismatch), (b) vectors exist but
+        # none passed the similarity cutoff. Log enough to tell them apart.
+        try:
+            probe = coll.get(where={"document_id": document_id}, limit=1)
+            vector_count_hint = len(probe.get("ids") or [])
+        except Exception:
+            vector_count_hint = -1
+        logger.warning(
+            "[instant-rag] empty Chroma result for document_id=%r. "
+            "Vectors-for-doc probe: %s "
+            "(0 = skill didn't write to Chroma — likely embedding dim mismatch "
+            "or write error; >0 = query embedding missed all of them).",
+            document_id,
+            vector_count_hint if vector_count_hint >= 0 else "probe_failed",
+        )
         _emit(emitter, "  ↓ nothing relevant found in the uploaded doc.")
         return ("", [], None, _SIGNAL_NO_SOURCES)
 
