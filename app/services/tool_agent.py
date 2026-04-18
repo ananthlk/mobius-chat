@@ -28,7 +28,34 @@ from app.communication.workflow_selection import (
     format_npi_org_search_summary_for_disambiguation,
 )
 from app.services.mcp_manager import call_mcp_tool
-from app.services.roster_credentialing_orchestrator import run_orchestrator, _provider_roster_base_url
+
+
+# 2026-04-18 disconnect: roster_credentialing_orchestrator was deleted.
+# tool_agent.py still has ~400 LOC of credentialing-specific helper
+# functions (lookup_org_npi, find_org_locations, etc.) that referenced
+# run_orchestrator + _provider_roster_base_url from it. With the ReAct
+# tool branches removed in commit 2, those helpers are unreachable —
+# no caller in the codebase invokes them — but they're still
+# module-level and their imports must resolve.
+#
+# Stubbed below so the module keeps loading. The helpers will fall
+# through to "" base URL → HTTPException 503 if anything ever calls
+# them, which is the right behavior for orphaned dead code. A later
+# cleanup pass will delete the helpers outright; out of scope for
+# this commit which is focused on deleting the services + DB modules.
+
+def _provider_roster_base_url() -> str:
+    """Stub — credentialing skill is disconnected as of 2026-04-18."""
+    return ""
+
+
+def run_orchestrator(*args, **kwargs):
+    """Stub — credentialing skill is disconnected as of 2026-04-18."""
+    raise RuntimeError(
+        "run_orchestrator was removed with the credentialing disconnect. "
+        "If this raises, a caller survived the 2026-04-18 cleanup and "
+        "needs to be removed too."
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -2066,10 +2093,12 @@ def _answer_tool_impl(
         org_name = (question or "").strip()
         upload_id = (reconciliation_upload_id or "").strip()
         org_id = (reconciliation_org_id or "").strip()
-        if org_id and not upload_id:
-            from app.services.roster_source_of_truth import resolve_reconciliation_upload_id_for_org
-
-            upload_id = resolve_reconciliation_upload_id_for_org(org_id, explicit_upload_id=None) or ""
+        # 2026-04-18 disconnect: roster_source_of_truth removed along with
+        # the rest of the credentialing services. This branch is
+        # unreachable after the ReAct tool dispatch cleanup (commit 2 of
+        # the disconnect), so the downstream code here will raise a
+        # clear error if anything reaches it instead of silently missing
+        # the upload_id resolution.
         base = _provider_roster_base_url()
         if not base or not org_name or not upload_id or not org_id:
             missing = []
@@ -2687,9 +2716,12 @@ def _answer_tool_impl(
                         active_merge = (st or {}).get("active") or {}
                     except Exception:
                         active_merge = {}
-                from app.pipeline.credentialing_envelope import resolve_step3_roster_merge_context
-
-                uid3, ext3, incl3 = resolve_step3_roster_merge_context(active_merge, credentialing_options)
+                # 2026-04-18 disconnect: credentialing_envelope deleted.
+                # This branch is also unreachable (same dead-code story
+                # as the roster_reconciliation branch above) — fallback
+                # to empty merge context so dispatch won't crash if it
+                # somehow gets here.
+                uid3, ext3, incl3 = None, None, None
                 result_text, ostate = run_orchestrator(
                     org_name,
                     emitter=emitter,

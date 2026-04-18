@@ -213,13 +213,19 @@ class TestReactLoopRatchet:
     tighten this ceiling. Never loosen.
 
     Sub-pass log:
-      pre-1i pass 1     2,459 LOC   (watched-file monolith risk discovered)
-      post-1i pass 1    ~2,086 LOC  (parsing + prompts extracted)
-      post-1i pass 2    TBD         (dispatcher extraction)
-      post-1i pass 3    TBD         (integrator extraction)
+      pre-1i pass 1          2,459 LOC   (watched-file monolith risk discovered)
+      post-1i pass 1         ~2,086 LOC  (parsing + prompts extracted)
+      post cred-disconnect   ~1,405 LOC  (7 credentialing/roster tool
+                                           branches + 5 helper functions
+                                           removed 2026-04-18; planner
+                                           manifest no longer advertises
+                                           them so no dispatch reaches
+                                           the removed code regardless)
+      post-1i pass 2         TBD         (dispatcher extraction)
+      post-1i pass 3         TBD         (integrator extraction)
     """
 
-    MAX_REACT_LOOP_LOC = 2_100  # tighten as passes 2+3 land
+    MAX_REACT_LOOP_LOC = 1_420  # tighten as passes 2+3 land
 
     def test_react_loop_loc_under_ceiling(self):
         loc = len(REACT_LOOP.read_text().splitlines())

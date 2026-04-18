@@ -609,274 +609,22 @@ def post_chat_roster_upload(
             thread_id=thread_id, file_purpose=purpose,
         )
 
-    # ── Roster path (original) ───────────────────────────────────────────
-    if ext not in ("csv", "xlsx", "xls"):
-        raise HTTPException(status_code=400, detail="Roster files must be CSV or Excel (.csv, .xlsx, .xls)")
-
-    base = (os.environ.get("CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL") or "").rstrip("/").split("/report")[0]
-    if not base:
-        raise HTTPException(
-            status_code=503,
-            detail="Roster upload not configured. Set CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL.",
-        )
-    if not org_name:
-        raise HTTPException(status_code=400, detail="org_name is required for roster uploads")
-
-    # 1. Resolve org_id — fast path: read from pipeline run state if available.
-    #    Fallback: quick NPPES search with 5s timeout (non-fatal if it fails).
-    import urllib.request
-    import urllib.parse
-    import json as json_mod
-    import threading as _threading
-    org_id = ""
-    matched_org_name = org_name
-    matched_practice_address: str | None = None
-
-    # Fast path: get org NPI from the credentialing run (already looked up in Step 1)
-    _run_id_val = (run_id or "").strip()
-    if _run_id_val:
-        try:
-            from app.services.credentialing_run_service import _store_get
-            _rec = _store_get(_run_id_val)
-            if _rec:
-                _state_dict = (_rec.get("orchestrator_state_dict") or {})
-                _npi = (
-                    _state_dict.get("org_npi")
-                    or _state_dict.get("billing_npi")
-                    or (_state_dict.get("selected_npis") or [None])[0]
-                    or ""
-                )
-                if _npi:
-                    org_id = str(_npi).strip().zfill(10)
-                matched_org_name = _state_dict.get("org_name") or org_name
-        except Exception as _e:
-            logger.debug("Could not get org_id from run state: %s", _e)
-
-    # org_id unknown — will be resolved asynchronously after upload_id is known (see step 2b below)
-    _needs_bg_org_search = not org_id
-
-    # 2. Upload roster to provider-roster-credentialing
-    ct = "text/csv" if ext == "csv" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    upload_url = f"{base}/roster-uploads"
-    import io
-    import httpx
-    files = {"file": (filename, io.BytesIO(content), ct)}
-    data = {"org_name": org_name, "org_id": org_id}
-    try:
-        with httpx.Client(timeout=60.0) as client:
-            upload_resp = client.post(upload_url, files=files, data=data)
-    except Exception as e:
-        logger.warning("Roster upload request failed: %s", e)
-        raise HTTPException(status_code=502, detail=f"Roster upload failed: {e}") from e
-    if upload_resp.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"Roster upload rejected: {upload_resp.text[:500]}")
-    upload_data = upload_resp.json()
-    upload_id = upload_data.get("upload_id") or ""
-    if not upload_id:
-        raise HTTPException(status_code=502, detail="No upload_id from roster upload")
-
-    # 2b. Backfill org_id asynchronously (search takes ~60s, non-critical metadata)
-    if _needs_bg_org_search:
-        def _bg_org_search(base_url: str, name: str, uid: str) -> None:
-            try:
-                _r = urllib.request.Request(
-                    f"{base_url}/search/org-names",
-                    data=json_mod.dumps({"name": name}).encode(),
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
-                )
-                with urllib.request.urlopen(_r, timeout=60) as _resp:
-                    _top = (json_mod.loads(_resp.read().decode()).get("results") or [{}])[0]
-                    _oid = (_top.get("org_id") or _top.get("npi") or "").strip().zfill(10)
-                if _oid and uid:
-                    import httpx as _hx
-                    with _hx.Client(timeout=10) as _c:
-                        _c.patch(f"{base_url}/roster-uploads/{uid}", json={"org_id": _oid})
-            except Exception as _e:
-                logger.debug("Background org search: %s", _e)
-        _threading.Thread(target=_bg_org_search, args=(base, org_name, upload_id), daemon=True).start()
-
-    # 3. Register with the new NPI reconciliation pipeline (TurboTax-style progress UI).
-    #    Runs right after upload so it always has the file, regardless of step 4 outcome.
-    #    Non-fatal: if this fails the primary credentialing pipeline still proceeds.
-    reconciliation_upload_id: str | None = None
-    reconciliation_ui_url: str | None = None
-    try:
-        with httpx.Client(timeout=30.0) as rc_client:
-            # 3a: store the file in the reconciliation pipeline (no auto-reconcile to avoid blocking)
-            new_upload_resp = rc_client.post(
-                f"{base}/roster/upload",
-                files={"file": (filename, io.BytesIO(content), ct)},
-                data={
-                    "org_name": org_name,
-                    "file_purpose": "roster_reconciliation",
-                    "auto_reconcile": "false",
-                    "uploaded_by": "chat",
-                },
-            )
-            if new_upload_resp.status_code == 200:
-                rc_data = new_upload_resp.json()
-                reconciliation_upload_id = rc_data.get("upload_id") or None
-                if reconciliation_upload_id:
-                    reconciliation_ui_url = (
-                        f"{base}/roster-ui/progress.html?upload_id={reconciliation_upload_id}"
-                    )
-                    # 3b: kick off reconciliation — pass Step-2 org locations if available
-                    try:
-                        # Look up Step-2 practice locations from the active pipeline run
-                        _org_locations: list[dict] = []
-                        _run_id = (run_id or "").strip()
-                        if _run_id:
-                            try:
-                                from app.services.credentialing_run_service import _store_get
-                                _rec = _store_get(_run_id)
-                                if _rec:
-                                    _state_dict = (_rec.get("orchestrator_state_dict") or {})
-                                    _org_locations = _state_dict.get("locations") or []
-                            except Exception as _loc_err:
-                                logger.debug("Could not load run locations: %s", _loc_err)
-                        rc_client.post(
-                            f"{base}/roster/reconcile/{reconciliation_upload_id}",
-                            json={"org_locations": _org_locations} if _org_locations else None,
-                            timeout=5.0,
-                        )
-                    except Exception:
-                        pass
-            else:
-                logger.warning("New reconciliation upload returned %s", new_upload_resp.status_code)
-    except Exception as exc:
-        logger.warning("New reconciliation upload skipped: %s", exc)
-
-    # 3c. Persist reconciliation_upload_id to the pipeline run state (step3_roster_upload_id)
-    #     so the pipeline page auto-loads the last roster without requiring a re-upload.
-    if reconciliation_upload_id and run_id:
-        def _patch_run_upload_id(rid: str, uid: str) -> None:
-            try:
-                from app.storage.credentialing_runs_pg import patch_step3_upload_id
-                patch_step3_upload_id(rid, uid)
-            except Exception as _e:
-                logger.debug("patch_step3_upload_id failed: %s", _e)
-        _threading.Thread(
-            target=_patch_run_upload_id,
-            args=(run_id, reconciliation_upload_id),
-            daemon=True,
-        ).start()
-
-    # 4. Process via legacy credentialing pipeline (parse, clean, resolve NPIs via GCS/BQ).
-    #    Runs in a background thread — DOES NOT block the response.
-    #    The new reconciliation pipeline (step 3) is the primary real-time path.
-    def _run_legacy_process(url: str, data: bytes) -> None:
-        try:
-            _req = urllib.request.Request(url, data=data,
-                                          headers={"Content-Type": "application/json"},
-                                          method="POST")
-            with urllib.request.urlopen(_req, timeout=120) as _resp:
-                _resp.read()
-        except Exception as _e:
-            logger.debug("Legacy roster process (background): %s", _e)
-
-    _proc_payload = json_mod.dumps({"resolve_npi": True, "state": "FL"}).encode()
-    _threading.Thread(
-        target=_run_legacy_process,
-        args=(f"{base}/roster-uploads/{upload_id}/process", _proc_payload),
-        daemon=True,
-    ).start()
-
-    # These values are no longer available synchronously (legacy runs in background).
-    proc_data: dict = {}
-    _process_error: str | None = None
-    rc_clean = 0
-    rc_res = 0
-    row_count = 0
-    resolution_summary: dict | None = None
-    pipeline_progress: dict | None = None
-
-    # 5. Save to thread state — runs in a background thread so the response is instant.
-    #    The upload IDs are returned immediately; thread state persists asynchronously.
-    from datetime import datetime, timezone
-
-    purpose = (file_purpose or "roster_reconciliation").strip() or "roster_reconciliation"
-    if purpose not in ("roster_reconciliation", "instant_rag", "other"):
-        purpose = "roster_reconciliation"
-
-    # Generate thread id without blocking (no DB call yet)
-    _tid_input = (thread_id or "").strip() or None
-    import uuid as _uuid_mod
-    tid = _tid_input or str(_uuid_mod.uuid4())
-
-    record: dict[str, Any] = {
-        "upload_id": upload_id,
-        "org_id": org_id,
-        "org_name": org_name,
-        "purpose": purpose,
-        "filename": filename,
-        "row_count": 0,
-        "uploaded_at": datetime.now(timezone.utc).isoformat(),
-        "reconciliation_upload_id": reconciliation_upload_id,
-    }
-
-    def _persist_thread_state(tid: str, record: dict) -> None:
-        try:
-            real_tid = ensure_thread(tid)
-            append_uploaded_file_record(real_tid, record)
-        except Exception as _e:
-            logger.debug("Background thread-state save skipped: %s", _e)
-
-    _threading.Thread(
-        target=_persist_thread_state,
-        args=(tid, record),
-        daemon=True,
-    ).start()
-
-    # Log roster upload event to audit log (fire-and-forget, non-fatal)
-    def _log_upload_audit(skill_base: str, org: str, fname: str, uid: str, rc_uid: str | None) -> None:
-        try:
-            import urllib.request as _ur
-            evt = [{
-                "org_name":    org,
-                "event_type":  "uploaded",
-                "upload_id":   uid,
-                "actor":       "user",
-                "actor_label": "Roster file upload",
-                "event_data": {
-                    "filename":                fname,
-                    "upload_id":               uid,
-                    "reconciliation_upload_id": rc_uid,
-                },
-            }]
-            _req = _ur.Request(
-                f"{skill_base}/roster/log-events",
-                data=json_mod.dumps(evt).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with _ur.urlopen(_req, timeout=8):
-                pass
-        except Exception as _e:
-            logger.debug("Upload audit log (non-fatal): %s", _e)
-    if base:
-        _threading.Thread(
-            target=_log_upload_audit,
-            args=(base, org_name, filename, upload_id, reconciliation_upload_id),
-            daemon=True,
-        ).start()
-
-    out: dict[str, Any] = {
-        "upload_id": upload_id,
-        "org_id": org_id,
-        "org_name": org_name,
-        "row_count": 0,
-        "thread_id": tid,
-        "file_purpose": purpose,
-        "default_billing_npi": org_id,
-        "filename": filename,
-        "matched_organization_name": matched_org_name,
-        "matched_practice_address": matched_practice_address,
-        "reconciliation_upload_id": reconciliation_upload_id,
-        "reconciliation_ui_url": reconciliation_ui_url,
-    }
-    return out
-
+    # 2026-04-18 disconnect — roster upload branch removed.
+    # The old implementation (~260 LOC) proxied to the
+    # provider-roster-credentialing skill, registered reconciliation
+    # uploads, and patched credentialing_runs_pg.step3_roster_upload_id.
+    # All of it gone with the credentialing disconnect; a roster
+    # file_purpose now 400s so the caller gets a clear error
+    # rather than a silent half-success.
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"file_purpose={purpose!r} is not supported on this chat. "
+            "Only file_purpose='instant_rag' is accepted (the paperclip "
+            "affordance already handles this). Roster/credentialing "
+            "uploads will rebuild as a standalone skill integration."
+        ),
+    )
 
 @app.get("/chat/thread/{thread_id}/uploads")
 def get_thread_uploads(thread_id: str) -> dict[str, Any]:
@@ -1221,78 +969,14 @@ async def internal_skill_llm(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Financial Strategy skill proxy — /chat/financial-strategy/* → provider-roster-credentialing
+# Financial Strategy proxies REMOVED 2026-04-18.
+# Nine /chat/financial-strategy/*, /chat/org-story, /chat/org-story-v2,
+# /chat/market-map, /chat/industry-report-data routes plus their shared
+# _fs_proxy helper were cut as part of the credentialing/roster/strategy
+# disconnect. These will rebuild cleanly as a separate skill integration
+# when that work lands; chat should not proxy into the credentialing
+# skill server.
 # ═══════════════════════════════════════════════════════════════════════════════
-
-def _fs_proxy(method: str, path: str, *, json_body=None, timeout: float = 30.0):
-    """Proxy helper for financial-strategy routes on the credentialing skill server."""
-    import httpx
-    base = _skill_base()
-    if not base:
-        raise HTTPException(status_code=503, detail="Skill server not configured")
-    try:
-        with httpx.Client(timeout=timeout) as c:
-            r = c.request(method, f"{base}{path}", json=json_body)
-            r.raise_for_status()
-            return r.json()
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Skill server error: {e}") from e
-
-
-@app.get("/chat/financial-strategy/orgs")
-def fs_list_orgs():
-    """Proxy: list available orgs with canonical data."""
-    return _fs_proxy("GET", "/financial-strategy/orgs")
-
-
-@app.get("/chat/financial-strategy/industry")
-def fs_industry():
-    """Proxy: static industry landscape chapter."""
-    return _fs_proxy("GET", "/financial-strategy/industry")
-
-
-@app.post("/chat/financial-strategy/generate-baseline")
-def fs_generate_baseline(body: dict = Body(...)):
-    """Proxy: generate industry + org baseline chapter."""
-    return _fs_proxy("POST", "/financial-strategy/generate-baseline", json_body=body)
-
-
-@app.post("/chat/financial-strategy/ask")
-def fs_ask(body: dict = Body(...)):
-    """Proxy: Q&A over org's financial position (includes LLM reframe)."""
-    return _fs_proxy("POST", "/financial-strategy/ask", json_body=body, timeout=60.0)
-
-
-@app.post("/chat/financial-strategy/generate-plan")
-def fs_generate_plan(body: dict = Body(...)):
-    """Proxy: convert findings into investigation tasks."""
-    return _fs_proxy("POST", "/financial-strategy/generate-plan", json_body=body)
-
-
-@app.post("/chat/org-story")
-def fs_org_story(body: dict = Body(...)):
-    """Proxy: 5-factor Laspeyres decomposition + conversion + leakage dashboard."""
-    return _fs_proxy("POST", "/org-story", json_body=body, timeout=120.0)
-
-
-@app.post("/chat/org-story-v2")
-def fs_org_story_v2(body: dict = Body(...)):
-    """Proxy: org story v2 — pre-computed from v2 tables (<2s vs 30s)."""
-    return _fs_proxy("POST", "/org-story-v2", json_body=body, timeout=30.0)
-
-
-@app.get("/chat/market-map")
-def fs_market_map():
-    """Proxy: FL BH market map data — all org locations with revenue."""
-    return _fs_proxy("GET", "/market-map", timeout=60.0)
-
-
-@app.get("/chat/industry-report-data")
-def fs_industry_report_data():
-    """Proxy: Industry report data — archetype distributions, code metrics, trends, CMHC."""
-    return _fs_proxy("GET", "/industry-report-data", timeout=120.0)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1343,109 +1027,14 @@ def dr_health():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Phase 1e: _task_manager_base consolidated into app.api._common.
-# Phase 1f.1: _task_proxy also consolidated there (the tasks router uses it,
-# and the /chat/runs aggregator below still needs it for its bulk task fetch).
 from app.api._common import task_manager_base_url as _task_manager_base
-from app.api._common import task_proxy as _task_proxy  # noqa: F401 — used by /chat/runs
 
 
-_STEP_LABELS: dict[str, str] = {
-    "ensure_benchmarks":        "Ensuring revenue metrics",
-    "identify_org":             "Identifying organization",
-    "find_locations":           "Mapping practice locations",
-    "find_associated_providers":"Finding associated providers",
-    "nppes_alignment":          "Aligning NPPES data",
-    "medicaid_enrollment":      "Checking Medicaid enrollment",
-    "compliance_check":         "Running compliance check",
-    "taxonomy_optimization":    "Optimizing taxonomy codes",
-}
-_STEP_TOTAL = len(_STEP_LABELS)
-
-
-@app.get("/chat/runs")
-def chat_runs_list(
-    status: str | None = None,   # active | complete | all (default all)
-    limit: int = 20,
-) -> dict[str, Any]:
-    """
-    Aggregate credentialing runs with task counts for the credentialing home page.
-    Merges /chat/credentialing-runs with task-manager counts in two bulk calls.
-    """
-    from collections import defaultdict
-    from app.storage.credentialing_runs_pg import list_credentialing_runs
-
-    runs = list_credentialing_runs(limit=limit)
-
-    # Bulk-fetch all open tasks + resolved info tasks across all runs in two calls
-    try:
-        open_tasks = _task_proxy("GET", "/tasks", params={
-            "status": "open", "workflow": "credentialing", "limit": 500,
-        }).json().get("tasks", [])
-    except Exception:
-        open_tasks = []
-
-    try:
-        resolved_info = _task_proxy("GET", "/tasks", params={
-            "status": "resolved", "workflow": "credentialing", "limit": 500,
-        }).json().get("tasks", [])
-    except Exception:
-        resolved_info = []
-
-    # Group by run_id
-    open_by_run: dict[str, list] = defaultdict(list)
-    for t in open_tasks:
-        if t.get("run_id"):
-            open_by_run[t["run_id"]].append(t)
-
-    resolved_info_by_run: dict[str, int] = defaultdict(int)
-    for t in resolved_info:
-        if t.get("run_id") and t.get("type") == "info":
-            resolved_info_by_run[t["run_id"]] += 1
-
-    def _phase_to_status(phase: str) -> str:
-        if phase in ("running", "awaiting_validation"):
-            return "running"
-        if phase == "complete":
-            return "complete"
-        if phase == "error":
-            return "error"
-        return "paused"
-
-    result: list[dict[str, Any]] = []
-    for run in runs:
-        phase     = run.get("phase", "")
-        run_id    = run["run_id"]
-        run_status = _phase_to_status(phase)
-
-        if status == "active" and run_status not in ("running", "paused"):
-            continue
-        if status == "complete" and run_status != "complete":
-            continue
-
-        run_tasks      = open_by_run.get(run_id, [])
-        open_decisions = sum(1 for t in run_tasks if t.get("type") == "decision")
-        open_blockers  = sum(1 for t in run_tasks if t.get("type") == "blocker")
-        resolved_steps = resolved_info_by_run.get(run_id, 0)
-        pending_step   = run.get("pending_step_id") or ""
-        pending_label  = _STEP_LABELS.get(pending_step, pending_step.replace("_", " ").title() if pending_step else "")
-
-        result.append({
-            "run_id":            run_id,
-            "org_name":          run.get("org_name", ""),
-            "run_status":        run_status,
-            "phase":             phase,
-            "started_at":        run.get("created_at") or run.get("updated_at"),
-            "provider_count":    None,
-            "step_current":      resolved_steps,
-            "step_total":        _STEP_TOTAL,
-            "pending_step_label": pending_label,
-            "open_decisions":    open_decisions,
-            "open_blockers":     open_blockers,
-            "resolved_steps":    resolved_steps,
-        })
-
-    return {"runs": result}
-
+# 2026-04-18 disconnect — /chat/runs aggregator + _STEP_LABELS /
+# _STEP_TOTAL constants removed. The endpoint joined
+# list_credentialing_runs() with task-manager per-run counts for the
+# credentialing home page's run list. With the UI, page routes, and
+# services all gone, the aggregator has no caller.
 
 # Phase 1f.1: /chat/tasks/* moved to app.api.tasks. Router included below.
 
@@ -1472,13 +1061,9 @@ if _frontend.exists():
         r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return r
 
-    # DEPRECATED: financial-strategy, org-story, market-map, industry-report
-    # All consolidated into displacement.html on skill server (/roster-ui/displacement.html)
-
-    @app.get("/roster")
-    def roster():
-        # roster.html lives in static/ (not the top-level frontend/ dir)
-        p = _frontend / "static" / "roster.html"
-        r = FileResponse(p)
-        r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        return r
+    # REMOVED 2026-04-18: financial-strategy / org-story / market-map /
+    # industry-report / roster page serves. These pages + their data
+    # proxies were part of the credentialing+strategy chat integration
+    # that's being disconnected for a clean rebuild. If the user lands
+    # on one of these URLs, they'll get a 404 — acceptable since nothing
+    # in the UI links to them anymore (skill cards removed from landing).
