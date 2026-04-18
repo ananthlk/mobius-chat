@@ -145,7 +145,6 @@ def run_pipeline(
     message: str,
     thread_id: str | None,
     t0_start: float | None = None,
-    credentialing_options: dict | None = None,
     use_react_override: bool | None = None,
     chat_mode: str | None = None,
 ) -> None:
@@ -158,10 +157,7 @@ def run_pipeline(
 
     # Read at request time so we use current env (worker may have set MOBIUS_USE_REACT=1 after load_dotenv)
     env_use_react = (os.environ.get("MOBIUS_USE_REACT") or "1").strip().lower() in ("1", "true", "yes")
-    if credentialing_options is not None:
-        # Credentialing tools require ReAct; ignore client use_react=false for this turn
-        use_react = True
-    elif use_react_override is not None:
+    if use_react_override is not None:
         use_react = use_react_override
     else:
         use_react = env_use_react
@@ -170,7 +166,6 @@ def run_pipeline(
         correlation_id=correlation_id,
         thread_id=(thread_id or "").strip() or None,
         message=(message or "").strip(),
-        credentialing_options=dict(credentialing_options) if credentialing_options is not None else None,
     )
 
     def on_thinking(chunk: str) -> None:
@@ -191,11 +186,6 @@ def run_pipeline(
         else:
             ctx.chat_mode = _normalize_chat_mode(prev_mode if isinstance(prev_mode, str) else None)
         ctx.merged_state = {**(ctx.merged_state or {}), "last_chat_mode": ctx.chat_mode}
-
-        # 2026-04-18 disconnect — credentialing_envelope removed. The
-        # pre-ReAct "rewrite the user message into a canonical
-        # credentialing request" step is gone; ctx.credentialing_options
-        # is deprecated and no chat UI sets it anymore.
 
         obj_raw = (ctx.merged_state or {}).get("master_objective")
         has_active = bool(obj_raw and (obj_raw.get("status") or "active") == "active")

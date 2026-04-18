@@ -292,25 +292,14 @@ def maybe_start_worker():
         pass
 
 
-class CredentialingOptions(BaseModel):
-    """Structured choices from the credentialing envelope (POST /chat)."""
-
-    org_name: str | None = None
-    mode: Literal["autopilot", "copilot"] | None = None
-    force_refresh: bool | None = None
-    report_kind: Literal["auto", "credentialing", "reconciliation"] | None = None
-    """auto: server picks reconciliation if thread has a roster upload, else outside-in credentialing."""
-    prefer_outside_in: bool | None = None
-    """True: run Medicaid NPI / credentialing pipeline even when a roster exists on the thread."""
-    prefer_fresh_report: bool | None = None
-    """True: skip same-day cached credentialing report and run full orchestrator (outside-in path)."""
-
-
 class ChatRequest(BaseModel):
+    # Tolerate extra keys so older frontend builds that still send
+    # credentialing_options / reconciliation_upload_id / etc. after the
+    # 2026-04-18 disconnect don't get 422'd. Server ignores them.
+    model_config = {"extra": "ignore"}
+
     message: str = ""
     thread_id: str | None = None  # When provided, load state for jurisdiction/context
-    credentialing_options: CredentialingOptions | None = None
-    """When set (e.g. after envelope confirm), worker merges into run_credentialing_report."""
     use_react: bool | None = None
     """Per-request override for MOBIUS_USE_REACT; when None, worker uses env."""
     chat_mode: Literal["copilot", "agentic", "quick"] | None = None
@@ -374,8 +363,6 @@ def post_chat(body: ChatRequest):
     correlation_id = str(uuid.uuid4())
     thread_id = ensure_thread((body.thread_id or "").strip() or None)
     payload: dict = {"message": body.message or "", "thread_id": thread_id}
-    if body.credentialing_options is not None:
-        payload["credentialing_options"] = body.credentialing_options.model_dump(exclude_none=True)
     if body.use_react is not None:
         payload["use_react"] = body.use_react
     if body.chat_mode is not None:
@@ -506,7 +493,6 @@ def _handle_instant_rag_upload(
         "filename": filename,
         "row_count": rag_result.get("chunks_count", 0),
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
-        "reconciliation_upload_id": None,
         "envelope_id": rag_result.get("envelope_id"),
         "document_id": rag_result.get("document_id"),
     }
@@ -646,9 +632,6 @@ def get_thread_uploads(thread_id: str) -> dict[str, Any]:
             "thread_id": tid,
             "uploaded_files": [],
             "roster_reconciliation_files": [],
-            "reconciliation_upload_id": None,
-            "reconciliation_org_id": None,
-            "reconciliation_org_name": None,
             "latest_roster_reconciliation": None,
             "roster_freshness": "none",
             "roster_age_days": None,
@@ -674,43 +657,11 @@ def get_thread_uploads(thread_id: str) -> dict[str, Any]:
         head = roster_reconciliation_files[0]
         if (head.get("upload_id") or "").strip() and (head.get("org_id") or "").strip():
             latest_roster = dict(head)
-    if latest_roster is None:
-        rup = (active.get("reconciliation_upload_id") or "").strip()
-        rid = (active.get("reconciliation_org_id") or "").strip()
-        ron = (active.get("reconciliation_org_name") or "").strip()
-        if rup and rid:
-            uploaded_at_u: Any = None
-            filename_u = ""
-            row_count_u: Any = None
-            org_name_u = ron
-            for u in uploaded:
-                if not isinstance(u, dict):
-                    continue
-                if (u.get("upload_id") or "").strip() != rup:
-                    continue
-                uploaded_at_u = u.get("uploaded_at")
-                filename_u = (u.get("filename") or "").strip()
-                row_count_u = u.get("row_count")
-                on = (u.get("org_name") or "").strip()
-                if on:
-                    org_name_u = on
-                break
-            latest_roster = {
-                "upload_id": rup,
-                "org_id": rid,
-                "org_name": org_name_u,
-                "filename": filename_u,
-                "row_count": row_count_u,
-                "uploaded_at": uploaded_at_u,
-            }
     freshness, age_days = _compute_roster_freshness(latest_roster)
     return {
         "thread_id": tid,
         "uploaded_files": uploaded,
         "roster_reconciliation_files": roster_reconciliation_files,
-        "reconciliation_upload_id": (active.get("reconciliation_upload_id") or "").strip() or None,
-        "reconciliation_org_id": (active.get("reconciliation_org_id") or "").strip() or None,
-        "reconciliation_org_name": (active.get("reconciliation_org_name") or "").strip() or None,
         "latest_roster_reconciliation": latest_roster,
         "roster_freshness": freshness,
         "roster_age_days": round(age_days, 2) if age_days is not None else None,

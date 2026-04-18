@@ -21,9 +21,6 @@ def process_one(correlation_id: str, payload: dict) -> None:
 
     message = payload.get("message", "").strip()
     thread_id = (payload.get("thread_id") or "").strip() or None
-    credentialing_options = payload.get("credentialing_options")
-    if credentialing_options is not None and not isinstance(credentialing_options, dict):
-        credentialing_options = None
     use_react = payload.get("use_react")
     if use_react is not None and not isinstance(use_react, bool):
         use_react = None
@@ -35,7 +32,6 @@ def process_one(correlation_id: str, payload: dict) -> None:
         message,
         thread_id,
         t0_start=time.perf_counter(),
-        credentialing_options=credentialing_options,
         use_react_override=use_react,
         chat_mode=chat_mode,
     )

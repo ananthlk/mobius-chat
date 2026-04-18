@@ -19,3 +19,4 @@ frontend/node_modules/
 # Local reload markers / scratch
 .last_fl_medicaid_reload
 reports/
+.claude/

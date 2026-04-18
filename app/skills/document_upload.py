@@ -57,12 +57,4 @@ def format_thread_uploads_markdown(thread_id: str) -> str:
             )
         if len(files) > 20:
             lines.append(f"\n_Showing 20 of {len(files)} uploads._")
-    rec = (active.get("reconciliation_upload_id") or "").strip()
-    if rec:
-        lines.append("")
-        lines.append(
-            f"**Reconciliation default:** upload `{rec[:12]}…`, billing NPI "
-            f"`{(active.get('reconciliation_org_id') or '').strip() or '—'}`, org "
-            f"`{(active.get('reconciliation_org_name') or '').strip() or '—'}`."
-        )
     return "\n".join(lines)

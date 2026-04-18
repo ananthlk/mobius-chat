@@ -158,7 +158,6 @@ def _answer_for_subquestion(
     config_sha: str | None = None,
     skill_search_mode: str = "copilot",
     pipeline_ctx: Any | None = None,
-    credentialing_options: dict[str, Any] | None = None,
     chat_mode: str | None = None,
 ) -> tuple[str, LLMUsageDict | None, list[dict], str, int]:
     """Answer one subquestion with fallback cascade.
@@ -237,33 +236,6 @@ def _answer_for_subquestion(
             emit_layer_attempt(agent, tool_hint, scrape_url, emitter)
 
         tool_question = text
-        rec_uid: str | None = None
-        rec_oid: str | None = None
-        if tool_hint == "roster_reconciliation" and isinstance(active_context, dict):
-            ac = active_context
-            rec_uid = (ac.get("reconciliation_upload_id") or "").strip() or None
-            rec_oid = (ac.get("reconciliation_org_id") or "").strip() or None
-            roster_files = [
-                u
-                for u in (ac.get("uploaded_files") or [])
-                if isinstance(u, dict) and (u.get("purpose") or "").strip() == "roster_reconciliation"
-            ]
-            if (not rec_uid or not rec_oid) and len(roster_files) >= 1:
-                latest = roster_files[0]
-                rec_uid = rec_uid or ((latest.get("upload_id") or "").strip() or None)
-                rec_oid = rec_oid or ((latest.get("org_id") or "").strip() or None)
-            state_org = (ac.get("reconciliation_org_name") or "").strip()
-            tnorm = (tool_question or "").strip().lower()
-            generic_reconcile_sq = tnorm in (
-                "",
-                "run roster reconciliation report",
-                "run reconciliation report",
-                "roster reconciliation report",
-                "run reconciliation",
-                "reconciliation report",
-            )
-            if state_org and (not (tool_question or "").strip() or generic_reconcile_sq):
-                tool_question = state_org
 
         answer, sources, usage, signal = answer_tool(
             tool_question,
@@ -275,12 +247,9 @@ def _answer_for_subquestion(
             scrape_url=scrape_url,
             question_intent=question_intent,
             active_context=active_context,
-            reconciliation_upload_id=rec_uid,
-            reconciliation_org_id=rec_oid,
             thread_id=thread_id,
             skill_search_mode=skill_search_mode,
             pipeline_ctx=pipeline_ctx,
-            credentialing_options=credentialing_options,
         )
         is_valid, _ = validate_tool_result(agent, tool_hint, answer, sources, signal, text)
         if is_valid:
@@ -459,7 +428,6 @@ def run_resolve(
                 config_sha=resolve_config_sha,
                 skill_search_mode=getattr(ctx, "chat_mode", None) or "copilot",
                 pipeline_ctx=ctx,
-                credentialing_options=getattr(ctx, "credentialing_options", None),
                 chat_mode=getattr(ctx, "chat_mode", None),
             )
         if extra_out and extra_out.get("roster_step_outputs"):

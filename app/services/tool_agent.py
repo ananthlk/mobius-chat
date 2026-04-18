@@ -618,10 +618,7 @@ def answer_tool(
     scrape_url: str | None = None,
     question_intent: str | None = None,
     active_context: dict | None = None,
-    reconciliation_upload_id: str | None = None,
-    reconciliation_org_id: str | None = None,
     thread_id: str | None = None,
-    credentialing_options: dict | None = None,
     skill_search_mode: str | None = None,
     pipeline_ctx: Any | None = None,
     tool_inputs: dict[str, Any] | None = None,
@@ -634,9 +631,7 @@ def answer_tool(
     question_intent: planner question_intent — used as qualifier in search query construction.
     active_context: active jurisdiction state — passed as qualifier ONLY to build_search_query(),
                     never used as a tool search target.
-    reconciliation_upload_id, reconciliation_org_id: for run_roster_reconciliation_report.
     thread_id: current chat thread (for list_thread_document_uploads legacy path).
-    credentialing_options: from POST /chat envelope (force_refresh, org_name, mode) for roster_report.
     pipeline_ctx: when set, tools may append server-authored choice groups to ctx.pending_workflow_selection
         (merged into response clarification_options in integrate).
     """
@@ -646,10 +641,7 @@ def answer_tool(
             user_message=user_message, extra_out=extra_out,
             tool_hint_override=tool_hint_override, scrape_url=scrape_url,
             question_intent=question_intent, active_context=active_context,
-            reconciliation_upload_id=reconciliation_upload_id,
-            reconciliation_org_id=reconciliation_org_id,
             thread_id=thread_id,
-            credentialing_options=credentialing_options,
             skill_search_mode=skill_search_mode,
             pipeline_ctx=pipeline_ctx,
             tool_inputs=tool_inputs,
@@ -770,10 +762,7 @@ def _answer_tool_impl(
     scrape_url: str | None = None,
     question_intent: str | None = None,
     active_context: dict | None = None,
-    reconciliation_upload_id: str | None = None,
-    reconciliation_org_id: str | None = None,
     thread_id: str | None = None,
-    credentialing_options: dict | None = None,
     skill_search_mode: str | None = None,
     pipeline_ctx: Any | None = None,
     tool_inputs: dict[str, Any] | None = None,

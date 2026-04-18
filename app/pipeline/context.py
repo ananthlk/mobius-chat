@@ -107,9 +107,6 @@ class PipelineContext:
     # Co-pilot credentialing: run_id, pending_step_id, draft_output for validation UI
     credentialing_copilot: dict[str, Any] | None = None
 
-    # Client envelope (POST /chat credentialing_options): merged into run_credentialing_report
-    credentialing_options: dict[str, Any] | None = None
-
     # UI chat mode (POST /chat chat_mode): copilot | agentic | quick
     chat_mode: str = "copilot"
 

@@ -221,7 +221,6 @@ def link_upload_to_thread(
         "filename": row.get("filename") or "upload",
         "row_count": row.get("chunks_count") or 0,
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
-        "reconciliation_upload_id": None,
         "envelope_id": row.get("envelope_id"),
         "document_id": document_id,
         # Mark this specific record as a link so future read paths can
