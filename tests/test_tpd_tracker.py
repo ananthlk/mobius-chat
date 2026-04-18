@@ -244,6 +244,63 @@ class TestParseRetryAfterSeconds:
         from app.services.tpd_tracker import parse_retry_after_seconds
         assert parse_retry_after_seconds("TRY AGAIN IN 30S") is not None
 
+    def test_tpm_413_without_retry_hint_returns_60s(self):
+        """Phase 2.5b follow-up (2026-04-17 second incident): Groq's 413
+        TPM-overflow error does NOT include 'try again in X' — just
+        'please reduce your message size'. Since TPM is a per-minute
+        window, a 60s hold is the correct default so the bandit skips
+        this model until the minute rolls over."""
+        from app.services.tpd_tracker import parse_retry_after_seconds
+        msg = (
+            'Groq API error 413: {"error":{"message":"Request too large for '
+            'model `llama-3.1-8b-instant` in organization `...` service tier '
+            '`on_demand` on tokens per minute (TPM): Limit 6000, Requested '
+            '7649, please reduce your message size and try again."}}'
+        )
+        assert parse_retry_after_seconds(msg) == pytest.approx(60.0)
+
+    def test_tpd_hint_wins_over_tpm_fallback(self):
+        """When a body contains BOTH 'tokens per minute (TPM)' AND an
+        explicit retry hint ('try again in 1h28m'), the explicit hint
+        should win — not the 60s TPM fallback. This keeps the TPD case
+        (Groq daily exhaustion with a real retry time) from being
+        stomped by the fallback."""
+        from app.services.tpd_tracker import parse_retry_after_seconds
+        # Hypothetical mix — some future Groq variant might include both.
+        msg = (
+            "Rate limit reached ... tokens per minute (TPM): Limit 100 ... "
+            "Please try again in 45s"
+        )
+        result = parse_retry_after_seconds(msg)
+        assert result == pytest.approx(45.0), (
+            f"Explicit retry hint must beat TPM 60s fallback; got {result}"
+        )
+
+
+class TestModelSpecCalibration:
+    """The 8b-instant TPM was miscalibrated at 30_000 for months; Groq
+    actually enforces 6_000 (observed 2026-04-17). This test locks the
+    corrected value so a future edit can't quietly double the spec and
+    re-introduce the 413 storm."""
+
+    def test_llama_3_1_8b_tpm_is_6000(self):
+        from app.services.model_registry import MODEL_ROSTER
+        spec = MODEL_ROSTER.get("llama-3.1-8b-instant")
+        assert spec is not None
+        assert spec.spec_tpm_limit == 6_000, (
+            f"llama-3.1-8b-instant spec_tpm_limit drifted to {spec.spec_tpm_limit}. "
+            "Groq's on_demand free tier enforces 6_000. Any spec above 6_000 "
+            "will let the bandit pick this model for ~7k-token requests and "
+            "immediately fail with 413."
+        )
+
+    def test_llama_3_3_70b_tpm_is_12000(self):
+        """Also-calibrated spec; make sure it doesn't drift either."""
+        from app.services.model_registry import MODEL_ROSTER
+        spec = MODEL_ROSTER.get("llama-3.3-70b-versatile")
+        assert spec is not None
+        assert spec.spec_tpm_limit == 12_000
+
 
 # ── Thread-safety smoke test ─────────────────────────────────────────────
 
