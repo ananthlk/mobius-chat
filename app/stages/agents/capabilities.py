@@ -10,16 +10,9 @@ from typing import Any
 
 # Per-tool explicit capability declarations (tool_name -> what it can/cannot do)
 TOOL_CAPABILITIES: dict[str, dict[str, Any]] = {
-    "ask_credentialing_npi": {
-        "can_answer": [
-            "Is NPI X set up for PML? (Florida Medicaid Provider Master List)",
-            "Is this NPI enrolled in PML?",
-            "Why is this NPI ready for PML?",
-            "NPI profile from credentialing report (PML status, valid combos, readiness)",
-        ],
-        "requires": "report_run_id or last_report_org in context (user must have run a credentialing report first)",
-        "cannot_answer": "NPPES-only lookup; questions when no report exists",
-    },
+    # 2026-04-18 disconnect — ask_credentialing_npi removed along with
+    # the other credentialing/roster tools. Capability declaration
+    # rebuilds when credentialing ships as a proper skill integration.
     "healthcare_query": {
         "can_answer": [
             "ICD-10-CM code meaning and description (e.g. what is F32.1)",
@@ -38,27 +31,12 @@ TOOL_CAPABILITIES: dict[str, dict[str, Any]] = {
             "PML status, Florida Medicaid enrollment, credentialing report data"
         ),
     },
-    "lookup_npi": {
-        "can_answer": ["NPI numbers for an organization by name (what is the NPI of David Lawrence Center?)"],
-        "cannot_answer": "Lookup by NPI number; PML status",
-    },
-    "find_org_locations": {
-        "can_answer": [
-            "Practice / service site addresses for one or more billing org (Type-2) NPIs (credentialing Step 2)",
-            "Where does this organization operate (NPPES + PML + DOGE; agentic may add web hints)",
-        ],
-        "requires": "CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL; billing NPI(s) or org name that resolves to one NPI",
-        "cannot_answer": "Full credentialing waterfall without run_credentialing_report; PML enrollment Q&A without a report",
-    },
-    "find_associated_providers_at_locations": {
-        "can_answer": [
-            "Operational roster: which NPIs are implicated at each practice site (credentialing Step 4)",
-            "Who bills / is tied to this location for Medicaid readiness (DOGE + NPPES/PML address + optional roster upload)",
-            "Natural phrasing: who practices at this site — as data-linked roster, not clinical staffing",
-        ],
-        "requires": "CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL; same org resolution as find_org_locations",
-        "cannot_answer": "Clinical schedules or guarantee every person physically at a site; full report without run_credentialing_report",
-    },
+    # 2026-04-18 disconnect — removed:
+    #   lookup_npi / find_org_locations /
+    #   find_associated_providers_at_locations
+    # These reached the provider-roster-credentialing skill server via
+    # chat proxies. Capability declarations rebuild with the clean
+    # credentialing skill integration.
     "org_npi_lookup": {
         "can_answer": [
             "Organization NPI lookup by name via MCP org_npi_lookup (credentialing API + optional web variant discovery)",
@@ -72,30 +50,11 @@ TOOL_CAPABILITIES: dict[str, dict[str, Any]] = {
         ],
         "cannot_answer": "10-digit NPI registry row only (use healthcare_query); PML enrollment from report (use ask_credentialing_npi)",
     },
-    "run_credentialing_report": {
-        "can_answer": [
-            "Medicaid NPI credentialing report: 11-step pipeline, Sections A–E revenue waterfall, readiness / PML-facing outputs",
-            "Tabular outputs from code-built steps; narrative after deterministic validate→compose style gates",
-            "Co-pilot credentialing: step-by-step with user validation when mode is copilot",
-        ],
-        "cannot_answer": "Roster upload vs outside-in only (in_both / external_only / internal_only) without waterfall — use run_roster_reconciliation_report",
-    },
-    "validate_credentialing_step": {
-        "can_answer": [
-            "Advance credentialing co-pilot after user confirms or edits the pending step (NPIs, locations, etc.)",
-            "Attach optional workflow_follow_ups (per-step operational tasks) when the user adds follow-up lines",
-        ],
-        "requires": "Active copilot run on thread (credentialing_run_id) or run_id in tool inputs",
-    },
-    "run_roster_reconciliation_report": {
-        "can_answer": [
-            "Phase 1 — Roster alignment with NPPES: upload vs NPPES/outside-in (in_both / external_only / internal_only); not PML enrollment validation (Phase 2)",
-            "Scenarios: aligned (roster + NPPES + org match); misaligned (roster + NPPES, linkage wrong); on roster, not in NPPES (credentialing-critical); strong NPPES/org tie, not on roster (compliance/billing urgency)",
-            "Code-built CSVs; narrative only; deterministic validate→re-compose; PML mentioned only as next step",
-        ],
-        "cannot_answer": "Full credentialing waterfall dollar report — use run_credentialing_report",
-        "requires": "Billing NPI (org_id) and org_name. Internal roster CSV comes from the **latest resolved upload in the provider roster DB** for that org; chat upload only refreshes that record. Thread-linked upload metadata is optional (fallback / UX).",
-    },
+    # 2026-04-18 disconnect — removed:
+    #   run_credentialing_report / validate_credentialing_step /
+    #   run_roster_reconciliation_report
+    # All three reached the credentialing skill server via chat proxies
+    # and are being rebuilt as a clean skill integration.
     "document_upload_skill": {
         "can_answer": [
             "How to attach files to this chat (roster CSV/Excel; future document types)",
@@ -229,21 +188,18 @@ def tool_capabilities_for_parser() -> str:
 
 def available_capabilities_json() -> dict[str, Any]:
     """Build structured available_capabilities for Mobius Planner input (JSON)."""
+    # 2026-04-18 disconnect — removed 7 credentialing/roster/strategy
+    # tool identifiers from the advertised tool list + the routing rule.
+    # The chat pipeline now routes to search_corpus, search_uploaded_document,
+    # google_search/web_scrape for web, healthcare_query/_npi_lookup for
+    # code + registry facts, and task CRUD.
     return {
         "rag_scopes": ["payer_manuals", "state_contracts", "internal_docs"],
         "tools": [
             "google_search",
             "web_scrape",
-            "find_org_locations",
-            "find_associated_providers_at_locations",
-            "org_npi_lookup",
-            "search_org_names",
-            "ask_credentialing_npi",
             "healthcare_npi_lookup",
             "healthcare_query",
-            "npi_lookup",
-            "roster_report",
-            "roster_reconciliation",
             "document_upload_skill",
             "list_thread_document_uploads",
             "list_tasks",
@@ -255,14 +211,11 @@ def available_capabilities_json() -> dict[str, Any]:
         "tool_capabilities": TOOL_CAPABILITIES,
         "routing_rule": (
             "Match question to tool capabilities. "
-            "Roster **reconciliation** / **NPPES alignment** (Phase 1: upload vs registry/outside-in; Phase 2 PML is separate) → run_roster_reconciliation_report. "
-            "**Credentialing** / Medicaid NPI **waterfall** / Section A–E / readiness dollar report → run_credentialing_report. "
-            "NPI + PML/enrollment → ask_credentialing_npi (requires report). "
+            "Policy / process / payer-manual questions → search_corpus. "
+            "Questions referring to an attached document → search_uploaded_document. "
             "ICD-10, HCPCS, CPT code meaning, Medicare/Medicaid coverage (NCD/LCD) → healthcare_query. "
-            "10-digit NPI registry lookup (no PML) → healthcare_query or healthcare_npi_lookup. "
-            "NPI for org name → search_org_names / org_npi_lookup (MCP passes search_mode: copilot registry-first, agentic allows web escalation). "
-            "Practice locations for org NPI(s) → find_org_locations. "
-            "Providers tied to each site (operational roster / Step 4) → find_associated_providers_at_locations."
+            "10-digit NPI registry lookup → healthcare_query or healthcare_npi_lookup. "
+            "Web lookups / current information → google_search then web_scrape."
         ),
     }
 
