@@ -4490,8 +4490,8 @@ function run() {
       nextEl.textContent = ack.next_step || "";
     } else {
       const isRAG = data.file_purpose === "instant_rag" || data.verification_tier === "instant";
-      headline.textContent = isRAG ? "Document ingested for RAG" : "Upload complete";
-      sub.textContent = isRAG ? "Your document has been chunked, embedded, and is now queryable in this chat." : "Your file was saved to this chat.";
+      headline.textContent = isRAG ? "Document ready" : "Upload complete";
+      sub.textContent = isRAG ? "Your document is ready to search in this chat." : "Your file was saved to this chat.";
       checksEl.replaceChildren();
       const li = document.createElement("li");
       const t = document.createElement("span");
@@ -4499,13 +4499,13 @@ function run() {
       t.textContent = "Summary";
       const d = document.createElement("span");
       d.className = "roster-receipt__check-detail";
-      d.textContent = isRAG ? `${data.filename ?? "File"} \u2014 ${data.chunks_count ?? data.row_count ?? 0} chunk(s) indexed. Verification tier: instant (7-day TTL).` : `${data.filename ?? "File"} \u2014 ${data.row_count ?? 0} row(s) for ${data.org_name ?? ""}. Billing NPI ${data.default_billing_npi || data.org_id || "\u2014"}.`;
+      d.textContent = isRAG ? `${data.filename ?? "File"} \u2014 ready to search. Kept for 7 days.` : `${data.filename ?? "File"} \u2014 ${data.row_count ?? 0} row(s) for ${data.org_name ?? ""}. Billing NPI ${data.default_billing_npi || data.org_id || "\u2014"}.`;
       li.appendChild(t);
       li.appendChild(d);
       checksEl.appendChild(li);
       alertsEl.replaceChildren();
       alertsEl.setAttribute("hidden", "");
-      nextEl.textContent = isRAG ? "Ask a question about this document \u2014 it's ready for retrieval now." : "Press Send to run reconciliation, or wait if you turned on automatic send after upload.";
+      nextEl.textContent = isRAG ? "Ask a question about this document \u2014 it's ready now." : "Press Send to run reconciliation, or wait if you turned on automatic send after upload.";
     }
     function addMeta(label, value) {
       if (!value)
@@ -4521,13 +4521,13 @@ function run() {
     const _isRAG = data.file_purpose === "instant_rag" || data.verification_tier === "instant";
     addMeta("File", (data.filename ?? "").trim());
     if (_isRAG) {
-      addMeta("Chunks indexed", String(data.chunks_count ?? data.row_count ?? 0));
-      addMeta("Verification tier", data.verification_tier ?? "instant");
-      addMeta("Status", data.status ?? "live");
-      if (data.envelope_id)
-        addMeta("Envelope ID", data.envelope_id);
-      if (data.document_id)
-        addMeta("Document ID", data.document_id);
+      addMeta("Status", "Ready to search");
+      console.debug("[upload-receipt] instant-rag meta:", {
+        chunks_count: data.chunks_count ?? data.row_count ?? 0,
+        verification_tier: data.verification_tier ?? "instant",
+        envelope_id: data.envelope_id,
+        document_id: data.document_id
+      });
     } else {
       if (data.row_count_cleansed != null)
         addMeta("Rows after cleanup", String(data.row_count_cleansed));
@@ -5911,10 +5911,14 @@ ${message}`;
         { ms: 7e3, text: "Step 3 of 3 \u2014 Parsing rows and resolving NPIs (often 30s\u20132 min)\u2026" },
         { ms: 45e3, text: "Still working \u2014 large rosters can take a bit longer\u2026" }
       ] : [
-        { ms: 0, text: "Step 1 of 3 \u2014 Extracting text from document\u2026" },
-        { ms: 3e3, text: "Step 2 of 3 \u2014 Chunking and generating embeddings\u2026" },
-        { ms: 8e3, text: "Step 3 of 3 \u2014 Publishing to RAG corpus\u2026" },
-        { ms: 3e4, text: "Still working \u2014 large documents take a bit longer\u2026" }
+        // 2026-04-18 copy revision (user flagged "publishing to RAG"
+        // as jargon). Same user-friendly arc as the composer-attach
+        // flow — one narrative, not four technical stages.
+        { ms: 0, text: "Uploading\u2026" },
+        { ms: 4e3, text: "Reading your document\u2026" },
+        { ms: 15e3, text: "Getting it ready to search\u2026" },
+        { ms: 4e4, text: "Still working \u2014 larger docs take a bit longer\u2026" },
+        { ms: 75e3, text: "Almost done\u2026" }
       ];
       phases.forEach(({ ms, text }) => {
         const id = window.setTimeout(() => setStatus(text, false, true), ms);

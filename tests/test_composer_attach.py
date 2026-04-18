@@ -366,6 +366,16 @@ class TestNoDeveloperJargonInUserFacingStrings:
         "embeddings",
         "ingested",
         "generating embedding",
+        # Added 2026-04-18 after the roster-receipt leak found by the
+        # second scorecard audit: the earlier guard covered only
+        # showChatStatusBanner/alert/setStatus, missing the roster-upload
+        # receipt UI that wrote "Document ingested for RAG" + "chunked,
+        # embedded" + "chunk(s) indexed" + "Verification tier" via
+        # .textContent = assignments. Adding these patterns so the
+        # receipt-scan test below fires if any of them reappear.
+        "Chunks indexed",
+        "Verification tier",
+        "RAG corpus",
     )
 
     def test_no_jargon_in_showchatstatusbanner_literals(self, js_text: str):
@@ -416,6 +426,55 @@ class TestNoDeveloperJargonInUserFacingStrings:
                         f"{fn}(...) at offset {start} contains banned jargon "
                         f"{banned!r}. 2026-04-18 UX revision."
                     )
+
+    def test_no_jargon_in_dom_content_assignments(self, js_text: str):
+        """Catches the roster-receipt leak (found 2026-04-18 in the
+        second scorecard audit): strings assigned to .textContent /
+        .innerHTML / .innerText are user-visible just like
+        showChatStatusBanner args, but the earlier guard didn't scan
+        them. Classic pattern:
+            headline.textContent = "Document ingested for RAG";
+            sub.textContent = "Your document has been chunked, embedded…";
+        The user sees this on every successful upload; the regression
+        test must fail if any banned term reappears in such an assignment.
+
+        Limitations: only scans static string literals and the leading
+        portion of template literals. Dynamic computed strings (via a
+        variable or a function return) aren't analyzed — if you really
+        want to hide jargon from the guard you can put it in a const.
+        That tradeoff is acceptable because the common regression path
+        is hardcoded copy, not computed content.
+        """
+        import re
+        # Match `.textContent = "..."` / `.innerHTML = "..."` /
+        # `.innerText = "..."` / `.textContent = \`...\``. Non-greedy to
+        # the next matching quote; we don't try to handle escape
+        # sequences perfectly — banned terms don't contain escapable
+        # characters so the rough match is sufficient.
+        pattern = re.compile(
+            r"\.(?:textContent|innerHTML|innerText)\s*=\s*"
+            r"(?:"
+            r'"([^"]{0,500})"'        # double-quoted
+            r"|'([^']{0,500})'"       # single-quoted
+            r"|`([^`]{0,500})`"       # template literal
+            r")",
+        )
+        offenders: list[tuple[int, str, str]] = []
+        for m in pattern.finditer(js_text):
+            text = m.group(1) or m.group(2) or m.group(3) or ""
+            for banned in self.BANNED_IN_USER_STRINGS:
+                if banned in text:
+                    offenders.append((m.start(), banned, text[:120]))
+        assert not offenders, (
+            "User-visible DOM assignments contain banned jargon. Users "
+            "see these strings on the page:\n"
+            + "\n".join(
+                f"  at offset {off}: {term!r} → {sample!r}"
+                for off, term, sample in offenders[:5]
+            )
+            + "\n\nRewrite to plain English; if the dev-facing term must "
+              "stay (e.g. for support diagnostics), move it to console.debug."
+        )
 
 
 class TestSendBtnReenabledBeforeSendMessage:
