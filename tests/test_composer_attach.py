@@ -23,9 +23,17 @@ import pytest
 
 
 REPO = Path(__file__).parent.parent
-HTML = REPO / "frontend" / "static" / "index.html"
+# Served by main.py (FileResponse for "/"): the file at frontend/index.html.
+# frontend/static/index.html also exists but isn't routed anywhere.
+HTML = REPO / "frontend" / "index.html"
 CSS = REPO / "frontend" / "static" / "styles.css"
-JS = REPO / "frontend" / "static" / "app.js"
+# Source of truth: frontend/src/app.ts is compiled via esbuild to
+# frontend/static/app.js. Editing the compiled artifact is a footgun
+# (mstart runs `npm run build` on boot and clobbers manual edits).
+# Tests assert the TS source directly + verify the build output hasn't
+# drifted away from it.
+JS_SRC = REPO / "frontend" / "src" / "app.ts"
+JS_BUILT = REPO / "frontend" / "static" / "app.js"
 
 
 @pytest.fixture(scope="module")
@@ -40,7 +48,16 @@ def css_text() -> str:
 
 @pytest.fixture(scope="module")
 def js_text() -> str:
-    return JS.read_text()
+    """TypeScript source — the file developers edit."""
+    return JS_SRC.read_text()
+
+
+@pytest.fixture(scope="module")
+def js_built() -> str:
+    """Built bundle — what the browser loads. Must include the B.1a
+    identifiers; if it doesn't, someone edited the TS but forgot to run
+    `npm run build`, and the browser still sees the old bundle."""
+    return JS_BUILT.read_text()
 
 
 # ── Structural anchors in HTML ────────────────────────────────────────────
@@ -152,3 +169,51 @@ class TestComposerAttachJSWiring:
         otherwise the user clicks × and the file still uploads on Send."""
         assert "clearComposerAttachment" in js_text
         assert "composerAttachmentChipRemove" in js_text
+
+
+class TestComposerAttachBuildSync:
+    """Catches the "I edited app.ts but forgot to run npm run build" failure
+    mode. mstart runs `npm run build` on boot, but CI and any local dev
+    that skips mstart need to surface the staleness loudly.
+
+    Each identifier added in the TS source MUST also show up in the
+    built bundle. If not, the browser is serving an outdated bundle and
+    nothing works at runtime.
+    """
+
+    REQUIRED_IDENTIFIERS: tuple[str, ...] = (
+        "composerStagedFile",
+        "uploadStagedAttachmentForInstantRag",
+        "clearComposerAttachment",
+        "composerAttachmentChip",
+    )
+
+    def test_built_bundle_contains_b1a_identifiers(self, js_built: str):
+        missing = [i for i in self.REQUIRED_IDENTIFIERS if i not in js_built]
+        assert not missing, (
+            f"frontend/static/app.js is stale — rebuild with "
+            f"`cd frontend && npm run build`. Missing identifiers from "
+            f"the bundle: {missing}"
+        )
+
+    def test_built_bundle_posts_to_roster_upload(self, js_built: str):
+        """Bundle must POST to /chat/roster-upload. If esbuild tree-shook
+        the code away (dead-code elimination when all refs go through an
+        unreachable branch), this catches it."""
+        assert "/chat/roster-upload" in js_built
+
+
+class TestServedHTML:
+    """The FastAPI app serves frontend/index.html (not frontend/static/index.html).
+    If the composer anchors regress to the unused static/index.html, the
+    built paperclip renders invisibly because it's not in the file the
+    browser loads. These tests lock in the right file."""
+
+    def test_main_py_serves_frontend_index_html(self):
+        main_py = REPO / "app" / "main.py"
+        text = main_py.read_text()
+        assert 'FileResponse(_frontend / "index.html")' in text, (
+            "main.py no longer serves frontend/index.html via FileResponse — "
+            "if the route moved, update this test AND frontend/index.html "
+            "to match the new served-file path."
+        )

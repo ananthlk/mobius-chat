@@ -6136,6 +6136,176 @@ function run(): void {
 
   sendBtn.addEventListener("click", () => sendMessage());
 
+  // ─────────────────────────────────────────────────────────────────────
+  // Phase B.1a — inline attach-to-send
+  //
+  // Staging-then-send pattern: clicking the paperclip stages a file
+  // (shows chip), the actual upload happens when Send is pressed. The
+  // upload and the user's question fire as one perceived interaction.
+  // The existing upload endpoint handles ingest inline; by the time it
+  // resolves, the document_id is already in thread state so the next
+  // chat turn will auto-resolve it via search_uploaded_document.
+  // ─────────────────────────────────────────────────────────────────────
+  let composerStagedFile: File | null = null;
+  const composerAttachBtn = document.getElementById("composerAttach") as HTMLButtonElement | null;
+  const composerAttachmentInput = document.getElementById("composerAttachmentInput") as HTMLInputElement | null;
+  const composerAttachmentChip = document.getElementById("composerAttachmentChip") as HTMLElement | null;
+  const composerAttachmentChipName = document.getElementById("composerAttachmentChipName") as HTMLElement | null;
+  const composerAttachmentChipRemove = document.getElementById("composerAttachmentChipRemove") as HTMLButtonElement | null;
+
+  function showComposerAttachment(file: File): void {
+    composerStagedFile = file;
+    if (composerAttachmentChipName) composerAttachmentChipName.textContent = file.name;
+    if (composerAttachmentChip) composerAttachmentChip.hidden = false;
+    if (composerAttachBtn) composerAttachBtn.setAttribute("aria-pressed", "true");
+  }
+  function clearComposerAttachment(): void {
+    composerStagedFile = null;
+    if (composerAttachmentChip) {
+      composerAttachmentChip.hidden = true;
+      composerAttachmentChip.classList.remove("is-uploading");
+    }
+    if (composerAttachmentInput) composerAttachmentInput.value = "";
+    if (composerAttachBtn) composerAttachBtn.removeAttribute("aria-pressed");
+  }
+
+  composerAttachBtn?.addEventListener("click", () => {
+    composerAttachmentInput?.click();
+  });
+
+  composerAttachmentInput?.addEventListener("change", (e) => {
+    const f = (e.target as HTMLInputElement).files?.[0];
+    if (!f) {
+      clearComposerAttachment();
+      return;
+    }
+    // Size guard — chat's /chat/roster-upload → instant-rag skill runs
+    // extraction + ingest within a 120s urlopen; files over ~25MB
+    // routinely time out to an opaque 502. Fail loud here instead.
+    const maxBytes = 25 * 1024 * 1024;
+    if (f.size > maxBytes) {
+      alert(
+        `File too large (${Math.round(f.size / 1024 / 1024)} MB). ` +
+        `Limit is 25 MB for inline attach. Use the ⋯ → Upload file modal for larger files.`,
+      );
+      clearComposerAttachment();
+      return;
+    }
+    showComposerAttachment(f);
+    inputEl?.focus();
+  });
+
+  composerAttachmentChipRemove?.addEventListener("click", () => clearComposerAttachment());
+
+  // Drag-and-drop onto the composer-wrap stages the first file, routed
+  // through the same change handler so size-guard + chip rendering
+  // stays in one place.
+  const composerWrap = document.querySelector(".composer-wrap") as HTMLElement | null;
+  if (composerWrap) {
+    const stop = (e: Event) => { e.preventDefault(); e.stopPropagation(); };
+    (["dragenter", "dragover"] as const).forEach((evt) =>
+      composerWrap.addEventListener(evt, (e) => {
+        stop(e);
+        composerWrap.classList.add("composer-wrap--dragover");
+      }),
+    );
+    (["dragleave", "drop"] as const).forEach((evt) =>
+      composerWrap.addEventListener(evt, (e) => {
+        stop(e);
+        composerWrap.classList.remove("composer-wrap--dragover");
+      }),
+    );
+    composerWrap.addEventListener("drop", (e) => {
+      const f = (e as DragEvent).dataTransfer?.files?.[0];
+      if (!f) return;
+      if (composerAttachmentInput) {
+        const dt = new DataTransfer();
+        dt.items.add(f);
+        composerAttachmentInput.files = dt.files;
+        composerAttachmentInput.dispatchEvent(new Event("change"));
+      }
+    });
+  }
+
+  async function uploadStagedAttachmentForInstantRag(): Promise<any | null> {
+    if (!composerStagedFile) return null;
+    composerAttachmentChip?.classList.add("is-uploading");
+    try {
+      const formData = new FormData();
+      formData.append("file", composerStagedFile);
+      // "instant-rag" sentinel — chat-side _handle_instant_rag_upload
+      // collapses this to an empty payer tag (payer auto-classification
+      // lands in Phase B.2).
+      formData.append("org_name", "instant-rag");
+      formData.append("file_purpose", "instant_rag");
+      if (currentThreadId) formData.append("thread_id", currentThreadId);
+      const resp = await fetch(API_BASE + "/chat/roster-upload", {
+        method: "POST",
+        body: formData,
+      });
+      if (!resp.ok) {
+        const detail = await resp.json().catch(() => null as any);
+        throw new Error(detail?.detail || `Upload failed (${resp.status})`);
+      }
+      const data = await resp.json();
+      if (data.thread_id) currentThreadId = data.thread_id;
+      return data;
+    } finally {
+      composerAttachmentChip?.classList.remove("is-uploading");
+    }
+  }
+
+  // Attachment-aware send: when a file is staged, upload first (awaited),
+  // synthesize a default question if the input is empty, then fall through
+  // to the normal sendMessage flow. The capturing listener below
+  // stopImmediatePropagation()s so the bare-send listener registered
+  // earlier doesn't also fire and cause a double-send race.
+  async function sendMessageWithAttachment(): Promise<void> {
+    if (!composerStagedFile) {
+      sendMessage();
+      return;
+    }
+    sendBtn.disabled = true;
+    try {
+      const uploadedName = composerStagedFile.name;
+      await uploadStagedAttachmentForInstantRag();
+      clearComposerAttachment();
+      const typed = (inputEl.value ?? "").trim();
+      const effective = typed || `I just uploaded "${uploadedName}" — what does it say?`;
+      if (!typed) inputEl.value = effective;
+      sendMessage();
+    } catch (err: any) {
+      console.error("[composer-attach] upload failed:", err);
+      alert(`Upload failed: ${err?.message || err}`);
+      sendBtn.disabled = false;
+    }
+  }
+
+  // Capturing listeners that intercept Send/Enter only when a file is
+  // staged. Otherwise they no-op and the original non-attach handlers
+  // (registered above) run unchanged.
+  sendBtn.addEventListener(
+    "click",
+    (e) => {
+      if (!composerStagedFile) return;
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      void sendMessageWithAttachment();
+    },
+    { capture: true },
+  );
+  inputEl.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key !== "Enter" || e.shiftKey) return;
+      if (!composerStagedFile) return;
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      void sendMessageWithAttachment();
+    },
+    { capture: true },
+  );
+
   /** Reset upload UI and show sheet (⋯ → Upload file). */
   function openUploadModal(): void {
     hideRosterUploadReceipt();
