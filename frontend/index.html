@@ -209,6 +209,30 @@
           </details>
         </div>
       </div>
+      <!-- Phase B.1d: restoration banner.
+           When the current thread has no instant_rag uploads but the
+           catalog has recent ones, this strip shows the user their
+           cross-thread uploads with a one-click "Attach to this chat"
+           button. No bytes re-uploaded — link_upload_to_thread just
+           writes a JSONB reference into active.uploaded_files[] on the
+           target thread so search_uploaded_document finds the same
+           chunks that already live in Chroma + PG.
+
+           Hidden by default; the JS fetches /chat/uploads/recent/
+           for-restoration on page load and un-hides when it gets
+           non-zero results. Dismiss button stashes a "don't nag me
+           again this session" flag in sessionStorage. -->
+      <div class="upload-restore-banner" id="uploadRestoreBanner" hidden>
+        <div class="upload-restore-banner__icon" aria-hidden="true">📎</div>
+        <div class="upload-restore-banner__body">
+          <div class="upload-restore-banner__title">Recent uploads from your other chats</div>
+          <div class="upload-restore-banner__list" id="uploadRestoreBannerList">
+            <!-- JS populates one row per upload: filename + Attach button. -->
+          </div>
+        </div>
+        <button type="button" class="upload-restore-banner__dismiss" id="uploadRestoreBannerDismiss" aria-label="Hide this banner" title="Hide for now">×</button>
+      </div>
+
       <div class="composer-wrap">
         <!-- Phase B.1a: inline attach-to-send.
              Paperclip stages a file (chip appears above composer); Send
