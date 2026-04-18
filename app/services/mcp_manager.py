@@ -125,7 +125,15 @@ def call_mcp_tool(
 
 
 async def _list_mcp_tools_async() -> list[dict[str, Any]]:
-    """List tools from MCP server. Returns list of {name, description}."""
+    """List tools from MCP server.
+
+    Returns a list of ``{name, description, inputSchema}`` dicts.
+    ``inputSchema`` is the JSON-Schema object the MCP tool declares for
+    its arguments; an empty ``{}`` when the MCP object doesn't carry
+    one. Added so ``app.skills.mcp_adapter`` can build ``SkillSpec``s
+    with typed input schemas; earlier callers that only read ``name``
+    and ``description`` are unaffected (dict keys are additive).
+    """
     url = _get_mcp_url()
     try:
         from mcp.client.session import ClientSession
@@ -138,9 +146,13 @@ async def _list_mcp_tools_async() -> list[dict[str, Any]]:
                     result = await session.list_tools()
                     tools = []
                     for t in result.tools:
+                        schema = getattr(t, "inputSchema", None) or {}
+                        if not isinstance(schema, dict):
+                            schema = {}
                         tools.append({
                             "name": t.name,
                             "description": getattr(t, "description", "") or "",
+                            "inputSchema": schema,
                         })
                     return tools
     except ImportError:
