@@ -23,9 +23,40 @@
   --mobius-border-light: #e5e7eb;
   --mobius-border-medium: #d1d5db;
 
+  /* Semantic accent roles (2026-04-18 — UX audit collapse).
+   * Three distinct accents existed on the landing page before
+   * (#1A73E8 "Google blue", #7C3AED violet, #10b981 emerald) with no
+   * documented semantics. Mapped to intentional roles below so a
+   * designer reading the code knows which one to reach for:
+   *
+   *   --mobius-accent      primary action (Send, links, focus)
+   *   --mobius-indigo      runs / pipeline / process state
+   *   --mobius-violet      credentialing (policy-of-record)
+   *   --mobius-emerald     roster (operational data)
+   */
   --mobius-accent: #3b82f6;
   --mobius-accent-hover: #2563eb;
   --mobius-accent-text: #ffffff;
+  --mobius-indigo: #5b5ef4;
+  --mobius-indigo-hover: #4f52e0;
+  --mobius-violet: #7C3AED;
+  --mobius-violet-hover: #6d28d9;
+  --mobius-emerald: #10b981;
+  --mobius-emerald-hover: #059669;
+
+  /* Shorthand aliases so components that use the un-prefixed names
+   * (--surface, --border, --text-primary) don't fall through to browser
+   * defaults. These were referenced by the skills modal + skill cards
+   * before 2026-04-18 but never defined — audit called it out. Kept as
+   * aliases (not primary tokens) so the mobius-* names remain canonical.
+   */
+  --surface: var(--mobius-bg-card);
+  --surface-hover: var(--mobius-bg-hover);
+  --border: var(--mobius-border);
+  --border-light: var(--mobius-border-light);
+  --text-primary: var(--mobius-text-primary);
+  --text-secondary: var(--mobius-text-secondary);
+  --text-muted: var(--mobius-text-muted);
 
   --mobius-success: #16a34a;
   --mobius-warning: #f59e0b;
