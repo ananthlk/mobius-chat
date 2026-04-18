@@ -212,13 +212,40 @@ class TestUploadProgressEmits:
             f"Found ms values: {sorted(set(ms_values))}"
         )
 
-    def test_success_banner_mentions_chunks(self, js_text: str):
-        """On success, the banner should surface chunks_count so the
-        user knows the skill actually did the work. Silent success
-        (just "done") leaves them guessing whether retrieval has any
-        content to find."""
-        assert "chunks_count" in js_text
-        assert "ingested" in js_text
+    def test_success_banner_is_user_friendly(self, js_text: str):
+        """On success, the banner tells the user the doc is ready to
+        search in plain language. 2026-04-18: reverted from the earlier
+        "ingested (N chunks)" phrasing — users flagged 'publishing to
+        RAG' and 'chunks' as developer jargon. The chunks_count is
+        still captured from the skill response but only logged to the
+        debug console, not shown to the user.
+
+        Scoped to the uploadStagedAttachmentForInstantRag function body
+        since "ingested" legitimately appears elsewhere in app.ts
+        (e.g., the roster-upload modal's legacy messaging).
+        """
+        anchor = "uploadStagedAttachmentForInstantRag"
+        idx = js_text.find(anchor)
+        assert idx >= 0, "uploadStagedAttachmentForInstantRag helper missing"
+        # Look at the next ~3KB — covers the full function body.
+        region = js_text[idx:idx + 3000]
+        # Plain-language user feedback.
+        assert "is ready" in region, (
+            "Success banner should say the doc is ready — any phrasing "
+            "that removes this user-facing signal is a UX regression."
+        )
+        # "ingested" must not appear in the showChatStatusBanner call
+        # inside this function (the user-visible surface). Comments,
+        # console.debug, variable names in OTHER functions are fine.
+        import re
+        banner_calls = re.findall(
+            r"showChatStatusBanner\s*\(\s*`[^`]*`", region,
+        )
+        for call in banner_calls:
+            assert "ingested" not in call, (
+                f"Banner copy still says 'ingested' — 2026-04-18 copy "
+                f"revision should have removed this: {call[:120]}"
+            )
 
     def test_phase_timers_stopped_on_failure(self, js_text: str):
         """Failure path must call stopComposerUploadPhaseEmits or the
@@ -318,6 +345,79 @@ class TestLargeFileConfirmGate:
         assert '"Enter"' in js_text
 
 
+class TestNoDeveloperJargonInUserFacingStrings:
+    """2026-04-18: user flagged "⏳ Uploading 'X' — publishing to RAG…"
+    as developer jargon. Rewrote the upload phase messages + success +
+    failure copy to plain language. This test locks the reversion in:
+    if any of the flagged terms reappear in user-visible template
+    literals, the test fails and we know copy regressed.
+
+    The banned terms are the ones users specifically don't parse:
+      RAG, chunks, embeddings, ingested, publishing to, corpus (lowercase),
+      chunking, embed
+    They're fine in code comments, variable names, and console.debug —
+    this test only blocks them inside template literals that end up as
+    user-visible strings via showChatStatusBanner, emit, or alert.
+    """
+
+    BANNED_IN_USER_STRINGS: tuple[str, ...] = (
+        "publishing to RAG",
+        "chunking",
+        "embeddings",
+        "ingested",
+        "generating embedding",
+    )
+
+    def test_no_jargon_in_showchatstatusbanner_literals(self, js_text: str):
+        """Scan showChatStatusBanner() calls and flag banned substrings
+        inside the first argument. We look for the calls and walk the
+        adjacent template literal. Not a perfect AST scan, but covers
+        99% of real cases — banner args are almost always a single
+        template literal on the same or next line."""
+        import re
+        # Find each showChatStatusBanner call and grab ~200 chars that
+        # should contain the template literal argument.
+        for match in re.finditer(r"showChatStatusBanner\s*\(", js_text):
+            start = match.end()
+            snippet = js_text[start:start + 250]
+            # Only inspect the first argument — stop at the first top-level
+            # comma OR the closing paren, whichever comes first. Simple
+            # nesting-aware walk.
+            depth = 0
+            first_arg_end = len(snippet)
+            for i, ch in enumerate(snippet):
+                if ch in "([{":
+                    depth += 1
+                elif ch in ")]}":
+                    if depth == 0:
+                        first_arg_end = i
+                        break
+                    depth -= 1
+                elif ch == "," and depth == 0:
+                    first_arg_end = i
+                    break
+            first_arg = snippet[:first_arg_end]
+            for banned in self.BANNED_IN_USER_STRINGS:
+                assert banned not in first_arg, (
+                    f"showChatStatusBanner literal contains banned jargon "
+                    f"{banned!r}: {first_arg[:120]!r}. "
+                    f"Users flagged this on 2026-04-18 — use plain language."
+                )
+
+    def test_no_jargon_in_setstatus_or_alert(self, js_text: str):
+        """Same rule for alert() and setStatus() in the composer-attach flow."""
+        import re
+        for fn in ("alert", "setStatus"):
+            for match in re.finditer(fn + r"\s*\(", js_text):
+                start = match.end()
+                snippet = js_text[start:start + 250]
+                for banned in self.BANNED_IN_USER_STRINGS:
+                    assert banned not in snippet, (
+                        f"{fn}(...) at offset {start} contains banned jargon "
+                        f"{banned!r}. 2026-04-18 UX revision."
+                    )
+
+
 class TestSendBtnReenabledBeforeSendMessage:
     """Regression for the 2026-04-17 stuck-state bug.
 
@@ -376,10 +476,13 @@ class TestSendBtnReenabledBeforeSendMessage:
         """Upload failure must leave BOTH the button and the input editable
         so the user can remove the file / type a different message / retry.
         Pre-fix, the catch only restored sendBtn — inputEl stayed disabled."""
-        # Look for the catch block in sendMessageWithAttachment.
+        # Look for the catch block in sendMessageWithAttachment. Window
+        # widened from 1000→1500 chars because the user-friendly error
+        # message strings (2026-04-18) pushed the re-enable lines past
+        # the old 1000-char horizon.
         idx = js_text.find('console.error("[composer-attach] upload failed:')
         assert idx >= 0, "catch block signature missing"
-        window = js_text[idx:idx + 1000]
+        window = js_text[idx:idx + 1500]
         assert "sendBtn.disabled = false" in window, (
             "Catch path doesn't re-enable sendBtn — user stuck with no send button."
         )

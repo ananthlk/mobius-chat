@@ -748,8 +748,8 @@ def _execute_tool(
 
         if upload_candidates:
             emit(
-                f"◌ Searching our materials + {len(upload_candidates)} attached "
-                f"doc{'s' if len(upload_candidates) > 1 else ''} in parallel…"
+                f"◌ Searching our materials and your attached "
+                f"doc{'s' if len(upload_candidates) > 1 else ''}…"
             )
         else:
             emit("◌ Searching our materials…")
@@ -840,9 +840,13 @@ def _execute_tool(
         # can cite them distinctly.
         if upload_chunk_previews:
             merged_result = (corpus_answer or "") + "\n\n---\n\n" + "\n\n---\n\n".join(upload_chunk_previews)
+            # User-facing: "found N passages from your document" is
+            # clearer than "uploads: N chunks" — passages map to reading,
+            # chunks map to engineering.
             emit(
-                f"  ✓ corpus: {len(corpus_sources or [])} · uploads: "
-                f"{upload_chunks_total} chunk{'s' if upload_chunks_total != 1 else ''}"
+                f"  ✓ found {upload_chunks_total} passage"
+                f"{'s' if upload_chunks_total != 1 else ''} from your attached "
+                f"doc{'s' if len(upload_candidates) > 1 else ''}"
             )
         else:
             merged_result = corpus_answer or ""
@@ -995,7 +999,7 @@ def _execute_tool(
                 "sources": [],
             }
 
-        emit(f"◌ Searching your uploaded document for: {(query or '')[:60]}…")
+        emit(f"◌ Reading your attached document: {(query or '')[:60]}…")
         # Phase B.1 — lazy RAG. Skips J/P/D tagger + confidence filter +
         # rerank entirely (all three assume a corpus doc with document_tags
         # / policy_line_tags rows, which user uploads don't have until

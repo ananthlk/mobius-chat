@@ -104,7 +104,7 @@ def lazy_rag_search(
         logger.warning("instant-rag: CHROMA_PERSIST_DIR not configured")
         return ("", [], None, _SIGNAL_NO_SOURCES)
 
-    _emit(emitter, f"Searching your uploaded doc (id={document_id[:8]}…)")
+    _emit(emitter, "Reading your attached document…")
 
     try:
         query_embedding = get_query_embedding(question)
@@ -174,7 +174,7 @@ def lazy_rag_search(
             document_id,
             vector_count_hint if vector_count_hint >= 0 else "probe_failed",
         )
-        _emit(emitter, "  ↓ nothing relevant found in the uploaded doc.")
+        _emit(emitter, "  ↓ your attached document doesn't cover this.")
         return ("", [], None, _SIGNAL_NO_SOURCES)
 
     # Distance is cosine in [0, 2]; invert to a 0..1 similarity score the
@@ -208,7 +208,7 @@ def lazy_rag_search(
     # point per turn (keeps latency + cost predictable).
     answer = "\n\n---\n\n".join(s["text"] for s in sources)
 
-    _emit(emitter, f"  ✓ matched {len(sources)} chunk(s) from the uploaded doc.")
+    _emit(emitter, f"  ✓ found {len(sources)} passage{'s' if len(sources) != 1 else ''} in your attached document.")
 
     return (answer, sources, None, _SIGNAL_CORPUS_ONLY)
 

@@ -5571,7 +5571,7 @@ ${message}`;
       const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
       const pages = estimatePageCount(file);
       if (bodyEl) {
-        bodyEl.innerHTML = `"<strong>${file.name}</strong>" is <strong>${sizeMb} MB</strong> (roughly <strong>${pages} pages</strong>). Instant upload extracts, chunks, and embeds it right now so you can search it in this chat \u2014 that typically takes <strong>30 to 60 seconds</strong> for a document this size.<br><br>Batch processing runs the full ingestion pipeline (tags, cross-corpus visibility, permanent storage) asynchronously \u2014 not yet wired up.`;
+        bodyEl.innerHTML = `"<strong>${file.name}</strong>" is <strong>${sizeMb} MB</strong> (roughly <strong>${pages} pages</strong>). "Upload now" gets it ready to search in this chat \u2014 typically <strong>30 to 60 seconds</strong> for a document this size.<br><br>"Queue for batch processing" adds the doc to your permanent library so it's searchable from any chat. Coming soon.`;
       }
       const cleanup = () => {
         modal2.setAttribute("hidden", "");
@@ -5618,11 +5618,11 @@ ${message}`;
   function startComposerUploadPhaseEmits(filename) {
     stopComposerUploadPhaseEmits();
     const phases = [
-      { ms: 0, text: `\u23F3 Uploading "${filename}" \u2014 extracting text\u2026` },
-      { ms: 3e3, text: `\u23F3 Uploading "${filename}" \u2014 chunking + generating embeddings\u2026` },
-      { ms: 12e3, text: `\u23F3 Uploading "${filename}" \u2014 publishing to RAG\u2026` },
-      { ms: 3e4, text: `\u23F3 Still processing "${filename}" \u2014 large documents can take up to a minute\u2026` },
-      { ms: 6e4, text: `\u23F3 Still processing "${filename}" \u2014 nearly done or retrying\u2026` }
+      { ms: 0, text: `\u23F3 Uploading "${filename}"\u2026` },
+      { ms: 4e3, text: `\u23F3 Reading "${filename}"\u2026` },
+      { ms: 15e3, text: `\u23F3 Getting "${filename}" ready to search\u2026` },
+      { ms: 4e4, text: `\u23F3 Still working on "${filename}" \u2014 larger docs take a bit longer\u2026` },
+      { ms: 75e3, text: `\u23F3 Almost done with "${filename}"\u2026` }
     ];
     phases.forEach(({ ms, text }) => {
       const id = window.setTimeout(() => showChatStatusBanner(text, 0), ms);
@@ -5654,8 +5654,10 @@ ${message}`;
       if (data.thread_id)
         currentThreadId = data.thread_id;
       const chunks = typeof data.chunks_count === "number" ? data.chunks_count : 0;
-      const chunksLabel = chunks > 0 ? ` (${chunks} chunk${chunks === 1 ? "" : "s"})` : "";
-      showChatStatusBanner(`\u2713 "${filename}" ingested${chunksLabel} \u2014 searching\u2026`, 4e3);
+      if (chunks > 0) {
+        console.debug(`[composer-attach] "${filename}" ingested as ${chunks} chunk${chunks === 1 ? "" : "s"}`);
+      }
+      showChatStatusBanner(`\u2713 "${filename}" is ready \u2014 searching now\u2026`, 4e3);
       return data;
     } finally {
       stopComposerUploadPhaseEmits();
@@ -5674,7 +5676,7 @@ ${message}`;
       }
       if (choice === "batch") {
         showChatStatusBanner(
-          `Batch processing for "${composerStagedFile.name}" is queued \u2014 but the batch pipeline isn't wired up yet (coming in Phase B.7). For now, pick "Upload now" to use the doc in this chat immediately.`,
+          `Batch processing isn't available yet. Use "Upload now" to search "${composerStagedFile.name}" in this chat right now.`,
           15e3
         );
         return;
@@ -5697,8 +5699,8 @@ ${message}`;
       console.error("[composer-attach] upload failed:", err);
       stopComposerUploadPhaseEmits();
       const msg = err?.message || String(err);
-      showChatStatusBanner(`\u2717 Upload failed: ${msg}`, 2e4);
-      alert(`Upload failed: ${msg}`);
+      showChatStatusBanner(`\u2717 Couldn't upload "${composerStagedFile?.name ?? "the document"}": ${msg}`, 2e4);
+      alert(`Couldn't upload the document: ${msg}`);
       sendBtn.disabled = false;
       inputEl.disabled = false;
     }

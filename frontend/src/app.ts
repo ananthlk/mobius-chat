@@ -6265,12 +6265,12 @@ function run(): void {
       if (bodyEl) {
         bodyEl.innerHTML =
           `"<strong>${file.name}</strong>" is <strong>${sizeMb} MB</strong> ` +
-          `(roughly <strong>${pages} pages</strong>). Instant upload extracts, ` +
-          `chunks, and embeds it right now so you can search it in this chat — ` +
-          `that typically takes <strong>30 to 60 seconds</strong> for a document this size.` +
+          `(roughly <strong>${pages} pages</strong>). "Upload now" gets it ` +
+          `ready to search in this chat — typically ` +
+          `<strong>30 to 60 seconds</strong> for a document this size.` +
           `<br><br>` +
-          `Batch processing runs the full ingestion pipeline (tags, cross-corpus ` +
-          `visibility, permanent storage) asynchronously — not yet wired up.`;
+          `"Queue for batch processing" adds the doc to your permanent ` +
+          `library so it's searchable from any chat. Coming soon.`;
       }
       const cleanup = () => {
         modal.setAttribute("hidden", "");
@@ -6312,17 +6312,21 @@ function run(): void {
   }
   function startComposerUploadPhaseEmits(filename: string): void {
     stopComposerUploadPhaseEmits();
-    // Same three-step story as the upload modal for instant_rag, adapted
-    // for the composer context. The skill's actual timing varies with
-    // doc size: extraction 1-3s, chunking+embedding 5-30s, publish 1-2s.
-    // Messages are time-gated rather than progress-driven because we
-    // don't get intermediate signals back from the urlopen().
+    // Phase messages are user-facing, not developer-facing. Each one
+    // answers the question a user actually has ("is this still working?")
+    // without exposing implementation terms like chunks/embeddings/RAG.
+    // The skill's pipeline has four stages under the hood (extract,
+    // chunk, embed, publish) but users experience it as one wait — so
+    // the messages collapse to a single narrative arc.
+    //
+    // Timing is time-gated rather than progress-driven; the skill's
+    // /ingest/from-text is a blocking urlopen with no intermediate signals.
     const phases: Array<{ ms: number; text: string }> = [
-      { ms: 0,     text: `⏳ Uploading "${filename}" — extracting text…` },
-      { ms: 3000,  text: `⏳ Uploading "${filename}" — chunking + generating embeddings…` },
-      { ms: 12000, text: `⏳ Uploading "${filename}" — publishing to RAG…` },
-      { ms: 30000, text: `⏳ Still processing "${filename}" — large documents can take up to a minute…` },
-      { ms: 60000, text: `⏳ Still processing "${filename}" — nearly done or retrying…` },
+      { ms: 0,     text: `⏳ Uploading "${filename}"…` },
+      { ms: 4000,  text: `⏳ Reading "${filename}"…` },
+      { ms: 15000, text: `⏳ Getting "${filename}" ready to search…` },
+      { ms: 40000, text: `⏳ Still working on "${filename}" — larger docs take a bit longer…` },
+      { ms: 75000, text: `⏳ Almost done with "${filename}"…` },
     ];
     phases.forEach(({ ms, text }) => {
       // autoHideMs=0 keeps each message up until the next phase replaces it
@@ -6357,13 +6361,16 @@ function run(): void {
       }
       const data = await resp.json();
       if (data.thread_id) currentThreadId = data.thread_id;
-      // Success: flash a short confirmation (chunks_count reported by
-      // the skill gives the user concrete feedback that ingest worked)
-      // then let it auto-hide. The chat-turn thinking block takes over
-      // from here.
+      // Success: short user-facing confirmation ("ready — searching now").
+      // chunks_count is logged at the debug console for developer
+      // diagnostics, but not exposed in the banner because users don't
+      // care whether the doc is 9 chunks or 287 chunks — they care that
+      // it's ready.
       const chunks = typeof data.chunks_count === "number" ? data.chunks_count : 0;
-      const chunksLabel = chunks > 0 ? ` (${chunks} chunk${chunks === 1 ? "" : "s"})` : "";
-      showChatStatusBanner(`✓ "${filename}" ingested${chunksLabel} — searching…`, 4000);
+      if (chunks > 0) {
+        console.debug(`[composer-attach] "${filename}" ingested as ${chunks} chunk${chunks === 1 ? "" : "s"}`);
+      }
+      showChatStatusBanner(`✓ "${filename}" is ready — searching now…`, 4000);
       return data;
     } finally {
       stopComposerUploadPhaseEmits();
@@ -6398,9 +6405,8 @@ function run(): void {
         // connected to batch pipeline" today (Phase B.7 future work).
         // Until then, tell the user it's coming and don't proceed.
         showChatStatusBanner(
-          `Batch processing for "${composerStagedFile.name}" is queued — but the ` +
-          `batch pipeline isn't wired up yet (coming in Phase B.7). For now, ` +
-          `pick "Upload now" to use the doc in this chat immediately.`,
+          `Batch processing isn't available yet. Use "Upload now" to ` +
+          `search "${composerStagedFile.name}" in this chat right now.`,
           15000,
         );
         return;
@@ -6435,11 +6441,11 @@ function run(): void {
       // a longer dwell so the user can read it before it auto-hides.
       stopComposerUploadPhaseEmits();
       const msg = err?.message || String(err);
-      showChatStatusBanner(`✗ Upload failed: ${msg}`, 20000);
+      showChatStatusBanner(`✗ Couldn't upload "${composerStagedFile?.name ?? 'the document'}": ${msg}`, 20000);
       // Keep the alert too — the banner can be dismissed or missed if
       // the user is looking elsewhere, and upload failure is a hard
       // block that deserves an interrupt.
-      alert(`Upload failed: ${msg}`);
+      alert(`Couldn't upload the document: ${msg}`);
       // Restore BOTH controls — the user needs to be able to edit the
       // message, remove the staged file, and retry. Restoring only the
       // send button but leaving inputEl disabled was the 2026-04-17
