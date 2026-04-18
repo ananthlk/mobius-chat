@@ -518,14 +518,46 @@ def _handle_instant_rag_upload(
     # upload path is already synchronous (blocks on urlopen for the skill
     # call), so adding a sub-second PG write to the tail is negligible
     # and removes a whole class of "invisible upload" bugs.
+    # Resolve the real thread_id once up front so both writes use the
+    # same value. ensure_thread either creates the row or returns the
+    # existing thread_id; either way it's the canonical id we persist
+    # against. Fall through to the raw tid if ensure_thread fails.
+    real_tid = tid
     try:
-        real_tid = ensure_thread(tid)
+        real_tid = ensure_thread(tid) or tid
+    except Exception as _e:
+        logger.warning("ensure_thread failed for tid=%s: %s", tid, _e)
+
+    try:
         append_uploaded_file_record(real_tid, record)
     except Exception as _e:
         # Keep the upload itself successful even if thread-state persistence
         # fails — the chunks are already in Chroma + PG, so search works.
         # Log loud (not debug) so this shows up in ops dashboards.
-        logger.warning("Thread state save (instant-rag) failed for thread=%s: %s", tid, _e)
+        logger.warning("Thread state save (instant-rag) failed for thread=%s: %s", real_tid, _e)
+
+    # Phase B.1c — dual-write to the durable catalog table. This is the
+    # source of truth for cross-thread queries ("all uploads for this
+    # user", cleanup cron's "expired rows"). The JSONB blob above stays
+    # as the fast-path cache for the ReAct loop's _resolve_upload_document_id.
+    # Failure here is non-fatal for the same reason as the JSONB save:
+    # chunks are already durable in Chroma + PG; losing a catalog row
+    # just means cross-thread queries miss this upload until we backfill.
+    try:
+        from app.storage.instant_rag_catalog import record_upload as _catalog_record
+        _catalog_record(
+            document_id=str(rag_result.get("document_id") or ""),
+            envelope_id=str(rag_result.get("envelope_id") or upload_id),
+            upload_id=upload_id,
+            thread_id=real_tid,
+            filename=filename,
+            user_id=None,  # Phase 1h: user_id is None in auth=off (dev); wire when auth=required
+            content_type=None,
+            byte_size=None,  # chat side doesn't have the raw bytes by this point; skill saw them
+            chunks_count=int(rag_result.get("chunks_count", 0) or 0),
+        )
+    except Exception as _e:
+        logger.warning("[catalog] dual-write failed for thread=%s: %s", real_tid, _e)
 
     return {
         "upload_id": upload_id,
@@ -1105,9 +1137,11 @@ def get_chat_config_by_sha(config_sha: str):
 from app.api.feedback import router as _feedback_router
 from app.api.history import router as _history_router
 from app.api.tasks import router as _tasks_router
+from app.api.uploads import router as _uploads_router
 app.include_router(_history_router)
 app.include_router(_feedback_router)
 app.include_router(_tasks_router)
+app.include_router(_uploads_router)  # Phase B.1c — cross-thread uploads catalog
 
 
 # Phase 1b: feedback / QC endpoints moved to app.api.feedback.
