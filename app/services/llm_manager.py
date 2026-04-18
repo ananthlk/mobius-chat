@@ -145,6 +145,21 @@ async def generate(
         success = True
     except Exception as e:
         error_type = type(e).__name__
+        # Phase 2.5b — parse 429 "try again in X" hints so the bandit's
+        # tpd_tracker short-circuits this model for the remaining window
+        # instead of retrying and failing every turn until the daily
+        # quota rolls. Groq's error body carries the reset hint
+        # (observed 2026-04-17: "Please try again in 1h28m56.928s").
+        try:
+            from app.services import tpd_tracker as _tpd_tracker
+            retry_after = _tpd_tracker.parse_retry_after_seconds(str(e))
+            if retry_after and retry_after > 0 and spec is not None:
+                deadline = time.monotonic() + retry_after
+                _tpd_tracker.mark_rate_limited_until(spec.model_id, deadline)
+        except Exception:
+            # TPD hint parsing is best-effort; never let it mask the
+            # actual provider error being re-raised below.
+            pass
         usage = zero_usage()
         raise
     finally:
@@ -152,6 +167,24 @@ async def generate(
         model_id   = spec.model_id if spec else (usage.get("model") or "unknown")
         provider_n = spec.provider if spec else (usage.get("provider") or "unknown")
         cost_usd   = float(usage.get("cost_usd") or 0.0)
+
+        # Phase 2.5b — feed the tpd_tracker so the filter in
+        # _filter_by_token_budget can protect future calls. Total tokens
+        # (prompt + completion) is what providers charge against the daily
+        # quota; fall back to prompt_tokens + completion_tokens if
+        # total_tokens isn't present in the usage dict.
+        if success:
+            try:
+                from app.services import tpd_tracker as _tpd_tracker
+                total = (
+                    int(usage.get("total_tokens") or 0)
+                    or (int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+                        + int(usage.get("completion_tokens") or usage.get("output_tokens") or 0))
+                )
+                if total > 0:
+                    _tpd_tracker.record_usage(model_id, total)
+            except Exception:
+                pass
 
         # Update router EMA (quality score added later by adjudicator)
         if spec and router is not None:

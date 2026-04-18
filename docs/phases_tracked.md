@@ -5,7 +5,7 @@ sessions. This supplements `CHAT_MODULE_REFACTOR_PLAN.md` (the architectural
 plan) with a tactical, session-to-session snapshot of what's done, what's
 next, and what's deliberately parked.
 
-Last updated: 2026-04-17 (B.1 end-to-end shakedown; lazy-RAG verified against real PDF — retrieval working, integrator blocked only by Groq daily quota).
+Last updated: 2026-04-17 (after B.4 parallel retrieval + 2.5b daily-quota bandit — end-of-day Groq 429 storms prevented proactively, corpus + uploads fanned out per turn).
 
 ---
 
@@ -43,6 +43,8 @@ each phase live in `tests/test_<phase_feature>.py`.
 | 0.19 | **Tool-exhaustion block in ReAct retry guard.** 2026-04-17 live test exposed a gap in Phase 0.7: guard only blocks identical `(tool, inputs_sig)` pairs, so R1 `search_corpus` query="A" (5→0 kept) and R2 `search_corpus` query="B" (5→0 kept) both ran because the reasoner reformulated the query between rounds. Fix: per-tool consecutive-failure counter; after 2 failures with no intervening success, tool is blocked regardless of inputs_sig. `failure_hint_for_prompt` surfaces "Exhausted tools (pick a DIFFERENT tool, not a re-phrased query)" to the planner. | `feat(react): tool-exhaustion block in retry guard` |
 | 1f.1 | **Tasks router extracted.** 8 `/chat/tasks/*` endpoints moved to `app/api/tasks.py`; `_task_proxy` consolidated into `app.api._common.task_proxy` (also used by `/chat/runs` aggregator). Hygiene guard gained a ratcheting `MAX_MAIN_PY_LOC` / `MAX_MAIN_PY_ENDPOINTS` ceiling so regression is impossible. **main.py: 1,528 → 1,408 LOC, 36 → 28 endpoints.** 15 new router tests + 10 hygiene tests green. | `refactor(api): extract /chat/tasks router (Phase 1f.1)` |
 | B.1a | **Composer inline attach-to-send.** Paperclip button + hidden file input + drag-drop zone on the message composer. Staging-then-send pattern: clicking the paperclip stages a file (chip appears above composer), pressing Send (or Enter) uploads first (via existing /chat/roster-upload?file_purpose=instant_rag), then sends the user message as normal. The just-uploaded document_id lands in thread state before the next chat turn runs so search_uploaded_document auto-resolves. Wrapped handler uses stopImmediatePropagation so the original sendMessage click listener doesn't double-fire. 25MB size guard prevents the 120s-inline-timeout failure mode. 13 structural tests lock HTML/CSS/JS anchors. | `feat(ui): composer inline attach-to-send (Phase B.1a)` |
+| 2.5b | **Daily-quota-aware bandit.** Phase 2.5 filtered LLM candidates by per-minute TPM; 2.5b adds per-day TPD. New `app/services/tpd_tracker.py` module tracks token usage per model over a rolling 24-hour window and exposes `is_exhausted(model_id, spec_tpd, request_tokens)` which the `_filter_by_token_budget` pool-trimmer now calls. Also reactively honors 429 "try again in X" hints via `mark_rate_limited_until` — `llm_manager` parses provider error bodies and sets the hold, so subsequent calls skip the exhausted model without hitting the provider again. 4 Groq models now carry `spec_tpd_limit` (100k for llama-3.3-70b, 500k for 8b-instant, 200k each for gpt-oss-120b/20b). Closes the 2026-04-17 live bug: 99946/100000 used → every turn's integrator blocked with "model temporarily busy" until daily reset. Post-2.5b, bandit falls through to Gemini/Claude automatically. Thread-safe; per-process (Redis-shared counter is a future phase). 28 new tests covering usage accumulation, 24h pruning, safety margin, 429 parse for Groq's "1h28m56.928s" / "9m29.376s" / "45s" / "Retry-After: N" forms, thread safety under contention, and the full 2026-04-17 scenario as an integration regression. | `feat(router): daily-quota-aware bandit + 429 hint honoring (Phase 2.5b)` |
+| B.4 | **Parallel retrieval — search_corpus + lazy-RAG fan-out.** When the thread has instant_rag uploads and the planner picks search_corpus, the ReAct dispatcher fans out concurrent `lazy_rag_search` calls against each upload (capped at 3) and merges the results. ThreadPoolExecutor (not asyncio — both retrievers are sync). Eliminates the binary planner choice on ambiguous phrasing: user asks "what does Sunshine say about H0036" with a Sunshine doc attached, both pools contribute. Tool name stays `search_corpus` in return dict so 0.19 retry guard + `_TOOL_STAGE_FOR_USAGE` metrics still work. New observability fields: `fanned_out_to`, `upload_chunks_total`. Partial-failure isolation (one bad upload doesn't kill corpus; corpus failure still returns upload chunks); merged chunks capped at 15 to protect integrator context budget. 12 new tests covering no-fan-out preservation, cap enforcement, parallel vs sequential timing, partial failure, and contract preservation for retry guard. | `feat(rag): parallel retrieval — fan out search_corpus + lazy-RAG (Phase B.4)` |
 | B.1-shakedown | **Lazy-RAG live-test fixes from 2026-04-17.** Five bugs caught by running the full upload+ask flow against a real FL Medicaid provider manual: (a) 413 from skill's 50-page cap → bumped default to 300 pages (`mobius-skills/instant-rag/app/config.py`); (b) daemon-thread persistence race — upload record not in thread state by the time the chat turn read it → made `append_uploaded_file_record` synchronous (`app/main.py`); (c) planner blind to uploaded docs — reasoning context never mentioned `active.uploaded_files[]` → added explicit surfacing block with nudge away from search_corpus (`app/pipeline/react_loop.py`); (d) send button stuck disabled after upload — wrapper disabled before calling sendMessage, which has early-return on disabled → re-enable both controls before calling (`frontend/src/app.ts`); (e) silent Chroma upsert failure — skill embedder returning 3072-dim vectors into a 1536-dim collection → pinned `output_dimensionality=1536` on gemini-embedding-001 (`mobius-skills/instant-rag/app/processing/embedder.py`). Diagnostic probes added so the next time any of these classes of failure happen they're visible in logs within one grep. 20+ new tests across the five fixes. Confirmed end-to-end: 9 chunks retrieved from uploaded PDF against the Chroma collection. | 6 commits: `c06c768`, `bafdd23`, `0d0c40e`, `c72144f`, `be7c0e6`, others |
 | B.1 | **Lazy-RAG query tool (Instant RAG).** New ReAct tool `search_uploaded_document(upload_id, query)` that searches *inside* a user-uploaded document, scoped strictly by `document_id`. Bypasses the main RAG pipeline's J/P/D tagger + tag-match rerank + confidence filter + LLM synthesis — all four require corpus infrastructure (`document_tags`, `policy_line_tags`, curated confidence labels) that user uploads don't have until promotion (future Phase B.7). Uses ChromaDB directly with `where={document_id, instant_rag=true}`. No LLM call in the tool path — synthesis stays at the end-of-turn integrator. Auto-resolves upload_id when exactly one instant_rag upload exists on thread. 18 new tests; tool registered in TOOL_MANIFEST + TOOL_CAPABILITIES + _TOOL_STAGE_FOR_USAGE. | `feat(rag): lazy-RAG search_uploaded_document tool (Phase B.1)` |
 | 1h | **Front-door hardening.** Closes two audit gaps: `main.py:242 allow_origins=["*"]` and `app/auth.py` imported by nothing. New `app/api/front_door.py` centralizes CORS, rate limit, and auth-mode config, all driven by the `CHAT_ENV` gate from 0.17. **CORS:** dev default permissive, hosted envs MUST set `CHAT_CORS_ORIGINS` or `CorsMisconfiguredError` raises at startup; wildcards rejected; methods/headers restricted in hosted envs. **Rate limit:** opt-in via `CHAT_RATE_LIMIT_PER_MINUTE`, hosted default 30 req/min/IP on `/chat`, sliding-window per-IP with 429+Retry-After header. **Auth mode:** `off`/`optional`/`required`, `require_user` FastAPI dependency wired to 5 write routes in tasks router as proof-of-pattern. Main.py line `allow_origins=["*"]` removed. 34 new tests (CORS, rate limit middleware, auth dependency, audit-regression locks). | `feat(front-door): env-driven CORS, rate limit, auth mode (Phase 1h)` |
@@ -123,26 +125,13 @@ Estimated: 3 days after Phase 1.
   filter can keep them out of repair too.
 - Scope: ~1 hour.
 
-### 2.5b — Declare daily TPD on ModelSpec (Groq quota-aware bandit)
-Follow-up to Phase 2.5 (token-aware Thompson sampling). Phase 2.5 filters
-by TPM (per-minute) but not TPD (per-day). Result: the bandit happily
-picks Groq models all day until the daily quota is within ~5% of
-exhaustion, then every subsequent integrator call fails with 429.
-Observed on 2026-04-17 during B.1 live testing — 99946/100000 TPD used,
-every turn failed at the integrator step despite retrieval working
-perfectly. Groq's response includes a reset hint (1h28m remaining) but
-nothing in the bandit consumes it.
-
-Fix: add `tokens_per_day` field to `ModelSpec`; track usage in a rolling
-daily window; filter models out of the candidate pool when
-`predicted_tokens > (daily_limit − daily_used)`. Also parse the
-"try again in X" from 429 responses to short-circuit the daily filter
-when a reset is imminent. When all Groq models are filtered out, the
-bandit falls through to Gemini Flash / Claude automatically (the
-fallback tier already exists in `model_registry`).
-
-Scope: ~3 hours. Highest-impact single fix for end-of-day availability
-since the project is pinned to Groq's free-tier daily budget.
+### 2.5b — shipped (see Shipped row above)
+Previously tracked here as "Declare daily TPD on ModelSpec". Merged
+2026-04-17 with rolling 24h window + 429 retry-after hint parsing +
+integration regression covering the live-test scenario. Follow-up for
+multi-worker deployments: Redis-backed shared counter so two workers
+see the same TPD usage (current impl is per-process). Not urgent —
+on a single-worker deployment the current state suffices.
 
 ### Emit → task-manager event migration (user flagged 2026-04-17)
 The ReAct loop currently emits progress as transient UI strings
