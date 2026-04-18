@@ -1384,8 +1384,7 @@ function splitSectionsByVisibility(sections, mode) {
     return { visible: [], hidden: all };
   if (mode === "CANONICAL")
     return { visible: all, hidden: [] };
-  // Phase 0.14: BLENDED now shows requirements + definitions by default.
-  const visibleIntents = new Set(["requirements", "definitions"]);
+  const visibleIntents = /* @__PURE__ */ new Set(["requirements", "definitions"]);
   const visible = all.filter((s) => visibleIntents.has(s.intent ?? "process"));
   const hidden = all.filter((s) => !visibleIntents.has(s.intent ?? "process"));
   return { visible, hidden };
@@ -5475,6 +5474,192 @@ ${message}`;
     }
   });
   sendBtn.addEventListener("click", () => sendMessage());
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Phase B.1a — inline attach-to-send
+  //
+  // Staging-then-send pattern: clicking the paperclip stages a file
+  // (shows chip), the actual upload happens when the user presses Send.
+  // That way the upload and the user's question fire as one perceived
+  // interaction. The existing upload endpoint handles ingest inline; by
+  // the time it resolves, the document is already in thread state and
+  // the subsequent chat turn will see it via search_uploaded_document.
+  // ─────────────────────────────────────────────────────────────────────
+  let composerStagedFile = null;
+  const composerAttachBtn = document.getElementById("composerAttach");
+  const composerAttachmentInput = document.getElementById("composerAttachmentInput");
+  const composerAttachmentChip = document.getElementById("composerAttachmentChip");
+  const composerAttachmentChipName = document.getElementById("composerAttachmentChipName");
+  const composerAttachmentChipRemove = document.getElementById("composerAttachmentChipRemove");
+
+  function showComposerAttachment(file) {
+    composerStagedFile = file;
+    if (composerAttachmentChipName) composerAttachmentChipName.textContent = file.name;
+    if (composerAttachmentChip) composerAttachmentChip.hidden = false;
+    if (composerAttachBtn) composerAttachBtn.setAttribute("aria-pressed", "true");
+  }
+  function clearComposerAttachment() {
+    composerStagedFile = null;
+    if (composerAttachmentChip) {
+      composerAttachmentChip.hidden = true;
+      composerAttachmentChip.classList.remove("is-uploading");
+    }
+    if (composerAttachmentInput) composerAttachmentInput.value = "";
+    if (composerAttachBtn) composerAttachBtn.removeAttribute("aria-pressed");
+  }
+
+  composerAttachBtn?.addEventListener("click", () => {
+    // If a file is already staged, the paperclip toggles — click again
+    // to open picker for replacement. Users can clear via the × chip.
+    composerAttachmentInput?.click();
+  });
+
+  composerAttachmentInput?.addEventListener("change", (e) => {
+    const f = e.target.files?.[0];
+    if (!f) {
+      clearComposerAttachment();
+      return;
+    }
+    // Size guard — chat → instant-rag skill inlines extraction in the
+    // 120s timeout; files over ~25MB routinely time out. Fail loud here
+    // instead of having the user wait two minutes for an opaque 502.
+    const maxBytes = 25 * 1024 * 1024;
+    if (f.size > maxBytes) {
+      alert(`File too large (${Math.round(f.size / 1024 / 1024)} MB). Limit is 25 MB for inline attach. Use the ⋯ → Upload file modal for larger files.`);
+      clearComposerAttachment();
+      return;
+    }
+    showComposerAttachment(f);
+    // Focus the text input so the user types their question next.
+    inputEl?.focus();
+  });
+
+  composerAttachmentChipRemove?.addEventListener("click", () => clearComposerAttachment());
+
+  // Drag-and-drop onto the composer-wrap stages the first file the same
+  // way as the paperclip. Drag over the rest of the page is ignored.
+  const composerWrap = document.querySelector(".composer-wrap");
+  if (composerWrap) {
+    const preventDefault = (e) => { e.preventDefault(); e.stopPropagation(); };
+    ["dragenter", "dragover"].forEach((evt) =>
+      composerWrap.addEventListener(evt, (e) => {
+        preventDefault(e);
+        composerWrap.classList.add("composer-wrap--dragover");
+      }),
+    );
+    ["dragleave", "drop"].forEach((evt) =>
+      composerWrap.addEventListener(evt, (e) => {
+        preventDefault(e);
+        composerWrap.classList.remove("composer-wrap--dragover");
+      }),
+    );
+    composerWrap.addEventListener("drop", (e) => {
+      const f = e.dataTransfer?.files?.[0];
+      if (!f) return;
+      // Route through the same change handler as the file picker so the
+      // size guard + chip rendering stays in one place.
+      if (composerAttachmentInput) {
+        const dt = new DataTransfer();
+        dt.items.add(f);
+        composerAttachmentInput.files = dt.files;
+        composerAttachmentInput.dispatchEvent(new Event("change"));
+      }
+    });
+  }
+
+  async function uploadStagedAttachmentForInstantRag() {
+    // Returns the parsed JSON response on success; throws on failure so
+    // the caller can abort the send. We intentionally keep the UI chip
+    // visible (with is-uploading class) while this runs — the perceived
+    // interaction is "Send" → "sent" with a tiny pause, not a separate
+    // upload phase.
+    if (!composerStagedFile) return null;
+    composerAttachmentChip?.classList.add("is-uploading");
+    try {
+      const formData = new FormData();
+      formData.append("file", composerStagedFile);
+      // org_name is mandatory-ish upstream for roster_reconciliation but
+      // instant_rag uses it only as an optional payer tag. Sending
+      // "instant-rag" is a sentinel that chat-side _handle_instant_rag_upload
+      // collapses to empty payer.
+      formData.append("org_name", "instant-rag");
+      formData.append("file_purpose", "instant_rag");
+      if (currentThreadId) formData.append("thread_id", currentThreadId);
+      const resp = await fetch(API_BASE + "/chat/roster-upload", {
+        method: "POST",
+        body: formData,
+      });
+      if (!resp.ok) {
+        const detail = await resp.json().catch(() => null);
+        throw new Error(detail?.detail || `Upload failed (${resp.status})`);
+      }
+      const data = await resp.json();
+      if (data.thread_id) currentThreadId = data.thread_id;
+      return data;
+    } finally {
+      composerAttachmentChip?.classList.remove("is-uploading");
+    }
+  }
+
+  // Wrap sendMessage so a staged file gets uploaded BEFORE the regular
+  // send flow executes. The wrapper replaces the identifier used by the
+  // Enter key + sendBtn handlers above — we declared them with
+  // sendMessage() directly, which is still the function below, so we
+  // re-point the click + keydown handlers here at the wrapped variant.
+  const _originalSendMessage = sendMessage;
+  async function sendMessageMaybeWithAttachment(overrideMessage, opts) {
+    if (!composerStagedFile) {
+      return _originalSendMessage(overrideMessage, opts);
+    }
+    // Lock the composer while the upload runs so the user can't
+    // double-send during the wait.
+    const wasDisabledInput = inputEl.disabled;
+    const wasDisabledSend = sendBtn.disabled;
+    sendBtn.disabled = true;
+    try {
+      await uploadStagedAttachmentForInstantRag();
+      const uploadedName = composerStagedFile.name;
+      clearComposerAttachment();
+      // If the user hasn't typed anything, synthesize a reasonable default
+      // so the ReAct loop has a query to run. This matches the current
+      // post-modal UX ("I just uploaded X — what does it say about …").
+      const typed = (overrideMessage ?? (inputEl.value ?? "").trim()).trim();
+      const effective = typed || `I just uploaded "${uploadedName}" — what does it say?`;
+      if (!typed && overrideMessage === undefined) {
+        inputEl.value = effective;
+      }
+      return _originalSendMessage(overrideMessage ?? effective, opts);
+    } catch (err) {
+      console.error("[composer-attach] upload failed:", err);
+      alert(`Upload failed: ${err?.message || err}`);
+      // Restore prior button/input state so the user can retry.
+      sendBtn.disabled = wasDisabledSend;
+      inputEl.disabled = wasDisabledInput;
+    }
+  }
+
+  // Re-bind: the handlers installed above point to the bare sendMessage.
+  // Replace them with the attachment-aware wrapper so the upload runs
+  // before the message send when a file is staged.
+  sendBtn.removeEventListener("click", () => sendMessage());  // no-op (can't remove anon); rebind cleanly below
+  // We can't remove the anonymous listener, so we add a capturing listener
+  // that runs first and stopsImmediatePropagation when it will handle the
+  // send. That keeps the original handler harmless when there's no file.
+  const attachmentAwareClick = (e) => {
+    if (!composerStagedFile) return;  // let the original handler run
+    e.stopImmediatePropagation();
+    e.preventDefault();
+    sendMessageMaybeWithAttachment();
+  };
+  const attachmentAwareKeydown = (e) => {
+    if (e.key !== "Enter" || e.shiftKey) return;
+    if (!composerStagedFile) return;
+    e.stopImmediatePropagation();
+    e.preventDefault();
+    sendMessageMaybeWithAttachment();
+  };
+  sendBtn.addEventListener("click", attachmentAwareClick, { capture: true });
+  inputEl.addEventListener("keydown", attachmentAwareKeydown, { capture: true });
   function openUploadModal() {
     hideRosterUploadReceipt();
     const modal2 = document.getElementById("uploadModal");
