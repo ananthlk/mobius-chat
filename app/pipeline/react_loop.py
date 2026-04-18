@@ -1235,11 +1235,13 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                             emitter,
                         )
                     return
-            if iteration == 0:
-                fb = _react_fallback_org_npi_lookup_decision(ctx)
-                if fb:
-                    emit("  Recovered: routing to lookup_npi for organization name.")
-                    decision = fb
+            # 2026-04-18 disconnect: _react_fallback_org_npi_lookup_decision
+            # routed mangled reasoner output to the lookup_npi tool, which
+            # no longer exists. Without a replacement fallback the loop
+            # just breaks here — the integrator then produces an honest
+            # "couldn't parse" message instead of dispatching to a dead
+            # tool. When credentialing rebuilds as a skill, the fallback
+            # should route to that skill's API instead of a chat tool.
             if decision is None:
                 break
 
@@ -1300,12 +1302,10 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             continue
 
         emit(f"  Using {tool or 'unknown'}…")
-        if (tool or "").strip().lower() == "run_credentialing_report":
-            emit("  (The report runs its own steps below — org, locations, providers, PML, opportunity, etc.)")
-        if (tool or "").strip().lower() == "find_org_locations":
-            emit("  (Calls credentialing POST /find-locations — NPPES, PML, DOGE; agentic may add web.)")
-        if (tool or "").strip().lower() == "find_associated_providers_at_locations":
-            emit("  (POST /find-locations then /find-associated-providers — operational roster per site.)")
+        # 2026-04-18 disconnect: contextual emit lines for the removed
+        # credentialing tools deleted — those tools aren't in the manifest
+        # so the planner can't pick them, and if it hallucinates the name
+        # anyway the generic "Using <tool>…" above is enough.
         results_before = len(tool_results)
         # Phase 0.7 + 0.13: convert raised exceptions into a typed failed-tool
         # result AND auto-retry recoverable errors once, honoring the
@@ -1347,38 +1347,24 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         if result.get("signal") and result["signal"] != RETRIEVAL_SIGNAL_NO_SOURCES:
             final_signal = result["signal"]
 
-        # Full roster report returned — finish without waiting for another reasoning round to
-        # emit is_complete (otherwise we exhaust iterations and show a generic "no verified answer").
-        _term_sig = result.get("signal")
-        _term_text = (result.get("result") or "").strip()
-        if (
-            _term_sig == RETRIEVAL_SIGNAL_ROSTER_COMPLETE
-            and _term_text
-            and (last_tool or "")
-            in ("run_roster_reconciliation_report", "run_credentialing_report")
-        ):
-            emit("  Synthesizing answer from report…")
-            _finalize_response(ctx, _term_text, all_sources, _term_sig, last_tool, emitter)
-            return
+        # 2026-04-18 disconnect: the roster-report early-exit (which
+        # fired when a credentialing tool returned
+        # RETRIEVAL_SIGNAL_ROSTER_COMPLETE) is gone along with those
+        # tools. The generic "is_complete=true from the reasoner" path
+        # still works for any remaining tool that returns a final answer.
 
         if result.get("is_terminal"):
             emit("  Stopping (refuse).")
             _finalize_response(ctx, "", [], RETRIEVAL_SIGNAL_NO_SOURCES, last_tool, emitter)
             return
 
-        # Credentialing / NPPES tools: summary + full markdown — finish immediately so ReAct does not burn rounds.
-        if (
-            last_tool in _CREDENTIALING_DUAL_FINALIZE_TOOLS
-            and result.get("success")
-            and (result.get("result_summary") or "").strip()
-            and (result.get("result") or "").strip()
-        ):
-            rs = (result.get("result_summary") or "").strip()
-            rm = (result.get("result") or "").strip()
-            combined = compose_mobius_tool_envelope(rs, rm)
-            emit("  Finishing: credentialing tool returned summary + full markdown.")
-            _finalize_response(ctx, combined, all_sources, final_signal, last_tool, emitter)
-            return
+        # 2026-04-18 disconnect: the dual-finalize early exit was tuned
+        # for credentialing tools (find_org_locations + find_associated_
+        # providers_at_locations) that returned summary+full-markdown in
+        # one result. Those tools are gone; the generic "exhausted
+        # iterations + last_tool has summary+markdown" fallback a few
+        # lines below still handles any future tool that produces that
+        # shape.
 
     # Exhausted iterations
     if tool_results:
