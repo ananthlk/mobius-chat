@@ -784,6 +784,31 @@ def _answer_tool_impl(
     if tool_hint_override:
         hint = tool_hint_override.lower().strip()
 
+        # ── Registry dispatch (commit 1 of skill-registry refactor) ──
+        # Two skills migrated: document_upload_skill +
+        # list_thread_document_uploads. The legacy `if hint == "X"` branches
+        # below stay as a fallback when MOBIUS_USE_SKILL_REGISTRY=0 so the
+        # migration is rollback-safe. Commits 2+3 migrate the rest then
+        # delete the legacy branches and this flag.
+        from app.skills import registry as _skill_registry
+
+        if _skill_registry.registry_enabled() and _skill_registry.has(hint):
+            call = _skill_registry.SkillCall(
+                name=hint,
+                inputs=tool_inputs or {},
+                question=question or "",
+                user_message=user_message,
+                thread_id=thread_id,
+                active_context=active_context,
+                mode=_org_skill_mode,
+                emitter=emitter,
+                pipeline_ctx=pipeline_ctx,
+                extra_out=extra_out,
+            )
+            return _skill_registry.dispatch(call).to_legacy_tuple()
+
+        # Legacy dispatch (fallback when registry disabled or skill not
+        # yet migrated):
         if hint == "document_upload_skill":
             from app.skills.document_upload import DOCUMENT_UPLOAD_SKILL_MARKDOWN
 
