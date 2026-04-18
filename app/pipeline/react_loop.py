@@ -581,7 +581,35 @@ _TOOL_STAGE_FOR_USAGE: dict[str, str] = {
     "document_upload_skill": "document_upload",
     "list_thread_document_uploads": "document_upload",
     "find_org_locations": "find_org_locations",
+    # Phase B.1: instant-RAG — search scoped to an uploaded document.
+    "search_uploaded_document": "rag",
 }
+
+
+def _resolve_upload_document_id(active: dict, upload_id: str) -> str | None:
+    """Phase B.1 helper — resolve an ``upload_id`` to the stored ``document_id``.
+
+    Reads ``active.uploaded_files[]`` (populated on upload by
+    ``_handle_instant_rag_upload`` in main.py). Returns the first record's
+    ``document_id`` matching ``upload_id`` with a non-empty ``document_id``.
+    Uploads without a ``document_id`` (e.g. roster-reconciliation files with
+    no searchable chunks) are silently skipped.
+
+    Returns None if no match; the caller converts that to a failed
+    tool_result so the retry guard records it and the planner can pivot.
+    """
+    if not upload_id:
+        return None
+    files = active.get("uploaded_files") or []
+    for u in files:
+        if not isinstance(u, dict):
+            continue
+        if str(u.get("upload_id") or "") != upload_id:
+            continue
+        doc_id = str(u.get("document_id") or "").strip()
+        if doc_id:
+            return doc_id
+    return None
 
 
 def _append_tool_llm_usage(ctx: PipelineContext, tool: str, result: dict) -> None:
@@ -681,6 +709,87 @@ def _execute_tool(
             "signal": signal,
             "sources": sources or [],
             "usage": usage,
+        }
+
+    if tool == "search_uploaded_document":
+        # Phase B.1 — Instant RAG query tool.
+        #
+        # The ingest side (upload → extract → chunk → embed → store in
+        # published_rag_metadata) already exists: main.py:387 _handle_instant_rag_upload
+        # proxies to the Instant RAG skill, and its chat_rag consumer writes
+        # the chunks into the same table the main corpus uses. Those chunks
+        # are searchable via the retriever's ``include_document_ids`` filter.
+        #
+        # This tool scopes a RAG query to a SINGLE uploaded document so the
+        # reasoner can answer questions like "what does the doc I just
+        # uploaded say about X" without mixing in stale corpus chunks.
+        #
+        # Input contract:
+        #   upload_id: the ``upload_id`` from active.uploaded_files[] (same
+        #              id surfaced to the UI). Resolves to document_id.
+        #   query:     free-text question.
+        #
+        # If upload_id is missing or doesn't resolve to a document_id (e.g.
+        # the user passed a roster-reconciliation upload_id, which has no
+        # searchable chunks), return success=False with a hint so the
+        # planner can pivot.
+        upload_id = (inputs.get("upload_id") or "").strip()
+        query = inputs.get("query") or (ctx.effective_message or ctx.message)
+        if not upload_id:
+            # Fall-through: if exactly one instant_rag upload exists on the
+            # thread, use it. Common case when the user just uploaded and
+            # asked a question in the next turn.
+            candidates = [
+                u for u in (active.get("uploaded_files") or [])
+                if isinstance(u, dict)
+                and (u.get("purpose") == "instant_rag")
+                and u.get("document_id")
+            ]
+            if len(candidates) == 1:
+                upload_id = str(candidates[0].get("upload_id") or "")
+
+        document_id = _resolve_upload_document_id(active, upload_id)
+        if not document_id:
+            emit("  ⊘ search_uploaded_document: no matching uploaded doc found.")
+            return {
+                "tool": "search_uploaded_document",
+                "success": False,
+                "result": (
+                    "No uploaded document matched that upload_id. "
+                    "Use list_thread_document_uploads to see what's available, "
+                    "or pick a different tool."
+                ),
+                "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
+                "sources": [],
+            }
+
+        emit(f"◌ Searching your uploaded document for: {(query or '')[:60]}…")
+        # Phase B.1 — lazy RAG. Skips J/P/D tagger + confidence filter +
+        # rerank entirely (all three assume a corpus doc with document_tags
+        # / policy_line_tags rows, which user uploads don't have until
+        # promotion — see Phase B.7). Direct Chroma vector search scoped
+        # to document_id; chunks flow into the integrator unchanged.
+        from app.services.instant_rag_search import lazy_rag_search
+        answer, sources, usage, signal = lazy_rag_search(
+            document_id=document_id,
+            question=query,
+            k=10,
+            emitter=emitter,
+        )
+        success = bool(sources) and signal != RETRIEVAL_SIGNAL_NO_SOURCES
+        if not success:
+            emit("  ↓ Your uploaded doc didn't contain this — trying other tools.")
+        return {
+            "tool": "search_uploaded_document",
+            "success": success,
+            # Raw chunk text (no LLM synth in the tool). Integrator at
+            # the end of the turn does the single synthesis pass.
+            "result": answer or "",
+            "signal": signal,
+            "sources": sources or [],
+            "usage": usage,
+            # Expose the resolved document_id for downstream observability.
+            "resolved_document_id": document_id,
         }
 
     if tool == "google_search":
