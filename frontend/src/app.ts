@@ -4920,9 +4920,15 @@ function run(): void {
       nextEl.textContent = ack.next_step || "";
     } else {
       const isRAG = (data as any).file_purpose === "instant_rag" || (data as any).verification_tier === "instant";
-      headline.textContent = isRAG ? "Document ingested for RAG" : "Upload complete";
+      // 2026-04-18 copy revision: the earlier wording ("Document ingested
+      // for RAG", "chunked, embedded", "chunk(s) indexed. Verification
+      // tier: instant (7-day TTL)") leaked developer jargon into the
+      // upload-success receipt that every user sees after a successful
+      // upload. Rewritten to plain English; filename + a kept-for-N-days
+      // note is enough signal for the user.
+      headline.textContent = isRAG ? "Document ready" : "Upload complete";
       sub.textContent = isRAG
-        ? "Your document has been chunked, embedded, and is now queryable in this chat."
+        ? "Your document is ready to search in this chat."
         : "Your file was saved to this chat.";
       checksEl.replaceChildren();
       const li = document.createElement("li");
@@ -4932,7 +4938,7 @@ function run(): void {
       const d = document.createElement("span");
       d.className = "roster-receipt__check-detail";
       d.textContent = isRAG
-        ? `${data.filename ?? "File"} — ${(data as any).chunks_count ?? data.row_count ?? 0} chunk(s) indexed. Verification tier: instant (7-day TTL).`
+        ? `${data.filename ?? "File"} — ready to search. Kept for 7 days.`
         : `${data.filename ?? "File"} — ${data.row_count ?? 0} row(s) for ${data.org_name ?? ""}. Billing NPI ${data.default_billing_npi || data.org_id || "—"}.`;
       li.appendChild(t);
       li.appendChild(d);
@@ -4940,7 +4946,7 @@ function run(): void {
       alertsEl.replaceChildren();
       alertsEl.setAttribute("hidden", "");
       nextEl.textContent = isRAG
-        ? "Ask a question about this document — it's ready for retrieval now."
+        ? "Ask a question about this document — it's ready now."
         : "Press Send to run reconciliation, or wait if you turned on automatic send after upload.";
     }
 
@@ -4957,11 +4963,18 @@ function run(): void {
     const _isRAG = (data as any).file_purpose === "instant_rag" || (data as any).verification_tier === "instant";
     addMeta("File", (data.filename ?? "").trim());
     if (_isRAG) {
-      addMeta("Chunks indexed", String((data as any).chunks_count ?? data.row_count ?? 0));
-      addMeta("Verification tier", (data as any).verification_tier ?? "instant");
-      addMeta("Status", (data as any).status ?? "live");
-      if ((data as any).envelope_id) addMeta("Envelope ID", (data as any).envelope_id);
-      if ((data as any).document_id) addMeta("Document ID", (data as any).document_id);
+      // 2026-04-18: replaced developer-facing rows ("Chunks indexed",
+      // "Verification tier", "Envelope ID", raw "live" status) with
+      // one user-meaningful row. The internal fields are still useful
+      // for support — log them to the debug console for ops but don't
+      // display in the receipt.
+      addMeta("Status", "Ready to search");
+      console.debug("[upload-receipt] instant-rag meta:", {
+        chunks_count: (data as any).chunks_count ?? data.row_count ?? 0,
+        verification_tier: (data as any).verification_tier ?? "instant",
+        envelope_id: (data as any).envelope_id,
+        document_id: (data as any).document_id,
+      });
     } else {
       if (data.row_count_cleansed != null) addMeta("Rows after cleanup", String(data.row_count_cleansed));
       if (data.row_count_resolved != null) addMeta("Rows checked in NPI registry", String(data.row_count_resolved));
@@ -6676,10 +6689,14 @@ function run(): void {
             { ms: 45000, text: "Still working — large rosters can take a bit longer…" },
           ]
         : [
-            { ms: 0, text: "Step 1 of 3 — Extracting text from document…" },
-            { ms: 3000, text: "Step 2 of 3 — Chunking and generating embeddings…" },
-            { ms: 8000, text: "Step 3 of 3 — Publishing to RAG corpus…" },
-            { ms: 30000, text: "Still working — large documents take a bit longer…" },
+            // 2026-04-18 copy revision (user flagged "publishing to RAG"
+            // as jargon). Same user-friendly arc as the composer-attach
+            // flow — one narrative, not four technical stages.
+            { ms: 0,     text: "Uploading…" },
+            { ms: 4000,  text: "Reading your document…" },
+            { ms: 15000, text: "Getting it ready to search…" },
+            { ms: 40000, text: "Still working — larger docs take a bit longer…" },
+            { ms: 75000, text: "Almost done…" },
           ];
 
       phases.forEach(({ ms, text }) => {
