@@ -6407,7 +6407,13 @@ function run(): void {
       }
       // choice === "instant" → fall through to the normal upload path.
     }
+    // Disable only for the upload phase, NOT for the subsequent sendMessage
+    // call. The original sendMessage bails early with `if (sendBtn.disabled)
+    // return;` — leaving the button disabled here causes the classic
+    // "upload succeeded but chat turn never fired" stuck state (2026-04-17).
+    // sendMessage() re-disables both itself during the actual chat turn.
     sendBtn.disabled = true;
+    inputEl.disabled = true;
     try {
       const uploadedName = composerStagedFile.name;
       await uploadStagedAttachmentForInstantRag();
@@ -6415,6 +6421,12 @@ function run(): void {
       const typed = (inputEl.value ?? "").trim();
       const effective = typed || `I just uploaded "${uploadedName}" — what does it say?`;
       if (!typed) inputEl.value = effective;
+      // CRITICAL: re-enable both BEFORE calling sendMessage — it has an
+      // early return on sendBtn.disabled that would silently drop the
+      // user's message. sendMessage() re-disables them itself for the
+      // actual in-flight chat turn.
+      sendBtn.disabled = false;
+      inputEl.disabled = false;
       sendMessage();
     } catch (err: any) {
       console.error("[composer-attach] upload failed:", err);
@@ -6428,7 +6440,12 @@ function run(): void {
       // the user is looking elsewhere, and upload failure is a hard
       // block that deserves an interrupt.
       alert(`Upload failed: ${msg}`);
+      // Restore BOTH controls — the user needs to be able to edit the
+      // message, remove the staged file, and retry. Restoring only the
+      // send button but leaving inputEl disabled was the 2026-04-17
+      // stuck-state bug that prompted this fix.
       sendBtn.disabled = false;
+      inputEl.disabled = false;
     }
   }
 

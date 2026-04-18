@@ -5681,6 +5681,7 @@ ${message}`;
       }
     }
     sendBtn.disabled = true;
+    inputEl.disabled = true;
     try {
       const uploadedName = composerStagedFile.name;
       await uploadStagedAttachmentForInstantRag();
@@ -5689,6 +5690,8 @@ ${message}`;
       const effective = typed || `I just uploaded "${uploadedName}" \u2014 what does it say?`;
       if (!typed)
         inputEl.value = effective;
+      sendBtn.disabled = false;
+      inputEl.disabled = false;
       sendMessage();
     } catch (err) {
       console.error("[composer-attach] upload failed:", err);
@@ -5697,6 +5700,7 @@ ${message}`;
       showChatStatusBanner(`\u2717 Upload failed: ${msg}`, 2e4);
       alert(`Upload failed: ${msg}`);
       sendBtn.disabled = false;
+      inputEl.disabled = false;
     }
   }
   sendBtn.addEventListener(

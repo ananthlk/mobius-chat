@@ -318,6 +318,76 @@ class TestLargeFileConfirmGate:
         assert '"Enter"' in js_text
 
 
+class TestSendBtnReenabledBeforeSendMessage:
+    """Regression for the 2026-04-17 stuck-state bug.
+
+    `sendMessageWithAttachment` disables sendBtn during the upload phase.
+    The original `sendMessage` has `if (sendBtn.disabled) return;` as its
+    first check — so if we call sendMessage() WITHOUT re-enabling first,
+    the message silently drops. User sees: upload succeeded, chat turn
+    never fired, button stuck disabled, input stuck disabled, no error
+    anywhere.
+
+    Evidence the fix is in place:
+      - After `await uploadStagedAttachmentForInstantRag()` and BEFORE
+        `sendMessage()` call, both `sendBtn.disabled = false` and
+        `inputEl.disabled = false` must run.
+      - Failure/catch path must also restore both controls.
+    """
+
+    def test_reenable_before_send_in_success_path(self, js_text: str):
+        """Look for the specific sequence: await upload → re-enable →
+        sendMessage. Mangled ordering means the send message can bail
+        and the stuck state returns."""
+        # Find the success path. Use a stable anchor ("await upload...")
+        # and verify both re-enables appear before sendMessage() in the
+        # next ~20 lines.
+        anchor = "await uploadStagedAttachmentForInstantRag"
+        idx = js_text.find(anchor)
+        assert idx >= 0, "upload helper call site missing from send flow"
+        window = js_text[idx:idx + 2000]
+        # Both re-enables must appear in the window.
+        assert "sendBtn.disabled = false" in window, (
+            "Success path doesn't re-enable sendBtn before sendMessage() — "
+            "sendMessage's early-return on sendBtn.disabled will silently "
+            "drop the user's message. This is the 2026-04-17 stuck-state bug."
+        )
+        assert "inputEl.disabled = false" in window, (
+            "Success path doesn't re-enable inputEl before sendMessage() — "
+            "user sees their typed message persist in a disabled field, "
+            "can't edit or retry."
+        )
+        # Order check: re-enables must come BEFORE the sendMessage() call.
+        # Use a regex anchored to statement position ("sendMessage()" at the
+        # start of a line after whitespace) so we don't match the string
+        # inside the explanatory comment above the call.
+        import re
+        stmt_match = re.search(r"^\s+sendMessage\(\);", window, re.MULTILINE)
+        assert stmt_match, "sendMessage() call missing from success path"
+        send_idx = stmt_match.start()
+        reen_idx = window.find("sendBtn.disabled = false")
+        assert 0 <= reen_idx < send_idx, (
+            f"sendBtn.disabled = false (at {reen_idx}) must appear BEFORE "
+            f"sendMessage() call (at {send_idx}) — otherwise sendMessage "
+            f"bails on its own disabled check."
+        )
+
+    def test_catch_path_restores_both_controls(self, js_text: str):
+        """Upload failure must leave BOTH the button and the input editable
+        so the user can remove the file / type a different message / retry.
+        Pre-fix, the catch only restored sendBtn — inputEl stayed disabled."""
+        # Look for the catch block in sendMessageWithAttachment.
+        idx = js_text.find('console.error("[composer-attach] upload failed:')
+        assert idx >= 0, "catch block signature missing"
+        window = js_text[idx:idx + 1000]
+        assert "sendBtn.disabled = false" in window, (
+            "Catch path doesn't re-enable sendBtn — user stuck with no send button."
+        )
+        assert "inputEl.disabled = false" in window, (
+            "Catch path doesn't re-enable inputEl — user can't edit / retry."
+        )
+
+
 class TestComposerAttachBuildSync:
     """Catches the "I edited app.ts but forgot to run npm run build" failure
     mode. mstart runs `npm run build` on boot, but CI and any local dev
