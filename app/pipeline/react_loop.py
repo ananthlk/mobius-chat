@@ -767,27 +767,90 @@ def _execute_tool(
         # planner can pivot.
         upload_id = (inputs.get("upload_id") or "").strip()
         query = inputs.get("query") or (ctx.effective_message or ctx.message)
+
+        # Snapshot what the thread actually has so diagnostic logging + the
+        # failure message can show the real state (not just "no match").
+        # 2026-04-17 debug showed the planner correctly picking this tool
+        # but the lookup failing silently with no way to tell why.
+        _all_files = [
+            u for u in (active.get("uploaded_files") or [])
+            if isinstance(u, dict)
+        ]
+        _file_summary = [
+            {
+                "upload_id": str(f.get("upload_id") or ""),
+                "filename":  str(f.get("filename") or ""),
+                "purpose":   str(f.get("purpose") or ""),
+                "document_id": str(f.get("document_id") or ""),
+            }
+            for f in _all_files
+        ]
+        logger.info(
+            "[instant-rag] dispatch: input upload_id=%r, %d files on thread: %s",
+            upload_id, len(_file_summary), _file_summary,
+        )
+
         if not upload_id:
-            # Fall-through: if exactly one instant_rag upload exists on the
-            # thread, use it. Common case when the user just uploaded and
-            # asked a question in the next turn.
+            # Fall-through: if exactly one record has a usable document_id,
+            # use it. Loosened from "purpose==instant_rag AND document_id"
+            # to just "document_id is set" — some records written before
+            # the Phase 0.17/B.1 persistence fixes may have missing/empty
+            # purpose but still have a valid document_id that works.
+            # Strictly filtering on purpose silently excluded them.
             candidates = [
-                u for u in (active.get("uploaded_files") or [])
-                if isinstance(u, dict)
-                and (u.get("purpose") == "instant_rag")
-                and u.get("document_id")
+                u for u in _all_files
+                if str(u.get("document_id") or "").strip()
+                and str(u.get("purpose") or "") != "roster_reconciliation"
             ]
             if len(candidates) == 1:
                 upload_id = str(candidates[0].get("upload_id") or "")
+                logger.info(
+                    "[instant-rag] auto-resolved upload_id=%r from single candidate.",
+                    upload_id,
+                )
+            elif len(candidates) > 1:
+                logger.info(
+                    "[instant-rag] multiple candidates (%d); planner must pass upload_id.",
+                    len(candidates),
+                )
 
         document_id = _resolve_upload_document_id(active, upload_id)
         if not document_id:
-            emit("  ⊘ search_uploaded_document: no matching uploaded doc found.")
+            # Build a specific failure message that tells the planner (and
+            # us in logs) exactly why this failed. Silent "no match" forced
+            # a live debugging session on 2026-04-17.
+            available = [
+                f"{f['filename']} (upload_id={f['upload_id']}, has_doc_id={bool(f['document_id'])})"
+                for f in _file_summary
+                if f["filename"] or f["upload_id"]
+            ]
+            if not _file_summary:
+                why = "No uploads on this thread."
+            elif not upload_id:
+                why = (
+                    "No upload_id provided and auto-resolution didn't pick one "
+                    f"(found {len(_file_summary)} uploads, but {'none' if not available else 'multiple'} "
+                    f"were usable). Available: {available}."
+                )
+            else:
+                matching = [f for f in _file_summary if f["upload_id"] == upload_id]
+                if not matching:
+                    why = f"upload_id={upload_id!r} not found in thread. Available: {available}."
+                elif not matching[0]["document_id"]:
+                    why = (
+                        f"upload_id={upload_id!r} matches {matching[0]['filename']!r} but its "
+                        f"document_id is empty — the upload likely failed mid-ingest. "
+                        f"Re-upload the file or use list_thread_document_uploads to see state."
+                    )
+                else:
+                    why = f"upload_id={upload_id!r} matched but document_id lookup returned empty."
+            logger.warning("[instant-rag] resolution failed: %s", why)
+            emit(f"  ⊘ search_uploaded_document: {why[:140]}")
             return {
                 "tool": "search_uploaded_document",
                 "success": False,
                 "result": (
-                    "No uploaded document matched that upload_id. "
+                    f"Cannot search uploaded document. {why} "
                     "Use list_thread_document_uploads to see what's available, "
                     "or pick a different tool."
                 ),
