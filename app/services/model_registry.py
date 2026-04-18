@@ -384,20 +384,44 @@ def _filter_by_token_budget(
         else:
             trimmed_tpm += 1
 
+    # Phase 2.5b — TPD (per-day token) filter.
+    # Drop candidates whose daily quota is exhausted (or would be by this
+    # call). The tpd_tracker also honors a 429 retry-after hold, so this
+    # single check both proactively protects against known quotas AND
+    # reactively honors provider-sent "try again in X" hints. Candidates
+    # with spec_tpd_limit=None are exempt — unknown/unlimited.
+    from app.services import tpd_tracker
+    after_tpd: list[ModelSpec] = []
+    trimmed_tpd = 0
+    tpd_trimmed_models: list[str] = []
+    for c in after_tpm:
+        out_t = expected_output_tokens if expected_output_tokens is not None else c.default_max_output_tokens
+        request_tokens = int((estimated_prompt_tokens + out_t) * _TOKEN_BUDGET_SAFETY)
+        if tpd_tracker.is_exhausted(c.model_id, c.spec_tpd_limit, request_tokens):
+            trimmed_tpd += 1
+            tpd_trimmed_models.append(c.model_id)
+        else:
+            after_tpd.append(c)
+
     # Use a representative request size in meta (uses the first surviving candidate's
     # output default, or 1024 as a neutral baseline).
     representative_out = (
         expected_output_tokens
         if expected_output_tokens is not None
-        else (after_tpm[0].default_max_output_tokens if after_tpm else 1024)
+        else (after_tpd[0].default_max_output_tokens if after_tpd else 1024)
     )
     meta["request_tokens"] = int(
         (estimated_prompt_tokens + representative_out) * _TOKEN_BUDGET_SAFETY
     )
     meta["candidates_trimmed_by_context"] = trimmed_ctx
     meta["candidates_trimmed_by_tpm"] = trimmed_tpm
+    meta["candidates_trimmed_by_tpd"] = trimmed_tpd
+    if tpd_trimmed_models:
+        # Name them so the per-call router log / llm_calls row can surface
+        # "we skipped Groq today because its daily quota is near-exhausted".
+        meta["tpd_trimmed_models"] = tpd_trimmed_models
 
-    return after_tpm, meta
+    return after_tpd, meta
 
 
 def _react_deep_rounds_min_context_k() -> int:
@@ -504,6 +528,12 @@ class ModelSpec:
     # Groq free tier: gpt-oss-20b = 8_000 TPM, llama-3.3-70b = 12_000 TPM, etc.
     spec_tpm_limit:             int | None = None
     spec_rpm_limit:             int | None = None
+    # Per-day budget (Phase 2.5b). Groq's free tier enforces this and it's
+    # the single biggest driver of end-of-day 429s in Mobius Chat. Set
+    # ``None`` for providers that don't enforce daily caps (Anthropic,
+    # Vertex on paid tiers) or when the cap is unknown.
+    # Groq free tier (observed 2026-04-17): llama-3.3-70b-versatile = 100_000 TPD.
+    spec_tpd_limit:             int | None = None
     # Expected completion size for capacity-planning (request = prompt + completion).
     # Callers may override per-stage; this is the registry default.
     default_max_output_tokens:  int        = 1024
@@ -670,6 +700,7 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         spec_output_per_1m_usd=0.79,
         spec_tpm_limit=12_000,                     # Groq on_demand free tier
         spec_rpm_limit=30,
+        spec_tpd_limit=100_000,                    # Groq free tier — observed 2026-04-17
         benchmark_category="groq_fast",
         ema_quality=0.72,
         ema_latency_ms=1200.0,
@@ -689,6 +720,7 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         spec_output_per_1m_usd=0.08,
         spec_tpm_limit=30_000,                     # Groq on_demand free tier (smaller model)
         spec_rpm_limit=30,
+        spec_tpd_limit=500_000,                    # Groq free tier — higher daily cap for 8b instant
         benchmark_category="groq_fast",
         ema_quality=0.62,
         ema_latency_ms=400.0,
@@ -708,6 +740,7 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         spec_output_per_1m_usd=0.60,
         spec_tpm_limit=8_000,                      # Groq on_demand free tier
         spec_rpm_limit=30,
+        spec_tpd_limit=200_000,                    # Groq free tier (gpt-oss-120b)
         benchmark_category="open_large",
         ema_quality=0.78,
         ema_latency_ms=600.0,
@@ -727,6 +760,7 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         spec_output_per_1m_usd=0.30,
         spec_tpm_limit=8_000,                      # Groq on_demand free tier — observed 413 at 8907 tokens
         spec_rpm_limit=30,
+        spec_tpd_limit=200_000,                    # Groq free tier (gpt-oss-20b)
         benchmark_category="open_mid",
         ema_quality=0.68,
         ema_latency_ms=300.0,

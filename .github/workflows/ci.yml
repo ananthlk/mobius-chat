@@ -89,7 +89,8 @@ jobs:
             tests/test_front_door.py \
             tests/test_instant_rag_search.py \
             tests/test_composer_attach.py \
-            tests/test_parallel_retrieval.py
+            tests/test_parallel_retrieval.py \
+            tests/test_tpd_tracker.py
 
       - name: Report summary
         if: always()
