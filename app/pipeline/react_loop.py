@@ -714,33 +714,170 @@ def _execute_tool(
 
     if tool == "search_corpus":
         query = inputs.get("query") or (ctx.effective_message or ctx.message)
-        emit("◌ Searching our materials…")
         rag_overrides = rag_filters_from_active(active) or {}
-        answer, sources, usage, signal = answer_non_patient(
-            question=query,
-            k=10,
-            confidence_min=0.5,
-            emitter=emitter,
-            correlation_id=ctx.correlation_id,
-            subquestion_id="react_1",
-            rag_filter_overrides=rag_overrides,
-            thread_id=ctx.thread_id,
-            phi_detected=False,
-            config_sha=_get_config_sha() or None,
-            mode=getattr(ctx, "chat_mode", None),
+
+        # Phase B.4 — parallel retrieval.
+        #
+        # When the thread has instant_rag uploads, the user's uploaded doc
+        # IS policy for them. If the planner picks search_corpus, we fan
+        # out a parallel lazy-RAG search against each upload (capped) so
+        # the integrator gets BOTH curated-corpus chunks AND upload chunks
+        # in one retrieval round.
+        #
+        # Why this matters (from the 2026-04-17 shakedown): the planner
+        # correctly picked search_corpus for "what does Sunshine say about
+        # H0036" even when the user had a Sunshine doc attached, because
+        # the reasoning prompt favored the payer keyword. Fan-out means
+        # ambiguous phrasing no longer forces a binary choice — the
+        # integrator sees both pools and merges them. No extra planner
+        # round, no retry-guard churn, just better evidence per turn.
+        #
+        # We deliberately do NOT fan out the other direction (from
+        # search_uploaded_document → search_corpus). When the user says
+        # "my doc" the intent is scoped; adding corpus noise would hurt.
+        upload_candidates = [
+            u for u in (active.get("uploaded_files") or [])
+            if isinstance(u, dict)
+            and str(u.get("document_id") or "").strip()
+            and str(u.get("purpose") or "") != "roster_reconciliation"
+        ]
+        # Cap at 3 parallel upload searches per turn. Most threads have 1;
+        # beyond 3 we start to dilute the integrator's context budget
+        # faster than we add signal.
+        upload_candidates = upload_candidates[:3]
+
+        if upload_candidates:
+            emit(
+                f"◌ Searching our materials + {len(upload_candidates)} attached "
+                f"doc{'s' if len(upload_candidates) > 1 else ''} in parallel…"
+            )
+        else:
+            emit("◌ Searching our materials…")
+
+        # Run all retrievals concurrently. ThreadPoolExecutor (not asyncio)
+        # because answer_non_patient + lazy_rag_search are both sync and
+        # asyncio integration across the stack is a separate project.
+        import concurrent.futures as _cf
+        from app.services.instant_rag_search import lazy_rag_search
+
+        def _run_corpus() -> tuple[str, list[dict], dict | None, str]:
+            return answer_non_patient(
+                question=query,
+                k=10,
+                confidence_min=0.5,
+                emitter=emitter,
+                correlation_id=ctx.correlation_id,
+                subquestion_id="react_1",
+                rag_filter_overrides=rag_overrides,
+                thread_id=ctx.thread_id,
+                phi_detected=False,
+                config_sha=_get_config_sha() or None,
+                mode=getattr(ctx, "chat_mode", None),
+            )
+
+        def _run_upload(doc_id: str) -> tuple[str, list[dict], dict | None, str]:
+            try:
+                return lazy_rag_search(
+                    document_id=doc_id, question=query, k=5, emitter=None,
+                )
+            except Exception as _e:
+                # Don't let one upload's failure kill the corpus result.
+                logger.warning(
+                    "[B.4] parallel lazy_rag_search failed for doc=%s: %s",
+                    doc_id, _e,
+                )
+                return ("", [], None, "no_sources")
+
+        _workers = 1 + len(upload_candidates)
+        with _cf.ThreadPoolExecutor(max_workers=_workers) as pool:
+            corpus_future = pool.submit(_run_corpus)
+            upload_futures = [
+                (u, pool.submit(_run_upload, str(u.get("document_id"))))
+                for u in upload_candidates
+            ]
+
+            # Corpus is the "primary" path — its failure is semantically
+            # different from an upload miss. Materialize each result
+            # independently so partial failure still returns something.
+            try:
+                corpus_answer, corpus_sources, corpus_usage, corpus_signal = corpus_future.result()
+            except Exception as _e:
+                logger.warning("[B.4] corpus search failed: %s", _e)
+                corpus_answer, corpus_sources, corpus_usage, corpus_signal = (
+                    "", [], None, "no_sources",
+                )
+            upload_results = [(u, f.result()) for u, f in upload_futures]
+
+        # Merge: the integrator downstream doesn't care that two tools ran;
+        # it wants a single result block with sources it can cite.
+        merged_sources: list[dict] = list(corpus_sources or [])
+        upload_chunks_total = 0
+        fanned_out_to: list[str] = []
+        upload_chunk_previews: list[str] = []  # short per-upload strings for the tool result
+        for u, (u_answer, u_sources, _u_usage, u_signal) in upload_results:
+            upload_chunks_total += len(u_sources or [])
+            if u_sources:
+                fanned_out_to.append(str(u.get("upload_id") or ""))
+                merged_sources.extend(u_sources)
+                # Distilled preview for the reasoning-context payload —
+                # the integrator composes from sources[], but the planner
+                # on the next round reads the result string.
+                fname = str(u.get("filename") or "upload")
+                head = (u_answer or "")[:600]
+                upload_chunk_previews.append(
+                    f"From attached doc '{fname}' ({len(u_sources)} chunks):\n{head}"
+                )
+
+        # Cap total chunks going downstream — 15 is a reasonable ceiling.
+        # Preserve head-from-each (corpus + uploads) rather than truncate at
+        # the tail which would drop all upload evidence.
+        _MAX_MERGED = 15
+        if len(merged_sources) > _MAX_MERGED:
+            merged_sources = merged_sources[:_MAX_MERGED]
+
+        # Build the result string. Corpus answer is the spine; upload
+        # snippets are appended with clear separators so the integrator
+        # can cite them distinctly.
+        if upload_chunk_previews:
+            merged_result = (corpus_answer or "") + "\n\n---\n\n" + "\n\n---\n\n".join(upload_chunk_previews)
+            emit(
+                f"  ✓ corpus: {len(corpus_sources or [])} · uploads: "
+                f"{upload_chunks_total} chunk{'s' if upload_chunks_total != 1 else ''}"
+            )
+        else:
+            merged_result = corpus_answer or ""
+
+        # Success if EITHER path contributed usable evidence.
+        success = (
+            bool(merged_result and len(merged_result.strip()) > 80 and corpus_signal != RETRIEVAL_SIGNAL_NO_SOURCES)
+            or upload_chunks_total > 0
         )
-        success = bool(
-            answer and len(answer.strip()) > 80 and signal != RETRIEVAL_SIGNAL_NO_SOURCES
-        )
+
+        # Signal favors whichever path had hits — corpus_only when we got
+        # anything; no_sources only when both pools returned empty. This
+        # matches what the 0.19 retry guard expects for recording
+        # success/failure on the (search_corpus, inputs) pair.
+        if corpus_signal != RETRIEVAL_SIGNAL_NO_SOURCES and corpus_sources:
+            merged_signal = corpus_signal
+        elif upload_chunks_total > 0:
+            merged_signal = "corpus_only"  # keep shape; integrator treats it the same
+        else:
+            merged_signal = RETRIEVAL_SIGNAL_NO_SOURCES
+
         if not success:
             emit("↓ Not in our materials — will try web next if needed.")
+
         return {
-            "tool": "search_corpus",
+            "tool": "search_corpus",  # keep tool name stable for retry-guard + observability
             "success": success,
-            "result": answer or "",
-            "signal": signal,
-            "sources": sources or [],
-            "usage": usage,
+            "result": merged_result,
+            "signal": merged_signal,
+            "sources": merged_sources,
+            "usage": corpus_usage,  # upload side makes no LLM calls (Phase B.1 design)
+            # Phase B.4 observability — downstream code can inspect this to
+            # know whether fan-out happened, and the logs name the upload_ids.
+            "fanned_out_to": fanned_out_to,
+            "upload_chunks_total": upload_chunks_total,
         }
 
     if tool == "search_uploaded_document":
