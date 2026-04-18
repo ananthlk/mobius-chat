@@ -6542,11 +6542,14 @@ function run(): void {
     filename: string,
     button: HTMLButtonElement,
   ): Promise<void> {
+    // Phase B.1d 2026-04-18 fix: on fresh page load, currentThreadId
+    // is null until the user sends their first message. Previous
+    // version silently returned, making the Attach button feel dead.
+    // Now we generate a thread_id client-side if needed; the server's
+    // ensure_thread() creates the chat_threads row on first write,
+    // matching the behavior of a fresh POST /chat turn.
     if (!currentThreadId) {
-      // No thread yet — send a stub chat turn first so the server
-      // creates one, or just ignore. Simplest: ignore and let the user
-      // send a message or attach a fresh file. Banner stays.
-      return;
+      currentThreadId = crypto.randomUUID();
     }
     if (restoreInFlight.has(documentId)) return;
     restoreInFlight.add(documentId);

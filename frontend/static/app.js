@@ -5753,7 +5753,7 @@ ${message}`;
   });
   async function linkUploadToCurrentThread(documentId, filename, button) {
     if (!currentThreadId) {
-      return;
+      currentThreadId = crypto.randomUUID();
     }
     if (restoreInFlight.has(documentId))
       return;
