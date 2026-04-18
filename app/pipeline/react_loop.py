@@ -62,14 +62,38 @@ from app.skills.document_upload import DOCUMENT_UPLOAD_SKILL_MARKDOWN, format_th
 
 # 2026-04-18 disconnect — credentialing helpers removed:
 #   _CREDENTIALING_DUAL_FINALIZE_TOOLS frozenset
-#   _attach_credentialing_result_summary()
 #   _credentialing_copilot_turn_markdown()
 #   _envelope_routes_to_reconciliation()
 #   _format_billing_npi_options_markdown()
 #   import from app.pipeline.credentialing_envelope
-# These were used only by the 7 tool branches removed in the same
-# commit. Their removal drops ~120 LOC of chat-side credentialing
-# glue; all of it will rebuild as a proper skill integration later.
+#
+# _attach_result_summary below was originally named
+# _attach_credentialing_result_summary but is generic "truncate long
+# tool output into a concise Summary block" logic used by the healthcare
+# lookup branches too. Retained (renamed) because those remain in the
+# tool dispatch.
+def _attach_result_summary(
+    out: dict[str, Any],
+    result_text: str,
+    *,
+    summary_heading: str,
+    long_threshold: int = 800,
+) -> dict[str, Any]:
+    """Add result_summary when prose is long (NPPES/healthcare tools).
+
+    The LLM-facing reasoning context will read result_summary first; the
+    full markdown stays in the response for the user. Keeps the planner
+    from wasting rounds re-calling the same tool because its full output
+    truncates in the context window."""
+    txt = (result_text or "").strip()
+    if len(txt) > long_threshold:
+        summ = _react_summary_from_long_markdown(txt, heading=summary_heading)
+        if summ:
+            out = dict(out)
+            out["result_summary"] = summ
+    return out
+
+
 from app.state.jurisdiction import rag_filters_from_active
 
 # ---------------------------------------------------------------------------
@@ -679,7 +703,7 @@ def _execute_tool(
             "usage": usage,
         }
         if success and answer:
-            out_h = _attach_credentialing_result_summary(
+            out_h = _attach_result_summary(
                 out_h, answer, summary_heading="**Healthcare lookup (codes / NPPES / coverage):**"
             )
         return out_h
@@ -707,7 +731,7 @@ def _execute_tool(
             "usage": usage,
         }
         if success and answer:
-            out_n = _attach_credentialing_result_summary(
+            out_n = _attach_result_summary(
                 out_n, answer, summary_heading="**NPPES / registry (by NPI number):**"
             )
         return out_n

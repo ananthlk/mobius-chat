@@ -225,7 +225,12 @@ class TestReactLoopRatchet:
       post-1i pass 3         TBD         (integrator extraction)
     """
 
-    MAX_REACT_LOOP_LOC = 1_420  # tighten as passes 2+3 land
+    MAX_REACT_LOOP_LOC = 1_430  # tighten as passes 2+3 land
+    # 2026-04-18: bumped from 1_420 by 10 LOC to absorb the restore of
+    # _attach_result_summary (renamed from the deleted
+    # _attach_credentialing_result_summary). The utility is not
+    # credentialing-specific — healthcare_query + healthcare_npi_lookup
+    # both need it to summarize long NPPES payloads.
 
     def test_react_loop_loc_under_ceiling(self):
         loc = len(REACT_LOOP.read_text().splitlines())
