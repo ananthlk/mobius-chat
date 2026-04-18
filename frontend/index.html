@@ -110,6 +110,12 @@
 
     <main class="main">
       <header class="main-header">
+        <!-- 2026-04-18 UX audit fix: main header had no Mobius identity.
+             When the sidebar is collapsed the page looked brandless;
+             now the logo + wordmark appear here across every viewport
+             state. Sidebar-rail logo stays as-is for collapsed-sidebar
+             recognition. -->
+        <img class="main-header-logo" src="static/logo.svg" alt="" aria-hidden="true" />
         <div class="main-header-titles">
           <h1 class="main-header-title">Welcome</h1>
           <p class="main-header-subtitle" id="welcomeRotator">Some questions should take seconds, not three phone calls.</p>
@@ -265,8 +271,13 @@
           <input type="text" id="input" placeholder="Message Mobius Chat…" autocomplete="off" />
           <button type="button" class="btn-composer-options" id="composerOptions" aria-label="More options" aria-haspopup="true" aria-expanded="false" title="More options">⋯</button>
           <div class="composer-options-menu" id="composerOptionsMenu" hidden role="menu">
-            <button type="button" class="composer-option-item" id="composerOptionUploadFile" role="menuitem">Upload file</button>
-            <button type="button" class="composer-option-item composer-option-item--disabled" id="composerOptionAddLink" role="menuitem" disabled aria-disabled="true" title="Coming soon">Add link</button>
+            <!-- 2026-04-18 UX audit fix: the paperclip 📎 is now the
+                 primary "attach a file" affordance; the duplicate
+                 "Upload file" row here was confusing (two ways to do
+                 the same thing). Left the ⋯ menu in place as a
+                 placeholder for future non-file composer options. -->
+            <button type="button" class="composer-option-item" id="composerOptionUploadFile" role="menuitem" hidden aria-hidden="true">Upload file</button>
+            <button type="button" class="composer-option-item composer-option-item--disabled" id="composerOptionAddLink" role="menuitem" disabled aria-disabled="true" title="Coming soon">Add link (coming soon)</button>
           </div>
           <button type="button" class="btn-send" id="send" aria-label="Send">
             <svg class="send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>
@@ -305,7 +316,7 @@
   <div class="upload-overlay upload-overlay--sheet" id="uploadOverlay"></div>
   <div class="upload-modal upload-modal--sheet" id="uploadModal" role="dialog" aria-labelledby="uploadModalTitle" aria-modal="true" hidden>
     <h2 id="uploadModalTitle">Upload file</h2>
-    <p class="upload-modal-desc">Document upload skill — attach a file to <strong>this chat</strong> (you can upload more files anytime). What is this file for?</p>
+    <p class="upload-modal-desc">Attach a file to <strong>this chat</strong>. You can upload more files anytime. What is this file for?</p>
     <div class="roster-thread-signal roster-thread-signal--muted" id="uploadRosterThreadSignal" hidden>
       <span class="roster-thread-signal__icon" aria-hidden="true"></span>
       <p class="roster-thread-signal__text" id="uploadRosterThreadSignalText"></p>
@@ -313,8 +324,8 @@
     <form id="uploadForm">
       <label class="upload-modal-select-label">File purpose
         <select id="uploadFilePurpose" aria-label="File purpose">
-          <option value="roster_reconciliation">Roster for reconciliation</option>
-          <option value="instant_rag">Document for RAG (any file type)</option>
+          <option value="roster_reconciliation">Provider roster / staff list</option>
+          <option value="instant_rag">Reference document to ask about (PDF, DOCX, HTML, TXT)</option>
         </select>
       </label>
       <div class="upload-modal-field upload-field-roster" id="uploadFieldRoster">
@@ -360,11 +371,13 @@
       </div>
       <label class="credentialing-envelope-checkbox" id="credentialingPreferOutsideInWrap" hidden>
         <input type="checkbox" id="credentialingPreferOutsideIn" />
-        Outside-in Medicaid NPI only (ignore linked roster for this run)
+        Look up providers from Medicaid records only
+        <span class="credentialing-envelope-hint">(skips any roster file you&rsquo;ve attached to this chat)</span>
       </label>
       <label class="credentialing-envelope-checkbox" id="credentialingPreferFreshWrap">
         <input type="checkbox" id="credentialingPreferFresh" />
-        Run full pipeline fresh (do not use today’s cached outside-in report if one exists)
+        Force a fresh lookup
+        <span class="credentialing-envelope-hint">(ignore today&rsquo;s cached data)</span>
       </label>
       <fieldset class="credentialing-envelope-fieldset">
         <legend>Run style</legend>
@@ -648,7 +661,7 @@
         </div>
         <ul class="skill-card-features">
           <li>Billability score per provider</li>
-          <li>NPPES × PML × TML taxonomy coverage</li>
+          <li>Federal registry, Medicaid enrollment &amp; billing codes verified</li>
           <li>Open tasks, drift flags, audit log</li>
           <li>Run timeline — who changed what</li>
         </ul>
@@ -670,10 +683,10 @@
           </button>
         </div>
         <ul class="skill-card-features">
-          <li>Step 1–2: Org identity &amp; locations (once)</li>
-          <li>Step 3: NPPES alignment → roster</li>
-          <li>Step 4–5: PML enrollment &amp; compliance</li>
-          <li>Step 6: Taxonomy optimization</li>
+          <li>Identifies the organization and its practice locations</li>
+          <li>Matches providers against the federal registry</li>
+          <li>Checks Medicaid enrollment &amp; compliance</li>
+          <li>Verifies billing taxonomy codes</li>
         </ul>
       </div>
 

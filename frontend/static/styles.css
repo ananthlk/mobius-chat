@@ -9,9 +9,15 @@
   --sidebar-border: var(--mobius-border);
   --main-bg: var(--mobius-bg-primary);
   --main-text: var(--mobius-text-primary);
-  /* Temporary accent (Google-ish) until brand accent is finalized */
-  --accent: #1A73E8;
-  --accent-hover: #185ABC;
+  /* 2026-04-18: accent is now the Mobius brand blue — same token the
+   * rest of the app (including mobius-design) uses. The previous
+   * --accent: var(--mobius-accent) ("Google-ish" placeholder) was called out in the
+   * UX branding audit; purging it here so the whole app renders with
+   * one primary-action color. If a bespoke accent is ever needed,
+   * introduce a named semantic token (--mobius-indigo, --mobius-violet,
+   * --mobius-emerald already exist) — do not reintroduce a raw hex. */
+  --accent: var(--mobius-accent);
+  --accent-hover: var(--mobius-accent-hover);
   --user-bubble: var(--mobius-accent);
   --assistant-bubble: var(--mobius-bg-card);
   --assistant-border: var(--mobius-border-light);
@@ -708,13 +714,24 @@ body {
   padding: 16px 20px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 12px;
   background: #ffffff;
-  border-bottom: 1px solid #E5E7EB;
+  border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   position: sticky;
   top: 0;
   z-index: 20;
+}
+
+/* 2026-04-18 UX audit fix: Mobius identity in the main header. Sized
+ * to match the sidebar logo (28px) so both match when the user
+ * switches between collapsed + expanded sidebar states. */
+.main-header-logo {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  object-fit: contain;
+  margin-right: 2px;
 }
 
 .main-header-title {
@@ -722,13 +739,15 @@ body {
   font-size: 18px;
   font-weight: 600;
   letter-spacing: -0.02em;
-  color: #111827;
+  color: var(--mobius-text-primary);
 }
 
 .main-header-titles {
   display: flex;
   flex-direction: column;
   gap: 0.1rem;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .main-header-subtitle {
@@ -970,7 +989,7 @@ body {
   border: 1px solid #E5E7EB;
   border-radius: 12px;
   padding: 14px 16px;
-  border-left: 3px solid #1A73E8;
+  border-left: 3px solid var(--mobius-accent);  /* org strip = primary brand blue */
 }
 .ld-org-left {
   display: flex;
@@ -1004,7 +1023,7 @@ body {
   min-width: 200px;
   transition: border-color .12s;
 }
-.ld-org-select:focus { outline: none; border-color: #1A73E8; }
+.ld-org-select:focus { outline: none; border-color: var(--mobius-accent); }
 .ld-org-steps {
   display: flex;
   align-items: center;
@@ -1042,7 +1061,7 @@ body {
   margin-left: auto;
   font-size: 11.5px;
   font-weight: 600;
-  color: #1A73E8;
+  color: var(--mobius-accent);
   background: #EFF6FF;
   border: 1px solid #BFDBFE;
   border-radius: 6px;
@@ -1084,7 +1103,7 @@ body {
   flex-direction: column;
   gap: 12px;
 }
-.ld-panel--roster { border-top: 3px solid #1A73E8; }
+.ld-panel--roster { border-top: 3px solid var(--mobius-accent); }
 .ld-panel--runs   { border-top: 3px solid #7C3AED; }
 
 /* Panel head */
@@ -1203,7 +1222,7 @@ body {
 .ld-link-btn {
   font-size: 11.5px;
   font-weight: 600;
-  color: #1A73E8;
+  color: var(--mobius-accent);
   text-decoration: none;
   white-space: nowrap;
   padding: 3px 8px;
@@ -1237,7 +1256,7 @@ body {
   font-size: 11.5px;
   font-weight: 600;
   color: #fff;
-  background: #1A73E8;
+  background: var(--mobius-accent);
   border: none;
   border-radius: 6px;
   padding: 4px 10px;
@@ -1277,7 +1296,7 @@ body {
   text-decoration: none;
 }
 .ld-run-capsule:hover { border-color: #A5B4FC; background: #F5F3FF; }
-.ld-run-capsule--active   { border-left: 3px solid #1A73E8; }
+.ld-run-capsule--active   { border-left: 3px solid var(--mobius-accent); }
 .ld-run-capsule--complete { border-left: 3px solid #16A34A; }
 .ld-run-capsule--error    { border-left: 3px solid #DC2626; }
 
@@ -1314,7 +1333,7 @@ body {
   border-radius: 4px;
   border: 1px solid currentColor;
 }
-.ld-cap-badge--running  { color: #1A73E8; background: #EFF6FF; }
+.ld-cap-badge--running  { color: var(--mobius-accent); background: #EFF6FF; }
 .ld-cap-badge--complete { color: #16A34A; background: #F0FDF4; }
 .ld-cap-badge--error    { color: #DC2626; background: #FEF2F2; }
 .ld-cap-badge--pending  { color: #6B7280; background: #F9FAFB; }
@@ -5219,7 +5238,7 @@ body {
   font-size: 0.85rem;
 }
 .drawer .pref-value {
-  color: var(--accent, #1a73e8);
+  color: var(--accent, #3b82f6);  /* fallback matches --mobius-accent */
   font-weight: 500;
   font-size: 0.8rem;
 }

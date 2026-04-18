@@ -91,6 +91,7 @@ class TestPhaseRegressionSubsetInCI:
         "tests/test_instant_rag_catalog.py",  # Phase B.1c
         "tests/test_react_split_phase_1i.py",  # Phase 1i pass 1
         "tests/test_b1d_restoration_banner.py",  # Phase B.1d
+        "tests/test_ux_branding_audit.py",  # UX branding audit 2026-04-18
     )
 
     def test_every_critical_test_is_invoked(self, workflow_text: str) -> None:
