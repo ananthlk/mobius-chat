@@ -1,9 +1,14 @@
-"""FastAPI app: POST /chat (enqueue), GET /chat/response/:id (poll), GET /chat/stream/:id (SSE), health."""
-import asyncio
-import json
+"""FastAPI app: startup + middleware + routes that haven't been extracted yet.
+
+Phase 2b.1 / 2b.2 extracted the doc-reader proxy and core chat
+lifecycle to ``app/api/doc_reader.py`` and ``app/api/chat.py``. Routes
+still living here: /health, /chat/org-name-candidates,
+/chat/roster-upload (with instant-RAG handler), /chat/thread/{id}/uploads,
+/chat/config/*, /chat/skills/urls, /chat/llm-router-report, the static
+mount, and /internal/skill-llm.
+"""
 import os
 import logging
-import uuid
 from pathlib import Path
 from typing import Any, Literal
 
@@ -23,7 +28,7 @@ os.environ["MOBIUS_USE_REACT"] = "1"
 
 from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -43,25 +48,7 @@ class NoCacheStaticFiles(StaticFiles):
 from app.chat_config import chat_config_for_api
 from app.config import get_config
 from app.queue import get_queue
-from app.storage import (
-    fetch_turn_qc_audit,
-    # Phase 1a: get_most_helpful_documents / get_most_helpful_turns /
-    # get_recent_turns moved to app.api.history.
-    # Phase 1b: insert_adjudication_feedback / insert_feedback /
-    # insert_llm_performance_feedback / insert_source_feedback moved to
-    # app.api.feedback. fetch_turn_qc_audit stays — still used by the
-    # response-fetch endpoint (see /chat/response/{cid}).
-    get_plan,
-    get_response,
-)
-from app.storage.feedback import get_adjudication_feedback, get_llm_performance_feedback
 from app.storage.threads import append_uploaded_file_record, ensure_thread, get_state, save_state, save_state_full
-from app.storage.progress import (
-    get_and_clear_events,
-    get_progress,
-    get_progress_events_from_db,
-    get_progress_from_db,
-)
 from app.storage.llm_router_report import fetch_llm_router_report
 from app.worker import start_worker_background
 
@@ -326,23 +313,10 @@ def maybe_start_worker():
             logger.warning("MCP auto-register failed: %s — continuing with builtins", e, exc_info=True)
 
 
-class ChatRequest(BaseModel):
-    # Tolerate extra keys so older frontend builds that still send
-    # credentialing_options / reconciliation_upload_id / etc. after the
-    # 2026-04-18 disconnect don't get 422'd. Server ignores them.
-    model_config = {"extra": "ignore"}
-
-    message: str = ""
-    thread_id: str | None = None  # When provided, load state for jurisdiction/context
-    use_react: bool | None = None
-    """Per-request override for MOBIUS_USE_REACT; when None, worker uses env."""
-    chat_mode: Literal["copilot", "agentic", "quick"] | None = None
-    """copilot: registry-first, 3 rounds. agentic: web escalation, 6 rounds. quick: mini-container, 2 rounds, brief answers."""
-
-
-class ChatResponse(BaseModel):
-    correlation_id: str
-    thread_id: str  # Created or reused; client sends on follow-up requests
+# Phase 2b.2: ChatRequest / ChatResponse + POST /chat + GET /chat/response
+# + GET /chat/stream + GET /chat/plan moved to app.api.chat. Router
+# included below with the other app.include_router calls.
+from app.api.chat import ChatRequest, ChatResponse  # noqa: F401 — re-exported for back-compat imports
 
 
 class OrgNameCandidatesRequest(BaseModel):
@@ -391,29 +365,7 @@ def post_chat_org_name_candidates(body: OrgNameCandidatesRequest) -> dict[str, A
         raise HTTPException(status_code=502, detail=str(e)) from e
 
 
-@app.post("/chat", response_model=ChatResponse)
-def post_chat(
-    body: ChatRequest,
-    _user_id: str | None = Depends(require_user),
-):
-    """Enqueue a chat request; returns correlation_id and thread_id for polling.
-
-    Phase 2d: ``require_user`` respects ``CHAT_AUTH_MODE``. In hosted envs
-    (``CHAT_ENV=staging`` or ``prod``) auth defaults to ``required`` — a
-    request without a valid JWT gets 401. Dev is ``off`` by default so
-    local testing is unchanged. The ``_user_id`` is not consumed here
-    yet; future work will stamp it onto the turn + use it for
-    per-user rate limiting.
-    """
-    correlation_id = str(uuid.uuid4())
-    thread_id = ensure_thread((body.thread_id or "").strip() or None)
-    payload: dict = {"message": body.message or "", "thread_id": thread_id}
-    if body.use_react is not None:
-        payload["use_react"] = body.use_react
-    if body.chat_mode is not None:
-        payload["chat_mode"] = body.chat_mode
-    get_queue().publish_request(correlation_id, payload)
-    return ChatResponse(correlation_id=correlation_id, thread_id=thread_id)
+# Phase 2b.2: POST /chat moved to app.api.chat.
 
 
 def _handle_instant_rag_upload(
@@ -724,105 +676,8 @@ def get_thread_uploads(thread_id: str) -> dict[str, Any]:
 # app.api.credentialing (router mounted near the top of this file).
 
 
-def _enrich_completed_response_from_db(resp: dict) -> dict:
-    """Overlay qc_audit + technical_feedback from Postgres so edits and thumbs survive poll/refresh."""
-    if not isinstance(resp, dict) or resp.get("status") != "completed":
-        return resp
-    cid = (resp.get("correlation_id") or "").strip()
-    if not cid:
-        return resp
-    try:
-        db_qc = fetch_turn_qc_audit(cid)
-        if isinstance(db_qc, dict) and db_qc:
-            resp = {**resp, "qc_audit": db_qc}
-        lp = get_llm_performance_feedback(cid)
-        adj = get_adjudication_feedback(cid)
-        if lp or adj:
-            tf: dict = {}
-            if lp:
-                tf["llm_performance"] = lp
-            if adj:
-                tf["adjudication"] = adj
-            resp["technical_feedback"] = tf
-    except Exception as e:
-        logger.debug("DB enrich for response %s: %s", cid[:8], e)
-    return resp
-
-
-@app.get("/chat/response/{correlation_id}")
-def get_chat_response(correlation_id: str):
-    """Poll for response. Returns completed payload when done; while in progress returns status 'processing' and live thinking_log."""
-    q = get_queue()
-    resp = q.get_response(correlation_id)
-    if resp is None:
-        resp = get_response(correlation_id)
-    if resp is not None:
-        return _enrich_completed_response_from_db(resp)
-    cfg = get_config()
-    in_progress, thinking_log, message_so_far = get_progress(correlation_id)
-    # When worker runs in separate process (Redis), in-memory progress is empty; fetch from DB.
-    if not in_progress and cfg.queue_type == "redis":
-        thinking_log, message_so_far = get_progress_from_db(correlation_id)
-        in_progress = bool(thinking_log or message_so_far)
-    if in_progress:
-        return {"status": "processing", "message": message_so_far or None, "plan": None, "thinking_log": thinking_log}
-    return {"status": "pending", "message": None, "plan": None, "thinking_log": None}
-
-
-@app.get("/chat/stream/{correlation_id}")
-async def chat_stream(correlation_id: str):
-    """SSE stream: progress events (thinking, message) then completed. Polls DB when worker is separate (Redis)."""
-    cfg = get_config()
-    q = get_queue()
-    use_db = cfg.queue_type == "redis"
-    last_progress_id = 0
-    loop = asyncio.get_running_loop()
-    last_keepalive = loop.time()
-    timeout_s = int(os.environ.get("CHAT_STREAM_TIMEOUT_S", "1800"))  # 30 min default (large Medicaid reports e.g. Aspire 772 providers can take 15+ min)
-
-    async def event_generator():
-        nonlocal last_progress_id, last_keepalive
-        start = loop.time()
-        while True:
-            now = loop.time()
-            if now - start > timeout_s:
-                yield f"data: {json.dumps({'event': 'error', 'data': {'message': 'Stream timeout'}})}\n\n"
-                return
-            # Progress events
-            if use_db:
-                for ev_id, ev in get_progress_events_from_db(correlation_id, after_id=last_progress_id):
-                    last_progress_id = ev_id
-                    yield f"data: {json.dumps(ev)}\n\n"
-            else:
-                for ev in get_and_clear_events(correlation_id):
-                    yield f"data: {json.dumps(ev)}\n\n"
-            # Check for completed response
-            resp = q.get_response(correlation_id)
-            if resp is None:
-                resp = get_response(correlation_id)
-            if resp is not None:
-                yield f"data: {json.dumps({'event': 'completed', 'data': resp})}\n\n"
-                return
-            # Keepalive every 15s
-            if now - last_keepalive > 15:
-                yield ": keepalive\n\n"
-                last_keepalive = now
-            await asyncio.sleep(0.2)
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-    )
-
-
-@app.get("/chat/plan/{correlation_id}")
-def get_chat_plan(correlation_id: str):
-    """Get stored plan (and thinking log) for correlation_id."""
-    plan_payload = get_plan(correlation_id)
-    if plan_payload is None:
-        raise HTTPException(status_code=404, detail="Plan not found")
-    return plan_payload
+# Phase 2b.2: _enrich_completed_response_from_db + GET /chat/response +
+# GET /chat/stream + GET /chat/plan moved to app.api.chat.
 
 
 @app.get("/chat/config")
@@ -884,16 +739,18 @@ def get_chat_config_by_sha(config_sha: str):
 # Chat's internal ReAct tools continue to use the services in
 # app.services.credentialing_* and app.storage.credentialing_* for
 # server-side orchestration — only the public HTTP surface was removed.
+from app.api.chat import router as _chat_router
 from app.api.doc_reader import router as _doc_reader_router
 from app.api.feedback import router as _feedback_router
 from app.api.history import router as _history_router
 from app.api.tasks import router as _tasks_router
 from app.api.uploads import router as _uploads_router
+app.include_router(_chat_router)  # Phase 2b.2 — core chat lifecycle extracted from main.py
 app.include_router(_history_router)
 app.include_router(_feedback_router)
 app.include_router(_tasks_router)
 app.include_router(_uploads_router)  # Phase B.1c — cross-thread uploads catalog
-app.include_router(_doc_reader_router)  # Phase 2b — doc-reader proxy extracted from main.py
+app.include_router(_doc_reader_router)  # Phase 2b.1 — doc-reader proxy extracted from main.py
 
 
 # Phase 1b: feedback / QC endpoints moved to app.api.feedback.
