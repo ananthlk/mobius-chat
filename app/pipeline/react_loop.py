@@ -1256,6 +1256,88 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         if is_complete or not tool:
             answer = decision.get("answer", "")
             if answer:
+                # ── Critic gate (Phase groundedness-v1) ──────────────
+                # Before finalizing, audit the draft against collected
+                # sources. If the critic flags high-severity ungrounded
+                # claims AND we have rounds left, inject the critique as
+                # a synthetic observation so the planner gets specific
+                # feedback and runs another round. On the last round we
+                # ship anyway (falling closed would mean no answer at
+                # all on stubborn hallucinations) but append a warning.
+                #
+                # Gated behind MOBIUS_REACT_CRITIC env flag (default OFF
+                # in the rollout commit) so operators can turn it on
+                # per environment after validation.
+                from app.pipeline.react.critic import (
+                    CRITIC_SYSTEM_PROMPT,
+                    build_critic_user_message,
+                    critic_enabled,
+                    format_critique_as_observation,
+                    parse_critic_response,
+                )
+
+                if critic_enabled():
+                    rounds_remaining = (max_it - rn)  # not counting this round's decision
+                    emit("  ◌ Critic auditing draft against sources…")
+                    critic_raw = _call_llm_json(
+                        CRITIC_SYSTEM_PROMPT,
+                        build_critic_user_message(
+                            question=ctx.effective_message or ctx.message or "",
+                            draft_answer=answer,
+                            sources=all_sources,
+                            tool_results=tool_results,
+                        ),
+                        ctx=ctx,
+                        stage="react_critic",
+                        max_tokens=1200,
+                    )
+                    critique = parse_critic_response(critic_raw)
+
+                    if critique.has_blocking_issues and rounds_remaining > 0:
+                        # Inject the critique + keep going. Planner sees
+                        # the flagged claims next round and either finds
+                        # evidence or revises.
+                        high = critique.high_severity_issues
+                        emit(
+                            f"  ⚠ Critic flagged {len(high)} ungrounded "
+                            f"claim(s); revising in next round."
+                        )
+                        tool_results.append({
+                            "tool": "_critic",
+                            "success": False,
+                            "result": format_critique_as_observation(high),
+                        })
+                        # Round counter increments via `continue`; the
+                        # reasoning_context builder will pick up the new
+                        # synthetic observation on the next pass.
+                        continue
+
+                    if critique.has_blocking_issues and rounds_remaining == 0:
+                        # Last round — ship anyway, but annotate so the
+                        # reader sees this answer is suspect. Honest
+                        # degradation beats silent hallucination.
+                        warning_lines = [
+                            "",
+                            "---",
+                            "⚠ **Groundedness notice:** the following claims in this "
+                            "answer could not be verified against the retrieved sources:",
+                        ]
+                        for i, issue in enumerate(critique.high_severity_issues, 1):
+                            claim_preview = issue.claim
+                            if len(claim_preview) > 150:
+                                claim_preview = claim_preview[:150].rstrip() + "…"
+                            warning_lines.append(f"  {i}. {claim_preview}")
+                        warning_lines.append(
+                            "Verify these specifically before acting on them."
+                        )
+                        answer = answer.rstrip() + "\n" + "\n".join(warning_lines)
+                        emit(
+                            f"  ⚠ Critic flagged {len(critique.high_severity_issues)} "
+                            f"unresolved claim(s); shipping with warning (rounds exhausted)."
+                        )
+                    else:
+                        emit("  ✓ Critic approved.")
+
                 emit("  Synthesizing answer…")
                 ctx.react_last_tool = last_tool
                 _finalize_response(

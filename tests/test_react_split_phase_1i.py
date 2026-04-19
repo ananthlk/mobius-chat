@@ -225,12 +225,21 @@ class TestReactLoopRatchet:
       post-1i pass 3         TBD         (integrator extraction)
     """
 
-    MAX_REACT_LOOP_LOC = 1_430  # tighten as passes 2+3 land
+    MAX_REACT_LOOP_LOC = 1_510  # tighten as passes 2+3 land
     # 2026-04-18: bumped from 1_420 by 10 LOC to absorb the restore of
     # _attach_result_summary (renamed from the deleted
     # _attach_credentialing_result_summary). The utility is not
     # credentialing-specific — healthcare_query + healthcare_npi_lookup
     # both need it to summarize long NPPES payloads.
+    # 2026-04-19: bumped from 1_430 to 1_510 (+80 LOC) for the ReAct
+    # critic gate — an LLM-based groundedness check that runs when the
+    # planner emits is_complete=true. The critic body is in
+    # app/pipeline/react/critic.py (382 LOC, extracted); what sits in
+    # the loop is just the call site, the round-control logic
+    # (inject critique on reject, ship-with-warning on rounds-exhausted),
+    # and the feature-flag gate. This is a real new feature, not drift —
+    # the alternative was a post-hoc groundedness gate downstream of
+    # the integrator, which doesn't get the retry benefit.
 
     def test_react_loop_loc_under_ceiling(self):
         loc = len(REACT_LOOP.read_text().splitlines())
