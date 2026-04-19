@@ -884,6 +884,7 @@ def get_chat_config_by_sha(config_sha: str):
 # Chat's internal ReAct tools continue to use the services in
 # app.services.credentialing_* and app.storage.credentialing_* for
 # server-side orchestration — only the public HTTP surface was removed.
+from app.api.doc_reader import router as _doc_reader_router
 from app.api.feedback import router as _feedback_router
 from app.api.history import router as _history_router
 from app.api.tasks import router as _tasks_router
@@ -892,6 +893,7 @@ app.include_router(_history_router)
 app.include_router(_feedback_router)
 app.include_router(_tasks_router)
 app.include_router(_uploads_router)  # Phase B.1c — cross-thread uploads catalog
+app.include_router(_doc_reader_router)  # Phase 2b — doc-reader proxy extracted from main.py
 
 
 # Phase 1b: feedback / QC endpoints moved to app.api.feedback.
@@ -981,56 +983,9 @@ async def internal_skill_llm(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Doc Reader skill proxy — /chat/doc-reader/* → mobius-skills/doc-reader
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _doc_reader_proxy(method: str, path: str, *, json_body=None, timeout: float = 30.0):
-    """Proxy helper for doc-reader skill routes."""
-    import httpx
-    base = (os.environ.get("CHAT_SKILLS_DOC_READER_URL") or "http://localhost:8018").rstrip("/")
-    try:
-        with httpx.Client(timeout=timeout) as c:
-            r = c.request(method, f"{base}{path}", json=json_body)
-            r.raise_for_status()
-            return r.json()
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Doc-reader skill error: {e}") from e
-
-
-@app.post("/chat/doc-reader/read")
-def dr_read(
-    body: dict = Body(...),
-    _user_id: str | None = Depends(require_user),
-):
-    """Proxy: read/reassemble a published document."""
-    return _doc_reader_proxy("POST", "/read", json_body=body)
-
-
-@app.post("/chat/doc-reader/extract")
-def dr_extract(
-    body: dict = Body(...),
-    _user_id: str | None = Depends(require_user),
-):
-    """Proxy: query-targeted extraction from a document."""
-    return _doc_reader_proxy("POST", "/extract", json_body=body, timeout=60.0)
-
-
-@app.post("/chat/doc-reader/summarize")
-def dr_summarize(
-    body: dict = Body(...),
-    _user_id: str | None = Depends(require_user),
-):
-    """Proxy: generate LLM summary of a document."""
-    return _doc_reader_proxy("POST", "/summarize", json_body=body, timeout=60.0)
-
-
-@app.get("/chat/doc-reader/health")
-def dr_health():
-    """Proxy: doc-reader health check."""
-    return _doc_reader_proxy("GET", "/health")
+# Phase 2b: /chat/doc-reader/* moved to app.api.doc_reader.
+# Router included below near the other app.include_router calls so
+# external URLs are unchanged.
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
