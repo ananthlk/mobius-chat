@@ -618,9 +618,14 @@ def get_thread_uploads(thread_id: str) -> dict[str, Any]:
     Document upload skill — list files attached to this chat thread (newest first).
     Used by the UI, MCP, and integrations; supports multiple uploads over time per thread.
 
-    Also returns ``latest_roster_reconciliation`` and ``roster_freshness`` (``fresh`` | ``stale`` | ``none``)
-    so the client can show whether an existing roster is recent enough to reuse without re-uploading.
-    Threshold comes from env ``CHAT_ROSTER_FRESH_DAYS`` (default 14).
+    Post-2026-04-18 disconnect: ``uploaded_files`` is the canonical list.
+    ``roster_reconciliation_files`` + ``latest_roster_reconciliation`` +
+    ``roster_freshness`` fields are retained in the response shape for FE
+    back-compat, but they'll always be empty / none now that the
+    roster_reconciliation purpose is retired. The
+    ``CHAT_ROSTER_FRESH_DAYS`` env (default 14) controls freshness
+    comparison for any roster_reconciliation entries that might still
+    exist in old thread state.
     """
     tid = (thread_id or "").strip()
     if not tid:

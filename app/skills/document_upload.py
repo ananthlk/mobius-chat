@@ -1,6 +1,12 @@
 """Document upload skill — first-class attachment of files to a chat thread.
 
-Shared by ReAct (_execute_tool), legacy tool path (answer_tool), MCP docs, and HTTP GET /chat/thread/.../uploads.
+Shared by ReAct (_execute_tool), legacy tool path (answer_tool), MCP docs,
+and HTTP GET /chat/thread/{thread_id}/uploads.
+
+2026-04-18 disconnect note: the roster_reconciliation purpose was retired
+along with the credentialing / roster skill set. Only instant_rag uploads
+are accepted today; they chunk + embed the document for retrieval via the
+``search_uploaded_document`` skill.
 """
 
 from __future__ import annotations
@@ -10,20 +16,20 @@ from typing import Any
 DOCUMENT_UPLOAD_SKILL_MARKDOWN = """
 ## Document upload skill (Mobius Chat)
 
-**What it does:** Attach files to **this chat thread** so other tools can use them. You may upload **different documents at different times**; each upload is stored on the thread (timestamp, purpose, filename, row counts).
+**What it does:** Attach files to **this chat thread** so other tools can search them. Each upload is chunked + embedded once; afterwards you can ask natural-language questions and the `search_uploaded_document` skill retrieves the relevant passages with page citations. You can upload **multiple documents at different times**; each is stored on the thread with a timestamp and filename.
 
-**End user:** Tap **⋯** next to Send → **Upload file** → choose **file purpose** (e.g. roster for reconciliation) → organization name when required → pick **CSV or Excel**.
+**End user:** Tap **⋯** next to Send → **Upload file** → pick a **PDF, DOCX, CSV, or XLSX**. The upload runs instant-RAG in the background; a receipt banner confirms when indexing is complete.
 
-**Purposes today:**
-- `roster_reconciliation` — provider roster for upload vs outside-in reconciliation.
+**Supported purpose:**
+- `instant_rag` — the default. Chunks + embeds the document so `search_uploaded_document` can search inside it.
 
 **HTTP API (integrations / MCP):**
-- `POST /chat/roster-upload` — multipart: `file`, `org_name`, `file_purpose` (optional), `thread_id` (optional; response returns `thread_id`).
-- `GET /chat/thread/{thread_id}/uploads` — list uploads on that thread (newest first), plus reconciliation pointers.
+- `POST /chat/roster-upload` — multipart form: `file`, `org_name`, `file_purpose="instant_rag"`, `thread_id` (optional; response returns the thread_id used).
+- `GET /chat/thread/{thread_id}/uploads` — list uploads on the thread (newest first), each with filename, purpose, row/chunk count, and timestamp.
 
-**Note:** File bytes cannot be sent inside plain chat text; use the UI or multipart POST.
+**Note:** File bytes cannot be sent inside plain chat text; use the UI button or multipart POST. `file_purpose` values other than `instant_rag` return 400 today — roster / credentialing uploads will come back as their own skill integration.
 
-**Next step:** After a roster upload, ask to run the **roster reconciliation report** for the same org; the server fills `upload_id` and billing NPI from thread state.
+**Next step:** After uploading, ask a question about the document (e.g. *"what does section 3.2 say about prior auth?"*). Chat will pick `search_uploaded_document` and return scoped chunks with page citations — no separate search command needed.
 """.strip()
 
 
