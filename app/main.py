@@ -21,7 +21,7 @@ except Exception:
 # Always use ReAct (ignore .env); for legacy run API with MOBIUS_USE_REACT=0
 os.environ["MOBIUS_USE_REACT"] = "1"
 
-from fastapi import Body, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -249,6 +249,7 @@ app = FastAPI(title="Mobius Chat", version="0.1.0")
 #   for front-door config live there so the surface is auditable from one file.
 from app.api.front_door import (
     InMemoryRateLimitMiddleware,
+    require_user,
     resolve_cors_config,
     resolve_rate_limit_config,
 )
@@ -391,8 +392,19 @@ def post_chat_org_name_candidates(body: OrgNameCandidatesRequest) -> dict[str, A
 
 
 @app.post("/chat", response_model=ChatResponse)
-def post_chat(body: ChatRequest):
-    """Enqueue a chat request; returns correlation_id and thread_id for polling."""
+def post_chat(
+    body: ChatRequest,
+    _user_id: str | None = Depends(require_user),
+):
+    """Enqueue a chat request; returns correlation_id and thread_id for polling.
+
+    Phase 2d: ``require_user`` respects ``CHAT_AUTH_MODE``. In hosted envs
+    (``CHAT_ENV=staging`` or ``prod``) auth defaults to ``required`` — a
+    request without a valid JWT gets 401. Dev is ``off`` by default so
+    local testing is unchanged. The ``_user_id`` is not consumed here
+    yet; future work will stamp it onto the turn + use it for
+    per-user rate limiting.
+    """
     correlation_id = str(uuid.uuid4())
     thread_id = ensure_thread((body.thread_id or "").strip() or None)
     payload: dict = {"message": body.message or "", "thread_id": thread_id}
@@ -602,6 +614,7 @@ def post_chat_roster_upload(
     thread_id: str | None = Form(None),
     run_id: str | None = Form(None),
     file_purpose: str | None = Form("roster_reconciliation"),
+    _user_id: str | None = Depends(require_user),
 ) -> dict[str, Any]:
     """
     Upload a file for credentialing/reconciliation or instant RAG ingestion.
@@ -988,19 +1001,28 @@ def _doc_reader_proxy(method: str, path: str, *, json_body=None, timeout: float 
 
 
 @app.post("/chat/doc-reader/read")
-def dr_read(body: dict = Body(...)):
+def dr_read(
+    body: dict = Body(...),
+    _user_id: str | None = Depends(require_user),
+):
     """Proxy: read/reassemble a published document."""
     return _doc_reader_proxy("POST", "/read", json_body=body)
 
 
 @app.post("/chat/doc-reader/extract")
-def dr_extract(body: dict = Body(...)):
+def dr_extract(
+    body: dict = Body(...),
+    _user_id: str | None = Depends(require_user),
+):
     """Proxy: query-targeted extraction from a document."""
     return _doc_reader_proxy("POST", "/extract", json_body=body, timeout=60.0)
 
 
 @app.post("/chat/doc-reader/summarize")
-def dr_summarize(body: dict = Body(...)):
+def dr_summarize(
+    body: dict = Body(...),
+    _user_id: str | None = Depends(require_user),
+):
     """Proxy: generate LLM summary of a document."""
     return _doc_reader_proxy("POST", "/summarize", json_body=body, timeout=60.0)
 

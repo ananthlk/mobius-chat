@@ -26,9 +26,10 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
+from app.api.front_door import require_user
 from app.queue import get_queue
 from app.storage import (
     fetch_turn_qc_audit,
@@ -41,6 +42,12 @@ from app.storage.progress import publish_quality_audit_event
 from app.storage.turns import update_turn_qc_audit
 
 router = APIRouter(tags=["feedback"])
+
+# Phase 2d: the five "user thumbs / score" endpoints below go through
+# ``require_user``. ``/chat/qc-audit`` stays on its own
+# ``MOBIUS_QC_AUDIT_SECRET`` service-to-service check — it's invoked
+# by the eval adjudicator, not by a browser client, so user auth
+# doesn't apply.
 
 
 # ── Request bodies ─────────────────────────────────────────────────────────
@@ -151,7 +158,11 @@ def post_chat_qc_audit(
 
 
 @router.post("/chat/qc-user-score/{correlation_id}")
-def post_qc_user_score(correlation_id: str, body: QcUserScoreBody):
+def post_qc_user_score(
+    correlation_id: str,
+    body: QcUserScoreBody,
+    _user_id: str | None = Depends(require_user),
+):
     """Persist edited quality score (0–1) + optional note into qc_audit; patches live response for poll/SSE."""
     if body.user_score < 0.0 or body.user_score > 1.0:
         raise HTTPException(status_code=400, detail="user_score must be between 0 and 1")
@@ -172,7 +183,11 @@ def post_qc_user_score(correlation_id: str, body: QcUserScoreBody):
 
 
 @router.post("/chat/adjudication-feedback/{correlation_id}")
-def post_adjudication_feedback_route(correlation_id: str, body: AdjudicationFeedbackBody):
+def post_adjudication_feedback_route(
+    correlation_id: str,
+    body: AdjudicationFeedbackBody,
+    _user_id: str | None = Depends(require_user),
+):
     """Thumbs + comment on the adjudicator / QA scorecard (technical users)."""
     if body.rating not in ("up", "down"):
         raise HTTPException(status_code=400, detail="rating must be 'up' or 'down'")
@@ -181,7 +196,11 @@ def post_adjudication_feedback_route(correlation_id: str, body: AdjudicationFeed
 
 
 @router.post("/chat/feedback/{correlation_id}")
-def post_chat_feedback(correlation_id: str, body: FeedbackBody):
+def post_chat_feedback(
+    correlation_id: str,
+    body: FeedbackBody,
+    _user_id: str | None = Depends(require_user),
+):
     """Persist turn-level feedback (thumbs up/down + optional comment)."""
     if body.rating not in ("up", "down"):
         raise HTTPException(status_code=400, detail="rating must be 'up' or 'down'")
@@ -190,7 +209,11 @@ def post_chat_feedback(correlation_id: str, body: FeedbackBody):
 
 
 @router.post("/chat/llm-performance-feedback/{correlation_id}")
-def post_llm_performance_feedback(correlation_id: str, body: LlmPerformanceFeedbackBody):
+def post_llm_performance_feedback(
+    correlation_id: str,
+    body: LlmPerformanceFeedbackBody,
+    _user_id: str | None = Depends(require_user),
+):
     """Model routing / efficiency feedback (separate from answer-quality thumbs)."""
     if body.rating not in ("up", "down"):
         raise HTTPException(status_code=400, detail="rating must be 'up' or 'down'")
@@ -199,7 +222,11 @@ def post_llm_performance_feedback(correlation_id: str, body: LlmPerformanceFeedb
 
 
 @router.post("/chat/source-feedback/{correlation_id}")
-def post_chat_source_feedback(correlation_id: str, body: SourceFeedbackBody):
+def post_chat_source_feedback(
+    correlation_id: str,
+    body: SourceFeedbackBody,
+    _user_id: str | None = Depends(require_user),
+):
     """Persist per-source feedback (thumbs up/down)."""
     if body.rating not in ("up", "down"):
         raise HTTPException(status_code=400, detail="rating must be 'up' or 'down'")
