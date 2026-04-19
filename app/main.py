@@ -272,6 +272,15 @@ def maybe_start_worker():
     global _worker_started
     if _worker_started:
         return
+
+    # Phase 2c gate: fail fast in CHAT_ENV=staging|prod when critical env
+    # vars are missing or placeholder. No-op in CHAT_ENV=dev (our laptop
+    # default). Raises StartupAssertionError — FastAPI propagates and
+    # boot fails with a clear message, which is much safer than
+    # silently sending prod traffic to a dev-sandbox GCP project.
+    from app.config import assert_hosted_config
+    assert_hosted_config()
+
     cfg = get_config()
     if cfg.queue_type == "memory":
         start_worker_background()
@@ -279,7 +288,10 @@ def maybe_start_worker():
         logger.info("Started in-process worker (memory queue)")
     else:
         logger.info("Queue type=%s: run worker separately with: python -m app.worker", cfg.queue_type)
-    # Warn when DB not configured: chat history, jurisdiction state, and retrieval persistence will not work
+
+    # Warn when DB not configured: chat history, jurisdiction state, and retrieval persistence will not work.
+    # (In hosted envs this fails earlier via assert_hosted_config; the
+    # warning below is the dev-env soft reminder.)
     try:
         from app.chat_config import get_chat_config
         db_url = (get_chat_config().rag.database_url or "").strip()
@@ -290,6 +302,27 @@ def maybe_start_worker():
             )
     except Exception:
         pass
+
+    # Phase 2c + MCPSkillAdapter: auto-register remote MCP tools as
+    # skill registry entries so the planner sees them alongside the
+    # five built-in skills. Best-effort — if the MCP server is down
+    # we log and keep booting; chat still works with just builtins.
+    # Gated by MOBIUS_MCP_AUTOREGISTER=1 so operators can turn it off
+    # without redeploying (default OFF until we validate in hosted).
+    if (os.environ.get("MOBIUS_MCP_AUTOREGISTER") or "").strip().lower() in ("1", "true", "yes"):
+        try:
+            from app.skills.mcp_adapter import register_mcp_skills
+            names = register_mcp_skills()
+            if names:
+                logger.info("MCP auto-register: %d skill(s): %s", len(names), ", ".join(names))
+            else:
+                logger.info(
+                    "MCP auto-register: no tools discovered "
+                    "(MCP server down or returned empty tool list). "
+                    "Chat continues with builtin skills only."
+                )
+        except Exception as e:
+            logger.warning("MCP auto-register failed: %s — continuing with builtins", e, exc_info=True)
 
 
 class ChatRequest(BaseModel):
