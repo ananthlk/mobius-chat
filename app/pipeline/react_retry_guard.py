@@ -215,20 +215,87 @@ class ReactRetryGuard:
     # ── Helpers ─────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _is_failure(result: dict[str, Any]) -> bool:
+    def _is_zero_result(result: dict[str, Any]) -> bool:
+        """True when the tool ran successfully but produced nothing usable.
+
+        Today's classifier: ``success=True`` + retrieval signal is
+        ``no_sources`` + empty sources list. This catches the specific
+        pathology observed in live 2026-04-19 traces:
+
+          - ``search_corpus`` called with confidence_min=0.5 (pre-0.3
+            fix) dropping every retrieved chunk → ``success=True`` but
+            chunks=[] and signal='no_sources'. The tool technically
+            "succeeded" at running; it just produced no useful output.
+
+          - ``google_search`` returning only off-topic URLs (sec.gov
+            when you asked about Molina Medicaid) → the ``_run_google_search``
+            path ends at the snippets-only branch with signal='no_sources'.
+
+          - ``web_scrape`` hitting a 404 → this is already
+            ``success=False`` at the tool level, so the existing
+            failure-detection path catches it.
+
+        Pre-2026-04-19 the retry guard treated these as successful
+        calls, which meant ``consecutive_failures_per_tool`` never
+        incremented and tool-exhaustion never fired on zero-result
+        outcomes. The planner was free to call the same tool with
+        slightly different query strings round after round — which is
+        exactly what the live Molina trace showed (search_corpus R1,
+        then R2, then R3 with different queries, all zero-result).
+
+        Treating zero-result as a failure means:
+          1. ``consecutive_failures_per_tool`` increments.
+          2. After ``_TOOL_EXHAUSTION_THRESHOLD`` consecutive
+             zero-results, the tool is blocked — planner must pivot.
+          3. ``all_rounds_failed`` can short-circuit when every round
+             produced nothing.
+
+        This is intentionally conservative: it only matches the
+        specific zero-result shape we've seen in production. Tools
+        returning partial results (some chunks but not the "right"
+        ones) or mixed-signal outcomes (corpus_plus_google with a
+        thin corpus hit) are NOT classified as failures — they're
+        genuine partial successes the planner may synthesize from
+        via guidance mode.
+        """
+        if result.get("success") is not True:
+            return False
+        signal = (result.get("signal") or "").strip().lower()
+        if signal != "no_sources":
+            return False
+        sources = result.get("sources")
+        if isinstance(sources, list) and len(sources) > 0:
+            # Has at least one source — not a zero-result. The planner
+            # may still get partial value from it.
+            return False
+        return True
+
+    @classmethod
+    def _is_failure(cls, result: dict[str, Any]) -> bool:
         if result.get("success") is False:
             return True
         if result.get("error") is not None:
             return True
+        # 2026-04-19: zero-result "success" outcomes count as failures
+        # for retry-guard purposes. See _is_zero_result for rationale.
+        if cls._is_zero_result(result):
+            return True
         return False
 
-    @staticmethod
-    def _error_code(result: dict[str, Any]) -> str | None:
+    @classmethod
+    def _error_code(cls, result: dict[str, Any]) -> str | None:
         err = result.get("error")
         if isinstance(err, dict):
             code = err.get("error_code")
             if isinstance(code, str):
                 return code
+        # Distinguish zero-result from other tool errors so the
+        # failure-hint-for-prompt can tell the planner "try different
+        # tool" vs. "this tool errored out." Both count as failures
+        # but operators reading llm_calls rows should be able to tell
+        # them apart.
+        if cls._is_zero_result(result):
+            return "no_results"
         if result.get("success") is False:
             return "tool_error"
         return None
