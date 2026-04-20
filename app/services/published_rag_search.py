@@ -194,110 +194,135 @@ def search_published_rag(
     source_type_allow: List[str] | None = None,
     emitter: Callable[[str], None] | None = None,
 ) -> List[dict[str, Any]]:
-    """Search published RAG: embed question (1536), query vector store (Chroma or Vertex) with filters,
-    fetch metadata from Postgres by id.
-    If confidence_min is set, only return chunks with confidence >= confidence_min (after fetching k).
-    If source_type_allow is set, restrict results to those source_type values.
-    Returns list of dicts with keys: text, document_id, document_name, page_number, source_type.
+    """Search published RAG: embed question (1536), query vector store
+    (Chroma or Vertex) with filters, fetch metadata from Postgres by id.
+
+    If confidence_min is set, only return chunks with confidence >=
+    confidence_min (after fetching k). If source_type_allow is set,
+    restrict results to those source_type values. Returns list of dicts
+    with keys: text, document_id, document_name, page_number,
+    source_type, and — when a vector distance was returned —
+    match_score / confidence.
+
+    skills-core refactor (Day 4, 2026-04-20)
+    ----------------------------------------
+    The vector-search + Postgres metadata hydration moved to
+    ``mobius_skills_core.skills.corpus_search.run_corpus_search``.
+    This function is now a thin chat-specific adapter that:
+
+      * reads chat's config + embedding provider (chat-specific)
+      * constructs the shared skill's config dataclasses
+      * calls the shared skill
+      * applies chat's confidence_min filter
+      * returns the dict shape downstream chat code expects
+        (answer_non_patient, doc_assembly, etc.)
+
+    Keeps the existing return shape so all chat callers work unchanged.
+    Over time the confidence filter + doc_assembly can also migrate to
+    shared core; today's scope is the pure retrieval layer.
     """
     from app.chat_config import get_chat_config
+    from app.db_client import db_query as db_query_fn
     from app.services.embedding_provider import get_query_embedding
+    from mobius_skills_core.skills.corpus_search import (
+        ChromaConfig,
+        CorpusFilters,
+        VertexConfig,
+        run_corpus_search,
+    )
 
     cfg = get_chat_config()
     rag = cfg.rag
 
-    # Determine which vector store to use
+    # Determine backend + build the config dataclass the shared skill
+    # understands. Config lives in chat's chat_config; skills-core stays
+    # env-neutral.
     use_chroma = rag.vector_store == "chroma"
-
+    chroma_cfg: ChromaConfig | None = None
+    vertex_cfg: VertexConfig | None = None
     if use_chroma:
         if not rag.chroma_persist_dir or not rag.database_url:
             logger.warning("Published RAG: chroma_persist_dir or database_url not set")
             return []
+        chroma_cfg = ChromaConfig(
+            persist_dir=rag.chroma_persist_dir,
+            collection=rag.chroma_collection or "published_rag",
+        )
     else:
         if not rag.vertex_index_endpoint_id or not rag.vertex_deployed_index_id or not rag.database_url:
-            logger.warning("Published RAG: vertex_index_endpoint_id, vertex_deployed_index_id, or database_url not set")
+            logger.warning(
+                "Published RAG: vertex_index_endpoint_id, vertex_deployed_index_id, or database_url not set"
+            )
             return []
-
-    try:
-        _emit(emitter, "Getting your question ready to search...")
-        query_embedding = get_query_embedding(question)
-    except Exception as e:
-        logger.exception("Published RAG embedding failed: %s", e)
-        return []
-
-    # Vector search
-    if use_chroma:
-        ids, id_to_distance = _search_chroma(query_embedding, k, cfg, source_type_allow)
-    else:
-        ids, id_to_distance = _search_vertex(query_embedding, k, cfg, source_type_allow)
-
-    if not ids:
-        store_name = "Chroma" if use_chroma else "Vertex"
-        logger.warning(
-            "RAG: %s returned 0 neighbors. Check: (1) vector store has datapoints; "
-            "(2) If CHAT_RAG_FILTER_* are set, metadata must match.",
-            store_name,
-        )
-        return []
-
-    # Fetch metadata from Postgres
-    try:
-        import psycopg2
-        import psycopg2.extras
-        conn = psycopg2.connect(rag.database_url)
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute(
-            "SELECT id, document_id, source_type, text, page_number, paragraph_index, document_display_name, document_filename FROM published_rag_metadata WHERE id::text = ANY(%s)",
-            (ids,),
-        )
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-    except Exception as e:
-        logger.exception("Postgres published_rag_metadata fetch failed: %s", e)
-        return []
-
-    logger.info("Postgres published_rag_metadata returned %d row(s) for %d id(s)", len(rows), len(ids))
-    if len(rows) < len(ids):
-        logger.warning(
-            "RAG: Some vector store ids not found in Postgres (%d ids, %d rows). "
-            "Ensure sync job wrote to the same CHAT_RAG_DATABASE_URL.",
-            len(ids), len(rows),
+        vertex_cfg = VertexConfig(
+            project_id=cfg.llm.vertex_project_id,
+            location=(cfg.llm.vertex_location or "us-central1"),
+            index_endpoint_id=rag.vertex_index_endpoint_id,
+            deployed_index_id=rag.vertex_deployed_index_id,
         )
 
-    # Preserve order by ids (vector store returns by similarity); attach distance -> match_score, confidence
-    id_to_row = {str(r["id"]): r for r in rows}
-    ordered = []
-    for id_ in ids:
-        r = id_to_row.get(id_)
-        if not r:
-            continue
-        doc_name = (r.get("document_display_name") or r.get("document_filename") or "document") if r else "document"
-        distance = id_to_distance.get(str(id_))
-        match_score = None
-        confidence = None
-        if distance is not None:
-            # Cosine distance in [0, 2]; similarity 0-1 = 1 - distance/2
-            try:
-                d = float(distance)
-                match_score = round(max(0.0, min(1.0, 1.0 - d / 2.0)), 4)
-                confidence = match_score
-            except (TypeError, ValueError):
-                pass
+    # Legacy emit for UI parity — the shared skill also emits structured
+    # SkillEvents, but the chat's existing emit channel expects short
+    # strings. Kept for pre-Day-5 callers that haven't migrated to the
+    # envelope translator yet.
+    _emit(emitter, "Getting your question ready to search...")
+
+    filters = CorpusFilters(
+        payer=rag.filter_payer or "",
+        state=rag.filter_state or "",
+        program=rag.filter_program or "",
+        authority_level=rag.filter_authority_level or "",
+        source_type_allow=source_type_allow,
+    )
+
+    result = run_corpus_search(
+        query=question,
+        embed_query=get_query_embedding,
+        k=k,
+        filters=filters,
+        chroma=chroma_cfg,
+        vertex=vertex_cfg,
+        database="chat",
+        db_query_fn=db_query_fn,
+        # emitter deliberately NOT passed — chat's string emitter can't
+        # accept SkillEvents. Day 5+ will plug the SkillEvent→EmitEnvelope
+        # translator here so structured retrieval emits land in the
+        # thinking log with correlation_id / task-manager hints.
+    )
+
+    if result.signal == "tool_error":
+        logger.warning("Published RAG shared skill returned tool_error: %s", result.text)
+        return []
+
+    # Convert SkillResult.chunks back to the dict shape chat callers
+    # expect. Preserves every field the legacy function returned:
+    # id, text, document_id, document_name, page_number,
+    # paragraph_index, source_type, distance, match_score, confidence.
+    ordered: list[dict[str, Any]] = []
+    for chunk in result.chunks:
+        md = chunk.metadata or {}
+        distance = md.get("distance")
+        match_score = chunk.score if distance is not None else None
+        confidence = match_score
         ordered.append({
-            "id": r.get("id"),
-            "text": r.get("text") or "",
-            "document_id": str(r["document_id"]) if r.get("document_id") else None,
-            "document_name": doc_name,
-            "page_number": r.get("page_number"),
-            "paragraph_index": r.get("paragraph_index"),
-            "source_type": r.get("source_type") or "chunk",
+            "id": chunk.chunk_id or None,
+            "text": chunk.text,
+            "document_id": chunk.document_id or None,
+            "document_name": chunk.document_name,
+            "page_number": chunk.page_number,
+            "paragraph_index": md.get("paragraph_index"),
+            "source_type": md.get("source_type") or "chunk",
             "distance": distance,
             "match_score": match_score,
             "confidence": confidence,
         })
+
+    # Confidence filter stays in chat — still chat-specific taxonomy.
+    # Will move to shared core in a Day 5+ follow-up once we pull in
+    # the full doc_assembly pipeline.
     if confidence_min is not None:
         ordered = [c for c in ordered if (c.get("confidence") or 0.0) >= confidence_min]
+
     n = len(ordered)
     _emit(emitter, f"Found {n} relevant bit{'s' if n != 1 else ''}.")
     return ordered
