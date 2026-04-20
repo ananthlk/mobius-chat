@@ -347,3 +347,267 @@ def make_rounds_exhausted_with_warning(
         task_type="blocker",
         task_severity="high",
     )
+
+
+# ── Tool / pipeline signals (commit 3 — fan-out) ────────────────────
+
+
+def make_tool_exhausted(
+    correlation_id: str,
+    round: int,
+    *,
+    tool: str,
+    attempts: int,
+    thread_id: str | None = None,
+    user_id: str | None = None,
+) -> EmitEnvelope:
+    """A tool has been tried N times (N ≥ _TOOL_EXHAUSTION_THRESHOLD)
+    with no productive output — the retry guard blocks further uses
+    of it for the rest of the turn. Promoted as ``insight`` (med) —
+    analytics signal for RAG / corpus / tool quality tuning."""
+    return EmitEnvelope(
+        signal="tool_exhausted",
+        correlation_id=correlation_id,
+        step_id=f"round_{round}.tool_exhausted",
+        round=round,
+        note=f"⊘ {tool} exhausted ({attempts} failures, no new evidence) — pivoting to a different tool.",
+        data={"tool": tool, "attempts_before_exhaustion": attempts},
+        thread_id=thread_id,
+        user_id=user_id,
+        report_to_task_manager=True,
+        task_type="insight",
+        task_severity="med",
+    )
+
+
+def make_tool_failed(
+    correlation_id: str,
+    round: int,
+    *,
+    tool: str,
+    error_code: str,
+    error_message: str,
+    retryable: bool,
+    thread_id: str | None = None,
+    user_id: str | None = None,
+) -> EmitEnvelope:
+    """A tool call produced a typed error envelope. Promoted only
+    when non-recoverable (retryable=False) — the retry path handles
+    retryable errors without needing analytics. Promoted as
+    ``failure`` (med) — feeds per-tool error-rate dashboards."""
+    return EmitEnvelope(
+        signal="tool_failed",
+        correlation_id=correlation_id,
+        step_id=f"round_{round}.tool_failed",
+        round=round,
+        note=f"⊘ {tool} failed ({error_code}): {error_message[:120]}",
+        data={
+            "tool": tool,
+            "error_code": error_code,
+            "error_message": error_message[:500],
+            "retryable": retryable,
+        },
+        thread_id=thread_id,
+        user_id=user_id,
+        # Only non-recoverable failures promote. Rate-limit + timeout
+        # are retryable and handled locally — too noisy to promote
+        # each one; the retry guard surfaces them in aggregate via
+        # tool_exhausted.
+        report_to_task_manager=not retryable,
+        task_type="failure" if not retryable else None,
+        task_severity="med" if not retryable else None,
+    )
+
+
+def make_rate_limit_hit(
+    correlation_id: str,
+    round: int,
+    *,
+    tool: str,
+    provider: str | None = None,
+    retry_after_seconds: float | None = None,
+    thread_id: str | None = None,
+    user_id: str | None = None,
+) -> EmitEnvelope:
+    """Upstream provider rate-limited us. Promoted as ``failure``
+    (high) — this is a capacity/credit issue operators should see
+    surface quickly (it's what caused the 2026-04-19 'Anthropic 400
+    credits' class of failure)."""
+    return EmitEnvelope(
+        signal="rate_limit_hit",
+        correlation_id=correlation_id,
+        step_id=f"round_{round}.rate_limit_hit",
+        round=round,
+        note=f"⊘ Rate-limited by {provider or tool}" + (
+            f"; retrying in {retry_after_seconds:.1f}s" if retry_after_seconds else ""
+        ),
+        data={
+            "tool": tool,
+            "provider": provider,
+            "retry_after_seconds": retry_after_seconds,
+        },
+        thread_id=thread_id,
+        user_id=user_id,
+        report_to_task_manager=True,
+        task_type="failure",
+        task_severity="high",
+    )
+
+
+def make_guidance_mode_activated(
+    correlation_id: str,
+    round: int,
+    *,
+    rounds_remaining: int,
+    tools_used_so_far: list[str],
+    thread_id: str | None = None,
+    user_id: str | None = None,
+) -> EmitEnvelope:
+    """The planner hit the 80% threshold and shifted from 'hunt for
+    authoritative answer' to 'synthesize next-best guidance from
+    what we have'. Promoted as ``insight`` (low) — frequency signals
+    when the hunt phase needs tuning or when queries consistently
+    need hedging."""
+    return EmitEnvelope(
+        signal="guidance_mode_activated",
+        correlation_id=correlation_id,
+        step_id=f"round_{round}.guidance_mode",
+        round=round,
+        note=f"◌ Guidance mode activated (round {round}, {rounds_remaining} rounds remaining)",
+        data={
+            "rounds_remaining": rounds_remaining,
+            "tools_used_so_far": tools_used_so_far,
+        },
+        thread_id=thread_id,
+        user_id=user_id,
+        report_to_task_manager=True,
+        task_type="insight",
+        task_severity="low",
+    )
+
+
+def make_confidence_filter_dropped_all(
+    correlation_id: str,
+    round: int,
+    *,
+    query: str,
+    chunks_retrieved: int,
+    confidence_min: float,
+    thread_id: str | None = None,
+    user_id: str | None = None,
+) -> EmitEnvelope:
+    """search_corpus retrieved N chunks but all fell below the
+    confidence_min threshold — zero reach the planner. Promoted as
+    ``insight`` (low) — the threshold-tuning signal that motivated
+    the 0.5→0.3 lowering in 760f06f. Tracks whether further tuning
+    is needed per query class."""
+    return EmitEnvelope(
+        signal="confidence_filter_dropped_all",
+        correlation_id=correlation_id,
+        step_id=f"round_{round}.confidence_filter",
+        round=round,
+        note=(
+            f"◌ Confidence filter ({confidence_min}) dropped all "
+            f"{chunks_retrieved} retrieved chunks — no corpus evidence reached the planner."
+        ),
+        data={
+            "query_preview": query[:200],
+            "chunks_retrieved": chunks_retrieved,
+            "confidence_min": confidence_min,
+        },
+        thread_id=thread_id,
+        user_id=user_id,
+        report_to_task_manager=True,
+        task_type="insight",
+        task_severity="low",
+    )
+
+
+def make_turn_started(
+    correlation_id: str,
+    *,
+    mode: str,
+    thread_id: str | None = None,
+    user_id: str | None = None,
+) -> EmitEnvelope:
+    """A chat turn began. NOT promoted today — too common; the
+    complement signal turn_completed carries outcome data. Kept as
+    a separate helper in case operators want per-turn counting
+    later; flip report_to_task_manager=True locally if needed."""
+    return EmitEnvelope(
+        signal="turn_started",
+        correlation_id=correlation_id,
+        step_id="turn_start",
+        note=f"Turn started ({mode})",
+        data={"mode": mode},
+        thread_id=thread_id,
+        user_id=user_id,
+    )
+
+
+def make_turn_completed(
+    correlation_id: str,
+    *,
+    rounds_used: int,
+    tools_used: list[str],
+    final_signal: str,
+    duration_ms: int,
+    total_llm_tokens: int | None = None,
+    total_cost_usd: float | None = None,
+    thread_id: str | None = None,
+    user_id: str | None = None,
+) -> EmitEnvelope:
+    """A chat turn finished successfully. Promoted as ``info``
+    (low) — the throughput + cost-per-turn + rounds-distribution
+    dashboard foundation."""
+    return EmitEnvelope(
+        signal="turn_completed",
+        correlation_id=correlation_id,
+        step_id="turn_complete",
+        note=f"✓ Turn completed in {rounds_used} round(s), {duration_ms}ms",
+        data={
+            "rounds_used": rounds_used,
+            "tools_used": tools_used,
+            "final_signal": final_signal,
+            "duration_ms": duration_ms,
+            "total_llm_tokens": total_llm_tokens,
+            "total_cost_usd": total_cost_usd,
+        },
+        thread_id=thread_id,
+        user_id=user_id,
+        report_to_task_manager=True,
+        task_type="info",
+        task_severity="low",
+    )
+
+
+def make_turn_failed(
+    correlation_id: str,
+    *,
+    error_class: str,
+    stage: str,
+    error_message: str,
+    last_tool: str | None = None,
+    thread_id: str | None = None,
+    user_id: str | None = None,
+) -> EmitEnvelope:
+    """A chat turn failed — the orchestrator caught an exception
+    that prevented completion. Promoted as ``failure`` (high) —
+    top-level failure rate dashboard."""
+    return EmitEnvelope(
+        signal="turn_failed",
+        correlation_id=correlation_id,
+        step_id="turn_failed",
+        note=f"✗ Turn failed at {stage}: {error_message[:120]}",
+        data={
+            "error_class": error_class,
+            "stage": stage,
+            "error_message": error_message[:500],
+            "last_tool": last_tool,
+        },
+        thread_id=thread_id,
+        user_id=user_id,
+        report_to_task_manager=True,
+        task_type="failure",
+        task_severity="high",
+    )

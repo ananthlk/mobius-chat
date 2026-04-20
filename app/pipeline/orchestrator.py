@@ -686,6 +686,52 @@ def _publish_completed(ctx: PipelineContext, t0_start: float) -> None:
     if not payload:
         return
 
+    # Sprint A.1 commit 3: emit a structured turn_completed envelope
+    # so task-manager promotion (A.2) can feed throughput, cost, and
+    # rounds-distribution dashboards. Fires BEFORE the SSE + persist
+    # steps so even if persistence fails downstream, the
+    # turn-completed event still lands in thinking_log.
+    try:
+        from app.communication.emit_envelope import make_turn_completed
+
+        tools_used = sorted({
+            e.get("data", {}).get("tool")
+            for e in (ctx.thinking_chunks or [])
+            if isinstance(e, dict) and e.get("data", {}).get("tool")
+        })
+        total_tokens = None
+        total_cost = None
+        if ctx.usages:
+            try:
+                total_tokens = sum(
+                    (u or {}).get("total_tokens", 0) or 0 for u in ctx.usages
+                )
+                total_cost = sum(
+                    float((u or {}).get("cost_usd") or 0.0) for u in ctx.usages
+                )
+            except Exception:
+                pass
+        env = make_turn_completed(
+            correlation_id=ctx.correlation_id,
+            rounds_used=len(ctx.thinking_chunks or []),  # rough proxy; ReAct turn count
+            tools_used=list(tools_used),
+            final_signal=",".join(ctx.retrieval_signals or []) or "unknown",
+            duration_ms=duration_ms,
+            total_llm_tokens=total_tokens,
+            total_cost_usd=total_cost,
+            thread_id=ctx.thread_id,
+            user_id=ctx.user_id,
+        )
+        # Record directly in thinking_chunks (no emitter here — this
+        # fires at publish time, after run_react has returned).
+        ctx.thinking_chunks.append(env.to_dict())
+        # And promote (respects MOBIUS_TASK_MANAGER_PROMOTION flag +
+        # the envelope's report_to_task_manager=True).
+        from app.services.task_manager_promotion import promote
+        promote(env.to_dict())
+    except Exception as _e:  # pragma: no cover — defensive
+        logger.warning("turn_completed envelope emit failed (non-fatal): %s", _e)
+
     # Large adjudication-only source blobs must not go to SSE/HTTP clients or in-memory response cache.
     client_payload = {k: v for k, v in payload.items() if k != "adjudication_sources"}
     # quick_mode: pass truncation flag so mini container can show "Full answer" link
@@ -775,6 +821,38 @@ def _publish_failed(
     except Exception:
         _env = None
     chunks = list(thinking_chunks) if thinking_chunks is not None else []
+
+    # Sprint A.1 commit 3: emit turn_failed envelope before building
+    # the user-facing payload. Feeds top-level failure-rate dashboard
+    # via task-manager promotion. Runs inside the try/except that
+    # wraps the rest of _publish_failed so this cannot double-fail
+    # the already-failing turn.
+    try:
+        from app.communication.emit_envelope import make_turn_failed
+        from app.services.task_manager_promotion import promote
+
+        error_class = type(err).__name__ if err is not None else "Unknown"
+        stage = "orchestrator"
+        if _env is not None:
+            # classify_exception returns an ErrorEnvelope with an
+            # error_code that helps distinguish failure types.
+            try:
+                stage = getattr(_env, "stage", None) or stage
+            except Exception:
+                pass
+        env = make_turn_failed(
+            correlation_id=correlation_id,
+            error_class=error_class,
+            stage=stage,
+            error_message=err_str,
+            last_tool=None,  # not easily recoverable at this layer
+            thread_id=thread_id,
+        )
+        chunks.append(env.to_dict())
+        promote(env.to_dict())
+    except Exception:  # pragma: no cover — defensive
+        # Must not double-fail: emission errors here are silent.
+        pass
     # Phase 0.12: tighten the user message. The 0.6b version always suffixed
     # "Please try again." to whatever the classifier produced, which combined
     # poorly with classifier messages that already implied a retry

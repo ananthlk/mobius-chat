@@ -13,7 +13,13 @@ USE_REACT = os.environ.get("MOBIUS_USE_REACT", "").lower() in ("1", "true", "yes
 
 
 def test_publish_failed_produces_structured_payload():
-    """_publish_failed always produces a structured payload with required keys."""
+    """_publish_failed always produces a structured payload with required keys.
+
+    Sprint A.1 commit 3: _publish_failed now also appends a
+    turn_failed envelope dict to thinking_log before publishing.
+    So thinking_log is no longer the bare input list; it carries
+    the original chunks PLUS the structured failure event. Test
+    updated to reflect the new shape."""
     payload_keys = {
         "status",
         "message",
@@ -47,12 +53,24 @@ def test_publish_failed_produces_structured_payload():
     payload = call_args[0][1]
     assert payload["status"] == "failed"
     assert payload["llm_error"] == "test error"
-    assert payload["thinking_log"] == ["chunk1"]
+    # thinking_log now starts with the caller's chunks, followed by a
+    # turn_failed envelope dict that _publish_failed appended.
+    log = payload["thinking_log"]
+    assert log[0] == "chunk1"
+    # The appended envelope has the expected shape:
+    assert len(log) == 2
+    env = log[1]
+    assert isinstance(env, dict) and env.get("signal") == "turn_failed"
+    assert env.get("data", {}).get("error_class") == "ValueError"
     assert payload_keys.issubset(payload.keys())
 
 
 def test_publish_failed_handles_none_thinking_chunks():
-    """_publish_failed handles None thinking_chunks."""
+    """_publish_failed handles None thinking_chunks.
+
+    Sprint A.1 commit 3: even when called with None chunks, the
+    turn_failed envelope still gets appended, so thinking_log is
+    a 1-element list carrying just the failure event."""
     with patch("app.pipeline.orchestrator.get_queue") as mock_q:
         with patch("app.pipeline.orchestrator.clear_progress"):
             with patch("app.pipeline.orchestrator.store_response"):
@@ -64,7 +82,11 @@ def test_publish_failed_handles_none_thinking_chunks():
                     RuntimeError("oops"),
                 )
     payload = mock_q.return_value.publish_response.call_args[0][1]
-    assert payload["thinking_log"] == []
+    # Starts empty; _publish_failed appends the turn_failed envelope.
+    log = payload["thinking_log"]
+    assert len(log) == 1
+    assert log[0].get("signal") == "turn_failed"
+    assert log[0].get("data", {}).get("error_class") == "RuntimeError"
 
 
 @pytest.mark.skipif(USE_REACT, reason="ReAct path skips clarify stage; test applies to legacy pipeline only")

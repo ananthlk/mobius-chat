@@ -1265,11 +1265,35 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
     # chat-side-only (too common to warrant promotion).
     _critic_retries_this_turn = 0
 
+    # Sprint A.1 commit 3: emit a structured signal at the transition
+    # round (first round where guidance mode activates). The planner's
+    # instruction change is visible in the thinking trail via the
+    # headline; the envelope makes the event analytics-queryable.
+    _guidance_mode_emitted = False
+
     for iteration in range(max_it):
         rn = iteration + 1
         headline = _react_round_headline(iteration, max_it)
         emit(f"  Round {rn}/{max_it} — {headline}")
         emit(f"  Reasoning round {rn}/{max_it}…")
+
+        # Structured signal at the guidance-mode transition.
+        if not _guidance_mode_emitted:
+            from app.pipeline.react.prompts import is_guidance_round
+            if is_guidance_round(iteration, max_it):
+                _guidance_mode_emitted = True
+                if emitter:
+                    from app.communication.emit_envelope import make_guidance_mode_activated
+                    tools_used = [r.get("tool") for r in tool_results if r.get("tool")]
+                    emitter(make_guidance_mode_activated(
+                        correlation_id=ctx.correlation_id,
+                        round=rn,
+                        rounds_remaining=max_it - iteration,
+                        tools_used_so_far=list(tools_used),
+                        thread_id=ctx.thread_id,
+                        user_id=getattr(ctx, "user_id", None),
+                    ).to_dict())
+
         reasoning_context = build_reasoning_context(
             ctx, tool_results, rn, max_iterations=max_it,
         )
@@ -1516,10 +1540,16 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             # the Phase 0.7 same-signature block ("this exact call already
             # failed with no new evidence since").
             if blocked_by.error_code == "tool_exhausted":
-                emit(
-                    f"  ⊘ {blocked_by.tool} exhausted ({blocked_by.round} failures, no new evidence) "
-                    f"— pivoting to a different tool."
-                )
+                if emitter:
+                    from app.communication.emit_envelope import make_tool_exhausted
+                    emitter(make_tool_exhausted(
+                        correlation_id=ctx.correlation_id,
+                        round=rn,
+                        tool=blocked_by.tool,
+                        attempts=blocked_by.round,
+                        thread_id=ctx.thread_id,
+                        user_id=getattr(ctx, "user_id", None),
+                    ).to_dict())
                 skip_reason = "(skipped — tool exhausted; pick a different tool)"
             else:
                 emit(

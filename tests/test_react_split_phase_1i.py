@@ -238,7 +238,7 @@ class TestReactLoopRatchet:
       post-1i pass 3         TBD         (integrator extraction)
     """
 
-    MAX_REACT_LOOP_LOC = 1_660  # tighten as passes 2+3 land
+    MAX_REACT_LOOP_LOC = 1_700  # tighten as passes 2+3 land
     # 2026-04-18: bumped from 1_420 by 10 LOC to absorb the restore of
     # _attach_result_summary (renamed from the deleted
     # _attach_credentialing_result_summary). The utility is not
@@ -273,6 +273,13 @@ class TestReactLoopRatchet:
     # thinking_log is the foundation for Sprint A.2's task-manager
     # promotion — the LOC is justified by the analytics surface it
     # unblocks.
+    # 2026-04-19 (Sprint A.1 commit 3): bumped from 1_660 to 1_700
+    # (+40 LOC) for the fan-out of structured envelopes at the
+    # tool_exhausted site (guard-block) and the guidance_mode_activated
+    # site (transition round in the main loop). Envelope helpers
+    # themselves live in app/communication/emit_envelope.py; what's
+    # here is the wiring + conditional imports + the
+    # _guidance_mode_emitted latch.
 
     def test_react_loop_loc_under_ceiling(self):
         loc = len(REACT_LOOP.read_text().splitlines())
