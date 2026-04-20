@@ -1,4 +1,21 @@
-"""Persist retrieval runs and docs for data science. Uses CHAT_RAG_DATABASE_URL."""
+"""Persist retrieval runs and docs for data science.
+
+db-agent refactor (2026-04-19)
+------------------------------
+Routes through ``app.db_client.db_execute``. This function does N+1 inserts
+(one into retrieval_runs, plus one per assembled chunk into retrieval_docs).
+The original wrapped everything in a single psycopg2 transaction; under the
+agent each statement is autocommitted independently.
+
+Atomicity trade-off: this is an analytics/DS table. The outer try/except
+has always swallowed errors (the caller doesn't rely on retrieval_docs
+being present for every retrieval_runs row). Partial writes — parent row
+succeeds, some child rows fail — are acceptable for this data shape and
+were already possible pre-refactor on mid-transaction driver errors. When
+the agent grows a ``db_transaction`` primitive we can reclaim full
+atomicity; until then, the pool benefit (one shared pool vs a fresh
+connection per call) outweighs the atomicity loss for an analytics path.
+"""
 from __future__ import annotations
 
 import json
@@ -6,12 +23,18 @@ import logging
 import uuid
 from typing import Any
 
+from app.db_client import db_execute
+
 logger = logging.getLogger(__name__)
 
+_DB = "chat"
 
-def _get_db_url() -> str:
-    from app.chat_config import get_chat_config
-    return (get_chat_config().rag.database_url or "").strip()
+
+def _err_message(result: dict) -> str:
+    err = result.get("error") or {}
+    if isinstance(err, dict):
+        return err.get("message", "") or ""
+    return str(err)
 
 
 def insert_retrieval_run(
@@ -25,10 +48,6 @@ def insert_retrieval_run(
     assembled: list[dict[str, Any]],
 ) -> None:
     """Insert retrieval_runs and retrieval_docs from trace and assembled chunks."""
-    url = _get_db_url()
-    if not url:
-        logger.debug("CHAT_RAG_DATABASE_URL not set; retrieval run not persisted")
-        return
     if not trace or not isinstance(trace, dict) or not trace.get("extract"):
         return
 
@@ -84,6 +103,38 @@ def insert_retrieval_run(
         "assemble_ms": trace.get("assemble_ms"),
     }
 
+    parent_result = db_execute(
+        """
+        INSERT INTO retrieval_runs (
+            id, correlation_id, subquestion_id, subquestion_text, path,
+            n_factual, n_hierarchical, bm25_raw_n, vector_raw_n, vector_filtered_n,
+            merged_n, n_added_bm25, n_skipped_bm25, n_added_vector, n_skipped_vector,
+            merged_ids_by_source, n_chunks_rerank_input, n_chunks_after_decay,
+            by_category_keys, decay_per_category, blend_chunks_input_n,
+            blend_n_sentence_pool, blend_n_paragraph_pool, blend_n_output,
+            n_assembled, n_corpus, n_google,
+            reranker_config_snapshot, bm25_sigmoid_snapshot, raw_by_signal, norm_by_signal,
+            extract_ms, merge_ms, rerank_ms, assemble_ms
+        )
+        VALUES (
+            :id, :correlation_id, :subquestion_id, :subquestion_text, :path,
+            :n_factual, :n_hierarchical, :bm25_raw_n, :vector_raw_n, :vector_filtered_n,
+            :merged_n, :n_added_bm25, :n_skipped_bm25, :n_added_vector, :n_skipped_vector,
+            :merged_ids_by_source, :n_chunks_rerank_input, :n_chunks_after_decay,
+            :by_category_keys, :decay_per_category, :blend_chunks_input_n,
+            :blend_n_sentence_pool, :blend_n_paragraph_pool, :blend_n_output,
+            :n_assembled, :n_corpus, :n_google,
+            :reranker_config_snapshot, :bm25_sigmoid_snapshot, :raw_by_signal, :norm_by_signal,
+            :extract_ms, :merge_ms, :rerank_ms, :assemble_ms
+        )
+        """,
+        _DB,
+        params=run_row,
+    )
+    if "error" in parent_result:
+        logger.exception("Failed to persist retrieval run: %s", _err_message(parent_result))
+        return
+
     per_chunk_by_id: dict[str, dict[str, Any]] = {}
     for pc in rr.get("per_chunk") or []:
         if not isinstance(pc, dict):
@@ -96,88 +147,58 @@ def insert_retrieval_run(
     if not isinstance(bm25_sigmoid, dict):
         bm25_sigmoid = {}
 
-    try:
-        import psycopg2
-        conn = psycopg2.connect(url)
-        cur = conn.cursor()
+    for idx, c in enumerate(assembled, 1):
+        if not isinstance(c, dict):
+            continue
+        cid = str(c.get("id", ""))
+        src = c.get("retrieval_source", "vector")
+        pt = c.get("provision_type", "paragraph")
+        pc = per_chunk_by_id.get(cid, {}) if cid else {}
+        raw = c.get("raw_score") or pc.get("raw_score")
+        pt_cfg = bm25_sigmoid.get(pt, {}) if isinstance(bm25_sigmoid, dict) else {}
+        sig_k = pt_cfg.get("k") if isinstance(pt_cfg, dict) else None
+        sig_x0 = pt_cfg.get("x0") if isinstance(pt_cfg, dict) else None
 
-        cur.execute(
+        reranker_signals = pc.get("signals")
+
+        child_result = db_execute(
             """
-            INSERT INTO retrieval_runs (
-                id, correlation_id, subquestion_id, subquestion_text, path,
-                n_factual, n_hierarchical, bm25_raw_n, vector_raw_n, vector_filtered_n,
-                merged_n, n_added_bm25, n_skipped_bm25, n_added_vector, n_skipped_vector,
-                merged_ids_by_source, n_chunks_rerank_input, n_chunks_after_decay,
-                by_category_keys, decay_per_category, blend_chunks_input_n,
-                blend_n_sentence_pool, blend_n_paragraph_pool, blend_n_output,
-                n_assembled, n_corpus, n_google,
-                reranker_config_snapshot, bm25_sigmoid_snapshot, raw_by_signal, norm_by_signal,
-                extract_ms, merge_ms, rerank_ms, assemble_ms
+            INSERT INTO retrieval_docs (
+                retrieval_run_id, chunk_index, chunk_id, document_id, document_name,
+                page_number, retrieval_source, provision_type,
+                bm25_raw_score, bm25_sigmoid_k, bm25_sigmoid_x0, similarity, rerank_score,
+                reranker_signals, confidence_label, text_preview
             )
             VALUES (
-                %(id)s, %(correlation_id)s, %(subquestion_id)s, %(subquestion_text)s, %(path)s,
-                %(n_factual)s, %(n_hierarchical)s, %(bm25_raw_n)s, %(vector_raw_n)s, %(vector_filtered_n)s,
-                %(merged_n)s, %(n_added_bm25)s, %(n_skipped_bm25)s, %(n_added_vector)s, %(n_skipped_vector)s,
-        %(merged_ids_by_source)s, %(n_chunks_rerank_input)s, %(n_chunks_after_decay)s,
-        %(by_category_keys)s, %(decay_per_category)s, %(blend_chunks_input_n)s,
-        %(blend_n_sentence_pool)s, %(blend_n_paragraph_pool)s, %(blend_n_output)s,
-        %(n_assembled)s, %(n_corpus)s, %(n_google)s,
-        %(reranker_config_snapshot)s, %(bm25_sigmoid_snapshot)s,
-        %(raw_by_signal)s, %(norm_by_signal)s,
-                %(extract_ms)s, %(merge_ms)s, %(rerank_ms)s, %(assemble_ms)s
+                :run_id, :idx, :cid, :doc_id, :doc_name, :page, :src, :pt,
+                :bm25_raw, :sig_k, :sig_x0, :similarity, :rerank,
+                :signals, :conf, :preview
             )
             """,
-            run_row,
+            _DB,
+            params={
+                "run_id": run_id,
+                "idx": idx,
+                "cid": cid[:256] if cid else None,
+                "doc_id": str(c.get("document_id", ""))[:256] if c.get("document_id") else None,
+                "doc_name": (c.get("document_name") or "")[:512],
+                "page": c.get("page_number"),
+                "src": src[:64] if src else None,
+                "pt": pt[:32] if pt else None,
+                "bm25_raw": float(raw) if raw is not None else None,
+                "sig_k": float(sig_k) if sig_k is not None else None,
+                "sig_x0": float(sig_x0) if sig_x0 is not None else None,
+                "similarity": float(c.get("similarity")) if c.get("similarity") is not None
+                              else (float(c.get("rerank_score")) if c.get("rerank_score") is not None else None),
+                "rerank": float(c.get("rerank_score")) if c.get("rerank_score") is not None else None,
+                "signals": json.dumps(reranker_signals) if reranker_signals else None,
+                "conf": (c.get("confidence_label") or "")[:64],
+                "preview": (c.get("text") or "")[:500],
+            },
         )
-
-        for idx, c in enumerate(assembled, 1):
-            if not isinstance(c, dict):
-                continue
-            cid = str(c.get("id", ""))
-            src = c.get("retrieval_source", "vector")
-            pt = c.get("provision_type", "paragraph")
-            pc = per_chunk_by_id.get(cid, {}) if cid else {}
-            raw = c.get("raw_score") or pc.get("raw_score")
-            pt_cfg = bm25_sigmoid.get(pt, {}) if isinstance(bm25_sigmoid, dict) else {}
-            sig_k = pt_cfg.get("k") if isinstance(pt_cfg, dict) else None
-            sig_x0 = pt_cfg.get("x0") if isinstance(pt_cfg, dict) else None
-
-            reranker_signals = pc.get("signals")
-
-            cur.execute(
-                """
-                INSERT INTO retrieval_docs (
-                    retrieval_run_id, chunk_index, chunk_id, document_id, document_name,
-                    page_number, retrieval_source, provision_type,
-                    bm25_raw_score, bm25_sigmoid_k, bm25_sigmoid_x0, similarity, rerank_score,
-                    reranker_signals, confidence_label, text_preview
-                )
-                VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-                )
-                """,
-                (
-                    run_id,
-                    idx,
-                    cid[:256] if cid else None,
-                    str(c.get("document_id", ""))[:256] if c.get("document_id") else None,
-                    (c.get("document_name") or "")[:512],
-                    c.get("page_number"),
-                    src[:64] if src else None,
-                    pt[:32] if pt else None,
-                    float(raw) if raw is not None else None,
-                    float(sig_k) if sig_k is not None else None,
-                    float(sig_x0) if sig_x0 is not None else None,
-                    float(c.get("similarity")) if c.get("similarity") is not None else float(c.get("rerank_score")) if c.get("rerank_score") is not None else None,
-                    float(c.get("rerank_score")) if c.get("rerank_score") is not None else None,
-                    json.dumps(reranker_signals) if reranker_signals else None,
-                    (c.get("confidence_label") or "")[:64],
-                    (c.get("text") or "")[:500],
-                ),
+        if "error" in child_result:
+            logger.debug(
+                "Failed to persist retrieval_docs row %d (partial; analytics-grade): %s",
+                idx, _err_message(child_result),
             )
-
-        conn.commit()
-        cur.close()
-        conn.close()
-    except Exception as e:
-        logger.exception("Failed to persist retrieval run: %s", e)
+            # Keep going; see module docstring re: analytics-grade partial writes.

@@ -119,29 +119,16 @@ def list_recent_for_restoration(
     The banner is strictly advisory; clicking "Attach to this chat" goes
     through link_upload_to_thread below which is the single write path.
     """
-    from app.storage.instant_rag_catalog import _conn, _SELECT_SQL, _row_to_dict
+    # db-agent refactor: moved the inline "global recent" SQL into
+    # ``list_recent_global`` on the catalog module so all catalog DB
+    # access goes through ``app.db_client``.
+    from app.storage.instant_rag_catalog import list_recent_global
 
     if user_id:
         rows = list_for_user(user_id, include_inactive=False, limit=limit * 2)
     else:
         # Dev / auth-off branch — query catalog without user scope.
-        # Keeping the SQL here (vs adding another catalog helper) because
-        # this case is auth-mode-specific, not a general pattern.
-        try:
-            conn = _conn()
-            try:
-                cur = conn.cursor()
-                cur.execute(
-                    f"{_SELECT_SQL} WHERE status = 'active' "
-                    f"ORDER BY created_at DESC LIMIT %s",
-                    (limit * 2,),
-                )
-                rows = [_row_to_dict(r) for r in cur.fetchall()]
-                cur.close()
-            finally:
-                conn.close()
-        except Exception:
-            rows = []
+        rows = list_recent_global(limit=limit * 2)
 
     # Filter out uploads already on the current thread so the banner only
     # offers things the user genuinely needs to restore.

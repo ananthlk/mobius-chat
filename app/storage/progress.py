@@ -277,51 +277,51 @@ def publish_quality_audit_event(correlation_id: str, audit: dict[str, Any], line
 
 def get_progress_events_from_db(correlation_id: str, after_id: int = 0) -> list[tuple[int, dict[str, Any]]]:
     """Poll chat_progress_events for this correlation_id. Returns [(id, {event, data}), ...] for API stream.
-    Used when worker runs in separate process (Redis queue); worker persists events to DB."""
-    try:
-        from app.chat_config import get_chat_config
-        cfg = get_chat_config()
-        url = (getattr(cfg, "rag", None) and getattr(cfg.rag, "database_url", None) or "").strip()
-        if not url:
-            return []
-        import psycopg2
-        import psycopg2.extras
-        conn = psycopg2.connect(url)
-        try:
-            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-            cur.execute(
-                """
-                SELECT id, event_type, event_data
-                FROM chat_progress_events
-                WHERE correlation_id = %s AND id > %s
-                ORDER BY id ASC
-                LIMIT 100
-                """,
-                (correlation_id, after_id),
-            )
-            rows = cur.fetchall()
-            def _norm_data(val: Any) -> dict:
-                if isinstance(val, dict):
-                    return val
-                if isinstance(val, str):
-                    try:
-                        return json.loads(val) if val else {}
-                    except Exception:
-                        return {}
-                return {}
+    Used when worker runs in separate process (Redis queue); worker persists events to DB.
 
-            return [
-                (
-                    r["id"],
-                    {
-                        "event": r["event_type"] or "",
-                        "data": _norm_data(r.get("event_data")),
-                    },
-                )
-                for r in rows
-            ]
-        finally:
-            conn.close()
-    except Exception as e:
-        logger.debug("Failed to poll progress events from DB: %s", e)
+    db-agent refactor: routes through ``app.db_client.db_query`` instead of
+    direct psycopg2. Handles structured errors silently — polling must stay
+    quiet (debug-level) since the caller is a tight stream loop.
+    """
+    from app.db_client import db_query
+
+    result = db_query(
+        """
+        SELECT id, event_type, event_data
+        FROM chat_progress_events
+        WHERE correlation_id = :cid AND id > :after
+        ORDER BY id ASC
+        LIMIT 100
+        """,
+        "chat",
+        params={"cid": correlation_id, "after": after_id},
+    )
+    err = result.get("error") if isinstance(result, dict) else None
+    if err:
+        msg = err.get("message", "") if isinstance(err, dict) else str(err)
+        logger.debug("Failed to poll progress events from DB: %s", msg)
         return []
+
+    def _norm_data(val: Any) -> dict:
+        if isinstance(val, dict):
+            return val
+        if isinstance(val, str):
+            try:
+                return json.loads(val) if val else {}
+            except Exception:
+                return {}
+        return {}
+
+    cols = result.get("columns") or []
+    rows = result.get("rows") or []
+    out: list[tuple[int, dict[str, Any]]] = []
+    for row in rows:
+        d = dict(zip(cols, row))
+        out.append((
+            d["id"],
+            {
+                "event": d.get("event_type") or "",
+                "data": _norm_data(d.get("event_data")),
+            },
+        ))
+    return out

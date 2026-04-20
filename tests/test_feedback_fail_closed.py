@@ -117,14 +117,24 @@ class TestMissingRelation:
 
 
 class TestInsertFeedbackEndToEnd:
-    """Each ``insert_*`` returns cleanly in dev without DB; raises in prod."""
+    """Each ``insert_*`` returns cleanly in dev without DB; raises in prod.
+
+    Post db-agent refactor (2026-04-19): the "no DB" condition is no longer
+    "CHAT_RAG_DATABASE_URL unset" — it's "db_execute returned a
+    connection_error". Same fail-closed policy; different plumbing. We mock
+    db_execute to return the structured error shape the agent produces.
+    """
 
     @pytest.fixture(autouse=True)
-    def _mock_no_db_url(self, monkeypatch):
-        """Force ``_get_db_url`` to return empty (simulates unset env)."""
+    def _mock_connection_error(self, monkeypatch):
+        """Force ``db_execute`` to return a connection_error (simulates unreachable DB)."""
         import app.storage.feedback as fb
 
-        monkeypatch.setattr(fb, "_get_db_url", lambda: "")
+        monkeypatch.setattr(
+            fb, "db_execute",
+            lambda *a, **kw: {"error": {"code": "connection_error",
+                                         "message": "pool unavailable"}},
+        )
 
     def test_feedback_dev_returns_silently(self, monkeypatch):
         monkeypatch.setenv("CHAT_ENV", "dev")

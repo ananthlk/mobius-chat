@@ -4,9 +4,10 @@ Covers three surfaces:
 
   1. Storage module (``app.storage.instant_rag_catalog``)
      CRUD behavior, status transitions, dual-write contract with the JSONB
-     blob. Uses an in-memory mock psycopg2 so we don't need a real DB;
-     the SQL is assembled and passed through a cursor-like recorder that
-     returns the rows we program it to return.
+     blob. Mocks ``db_execute`` / ``db_query`` from ``app.db_client`` (which
+     the storage module uses post db-agent refactor). The mocks capture
+     the SQL + params that would have been sent and return programmable
+     result payloads.
 
   2. Router (``app.api.uploads``)
      Endpoint contract: exactly one of thread_id | user_id required, the
@@ -23,76 +24,71 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
-# ── Mock psycopg2 plumbing ────────────────────────────────────────────────
-
-
-class _FakeCursor:
-    """Minimal cursor: remembers executed SQL + params, returns programmed rows."""
-
-    def __init__(self, rows_to_return: list[tuple] | None = None):
-        self.executed: list[tuple[str, Any]] = []
-        self._rows = rows_to_return or []
-        self.rowcount = 0
-
-    def execute(self, sql, params=None):
-        # Normalize whitespace for easier substring checks in tests.
-        compact_sql = " ".join(sql.split())
-        self.executed.append((compact_sql, params))
-        self.rowcount = 1 if self._rows else 0
-
-    def fetchone(self):
-        return self._rows[0] if self._rows else None
-
-    def fetchall(self):
-        return list(self._rows)
-
-    def close(self):
-        pass
-
-
-class _FakeConn:
-    def __init__(self, rows_to_return: list[tuple] | None = None):
-        self.cursor_obj = _FakeCursor(rows_to_return)
-        self.committed = False
-        self.closed = False
-
-    def cursor(self):
-        return self.cursor_obj
-
-    def commit(self):
-        self.committed = True
-
-    def close(self):
-        self.closed = True
+# ── Mock db-agent plumbing ────────────────────────────────────────────────
 
 
 @pytest.fixture
 def mock_db(monkeypatch):
-    """Patch app.storage.instant_rag_catalog._conn to return a mock conn.
-    Test sets `mock_db.rows` to program returns; test reads `mock_db.last_conn`
-    to inspect what SQL ran."""
+    """Patch db_execute / db_query used by the catalog module.
+
+    Test sets ``mock_db.query_rows`` / ``mock_db.query_columns`` to program
+    SELECT results, or ``mock_db.execute_rows_affected`` for writes. Tests
+    read ``mock_db.executed`` — a list of (fn, sql, params) tuples — to
+    inspect what the module asked the agent to do.
+    """
     class Holder:
-        rows: list[tuple] = []
-        last_conn: _FakeConn | None = None
+        # Configurable inputs
+        query_rows: list[list] = []
+        query_columns: list[str] | None = None
+        execute_rows_affected: int = 1
+        query_error: dict | None = None
+        execute_error: dict | None = None
+        # Captured calls (fn, sql, params) — tests assert on these
+        executed: list[tuple[str, str, dict | None]] = []
+
     holder = Holder()
+    holder.executed = []
 
-    def _fake_conn():
-        conn = _FakeConn(rows_to_return=holder.rows)
-        holder.last_conn = conn
-        return conn
+    def _fake_query(sql, db_name, params=None, max_rows=1000):
+        compact = " ".join(sql.split())
+        holder.executed.append(("query", compact, params))
+        if holder.query_error:
+            return {"error": holder.query_error}
+        cols = holder.query_columns
+        if cols is None:
+            from app.storage.instant_rag_catalog import _SELECT_COLUMNS
+            cols = list(_SELECT_COLUMNS)
+        return {
+            "columns": cols,
+            "rows": list(holder.query_rows),
+            "row_count": len(holder.query_rows),
+            "truncated": False,
+        }
 
-    monkeypatch.setattr("app.storage.instant_rag_catalog._conn", _fake_conn)
-    monkeypatch.setattr(
-        "app.storage.instant_rag_catalog._get_db_url",
-        lambda: "postgresql://test:test@localhost/test",
-    )
+    def _fake_execute(sql, db_name, params=None):
+        compact = " ".join(sql.split())
+        holder.executed.append(("execute", compact, params))
+        if holder.execute_error:
+            return {"error": holder.execute_error}
+        # Split on first whitespace-stripped keyword for operation inference.
+        first_word = compact.strip().split(" ", 1)[0].upper()
+        table = "instant_rag_uploads"
+        return {
+            "operation": "INSERT" if first_word == "INSERT" else
+                         "UPDATE" if first_word == "UPDATE" else first_word,
+            "table": table,
+            "rows_affected": holder.execute_rows_affected,
+        }
+
+    monkeypatch.setattr("app.storage.instant_rag_catalog.db_query", _fake_query)
+    monkeypatch.setattr("app.storage.instant_rag_catalog.db_execute", _fake_execute)
     return holder
 
 
@@ -103,8 +99,7 @@ class TestRecordUpload:
     def test_happy_path_inserts(self, mock_db):
         from app.storage import instant_rag_catalog as cat
 
-        # Simulate a successful INSERT...RETURNING document_id
-        mock_db.rows = [("doc-abc",)]
+        mock_db.execute_rows_affected = 1
         ok = cat.record_upload(
             document_id="doc-abc",
             envelope_id="env-1",
@@ -114,16 +109,17 @@ class TestRecordUpload:
             chunks_count=19,
         )
         assert ok is True
-        assert mock_db.last_conn is not None
-        assert mock_db.last_conn.committed is True
-        sql = mock_db.last_conn.cursor_obj.executed[0][0]
+        assert len(mock_db.executed) == 1
+        fn, sql, params = mock_db.executed[0]
+        assert fn == "execute"
         assert "INSERT INTO instant_rag_uploads" in sql
         assert "ON CONFLICT (document_id) DO NOTHING" in sql
+        assert params["document_id"] == "doc-abc"
 
     def test_conflict_returns_false_without_raising(self, mock_db):
         from app.storage import instant_rag_catalog as cat
-        # RETURNING yields nothing → already existed
-        mock_db.rows = []
+        # ON CONFLICT DO NOTHING → 0 rows affected
+        mock_db.execute_rows_affected = 0
         ok = cat.record_upload(
             document_id="doc-abc", envelope_id="env-1", upload_id="u-1",
             thread_id="t-1", filename="x.pdf",
@@ -138,41 +134,42 @@ class TestRecordUpload:
                 thread_id="t", filename="x.pdf",
             )
             kwargs[missing] = ""
+            mock_db.executed.clear()
             assert cat.record_upload(**kwargs) is False, (
                 f"record_upload must reject empty {missing} without touching DB"
+            )
+            assert mock_db.executed == [], (
+                f"No DB call must be made when {missing} is empty"
             )
 
     def test_default_expires_at_7d(self, mock_db):
         """Catalog TTL defaults to 7 days forward to match the skill's
         INSTANT_RAG_TTL_DAYS. Cleanup cron depends on this."""
         from app.storage import instant_rag_catalog as cat
-        mock_db.rows = [("doc-abc",)]
+        mock_db.execute_rows_affected = 1
         before = datetime.now(timezone.utc)
         cat.record_upload(
             document_id="doc-abc", envelope_id="e", upload_id="u",
             thread_id="t", filename="x.pdf",
         )
         after = datetime.now(timezone.utc)
-        params = mock_db.last_conn.cursor_obj.executed[0][1]
-        # expires_at is the last positional param in the INSERT (see source).
-        expires_at = params[-1]
-        assert isinstance(expires_at, datetime)
+        _fn, _sql, params = mock_db.executed[0]
+        # expires_at is serialized as ISO string by the module (agent-friendly).
+        expires_str = params["expires_at"]
+        assert isinstance(expires_str, str)
+        expires_at = datetime.fromisoformat(expires_str)
         expected_low  = before + timedelta(days=7) - timedelta(seconds=5)
         expected_high = after  + timedelta(days=7) + timedelta(seconds=5)
         assert expected_low <= expires_at <= expected_high, (
             f"Default expires_at ({expires_at}) not within 5s of now+7d."
         )
 
-    def test_exception_is_swallowed(self, monkeypatch):
+    def test_exception_is_swallowed(self, mock_db):
         """DB failure during record_upload must NOT raise — chunks are
         already durable in Chroma+PG, catalog is a secondary layer."""
         from app.storage import instant_rag_catalog as cat
 
-        def _explode():
-            raise RuntimeError("DB down")
-
-        monkeypatch.setattr(cat, "_conn", _explode)
-        monkeypatch.setattr(cat, "_get_db_url", lambda: "x")
+        mock_db.execute_error = {"code": "connection_error", "message": "DB down"}
         ok = cat.record_upload(
             document_id="doc-abc", envelope_id="e", upload_id="u",
             thread_id="t", filename="x.pdf",
@@ -186,7 +183,7 @@ class TestRecordUpload:
 class TestMarkStatus:
     def test_valid_transitions(self, mock_db):
         from app.storage import instant_rag_catalog as cat
-        mock_db.rows = [("doc-abc",)]  # rowcount > 0 via _rows len
+        mock_db.execute_rows_affected = 1
         for s in ("expired", "discarded", "promoted"):
             assert cat.mark_status("doc-abc", s) is True
 
@@ -194,7 +191,7 @@ class TestMarkStatus:
         from app.storage import instant_rag_catalog as cat
         assert cat.mark_status("doc-abc", "weird") is False
         # No SQL should have run for the rejected case
-        assert mock_db.last_conn is None
+        assert mock_db.executed == []
 
     def test_empty_doc_id_rejected(self, mock_db):
         from app.storage import instant_rag_catalog as cat
@@ -207,7 +204,7 @@ class TestMarkStatus:
 class TestListReads:
     def _sample_row(self, doc_id="doc-1", thread_id="t-1", user_id=None, status="active"):
         # Must match _SELECT_COLUMNS order exactly.
-        return (
+        return [
             doc_id, f"env-{doc_id}", f"u-{doc_id}", thread_id, user_id,
             "f.pdf", "application/pdf", 1024, 10,
             status,
@@ -216,45 +213,47 @@ class TestListReads:
             datetime(2026, 4, 17, 22, 0, tzinfo=timezone.utc),
             datetime(2026, 4, 24, 22, 0, tzinfo=timezone.utc),
             None,
-        )
+        ]
 
     def test_list_for_thread_scopes_query(self, mock_db):
         from app.storage import instant_rag_catalog as cat
-        mock_db.rows = [self._sample_row(doc_id="doc-a", thread_id="t-1")]
+        mock_db.query_rows = [self._sample_row(doc_id="doc-a", thread_id="t-1")]
         rows = cat.list_for_thread("t-1")
         assert len(rows) == 1
         assert rows[0]["document_id"] == "doc-a"
         assert rows[0]["thread_id"] == "t-1"
-        sql = mock_db.last_conn.cursor_obj.executed[0][0]
-        assert "WHERE thread_id = %s" in sql
+        fn, sql, params = mock_db.executed[0]
+        assert fn == "query"
+        assert "WHERE thread_id = :tid" in sql
         assert "status = 'active'" in sql
+        assert params["tid"] == "t-1"
 
     def test_list_for_thread_include_inactive(self, mock_db):
         from app.storage import instant_rag_catalog as cat
-        mock_db.rows = []
+        mock_db.query_rows = []
         cat.list_for_thread("t-1", include_inactive=True)
-        sql = mock_db.last_conn.cursor_obj.executed[0][0]
-        # Must NOT filter to active when include_inactive=True
+        _fn, sql, _p = mock_db.executed[0]
         assert "status = 'active'" not in sql
 
     def test_list_for_user_cross_thread(self, mock_db):
         from app.storage import instant_rag_catalog as cat
-        mock_db.rows = [
+        mock_db.query_rows = [
             self._sample_row(doc_id="doc-a", thread_id="t-1", user_id="u-1"),
             self._sample_row(doc_id="doc-b", thread_id="t-2", user_id="u-1"),
         ]
         rows = cat.list_for_user("u-1")
         assert [r["document_id"] for r in rows] == ["doc-a", "doc-b"]
-        sql = mock_db.last_conn.cursor_obj.executed[0][0]
-        assert "WHERE user_id = %s" in sql
+        _fn, sql, params = mock_db.executed[0]
+        assert "WHERE user_id = :uid" in sql
         assert "LIMIT" in sql
+        assert params["uid"] == "u-1"
 
     def test_list_for_user_honors_limit(self, mock_db):
         from app.storage import instant_rag_catalog as cat
-        mock_db.rows = []
+        mock_db.query_rows = []
         cat.list_for_user("u-1", limit=25)
-        params = mock_db.last_conn.cursor_obj.executed[0][1]
-        assert params[-1] == 25
+        _fn, _sql, params = mock_db.executed[0]
+        assert params["lim"] == 25
 
     def test_empty_id_returns_empty(self, mock_db):
         from app.storage import instant_rag_catalog as cat
@@ -268,12 +267,12 @@ class TestListReads:
 class TestListExpiringBefore:
     def test_scopes_to_active_and_past_cutoff(self, mock_db):
         from app.storage import instant_rag_catalog as cat
-        mock_db.rows = []
+        mock_db.query_rows = []
         cutoff = datetime(2026, 4, 17, tzinfo=timezone.utc)
         cat.list_expiring_before(cutoff)
-        sql = mock_db.last_conn.cursor_obj.executed[0][0]
+        _fn, sql, _p = mock_db.executed[0]
         assert "status = 'active'" in sql
-        assert "expires_at < %s" in sql
+        assert "expires_at < :cutoff" in sql
         assert "expires_at IS NOT NULL" in sql
 
 
@@ -321,7 +320,6 @@ class TestUploadsRouter:
         body = r.json()
         assert body["count"] == 1
         assert body["uploads"][0]["document_id"] == "doc-1"
-        # Datetimes serialized as ISO strings (not the raw Python obj)
         assert isinstance(body["uploads"][0]["created_at"], str)
         assert "2026-04-17" in body["uploads"][0]["created_at"]
 
@@ -358,17 +356,9 @@ class TestUploadsRouter:
 
 class TestDualWriteContract:
     """The JSONB blob (active.uploaded_files[]) and the catalog row must
-    carry matching (document_id, upload_id, filename, thread_id). This
-    test doesn't run the full upload endpoint (heavy imports); it
-    inspects the source of _handle_instant_rag_upload directly for the
-    dual-write sequence so the invariant is locked structurally.
-    """
+    carry matching (document_id, upload_id, filename, thread_id)."""
 
     def test_handle_instant_rag_upload_writes_to_both(self):
-        """_handle_instant_rag_upload must call BOTH append_uploaded_file_record
-        (JSONB fast-path) AND the catalog record_upload after the skill
-        ingest returns. Removing either is a silent data-loss regression.
-        """
         from pathlib import Path
         main_py = Path(__file__).parent.parent / "app" / "main.py"
         text = main_py.read_text()

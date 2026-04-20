@@ -81,34 +81,31 @@ def client(app):
 class TestListRecentForRestoration:
     def test_auth_off_returns_globally_recent(self, client, monkeypatch):
         """auth=off (dev) → endpoint returns globally most-recent active
-        uploads. Since require_user resolves to None, the route falls
-        into the cursor-level SQL branch."""
-        from app.api import uploads as uploads_mod
+        uploads. Since require_user resolves to None, the route calls
+        ``list_recent_global`` (post db-agent refactor) which in turn
+        asks the db-agent via db_query."""
+        from app.storage.instant_rag_catalog import _SELECT_COLUMNS
 
-        # Mock the inner DB connection used by the dev branch so we don't
-        # need a live PG for this test.
         fake_rows = [
-            ("doc-1", "e-1", "u-1", "t-a", None, "A.pdf", None, None, 9, "active",
+            ["doc-1", "e-1", "u-1", "t-a", None, "A.pdf", None, None, 9, "active",
              None, None, None, None, None, None, None, None,
              datetime(2026, 4, 18, 0, 0, tzinfo=timezone.utc),
-             datetime(2026, 4, 25, 0, 0, tzinfo=timezone.utc), None),
-            ("doc-2", "e-2", "u-2", "t-b", None, "B.pdf", None, None, 5, "active",
+             datetime(2026, 4, 25, 0, 0, tzinfo=timezone.utc), None],
+            ["doc-2", "e-2", "u-2", "t-b", None, "B.pdf", None, None, 5, "active",
              None, None, None, None, None, None, None, None,
              datetime(2026, 4, 17, 0, 0, tzinfo=timezone.utc),
-             datetime(2026, 4, 24, 0, 0, tzinfo=timezone.utc), None),
+             datetime(2026, 4, 24, 0, 0, tzinfo=timezone.utc), None],
         ]
 
-        class FakeCur:
-            def __init__(self): self._rows = fake_rows
-            def execute(self, sql, params=None): pass
-            def fetchall(self): return self._rows
-            def close(self): pass
+        def _fake_query(sql, db_name, params=None, max_rows=1000):
+            return {
+                "columns": list(_SELECT_COLUMNS),
+                "rows": fake_rows,
+                "row_count": len(fake_rows),
+                "truncated": False,
+            }
 
-        class FakeConn:
-            def cursor(self): return FakeCur()
-            def close(self): pass
-
-        monkeypatch.setattr("app.storage.instant_rag_catalog._conn", lambda: FakeConn())
+        monkeypatch.setattr("app.storage.instant_rag_catalog.db_query", _fake_query)
 
         r = client.get("/chat/uploads/recent/for-restoration?limit=5")
         assert r.status_code == 200
@@ -122,25 +119,26 @@ class TestListRecentForRestoration:
         """When current_thread_id is provided, uploads from that thread
         must be filtered out — the banner should only offer things to
         restore, not things already visible."""
+        from app.storage.instant_rag_catalog import _SELECT_COLUMNS
+
         fake_rows = [
-            ("doc-a", "e", "u-a", "t-current", None, "onthread.pdf", None, None, 1, "active",
+            ["doc-a", "e", "u-a", "t-current", None, "onthread.pdf", None, None, 1, "active",
              None, None, None, None, None, None, None, None,
-             datetime(2026, 4, 18, tzinfo=timezone.utc), None, None),
-            ("doc-b", "e", "u-b", "t-other",   None, "elsewhere.pdf", None, None, 1, "active",
+             datetime(2026, 4, 18, tzinfo=timezone.utc), None, None],
+            ["doc-b", "e", "u-b", "t-other",   None, "elsewhere.pdf", None, None, 1, "active",
              None, None, None, None, None, None, None, None,
-             datetime(2026, 4, 18, tzinfo=timezone.utc), None, None),
+             datetime(2026, 4, 18, tzinfo=timezone.utc), None, None],
         ]
 
-        class FakeCur:
-            def execute(self, sql, params=None): pass
-            def fetchall(self): return fake_rows
-            def close(self): pass
+        def _fake_query(sql, db_name, params=None, max_rows=1000):
+            return {
+                "columns": list(_SELECT_COLUMNS),
+                "rows": fake_rows,
+                "row_count": len(fake_rows),
+                "truncated": False,
+            }
 
-        class FakeConn:
-            def cursor(self): return FakeCur()
-            def close(self): pass
-
-        monkeypatch.setattr("app.storage.instant_rag_catalog._conn", lambda: FakeConn())
+        monkeypatch.setattr("app.storage.instant_rag_catalog.db_query", _fake_query)
 
         r = client.get("/chat/uploads/recent/for-restoration?current_thread_id=t-current")
         assert r.status_code == 200
@@ -152,14 +150,17 @@ class TestListRecentForRestoration:
         )
 
     def test_empty_catalog_returns_zero(self, client, monkeypatch):
-        class FakeCur:
-            def execute(self, sql, params=None): pass
-            def fetchall(self): return []
-            def close(self): pass
-        class FakeConn:
-            def cursor(self): return FakeCur()
-            def close(self): pass
-        monkeypatch.setattr("app.storage.instant_rag_catalog._conn", lambda: FakeConn())
+        from app.storage.instant_rag_catalog import _SELECT_COLUMNS
+
+        def _fake_query(sql, db_name, params=None, max_rows=1000):
+            return {
+                "columns": list(_SELECT_COLUMNS),
+                "rows": [],
+                "row_count": 0,
+                "truncated": False,
+            }
+
+        monkeypatch.setattr("app.storage.instant_rag_catalog.db_query", _fake_query)
 
         r = client.get("/chat/uploads/recent/for-restoration")
         assert r.status_code == 200

@@ -1,8 +1,26 @@
-"""Postgres persistence: wraps current storage (turns, threads)."""
+"""Postgres persistence: wraps current storage (turns, threads).
+
+db-agent refactor (2026-04-19)
+------------------------------
+All DB access now routes through ``app.db_client`` → mobius-db-agent.
+
+- ``append_progress_event``: single-statement write, uses ``db_execute``.
+- ``_atomic_save_turn_with_messages``: three writes (turn + user msg +
+  assistant msg) in one transaction, uses ``db_transaction``. A mid-
+  sequence failure rolls back so we never end up with a chat_turns row
+  that has no paired chat_turn_messages — the original atomicity
+  invariant, now enforced via the agent.
+
+Graceful fallback for missing ``user_id`` column on chat_turns: we try
+the full INSERT first; on ``column_missing`` (or text match for older
+drivers) we retry via db_transaction with the non-user_id column list.
+Same shape the pre-refactor code had, just through the agent.
+"""
 import json
 import logging
 from typing import Any
 
+from app.db_client import db_execute, db_transaction
 from app.persistence.interface import PersistencePort
 from app.storage.threads import append_turn_messages, save_state_full
 from app.storage.turns import insert_turn
@@ -10,9 +28,70 @@ from app.storage.turns import insert_turn
 logger = logging.getLogger(__name__)
 
 
-def _get_db_url() -> str:
-    from app.chat_config import get_chat_config
-    return (get_chat_config().rag.database_url or "").strip()
+_TURN_INSERT_SQL_WITH_USER_ID = """
+INSERT INTO chat_turns (
+    correlation_id, question, thinking_log, final_message, sources,
+    duration_ms, model_used, llm_provider, session_id, thread_id,
+    plan_snapshot, blueprint_snapshot, agent_cards, source_confidence_strip, config_sha,
+    user_id
+)
+VALUES (
+    :correlation_id, :question, :thinking_log, :final_message, :sources,
+    :duration_ms, :model_used, :llm_provider, :session_id, :thread_id,
+    :plan_snapshot, :blueprint_snapshot, :agent_cards, :source_confidence_strip, :config_sha,
+    :user_id
+)
+ON CONFLICT (correlation_id) DO UPDATE SET
+    question = EXCLUDED.question,
+    thinking_log = EXCLUDED.thinking_log,
+    final_message = EXCLUDED.final_message,
+    sources = EXCLUDED.sources,
+    duration_ms = EXCLUDED.duration_ms,
+    model_used = EXCLUDED.model_used,
+    llm_provider = EXCLUDED.llm_provider,
+    session_id = EXCLUDED.session_id,
+    thread_id = EXCLUDED.thread_id,
+    plan_snapshot = EXCLUDED.plan_snapshot,
+    blueprint_snapshot = EXCLUDED.blueprint_snapshot,
+    agent_cards = EXCLUDED.agent_cards,
+    source_confidence_strip = EXCLUDED.source_confidence_strip,
+    config_sha = EXCLUDED.config_sha,
+    user_id = COALESCE(EXCLUDED.user_id, chat_turns.user_id)
+"""
+
+_TURN_INSERT_SQL_NO_USER_ID = """
+INSERT INTO chat_turns (
+    correlation_id, question, thinking_log, final_message, sources,
+    duration_ms, model_used, llm_provider, session_id, thread_id,
+    plan_snapshot, blueprint_snapshot, agent_cards, source_confidence_strip, config_sha
+)
+VALUES (
+    :correlation_id, :question, :thinking_log, :final_message, :sources,
+    :duration_ms, :model_used, :llm_provider, :session_id, :thread_id,
+    :plan_snapshot, :blueprint_snapshot, :agent_cards, :source_confidence_strip, :config_sha
+)
+ON CONFLICT (correlation_id) DO UPDATE SET
+    question = EXCLUDED.question,
+    thinking_log = EXCLUDED.thinking_log,
+    final_message = EXCLUDED.final_message,
+    sources = EXCLUDED.sources,
+    duration_ms = EXCLUDED.duration_ms,
+    model_used = EXCLUDED.model_used,
+    llm_provider = EXCLUDED.llm_provider,
+    session_id = EXCLUDED.session_id,
+    thread_id = EXCLUDED.thread_id,
+    plan_snapshot = EXCLUDED.plan_snapshot,
+    blueprint_snapshot = EXCLUDED.blueprint_snapshot,
+    agent_cards = EXCLUDED.agent_cards,
+    source_confidence_strip = EXCLUDED.source_confidence_strip,
+    config_sha = EXCLUDED.config_sha
+"""
+
+_MESSAGE_INSERT_SQL = """
+INSERT INTO chat_turn_messages (turn_id, thread_id, role, content, created_at)
+VALUES (:turn_id, :thread_id, :role, :content, now())
+ON CONFLICT (turn_id, role) DO UPDATE SET content = EXCLUDED.content, created_at = now()
+"""
 
 
 def _atomic_save_turn_with_messages(
@@ -34,145 +113,88 @@ def _atomic_save_turn_with_messages(
 ) -> None:
     """Single transaction: insert turn + append user/assistant messages.
 
-    ``user_id`` (Phase 2d completion): authenticated user_id from
-    ``require_user``. Stamped onto the chat_turns row for attribution.
-    None in dev / no-auth mode.
+    ``user_id`` (Phase 2d): authenticated user_id from ``require_user``.
+    None in dev / no-auth mode. On hosts where the ``user_id`` column
+    hasn't been added yet we retry with the non-user_id column list —
+    same graceful fallback the pre-refactor code had.
     """
-    import psycopg2
+    thread_val = (thread_id or "").strip() or None
+    strip_val = (source_confidence_strip or "").strip() or None
+    config_sha_val = (config_sha or "").strip() or None
+    user_id_val = (user_id or "").strip() or None
 
-    url = _get_db_url()
-    if not url:
-        logger.warning("CHAT_RAG_DATABASE_URL not set; turn not persisted")
+    turn_params_full = {
+        "correlation_id": correlation_id,
+        "question": (question or "").strip() or "",
+        "thinking_log": json.dumps(thinking_log or []),
+        "final_message": (final_message or "").strip() or None,
+        "sources": json.dumps(sources or []),
+        "duration_ms": duration_ms,
+        "model_used": (model_used or "").strip() or None,
+        "llm_provider": (llm_provider or "").strip() or None,
+        "session_id": None,
+        "thread_id": thread_val,
+        "plan_snapshot": json.dumps(plan_snapshot) if plan_snapshot is not None else None,
+        "blueprint_snapshot": None,
+        "agent_cards": None,
+        "source_confidence_strip": strip_val,
+        "config_sha": config_sha_val,
+        "user_id": user_id_val,
+    }
+
+    statements: list[dict[str, Any]] = [
+        {"sql": _TURN_INSERT_SQL_WITH_USER_ID, "params": turn_params_full}
+    ]
+    if thread_id and thread_val:
+        u = (user_content or "").strip() or ""
+        a = (assistant_content or "").strip() or ""
+        statements.append({
+            "sql": _MESSAGE_INSERT_SQL,
+            "params": {"turn_id": correlation_id, "thread_id": thread_val,
+                       "role": "user", "content": u},
+        })
+        statements.append({
+            "sql": _MESSAGE_INSERT_SQL,
+            "params": {"turn_id": correlation_id, "thread_id": thread_val,
+                       "role": "assistant", "content": a},
+        })
+
+    result = db_transaction(statements, "chat")
+    err = result.get("error") if isinstance(result, dict) else None
+    if err is None:
         return
-    conn = psycopg2.connect(url)
-    try:
-        cur = conn.cursor()
-        thread_val = (thread_id or "").strip() or None
-        strip_val = (source_confidence_strip or "").strip() or None
-        config_sha_val = (config_sha or "").strip() or None
-        user_id_val = (user_id or "").strip() or None
-        try:
-            cur.execute(
-                """
-                INSERT INTO chat_turns (
-                    correlation_id, question, thinking_log, final_message, sources,
-                    duration_ms, model_used, llm_provider, session_id, thread_id,
-                    plan_snapshot, blueprint_snapshot, agent_cards, source_confidence_strip, config_sha,
-                    user_id
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (correlation_id) DO UPDATE SET
-                    question = EXCLUDED.question,
-                    thinking_log = EXCLUDED.thinking_log,
-                    final_message = EXCLUDED.final_message,
-                    sources = EXCLUDED.sources,
-                    duration_ms = EXCLUDED.duration_ms,
-                    model_used = EXCLUDED.model_used,
-                    llm_provider = EXCLUDED.llm_provider,
-                    session_id = EXCLUDED.session_id,
-                    thread_id = EXCLUDED.thread_id,
-                    plan_snapshot = EXCLUDED.plan_snapshot,
-                    blueprint_snapshot = EXCLUDED.blueprint_snapshot,
-                    agent_cards = EXCLUDED.agent_cards,
-                    source_confidence_strip = EXCLUDED.source_confidence_strip,
-                    config_sha = EXCLUDED.config_sha,
-                    user_id = COALESCE(EXCLUDED.user_id, chat_turns.user_id)
-                """,
-                (
-                    correlation_id,
-                    (question or "").strip() or "",
-                    json.dumps(thinking_log or []),
-                    (final_message or "").strip() or None,
-                    json.dumps(sources or []),
-                    duration_ms,
-                    (model_used or "").strip() or None,
-                    (llm_provider or "").strip() or None,
-                    None,
-                    thread_val,
-                    json.dumps(plan_snapshot) if plan_snapshot is not None else None,
-                    None,
-                    None,
-                    strip_val,
-                    config_sha_val,
-                    user_id_val,
-                ),
-            )
-        except Exception as e:
-            # Graceful fallback for the same migration class that
-            # insert_turn handles: if the user_id column doesn't exist
-            # (migration not yet run), retry without it so the atomic
-            # save still succeeds. Rolling back + reinserting on the
-            # same cursor requires closing the failed transaction
-            # first.
-            err_str = str(e).lower()
-            if "user_id" in err_str or ("column" in err_str and "does not exist" in err_str):
-                conn.rollback()
-                cur.execute(
-                    """
-                    INSERT INTO chat_turns (
-                        correlation_id, question, thinking_log, final_message, sources,
-                        duration_ms, model_used, llm_provider, session_id, thread_id,
-                        plan_snapshot, blueprint_snapshot, agent_cards, source_confidence_strip, config_sha
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (correlation_id) DO UPDATE SET
-                        question = EXCLUDED.question,
-                        thinking_log = EXCLUDED.thinking_log,
-                        final_message = EXCLUDED.final_message,
-                        sources = EXCLUDED.sources,
-                        duration_ms = EXCLUDED.duration_ms,
-                        model_used = EXCLUDED.model_used,
-                        llm_provider = EXCLUDED.llm_provider,
-                        session_id = EXCLUDED.session_id,
-                        thread_id = EXCLUDED.thread_id,
-                        plan_snapshot = EXCLUDED.plan_snapshot,
-                        blueprint_snapshot = EXCLUDED.blueprint_snapshot,
-                        agent_cards = EXCLUDED.agent_cards,
-                        source_confidence_strip = EXCLUDED.source_confidence_strip,
-                        config_sha = EXCLUDED.config_sha
-                    """,
-                    (
-                        correlation_id,
-                        (question or "").strip() or "",
-                        json.dumps(thinking_log or []),
-                        (final_message or "").strip() or None,
-                        json.dumps(sources or []),
-                        duration_ms,
-                        (model_used or "").strip() or None,
-                        (llm_provider or "").strip() or None,
-                        None,
-                        thread_val,
-                        json.dumps(plan_snapshot) if plan_snapshot is not None else None,
-                        None,
-                        None,
-                        strip_val,
-                        config_sha_val,
-                    ),
-                )
-            else:
-                raise
+
+    # Graceful fallback — missing user_id column (migration not yet run).
+    # Same text-match heuristics the original code used, now augmented
+    # with the structured error code.
+    code = err.get("code") if isinstance(err, dict) else None
+    msg = (err.get("message") if isinstance(err, dict) else str(err)) or ""
+    msg_lower = msg.lower()
+
+    if code == "connection_error":
+        logger.warning("db-agent unreachable (or CHAT_RAG_DATABASE_URL unset); turn not persisted: %s", msg)
+        return
+
+    if code == "column_missing" or "user_id" in msg_lower or (
+        "column" in msg_lower and "does not exist" in msg_lower
+    ):
+        fallback_turn_params = {k: v for k, v in turn_params_full.items() if k != "user_id"}
+        fallback_statements = [
+            {"sql": _TURN_INSERT_SQL_NO_USER_ID, "params": fallback_turn_params}
+        ]
         if thread_id and thread_val:
-            u = (user_content or "").strip() or ""
-            a = (assistant_content or "").strip() or ""
-            cur.execute(
-                """
-                INSERT INTO chat_turn_messages (turn_id, thread_id, role, content, created_at)
-                VALUES (%s, %s, 'user', %s, now())
-                ON CONFLICT (turn_id, role) DO UPDATE SET content = EXCLUDED.content, created_at = now()
-                """,
-                (correlation_id, thread_val, u),
-            )
-            cur.execute(
-                """
-                INSERT INTO chat_turn_messages (turn_id, thread_id, role, content, created_at)
-                VALUES (%s, %s, 'assistant', %s, now())
-                ON CONFLICT (turn_id, role) DO UPDATE SET content = EXCLUDED.content, created_at = now()
-                """,
-                (correlation_id, thread_val, a),
-            )
-        conn.commit()
-    finally:
-        conn.close()
+            fallback_statements.append(statements[1])
+            fallback_statements.append(statements[2])
+        result2 = db_transaction(fallback_statements, "chat")
+        err2 = result2.get("error") if isinstance(result2, dict) else None
+        if err2 is None:
+            return
+        msg2 = err2.get("message") if isinstance(err2, dict) else str(err2)
+        logger.exception("Atomic turn save (fallback) failed: %s", msg2)
+        raise RuntimeError(msg2)
+
+    logger.exception("Atomic turn save failed: %s", msg)
+    raise RuntimeError(msg)
 
 
 class PostgresPersistence(PersistencePort):
@@ -256,28 +278,25 @@ class PostgresPersistence(PersistencePort):
 
     def append_progress_event(self, correlation_id: str, event_type: str, event_data: dict[str, Any]) -> None:
         """Persist event to chat_progress_events. Used by progress module for DB write."""
-        url = _get_db_url()
-        if not url:
-            return
-        try:
-            import psycopg2
-            line = event_data.get("line", "") or event_data.get("message", "")
-            chunk = event_data.get("chunk", "") or event_data.get("message", "")
-            if event_type == "thinking" and line:
-                ev_data = {"line": line}
-            elif event_type == "message" and chunk:
-                ev_data = {"chunk": chunk}
-            else:
-                ev_data = event_data
-            conn = psycopg2.connect(url)
-            try:
-                cur = conn.cursor()
-                cur.execute(
-                    "INSERT INTO chat_progress_events (correlation_id, event_type, event_data) VALUES (%s, %s, %s)",
-                    (correlation_id, event_type, json.dumps(ev_data)),
-                )
-                conn.commit()
-            finally:
-                conn.close()
-        except Exception as e:
-            logger.debug("append_progress_event: %s", e)
+        line = event_data.get("line", "") or event_data.get("message", "")
+        chunk = event_data.get("chunk", "") or event_data.get("message", "")
+        if event_type == "thinking" and line:
+            ev_data = {"line": line}
+        elif event_type == "message" and chunk:
+            ev_data = {"chunk": chunk}
+        else:
+            ev_data = event_data
+        result = db_execute(
+            "INSERT INTO chat_progress_events (correlation_id, event_type, event_data) "
+            "VALUES (:cid, :ev_type, CAST(:ev_data AS jsonb))",
+            "chat",
+            params={
+                "cid": correlation_id,
+                "ev_type": event_type,
+                "ev_data": json.dumps(ev_data),
+            },
+        )
+        err = result.get("error") if isinstance(result, dict) else None
+        if err:
+            msg = err.get("message", "") if isinstance(err, dict) else str(err)
+            logger.debug("append_progress_event: %s", msg)

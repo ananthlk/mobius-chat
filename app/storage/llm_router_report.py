@@ -1,9 +1,21 @@
-"""Aggregate LLM call + adjudication stats for the model-router report UI (hamburger menu)."""
+"""Aggregate LLM call + adjudication stats for the model-router report UI (hamburger menu).
+
+db-agent refactor (2026-04-19)
+------------------------------
+Routes through ``app.db_client.db_query``. The ``llm_calls`` table lives in
+the chat database, covered by the wildcard read permission in
+``mobius-db-agent/manifests/mobius-chat.yml``. Preserved behavior:
+- Connection/query failures return an ``_empty_report`` with the error
+  message as the warning (same as before).
+- Sane window clamp (1..365 days).
+"""
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
 from typing import Any
+
+from app.db_client import db_query
 
 logger = logging.getLogger(__name__)
 
@@ -74,25 +86,6 @@ def fetch_llm_router_report(window_days: int = 30) -> dict[str, Any]:
     Returns per-stage model rows with call volume, adjudicated quality, composite ranking.
     Uses live aggregation on llm_calls (same window as model_performance_by_stage).
     """
-    try:
-        from app.chat_config import get_chat_config
-
-        url = (get_chat_config().rag.database_url or "").strip()
-    except Exception:
-        url = ""
-    if not url:
-        out = _empty_report(window_days, "CHAT_RAG_DATABASE_URL not configured.")
-        out["composite_spec"] = _composite_spec_payload()
-        return out
-
-    try:
-        import psycopg2
-        import psycopg2.extras
-    except ImportError:
-        out = _empty_report(window_days, "psycopg2 not available.")
-        out["composite_spec"] = _composite_spec_payload()
-        return out
-
     sql = """
         SELECT
             stage,
@@ -109,83 +102,89 @@ def fetch_llm_router_report(window_days: int = 30) -> dict[str, Any]:
             AVG(input_tokens) FILTER (WHERE success = true)::float AS avg_input_tokens,
             AVG(output_tokens) FILTER (WHERE success = true)::float AS avg_output_tokens
         FROM llm_calls
-        WHERE ts > NOW() - make_interval(days => %s)
+        WHERE ts > NOW() - make_interval(days => :window_days)
         GROUP BY stage, model
         ORDER BY stage ASC, model ASC
     """
+    window_clamped = max(1, min(window_days, 365))
 
-    rows: list[dict[str, Any]] = []
-    try:
-        from app.services.cost_model import get_rates
-
-        conn = psycopg2.connect(url)
-        try:
-            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-            cur.execute(sql, (max(1, min(window_days, 365)),))
-            for r in cur.fetchall():
-                qs = int(r["quality_samples"] or 0)
-                st = str(r["stage"] or "")
-                prov = str(r["provider"] or "").strip() or "unknown"
-                mdl = str(r["model"] or "").strip() or "unknown"
-                avg_in = r.get("avg_input_tokens")
-                avg_out = r.get("avg_output_tokens")
-                avg_in_f = float(avg_in) if avg_in is not None else None
-                avg_out_f = float(avg_out) if avg_out is not None else None
-                in_rate, out_rate = get_rates(prov, mdl)
-                list_price: float | None = None
-                if avg_in_f is not None or avg_out_f is not None:
-                    list_price = (max(0.0, avg_in_f or 0.0) / 1000.0) * in_rate + (
-                        max(0.0, avg_out_f or 0.0) / 1000.0
-                    ) * out_rate
-
-                comp = 0.0
-                brk_ser: dict[str, Any] = {}
-                if composite_router_signal is not None:
-                    try:
-                        comp, brk = composite_router_signal(
-                            {
-                                "avg_quality": r.get("avg_quality"),
-                                "hard_error_rate": r.get("hard_error_rate"),
-                                "p95_latency_ms": r.get("p95_latency_ms"),
-                                "avg_cost_usd": r.get("avg_cost_usd"),
-                                "stage": st,
-                            },
-                            stage=st,
-                        )
-                        brk_ser = _serialize_composite_breakdown(brk)
-                    except Exception:
-                        comp = 0.0
-                        brk_ser = {}
-                rows.append(
-                    {
-                        "stage": str(r["stage"] or ""),
-                        "model": str(r["model"] or ""),
-                        "provider": str(r["provider"] or "").strip() or None,
-                        "total_calls": int(r["total_calls"] or 0),
-                        "quality_samples": qs,
-                        "avg_quality": round(float(r["avg_quality"]), 4) if r.get("avg_quality") is not None else None,
-                        "avg_latency_ms": int(r["avg_latency_ms"]) if r.get("avg_latency_ms") is not None else None,
-                        "p95_latency_ms": int(r["p95_latency_ms"]) if r.get("p95_latency_ms") is not None else None,
-                        "hard_error_rate": round(float(r["hard_error_rate"] or 0), 4),
-                        "avg_cost_usd": round(float(r["avg_cost_usd"]), 6) if r.get("avg_cost_usd") is not None else None,
-                        "avg_input_tokens": round(avg_in_f, 1) if avg_in_f is not None else None,
-                        "avg_output_tokens": round(avg_out_f, 1) if avg_out_f is not None else None,
-                        "usd_per_1k_input": round(float(in_rate), 6),
-                        "usd_per_1k_output": round(float(out_rate), 6),
-                        "avg_list_price_usd": round(float(list_price), 6) if list_price is not None else None,
-                        "composite_score": round(comp, 4),
-                        "composite_breakdown": brk_ser,
-                        "confidence": _confidence_tier(qs),
-                    }
-                )
-        finally:
-            conn.close()
-    except Exception as e:
-        err = str(e)
-        logger.warning("fetch_llm_router_report failed: %s", err)
-        out = _empty_report(window_days, err[:500])
+    result = db_query(
+        sql,
+        "chat",
+        params={"window_days": window_clamped},
+        max_rows=5000,
+    )
+    err = result.get("error") if isinstance(result, dict) else None
+    if err:
+        msg = err.get("message", "") if isinstance(err, dict) else str(err)
+        logger.warning("fetch_llm_router_report failed: %s", msg)
+        out = _empty_report(window_days, msg[:500])
         out["composite_spec"] = _composite_spec_payload()
         return out
+
+    cols = result.get("columns") or []
+    raw_rows = result.get("rows") or []
+
+    from app.services.cost_model import get_rates
+
+    rows: list[dict[str, Any]] = []
+    for row in raw_rows:
+        r = dict(zip(cols, row))
+        qs = int(r["quality_samples"] or 0)
+        st = str(r["stage"] or "")
+        prov = str(r["provider"] or "").strip() or "unknown"
+        mdl = str(r["model"] or "").strip() or "unknown"
+        avg_in = r.get("avg_input_tokens")
+        avg_out = r.get("avg_output_tokens")
+        avg_in_f = float(avg_in) if avg_in is not None else None
+        avg_out_f = float(avg_out) if avg_out is not None else None
+        in_rate, out_rate = get_rates(prov, mdl)
+        list_price: float | None = None
+        if avg_in_f is not None or avg_out_f is not None:
+            list_price = (max(0.0, avg_in_f or 0.0) / 1000.0) * in_rate + (
+                max(0.0, avg_out_f or 0.0) / 1000.0
+            ) * out_rate
+
+        comp = 0.0
+        brk_ser: dict[str, Any] = {}
+        if composite_router_signal is not None:
+            try:
+                comp, brk = composite_router_signal(
+                    {
+                        "avg_quality": r.get("avg_quality"),
+                        "hard_error_rate": r.get("hard_error_rate"),
+                        "p95_latency_ms": r.get("p95_latency_ms"),
+                        "avg_cost_usd": r.get("avg_cost_usd"),
+                        "stage": st,
+                    },
+                    stage=st,
+                )
+                brk_ser = _serialize_composite_breakdown(brk)
+            except Exception:
+                comp = 0.0
+                brk_ser = {}
+        rows.append(
+            {
+                "stage": str(r["stage"] or ""),
+                "model": str(r["model"] or ""),
+                "provider": str(r["provider"] or "").strip() or None,
+                "total_calls": int(r["total_calls"] or 0),
+                "quality_samples": qs,
+                "avg_quality": round(float(r["avg_quality"]), 4) if r.get("avg_quality") is not None else None,
+                "avg_latency_ms": int(r["avg_latency_ms"]) if r.get("avg_latency_ms") is not None else None,
+                "p95_latency_ms": int(r["p95_latency_ms"]) if r.get("p95_latency_ms") is not None else None,
+                "hard_error_rate": round(float(r["hard_error_rate"] or 0), 4),
+                "avg_cost_usd": round(float(r["avg_cost_usd"]), 6) if r.get("avg_cost_usd") is not None else None,
+                "avg_input_tokens": round(avg_in_f, 1) if avg_in_f is not None else None,
+                "avg_output_tokens": round(avg_out_f, 1) if avg_out_f is not None else None,
+                "usd_per_1k_input": round(float(in_rate), 6),
+                "usd_per_1k_output": round(float(out_rate), 6),
+                "avg_list_price_usd": round(float(list_price), 6) if list_price is not None else None,
+                "composite_score": round(comp, 4),
+                "composite_breakdown": brk_ser,
+                "confidence": _confidence_tier(qs),
+            }
+        )
 
     # Group by stage, sort models inside each stage by composite (preferred first)
     stage_map: dict[str, list[dict[str, Any]]] = {}
