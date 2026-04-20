@@ -478,18 +478,31 @@ def _scrape_direct(url: str) -> tuple[str, bool]:
 
 
 def _scrape_via_mcp(url: str) -> tuple[str, bool]:
-    """MCP web_scrape_review fallback — handles JS-rendered pages, PDFs, blocked agents.
-    Wired to the same call_mcp_tool(TOOL_WEB_SCRAPE_REVIEW, ...) used elsewhere.
+    """Heavier scrape fallback — handles JS-rendered pages, PDFs, blocked agents.
+
+    Historically reached the scraper via MCP (``call_mcp_tool(TOOL_WEB_SCRAPE_REVIEW, …)``).
+    Now delegates to ``mobius_skills_core.skills.web_scrape.run_web_scrape``
+    which calls the scraper service directly — same semantics, one
+    fewer HTTP hop, and no chat→MCP startup ordering dependency.
     Returns (content, success).
     """
+    from mobius_skills_core.skills.web_scrape import run_web_scrape
     try:
-        args = web_scrape_review_mcp_arguments(url, include_summary=False, scrape_mode=WEB_SCRAPE_MODE_QUICK)
-        result_text, success = call_mcp_tool(
-            TOOL_WEB_SCRAPE_REVIEW,
-            args,
-            read_timeout=_WEB_SCRAPE_MCP_TIMEOUT[WEB_SCRAPE_MODE_QUICK],
+        result = run_web_scrape(
+            url=url,
+            scrape_mode=WEB_SCRAPE_MODE_QUICK,
+            include_summary=False,
         )
-        content = (result_text or '').strip()
+        if result.signal != "ok":
+            return '', False
+        # The skill's ``text`` is the formatted "URL: …\n\nscrape_mode:
+        # …\n\nContent:\n<content>" block. Strip the header so callers
+        # get the page content the same way they did pre-refactor.
+        content = (result.text or '').strip()
+        marker = "\nContent:\n"
+        idx = content.find(marker)
+        if idx != -1:
+            content = content[idx + len(marker):]
         if not content or len(content) < 200:
             return '', False
         content_lower = content.lower()[:800]
@@ -661,41 +674,72 @@ def _run_web_scrape(
     emitter=None,
     scrape_mode: str | None = None,
 ) -> tuple[str, list[dict], dict[str, Any] | None, str]:
-    """Scrape a URL and return (answer, sources, usage, retrieval_signal)."""
+    """Scrape a URL and return (answer, sources, usage, retrieval_signal).
+
+    db-agent / skills-core refactor (2026-04-20):
+    Previously this routed through the MCP server (chat → :8006 MCP →
+    :8002 scraper). Now it delegates straight to
+    ``mobius_skills_core.skills.web_scrape.run_web_scrape`` which calls
+    the scraper directly, saving one HTTP hop per call and removing the
+    chat→MCP startup-order dependency.
+
+    The ``emitter`` parameter keeps the pre-refactor calling convention
+    — it accepts bare-string or dict emits via the shared ``_emit``
+    helper. The skill's structured SkillEvent emits are surfaced to
+    that same emitter through a translator closure; the legacy
+    "◌ Reading page: …" one-liner is preserved verbatim by the skill
+    itself (its ``note`` field matches the old string byte-for-byte).
+    """
+    from mobius_skills_core.skills.web_scrape import run_web_scrape
+
     mode = normalize_web_scrape_mode(scrape_mode)
     domain = _extract_domain(url) or url[:40]
-    _emit(
-        emitter,
-        {
-            WEB_SCRAPE_MODE_QUICK: f"◌ Reading page: {domain}…",
-            WEB_SCRAPE_MODE_MEDIUM: f"◌ Site crawl (medium — depth ≤3, up to 6 pages): {domain}…",
-            WEB_SCRAPE_MODE_DETAILED: f"◌ Site crawl (detailed — depth ≤5, up to 50 pages, ≤10 doc downloads): {domain}…",
-        }[mode],
+
+    # Bridge the SkillEvent stream to the legacy emit channel. For now
+    # we only surface the ``note`` (a bare string) to preserve exact
+    # UI parity with the pre-refactor path — structured envelope emits
+    # arrive through the orchestrator-side emitter which already
+    # accepts dicts. A fuller wiring (piping envelopes straight into
+    # ctx.thinking_chunks with task-manager promotion) lands when the
+    # pipeline stages switch to the shared SkillEvent surface.
+    def _forward(ev) -> None:
+        if ev.note:
+            _emit(emitter, ev.note)
+
+    result = run_web_scrape(
+        url=url,
+        scrape_mode=mode,
+        include_summary=False,
+        emitter=_forward,
     )
-    args = web_scrape_review_mcp_arguments(url, include_summary=False, scrape_mode=mode)
-    timeout = _WEB_SCRAPE_MCP_TIMEOUT[mode]
-    try:
-        result_text, success = call_mcp_tool(
-            TOOL_WEB_SCRAPE_REVIEW,
-            args,
-            read_timeout=timeout,
-        )
-    except Exception as e:
-        logger.warning("call_mcp_tool web_scrape failed: %s", e, exc_info=True)
-        return (f"I ran into an issue calling the tool. {e}. Please try again.", [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
-    result_text = result_text or ""
-    if success and result_text:
+
+    if result.signal == "ok" and result.text:
+        # Preserve the exact output cap semantics the chat had before:
+        # the shared skill caps at _WEB_SCRAPE_RESULT_CAP; any further
+        # truncation and preview shaping happens here so downstream
+        # context-window budgeting is unchanged.
         cap = _WEB_SCRAPE_RESULT_CAP.get(mode, 8000)
-        preview = (result_text[:cap] + "\n\n[... truncated for context window ...]") if len(result_text) > cap else result_text
-        src_preview = preview[: min(2000, len(preview))]
-        sources = [{"index": 1, "document_name": domain, "text": src_preview[:300], "source_type": "web", "url": url}]
-        return (preview, sources, None, RETRIEVAL_SIGNAL_GOOGLE_ONLY)
-    return (
-        result_text if result_text else "I tried to scrape that URL but ran into an issue. Ensure MCP server is running and CHAT_SKILLS_WEB_SCRAPER_URL is set.",
-        [],
-        None,
-        RETRIEVAL_SIGNAL_NO_SOURCES,
+        text_out = result.text
+        if len(text_out) > cap:
+            text_out = text_out[:cap] + "\n\n[... truncated for context window ...]"
+        src_preview = text_out[: min(2000, len(text_out))]
+        sources = [{
+            "index": 1,
+            "document_name": domain,
+            "text": src_preview[:300],
+            "source_type": "web",
+            "url": url,
+        }]
+        return (text_out, sources, None, RETRIEVAL_SIGNAL_GOOGLE_ONLY)
+
+    # Failure / no-content paths. The skill already produced the user-
+    # facing error text; surface it verbatim so the retry-guard branches
+    # below match on the same keywords they did before.
+    fallback_text = result.text or (
+        "I tried to scrape that URL but ran into an issue. "
+        "Ensure the web-scraper service is running and WEB_SCRAPER_URL is set."
     )
+    return (fallback_text, [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
 
 
 def _run_google_search(
@@ -709,47 +753,90 @@ def _run_google_search(
         Returns (answer: str, sources: list[dict], usage: dict|None, signal: str)
     Raw mode (return_raw_results=True):
         Returns (raw_results: list[dict], snippets: str, usage: dict|None, signal: str)
-        raw_results contains {title, snippet, url} dicts for use in score_and_scrape_top_result().
+        raw_results contains {title, snippet, url} dicts for use in
+        score_and_scrape_top_result().
+
+    skills-core refactor (2026-04-20):
+    Previously routed through the MCP server (chat → :8006 MCP →
+    :8004 google-search). Now delegates straight to
+    ``mobius_skills_core.skills.google_search.run_google_search``,
+    which calls the search service directly. Saves an HTTP hop and
+    removes chat→MCP startup coupling. Raw results are read from
+    ``result.extra['results']`` which the shared skill populates for
+    exactly this use case (auto-scrape top result in the composite
+    builtin).
     """
-    try:
-        result_text, success = call_mcp_tool(TOOL_GOOGLE_SEARCH, {"query": query, "max_results": 5})
-    except Exception as e:
-        logger.warning("call_mcp_tool google_search failed: %s", e, exc_info=True)
-        empty: list = []
-        err = f"I ran into an issue calling the tool. {e}. Please try again."
-        return (empty, err, None, RETRIEVAL_SIGNAL_NO_SOURCES) if return_raw_results else (err, [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
+    from mobius_skills_core.skills.google_search import run_google_search
 
-    result_text = result_text or ""
-    has_results = success and result_text and "No search results found" not in result_text
+    def _forward(ev) -> None:
+        if ev.note:
+            _emit(emitter, ev.note)
 
-    # Always parse raw URL list (used by caller when return_raw_results=True)
-    raw_results = _parse_search_result_urls(result_text) if has_results else []
+    result = run_google_search(
+        query=query,
+        max_results=5,
+        emitter=_forward,
+    )
+
+    # Build a "snippet block" in the exact shape the old upstream
+    # MCP tool produced — "1. Title — snippet (url)\n2. …". The shared
+    # skill's ``result.text`` already has this format, preserving parity
+    # for downstream LLM-summarization prompts that were tuned to it.
+    snippets = result.text or ""
+    raw_results = list(result.extra.get("results") or [])
+
+    has_results = (
+        result.signal == "ok"
+        and snippets
+        and "No search results found" not in snippets
+    )
 
     if not has_results:
-        msg = result_text if result_text else "I tried to search the web but ran into an issue. Ensure MCP server is running."
-        return (raw_results, msg, None, RETRIEVAL_SIGNAL_NO_SOURCES) if return_raw_results else (msg, [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
+        msg = (
+            snippets
+            if snippets
+            else "I tried to search the web but ran into an issue. "
+                 "Ensure the google-search service is running."
+        )
+        empty: list = []
+        return (
+            (raw_results or empty, msg, None, RETRIEVAL_SIGNAL_NO_SOURCES)
+            if return_raw_results
+            else (msg, [], None, RETRIEVAL_SIGNAL_NO_SOURCES)
+        )
 
     if return_raw_results:
-        # Caller will handle LLM summarisation after scraping
-        return (raw_results, result_text, None, RETRIEVAL_SIGNAL_GOOGLE_ONLY)
+        # Caller (the composite builtin) will handle scrape + LLM fallback
+        return (raw_results, snippets, None, RETRIEVAL_SIGNAL_GOOGLE_ONLY)
 
-    # Normal path: LLM-summarise the snippet text
+    # Normal path: LLM-summarise the snippet text. Identical behavior to
+    # pre-refactor; only the underlying search call changed.
     _emit(emitter, "Found results. Summarizing...")
     try:
         from app.services.llm_provider import get_llm_provider
         provider = get_llm_provider()
         prompt = (
             f"Use the following web search results to answer the user's question. "
-            f"Cite sources by number [1], [2], etc.\n\nResults:\n{result_text}\n\n"
+            f"Cite sources by number [1], [2], etc.\n\nResults:\n{snippets}\n\n"
             f"Question: {query}\n\nAnswer:"
         )
         raw, usage = asyncio.run(provider.generate_with_usage(prompt))
         answer = (raw or "").strip()
-        sources = [{"index": 1, "document_name": "Web search", "text": result_text[:300], "source_type": "external"}]
+        sources = [{
+            "index": 1,
+            "document_name": "Web search",
+            "text": snippets[:300],
+            "source_type": "external",
+        }]
         return (answer, sources, usage, RETRIEVAL_SIGNAL_GOOGLE_ONLY)
     except Exception as e:
         logger.warning("LLM summarization failed, using raw results: %s", e)
-        return (result_text, [{"document_name": "Web search", "source_type": "external"}], None, RETRIEVAL_SIGNAL_GOOGLE_ONLY)
+        return (
+            snippets,
+            [{"document_name": "Web search", "source_type": "external"}],
+            None,
+            RETRIEVAL_SIGNAL_GOOGLE_ONLY,
+        )
 
 
 def _answer_tool_impl(

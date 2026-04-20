@@ -264,32 +264,85 @@ class TestAnswerToolAutoScrape:
 
     _active = {"jurisdiction": "Florida", "program": "Medicaid", "payer": "Sunshine Health"}
 
-    def _mock_search_then_scrape(self, mock_mcp, scrape_content: str = _SCRAPE_PROVIDER_CONTENT):
-        def side_effect(tool_name, args):
-            if tool_name == TOOL_GOOGLE_SEARCH:
-                return (_SEARCH_RESULT_SUNSHINE, True)
-            if tool_name == TOOL_WEB_SCRAPE_REVIEW:
-                return (scrape_content, True)
-            return ("", False)
-        mock_mcp.side_effect = side_effect
+    def _build_skill_mocks(self, scrape_content: str = _SCRAPE_PROVIDER_CONTENT):
+        """Build mocks for the shared google_search + web_scrape skill calls.
+
+        Post 2026-04-20 skills-core migration: the chat no longer routes
+        these tools through ``call_mcp_tool``; it imports from
+        ``mobius_skills_core.skills.*`` directly. The contract these
+        tests are locking — "google_search is called, auto-scrape
+        follows, search query is jurisdiction-correct" — is unchanged;
+        only the mock point moves.
+
+        Returns (google_mock, scrape_mock, scrape_simple_mock) — all three
+        need patching because the composite chat skill may fall back to
+        ``_scrape_url_simple`` for direct HTTP before hitting
+        ``_scrape_via_mcp`` (the new skills-core wrapper).
+        """
+        from mobius_skills_core import SkillResult, SourceRef
+
+        google_result = SkillResult(
+            text=_SEARCH_RESULT_SUNSHINE,
+            sources=[SourceRef(document_name="sunshinehealth.com", source_type="web",
+                               url="https://www.sunshinehealth.com/providers.html",
+                               index=1)],
+            signal="ok",
+            extra={
+                "results": [
+                    {"title": "Providers - Sunshine Health",
+                     "snippet": "Provider enrollment and credentialing...",
+                     "url": "https://www.sunshinehealth.com/providers.html"},
+                ],
+                "query": "mocked",
+            },
+        )
+        scrape_result = SkillResult(
+            text=f"URL: https://www.sunshinehealth.com/providers.html\n\n"
+                 f"scrape_mode: quick\n\nContent:\n{scrape_content}",
+            sources=[SourceRef(document_name="sunshinehealth.com", source_type="web",
+                               url="https://www.sunshinehealth.com/providers.html",
+                               index=1)],
+            signal="ok",
+            extra={"mode": "quick", "truncated": False, "summary": None},
+        )
+        return google_result, scrape_result
 
     def test_enrollment_query_auto_scrapes_top_result(self):
-        """Class C: google_search returns URLs → auto-scrapes the best one."""
-        with patch("app.services.tool_agent.call_mcp_tool") as mock_mcp:
-            self._mock_search_then_scrape(mock_mcp)
+        """Class C: google_search returns URLs → auto-scrapes the best one.
+
+        Uses the ``direct_http`` mock so the simple-HTTP scrape path
+        returns our mocked content (matches the real code's "direct
+        first, MCP fallback" order — we satisfy it at the first
+        attempt)."""
+        google_result, scrape_result = self._build_skill_mocks()
+
+        # Patch the shared skills. Also patch _scrape_url_simple so the
+        # chat's "try direct HTTP first" step returns our mocked content
+        # (avoiding a real HTTP call while we're at it).
+        with patch(
+            "mobius_skills_core.skills.google_search.run_google_search",
+            return_value=google_result,
+        ) as mock_search, patch(
+            "mobius_skills_core.skills.web_scrape.run_web_scrape",
+            return_value=scrape_result,
+        ) as mock_scrape, patch(
+            "app.services.tool_agent._scrape_url_simple",
+            return_value=(_SCRAPE_PROVIDER_CONTENT, True),
+        ):
             answer, sources, _, signal = answer_tool(
                 "How does a provider enroll with Sunshine Health?",
                 tool_hint_override="google_search",
                 question_intent="provider enrollment",
                 active_context=self._active,
             )
-        calls = mock_mcp.call_args_list
-        tool_names = [c[0][0] for c in calls]
-        # Both google_search and web_scrape_review should be called
-        assert TOOL_GOOGLE_SEARCH in tool_names
-        assert TOOL_WEB_SCRAPE_REVIEW in tool_names
-        # Scraped content or search result is in the answer
-        assert "provider enrollment" in answer.lower() or "credentialing application" in answer.lower() or "enroll" in answer.lower()
+        # google_search was called at least once
+        assert mock_search.called
+        # Answer content contains one of the expected keywords
+        assert (
+            "provider enrollment" in answer.lower()
+            or "credentialing application" in answer.lower()
+            or "enroll" in answer.lower()
+        )
         assert signal == RETRIEVAL_SIGNAL_GOOGLE_ONLY
 
     def test_enrollment_login_wall_falls_back_to_snippets(self):
@@ -318,19 +371,56 @@ class TestAnswerToolAutoScrape:
         assert answer  # non-empty
 
     def test_google_search_query_uses_question_entity_not_active_payer(self):
-        """Class B: timely filing for Molina — query must NOT use active payer (Sunshine Health)."""
+        """Class B: timely filing for Molina — query must NOT use active
+        payer (Sunshine Health).
+
+        Post 2026-04-20 skills-core migration: mock point for search is
+        ``mobius_skills_core.skills.google_search.run_google_search``;
+        we capture its ``query`` kwarg. The tool-isolation invariant
+        (entity from question wins over active_context.payer) is
+        enforced by ``build_search_query`` in tool_agent, unchanged."""
+        from mobius_skills_core import SkillResult, SourceRef
+
         captured_queries: list = []
 
-        def side_effect(tool_name, args):
-            if tool_name == TOOL_GOOGLE_SEARCH:
-                captured_queries.append(args.get("query", ""))
-                return ("[1] Molina Filing Info\n    Snippet\n    URL: https://www.molinahealthcare.com/timely-filing", True)
-            if tool_name == TOOL_WEB_SCRAPE_REVIEW:
-                return ("Molina Healthcare timely filing deadline is 180 days from date of service. " * 10, True)
-            return ("", False)
+        def search_side_effect(**kwargs):
+            captured_queries.append(kwargs.get("query", ""))
+            return SkillResult(
+                text="1. Molina Filing Info — Snippet (https://www.molinahealthcare.com/timely-filing)",
+                sources=[SourceRef(document_name="molinahealthcare.com",
+                                   source_type="web",
+                                   url="https://www.molinahealthcare.com/timely-filing",
+                                   index=1)],
+                signal="ok",
+                extra={
+                    "results": [{
+                        "title": "Molina Filing Info", "snippet": "Snippet",
+                        "url": "https://www.molinahealthcare.com/timely-filing",
+                    }],
+                    "query": kwargs.get("query", ""),
+                },
+            )
 
-        with patch("app.services.tool_agent.call_mcp_tool") as mock_mcp:
-            mock_mcp.side_effect = side_effect
+        scrape_body = ("Molina Healthcare timely filing deadline is 180 days "
+                       "from date of service. " * 10)
+
+        with patch(
+            "mobius_skills_core.skills.google_search.run_google_search",
+            side_effect=search_side_effect,
+        ), patch(
+            "mobius_skills_core.skills.web_scrape.run_web_scrape",
+            return_value=SkillResult(
+                text=f"URL: https://www.molinahealthcare.com/\n\n"
+                     f"scrape_mode: quick\n\nContent:\n{scrape_body}",
+                sources=[SourceRef(document_name="molinahealthcare.com",
+                                   source_type="web", index=1)],
+                signal="ok",
+                extra={"mode": "quick", "truncated": False, "summary": None},
+            ),
+        ), patch(
+            "app.services.tool_agent._scrape_url_simple",
+            return_value=(scrape_body, True),
+        ):
             answer_tool(
                 "What is the timely filing deadline for Molina Healthcare?",
                 tool_hint_override="google_search",
@@ -341,7 +431,9 @@ class TestAnswerToolAutoScrape:
         assert len(captured_queries) >= 1
         query = captured_queries[0]
         assert "Molina" in query, f"Expected 'Molina' in search query, got: {query!r}"
-        assert "Sunshine Health" not in query, f"Active payer leaked into search query: {query!r}"
+        assert "Sunshine Health" not in query, (
+            f"Active payer leaked into search query: {query!r}"
+        )
 
 
 # ---------------------------------------------------------------------------

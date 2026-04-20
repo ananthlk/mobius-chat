@@ -53,7 +53,12 @@ def _mcp_mock(text: str, success: bool):
     """Return a side_effect for call_mcp_tool that ignores args and
     returns a fixed (text, success) tuple. Matches the MCP manager's
     actual return shape so both registry and legacy paths see the same
-    response."""
+    response.
+
+    Legacy helper kept for healthcare_query (still MCP-backed). The
+    web_scrape path migrated to mobius-skills-core on 2026-04-20 and
+    uses ``_scrape_skill_mock`` below.
+    """
 
     def impl(tool, args, **kwargs):
         return (text, success)
@@ -62,15 +67,42 @@ def _mcp_mock(text: str, success: bool):
 
 
 def _dual_mcp_patch(text: str, success: bool):
-    """tool_agent.py's call_mcp_tool is bound at import time; skill
-    builtins import ``call_mcp_tool`` via app.services.mcp_manager.
-    Both have to be patched for parity tests to exercise a mocked MCP
-    on both paths."""
+    """Legacy dual-path MCP patch — tool_agent.py imports call_mcp_tool
+    directly, skill builtins import via app.services.mcp_manager. Both
+    have to be patched for parity tests.
+
+    Post 2026-04-20 skills-core refactor, the web_scrape path bypasses
+    MCP entirely; only healthcare_query still needs this helper."""
     side = _mcp_mock(text, success)
     return (
         patch("app.services.tool_agent.call_mcp_tool", side_effect=side),
         patch("app.services.mcp_manager.call_mcp_tool", side_effect=side),
     )
+
+
+def _scrape_skill_mock(content: str, signal: str = "ok",
+                       url: str = "https://example.com/page",
+                       mode: str = "quick"):
+    """Build a SkillResult matching what run_web_scrape returns, wrapped
+    so both chat (mobius_skills_core.skills.web_scrape.run_web_scrape)
+    and MCP ingress paths see the same shape.
+
+    Post skills-core: web_scrape dispatches via the shared core; the
+    MCP call_mcp_tool path is retired for this skill. Tests mock the
+    shared function directly.
+    """
+    from mobius_skills_core import SkillResult, SourceRef
+
+    if signal == "ok":
+        body = f"URL: {url}\n\nscrape_mode: {mode}\n\nContent:\n{content}"
+        return SkillResult(
+            text=body,
+            sources=[SourceRef(document_name="example.com",
+                               source_type="web", url=url, index=1)],
+            signal="ok",
+            extra={"mode": mode, "truncated": False, "summary": None},
+        )
+    return SkillResult(text=content, signal=signal)
 
 
 # ── Registration drift-detection ─────────────────────────────────────
@@ -194,10 +226,15 @@ class TestHealthcareQueryHandler:
 class TestWebScrapeHandler:
     def test_url_from_inputs_triggers_scrape(self):
         """Dispatcher populates ``inputs['url']`` before calling the
-        handler. Handler trusts it and calls the underlying MCP."""
-        cx = patch("app.services.tool_agent.call_mcp_tool", side_effect=_mcp_mock(
-            "# Policy Page\n\nEligibility details here.", True,
-        ))
+        handler. Handler trusts it and calls the underlying skill
+        (post skills-core migration; was call_mcp_tool pre 2026-04-20)."""
+        cx = patch(
+            "mobius_skills_core.skills.web_scrape.run_web_scrape",
+            return_value=_scrape_skill_mock(
+                "# Policy Page\n\nEligibility details here.",
+                url="https://example.com/policy",
+            ),
+        )
         with cx:
             env = registry.dispatch(
                 SkillCall(
@@ -223,17 +260,24 @@ class TestWebScrapeHandler:
         assert "URL" in env.text
         assert env.signal == "no_sources"
 
-    def test_scrape_mode_forwarded_to_mcp_arguments(self):
+    def test_scrape_mode_forwarded_to_skills_core(self):
         """Planner can request medium or detailed mode. The handler
-        must pass it through to the MCP call via
-        ``web_scrape_review_mcp_arguments(scrape_mode=...)``."""
+        must pass it through to the shared skill
+        (``mobius_skills_core.skills.web_scrape.run_web_scrape(scrape_mode=…)``).
+
+        Renamed from test_scrape_mode_forwarded_to_mcp_arguments 2026-04-20
+        — pre-refactor the assertion was against ``call_mcp_tool`` args;
+        post-refactor the dispatch target moved."""
         captured = {}
 
-        def cap(tool, args, **kw):
-            captured["args"] = args
-            return ("content", True)
+        def cap(**kw):
+            captured["kwargs"] = kw
+            return _scrape_skill_mock("content", mode=kw.get("scrape_mode", "quick"))
 
-        with patch("app.services.tool_agent.call_mcp_tool", side_effect=cap):
+        with patch(
+            "mobius_skills_core.skills.web_scrape.run_web_scrape",
+            side_effect=cap,
+        ):
             registry.dispatch(
                 SkillCall(
                     name="web_scrape",
@@ -241,10 +285,8 @@ class TestWebScrapeHandler:
                     question="",
                 )
             )
-        # web_scrape_review_mcp_arguments packs mode into args — exact key
-        # name depends on the helper. Assert the mode made it in somewhere.
-        flat = str(captured["args"])
-        assert "detailed" in flat
+        assert captured["kwargs"]["scrape_mode"] == "detailed"
+        assert captured["kwargs"]["url"] == "https://x.com"
 
 
 # ── End-to-end: answer_tool via registry (commit-3 world) ────────────
@@ -275,12 +317,17 @@ class TestAnswerToolViaRegistry:
         assert sources[0]["source_type"] == "external"
 
     def test_web_scrape_with_url_shape(self):
+        """Post 2026-04-20 skills-core migration: mock point is the
+        shared function, not call_mcp_tool."""
         from app.services.tool_agent import answer_tool
 
-        tool_patch, mgr_patch = _dual_mcp_patch(
-            "# Policy\n\nEligibility info.", True
-        )
-        with tool_patch, mgr_patch:
+        with patch(
+            "mobius_skills_core.skills.web_scrape.run_web_scrape",
+            return_value=_scrape_skill_mock(
+                "# Policy\n\nEligibility info.",
+                url="https://example.com/policy",
+            ),
+        ):
             text, sources, usage, signal = answer_tool(
                 "scrape https://example.com/policy",
                 tool_hint_override="web_scrape",
