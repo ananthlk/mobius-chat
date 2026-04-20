@@ -60,10 +60,55 @@ def react_max_iterations_for_mode(chat_mode: str | None) -> int:
     return REACT_MAX_ROUNDS_COPILOT
 
 
+def guidance_mode_threshold(max_it: int) -> int:
+    """First ROUND (1-indexed) at which guidance mode activates.
+
+    The 80/20 split: rounds 1..guidance_threshold-1 are "hunt for the
+    authoritative answer"; rounds guidance_threshold..max_it are
+    "synthesize next-best guidance from what we've already found."
+
+    Ceiling, so quick (2) → 2, copilot (3) → 3, agentic (6) → 5. All
+    three give the planner at least one dedicated guidance round; on
+    the longer modes it also has a round to revise if the critic
+    rejects the guidance.
+    """
+    if max_it <= 2:
+        return max_it  # quick mode: last round is guidance round
+    return max(2, -(-max_it * 4 // 5))  # ceil(0.8 * max_it), never below 2
+
+
+def is_guidance_round(iteration: int, max_it: int) -> bool:
+    """True when the 0-indexed iteration falls in the guidance band.
+
+    The loop's ``rn`` is 1-indexed, but we key on the 0-indexed
+    iteration because that's what ``build_reasoning_context`` and
+    ``_react_round_headline`` both get.
+    """
+    return (iteration + 1) >= guidance_mode_threshold(max_it)
+
+
 def _react_round_headline(iteration: int, max_it: int) -> str:
-    """User-facing headline for this round index (0-based), depends on total rounds."""
+    """User-facing headline for this round index (0-based), depends on total rounds.
+
+    Guidance rounds get a distinct label that precedes the per-iteration
+    defaults — so the user sees that the planner has shifted from
+    searching to synthesis, regardless of where in the mode-specific
+    numbering that happens.
+    """
+    # Round 0 is always Scoping — even in quick mode (which has only 2
+    # rounds total). The first round is where the planner makes its
+    # initial tool choice; guidance mode never overrides round 0.
     if iteration == 0:
         return "Scoping — interpret the question and choose the first tool or answer"
+
+    # Guidance-mode label takes precedence over per-iteration defaults.
+    # Without this ordering, quick mode's round 2 would render
+    # "Grounding" even though the planner has shifted to guidance mode.
+    if is_guidance_round(iteration, max_it):
+        if iteration >= max_it - 1:
+            return "Guidance — synthesize best next-step advice from what's been gathered"
+        return "Guidance — shifting from search to synthesis"
+
     if iteration == 1:
         return "Grounding — use evidence from prior tool results"
     if iteration >= max_it - 1:
@@ -73,6 +118,87 @@ def _react_round_headline(iteration: int, max_it: int) -> str:
     if iteration == 3:
         return "Extended — alternate tools or queries if needed"
     return "Extended — narrow or verify before answering"
+
+
+def _react_guidance_instruction(iteration: int, max_it: int) -> str:
+    """Return the guidance-mode instruction to inject into the reasoning
+    context, or an empty string if this round isn't a guidance round.
+
+    Why this exists. On information-gathering questions with no
+    definitive corpus answer, the planner historically burns all
+    rounds searching and lets the ReAct loop fall out via rounds-
+    exhaustion — producing a generic "I couldn't confirm" message that
+    ignores all the evidence it did collect. That's a bad UX: the user
+    asked a question, the system found relevant context, and the
+    response is "sorry, nothing." Users are better served by: "Here's
+    what I found; based on that, your best next step is X. The
+    specific Y was not in the sources I could access."
+
+    The 80/20 split the operator wants:
+
+      - Rounds 1 .. ceil(0.8 * max_it) - 1 : hunt for the authoritative
+        answer (normal ReAct).
+      - Rounds ceil(0.8 * max_it) .. max_it: shift to synthesis-from-
+        evidence. Draft a hedged answer that extracts concrete
+        next-step guidance from what's already been gathered.
+
+    The critic remains the safety net. In guidance mode the planner
+    is explicitly encouraged to synthesize from partial evidence,
+    which is fertile ground for hallucination. The critic audits the
+    resulting draft against the retrieved sources and rejects
+    anything that isn't grounded — forcing a revise round if one is
+    available.
+
+    What this does NOT do: permit fabrication. The instruction
+    explicitly warns that "you should contact X at <number>" is only
+    safe if <number> came from a source. Unsupported phone numbers,
+    invented rule citations, and unsubstantiated modal assertions
+    ("X is required") are still hallucinations and the critic will
+    still flag them.
+    """
+    if not is_guidance_round(iteration, max_it):
+        return ""
+
+    rounds_remaining = max_it - iteration  # includes this round
+
+    return (
+        "## GUIDANCE MODE ACTIVATED\n"
+        f"You are now on round {iteration + 1} of {max_it}. "
+        f"{rounds_remaining} round(s) remain.\n"
+        "\n"
+        "Shift strategy: **stop hunting for the perfect authoritative "
+        "source**. The sources you have already retrieved are what you "
+        "have to work with. Your job now is to produce the most useful "
+        "possible answer for the user, given that evidence.\n"
+        "\n"
+        "Preferred action this round:\n"
+        "  Set ``is_complete: true`` with an answer that:\n"
+        "    1. States plainly what was found in the sources (with "
+        "citations).\n"
+        "    2. Acknowledges what was NOT found (\"the specific X was "
+        "not available in the sources I could access\").\n"
+        "    3. Gives concrete next-step guidance based on what WAS "
+        "found (\"based on <source>, you should try X\" or \"the "
+        "<provider portal> is the authoritative source — check it for "
+        "the specific Y\").\n"
+        "\n"
+        "HARD RULES (a grounding critic will audit your answer):\n"
+        "  - Do NOT invent facts. If no source contains a specific "
+        "phone number, do NOT state one — say \"contact provider "
+        "services\" without making up a number.\n"
+        "  - Do NOT assert definitive requirements (\"X is required\", "
+        "\"Y must be done\") unless a retrieved source establishes "
+        "them. Hedge if uncertain: \"the typical requirement is...\" or "
+        "\"this usually involves...\".\n"
+        "  - Do NOT extrapolate from training-data knowledge. Only use "
+        "what the retrieved sources show.\n"
+        "\n"
+        "A useful hedged answer grounded in partial evidence is MUCH "
+        "better than \"I couldn't confirm\". The user asked a question; "
+        "if you have partial evidence, coach them on what to do with "
+        "it. The critic will flag anything ungrounded and you can "
+        "revise on the next round if one remains."
+    )
 
 
 def _react_reasoning_system(max_iterations: int, chat_mode: str) -> str:
@@ -214,9 +340,34 @@ def build_reasoning_context(
     ctx: PipelineContext,
     tool_results: list[dict],
     iteration: int,
+    max_iterations: int | None = None,
 ) -> str:
-    """Build the context the model reasons over each iteration."""
+    """Build the context the model reasons over each iteration.
+
+    ``max_iterations`` is optional so legacy tests that call this with
+    three positional args keep working. When supplied, it enables the
+    guidance-mode instruction on the appropriate rounds (see
+    :func:`_react_guidance_instruction`). Legacy callers that pass
+    None silently skip the guidance pathway — identical to
+    pre-guidance-mode behavior.
+    """
     parts = []
+
+    # Guidance mode gets prepended so it's the first thing the planner
+    # reads each round during the 80/20 synthesis phase. The rest of
+    # the context (jurisdiction, uploads, turns, tool results) follows
+    # unchanged. An empty string from the helper means "not a guidance
+    # round" and no change is made.
+    #
+    # Note: ``iteration`` here is actually 1-indexed (the caller passes
+    # ``rn`` which is round number 1..max_it). The guidance helpers
+    # internally use 0-indexed so convert at this boundary — the
+    # _react_round_headline caller uses 0-indexed directly, so the
+    # offset only applies here.
+    if max_iterations is not None:
+        guidance = _react_guidance_instruction(iteration - 1, max_iterations)
+        if guidance:
+            parts.append(guidance)
 
     active = (ctx.merged_state or {}).get("active") or {}
     j = jurisdiction_summary(active)

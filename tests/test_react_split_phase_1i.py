@@ -182,10 +182,23 @@ class TestExtractedBehaviorUnchanged:
 
     def test_round_headline_progression(self):
         from app.pipeline.react.prompts import _react_round_headline
-        # Round 0 is scoping, round 1 is grounding, last round is finalize.
+        # Round 0 is scoping, round 1 is grounding. The last round used
+        # to render "Finalize"; the 2026-04-19 guidance-mode commit
+        # swapped it to "Guidance — ..." on rounds in the 80/20
+        # synthesis band (which for copilot's 3-round mode is just the
+        # last round). Explicit coverage of both names lives in
+        # tests/test_react_guidance_mode.py; here we just assert the
+        # last-round headline is NON-EMPTY and NOT still saying
+        # "Finalize" (that would mean the guidance-mode label path
+        # never wired up).
         assert "Scoping" in _react_round_headline(0, 3)
         assert "Grounding" in _react_round_headline(1, 3)
-        assert "Finalize" in _react_round_headline(2, 3)
+        last = _react_round_headline(2, 3)
+        assert last, "last-round headline must not be empty"
+        assert "Guidance" in last, (
+            f"expected last-round headline to render 'Guidance' after "
+            f"guidance-mode wiring; got {last!r}"
+        )
 
     def test_fallback_decision_captures_org_name(self):
         """The NPI-lookup fallback is the one piece of parsing that

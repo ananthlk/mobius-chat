@@ -1192,7 +1192,9 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         headline = _react_round_headline(iteration, max_it)
         emit(f"  Round {rn}/{max_it} — {headline}")
         emit(f"  Reasoning round {rn}/{max_it}…")
-        reasoning_context = build_reasoning_context(ctx, tool_results, rn)
+        reasoning_context = build_reasoning_context(
+            ctx, tool_results, rn, max_iterations=max_it,
+        )
         # Inject already-failed attempts into the prompt so the LLM sees
         # them and picks differently.
         hint = retry_guard.failure_hint_for_prompt()
