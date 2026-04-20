@@ -1,0 +1,45 @@
+# Cloud Build config for mobius-chat.
+#
+# Why a config file instead of ``gcloud builds submit --tag``?
+# The ``--tag`` shortcut requires the Dockerfile at the build context
+# root. Our build context is the Mobius parent directory (so sibling
+# repos are visible to ``COPY``) and the Dockerfile lives at
+# ``mobius-chat/Dockerfile``. Cloud Build's explicit docker-build step
+# supports ``--file`` for that case.
+#
+# Invoked by scripts/deploy.sh:
+#   gcloud builds submit <parent-dir> \
+#     --config=mobius-chat/deploy/cloudbuild.yaml \
+#     --substitutions=_IMAGE=<tag>,_DOCKERFILE=mobius-chat/Dockerfile
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --file=${_DOCKERFILE}
+      - --tag=${_IMAGE}
+      - --cache-from=${_IMAGE_BASE}:latest
+      - .
+  - name: gcr.io/cloud-builders/docker
+    args: [push, "${_IMAGE}"]
+
+# Also push a :latest tag for the next build's cache-from. Cheap
+# (layer-dedup on the registry side) and buys ~60% faster subsequent
+# builds during active development.
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - tag
+      - ${_IMAGE}
+      - ${_IMAGE_BASE}:latest
+  - name: gcr.io/cloud-builders/docker
+    args: [push, "${_IMAGE_BASE}:latest"]
+
+images:
+  - ${_IMAGE}
+  - ${_IMAGE_BASE}:latest
+
+options:
+  machineType: E2_HIGHCPU_8
+  logging: CLOUD_LOGGING_ONLY  # needed when no GCS log bucket is pinned
+
+timeout: 1800s

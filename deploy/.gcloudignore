@@ -1,0 +1,38 @@
+# .gcloudignore passed via --ignore-file to ``gcloud builds submit``.
+#
+# gcloud tars the source directory (``/Users/ananth/Mobius``, the
+# parent monorepo) and uploads it to Cloud Build. Without this file,
+# every sibling repo + landing/ + .claude/ worktrees + node_modules
+# ends up in the tarball — which is both 8+ GB and contains broken
+# symlinks that crash gcloud mid-upload.
+#
+# Allow-list pattern mirrors the Dockerfile's .dockerignore. Only the
+# four repos the Dockerfile COPYs should enter the build context.
+
+*
+
+# Un-exclude the repos chat actually needs.
+!mobius-chat/
+!mobius-contracts/
+!mobius-skills-core/
+!mobius-retriever/
+
+# Prune noise within the four allowed repos.
+**/.git/
+**/.github/
+**/.venv/
+**/venv/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/node_modules/
+**/.DS_Store
+**/.claude/
+
+# Chat-specific exclusions (tests, docs, local artifacts).
+mobius-chat/tests/
+mobius-chat/docs/
+mobius-chat/.venv/
+mobius-chat/frontend/node_modules/

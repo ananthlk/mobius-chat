@@ -117,22 +117,19 @@ csv_env() {
 if [[ "${SKIP_BUILD}" -eq 0 ]]; then
     echo "── Building ${IMAGE_TAG} ──"
     # Build context is PARENT_DIR so the Dockerfile can COPY siblings.
-    # --config-file would let us pin Cloud Build steps, but the simple
-    # one-liner form is enough for the single-Dockerfile case.
+    # ``--config`` + an explicit cloudbuild.yaml replaces the ``--tag``
+    # shortcut (which requires Dockerfile-at-context-root; we don't).
     run gcloud builds submit "${PARENT_DIR}" \
         --project="${GCP_PROJECT}" \
         --region="${GCP_REGION}" \
-        --tag="${IMAGE_TAG}" \
-        --gcs-log-dir="gs://${GCP_PROJECT}_cloudbuild/chat-logs/" \
-        --machine-type=e2-highcpu-8 \
+        --config="${CHAT_DIR}/deploy/cloudbuild.yaml" \
+        --ignore-file="${CHAT_DIR}/deploy/.gcloudignore" \
+        --substitutions="_IMAGE=${IMAGE_TAG},_IMAGE_BASE=${IMAGE_BASE},_DOCKERFILE=mobius-chat/Dockerfile" \
         --timeout=30m \
-        --substitutions=_DOCKERFILE=mobius-chat/Dockerfile \
         || {
             echo "error: gcloud builds submit failed. Check the build log URL above." >&2
             exit 70
         }
-    # gcloud builds submit needs the Dockerfile at the build context
-    # root. Use --config-file for future custom steps if needed.
 else
     # Resolve the newest previously-built image for this service.
     IMAGE_TAG="$(gcloud artifacts docker images list \

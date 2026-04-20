@@ -69,38 +69,70 @@ for required in GCP_PROJECT CLOUDSQL_INSTANCE CLOUDSQL_DATABASE CLOUDSQL_IAM_USE
 done
 
 # ── Cloud SQL proxy ─────────────────────────────────────────────────
-# Use a per-invocation Unix socket under $TMPDIR so parallel deploys
-# (e.g. dev + prod) don't collide on the default /cloudsql path.
-
-PROXY_SOCKET_DIR="$(mktemp -d -t chat-migrate-XXXXXX)"
-trap 'rm -rf "${PROXY_SOCKET_DIR}"; jobs -p | xargs -r kill 2>/dev/null || true' EXIT
+# TCP mode on a random local port. Originally this was Unix-socket
+# based but macOS caps socket paths at ~104 chars and the proxy's
+# nested ``<project>:<region>:<instance>`` subdirectory blew past
+# that under ``$TMPDIR`` on every test run. TCP is simpler, works on
+# Linux + macOS identically, and the --auto-iam-authn flag still
+# mints short-lived IAM credentials per connection.
 
 if ! command -v cloud-sql-proxy >/dev/null; then
     echo "error: cloud-sql-proxy not on PATH. Install: brew install cloud-sql-proxy" >&2
     exit 69
 fi
 
-echo "── Starting Cloud SQL Auth Proxy ──"
+# Random high port to avoid collisions with other local services.
+# Range 15000-19999 is arbitrary but far from well-known PG ports.
+PROXY_PORT=$(( 15000 + RANDOM % 5000 ))
+
+echo "── Starting Cloud SQL Auth Proxy on 127.0.0.1:${PROXY_PORT} ──"
+# Migrations connect as the built-in ``postgres`` superuser because
+# the DDL they apply (CREATE TABLE, CREATE INDEX, ALTER...) requires
+# owner privileges that the runtime IAM user intentionally doesn't
+# have. The password lives in Secret Manager (``db-password``).
+#
+# Previous attempt: connect as the runtime SA via --impersonate-
+# service-account + --auto-iam-authn. That fails on consumer-gmail
+# ADC identities — iam.serviceAccounts.getAccessToken returns 403
+# even with the binding in place because consumer accounts' token
+# service has different propagation characteristics than Workspace.
+# Not worth chasing; postgres-superuser migrations are a clearer
+# ownership model anyway.
 cloud-sql-proxy \
-    --unix-socket "${PROXY_SOCKET_DIR}" \
-    --auto-iam-authn \
+    --port "${PROXY_PORT}" \
     "${CLOUDSQL_INSTANCE}" &
 PROXY_PID=$!
+trap 'kill ${PROXY_PID} 2>/dev/null || true' EXIT
 
-# Give the proxy a moment to bind the socket. Two-second poll is
-# plenty; we bail if it hasn't materialized after ~10s.
-for i in 1 2 3 4 5; do
-    if [[ -S "${PROXY_SOCKET_DIR}/${CLOUDSQL_INSTANCE}/.s.PGSQL.5432" ]]; then
+# Poll for readiness. The proxy logs "ready for new connections!"
+# once the TCP listener is up; we just check if the port is open.
+for i in 1 2 3 4 5 6 7 8; do
+    if nc -z 127.0.0.1 "${PROXY_PORT}" 2>/dev/null; then
         break
     fi
-    sleep 2
+    sleep 1
 done
-if [[ ! -S "${PROXY_SOCKET_DIR}/${CLOUDSQL_INSTANCE}/.s.PGSQL.5432" ]]; then
-    echo "error: Cloud SQL Proxy failed to bind socket. Check gcloud auth." >&2
+if ! nc -z 127.0.0.1 "${PROXY_PORT}" 2>/dev/null; then
+    echo "error: Cloud SQL Proxy did not bind 127.0.0.1:${PROXY_PORT}." >&2
+    echo "       Run 'gcloud auth application-default login' and retry." >&2
     exit 74
 fi
 
-PSQL_DSN="host=${PROXY_SOCKET_DIR}/${CLOUDSQL_INSTANCE} dbname=${CLOUDSQL_DATABASE} user=${CLOUDSQL_IAM_USER}"
+# sslmode=disable is fine: the proxy is the TLS terminator on the
+# wire to Cloud SQL; the local TCP hop is plain.
+# Superuser ``postgres`` password comes from Secret Manager, so
+# operators don't need it in their shell history.
+echo "── Fetching postgres password from Secret Manager ──"
+PG_PASSWORD="$(gcloud secrets versions access latest \
+    --secret=db-password \
+    --project="${GCP_PROJECT}")"
+if [[ -z "${PG_PASSWORD}" ]]; then
+    echo "error: db-password secret empty or fetch failed" >&2
+    exit 75
+fi
+export PGPASSWORD="${PG_PASSWORD}"
+
+PSQL_DSN="host=127.0.0.1 port=${PROXY_PORT} dbname=${CLOUDSQL_DATABASE} user=postgres sslmode=disable"
 
 psql_exec() {
     PGOPTIONS='-c client_min_messages=warning' psql "${PSQL_DSN}" -v ON_ERROR_STOP=1 "$@"
@@ -118,7 +150,13 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 
 # ── Discover pending migrations ─────────────────────────────────────
 
-mapfile -t ALL_FILES < <(find "${SCHEMA_DIR}" -maxdepth 1 -type f -name '*.sql' -printf '%f\n' | sort)
+# ``mapfile`` is bash 4+; macOS ships 3.2. Use a portable read loop.
+# ``find -printf`` is GNU; strip the dirname ourselves so this works
+# on BSD find (macOS) too.
+ALL_FILES=()
+while IFS= read -r line; do
+    ALL_FILES+=("$(basename "${line}")")
+done < <(find "${SCHEMA_DIR}" -maxdepth 1 -type f -name '*.sql' | LC_ALL=C sort)
 
 if [[ -n "${SINGLE_FILE}" ]]; then
     ALL_FILES=("${SINGLE_FILE}")
