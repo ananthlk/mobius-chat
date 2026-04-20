@@ -232,11 +232,13 @@ class TestRunReactCriticIntegration:
         from app.pipeline.react_loop import run_react
 
         scripted_llm = ScriptedLLM({
-            # Round 1 + 2 + 3 all hit stage=react_{N} based on rn.
+            # Round N planner calls go through stage=react_{N}.
+            # Critic calls go through stage=critique (cheap-model bucket,
+            # see model_registry._COMPOSITE_LAT_CAP_MS_BY_BUCKET).
             "react_1": [_PLANNER_ROUND_1],
             "react_2": [_PLANNER_ROUND_2_HALLUCINATED],
             "react_3": [_PLANNER_ROUND_3_GROUNDED],
-            "react_critic": [_CRITIC_REJECTS_ROUND_2, _CRITIC_APPROVES_ROUND_3],
+            "critique": [_CRITIC_REJECTS_ROUND_2, _CRITIC_APPROVES_ROUND_3],
         })
 
         ctx = _make_ctx("What are Sunshine Health's medical necessity criteria for H0036?")
@@ -265,11 +267,11 @@ class TestRunReactCriticIntegration:
         # ── LLM call sequence was: planner-1 → planner-2 → critic → planner-3 → critic
         stages = [c["stage"] for c in scripted_llm.calls]
         assert stages == [
-            "react_1",        # round 1 decision
-            "react_2",        # round 2 decision (hallucinated)
-            "react_critic",   # audit → reject
-            "react_3",        # round 3 decision (revised)
-            "react_critic",   # audit → approve
+            "react_1",    # round 1 decision (planner bucket)
+            "react_2",    # round 2 decision (planner bucket) — hallucinated
+            "critique",   # audit → reject (cheap bucket)
+            "react_3",    # round 3 decision (planner bucket) — revised
+            "critique",   # audit → approve (cheap bucket)
         ], f"Unexpected call sequence: {stages}"
 
         # ── Thinking trail carries the critic's signals so the user
@@ -295,7 +297,7 @@ class TestRunReactCriticIntegration:
 
         from app.pipeline.react_loop import run_react
 
-        # No critic call in the script — if the critic fires despite
+        # No critique stage in the script — if the critic fires despite
         # being disabled, ScriptedLLM raises "unexpected call".
         scripted_llm = ScriptedLLM({
             "react_1": [_PLANNER_ROUND_1],
@@ -316,9 +318,9 @@ class TestRunReactCriticIntegration:
             "(baseline). If it's missing, something else is stripping it."
         )
 
-        # And the critic stage was never called:
+        # And the critique stage was never called:
         stages = [c["stage"] for c in scripted_llm.calls]
-        assert "react_critic" not in stages
+        assert "critique" not in stages
 
     def test_rounds_exhausted_ships_with_warning(self, critic_on):
         """When the planner keeps producing hallucinated drafts and
@@ -334,7 +336,7 @@ class TestRunReactCriticIntegration:
             "react_1": [_PLANNER_ROUND_2_HALLUCINATED],  # completes on round 1
             "react_2": [_PLANNER_ROUND_2_HALLUCINATED],  # and again
             "react_3": [_PLANNER_ROUND_2_HALLUCINATED],  # and again
-            "react_critic": [
+            "critique": [
                 _CRITIC_REJECTS_ROUND_2,
                 _CRITIC_REJECTS_ROUND_2,
                 _CRITIC_REJECTS_ROUND_2,

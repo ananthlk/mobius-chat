@@ -1279,6 +1279,17 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 if critic_enabled():
                     rounds_remaining = (max_it - rn)  # not counting this round's decision
                     emit("  ◌ Critic auditing draft against sources…")
+                    # Stage 'critique' (not 'react_critic') routes to the
+                    # existing cheap-model bucket in model_registry:
+                    #   - Latency cap: 15s (vs planner's 90s)
+                    #   - Cost cap: $0.006 (vs planner's $0.12)
+                    #   - Eligible models: Haiku / Flash class (critic is
+                    #     a narrow JSON-audit task; doesn't need Sonnet)
+                    #   - Listed in CHEAP_STAGES so the bandit treats it
+                    #     accordingly.
+                    # 'react_critic' would have fallen through to the
+                    # planner bucket via the stage.startswith('react_')
+                    # branch — wrong pool for this workload.
                     critic_raw = _call_llm_json(
                         CRITIC_SYSTEM_PROMPT,
                         build_critic_user_message(
@@ -1288,7 +1299,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                             tool_results=tool_results,
                         ),
                         ctx=ctx,
-                        stage="react_critic",
+                        stage="critique",
                         max_tokens=1200,
                     )
                     critique = parse_critic_response(critic_raw)
