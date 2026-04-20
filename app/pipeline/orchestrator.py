@@ -147,10 +147,17 @@ def run_pipeline(
     t0_start: float | None = None,
     use_react_override: bool | None = None,
     chat_mode: str | None = None,
+    user_id: str | None = None,
 ) -> None:
     """Run the full pipeline: state_load -> classify -> plan -> clarify -> [resolve -> integrate] | early_exit.
 
     Publishes response (clarification, refinement, or completed) via queue.
+
+    ``user_id`` (Phase 2d completion, 2026-04-19): authenticated user_id
+    from POST /chat's ``require_user`` dependency, forwarded through
+    the queue payload. Stored on ``ctx.user_id`` and stamped onto the
+    chat_turns row at ``persistence.save_turn(user_id=...)``. None in
+    dev mode / when auth is disabled.
     """
     t0 = t0_start if t0_start is not None else time.perf_counter()
     start_progress(correlation_id)
@@ -166,6 +173,7 @@ def run_pipeline(
         correlation_id=correlation_id,
         thread_id=(thread_id or "").strip() or None,
         message=(message or "").strip(),
+        user_id=(user_id or "").strip() or None,
     )
 
     def on_thinking(chunk: str) -> None:
@@ -418,6 +426,7 @@ def _publish_pursuit_ended(correlation_id: str, ctx: PipelineContext, t0_start: 
                 plan_snapshot=ctx.plan.model_dump() if ctx.plan else None,
                 source_confidence_strip=None,
                 config_sha=config_sha,
+                user_id=ctx.user_id,
             )
             merged = {**(ctx.merged_state or {}), "refined_query": ctx.refined_query}
             if ctx.master_objective is not None:
@@ -492,6 +501,7 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
                     plan_snapshot=ctx.plan.model_dump() if ctx.plan else None,
                     source_confidence_strip=None,
                     config_sha=config_sha,
+                    user_id=ctx.user_id,
                 )
             else:
                 persistence.save_turn(
@@ -507,6 +517,7 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
                     plan_snapshot=ctx.plan.model_dump() if ctx.plan else None,
                     source_confidence_strip=None,
                     config_sha=config_sha,
+                    user_id=ctx.user_id,
                 )
             if ctx.thread_id:
                 merged = {**(ctx.merged_state or {}), "refined_query": ctx.refined_query}
@@ -589,6 +600,7 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
                 plan_snapshot=ctx.plan.model_dump() if ctx.plan else None,
                 source_confidence_strip=None,
                 config_sha=config_sha,
+                user_id=ctx.user_id,
             )
         else:
             persistence.save_turn(
@@ -604,6 +616,7 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
                 plan_snapshot=ctx.plan.model_dump() if ctx.plan else None,
                 source_confidence_strip=None,
                 config_sha=config_sha,
+                user_id=ctx.user_id,
             )
         if ctx.thread_id:
             merged = {**(ctx.merged_state or {}), "refined_query": ctx.refined_query}
@@ -655,6 +668,7 @@ def _publish_completed(ctx: PipelineContext, t0_start: float) -> None:
                 plan_snapshot=ctx.plan.model_dump() if ctx.plan else None,
                 source_confidence_strip=payload.get("source_confidence_strip"),
                 config_sha=config_sha,
+                user_id=ctx.user_id,
             )
         else:
             persistence.save_turn(
@@ -670,6 +684,7 @@ def _publish_completed(ctx: PipelineContext, t0_start: float) -> None:
                 plan_snapshot=ctx.plan.model_dump() if ctx.plan else None,
                 source_confidence_strip=payload.get("source_confidence_strip"),
                 config_sha=config_sha,
+                user_id=ctx.user_id,
             )
         if ctx.thread_id:
             merged = {**(ctx.merged_state or {}), "refined_query": ctx.refined_query}

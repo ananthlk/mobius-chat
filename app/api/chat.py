@@ -131,16 +131,21 @@ def _enrich_completed_response_from_db(resp: dict) -> dict:
 @router.post("/chat", response_model=ChatResponse)
 def post_chat(
     body: ChatRequest,
-    _user_id: str | None = Depends(require_user),
+    user_id: str | None = Depends(require_user),
 ):
     """Enqueue a chat request; returns correlation_id and thread_id for polling.
 
     Phase 2d: ``require_user`` respects ``CHAT_AUTH_MODE``. In hosted envs
     (``CHAT_ENV=staging`` or ``prod``) auth defaults to ``required`` — a
     request without a valid JWT gets 401. Dev is ``off`` by default so
-    local testing is unchanged. The ``_user_id`` is not consumed here
-    yet; future work will stamp it onto the turn + use it for
-    per-user rate limiting.
+    local testing is unchanged.
+
+    Phase 2d completion (2026-04-19): the authenticated ``user_id`` is
+    now forwarded through the queue payload → worker → pipeline → onto
+    the ``chat_turns.user_id`` column for audit attribution. None when
+    auth is disabled (``CHAT_AUTH_MODE=off``); only included in the
+    payload when non-None so older worker binaries that haven't picked
+    up the new signature still work.
     """
     correlation_id = str(uuid.uuid4())
     thread_id = ensure_thread((body.thread_id or "").strip() or None)
@@ -149,6 +154,8 @@ def post_chat(
         payload["use_react"] = body.use_react
     if body.chat_mode is not None:
         payload["chat_mode"] = body.chat_mode
+    if user_id:
+        payload["user_id"] = user_id
     get_queue().publish_request(correlation_id, payload)
     return ChatResponse(correlation_id=correlation_id, thread_id=thread_id)
 

@@ -22,6 +22,7 @@ class PersistencePort(ABC):
         plan_snapshot: dict[str, Any] | None = None,
         source_confidence_strip: str | None = None,
         config_sha: str | None = None,
+        user_id: str | None = None,
     ) -> None:
         pass
 
@@ -42,6 +43,7 @@ class PersistencePort(ABC):
         plan_snapshot: dict[str, Any] | None = None,
         source_confidence_strip: str | None = None,
         config_sha: str | None = None,
+        user_id: str | None = None,
     ) -> None:
         """Atomic when possible: save turn + append messages. Default: separate calls."""
         self.save_turn(
@@ -49,6 +51,7 @@ class PersistencePort(ABC):
             duration_ms, model_used, llm_provider,
             thread_id=thread_id, plan_snapshot=plan_snapshot,
             source_confidence_strip=source_confidence_strip, config_sha=config_sha,
+            user_id=user_id,
         )
         if thread_id:
             self.append_messages(thread_id, correlation_id, user_content, assistant_content)

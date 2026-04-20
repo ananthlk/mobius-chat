@@ -68,6 +68,7 @@ class MemoryPersistence(PersistencePort):
         plan_snapshot: dict[str, Any] | None = None,
         source_confidence_strip: str | None = None,
         config_sha: str | None = None,
+        user_id: str | None = None,  # Phase 2d: accepted for signature parity; in-memory backend doesn't persist  # noqa: ARG002
     ) -> None:
         if not thread_id:
             return
@@ -98,12 +99,14 @@ class MemoryPersistence(PersistencePort):
         plan_snapshot: dict[str, Any] | None = None,
         source_confidence_strip: str | None = None,
         config_sha: str | None = None,
+        user_id: str | None = None,
     ) -> None:
         self.save_turn(
             correlation_id, question, thinking_log, final_message, sources,
             duration_ms, model_used, llm_provider,
             thread_id=thread_id, plan_snapshot=plan_snapshot,
             source_confidence_strip=source_confidence_strip, config_sha=config_sha,
+            user_id=user_id,
         )
         if thread_id:
             self.append_messages(thread_id, correlation_id, user_content, assistant_content)

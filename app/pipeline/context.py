@@ -18,6 +18,16 @@ class PipelineContext:
     message: str
     """Raw user message for this turn."""
 
+    user_id: str | None = None
+    """Authenticated user_id from POST /chat's ``require_user`` dependency.
+
+    Phase 2d added the dependency + 401 gating for hosted mode;
+    2026-04-19 commit added the plumbing from POST /chat → worker →
+    here → insert_turn so chat_turns rows get stamped. None in dev
+    (``CHAT_AUTH_MODE=off``) or when auth middleware couldn't decode
+    a JWT.
+    """
+
     # State (patch-based for now; will migrate to ThreadState in Phase 2)
     merged_state: dict[str, Any] = field(default_factory=dict)
     """Current thread state after load + apply patch."""

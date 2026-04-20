@@ -27,6 +27,13 @@ def process_one(correlation_id: str, payload: dict) -> None:
     chat_mode = payload.get("chat_mode")
     if chat_mode is not None and not isinstance(chat_mode, str):
         chat_mode = None
+    # Phase 2d completion (2026-04-19): user_id comes from POST /chat's
+    # require_user dependency, forwarded through the queue so the
+    # worker can stamp it on chat_turns for audit attribution. None
+    # when auth is disabled in dev or the JWT couldn't be decoded.
+    user_id = payload.get("user_id")
+    if user_id is not None and not isinstance(user_id, str):
+        user_id = None
     run_pipeline(
         correlation_id,
         message,
@@ -34,6 +41,7 @@ def process_one(correlation_id: str, payload: dict) -> None:
         t0_start=time.perf_counter(),
         use_react_override=use_react,
         chat_mode=chat_mode,
+        user_id=user_id,
     )
 
 

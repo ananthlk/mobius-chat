@@ -30,8 +30,14 @@ def _atomic_save_turn_with_messages(
     plan_snapshot: dict[str, Any] | None,
     source_confidence_strip: str | None,
     config_sha: str | None,
+    user_id: str | None = None,
 ) -> None:
-    """Single transaction: insert turn + append user/assistant messages."""
+    """Single transaction: insert turn + append user/assistant messages.
+
+    ``user_id`` (Phase 2d completion): authenticated user_id from
+    ``require_user``. Stamped onto the chat_turns row for attribution.
+    None in dev / no-auth mode.
+    """
     import psycopg2
 
     url = _get_db_url()
@@ -44,48 +50,107 @@ def _atomic_save_turn_with_messages(
         thread_val = (thread_id or "").strip() or None
         strip_val = (source_confidence_strip or "").strip() or None
         config_sha_val = (config_sha or "").strip() or None
-        cur.execute(
-            """
-            INSERT INTO chat_turns (
-                correlation_id, question, thinking_log, final_message, sources,
-                duration_ms, model_used, llm_provider, session_id, thread_id,
-                plan_snapshot, blueprint_snapshot, agent_cards, source_confidence_strip, config_sha
+        user_id_val = (user_id or "").strip() or None
+        try:
+            cur.execute(
+                """
+                INSERT INTO chat_turns (
+                    correlation_id, question, thinking_log, final_message, sources,
+                    duration_ms, model_used, llm_provider, session_id, thread_id,
+                    plan_snapshot, blueprint_snapshot, agent_cards, source_confidence_strip, config_sha,
+                    user_id
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (correlation_id) DO UPDATE SET
+                    question = EXCLUDED.question,
+                    thinking_log = EXCLUDED.thinking_log,
+                    final_message = EXCLUDED.final_message,
+                    sources = EXCLUDED.sources,
+                    duration_ms = EXCLUDED.duration_ms,
+                    model_used = EXCLUDED.model_used,
+                    llm_provider = EXCLUDED.llm_provider,
+                    session_id = EXCLUDED.session_id,
+                    thread_id = EXCLUDED.thread_id,
+                    plan_snapshot = EXCLUDED.plan_snapshot,
+                    blueprint_snapshot = EXCLUDED.blueprint_snapshot,
+                    agent_cards = EXCLUDED.agent_cards,
+                    source_confidence_strip = EXCLUDED.source_confidence_strip,
+                    config_sha = EXCLUDED.config_sha,
+                    user_id = COALESCE(EXCLUDED.user_id, chat_turns.user_id)
+                """,
+                (
+                    correlation_id,
+                    (question or "").strip() or "",
+                    json.dumps(thinking_log or []),
+                    (final_message or "").strip() or None,
+                    json.dumps(sources or []),
+                    duration_ms,
+                    (model_used or "").strip() or None,
+                    (llm_provider or "").strip() or None,
+                    None,
+                    thread_val,
+                    json.dumps(plan_snapshot) if plan_snapshot is not None else None,
+                    None,
+                    None,
+                    strip_val,
+                    config_sha_val,
+                    user_id_val,
+                ),
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (correlation_id) DO UPDATE SET
-                question = EXCLUDED.question,
-                thinking_log = EXCLUDED.thinking_log,
-                final_message = EXCLUDED.final_message,
-                sources = EXCLUDED.sources,
-                duration_ms = EXCLUDED.duration_ms,
-                model_used = EXCLUDED.model_used,
-                llm_provider = EXCLUDED.llm_provider,
-                session_id = EXCLUDED.session_id,
-                thread_id = EXCLUDED.thread_id,
-                plan_snapshot = EXCLUDED.plan_snapshot,
-                blueprint_snapshot = EXCLUDED.blueprint_snapshot,
-                agent_cards = EXCLUDED.agent_cards,
-                source_confidence_strip = EXCLUDED.source_confidence_strip,
-                config_sha = EXCLUDED.config_sha
-            """,
-            (
-                correlation_id,
-                (question or "").strip() or "",
-                json.dumps(thinking_log or []),
-                (final_message or "").strip() or None,
-                json.dumps(sources or []),
-                duration_ms,
-                (model_used or "").strip() or None,
-                (llm_provider or "").strip() or None,
-                None,
-                thread_val,
-                json.dumps(plan_snapshot) if plan_snapshot is not None else None,
-                None,
-                None,
-                strip_val,
-                config_sha_val,
-            ),
-        )
+        except Exception as e:
+            # Graceful fallback for the same migration class that
+            # insert_turn handles: if the user_id column doesn't exist
+            # (migration not yet run), retry without it so the atomic
+            # save still succeeds. Rolling back + reinserting on the
+            # same cursor requires closing the failed transaction
+            # first.
+            err_str = str(e).lower()
+            if "user_id" in err_str or ("column" in err_str and "does not exist" in err_str):
+                conn.rollback()
+                cur.execute(
+                    """
+                    INSERT INTO chat_turns (
+                        correlation_id, question, thinking_log, final_message, sources,
+                        duration_ms, model_used, llm_provider, session_id, thread_id,
+                        plan_snapshot, blueprint_snapshot, agent_cards, source_confidence_strip, config_sha
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (correlation_id) DO UPDATE SET
+                        question = EXCLUDED.question,
+                        thinking_log = EXCLUDED.thinking_log,
+                        final_message = EXCLUDED.final_message,
+                        sources = EXCLUDED.sources,
+                        duration_ms = EXCLUDED.duration_ms,
+                        model_used = EXCLUDED.model_used,
+                        llm_provider = EXCLUDED.llm_provider,
+                        session_id = EXCLUDED.session_id,
+                        thread_id = EXCLUDED.thread_id,
+                        plan_snapshot = EXCLUDED.plan_snapshot,
+                        blueprint_snapshot = EXCLUDED.blueprint_snapshot,
+                        agent_cards = EXCLUDED.agent_cards,
+                        source_confidence_strip = EXCLUDED.source_confidence_strip,
+                        config_sha = EXCLUDED.config_sha
+                    """,
+                    (
+                        correlation_id,
+                        (question or "").strip() or "",
+                        json.dumps(thinking_log or []),
+                        (final_message or "").strip() or None,
+                        json.dumps(sources or []),
+                        duration_ms,
+                        (model_used or "").strip() or None,
+                        (llm_provider or "").strip() or None,
+                        None,
+                        thread_val,
+                        json.dumps(plan_snapshot) if plan_snapshot is not None else None,
+                        None,
+                        None,
+                        strip_val,
+                        config_sha_val,
+                    ),
+                )
+            else:
+                raise
         if thread_id and thread_val:
             u = (user_content or "").strip() or ""
             a = (assistant_content or "").strip() or ""
@@ -130,6 +195,7 @@ class PostgresPersistence(PersistencePort):
         plan_snapshot: dict[str, Any] | None = None,
         source_confidence_strip: str | None = None,
         config_sha: str | None = None,
+        user_id: str | None = None,
     ) -> None:
         """Atomic: turn + messages in one transaction."""
         _atomic_save_turn_with_messages(
@@ -137,6 +203,7 @@ class PostgresPersistence(PersistencePort):
             duration_ms, model_used, llm_provider, thread_id,
             user_content, assistant_content,
             plan_snapshot, source_confidence_strip, config_sha,
+            user_id,
         )
 
     def save_turn(
@@ -155,6 +222,7 @@ class PostgresPersistence(PersistencePort):
         plan_snapshot: dict[str, Any] | None = None,
         source_confidence_strip: str | None = None,
         config_sha: str | None = None,
+        user_id: str | None = None,
     ) -> None:
         insert_turn(
             correlation_id=correlation_id,
@@ -170,6 +238,7 @@ class PostgresPersistence(PersistencePort):
             plan_snapshot=plan_snapshot,
             source_confidence_strip=source_confidence_strip,
             config_sha=config_sha,
+            user_id=user_id,
         )
 
     def append_messages(

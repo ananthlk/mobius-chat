@@ -92,8 +92,22 @@ def insert_turn(
     agent_cards: list[dict[str, Any]] | None = None,
     source_confidence_strip: str | None = None,
     config_sha: str | None = None,
+    user_id: str | None = None,
 ) -> None:
-    """Insert one turn row. Called by worker when response is complete. config_sha ties run to prompts+LLM config version."""
+    """Insert one turn row. Called by worker when response is complete.
+
+    config_sha ties run to prompts+LLM config version.
+
+    user_id (Phase 2d, added 2026-04-19): the authenticated user_id
+    from ``require_user`` when auth is enabled. None in dev / when
+    auth is disabled. Stamped onto the row so audit trails, per-user
+    rate limiting, and per-user analytics have the attribution they
+    need. Requires the ``user_id`` column on ``chat_turns``; when
+    missing, the function falls back to the column-less insert path
+    (same pattern as the context_summary migration). That way this
+    change ships without requiring an immediate DB migration — the
+    column can be added at operator's convenience.
+    """
     url = _get_db_url()
     if not url:
         logger.warning("CHAT_RAG_DATABASE_URL not set; turn not persisted")
@@ -113,6 +127,7 @@ def insert_turn(
         cur = conn.cursor()
         strip_val = (source_confidence_strip or "").strip() or None
         config_sha_val = (config_sha or "").strip() or None
+        user_id_val = (user_id or "").strip() or None
         context_summary_val = build_context_summary(final_message or "", sources or [])
         cur.execute(
             """
@@ -120,9 +135,9 @@ def insert_turn(
                 correlation_id, question, thinking_log, final_message, sources,
                 duration_ms, model_used, llm_provider, session_id, thread_id,
                 plan_snapshot, blueprint_snapshot, agent_cards, source_confidence_strip, config_sha,
-                context_summary
+                context_summary, user_id
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (correlation_id) DO UPDATE SET
                 question = EXCLUDED.question,
                 thinking_log = EXCLUDED.thinking_log,
@@ -138,7 +153,8 @@ def insert_turn(
                 agent_cards = EXCLUDED.agent_cards,
                 source_confidence_strip = EXCLUDED.source_confidence_strip,
                 config_sha = EXCLUDED.config_sha,
-                context_summary = EXCLUDED.context_summary
+                context_summary = EXCLUDED.context_summary,
+                user_id = COALESCE(EXCLUDED.user_id, chat_turns.user_id)
             """,
             (
                 correlation_id,
@@ -157,15 +173,24 @@ def insert_turn(
                 strip_val,
                 config_sha_val,
                 context_summary_val or None,
+                user_id_val,
             ),
         )
         conn.commit()
         cur.close()
         conn.close()
     except Exception as e:
-        # If context_summary column is missing (migration 017 not run), retry without it so turns still appear in recent searches
+        # If context_summary or user_id columns are missing (migration
+        # not yet run), retry without them so turns still appear in
+        # recent searches. Same graceful-fallback pattern protects
+        # both newly-added columns — operators can run migrations at
+        # their convenience instead of at deploy time.
         err_str = str(e).lower()
-        if "context_summary" in err_str or ("column" in err_str and "does not exist" in err_str):
+        if (
+            "context_summary" in err_str
+            or "user_id" in err_str
+            or ("column" in err_str and "does not exist" in err_str)
+        ):
             try:
                 conn2 = psycopg2.connect(url)
                 cur2 = conn2.cursor()
