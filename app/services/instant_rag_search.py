@@ -72,30 +72,37 @@ def lazy_rag_search(
 
         (answer_text, sources, usage, signal)
 
-    - ``answer_text``: the chunk texts joined with section-break markers.
-      **Not** an LLM synthesis — the ReAct integrator does that once at
-      the end of the turn. Joining raw chunks keeps this tool cheap
-      (no synth LLM call, no 2-5s latency per dispatch).
-    - ``sources``: the per-chunk dicts the downstream integrator already
-      knows how to cite (text, document_name, page_number, rerank_score).
-    - ``usage``: None — we do not burn LLM tokens here. Embedding cost is
-      tracked separately by the embedding provider if it emits usage.
-    - ``signal``: ``no_sources`` when zero chunks come back (so the ReAct
-      retry guard records a failed attempt), else ``corpus_only`` so the
-      integrator treats these chunks the same as a ``search_corpus`` hit.
+    skills-core refactor (Day 5, 2026-04-20):
+    Previously this function did embed + Chroma query + metadata
+    extraction inline. Now it's a thin adapter over
+    ``mobius_skills_core.skills.thread_corpus_search.run_thread_corpus_search``
+    — the shared skill is the single source of truth for this
+    retrieval pattern, shared with external MCP consumers.
+
+    The chat-specific pieces that stay here:
+      * config read (chat_config.get_chat_config())
+      * embedding provider (chat's get_query_embedding)
+      * legacy string emits for pre-envelope callers
+      * tuple return shape the ReAct loop expects
+
+    All the Chroma + filter + scoring logic now lives in the shared
+    package. Preserves the (answer, sources, usage, signal) tuple so
+    downstream (react_loop's tool dispatch) works unchanged.
     """
     if not document_id or not document_id.strip():
         return ("", [], None, _SIGNAL_NO_SOURCES)
     if not question or not question.strip():
         return ("", [], None, _SIGNAL_NO_SOURCES)
 
-    # Lazy imports so loading this module doesn't pull the embedding /
-    # chroma deps if nothing calls the function.
     try:
         from app.chat_config import get_chat_config
         from app.services.embedding_provider import get_query_embedding
+        from mobius_skills_core.skills.corpus_search import ChromaConfig
+        from mobius_skills_core.skills.thread_corpus_search import (
+            run_thread_corpus_search,
+        )
     except ImportError as e:
-        logger.warning("instant-rag: embedding / config deps missing: %s", e)
+        logger.warning("instant-rag: required deps missing: %s", e)
         return ("", [], None, _SIGNAL_NO_SOURCES)
 
     cfg = get_chat_config()
@@ -106,111 +113,62 @@ def lazy_rag_search(
 
     _emit(emitter, "Reading your attached document…")
 
-    try:
-        query_embedding = get_query_embedding(question)
-    except Exception as e:
-        # Embedding provider errors shouldn't take down the tool — report
-        # no_sources so the retry guard records it and the planner pivots.
-        logger.warning("instant-rag: embedding failed: %s", e)
-        return ("", [], None, _SIGNAL_NO_SOURCES)
+    result = run_thread_corpus_search(
+        document_id=document_id,
+        question=question,
+        embed_query=get_query_embedding,
+        chroma=ChromaConfig(
+            persist_dir=rag.chroma_persist_dir,
+            collection=rag.chroma_collection or "published_rag",
+        ),
+        k=k,
+        # emitter deliberately None — legacy string emit above covers
+        # the pre-envelope UI surface; SkillEvent → EmitEnvelope
+        # translation comes in a follow-up.
+    )
 
-    try:
-        import chromadb
-    except ImportError:
-        logger.warning("instant-rag: chromadb not installed")
-        return ("", [], None, _SIGNAL_NO_SOURCES)
-
-    try:
-        client = chromadb.PersistentClient(path=rag.chroma_persist_dir)
-        coll = client.get_or_create_collection(
-            name=rag.chroma_collection,
-            metadata={"hnsw:space": "cosine"},
-        )
-    except Exception as e:
-        logger.warning("instant-rag: chroma open failed: %s", e)
-        return ("", [], None, _SIGNAL_NO_SOURCES)
-
-    # Scope strictly to this document + the instant_rag flag. The flag is
-    # redundant given document_id, but keeping it catches corruption cases
-    # where a chunk was mis-tagged.
-    where = {
-        "$and": [
-            {"document_id": document_id},
-            {"instant_rag": "true"},
-        ]
-    }
-
-    try:
-        result = coll.query(
-            query_embeddings=[query_embedding],
-            n_results=k,
-            where=where,
-            include=["documents", "metadatas", "distances"],
-        )
-    except Exception as e:
-        logger.warning("instant-rag: chroma query failed: %s", e)
-        return ("", [], None, _SIGNAL_NO_SOURCES)
-
-    ids = (result.get("ids") or [[]])[0]
-    docs = (result.get("documents") or [[]])[0]
-    metas = (result.get("metadatas") or [[]])[0]
-    distances = (result.get("distances") or [[]])[0]
-
-    if not ids:
-        # 2026-04-17 diagnostic: empty Chroma result has two very different
-        # causes — (a) no vectors for this document_id (ingest failed to
-        # write to Chroma, e.g. dimension mismatch), (b) vectors exist but
-        # none passed the similarity cutoff. Log enough to tell them apart.
-        try:
-            probe = coll.get(where={"document_id": document_id}, limit=1)
-            vector_count_hint = len(probe.get("ids") or [])
-        except Exception:
-            vector_count_hint = -1
-        logger.warning(
-            "[instant-rag] empty Chroma result for document_id=%r. "
-            "Vectors-for-doc probe: %s "
-            "(0 = skill didn't write to Chroma — likely embedding dim mismatch "
-            "or write error; >0 = query embedding missed all of them).",
-            document_id,
-            vector_count_hint if vector_count_hint >= 0 else "probe_failed",
-        )
+    if result.signal != "ok":
+        # Surface the diagnostic hint from the shared skill when
+        # present — the vector_count_hint tells operators whether the
+        # document's chunks are missing from Chroma (ingest gap) vs.
+        # present but the query embedding missed them (similarity).
+        hint = (result.extra or {}).get("vector_count_hint")
+        if hint is not None:
+            logger.warning(
+                "[instant-rag] empty Chroma result for document_id=%r. "
+                "vector_count_hint=%s (0 = nothing indexed for this doc; "
+                ">0 = query embedding missed).",
+                document_id, hint,
+            )
         _emit(emitter, "  ↓ your attached document doesn't cover this.")
         return ("", [], None, _SIGNAL_NO_SOURCES)
 
-    # Distance is cosine in [0, 2]; invert to a 0..1 similarity score the
-    # rest of the pipeline calls "rerank_score" so the integrator treats
-    # these chunks like any other retrieved chunk.
+    # Convert SkillResult.chunks → legacy dict shape the chat integrator
+    # knows how to cite. Preserves the pre-refactor field names
+    # (rerank_score, instant_rag flag, etc.) so downstream integrator +
+    # retry-guard code works unchanged.
     sources: list[dict[str, Any]] = []
-    for cid, text, meta, dist in zip(ids, docs, metas, distances):
-        if not text or not str(text).strip():
-            continue
-        m = meta or {}
-        rerank_score = max(0.0, min(1.0, 1.0 - (float(dist or 0.0) / 2.0)))
+    for idx, chunk in enumerate(result.chunks, 1):
+        md = chunk.metadata or {}
         sources.append({
-            "id": str(cid),
-            "text": str(text),
-            "document_id": str(m.get("document_id") or document_id),
-            "document_name": str(m.get("display_name") or m.get("filename") or "Uploaded document"),
-            "page_number": m.get("page_number"),
-            "source_type": str(m.get("source_type") or "instant_rag"),
-            "rerank_score": rerank_score,
-            # No confidence_label — ``_score_chunk_for_confidence_filter``
-            # (Phase 0.18) will fall through to the rerank_score above.
+            "id": chunk.chunk_id,
+            "text": chunk.text,
+            "document_id": chunk.document_id or document_id,
+            "document_name": chunk.document_name,
+            "page_number": chunk.page_number,
+            "source_type": md.get("source_type") or "instant_rag",
+            "rerank_score": chunk.score,
+            # No confidence_label — _score_chunk_for_confidence_filter
+            # (Phase 0.18) falls through to rerank_score.
             "instant_rag": True,
         })
 
-    if not sources:
-        return ("", [], None, _SIGNAL_NO_SOURCES)
+    _emit(
+        emitter,
+        f"  ✓ found {len(sources)} passage{'s' if len(sources) != 1 else ''} in your attached document.",
+    )
 
-    # "answer" for the tool result is the raw chunk text joined with
-    # separators so the integrator has enough to synthesize. We do NOT
-    # run an LLM here; the end-of-turn integrator is the single synthesis
-    # point per turn (keeps latency + cost predictable).
-    answer = "\n\n---\n\n".join(s["text"] for s in sources)
-
-    _emit(emitter, f"  ✓ found {len(sources)} passage{'s' if len(sources) != 1 else ''} in your attached document.")
-
-    return (answer, sources, None, _SIGNAL_CORPUS_ONLY)
+    return (result.text, sources, None, _SIGNAL_CORPUS_ONLY)
 
 
 def _emit(emitter: Callable[[str], None] | None, line: str) -> None:

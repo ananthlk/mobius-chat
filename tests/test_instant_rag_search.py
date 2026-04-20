@@ -23,6 +23,28 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _reset_skills_core_chroma_cache():
+    """Reset the shared Chroma collection cache between tests.
+
+    lazy_rag + corpus_search in mobius-skills-core keep a module-level
+    cache of chromadb collection handles to avoid the HNSW-index load
+    cost on every query. Tests that monkey-patch chromadb need the
+    cache cleared so a stale mock from a previous test doesn't leak.
+    """
+    try:
+        from mobius_skills_core.skills.corpus_search import _reset_chroma_cache
+        _reset_chroma_cache()
+    except ImportError:
+        pass
+    yield
+    try:
+        from mobius_skills_core.skills.corpus_search import _reset_chroma_cache
+        _reset_chroma_cache()
+    except ImportError:
+        pass
+
+
 # ── helper: thread-state upload_id → document_id resolution ────────────────
 
 
