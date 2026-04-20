@@ -259,12 +259,49 @@ interface LlmRouterReportResponse {
 }
 
 /** Chat API response when polling for completion */
+/** Sprint A.1 (2026-04-19): the structured emit envelope shape the
+ *  backend writes into thinking_log. Typed minimally — we only need
+ *  `signal` (for future signal-specific rendering) and `note` (for
+ *  the display string fallback). Full envelope has more fields (data,
+ *  step_id, round, task_type, etc.) but the FE doesn't consume them
+ *  yet. */
+interface ThinkingEnvelope {
+  signal: string;
+  note?: string;
+  step_id?: string;
+  round?: number;
+  data?: Record<string, unknown>;
+  // … other fields ignored by the FE today
+}
+
+/** Normalize a thinking_log entry (legacy string or new envelope dict)
+ *  into the display string the chat UI renders. */
+function thinkingLineFromEntry(entry: string | ThinkingEnvelope | unknown): string {
+  if (typeof entry === "string") {
+    return entry;
+  }
+  if (entry && typeof entry === "object" && "signal" in entry) {
+    const env = entry as ThinkingEnvelope;
+    return (env.note ?? "").trim() || `[${env.signal}]`;
+  }
+  // Unknown shape — stringify as a last resort so the line doesn't
+  // silently disappear. Shouldn't happen in practice.
+  try {
+    return JSON.stringify(entry);
+  } catch {
+    return String(entry);
+  }
+}
+
 interface ChatResponse {
   status: string;
   message: string | null;
   correlation_id?: string;
   plan?: unknown;
-  thinking_log?: string[];
+  /** Sprint A.1 (2026-04-19): thinking_log became a mixed array — legacy
+   *  string emits alongside new EmitEnvelope dicts. The normalizer
+   *  thinkingLineFromEntry() converts either shape to a display string. */
+  thinking_log?: (string | ThinkingEnvelope)[];
   response_source?: string;
   model_used?: string | null;
   llm_error?: string | null;
@@ -5365,7 +5402,9 @@ function run(): void {
           .then((r) => r.json() as Promise<ChatResponse>)
           .then((data) => {
             if (data.thinking_log?.length && onThinking) {
-              data.thinking_log.forEach((line: string) => {
+              data.thinking_log.forEach((entry) => {
+                // Mixed array (Sprint A.1): string OR envelope dict.
+                const line = thinkingLineFromEntry(entry);
                 if (!seenLines.has(line)) {
                   seenLines.add(line);
                   onThinking(line);
@@ -5871,8 +5910,10 @@ function run(): void {
           .catch(() => data)
       )
       .then((data) => {
-        // Final thinking lines if any not yet shown
-        (data.thinking_log ?? []).forEach((line: string) => {
+        // Final thinking lines if any not yet shown. Mixed array
+        // (Sprint A.1): string OR envelope dict; normalize first.
+        (data.thinking_log ?? []).forEach((entry) => {
+          const line = thinkingLineFromEntry(entry);
           if (!thinkingLines.includes(line)) addThinkingLineAndScroll(line);
         });
         const fullMessage = data.message ?? "(No message)";

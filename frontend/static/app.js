@@ -697,6 +697,20 @@ function adjudicationVerdictUi(qc) {
   }
   return qc.passed ? { shortLabel: "PASS", verdictBadgeText: "Verdict: PASS", badgeVariant: "pass" } : { shortLabel: "FAIL", verdictBadgeText: "Verdict: FAIL", badgeVariant: "fail" };
 }
+function thinkingLineFromEntry(entry) {
+  if (typeof entry === "string") {
+    return entry;
+  }
+  if (entry && typeof entry === "object" && "signal" in entry) {
+    const env = entry;
+    return (env.note ?? "").trim() || `[${env.signal}]`;
+  }
+  try {
+    return JSON.stringify(entry);
+  } catch {
+    return String(entry);
+  }
+}
 function normalizeFollowupLineItem(raw, defaultClickable) {
   if (typeof raw === "string") {
     const t = raw.trim();
@@ -4865,7 +4879,8 @@ function run() {
       function poll() {
         fetch(API_BASE + "/chat/response/" + correlationId).then((r) => r.json()).then((data) => {
           if (data.thinking_log?.length && onThinking) {
-            data.thinking_log.forEach((line) => {
+            data.thinking_log.forEach((entry) => {
+              const line = thinkingLineFromEntry(entry);
               if (!seenLines.has(line)) {
                 seenLines.add(line);
                 onThinking(line);
@@ -5280,7 +5295,8 @@ ${message}`;
         }).catch(() => data)
       )
     ).then((data) => {
-      (data.thinking_log ?? []).forEach((line) => {
+      (data.thinking_log ?? []).forEach((entry) => {
+        const line = thinkingLineFromEntry(entry);
         if (!thinkingLines.includes(line))
           addThinkingLineAndScroll(line);
       });
