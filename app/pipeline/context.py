@@ -126,6 +126,11 @@ class PipelineContext:
     # Co-pilot credentialing: run_id, pending_step_id, draft_output for validation UI
     credentialing_copilot: dict[str, Any] | None = None
 
+    # Inbound credentialing options from POST /chat (parallel feature branch;
+    # restored here so the orchestrator's run_pipeline(..., credentialing_options=...)
+    # signature doesn't TypeError on every turn).
+    credentialing_options: dict[str, Any] | None = None
+
     # UI chat mode (POST /chat chat_mode): copilot | agentic | quick
     chat_mode: str = "copilot"
 
