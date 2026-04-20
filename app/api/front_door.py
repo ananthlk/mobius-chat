@@ -45,22 +45,80 @@ logger = logging.getLogger(__name__)
 # ── Environment gate ──────────────────────────────────────────────────────
 
 
+_VALID_CHAT_ENVS = frozenset({"dev", "staging", "prod"})
+
+
+class InvalidChatEnvError(RuntimeError):
+    """Raised when CHAT_ENV is set to a value outside {dev, staging, prod}
+    AND the process is running in a way that suggests it's a hosted
+    deployment. See ``chat_env()`` for the strict-mode gating rules.
+    """
+
+
 def chat_env() -> str:
     """Normalized deployment env: 'dev' | 'staging' | 'prod'.
 
-    Same contract as Phase 0.17's CHAT_ENV gate in app.storage.feedback.
-    Unknown values fall back to 'dev' (permissive) so a typo doesn't
-    accidentally fail-closed your entire deployment — but logs a warning
-    so the typo is visible.
+    Strict mode (2026-04-20 hardening) — the permissive fallback to
+    ``dev`` was a production footgun: a typo in hosted config
+    (``CHAT_ENV=prod-us`` → silently treated as ``dev`` →
+    authentication off). Now:
+
+    * Valid values (``dev`` / ``staging`` / ``prod``) → use as-is.
+    * Empty / unset → default ``dev`` (matches legacy local-dev UX).
+    * **Unknown value + hosted cues** (``K_SERVICE`` for Cloud Run,
+      ``MOBIUS_PROD=1``, ``CHAT_ENV_STRICT=1``) → raise
+      ``InvalidChatEnvError`` so the container refuses to start and
+      ops sees a loud failure rather than a silent permissive deploy.
+    * **Unknown value on a dev laptop** (no hosted cues) → log a
+      warning and treat as ``dev``, preserving the "don't brick my
+      workstation on a typo" ergonomics.
+
+    The strict-mode check keys on cues rather than the unknown value
+    itself because the whole point is that we can't trust the value —
+    it might be the operator's intended prod config that typo'd.
     """
-    raw = (os.environ.get("CHAT_ENV") or "dev").strip().lower()
-    if raw not in {"dev", "staging", "prod"}:
-        logger.warning(
-            "Unknown CHAT_ENV=%r — treating as 'dev'. Valid: dev, staging, prod.",
-            raw,
-        )
+    raw = (os.environ.get("CHAT_ENV") or "").strip().lower()
+    if not raw:
         return "dev"
-    return raw
+    if raw in _VALID_CHAT_ENVS:
+        return raw
+    if _looks_hosted():
+        raise InvalidChatEnvError(
+            f"CHAT_ENV={raw!r} is not one of {sorted(_VALID_CHAT_ENVS)}. "
+            "Refusing to start in what looks like a hosted deployment "
+            "(detected via K_SERVICE / MOBIUS_PROD / CHAT_ENV_STRICT). "
+            "Fix the env var or set CHAT_ENV_STRICT=0 to force-disable "
+            "this gate (not recommended)."
+        )
+    logger.warning(
+        "Unknown CHAT_ENV=%r on a non-hosted host — treating as 'dev'. "
+        "Set CHAT_ENV to dev, staging, or prod. Set CHAT_ENV_STRICT=1 "
+        "to turn this into a boot failure in any environment.",
+        raw,
+    )
+    return "dev"
+
+
+def _looks_hosted() -> bool:
+    """Heuristic: is this process running in a hosted context?
+
+    True when any of:
+      * Cloud Run sets ``K_SERVICE`` automatically.
+      * ``MOBIUS_PROD=1`` / ``MOBIUS_PROD=true`` — our own belt.
+      * ``CHAT_ENV_STRICT=1`` — operator opt-in to strict mode.
+
+    When none of these are set we assume dev. The strict-mode gate
+    only fires on unknown CHAT_ENV values *in hosted*; unknown values
+    on a dev laptop still log-and-default (preserves "don't brick my
+    workstation on a typo" UX).
+    """
+    if (os.environ.get("K_SERVICE") or "").strip():
+        return True
+    if (os.environ.get("MOBIUS_PROD") or "").strip().lower() in {"1", "true", "yes"}:
+        return True
+    if (os.environ.get("CHAT_ENV_STRICT") or "").strip().lower() in {"1", "true", "yes"}:
+        return True
+    return False
 
 
 def is_hosted() -> bool:

@@ -2,8 +2,9 @@
 
 Tests lock:
 
-  1. **Flag gating.** ``MOBIUS_TASK_MANAGER_PROMOTION`` unset OR "0"
-     → no POST fires, regardless of envelope's flag.
+  1. **Flag gating.** ``MOBIUS_TASK_MANAGER_PROMOTION=0`` (or empty-
+     string explicit disable variants) → no POST fires. Default ON
+     as of 2026-04-20; unset env = enabled.
 
   2. **Envelope flag gating.** Even when the feature is on, only
      envelopes with ``report_to_task_manager=True`` get POSTed.
@@ -51,16 +52,18 @@ from app.services.task_manager_promotion import (
 
 
 class TestPromotionFlag:
-    def test_default_off(self, monkeypatch):
+    def test_default_on(self, monkeypatch):
+        # 2026-04-20: default flipped to ON after Sprint A.2 soak.
         monkeypatch.delenv("MOBIUS_TASK_MANAGER_PROMOTION", raising=False)
-        assert promotion_enabled() is False
+        assert promotion_enabled() is True
 
-    @pytest.mark.parametrize("val", ["1", "true", "TRUE", "yes", "on"])
+    @pytest.mark.parametrize("val", ["1", "true", "TRUE", "yes", "on", ""])
     def test_explicit_on(self, monkeypatch, val):
+        # Empty string falls back to default ON.
         monkeypatch.setenv("MOBIUS_TASK_MANAGER_PROMOTION", val)
         assert promotion_enabled() is True
 
-    @pytest.mark.parametrize("val", ["0", "false", "no", "off", ""])
+    @pytest.mark.parametrize("val", ["0", "false", "no", "off"])
     def test_explicit_off(self, monkeypatch, val):
         monkeypatch.setenv("MOBIUS_TASK_MANAGER_PROMOTION", val)
         assert promotion_enabled() is False
@@ -159,7 +162,7 @@ class TestPromoteGating:
     def test_promote_no_op_when_flag_off(self, monkeypatch):
         """Feature disabled — no POST. Even a promotion-eligible
         envelope is silently skipped."""
-        monkeypatch.delenv("MOBIUS_TASK_MANAGER_PROMOTION", raising=False)
+        monkeypatch.setenv("MOBIUS_TASK_MANAGER_PROMOTION", "0")
         env = make_critic_flagged(
             correlation_id="c-1",
             round=3,

@@ -62,11 +62,7 @@ _VALID_STATUSES = frozenset({
 # ── Internal helpers ──────────────────────────────────────────────────────
 
 
-def _err_message(result: dict) -> str:
-    err = result.get("error") or {}
-    if isinstance(err, dict):
-        return err.get("message", "") or ""
-    return str(err)
+from app.db_client import _err_message  # noqa: E402, F401 — shared helper
 
 
 def _row_to_dict(row) -> dict[str, Any]:

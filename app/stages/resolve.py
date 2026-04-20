@@ -307,6 +307,32 @@ def run_resolve(
     if not plan:
         return
 
+    # PHI audit trail (2026-04-20 hardening). Scan the user's raw
+    # message for PHI patterns (SSN / member_id / DOB / MRN / name) and
+    # write a phi_audit_log row if anything matched. Fire-and-forget
+    # via db-agent — never blocks the turn on audit-write failure.
+    #
+    # HIPAA requires a persistent audit trail of every PHI encounter;
+    # this is the inbound detection point. The outbound point
+    # (scanning the final answer) will wire into the integrator in a
+    # follow-up, which will upgrade ``action_taken`` from "logged_only"
+    # to "blocked" / "redacted" as the policy layer grows.
+    try:
+        from app.storage.phi_audit_log import audit_if_phi
+        audit_if_phi(
+            ctx.message or "",
+            correlation_id=ctx.correlation_id,
+            thread_id=ctx.thread_id,
+            event_type="request_phi_detected",
+            stage="resolve",
+            action_taken="logged_only",
+        )
+    except Exception:
+        # Never let a PHI audit issue break the resolve stage. Audit
+        # writer itself logs at warning on failure via its own logger;
+        # we stay silent here.
+        pass
+
     # ── ORDERED HEADER EMITS — must fire first, unconditionally, before any retrieval ──
     # Placing these here (not in the orchestrator) guarantees they enter the serial DB
     # insert queue before any retrieval events, regardless of classification or timing.

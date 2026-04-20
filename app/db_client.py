@@ -311,3 +311,58 @@ def db_transaction(
         "db_name": db_name,
         "caller_id": _get_caller_id(),
     })
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Shared error helpers
+# ─────────────────────────────────────────────────────────────────────────
+#
+# Every storage module that calls ``db_query`` / ``db_execute`` has the
+# same two helpers for reading the structured error shape. Having them
+# in the client (not duplicated across 5 storage modules) means one
+# source of truth for what an error looks like — and new storage modules
+# stay in sync by construction.
+#
+# The shape contract (matches app.db_agent / mobius-db-agent / contract):
+#   {"error": {"code": "...", "message": "...", ...extras}}
+#
+# ``_err_code`` / ``_err_message`` are tolerant of older shapes where
+# ``error`` was a bare string (can happen on the direct-psycopg2 fallback
+# path when the caller hasn't updated to the structured shape yet).
+
+
+def err_code(result: dict) -> str | None:
+    """Return ``result["error"]["code"]`` when the result is an error, else None.
+
+    ``result`` is the return value of ``db_query`` / ``db_execute``.
+    On success there's no ``error`` key; on error the shape is
+    ``{"error": {"code": "...", ...}}``. This helper normalizes both
+    so callers can do::
+
+        if err_code(result) == "connection_error":
+            ...
+    """
+    err = result.get("error") if isinstance(result, dict) else None
+    if isinstance(err, dict):
+        return err.get("code")
+    return None
+
+
+def err_message(result: dict) -> str:
+    """Return the human-readable error message or "" on success.
+
+    Handles both the canonical dict shape and the legacy bare-string
+    shape (pre-2026-04-20 fallback path).
+    """
+    err = result.get("error") if isinstance(result, dict) else None
+    if isinstance(err, dict):
+        return err.get("message", "") or ""
+    return str(err) if err else ""
+
+
+# Keep the underscore-prefixed aliases for back-compat with storage
+# modules that imported ``_err_code`` / ``_err_message`` as private
+# helpers before they moved here. New code should import the unprefixed
+# names.
+_err_code = err_code
+_err_message = err_message

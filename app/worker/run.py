@@ -1,6 +1,7 @@
 """Worker: consume from request queue → run_pipeline → publish."""
 import logging
 import os
+import signal
 import threading
 import time
 
@@ -15,8 +16,42 @@ from app.queue import get_queue
 logger = logging.getLogger(__name__)
 
 
+# Per-request deadline (2026-04-20 hardening). Without this, a runaway
+# turn (pathological LLM output, infinite tool loop, network hang) can
+# pin a worker indefinitely and the user sees no response. 90s matches
+# P99 of real turns on this stack — headroom for 3 ReAct rounds with
+# an LLM rate-limit retry, while still failing loudly for genuinely
+# stuck turns.
+_DEFAULT_TURN_DEADLINE_S = 90
+
+
+def _turn_deadline_seconds() -> int:
+    raw = (os.environ.get("MOBIUS_TURN_DEADLINE_S") or "").strip()
+    if not raw:
+        return _DEFAULT_TURN_DEADLINE_S
+    try:
+        n = int(raw)
+        return max(10, min(900, n))  # clamp [10s, 15min]
+    except ValueError:
+        return _DEFAULT_TURN_DEADLINE_S
+
+
+class _TurnDeadlineExceeded(Exception):
+    """Raised when a turn exceeds its allotted wall-clock budget."""
+
+
+def _deadline_handler(signum, frame):  # noqa: ARG001 — signal signature
+    raise _TurnDeadlineExceeded("turn exceeded deadline")
+
+
 def process_one(correlation_id: str, payload: dict) -> None:
-    """Process one request via pipeline: state_load → classify → plan → clarify → resolve → integrate → publish."""
+    """Process one request via pipeline: state_load → classify → plan → clarify → resolve → integrate → publish.
+
+    Wrapped in a wall-clock deadline (2026-04-20). On trip, publishes a
+    ``turn_failed`` response via the queue so the user gets a graceful
+    message instead of the client polling forever, and logs a loud
+    warning so ops sees stuck turns surface immediately.
+    """
     from app.pipeline.orchestrator import run_pipeline
 
     message = payload.get("message", "").strip()
@@ -34,15 +69,60 @@ def process_one(correlation_id: str, payload: dict) -> None:
     user_id = payload.get("user_id")
     if user_id is not None and not isinstance(user_id, str):
         user_id = None
-    run_pipeline(
-        correlation_id,
-        message,
-        thread_id,
-        t0_start=time.perf_counter(),
-        use_react_override=use_react,
-        chat_mode=chat_mode,
-        user_id=user_id,
-    )
+
+    deadline_s = _turn_deadline_seconds()
+    # signal.alarm only works in the main thread of the main interpreter.
+    # When the worker runs as a background thread (start_worker_background,
+    # used by the API's in-process path), we can't install the alarm —
+    # fall back to no deadline there. The standalone `python -m app.worker`
+    # process always runs the consumer in the main thread, so the alarm
+    # protects the production path.
+    is_main_thread = threading.current_thread() is threading.main_thread()
+    installed_alarm = False
+    prev_handler = None
+    if is_main_thread and hasattr(signal, "SIGALRM"):
+        prev_handler = signal.signal(signal.SIGALRM, _deadline_handler)
+        signal.alarm(deadline_s)
+        installed_alarm = True
+
+    try:
+        run_pipeline(
+            correlation_id,
+            message,
+            thread_id,
+            t0_start=time.perf_counter(),
+            use_react_override=use_react,
+            chat_mode=chat_mode,
+            user_id=user_id,
+        )
+    except _TurnDeadlineExceeded:
+        logger.warning(
+            "turn_deadline_exceeded correlation_id=%s deadline_s=%d",
+            correlation_id, deadline_s,
+        )
+        # Publish a graceful failure response so the client stops
+        # polling. Same pattern the orchestrator's _publish_failed uses.
+        try:
+            from app.queue import get_queue
+            get_queue().publish_response(
+                correlation_id,
+                {
+                    "status": "failed",
+                    "message": (
+                        "This is taking longer than expected. Please try again — "
+                        "if it keeps happening, rephrase your question or try a narrower scope."
+                    ),
+                    "error": "turn_deadline_exceeded",
+                    "deadline_s": deadline_s,
+                },
+            )
+        except Exception as _pub_err:
+            logger.exception("Failed to publish deadline-exceeded response: %s", _pub_err)
+    finally:
+        if installed_alarm:
+            signal.alarm(0)  # cancel
+            if prev_handler is not None:
+                signal.signal(signal.SIGALRM, prev_handler)
 
 
 def run_worker() -> None:

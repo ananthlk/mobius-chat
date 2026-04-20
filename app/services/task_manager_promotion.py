@@ -21,10 +21,10 @@ returns 5xx, we log WARNING and the chat turn continues. Promoted
 events lost in transit won't come back (no retry queue yet — if this
 becomes a concern, Sprint A.3 can add a Postgres outbox table).
 
-**Gating:** same env pattern as the rest of the Sprint A / critic work.
-``MOBIUS_TASK_MANAGER_PROMOTION=1`` enables the writer. Default OFF so
-Sprint A.2 can ship without immediate live behavior change; operators
-flip to ON per env after reviewing the first few promoted events.
+**Gating:** ``MOBIUS_TASK_MANAGER_PROMOTION`` controls the writer.
+Default ON (2026-04-20) after Sprint A.2 soak — operators set ``=0``
+to disable. Fire-and-forget failure mode means the worst case of an
+unreachable task-manager is a log warning per turn, not broken chat.
 
 **Volume expectation:** the 10 promoted signals fire roughly 1-3 times
 per chat turn on average. For a system at 100 turns/day, that's
@@ -47,10 +47,17 @@ logger = logging.getLogger(__name__)
 
 def promotion_enabled() -> bool:
     """Read at call time (not module load) so .env changes don't
-    require a worker restart for this specific knob. Default OFF
-    — matches the pattern used by MOBIUS_REACT_CRITIC, etc."""
+    require a worker restart for this specific knob.
+
+    Default **ON** as of 2026-04-20 — Sprint A.2 soak completed and
+    task-manager promotion is the expected production behavior. Set
+    ``MOBIUS_TASK_MANAGER_PROMOTION=0`` (or ``false``/``no``/``off``)
+    to disable explicitly.
+    """
     raw = (os.environ.get("MOBIUS_TASK_MANAGER_PROMOTION") or "").strip().lower()
-    return raw in ("1", "true", "yes", "on")
+    if raw == "":
+        return True  # default ON
+    return raw not in ("0", "false", "no", "off")
 
 
 # ── Writer ──────────────────────────────────────────────────────────

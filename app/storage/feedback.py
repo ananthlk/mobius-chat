@@ -92,19 +92,7 @@ def _handle_missing_relation(kind: str, migration_num: str, err: object) -> None
     logger.warning(msg)
 
 
-def _err_code(result: dict) -> str | None:
-    """Return error["code"] if the response is an error, else None."""
-    err = result.get("error")
-    if isinstance(err, dict):
-        return err.get("code")
-    return None
-
-
-def _err_message(result: dict) -> str:
-    err = result.get("error") or {}
-    if isinstance(err, dict):
-        return err.get("message", "") or ""
-    return str(err)
+from app.db_client import _err_code, _err_message  # noqa: E402, F401 — shared helpers, re-exported for module-local use
 
 
 # ---------------------------------------------------------------------------

@@ -51,12 +51,20 @@ def list_uploads(
     user_id: str | None = Query(None, description="Filter to a specific user's uploads (cross-thread)"),
     include_inactive: bool = Query(False, description="Include expired/discarded/promoted rows"),
     limit: int = Query(100, ge=1, le=500, description="Max rows to return for user-scoped list"),
+    authed_user_id: str | None = Depends(require_user),
 ) -> dict[str, Any]:
     """List catalog rows.
 
     Exactly one of ``thread_id`` or ``user_id`` is required. Cross-thread
     "all uploads" listings are not supported without a user_id filter —
     that would be an accidental data leak surface when auth lands.
+
+    Ownership (2026-04-20 hardening): when ``auth_mode() == 'required'``
+    and the caller passes a ``user_id`` query param, that value MUST
+    match the caller's authenticated identity. Without this check,
+    ``GET /chat/uploads?user_id=alice`` with bob's JWT would return
+    alice's uploads — a cross-account data leak. Returns 403 on
+    mismatch.
     """
     if not thread_id and not user_id:
         raise HTTPException(
@@ -68,6 +76,21 @@ def list_uploads(
             status_code=400,
             detail="Pass thread_id OR user_id, not both — use separate requests.",
         )
+
+    # Ownership check for the user-scoped list. Thread-scoped listings
+    # are not gated here because thread access is governed separately
+    # (a thread's uploads are visible to anyone who can name its id —
+    # not ideal but pre-existing and out of scope for this hardening).
+    if user_id and auth_mode() == "required":
+        if not authed_user_id or authed_user_id != user_id:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "user_id query parameter does not match the "
+                    "authenticated caller. You can only list your "
+                    "own uploads."
+                ),
+            )
 
     if thread_id:
         rows = list_for_thread(thread_id, include_inactive=include_inactive)

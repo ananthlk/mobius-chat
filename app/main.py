@@ -592,7 +592,28 @@ def post_chat_roster_upload(
     file_purpose: roster_reconciliation | instant_rag | other.
     Returns { upload_id, org_id, org_name, row_count, thread_id }.
     """
-    content = file.file.read()
+    # Size cap (2026-04-20 hardening). Enforce before reading the whole
+    # body into memory so a malicious client can't exhaust disk / RSS.
+    # Chunked reads until cap is exceeded OR the stream is exhausted.
+    _MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MB — covers any realistic
+                                            # roster CSV or policy PDF
+    buf = bytearray()
+    while True:
+        chunk = file.file.read(1024 * 1024)
+        if not chunk:
+            break
+        if len(buf) + len(chunk) > _MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"Upload exceeds {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB "
+                    "limit. Split the file or contact support if you need "
+                    "a higher limit for this purpose."
+                ),
+            )
+        buf.extend(chunk)
+    content = bytes(buf)
+
     filename = file.filename or "upload"
     ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
     purpose = (file_purpose or "roster_reconciliation").strip()
@@ -611,20 +632,24 @@ def post_chat_roster_upload(
             thread_id=thread_id, file_purpose=purpose,
         )
 
-    # 2026-04-18 disconnect — roster upload branch removed.
-    # The old implementation (~260 LOC) proxied to the
-    # provider-roster-credentialing skill, registered reconciliation
-    # uploads, and patched credentialing_runs_pg.step3_roster_upload_id.
-    # All of it gone with the credentialing disconnect; a roster
-    # file_purpose now 400s so the caller gets a clear error
-    # rather than a silent half-success.
+    # ── Roster reconciliation path ────────────────────────────────────────
+    if purpose == "roster_reconciliation":
+        from app.api.roster_upload import handle_roster_upload
+        return handle_roster_upload(
+            content=content,
+            filename=filename,
+            ext=ext,
+            org_name=org_name,
+            thread_id=thread_id,
+            run_id=run_id,
+            file_purpose=purpose,
+        )
+
     raise HTTPException(
         status_code=400,
         detail=(
-            f"file_purpose={purpose!r} is not supported on this chat. "
-            "Only file_purpose='instant_rag' is accepted (the paperclip "
-            "affordance already handles this). Roster/credentialing "
-            "uploads will rebuild as a standalone skill integration."
+            f"file_purpose={purpose!r} is not supported. "
+            "Accepted values: 'roster_reconciliation', 'instant_rag'."
         ),
     )
 
@@ -758,17 +783,22 @@ def get_chat_config_by_sha(config_sha: str):
 # app.services.credentialing_* and app.storage.credentialing_* for
 # server-side orchestration — only the public HTTP surface was removed.
 from app.api.chat import router as _chat_router
+from app.api.credentialing import router as _credentialing_router
 from app.api.doc_reader import router as _doc_reader_router
 from app.api.feedback import router as _feedback_router
 from app.api.history import router as _history_router
 from app.api.tasks import router as _tasks_router
 from app.api.uploads import router as _uploads_router
 app.include_router(_chat_router)  # Phase 2b.2 — core chat lifecycle extracted from main.py
+app.include_router(_credentialing_router)  # credentialing-runs + NPI lookup (restored for pipeline UI)
 app.include_router(_history_router)
 app.include_router(_feedback_router)
 app.include_router(_tasks_router)
 app.include_router(_uploads_router)  # Phase B.1c — cross-thread uploads catalog
 app.include_router(_doc_reader_router)  # Phase 2b.1 — doc-reader proxy extracted from main.py
+
+# Provider skill runs as its own server (provider-roster-credentialing, :8011).
+# Chat calls it via CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL.
 
 
 # Phase 1b: feedback / QC endpoints moved to app.api.feedback.
@@ -782,6 +812,9 @@ _SKILL_LLM_ALLOWED_STAGES = frozenset({
     "credentialing_critique",
     "credentialing_compose",
     "credentialing_report_qa",
+    # Org intelligence stages
+    "org_intel_synthesis",   # profile synthesis → structured JSON profile
+    "org_intel_report",      # long-form report generation from synthesized profile
 })
 
 
@@ -898,13 +931,7 @@ if _frontend.exists():
 
     @app.get("/pipeline")
     def pipeline():
-        r = FileResponse(_frontend / "pipeline.html")
+        r = FileResponse(_frontend / "static" / "pipeline.html")
         r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return r
 
-    # REMOVED 2026-04-18: financial-strategy / org-story / market-map /
-    # industry-report / roster page serves. These pages + their data
-    # proxies were part of the credentialing+strategy chat integration
-    # that's being disconnected for a clean rebuild. If the user lands
-    # on one of these URLs, they'll get a 404 — acceptable since nothing
-    # in the UI links to them anymore (skill cards removed from landing).

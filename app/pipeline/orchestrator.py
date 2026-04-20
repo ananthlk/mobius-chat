@@ -209,7 +209,18 @@ def run_pipeline(
                 correlation_id,
                 {"type": "thinking", "content": ui_text, "envelope": chunk},
             )
-            logger.info("[thinking:%s] %s", chunk.get("signal"), ui_text[:80])
+            # PHI hygiene (2026-04-20): only the signal + step reach the
+            # app logger; the free-form ``note`` field can carry user
+            # text (search queries, scraped URL titles) and therefore
+            # stays out of logs. Operators who need the full thinking
+            # trail read chat_turns.thinking_log from Postgres, which
+            # is access-controlled separately.
+            logger.info(
+                "[thinking:%s] cid=%s step=%s",
+                chunk.get("signal"),
+                correlation_id[:8] if correlation_id else "",
+                chunk.get("step_id", ""),
+            )
             # Sprint A.2: conditionally POST promoted envelopes to
             # task-manager for chat-PM analytics. The writer itself
             # gates on MOBIUS_TASK_MANAGER_PROMOTION + the envelope's
@@ -227,7 +238,13 @@ def run_pipeline(
             s = str(chunk).strip()
             ctx.thinking_chunks.append(s)
             send_to_user(correlation_id, {"type": "thinking", "content": s})
-            logger.info("[thinking] %s", s[:80])
+            # PHI hygiene (2026-04-20): correlation_id only; the free-
+            # form bare-string path historically carried search queries
+            # and scraped page titles, so it must not reach server logs.
+            logger.info(
+                "[thinking:legacy] cid=%s",
+                correlation_id[:8] if correlation_id else "",
+            )
 
     try:
         trace_entered("pipeline.run_pipeline", correlation_id=correlation_id[:8], thread_id=thread_id or "")
