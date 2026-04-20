@@ -149,13 +149,29 @@ class TestExpectedSkillsRegistered:
 
 class TestHealthcareQueryHandler:
     def test_success_returns_envelope_with_source(self):
-        """Happy path: MCP returns a non-error body → envelope has the
+        """Happy path: shared skill returns an answer → envelope has the
         text, a single SourceRef with document_name='Healthcare lookup',
-        and signal='no_sources' (correct — not corpus, not google)."""
-        cx = patch("app.services.mcp_manager.call_mcp_tool", side_effect=_mcp_mock(
-            "NPI 1234567890: Jane Doe, Taxonomy 2084P0800X", True,
-        ))
-        with cx:
+        and signal='no_sources' (correct — not corpus, not google).
+
+        Post 2026-04-20 skills-core migration: mock point is
+        ``mobius_skills_core.skills.healthcare_query.run_healthcare_query``."""
+        from mobius_skills_core import SkillResult, SourceRef
+
+        result = SkillResult(
+            text="NPI 1234567890: Jane Doe, Taxonomy 2084P0800X",
+            sources=[SourceRef(
+                document_name="Healthcare lookup",
+                source_type="external",
+                authority="external",
+                index=1,
+                text="NPI 1234567890: Jane Doe",
+            )],
+            signal="no_sources",
+        )
+        with patch(
+            "mobius_skills_core.skills.healthcare_query.run_healthcare_query",
+            return_value=result,
+        ):
             env = registry.dispatch(
                 SkillCall(
                     name="healthcare_query",
@@ -186,33 +202,52 @@ class TestHealthcareQueryHandler:
         assert env.sources == []
         assert env.signal == "no_sources"
 
-    def test_mcp_exception_is_caught_with_helpful_message(self):
-        """MCP crashed (healthcare API down) → handler returns a
-        graceful error envelope, not a bare traceback. Matches legacy
-        'I ran into an issue. {e}. Please try again.' shape."""
-        def boom(tool, args, **kw):
-            raise RuntimeError("healthcare API down")
+    def test_skill_error_is_caught_with_helpful_message(self):
+        """Shared skill returns tool_error (healthcare API down) → handler
+        returns a graceful error envelope, not a bare traceback.
 
-        with patch("app.services.mcp_manager.call_mcp_tool", side_effect=boom):
+        Post 2026-04-20 skills-core migration: the shared skill already
+        catches HTTP/network errors and returns SkillResult(signal=
+        "tool_error", text="Healthcare query failed: …"). The chat
+        adapter surfaces that text with signal="no_sources" (the
+        integrator groups tool errors with 'no useful answer' at the
+        UI level)."""
+        from mobius_skills_core import SkillResult
+
+        fake_error = SkillResult(
+            text="Healthcare query failed: connection refused. Ensure the healthcare service is running (e.g. port 8007) and HEALTHCARE_URL is set.",
+            signal="tool_error",
+        )
+        with patch(
+            "mobius_skills_core.skills.healthcare_query.run_healthcare_query",
+            return_value=fake_error,
+        ):
             env = registry.dispatch(
                 SkillCall(name="healthcare_query", inputs={}, question="Look up NPI 1"),
             )
-        assert "ran into an issue" in env.text.lower()
-        assert "healthcare api down" in env.text.lower()
+        # Verbatim error text from the shared skill is surfaced
+        assert "Healthcare query failed" in env.text
+        assert "connection refused" in env.text
         assert env.signal == "no_sources"
 
     def test_explicit_question_override_via_inputs(self):
         """Planner may pass a more precise ``question`` in tool_inputs;
         when set, the handler prefers it over entity-extracted text.
-        Asserts the MCP call receives the override, not the raw
-        question body."""
+
+        Post 2026-04-20 skills-core migration: we assert the shared
+        skill is called with the override, not the raw question body."""
+        from mobius_skills_core import SkillResult
+
         captured = {}
 
-        def cap(tool, args, **kw):
-            captured["args"] = args
-            return ("ok", True)
+        def cap(**kwargs):
+            captured["kwargs"] = kwargs
+            return SkillResult(text="ok", signal="no_sources")
 
-        with patch("app.services.mcp_manager.call_mcp_tool", side_effect=cap):
+        with patch(
+            "mobius_skills_core.skills.healthcare_query.run_healthcare_query",
+            side_effect=cap,
+        ):
             registry.dispatch(
                 SkillCall(
                     name="healthcare_query",
@@ -220,7 +255,7 @@ class TestHealthcareQueryHandler:
                     question="raw text would be a fallback",
                 )
             )
-        assert captured["args"]["question"] == "EXPLICIT QUESTION"
+        assert captured["kwargs"]["question"] == "EXPLICIT QUESTION"
 
 
 class TestWebScrapeHandler:
@@ -300,12 +335,22 @@ class TestAnswerToolViaRegistry:
     future refactors can't silently change it."""
 
     def test_healthcare_query_success_shape(self):
+        """Post 2026-04-20: mock point is run_healthcare_query, not MCP."""
         from app.services.tool_agent import answer_tool
+        from mobius_skills_core import SkillResult, SourceRef
 
-        tool_patch, mgr_patch = _dual_mcp_patch(
-            "NPI 1234567890: Jane Doe, Taxonomy 2084P0800X", True
-        )
-        with tool_patch, mgr_patch:
+        with patch(
+            "mobius_skills_core.skills.healthcare_query.run_healthcare_query",
+            return_value=SkillResult(
+                text="NPI 1234567890: Jane Doe, Taxonomy 2084P0800X",
+                sources=[SourceRef(
+                    document_name="Healthcare lookup",
+                    source_type="external",
+                    authority="external", index=1,
+                )],
+                signal="no_sources",
+            ),
+        ):
             text, sources, usage, signal = answer_tool(
                 "Look up NPI 1234567890",
                 tool_hint_override="healthcare_query",

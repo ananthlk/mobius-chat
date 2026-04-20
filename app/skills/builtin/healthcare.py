@@ -1,27 +1,28 @@
-"""Builtin skill: healthcare_query — NPI / ICD-10 / CMS coverage via MCP.
+"""Builtin skill: healthcare_query — NPI / ICD-10 / CMS coverage lookup.
 
-Third migration in the skill-registry refactor (commit 2). Routes to the
-mobius-healthcare MCP via ``call_mcp_tool(TOOL_HEALTHCARE_QUERY, ...)``.
+skills-core refactor (2026-04-20, Day 3):
+Previously reached the healthcare microservice via MCP
+(chat → :8006 MCP → :8007 healthcare). Now delegates straight to
+``mobius_skills_core.skills.healthcare_query.run_healthcare_query``
+which calls the healthcare service directly. Saves one HTTP hop and
+removes the chat→MCP startup-order dependency. mobius-skills-mcp
+continues to expose the same skill for external consumers using the
+same shared core function.
 
-Parity with the legacy ``if hint == "healthcare_query"`` branch:
+Entity extraction (``extract_entity_from_question``) stays in chat
+because it's chat-specific logic — it reads active_context,
+planner-provided inputs, and threading state that the shared core
+shouldn't know about. The chat picks the question, the shared core
+does the HTTP call.
 
-  - Entity extraction: pulls ``npi_number``, ``icd10_code``, or
-    ``raw[:120]`` from the user's question text via
-    ``extract_entity_from_question`` (same helper the legacy branch
-    uses). Active jurisdiction is deliberately NOT merged into the
-    query — healthcare_query is an entity-lookup tool; jurisdiction
-    leaking in produces wrong NPIs for the wrong state.
-
-  - Error shape: MCP exceptions return "I ran into an issue. {e}.
-    Please try again." with no sources, signal=no_sources.
-
-  - Success shape: one source with document_name="Healthcare lookup",
-    the first 300 chars of the response as preview, signal=no_sources
-    (this signal is correct — healthcare_query data isn't RAG corpus
-    and isn't google-scraped web content; it's an external API lookup).
-
-Envelope shape is captured in ``test_skill_registry_commit2.py`` so
-commit 3's deletion of the legacy branch can't silently change it.
+Legacy behavior preserved:
+  - Jurisdiction isolation: active-thread payer/state NEVER merged
+    into the healthcare question (per the tool-isolation invariant
+    locked in test_tool_isolation_v11).
+  - Success shape: one SourceRef(document_name="Healthcare lookup",
+    source_type="external"), signal=no_sources (external API data,
+    not RAG corpus).
+  - Error shape: graceful fallback text, signal=no_sources.
 """
 
 from __future__ import annotations
@@ -32,22 +33,12 @@ from app.skills.registry import SkillCall, SkillEnvelope, SkillSpec, SourceRef, 
 
 logger = logging.getLogger(__name__)
 
-# Keep in sync with tool_agent.TOOL_HEALTHCARE_QUERY. Duplicated here so
-# this module doesn't have to import tool_agent (which itself imports the
-# registry — circular). Commit 3 can consolidate.
-_TOOL_HEALTHCARE_QUERY = "healthcare_query"
-
 
 def _run(call: SkillCall) -> SkillEnvelope:
-    # Lazy imports: call_mcp_tool is bound at tool_agent import time for
-    # the legacy branch; importing it at module level here would bind a
-    # SECOND reference that mock-patching ``app.services.mcp_manager.call_mcp_tool``
-    # couldn't reach. Pulling it in at call time means patches apply
-    # uniformly across both dispatch paths. extract_entity_from_question
-    # lives in tool_agent which imports the registry → circular at
-    # module load.
-    from app.services.mcp_manager import call_mcp_tool
+    # Lazy import — extract_entity_from_question lives in tool_agent
+    # which imports the registry → circular at module load time.
     from app.services.tool_agent import extract_entity_from_question
+    from mobius_skills_core.skills.healthcare_query import run_healthcare_query
 
     source_text = (call.user_message or call.question or "").strip()
     entity = extract_entity_from_question(text=source_text)
@@ -55,44 +46,63 @@ def _run(call: SkillCall) -> SkillEnvelope:
     npi = entity.get("npi_number")
     icd = entity.get("icd10_code")
     hc_question = npi or icd or entity.get("raw", "")[:120]
-    # Planner may also pass an explicit ``question`` through tool_inputs.
-    # Prefer it when set and non-empty (lets the planner be more precise
-    # than the keyword heuristic).
+    # Planner may pass an explicit ``question`` through tool_inputs.
+    # Prefer it when set and non-empty (more precise than the keyword
+    # heuristic).
     if isinstance(call.inputs.get("question"), str) and call.inputs["question"].strip():
         hc_question = call.inputs["question"].strip()
 
-    try:
-        result_text, success = call_mcp_tool(
-            _TOOL_HEALTHCARE_QUERY,
-            {"question": hc_question},
+    # Bridge the skill's SkillEvents to the legacy string emit channel —
+    # same pattern used for google_search / web_scrape. The chat's emit
+    # envelope pipeline sees the ``note`` text unchanged; structured
+    # envelope wiring (correlation_id / task-manager promotion) comes
+    # with the retrieval-skill migration in Days 4-5.
+    from app.skills.skill_event_adapter import make_skill_emitter
+    emitter = (
+        make_skill_emitter(
+            on_thinking=call.emitter,
+            correlation_id=(
+                getattr(call.pipeline_ctx, "correlation_id", "") or ""
+            ),
+            thread_id=(call.thread_id or None),
+            user_id=(
+                getattr(call.pipeline_ctx, "user_id", None)
+                if call.pipeline_ctx is not None else None
+            ),
         )
-    except Exception as e:
-        logger.warning("call_mcp_tool healthcare_query failed: %s", e, exc_info=True)
-        return SkillEnvelope(
-            text=f"I ran into an issue. {e}. Please try again.",
-            signal="no_sources",
-        )
+        if call.emitter
+        else None
+    )
 
-    if success and result_text and "Error:" not in result_text:
+    result = run_healthcare_query(question=hc_question, emitter=emitter)
+
+    # The shared SkillResult maps cleanly to the chat's SkillEnvelope.
+    # On success: signal="no_sources" with a SourceRef. On tool_error
+    # (empty question, network fail, HTTP error): surface the error
+    # text verbatim with signal="no_sources" so the chat integrator
+    # handles the "lookup failed" case consistently.
+    if result.signal == "no_sources" and result.sources:
+        # success path — answer returned with a SourceRef
         return SkillEnvelope(
-            text=result_text,
+            text=result.text,
             sources=[
                 SourceRef(
                     document_name="Healthcare lookup",
                     index=1,
-                    text=result_text[:300],
+                    text=result.text[:300],
                     source_type="external",
                 )
             ],
             signal="no_sources",
         )
 
+    # Empty answer / error path. Preserve the legacy fallback text for
+    # cases where the shared skill's message isn't friendly enough.
+    fallback_text = result.text or (
+        "Healthcare lookup failed. Ensure the healthcare service is running."
+    )
     return SkillEnvelope(
-        text=(
-            result_text
-            if result_text
-            else "Healthcare lookup failed. Ensure mobius-healthcare API is running."
-        ),
+        text=fallback_text,
         signal="no_sources",
     )
 

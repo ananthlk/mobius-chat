@@ -1,66 +1,60 @@
-"""Document upload skill — first-class attachment of files to a chat thread.
+"""Document upload skill helpers — re-exports from mobius-skills-core.
 
-Shared by ReAct (_execute_tool), legacy tool path (answer_tool), MCP docs,
-and HTTP GET /chat/thread/{thread_id}/uploads.
+Shared by ReAct (_execute_tool), legacy tool path (answer_tool), MCP
+docs, and HTTP GET /chat/thread/{thread_id}/uploads.
 
-2026-04-18 disconnect note: the roster_reconciliation purpose was retired
-along with the credentialing / roster skill set. Only instant_rag uploads
-are accepted today; they chunk + embed the document for retrieval via the
-``search_uploaded_document`` skill.
+skills-core refactor (2026-04-20, Day 3):
+The canonical content (markdown text + upload-table formatter) moved
+to ``mobius_skills_core.skills.document_upload`` and
+``mobius_skills_core.skills.list_thread_uploads`` so the MCP server
+produces byte-identical output for external consumers. This file
+preserves its pre-refactor public API (``DOCUMENT_UPLOAD_SKILL_MARKDOWN``
+and ``format_thread_uploads_markdown(tid)``) as thin re-exports /
+adapters so existing callers (tests, legacy branches, any future code
+that imports these symbols) keep working.
+
+2026-04-18 disconnect note: the roster_reconciliation purpose was
+retired along with the credentialing / roster skill set. Only
+instant_rag uploads are accepted today; they chunk + embed the
+document for retrieval via the ``search_uploaded_document`` skill.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from mobius_skills_core.skills.document_upload import (
+    DOCUMENT_UPLOAD_MARKDOWN as _CORE_MARKDOWN,
+)
+from mobius_skills_core.skills.list_thread_uploads import (
+    run_list_thread_uploads,
+)
 
-DOCUMENT_UPLOAD_SKILL_MARKDOWN = """
-## Document upload skill (Mobius Chat)
-
-**What it does:** Attach files to **this chat thread** so other tools can search them. Each upload is chunked + embedded once; afterwards you can ask natural-language questions and the `search_uploaded_document` skill retrieves the relevant passages with page citations. You can upload **multiple documents at different times**; each is stored on the thread with a timestamp and filename.
-
-**End user:** Tap **⋯** next to Send → **Upload file** → pick a **PDF, DOCX, CSV, or XLSX**. The upload runs instant-RAG in the background; a receipt banner confirms when indexing is complete.
-
-**Supported purpose:**
-- `instant_rag` — the default. Chunks + embeds the document so `search_uploaded_document` can search inside it.
-
-**HTTP API (integrations / MCP):**
-- `POST /chat/roster-upload` — multipart form: `file`, `org_name`, `file_purpose="instant_rag"`, `thread_id` (optional; response returns the thread_id used).
-- `GET /chat/thread/{thread_id}/uploads` — list uploads on the thread (newest first), each with filename, purpose, row/chunk count, and timestamp.
-
-**Note:** File bytes cannot be sent inside plain chat text; use the UI button or multipart POST. `file_purpose` values other than `instant_rag` return 400 today — roster / credentialing uploads will come back as their own skill integration.
-
-**Next step:** After uploading, ask a question about the document (e.g. *"what does section 3.2 say about prior auth?"*). Chat will pick `search_uploaded_document` and return scoped chunks with page citations — no separate search command needed.
-""".strip()
+# Legacy public name — re-export the shared constant so callers that
+# import ``DOCUMENT_UPLOAD_SKILL_MARKDOWN`` keep working. When it's
+# time to drop the alias (consumers all migrated), this re-export
+# goes and only the core name remains.
+DOCUMENT_UPLOAD_SKILL_MARKDOWN = _CORE_MARKDOWN
 
 
 def format_thread_uploads_markdown(thread_id: str) -> str:
-    """Human-readable list of uploads for a thread (matches ReAct / MCP behavior)."""
+    """Human-readable list of uploads for a thread — chat-side adapter.
+
+    Reads upload records from in-process thread state, hands them to
+    the shared formatter. Consumers that want the same markdown from
+    outside the chat process (e.g. the MCP server) source records via
+    HTTP and call the shared formatter directly.
+    """
     from app.storage.threads import get_state
 
     tid = (thread_id or "").strip()
     if not tid:
-        return "No chat thread is available yet. Send a message in Mobius Chat first, then ask what files are attached."
+        # Short-circuit the "no thread yet" case via the shared skill
+        # so the message text matches across consumers.
+        return run_list_thread_uploads("", None).text
 
     raw = get_state(tid) or {}
-    active: dict[str, Any] = raw.get("active") or {}
+    active = raw.get("active") or {}
     files = [u for u in (active.get("uploaded_files") or []) if isinstance(u, dict)]
-    lines = [
-        f"**Thread:** `{tid}`",
-        f"**Uploads on file:** {len(files)} (newest listed first)",
-        "",
-    ]
-    if not files:
-        lines.append("No documents uploaded yet. Use ⋯ → **Upload file**, or `POST /chat/roster-upload`.")
-    else:
-        lines.append("| # | Purpose | File | Organization | Rows | Uploaded (UTC) |")
-        lines.append("|---|---------|------|--------------|------|----------------|")
-        for i, u in enumerate(files[:20], 1):
-            lines.append(
-                f"| {i} | {(u.get('purpose') or '—').replace('|', '/')} | "
-                f"{(u.get('filename') or '—').replace('|', '/')} | "
-                f"{(u.get('org_name') or '—').replace('|', '/')} | "
-                f"{u.get('row_count', '—')} | {(u.get('uploaded_at') or '—').replace('|', '/')} |"
-            )
-        if len(files) > 20:
-            lines.append(f"\n_Showing 20 of {len(files)} uploads._")
-    return "\n".join(lines)
+    return run_list_thread_uploads(
+        thread_id=tid,
+        uploaded_files=files,
+    ).text

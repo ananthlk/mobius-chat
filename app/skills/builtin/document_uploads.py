@@ -1,50 +1,84 @@
 """Builtin skills: document_upload_skill + list_thread_document_uploads.
 
-These are the two simplest skills in the dispatcher — no MCP calls, no
-external state, no error paths worth speaking of. Migrating them first
-is the "hello world" for the skill registry: if the registry can
-dispatch these identically to the legacy ``_answer_tool_impl`` branches,
-the harder skills (healthcare_query, web_scrape, google_search) follow
-the same pattern.
+skills-core refactor (2026-04-20, Day 3):
+Both skills now delegate to ``mobius_skills_core.skills.*``. The chat-
+specific parts — reading thread state for uploaded_files, routing the
+planner's call — stay here. The rendering (canned upload markdown,
+upload-table markdown) lives in the shared package so the MCP server
+produces byte-identical output for external consumers.
 
-Legacy branches (still live behind MOBIUS_USE_SKILL_REGISTRY=0):
-
-    app/services/tool_agent.py
-        if hint == "document_upload_skill": ...
-        if hint == "list_thread_document_uploads": ...
-
-After commit 3 of the registry series those branches are deleted and
-this file is the only definition.
+Legacy branches deleted in commit 3 of the registry series; this file
+is the only definition. Post-refactor the dispatcher still behaves
+identically from the planner's perspective.
 """
 
 from __future__ import annotations
 
-from app.skills.document_upload import (
-    DOCUMENT_UPLOAD_SKILL_MARKDOWN,
-    format_thread_uploads_markdown,
-)
 from app.skills.registry import SkillCall, SkillEnvelope, SkillSpec, register
 
 
 def _run_document_upload_skill(call: SkillCall) -> SkillEnvelope:
-    """Show the canned 'how to upload' markdown. Pure: no state reads,
-    no network, no branching on ``call.inputs``. If the user asks "how
-    do I upload a doc", the planner routes here."""
-    return SkillEnvelope(
-        text=DOCUMENT_UPLOAD_SKILL_MARKDOWN,
-        signal="no_sources",
-    )
+    """Show the canned 'how to upload' markdown.
+
+    The markdown is defined once in
+    ``mobius_skills_core.skills.document_upload.DOCUMENT_UPLOAD_MARKDOWN``
+    so the MCP server's equivalent tool returns the same bytes. No
+    state reads, no network. If the user asks "how do I upload a
+    doc", the planner routes here.
+    """
+    from mobius_skills_core.skills.document_upload import run_document_upload_info
+
+    emitter = _make_emitter(call)
+    result = run_document_upload_info(emitter=emitter)
+    return SkillEnvelope(text=result.text, signal="no_sources")
 
 
 def _run_list_thread_document_uploads(call: SkillCall) -> SkillEnvelope:
-    """List the uploads on the current thread. Reads ``ThreadState`` via
-    the same ``format_thread_uploads_markdown`` helper the legacy branch
-    used — identical semantics, no behavior change on migration."""
+    """List the uploads on the current thread.
+
+    Chat fetches the upload records from in-process thread state; the
+    shared skill handles formatting. Split chosen so the MCP server
+    can source records over HTTP without this file caring.
+    """
+    from app.storage.threads import get_state
+    from mobius_skills_core.skills.list_thread_uploads import run_list_thread_uploads
+
     tid = (call.thread_id or "").strip()
-    body = format_thread_uploads_markdown(tid)
-    return SkillEnvelope(
-        text=body,
-        signal="no_sources",
+    # Pull uploads from thread state (same read the legacy helper did).
+    uploaded_files: list = []
+    if tid:
+        raw = get_state(tid) or {}
+        active: dict = raw.get("active") or {}
+        uploaded_files = [
+            u for u in (active.get("uploaded_files") or []) if isinstance(u, dict)
+        ]
+
+    emitter = _make_emitter(call)
+    result = run_list_thread_uploads(
+        thread_id=tid,
+        uploaded_files=uploaded_files,
+        emitter=emitter,
+    )
+    return SkillEnvelope(text=result.text, signal="no_sources")
+
+
+def _make_emitter(call: SkillCall):
+    """Build a SkillEvent → chat EmitEnvelope translator bound to this
+    call's context, if the caller supplied a thinking emitter."""
+    if not call.emitter:
+        return None
+    from app.skills.skill_event_adapter import make_skill_emitter
+    return make_skill_emitter(
+        on_thinking=call.emitter,
+        correlation_id=(
+            getattr(call.pipeline_ctx, "correlation_id", "") or ""
+        ),
+        thread_id=(call.thread_id or None),
+        user_id=(
+            getattr(call.pipeline_ctx, "user_id", None)
+            if call.pipeline_ctx is not None
+            else None
+        ),
     )
 
 

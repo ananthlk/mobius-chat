@@ -232,26 +232,38 @@ class TestAnswerToolEntityIsolation:
     # NPI-by-number and address lookups is still covered below.
 
     def test_npi_by_number_no_payer_contamination(self):
-        """Class A: 'Look up NPI 1234567890' → healthcare_query with NPI number, no payer passed.
+        """Class A: 'Look up NPI 1234567890' → healthcare_query with NPI
+        number, no payer passed.
 
-        Patches both MCP import sites: the legacy branch in tool_agent
-        uses ``app.services.tool_agent.call_mcp_tool``; the registry
-        handler (commit 2 of skill-registry migration) lazy-imports from
-        ``app.services.mcp_manager``. Patching both means the test works
-        whether the registry flag is on or off."""
-        with patch("app.services.tool_agent.call_mcp_tool") as mock_tool, \
-             patch("app.services.mcp_manager.call_mcp_tool") as mock_mgr:
-            mock_tool.return_value = ("Provider: Jane Doe, NPI: 1234567890, Specialty: Psychiatry", True)
-            mock_mgr.return_value = ("Provider: Jane Doe, NPI: 1234567890, Specialty: Psychiatry", True)
+        Post 2026-04-20 skills-core migration: mock point moved from
+        ``call_mcp_tool`` to
+        ``mobius_skills_core.skills.healthcare_query.run_healthcare_query``.
+        Tool-isolation invariant unchanged: the question passed to the
+        skill must contain the NPI and must NOT contain the active
+        payer (leaking active Sunshine Health into an NPI lookup
+        produces wrong results)."""
+        from mobius_skills_core import SkillResult
+
+        captured = {}
+
+        def cap(**kwargs):
+            captured["kwargs"] = kwargs
+            return SkillResult(
+                text="Provider: Jane Doe, NPI: 1234567890, Specialty: Psychiatry",
+                signal="no_sources",
+            )
+
+        with patch(
+            "mobius_skills_core.skills.healthcare_query.run_healthcare_query",
+            side_effect=cap,
+        ):
             answer, sources, _, signal = answer_tool(
                 "Look up NPI 1234567890",
                 tool_hint_override="healthcare_query",
                 active_context=self._active,
             )
-        calls = list(mock_tool.call_args_list) + list(mock_mgr.call_args_list)
-        hc_call = next((c for c in calls if c[0][0] == TOOL_HEALTHCARE_QUERY), None)
-        assert hc_call is not None, "healthcare_query was never called on either import path"
-        question_arg = hc_call[0][1].get("question", "")
+        assert "kwargs" in captured, "healthcare_query skill was never called"
+        question_arg = captured["kwargs"].get("question", "")
         assert "1234567890" in question_arg
         assert "Sunshine" not in question_arg
 
