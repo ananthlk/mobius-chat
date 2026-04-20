@@ -1,0 +1,83 @@
+# .dockerignore for mobius-chat Cloud Run build.
+#
+# Build context = /Users/ananth/Mobius (the parent of mobius-chat),
+# because the Dockerfile COPYs sibling repos. So this file is consulted
+# by docker-build for the parent tree, and we exclude everything that
+# isn't one of the four sibling repos we actually vendor
+# (mobius-chat, mobius-contracts, mobius-skills-core, mobius-retriever).
+#
+# Anything matched here never reaches the builder stage, so it can't
+# bloat the final image and can't accidentally contain secrets.
+
+# ── Default-exclude every sibling ────────────────────────────────────
+# Allow-list pattern: exclude all directories under the build context,
+# then un-exclude only the ones we need. This is safer than enumerating
+# excluded siblings by name — new siblings in /Users/ananth/Mobius/
+# are automatically excluded from chat's build.
+*
+!mobius-chat/
+!mobius-contracts/
+!mobius-skills-core/
+!mobius-retriever/
+
+# ── Within each vendored sibling, exclude noise ──────────────────────
+# These patterns apply recursively regardless of which sibling; a
+# .venv under mobius-contracts and one under mobius-chat are both
+# stripped.
+
+**/.git/
+**/.github/
+**/.gitignore
+**/.gitattributes
+**/.venv/
+**/venv/
+**/env/
+**/.env
+**/.env.*
+!**/.env.example
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.coverage
+**/htmlcov/
+**/*.egg-info/
+**/build/
+**/dist/
+
+# ── Chat-specific development artifacts ──────────────────────────────
+# tests/ is NOT shipped to prod — pytest is not in the runtime deps
+# and tests carry fixtures that may leak PHI-shaped data.
+mobius-chat/tests/
+mobius-chat/docs/
+mobius-chat/scripts/
+mobius-chat/deploy/
+mobius-chat/Dockerfile
+mobius-chat/.dockerignore
+mobius-chat/README.md
+mobius-chat/notebooks/
+mobius-chat/examples/
+mobius-chat/.claude/
+
+# node_modules in frontend/ if it exists — chat's frontend is
+# vanilla HTML/JS today, but if a build step gets added, the
+# node_modules artifact should not enter the image.
+mobius-chat/frontend/node_modules/
+mobius-chat/frontend/.next/
+mobius-chat/frontend/dist/
+
+# ── Sibling-package noise ─────────────────────────────────────────
+# tests/ in the vendored packages aren't imported by chat; strip them
+# to keep the image small.
+mobius-contracts/tests/
+mobius-skills-core/tests/
+mobius-retriever/tests/
+
+# ── Worktree / tooling noise ──────────────────────────────────────
+**/.claude/
+**/.vscode/
+**/.idea/
+**/.DS_Store

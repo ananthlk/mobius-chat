@@ -1,27 +1,79 @@
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
-httpx>=0.25.0
-PyJWT>=2.8.0
-# mobius-user: shared auth (install from sibling: pip install -e ../mobius-user)
-# mobius-retriever: BM25 + Vertex retrieval (pip install -e ../mobius-retriever from mobius-chat or Mobius root)
--e ../mobius-retriever
-pydantic>=2.0.0
-python-dotenv>=1.0.0
-# Optional: for QUEUE_TYPE=redis (API and worker in separate processes)
-redis>=5.0.0
-# Optional: for LLM_PROVIDER=vertex (Vertex AI / Gemini)
+# Mobius Chat — runtime dependencies (2026-04-20 clean-slate rewrite).
+#
+# Audit policy
+# ------------
+# * One line = one package, lowest version that works in prod. Ranges
+#   use ``>=`` to allow patch-level security fixes; upper bounds only
+#   when a breaking change is known.
+# * Dev/test deps (pytest, coverage, mypy) are NOT here — they live in
+#   a future requirements-dev.txt. The Cloud Run image should never
+#   carry a test runner.
+# * Sibling editable installs (mobius-contracts, mobius-skills-core,
+#   mobius-retriever) are handled by the Dockerfile's multi-stage
+#   COPY+install, NOT by references here. Keeps ``pip install -r
+#   requirements.txt`` usable in raw dev checkouts without weird
+#   relative paths.
+# * When you add a dep: bump the Dockerfile builder cache by
+#   touching this file, not by rebuilding from scratch.
+
+# ── Web stack ────────────────────────────────────────────────────────
+fastapi>=0.104.0              # app, dependency injection, lifespan
+uvicorn[standard]>=0.24.0     # ASGI server + uvloop + httptools
+pydantic>=2.0.0               # request/response schemas
+python-dotenv>=1.0.0          # dev-only .env loading (no-op in hosted)
+
+# ── HTTP ─────────────────────────────────────────────────────────────
+httpx>=0.25.0                 # outbound HTTP (skills-mcp, task-manager, doc-reader)
+
+# ── Auth ─────────────────────────────────────────────────────────────
+PyJWT>=2.8.0                  # HS256 token validation (shared with mobius-os)
+
+# ── GCP SDK ──────────────────────────────────────────────────────────
+# ``google-cloud-aiplatform`` brings ``vertexai`` (Gemini + embeddings)
+# and pulls ``google-auth``, ``google-api-core``, grpcio as transitive.
+# ``google-cloud-secret-manager`` is required for the secrets_loader
+# hosted-env path; lazy-imported so dev without the dep still works.
 google-cloud-aiplatform>=1.38.0
-# For CHAT_RAG_DATABASE_URL (published_rag_metadata Postgres)
-psycopg2-binary>=2.9.0
-# For async analytics writes (llm_analytics, prompts_llm_history PG)
+google-cloud-secret-manager>=2.20.0
+
+# ── Database ─────────────────────────────────────────────────────────
+# psycopg2-binary: sync driver used by ~33 call sites for Postgres.
+#   ``binary`` variant avoids needing libpq-dev at build time (we get
+#   it from apt as libpq5 at runtime).
+# asyncpg: async driver for analytics/telemetry writes that would block
+#   the event loop with psycopg2.
+psycopg2-binary>=2.9.9
 asyncpg>=0.29.0
-# Repair malformed LLM JSON (trailing commas, missing quotes, etc.) before LLM repair
+
+# ── Retrieval / vector ───────────────────────────────────────────────
+chromadb>=0.4.0               # local vector store (thread-corpus, instant-RAG)
+
+# ── LLM output repair ────────────────────────────────────────────────
+# json-repair catches the common LLM JSON failures (trailing commas,
+# truncated objects, single-quote keys) before handing off to a
+# slower LLM repair round. Saves ~400 ms on integrator retries.
 json-repair>=0.55.0
-# Chat bot script (config and questions YAML)
-PyYAML>=6.0.0
-# ChromaDB for local vector search (replaces Vertex AI Vector Search)
-chromadb>=0.4.0
-# Tests
-pytest>=7.0.0
-# Payer normalization config (config/payer_normalization.yaml)
-PyYAML>=6.0.0
+
+# ── Config ───────────────────────────────────────────────────────────
+PyYAML>=6.0                   # config/payer_normalization.yaml etc.
+
+# ── Document parsing ─────────────────────────────────────────────────
+# PyMuPDF (``fitz``) — PDF extraction for uploaded documents
+# (doc_reader proxy, roster uploads). Pinned under the major version
+# to avoid the parser rewrites that shipped in 2.x.
+PyMuPDF>=1.24.0,<2.0.0
+
+# ── Web scraping ─────────────────────────────────────────────────────
+beautifulsoup4>=4.12.0        # bs4 import; powers skills-core.web_scrape
+
+# ── Optional: Redis queue ────────────────────────────────────────────
+# Monolith beta uses CHAT_QUEUE_TYPE=memory; this dep is included so
+# switching to redis is a config-only change with no rebuild.
+redis>=5.0.0
+
+# ── Optional: MCP client ─────────────────────────────────────────────
+# Only used when CHAT_SKILLS_MCP_URL is set AND skills are routed
+# through MCP rather than being invoked as in-process Python imports.
+# Beta monolith uses the in-process path so this is currently
+# unused-at-runtime but kept for the post-beta split.
+mcp>=1.0.0

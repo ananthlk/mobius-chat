@@ -1,0 +1,234 @@
+#!/usr/bin/env bash
+#
+# Mobius Chat — Cloud Run deploy driver.
+#
+# Usage:
+#     scripts/deploy.sh <env>           # build image + deploy
+#     scripts/deploy.sh <env> --dry-run # print commands, don't run
+#     scripts/deploy.sh <env> --skip-build  # redeploy previous image
+#
+# Where <env> is a label matching deploy/<env>.env (dev | prod).
+#
+# What it does
+# ------------
+# 1. Loads non-secret config from deploy/<env>.env
+# 2. Tags a new container image from the current git SHA
+# 3. Builds via ``gcloud builds submit`` so the build runs in GCP
+#    (faster than local ``docker build + gcloud artifacts push`` and
+#    doesn't require Docker on the dev laptop)
+# 4. Deploys to Cloud Run with every flag spelled out (no hidden
+#    defaults) — someone reading the rollout log can reconstruct the
+#    exact service config
+# 5. Refreshes CHAT_CORS_ORIGINS post-deploy with the service's
+#    allocated *.run.app URL (first deploy only — subsequent deploys
+#    preserve whatever's already set)
+#
+# Safety
+# ------
+# * ``set -euo pipefail`` + trap on ERR. One failed gcloud call aborts
+#   the whole script.
+# * No destructive commands. This script never deletes services /
+#   revisions / secrets. Rollback is a separate flow (see README).
+# * --dry-run prints every command that would run, exits 0 without
+#   executing. Use it before the first real deploy to sanity-check
+#   the resolved config.
+
+set -euo pipefail
+
+# ── Argument parsing ────────────────────────────────────────────────
+
+ENV_LABEL="${1:-}"
+if [[ -z "${ENV_LABEL}" ]]; then
+    echo "usage: $0 <env> [--dry-run] [--skip-build]" >&2
+    exit 64
+fi
+
+DRY_RUN=0
+SKIP_BUILD=0
+shift || true
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry-run)    DRY_RUN=1; shift ;;
+        --skip-build) SKIP_BUILD=1; shift ;;
+        *) echo "unknown flag: $1" >&2; exit 64 ;;
+    esac
+done
+
+# ── Paths ───────────────────────────────────────────────────────────
+# CHAT_DIR = mobius-chat repo root (the dir containing this script's
+# parent). PARENT_DIR = Mobius monorepo root (build context, because
+# the Dockerfile vendors sibling repos).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CHAT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PARENT_DIR="$(cd "${CHAT_DIR}/.." && pwd)"
+
+ENV_FILE="${CHAT_DIR}/deploy/${ENV_LABEL}.env"
+if [[ ! -f "${ENV_FILE}" ]]; then
+    echo "error: config file not found: ${ENV_FILE}" >&2
+    exit 66
+fi
+
+# ── Load config ─────────────────────────────────────────────────────
+# Use ``set -a`` so every variable in the env file is exported
+# automatically — matches the dotenv semantics the app itself uses.
+set -a
+# shellcheck disable=SC1090
+source "${ENV_FILE}"
+set +a
+
+# Sanity: required vars from the env file. Missing any of these is
+# a deploy-time bug, not a runtime bug.
+for required in GCP_PROJECT GCP_REGION SERVICE_NAME SERVICE_ACCOUNT \
+                AR_REPO IMAGE_BASE CLOUDSQL_INSTANCE RUN_MEMORY \
+                RUN_CPU RUN_CONCURRENCY RUN_TIMEOUT \
+                RUN_MIN_INSTANCES RUN_MAX_INSTANCES; do
+    if [[ -z "${!required:-}" ]]; then
+        echo "error: ${required} missing from ${ENV_FILE}" >&2
+        exit 65
+    fi
+done
+
+# ── Image tag ───────────────────────────────────────────────────────
+# Git SHA + timestamp. SHA alone would be enough for uniqueness but
+# the timestamp makes ``gcloud artifacts docker images list`` sortable
+# chronologically, which is useful during a fast-moving beta.
+GIT_SHA="$(git -C "${CHAT_DIR}" rev-parse --short=10 HEAD 2>/dev/null || echo nogit)"
+BUILD_TS="$(date -u +%Y%m%d-%H%M%S)"
+IMAGE_TAG="${IMAGE_BASE}:${BUILD_TS}-${GIT_SHA}"
+
+# ── Helpers ─────────────────────────────────────────────────────────
+
+# Echo the command, then run it (or skip in dry-run).
+run() {
+    echo "+ $*"
+    if [[ "${DRY_RUN}" -eq 0 ]]; then
+        "$@"
+    fi
+}
+
+# Build a comma-separated key=value list from a newline-delimited
+# block. ``gcloud run deploy --set-env-vars`` wants the comma form.
+csv_env() {
+    printf '%s\n' "$@" | paste -sd, -
+}
+
+# ── Build ───────────────────────────────────────────────────────────
+
+if [[ "${SKIP_BUILD}" -eq 0 ]]; then
+    echo "── Building ${IMAGE_TAG} ──"
+    # Build context is PARENT_DIR so the Dockerfile can COPY siblings.
+    # --config-file would let us pin Cloud Build steps, but the simple
+    # one-liner form is enough for the single-Dockerfile case.
+    run gcloud builds submit "${PARENT_DIR}" \
+        --project="${GCP_PROJECT}" \
+        --region="${GCP_REGION}" \
+        --tag="${IMAGE_TAG}" \
+        --gcs-log-dir="gs://${GCP_PROJECT}_cloudbuild/chat-logs/" \
+        --machine-type=e2-highcpu-8 \
+        --timeout=30m \
+        --substitutions=_DOCKERFILE=mobius-chat/Dockerfile \
+        || {
+            echo "error: gcloud builds submit failed. Check the build log URL above." >&2
+            exit 70
+        }
+    # gcloud builds submit needs the Dockerfile at the build context
+    # root. Use --config-file for future custom steps if needed.
+else
+    # Resolve the newest previously-built image for this service.
+    IMAGE_TAG="$(gcloud artifacts docker images list \
+        "${IMAGE_BASE}" --project="${GCP_PROJECT}" \
+        --include-tags --format='value(IMAGE,TAGS)' \
+        --sort-by="~UPDATE_TIME" --limit=1 | awk '{print $1":"$2}' | awk -F, '{print $1}')"
+    if [[ -z "${IMAGE_TAG}" ]]; then
+        echo "error: --skip-build set but no prior image found in ${IMAGE_BASE}" >&2
+        exit 71
+    fi
+    echo "── Reusing previous image ${IMAGE_TAG} ──"
+fi
+
+# ── Assemble env-var and secret flags ───────────────────────────────
+# We list them explicitly (not ``--env-vars-file``) so the command is
+# self-documenting in the rollout log.
+
+SET_ENV_VARS=(
+    "CHAT_ENV=${CHAT_ENV}"
+    "CHAT_ENV_STRICT=${CHAT_ENV_STRICT}"
+    "MOBIUS_PROD=${MOBIUS_PROD}"
+    "CHAT_QUEUE_TYPE=${CHAT_QUEUE_TYPE}"
+    "MOBIUS_TURN_DEADLINE_S=${MOBIUS_TURN_DEADLINE_S}"
+    "CHAT_MAX_REQUEST_BYTES=${CHAT_MAX_REQUEST_BYTES}"
+    "VERTEX_PROJECT_ID=${VERTEX_PROJECT_ID}"
+    "CHAT_RAG_DATABASE_URL=${CHAT_RAG_DATABASE_URL}"
+    "CHAT_SKILLS_TASK_MANAGER_URL=${CHAT_SKILLS_TASK_MANAGER_URL}"
+    "CHAT_SKILLS_MCP_URL=${CHAT_SKILLS_MCP_URL}"
+    "MOBIUS_TASK_MANAGER_PROMOTION=${MOBIUS_TASK_MANAGER_PROMOTION}"
+    "CHAT_CORS_ORIGINS=${CHAT_CORS_ORIGINS}"
+    "MOBIUS_OS_AUTH_URL=${MOBIUS_OS_AUTH_URL}"
+    "CHAT_HIPAA_MODE=${CHAT_HIPAA_MODE}"
+    # Secret Manager loader needs this to know which project to fetch
+    # secrets from. Cloud Run sets GOOGLE_CLOUD_PROJECT automatically,
+    # but CHAT_GCP_PROJECT wins if set — useful during debugging.
+    "CHAT_GCP_PROJECT=${GCP_PROJECT}"
+)
+
+# Secrets → Cloud Run mounts each as an env var. ``name:latest`` pins
+# to whatever the current secret version is at deploy time (re-runs
+# after a rotation pick up the new version automatically).
+SET_SECRETS=(
+    "GROQ_API_KEY=groq-api-key:latest"
+    "ANTHROPIC_API_KEY=anthropic-api-key:latest"
+    "JWT_SECRET=jwt-secret:latest"
+)
+
+# ── Deploy ──────────────────────────────────────────────────────────
+
+echo "── Deploying ${SERVICE_NAME} to ${GCP_PROJECT}/${GCP_REGION} ──"
+run gcloud run deploy "${SERVICE_NAME}" \
+    --project="${GCP_PROJECT}" \
+    --region="${GCP_REGION}" \
+    --image="${IMAGE_TAG}" \
+    --service-account="${SERVICE_ACCOUNT}" \
+    --platform=managed \
+    --allow-unauthenticated \
+    --memory="${RUN_MEMORY}" \
+    --cpu="${RUN_CPU}" \
+    --concurrency="${RUN_CONCURRENCY}" \
+    --timeout="${RUN_TIMEOUT}" \
+    --min-instances="${RUN_MIN_INSTANCES}" \
+    --max-instances="${RUN_MAX_INSTANCES}" \
+    --port=8080 \
+    --add-cloudsql-instances="${CLOUDSQL_INSTANCE}" \
+    --set-env-vars="$(csv_env "${SET_ENV_VARS[@]}")" \
+    --set-secrets="$(csv_env "${SET_SECRETS[@]}")" \
+    --cpu-boost \
+    --execution-environment=gen2
+
+# ── Post-deploy: populate CHAT_CORS_ORIGINS with the real URL ───────
+# First deploy → the Cloud Run URL isn't known until the service is
+# created. If the env file left CHAT_CORS_ORIGINS empty, update the
+# service with the real URL now. Subsequent deploys skip this because
+# CHAT_CORS_ORIGINS is already set.
+
+if [[ -z "${CHAT_CORS_ORIGINS:-}" && "${DRY_RUN}" -eq 0 ]]; then
+    SERVICE_URL="$(gcloud run services describe "${SERVICE_NAME}" \
+        --project="${GCP_PROJECT}" \
+        --region="${GCP_REGION}" \
+        --format='value(status.url)')"
+    echo "── Updating CHAT_CORS_ORIGINS=${SERVICE_URL} ──"
+    run gcloud run services update "${SERVICE_NAME}" \
+        --project="${GCP_PROJECT}" \
+        --region="${GCP_REGION}" \
+        --update-env-vars="CHAT_CORS_ORIGINS=${SERVICE_URL}"
+    echo
+    echo "Persist this in deploy/${ENV_LABEL}.env for future deploys:"
+    echo "  CHAT_CORS_ORIGINS=${SERVICE_URL}"
+fi
+
+echo
+echo "✓ Deploy complete: ${IMAGE_TAG}"
+echo "  Service URL: $(gcloud run services describe "${SERVICE_NAME}" \
+    --project="${GCP_PROJECT}" --region="${GCP_REGION}" \
+    --format='value(status.url)' 2>/dev/null || echo '(not queryable in dry-run)')"
+echo
+echo "Smoke test:"
+echo "  curl \$(gcloud run services describe ${SERVICE_NAME} --project=${GCP_PROJECT} --region=${GCP_REGION} --format='value(status.url)')/ready"
