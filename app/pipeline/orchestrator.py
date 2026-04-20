@@ -210,6 +210,18 @@ def run_pipeline(
                 {"type": "thinking", "content": ui_text, "envelope": chunk},
             )
             logger.info("[thinking:%s] %s", chunk.get("signal"), ui_text[:80])
+            # Sprint A.2: conditionally POST promoted envelopes to
+            # task-manager for chat-PM analytics. The writer itself
+            # gates on MOBIUS_TASK_MANAGER_PROMOTION + the envelope's
+            # report_to_task_manager flag, so this call is a no-op
+            # for chat-side-only signals or when the feature is off.
+            # Runs on a daemon thread — no latency added to the emit
+            # path regardless of task-manager responsiveness.
+            try:
+                from app.services.task_manager_promotion import promote
+                promote(chunk)
+            except Exception as e:  # pragma: no cover — defensive
+                logger.warning("task-manager promotion hook raised: %s", e)
         elif chunk and str(chunk).strip():
             # Legacy path — bare string.
             s = str(chunk).strip()
