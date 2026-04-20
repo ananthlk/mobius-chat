@@ -186,6 +186,27 @@ def critic_on(monkeypatch):
     yield
 
 
+def _emit_collector():
+    """Return (emit_fn, lines_list) where emit_fn mirrors
+    orchestrator.on_thinking's string/dict handling.
+
+    2026-04-19 (Sprint A.1 commit 1): run_react's critic block now
+    produces envelope DICTS, not strings. A naive collector that
+    just appends whatever it gets would leave lines_list as a mixed
+    array that "\\n".join can't handle. This helper renders dicts
+    to their envelope 'note' field for display, matching what the
+    orchestrator + FE see."""
+    lines: list[str] = []
+
+    def emit(msg) -> None:  # str | dict
+        if isinstance(msg, dict) and isinstance(msg.get("signal"), str):
+            lines.append(msg.get("note") or f"[{msg['signal']}]")
+        else:
+            lines.append(str(msg) if msg is not None else "")
+
+    return emit, lines
+
+
 def _make_ctx(message: str):
     """Minimal PipelineContext for run_react. We don't need a real DB
     or queue — run_react writes to ctx directly and the test reads
@@ -243,9 +264,7 @@ class TestRunReactCriticIntegration:
 
         ctx = _make_ctx("What are Sunshine Health's medical necessity criteria for H0036?")
 
-        emit_lines: list[str] = []
-        def emit(msg: str) -> None:
-            emit_lines.append(msg)
+        emit, emit_lines = _emit_collector()
 
         with patch("app.pipeline.react_loop._call_llm_json", side_effect=scripted_llm), \
              patch("app.pipeline.react_loop._execute_tool_with_retry", return_value=_SEARCH_CORPUS_RESULT):
@@ -346,10 +365,10 @@ class TestRunReactCriticIntegration:
         ctx = _make_ctx("What are Sunshine Health's medical necessity criteria for H0036?")
         ctx.chat_mode = "copilot"  # 3 rounds
 
-        emit_lines: list[str] = []
+        emit, emit_lines = _emit_collector()
         with patch("app.pipeline.react_loop._call_llm_json", side_effect=scripted_llm), \
              patch("app.pipeline.react_loop._execute_tool_with_retry", return_value=_SEARCH_CORPUS_RESULT):
-            run_react(ctx, emitter=lambda m: emit_lines.append(m))
+            run_react(ctx, emitter=emit)
 
         final = ctx.final_message or ""
         # Last-round ship: the hallucinated body is delivered WITH the

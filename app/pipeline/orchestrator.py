@@ -176,11 +176,46 @@ def run_pipeline(
         user_id=(user_id or "").strip() or None,
     )
 
-    def on_thinking(chunk: str) -> None:
-        if chunk and str(chunk).strip():
-            ctx.thinking_chunks.append(str(chunk).strip())
-            send_to_user(correlation_id, {"type": "thinking", "content": str(chunk).strip()})
-            logger.info("[thinking] %s", (chunk or "")[:80])
+    def on_thinking(chunk) -> None:  # str | dict (EmitEnvelope.to_dict())
+        """Accept legacy string emits OR structured envelope dicts.
+
+        2026-04-19 (Sprint A.1 commit 1): added dict branch. The
+        pipeline is migrating from bare strings to typed envelopes
+        (see app/communication/emit_envelope.py). During rollout,
+        both shapes coexist:
+
+          - Legacy emit("◌ Searching…")   → string → appended as-is
+          - New emit_env(envelope)        → dict   → appended as-is,
+                                                     UI gets the
+                                                     envelope's note
+                                                     field for display
+                                                     plus the full dict
+                                                     under `envelope`
+                                                     for structured
+                                                     rendering.
+
+        thinking_chunks therefore becomes a mixed array of strings
+        and dicts during the rollout. The FE's is_envelope() helper
+        distinguishes them. Once every emit site has migrated, only
+        dicts appear.
+        """
+        from app.communication.emit_envelope import is_envelope
+
+        if isinstance(chunk, dict) and is_envelope(chunk):
+            # Structured envelope — store dict, extract note for UI.
+            ctx.thinking_chunks.append(chunk)
+            ui_text = (chunk.get("note") or f"[{chunk.get('signal', 'event')}]").strip()
+            send_to_user(
+                correlation_id,
+                {"type": "thinking", "content": ui_text, "envelope": chunk},
+            )
+            logger.info("[thinking:%s] %s", chunk.get("signal"), ui_text[:80])
+        elif chunk and str(chunk).strip():
+            # Legacy path — bare string.
+            s = str(chunk).strip()
+            ctx.thinking_chunks.append(s)
+            send_to_user(correlation_id, {"type": "thinking", "content": s})
+            logger.info("[thinking] %s", s[:80])
 
     try:
         trace_entered("pipeline.run_pipeline", correlation_id=correlation_id[:8], thread_id=thread_id or "")

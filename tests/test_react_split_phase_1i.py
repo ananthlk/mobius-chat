@@ -238,7 +238,7 @@ class TestReactLoopRatchet:
       post-1i pass 3         TBD         (integrator extraction)
     """
 
-    MAX_REACT_LOOP_LOC = 1_590  # tighten as passes 2+3 land
+    MAX_REACT_LOOP_LOC = 1_660  # tighten as passes 2+3 land
     # 2026-04-18: bumped from 1_420 by 10 LOC to absorb the restore of
     # _attach_result_summary (renamed from the deleted
     # _attach_credentialing_result_summary). The utility is not
@@ -262,6 +262,17 @@ class TestReactLoopRatchet:
     # without redeploys. Helper body + explanation comment account for
     # the LOC; tests that lock the behavior are in
     # test_corpus_confidence_tuning.py.
+    # 2026-04-19 (Sprint A.1 commit 1): bumped from 1_590 to 1_660
+    # (+70 LOC) for the critic block's migration to structured emit
+    # envelopes. The envelope types + helpers are in
+    # app/communication/emit_envelope.py (separate module); what
+    # lives here is the 5 make_critic_* import calls, the retry
+    # counter, and the if/else branches that pick the right helper
+    # for each critic outcome (audit_started, flagged, approved,
+    # approved_after_retry, rounds_exhausted). Event-sourced
+    # thinking_log is the foundation for Sprint A.2's task-manager
+    # promotion — the LOC is justified by the analytics surface it
+    # unblocks.
 
     def test_react_loop_loc_under_ceiling(self):
         loc = len(REACT_LOOP.read_text().splitlines())

@@ -1258,6 +1258,13 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
     from app.pipeline.react_retry_guard import ReactRetryGuard
     retry_guard = ReactRetryGuard()
 
+    # Sprint A.1: track whether the critic has flagged any round during
+    # this turn. If a later round's completion gets approved AFTER a
+    # previous flag, that's a system self-correction event worth
+    # promoting to task-manager analytics. First-try approvals stay
+    # chat-side-only (too common to warrant promotion).
+    _critic_retries_this_turn = 0
+
     for iteration in range(max_it):
         rn = iteration + 1
         headline = _react_round_headline(iteration, max_it)
@@ -1351,7 +1358,33 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
 
                 if critic_enabled():
                     rounds_remaining = (max_it - rn)  # not counting this round's decision
-                    emit("  ◌ Critic auditing draft against sources…")
+                    # 2026-04-19 (Sprint A.1 commit 1): critic emits
+                    # now produce structured envelopes via the
+                    # make_critic_* helpers in
+                    # app/communication/emit_envelope.py. The legacy
+                    # emit(str) path still works elsewhere in the
+                    # loop; we're migrating one block at a time.
+                    from app.communication.emit_envelope import (
+                        make_critic_approved,
+                        make_critic_approved_after_retry,
+                        make_critic_audit_started,
+                        make_critic_flagged,
+                        make_rounds_exhausted_with_warning,
+                    )
+                    _emit_env = emitter  # on_thinking accepts dicts now
+                    cid = ctx.correlation_id
+                    tid = ctx.thread_id
+                    uid = getattr(ctx, "user_id", None)
+
+                    if _emit_env:
+                        _emit_env(make_critic_audit_started(
+                            correlation_id=cid,
+                            round=rn,
+                            draft_length=len(answer or ""),
+                            sources_count=len(all_sources or []),
+                            thread_id=tid,
+                            user_id=uid,
+                        ).to_dict())
                     # Stage 'critique' (not 'react_critic') routes to the
                     # existing cheap-model bucket in model_registry:
                     #   - Latency cap: 15s (vs planner's 90s)
@@ -1382,10 +1415,22 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                         # the flagged claims next round and either finds
                         # evidence or revises.
                         high = critique.high_severity_issues
-                        emit(
-                            f"  ⚠ Critic flagged {len(high)} ungrounded "
-                            f"claim(s); revising in next round."
-                        )
+                        if _emit_env:
+                            _emit_env(make_critic_flagged(
+                                correlation_id=cid,
+                                round=rn,
+                                total_issues=len(critique.issues),
+                                high_severity=len(high),
+                                flagged_claims=[i.claim for i in high],
+                                rounds_remaining=rounds_remaining,
+                                thread_id=tid,
+                                user_id=uid,
+                            ).to_dict())
+                        # Track that this turn had a retry, so when a
+                        # later round is approved we can emit
+                        # critic_approved_after_retry (promoted) vs.
+                        # plain critic_approved (chat-side only).
+                        _critic_retries_this_turn += 1
                         tool_results.append({
                             "tool": "_critic",
                             "success": False,
@@ -1415,12 +1460,37 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                             "Verify these specifically before acting on them."
                         )
                         answer = answer.rstrip() + "\n" + "\n".join(warning_lines)
-                        emit(
-                            f"  ⚠ Critic flagged {len(critique.high_severity_issues)} "
-                            f"unresolved claim(s); shipping with warning (rounds exhausted)."
-                        )
+                        if _emit_env:
+                            _emit_env(make_rounds_exhausted_with_warning(
+                                correlation_id=cid,
+                                round=rn,
+                                unresolved_claims=[i.claim for i in critique.high_severity_issues],
+                                thread_id=tid,
+                                user_id=uid,
+                            ).to_dict())
                     else:
-                        emit("  ✓ Critic approved.")
+                        # Critic approved. If this turn had any
+                        # previous retries, this is a self-correction
+                        # worth promoting to task-manager analytics.
+                        # First-try approvals are the common case and
+                        # stay chat-side-only.
+                        if _emit_env:
+                            if _critic_retries_this_turn > 0:
+                                _emit_env(make_critic_approved_after_retry(
+                                    correlation_id=cid,
+                                    round=rn,
+                                    retry_count=_critic_retries_this_turn,
+                                    issues_resolved=[i.claim for i in critique.issues],
+                                    thread_id=tid,
+                                    user_id=uid,
+                                ).to_dict())
+                            else:
+                                _emit_env(make_critic_approved(
+                                    correlation_id=cid,
+                                    round=rn,
+                                    thread_id=tid,
+                                    user_id=uid,
+                                ).to_dict())
 
                 emit("  Synthesizing answer…")
                 ctx.react_last_tool = last_tool
