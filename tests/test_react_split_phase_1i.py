@@ -238,7 +238,7 @@ class TestReactLoopRatchet:
       post-1i pass 3         TBD         (integrator extraction)
     """
 
-    MAX_REACT_LOOP_LOC = 1_700  # tighten as passes 2+3 land
+    MAX_REACT_LOOP_LOC = 1_800  # Day 6 2026-04-20: +~90 LOC for lazy_corpus_search dispatch (the 3rd retrieval skill from the 2×2 framework). Tighten as passes 2+3 land and the per-tool handlers extract to their own module.
     # 2026-04-18: bumped from 1_420 by 10 LOC to absorb the restore of
     # _attach_result_summary (renamed from the deleted
     # _attach_credentialing_result_summary). The utility is not

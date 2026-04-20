@@ -36,11 +36,39 @@ from app.stages.agents.capabilities import tool_capabilities_for_parser
 _SEARCH_CORPUS_BLOCK = """\
 search_corpus(query)
   Search Mobius knowledge base (payer manuals, policy docs).
-  Use for: ANY question not requiring structured data.
+  Use for: ANY question not requiring structured data, when citations
+    and confidence matter (default corpus search).
   This includes: enrollment, PA, appeals, credentialing process,
     timely filing, covered services, claims process.
   Try this FIRST for everything except the tools below.
-  Returns: answer with page citations and confidence score."""
+  Returns: answer with page citations and confidence score.
+
+  Picking between search_corpus and lazy_corpus_search:
+    - search_corpus (this tool) — heavyweight: confidence filter,
+      neighbor expansion, LLM synthesis. Use when the answer needs
+      high-precision citations.
+    - lazy_corpus_search — fast, capture-first, no rerank/synthesis.
+      Use for exploratory first-pass, copilot-mode speed questions,
+      or broad 'what does the corpus know about X' scans."""
+
+
+_LAZY_CORPUS_SEARCH_BLOCK = """\
+lazy_corpus_search(query)
+  Fast capture-oriented search of the Mobius corpus — vector-only,
+    no rerank, no confidence filter, higher k (16 default) than
+    search_corpus. Excludes user uploads (use search_uploaded_document
+    for those).
+  Use when:
+    - Copilot mode / speed matters more than perfect citations.
+    - Agentic first-pass exploration before committing to
+      search_corpus for precision.
+    - Broad 'what do we know about X' scans.
+  Do NOT use for:
+    - User-uploaded documents (use search_uploaded_document).
+    - Final answers that need high-confidence citations — prefer
+      search_corpus.
+  Returns: ranked chunks with doc name + page citation, no
+    synthesis (integrator handles that at turn end)."""
 
 _HEALTHCARE_NPI_LOOKUP_BLOCK = """\
 healthcare_npi_lookup(question)
@@ -90,6 +118,7 @@ def _compose_manifest() -> str:
     """Splice router-owned prose with registry-rendered skill blocks."""
     blocks = [
         _SEARCH_CORPUS_BLOCK,
+        _LAZY_CORPUS_SEARCH_BLOCK,
         registry.manifest_text(names=("healthcare_query",)),
         _HEALTHCARE_NPI_LOOKUP_BLOCK,
         registry.manifest_text(names=("document_upload_skill",)),

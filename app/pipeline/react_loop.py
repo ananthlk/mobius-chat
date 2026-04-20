@@ -214,6 +214,11 @@ def _corpus_confidence_min() -> float:
 # underlying tool branches are gone.
 _TOOL_STAGE_FOR_USAGE: dict[str, str] = {
     "search_corpus": "rag",
+    # Day 6 (2026-04-20): lazy_corpus_search shares the ``rag`` stage for
+    # analytics so it appears alongside the heavy corpus_search in
+    # llm_calls breakdowns, but with its own tool name so dashboards
+    # can separate fast vs heavy retrieval paths.
+    "lazy_corpus_search": "rag",
     "google_search": "web_search",
     "web_scrape": "web_scrape",
     "healthcare_query": "healthcare_query",
@@ -496,6 +501,105 @@ def _execute_tool(
             # know whether fan-out happened, and the logs name the upload_ids.
             "fanned_out_to": fanned_out_to,
             "upload_chunks_total": upload_chunks_total,
+        }
+
+    if tool == "lazy_corpus_search":
+        # Day 6 (2026-04-20) — the "light" retrieval skill. Fast
+        # vector-only scan of the approved corpus. No confidence
+        # filter, no neighbor expansion, no per-round LLM synthesis
+        # (the integrator synthesizes at turn end, matching the
+        # thread_corpus_search / lazy_rag_search pattern).
+        #
+        # When the planner picks this tool over search_corpus:
+        #   - copilot mode / speed > precision
+        #   - first-pass exploration before a heavier retrieval round
+        #   - broad "what do we know about X" scans
+        #
+        # Thin dispatcher; the shared skill does everything.
+        query = inputs.get("query") or (ctx.effective_message or ctx.message)
+        rag_overrides = rag_filters_from_active(active) or {}
+
+        from app.chat_config import get_chat_config
+        from app.services.embedding_provider import get_query_embedding
+        from mobius_skills_core.skills.corpus_search import (
+            ChromaConfig,
+            CorpusFilters,
+        )
+        from mobius_skills_core.skills.lazy_corpus_search import (
+            run_lazy_corpus_search,
+        )
+
+        rag = get_chat_config().rag
+        if not rag.chroma_persist_dir:
+            emit("↓ Corpus not configured on this deploy.")
+            return {
+                "tool": "lazy_corpus_search",
+                "success": False,
+                "result": "Corpus backend not configured.",
+                "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
+                "sources": [],
+            }
+
+        emit("◌ Lazy scan of our materials…")
+
+        # Build filters from the active thread jurisdiction (same
+        # semantics the heavy corpus_search path uses).
+        filters = CorpusFilters(
+            payer=(rag_overrides.get("filter_payer") or rag.filter_payer or "").strip(),
+            state=(rag_overrides.get("filter_state") or rag.filter_state or "").strip(),
+            program=(rag_overrides.get("filter_program") or rag.filter_program or "").strip(),
+            authority_level=(rag.filter_authority_level or "").strip(),
+        )
+
+        result = run_lazy_corpus_search(
+            query=query,
+            embed_query=get_query_embedding,
+            chroma=ChromaConfig(
+                persist_dir=rag.chroma_persist_dir,
+                collection=rag.chroma_collection or "published_rag",
+            ),
+            filters=filters,
+            k=16,
+        )
+
+        if result.signal != "ok":
+            emit("↓ Lazy scan found nothing matching this query.")
+            return {
+                "tool": "lazy_corpus_search",
+                "success": False,
+                "result": result.text or "No chunks from lazy corpus scan.",
+                "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
+                "sources": [],
+            }
+
+        # Convert ChunkRef → legacy source dict shape the integrator
+        # already knows how to cite. Matches what lazy_rag_search
+        # produces on the thread-upload side.
+        sources_out: list[dict] = []
+        for idx, chunk in enumerate(result.chunks, 1):
+            md = chunk.metadata or {}
+            sources_out.append({
+                "id": chunk.chunk_id,
+                "text": chunk.text,
+                "document_id": chunk.document_id or None,
+                "document_name": chunk.document_name,
+                "page_number": chunk.page_number,
+                "source_type": md.get("source_type") or "chunk",
+                "rerank_score": chunk.score,
+            })
+
+        emit(
+            f"  ✓ found {len(sources_out)} corpus passage"
+            f"{'s' if len(sources_out) != 1 else ''} (fast scan)."
+        )
+
+        return {
+            "tool": "lazy_corpus_search",
+            "success": True,
+            "result": result.text,
+            "signal": "corpus_only",  # integrator treats these like search_corpus hits
+            "sources": sources_out,
+            "usage": None,
         }
 
     if tool == "search_uploaded_document":
