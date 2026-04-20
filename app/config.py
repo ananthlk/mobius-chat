@@ -178,13 +178,57 @@ def assert_hosted_config() -> None:
     # 3. JWT_SECRET required when MOBIUS_OS_AUTH_URL is set.
     #    (auth.py already guards this at request time, but failing at
     #    boot surfaces the misconfig before any user hits /chat.)
+    #    2026-04-20: resolves via secrets_loader so Secret Manager
+    #    values satisfy the gate — env var no longer required when
+    #    running in a hosted env with SM configured.
     if (os.environ.get("MOBIUS_OS_AUTH_URL") or "").strip():
-        if not (os.environ.get("JWT_SECRET") or "").strip():
+        from app.secrets_loader import get_secret
+        try:
+            jwt_secret = (get_secret("JWT_SECRET") or "").strip()
+        except Exception as e:
+            problems.append(
+                f"MOBIUS_OS_AUTH_URL is set but JWT_SECRET lookup failed: {e}. "
+                "Check Secret Manager 'jwt-secret' secret + service "
+                "account roles/secretmanager.secretAccessor binding."
+            )
+            jwt_secret = ""
+        if not jwt_secret:
             problems.append(
                 "MOBIUS_OS_AUTH_URL is set but JWT_SECRET is unset. "
                 "Either unset MOBIUS_OS_AUTH_URL (auth disabled) or "
-                "set JWT_SECRET to the shared secret the Mobius-OS "
-                "proxy uses to sign JWTs."
+                "provide the shared secret — via JWT_SECRET env in dev "
+                "or Secret Manager 'jwt-secret' in hosted envs."
+            )
+
+    # 4. Cloud SQL connection mode in hosted envs — a direct
+    #    ``postgresql://user:password@host:5432/db`` string in Cloud
+    #    Run means the password is flowing through an env var, which
+    #    defeats the point of Secret Manager. Require either:
+    #      - Unix socket form (/cloudsql/<instance>/.s.PGSQL.5432) —
+    #        Cloud Run mounts this when ``--add-cloudsql-instances``
+    #        is set and the service account has cloudsql.client.
+    #      - Localhost (Cloud SQL Proxy sidecar, rare).
+    #      - ``iam@`` user prefix (explicit IAM-db-auth).
+    #    Opt-out via ``CHAT_ALLOW_PASSWORD_DB=1`` for the rare case
+    #    an external Postgres is intentional.
+    db_url = chat_rag_database_url() or ""
+    allow_pw_db = (os.environ.get("CHAT_ALLOW_PASSWORD_DB") or "").strip().lower() in {"1", "true", "yes"}
+    if db_url and not allow_pw_db:
+        url_ok = (
+            "/cloudsql/" in db_url
+            or "localhost" in db_url
+            or "127.0.0.1" in db_url
+            or "iam@" in db_url
+        )
+        if not url_ok:
+            problems.append(
+                "CHAT_RAG_DATABASE_URL does not use the Cloud SQL IAM "
+                "socket path (/cloudsql/<instance>/.s.PGSQL.5432), a "
+                "local proxy (localhost), or an explicit iam@ user. In "
+                "hosted envs a direct host:port URL usually means a "
+                "hardcoded password is flowing through the env. Mount "
+                "Cloud SQL via --add-cloudsql-instances with IAM-db-auth, "
+                "or set CHAT_ALLOW_PASSWORD_DB=1 to acknowledge the risk."
             )
 
     if problems:

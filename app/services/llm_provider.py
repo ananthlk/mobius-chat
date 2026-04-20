@@ -540,11 +540,15 @@ class GroqProvider(LLMProvider):
 
     def __init__(self, model: str = "llama-3.3-70b-versatile"):
         import os
+        from app.secrets_loader import get_secret
         self.model = model
-        self.api_key = os.environ.get("GROQ_API_KEY", "").strip()
+        # Routes through secrets_loader: env var in dev/tests (unchanged
+        # behavior), Secret Manager in hosted envs. See app/secrets_loader.py.
+        self.api_key = (get_secret("GROQ_API_KEY") or "").strip()
         if not self.api_key:
             raise ValueError(
-                "GROQ_API_KEY not set. Add to .env: GROQ_API_KEY=gsk_..."
+                "GROQ_API_KEY not set. Add to .env (dev) or populate "
+                "Secret Manager secret 'groq-api-key' (hosted): GROQ_API_KEY=gsk_..."
             )
         self.base_url = "https://api.groq.com/openai/v1"
         self.timeout = float(os.environ.get("LLM_TIMEOUT_SECONDS", "60"))
@@ -663,11 +667,15 @@ class AnthropicProvider(LLMProvider):
 
     def __init__(self, model: str = "claude-haiku-4-5-20251001"):
         import os
+        from app.secrets_loader import get_secret
         self.model = model
-        self.api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        # Same pattern as GroqProvider — see app/secrets_loader.py.
+        self.api_key = (get_secret("ANTHROPIC_API_KEY") or "").strip()
         if not self.api_key:
             raise ValueError(
-                "ANTHROPIC_API_KEY not set. Add to .env: ANTHROPIC_API_KEY=sk-ant-..."
+                "ANTHROPIC_API_KEY not set. Add to .env (dev) or populate "
+                "Secret Manager secret 'anthropic-api-key' (hosted): "
+                "ANTHROPIC_API_KEY=sk-ant-..."
             )
         self.base_url = "https://api.anthropic.com/v1"
         self.timeout = float(os.environ.get("LLM_TIMEOUT_SECONDS", "60"))
