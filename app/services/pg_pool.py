@@ -86,9 +86,16 @@ async def get_pool():
         return None
 
     try:
-        from app.chat_config import get_chat_config
+        # Route through db_client._get_fallback_url so we get a
+        # psycopg2/asyncpg-ready DSN: the ``postgresql+psycopg2://``
+        # SQLAlchemy-style prefix gets stripped (asyncpg rejects it
+        # too), and CHAT_DB_PASSWORD from Secret Manager is injected
+        # at the user segment. Previous direct read of
+        # chat_config.rag.database_url blew up in Cloud Run with
+        # ``invalid DSN: scheme is expected to be postgresql``.
+        from app.db_client import _get_fallback_url
 
-        url = (get_chat_config().rag.database_url or "").strip()
+        url = _get_fallback_url("chat")
         if not url:
             logger.debug("CHAT_RAG_DATABASE_URL not set; analytics PG pool unavailable")
             return None

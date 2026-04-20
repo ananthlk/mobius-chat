@@ -111,24 +111,20 @@ class TestPgPoolLoopIsolation:
 
         pg_pool._reset_for_tests()
 
-    def test_returns_none_when_no_running_loop(self):
-        """Sync-context callers must get None (not an exception, not a new pool)."""
+    def test_returns_none_when_no_running_loop(self, monkeypatch):
+        """Sync-context callers must get None (not an exception, not a new pool).
+
+        2026-04-20: pg_pool now resolves DSN via ``db_client._get_fallback_url``
+        (so Secret Manager password injection + SQLAlchemy-prefix stripping
+        reach the analytics pool too). The test mocks the underlying env
+        rather than the chat_config layer it used to patch.
+        """
         from app.services import pg_pool
 
-        async def _noop():
-            return None
-
-        # Directly call get_pool in a sync context — it's a coroutine so we
-        # need some loop to run it. Simplest: wrap in a plain event loop that
-        # does not itself invoke create_pool.
         pg_pool._reset_for_tests()
-        # Use asyncio.run to drive the coroutine; the point of this test is
-        # that when `url` is unset, get_pool returns None gracefully.
-        with patch(
-            "app.chat_config.get_chat_config",
-            return_value=MagicMock(rag=MagicMock(database_url="")),
-        ):
-            result = asyncio.run(pg_pool.get_pool())
+        monkeypatch.delenv("CHAT_RAG_DATABASE_URL", raising=False)
+        monkeypatch.delenv("CHAT_DB_PASSWORD", raising=False)
+        result = asyncio.run(pg_pool.get_pool())
         assert result is None
 
     def test_foreign_loop_returns_none_without_recreating(self):
