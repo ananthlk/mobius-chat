@@ -13,6 +13,7 @@ will migrate in later commits; this commit's goal is to catch the
 deploy-time footguns (placeholder VERTEX project, missing DB URL in
 hosted) and wire the MCP adapter at startup.
 """
+import logging
 import os
 from dataclasses import dataclass
 from typing import Literal
@@ -200,7 +201,49 @@ def assert_hosted_config() -> None:
                 "or Secret Manager 'jwt-secret' in hosted envs."
             )
 
-    # 4. Cloud SQL connection mode in hosted envs — a direct
+    # 4a. Hosted envs must not silently talk to dev endpoints.
+    #     ``chat_config.py`` and several sub-skills default to
+    #     ``localhost:8015`` (task-manager) or ``mobiusos-new``
+    #     (Vertex project) when their env vars are unset. In dev
+    #     that's convenient; in prod it means the Cloud Run revision
+    #     talks to nothing, which fails silently at request time.
+    #
+    #     Policy: fail at boot ONLY when the strictest env markers are
+    #     set (``CHAT_ENV_STRICT=1`` or ``MOBIUS_PROD=1``). In plain
+    #     staging we log a warning — staging frequently uses localhost
+    #     tunnels / port-forwards during debugging, so hard-failing
+    #     there is too strict.
+    strict = (os.environ.get("CHAT_ENV_STRICT") or "").strip().lower() in {"1", "true", "yes"} \
+        or (os.environ.get("MOBIUS_PROD") or "").strip().lower() in {"1", "true", "yes"}
+
+    tm_url = (os.environ.get("CHAT_SKILLS_TASK_MANAGER_URL") or "").strip()
+    tm_bad = bool(tm_url) and ("localhost" in tm_url or "127.0.0.1" in tm_url)
+    if strict and tm_bad:
+        problems.append(
+            f"CHAT_SKILLS_TASK_MANAGER_URL={tm_url!r} points at localhost. "
+            "In strict/prod envs set this to the task-manager's public/VPC URL "
+            "(the default localhost:8015 fallback is dev-only)."
+        )
+    elif tm_bad:
+        logging.getLogger(__name__).warning(
+            "CHAT_SKILLS_TASK_MANAGER_URL points at localhost in hosted env "
+            "(%s) — task-manager signals will not reach the hosted service. "
+            "Set CHAT_ENV_STRICT=1 to make this a boot error.", tm_url,
+        )
+
+    mcp_url = (os.environ.get("CHAT_SKILLS_MCP_URL") or "").strip()
+    mcp_bad = bool(mcp_url) and ("localhost" in mcp_url or "127.0.0.1" in mcp_url)
+    if strict and mcp_bad:
+        problems.append(
+            f"CHAT_SKILLS_MCP_URL={mcp_url!r} points at localhost in a strict env."
+        )
+    elif mcp_bad:
+        logging.getLogger(__name__).warning(
+            "CHAT_SKILLS_MCP_URL points at localhost in hosted env (%s). "
+            "Set CHAT_ENV_STRICT=1 to make this a boot error.", mcp_url,
+        )
+
+    # 4b. Cloud SQL connection mode in hosted envs — a direct
     #    ``postgresql://user:password@host:5432/db`` string in Cloud
     #    Run means the password is flowing through an env var, which
     #    defeats the point of Secret Manager. Require either:

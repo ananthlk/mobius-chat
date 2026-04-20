@@ -125,6 +125,37 @@ def process_one(correlation_id: str, payload: dict) -> None:
                 signal.signal(signal.SIGALRM, prev_handler)
 
 
+# ── Graceful shutdown ────────────────────────────────────────────────
+#
+# ``_shutdown_event`` lets the API's on_event("shutdown") hook signal
+# the worker to stop pulling new jobs. The queue's ``consume_requests``
+# loop polls this between iterations (when the queue impl supports a
+# stop predicate). In-flight turns continue — bounded by the 90s
+# per-request deadline above, so Cloud Run's container-stop grace
+# period (10s default, configurable to 120s via
+# ``--max-instances --timeout``) is comfortably enough to drain one
+# turn before SIGKILL.
+#
+# Queue impls that don't accept a stop_fn still honor shutdown via the
+# ``KeyboardInterrupt``-like fast path each impl already handles.
+
+_shutdown_event = threading.Event()
+
+
+def request_shutdown() -> None:
+    """Signal the consumer loop to stop accepting new jobs.
+
+    Called by the FastAPI shutdown hook on SIGTERM. Safe to call
+    multiple times — the event only latches.
+    """
+    _shutdown_event.set()
+
+
+def is_shutting_down() -> bool:
+    """Predicate the queue consumer polls between jobs."""
+    return _shutdown_event.is_set()
+
+
 def run_worker() -> None:
     """Blocking: consume requests and process each."""
     try:
@@ -133,7 +164,14 @@ def run_worker() -> None:
     except Exception:
         pass
     q = get_queue()
-    q.consume_requests(process_one)
+    # Queue impls that accept a stop predicate (the newer shape) drain
+    # cleanly on SIGTERM. Older impls fall back to the original signature
+    # — they'll stop on process exit, which is still correct, just less
+    # graceful.
+    try:
+        q.consume_requests(process_one, stop_fn=is_shutting_down)  # type: ignore[call-arg]
+    except TypeError:
+        q.consume_requests(process_one)
 
 
 def start_worker_background() -> threading.Thread:

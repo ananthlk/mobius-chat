@@ -441,6 +441,25 @@ def run_integrate(
     )
     ctx.final_message = final_message
 
+    # Response-side PHI audit (2026-04-20). Mirror of the resolve-stage
+    # hook for user-input side: LLM outputs can contain PHI too (the
+    # model may echo back identifiers that were in RAG context, or
+    # fabricate PII-shaped strings). HIPAA requires both sides in the
+    # audit trail. Fire-and-forget — the writer itself logs on failure.
+    try:
+        from app.storage.phi_audit_log import audit_if_phi
+        audit_if_phi(
+            final_message or "",
+            correlation_id=ctx.correlation_id,
+            thread_id=ctx.thread_id,
+            event_type="response_phi_detected",
+            stage="integrate",
+            model_used=(integrator_usage or {}).get("model") if isinstance(integrator_usage, dict) else None,
+            action_taken="logged_only",
+        )
+    except Exception:
+        pass  # audit must never break the turn
+
     if integrator_usage:
         usages = list(usages) + [integrator_usage]
         if isinstance(integrator_usage, dict):

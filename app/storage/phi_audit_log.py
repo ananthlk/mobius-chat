@@ -1,13 +1,27 @@
-"""HIPAA PHI audit trail writer.
+"""HIPAA PHI audit trail writer — chat-side host for the shared skill.
 
 Writes to ``phi_audit_log`` (see db/schema/020_llm_analytics.sql) every
 time the pipeline detects PHI in a user message or an LLM output.
-Required for HIPAA audit-trail compliance: "who/what/when/where/how" of
-every PHI encounter, regardless of whether the request succeeded or was
-blocked.
+Required for HIPAA audit-trail compliance: "who/what/when/where/how"
+of every PHI encounter, regardless of whether the request succeeded
+or was blocked.
 
-2026-04-20 hardening: the table existed for months but had zero
-writers. This module is the single source of truth for audit writes.
+2026-04-20 — detection moved to ``mobius_skills_core.skills.phi_audit``
+so credentialing, roster, and future surfaces share the same pattern
+library and emit contract. This module keeps:
+
+  * The DB writer (``phi_audit_log`` is a chat-owned table — other
+    products have their own audit stores).
+  * The host-side env reads (``CHAT_HIPAA_MODE``, ``CHAT_BAA_*``) that
+    compute ``hipaa_mode_active`` / ``baa_available`` before handing
+    them to the skill.
+  * The ``audit_if_phi`` convenience that stages call with a single
+    line to "detect + log if present".
+
+Detection callers in other repos (credentialing workflow events,
+roster-upload pipelines, future agents) should import
+``run_phi_audit`` or ``detect_phi`` directly from skills-core; they
+do not need this module.
 
 Shape (mirrors the table schema):
     event_id           — auto gen_random_uuid()
@@ -30,7 +44,7 @@ Shape (mirrors the table schema):
     baa_available      — True when a BAA is signed with the active model's vendor
 
 Failure mode:
-    Writes are fire-and-forget via the db-agent. Errors log at debug
+    Writes are fire-and-forget via the db-agent. Errors log at warning
     — we must NEVER break the main pipeline because PHI audit log
     write failed. Missing audit entries are an ops issue; they are
     not worse than blocking a user's clinical request.
@@ -39,44 +53,34 @@ from __future__ import annotations
 
 import logging
 import os
-import re
-from typing import Any
 
 from app.db_client import db_execute, err_code, err_message
+
+# Detection is now a shared skill — chat is one of several hosts.
+from mobius_skills_core.skills.phi_audit import (
+    detect_phi as _skill_detect_phi,
+    run_phi_audit,
+)
 
 logger = logging.getLogger(__name__)
 
 
-# PHI detection patterns — matches (loosely) what adjudication/full.py
-# already looks for, extended to cover DOB + MRN. Extensible; ops can
-# add patterns here and they flow to every caller.
-_PHI_PATTERNS: dict[str, re.Pattern[str]] = {
-    "ssn":            re.compile(r"\b\d{3}[-\s]?\d{2}[-\s]?\d{4}\b"),
-    "member_id":      re.compile(r"member\s*(?:id|#|number)\s*[:#]?\s*\S+", re.I),
-    "patient_name":   re.compile(r"patient\s*(?:name)?\s*[:]\s*[A-Z][a-z]+", re.I),
-    "dob":            re.compile(r"\b(?:dob|date of birth)\b\s*[:]?\s*\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", re.I),
-    "mrn":            re.compile(r"\b(?:mrn|medical record)\s*[:#]?\s*[A-Z0-9-]+", re.I),
-    # 9-digit run that isn't SSN-formatted (covers un-separated SSNs + member ids)
-    "9digit_id":      re.compile(r"\b\d{9}\b"),
-}
-
+# ── Re-export the skill's detector for existing chat callers ─────────
+#
+# Anything in chat that used to do ``from app.storage.phi_audit_log
+# import detect_phi`` keeps working — we just delegate to the skill
+# so there's one source of regex truth.
 
 def detect_phi(text: str) -> tuple[list[str], int]:
-    """Scan ``text`` and return (list of PHI type labels, total match count).
+    """Scan ``text`` for PHI — delegates to the skills-core detector.
 
-    Used by callers that want to decide whether to write an audit row
-    and what ``phi_types`` to record.
+    Thin wrapper preserved for call-site stability. Prefer importing
+    from ``mobius_skills_core.skills.phi_audit`` directly in new code.
     """
-    if not text:
-        return [], 0
-    hits: list[str] = []
-    total = 0
-    for label, pat in _PHI_PATTERNS.items():
-        matches = pat.findall(text)
-        if matches:
-            hits.append(label)
-            total += len(matches)
-    return hits, total
+    return _skill_detect_phi(text)
+
+
+# ── Host-specific env lookups (not in the skill) ─────────────────────
 
 
 def _hipaa_mode_active() -> bool:
@@ -84,6 +88,10 @@ def _hipaa_mode_active() -> bool:
 
     Ops flips ``CHAT_HIPAA_MODE=1`` to narrow model rotation to HIPAA-
     eligible providers. Defaults to False to preserve dev ergonomics.
+
+    Env-reading lives here (not in the skill) because other hosts may
+    derive this flag differently — credentialing, for example, may
+    treat every request as HIPAA-mode regardless of env.
     """
     return (os.environ.get("CHAT_HIPAA_MODE") or "").strip().lower() in {"1", "true", "yes"}
 
@@ -109,6 +117,9 @@ def _baa_available_for(model: str | None) -> bool:
     return False
 
 
+# ── DB writer (chat-specific) ────────────────────────────────────────
+
+
 def write_phi_audit_event(
     *,
     correlation_id: str | None,
@@ -122,7 +133,7 @@ def write_phi_audit_event(
 ) -> None:
     """Insert one row into ``phi_audit_log``. Fire-and-forget.
 
-    Never raises. Logs at debug on failure so the main pipeline is
+    Never raises. Logs at warning on failure so the main pipeline is
     never blocked by an audit-write issue.
     """
     types_str = ",".join(phi_types or [])
@@ -160,6 +171,9 @@ def write_phi_audit_event(
     )
 
 
+# ── Convenience helper for chat stages ───────────────────────────────
+
+
 def audit_if_phi(
     text: str,
     *,
@@ -170,23 +184,43 @@ def audit_if_phi(
     model_used: str | None = None,
     action_taken: str = "logged_only",
 ) -> bool:
-    """Convenience wrapper: detect PHI in ``text`` and write an audit
-    event if any pattern matched. Returns True if an audit row was
-    written, False otherwise.
+    """One-liner for chat stages: detect + write if PHI present.
 
-    Callers that want to branch on "is there PHI here" should use
-    ``detect_phi()`` directly; this one-call helper is for stages
-    that just want to log on detection and move on.
+    Internally routes through the shared skill (for detection +
+    structured emit) and then writes the chat-specific audit row via
+    ``write_phi_audit_event`` if anything was found.
+
+    Returns True if an audit row was written, False otherwise.
+
+    Callers that want to branch on "is there PHI here" without writing
+    should use ``detect_phi()`` (or the skill directly). This helper
+    is for stages that just want to log on detection and move on.
     """
-    types, count = detect_phi(text or "")
-    if not types:
+    try:
+        result = run_phi_audit(
+            text or "",
+            event_type=event_type,
+            correlation_id=correlation_id,
+            thread_id=thread_id,
+            stage=stage,
+            model_used=model_used,
+            action_taken=action_taken,
+            hipaa_mode_active=_hipaa_mode_active(),
+            baa_available=_baa_available_for(model_used),
+        )
+    except Exception as e:  # defensive — must never break caller
+        logger.warning("phi_audit skill raised: %s", e)
         return False
+
+    if not result.extra.get("detected"):
+        return False
+
     write_phi_audit_event(
         correlation_id=correlation_id,
         thread_id=thread_id,
         event_type=event_type,
-        phi_types=types,
-        phi_count=count,
+        phi_types=result.extra["phi_types"],
+        phi_count=result.extra["phi_count"],
         stage=stage,
         model_used=model_used,
         action_taken=action_taken,

@@ -251,6 +251,69 @@ app.add_middleware(
 )
 app.add_middleware(InMemoryRateLimitMiddleware, config=resolve_rate_limit_config())
 
+
+# ── Request body size cap (2026-04-20) ─────────────────────────────
+#
+# /upload already has a 100 MB chunked cap enforced in the handler.
+# This middleware protects /chat, /chat/...POST, and any other JSON
+# body endpoint from oversized requests — 1 MB is plenty for a chat
+# message plus UI metadata, and blocks a DoS vector where a malicious
+# client sends a multi-GB JSON to stall the parser.
+#
+# Tunable via CHAT_MAX_REQUEST_BYTES (default 1 MB). Overridden for
+# /upload and /chat/roster-upload since those legitimately ship
+# megabytes of document content.
+
+_DEFAULT_MAX_REQUEST_BYTES = 1 * 1024 * 1024  # 1 MB
+_LARGE_BODY_PREFIXES = ("/upload", "/chat/roster-upload")
+
+
+def _max_request_bytes() -> int:
+    raw = (os.environ.get("CHAT_MAX_REQUEST_BYTES") or "").strip()
+    if not raw:
+        return _DEFAULT_MAX_REQUEST_BYTES
+    try:
+        n = int(raw)
+        # Clamp to [64 KB, 128 MB] — prevents accidental footguns where
+        # a 0 or negative disables the cap, and caps the max at
+        # something the upload handler will still honor.
+        return max(64 * 1024, min(128 * 1024 * 1024, n))
+    except ValueError:
+        return _DEFAULT_MAX_REQUEST_BYTES
+
+
+@app.middleware("http")
+async def _enforce_request_body_cap(request, call_next):
+    """Reject requests whose Content-Length exceeds the configured cap.
+
+    Checks the header only — doesn't drain the body — so oversized
+    requests are rejected before the parser allocates memory. Clients
+    that omit Content-Length (chunked uploads) are passed through;
+    the /upload handler enforces its own cap via chunked reads.
+    """
+    # Skip cap for endpoints that legitimately receive large payloads.
+    path = request.url.path or ""
+    if any(path.startswith(p) for p in _LARGE_BODY_PREFIXES):
+        return await call_next(request)
+
+    cl = request.headers.get("content-length")
+    if cl:
+        try:
+            n = int(cl)
+        except ValueError:
+            n = -1
+        if n > _max_request_bytes():
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "error": "request_too_large",
+                    "max_bytes": _max_request_bytes(),
+                    "received_bytes": n,
+                },
+            )
+    return await call_next(request)
+
 # Start worker in background only for in-memory queue (single process). For Redis, run worker separately.
 _worker_started = False
 
@@ -915,7 +978,118 @@ from app.api._common import task_manager_base_url as _task_manager_base
 
 @app.get("/health")
 def health():
+    """Liveness probe — process is up, event loop responsive.
+
+    Cheap enough for Cloud Run / k8s liveness at 1Hz. Does NOT touch
+    the DB / queue / skills-MCP — use ``/ready`` for that. The
+    distinction matters: a failing liveness check triggers container
+    kill, so a transient DB blip shouldn't cycle pods.
+    """
     return {"status": "ok"}
+
+
+# ── Readiness probe ────────────────────────────────────────────────
+#
+# Introduced 2026-04-20 for Cloud Run deploys. Unlike ``/health``,
+# ``/ready`` actively pings downstream dependencies. Cloud Run uses
+# this to decide whether to route traffic to a new revision. Returns
+# 503 when any dependency is down so traffic drains cleanly.
+#
+# Checks (all short-timeout, failure-tolerant):
+#   * chat DB round-trip (SELECT 1)
+#   * queue configured + reachable (already asserted at startup but
+#     transient Redis outages need to show up here)
+#   * skills-mcp ping (best-effort — failures degrade to warn, not 503,
+#     since chat can fall back to built-in tool implementations)
+
+
+@app.get("/ready")
+def ready():
+    """Readiness probe. 200 ok when chat can serve traffic; 503 otherwise.
+
+    Fast (<500ms typical). Each check is wrapped so one failure
+    doesn't mask the real cause in the response body.
+    """
+    checks: dict[str, dict[str, Any]] = {}
+    all_ok = True
+
+    # 1. Chat DB — one of the cheapest possible queries.
+    try:
+        from app.db_client import db_execute, err_code
+        result = db_execute("SELECT 1 AS ok", "chat", params={})
+        if err_code(result) is not None:
+            checks["db"] = {"status": "fail", "error": str(err_code(result))}
+            all_ok = False
+        else:
+            checks["db"] = {"status": "ok"}
+    except Exception as e:
+        checks["db"] = {"status": "fail", "error": str(e)[:200]}
+        all_ok = False
+
+    # 2. Queue — for Redis queues, verify the client can ping. In-memory
+    #    queue always passes (it's in-process).
+    try:
+        q = get_queue()
+        # Best-effort: queue impls expose ``ping()`` when they can;
+        # when they don't, assume in-memory / always-up.
+        ping = getattr(q, "ping", None)
+        if callable(ping):
+            ping()
+        checks["queue"] = {"status": "ok", "type": type(q).__name__}
+    except Exception as e:
+        checks["queue"] = {"status": "fail", "error": str(e)[:200]}
+        all_ok = False
+
+    # 3. skills-mcp — degraded (warn) on failure, not 503. Chat can
+    #    serve built-in tools without skills-mcp.
+    try:
+        base = (os.environ.get("CHAT_SKILLS_MCP_URL") or "").strip()
+        if base:
+            import urllib.request
+            req = urllib.request.Request(base.rstrip("/") + "/health")
+            with urllib.request.urlopen(req, timeout=2) as _resp:  # noqa: S310
+                checks["skills_mcp"] = {"status": "ok"}
+        else:
+            checks["skills_mcp"] = {"status": "skipped", "reason": "not configured"}
+    except Exception as e:
+        checks["skills_mcp"] = {"status": "degraded", "error": str(e)[:200]}
+        # Intentionally not flipping all_ok — skills-mcp outage is
+        # not a ready-to-serve blocker.
+
+    status_code = 200 if all_ok else 503
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        status_code=status_code,
+        content={"status": "ready" if all_ok else "not_ready", "checks": checks},
+    )
+
+
+# ── Graceful shutdown ──────────────────────────────────────────────
+#
+# Cloud Run sends SIGTERM + gives the container ~10s to drain before
+# SIGKILL. Without a shutdown hook, in-flight chat turns are dropped
+# mid-processing — the client sees a hang, the DB sees partial writes.
+#
+# FastAPI's on_event("shutdown") runs during Uvicorn's lifespan
+# shutdown (which in turn triggers on SIGTERM). We use the hook to:
+#   * flag a shared event so the worker loop stops consuming new jobs
+#   * the worker's current turn keeps running (deadline already caps
+#     it at 90s, and we configure Cloud Run's timeout to match)
+
+
+@app.on_event("shutdown")
+def _graceful_shutdown() -> None:
+    """SIGTERM drain hook. Signals the worker to stop taking new jobs.
+
+    Chat turns already running continue to completion (bounded by the
+    90s worker deadline). No new turns are dequeued.
+    """
+    try:
+        from app.worker.run import request_shutdown
+        request_shutdown()
+        logger.info("Graceful shutdown signal sent to worker.")
+    except Exception as e:
+        logger.warning("Worker shutdown signal failed: %s", e)
 
 
 # Serve chat UI at /
