@@ -95,6 +95,15 @@ class PipelineContext:
     """Tool output for follow-up questions (tool, org, summary, follow_up_capable, expires_after_turns)."""
 
     react_last_tool: str | None = None
+    react_rounds_used: int = 0
+    """Actual ReAct loop round count — set by run_react when it exits.
+
+    2026-04-19 (Sprint A.1 commit 4 follow-up): feeds the turn_completed
+    envelope's rounds_used field for accurate throughput analytics.
+    Previously _publish_completed used len(thinking_chunks) as a proxy,
+    which over-counted by 5-10× because every emit contributes an
+    entry. This field is set exactly once per turn to the number of
+    ReAct rounds that actually ran (1..max_it)."""
     """Last tool name from ReAct loop (UI attribution / assistant_envelope)."""
 
     # Collected during pipeline (emitter appends)

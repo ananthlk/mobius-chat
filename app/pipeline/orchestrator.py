@@ -699,6 +699,13 @@ def _publish_completed(ctx: PipelineContext, t0_start: float) -> None:
             for e in (ctx.thinking_chunks or [])
             if isinstance(e, dict) and e.get("data", {}).get("tool")
         })
+        # rounds_used: authoritative value tracked on ctx by run_react
+        # at each iteration's top. More reliable than counting things
+        # in thinking_chunks (which mixes strings + envelopes +
+        # non-round-scoped entries) and handles all the loop-exit
+        # paths uniformly (finalize, break, exception → integrator
+        # fallback).
+        rounds_used = int(getattr(ctx, "react_rounds_used", 0) or 0)
         total_tokens = None
         total_cost = None
         if ctx.usages:
@@ -713,7 +720,7 @@ def _publish_completed(ctx: PipelineContext, t0_start: float) -> None:
                 pass
         env = make_turn_completed(
             correlation_id=ctx.correlation_id,
-            rounds_used=len(ctx.thinking_chunks or []),  # rough proxy; ReAct turn count
+            rounds_used=rounds_used,
             tools_used=list(tools_used),
             final_signal=",".join(ctx.retrieval_signals or []) or "unknown",
             duration_ms=duration_ms,

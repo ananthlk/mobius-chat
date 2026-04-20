@@ -1273,6 +1273,10 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
 
     for iteration in range(max_it):
         rn = iteration + 1
+        # Keep ctx.react_rounds_used current so whichever exit path
+        # the loop takes (finalize, break, exception-to-integrator
+        # fallback), _publish_completed reads the correct round count.
+        ctx.react_rounds_used = rn
         headline = _react_round_headline(iteration, max_it)
         emit(f"  Round {rn}/{max_it} — {headline}")
         emit(f"  Reasoning round {rn}/{max_it}…")
