@@ -41,6 +41,18 @@ _MCP_URL = os.environ.get("DB_AGENT_MCP_URL", "http://localhost:8008/mcp")
 _CALLER_ID = os.environ.get("DB_AGENT_CALLER_ID", "")
 _TIMEOUT = 15  # seconds
 
+# 2026-04-20 monolith-beta toggle: when ``CHAT_DB_MODE=direct`` is set
+# we skip the MCP agent entirely and go straight to Cloud SQL via
+# psycopg2. Rationale: the Cloud Run beta runs chat as a monolith
+# without db-agent deployed. Without this flag the public API would
+# raise on ``_get_caller_id()`` before ever attempting the graceful
+# fallback, or waste 15s per call hitting an unreachable localhost
+# before the URLError catch fires.
+#
+# Unset (default) → normal MCP-first behavior (dev + future split).
+# ``=direct``     → every call uses the psycopg2 fallback path only.
+_DIRECT_MODE = (os.environ.get("CHAT_DB_MODE") or "").strip().lower() == "direct"
+
 
 def _call_mcp_tool(tool_name: str, arguments: dict) -> dict:
     """Call an MCP tool via streamable-http and return the parsed result."""
@@ -99,7 +111,15 @@ def _to_psycopg2_sql(sql: str) -> str:
 
 
 def _get_fallback_url(db_name: str) -> str:
-    """Resolve a direct database URL from env vars."""
+    """Resolve a direct database URL from env vars.
+
+    If ``CHAT_DB_PASSWORD`` is set (Cloud Run path — injected from
+    Secret Manager), inject it into the URL so psycopg2 can auth.
+    The URL otherwise carries no password (keeps ``.env.example``
+    and Cloud Run env-var listings secret-free). libpq also honors
+    a ``PGPASSWORD`` env var, but doing it URL-side keeps the
+    semantics visible at the connect callsite.
+    """
     url_map = {
         "chat": os.environ.get("CHAT_RAG_DATABASE_URL", ""),
         "rag": os.environ.get("DATABASE_URL", ""),
@@ -107,8 +127,19 @@ def _get_fallback_url(db_name: str) -> str:
         "qa": os.environ.get("QA_DATABASE_URL", ""),
     }
     url = url_map.get(db_name, "")
-    # Strip async driver
-    return re.sub(r"postgresql\+\w+://", "postgresql://", url)
+    # Strip async driver (``postgresql+psycopg2://`` → ``postgresql://``).
+    url = re.sub(r"postgresql\+\w+://", "postgresql://", url)
+    # Inject password if env-var-side secret is set and URL has none.
+    # Matches user@ (no pw) and user:@ (empty pw) forms. Skip if URL
+    # already has a password component.
+    pw = os.environ.get("CHAT_DB_PASSWORD", "").strip()
+    if pw and db_name == "chat" and url:
+        # Only inject when the user segment lacks a ``:password``.
+        m = re.match(r"(postgresql://)([^:@/]+)(@.+)$", url)
+        if m:
+            from urllib.parse import quote
+            url = f"{m.group(1)}{m.group(2)}:{quote(pw, safe='')}{m.group(3)}"
+    return url
 
 
 def _fallback_error(exc: BaseException) -> dict:
@@ -236,6 +267,8 @@ def db_query(
     max_rows: int = 1000,
 ) -> dict:
     """Execute a read-only SQL query. Falls back to direct DB if agent is down."""
+    if _DIRECT_MODE:
+        return _fallback_query(sql, db_name, params or {}, max_rows)
     try:
         return _call_mcp_tool("db_query", {
             "sql": sql,
@@ -255,6 +288,8 @@ def db_execute(
     params: dict | None = None,
 ) -> dict:
     """Execute a write SQL statement. Falls back to direct DB if agent is down."""
+    if _DIRECT_MODE:
+        return _fallback_execute(sql, db_name, params or {})
     try:
         return _call_mcp_tool("db_execute", {
             "sql": sql,
@@ -302,15 +337,79 @@ def db_transaction(
     "statement_index": N}}`` — any failure rolls back the entire transaction,
     so callers never see partial writes.
 
-    No direct-DB fallback: transactions are the whole point. If the agent
-    is down, the caller's best option is to degrade (skip persistence or
-    split into individual db_execute calls, accepting loss of atomicity).
+    No direct-DB fallback historically; 2026-04-20 added a ``CHAT_DB_MODE=direct``
+    path for the Cloud Run monolith beta where db-agent isn't deployed.
+    That path runs all statements inside a single psycopg2 transaction
+    with the same rollback-on-failure semantics.
     """
+    if _DIRECT_MODE:
+        return _fallback_transaction(statements, db_name)
     return _call_mcp_tool("db_transaction", {
         "statements": json.dumps(statements),
         "db_name": db_name,
         "caller_id": _get_caller_id(),
     })
+
+
+def _fallback_transaction(statements: list[dict], db_name: str) -> dict:
+    """Direct psycopg2 implementation of ``db_transaction``.
+
+    Runs every statement in one transaction, rolls back on any error,
+    and returns the same shape as the MCP version so callers can't
+    tell the difference.
+    """
+    import psycopg2
+    url = _get_fallback_url(db_name)
+    if not url:
+        return {
+            "error": {"code": "connection_error",
+                      "message": f"No fallback URL for database '{db_name}'"},
+            "_fallback": True,
+        }
+    try:
+        conn = psycopg2.connect(url, connect_timeout=10)
+    except Exception as exc:
+        return _fallback_error(exc)
+
+    per_stmt: list[dict] = []
+    total = 0
+    try:
+        with conn.cursor() as cur:
+            for i, stmt in enumerate(statements):
+                sql = stmt.get("sql", "")
+                params = stmt.get("params") or {}
+                try:
+                    cur.execute(_to_psycopg2_sql(sql), params)
+                except Exception as exc:
+                    conn.rollback()
+                    err = _fallback_error(exc)
+                    if "error" in err:
+                        err["error"]["statement_index"] = i
+                    return err
+                # Parse operation + table for the response shape. Best-effort.
+                op = sql.strip().split(None, 1)[0].upper() if sql.strip() else ""
+                tbl = ""
+                m = re.search(r"(?:INTO|UPDATE|FROM)\s+([A-Za-z_][\w.]*)", sql, re.I)
+                if m:
+                    tbl = m.group(1)
+                per_stmt.append({
+                    "operation": op,
+                    "table": tbl,
+                    "rows_affected": cur.rowcount,
+                })
+                total += max(0, cur.rowcount)
+        conn.commit()
+        return {
+            "statements_executed": len(statements),
+            "rows_affected_total": total,
+            "per_statement": per_stmt,
+            "_fallback": True,
+        }
+    except Exception as exc:
+        conn.rollback()
+        return _fallback_error(exc)
+    finally:
+        conn.close()
 
 
 # ─────────────────────────────────────────────────────────────────────────

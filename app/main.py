@@ -1014,16 +1014,24 @@ def ready():
     all_ok = True
 
     # 1. Chat DB — one of the cheapest possible queries.
+    #    Use db_query (SELECT 1 is a read; db_execute works but db_query
+    #    is the right shape). Surface both the error code AND the
+    #    underlying message so operators can diagnose without grepping
+    #    Cloud Logging.
     try:
-        from app.db_client import db_execute, err_code
-        result = db_execute("SELECT 1 AS ok", "chat", params={})
+        from app.db_client import db_query, err_code, err_message
+        result = db_query("SELECT 1 AS ok", "chat", params={})
         if err_code(result) is not None:
-            checks["db"] = {"status": "fail", "error": str(err_code(result))}
+            checks["db"] = {
+                "status": "fail",
+                "error": str(err_code(result)),
+                "message": err_message(result)[:300],
+            }
             all_ok = False
         else:
             checks["db"] = {"status": "ok"}
     except Exception as e:
-        checks["db"] = {"status": "fail", "error": str(e)[:200]}
+        checks["db"] = {"status": "fail", "error": str(e)[:300]}
         all_ok = False
 
     # 2. Queue — for Redis queues, verify the client can ping. In-memory

@@ -152,6 +152,7 @@ SET_ENV_VARS=(
     "CHAT_ENV_STRICT=${CHAT_ENV_STRICT}"
     "MOBIUS_PROD=${MOBIUS_PROD}"
     "CHAT_QUEUE_TYPE=${CHAT_QUEUE_TYPE}"
+    "CHAT_DB_MODE=${CHAT_DB_MODE:-}"
     "MOBIUS_TURN_DEADLINE_S=${MOBIUS_TURN_DEADLINE_S}"
     "CHAT_MAX_REQUEST_BYTES=${CHAT_MAX_REQUEST_BYTES}"
     "VERTEX_PROJECT_ID=${VERTEX_PROJECT_ID}"
@@ -175,6 +176,9 @@ SET_SECRETS=(
     "GROQ_API_KEY=groq-api-key:latest"
     "ANTHROPIC_API_KEY=anthropic-api-key:latest"
     "JWT_SECRET=jwt-secret:latest"
+    # Beta: postgres superuser password for direct Cloud SQL connect.
+    # Injected into CHAT_RAG_DATABASE_URL at connect time by db_client.
+    "CHAT_DB_PASSWORD=db-password:latest"
 )
 
 # ── Deploy ──────────────────────────────────────────────────────────
