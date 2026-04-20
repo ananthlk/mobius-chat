@@ -295,9 +295,27 @@ def maybe_start_worker():
     # skill registry entries so the planner sees them alongside the
     # five built-in skills. Best-effort — if the MCP server is down
     # we log and keep booting; chat still works with just builtins.
-    # Gated by MOBIUS_MCP_AUTOREGISTER=1 so operators can turn it off
-    # without redeploying (default OFF until we validate in hosted).
-    if (os.environ.get("MOBIUS_MCP_AUTOREGISTER") or "").strip().lower() in ("1", "true", "yes"):
+    #
+    # 2026-04-19: default flipped OFF→ON after the critic + guidance
+    # mode arc landed. The adapter has full test coverage (cold
+    # integration tests + golden-case behavior + collision tests) and
+    # graceful degradation at every failure mode (MCP down → []; bad
+    # descriptors → skipped; name collisions with builtins → skipped).
+    # Worst-case boot time impact: one list_tools round-trip to the
+    # MCP server (skipped silently on failure).
+    #
+    # Rollback: set MOBIUS_MCP_AUTOREGISTER=0 (or "false"/"no"/"off")
+    # in .env and restart. No code change needed.
+    _mcp_autoreg_raw = (os.environ.get("MOBIUS_MCP_AUTOREGISTER") or "").strip().lower()
+    if _mcp_autoreg_raw in ("0", "false", "no", "off"):
+        _mcp_autoreg_enabled = False
+    else:
+        # Default ON when the env var is unset, empty, or any truthy
+        # value. The permissive parsing mirrors the critic flag so
+        # operators only need to remember "set to 0 to disable."
+        _mcp_autoreg_enabled = True
+
+    if _mcp_autoreg_enabled:
         try:
             from app.skills.mcp_adapter import register_mcp_skills
             names = register_mcp_skills()
