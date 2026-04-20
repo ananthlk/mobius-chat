@@ -238,7 +238,7 @@ class TestReactLoopRatchet:
       post-1i pass 3         TBD         (integrator extraction)
     """
 
-    MAX_REACT_LOOP_LOC = 1_510  # tighten as passes 2+3 land
+    MAX_REACT_LOOP_LOC = 1_590  # tighten as passes 2+3 land
     # 2026-04-18: bumped from 1_420 by 10 LOC to absorb the restore of
     # _attach_result_summary (renamed from the deleted
     # _attach_credentialing_result_summary). The utility is not
@@ -253,6 +253,15 @@ class TestReactLoopRatchet:
     # and the feature-flag gate. This is a real new feature, not drift —
     # the alternative was a post-hoc groundedness gate downstream of
     # the integrator, which doesn't get the retry benefit.
+    # 2026-04-19 (later): bumped from 1_510 to 1_590 (+80 LOC) for
+    # _corpus_confidence_min() — the tunable knob that replaces a
+    # hardcoded confidence_min=0.5 at react_loop.py's search_corpus
+    # call site. Live validation exposed the 0.5 threshold as silently
+    # dropping abstain-grade chunks that were legitimately relevant;
+    # moving to an env-var-tunable default-0.3 lets operators iterate
+    # without redeploys. Helper body + explanation comment account for
+    # the LOC; tests that lock the behavior are in
+    # test_corpus_confidence_tuning.py.
 
     def test_react_loop_loc_under_ceiling(self):
         loc = len(REACT_LOOP.read_text().splitlines())

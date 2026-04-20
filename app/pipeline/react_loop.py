@@ -138,6 +138,70 @@ from app.pipeline.react.prompts import (  # noqa: F401 — re-exported for back-
 # Kept only for reference; the body now lives in app.pipeline.react.prompts.
 # The re-imports above provide the same names at the old import path.
 
+
+# ── Corpus confidence threshold (tunable) ──────────────────────────────
+#
+# ``answer_non_patient`` filters retrieved chunks by
+# ``_score_chunk_for_confidence_filter(chunk) >= confidence_min``. The
+# score map in app/services/non_patient_rag.py assigns:
+#
+#   process_confident     0.9
+#   process_with_caution  0.55
+#   abstain               0.3
+#
+# Pre-2026-04-19 threshold was 0.5 — which dropped "abstain" chunks
+# silently. Live validation on Sunshine Health H0036 revealed the
+# failure mode: the RAG backend retrieved Sunshine Provider Manual
+# pages (general medical-necessity framework) but they scored in the
+# abstain band on a specific-code question. Planner got zero chunks,
+# emitted "I didn't find anything specific", burned all rounds
+# searching — while the chunks were available the whole time via a
+# different code path (shown as citations in the final card but never
+# used in the reasoning).
+#
+# Lowering to 0.3 admits abstain-labeled chunks as partial evidence.
+# The planner can now synthesize from them. Guidance mode (rounds
+# after ceil(0.8 * max_it)) shifts the planner from "hunt for the
+# authoritative answer" to "produce a hedged answer from what we
+# have" — abstain-grade evidence is exactly the input that mode was
+# designed to work with. The critic keeps the resulting drafts
+# grounded by flagging any claim not supported by the admitted
+# chunks.
+#
+# The env var MOBIUS_REACT_CORPUS_CONFIDENCE_MIN lets operators tune
+# without a code change since we expect to iterate on this knob.
+# Clamped to [0.0, 1.0]; malformed values fall back to the default.
+
+_CORPUS_CONFIDENCE_MIN_DEFAULT = 0.3
+
+
+def _corpus_confidence_min() -> float:
+    """Resolve the confidence_min used by react_loop's search_corpus call.
+
+    Reads MOBIUS_REACT_CORPUS_CONFIDENCE_MIN at call time (not module
+    load) so tests can monkeypatch the env var and production changes
+    don't need a worker restart. Invalid values fall back to the
+    default silently — this is a tuning knob, not an invariant.
+    """
+    import math
+
+    raw = (os.environ.get("MOBIUS_REACT_CORPUS_CONFIDENCE_MIN") or "").strip()
+    if not raw:
+        return _CORPUS_CONFIDENCE_MIN_DEFAULT
+    try:
+        v = float(raw)
+    except ValueError:
+        return _CORPUS_CONFIDENCE_MIN_DEFAULT
+    # NaN / inf slip through float() but aren't valid thresholds.
+    # float('nan') comparisons are all False, so without this guard
+    # _corpus_confidence_min() returns 1.0 for NaN input (via the
+    # max/min clamping), silently locking the threshold at "admit
+    # nothing". Fall back to default instead.
+    if not math.isfinite(v):
+        return _CORPUS_CONFIDENCE_MIN_DEFAULT
+    return max(0.0, min(1.0, v))
+
+
 # ---------------------------------------------------------------------------
 # Tool executor (skeleton: search_corpus only)
 # ---------------------------------------------------------------------------
@@ -307,7 +371,14 @@ def _execute_tool(
             return answer_non_patient(
                 question=query,
                 k=10,
-                confidence_min=0.5,
+                # 2026-04-19: was 0.5 hardcoded, which silently dropped
+                # "abstain"-grade chunks (score 0.3). Live validation
+                # showed the planner missing the Sunshine Provider
+                # Manual entirely even though the RAG backend retrieved
+                # it — now tunable via MOBIUS_REACT_CORPUS_CONFIDENCE_MIN
+                # (default 0.3 — admits abstain chunks as partial
+                # evidence for guidance mode to work with).
+                confidence_min=_corpus_confidence_min(),
                 emitter=emitter,
                 correlation_id=ctx.correlation_id,
                 subquestion_id="react_1",
