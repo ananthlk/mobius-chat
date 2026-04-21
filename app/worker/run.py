@@ -139,29 +139,57 @@ def process_one(correlation_id: str, payload: dict) -> None:
             if prev_handler is not None:
                 signal.signal(signal.SIGALRM, prev_handler)
     else:
-        # Path 2: thread-pool timeout
-        from concurrent.futures import ThreadPoolExecutor
-        from concurrent.futures import TimeoutError as FutureTimeoutError
-        # One-off executor — cheap to construct, auto-cleans when the
-        # enclosing call returns. A persistent pool would save a few ms
-        # of thread-start but wouldn't help if a zombie monopolizes it.
-        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="turn") as ex:
-            fut = ex.submit(_run_pipeline)
+        # Path 2: daemon-thread timeout
+        #
+        # First attempt used ThreadPoolExecutor with ``with`` + on-timeout
+        # ``shutdown(wait=False)``. That looked right but the ``with``
+        # block's ``__exit__`` called shutdown(wait=True) again, which
+        # re-joined the zombie thread — effectively blocking the whole
+        # queue consumer from picking up the next turn. Observed
+        # downstream: one timed-out turn stalled 5 subsequent queued
+        # turns for ~15 min until we caught it in smoke.
+        #
+        # Fix: raw daemon ``threading.Thread`` + ``Event``. A daemon
+        # thread doesn't block process exit, and we never join the
+        # zombie — we just return control the moment the deadline
+        # trips. The thread continues to run in the background,
+        # bounded by the nested tool-call timeouts (LLM 60s, httpx
+        # 30s, db 15s) so it finishes on its own within a few minutes.
+        done = threading.Event()
+        exc_holder: list[BaseException] = []
+
+        def _target() -> None:
             try:
-                fut.result(timeout=deadline_s)
-            except FutureTimeoutError:
-                logger.warning(
-                    "turn_deadline_exceeded correlation_id=%s deadline_s=%d "
-                    "(thread-pool path; worker thread may still be running)",
-                    correlation_id, deadline_s,
-                )
-                _publish_deadline_failure()
-                # Return control without waiting for the runaway thread.
-                # ThreadPoolExecutor's __exit__ would block on it,
-                # so we disable wait. The zombie finishes on its own
-                # (bounded by the nested tool-call timeouts) and the
-                # pool then joins it at GC.
-                ex.shutdown(wait=False)
+                _run_pipeline()
+            except BaseException as e:  # noqa: BLE001  — forwarded below
+                exc_holder.append(e)
+            finally:
+                done.set()
+
+        t = threading.Thread(
+            target=_target,
+            name=f"turn-{correlation_id[:8]}" if correlation_id else "turn",
+            daemon=True,
+        )
+        t.start()
+        finished_in_time = done.wait(timeout=deadline_s)
+        if not finished_in_time:
+            logger.warning(
+                "turn_deadline_exceeded correlation_id=%s deadline_s=%d "
+                "(daemon-thread path; worker thread may still be running)",
+                correlation_id, deadline_s,
+            )
+            _publish_deadline_failure()
+            # Don't join — we return to the queue consumer immediately.
+            # The zombie thread keeps running; it's a daemon so it
+            # won't hold the process open, and the next turn starts
+            # right away.
+            return
+        # Pipeline finished within deadline — propagate any exception
+        # so the queue consumer logs it normally (matches legacy path
+        # 1 behavior).
+        if exc_holder:
+            raise exc_holder[0]
 
 
 # ── Graceful shutdown ────────────────────────────────────────────────
