@@ -5873,13 +5873,13 @@ function run(): void {
       payload.credentialing_options = opts.credentialing_options;
     }
     payload.chat_mode = selectedMode;
+    // 2026-04-20: all modes default to ReAct. The old copilot =
+    // legacy-planner mapping has been retired — the pipeline's
+    // hardening (per-request deadline, PHI audit on both sides,
+    // critic + adjudicator) is only exercised on the ReAct path.
+    // Explicit override still honored for internal callers.
     if (opts?.use_react !== undefined) {
       payload.use_react = opts.use_react;
-    } else {
-      // copilot uses the registry-first non-ReAct path; quick and agentic use ReAct
-      if (selectedMode === "copilot") {
-        payload.use_react = false;
-      }
     }
     let activeCorrelationId = "";
     fetch(API_BASE + "/chat", {
