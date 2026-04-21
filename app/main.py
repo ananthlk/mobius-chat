@@ -878,6 +878,12 @@ _SKILL_LLM_ALLOWED_STAGES = frozenset({
     # Org intelligence stages
     "org_intel_synthesis",   # profile synthesis → structured JSON profile
     "org_intel_report",      # long-form report generation from synthesized profile
+    # mobius-rag ingestion stages (2026-04-21): rag's extraction +
+    # critique calls route through here so Thompson-bandit routing +
+    # llm_calls analytics cover the full stack, not just chat-side.
+    "rag_extraction",        # stream_extract_facts → structured fact JSON
+    "rag_critique",          # critique_extraction → quality score + feedback
+    "rag_lexicon_triage",    # candidate → {new_tag, alias, reject} verdict
 })
 
 
