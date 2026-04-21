@@ -143,12 +143,19 @@ def answer_non_patient(
     if rag.database_url:
         try:
             from app.services.retriever_backend import retrieve_for_chat
+            # Normalize DSN the same way db_client does so psycopg2 inside
+            # retriever_backend gets a clean URL (no ``+psycopg2`` driver
+            # prefix) with CHAT_DB_PASSWORD from Secret Manager injected.
+            # Without this, Cloud Run logs ``BM25 corpus fetch failed:
+            # invalid dsn: invalid connection option "postgresql+psycopg2"``.
+            from app.db_client import _get_fallback_url
+            retrieval_db_url = _get_fallback_url("chat") or rag.database_url
             k = k if k is not None else rag.top_k
             total_k = max(k, (n_hierarchical or 0) + (n_factual or 0)) if use_blend else k
             chunks, retrieval_trace = retrieve_for_chat(
                 question,
                 top_k=total_k,
-                database_url=rag.database_url,
+                database_url=retrieval_db_url,
                 filter_payer=(fp if fp is not None else rag.filter_payer) or "",
                 filter_state=(fst if fst is not None else rag.filter_state) or "",
                 filter_program=(fpr if fpr is not None else rag.filter_program) or "",
