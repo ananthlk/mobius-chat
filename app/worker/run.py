@@ -71,37 +71,29 @@ def process_one(correlation_id: str, payload: dict) -> None:
         user_id = None
 
     deadline_s = _turn_deadline_seconds()
-    # signal.alarm only works in the main thread of the main interpreter.
-    # When the worker runs as a background thread (start_worker_background,
-    # used by the API's in-process path), we can't install the alarm —
-    # fall back to no deadline there. The standalone `python -m app.worker`
-    # process always runs the consumer in the main thread, so the alarm
-    # protects the production path.
     is_main_thread = threading.current_thread() is threading.main_thread()
-    installed_alarm = False
-    prev_handler = None
-    if is_main_thread and hasattr(signal, "SIGALRM"):
-        prev_handler = signal.signal(signal.SIGALRM, _deadline_handler)
-        signal.alarm(deadline_s)
-        installed_alarm = True
 
-    try:
-        run_pipeline(
-            correlation_id,
-            message,
-            thread_id,
-            t0_start=time.perf_counter(),
-            use_react_override=use_react,
-            chat_mode=chat_mode,
-            user_id=user_id,
-        )
-    except _TurnDeadlineExceeded:
-        logger.warning(
-            "turn_deadline_exceeded correlation_id=%s deadline_s=%d",
-            correlation_id, deadline_s,
-        )
-        # Publish a graceful failure response so the client stops
-        # polling. Same pattern the orchestrator's _publish_failed uses.
+    # Two deadline enforcement paths, chosen by execution context:
+    #
+    # 1. Main thread → signal.alarm (cheap, interrupts Python anywhere).
+    #    The standalone ``python -m app.worker`` process hits this path.
+    #
+    # 2. Background thread (the Cloud Run monolith path where the API's
+    #    startup hook spawns start_worker_background) → ThreadPool
+    #    timeout. The turn runs in a worker-pool thread; if it exceeds
+    #    deadline_s, .result() raises FutureTimeoutError and we publish
+    #    a graceful failure. The pool thread keeps running (Python
+    #    can't kill a thread mid-syscall), but the outer process_one
+    #    returns immediately — so the queue consumer can pick up the
+    #    next job without being blocked by a stuck turn.
+    #
+    # The zombie-thread caveat of path 2 is acceptable: each tool call
+    # in run_pipeline has its own timeout (LLM providers ~60s, httpx
+    # ~30s, db-client ~15s), so a "hung" turn bounded-deadlines its
+    # way out within a few minutes even without forced cancellation.
+    # The main user-visible symptom (infinite polling) is fixed.
+
+    def _publish_deadline_failure() -> None:
         try:
             from app.queue import get_queue
             get_queue().publish_response(
@@ -118,11 +110,58 @@ def process_one(correlation_id: str, payload: dict) -> None:
             )
         except Exception as _pub_err:
             logger.exception("Failed to publish deadline-exceeded response: %s", _pub_err)
-    finally:
-        if installed_alarm:
-            signal.alarm(0)  # cancel
+
+    def _run_pipeline() -> None:
+        run_pipeline(
+            correlation_id,
+            message,
+            thread_id,
+            t0_start=time.perf_counter(),
+            use_react_override=use_react,
+            chat_mode=chat_mode,
+            user_id=user_id,
+        )
+
+    if is_main_thread and hasattr(signal, "SIGALRM"):
+        # Path 1: signal.alarm
+        prev_handler = signal.signal(signal.SIGALRM, _deadline_handler)
+        signal.alarm(deadline_s)
+        try:
+            _run_pipeline()
+        except _TurnDeadlineExceeded:
+            logger.warning(
+                "turn_deadline_exceeded correlation_id=%s deadline_s=%d",
+                correlation_id, deadline_s,
+            )
+            _publish_deadline_failure()
+        finally:
+            signal.alarm(0)
             if prev_handler is not None:
                 signal.signal(signal.SIGALRM, prev_handler)
+    else:
+        # Path 2: thread-pool timeout
+        from concurrent.futures import ThreadPoolExecutor
+        from concurrent.futures import TimeoutError as FutureTimeoutError
+        # One-off executor — cheap to construct, auto-cleans when the
+        # enclosing call returns. A persistent pool would save a few ms
+        # of thread-start but wouldn't help if a zombie monopolizes it.
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="turn") as ex:
+            fut = ex.submit(_run_pipeline)
+            try:
+                fut.result(timeout=deadline_s)
+            except FutureTimeoutError:
+                logger.warning(
+                    "turn_deadline_exceeded correlation_id=%s deadline_s=%d "
+                    "(thread-pool path; worker thread may still be running)",
+                    correlation_id, deadline_s,
+                )
+                _publish_deadline_failure()
+                # Return control without waiting for the runaway thread.
+                # ThreadPoolExecutor's __exit__ would block on it,
+                # so we disable wait. The zombie finishes on its own
+                # (bounded by the nested tool-call timeouts) and the
+                # pool then joins it at GC.
+                ex.shutdown(wait=False)
 
 
 # ── Graceful shutdown ────────────────────────────────────────────────

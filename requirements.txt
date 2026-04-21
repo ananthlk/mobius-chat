@@ -66,6 +66,13 @@ PyMuPDF>=1.24.0,<2.0.0
 # ── Web scraping ─────────────────────────────────────────────────────
 beautifulsoup4>=4.12.0        # bs4 import; powers skills-core.web_scrape
 
+# ── Search fallback ──────────────────────────────────────────────────
+# Used by skills-core.google_search when GOOGLE_SEARCH_URL isn't
+# pointed at the microservice and GOOGLE_CSE credentials aren't set.
+# No API key required; honors robots.txt; low quality but works.
+# When the microservice deploys, this stays installed but never fires.
+ddgs>=9.0.0
+
 # ── Optional: Redis queue ────────────────────────────────────────────
 # Monolith beta uses CHAT_QUEUE_TYPE=memory; this dep is included so
 # switching to redis is a config-only change with no rebuild.
