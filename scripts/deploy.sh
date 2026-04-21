@@ -163,6 +163,7 @@ SET_ENV_VARS=(
     "CHAT_CORS_ORIGINS=${CHAT_CORS_ORIGINS}"
     "MOBIUS_OS_AUTH_URL=${MOBIUS_OS_AUTH_URL}"
     "CHAT_AUTH_MODE=${CHAT_AUTH_MODE:-}"
+    "MOBIUS_REACT_CRITIC=${MOBIUS_REACT_CRITIC:-}"
     "CHAT_HIPAA_MODE=${CHAT_HIPAA_MODE}"
     # Secret Manager loader needs this to know which project to fetch
     # secrets from. Cloud Run sets GOOGLE_CLOUD_PROJECT automatically,
