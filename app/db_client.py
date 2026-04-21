@@ -106,8 +106,17 @@ def _get_caller_id() -> str:
 # ---------------------------------------------------------------------------
 
 def _to_psycopg2_sql(sql: str) -> str:
-    """Convert SQLAlchemy :param style to psycopg2 %(param)s style."""
-    return re.sub(r":([a-zA-Z_][a-zA-Z0-9_]*)", r"%(\1)s", sql)
+    """Convert SQLAlchemy ``:param`` style to psycopg2 ``%(param)s`` style.
+
+    The negative lookbehind ``(?<!:)`` is critical — PostgreSQL's type
+    cast syntax ``::bigint`` / ``::text`` / ``::jsonb`` would otherwise
+    have its second colon mangled into a phantom ``%(bigint)s`` /
+    ``%(text)s`` parameter. The original regex didn't have this guard
+    and produced user-visible errors on any query that used ``::`` casts
+    (e.g. the LLM router report's ``COUNT(*)::bigint``, which surfaced
+    as a literal red "'bigint'" in the UI modal).
+    """
+    return re.sub(r"(?<!:):([a-zA-Z_][a-zA-Z0-9_]*)", r"%(\1)s", sql)
 
 
 def _get_fallback_url(db_name: str) -> str:
