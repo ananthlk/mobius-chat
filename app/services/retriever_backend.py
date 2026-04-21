@@ -313,8 +313,16 @@ def retrieve_for_chat(
                 line_tags_by_key=line_tags_by_key,
             )
             _debug_chunks("after rerank (chunks_to_convert)", chunks_to_convert)
-    except FileNotFoundError:
-        logger.debug("Reranker config not found; using BM25 scores only.")
+    except FileNotFoundError as _fnf:
+        # 2026-04-21: was logger.debug, which silently masked a
+        # real prod bug — configs/*.yaml didn't ship in the
+        # mobius-retriever wheel, so rerank fell back to BM25-only
+        # scoring in Cloud Run while working fine in dev editable
+        # installs. Upgraded to warning so this is never silent again.
+        logger.warning(
+            "Reranker config not found (%s); falling back to BM25-only "
+            "scoring. tag_match contribution will be zero.", _fnf,
+        )
     except Exception as e:
         logger.warning("Reranker failed: %s; using BM25 scores only.", e, exc_info=True)
 

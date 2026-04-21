@@ -530,7 +530,14 @@ def _execute_tool(
         )
 
         rag = get_chat_config().rag
-        if not rag.chroma_persist_dir:
+        # Chroma is "configured" when either a persist dir (legacy
+        # local mode) OR a host (HttpClient mode — Cloud Run + shared
+        # GCE server) is set. Pre-2026-04-21 the guard only knew
+        # about persist_dir, so lazy_corpus_search always gave up in
+        # Cloud Run with "Corpus not configured" even though the
+        # shared Chroma was reachable.
+        chroma_host = (os.environ.get("CHROMA_HOST") or "").strip()
+        if not rag.chroma_persist_dir and not chroma_host:
             emit("↓ Corpus not configured on this deploy.")
             return {
                 "tool": "lazy_corpus_search",
@@ -551,13 +558,25 @@ def _execute_tool(
             authority_level=(rag.filter_authority_level or "").strip(),
         )
 
+        # Chroma connection: HttpClient for Cloud Run (shared GCE
+        # server), PersistentClient for legacy local dev. Env vars
+        # here mirror what published_rag_search.py reads so the two
+        # paths stay in sync.
+        _chroma_host = (os.environ.get("CHROMA_HOST") or "").strip()
+        _chroma_cfg_kwargs = {"collection": rag.chroma_collection or "published_rag"}
+        if _chroma_host:
+            _chroma_cfg_kwargs.update(
+                host=_chroma_host,
+                port=int((os.environ.get("CHROMA_PORT") or "8000").strip()),
+                ssl=(os.environ.get("CHROMA_SSL") or "").strip().lower() in {"1","true","yes"},
+                auth_token=(os.environ.get("CHROMA_AUTH_TOKEN") or "").strip(),
+            )
+        else:
+            _chroma_cfg_kwargs["persist_dir"] = rag.chroma_persist_dir
         result = run_lazy_corpus_search(
             query=query,
             embed_query=get_query_embedding,
-            chroma=ChromaConfig(
-                persist_dir=rag.chroma_persist_dir,
-                collection=rag.chroma_collection or "published_rag",
-            ),
+            chroma=ChromaConfig(**_chroma_cfg_kwargs),
             filters=filters,
             k=16,
         )
