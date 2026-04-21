@@ -7,6 +7,7 @@ Two retrieval modes:
 """
 from __future__ import annotations
 import logging
+import os
 from typing import Any, Callable, List
 
 logger = logging.getLogger(__name__)
@@ -42,12 +43,53 @@ _chroma_collection = None
 
 
 def _get_chroma_collection(persist_dir: str, collection_name: str):
-    """Lazy-init ChromaDB persistent client and collection (cosine space)."""
+    """Lazy-init ChromaDB client and collection (cosine space).
+
+    Two deployment modes, chosen at call time:
+
+    1. **HTTP server mode** (hosted beta) — when ``CHROMA_HOST`` is
+       set, connect via ``chromadb.HttpClient`` to the GCE VM running
+       the Chroma container. Auth is the ``X-Chroma-Token`` header;
+       the token comes from env ``CHROMA_AUTH_TOKEN`` (wired from
+       Secret Manager ``chroma-auth-token``). Both chat (Cloud Run)
+       and local dev point at the same server → one source of truth.
+
+    2. **Persistent local mode** (legacy) — when ``CHROMA_HOST`` is
+       unset, fall back to ``PersistentClient`` with the on-disk
+       ``persist_dir``. This kept old dev boxes working while the
+       shared server was provisioning; kept for safety, remove once
+       every env has ``CHROMA_HOST`` set.
+
+    The returned collection object is cached at module scope so every
+    request in the same process reuses it.
+    """
     global _chroma_client, _chroma_collection
     if _chroma_collection is not None:
         return _chroma_collection
     import chromadb
-    _chroma_client = chromadb.PersistentClient(path=persist_dir)
+
+    host = (os.environ.get("CHROMA_HOST") or "").strip()
+    if host:
+        # HttpClient path — hosted beta + any dev box pointed at the shared VM.
+        port = int((os.environ.get("CHROMA_PORT") or "8000").strip())
+        ssl = (os.environ.get("CHROMA_SSL") or "").strip().lower() in {"1", "true", "yes"}
+        token = (os.environ.get("CHROMA_AUTH_TOKEN") or "").strip()
+        headers = {"X-Chroma-Token": token} if token else None
+        logger.info(
+            "chroma: using HttpClient host=%s port=%d ssl=%s auth=%s",
+            host, port, ssl, bool(token),
+        )
+        _chroma_client = chromadb.HttpClient(
+            host=host,
+            port=port,
+            ssl=ssl,
+            headers=headers,
+        )
+    else:
+        # Fallback — legacy persistent-disk mode.
+        logger.info("chroma: using PersistentClient path=%s (no CHROMA_HOST set)", persist_dir)
+        _chroma_client = chromadb.PersistentClient(path=persist_dir)
+
     _chroma_collection = _chroma_client.get_or_create_collection(
         name=collection_name,
         metadata={"hnsw:space": "cosine"},

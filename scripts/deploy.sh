@@ -160,6 +160,10 @@ SET_ENV_VARS=(
     "CHAT_SKILLS_TASK_MANAGER_URL=${CHAT_SKILLS_TASK_MANAGER_URL}"
     "CHAT_SKILLS_MCP_URL=${CHAT_SKILLS_MCP_URL}"
     "CHAT_SKILLS_DOC_READER_URL=${CHAT_SKILLS_DOC_READER_URL:-}"
+    "CHROMA_HOST=${CHROMA_HOST:-}"
+    "CHROMA_PORT=${CHROMA_PORT:-}"
+    "CHROMA_SSL=${CHROMA_SSL:-}"
+    "CHROMA_COLLECTION=${CHROMA_COLLECTION:-}"
     "MOBIUS_TASK_MANAGER_PROMOTION=${MOBIUS_TASK_MANAGER_PROMOTION}"
     "CHAT_CORS_ORIGINS=${CHAT_CORS_ORIGINS}"
     "MOBIUS_OS_AUTH_URL=${MOBIUS_OS_AUTH_URL}"
@@ -182,6 +186,7 @@ SET_SECRETS=(
     # Beta: postgres superuser password for direct Cloud SQL connect.
     # Injected into CHAT_RAG_DATABASE_URL at connect time by db_client.
     "CHAT_DB_PASSWORD=db-password:latest"
+    "CHROMA_AUTH_TOKEN=chroma-auth-token:latest"
 )
 
 # ── Deploy ──────────────────────────────────────────────────────────
