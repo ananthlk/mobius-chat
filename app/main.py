@@ -884,6 +884,15 @@ _SKILL_LLM_ALLOWED_STAGES = frozenset({
     "rag_extraction",        # stream_extract_facts → structured fact JSON
     "rag_critique",          # critique_extraction → quality score + feedback
     "rag_lexicon_triage",    # candidate → {new_tag, alias, reject} verdict
+    # mobius-qa/lexicon-maintenance stages (2026-04-23): curator UI's
+    # LLM calls route through here. Same reason as rag — unified
+    # bandit + telemetry. Three stages cover the four endpoint needs:
+    #   * lexicon_triage : bulk candidate triage + health analysis
+    #   * lexicon_suggest: single-phrase tag placement + candidate revise
+    #   * lexicon_from_doc: "suggest tags from this document" flow
+    "lexicon_triage",
+    "lexicon_suggest",
+    "lexicon_from_doc",
 })
 
 
