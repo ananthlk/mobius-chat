@@ -155,6 +155,7 @@ def _post_chat(
     chat_mode: str,
     thread_id: str | None,
     system_context: str | None,
+    cache_assist: bool | None = None,
 ) -> tuple[str, str]:
     """POST /chat, return (correlation_id, thread_id)."""
     body: dict[str, Any] = {"message": question, "chat_mode": chat_mode}
@@ -162,6 +163,8 @@ def _post_chat(
         body["thread_id"] = thread_id
     if system_context:
         body["system_context"] = system_context
+    if cache_assist is not None:
+        body["cache_assist"] = cache_assist
     r = client.post(f"{base_url}/chat", json=body, timeout=30)
     r.raise_for_status()
     data = r.json()
@@ -301,6 +304,7 @@ def run_one(
     chat_mode: str,
     per_turn_timeout_s: int,
     use_stream: bool,
+    cache_assist: bool | None = None,
 ) -> TurnResult:
     turn = TurnResult(question_id=q["id"], question=q["question"])
     t0 = time.perf_counter()
@@ -308,6 +312,7 @@ def run_one(
         cid, _ = _post_chat(
             client, base_url, q["question"], chat_mode,
             thread_id=None, system_context=None,
+            cache_assist=cache_assist,
         )
         turn.correlation_id = cid
     except Exception as exc:
@@ -414,6 +419,10 @@ def main() -> int:
                         help="Run only the first N questions (0 = all)")
     parser.add_argument("--tag", default="",
                         help="Free-form tag saved into the run metadata (e.g. 'rag_v2', 'post_chroma_swap')")
+    parser.add_argument("--cache-assist", choices=["on", "off"], default=None,
+                        help="Force cache-assist on/off per turn via POST /chat body. "
+                             "Omit to let the server apply normal mode-selection rules (recommended). "
+                             "Use 'off' to establish a no-cache baseline for A/B comparison.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -443,11 +452,17 @@ def main() -> int:
     with httpx.Client(http2=False) as client:
         for i, q in enumerate(questions, start=1):
             print(f"\n[{i}/{len(questions)}] {q['id']}: {q['question'][:80]}")
+            cache_override: bool | None = None
+            if args.cache_assist == "off":
+                cache_override = False
+            elif args.cache_assist == "on":
+                cache_override = True
             t = run_one(
                 client, base_url, q,
                 chat_mode=args.chat_mode,
                 per_turn_timeout_s=args.per_turn_timeout_s,
                 use_stream=not args.no_stream,
+                cache_assist=cache_override,
             )
             results.append(t)
             print(

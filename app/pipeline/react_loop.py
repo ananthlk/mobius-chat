@@ -1358,6 +1358,67 @@ from app.pipeline.react.round0 import (  # noqa: E402 — grouped with other rea
 )
 
 
+def _cache_preaudited_critic_skip(
+    ctx: PipelineContext,
+    tool_results: list[dict],
+    rn: int,
+) -> tuple[bool, str]:
+    """Decide whether to skip the critic on this finalization.
+
+    Skip criteria (ALL must hold):
+      1. ``CACHE_ASSIST_SKIP_CRITIC_WHEN_PREAUDITED != 0`` (env kill switch)
+      2. ``rn == 1`` — the LLM is finalizing without having picked a tool
+         this turn (the only tool_result present is the cache seed from
+         ``round_virtual=0``)
+      3. The only tool result in this turn's history is the cache seed —
+         i.e. no real tool was invoked. Mixed cache+fresh finalization
+         still runs the critic because the blend is a new artifact that
+         wasn't audited before.
+      4. The cache candidates surfaced to the LLM were ALL
+         ``critic_approved=True`` at their original write time. Partially
+         approved cache still runs the critic (defense in depth against
+         the LLM picking the non-approved candidate).
+
+    Returns ``(skip, reason)``. ``reason`` is diagnostic (e.g. "cache
+    seed absent", "mixed cache+fresh", "not all candidates approved").
+    """
+    import os
+    raw = (os.environ.get("CACHE_ASSIST_SKIP_CRITIC_WHEN_PREAUDITED") or "1").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False, "env_disabled"
+
+    if rn != 1:
+        return False, f"not_round_1(rn={rn})"
+
+    if not tool_results:
+        return False, "no_tool_results"
+
+    # Tool results should contain exactly the cache seed and nothing else.
+    non_cache = [
+        tr for tr in tool_results
+        if not (tr.get("tool") == "cached_answer_lookup" and tr.get("round_virtual") == 0)
+    ]
+    if non_cache:
+        return False, "mixed_cache_and_fresh_tool_results"
+
+    cache_entries = [
+        tr for tr in tool_results
+        if tr.get("tool") == "cached_answer_lookup" and tr.get("round_virtual") == 0
+    ]
+    if not cache_entries:
+        return False, "cache_seed_absent"
+
+    candidates = getattr(ctx, "cache_candidates", None) or []
+    if not candidates:
+        return False, "no_candidates_on_ctx"
+
+    all_approved = all(bool(c.get("critic_approved")) for c in candidates)
+    if not all_approved:
+        return False, "not_all_candidates_critic_approved"
+
+    return True, "all_gates_passed"
+
+
 def run_react(ctx: PipelineContext, emitter=None) -> None:
     """
     ReAct loop: Reason → Act → Observe → Repeat.
@@ -1574,6 +1635,29 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     format_critique_as_observation,
                     parse_critic_response,
                 )
+
+                _cache_skip, _cache_skip_reason = _cache_preaudited_critic_skip(
+                    ctx, tool_results, rn,
+                )
+                if _cache_skip:
+                    # The finalized answer is grounded in an already-
+                    # critic-approved cached turn; re-auditing is
+                    # redundant work that adds 5–10s per turn. Skip
+                    # straight to finalize. Emit a signal so the skip
+                    # is visible in thinking_log + analytics.
+                    if emitter:
+                        from app.communication.emit_envelope import make_note
+                        emitter(make_note(
+                            correlation_id=ctx.correlation_id,
+                            note=f"✓ Critic skipped: cache answer pre-audited ({_cache_skip_reason})",
+                            round=rn,
+                            thread_id=ctx.thread_id,
+                            user_id=getattr(ctx, "user_id", None),
+                        ).to_dict())
+                    _finalize_response(
+                        ctx, answer, all_sources, final_signal, last_tool, emitter,
+                    )
+                    return
 
                 if critic_enabled():
                     rounds_remaining = (max_it - rn)  # not counting this round's decision
