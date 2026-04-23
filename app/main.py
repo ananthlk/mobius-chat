@@ -462,7 +462,20 @@ def _handle_instant_rag_upload(
     import threading as _threading
     from datetime import datetime, timezone
 
-    instant_rag_url = (os.environ.get("INSTANT_RAG_URL") or "http://localhost:8040").rstrip("/")
+    # Resolution order (fixes a 2026-04-23 prod failure where users hit
+    # "Connection refused" on uploads):
+    #   1. CHAT_SKILLS_INSTANT_RAG_URL  (the CHAT_SKILLS_* convention all
+    #      other microservice URLs use; what deploy/dev.env + deploy.sh
+    #      actually set)
+    #   2. INSTANT_RAG_URL              (legacy name, kept for back-compat
+    #      with any script/test that still exports it)
+    #   3. http://localhost:8040        (local-dev fallback only; on Cloud
+    #      Run nothing listens on that port so uploads would 503)
+    instant_rag_url = (
+        os.environ.get("CHAT_SKILLS_INSTANT_RAG_URL")
+        or os.environ.get("INSTANT_RAG_URL")
+        or "http://localhost:8040"
+    ).rstrip("/")
 
     # Extract text from the file based on type
     ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
