@@ -845,6 +845,7 @@ def get_chat_config_by_sha(config_sha: str):
 # Chat's internal ReAct tools continue to use the services in
 # app.services.credentialing_* and app.storage.credentialing_* for
 # server-side orchestration — only the public HTTP surface was removed.
+from app.api.admin import router as _admin_router
 from app.api.chat import router as _chat_router
 from app.api.credentialing import router as _credentialing_router
 from app.api.doc_reader import router as _doc_reader_router
@@ -859,6 +860,7 @@ app.include_router(_feedback_router)
 app.include_router(_tasks_router)
 app.include_router(_uploads_router)  # Phase B.1c — cross-thread uploads catalog
 app.include_router(_doc_reader_router)  # Phase 2b.1 — doc-reader proxy extracted from main.py
+app.include_router(_admin_router)  # Dev-token minter + future ops-only endpoints
 
 # Provider skill runs as its own server (provider-roster-credentialing, :8011).
 # Chat calls it via CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL.

@@ -156,6 +156,7 @@ def _post_chat(
     thread_id: str | None,
     system_context: str | None,
     cache_assist: bool | None = None,
+    bearer_token: str | None = None,
 ) -> tuple[str, str]:
     """POST /chat, return (correlation_id, thread_id)."""
     body: dict[str, Any] = {"message": question, "chat_mode": chat_mode}
@@ -165,7 +166,10 @@ def _post_chat(
         body["system_context"] = system_context
     if cache_assist is not None:
         body["cache_assist"] = cache_assist
-    r = client.post(f"{base_url}/chat", json=body, timeout=30)
+    headers = {}
+    if bearer_token:
+        headers["Authorization"] = f"Bearer {bearer_token}"
+    r = client.post(f"{base_url}/chat", json=body, timeout=30, headers=headers)
     r.raise_for_status()
     data = r.json()
     return (data["correlation_id"], data.get("thread_id") or "")
@@ -305,6 +309,7 @@ def run_one(
     per_turn_timeout_s: int,
     use_stream: bool,
     cache_assist: bool | None = None,
+    bearer_token: str | None = None,
 ) -> TurnResult:
     turn = TurnResult(question_id=q["id"], question=q["question"])
     t0 = time.perf_counter()
@@ -313,6 +318,7 @@ def run_one(
             client, base_url, q["question"], chat_mode,
             thread_id=None, system_context=None,
             cache_assist=cache_assist,
+            bearer_token=bearer_token,
         )
         turn.correlation_id = cid
     except Exception as exc:
@@ -423,6 +429,13 @@ def main() -> int:
                         help="Force cache-assist on/off per turn via POST /chat body. "
                              "Omit to let the server apply normal mode-selection rules (recommended). "
                              "Use 'off' to establish a no-cache baseline for A/B comparison.")
+    parser.add_argument("--mint-dev-token", action="store_true",
+                        help="Hit POST /chat/admin/mint-dev-token at run start, include the "
+                             "resulting JWT as Bearer on every /chat POST. Lets the run exercise "
+                             "the authed path + L3 (per-user) rate limit. Requires "
+                             "MOBIUS_DEV_TOKEN_ENABLED=1 server-side.")
+    parser.add_argument("--bearer-token", default=None,
+                        help="Supply a pre-minted Bearer token directly. Overrides --mint-dev-token.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -448,6 +461,31 @@ def main() -> int:
     except Exception as exc:
         print(f"WARNING: /health probe failed ({exc}); continuing anyway", file=sys.stderr)
 
+    # Bearer-token resolution. Priority: explicit --bearer-token >
+    # --mint-dev-token via server endpoint > unauthenticated.
+    bearer: str | None = args.bearer_token
+    if not bearer and args.mint_dev_token:
+        try:
+            mint_r = httpx.post(
+                f"{base_url}/chat/admin/mint-dev-token",
+                json={"ttl_seconds": max(600, (args.per_turn_timeout_s * args.limit or 3600) + 600)},
+                timeout=15,
+            )
+            mint_r.raise_for_status()
+            bearer = mint_r.json().get("access_token")
+            if bearer:
+                print(f"auth=minted  (user_id={mint_r.json().get('user_id', '')[:8]}…)")
+            else:
+                print("WARNING: mint-dev-token returned no access_token; continuing unauthenticated",
+                      file=sys.stderr)
+        except Exception as exc:
+            print(f"WARNING: mint-dev-token failed ({exc}); continuing unauthenticated",
+                  file=sys.stderr)
+    elif bearer:
+        print("auth=pre-minted  (Bearer token supplied via --bearer-token)")
+    else:
+        print("auth=none  (no Bearer token)")
+
     results: list[TurnResult] = []
     with httpx.Client(http2=False) as client:
         for i, q in enumerate(questions, start=1):
@@ -463,6 +501,7 @@ def main() -> int:
                 per_turn_timeout_s=args.per_turn_timeout_s,
                 use_stream=not args.no_stream,
                 cache_assist=cache_override,
+                bearer_token=bearer,
             )
             results.append(t)
             print(
