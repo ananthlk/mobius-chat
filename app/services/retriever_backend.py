@@ -225,7 +225,7 @@ def retrieve_for_chat(
             question,
             path=rag_path,
             top_k=top_k,
-            apply_google=True,
+            apply_google=False,  # React tool loop invokes Google explicitly when needed
             n_factual=n_factual,
             n_hierarchical=n_hierarchical,
             emitter=emitter,

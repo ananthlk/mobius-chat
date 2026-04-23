@@ -18,6 +18,13 @@ class PipelineContext:
     message: str
     """Raw user message for this turn."""
 
+    system_context: str | None = None
+    """Pre-loaded ground-truth context passed by the caller (POST /chat's
+    ``system_context`` field). When set, ReAct runs a Round 0 attempt
+    that tries to answer from this context alone before entering the
+    tool loop. Primary consumer: story presentation layer node clicks
+    where verified values are already known."""
+
     user_id: str | None = None
     """Authenticated user_id from POST /chat's ``require_user`` dependency.
 

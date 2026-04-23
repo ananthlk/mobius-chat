@@ -134,6 +134,12 @@ def _spec_from_mcp_tool(tool: dict[str, Any]) -> SkillSpec | None:
         # doesn't guess.
         requires_jurisdiction=False,
         follow_up_capable=False,
+        # Tag the origin so the planner manifest can render MCP-sourced
+        # tools in a dedicated auto-discovery section, separate from
+        # the curated builtin block. See
+        # ``app.pipeline.tool_manifest._compose_manifest`` for the
+        # rendering contract.
+        source="mcp",
     )
 
 

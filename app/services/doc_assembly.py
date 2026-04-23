@@ -174,6 +174,13 @@ RETRIEVAL_SIGNAL_CORPUS_PLUS_GOOGLE = "corpus_plus_google"
 RETRIEVAL_SIGNAL_GOOGLE_ONLY = "google_only"
 RETRIEVAL_SIGNAL_NO_SOURCES = "no_sources"
 RETRIEVAL_SIGNAL_ROSTER_COMPLETE = "roster_complete"
+RETRIEVAL_SIGNAL_SYSTEM_CONTEXT = "system_context"
+"""Answer grounded entirely in caller-supplied ``system_context`` (Round 0).
+
+No RAG / web / tool retrieval ran. Sources list is intentionally empty
+because the data was pre-verified by the caller (story layer node, skill
+card, etc.). Dashboards that attribute cost/latency by signal should
+treat this bucket as the lowest-cost path."""
 
 
 def apply_google_fallback(
@@ -238,80 +245,126 @@ def _fetch_sibling_paragraphs(
     """Fetch +/- ``window`` paragraphs (siblings) from same document, restricted to
     pages within ``page_window`` of the seed's page.
 
-    Page constraint (Phase 0.11)
-    ----------------------------
-    Without a page constraint this query was hemorrhaging rows: because
-    ``paragraph_index`` is not globally unique per document (it resets per page
-    or many rows share a value), ``paragraph_index BETWEEN lo AND hi`` matched
-    ~5 rows per page × N pages. For a 139-page manual a single seed could pull
-    ~700 siblings. We now restrict to the seed's page ± ``page_window`` (default
-    ±1), which still captures the natural "last-line-of-page-N continues at
-    top-of-page-N+1" case without raking the whole document.
-
-    Excludes the seed ``chunk_id``.
+    DEPRECATED for pipeline use: prefer ``_fetch_sibling_paragraphs_batch`` which does
+    ONE round-trip for many chunks. Kept for back-compat with single-chunk callers.
     """
     if not database_url or not document_id:
         return []
-    try:
-        import psycopg2
-        import psycopg2.extras
-        conn = psycopg2.connect(database_url)
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        lo = max(0, (paragraph_index or 0) - window)
-        hi = (paragraph_index or 0) + window
-        chunk_id_str = str(chunk_id) if chunk_id else ""
-        if page_number is not None:
-            # ±page_window pages around the seed — captures the "seed is the
-            # last paragraph of page N, real continuation is first paragraph
-            # of page N+1" case without raking the whole document.
-            page_lo = max(0, page_number - page_window)
-            page_hi = page_number + page_window
-            sql = (
-                "SELECT id, document_id, text, page_number, paragraph_index, "
-                "document_display_name, document_filename "
-                "FROM published_rag_metadata "
-                "WHERE document_id::text = %s "
-                "  AND paragraph_index BETWEEN %s AND %s "
-                "  AND page_number BETWEEN %s AND %s "
-                "  AND id::text != %s "
-                "ORDER BY page_number, paragraph_index"
-            )
-            params = (str(document_id), lo, hi, page_lo, page_hi, chunk_id_str)
-        else:
-            # Seed has no page_number — degrade to the old query. The caps in
-            # ``_apply_chunk_caps`` still contain the blast radius.
-            sql = (
-                "SELECT id, document_id, text, page_number, paragraph_index, "
-                "document_display_name, document_filename "
-                "FROM published_rag_metadata "
-                "WHERE document_id::text = %s "
-                "  AND paragraph_index BETWEEN %s AND %s "
-                "  AND id::text != %s "
-                "ORDER BY page_number, paragraph_index"
-            )
-            params = (str(document_id), lo, hi, chunk_id_str)
-        cur.execute(sql, params)
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        return [
-            {
-                "id": r.get("id"),
-                "text": r.get("text") or "",
-                "document_id": str(r["document_id"]) if r.get("document_id") else None,
-                "document_name": (r.get("document_display_name") or r.get("document_filename") or "document"),
-                "page_number": r.get("page_number"),
-                "paragraph_index": r.get("paragraph_index"),
-                "source_type": "chunk",
-                "match_score": None,
-                "confidence": None,
-                "is_neighbor": True,
-            }
-            for r in rows
-        ]
-    except Exception as e:
-        logger.warning("Failed to fetch sibling paragraphs: %s", e)
+    return _fetch_sibling_paragraphs_batch(
+        database_url,
+        [{
+            "document_id": document_id,
+            "paragraph_index": paragraph_index,
+            "page_number": page_number,
+            "id": chunk_id,
+        }],
+        window=window,
+        page_window=page_window,
+    )
+
+
+# Very large page range → effectively "no page constraint" for chunks without page_number.
+_NO_PAGE_HI = 10_000_000
+
+
+def _fetch_sibling_paragraphs_batch(
+    database_url: str,
+    chunks: list[dict[str, Any]],
+    window: int = 2,
+    page_window: int = 1,
+) -> list[dict[str, Any]]:
+    """Fetch siblings for MANY chunks in ONE Postgres round-trip (UNNEST).
+
+    Previously did N separate queries (~1.4s each via Cloud SQL proxy → ~15-40s total
+    per question). Now a single query JOINs the metadata table against an UNNEST'd
+    virtual table of (doc_id, lo, hi, page_lo, page_hi, exclude_id) tuples.
+
+    Page constraint (per Phase 0.11) is preserved: chunks with a page_number get
+    ± ``page_window`` pages; chunks without one get a huge range that is effectively
+    no constraint (so both paths are handled in one query).
+    """
+    if not database_url or not chunks:
         return []
+
+    from app.db_client import db_query
+
+    doc_ids: list[str] = []
+    los: list[int] = []
+    his: list[int] = []
+    page_los: list[int] = []
+    page_his: list[int] = []
+    excludes: list[str] = []
+    for c in chunks:
+        doc_id = c.get("document_id")
+        if doc_id is None:
+            continue
+        pi = c.get("paragraph_index")
+        pi_int = int(pi) if pi is not None else 0
+        doc_ids.append(str(doc_id))
+        los.append(max(0, pi_int - window))
+        his.append(pi_int + window)
+        page = c.get("page_number")
+        if isinstance(page, int):
+            page_los.append(max(0, page - page_window))
+            page_his.append(page + page_window)
+        else:
+            page_los.append(0)
+            page_his.append(_NO_PAGE_HI)
+        cid = c.get("id")
+        excludes.append(str(cid) if cid is not None else "")
+    if not doc_ids:
+        return []
+
+    sql = (
+        "SELECT DISTINCT ON (m.id) "
+        "       m.id, m.document_id, m.text, m.page_number, m.paragraph_index, "
+        "       m.document_display_name, m.document_filename "
+        "FROM published_rag_metadata m "
+        "JOIN ( "
+        "   SELECT UNNEST(:doc_ids::text[])   AS doc_id, "
+        "          UNNEST(:los::int[])        AS lo, "
+        "          UNNEST(:his::int[])        AS hi, "
+        "          UNNEST(:page_los::int[])   AS page_lo, "
+        "          UNNEST(:page_his::int[])   AS page_hi, "
+        "          UNNEST(:excludes::text[])  AS exclude_id "
+        ") r "
+        "  ON m.document_id::text = r.doc_id "
+        " AND m.paragraph_index BETWEEN r.lo AND r.hi "
+        " AND m.page_number BETWEEN r.page_lo AND r.page_hi "
+        " AND m.id::text <> COALESCE(NULLIF(r.exclude_id, ''), '00000000-0000-0000-0000-000000000000') "
+        "ORDER BY m.id, m.page_number, m.paragraph_index"
+    )
+    params = {
+        "doc_ids": doc_ids,
+        "los": los, "his": his,
+        "page_los": page_los, "page_his": page_his,
+        "excludes": excludes,
+    }
+
+    # max_rows: caller expects caps applied downstream; request generous budget.
+    result = db_query(sql, "chat", params=params, max_rows=5000)
+    err = result.get("error") if isinstance(result, dict) else None
+    if err:
+        msg = err.get("message", "") if isinstance(err, dict) else str(err)
+        logger.warning("Failed to fetch sibling paragraphs (batch): %s", msg)
+        return []
+
+    cols = result.get("columns") or []
+    return [
+        {
+            "id": row.get("id"),
+            "text": row.get("text") or "",
+            "document_id": str(row["document_id"]) if row.get("document_id") else None,
+            "document_name": (row.get("document_display_name") or row.get("document_filename") or "document"),
+            "page_number": row.get("page_number"),
+            "paragraph_index": row.get("paragraph_index"),
+            "source_type": "chunk",
+            "match_score": None,
+            "confidence": None,
+            "is_neighbor": True,
+        }
+        for row in (dict(zip(cols, r)) for r in (result.get("rows") or []))
+    ]
 
 
 def _apply_chunk_caps(
@@ -370,13 +423,14 @@ def assemble_with_neighbors(
     """Expand each chunk with sibling paragraphs within ``page_window`` pages
     and ``window`` paragraph indices, then apply per-doc and total caps.
 
-    Neighbors are appended after each core chunk (preserving seed ordering).
-    Phase 0.11: page-constrained query + output caps keep a 20-seed retrieval
-    from ballooning past ``total_cap`` chunks.
+    Performs ONE Postgres round-trip for all seeds (UNNEST batch) rather than
+    N serial queries. Phase 0.11 page constraint is preserved per-seed inside
+    the batched query.
     """
     cfg = config or DocAssemblyConfig()
+    # Dedupe seeds by id, preserving order
     seen_ids: set[str] = set()
-    out: list[dict[str, Any]] = []
+    seeds: list[dict[str, Any]] = []
     for c in chunks:
         if not isinstance(c, dict):
             continue
@@ -384,25 +438,26 @@ def assemble_with_neighbors(
         if cid and cid in seen_ids:
             continue
         seen_ids.add(cid)
-        out.append(dict(c))
-        doc_id = c.get("document_id")
-        para_idx = c.get("paragraph_index")
-        page_num = c.get("page_number")
-        if database_url and doc_id is not None:
-            siblings = _fetch_sibling_paragraphs(
-                database_url,
-                str(doc_id),
-                para_idx if para_idx is not None else 0,
-                c.get("id"),
-                window=window,
-                page_number=page_num if isinstance(page_num, int) else None,
-                page_window=page_window,
-            )
-            for s in siblings:
-                sid = str(s.get("id") or "")
-                if sid and sid not in seen_ids:
-                    seen_ids.add(sid)
-                    out.append(s)
+        seeds.append(dict(c))
+
+    out: list[dict[str, Any]] = list(seeds)
+    if not database_url:
+        return _apply_chunk_caps(out, total_cap=total_cap, per_doc_cap=per_doc_cap)
+
+    # One batched query for all siblings across all seeds
+    seeds_with_docs = [s for s in seeds if s.get("document_id") is not None]
+    if seeds_with_docs:
+        siblings = _fetch_sibling_paragraphs_batch(
+            database_url,
+            seeds_with_docs,
+            window=window,
+            page_window=page_window,
+        )
+        for s in siblings:
+            sid = str(s.get("id") or "")
+            if sid and sid not in seen_ids:
+                seen_ids.add(sid)
+                out.append(s)
     return _apply_chunk_caps(out, total_cap=total_cap, per_doc_cap=per_doc_cap)
 
 

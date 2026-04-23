@@ -69,6 +69,17 @@ def process_one(correlation_id: str, payload: dict) -> None:
     user_id = payload.get("user_id")
     if user_id is not None and not isinstance(user_id, str):
         user_id = None
+    # system_context (2026-04-22): pre-loaded ground-truth context from a
+    # caller that has structured data already (story layer, skill cards).
+    # Triggers ReAct Round 0 short-circuit when answerable from the
+    # context alone. None when the caller sent only a message.
+    system_context = payload.get("system_context")
+    if system_context is not None and not isinstance(system_context, str):
+        system_context = None
+    # Normalize empty/whitespace-only to None so downstream `if system_context`
+    # checks are correct.
+    if isinstance(system_context, str) and not system_context.strip():
+        system_context = None
 
     deadline_s = _turn_deadline_seconds()
     is_main_thread = threading.current_thread() is threading.main_thread()
@@ -120,6 +131,7 @@ def process_one(correlation_id: str, payload: dict) -> None:
             use_react_override=use_react,
             chat_mode=chat_mode,
             user_id=user_id,
+            system_context=system_context,
         )
 
     if is_main_thread and hasattr(signal, "SIGALRM"):
@@ -228,6 +240,15 @@ def run_worker() -> None:
     try:
         from app.services.model_registry import auto_enable_from_env
         auto_enable_from_env()
+    except Exception:
+        pass
+    # MCP tool registration (mirrors app.main on_startup hook).
+    # Worker is a separate process — it must register MCP skills so that
+    # get_tool_manifest() in the planner includes auto-discovered tools.
+    # Best-effort: if the MCP server is down, we continue with builtins only.
+    try:
+        from app.skills.mcp_adapter import register_mcp_skills
+        register_mcp_skills()
     except Exception:
         pass
     q = get_queue()

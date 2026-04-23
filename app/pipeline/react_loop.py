@@ -44,7 +44,9 @@ import httpx
 from app.communication.plan_display import emit_jurisdiction_context, jurisdiction_summary
 from app.communication.tool_output_envelope import compose_mobius_tool_envelope
 from app.pipeline.context import PipelineContext
-from app.pipeline.tool_manifest import TOOL_MANIFEST
+# NB: TOOL_MANIFEST is read lazily inside react/prompts._react_reasoning_system
+# so MCP-registered tools land in the planner prompt even if they registered
+# after this module was imported. No top-level snapshot here on purpose.
 from app.planner.schemas import Plan, SubQuestion
 from app.services.doc_assembly import (
     RETRIEVAL_SIGNAL_GOOGLE_ONLY,
@@ -1027,6 +1029,35 @@ def _execute_tool(
                 "sources": [],
             }
 
+    # ── Skill registry fallback (MCP + builtin skills not handled above) ─────
+    # Any tool registered via register_mcp_skills() or app.skills.builtin.*
+    # lands here. The registry dispatch is the universal fallback for tools
+    # the planner picked but that aren't hardcoded in the branches above.
+    from app.skills import registry as _skill_registry
+    if _skill_registry.has(tool):
+        _question = (ctx.merged_state or {}).get("message") or ""
+        call = _skill_registry.SkillCall(
+            name=tool,
+            inputs=inputs or {},
+            question=_question,
+            user_message=_question,
+            thread_id=ctx.thread_id,
+            active_context=active,
+            mode=getattr(ctx, "chat_mode", None) or "copilot",
+            emitter=emitter,
+            pipeline_ctx=ctx,
+            extra_out=None,
+        )
+        emit(f"◌ {tool.replace('_', ' ').title()}…")
+        env = _skill_registry.dispatch(call)
+        return {
+            "tool": tool,
+            "success": bool(env.text and not env.text.startswith("Unknown skill")),
+            "result": env.text or f"{tool} returned no content.",
+            "signal": env.signal,
+            "sources": [s.to_dict() for s in env.sources],
+        }
+
     return {
         "tool": tool,
         "success": False,
@@ -1314,6 +1345,19 @@ def _execute_tool_with_retry(
     return retry_result
 
 
+# ── Round 0: system_context short-circuit ─────────────────────────────────
+#
+# Logic lives in app.pipeline.react.round0 — see that module for the full
+# contract. Re-exports below keep the legacy import paths working for
+# tests and any external callers.
+
+from app.pipeline.react.round0 import (  # noqa: E402 — grouped with other react imports above
+    ROUND0_SENTINEL as _ROUND0_SENTINEL,
+    build_round_context_prefix as _round0_context_prefix,
+    try_system_context_round0 as _try_system_context_round0,
+)
+
+
 def run_react(ctx: PipelineContext, emitter=None) -> None:
     """
     ReAct loop: Reason → Act → Observe → Repeat.
@@ -1356,6 +1400,13 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             emit("◌ Answering from the report we just generated…")
             _answer_from_context(ctx, emitter)
             return
+
+    # Round 0: system_context short-circuit (2026-04-22). When the caller
+    # supplied pre-loaded ground truth (story layer, skill card), try to
+    # answer from it directly before entering the tool loop. Returns True
+    # when a complete answer was produced; caller returns immediately.
+    if _try_system_context_round0(ctx, emitter):
+        return
 
     # Emit jurisdiction
     active = (ctx.merged_state or {}).get("active") or {}
@@ -1424,6 +1475,13 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         reasoning_context = build_reasoning_context(
             ctx, tool_results, rn, max_iterations=max_it,
         )
+        # system_context (2026-04-22): when Round 0 fell through to the
+        # tool loop (NEEDS_TOOLS sentinel), surface the caller-supplied
+        # verified data to every subsequent reasoning round. Tools can
+        # then complement — not re-derive — what's already known.
+        sys_ctx_for_rounds = (getattr(ctx, "system_context", None) or "").strip()
+        if sys_ctx_for_rounds:
+            reasoning_context = _round0_context_prefix(sys_ctx_for_rounds) + reasoning_context
         # Inject already-failed attempts into the prompt so the LLM sees
         # them and picks differently.
         hint = retry_guard.failure_hint_for_prompt()

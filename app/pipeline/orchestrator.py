@@ -148,6 +148,7 @@ def run_pipeline(
     use_react_override: bool | None = None,
     chat_mode: str | None = None,
     user_id: str | None = None,
+    system_context: str | None = None,
 ) -> None:
     """Run the full pipeline: state_load -> classify -> plan -> clarify -> [resolve -> integrate] | early_exit.
 
@@ -169,11 +170,16 @@ def run_pipeline(
     else:
         use_react = env_use_react
 
+    # system_context (2026-04-22): normalize empty/whitespace to None so
+    # downstream checks are simple `if ctx.system_context:` truthiness.
+    _sys_ctx = (system_context or "").strip() or None
+
     ctx = PipelineContext(
         correlation_id=correlation_id,
         thread_id=(thread_id or "").strip() or None,
         message=(message or "").strip(),
         user_id=(user_id or "").strip() or None,
+        system_context=_sys_ctx,
     )
 
     def on_thinking(chunk) -> None:  # str | dict (EmitEnvelope.to_dict())
@@ -248,6 +254,17 @@ def run_pipeline(
 
     try:
         trace_entered("pipeline.run_pipeline", correlation_id=correlation_id[:8], thread_id=thread_id or "")
+
+        # Perceived-latency win (2026-04-22): emit an immediate "thinking"
+        # line BEFORE state_load so the user sees motion within ~100ms of
+        # POST /chat instead of waiting 1–3s for the first stage to
+        # finish. Purely perceptual — no functional change — but the
+        # difference between "blank panel for 2s" and "dot appears
+        # instantly then updates" is the difference between feeling fast
+        # and feeling stuck. Uses the same on_thinking path as every
+        # other emit so it rides the SSE stream and lands in
+        # thinking_log for replay.
+        on_thinking("◌ Thinking…")
 
         trace_entered(f"pipeline.stage.{STATE_LOAD}", correlation_id=correlation_id[:8])
         run_state_load(ctx)
@@ -761,6 +778,14 @@ def _publish_completed(ctx: PipelineContext, t0_start: float) -> None:
     # quick_mode: pass truncation flag so mini container can show "Full answer" link
     if getattr(ctx, "quick_truncated", False):
         client_payload["quick_truncated"] = True
+    # system_context short-circuit (2026-04-22): expose a stable flag so
+    # frontends can render a "answered from pre-loaded context" badge and
+    # dashboards can bucket turns that bypassed the tool loop entirely.
+    # Derived from ctx.retrieval_signals so a later refactor can't make
+    # the flag and the signal drift apart.
+    from app.services.doc_assembly import RETRIEVAL_SIGNAL_SYSTEM_CONTEXT
+    if RETRIEVAL_SIGNAL_SYSTEM_CONTEXT in (ctx.retrieval_signals or []):
+        client_payload["answered_from_system_context"] = True
 
     try:
         config_sha = get_config_sha() or None

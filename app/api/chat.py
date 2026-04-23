@@ -82,6 +82,21 @@ class ChatRequest(BaseModel):
     chat_mode: Literal["copilot", "agentic", "quick"] | None = None
     """copilot: registry-first, 3 rounds. agentic: web escalation, 6 rounds. quick: mini-container, 2 rounds, brief answers."""
 
+    system_context: str | None = None
+    """Pre-loaded context the worker should treat as ground truth.
+
+    When present, the ReAct pipeline attempts a Round 0 context-grounded
+    answer before invoking any tools. If the question can be answered
+    entirely from this context, we publish that answer and skip the
+    normal Round 1..N tool loop (~1 LLM call vs 3-5). If Round 0 reports
+    the context is insufficient, we fall through to the normal loop with
+    the system_context still available on every reasoning round.
+
+    Primary consumer: the story presentation layer, which clicks produce
+    a node with pre-computed verified values (share, beneficiaries,
+    etc.) that should be rendered, not re-derived via tools.
+    """
+
 
 class ChatResponse(BaseModel):
     correlation_id: str
@@ -156,6 +171,8 @@ def post_chat(
         payload["chat_mode"] = body.chat_mode
     if user_id:
         payload["user_id"] = user_id
+    if body.system_context:
+        payload["system_context"] = body.system_context
     get_queue().publish_request(correlation_id, payload)
     return ChatResponse(correlation_id=correlation_id, thread_id=thread_id)
 
@@ -220,6 +237,18 @@ async def chat_stream(correlation_id: str):
     async def event_generator():
         nonlocal last_progress_id, last_keepalive
         start = loop.time()
+        # SSE hardening (2026-04-22): flush an immediate comment line so
+        # Cloud Run / intermediate proxies see bytes within ~50ms of the
+        # connection opening and don't buffer-and-flush-on-timeout. Some
+        # Cloud Run load-balancer configurations hold the first body
+        # bytes until ~200–500ms of data accumulate, which delays
+        # ``es.onopen`` on the client and occasionally trips
+        # ``es.onerror`` → fallback to 400ms polling — causing the
+        # "hundreds of /chat/response polls per turn" pattern observed
+        # in dev logs. A comment line (starts with ``:``) is ignored by
+        # the SSE parser but forces a flush.
+        yield ": stream-open\n\n"
+        last_keepalive = loop.time()
         while True:
             now = loop.time()
             if now - start > timeout_s:
@@ -230,9 +259,11 @@ async def chat_stream(correlation_id: str):
                 for ev_id, ev in get_progress_events_from_db(correlation_id, after_id=last_progress_id):
                     last_progress_id = ev_id
                     yield f"data: {json.dumps(ev)}\n\n"
+                    last_keepalive = now  # real data counts as keepalive
             else:
                 for ev in get_and_clear_events(correlation_id):
                     yield f"data: {json.dumps(ev)}\n\n"
+                    last_keepalive = now
             # Terminal: completed response
             resp = q.get_response(correlation_id)
             if resp is None:
@@ -240,9 +271,10 @@ async def chat_stream(correlation_id: str):
             if resp is not None:
                 yield f"data: {json.dumps({'event': 'completed', 'data': resp})}\n\n"
                 return
-            # Keepalive every 15s — prevents idle-timeout on proxies that
-            # drop connections after (typically) 30-60s of silence.
-            if now - last_keepalive > 15:
+            # Keepalive every 10s (was 15s) — Cloud Run's HTTP/2 path
+            # occasionally idle-timeouts SSE at ~30s without a cushion.
+            # 10s gives two chances to hit the timer before it fires.
+            if now - last_keepalive > 10:
                 yield ": keepalive\n\n"
                 last_keepalive = now
             await asyncio.sleep(0.2)
@@ -250,7 +282,18 @@ async def chat_stream(correlation_id: str):
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            # ``X-Accel-Buffering: no`` tells nginx-family proxies (and
+            # some Cloud Run LB configurations respect it) NOT to buffer
+            # the stream — send each yielded chunk to the client
+            # immediately. Without this, small SSE events pile up in a
+            # 4KB buffer until it flushes on timeout, which is the
+            # exact pattern that makes thinking-panel updates look
+            # "sticky" and causes client-side SSE fallback to polling.
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

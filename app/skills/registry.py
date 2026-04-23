@@ -179,6 +179,23 @@ class SkillSpec:
     """Which chat_mode values can dispatch this skill. Restricts what
     the planner advertises per mode."""
 
+    source: str = "builtin"
+    """Where this skill came from. ``"builtin"`` = registered by a module
+    under ``app.skills.builtin.*`` at chat import. ``"mcp"`` = registered
+    by ``register_mcp_skills()`` from a remote MCP server's list_tools
+    response. The distinction matters for the planner manifest: builtins
+    occupy curated positions with hand-tuned descriptions; MCP tools
+    auto-append to a dedicated section so adding a new MCP tool is a
+    zero-code-change event on the chat side."""
+
+    visible_to_planner: bool = True
+    """When False, the skill is dispatchable by name (so programmatic
+    callers / other skills can invoke it) but is NOT rendered into
+    ``TOOL_MANIFEST`` — so the ReAct planner LLM never picks it. Use
+    for internal-only tools, experimental MCP tools not ready for
+    end-user-driven selection, or tools whose description is too weak
+    to safely expose to the planner."""
+
 
 # ── Registry ──────────────────────────────────────────────────────────
 
@@ -257,6 +274,21 @@ def entity_tools() -> frozenset[str]:
     """Skills that DON'T take jurisdiction as a query qualifier.
     Equivalent to ``ENTITY_TOOLS`` in tool_manifest.py but derived."""
     return frozenset(s.name for s in _REGISTRY.values() if not s.requires_jurisdiction)
+
+
+def names_by_source(source: str) -> frozenset[str]:
+    """All registered skill names whose ``SkillSpec.source`` matches.
+
+    Used by ``tool_manifest.py`` to render the "auto-discovered" MCP
+    section separately from the curated builtin section."""
+    return frozenset(s.name for s in _REGISTRY.values() if s.source == source)
+
+
+def planner_visible_names() -> frozenset[str]:
+    """All registered skill names whose ``SkillSpec.visible_to_planner``
+    is True. Used when composing the planner manifest so experimental or
+    internal-only skills are excluded even though they're dispatchable."""
+    return frozenset(s.name for s in _REGISTRY.values() if s.visible_to_planner)
 
 
 def follow_up_capable() -> frozenset[str]:

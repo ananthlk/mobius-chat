@@ -23,7 +23,12 @@ import asyncio
 import logging
 
 from app.pipeline.context import PipelineContext
-from app.pipeline.tool_manifest import TOOL_MANIFEST
+# Import the module (not the symbol) so each _react_reasoning_system()
+# call reads the current manifest. Importing ``TOOL_MANIFEST`` directly
+# would snapshot it at prompts-module import time and miss MCP tools
+# registered later during FastAPI startup. See
+# ``app.pipeline.tool_manifest.get_tool_manifest`` for the contract.
+from app.pipeline import tool_manifest as _tool_manifest_module
 from app.communication.plan_display import jurisdiction_summary
 
 logger = logging.getLogger(__name__)
@@ -240,7 +245,7 @@ Quality bar for this mode:
 You are Mobius — an AI assistant for CMHC billing coordinators in Florida.
 You do NOT answer questions directly. You decide which tool to use.
 {mode_block}
-{TOOL_MANIFEST}
+{_tool_manifest_module.get_tool_manifest()}
 
 Output ONLY valid JSON. No preamble, no markdown, no explanation.
 

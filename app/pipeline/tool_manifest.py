@@ -114,9 +114,53 @@ _REGISTRY_ORDER: tuple[str, ...] = (
 )
 
 
+_AUTO_DISCOVERED_HEADER = """\
+── Auto-discovered tools (from MCP) ─────────────────────────────────────
+These tools are published by a remote MCP server and auto-registered at
+chat startup. The descriptions below come from each tool's ``description``
+field in its MCP ``list_tools`` response — if a description reads vague or
+incomplete, fix it on the MCP server side so this section stays useful to
+the planner."""
+
+
+def _auto_discovered_block() -> str:
+    """Render the MCP-sourced, planner-visible skills that aren't in the
+    curated builtin ordering.
+
+    An MCP tool gets auto-appended to the planner manifest when:
+      - ``SkillSpec.source == "mcp"`` (set by ``mcp_adapter`` when the
+        skill was registered from ``list_mcp_tools()``), AND
+      - ``SkillSpec.visible_to_planner == True`` (the default; operators
+        can flip this to hide experimental tools), AND
+      - the name is NOT already rendered in the curated ``_REGISTRY_ORDER``
+        block above (which would mean a builtin and an MCP tool share a
+        name — "builtins win" collision policy already prevented the
+        register, so this is belt-and-suspenders).
+
+    Returns an empty string when no MCP tools are registered so callers
+    can skip the section header.
+    """
+    mcp_names = registry.names_by_source("mcp")
+    visible = registry.planner_visible_names()
+    curated = frozenset(_REGISTRY_ORDER)
+    render = tuple(sorted(n for n in mcp_names if n in visible and n not in curated))
+    if not render:
+        return ""
+    body = registry.manifest_text(names=render)
+    if not body.strip():
+        return ""
+    return f"{_AUTO_DISCOVERED_HEADER}\n\n{body}"
+
+
 def _compose_manifest() -> str:
-    """Splice router-owned prose with registry-rendered skill blocks."""
-    blocks = [
+    """Splice router-owned prose with registry-rendered skill blocks.
+
+    Block order (deliberate — planner reads top-down):
+      1. Curated router-owned + builtin skills (stable, hand-tuned prose).
+      2. Auto-discovered MCP skills (dynamic, rebuilt each call).
+      3. Per-tool capabilities footer (structured JSON for parser use).
+    """
+    curated_blocks = [
         _SEARCH_CORPUS_BLOCK,
         _LAZY_CORPUS_SEARCH_BLOCK,
         registry.manifest_text(names=("healthcare_query",)),
@@ -128,7 +172,10 @@ def _compose_manifest() -> str:
         registry.manifest_text(names=("web_scrape",)),
         _REFUSE_BLOCK,
     ]
-    joined = "\n\n".join(b for b in blocks if b.strip())
+    auto_block = _auto_discovered_block()
+    if auto_block:
+        curated_blocks.append(auto_block)
+    joined = "\n\n".join(b for b in curated_blocks if b.strip())
     return f"""
 AVAILABLE TOOLS — match the question to the tool whose capabilities fit.
 If the first tool fails (e.g. returns no results), try the next-best tool.
@@ -148,7 +195,30 @@ PER-TOOL CAPABILITIES (explicit):
 """
 
 
-TOOL_MANIFEST = _compose_manifest()
+def get_tool_manifest() -> str:
+    """Fresh manifest, composed at call time.
+
+    Lazy composition matters because ``register_mcp_skills()`` runs at
+    FastAPI startup — AFTER modules that depend on the manifest may have
+    been imported. If the planner's reasoning-system prompt captured
+    the manifest at import time, MCP tools registered during startup
+    would be invisible to the planner until the next process restart.
+    Re-rendering each call costs one registry scan (<1ms for <100 skills)
+    which is negligible compared to the LLM call it feeds into.
+    """
+    return _compose_manifest()
+
+
+# Back-compat: modules that still do ``from ... import TOOL_MANIFEST``
+# get the manifest as-of-import. Most callers should switch to
+# ``get_tool_manifest()`` so MCP-registered tools show up without a
+# restart. Kept as a module-level __getattr__ so each read re-renders,
+# matching the semantics operators expect from a "current manifest"
+# symbol.
+def __getattr__(name: str) -> str:
+    if name == "TOOL_MANIFEST":
+        return get_tool_manifest()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # ── Sets: union of registry-derived + router-owned ────────────────────

@@ -199,9 +199,126 @@ def _fallback_error(exc: BaseException) -> dict:
     return {"error": err, "_fallback": True}
 
 
+# ── Connection pool (2026-04-22 latency hardening) ───────────────────
+#
+# Every ``psycopg2.connect(url)`` over the Cloud SQL Unix socket costs
+# 30–100ms just for connection setup. Chat turns do 5–10 DB ops
+# (chat_turns write, chat_state read+write, progress events, feedback,
+# llm_calls), so pre-pool that'd be 150ms–1s of pure overhead per turn.
+# With a threaded pool, steady-state reuse drops connection cost to
+# effectively zero.
+#
+# One pool per fallback URL (typically one in prod). Pool sizes:
+#   - min=1 (always have a hot connection ready)
+#   - max=CHAT_DB_POOL_MAX (default 10, matches container_concurrency=10)
+# If ``psycopg2.pool`` isn't importable or pool creation fails, we
+# silently fall through to the legacy per-call connect path — no
+# behavior change, just lose the speedup. Loud-fail would turn a
+# latency fix into an availability risk.
+
+import threading as _threading_for_pool
+
+_POOLS: dict[str, object] = {}
+_POOLS_LOCK = _threading_for_pool.Lock()
+
+
+def _get_pool_max() -> int:
+    try:
+        n = int((os.environ.get("CHAT_DB_POOL_MAX") or "10").strip())
+        return max(1, min(50, n))  # clamp; 50 would exhaust Cloud SQL
+    except (TypeError, ValueError):
+        return 10
+
+
+def _get_pool(url: str):
+    """Return a threaded pool for ``url``, creating on first call.
+
+    Returns None if psycopg2.pool is unavailable or pool creation fails
+    — callers fall back to the legacy per-call connect path.
+    """
+    pool = _POOLS.get(url)
+    if pool is not None:
+        return pool
+    with _POOLS_LOCK:
+        pool = _POOLS.get(url)
+        if pool is not None:
+            return pool
+        try:
+            from psycopg2 import pool as _psycopg2_pool  # lazy import
+        except ImportError:
+            return None
+        try:
+            pool = _psycopg2_pool.ThreadedConnectionPool(
+                minconn=1,
+                maxconn=_get_pool_max(),
+                dsn=url,
+                connect_timeout=10,
+            )
+        except Exception as exc:
+            logger.warning(
+                "DB pool creation failed (%s); falling back to per-call connect",
+                exc,
+            )
+            return None
+        _POOLS[url] = pool
+        logger.info("DB pool created (maxconn=%d)", _get_pool_max())
+        return pool
+
+
+def _acquire_conn(url: str):
+    """Get a connection from the pool; fall back to a direct connect.
+
+    Returns ``(conn, is_pooled)`` tuple. Callers MUST release via
+    ``_release_conn(url, conn, is_pooled, is_broken)``.
+    """
+    import psycopg2
+
+    pool = _get_pool(url)
+    if pool is not None:
+        try:
+            conn = pool.getconn()
+            # pg server may have dropped an idle conn in the pool; a
+            # quick SELECT 1 confirms liveness before we use it. Cheap
+            # when conn is healthy, avoids a mysterious query failure
+            # when it's not.
+            try:
+                with conn.cursor() as _cur:
+                    _cur.execute("SELECT 1")
+                conn.commit()
+                return conn, True
+            except Exception:
+                # Dead conn — return broken to the pool so it reopens,
+                # then fall through to direct connect below.
+                try:
+                    pool.putconn(conn, close=True)
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.debug("DB pool getconn failed: %s; using direct connect", exc)
+    # Legacy path
+    return psycopg2.connect(url, connect_timeout=10), False
+
+
+def _release_conn(url: str, conn, is_pooled: bool, is_broken: bool = False) -> None:
+    if conn is None:
+        return
+    if is_pooled:
+        pool = _POOLS.get(url)
+        if pool is not None:
+            try:
+                pool.putconn(conn, close=is_broken)
+                return
+            except Exception as exc:
+                logger.debug("DB pool putconn failed: %s; closing directly", exc)
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+
 def _fallback_query(sql: str, db_name: str, params: dict, max_rows: int) -> dict:
     """Direct psycopg2 query when MCP agent is down."""
-    import psycopg2
+    import psycopg2  # noqa: F401 — keep import for side-effect compatibility
     import psycopg2.extras  # noqa: F401
 
     url = _get_fallback_url(db_name)
@@ -213,10 +330,11 @@ def _fallback_query(sql: str, db_name: str, params: dict, max_rows: int) -> dict
         }
 
     try:
-        conn = psycopg2.connect(url, connect_timeout=10)
+        conn, is_pooled = _acquire_conn(url)
     except Exception as exc:
         return _fallback_error(exc)
 
+    broken = False
     try:
         with conn.cursor() as cur:
             cur.execute(_to_psycopg2_sql(sql), params or None)
@@ -230,15 +348,14 @@ def _fallback_query(sql: str, db_name: str, params: dict, max_rows: int) -> dict
                 "_fallback": True,
             }
     except Exception as exc:
+        broken = True
         return _fallback_error(exc)
     finally:
-        conn.close()
+        _release_conn(url, conn, is_pooled, is_broken=broken)
 
 
 def _fallback_execute(sql: str, db_name: str, params: dict) -> dict:
     """Direct psycopg2 execute when MCP agent is down."""
-    import psycopg2
-
     url = _get_fallback_url(db_name)
     if not url:
         return {
@@ -248,10 +365,11 @@ def _fallback_execute(sql: str, db_name: str, params: dict) -> dict:
         }
 
     try:
-        conn = psycopg2.connect(url, connect_timeout=10)
+        conn, is_pooled = _acquire_conn(url)
     except Exception as exc:
         return _fallback_error(exc)
 
+    broken = False
     try:
         with conn.cursor() as cur:
             cur.execute(_to_psycopg2_sql(sql), params or None)
@@ -259,10 +377,14 @@ def _fallback_execute(sql: str, db_name: str, params: dict) -> dict:
         conn.commit()
         return {"rows_affected": rows_affected, "_fallback": True}
     except Exception as exc:
-        conn.rollback()
+        broken = True
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         return _fallback_error(exc)
     finally:
-        conn.close()
+        _release_conn(url, conn, is_pooled, is_broken=broken)
 
 
 # ---------------------------------------------------------------------------
@@ -367,7 +489,6 @@ def _fallback_transaction(statements: list[dict], db_name: str) -> dict:
     and returns the same shape as the MCP version so callers can't
     tell the difference.
     """
-    import psycopg2
     url = _get_fallback_url(db_name)
     if not url:
         return {
@@ -376,12 +497,13 @@ def _fallback_transaction(statements: list[dict], db_name: str) -> dict:
             "_fallback": True,
         }
     try:
-        conn = psycopg2.connect(url, connect_timeout=10)
+        conn, is_pooled = _acquire_conn(url)
     except Exception as exc:
         return _fallback_error(exc)
 
     per_stmt: list[dict] = []
     total = 0
+    broken = False
     try:
         with conn.cursor() as cur:
             for i, stmt in enumerate(statements):
@@ -415,10 +537,14 @@ def _fallback_transaction(statements: list[dict], db_name: str) -> dict:
             "_fallback": True,
         }
     except Exception as exc:
-        conn.rollback()
+        broken = True
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         return _fallback_error(exc)
     finally:
-        conn.close()
+        _release_conn(url, conn, is_pooled, is_broken=broken)
 
 
 # ─────────────────────────────────────────────────────────────────────────

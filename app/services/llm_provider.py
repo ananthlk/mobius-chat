@@ -283,6 +283,41 @@ def _vertex_stream_producer(
         out.put(("error", str(e)))
 
 
+# Per-call timeout for Vertex generate_content's underlying HTTP request
+# (2026-04-22 latency hardening). Without this, the Vertex SDK's internal
+# retry-with-exponential-backoff can keep hammering on 429s for 10+ minutes
+# — observed 597s elapsed before surfacing a single 429 in dev logs. That
+# (a) starves the worker thread long after the async wrapper's deadline
+# tripped, and (b) worsens the quota-throttling feedback loop because the
+# retries count against quota.
+#
+# Contract: ``request_options.timeout`` limits ONE HTTP round-trip, not
+# the whole generate_content call. The SDK may still retry up to
+# ``max_retries`` times, but each retry is capped. We want aggressive
+# per-attempt caps so the bandit can swap models rather than wait.
+#
+# Ops knob: ``VERTEX_HTTP_TIMEOUT_SECONDS`` (default 30). Bump for large
+# credentialing-style generations; the per-call async wrapper at
+# ``generate_with_usage`` applies its own ``_timeout_seconds`` on top.
+def _vertex_request_options():
+    import os as _os
+    try:
+        t = float(_os.getenv("VERTEX_HTTP_TIMEOUT_SECONDS", "30") or 30)
+    except (TypeError, ValueError):
+        t = 30.0
+    try:
+        # Prefer the newer google-api-core RequestOptions shape that the
+        # Vertex SDK expects. Path varies across SDK versions; fall back
+        # gracefully if the import fails (old SDK → no cap, pre-existing
+        # behavior).
+        from google.api_core.client_options import ClientOptions  # noqa: F401
+        # ``timeout`` kwarg on generate_content() is the simplest API
+        # the SDK honors across versions: a float seconds-per-attempt.
+        return {"timeout": t}
+    except Exception:
+        return {"timeout": t}
+
+
 def _vertex_generate_sync(
     model_name: str,
     prompt: str,
@@ -299,13 +334,30 @@ def _vertex_generate_sync(
     )
     from vertexai.generative_models import GenerativeModel
     model = GenerativeModel(model_name)
+    req_opts = _vertex_request_options()
     try:
+        # Defensive kwargs: pass ``timeout`` positionally via kwargs so
+        # SDK versions that don't recognize it raise cleanly (caught
+        # below) rather than silently ignoring the cap.
         if tools:
-            response = model.generate_content(
-                prompt, generation_config=gen_config, tools=tools
-            )
+            try:
+                response = model.generate_content(
+                    prompt, generation_config=gen_config, tools=tools, **req_opts
+                )
+            except TypeError:
+                # SDK version doesn't accept timeout; fall back without it.
+                response = model.generate_content(
+                    prompt, generation_config=gen_config, tools=tools
+                )
         else:
-            response = model.generate_content(prompt, generation_config=gen_config)
+            try:
+                response = model.generate_content(
+                    prompt, generation_config=gen_config, **req_opts
+                )
+            except TypeError:
+                response = model.generate_content(
+                    prompt, generation_config=gen_config
+                )
     except Exception as e:
         logger.error("[vertex] generate_content raised: %s (elapsed=%.1fs)", e, _time.perf_counter() - t0)
         raise
