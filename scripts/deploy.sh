@@ -217,6 +217,14 @@ SET_SECRETS=(
     # Injected into CHAT_RAG_DATABASE_URL at connect time by db_client.
     "CHAT_DB_PASSWORD=db-password:latest"
     "CHROMA_AUTH_TOKEN=chroma-auth-token:latest"
+    # Shared secret that gates /internal/skill-llm. Sibling services
+    # (mobius-rag, mobius-qa/lexicon-maintenance) POST with
+    # ``X-Mobius-Skill-LLM-Key: <this>`` and chat rejects on mismatch.
+    # Must stay in the deploy script — out-of-band ``gcloud run
+    # services update --update-secrets ...`` patches were lost on
+    # every redeploy before 2026-04-23 because --set-secrets in this
+    # script REPLACES the whole secret set. Keep this line.
+    "MOBIUS_SKILL_LLM_INTERNAL_KEY=mobius-skill-llm-internal-key:latest"
 )
 
 # ── Deploy ──────────────────────────────────────────────────────────
