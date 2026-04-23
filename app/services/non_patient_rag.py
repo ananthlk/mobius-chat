@@ -269,7 +269,10 @@ def answer_non_patient(
             chunks, retrieval_signal = assemble_docs(
                 chunks,
                 question,
-                apply_google=False,  # React tool loop invokes Google explicitly when needed
+                # Safety net — revert until explicit google_search + webscrape as React tools ship.
+                # See "Explicit external-retrieval tools" ticket. Library + rag-api defaults remain False
+                # so scripts and other consumers don't pay the Google tax; this is the chat-only net.
+                apply_google=True,
                 expand_neighbors=True,
                 database_url=rag.database_url if rag else None,
                 emitter=wrap_emitter_for_user(emitter),
