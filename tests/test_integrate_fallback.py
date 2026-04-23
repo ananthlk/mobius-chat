@@ -6,11 +6,18 @@ from unittest.mock import patch
 
 import pytest
 
+from app.communication.json_display_sanitize import DEFAULT_BLEED_FALLBACK
 from app.pipeline.context import PipelineContext
 from app.planner.schemas import Plan, SubQuestion
 from app.stages.integrate import run_integrate
 
-FALLBACK_TRY_AGAIN = "Something went wrong. Please try again, or start a new chat."
+# Keep this test aligned with the production-code constant so copy
+# changes to the fallback message don't require test churn. The
+# 2026-04-18 rewrite moved from "Something went wrong. Please try
+# again, or start a new chat." to a softer "I had trouble formatting
+# the answer. Please try rephrasing your question." — see the comment
+# in app/communication/json_display_sanitize.py for rationale.
+FALLBACK_TRY_AGAIN = DEFAULT_BLEED_FALLBACK
 
 
 def test_unparseable_final_message_produces_try_again_card():

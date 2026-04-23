@@ -244,44 +244,17 @@ class TestMainPySizeRatchet:
         )
 
 
-# ── Guard 4: credentialing HTTP surface stays removed ─────────────────────
-
-
-class TestCredentialingRouterRemoved:
-    """Phase 3c deleted the credentialing + roster routers entirely.
-
-    Re-introducing them would be a regression — credentialing is a skill,
-    and chat should have zero chat-side proxy endpoints for it. These
-    tests lock that in. If you need to re-expose credentialing to the FE,
-    route it through the standalone skill server (or a new router under a
-    non-``/chat/*`` prefix like ``/credentialing/*``).
-    """
-
-    def test_credentialing_router_file_does_not_exist(self):
-        cred = CHAT_REPO_ROOT / "app" / "api" / "credentialing.py"
-        assert not cred.exists(), (
-            "app/api/credentialing.py was re-introduced. Credentialing HTTP "
-            "surface was removed in Phase 3c and should stay out of chat."
-        )
-
-    def test_roster_router_file_does_not_exist(self):
-        roster = CHAT_REPO_ROOT / "app" / "api" / "roster.py"
-        assert not roster.exists(), (
-            "app/api/roster.py was re-introduced. Roster HTTP surface was "
-            "removed in Phase 3c and should stay out of chat."
-        )
-
-    def test_main_py_does_not_import_deleted_routers(self):
-        main_py = CHAT_REPO_ROOT / "app" / "main.py"
-        text = main_py.read_text()
-        for forbidden_import in (
-            "from app.api.credentialing import",
-            "from app.api.roster import",
-            "import app.api.credentialing",
-            "import app.api.roster",
-        ):
-            assert forbidden_import not in text, (
-                f"main.py still imports a removed credentialing router: "
-                f"'{forbidden_import}'. The HTTP surface was removed in "
-                f"Phase 3c."
-            )
+# ── Guard 4: credentialing HTTP surface — OBSOLETE ────────────────────────
+#
+# Phase 3c deleted the credentialing + roster routers. The
+# ``credentialing-with-roster`` branch re-introduced them deliberately
+# as part of the roster reconciliation flow. The "files must not exist"
+# assertions were locking in a decision that's since been reversed, so
+# they've been removed. If Phase 3c's architectural decision is ever
+# re-confirmed, re-add the guards and delete the routers in the same
+# commit.
+#
+# What IS still guarded: the shared ``task_manager_base_url`` helper
+# must live only in ``app.api._common``. See
+# ``TestSharedHelpersConsolidated`` above — that guard still catches
+# duplicate definitions in any router, credentialing included.

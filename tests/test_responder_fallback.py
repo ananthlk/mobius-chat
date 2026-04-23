@@ -35,13 +35,16 @@ def test_invalid_integrator_json_produces_fallback_no_500():
     plan = Plan(subquestions=[SubQuestion(id="sq1", text="What is X?", kind="non_patient")])
     stub_answers = ["Answer one."]
 
-    # Patch where LLM is used (final imports get_llm_provider from app.services.llm_provider inside format_response)
+    # Patch where LLM is used (final imports get_llm_provider from app.services.llm_provider inside format_response).
+    # The ``_repair_json`` LLM-based repair tier was deleted in Phase 0.16b
+    # (see comment in app/responder/final.py around line 195). The two
+    # remaining parse tiers — ``json.loads`` then ``json_repair.loads`` —
+    # both fail on "{ invalid json from llm }", so we hit the minimal-wrap
+    # fallback path without needing to mock any repair function.
     with patch("app.services.llm_provider.get_llm_provider") as p:
         mock_provider = p.return_value
         mock_provider.generate_with_usage = AsyncMock(return_value=("{ invalid json from llm }", {}))
-        # Repair path may be tried; mock it to also return invalid so we hit minimal wrap
-        with patch("app.responder.final._repair_json", return_value=""):
-            message, usage = format_response(plan, stub_answers, "What is X?")
+        message, usage = format_response(plan, stub_answers, "What is X?")
     assert message is not None
     assert isinstance(message, str)
     # Must be valid JSON (no 500, frontend can parse)

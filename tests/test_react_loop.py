@@ -134,7 +134,14 @@ def test_run_react_one_iteration_then_complete():
             )
         return '{"tool": null, "is_complete": true, "answer": "I could not find an answer."}'
 
-    with patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm):
+    # Disable the critic gate for this test (2026-04-23). The test asserts
+    # the raw reason→tool→reason→complete sequence — not critic integration.
+    # With MOBIUS_REACT_CRITIC=1 (the default in dev.env) an extra critic
+    # audit LLM call fires after is_complete=true, exhausting
+    # fake_llm with StopIteration. Critic integration is covered by
+    # test_react_critic.py.
+    with patch("app.pipeline.react.critic.critic_enabled", return_value=False), \
+         patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm):
         with patch("app.pipeline.react_loop._execute_tool") as mock_execute:
             mock_execute.return_value = {
                 "tool": "search_corpus",
@@ -196,7 +203,12 @@ def test_complete_answer_finalizes():
     ctx.last_turns = []
     ctx.effective_message = ctx.message
 
-    with patch("app.pipeline.react_loop._call_llm_json") as mock_llm:
+    # Disable the critic gate (2026-04-23). Same reason as
+    # test_run_react_one_iteration_then_complete: this test asserts the
+    # exact call count (2) for the reasoning LLM, and the default-enabled
+    # critic would add a third call + exhaust the side_effect iterator.
+    with patch("app.pipeline.react.critic.critic_enabled", return_value=False), \
+         patch("app.pipeline.react_loop._call_llm_json") as mock_llm:
         mock_llm.side_effect = [
             '{"tool": "search_corpus", "inputs": {}, "is_complete": false}',
             '{"tool": null, "is_complete": true, "answer": "PA is required for H0036.", "sources": [], "confidence": "high"}',
