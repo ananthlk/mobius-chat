@@ -21,6 +21,10 @@ fastapi>=0.104.0              # app, dependency injection, lifespan
 uvicorn[standard]>=0.24.0     # ASGI server + uvloop + httptools
 pydantic>=2.0.0               # request/response schemas
 python-dotenv>=1.0.0          # dev-only .env loading (no-op in hosted)
+# Required by /chat/roster-upload (File/Form params). Historically pulled
+# in as a transitive dep of something else, but that resolution is brittle —
+# pinning explicitly so the next dep-graph shift doesn't break startup.
+python-multipart>=0.0.6
 
 # ── HTTP ─────────────────────────────────────────────────────────────
 httpx>=0.25.0                 # outbound HTTP (skills-mcp, task-manager, doc-reader)
@@ -77,10 +81,3 @@ ddgs>=9.0.0
 # Monolith beta uses CHAT_QUEUE_TYPE=memory; this dep is included so
 # switching to redis is a config-only change with no rebuild.
 redis>=5.0.0
-
-# ── Optional: MCP client ─────────────────────────────────────────────
-# Only used when CHAT_SKILLS_MCP_URL is set AND skills are routed
-# through MCP rather than being invoked as in-process Python imports.
-# Beta monolith uses the in-process path so this is currently
-# unused-at-runtime but kept for the post-beta split.
-mcp>=1.0.0
