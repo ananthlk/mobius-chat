@@ -168,6 +168,16 @@ SET_ENV_VARS=(
     "CHROMA_PORT=${CHROMA_PORT:-}"
     "CHROMA_SSL=${CHROMA_SSL:-}"
     "CHROMA_COLLECTION=${CHROMA_COLLECTION:-}"
+    # Routes the published-RAG dispatcher to the ChromaDB backend. Must
+    # be set for the new retriever integration to hit Chroma and not
+    # fall through to the Vertex Vector Search code path.
+    "CHAT_VECTOR_STORE=${CHAT_VECTOR_STORE:-}"
+    # Latency hardening (2026-04-22). See deploy/dev.env for rationale
+    # on each. Empty-default so un-set vars don't blow up the csv.
+    "VERTEX_HTTP_TIMEOUT_SECONDS=${VERTEX_HTTP_TIMEOUT_SECONDS:-}"
+    "CHAT_DB_POOL_MAX=${CHAT_DB_POOL_MAX:-}"
+    "MOBIUS_POST_RUN_ADJUDICATE_EVERY_N=${MOBIUS_POST_RUN_ADJUDICATE_EVERY_N:-}"
+    "MOBIUS_MCP_AUTOREGISTER=${MOBIUS_MCP_AUTOREGISTER:-}"
     "MOBIUS_TASK_MANAGER_PROMOTION=${MOBIUS_TASK_MANAGER_PROMOTION}"
     "CHAT_CORS_ORIGINS=${CHAT_CORS_ORIGINS}"
     "MOBIUS_OS_AUTH_URL=${MOBIUS_OS_AUTH_URL}"
