@@ -611,3 +611,121 @@ def make_turn_failed(
         task_type="failure",
         task_severity="high",
     )
+
+
+# ── Cache-assist signals (2026-04-23) ──────────────────────────────
+#
+# Four signals tracking the cached_answer_lookup skill lifecycle per
+# turn. All four are chat-side-only (not promoted to task-manager) so
+# they stay in thinking_log for debugging without cluttering
+# dashboards. A future aggregation job can roll them up to daily
+# cache-hit-rate metrics.
+
+
+def make_cache_lookup_fired(
+    correlation_id: str,
+    *,
+    mode: str,
+    thread_id: str | None = None,
+    user_id: str | None = None,
+) -> EmitEnvelope:
+    """Cache lookup skill invoked at turn start.
+
+    ``mode`` is one of: ``active`` (result shown to LLM), ``shadow``
+    (result logged but not shown — A/B bypass bucket), ``off``
+    (cache disabled for this turn — emitted only when debugging).
+    """
+    return EmitEnvelope(
+        signal="cache_lookup_fired",
+        correlation_id=correlation_id,
+        step_id="cache.lookup",
+        note=f"◌ Cache lookup ({mode})…",
+        data={"mode": mode},
+        thread_id=thread_id,
+        user_id=user_id,
+    )
+
+
+def make_cache_candidates_returned(
+    correlation_id: str,
+    *,
+    count: int,
+    max_similarity: float | None,
+    oldest_age_days: float | None,
+    newest_age_days: float | None,
+    reasons_filtered: dict,
+    thread_id: str | None = None,
+    user_id: str | None = None,
+) -> EmitEnvelope:
+    """Cache lookup produced candidates. Emits even on zero-count so
+    analytics can distinguish 'lookup ran, found nothing' from
+    'lookup never ran'."""
+    return EmitEnvelope(
+        signal="cache_candidates_returned",
+        correlation_id=correlation_id,
+        step_id="cache.candidates",
+        note=(
+            f"✓ Cache returned {count} candidate(s)"
+            + (f" · max sim {max_similarity:.2f}" if max_similarity is not None else "")
+        ),
+        data={
+            "count": count,
+            "max_similarity": max_similarity,
+            "oldest_age_days": oldest_age_days,
+            "newest_age_days": newest_age_days,
+            "reasons_filtered": reasons_filtered,
+        },
+        thread_id=thread_id,
+        user_id=user_id,
+    )
+
+
+def make_cache_influenced_decision(
+    correlation_id: str,
+    *,
+    influence: str,
+    cache_turn_id: str | None,
+    similarity: float | None,
+    thread_id: str | None = None,
+    user_id: str | None = None,
+) -> EmitEnvelope:
+    """The final answer was materially influenced by a cached answer.
+
+    ``influence`` one of: ``verbatim`` (cached answer text returned
+    unchanged), ``partial`` (cache informed but answer re-synthesized),
+    ``rejected`` (LLM saw cache and picked fresh retrieval instead).
+    """
+    return EmitEnvelope(
+        signal="cache_influenced_decision",
+        correlation_id=correlation_id,
+        step_id="cache.influence",
+        note=f"⚡ Cache influence: {influence}",
+        data={
+            "influence": influence,
+            "cache_turn_id": cache_turn_id,
+            "similarity": similarity,
+        },
+        thread_id=thread_id,
+        user_id=user_id,
+    )
+
+
+def make_cache_rejected_by_llm(
+    correlation_id: str,
+    *,
+    reason: str,
+    thread_id: str | None = None,
+    user_id: str | None = None,
+) -> EmitEnvelope:
+    """LLM saw cache candidates but chose to invoke fresh retrieval.
+    The orchestrator derives the reason from the candidate set when
+    this fires — the LLM itself doesn't emit these."""
+    return EmitEnvelope(
+        signal="cache_rejected_by_llm",
+        correlation_id=correlation_id,
+        step_id="cache.rejected",
+        note=f"⊘ Cache ignored: {reason}",
+        data={"reason": reason},
+        thread_id=thread_id,
+        user_id=user_id,
+    )

@@ -1420,8 +1420,18 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         f"  (Up to {max_it} reasoning rounds — {mode_label}: "
         f"{'more tool passes when needed' if mode_label == 'agentic' else 'faster path; you can steer on the next message'}.)"
     )
-    tool_results: list[dict] = []
+    # Seed tool_results with pre-populated entries from the orchestrator
+    # (e.g. cache-assist's cached_answer_lookup result when cache_mode
+    # is 'active'). The entries already carry a ``round_virtual: 0``
+    # marker so downstream code can distinguish real round-N tool
+    # calls from pre-round-1 injections.
+    seed = list(getattr(ctx, "seed_tool_results", None) or [])
+    tool_results: list[dict] = seed
     all_sources: list[dict] = []
+    for s in seed:
+        seed_sources = s.get("sources") or []
+        if isinstance(seed_sources, list):
+            all_sources.extend(seed_sources)
     final_signal = RETRIEVAL_SIGNAL_NO_SOURCES
     last_tool: str | None = None
     reasoning_system = _react_reasoning_system(max_it, mode_label)

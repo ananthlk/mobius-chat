@@ -80,6 +80,12 @@ def process_one(correlation_id: str, payload: dict) -> None:
     # checks are correct.
     if isinstance(system_context, str) and not system_context.strip():
         system_context = None
+    # cache_assist (2026-04-23): per-turn override. True/False only;
+    # ignore malformed values (callers shouldn't send them, but don't
+    # let a bad flag break the turn).
+    cache_assist = payload.get("cache_assist")
+    if cache_assist is not None and not isinstance(cache_assist, bool):
+        cache_assist = None
 
     deadline_s = _turn_deadline_seconds()
     is_main_thread = threading.current_thread() is threading.main_thread()
@@ -132,6 +138,7 @@ def process_one(correlation_id: str, payload: dict) -> None:
             chat_mode=chat_mode,
             user_id=user_id,
             system_context=system_context,
+            cache_assist=cache_assist,
         )
 
     if is_main_thread and hasattr(signal, "SIGALRM"):

@@ -82,6 +82,16 @@ class ChatRequest(BaseModel):
     chat_mode: Literal["copilot", "agentic", "quick"] | None = None
     """copilot: registry-first, 3 rounds. agentic: web escalation, 6 rounds. quick: mini-container, 2 rounds, brief answers."""
 
+    cache_assist: bool | None = None
+    """Per-turn override for the cache-assist feature.
+
+    When ``False``, the cached_answer_lookup skill is skipped for this
+    turn regardless of global ``CACHE_ASSIST_ENABLED`` state — useful
+    for benchmarks that need fresh answers, admin troubleshooting, or
+    callers (e.g. the bench harness) that want to establish a cache-
+    free baseline. When ``None`` (default) the orchestrator applies
+    its normal mode-selection rules."""
+
     system_context: str | None = None
     """Pre-loaded context the worker should treat as ground truth.
 
@@ -173,6 +183,8 @@ def post_chat(
         payload["user_id"] = user_id
     if body.system_context:
         payload["system_context"] = body.system_context
+    if body.cache_assist is not None:
+        payload["cache_assist"] = bool(body.cache_assist)
     get_queue().publish_request(correlation_id, payload)
     return ChatResponse(correlation_id=correlation_id, thread_id=thread_id)
 

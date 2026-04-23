@@ -25,6 +25,34 @@ class PipelineContext:
     tool loop. Primary consumer: story presentation layer node clicks
     where verified values are already known."""
 
+    cache_assist_override: bool | None = None
+    """Per-turn override for cache-assist from POST /chat. None = use
+    orchestrator's normal mode-selection rules; False = force off;
+    True = force on (subject to all other gates: agentic-mode,
+    system_context, freshness markers still take precedence)."""
+
+    cache_mode: str = "none"
+    """Selected cache-assist mode for this turn: ``active`` (candidates
+    shown to LLM), ``shadow`` (logged only), ``off`` (skipped), or
+    ``none`` (feature off globally or not applicable)."""
+
+    cache_candidates: list = field(default_factory=list)
+    """Raw candidates returned by cached_answer_lookup (the skill's
+    ``extra.candidates`` list). Populated on both active and shadow
+    modes so shadow-log writes have the data they need."""
+
+    cache_influence: str = "none"
+    """How the cache influenced finalization: ``none``, ``partial``,
+    ``verbatim``, ``rejected``, or ``unknown``. Stamped onto chat_turns."""
+
+    seed_tool_results: list = field(default_factory=list)
+    """Pre-populated ``tool_results`` entries that the ReAct loop
+    should treat as already-executed before round 1 starts. Used by
+    the cache-assist path to inject cached_answer_lookup output as a
+    "round 0 virtual tool result" so the existing
+    build_reasoning_context machinery picks it up without special
+    casing. Empty when no pre-population applies."""
+
     user_id: str | None = None
     """Authenticated user_id from POST /chat's ``require_user`` dependency.
 

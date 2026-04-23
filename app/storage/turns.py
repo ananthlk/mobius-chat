@@ -279,6 +279,54 @@ def insert_turn(
 # -------------------------------------------------------------------
 
 
+def update_turn_cache_mode(
+    correlation_id: str,
+    *,
+    cache_mode: str,
+    cache_candidate_count: int,
+    cache_top_similarity: float | None,
+    cache_influence: str,
+) -> None:
+    """Stamp cache-assist bookkeeping onto an already-inserted chat_turns
+    row. Best-effort: swallows column-missing errors so chat works on
+    DBs without migration 028 applied (they just won't have the
+    analytics columns).
+
+    Called from ``_publish_completed`` AFTER ``save_turn_with_messages``,
+    so the row definitely exists. If the UPDATE matches zero rows, it's
+    a no-op — same behavior as the migration-missing case.
+    """
+    if not correlation_id:
+        return
+    result = db_execute(
+        """
+        UPDATE chat_turns
+        SET cache_mode = :mode,
+            cache_candidate_count = :cnt,
+            cache_top_similarity = :sim,
+            cache_influence = :inf
+        WHERE correlation_id = :cid
+        """,
+        _DB,
+        params={
+            "cid": correlation_id,
+            "mode": (cache_mode or "none").strip() or "none",
+            "cnt": int(cache_candidate_count or 0),
+            "sim": float(cache_top_similarity) if cache_top_similarity is not None else None,
+            "inf": (cache_influence or "none").strip() or "none",
+        },
+    )
+    code = _err_code(result)
+    if code is None:
+        return
+    # Columns not present (migration 028 not applied yet) → no-op.
+    err = _err_message(result).lower()
+    if code == "column_missing" or ("column" in err and "does not exist" in err):
+        logger.debug("cache-mode columns missing; migration 028 not applied — skipping")
+        return
+    logger.warning("update_turn_cache_mode failed: %s", err[:200])
+
+
 def get_last_turn_sources(thread_id: str, limit_turns: int = 2) -> list[dict[str, Any]]:
     """Return sources (document_id, document_name) from last N turns in thread for continuity.
     Dedupes by document_id. Used by planner context and retriever include_document_ids."""

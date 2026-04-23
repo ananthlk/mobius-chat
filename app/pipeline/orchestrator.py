@@ -140,6 +140,149 @@ def _debug_plan_state(label: str, ctx: PipelineContext) -> None:
     print("\n".join(lines))
 
 
+def _invoke_cache_assist(ctx, *, chat_mode_hint: str | None, emitter) -> None:
+    """Select cache-assist mode, invoke the cached_answer_lookup skill,
+    record the result on ``ctx`` + emit signals. No return — all side
+    effects land on the context.
+
+    Active mode: the skill's result is appended to ``ctx.tool_results``
+    so it appears in the reasoning context alongside search_corpus /
+    google_search outputs naturally. Round 1 planner sees it as just
+    another "prior tool result."
+
+    Shadow mode: result stored on ``ctx.cache_candidates`` only, NOT
+    appended to ``ctx.tool_results``. The LLM never sees it; the
+    shadow-log writer in _publish_completed picks it up after the
+    turn for agreement analytics.
+    """
+    from app.communication.emit_envelope import (
+        make_cache_candidates_returned,
+        make_cache_lookup_fired,
+    )
+    from app.services.cache_mode import select_cache_mode
+    from app.skills.registry import SkillCall, dispatch, has as registry_has
+
+    mode = select_cache_mode(
+        correlation_id=ctx.correlation_id,
+        chat_mode=chat_mode_hint or ctx.chat_mode,
+        system_context=ctx.system_context,
+        cache_assist_override=ctx.cache_assist_override,
+        question=ctx.message or "",
+    )
+    ctx.cache_mode = mode
+
+    if mode == "off":
+        # Don't emit on off — uninteresting and would spam thinking_log.
+        return
+
+    if not registry_has("cached_answer_lookup"):
+        logger.warning("cache-assist: skill not registered; skipping")
+        ctx.cache_mode = "off"
+        return
+
+    # Compose caller-supplied filter profile. Chat's default is
+    # "reasonable for a copilot/quick turn in the healthcare domain."
+    # Specialized agents invoking this skill directly would pass their
+    # own profile.
+    import os
+    try:
+        default_max_age = int((os.environ.get("CACHE_ASSIST_DEFAULT_MAX_AGE_DAYS") or "14").strip())
+    except (TypeError, ValueError):
+        default_max_age = 14
+
+    # Config_sha filter ties cache reads to the current prompts+LLM
+    # config version. When we deploy a new config_sha, existing cache
+    # entries quietly stop matching until re-seeded.
+    try:
+        from app.chat_config import get_config_sha
+        config_sha = get_config_sha() or None
+    except Exception:
+        config_sha = None
+
+    # Domain tags derived from the active payer/state so chat's cache
+    # doesn't bleed across jurisdictions (a Florida Sunshine Health
+    # turn shouldn't surface as a match for a Texas Medicaid question).
+    active = (ctx.merged_state or {}).get("active") or {}
+    dom_tags: list[str] = []
+    if isinstance(active, dict):
+        payer = (active.get("payer") or "").strip()
+        state = (active.get("state") or "").strip()
+        if payer:
+            dom_tags.append(f"payer:{payer.lower().replace(' ', '_')}")
+        if state:
+            dom_tags.append(f"state:{state.lower()}")
+
+    if emitter:
+        emitter(make_cache_lookup_fired(
+            correlation_id=ctx.correlation_id,
+            mode=mode,
+            thread_id=ctx.thread_id,
+            user_id=ctx.user_id,
+        ).to_dict())
+
+    try:
+        envelope = dispatch(SkillCall(
+            name="cached_answer_lookup",
+            inputs={
+                "question": ctx.message or "",
+                "max_age_days": default_max_age,
+                "config_sha": config_sha,
+                "domain_tags": dom_tags or None,
+            },
+            question=ctx.message or "",
+            thread_id=ctx.thread_id,
+            pipeline_ctx=ctx,
+        ))
+    except Exception as exc:
+        logger.warning("cache-assist: skill dispatch failed: %s", exc)
+        return
+
+    extra = envelope.extra or {}
+    candidates = extra.get("candidates") or []
+    reasons = extra.get("reasons_filtered") or {}
+    ctx.cache_candidates = candidates
+
+    max_sim = max((c.get("similarity") or 0.0) for c in candidates) if candidates else None
+    ages = [c.get("age_days") for c in candidates if c.get("age_days") is not None]
+    if emitter:
+        emitter(make_cache_candidates_returned(
+            correlation_id=ctx.correlation_id,
+            count=len(candidates),
+            max_similarity=max_sim,
+            oldest_age_days=max(ages) if ages else None,
+            newest_age_days=min(ages) if ages else None,
+            reasons_filtered=reasons,
+            thread_id=ctx.thread_id,
+            user_id=ctx.user_id,
+        ).to_dict())
+
+    if mode == "active" and envelope.text:
+        # Surface to the reasoning LLM as a virtual tool result. The
+        # existing build_reasoning_context loop iterates tool_results
+        # and renders them; no react_loop change needed.
+        tr_entry = {
+            "tool": "cached_answer_lookup",
+            "success": True,
+            "result": envelope.text,
+            "result_summary": f"{len(candidates)} cached candidate(s), max sim {max_sim:.2f}"
+                              if max_sim is not None else "no cached candidates",
+            "round_virtual": 0,
+            "sources": [s.to_dict() for s in (envelope.sources or [])],
+        }
+        # tool_results lives on the react loop's local list; we stash
+        # it on ctx so run_react can pick it up at start. A follow-up
+        # commit can wire this directly into react_loop's tool_results
+        # initialization. For now: use ctx.active_context as the
+        # already-existing "pre-round-1 payload" surface (follow-up
+        # context machinery is orthogonal to that path).
+        #
+        # Minimum-viable path: append to a new ctx field that
+        # react_loop reads as a seed for tool_results.
+        if not hasattr(ctx, "seed_tool_results") or ctx.seed_tool_results is None:
+            ctx.seed_tool_results = []
+        ctx.seed_tool_results.append(tr_entry)
+
+
 def run_pipeline(
     correlation_id: str,
     message: str,
@@ -149,6 +292,7 @@ def run_pipeline(
     chat_mode: str | None = None,
     user_id: str | None = None,
     system_context: str | None = None,
+    cache_assist: bool | None = None,
 ) -> None:
     """Run the full pipeline: state_load -> classify -> plan -> clarify -> [resolve -> integrate] | early_exit.
 
@@ -180,6 +324,7 @@ def run_pipeline(
         message=(message or "").strip(),
         user_id=(user_id or "").strip() or None,
         system_context=_sys_ctx,
+        cache_assist_override=cache_assist,
     )
 
     def on_thinking(chunk) -> None:  # str | dict (EmitEnvelope.to_dict())
@@ -268,6 +413,21 @@ def run_pipeline(
 
         trace_entered(f"pipeline.stage.{STATE_LOAD}", correlation_id=correlation_id[:8])
         run_state_load(ctx)
+
+        # Cache-assist invocation (2026-04-23). Runs AFTER state_load so
+        # chat_mode + merged_state are populated (the mode selector and
+        # domain-tag builder both read from merged_state). Keeping this
+        # in the orchestrator (not in react_loop) means the decision to
+        # cache-assist is visible to every planning path, not just ReAct.
+        #
+        # Synchronous for MVP (~100–150ms per turn on active/shadow).
+        # Parallelizing via asyncio.to_thread is tracked as a follow-up
+        # — the win is small relative to round 1's 5–10s, and the
+        # synchronous version keeps error handling obvious.
+        try:
+            _invoke_cache_assist(ctx, chat_mode_hint=chat_mode, emitter=on_thinking)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning("cache-assist invocation failed (non-fatal): %s", exc)
 
         prev_mode = (ctx.merged_state or {}).get("last_chat_mode")
         if chat_mode is not None and str(chat_mode).strip():
@@ -844,7 +1004,69 @@ def _publish_completed(ctx: PipelineContext, t0_start: float) -> None:
         schedule_post_run_adjudication(ctx, payload)
     except Exception as e:
         logger.debug("schedule_post_run_adjudication: %s", e)
+    # Cache-assist writer hook (2026-04-23). Fire-and-forget daemon
+    # thread; gate check + write failures both log + swallow so cache
+    # bookkeeping can never break a turn.
+    try:
+        from app.services.cache_writer import schedule_cache_write
+        schedule_cache_write(ctx, payload)
+    except Exception as e:
+        logger.debug("schedule_cache_write: %s", e)
+    # Stamp cache-assist bookkeeping onto the just-persisted chat_turns
+    # row. Column-missing errors are swallowed inside the helper so
+    # pre-migration DBs keep working.
+    try:
+        from app.storage.turns import update_turn_cache_mode
+        _cands = getattr(ctx, "cache_candidates", []) or []
+        _sims = [c.get("similarity") for c in _cands if c.get("similarity") is not None]
+        update_turn_cache_mode(
+            ctx.correlation_id,
+            cache_mode=getattr(ctx, "cache_mode", "none"),
+            cache_candidate_count=len(_cands),
+            cache_top_similarity=max(_sims) if _sims else None,
+            cache_influence=getattr(ctx, "cache_influence", "none") or "none",
+        )
+    except Exception as e:
+        logger.debug("update_turn_cache_mode: %s", e)
+    # Shadow-log writer — when cache_mode was 'shadow', persist the
+    # candidates-that-would-have-been-shown alongside the fresh
+    # answer so an offline agreement-scoring job can compare.
+    try:
+        if getattr(ctx, "cache_mode", "none") == "shadow":
+            _write_cache_shadow_log(ctx, payload)
+    except Exception as e:
+        logger.debug("cache shadow log write failed: %s", e)
     logger.info("Response published for %s", ctx.correlation_id[:8])
+
+
+def _write_cache_shadow_log(ctx, payload: dict) -> None:
+    """Persist one row to ``chat_cache_shadow_log`` for later A/B
+    agreement analysis. Non-blocking (single DB insert). Never raises
+    back to the orchestrator — shadow analytics must not affect live
+    turns."""
+    import json as _json
+
+    from app.db_client import db_execute
+
+    db_execute(
+        """
+        INSERT INTO chat_cache_shadow_log
+            (correlation_id, question, config_sha, cached_candidates,
+             fresh_final_message, fresh_sources_count, fresh_signals)
+        VALUES (:cid, :q, :cfg, :cands::jsonb, :msg, :src_n, :sig)
+        ON CONFLICT (correlation_id) DO NOTHING
+        """,
+        "chat",
+        params={
+            "cid": ctx.correlation_id,
+            "q": (ctx.message or "").strip()[:2000],
+            "cfg": (payload.get("config_sha") or "") or None,
+            "cands": _json.dumps(getattr(ctx, "cache_candidates", []) or []),
+            "msg": (payload.get("message") or payload.get("final_message") or "")[:4000],
+            "src_n": int(len(payload.get("sources") or [])),
+            "sig": ",".join(str(s) for s in (payload.get("retrieval_signals") or []) if s)[:500],
+        },
+    )
 
 
 def _publish_failed(
