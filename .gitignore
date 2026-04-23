@@ -20,3 +20,4 @@ frontend/node_modules/
 .last_fl_medicaid_reload
 reports/
 .claude/
+.ci_health_history.jsonl
