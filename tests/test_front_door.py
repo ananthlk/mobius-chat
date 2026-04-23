@@ -245,6 +245,206 @@ class TestRateLimitMiddleware:
             assert client.get("/chat/ping").status_code == 200
 
 
+# ── Tiered rate limiter: L1 / L2 / L3 + exemptions (2026-04-23) ─────
+
+
+def _tiered_app(
+    *,
+    l1_rpm: int = 100,
+    l2_rpm: int = 0,
+    l3_rpm: int = 0,
+    exempt_ips: frozenset[str] = frozenset(),
+) -> FastAPI:
+    """Tiny app for the multi-tier tests. POST /chat accepts a JSON body
+    with ``thread_id`` (for L2 keying). A tiny pre-middleware stashes a
+    ``user_id`` on request.state (simulates the auth middleware for L3
+    testing) based on the ``X-Test-User`` header."""
+    app = FastAPI()
+
+    # FastAPI/Starlette runs middleware in REVERSE registration order
+    # (last added = outermost = runs first). We need user injection to
+    # run BEFORE the rate limiter so request.state.user_id is populated
+    # in time for L3 keying. Therefore: add the rate limiter first, the
+    # injector second. Execution order ends up:
+    #    inject_user → rate_limit → endpoint
+    app.add_middleware(
+        InMemoryRateLimitMiddleware,
+        config=RateLimitConfig(
+            enabled=True,
+            requests_per_minute=l1_rpm,
+            path_prefixes=("/chat",),
+            thread_rpm=l2_rpm,
+            user_rpm=l3_rpm,
+            exempt_ips=exempt_ips,
+        ),
+    )
+
+    # Simulate what the auth middleware does — set request.state.user_id
+    # from a test-only header.
+    @app.middleware("http")
+    async def _inject_user(request, call_next):
+        uid = request.headers.get("x-test-user")
+        if uid:
+            request.state.user_id = uid
+        return await call_next(request)
+
+    @app.post("/chat/echo")
+    def echo(body: dict):
+        return {"ok": True, "body": body}
+
+    @app.get("/chat/ping")
+    def ping():
+        return {"ok": True}
+
+    return app
+
+
+class TestRateLimitTieredL2Thread:
+    """L2 (per-thread_id) tier."""
+
+    def test_thread_limit_blocks_before_ip_limit(self):
+        """Thread-tier cap trips before IP-tier on concurrent
+        same-thread requests."""
+        app = _tiered_app(l1_rpm=100, l2_rpm=3)
+        client = TestClient(app)
+        # 3 requests on the same thread succeed.
+        for _ in range(3):
+            r = client.post("/chat/echo", json={"thread_id": "tab-1", "message": "hi"})
+            assert r.status_code == 200
+        # 4th trips L2 despite L1 being nowhere near its cap.
+        r = client.post("/chat/echo", json={"thread_id": "tab-1", "message": "hi"})
+        assert r.status_code == 429
+        assert r.json()["tier"] == "thread"
+
+    def test_different_threads_do_not_share_bucket(self):
+        app = _tiered_app(l1_rpm=100, l2_rpm=2)
+        client = TestClient(app)
+        # Each thread has its own bucket.
+        for _ in range(2):
+            assert client.post("/chat/echo", json={"thread_id": "tab-a"}).status_code == 200
+        for _ in range(2):
+            assert client.post("/chat/echo", json={"thread_id": "tab-b"}).status_code == 200
+        # Now each is at cap; one more on either trips L2.
+        assert client.post("/chat/echo", json={"thread_id": "tab-a"}).status_code == 429
+
+    def test_l2_off_when_rpm_zero(self):
+        """thread_rpm=0 disables L2 entirely — only L1 applies."""
+        app = _tiered_app(l1_rpm=5, l2_rpm=0)
+        client = TestClient(app)
+        for _ in range(5):
+            r = client.post("/chat/echo", json={"thread_id": "tab-1"})
+            assert r.status_code == 200
+        # L1 trips at 6th. If L2 were still active with its default it'd
+        # have fired earlier.
+        r = client.post("/chat/echo", json={"thread_id": "tab-1"})
+        assert r.status_code == 429
+        assert r.json()["tier"] == "ip"
+
+    def test_missing_thread_id_falls_through_to_ip(self):
+        """A POST with no thread_id skips L2 silently; L1 still applies."""
+        app = _tiered_app(l1_rpm=3, l2_rpm=2)
+        client = TestClient(app)
+        # Three requests with no thread_id — L2 can't key them so it's
+        # skipped. L1 caps at 3, 4th trips L1.
+        for _ in range(3):
+            assert client.post("/chat/echo", json={"message": "no tid"}).status_code == 200
+        r = client.post("/chat/echo", json={"message": "no tid"})
+        assert r.status_code == 429
+        assert r.json()["tier"] == "ip"
+
+
+class TestRateLimitTieredL3UserStub:
+    """L3 (per-user_id) stub — activates when request.state.user_id is set."""
+
+    def test_user_limit_trips_with_auth_header_simulated(self):
+        app = _tiered_app(l1_rpm=100, l3_rpm=2)
+        client = TestClient(app)
+        # Two requests under the same simulated user succeed.
+        for _ in range(2):
+            r = client.get("/chat/ping", headers={"X-Test-User": "alice"})
+            assert r.status_code == 200
+        r = client.get("/chat/ping", headers={"X-Test-User": "alice"})
+        assert r.status_code == 429
+        assert r.json()["tier"] == "user"
+
+    def test_l3_stays_inert_when_no_user_id(self):
+        """No auth header → no user_id → L3 can't key → tier silent.
+        L1 is what protects the endpoint."""
+        app = _tiered_app(l1_rpm=3, l3_rpm=1)
+        client = TestClient(app)
+        for _ in range(3):
+            assert client.get("/chat/ping").status_code == 200
+        r = client.get("/chat/ping")
+        assert r.status_code == 429
+        assert r.json()["tier"] == "ip"  # not 'user' — L3 never fired
+
+    def test_different_users_do_not_share_bucket(self):
+        app = _tiered_app(l1_rpm=100, l3_rpm=2)
+        client = TestClient(app)
+        for _ in range(2):
+            assert client.get("/chat/ping", headers={"X-Test-User": "alice"}).status_code == 200
+        for _ in range(2):
+            assert client.get("/chat/ping", headers={"X-Test-User": "bob"}).status_code == 200
+        r = client.get("/chat/ping", headers={"X-Test-User": "alice"})
+        assert r.status_code == 429
+
+
+class TestRateLimitExemptions:
+    def test_exempt_ip_bypasses_all_tiers(self):
+        """An exempt IP should never hit 429 regardless of tiers."""
+        app = _tiered_app(
+            l1_rpm=1, l2_rpm=1, l3_rpm=1,
+            exempt_ips=frozenset({"testclient"}),  # FastAPI TestClient's client.host
+        )
+        client = TestClient(app)
+        # Way over every tier; all must succeed.
+        for _ in range(20):
+            r = client.post("/chat/echo", json={"thread_id": "t", "message": "x"},
+                            headers={"X-Test-User": "alice"})
+            assert r.status_code == 200
+
+    def test_non_exempt_ip_still_limited(self):
+        """Exemption list doesn't silently disable the limiter for
+        other IPs."""
+        app = _tiered_app(
+            l1_rpm=2,
+            exempt_ips=frozenset({"10.99.99.99"}),  # not the test client's IP
+        )
+        client = TestClient(app)
+        for _ in range(2):
+            assert client.post("/chat/echo", json={"thread_id": "t"}).status_code == 200
+        r = client.post("/chat/echo", json={"thread_id": "t"})
+        assert r.status_code == 429
+
+
+class TestRateLimitConfigTiered:
+    def test_hosted_default_includes_l2_and_l3(self, monkeypatch):
+        monkeypatch.setenv("CHAT_ENV", "prod")
+        monkeypatch.delenv("CHAT_RATE_LIMIT_PER_MINUTE", raising=False)
+        monkeypatch.delenv("CHAT_RATE_LIMIT_THREAD_PER_MINUTE", raising=False)
+        monkeypatch.delenv("CHAT_RATE_LIMIT_USER_PER_MINUTE", raising=False)
+        cfg = resolve_rate_limit_config()
+        assert cfg.enabled is True
+        assert cfg.requests_per_minute == 30
+        assert cfg.thread_rpm == 20
+        assert cfg.user_rpm == 120
+
+    def test_explicit_env_overrides_tiers(self, monkeypatch):
+        monkeypatch.setenv("CHAT_RATE_LIMIT_PER_MINUTE", "60")
+        monkeypatch.setenv("CHAT_RATE_LIMIT_THREAD_PER_MINUTE", "5")
+        monkeypatch.setenv("CHAT_RATE_LIMIT_USER_PER_MINUTE", "0")  # disable L3
+        cfg = resolve_rate_limit_config()
+        assert cfg.requests_per_minute == 60
+        assert cfg.thread_rpm == 5
+        assert cfg.user_rpm == 0
+
+    def test_exempt_ips_parsed_from_env(self, monkeypatch):
+        monkeypatch.setenv("CHAT_RATE_LIMIT_PER_MINUTE", "30")
+        monkeypatch.setenv("RATE_LIMIT_EXEMPT_IPS", "10.0.0.1, 10.0.0.2,  ,10.0.0.3")
+        cfg = resolve_rate_limit_config()
+        assert cfg.exempt_ips == frozenset({"10.0.0.1", "10.0.0.2", "10.0.0.3"})
+
+
 # ── Auth mode ─────────────────────────────────────────────────────────────
 
 

@@ -210,62 +210,145 @@ def _reject_wildcards(origins: list[str]) -> None:
 
 @dataclass(frozen=True)
 class RateLimitConfig:
+    """Tiered rate-limit config.
+
+    Three composable tiers:
+      - L1 per-IP — always on when ``enabled=True``. Catches bots.
+      - L2 per-thread — soft protection against a frontend retrying the
+        same thread (e.g. double-submit from a flaky retry loop).
+        ``thread_rpm == 0`` disables L2.
+      - L3 per-user — stub until auth lands; activates transparently
+        when ``require_user`` dependency populates ``request.state.user_id``.
+        ``user_rpm == 0`` disables L3.
+
+    IPs in ``exempt_ips`` bypass all three tiers — use for internal
+    monitoring / ops / the bench harness host.
+
+    Field order keeps backward-compat with callers that construct this
+    with the original three positional arguments
+    (``enabled``, ``requests_per_minute``, ``path_prefixes``). New
+    fields carry defaults so ``RateLimitConfig(True, 30, ('/chat',))``
+    still works.
+    """
     enabled: bool
-    requests_per_minute: int
+    requests_per_minute: int          # L1 — per-IP
     # Path prefixes the limiter applies to. Empty tuple = all paths.
     path_prefixes: tuple[str, ...]
+    thread_rpm: int = 0               # L2 — per-thread_id (0 = off)
+    user_rpm: int = 0                 # L3 — per-user_id   (0 = off)
+    exempt_ips: frozenset[str] = frozenset()  # admin/ops IPs that skip all tiers
+
+
+def _parse_exempt_ips() -> frozenset[str]:
+    """Comma-separated IPs via ``RATE_LIMIT_EXEMPT_IPS``. Leave unset
+    in prod unless there's a reason — every exemption is a gap."""
+    raw = (os.environ.get("RATE_LIMIT_EXEMPT_IPS") or "").strip()
+    if not raw:
+        return frozenset()
+    return frozenset({p.strip() for p in raw.split(",") if p.strip()})
+
+
+def _parse_int_env(name: str, default: int) -> int:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        logger.warning("Invalid %s=%r — using default %d", name, raw, default)
+        return default
 
 
 def resolve_rate_limit_config() -> RateLimitConfig:
-    """Opt-in via ``CHAT_RATE_LIMIT_PER_MINUTE`` (integer).
+    """L1 opt-in via ``CHAT_RATE_LIMIT_PER_MINUTE`` (integer).
+    L2 opt-in via ``CHAT_RATE_LIMIT_THREAD_PER_MINUTE`` (0 = off).
+    L3 opt-in via ``CHAT_RATE_LIMIT_USER_PER_MINUTE`` (0 = off; also
+    requires auth middleware to populate ``request.state.user_id``).
 
-    Dev default: OFF. Hosted default: ON at 30 req/min/IP against ``/chat``
-    POST paths unless the operator explicitly sets the env var.
+    Dev default:     L1 OFF,  L2 OFF,  L3 OFF.
+    Hosted default:  L1 30/min per IP on /chat, L2 20/min per thread,
+                     L3 120/min per user (active only when auth lands).
     """
-    raw = (os.environ.get("CHAT_RATE_LIMIT_PER_MINUTE") or "").strip()
-    if raw:
+    l1_raw = (os.environ.get("CHAT_RATE_LIMIT_PER_MINUTE") or "").strip()
+    hosted = is_hosted()
+    exempt = _parse_exempt_ips()
+
+    # L1 resolution (backward-compatible with existing CHAT_RATE_LIMIT_PER_MINUTE env).
+    if l1_raw:
         try:
-            rpm = max(1, int(raw))
+            l1_rpm = max(1, int(l1_raw))
+            l1_enabled = True
         except ValueError:
             logger.warning(
-                "Invalid CHAT_RATE_LIMIT_PER_MINUTE=%r — rate limit disabled.", raw,
+                "Invalid CHAT_RATE_LIMIT_PER_MINUTE=%r — L1 rate limit disabled.", l1_raw,
             )
-            return RateLimitConfig(enabled=False, requests_per_minute=0, path_prefixes=())
+            l1_enabled = False
+            l1_rpm = 0
+    elif hosted:
+        l1_enabled = True
+        l1_rpm = 30
+    else:
+        l1_enabled = False
+        l1_rpm = 0
+
+    if not l1_enabled:
         return RateLimitConfig(
-            enabled=True,
-            requests_per_minute=rpm,
-            path_prefixes=("/chat",),
+            enabled=False, requests_per_minute=0,
+            thread_rpm=0, user_rpm=0,
+            path_prefixes=(), exempt_ips=exempt,
         )
 
-    if is_hosted():
-        # Hosted default: 30 req/min per client IP against /chat. Operator
-        # overrides with the env var.
-        return RateLimitConfig(
-            enabled=True,
-            requests_per_minute=30,
-            path_prefixes=("/chat",),
-        )
+    # L2/L3 defaults are active only when L1 is active (turning on L1
+    # implies the operator wants per-tier limits too).
+    l2_default = 20 if hosted else 0
+    l3_default = 120 if hosted else 0
+    l2_rpm = _parse_int_env("CHAT_RATE_LIMIT_THREAD_PER_MINUTE", l2_default)
+    l3_rpm = _parse_int_env("CHAT_RATE_LIMIT_USER_PER_MINUTE", l3_default)
 
-    # Dev default: off.
-    return RateLimitConfig(enabled=False, requests_per_minute=0, path_prefixes=())
+    return RateLimitConfig(
+        enabled=True,
+        requests_per_minute=l1_rpm,
+        thread_rpm=l2_rpm,
+        user_rpm=l3_rpm,
+        path_prefixes=("/chat",),
+        exempt_ips=exempt,
+    )
 
 
 class InMemoryRateLimitMiddleware(BaseHTTPMiddleware):
-    """Simple sliding-window per-IP rate limiter.
+    """Tiered sliding-window rate limiter (L1 IP + L2 thread + L3 user).
+
+    All three tiers share the same sliding-window algorithm and storage
+    shape — just different keys. A request is rejected when ANY enabled
+    tier is at its cap; the 429 response names the tier that tripped
+    first so clients and ops can debug.
 
     Good enough for a single-process deployment. For multi-replica
     deployments, swap to a Redis-backed implementation in a later phase —
-    same config surface, different backend. This module pins the contract
-    so the swap is isolated.
+    same config surface, different backend.
 
-    Not applied when ``RateLimitConfig.enabled`` is False — the middleware
-    short-circuits. Not applied to paths outside ``path_prefixes``.
+    L2 (thread_id) requires the request body to parse as JSON with a
+    ``thread_id`` field. We peek at the body once (cached for downstream
+    handlers) and skip L2 quietly if it's missing or malformed.
+
+    L3 (user_id) reads ``request.state.user_id`` populated by the auth
+    middleware. Currently stubbed — activates when auth lands without
+    any changes here.
+
+    IPs in ``exempt_ips`` skip ALL tiers. Use only for monitoring / ops
+    hosts; every exemption is a hole in the safety net.
+
+    Not applied when ``RateLimitConfig.enabled`` is False — short-circuits.
+    Not applied to paths outside ``path_prefixes``.
     """
 
     def __init__(self, app, config: RateLimitConfig):
         super().__init__(app)
         self._config = config
-        # Per-IP deque of request timestamps. Trimmed on each hit.
+        # Per-key deque of request timestamps. Trimmed on each hit.
+        # Separate namespaces per tier so ``ip:1.2.3.4`` doesn't
+        # collide with ``t:1.2.3.4`` if a user ever names their
+        # thread after an IP.
         self._buckets: dict[str, deque[float]] = defaultdict(deque)
 
     async def dispatch(self, request: Request, call_next):
@@ -279,31 +362,81 @@ class InMemoryRateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         client_ip = _client_ip(request)
+        if client_ip in self._config.exempt_ips:
+            return await call_next(request)
+
         now = time.monotonic()
         window_start = now - 60.0
 
-        bucket = self._buckets[client_ip]
-        # Trim timestamps older than the sliding window.
-        while bucket and bucket[0] < window_start:
-            bucket.popleft()
+        # L2/L3 key resolution. Peek at the body for L2 only when the
+        # thread limit is active — avoids a body read on routes where
+        # the tier does nothing.
+        thread_id: str | None = None
+        if self._config.thread_rpm > 0 and request.method == "POST":
+            thread_id = await _peek_thread_id(request)
+        user_id: str | None = None
+        if self._config.user_rpm > 0:
+            user_id = getattr(request.state, "user_id", None) or None
 
-        if len(bucket) >= self._config.requests_per_minute:
-            # Retry-after is the time until the oldest-in-window expires.
-            retry_after = max(1, int(bucket[0] + 60.0 - now))
-            return JSONResponse(
-                status_code=429,
-                content={
-                    "detail": (
-                        f"Rate limit exceeded: "
-                        f"{self._config.requests_per_minute} req/min/IP"
-                    ),
-                    "retry_after_seconds": retry_after,
-                },
-                headers={"Retry-After": str(retry_after)},
-            )
+        # Check tiers in order IP → thread → user. First-to-trip wins.
+        tiers: list[tuple[str, str, int]] = [
+            ("ip", f"ip:{client_ip}", self._config.requests_per_minute),
+        ]
+        if thread_id and self._config.thread_rpm > 0:
+            tiers.append(("thread", f"t:{thread_id}", self._config.thread_rpm))
+        if user_id and self._config.user_rpm > 0:
+            tiers.append(("user", f"u:{user_id}", self._config.user_rpm))
 
-        bucket.append(now)
+        for tier_label, key, limit in tiers:
+            bucket = self._buckets[key]
+            while bucket and bucket[0] < window_start:
+                bucket.popleft()
+            if len(bucket) >= limit:
+                retry_after = max(1, int(bucket[0] + 60.0 - now))
+                logger.info(
+                    "rate_limit: tier=%s key=%s limit=%d retry_after=%ds",
+                    tier_label, key, limit, retry_after,
+                )
+                return JSONResponse(
+                    status_code=429,
+                    content={
+                        "detail": (
+                            f"Rate limit exceeded: {limit} req/min "
+                            f"({tier_label}-tier)"
+                        ),
+                        "tier": tier_label,
+                        "retry_after_seconds": retry_after,
+                    },
+                    headers={"Retry-After": str(retry_after)},
+                )
+
+        # Under limit for every enabled tier — increment each bucket.
+        for _, key, _ in tiers:
+            self._buckets[key].append(now)
         return await call_next(request)
+
+
+async def _peek_thread_id(request: Request) -> str | None:
+    """Read the request body once, cache it for downstream handlers,
+    return ``thread_id`` if present. Returns None on non-JSON, missing
+    field, or oversized body."""
+    try:
+        body = await request.body()
+        if not body or len(body) > 100_000:  # cap at ~100KB
+            return None
+        import json as _json
+        try:
+            payload = _json.loads(body.decode("utf-8", errors="ignore"))
+        except (ValueError, UnicodeDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        tid = payload.get("thread_id")
+        if isinstance(tid, str) and tid.strip():
+            return tid.strip()
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.debug("rate_limit peek failed (non-fatal): %s", exc)
+    return None
 
 
 def _client_ip(request: Request) -> str:
