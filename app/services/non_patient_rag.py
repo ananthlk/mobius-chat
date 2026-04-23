@@ -269,7 +269,7 @@ def answer_non_patient(
             chunks, retrieval_signal = assemble_docs(
                 chunks,
                 question,
-                apply_google=True,
+                apply_google=False,  # React tool loop invokes Google explicitly when needed
                 expand_neighbors=True,
                 database_url=rag.database_url if rag else None,
                 emitter=wrap_emitter_for_user(emitter),

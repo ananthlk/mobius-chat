@@ -5263,12 +5263,6 @@ ${message}`;
       payload.credentialing_options = opts.credentialing_options;
     }
     payload.chat_mode = selectedMode;
-    // 2026-04-20: every mode uses ReAct by default. Historical mapping
-    // (copilot → use_react=false → legacy clarify/plan/resolve path)
-    // is retired — the hardening sprint standardized on the ReAct
-    // orchestrator across all chat_mode values. Explicit override via
-    // opts.use_react still wins for internal callers that need the
-    // legacy path (e.g. eval harnesses).
     if (opts?.use_react !== void 0) {
       payload.use_react = opts.use_react;
     }
