@@ -1,0 +1,230 @@
+{
+  "run_id": "29be6f84-6f2d-4607-87b1-28f478b8650f",
+  "ts": "2026-04-24T16:33:35Z",
+  "base_url": "https://mobius-chat-ortabkknqa-uc.a.run.app",
+  "chat_mode": "copilot",
+  "tag": "optimal",
+  "question_source": "auto",
+  "summary": {
+    "n_total": 9,
+    "n_completed": 9,
+    "n_failed": 0,
+    "duration_ms_p50": 15906,
+    "duration_ms_p95": 32898,
+    "first_chunk_ms_p50": 60,
+    "first_chunk_ms_p95": 71,
+    "retrieval_signal_counts": {
+      "(none)": 9
+    },
+    "rounds_used_avg": 2.4444444444444446,
+    "total_llm_tokens_avg": 0.0,
+    "zero_sources_count": 0
+  },
+  "questions": [
+    {
+      "question_id": "dev_001",
+      "question": "What is the prior authorization requirement for physical therapy in Florida?",
+      "correlation_id": "6d257f0e-2ed9-4af9-9c00-562de326704f",
+      "status": "completed",
+      "duration_ms": 21546,
+      "first_chunk_ms": 66,
+      "final_message": "{\"mode\": \"FACTUAL\", \"direct_answer\": \"Prior authorization requirements for physical therapy in Florida vary by payer (Medicaid, Medicare Advantage, commercial plans) and are not available in the currently accessible resources. You will need to contact your specific payer to confirm the requirement.\", \"sections\": []}",
+      "retrieval_signals": [],
+      "sources_count": 1,
+      "sources_sample": [
+        "thedo.osteopathic.org"
+      ],
+      "rounds_used": 3,
+      "tools_used": [],
+      "total_llm_tokens": 0,
+      "total_cost_usd": 0.0,
+      "thinking_log_length": 37,
+      "answered_from_system_context": false,
+      "error": null
+    },
+    {
+      "question_id": "dev_002",
+      "question": "What phone number do pharmacies call for Express Scripts help desk?",
+      "correlation_id": "d5f94b1f-a9a5-45d6-aa76-51adbded13bd",
+      "status": "completed",
+      "duration_ms": 15568,
+      "first_chunk_ms": 51,
+      "final_message": "{\"mode\": \"FACTUAL\", \"direct_answer\": \"Pharmacies can call the Express Scripts help desk at 1-833-750-4392.\", \"sections\": []}",
+      "retrieval_signals": [],
+      "sources_count": 10,
+      "sources_sample": [
+        "Sunshine Provider Manual",
+        "Sunshine Provider Manual",
+        "Sunshine Member Handbook"
+      ],
+      "rounds_used": 2,
+      "tools_used": [],
+      "total_llm_tokens": 0,
+      "total_cost_usd": 0.0,
+      "thinking_log_length": 26,
+      "answered_from_system_context": false,
+      "error": null
+    },
+    {
+      "question_id": "dev_003",
+      "question": "Summarize the key guidance in the provider manual section \"Medicaid in Florida\".",
+      "correlation_id": "90d27b19-504b-4e91-b23e-0282c56210b7",
+      "status": "completed",
+      "duration_ms": 18874,
+      "first_chunk_ms": 69,
+      "final_message": "{\"mode\": \"FACTUAL\", \"direct_answer\": \"The knowledge base does not currently contain a retrievable provider manual section titled \\\"Medicaid in Florida.\\\" To proceed, you can upload a specific Florida Medicaid manual or policy document, ask about a narrower topic (e.g., timely filing limits or prior-authorization rules), or contact your CMHC provider services team for the authoritative manual.\", \"s",
+      "retrieval_signals": [],
+      "sources_count": 3,
+      "sources_sample": [
+        "cached_answer[1]",
+        "cached_answer[2]",
+        "cached_answer[3]"
+      ],
+      "rounds_used": 3,
+      "tools_used": [],
+      "total_llm_tokens": 0,
+      "total_cost_usd": 0.0,
+      "thinking_log_length": 33,
+      "answered_from_system_context": false,
+      "error": null
+    },
+    {
+      "question_id": "dev_004",
+      "question": "What is the 72-hour emergency medication supply policy?",
+      "correlation_id": "62cde152-ea95-42f9-a037-bf9652dd5ee6",
+      "status": "completed",
+      "duration_ms": 12583,
+      "first_chunk_ms": 60,
+      "final_message": "{\"mode\": \"FACTUAL\", \"direct_answer\": \"Florida state law requires participating pharmacies to provide a 72-hour (three-day) supply of certain medications to members awaiting prior authorization, ensuring continuity of therapy.\", \"sections\": []}",
+      "retrieval_signals": [],
+      "sources_count": 4,
+      "sources_sample": [
+        "cached_answer[1]",
+        "Sunshine Provider Manual",
+        "Sunshine Provider Manual"
+      ],
+      "rounds_used": 2,
+      "tools_used": [],
+      "total_llm_tokens": 0,
+      "total_cost_usd": 0.0,
+      "thinking_log_length": 26,
+      "answered_from_system_context": false,
+      "error": null
+    },
+    {
+      "question_id": "dev_005",
+      "question": "How can a provider determine whether a service requires prior authorization?",
+      "correlation_id": "50500efd-e99b-4256-9c27-b393d3c89ca0",
+      "status": "completed",
+      "duration_ms": 32898,
+      "first_chunk_ms": 48,
+      "final_message": "{\"mode\": \"FACTUAL\", \"direct_answer\": \"Providers can determine if a service requires prior authorization by using the Pre-Auth Check Tool (the primary method for checking by service code) or consulting the Authorization Requirements Policy document. For member-specific questions, contact Member Services at 1-866-796-0530 or behavioral health at 1-844-477-8313.\", \"sections\": []}",
+      "retrieval_signals": [],
+      "sources_count": 14,
+      "sources_sample": [
+        "cached_answer[1]",
+        "cached_answer[2]",
+        "cached_answer[3]"
+      ],
+      "rounds_used": 3,
+      "tools_used": [],
+      "total_llm_tokens": 0,
+      "total_cost_usd": 0.0,
+      "thinking_log_length": 32,
+      "answered_from_system_context": false,
+      "error": null
+    },
+    {
+      "question_id": "dev_006",
+      "question": "What are the weekend and after-hours on-call phone numbers?",
+      "correlation_id": "2a6cc1bf-1230-47af-b7bf-2374d7c99ce9",
+      "status": "completed",
+      "duration_ms": 15906,
+      "first_chunk_ms": 57,
+      "final_message": "{\"mode\": \"FACTUAL\", \"direct_answer\": \"For weekend and after-hours on-call support, contact Provider Services at 1-844-477-8313 for authorization requests, or Member Services at 1-866-796-0530 (TTY: 1-800-955-8770) for general questions.\", \"sections\": []}",
+      "retrieval_signals": [],
+      "sources_count": 11,
+      "sources_sample": [
+        "Sunshine Provider Manual",
+        "Sunshine Provider Manual",
+        "Sunshine Provider Manual"
+      ],
+      "rounds_used": 2,
+      "tools_used": [],
+      "total_llm_tokens": 0,
+      "total_cost_usd": 0.0,
+      "thinking_log_length": 26,
+      "answered_from_system_context": false,
+      "error": null
+    },
+    {
+      "question_id": "dev_007",
+      "question": "Summarize the Secure Provider Portal registration process.",
+      "correlation_id": "ca3ff074-a9f7-47c0-9618-bc0f8efb8c5c",
+      "status": "completed",
+      "duration_ms": 12641,
+      "first_chunk_ms": 50,
+      "final_message": "{\"mode\": \"FACTUAL\", \"direct_answer\": \"To register for the Secure Provider Portal, providers must request access by registering for a username and password. The available documentation provides limited detail beyond this basic registration requirement.\", \"sections\": []}",
+      "retrieval_signals": [],
+      "sources_count": 5,
+      "sources_sample": [
+        "cached_answer[1]",
+        "Sunshine Provider Manual",
+        "Sunshine Provider Manual"
+      ],
+      "rounds_used": 2,
+      "tools_used": [],
+      "total_llm_tokens": 0,
+      "total_cost_usd": 0.0,
+      "thinking_log_length": 26,
+      "answered_from_system_context": false,
+      "error": null
+    },
+    {
+      "question_id": "dev_008",
+      "question": "What is the process for claims reconsiderations and disputes?",
+      "correlation_id": "d5272855-3aab-4861-9402-d285206e3283",
+      "status": "completed",
+      "duration_ms": 12512,
+      "first_chunk_ms": 71,
+      "final_message": "{\"mode\": \"FACTUAL\", \"direct_answer\": \"To request a claim reconsideration or dispute, include the original claim number and relevant supporting documentation with your complaint submission. Reconsiderations from claim editing follow the standard provider claims process.\", \"sections\": []}",
+      "retrieval_signals": [],
+      "sources_count": 4,
+      "sources_sample": [
+        "Sunshine Provider Manual",
+        "Sunshine Provider Manual",
+        "Sunshine Provider Manual"
+      ],
+      "rounds_used": 2,
+      "tools_used": [],
+      "total_llm_tokens": 0,
+      "total_cost_usd": 0.0,
+      "thinking_log_length": 26,
+      "answered_from_system_context": false,
+      "error": null
+    },
+    {
+      "question_id": "dev_009",
+      "question": "What is the Medicare Part B prior authorization process in California?",
+      "correlation_id": "ac44f8c1-70ac-4a27-acd9-06dae2cba57e",
+      "status": "completed",
+      "duration_ms": 20752,
+      "first_chunk_ms": 67,
+      "final_message": "{\"mode\": \"FACTUAL\", \"direct_answer\": \"The specific Medicare Part B prior authorization process in California was not found in available sources. Medicare Part B PA requirements are defined by Local Coverage Determinations (LCDs) for California and vary by service type and payer.\", \"sections\": []}",
+      "retrieval_signals": [],
+      "sources_count": 4,
+      "sources_sample": [
+        "cached_answer[1]",
+        "cached_answer[2]",
+        "cached_answer[3]"
+      ],
+      "rounds_used": 3,
+      "tools_used": [],
+      "total_llm_tokens": 0,
+      "total_cost_usd": 0.0,
+      "thinking_log_length": 36,
+      "answered_from_system_context": false,
+      "error": null
+    }
+  ]
+}

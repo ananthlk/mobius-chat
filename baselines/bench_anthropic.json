@@ -1,0 +1,230 @@
+{
+  "run_id": "43452e00-d33e-4775-af8b-c159daea2254",
+  "ts": "2026-04-24T17:02:23Z",
+  "base_url": "https://mobius-chat-ortabkknqa-uc.a.run.app",
+  "chat_mode": "copilot",
+  "tag": "anthropic",
+  "question_source": "auto",
+  "summary": {
+    "n_total": 9,
+    "n_completed": 9,
+    "n_failed": 0,
+    "duration_ms_p50": 26958,
+    "duration_ms_p95": 44986,
+    "first_chunk_ms_p50": 54,
+    "first_chunk_ms_p95": 106,
+    "retrieval_signal_counts": {
+      "(none)": 9
+    },
+    "rounds_used_avg": 2.3333333333333335,
+    "total_llm_tokens_avg": 0.0,
+    "zero_sources_count": 0
+  },
+  "questions": [
+    {
+      "question_id": "dev_001",
+      "question": "What is the prior authorization requirement for physical therapy in Florida?",
+      "correlation_id": "8e702bcf-62e7-4c21-acd7-bbab5b1be59b",
+      "status": "completed",
+      "duration_ms": 36591,
+      "first_chunk_ms": 58,
+      "final_message": "{\"mode\": \"FACTUAL\", \"direct_answer\": \"For physical therapy in Florida, prior authorization requirements vary by payer and plan \\u2014 no single statewide rule applies universally. The steps below outline how to confirm the requirement for a specific insurer.\", \"sections\": [{\"intent\": \"requirements\", \"title\": \"Key Requirements to Confirm with the Payer\", \"bullets\": [\"Whether PT requires prior autho",
+      "retrieval_signals": [],
+      "sources_count": 3,
+      "sources_sample": [
+        "cached_answer[1]",
+        "cached_answer[2]",
+        "ahca.myflorida.com"
+      ],
+      "rounds_used": 3,
+      "tools_used": [],
+      "total_llm_tokens": 0,
+      "total_cost_usd": 0.0,
+      "thinking_log_length": 36,
+      "answered_from_system_context": false,
+      "error": null
+    },
+    {
+      "question_id": "dev_002",
+      "question": "What phone number do pharmacies call for Express Scripts help desk?",
+      "correlation_id": "f3cf27cf-3061-4c40-8ef2-68c13c139eb2",
+      "status": "completed",
+      "duration_ms": 20214,
+      "first_chunk_ms": 51,
+      "final_message": "{\"mode\": \"FACTUAL\", \"direct_answer\": \"Pharmacies can reach the Express Scripts help desk by calling 1-833-750-4392.\", \"sections\": []}",
+      "retrieval_signals": [],
+      "sources_count": 10,
+      "sources_sample": [
+        "cached_answer[1]",
+        "Sunshine Provider Manual",
+        "Sunshine Member Handbook"
+      ],
+      "rounds_used": 2,
+      "tools_used": [],
+      "total_llm_tokens": 0,
+      "total_cost_usd": 0.0,
+      "thinking_log_length": 26,
+      "answered_from_system_context": false,
+      "error": null
+    },
+    {
+      "question_id": "dev_003",
+      "question": "Summarize the key guidance in the provider manual section \"Medicaid in Florida\".",
+      "correlation_id": "b4672fe1-4199-4179-af8a-ffbd24bd0b5d",
+      "status": "completed",
+      "duration_ms": 26780,
+      "first_chunk_ms": 53,
+      "final_message": "{\"mode\": \"FACTUAL\", \"direct_answer\": \"For Florida Medicaid, the specific provider manual section could not be retrieved or parsed from the available corpus. The source at fl.acentra.com was identified but its content was not accessible for summarization.\", \"sections\": []}",
+      "retrieval_signals": [],
+      "sources_count": 1,
+      "sources_sample": [
+        "fl.acentra.com"
+      ],
+      "rounds_used": 3,
+      "tools_used": [],
+      "total_llm_tokens": 0,
+      "total_cost_usd": 0.0,
+      "thinking_log_length": 36,
+      "answered_from_system_context": false,
+      "error": null
+    },
+    {
+      "question_id": "dev_004",
+      "question": "What is the 72-hour emergency medication supply policy?",
+      "correlation_id": "fd4937df-9e82-4862-b556-45bfd3d84958",
+      "status": "completed",
+      "duration_ms": 27045,
+      "first_chunk_ms": 54,
+      "final_message": "{\"mode\": \"FACTUAL\", \"direct_answer\": \"Participating pharmacies must dispense a 72-hour (three-day) emergency supply of certain medications to members awaiting a prior authorization (PA) determination, ensuring no interruption of current therapy while the PA decision is pending.\", \"sections\": [{\"intent\": \"process\", \"title\": \"How It Works\", \"bullets\": [\"Participating pharmacies dispense a 72-hour (t",
+      "retrieval_signals": [],
+      "sources_count": 4,
+      "sources_sample": [
+        "cached_answer[1]",
+        "Sunshine Provider Manual",
+        "Sunshine Provider Manual"
+      ],
+      "rounds_used": 2,
+      "tools_used": [],
+      "total_llm_tokens": 0,
+      "total_cost_usd": 0.0,
+      "thinking_log_length": 26,
+      "answered_from_system_context": false,
+      "error": null
+    },
+    {
+      "question_id": "dev_005",
+      "question": "How can a provider determine whether a service requires prior authorization?",
+      "correlation_id": "2af7959d-cc52-4754-a473-0fb6f1042e04",
+      "status": "completed",
+      "duration_ms": 28996,
+      "first_chunk_ms": 47,
+      "final_message": "{\"mode\": \"FACTUAL\", \"direct_answer\": \"For Sunshine Health in Florida, providers can determine if a service requires prior authorization by using the Pre-Auth Check Tool and reviewing applicable coverage policies before submitting claims.\", \"sections\": [{\"intent\": \"process\", \"title\": \"How to Check Authorization Requirements\", \"bullets\": [\"Use the Pre-Auth Check Tool as the primary method: look up t",
+      "retrieval_signals": [],
+      "sources_count": 11,
+      "sources_sample": [
+        "Sunshine Provider Manual",
+        "Sunshine Provider Manual",
+        "Sunshine Provider Manual"
+      ],
+      "rounds_used": 2,
+      "tools_used": [],
+      "total_llm_tokens": 0,
+      "total_cost_usd": 0.0,
+      "thinking_log_length": 26,
+      "answered_from_system_context": false,
+      "error": null
+    },
+    {
+      "question_id": "dev_006",
+      "question": "What are the weekend and after-hours on-call phone numbers?",
+      "correlation_id": "611616f4-cefd-4eab-ae31-d242c59c4fe0",
+      "status": "completed",
+      "duration_ms": 21926,
+      "first_chunk_ms": 106,
+      "final_message": "{\"mode\": \"FACTUAL\", \"direct_answer\": \"For Sunshine Health in Florida, the weekend and after-hours on-call phone numbers are: On-Call Line (weekends & after-hours): 1-844-477-8313, and 24-Hour Nurse Advice Line: 1-866-796-0530 (TTY 1-800-955-8770). Regular Member Services hours are Monday\\u2013Friday, 8 a.m. to 8 p.m.\", \"sections\": []}",
+      "retrieval_signals": [],
+      "sources_count": 12,
+      "sources_sample": [
+        "cached_answer[1]",
+        "Sunshine Provider Manual",
+        "Sunshine Provider Manual"
+      ],
+      "rounds_used": 2,
+      "tools_used": [],
+      "total_llm_tokens": 0,
+      "total_cost_usd": 0.0,
+      "thinking_log_length": 26,
+      "answered_from_system_context": false,
+      "error": null
+    },
+    {
+      "question_id": "dev_007",
+      "question": "Summarize the Secure Provider Portal registration process.",
+      "correlation_id": "6c0e5997-d7b6-42ad-96bd-b4c787ae3f58",
+      "status": "completed",
+      "duration_ms": 24542,
+      "first_chunk_ms": 53,
+      "final_message": "{\"mode\": \"FACTUAL\", \"direct_answer\": \"To register for the Secure Provider Portal, providers with internet access must request access by registering for a username and password. Once registered, they can submit claims directly through the portal, or alternatively via EDI or paper methods.\", \"sections\": []}",
+      "retrieval_signals": [],
+      "sources_count": 5,
+      "sources_sample": [
+        "cached_answer[1]",
+        "Sunshine Provider Manual",
+        "Sunshine Provider Manual"
+      ],
+      "rounds_used": 2,
+      "tools_used": [],
+      "total_llm_tokens": 0,
+      "total_cost_usd": 0.0,
+      "thinking_log_length": 26,
+      "answered_from_system_context": false,
+      "error": null
+    },
+    {
+      "question_id": "dev_008",
+      "question": "What is the process for claims reconsiderations and disputes?",
+      "correlation_id": "1ea82bb0-f674-4555-b754-aa3eac648739",
+      "status": "completed",
+      "duration_ms": 26958,
+      "first_chunk_ms": 70,
+      "final_message": "{\"mode\": \"FACTUAL\", \"direct_answer\": \"For Sunshine Health in Florida, providers must submit claims reconsiderations or disputes within 90 days of the original explanation of payment or denial, including the original claim number and any relevant supporting documentation.\", \"sections\": [{\"intent\": \"requirements\", \"title\": \"Requirements\", \"bullets\": [\"Submit request within 90 days of the original ex",
+      "retrieval_signals": [],
+      "sources_count": 7,
+      "sources_sample": [
+        "cached_answer[1]",
+        "cached_answer[2]",
+        "cached_answer[3]"
+      ],
+      "rounds_used": 2,
+      "tools_used": [],
+      "total_llm_tokens": 0,
+      "total_cost_usd": 0.0,
+      "thinking_log_length": 26,
+      "answered_from_system_context": false,
+      "error": null
+    },
+    {
+      "question_id": "dev_009",
+      "question": "What is the Medicare Part B prior authorization process in California?",
+      "correlation_id": "dae53f6f-5165-4357-b4c2-e2af502cbff7",
+      "status": "completed",
+      "duration_ms": 44986,
+      "first_chunk_ms": 60,
+      "final_message": "{\"mode\": \"FACTUAL\", \"direct_answer\": \"For Medicare Part B in California, prior authorization requests are submitted to Medicare Administrative Contractors (MACs), which evaluate requests based on medical necessity and coverage policies. Specific service lists, timelines, and MAC contact details for California could not be fully confirmed from the available sources.\", \"sections\": [{\"intent\": \"proce",
+      "retrieval_signals": [],
+      "sources_count": 4,
+      "sources_sample": [
+        "cached_answer[1]",
+        "cached_answer[2]",
+        "cached_answer[3]"
+      ],
+      "rounds_used": 3,
+      "tools_used": [],
+      "total_llm_tokens": 0,
+      "total_cost_usd": 0.0,
+      "thinking_log_length": 34,
+      "answered_from_system_context": false,
+      "error": null
+    }
+  ]
+}
