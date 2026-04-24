@@ -26,6 +26,13 @@ python-dotenv>=1.0.0          # dev-only .env loading (no-op in hosted)
 # pinning explicitly so the next dep-graph shift doesn't break startup.
 python-multipart>=0.0.6
 
+# ── Structured logs (Sprint 1 #10, 2026-04-23) ───────────────────────
+# python-json-logger emits one JSON object per log record so Cloud
+# Logging parses severity + jsonPayload fields natively (rather than
+# forcing us to regex text in Log Explorer). The formatter is opt-in
+# via env — dev defaults to human-readable, hosted flips to JSON.
+python-json-logger>=2.0.7
+
 # ── HTTP ─────────────────────────────────────────────────────────────
 httpx>=0.25.0                 # outbound HTTP (skills-mcp, task-manager, doc-reader)
 

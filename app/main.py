@@ -225,6 +225,13 @@ def _build_roster_upload_acknowledgment(
         "process_status": process_status,
     }
 
+# Structured logging (Sprint 1 #10, 2026-04-23) — must run before the
+# FastAPI app is built so the first import-time log lines already go
+# through the configured formatter. configure_logging is idempotent;
+# a second call (e.g. from a worker module) is a no-op.
+from app.logging_config import configure_logging, request_context_middleware
+configure_logging()
+
 app = FastAPI(title="Mobius Chat", version="0.1.0")
 
 # Phase 1h: front-door hardening.
@@ -242,6 +249,12 @@ from app.api.front_door import (
 )
 
 _cors_cfg = resolve_cors_config()
+# Middleware registration order = REVERSE execution order (FastAPI puts
+# last-added on the outside). We want:
+#   request_context → (outer, runs first; stamps correlation_id)
+#   rate_limit      → (middle; reads headers, peeks body)
+#   CORS            → (inner; adds response headers on the way out)
+# So register CORS first, then rate_limit, then request_context.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_cfg.allow_origins,
@@ -250,6 +263,7 @@ app.add_middleware(
     allow_credentials=_cors_cfg.allow_credentials,
 )
 app.add_middleware(InMemoryRateLimitMiddleware, config=resolve_rate_limit_config())
+app.middleware("http")(request_context_middleware)
 
 
 # ── Request body size cap (2026-04-20) ─────────────────────────────
