@@ -1,0 +1,86 @@
+# Model profiles — 2026-04-24 (Sprint 2 #0)
+#
+# Pinned model choices per pipeline stage. When a profile is active,
+# model_registry.select_model_for_stage() returns the pinned model
+# directly, bypassing the Thompson-sampling bandit. Unpinned stages
+# fall through to the bandit's normal selection.
+#
+# Active profile is chosen at startup via the ``MOBIUS_MODEL_PROFILE``
+# env var and can be changed at runtime by admins via
+# ``POST /chat/admin/model-profile`` (see app/api/admin.py). No
+# redeploy required.
+#
+# When a pinned model name isn't in the MODEL_ROSTER (or is missing
+# credentials / is being excluded for other reasons), the profile's
+# ``fallback_model`` is used. When that's also unavailable, the
+# bandit's normal pool takes over (logged at WARNING).
+#
+# Stage names match what the pipeline passes to select_model_for_stage.
+# The common ones:
+#   react_1, react_2, react_3, react_4 → ReAct reasoning rounds
+#   planner                             → legacy planner stage (pre-ReAct)
+#   clarify                             → clarification message drafting
+#   resolve                             → per-subquestion answering
+#   integrator                          → final answer synthesis
+#   integrator_roster                   → credentialing roster integrator
+#   critique                            → ReAct critic gate (groundedness)
+#   non_patient                         → non-patient RAG answering
+#   credentialing_*                     → credentialing skill LLM calls
+#
+# Adding a new profile: append a key under ``profiles:``. Stage pins
+# are optional — an empty map {} = "bandit active, nothing pinned".
+
+profiles:
+
+  # ────────────────────────────────────────────────────────────────
+  # default — normal operation, bandit fully in charge.
+  # ────────────────────────────────────────────────────────────────
+  default: {}
+
+  # ────────────────────────────────────────────────────────────────
+  # demo — predictable + fast. Pin everything, no Groq, bias toward
+  # known-good combinations. Total cost per turn ~$0.015 at current
+  # Anthropic/Gemini rates. First choice for live demos and for
+  # ci_health benchmark runs that want to isolate non-routing signal.
+  # ────────────────────────────────────────────────────────────────
+  demo:
+    # ReAct reasoning rounds — Flash is cheap, fast, and good enough
+    # for routing decisions. Pro-class isn't worth the latency here.
+    react_1:           gemini-2.5-flash
+    react_2:           gemini-2.5-flash
+    react_3:           gemini-2.5-flash
+    react_4:           gemini-2.5-flash
+    planner:           gemini-2.5-flash
+
+    # Critic gate — cheap audit task; Haiku is plenty and consistent.
+    critique:          claude-3-5-haiku-20241022
+
+    # Answer synthesis — this is where quality matters. Sonnet
+    # produces noticeably cleaner AnswerCard JSON than Flash.
+    integrator:        claude-3-5-sonnet-20241022
+    integrator_roster: claude-3-5-sonnet-20241022
+
+    # Fallback when any of the pinned models is unavailable (missing
+    # credentials, not in ROSTER, circuit-broken, etc.). Flash is the
+    # safest universal fallback — we always have Vertex credentials
+    # and it can handle every stage adequately.
+    fallback_model:    gemini-2.5-flash
+
+  # ────────────────────────────────────────────────────────────────
+  # no_groq — bandit active, but Groq models excluded from the pool.
+  # Useful when Groq TPD is exhausted or when we want to isolate
+  # Vertex+Anthropic performance.
+  # ────────────────────────────────────────────────────────────────
+  no_groq:
+    exclude_providers: [groq]
+    fallback_model:    gemini-2.5-flash
+
+  # ────────────────────────────────────────────────────────────────
+  # anthropic_first — pin heavy-synthesis stages to Anthropic, let
+  # the bandit handle cheap stages. Demonstrates partial pinning.
+  # ────────────────────────────────────────────────────────────────
+  anthropic_first:
+    integrator:        claude-3-5-sonnet-20241022
+    integrator_roster: claude-3-5-sonnet-20241022
+    critique:          claude-3-5-haiku-20241022
+    fallback_model:    gemini-2.5-flash

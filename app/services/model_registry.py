@@ -1071,7 +1071,46 @@ class ModelRouter:
             "phi_safe_only": bool(phi_detected),
             "router_mode": (mode or "").strip().lower() or None,
         }
+
+        # Profile pin (Sprint 2 #0, 2026-04-24). When an active profile
+        # (``MOBIUS_MODEL_PROFILE`` env or runtime override) pins this
+        # stage, skip Thompson sampling entirely and return the pinned
+        # spec. PHI-detected turns skip the pin if the pinned model
+        # isn't HIPAA-eligible — correctness > predictability.
+        try:
+            from app.services.model_profile import resolve_pinned_model
+            pinned_spec, pin_meta = resolve_pinned_model(effective_stage, phi_detected=phi_detected)
+            meta.update(pin_meta)
+            if pinned_spec is not None:
+                meta["mode"] = "profile_pinned"
+                meta["reason"] = (
+                    f"Pinned by profile {pin_meta.get('model_profile')!r} "
+                    f"to {pinned_spec.model_id}."
+                )
+                return pinned_spec, meta
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning("profile pin lookup failed; falling back to bandit: %s", exc)
+
         candidates = self._get_candidates(effective_stage, phi_detected)
+
+        # Profile's exclude_providers filter — applied BEFORE mode /
+        # token / circuit filters so the bandit never sees excluded
+        # providers at all. Example: ``no_groq`` profile removes Groq
+        # entirely, letting the bandit pick among Vertex + Anthropic
+        # with its normal priors.
+        try:
+            from app.services.model_profile import excluded_providers
+            excluded = excluded_providers()
+            if excluded:
+                before = len(candidates)
+                candidates = [c for c in candidates if (c.provider or "").lower() not in excluded]
+                dropped = before - len(candidates)
+                if dropped:
+                    meta["profile_providers_excluded"] = sorted(excluded)
+                    meta["profile_candidates_dropped"] = dropped
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning("exclude_providers filter failed: %s", exc)
+
         meta["candidates_eligible"] = len(candidates)
         candidates, mode_note = self._apply_router_mode_filter(candidates, mode)
         if mode_note:

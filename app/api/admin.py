@@ -137,3 +137,82 @@ def mint_dev_token(body: MintDevTokenRequest) -> MintDevTokenResponse:
             "Disable by unsetting MOBIUS_DEV_TOKEN_ENABLED."
         ),
     )
+
+
+# ── Model profile (Sprint 2 #0, 2026-04-24) ───────────────────────────
+#
+# Runtime switch for model_registry's per-stage pinning. See
+# app/services/model_profile.py for the full contract.
+#
+# Gated by ``MOBIUS_ADMIN_ENABLED`` (default follows
+# MOBIUS_DEV_TOKEN_ENABLED — same audience: dev + demo operators).
+# Disabled endpoints return 404 so they don't fingerprint as existing
+# in production environments.
+
+
+def _admin_enabled() -> bool:
+    """Admin surface uses a dedicated env flag that *defaults* to the
+    dev-token flag. This lets ops leave dev-token minting off while
+    keeping the model-profile toggle available for demo operators,
+    without shipping a new release."""
+    raw = (os.environ.get("MOBIUS_ADMIN_ENABLED") or "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    # Default: mirror the dev-token gate.
+    return _dev_token_enabled()
+
+
+class ModelProfileState(BaseModel):
+    active_profile: str
+    override_set: bool
+    available_profiles: list[str]
+
+
+class SetModelProfileRequest(BaseModel):
+    # ``None`` clears the override and reverts to env/default.
+    profile: str | None = None
+
+
+@router.get("/chat/admin/model-profile", response_model=ModelProfileState)
+def get_model_profile() -> ModelProfileState:
+    """Report the currently-active model profile + the set of
+    available profile names from ``config/model_profiles.yaml``.
+    No-auth, no body — operators use this to check state before
+    flipping it.
+    """
+    if not _admin_enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+    from app.services.model_profile import _load, get_active_profile_name
+    profiles = _load()
+    return ModelProfileState(
+        active_profile=get_active_profile_name(),
+        override_set=bool(
+            __import__("app.services.model_profile", fromlist=["_ACTIVE_PROFILE_OVERRIDE"])
+            ._ACTIVE_PROFILE_OVERRIDE
+        ),
+        available_profiles=sorted(profiles.keys()),
+    )
+
+
+@router.post("/chat/admin/model-profile", response_model=ModelProfileState)
+def set_model_profile(body: SetModelProfileRequest) -> ModelProfileState:
+    """Switch the active model profile at runtime. Pass ``null`` to
+    clear the override and revert to ``MOBIUS_MODEL_PROFILE`` (or
+    ``default`` when that's unset).
+
+    Single-instance dev (``minScale=1``) sees the change on the very
+    next request. Multi-instance deployments will need a
+    Postgres-backed config (tracked for Sprint 2 after the worker
+    split lands) — until then, each instance has its own override.
+    """
+    if not _admin_enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+    from app.services.model_profile import set_active_profile
+    try:
+        state = set_active_profile(body.profile)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    logger.info("model_profile admin switch: active=%s", state["active_profile"])
+    return ModelProfileState(**state)
