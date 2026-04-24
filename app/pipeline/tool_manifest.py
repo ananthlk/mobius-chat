@@ -35,40 +35,66 @@ from app.stages.agents.capabilities import tool_capabilities_for_parser
 
 _SEARCH_CORPUS_BLOCK = """\
 search_corpus(query)
-  Search Mobius knowledge base (payer manuals, policy docs).
+  Default corpus search — HYBRID BM25 ⊕ vector via Reciprocal Rank
+    Fusion. Combines keyword precision with semantic recall in one
+    ranked list. Honors the canonical (n_hierarchical) vs factual
+    (n_factual) blend so paragraph-level policy answers surface above
+    sentence-level fragments.
   Use for: ANY question not requiring structured data, when citations
-    and confidence matter (default corpus search).
+    and confidence matter. This is the right default for everything
+    except specific code/ID lookups (precision_search) or pure
+    exploratory passes (recall_search).
   This includes: enrollment, PA, appeals, credentialing process,
-    timely filing, covered services, claims process.
+    timely filing, covered services, claims process, policy questions.
   Try this FIRST for everything except the tools below.
-  Returns: answer with page citations and confidence score.
-
-  Picking between search_corpus and lazy_corpus_search:
-    - search_corpus (this tool) — heavyweight: confidence filter,
-      neighbor expansion, LLM synthesis. Use when the answer needs
-      high-precision citations.
-    - lazy_corpus_search — fast, capture-first, no rerank/synthesis.
-      Use for exploratory first-pass, copilot-mode speed questions,
-      or broad 'what does the corpus know about X' scans."""
+  Aliases the planner / ReAct can use interchangeably:
+    corpus, default_search, hybrid_search
+  Returns: answer with page citations, per-arm provenance
+    (retrieval_arms = ["bm25"], ["vector"], or both), and confidence."""
 
 
-_LAZY_CORPUS_SEARCH_BLOCK = """\
-lazy_corpus_search(query)
-  Fast capture-oriented search of the Mobius corpus — vector-only,
-    no rerank, no confidence filter, higher k (16 default) than
-    search_corpus. Excludes user uploads (use search_uploaded_document
-    for those).
+_RECALL_SEARCH_BLOCK = """\
+recall_search(query)
+  Vector-only broad-recall search — no confidence filter, higher k
+    (16 default), no BM25 keyword constraint. Maximizes semantic
+    coverage on paraphrases and "what do we know about X" scans.
+    Same Chroma index as search_corpus, just no filters.
   Use when:
     - Copilot mode / speed matters more than perfect citations.
-    - Agentic first-pass exploration before committing to
-      search_corpus for precision.
-    - Broad 'what do we know about X' scans.
+    - Agentic first-pass exploration before committing to a heavier
+      search_corpus call.
+    - The query is a paraphrase that may not share keywords with the
+      corpus (precision_search would miss; search_corpus might too).
+    - "What do we know about X" scans.
   Do NOT use for:
     - User-uploaded documents (use search_uploaded_document).
-    - Final answers that need high-confidence citations — prefer
-      search_corpus.
-  Returns: ranked chunks with doc name + page citation, no
-    synthesis (integrator handles that at turn end)."""
+    - Specific code / ID / exact-phrase lookups (use precision_search).
+    - Final answers that need high-confidence citations (prefer
+      search_corpus, which has the rerank + confidence pipeline).
+  Aliases: lazy_corpus_search (back-compat), broad, explore
+  Returns: ranked chunks with doc name + page citation, no synthesis
+    (integrator handles that at turn end)."""
+
+
+_PRECISION_SEARCH_BLOCK = """\
+precision_search(query)
+  BM25-only exact-phrase search — keyword precision, no semantic
+    similarity. The right tool when the user names a specific code,
+    policy ID, form number, or exact phrase that should appear
+    verbatim in the corpus.
+  Use when:
+    - Looking up a specific HCPCS / CPT / ICD-10 code.
+    - The user names a policy by ID (e.g. "FL.UM.87", "CP.MP.98").
+    - The user asks for an exact phrase or quote.
+    - You suspect search_corpus's vector arm is diluting an
+      otherwise crisp keyword match (rare).
+  Do NOT use for:
+    - Conceptual / paraphrased questions — vector search wins those.
+    - "What is X" definitional questions — search_corpus handles
+      both arms.
+  Aliases: exact, keyword_search, bm25_search, lookup
+  Returns: ranked chunks with doc name + page citation, BM25 score,
+    no vector contribution."""
 
 _HEALTHCARE_NPI_LOOKUP_BLOCK = """\
 healthcare_npi_lookup(question)
@@ -162,7 +188,8 @@ def _compose_manifest() -> str:
     """
     curated_blocks = [
         _SEARCH_CORPUS_BLOCK,
-        _LAZY_CORPUS_SEARCH_BLOCK,
+        _RECALL_SEARCH_BLOCK,
+        _PRECISION_SEARCH_BLOCK,
         registry.manifest_text(names=("healthcare_query",)),
         _HEALTHCARE_NPI_LOOKUP_BLOCK,
         registry.manifest_text(names=("document_upload_skill",)),

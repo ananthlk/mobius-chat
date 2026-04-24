@@ -188,12 +188,64 @@ def retrieve_for_chat(
     emitter: Callable[[str], None] | None = None,
     include_trace: bool = False,
     include_document_ids: list[str] | None = None,
+    mode: str = "corpus",
+    _hybrid_internal: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """Call RAG API (if RAG_API_URL set) or inline mobius-retriever.
 
     Returns (chunks, trace). Chunks have text, document_id, document_name, page_number,
     source_type, match_score, confidence, rerank_score. Trace is None for inline path.
+
+    ``mode`` (Sprint 2 #0.2, 2026-04-24):
+        * ``"corpus"``    — hybrid BM25 ⊕ vector via RRF (default).
+                            Best for general questions.
+        * ``"precision"`` — BM25-only, exact-phrase boost.
+                            For code / policy-ID lookups.
+        * ``"recall"``    — vector-only, no confidence floor.
+                            For exploratory "what do we know about X".
+
+    ``_hybrid_internal`` is set to True when the hybrid path calls
+    back into this function for the BM25 arm; it short-circuits the
+    mode dispatch to avoid infinite recursion. Callers should not set
+    it.
     """
+    # ── Mode dispatch (Sprint 2 #0.2) ──────────────────────────────
+    # Internal hybrid recursion bypasses dispatch; everything else
+    # goes through the mode-aware entry points.
+    if not _hybrid_internal:
+        m = (mode or "corpus").strip().lower()
+        if m == "corpus":
+            from app.services.retriever_hybrid import retrieve_corpus_hybrid
+            chunks, telemetry = retrieve_corpus_hybrid(
+                question=question, top_k=top_k, database_url=database_url,
+                filter_payer=filter_payer, filter_state=filter_state,
+                filter_program=filter_program, filter_authority_level=filter_authority_level,
+                n_factual=n_factual, n_hierarchical=n_hierarchical,
+                emitter=emitter, include_document_ids=include_document_ids,
+            )
+            return chunks, (telemetry if include_trace else None)
+        if m == "precision":
+            from app.services.retriever_hybrid import retrieve_precision
+            chunks, telemetry = retrieve_precision(
+                question=question, top_k=top_k, database_url=database_url,
+                filter_payer=filter_payer, filter_state=filter_state,
+                filter_program=filter_program, filter_authority_level=filter_authority_level,
+                n_factual=n_factual, n_hierarchical=n_hierarchical,
+                emitter=emitter, include_document_ids=include_document_ids,
+            )
+            return chunks, (telemetry if include_trace else None)
+        if m == "recall":
+            from app.services.retriever_hybrid import retrieve_recall
+            chunks, telemetry = retrieve_recall(
+                question=question, top_k=top_k, emitter=emitter,
+            )
+            return chunks, (telemetry if include_trace else None)
+        # Unknown mode falls through to legacy BM25 path with a warning.
+        logger.warning("retrieve_for_chat: unknown mode=%r; using BM25 fallback", mode)
+    # _hybrid_internal=True or unknown mode → execute the legacy BM25
+    # body below. This is the "precision arm" code path the hybrid
+    # wraps around; preserved verbatim so existing callers see no
+    # regression.
     def _drop_jpd_emits(base: Callable[[str], None] | None):
         """Filter out JPD tagger and BM25 internal progress before wrap_emitter_for_user."""
         wrapped = wrap_emitter_for_user(base)

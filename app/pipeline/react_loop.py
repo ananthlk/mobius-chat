@@ -221,6 +221,11 @@ _TOOL_STAGE_FOR_USAGE: dict[str, str] = {
     # llm_calls breakdowns, but with its own tool name so dashboards
     # can separate fast vs heavy retrieval paths.
     "lazy_corpus_search": "rag",
+    # Sprint 2 #0.2 (2026-04-24): retrieval-mode taxonomy. recall and
+    # precision share the rag analytics stage so we can compare hit
+    # rates per mode. Aliases are normalized in _normalize_tool_name.
+    "recall_search": "rag",
+    "precision_search": "rag",
     "google_search": "web_search",
     "web_scrape": "web_scrape",
     "healthcare_query": "healthcare_query",
@@ -272,6 +277,60 @@ def _append_tool_llm_usage(ctx: PipelineContext, tool: str, result: dict) -> Non
     ctx.usages.append(u)
 
 
+# ── Tool-name aliasing (Sprint 2 #0.2, 2026-04-24) ──────────────────
+#
+# The retrieval taxonomy was renamed to make planner intent explicit:
+#
+#   search_corpus   — hybrid BM25 ⊕ vector (default).
+#   recall_search   — vector-only broad recall  (was lazy_corpus_search).
+#   precision_search — BM25-only exact-phrase   (new).
+#
+# We accept human-friendly aliases the planner / ReAct may emit since
+# the manifest documents both canonical names AND aliases. Normalize
+# at the dispatch boundary so every code path downstream sees the
+# canonical name.
+#
+# Adding an alias: append to the appropriate set below. Document it in
+# tool_manifest.py too so the planner sees it in the prompt.
+
+_TOOL_ALIASES: dict[str, str] = {
+    # search_corpus aliases (hybrid is the default — many ways to ask for it)
+    "corpus":                "search_corpus",
+    "corpus_search":         "search_corpus",
+    "default_search":        "search_corpus",
+    "hybrid_search":         "search_corpus",
+    "hybrid":                "search_corpus",
+
+    # recall_search aliases (vector-only, broad)
+    "lazy_corpus_search":    "recall_search",   # back-compat: old name
+    "broad":                 "recall_search",
+    "broad_search":          "recall_search",
+    "explore":               "recall_search",
+    "vector_search":         "recall_search",
+    "semantic_search":       "recall_search",
+
+    # precision_search aliases (BM25-only)
+    "exact":                 "precision_search",
+    "exact_match":           "precision_search",
+    "keyword_search":        "precision_search",
+    "bm25_search":           "precision_search",
+    "bm25":                  "precision_search",
+    "lookup":                "precision_search",
+}
+
+
+def _normalize_tool_name(tool: str) -> str:
+    """Canonicalize a planner-emitted tool name.
+
+    Returns the canonical name when ``tool`` is a known alias; passes
+    through unchanged otherwise. Case- and whitespace-tolerant.
+    """
+    if not isinstance(tool, str):
+        return tool
+    key = tool.strip().lower()
+    return _TOOL_ALIASES.get(key, tool)
+
+
 def _execute_tool(
     tool: str,
     inputs: dict,
@@ -279,6 +338,8 @@ def _execute_tool(
     emitter=None,
 ) -> dict:
     """Execute a tool and return standardized result dict."""
+    # Normalize alias → canonical before any dispatch logic runs.
+    tool = _normalize_tool_name(tool)
     active = (ctx.merged_state or {}).get("active") or {}
 
     def emit(msg: str) -> None:
@@ -505,17 +566,24 @@ def _execute_tool(
             "upload_chunks_total": upload_chunks_total,
         }
 
-    if tool == "lazy_corpus_search":
+    if tool == "recall_search":
         # Day 6 (2026-04-20) — the "light" retrieval skill. Fast
         # vector-only scan of the approved corpus. No confidence
         # filter, no neighbor expansion, no per-round LLM synthesis
         # (the integrator synthesizes at turn end, matching the
         # thread_corpus_search / lazy_rag_search pattern).
         #
+        # Renamed from ``lazy_corpus_search`` (Sprint 2 #0.2,
+        # 2026-04-24) to make planner intent explicit alongside
+        # ``precision_search`` and the new hybrid ``search_corpus``
+        # default. The old name is preserved as an alias in
+        # ``_TOOL_ALIASES`` for back-compat.
+        #
         # When the planner picks this tool over search_corpus:
         #   - copilot mode / speed > precision
         #   - first-pass exploration before a heavier retrieval round
         #   - broad "what do we know about X" scans
+        #   - paraphrased queries that may not share keywords with corpus
         #
         # Thin dispatcher; the shared skill does everything.
         query = inputs.get("query") or (ctx.effective_message or ctx.message)
@@ -542,7 +610,7 @@ def _execute_tool(
         if not rag.chroma_persist_dir and not chroma_host:
             emit("↓ Corpus not configured on this deploy.")
             return {
-                "tool": "lazy_corpus_search",
+                "tool": "recall_search",
                 "success": False,
                 "result": "Corpus backend not configured.",
                 "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
@@ -586,7 +654,7 @@ def _execute_tool(
         if result.signal != "ok":
             emit("↓ Lazy scan found nothing matching this query.")
             return {
-                "tool": "lazy_corpus_search",
+                "tool": "recall_search",
                 "success": False,
                 "result": result.text or "No chunks from lazy corpus scan.",
                 "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
@@ -615,12 +683,92 @@ def _execute_tool(
         )
 
         return {
-            "tool": "lazy_corpus_search",
+            "tool": "recall_search",
             "success": True,
             "result": result.text,
             "signal": "corpus_only",  # integrator treats these like search_corpus hits
             "sources": sources_out,
             "usage": None,
+        }
+
+    if tool == "precision_search":
+        # Sprint 2 #0.2 (2026-04-24) — BM25-only exact-phrase search.
+        # The complement of recall_search: same Chroma index? No —
+        # this path skips Chroma entirely and runs pure BM25 on
+        # Postgres text via mobius-retriever. Best for code / policy-ID
+        # / exact-phrase lookups (HCPCS, FL.UM.87, etc.).
+        #
+        # Reuses retrieve_for_chat with mode="precision" — same machinery
+        # the legacy BM25 fallback uses, just exposed as a first-class
+        # tool the planner can pick deliberately.
+        from app.services.retriever_backend import retrieve_for_chat
+
+        query = inputs.get("query") or (ctx.effective_message or ctx.message)
+        rag_overrides = rag_filters_from_active(active) or {}
+
+        from app.chat_config import get_chat_config
+        from app.db_client import _get_fallback_url
+        rag = get_chat_config().rag
+        retrieval_db_url = _get_fallback_url("chat") or rag.database_url
+
+        emit("◌ Precision (BM25) search of our materials…")
+        try:
+            chunks, telemetry = retrieve_for_chat(
+                question=query,
+                top_k=10,
+                database_url=retrieval_db_url,
+                filter_payer=(rag_overrides.get("filter_payer") or rag.filter_payer or "").strip(),
+                filter_state=(rag_overrides.get("filter_state") or rag.filter_state or "").strip(),
+                filter_program=(rag_overrides.get("filter_program") or rag.filter_program or "").strip(),
+                filter_authority_level=(rag.filter_authority_level or "").strip(),
+                emitter=None,
+                include_trace=True,
+                mode="precision",
+            )
+        except Exception as exc:
+            logger.warning("precision_search failed: %s", exc, exc_info=True)
+            return {
+                "tool": "precision_search",
+                "success": False,
+                "result": f"Precision search failed: {exc}",
+                "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
+                "sources": [],
+            }
+
+        if not chunks:
+            emit("↓ Precision search found no exact-phrase matches.")
+            return {
+                "tool": "precision_search",
+                "success": False,
+                "result": "No exact-phrase matches in the corpus.",
+                "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
+                "sources": [],
+            }
+
+        sources_out = []
+        for c in chunks:
+            sources_out.append({
+                "id": c.get("id"),
+                "text": c.get("text") or "",
+                "document_id": c.get("document_id"),
+                "document_name": c.get("document_name") or c.get("document_display_name") or "document",
+                "page_number": c.get("page_number"),
+                "source_type": c.get("source_type") or "chunk",
+                "rerank_score": c.get("match_score") or c.get("rerank_score"),
+            })
+
+        emit(
+            f"  ✓ precision search: {len(sources_out)} BM25 hit"
+            f"{'s' if len(sources_out) != 1 else ''}."
+        )
+        return {
+            "tool": "precision_search",
+            "success": True,
+            "result": f"Found {len(sources_out)} exact-match chunk(s).",
+            "signal": "corpus_only",
+            "sources": sources_out,
+            "usage": None,
+            "telemetry": telemetry,
         }
 
     if tool == "search_uploaded_document":
