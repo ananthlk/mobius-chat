@@ -937,6 +937,71 @@ function routerReportTermsTooltip(row) {
     return "";
   }
 }
+function initModelProfilePicker() {
+  const wrap = document.getElementById("modelProfileWrap");
+  const sel = document.getElementById("modelProfileSelect");
+  const status = document.getElementById("modelProfileStatus");
+  if (!wrap || !sel)
+    return;
+  const setStatus = (text, kind) => {
+    if (!status)
+      return;
+    status.textContent = text || "";
+    status.className = "model-profile-picker__status" + (kind ? " model-profile-picker__status--" + kind : "");
+  };
+  const render = (data) => {
+    const profiles = data && data.available_profiles || [];
+    const active = data && data.active_profile || "default";
+    sel.innerHTML = "";
+    profiles.forEach((p) => {
+      const opt = document.createElement("option");
+      opt.value = p;
+      opt.textContent = p;
+      if (p === active)
+        opt.selected = true;
+      sel.appendChild(opt);
+    });
+    wrap.hidden = false;
+  };
+  const load = () => {
+    fetch(API_BASE + "/chat/admin/model-profile").then((r) => {
+      if (r.status === 404) {
+        wrap.hidden = true;
+        return null;
+      }
+      if (!r.ok)
+        throw new Error("HTTP " + r.status);
+      return r.json();
+    }).then((d) => {
+      if (d)
+        render(d);
+    }).catch((e) => {
+      console.warn("model-profile load failed:", e);
+      wrap.hidden = true;
+    });
+  };
+  sel.addEventListener("change", () => {
+    const val = sel.value;
+    setStatus("\u2026", null);
+    fetch(API_BASE + "/chat/admin/model-profile", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: val })
+    }).then((r) => r.json().then((d) => ({ ok: r.ok, d }))).then(({ ok, d }) => {
+      if (!ok) {
+        setStatus(d && d.detail ? "!" : "err", "err");
+        return;
+      }
+      render(d);
+      setStatus("\u2713", "ok");
+      setTimeout(() => setStatus("", null), 1500);
+    }).catch((e) => {
+      console.warn("model-profile switch failed:", e);
+      setStatus("err", "err");
+    });
+  });
+  load();
+}
 function setupLlmRouterReportUI() {
   const btn = document.getElementById("btnLlmRouterReport");
   const modal = document.getElementById("llmRouterReportModal");
@@ -4775,6 +4840,7 @@ function run() {
     });
   }
   initSidebarCollapsibles();
+  initModelProfilePicker();
   hamburger.addEventListener("click", openDrawer);
   drawerClose.addEventListener("click", closeDrawer);
   drawerOverlay.addEventListener("click", closeDrawer);

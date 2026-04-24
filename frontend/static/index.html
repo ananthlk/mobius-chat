@@ -101,6 +101,13 @@
           <p class="main-header-subtitle" id="welcomeRotator">Some questions should take seconds, not three phone calls.</p>
         </div>
         <div class="main-header-actions">
+          <label class="model-profile-picker" id="modelProfileWrap" hidden>
+            <span class="model-profile-picker__label">Models</span>
+            <select id="modelProfileSelect" class="model-profile-picker__select" aria-label="Model profile">
+              <option value="__loading">loading…</option>
+            </select>
+            <span class="model-profile-picker__status" id="modelProfileStatus" aria-live="polite"></span>
+          </label>
           <button type="button" id="hamburger" aria-label="Config">&#9776;</button>
         </div>
       </header>

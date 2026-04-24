@@ -808,6 +808,64 @@ function routerReportTermsTooltip(row: LlmRouterReportModelRow): string {
   }
 }
 
+// ── Model profile picker (Sprint 2 #0) ────────────────────────────
+// Tiny header control that lets operators flip the active model
+// profile (bandit / optimal / gemini / anthropic / default) without
+// a redeploy. Hidden automatically when admin endpoints return 404
+// (i.e. MOBIUS_ADMIN_ENABLED=0, e.g. prod).
+function initModelProfilePicker(): void {
+  const wrap = document.getElementById("modelProfileWrap") as HTMLElement | null;
+  const sel = document.getElementById("modelProfileSelect") as HTMLSelectElement | null;
+  const status = document.getElementById("modelProfileStatus") as HTMLElement | null;
+  if (!wrap || !sel) return;
+  const setStatus = (text: string, kind: "ok" | "err" | null) => {
+    if (!status) return;
+    status.textContent = text || "";
+    status.className = "model-profile-picker__status" + (kind ? " model-profile-picker__status--" + kind : "");
+  };
+  const render = (data: any) => {
+    const profiles: string[] = (data && data.available_profiles) || [];
+    const active: string = (data && data.active_profile) || "default";
+    sel.innerHTML = "";
+    profiles.forEach((p) => {
+      const opt = document.createElement("option");
+      opt.value = p;
+      opt.textContent = p;
+      if (p === active) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    wrap.hidden = false;
+  };
+  const load = () => {
+    fetch(API_BASE + "/chat/admin/model-profile")
+      .then((r) => {
+        if (r.status === 404) { wrap.hidden = true; return null; }
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then((d) => { if (d) render(d); })
+      .catch((e) => { console.warn("model-profile load failed:", e); wrap.hidden = true; });
+  };
+  sel.addEventListener("change", () => {
+    const val = sel.value;
+    setStatus("…", null);
+    fetch(API_BASE + "/chat/admin/model-profile", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: val }),
+    })
+      .then((r) => r.json().then((d: any) => ({ ok: r.ok, d })))
+      .then(({ ok, d }) => {
+        if (!ok) { setStatus(d && d.detail ? "!" : "err", "err"); return; }
+        render(d);
+        setStatus("✓", "ok");
+        setTimeout(() => setStatus("", null), 1500);
+      })
+      .catch((e) => { console.warn("model-profile switch failed:", e); setStatus("err", "err"); });
+  });
+  load();
+}
+
 function setupLlmRouterReportUI(): void {
   const btn = document.getElementById("btnLlmRouterReport");
   const modal = document.getElementById("llmRouterReportModal");
@@ -5264,6 +5322,7 @@ function run(): void {
     });
   }
   initSidebarCollapsibles();
+  initModelProfilePicker();
 
   hamburger.addEventListener("click", openDrawer);
   drawerClose.addEventListener("click", closeDrawer);

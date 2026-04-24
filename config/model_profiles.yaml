@@ -1,86 +1,85 @@
-# Model profiles — 2026-04-24 (Sprint 2 #0)
+# Model profiles — 2026-04-24 (Sprint 2 #0, refreshed from rev43 bandit data)
 #
 # Pinned model choices per pipeline stage. When a profile is active,
 # model_registry.select_model_for_stage() returns the pinned model
 # directly, bypassing the Thompson-sampling bandit. Unpinned stages
 # fall through to the bandit's normal selection.
 #
-# Active profile is chosen at startup via the ``MOBIUS_MODEL_PROFILE``
-# env var and can be changed at runtime by admins via
-# ``POST /chat/admin/model-profile`` (see app/api/admin.py). No
-# redeploy required.
+# Active profile is chosen at startup via ``MOBIUS_MODEL_PROFILE`` and
+# can be flipped at runtime by operators via
+# ``POST /chat/admin/model-profile`` (no redeploy) — also surfaced as
+# a dropdown in the chat header.
 #
-# When a pinned model name isn't in the MODEL_ROSTER (or is missing
-# credentials / is being excluded for other reasons), the profile's
-# ``fallback_model`` is used. When that's also unavailable, the
-# bandit's normal pool takes over (logged at WARNING).
+# ROUND of profiles (2026-04-24 refresh):
+#   default / bandit  — Thompson sampling fully in charge. Baseline.
+#   optimal           — Best reliability+speed+quality mix. Groq excluded
+#                        (TPD throttling). Demo default.
+#   gemini            — Single-provider stress test (Vertex only).
+#   anthropic         — Single-provider stress test (Anthropic only).
 #
-# Stage names match what the pipeline passes to select_model_for_stage.
-# The common ones:
-#   react_1, react_2, react_3, react_4 → ReAct reasoning rounds
-#   planner                             → legacy planner stage (pre-ReAct)
-#   clarify                             → clarification message drafting
-#   resolve                             → per-subquestion answering
-#   integrator                          → final answer synthesis
-#   integrator_roster                   → credentialing roster integrator
-#   critique                            → ReAct critic gate (groundedness)
-#   non_patient                         → non-patient RAG answering
-#   credentialing_*                     → credentialing skill LLM calls
+# Picks were derived from the medium-confidence rows in the Thompson
+# learnings window on rev43:
+#   react_1: gemini-2.5-flash   (q=0.87, p95=3.0s, $0.0005)
+#   react_2: gemini-2.5-flash   (q=0.63, p95=6.4s, $0.0005)
+#   integrator: claude-haiku-4-5 (q=0.61, p95=3.6s, $0.003)
+#   integrator_roster: gemini-2.5-pro (n=3682 production volume)
+# Everything else is low-sample — we pin by provider shape + roster.
 #
-# Adding a new profile: append a key under ``profiles:``. Stage pins
-# are optional — an empty map {} = "bandit active, nothing pinned".
+# Adding a new profile: append under ``profiles:``. Stage pins are
+# optional — an empty map {} = "bandit active for every stage".
 
 profiles:
 
   # ────────────────────────────────────────────────────────────────
-  # default — normal operation, bandit fully in charge.
+  # default / bandit — Thompson sampling fully in charge.
+  # ``bandit`` is an alias exposed to the frontend picker.
   # ────────────────────────────────────────────────────────────────
   default: {}
+  bandit: {}
 
   # ────────────────────────────────────────────────────────────────
-  # demo — predictable + fast. Pin everything, no Groq, bias toward
-  # known-good combinations. Total cost per turn ~$0.015 at current
-  # Anthropic/Gemini rates. First choice for live demos and for
-  # ci_health benchmark runs that want to isolate non-routing signal.
+  # optimal — best reliability/speed/quality mix. Groq excluded for
+  # TPD predictability. Demo default.
   # ────────────────────────────────────────────────────────────────
-  demo:
-    # ReAct reasoning rounds — Flash is cheap, fast, and good enough
-    # for routing decisions. Pro-class isn't worth the latency here.
+  optimal:
+    react_1:           gemini-2.5-flash
+    react_2:           gemini-2.5-flash
+    react_3:           claude-haiku-4-5-20251001
+    react_4:           claude-haiku-4-5-20251001
+    planner:           gemini-2.5-flash
+    critique:          claude-haiku-4-5-20251001
+    integrator:        claude-haiku-4-5-20251001
+    integrator_roster: gemini-2.5-pro
+    exclude_providers: [groq]
+    fallback_model:    gemini-2.5-flash
+
+  # ────────────────────────────────────────────────────────────────
+  # gemini — Vertex only. Diagnostic: isolates Gemini performance.
+  # ────────────────────────────────────────────────────────────────
+  gemini:
     react_1:           gemini-2.5-flash
     react_2:           gemini-2.5-flash
     react_3:           gemini-2.5-flash
     react_4:           gemini-2.5-flash
     planner:           gemini-2.5-flash
-
-    # Critic gate — cheap audit task; Haiku is plenty and consistent.
-    critique:          claude-3-5-haiku-20241022
-
-    # Answer synthesis — this is where quality matters. Sonnet
-    # produces noticeably cleaner AnswerCard JSON than Flash.
-    integrator:        claude-3-5-sonnet-20241022
-    integrator_roster: claude-3-5-sonnet-20241022
-
-    # Fallback when any of the pinned models is unavailable (missing
-    # credentials, not in ROSTER, circuit-broken, etc.). Flash is the
-    # safest universal fallback — we always have Vertex credentials
-    # and it can handle every stage adequately.
+    critique:          gemini-2.5-flash
+    integrator:        gemini-2.5-pro
+    integrator_roster: gemini-2.5-pro
+    exclude_providers: [groq, anthropic]
     fallback_model:    gemini-2.5-flash
 
   # ────────────────────────────────────────────────────────────────
-  # no_groq — bandit active, but Groq models excluded from the pool.
-  # Useful when Groq TPD is exhausted or when we want to isolate
-  # Vertex+Anthropic performance.
+  # anthropic — Anthropic only. Diagnostic: isolates Claude quality.
+  # Costlier (Sonnet at the integrator) but a useful quality ceiling.
   # ────────────────────────────────────────────────────────────────
-  no_groq:
-    exclude_providers: [groq]
-    fallback_model:    gemini-2.5-flash
-
-  # ────────────────────────────────────────────────────────────────
-  # anthropic_first — pin heavy-synthesis stages to Anthropic, let
-  # the bandit handle cheap stages. Demonstrates partial pinning.
-  # ────────────────────────────────────────────────────────────────
-  anthropic_first:
-    integrator:        claude-3-5-sonnet-20241022
-    integrator_roster: claude-3-5-sonnet-20241022
-    critique:          claude-3-5-haiku-20241022
-    fallback_model:    gemini-2.5-flash
+  anthropic:
+    react_1:           claude-haiku-4-5-20251001
+    react_2:           claude-haiku-4-5-20251001
+    react_3:           claude-haiku-4-5-20251001
+    react_4:           claude-haiku-4-5-20251001
+    planner:           claude-haiku-4-5-20251001
+    critique:          claude-haiku-4-5-20251001
+    integrator:        claude-sonnet-4-6
+    integrator_roster: claude-sonnet-4-6
+    exclude_providers: [groq, vertex]
+    fallback_model:    claude-haiku-4-5-20251001

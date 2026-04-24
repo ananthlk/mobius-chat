@@ -6627,3 +6627,25 @@ body {
 .bookmark-meta { font-size: 11px; color: #8b949e; margin-top: 3px; display: flex; justify-content: space-between; align-items: center; }
 .bookmark-delete { font-size: 11px; color: #8b949e; background: none; border: none; cursor: pointer; padding: 2px 4px; border-radius: 3px; }
 .bookmark-delete:hover { color: #f85149; background: rgba(248,81,73,0.1); }
+
+/* ── Model profile picker (Sprint 2 #0) ───────────────────────────── */
+.model-profile-picker {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; color: #8b949e; margin-right: 10px;
+}
+.model-profile-picker__label {
+  text-transform: uppercase; letter-spacing: 0.04em; font-size: 10px;
+  color: #6e7681;
+}
+.model-profile-picker__select {
+  background: #161b22; border: 1px solid #30363d; color: #c9d1d9;
+  border-radius: 6px; padding: 4px 8px; font-size: 12px;
+  min-width: 110px; cursor: pointer;
+}
+.model-profile-picker__select:hover { border-color: #3b82f6; }
+.model-profile-picker__select:focus-visible { outline: 2px solid #3b82f6; outline-offset: 1px; }
+.model-profile-picker__status {
+  font-size: 11px; color: #6e7681; min-width: 12px;
+}
+.model-profile-picker__status--ok { color: #3fb950; }
+.model-profile-picker__status--err { color: #f85149; }
