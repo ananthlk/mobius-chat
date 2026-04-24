@@ -947,7 +947,7 @@ function initModelProfilePicker() {
     if (!status)
       return;
     status.textContent = text || "";
-    status.className = "model-profile-picker__status" + (kind ? " model-profile-picker__status--" + kind : "");
+    status.className = "sidebar-llm-status" + (kind ? " sidebar-llm-status--" + kind : "");
   };
   const render = (data) => {
     const profiles = data && data.available_profiles || [];
@@ -961,7 +961,6 @@ function initModelProfilePicker() {
         opt.selected = true;
       sel.appendChild(opt);
     });
-    wrap.hidden = false;
   };
   const load = () => {
     fetch(API_BASE + "/chat/admin/model-profile").then((r) => {

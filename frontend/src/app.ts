@@ -821,7 +821,7 @@ function initModelProfilePicker(): void {
   const setStatus = (text: string, kind: "ok" | "err" | null) => {
     if (!status) return;
     status.textContent = text || "";
-    status.className = "model-profile-picker__status" + (kind ? " model-profile-picker__status--" + kind : "");
+    status.className = "sidebar-llm-status" + (kind ? " sidebar-llm-status--" + kind : "");
   };
   const render = (data: any) => {
     const profiles: string[] = (data && data.available_profiles) || [];
@@ -834,7 +834,6 @@ function initModelProfilePicker(): void {
       if (p === active) opt.selected = true;
       sel.appendChild(opt);
     });
-    wrap.hidden = false;
   };
   const load = () => {
     fetch(API_BASE + "/chat/admin/model-profile")

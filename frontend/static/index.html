@@ -82,8 +82,14 @@
           <span class="sidebar-user-label">Signed in as</span>
           <span class="sidebar-user-name" id="sidebarUserName">Guest</span>
         </div>
-        <div class="sidebar-llm">
-          <span class="sidebar-llm-label" id="sidebarLlmLabel">LLM</span>
+        <div class="sidebar-llm" id="modelProfileWrap">
+          <span class="sidebar-llm-label">LLM</span>
+          <select id="modelProfileSelect" class="sidebar-llm-select" aria-label="Model profile">
+            <option value="__loading">loading…</option>
+          </select>
+          <span class="sidebar-llm-status" id="modelProfileStatus" aria-live="polite"></span>
+          <!-- legacy label kept hidden to preserve any existing selectors -->
+          <span class="sidebar-llm-label" id="sidebarLlmLabel" hidden></span>
         </div>
       </div>
       <div class="sidebar-rail" aria-hidden="true">
@@ -101,13 +107,6 @@
           <p class="main-header-subtitle" id="welcomeRotator">Some questions should take seconds, not three phone calls.</p>
         </div>
         <div class="main-header-actions">
-          <label class="model-profile-picker" id="modelProfileWrap" hidden>
-            <span class="model-profile-picker__label">Models</span>
-            <select id="modelProfileSelect" class="model-profile-picker__select" aria-label="Model profile">
-              <option value="__loading">loading…</option>
-            </select>
-            <span class="model-profile-picker__status" id="modelProfileStatus" aria-live="polite"></span>
-          </label>
           <button type="button" id="hamburger" aria-label="Config">&#9776;</button>
         </div>
       </header>
