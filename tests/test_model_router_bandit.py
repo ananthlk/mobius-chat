@@ -107,6 +107,15 @@ def test_build_bandit_state_uses_pure_prior_when_quality_stripped(monkeypatch: p
 
 
 def test_composite_router_signal_matches_view_formula() -> None:
+    """Default (no explicit bandit_mode) uses the 'normal' weights profile.
+
+    Weights refreshed 2026-04-24 (Sprint 2 #0.1): the bandit now weights
+    quality higher than cost under ``normal`` to match the demo baseline
+    observations. Keeps the linear-cap structure identical so the
+    ``model_composite_scores`` SQL view stays consistent after we backfill.
+    """
+    from app.services.bandit_weights import get_weights
+    w = get_weights("normal")
     stats = {
         "avg_quality": 0.8,
         "hard_error_rate": 0.05,
@@ -117,10 +126,11 @@ def test_composite_router_signal_matches_view_formula() -> None:
     rel = max(0.0, 1.0 - 0.1)
     lat_f = max(0.0, 1.0 - 7500.0 / 15000.0)
     cost_f = max(0.0, 1.0 - 0.025 / 0.05)
-    expected = 0.8 * 0.25 + rel * 0.25 + lat_f * 0.25 + cost_f * 0.25
+    expected = 0.8 * w["quality"] + rel * w["reliability"] + lat_f * w["latency"] + cost_f * w["cost"]
     assert abs(comp - expected) < 1e-6
-    assert abs(brk["term_quality"] - 0.8 * 0.25) < 1e-6
-    assert abs(brk["term_reliability"] - rel * 0.25) < 1e-6
+    assert abs(brk["term_quality"] - 0.8 * w["quality"]) < 1e-6
+    assert abs(brk["term_reliability"] - rel * w["reliability"]) < 1e-6
+    assert brk["bandit_mode"] == "normal"
 
 
 def test_per_call_composite_uses_token_list_price_when_tokens_present() -> None:

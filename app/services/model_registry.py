@@ -224,12 +224,21 @@ def composite_score_api_spec() -> dict[str, Any]:
 def composite_router_signal(
     stats: dict[str, Any],
     stage: str | None = None,
+    *,
+    bandit_mode: str | None = None,
 ) -> tuple[float, dict[str, Any]]:
     """Scalar + breakdown: quality, reliability, p95 latency, avg cost — linear caps **per stage type**.
 
     ``stage`` should be the llm_calls stage (e.g. router's effective_stage). Falls back to
     ``stats.get("stage")`` when ``stage`` is omitted.
+
+    ``bandit_mode`` selects the term weighting (see ``bandit_weights.MODE_WEIGHTS``).
+    Default ``None`` → ``normal`` — indistinguishable from the pre-2026-04-24 behavior
+    *for stages that don't hit the min-normal floor*. ``fast`` on ``integrator`` /
+    ``critique`` is clamped to ``normal`` inside ``weights_for_stage``.
     """
+    from app.services.bandit_weights import weights_for_stage
+
     st = stage if stage is not None else (stats.get("stage") if isinstance(stats.get("stage"), str) else None)
     lat_cap, cost_cap = composite_norm_caps_for_stage(st)
     raw_q = stats.get("avg_quality")
@@ -241,10 +250,12 @@ def composite_router_signal(
     lat_factor = max(0.0, 1.0 - min(p95, lat_cap) / lat_cap) if lat_cap > 0 else 0.0
     cost = float(stats.get("avg_cost_usd") or 0.0)
     cost_factor = max(0.0, 1.0 - min(cost, cost_cap) / cost_cap) if cost_cap > 0 else 0.0
-    t_q = q * 0.25
-    t_rel = rel * 0.25
-    t_lat = lat_factor * 0.25
-    t_cost = cost_factor * 0.25
+
+    weights, effective_mode = weights_for_stage(st, bandit_mode)
+    t_q = q * weights["quality"]
+    t_rel = rel * weights["reliability"]
+    t_lat = lat_factor * weights["latency"]
+    t_cost = cost_factor * weights["cost"]
     comp = min(1.0, max(0.0, t_q + t_rel + t_lat + t_cost))
     brk: dict[str, Any] = {
         "composite": comp,
@@ -259,6 +270,8 @@ def composite_router_signal(
         "latency_cap_ms": lat_cap,
         "cost_cap_usd": cost_cap,
         "stage_bucket": composite_stage_bucket(st),
+        "bandit_mode": effective_mode,
+        "bandit_weights": weights,
     }
     return comp, brk
 
@@ -303,10 +316,12 @@ def per_call_router_composite(
     cost_metric = list_price if (in_t or out_t) and list_price > 0 else billed
     cost_factor = max(0.0, 1.0 - min(cost_metric, cost_cap) / cost_cap) if cost_cap > 0 else 0.0
 
-    t_q = q * 0.25
-    t_rel = rel * 0.25
-    t_lat = lat_factor * 0.25
-    t_cost = cost_factor * 0.25
+    from app.services.bandit_weights import weights_for_stage
+    weights, effective_mode = weights_for_stage(stage, None)  # per-call uses normal; turn-level mode lives in composite_router_signal
+    t_q = q * weights["quality"]
+    t_rel = rel * weights["reliability"]
+    t_lat = lat_factor * weights["latency"]
+    t_cost = cost_factor * weights["cost"]
     comp = min(1.0, max(0.0, t_q + t_rel + t_lat + t_cost))
     brk: dict[str, Any] = {
         "composite": comp,
@@ -317,6 +332,7 @@ def per_call_router_composite(
         "quality_used": q,
         "hard_error_this_call": hard,
         "latency_ms": lat_ms,
+        "bandit_mode": effective_mode,
         "cost_usd_billed": billed,
         "cost_list_usd": list_price,
         "cost_metric_usd": cost_metric,
@@ -965,6 +981,8 @@ def _build_bandit_state(
     spec: ModelSpec,
     stats: dict,
     stage: str | None = None,
+    *,
+    bandit_mode: str | None = None,
 ) -> BanditState:
     """
     Build Beta distribution from PG stats + benchmark prior.
@@ -994,7 +1012,7 @@ def _build_bandit_state(
             call_count=0,
         )
 
-    composite, _ = composite_router_signal(stats, stage=stage)
+    composite, _ = composite_router_signal(stats, stage=stage, bandit_mode=bandit_mode)
     composite = max(0.01, min(0.99, float(composite)))
 
     obs_weight = min(total_calls, 100) / 100.0
@@ -1066,10 +1084,16 @@ class ModelRouter:
         self._maybe_refresh()
 
         effective_stage = "planner" if is_planner else stage
+        # Bandit weighting mode: derived from UX chat_mode when not
+        # explicitly set. quick→fast, copilot→normal, agentic→thinking.
+        from app.services.bandit_weights import derive_bandit_mode, weights_for_stage
+        bandit_mode = derive_bandit_mode(mode)
+        _, effective_bandit_mode = weights_for_stage(effective_stage, bandit_mode)
         meta: dict[str, Any] = {
             "router_stage": effective_stage,
             "phi_safe_only": bool(phi_detected),
             "router_mode": (mode or "").strip().lower() or None,
+            "bandit_mode": effective_bandit_mode,
         }
 
         # Profile pin (Sprint 2 #0, 2026-04-24). When an active profile
@@ -1199,7 +1223,7 @@ class ModelRouter:
                     "router can compare models (A/B-style calibration)."
                 )
         else:
-            chosen = self._thompson_select(candidates, stats, effective_stage)
+            chosen = self._thompson_select(candidates, stats, effective_stage, bandit_mode=bandit_mode)
             base_mode = "thompson"
             if _bandit_priors_only():
                 base_reason = (
@@ -1217,7 +1241,7 @@ class ModelRouter:
         s_chosen = stats.get(chosen.model_id, {})
         if s_chosen:
             try:
-                comp, brk = composite_router_signal(s_chosen, stage=effective_stage)
+                comp, brk = composite_router_signal(s_chosen, stage=effective_stage, bandit_mode=bandit_mode)
                 meta["router_composite_at_pick"] = round(float(comp), 4)
                 meta["router_composite_breakdown"] = {
                     k: round(float(v), 4) if isinstance(v, (int, float)) else v
@@ -1445,14 +1469,20 @@ class ModelRouter:
         candidates: list[ModelSpec],
         stats: dict[str, dict],
         stage: str,
+        *,
+        bandit_mode: str | None = None,
     ) -> ModelSpec:
-        """Sample from each model's Beta distribution. Pick highest sample."""
+        """Sample from each model's Beta distribution. Pick highest sample.
+
+        ``bandit_mode`` selects the composite term weights (fast / normal /
+        thinking). ``None`` → ``normal``.
+        """
         best: ModelSpec | None = None
         best_sample = -1.0
 
         for spec in candidates:
             s = _bandit_stats_row(stats.get(spec.model_id, {}))
-            state = _build_bandit_state(spec, s, stage=stage)
+            state = _build_bandit_state(spec, s, stage=stage, bandit_mode=bandit_mode)
             draw  = state.sample()
             if draw > best_sample:
                 best_sample = draw
