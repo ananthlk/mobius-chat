@@ -143,7 +143,24 @@ def configure_tracing() -> None:
             )
             exporter = ConsoleSpanExporter()
 
-    provider.add_span_processor(BatchSpanProcessor(exporter))
+    # Defensive BatchSpanProcessor config. Defaults here are tighter
+    # than OTel's stock values so a failing/slow exporter can't pile up
+    # memory or block shutdown: 512 spans max in the queue, 256 per
+    # batch, flush every 2s with a 5s per-export timeout. All tunable
+    # via env for ops.
+    provider.add_span_processor(BatchSpanProcessor(
+        exporter,
+        max_queue_size=int(os.environ.get("OTEL_MAX_QUEUE_SIZE") or "512"),
+        max_export_batch_size=int(os.environ.get("OTEL_MAX_EXPORT_BATCH") or "256"),
+        schedule_delay_millis=int(os.environ.get("OTEL_SCHEDULE_DELAY_MS") or "2000"),
+        export_timeout_millis=int(os.environ.get("OTEL_EXPORT_TIMEOUT_MS") or "5000"),
+    ))
+    # Silence OTel's internal exporter-error logger — a
+    # PERMISSION_DENIED or network blip on the Cloud Trace side would
+    # otherwise flood our logs with thousands of ERROR lines. Keep
+    # visibility at WARNING so the signal isn't completely lost.
+    logging.getLogger("opentelemetry.sdk.trace.export").setLevel(logging.WARNING)
+    logging.getLogger("opentelemetry.exporter.cloud_trace").setLevel(logging.WARNING)
     trace.set_tracer_provider(provider)
     _TRACER = trace.get_tracer(service_name)
     _CONFIGURED = True
@@ -154,22 +171,41 @@ def configure_tracing() -> None:
 
 
 def instrument_app(app) -> None:
-    """Install FastAPI + httpx auto-instrumenters. Called from main.py
-    AFTER app construction, before the first request arrives.
+    """Auto-instrumentation hook.
 
-    No-op when tracing is disabled."""
+    Original plan was to install FastAPI + httpx auto-instrumenters
+    here, but a deploy smoke (2026-04-24) showed them adding
+    per-request blocking latency that timed out /chat + /chat/roster-
+    upload at 15s each. Until root-caused, auto-instrumentation stays
+    off. Manual spans (pipeline.run_pipeline, llm.vertex.generate_content)
+    still fire — those execute in the worker, not the request-handling
+    path, so they can't block ingestion.
+
+    Opt back in by setting ``CHAT_TRACE_AUTOINSTRUMENT=fastapi`` /
+    ``httpx`` / ``both``. Default empty = off. Kept as code rather
+    than a full removal so turning them on is a one-env-var change
+    once we understand the overhead.
+    """
     if not tracing_enabled():
         return
-    try:
-        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-        FastAPIInstrumentor.instrument_app(app, excluded_urls="^/health$,^/ready$")
-    except Exception as exc:
-        logger.warning("FastAPI instrumentation failed: %s", exc)
-    try:
-        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
-        HTTPXClientInstrumentor().instrument()
-    except Exception as exc:
-        logger.warning("httpx instrumentation failed: %s", exc)
+    choice = (os.environ.get("CHAT_TRACE_AUTOINSTRUMENT") or "").strip().lower()
+    if not choice:
+        logger.info("tracing: auto-instrumentation disabled (manual spans only)")
+        return
+    if choice in ("fastapi", "both"):
+        try:
+            from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+            FastAPIInstrumentor.instrument_app(app, excluded_urls="^/health$,^/ready$")
+            logger.info("tracing: FastAPIInstrumentor active")
+        except Exception as exc:
+            logger.warning("FastAPI instrumentation failed: %s", exc)
+    if choice in ("httpx", "both"):
+        try:
+            from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+            HTTPXClientInstrumentor().instrument()
+            logger.info("tracing: HTTPXClientInstrumentor active")
+        except Exception as exc:
+            logger.warning("httpx instrumentation failed: %s", exc)
 
 
 # ── Public tracer access ─────────────────────────────────────────────
