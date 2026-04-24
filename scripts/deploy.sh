@@ -3,9 +3,10 @@
 # Mobius Chat — Cloud Run deploy driver.
 #
 # Usage:
-#     scripts/deploy.sh <env>           # build image + deploy
-#     scripts/deploy.sh <env> --dry-run # print commands, don't run
-#     scripts/deploy.sh <env> --skip-build  # redeploy previous image
+#     scripts/deploy.sh <env>                # build image + deploy + smoke
+#     scripts/deploy.sh <env> --dry-run      # print commands, don't run
+#     scripts/deploy.sh <env> --skip-build   # redeploy previous image
+#     scripts/deploy.sh <env> --skip-smoke   # skip post-deploy smoke (NOT recommended)
 #
 # Where <env> is a label matching deploy/<env>.env (dev | prod).
 #
@@ -39,17 +40,19 @@ set -euo pipefail
 
 ENV_LABEL="${1:-}"
 if [[ -z "${ENV_LABEL}" ]]; then
-    echo "usage: $0 <env> [--dry-run] [--skip-build]" >&2
+    echo "usage: $0 <env> [--dry-run] [--skip-build] [--skip-smoke]" >&2
     exit 64
 fi
 
 DRY_RUN=0
 SKIP_BUILD=0
+SKIP_SMOKE=0
 shift || true
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run)    DRY_RUN=1; shift ;;
         --skip-build) SKIP_BUILD=1; shift ;;
+        --skip-smoke) SKIP_SMOKE=1; shift ;;
         *) echo "unknown flag: $1" >&2; exit 64 ;;
     esac
 done
@@ -273,9 +276,46 @@ fi
 
 echo
 echo "✓ Deploy complete: ${IMAGE_TAG}"
-echo "  Service URL: $(gcloud run services describe "${SERVICE_NAME}" \
+SERVICE_URL="$(gcloud run services describe "${SERVICE_NAME}" \
     --project="${GCP_PROJECT}" --region="${GCP_REGION}" \
-    --format='value(status.url)' 2>/dev/null || echo '(not queryable in dry-run)')"
+    --format='value(status.url)' 2>/dev/null || echo '')"
+if [[ -n "${SERVICE_URL}" ]]; then
+    echo "  Service URL: ${SERVICE_URL}"
+else
+    echo "  Service URL: (not queryable in dry-run)"
+fi
 echo
-echo "Smoke test:"
-echo "  curl \$(gcloud run services describe ${SERVICE_NAME} --project=${GCP_PROJECT} --region=${GCP_REGION} --format='value(status.url)')/ready"
+
+# ── Post-deploy smoke ───────────────────────────────────────────────
+# Runs a handful of critical-path probes against the just-deployed
+# revision and fails the deploy when any of them comes back wrong.
+# Catches the class of bug that sneaks past unit tests:
+#   * Env-var name drift (INSTANT_RAG_URL vs CHAT_SKILLS_INSTANT_RAG_URL)
+#   * Missing transitive deps (python-multipart)
+#   * Downstream service URL misconfig
+#   * Startup-ordering regressions
+#
+# --skip-smoke bypasses this (emergency only — prefer rolling back).
+if [[ "${DRY_RUN}" -eq 1 ]]; then
+    echo "(dry-run: skipping post-deploy smoke)"
+elif [[ "${SKIP_SMOKE}" -eq 1 ]]; then
+    echo "⚠ --skip-smoke: post-deploy smoke bypassed. You should not rely on this."
+    echo "  To validate the deploy manually:"
+    echo "    scripts/post_deploy_smoke.sh ${SERVICE_URL}"
+elif [[ -z "${SERVICE_URL}" ]]; then
+    echo "⚠ Could not resolve service URL; skipping post-deploy smoke."
+else
+    echo "── Running post-deploy smoke ──"
+    if "${SCRIPT_DIR}/post_deploy_smoke.sh" "${SERVICE_URL}"; then
+        :  # pass — smoke script prints its own summary
+    else
+        echo
+        echo "✗ Post-deploy smoke failed. The revision is serving traffic but" >&2
+        echo "  one or more critical paths are broken. Review the probe output" >&2
+        echo "  above, then either fix-forward or roll back:" >&2
+        echo "    gcloud run services update-traffic ${SERVICE_NAME} \\" >&2
+        echo "      --project=${GCP_PROJECT} --region=${GCP_REGION} \\" >&2
+        echo "      --to-revisions=<PREVIOUS_REVISION>=100" >&2
+        exit 72
+    fi
+fi
