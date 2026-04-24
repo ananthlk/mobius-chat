@@ -37,7 +37,10 @@ logger = logging.getLogger(__name__)
 # ── Mode constants ────────────────────────────────────────────────────────
 
 REACT_MAX_ROUNDS_COPILOT = 3
-REACT_MAX_ROUNDS_AGENTIC = 6
+REACT_MAX_ROUNDS_AGENTIC = 10  # 2026-04-24: bumped 6→10 for complex multi-hop
+                               # questions. Paired with MOBIUS_TURN_DEADLINE_S=240
+                               # in deploy/dev.env (was 180) so long agentic turns
+                               # don't deadline-out mid-reasoning.
 REACT_MAX_ROUNDS_QUICK   = 2   # mini-container: fail-fast, brief answer
 
 # Answers longer than this in quick mode signal that the user should
@@ -56,7 +59,7 @@ def react_chat_mode_label(chat_mode: str | None) -> str:
 
 
 def react_max_iterations_for_mode(chat_mode: str | None) -> int:
-    """Quick: 2 rounds (mini container). Copilot: 3. Agentic: 6."""
+    """Quick: 2 rounds (mini container). Copilot: 3. Agentic: 10."""
     label = react_chat_mode_label(chat_mode)
     if label == "agentic":
         return REACT_MAX_ROUNDS_AGENTIC

@@ -176,7 +176,7 @@ class TestExtractedBehaviorUnchanged:
     def test_react_max_iterations_matches_mode(self):
         from app.pipeline.react.prompts import react_max_iterations_for_mode
         assert react_max_iterations_for_mode("copilot") == 3
-        assert react_max_iterations_for_mode("agentic") == 6
+        assert react_max_iterations_for_mode("agentic") == 10  # 2026-04-24: bumped 6→10
         assert react_max_iterations_for_mode("quick") == 2
         assert react_max_iterations_for_mode(None) == 3
 
