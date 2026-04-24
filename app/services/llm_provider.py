@@ -332,6 +332,27 @@ def _vertex_generate_sync(
         len(prompt),
         bool(tools),
     )
+    # Tracing: one span per Vertex call. The parent is the current
+    # pipeline/round span via the OTel context. Attributes match the
+    # GenAI semantic-convention draft so Cloud Trace's standard
+    # "LLM call" view populates automatically.
+    try:
+        from app.tracing_config import get_tracer
+        _tracer = get_tracer()
+        _span_cm = _tracer.start_as_current_span("llm.vertex.generate_content")
+        _vertex_span = _span_cm.__enter__()
+        try:
+            _vertex_span.set_attributes({
+                "gen_ai.system": "vertex_ai",
+                "gen_ai.request.model": model_name,
+                "gen_ai.request.prompt_chars": len(prompt),
+                "gen_ai.request.grounded": bool(tools),
+            })
+        except Exception:
+            pass
+    except Exception:
+        _span_cm = None
+        _vertex_span = None
     from vertexai.generative_models import GenerativeModel
     model = GenerativeModel(model_name)
     req_opts = _vertex_request_options()
@@ -360,6 +381,16 @@ def _vertex_generate_sync(
                 )
     except Exception as e:
         logger.error("[vertex] generate_content raised: %s (elapsed=%.1fs)", e, _time.perf_counter() - t0)
+        # Record the exception on the span so Cloud Trace's error
+        # overlay picks it up, then close the span before re-raising.
+        if _span_cm is not None:
+            try:
+                if _vertex_span is not None:
+                    _vertex_span.record_exception(e)
+                _span_cm.__exit__(type(e), e, e.__traceback__)
+                _span_cm = None
+            except Exception:
+                pass
         raise
     logger.info("[vertex] generate_content returned (elapsed=%.1fs)", _time.perf_counter() - t0)
     text = response.text or ""
@@ -377,6 +408,21 @@ def _vertex_generate_sync(
                 or 0
             ),
         )
+    # Decorate the span with response attributes on the happy path, then
+    # close it. The attribute writes are best-effort — never let tracing
+    # churn break the LLM call.
+    if _span_cm is not None:
+        try:
+            if _vertex_span is not None:
+                _vertex_span.set_attributes({
+                    "gen_ai.response.input_tokens": int(usage.get("input_tokens") or 0),
+                    "gen_ai.response.output_tokens": int(usage.get("output_tokens") or 0),
+                    "gen_ai.response.chars": len(text or ""),
+                    "gen_ai.response.latency_ms": int((_time.perf_counter() - t0) * 1000),
+                })
+            _span_cm.__exit__(None, None, None)
+        except Exception:
+            pass
     return (text, usage)
 
 

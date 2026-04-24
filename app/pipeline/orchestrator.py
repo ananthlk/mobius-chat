@@ -397,6 +397,26 @@ def run_pipeline(
                 correlation_id[:8] if correlation_id else "",
             )
 
+    # Distributed tracing span for the whole turn (Sprint 1 #11).
+    # When CHAT_TRACE_ENABLED=0 this is a no-op context manager — zero
+    # overhead on the disabled path. When on, it creates a span that
+    # children (stages, LLM calls, tools) attach under via the OTel
+    # current-context.
+    from app.tracing_config import start_pipeline_span
+
+    _pipeline_span_cm = start_pipeline_span(
+        "pipeline.run_pipeline",
+        correlation_id=correlation_id,
+        thread_id=thread_id,
+        user_id=user_id,
+        extra={"chat_mode": chat_mode or "copilot"},
+    )
+    try:
+        _pipeline_span_cm.__enter__()
+    except Exception:
+        # Defensive: a broken tracing init must never break the turn.
+        _pipeline_span_cm = None
+
     try:
         trace_entered("pipeline.run_pipeline", correlation_id=correlation_id[:8], thread_id=thread_id or "")
 
@@ -621,6 +641,20 @@ def run_pipeline(
                 logger.error("NoneType/iterable TypeError in pipeline; full traceback:\n%s", traceback.format_exc())
         logger.exception("Pipeline error: %s", e)
         _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e)
+        # Stamp the exception onto the tracing span for cross-reference
+        # with Cloud Trace error views.
+        if _pipeline_span_cm is not None:
+            try:
+                _pipeline_span_cm.__exit__(type(e), e, e.__traceback__)
+                _pipeline_span_cm = None  # don't double-close in finally
+            except Exception:
+                pass
+    finally:
+        if _pipeline_span_cm is not None:
+            try:
+                _pipeline_span_cm.__exit__(None, None, None)
+            except Exception:
+                pass
 
 
 def _publish_pursuit_ended(correlation_id: str, ctx: PipelineContext, t0_start: float) -> None:

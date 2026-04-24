@@ -88,21 +88,37 @@ def get_user_id() -> str | None:
 
 
 class ContextEnrichmentFilter(logging.Filter):
-    """Stamps correlation_id / user_id / thread_id onto every LogRecord
-    that passes through. Non-filtering — always returns True; we just
-    use the Filter hook because it runs for every record regardless of
-    logger.
+    """Stamps correlation_id / user_id / thread_id / trace_id / span_id
+    onto every LogRecord that passes through. Non-filtering — always
+    returns True; we just use the Filter hook because it runs for
+    every record regardless of logger.
 
-    None-valued fields are written as the empty string so the json
-    formatter can omit them consistently. (The formatter can't reliably
-    tell a missing field from a None field through the standard
-    ``%()s`` placeholder.)
+    None/missing-valued fields are written as the empty string so the
+    json formatter can omit them consistently. (The formatter can't
+    reliably tell a missing field from a None field through the
+    standard ``%()s`` placeholder.)
+
+    trace_id / span_id come from the OpenTelemetry active span when
+    tracing is on. The lookup is best-effort — a missing OTel dep
+    or disabled tracing yields empty strings, which the formatter
+    then drops. No hard dep on OTel from the logging layer.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
         record.correlation_id = _correlation_id.get() or ""
         record.user_id = _user_id.get() or ""
         record.thread_id = _thread_id.get() or ""
+        # OTel trace context (lazy import — keeps logging usable if
+        # opentelemetry wasn't installed at all).
+        trace_id = ""
+        span_id = ""
+        try:
+            from app.tracing_config import trace_context_ids
+            trace_id, span_id = trace_context_ids()
+        except Exception:
+            pass
+        record.trace_id = trace_id
+        record.span_id = span_id
         return True
 
 
@@ -134,13 +150,19 @@ def _build_json_formatter() -> logging.Formatter:
             # Drop empty-string context fields so the JSON isn't
             # polluted with {"correlation_id": "", "user_id": ""} on
             # every startup log line.
-            for k in ("correlation_id", "user_id", "thread_id"):
+            for k in ("correlation_id", "user_id", "thread_id", "trace_id", "span_id"):
                 if log_record.get(k) in ("", None):
                     log_record.pop(k, None)
 
     # Include line info in every record — trivial to ignore when you
-    # don't care, critical when you do.
-    fmt = "%(timestamp)s %(severity)s %(logger)s %(correlation_id)s %(user_id)s %(thread_id)s %(message)s"
+    # don't care, critical when you do. trace_id / span_id are in the
+    # format string so python-json-logger picks them up as jsonPayload
+    # fields; the add_fields hook drops them when empty.
+    fmt = (
+        "%(timestamp)s %(severity)s %(logger)s "
+        "%(correlation_id)s %(user_id)s %(thread_id)s "
+        "%(trace_id)s %(span_id)s %(message)s"
+    )
     return _CloudLoggingFormatter(
         fmt,
         datefmt="%Y-%m-%dT%H:%M:%S%z",

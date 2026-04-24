@@ -33,6 +33,22 @@ python-multipart>=0.0.6
 # via env — dev defaults to human-readable, hosted flips to JSON.
 python-json-logger>=2.0.7
 
+# ── Distributed tracing (Sprint 1 #11, 2026-04-24) ───────────────────
+# OpenTelemetry API + SDK + the GCP Cloud Trace exporter. Auto-
+# instrumentation packages add spans for FastAPI incoming requests
+# and httpx outgoing calls without any code change; we only add
+# manual spans at pipeline + LLM boundaries.
+#
+# Tracing is env-gated (CHAT_TRACE_ENABLED=0 by default in dev, on
+# in hosted envs via deploy.env). Initialization is lazy: when the
+# gate is off, the OTel SDK isn't even imported so dev boot stays
+# fast and the dep is effectively free.
+opentelemetry-api>=1.27.0
+opentelemetry-sdk>=1.27.0
+opentelemetry-exporter-gcp-trace>=1.7.0
+opentelemetry-instrumentation-fastapi>=0.48b0
+opentelemetry-instrumentation-httpx>=0.48b0
+
 # ── HTTP ─────────────────────────────────────────────────────────────
 httpx>=0.25.0                 # outbound HTTP (skills-mcp, task-manager, doc-reader)
 

@@ -1516,6 +1516,15 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
     # headline; the envelope makes the event analytics-queryable.
     _guidance_mode_emitted = False
 
+    # Per-round tracing intentionally omitted: the ReAct iteration body
+    # has many early-return paths (finalize_response, break,
+    # rounds_exhausted) that make reliable span-close logic risky
+    # without re-indenting the whole 200-line body. Coverage we keep:
+    # (a) the outer run_pipeline span wraps the full turn, (b) every
+    # Vertex LLM call inside the loop has its own span. That's enough
+    # to answer "how long did round N's LLM + tool take" by summing
+    # children in Cloud Trace — no per-round parent span needed.
+
     for iteration in range(max_it):
         rn = iteration + 1
         # Keep ctx.react_rounds_used current so whichever exit path

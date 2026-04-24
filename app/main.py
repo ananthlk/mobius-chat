@@ -232,7 +232,17 @@ def _build_roster_upload_acknowledgment(
 from app.logging_config import configure_logging, request_context_middleware
 configure_logging()
 
+# Distributed tracing (Sprint 1 #11, 2026-04-24) — init the TracerProvider
+# before auto-instrumentation runs, so the FastAPI instrumentor picks it
+# up on app construction. Env-gated: off by default in dev, on in hosted
+# envs. See app/tracing_config.py for the full contract.
+from app.tracing_config import configure_tracing, instrument_app
+configure_tracing()
+
 app = FastAPI(title="Mobius Chat", version="0.1.0")
+# Auto-instrumentation must run AFTER the FastAPI app is constructed.
+# Safe no-op when tracing is disabled.
+instrument_app(app)
 
 # Phase 1h: front-door hardening.
 # - CORS is env-driven (CHAT_CORS_ORIGINS). Dev default: '*'; staging/prod
