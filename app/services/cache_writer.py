@@ -215,12 +215,25 @@ def _thread_main(correlation_id: str, question: str, metadata: dict[str, Any]) -
 
 
 def schedule_cache_write(ctx, payload: dict[str, Any]) -> None:
-    """Fire-and-forget. Call from ``_publish_completed`` AFTER the
-    response has been queued + persisted.
+    """Write turn to cache **synchronously** within the request scope.
 
-    Runs on a daemon thread so the chat turn's user-visible latency
-    is unaffected. The only work on the synchronous path is the
-    write-gate check + thread start (< 1ms).
+    Despite the name (kept for back-compat with existing call sites),
+    this no longer runs on a daemon thread. The 2026-04-23 daemon
+    implementation worked locally but produced **zero live writes on
+    Cloud Run for 24+ hours** because Cloud Run throttles CPU once
+    the request handler returns — the daemon thread either never
+    runs or dies mid-write.
+
+    The cost of doing it synchronously is ~100-150ms per cacheable
+    turn (one Vertex embed + one Chroma upsert). That cost is
+    amortized across every future hit on the same question (which
+    saves the full retrieval+integration cycle, ~5-15s). Net win
+    after one repeat.
+
+    Called from ``_publish_completed`` AFTER the SSE response has
+    been queued, so the user has already seen the answer by the time
+    we write — the write extends only the **server-side** request
+    lifetime, not the user-perceived latency.
     """
     try:
         should, reason = _should_cache(ctx, payload)
@@ -239,12 +252,8 @@ def schedule_cache_write(ctx, payload: dict[str, Any]) -> None:
     try:
         question = (ctx.refined_query or ctx.message or "").strip()
         metadata = _build_metadata(ctx, payload)
-        t = threading.Thread(
-            target=_thread_main,
-            args=(ctx.correlation_id, question, metadata),
-            daemon=True,
-            name=f"cache-write-{ctx.correlation_id[:8]}",
-        )
-        t.start()
+        # Synchronous — see docstring for the Cloud Run rationale.
+        _thread_main(ctx.correlation_id, question, metadata)
     except Exception as e:
-        logger.warning("cache writer schedule failed: %s", e)
+        # Never let cache write failures break the turn.
+        logger.warning("cache writer failed: %s", e)

@@ -254,7 +254,15 @@ def _post_filter(
             continue
         if domain_tags:
             cand_tags = set(_domain_tags_of(c.get("meta") or {}))
-            if not (domain_tags & cand_tags):
+            # 2026-04-24 (Sprint 2 #0.3): soft domain-tag filter.
+            # Cached entries with NO tags (e.g. seeded entries from
+            # historical chat_turns; early live writes before tags
+            # were populated) used to fail the intersection test
+            # silently — every Sunshine/FL bench turn dropped all 40
+            # seeded entries because their tags column was empty.
+            # Now: empty cand_tags = wildcard ("domain unknown — don't
+            # penalize"). Tagged entries still require overlap.
+            if cand_tags and not (domain_tags & cand_tags):
                 reasons["domain_tag_mismatch"] = reasons.get("domain_tag_mismatch", 0) + 1
                 continue
         kept.append(c)

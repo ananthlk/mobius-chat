@@ -201,6 +201,31 @@ def test_post_filter_keeps_when_any_tag_matches():
     assert len(kept) == 1
 
 
+def test_post_filter_wildcards_untagged_candidates():
+    """2026-04-24 (Sprint 2 #0.3): empty cand_tags = wildcard match.
+
+    Pre-fix: seeded entries with no domain_tags silently dropped on
+    every Sunshine/FL turn (intersection of caller's tags ∩ ∅ = ∅).
+    Post-fix: untagged entries pass through; tagged entries still
+    require overlap.
+    """
+    candidates = [
+        # Untagged (e.g. seeded from historical chat_turns) — must pass
+        {"similarity": 0.9, "age_days": 1.0, "meta": {"domain_tags": ""}},
+        {"similarity": 0.9, "age_days": 1.0, "meta": {}},   # missing key entirely
+        # Tagged but mismatched — must drop
+        {"similarity": 0.9, "age_days": 1.0,
+         "meta": {"domain_tags": "state:tx"}},
+        # Tagged and matches — must pass
+        {"similarity": 0.9, "age_days": 1.0,
+         "meta": {"domain_tags": "state:fl"}},
+    ]
+    filters = skill_mod._parse_inputs({"domain_tags": ["state:fl"]})
+    kept, reasons = skill_mod._post_filter(candidates, filters)
+    assert len(kept) == 3, f"expected 3 kept (2 untagged + 1 fl-match), got {len(kept)}"
+    assert reasons.get("domain_tag_mismatch") == 1   # only the tx entry
+
+
 # ── Age helper ────────────────────────────────────────────────────────
 
 
