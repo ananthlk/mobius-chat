@@ -159,13 +159,46 @@ def set_thread_title_if_empty(thread_id: str, question: str) -> None:
 
 
 def get_recent_threads(limit: int = 10) -> list[dict[str, Any]]:
-    """Return distinct threads for the sidebar: ``[{thread_id, title, updated_at, turn_count}]``."""
+    """Return distinct threads for the sidebar: ``[{thread_id, title, updated_at, turn_count}]``.
+
+    2026-04-24: the pre-2026-04-24 query filtered ``WHERE title IS NOT NULL``
+    which silently excluded every thread on dev because
+    ``set_thread_title_if_empty`` was not persisting the title column (root
+    cause of that write bug is still under investigation — the UPDATE call
+    returns no error but the column stays NULL). To unblock the sidebar
+    in the meantime, this query now LEFT JOINs the first turn's question
+    as a fallback title and also derives live ``turn_count`` from the
+    chat_turns table so the sidebar never depends on the (buggy) stamped
+    values. When the write path is fixed, the stamped ``title`` /
+    ``turn_count`` will simply take precedence via COALESCE.
+
+    Threads with zero persisted turns are still excluded — the sidebar
+    should not surface empty shells created by an aborted request.
+    """
     result = db_query(
         """
-        SELECT thread_id, title, updated_at, turn_count
-        FROM chat_threads
-        WHERE title IS NOT NULL
-        ORDER BY updated_at DESC
+        WITH first_turn AS (
+            SELECT DISTINCT ON (thread_id)
+                   thread_id, question
+            FROM chat_turns
+            WHERE thread_id IS NOT NULL
+            ORDER BY thread_id, created_at ASC
+        ),
+        turn_counts AS (
+            SELECT thread_id, COUNT(*) AS n
+            FROM chat_turns
+            WHERE thread_id IS NOT NULL
+            GROUP BY thread_id
+        )
+        SELECT t.thread_id,
+               COALESCE(NULLIF(t.title, ''), ft.question, 'Untitled thread') AS title,
+               t.updated_at,
+               COALESCE(NULLIF(t.turn_count, 0), tc.n, 0) AS turn_count
+        FROM chat_threads t
+        LEFT JOIN first_turn  ft ON ft.thread_id = t.thread_id
+        LEFT JOIN turn_counts tc ON tc.thread_id = t.thread_id
+        WHERE tc.n IS NOT NULL AND tc.n > 0
+        ORDER BY t.updated_at DESC
         LIMIT :lim
         """,
         _DB,
@@ -184,7 +217,7 @@ def get_recent_threads(limit: int = 10) -> list[dict[str, Any]]:
     return [
         {
             "thread_id": str(r["thread_id"]),
-            "title": r.get("title") or "",
+            "title": (r.get("title") or "").strip() or "Untitled thread",
             "updated_at": _iso(r.get("updated_at")),
             "turn_count": int(r.get("turn_count") or 0),
         }
