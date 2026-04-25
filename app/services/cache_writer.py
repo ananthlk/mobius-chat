@@ -92,7 +92,14 @@ def _should_cache(ctx, payload: dict[str, Any]) -> tuple[bool, str]:
         return False, "final_message_too_short"
 
     # Retrieval signal check: union of orchestrator-provided list.
-    signals_raw = (payload or {}).get("retrieval_signals") or []
+    # 2026-04-24: payload['retrieval_signals'] is NOT populated by the
+    # main response-payload builder — only ctx.retrieval_signals is.
+    # Reading from payload alone produced 0 live writes for 24h because
+    # every turn scored "empty signals" → non-cacheable. Prefer ctx,
+    # fall back to payload for backward compat with callers that pass
+    # an enriched payload explicitly.
+    ctx_signals = getattr(ctx, "retrieval_signals", None) or []
+    signals_raw = ctx_signals or ((payload or {}).get("retrieval_signals") or [])
     signals = {str(s).strip().lower() for s in signals_raw if s is not None}
     if not signals or all(s in _NON_CACHEABLE_SIGNALS for s in signals):
         return False, "retrieval_signal_not_cacheable"
@@ -151,7 +158,8 @@ def _domain_tags_from_ctx(ctx) -> list[str]:
 def _build_metadata(ctx, payload: dict[str, Any]) -> dict[str, Any]:
     msg = (payload.get("message") or payload.get("final_message") or "").strip()
     sources = payload.get("sources") or []
-    signals = payload.get("retrieval_signals") or []
+    # Prefer ctx (authoritative) over payload (may not carry signals).
+    signals = getattr(ctx, "retrieval_signals", None) or payload.get("retrieval_signals") or []
 
     now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
