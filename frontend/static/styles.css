@@ -6582,6 +6582,10 @@ body {
 .doc-reader-header-actions button:hover { color: var(--mobius-accent, #3b82f6); border-color: var(--mobius-accent, #3b82f6); }
 .doc-reader-close { font-size: 18px; line-height: 1; padding: 2px 8px !important; }
 
+/* Inline reader (restored 2026-04-25) — markdown body + TOC nav.
+   Iframe wrapper kept (.doc-reader-iframe / -iframe-wrap) for back-
+   compat with any cached HTML; the live code path renders the
+   .doc-reader-body / .doc-reader-toc / .doc-reader-content markup. */
 .doc-reader-iframe-wrap { flex: 1; overflow: hidden; position: relative; }
 .doc-reader-iframe {
   width: 100%; height: 100%; border: none;
@@ -6589,6 +6593,67 @@ body {
 }
 .doc-reader-loading { padding: 40px; text-align: center; color: var(--mobius-text-muted, #8b949e); }
 .doc-reader-error { padding: 20px; color: #f85149; font-size: 13px; }
+
+.doc-reader-body { flex: 1; display: flex; min-height: 0; overflow: hidden; }
+.doc-reader-toc {
+  flex: 0 0 220px; max-width: 220px; overflow-y: auto;
+  padding: 12px 8px; border-right: 1px solid var(--mobius-border-light, #30363d);
+  background: var(--mobius-bg-secondary, #161b22);
+  font-size: 12px;
+}
+.doc-reader-toc-item {
+  display: block; padding: 5px 8px; color: var(--mobius-text-muted, #8b949e);
+  text-decoration: none; border-radius: 4px; cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.doc-reader-toc-item:hover { background: rgba(59,130,246,0.08); color: var(--mobius-text, #c9d1d9); }
+.doc-reader-toc-item.active { background: rgba(59,130,246,0.15); color: var(--mobius-accent, #3b82f6); }
+.doc-reader-toc-item.depth-2 { padding-left: 18px; }
+.doc-reader-toc-item.depth-3 { padding-left: 28px; }
+.doc-reader-toc-item.depth-4 { padding-left: 38px; font-size: 11px; }
+
+.doc-reader-content {
+  flex: 1; overflow-y: auto; padding: 18px 24px;
+  background: var(--mobius-bg-primary, #0d1117);
+  color: var(--mobius-text, #c9d1d9);
+  font-size: 13.5px; line-height: 1.55;
+}
+.doc-reader-section {
+  margin-bottom: 16px; border: 1px solid var(--mobius-border-light, #30363d);
+  border-radius: 8px; overflow: hidden;
+}
+.doc-reader-section-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px; background: var(--mobius-bg-secondary, #161b22);
+  font-weight: 600; font-size: 13px; cursor: pointer;
+  border-bottom: 1px solid var(--mobius-border-light, #30363d);
+}
+.doc-reader-section-header:hover { background: rgba(59,130,246,0.05); }
+.doc-reader-section-page { font-size: 11px; color: var(--mobius-text-muted, #8b949e); font-weight: 400; }
+.doc-reader-section-body { padding: 12px 16px; }
+.doc-reader-section-body p { margin: 0 0 10px; }
+.doc-reader-section-body h1,
+.doc-reader-section-body h2,
+.doc-reader-section-body h3 { margin: 14px 0 8px; font-size: 14px; font-weight: 600; }
+.doc-reader-section-body ul,
+.doc-reader-section-body ol { margin: 0 0 10px 18px; padding: 0; }
+.doc-reader-section-body code {
+  font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px;
+  background: rgba(110,118,129,0.15); padding: 1px 5px; border-radius: 3px;
+}
+.doc-reader-section-citations {
+  display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 14px;
+  border-top: 1px dashed var(--mobius-border-light, #30363d);
+  background: rgba(110,118,129,0.04);
+}
+.doc-reader-cite-badge {
+  font-size: 10px; padding: 2px 7px; border-radius: 999px;
+  background: rgba(59,130,246,0.10); color: var(--mobius-accent, #3b82f6);
+  cursor: help;
+}
+.doc-reader-highlight {
+  background: rgba(255,217,0,0.25); color: inherit; padding: 0 2px; border-radius: 2px;
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════
    Text Selection Toolbar — floating copy / bookmark / cite

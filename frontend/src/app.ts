@@ -3183,6 +3183,42 @@ function openDocumentOrSnippet(s: {
    Doc Reader Panel — embeds @mobius/document-viewer via RAG frontend iframe
    ═══════════════════════════════════════════════════════════════════════════ */
 
+// 2026-04-25: restored the original in-page inline reader (was replaced
+// with a RAG-iframe panel in commit 324bf5a — operator preferred the
+// inline experience). The panel calls /chat/doc-reader/read on the chat
+// service (which proxies to mobius-doc-reader) and renders sections as
+// expandable markdown cards with a TOC nav, citations, and the existing
+// text-selection toolbar (copy/bookmark/cite).
+
+interface DocReaderCitation {
+  display?: string;
+  page?: number | string;
+  snippet?: string;
+}
+interface DocReaderSection {
+  section_id?: string;
+  heading?: string;
+  depth?: number;
+  page_start?: number | null;
+  page_end?: number | null;
+  body_markdown?: string;
+  citations?: DocReaderCitation[];
+}
+interface DocReaderTocItem {
+  section_id?: string;
+  heading?: string;
+  depth?: number;
+  page_range?: string;
+}
+interface DocReaderEnvelope {
+  document_id?: string;
+  display_name?: string;
+  payer?: string;
+  authority_level?: string;
+  toc?: DocReaderTocItem[];
+  sections?: DocReaderSection[];
+}
+
 function _ensureDocReaderDOM(): void {
   if (document.getElementById("doc-reader-panel")) return;
   const overlay = document.createElement("div");
@@ -3194,15 +3230,30 @@ function _ensureDocReaderDOM(): void {
   panel.id = "doc-reader-panel";
   panel.innerHTML =
     '<div class="doc-reader-header">' +
-      '<span class="doc-reader-title">Document Viewer</span>' +
+      '<span class="doc-reader-title">Loading…</span>' +
+      '<span class="doc-reader-meta"></span>' +
       '<div class="doc-reader-header-actions">' +
+        '<button class="bookmarks-btn" title="Bookmarks">Bookmarks <span class="bm-count">0</span></button>' +
         '<a class="doc-reader-rag-link" href="#" target="_blank" rel="noopener noreferrer">Open in RAG &#8599;</a>' +
         '<button class="doc-reader-close" title="Close">&times;</button>' +
       '</div>' +
     '</div>' +
-    '<div class="doc-reader-iframe-wrap"><div class="doc-reader-loading">Loading document\u2026</div></div>';
+    '<div class="doc-reader-body">' +
+      '<nav class="doc-reader-toc"></nav>' +
+      '<div class="doc-reader-content"></div>' +
+    '</div>';
   panel.querySelector(".doc-reader-close")!.addEventListener("click", closeDocReaderPanel);
+  const bmBtn = panel.querySelector(".bookmarks-btn") as HTMLButtonElement;
+  bmBtn.addEventListener("click", () => _toggleBookmarksDrawer(bmBtn));
   document.body.appendChild(panel);
+}
+
+function _updateBookmarksBadge(panel: HTMLElement): void {
+  try {
+    const bm = JSON.parse(localStorage.getItem(_BOOKMARKS_KEY) || "[]") as unknown[];
+    const badge = panel.querySelector(".bm-count");
+    if (badge) badge.textContent = String(bm.length);
+  } catch { /* no-op */ }
 }
 
 function openDocReaderPanel(documentId: string, pageNumber?: number | null, citeText?: string | null): void {
@@ -3210,48 +3261,136 @@ function openDocReaderPanel(documentId: string, pageNumber?: number | null, cite
   _ensureDocReaderDOM();
   const panel = document.getElementById("doc-reader-panel")!;
   const overlay = document.getElementById("doc-reader-overlay")!;
-  const iframeWrap = panel.querySelector(".doc-reader-iframe-wrap") as HTMLElement;
+  const content = panel.querySelector(".doc-reader-content") as HTMLElement;
+  const tocEl = panel.querySelector(".doc-reader-toc") as HTMLElement;
   const titleEl = panel.querySelector(".doc-reader-title") as HTMLElement;
+  const metaEl = panel.querySelector(".doc-reader-meta") as HTMLElement;
   const ragLink = panel.querySelector(".doc-reader-rag-link") as HTMLAnchorElement;
 
-  // Open panel
   requestAnimationFrame(() => { overlay.classList.add("open"); panel.classList.add("open"); });
 
-  // Show loading state
-  iframeWrap.innerHTML = '<div class="doc-reader-loading">Loading document\u2026</div>';
-  titleEl.textContent = "Document Viewer";
+  content.innerHTML = '<div class="doc-reader-loading">Loading document\u2026</div>';
+  tocEl.innerHTML = "";
+  titleEl.textContent = "Loading\u2026";
+  metaEl.textContent = "";
 
-  // RAG link (full app)
   const ragUrl = getRagDocumentUrl(documentId, pageNumber, citeText ?? null);
   if (ragUrl) { ragLink.href = ragUrl; ragLink.style.display = ""; }
   else { ragLink.style.display = "none"; }
 
-  // Build embed URL for RAG frontend
-  // Try window.RAG_APP_BASE, then derive from current host (dev: port 5173, prod: /rag)
-  let ragBase = (typeof (window as any).RAG_APP_BASE === "string" ? (window as any).RAG_APP_BASE : "").trim().replace(/\/$/, "");
-  if (!ragBase) {
-    // Dev default: RAG frontend on port 5173 of same host
-    const loc = window.location;
-    ragBase = `${loc.protocol}//${loc.hostname}:5173`;
-  }
+  _updateBookmarksBadge(panel);
 
-  const params = new URLSearchParams({ embed: "true", tab: "read", documentId });
-  if (pageNumber != null) params.set("pageNumber", String(pageNumber));
-  if (citeText && citeText.trim()) params.set("citeText", citeText.trim().slice(0, 400));
-  const embedUrl = `${ragBase}?${params.toString()}`;
+  const apiBase = (typeof API_BASE === "string" ? API_BASE : "").replace(/\/$/, "");
+  fetch(apiBase + "/chat/doc-reader/read", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ document_id: documentId, view: "full" }),
+  })
+    .then((r) => {
+      if (!r.ok) throw new Error(String(r.status));
+      return r.json() as Promise<DocReaderEnvelope>;
+    })
+    .then((env) => _renderDocReaderEnvelope(env, pageNumber ?? null, citeText ?? null))
+    .catch((err: Error) => {
+      content.innerHTML = '<div class="doc-reader-error">Failed to load: ' + err.message + '</div>';
+      titleEl.textContent = "Error";
+    });
+}
 
-  // Create iframe
-  const iframe = document.createElement("iframe");
-  iframe.className = "doc-reader-iframe";
-  iframe.src = embedUrl;
-  iframe.setAttribute("frameborder", "0");
-  iframe.setAttribute("allow", "clipboard-write");
-  iframe.addEventListener("load", () => {
-    titleEl.textContent = "Document Viewer";
+function _renderDocReaderEnvelope(
+  env: DocReaderEnvelope,
+  scrollToPage: number | string | null,
+  highlightText: string | null,
+): void {
+  const panel = document.getElementById("doc-reader-panel");
+  if (!panel) return;
+  const content = panel.querySelector(".doc-reader-content") as HTMLElement;
+  const tocEl = panel.querySelector(".doc-reader-toc") as HTMLElement;
+  const titleEl = panel.querySelector(".doc-reader-title") as HTMLElement;
+  const metaEl = panel.querySelector(".doc-reader-meta") as HTMLElement;
+
+  titleEl.textContent = env.display_name || "Document";
+  const parts: string[] = [];
+  if (env.payer) parts.push(env.payer);
+  if (env.authority_level) parts.push(env.authority_level);
+  if (env.sections) parts.push(env.sections.length + " sections");
+  metaEl.textContent = parts.join(" \u00b7 ");
+  panel.dataset.docId = env.document_id || "";
+  panel.dataset.docName = env.display_name || "";
+
+  // TOC
+  tocEl.innerHTML = "";
+  (env.toc || []).forEach((t) => {
+    const a = document.createElement("a");
+    a.className = "doc-reader-toc-item" + ((t.depth || 0) > 1 ? " depth-" + t.depth : "");
+    a.textContent = t.heading || "(untitled)";
+    a.title = t.page_range || "";
+    a.addEventListener("click", () => {
+      const target = content.querySelector('[data-section-id="' + (t.section_id ?? "") + '"]') as HTMLElement | null;
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+      tocEl.querySelectorAll(".active").forEach((el) => el.classList.remove("active"));
+      a.classList.add("active");
+    });
+    tocEl.appendChild(a);
   });
 
-  iframeWrap.innerHTML = "";
-  iframeWrap.appendChild(iframe);
+  // Sections (expandable cards with markdown body)
+  content.innerHTML = "";
+  let scrollTarget: HTMLElement | null = null;
+  (env.sections || []).forEach((sec) => {
+    const card = document.createElement("div");
+    card.className = "doc-reader-section";
+    card.dataset.sectionId = sec.section_id || "";
+    card.dataset.pageStart = sec.page_start != null ? String(sec.page_start) : "";
+
+    const header = document.createElement("div");
+    header.className = "doc-reader-section-header";
+    const hs = document.createElement("span");
+    hs.textContent = sec.heading || "Section";
+    const ps = document.createElement("span");
+    ps.className = "doc-reader-section-page";
+    ps.textContent = sec.page_start != null ? "p." + sec.page_start : "";
+    header.appendChild(hs);
+    header.appendChild(ps);
+
+    const body = document.createElement("div");
+    body.className = "doc-reader-section-body";
+    let html = simpleMarkdownToHtml(sec.body_markdown || "");
+    if (highlightText && highlightText.trim()) {
+      const esc = highlightText.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").slice(0, 100);
+      try {
+        html = html.replace(new RegExp("(" + esc + ")", "gi"), '<mark class="doc-reader-highlight">$1</mark>');
+      } catch { /* regex compile failed → render without highlight */ }
+    }
+    body.innerHTML = html;
+    header.addEventListener("click", () => {
+      body.style.display = body.style.display === "none" ? "" : "none";
+    });
+    card.appendChild(header);
+    card.appendChild(body);
+
+    if (sec.citations && sec.citations.length > 0) {
+      const cr = document.createElement("div");
+      cr.className = "doc-reader-section-citations";
+      sec.citations.forEach((c) => {
+        const badge = document.createElement("span");
+        badge.className = "doc-reader-cite-badge";
+        badge.textContent = c.display || ("p." + (c.page ?? ""));
+        badge.title = (c.snippet || "").slice(0, 150);
+        cr.appendChild(badge);
+      });
+      card.appendChild(cr);
+    }
+
+    content.appendChild(card);
+    if (scrollToPage != null && String(sec.page_start) === String(scrollToPage)) {
+      scrollTarget = card;
+    }
+  });
+
+  if (scrollTarget) {
+    setTimeout(() => (scrollTarget as HTMLElement).scrollIntoView({ behavior: "smooth", block: "start" }), 100);
+  }
 }
 
 function closeDocReaderPanel(): void {
@@ -3259,6 +3398,61 @@ function closeDocReaderPanel(): void {
   const overlay = document.getElementById("doc-reader-overlay");
   if (panel) panel.classList.remove("open");
   if (overlay) overlay.classList.remove("open");
+}
+
+function _getPageFromElement(el: HTMLElement): number | string | null {
+  const card = el.closest(".doc-reader-section") as HTMLElement | null;
+  if (card && card.dataset.pageStart) return card.dataset.pageStart;
+  return null;
+}
+
+function _toggleBookmarksDrawer(btn: HTMLButtonElement): void {
+  const parent = btn.parentElement;
+  if (!parent) return;
+  const existing = parent.querySelector(".bookmarks-drawer");
+  if (existing) { existing.remove(); return; }
+  const drawer = document.createElement("div");
+  drawer.className = "bookmarks-drawer";
+  let bm: any[] = [];
+  try { bm = JSON.parse(localStorage.getItem(_BOOKMARKS_KEY) || "[]"); } catch { bm = []; }
+  if (bm.length === 0) {
+    drawer.innerHTML = '<div class="bookmarks-drawer-empty">No bookmarks yet. Select text and click Bookmark.</div>';
+  } else {
+    bm.forEach((b: any, idx: number) => {
+      const item = document.createElement("div");
+      item.className = "bookmark-item";
+      const te = document.createElement("div"); te.className = "bookmark-text"; te.textContent = b.text || "";
+      const me = document.createElement("div"); me.className = "bookmark-meta";
+      const info = document.createElement("span");
+      info.textContent = (b.documentName || "Doc") + (b.page ? ", p." + b.page : "")
+        + " \u00b7 " + new Date(b.timestamp || Date.now()).toLocaleDateString();
+      const del = document.createElement("button"); del.className = "bookmark-delete"; del.textContent = "Remove";
+      del.addEventListener("click", (e: Event) => {
+        e.stopPropagation();
+        bm.splice(idx, 1);
+        localStorage.setItem(_BOOKMARKS_KEY, JSON.stringify(bm));
+        item.remove();
+        if (bm.length === 0) drawer.innerHTML = '<div class="bookmarks-drawer-empty">No bookmarks.</div>';
+        const p = document.getElementById("doc-reader-panel");
+        if (p) _updateBookmarksBadge(p);
+      });
+      me.appendChild(info); me.appendChild(del);
+      item.appendChild(te); item.appendChild(me);
+      item.addEventListener("click", () => {
+        if (b.documentId) openDocReaderPanel(b.documentId, b.page, (b.text || "").slice(0, 50));
+        drawer.remove();
+      });
+      drawer.appendChild(item);
+    });
+  }
+  parent.appendChild(drawer);
+  const closeHandler = (e: Event) => {
+    if (!drawer.contains(e.target as Node) && e.target !== btn) {
+      drawer.remove();
+      document.removeEventListener("click", closeHandler);
+    }
+  };
+  setTimeout(() => document.addEventListener("click", closeHandler), 0);
 }
 
 document.addEventListener("keydown", (e: KeyboardEvent) => {
@@ -3294,6 +3488,16 @@ function _showToast(msg: string): void {
 }
 
 function _getDocContextFromElement(el: HTMLElement): { docName: string; docId: string } {
+  // Prefer the inline doc-reader panel context when the selection is
+  // inside it — that gives us the real document_id (so bookmarks can
+  // reopen the same doc on click).
+  const panel = el.closest("#doc-reader-panel") as HTMLElement | null;
+  if (panel) {
+    return {
+      docName: panel.dataset.docName || "Document",
+      docId: panel.dataset.docId || "",
+    };
+  }
   const envelope = el.closest(".assistant-envelope");
   if (envelope) {
     const sourceDoc = envelope.querySelector(".source-doc");
@@ -3313,11 +3517,15 @@ function initTextSelectionToolbar(): void {
       if (!anchor) return;
       const container = (anchor.nodeType === 3 ? anchor.parentElement : anchor) as HTMLElement | null;
       if (!container) return;
-      if (!container.closest(".envelope-detail-body")) return;
+      // 2026-04-25: also match the inline doc-reader content so the
+      // toolbar (copy/bookmark/cite) works inside the restored panel.
+      if (!container.closest(".envelope-detail-body") &&
+          !container.closest("#doc-reader-panel .doc-reader-content")) return;
 
       const range = sel!.getRangeAt(0);
       const rect = range.getBoundingClientRect();
       const ctx = _getDocContextFromElement(container);
+      const page = _getPageFromElement(container);
 
       const toolbar = document.createElement("div");
       toolbar.className = "text-selection-toolbar";
@@ -3340,11 +3548,13 @@ function initTextSelectionToolbar(): void {
       bmBtn.addEventListener("click", (ev) => {
         ev.stopPropagation();
         const bm: any[] = JSON.parse(localStorage.getItem(_BOOKMARKS_KEY) || "[]");
-        bm.unshift({ text: text.slice(0, 500), documentName: ctx.docName, documentId: ctx.docId, timestamp: new Date().toISOString() });
+        bm.unshift({ text: text.slice(0, 500), documentName: ctx.docName, documentId: ctx.docId, page, timestamp: new Date().toISOString() });
         if (bm.length > 50) bm.length = 50;
         localStorage.setItem(_BOOKMARKS_KEY, JSON.stringify(bm));
         _showToast("Bookmarked");
         _removeToolbar();
+        const p = document.getElementById("doc-reader-panel");
+        if (p) _updateBookmarksBadge(p);
       });
       toolbar.appendChild(bmBtn);
 

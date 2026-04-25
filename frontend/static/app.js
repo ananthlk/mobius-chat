@@ -2995,9 +2995,20 @@ function _ensureDocReaderDOM() {
   document.body.appendChild(overlay);
   const panel = document.createElement("div");
   panel.id = "doc-reader-panel";
-  panel.innerHTML = '<div class="doc-reader-header"><span class="doc-reader-title">Document Viewer</span><div class="doc-reader-header-actions"><a class="doc-reader-rag-link" href="#" target="_blank" rel="noopener noreferrer">Open in RAG &#8599;</a><button class="doc-reader-close" title="Close">&times;</button></div></div><div class="doc-reader-iframe-wrap"><div class="doc-reader-loading">Loading document\u2026</div></div>';
+  panel.innerHTML = '<div class="doc-reader-header"><span class="doc-reader-title">Loading\u2026</span><span class="doc-reader-meta"></span><div class="doc-reader-header-actions"><button class="bookmarks-btn" title="Bookmarks">Bookmarks <span class="bm-count">0</span></button><a class="doc-reader-rag-link" href="#" target="_blank" rel="noopener noreferrer">Open in RAG &#8599;</a><button class="doc-reader-close" title="Close">&times;</button></div></div><div class="doc-reader-body"><nav class="doc-reader-toc"></nav><div class="doc-reader-content"></div></div>';
   panel.querySelector(".doc-reader-close").addEventListener("click", closeDocReaderPanel);
+  const bmBtn = panel.querySelector(".bookmarks-btn");
+  bmBtn.addEventListener("click", () => _toggleBookmarksDrawer(bmBtn));
   document.body.appendChild(panel);
+}
+function _updateBookmarksBadge(panel) {
+  try {
+    const bm = JSON.parse(localStorage.getItem(_BOOKMARKS_KEY) || "[]");
+    const badge = panel.querySelector(".bm-count");
+    if (badge)
+      badge.textContent = String(bm.length);
+  } catch {
+  }
 }
 function openDocReaderPanel(documentId, pageNumber, citeText) {
   if (!documentId)
@@ -3005,15 +3016,19 @@ function openDocReaderPanel(documentId, pageNumber, citeText) {
   _ensureDocReaderDOM();
   const panel = document.getElementById("doc-reader-panel");
   const overlay = document.getElementById("doc-reader-overlay");
-  const iframeWrap = panel.querySelector(".doc-reader-iframe-wrap");
+  const content = panel.querySelector(".doc-reader-content");
+  const tocEl = panel.querySelector(".doc-reader-toc");
   const titleEl = panel.querySelector(".doc-reader-title");
+  const metaEl = panel.querySelector(".doc-reader-meta");
   const ragLink = panel.querySelector(".doc-reader-rag-link");
   requestAnimationFrame(() => {
     overlay.classList.add("open");
     panel.classList.add("open");
   });
-  iframeWrap.innerHTML = '<div class="doc-reader-loading">Loading document\u2026</div>';
-  titleEl.textContent = "Document Viewer";
+  content.innerHTML = '<div class="doc-reader-loading">Loading document\u2026</div>';
+  tocEl.innerHTML = "";
+  titleEl.textContent = "Loading\u2026";
+  metaEl.textContent = "";
   const ragUrl = getRagDocumentUrl(documentId, pageNumber, citeText ?? null);
   if (ragUrl) {
     ragLink.href = ragUrl;
@@ -3021,27 +3036,107 @@ function openDocReaderPanel(documentId, pageNumber, citeText) {
   } else {
     ragLink.style.display = "none";
   }
-  let ragBase = (typeof window.RAG_APP_BASE === "string" ? window.RAG_APP_BASE : "").trim().replace(/\/$/, "");
-  if (!ragBase) {
-    const loc = window.location;
-    ragBase = `${loc.protocol}//${loc.hostname}:5173`;
-  }
-  const params = new URLSearchParams({ embed: "true", tab: "read", documentId });
-  if (pageNumber != null)
-    params.set("pageNumber", String(pageNumber));
-  if (citeText && citeText.trim())
-    params.set("citeText", citeText.trim().slice(0, 400));
-  const embedUrl = `${ragBase}?${params.toString()}`;
-  const iframe = document.createElement("iframe");
-  iframe.className = "doc-reader-iframe";
-  iframe.src = embedUrl;
-  iframe.setAttribute("frameborder", "0");
-  iframe.setAttribute("allow", "clipboard-write");
-  iframe.addEventListener("load", () => {
-    titleEl.textContent = "Document Viewer";
+  _updateBookmarksBadge(panel);
+  const apiBase = (typeof API_BASE === "string" ? API_BASE : "").replace(/\/$/, "");
+  fetch(apiBase + "/chat/doc-reader/read", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ document_id: documentId, view: "full" })
+  }).then((r) => {
+    if (!r.ok)
+      throw new Error(String(r.status));
+    return r.json();
+  }).then((env) => _renderDocReaderEnvelope(env, pageNumber ?? null, citeText ?? null)).catch((err) => {
+    content.innerHTML = '<div class="doc-reader-error">Failed to load: ' + err.message + "</div>";
+    titleEl.textContent = "Error";
   });
-  iframeWrap.innerHTML = "";
-  iframeWrap.appendChild(iframe);
+}
+function _renderDocReaderEnvelope(env, scrollToPage, highlightText) {
+  const panel = document.getElementById("doc-reader-panel");
+  if (!panel)
+    return;
+  const content = panel.querySelector(".doc-reader-content");
+  const tocEl = panel.querySelector(".doc-reader-toc");
+  const titleEl = panel.querySelector(".doc-reader-title");
+  const metaEl = panel.querySelector(".doc-reader-meta");
+  titleEl.textContent = env.display_name || "Document";
+  const parts = [];
+  if (env.payer)
+    parts.push(env.payer);
+  if (env.authority_level)
+    parts.push(env.authority_level);
+  if (env.sections)
+    parts.push(env.sections.length + " sections");
+  metaEl.textContent = parts.join(" \xB7 ");
+  panel.dataset.docId = env.document_id || "";
+  panel.dataset.docName = env.display_name || "";
+  tocEl.innerHTML = "";
+  (env.toc || []).forEach((t) => {
+    const a = document.createElement("a");
+    a.className = "doc-reader-toc-item" + ((t.depth || 0) > 1 ? " depth-" + t.depth : "");
+    a.textContent = t.heading || "(untitled)";
+    a.title = t.page_range || "";
+    a.addEventListener("click", () => {
+      const target = content.querySelector('[data-section-id="' + (t.section_id ?? "") + '"]');
+      if (target)
+        target.scrollIntoView({ behavior: "smooth", block: "start" });
+      tocEl.querySelectorAll(".active").forEach((el2) => el2.classList.remove("active"));
+      a.classList.add("active");
+    });
+    tocEl.appendChild(a);
+  });
+  content.innerHTML = "";
+  let scrollTarget = null;
+  (env.sections || []).forEach((sec) => {
+    const card = document.createElement("div");
+    card.className = "doc-reader-section";
+    card.dataset.sectionId = sec.section_id || "";
+    card.dataset.pageStart = sec.page_start != null ? String(sec.page_start) : "";
+    const header = document.createElement("div");
+    header.className = "doc-reader-section-header";
+    const hs = document.createElement("span");
+    hs.textContent = sec.heading || "Section";
+    const ps = document.createElement("span");
+    ps.className = "doc-reader-section-page";
+    ps.textContent = sec.page_start != null ? "p." + sec.page_start : "";
+    header.appendChild(hs);
+    header.appendChild(ps);
+    const body = document.createElement("div");
+    body.className = "doc-reader-section-body";
+    let html = simpleMarkdownToHtml(sec.body_markdown || "");
+    if (highlightText && highlightText.trim()) {
+      const esc = highlightText.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").slice(0, 100);
+      try {
+        html = html.replace(new RegExp("(" + esc + ")", "gi"), '<mark class="doc-reader-highlight">$1</mark>');
+      } catch {
+      }
+    }
+    body.innerHTML = html;
+    header.addEventListener("click", () => {
+      body.style.display = body.style.display === "none" ? "" : "none";
+    });
+    card.appendChild(header);
+    card.appendChild(body);
+    if (sec.citations && sec.citations.length > 0) {
+      const cr = document.createElement("div");
+      cr.className = "doc-reader-section-citations";
+      sec.citations.forEach((c) => {
+        const badge = document.createElement("span");
+        badge.className = "doc-reader-cite-badge";
+        badge.textContent = c.display || "p." + (c.page ?? "");
+        badge.title = (c.snippet || "").slice(0, 150);
+        cr.appendChild(badge);
+      });
+      card.appendChild(cr);
+    }
+    content.appendChild(card);
+    if (scrollToPage != null && String(sec.page_start) === String(scrollToPage)) {
+      scrollTarget = card;
+    }
+  });
+  if (scrollTarget) {
+    setTimeout(() => scrollTarget.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
+  }
 }
 function closeDocReaderPanel() {
   const panel = document.getElementById("doc-reader-panel");
@@ -3050,6 +3145,77 @@ function closeDocReaderPanel() {
     panel.classList.remove("open");
   if (overlay)
     overlay.classList.remove("open");
+}
+function _getPageFromElement(el2) {
+  const card = el2.closest(".doc-reader-section");
+  if (card && card.dataset.pageStart)
+    return card.dataset.pageStart;
+  return null;
+}
+function _toggleBookmarksDrawer(btn) {
+  const parent = btn.parentElement;
+  if (!parent)
+    return;
+  const existing = parent.querySelector(".bookmarks-drawer");
+  if (existing) {
+    existing.remove();
+    return;
+  }
+  const drawer = document.createElement("div");
+  drawer.className = "bookmarks-drawer";
+  let bm = [];
+  try {
+    bm = JSON.parse(localStorage.getItem(_BOOKMARKS_KEY) || "[]");
+  } catch {
+    bm = [];
+  }
+  if (bm.length === 0) {
+    drawer.innerHTML = '<div class="bookmarks-drawer-empty">No bookmarks yet. Select text and click Bookmark.</div>';
+  } else {
+    bm.forEach((b, idx) => {
+      const item = document.createElement("div");
+      item.className = "bookmark-item";
+      const te = document.createElement("div");
+      te.className = "bookmark-text";
+      te.textContent = b.text || "";
+      const me = document.createElement("div");
+      me.className = "bookmark-meta";
+      const info = document.createElement("span");
+      info.textContent = (b.documentName || "Doc") + (b.page ? ", p." + b.page : "") + " \xB7 " + new Date(b.timestamp || Date.now()).toLocaleDateString();
+      const del = document.createElement("button");
+      del.className = "bookmark-delete";
+      del.textContent = "Remove";
+      del.addEventListener("click", (e) => {
+        e.stopPropagation();
+        bm.splice(idx, 1);
+        localStorage.setItem(_BOOKMARKS_KEY, JSON.stringify(bm));
+        item.remove();
+        if (bm.length === 0)
+          drawer.innerHTML = '<div class="bookmarks-drawer-empty">No bookmarks.</div>';
+        const p = document.getElementById("doc-reader-panel");
+        if (p)
+          _updateBookmarksBadge(p);
+      });
+      me.appendChild(info);
+      me.appendChild(del);
+      item.appendChild(te);
+      item.appendChild(me);
+      item.addEventListener("click", () => {
+        if (b.documentId)
+          openDocReaderPanel(b.documentId, b.page, (b.text || "").slice(0, 50));
+        drawer.remove();
+      });
+      drawer.appendChild(item);
+    });
+  }
+  parent.appendChild(drawer);
+  const closeHandler = (e) => {
+    if (!drawer.contains(e.target) && e.target !== btn) {
+      drawer.remove();
+      document.removeEventListener("click", closeHandler);
+    }
+  };
+  setTimeout(() => document.addEventListener("click", closeHandler), 0);
 }
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape")
@@ -3079,6 +3245,13 @@ function _showToast(msg) {
   setTimeout(() => t.remove(), 1800);
 }
 function _getDocContextFromElement(el2) {
+  const panel = el2.closest("#doc-reader-panel");
+  if (panel) {
+    return {
+      docName: panel.dataset.docName || "Document",
+      docId: panel.dataset.docId || ""
+    };
+  }
   const envelope = el2.closest(".assistant-envelope");
   if (envelope) {
     const sourceDoc = envelope.querySelector(".source-doc");
@@ -3101,11 +3274,12 @@ function initTextSelectionToolbar() {
       const container = anchor.nodeType === 3 ? anchor.parentElement : anchor;
       if (!container)
         return;
-      if (!container.closest(".envelope-detail-body"))
+      if (!container.closest(".envelope-detail-body") && !container.closest("#doc-reader-panel .doc-reader-content"))
         return;
       const range = sel.getRangeAt(0);
       const rect = range.getBoundingClientRect();
       const ctx = _getDocContextFromElement(container);
+      const page = _getPageFromElement(container);
       const toolbar = document.createElement("div");
       toolbar.className = "text-selection-toolbar";
       toolbar.style.top = window.scrollY + rect.top - 42 + "px";
@@ -3126,12 +3300,15 @@ function initTextSelectionToolbar() {
       bmBtn.addEventListener("click", (ev) => {
         ev.stopPropagation();
         const bm = JSON.parse(localStorage.getItem(_BOOKMARKS_KEY) || "[]");
-        bm.unshift({ text: text.slice(0, 500), documentName: ctx.docName, documentId: ctx.docId, timestamp: (/* @__PURE__ */ new Date()).toISOString() });
+        bm.unshift({ text: text.slice(0, 500), documentName: ctx.docName, documentId: ctx.docId, page, timestamp: (/* @__PURE__ */ new Date()).toISOString() });
         if (bm.length > 50)
           bm.length = 50;
         localStorage.setItem(_BOOKMARKS_KEY, JSON.stringify(bm));
         _showToast("Bookmarked");
         _removeToolbar();
+        const p = document.getElementById("doc-reader-panel");
+        if (p)
+          _updateBookmarksBadge(p);
       });
       toolbar.appendChild(bmBtn);
       const d2 = document.createElement("span");
