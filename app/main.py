@@ -932,6 +932,9 @@ _SKILL_LLM_ALLOWED_STAGES = frozenset({
     "lexicon_triage",
     "lexicon_suggest",
     "lexicon_from_doc",
+    # mobius-skills/vibe (2026-04-25): one-line vibe responses (toast,
+    # empathy, dry observation). Cheap+fast tier via CHEAP_STAGES.
+    "vibe",
 })
 
 

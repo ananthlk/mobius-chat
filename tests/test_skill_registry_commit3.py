@@ -274,13 +274,18 @@ class TestEntityAndFollowUpViews:
         assert "google_search" not in ENTITY_TOOLS
 
     def test_follow_up_capable_derived_from_registry(self):
-        """Post-disconnect, only list_thread_document_uploads is
-        follow-up-capable. That's derived from the registry now; if
-        a future commit adds a second follow-up skill via SkillSpec,
-        it automatically appears in FOLLOW_UP_CAPABLE."""
+        """FOLLOW_UP_CAPABLE is derived from the registry. Any skill
+        registered with ``follow_up_capable=True`` automatically appears
+        here. Currently:
+          * list_thread_document_uploads — long-standing
+          * vibe — added 2026-04-25 (mobius-skills/vibe)
+        """
         from app.pipeline.tool_manifest import FOLLOW_UP_CAPABLE
 
-        assert FOLLOW_UP_CAPABLE == frozenset({"list_thread_document_uploads"})
+        assert FOLLOW_UP_CAPABLE == frozenset({
+            "list_thread_document_uploads",
+            "vibe",
+        })
 
 
 # ── Legacy dispatch branches deleted ─────────────────────────────────

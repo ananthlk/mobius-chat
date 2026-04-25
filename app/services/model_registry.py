@@ -638,7 +638,7 @@ def integrator_llm_stage(ctx: Any) -> str:
     return "integrator"
 
 
-CHEAP_STAGES = ["badge", "classifier", "critique", "adjudicator"]
+CHEAP_STAGES = ["badge", "classifier", "critique", "adjudicator", "vibe"]
 PHI_SAFE_STAGES = ["phi_detector"]
 
 # roster_clean: lightweight batch classification (junk-row detection).
