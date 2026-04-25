@@ -3407,12 +3407,16 @@ function _getPageFromElement(el: HTMLElement): number | string | null {
 }
 
 function _toggleBookmarksDrawer(btn: HTMLButtonElement): void {
-  const parent = btn.parentElement;
-  if (!parent) return;
-  const existing = parent.querySelector(".bookmarks-drawer");
+  // Toggle: if already open, close it.
+  const existing = btn.querySelector(".bookmarks-drawer");
   if (existing) { existing.remove(); return; }
   const drawer = document.createElement("div");
   drawer.className = "bookmarks-drawer";
+  // Stop drawer-internal clicks from bubbling to the document close
+  // handler — without this, clicking a bookmark item registers a
+  // document-level click and tears the drawer down before the
+  // item's own click handler runs.
+  drawer.addEventListener("click", (e) => e.stopPropagation());
   let bm: any[] = [];
   try { bm = JSON.parse(localStorage.getItem(_BOOKMARKS_KEY) || "[]"); } catch { bm = []; }
   if (bm.length === 0) {
@@ -3445,12 +3449,17 @@ function _toggleBookmarksDrawer(btn: HTMLButtonElement): void {
       drawer.appendChild(item);
     });
   }
-  parent.appendChild(drawer);
+  // Append to the button itself — .bookmarks-btn has position:relative
+  // so the drawer's `position: absolute; top: 100%; right: 0` resolves
+  // against the button (not the header-actions flex container).
+  btn.appendChild(drawer);
   const closeHandler = (e: Event) => {
-    if (!drawer.contains(e.target as Node) && e.target !== btn) {
-      drawer.remove();
-      document.removeEventListener("click", closeHandler);
-    }
+    const t = e.target as Node;
+    // Keep open when click is on the button (or its inner count span)
+    // OR inside the drawer.
+    if (drawer.contains(t) || btn.contains(t)) return;
+    drawer.remove();
+    document.removeEventListener("click", closeHandler);
   };
   setTimeout(() => document.addEventListener("click", closeHandler), 0);
 }

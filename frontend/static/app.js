@@ -3153,16 +3153,14 @@ function _getPageFromElement(el2) {
   return null;
 }
 function _toggleBookmarksDrawer(btn) {
-  const parent = btn.parentElement;
-  if (!parent)
-    return;
-  const existing = parent.querySelector(".bookmarks-drawer");
+  const existing = btn.querySelector(".bookmarks-drawer");
   if (existing) {
     existing.remove();
     return;
   }
   const drawer = document.createElement("div");
   drawer.className = "bookmarks-drawer";
+  drawer.addEventListener("click", (e) => e.stopPropagation());
   let bm = [];
   try {
     bm = JSON.parse(localStorage.getItem(_BOOKMARKS_KEY) || "[]");
@@ -3208,12 +3206,13 @@ function _toggleBookmarksDrawer(btn) {
       drawer.appendChild(item);
     });
   }
-  parent.appendChild(drawer);
+  btn.appendChild(drawer);
   const closeHandler = (e) => {
-    if (!drawer.contains(e.target) && e.target !== btn) {
-      drawer.remove();
-      document.removeEventListener("click", closeHandler);
-    }
+    const t = e.target;
+    if (drawer.contains(t) || btn.contains(t))
+      return;
+    drawer.remove();
+    document.removeEventListener("click", closeHandler);
   };
   setTimeout(() => document.addEventListener("click", closeHandler), 0);
 }
