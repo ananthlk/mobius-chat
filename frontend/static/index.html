@@ -675,7 +675,17 @@
     </div>
   </div>
 
-  <script>window.API_BASE = window.location.origin;</script>
+  <script>
+    window.API_BASE = window.location.origin;
+    // Doc-reader panel iframe target (Sprint 2 #0.4, 2026-04-25):
+    // mobius-rag serves the @mobius/document-viewer at its root with
+    // ?embed=true&tab=read&documentId=… . Without this, getRagDocumentUrl
+    // falls back to `${hostname}:5173` (a dev-only assumption) which
+    // 404s on Cloud Run, breaking the "open document" link on every
+    // source card. Override per environment via the standard
+    // window.RAG_APP_BASE injection point if needed.
+    window.RAG_APP_BASE = "https://mobius-rag-ortabkknqa-uc.a.run.app";
+  </script>
   <script type="module" src="static/app.js?v=30"></script>
 </body>
 </html>
