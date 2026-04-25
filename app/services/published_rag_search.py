@@ -283,13 +283,39 @@ def search_published_rag(
     chroma_cfg: ChromaConfig | None = None
     vertex_cfg: VertexConfig | None = None
     if use_chroma:
-        if not rag.chroma_persist_dir or not rag.database_url:
-            logger.warning("Published RAG: chroma_persist_dir or database_url not set")
+        # Chroma is configured when EITHER a persist_dir (legacy
+        # PersistentClient path) OR a CHROMA_HOST (HttpClient path —
+        # the shared GCE server used in Cloud Run + dev) is set.
+        # Pre-2026-04-24 the guard only checked persist_dir, so this
+        # function silently returned [] in Cloud Run even though the
+        # shared Chroma was reachable. That made the vector arm of
+        # the hybrid retrieval (Sprint 2 #0.2) appear empty in prod
+        # while the local acceptance test passed.
+        chroma_host = (os.environ.get("CHROMA_HOST") or "").strip()
+        if not (rag.chroma_persist_dir or chroma_host) or not rag.database_url:
+            logger.warning(
+                "Published RAG: neither chroma_persist_dir nor CHROMA_HOST is set, "
+                "or database_url is missing",
+            )
             return []
-        chroma_cfg = ChromaConfig(
-            persist_dir=rag.chroma_persist_dir,
-            collection=rag.chroma_collection or "published_rag",
-        )
+        # Populate HTTP fields when CHROMA_HOST is set so skills-core
+        # picks the HttpClient path. ChromaConfig prefers persist_dir
+        # when both are non-empty, so we leave persist_dir empty in
+        # HTTP mode to force the HTTP path.
+        if chroma_host:
+            chroma_cfg = ChromaConfig(
+                persist_dir="",
+                collection=rag.chroma_collection or "published_rag",
+                host=chroma_host,
+                port=int((os.environ.get("CHROMA_PORT") or "8000").strip()),
+                ssl=(os.environ.get("CHROMA_SSL") or "").strip().lower() in {"1","true","yes"},
+                auth_token=(os.environ.get("CHROMA_AUTH_TOKEN") or "").strip(),
+            )
+        else:
+            chroma_cfg = ChromaConfig(
+                persist_dir=rag.chroma_persist_dir,
+                collection=rag.chroma_collection or "published_rag",
+            )
     else:
         if not rag.vertex_index_endpoint_id or not rag.vertex_deployed_index_id or not rag.database_url:
             logger.warning(
