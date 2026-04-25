@@ -300,22 +300,68 @@ def _vertex_stream_producer(
 # credentialing-style generations; the per-call async wrapper at
 # ``generate_with_usage`` applies its own ``_timeout_seconds`` on top.
 def _vertex_request_options():
+    """Build ``generate_content`` kwargs that cap both per-attempt wall
+    time AND the SDK's internal retry loop.
+
+    Two knobs pass through ``kwargs`` to ``GenerativeModel.generate_content``:
+
+    * ``timeout``  — per HTTP attempt (``VERTEX_HTTP_TIMEOUT_SECONDS``,
+      default 30s). Caps one round-trip.
+    * ``retry``   — an ``api_core.retry.Retry`` object with a TOTAL
+      ``deadline`` (``VERTEX_TOTAL_DEADLINE_SECONDS``, default 45s).
+      Caps the sum of all attempts + backoffs.
+
+    Why both:
+    2026-04-24 prod incident — the async wrapper at ``generate_with_usage``
+    used ``asyncio.wait_for(asyncio.to_thread(...), timeout_s)``, which
+    DOES cancel the awaiting coroutine at ``LLM_TIMEOUT_SECONDS`` (default
+    60s) but does NOT kill the underlying thread. The Vertex SDK's
+    internal retry-with-exponential-backoff then kept retrying a 429 for
+    **596 seconds** inside the thread, holding an instance slot hostage
+    long enough for Cloud Run to reap the worker as "unresponsive" — which
+    orphaned any in-flight SSE streams on that instance.
+
+    Python's threading model doesn't let us interrupt ``generate_content``
+    from outside the thread. The fix must therefore live INSIDE the SDK
+    call: the ``retry`` object's ``deadline`` is the only total-wall-clock
+    cap the SDK honors. With ``deadline=45``, a 429 returns in ~45s
+    max (not 600s), the async wrapper's ``LLM_TIMEOUT_SECONDS`` kicks in
+    as a secondary safety net, and the bandit can swap models fast.
+
+    Both values are tunable via env so ops can relax them for long
+    generations without a redeploy.
+    """
     import os as _os
     try:
-        t = float(_os.getenv("VERTEX_HTTP_TIMEOUT_SECONDS", "30") or 30)
+        per_attempt = float(_os.getenv("VERTEX_HTTP_TIMEOUT_SECONDS", "30") or 30)
     except (TypeError, ValueError):
-        t = 30.0
+        per_attempt = 30.0
     try:
-        # Prefer the newer google-api-core RequestOptions shape that the
-        # Vertex SDK expects. Path varies across SDK versions; fall back
-        # gracefully if the import fails (old SDK → no cap, pre-existing
-        # behavior).
-        from google.api_core.client_options import ClientOptions  # noqa: F401
-        # ``timeout`` kwarg on generate_content() is the simplest API
-        # the SDK honors across versions: a float seconds-per-attempt.
-        return {"timeout": t}
+        total_deadline = float(_os.getenv("VERTEX_TOTAL_DEADLINE_SECONDS", "45") or 45)
+    except (TypeError, ValueError):
+        total_deadline = 45.0
+
+    kwargs: dict = {"timeout": per_attempt}
+    try:
+        from google.api_core import retry as _retry
+        # Retry on transient errors (503/timeout) but NOT on 429 — we
+        # want the bandit to swap to a different model rather than
+        # hammer the same throttled one. The ``deadline`` caps the
+        # total wall time including initial attempt + all retries +
+        # backoffs. Initial=1s, multiplier=2, max=8s gives roughly
+        # attempts at t=0, 1s, 3s, 7s, 15s, 31s — so 3-4 retries fit
+        # under a 45s deadline, sufficient for transient blips without
+        # the 10-minute prod bug.
+        kwargs["retry"] = _retry.Retry(
+            initial=1.0,
+            maximum=8.0,
+            multiplier=2.0,
+            deadline=total_deadline,
+        )
     except Exception:
-        return {"timeout": t}
+        # Old SDK without api_core retry — fall back to timeout-only.
+        pass
+    return kwargs
 
 
 def _vertex_generate_sync(

@@ -29,7 +29,12 @@ def test_vertex_request_options_honors_env(monkeypatch):
 
     monkeypatch.setenv("VERTEX_HTTP_TIMEOUT_SECONDS", "15")
     opts = lp._vertex_request_options()
-    assert opts == {"timeout": 15.0}
+    assert opts["timeout"] == 15.0
+    # 2026-04-24: Retry object is also present (caps total wall time
+    # including SDK internal retries). Test for timeout separately
+    # rather than exact-dict equality because the Retry instance
+    # doesn't implement __eq__.
+    assert "retry" in opts
 
 
 def test_vertex_request_options_defaults_to_30(monkeypatch):
@@ -37,7 +42,7 @@ def test_vertex_request_options_defaults_to_30(monkeypatch):
 
     monkeypatch.delenv("VERTEX_HTTP_TIMEOUT_SECONDS", raising=False)
     opts = lp._vertex_request_options()
-    assert opts == {"timeout": 30.0}
+    assert opts["timeout"] == 30.0
 
 
 def test_vertex_request_options_clamps_bad_values(monkeypatch):
@@ -45,7 +50,33 @@ def test_vertex_request_options_clamps_bad_values(monkeypatch):
 
     monkeypatch.setenv("VERTEX_HTTP_TIMEOUT_SECONDS", "not-a-number")
     opts = lp._vertex_request_options()
-    assert opts == {"timeout": 30.0}
+    assert opts["timeout"] == 30.0
+
+
+def test_vertex_request_options_includes_retry_deadline(monkeypatch):
+    """2026-04-24: the Retry object must cap total wall time at the
+    configured deadline so the SDK's internal retry loop can't eat
+    10 minutes on a 429 storm (prod incident)."""
+    from app.services import llm_provider as lp
+
+    monkeypatch.setenv("VERTEX_TOTAL_DEADLINE_SECONDS", "60")
+    opts = lp._vertex_request_options()
+    retry_obj = opts.get("retry")
+    assert retry_obj is not None
+    # Retry exposes the deadline via _deadline or .deadline
+    deadline = getattr(retry_obj, "_deadline", None) or getattr(retry_obj, "deadline", None)
+    assert deadline == 60.0
+
+
+def test_vertex_request_options_retry_deadline_default(monkeypatch):
+    from app.services import llm_provider as lp
+
+    monkeypatch.delenv("VERTEX_TOTAL_DEADLINE_SECONDS", raising=False)
+    opts = lp._vertex_request_options()
+    retry_obj = opts.get("retry")
+    assert retry_obj is not None
+    deadline = getattr(retry_obj, "_deadline", None) or getattr(retry_obj, "deadline", None)
+    assert deadline == 45.0
 
 
 def test_vertex_generate_sync_passes_timeout_kwarg(monkeypatch):
