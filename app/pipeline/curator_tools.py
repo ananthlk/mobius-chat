@@ -124,35 +124,35 @@ def call_lookup_authoritative_sources(inputs: dict) -> dict:
         return _no_rag_url_result("lookup_authoritative_sources")
 
     params: dict[str, Any] = {"only_reachable": "true", "limit": 20}
-    for key in ("payer", "state", "program", "topic", "authority_level"):
+    # 2026-04-26: build q first so we know whether to also send topic.
+    # Phase 13.5d mirrored topic → q for BM25 relevance ranking. But
+    # the RAG endpoint's topic= filter is a hard AND on topic_tags,
+    # and topic_tags is null on most rows (categorization hasn't been
+    # run). With BOTH topic= and q= set, topic= kills every row whose
+    # tags are null — we observed this on the dental-plan-transition
+    # URL: q= alone returned 1 hit, q+topic returned 0. Strategy:
+    # use topic ONLY as the q= seed; never send it as a hard filter
+    # alongside q. If the caller passed an explicit q, that wins.
+    explicit_q = inputs.get("q") or inputs.get("query")
+    topic_val = inputs.get("topic")
+    if explicit_q:
+        params["q"] = explicit_q
+    elif topic_val:
+        params["q"] = topic_val
+
+    # Other passthrough filters. Note ``topic`` is NOT in this loop —
+    # see q= reasoning above.
+    for key in ("payer", "state", "program", "authority_level"):
         v = inputs.get(key)
         if v:
-            # 2026-04-26: the registry stores ``state`` as the 2-letter
-            # USPS code ("FL"), but the planner often emits the full
-            # name from ``active.jurisdiction`` ("Florida"). Without
-            # normalization the SQL state= filter returns zero rows
-            # even when the URL is in the registry — this was the
-            # "no curated sources" dead-end on the dental-plan-
-            # transition retest. Normalize on the chat side so the
-            # RAG endpoint stays simple.
+            # USPS state-code normalization (2026-04-26 fix). The
+            # registry stores 'FL' but the planner often emits
+            # 'Florida' from active.jurisdiction. Without this the
+            # state= filter returns zero rows even when the URL is
+            # registered.
             if key == "state":
                 v = _normalize_state(v)
             params[key] = v
-    # Phase 13.5d — pass the topic ALSO as q= for BM25-style relevance
-    # ranking on the registry's search_vector. topic= requires exact
-    # tag match (often empty since topic_tags isn't pre-populated);
-    # q= ranks by ts_rank over payer/path/host/authority text. With
-    # both set, planner gets exact-tag hits when they exist AND
-    # relevance-ranked fuzzy hits when they don't — best of both.
-    topic_val = inputs.get("topic")
-    if topic_val:
-        params["q"] = topic_val
-    # Caller can also pass an explicit free-text query distinct from
-    # the topic tag (rare but useful — e.g., when the planner's
-    # natural-language phrasing diverges from a one-word topic tag).
-    explicit_q = inputs.get("q") or inputs.get("query")
-    if explicit_q:
-        params["q"] = explicit_q
     # Optional: caller can ask for only-non-ingested rows to surface
     # gaps the corpus doesn't cover yet.
     if inputs.get("non_ingested_only") is True:

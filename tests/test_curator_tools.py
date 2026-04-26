@@ -125,12 +125,14 @@ def test_lookup_renders_prose_summary(monkeypatch):
 
 
 def test_lookup_passes_filters_through_query_params(monkeypatch):
-    """payer/state/topic/authority_level all forwarded as query params,
-    plus only_reachable=true and limit=20 always.
+    """payer/state/authority_level forwarded as query params, plus
+    only_reachable=true and limit=20 always.
 
-    Phase 13.5d: ``topic`` is ALSO mirrored to ``q`` so the registry's
-    BM25 relevance ranking surfaces matches even when topic_tags is
-    empty (which is most of the time before LLM categorization runs).
+    Phase 13.5d: ``topic`` is mirrored to ``q`` for BM25 ranking.
+    Phase 13.6 (2026-04-26): ``topic`` is NO LONGER sent as its own
+    filter — RAG endpoint treats topic= as a hard AND on topic_tags,
+    which kills every row whose tags are null (most rows, since
+    LLM categorization hasn't been run). Topic only seeds q=.
     """
     _set_rag_url(monkeypatch)
     fake = _FakeClient({("GET", "https://rag.test/sources/search"): _FakeResponse(200, [])})
@@ -147,18 +149,21 @@ def test_lookup_passes_filters_through_query_params(monkeypatch):
     assert method == "GET"
     assert params["payer"] == "Sunshine Health"
     assert params["state"] == "FL"
-    assert params["topic"] == "ECT"
     assert params["authority_level"] == "payer_policy"
     assert params["only_reachable"] == "true"
     assert params["limit"] == 20
-    # 13.5d: topic is mirrored to q for relevance fallback.
+    # 13.5d: topic seeds q for relevance ranking
     assert params["q"] == "ECT"
+    # 13.6 (2026-04-26): topic itself NOT sent — it would hard-filter
+    # against null topic_tags on the registry side
+    assert "topic" not in params
 
 
 def test_lookup_explicit_q_overrides_topic_mirror(monkeypatch):
     """Caller can pass an explicit ``q`` distinct from ``topic`` —
     e.g., when natural-language phrasing diverges from the one-word
-    tag. Explicit q wins over the topic mirror.
+    tag. Explicit q wins over the topic mirror; topic is NOT sent
+    as its own filter (see test above for rationale).
     """
     _set_rag_url(monkeypatch)
     fake = _FakeClient({("GET", "https://rag.test/sources/search"): _FakeResponse(200, [])})
@@ -169,7 +174,8 @@ def test_lookup_explicit_q_overrides_topic_mirror(monkeypatch):
             "q": "prior authorization for medications",
         })
     _, _, params = fake.calls[0]
-    assert params["topic"] == "PA"
+    # Topic is not sent as its own filter — only q matters here.
+    assert "topic" not in params
     assert params["q"] == "prior authorization for medications"
 
 
