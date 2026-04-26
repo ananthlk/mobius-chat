@@ -1042,6 +1042,56 @@ function _dropPromptIntoComposer(template) {
   }
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
+function initSidebarRailIcons() {
+  const sidebar = document.getElementById("sidebar");
+  if (!sidebar)
+    return;
+  const icons = Array.from(sidebar.querySelectorAll(".sidebar-rail-icon"));
+  if (!icons.length)
+    return;
+  icons.forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const targetId = btn.dataset.target || "";
+      if (sidebar.classList.contains("sidebar--collapsed")) {
+        sidebar.classList.remove("sidebar--collapsed");
+        const main = document.querySelector(".main");
+        if (main)
+          main.classList.remove("sidebar-collapsed");
+      }
+      if (!targetId)
+        return;
+      requestAnimationFrame(() => {
+        const target = document.getElementById(targetId);
+        if (!target)
+          return;
+        const section = target.closest(".sidebar-recent, .sidebar-needs-answer, .sidebar-skills, .sidebar-toast-master");
+        if (section) {
+          section.scrollIntoView({ behavior: "smooth", block: "start" });
+          section.classList.add("sidebar-section--flash");
+          setTimeout(() => section.classList.remove("sidebar-section--flash"), 1200);
+        }
+      });
+    });
+  });
+  const updateRecentBadge = () => {
+    const badge = document.getElementById("railBadgeRecent");
+    if (!badge)
+      return;
+    fetch(API_BASE + "/chat/history/recent?limit=20").then((r) => r.ok ? r.json() : []).then((rows) => {
+      const n = Array.isArray(rows) ? rows.length : 0;
+      if (n > 0) {
+        badge.textContent = String(n > 99 ? "99+" : n);
+        badge.hidden = false;
+      } else {
+        badge.hidden = true;
+      }
+    }).catch(() => {
+    });
+  };
+  updateRecentBadge();
+}
 function _openSeeAllSkillsModal() {
   let modal = document.getElementById("seeAllSkillsModal");
   if (!modal) {
@@ -5087,6 +5137,7 @@ function run() {
   initSidebarCollapsibles();
   initModelProfilePicker();
   initChatSkillsChips();
+  initSidebarRailIcons();
   hamburger.addEventListener("click", openDrawer);
   drawerClose.addEventListener("click", closeDrawer);
   drawerOverlay.addEventListener("click", closeDrawer);

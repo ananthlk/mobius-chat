@@ -6819,3 +6819,78 @@ body {
 .see-all-skills-list { margin: 0; padding-left: 18px; }
 .see-all-skills-list li { margin-bottom: 6px; }
 .see-all-skills-loading { color: var(--mobius-text-muted, #8b949e); }
+
+/* ── Sidebar rail icons (collapsed state, 2026-04-25) ─────────────── */
+
+/* Hidden when sidebar is expanded — they only matter on the rail */
+.sidebar-rail-icon { display: none; }
+
+.sidebar--collapsed .sidebar-rail {
+  /* Stack: logo at top, then icons, vertically centered in the rail */
+  display: flex; flex-direction: column; align-items: center;
+  padding-top: 8px; gap: 4px;
+}
+
+.sidebar--collapsed .sidebar-rail-icon {
+  display: flex; align-items: center; justify-content: center;
+  position: relative;
+  width: 36px; height: 36px;
+  margin: 2px 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.05s;
+}
+.sidebar--collapsed .sidebar-rail-icon:hover {
+  background: rgba(110,118,129,0.10);
+  border-color: var(--mobius-border-light, #30363d);
+}
+.sidebar--collapsed .sidebar-rail-icon:active {
+  transform: scale(0.95);
+}
+.rail-icon-glyph { font-size: 16px; line-height: 1; }
+.rail-icon-badge {
+  position: absolute; top: 2px; right: 2px;
+  min-width: 14px; height: 14px; padding: 0 3px;
+  background: var(--mobius-accent, #3b82f6); color: #fff;
+  font-size: 9px; font-weight: 700; line-height: 14px;
+  border-radius: 999px; text-align: center;
+  border: 1.5px solid var(--mobius-bg-primary, #0d1117);
+  box-sizing: content-box;
+}
+
+/* Section flash on rail-icon-jump */
+.sidebar-section--flash > .sidebar-section-title {
+  background: rgba(59,130,246,0.10);
+  transition: background 0.4s ease-out;
+  border-radius: 6px;
+}
+
+/* Lighter coming-soon placeholder — replaces the dashed-border heavy card */
+.sidebar-coming-soon {
+  padding: 6px 12px 10px; margin: 0;
+  background: transparent;
+  border: none;
+}
+.sidebar-coming-soon-title {
+  margin: 0 0 3px; font-size: 11px;
+  color: var(--mobius-text-muted, #8b949e);
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.sidebar-coming-soon-body {
+  margin: 0; font-size: 12px; line-height: 1.5;
+  color: var(--mobius-text-muted, #8b949e); opacity: 0.85;
+}
+
+/* Chat-tools chips: match the suite-button (Roster/Credentialing) styling
+   so the section reads as one consistent ladder, not two visual tiers. */
+.skill-sidebar-item--chip {
+  /* Inherit from .skill-sidebar-item (same padding, same hover) */
+  font-weight: 400;
+}
+.skill-sidebar-item--chip .skill-sidebar-icon {
+  font-size: 14px;
+  width: 18px;
+  text-align: center;
+}

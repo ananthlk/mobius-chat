@@ -939,6 +939,66 @@ function _dropPromptIntoComposer(template: string): void {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+// Collapsed-state rail icons (Sprint 2 #0.5, 2026-04-25). The sidebar
+// has a narrow rail visible when collapsed; rail icons let users jump
+// to a section without expanding the whole panel manually. Click →
+// expand sidebar AND scroll to the section. Counts feed from the same
+// data source the expanded sections render from.
+function initSidebarRailIcons(): void {
+  const sidebar = document.getElementById("sidebar");
+  if (!sidebar) return;
+  const icons = Array.from(sidebar.querySelectorAll<HTMLButtonElement>(".sidebar-rail-icon"));
+  if (!icons.length) return;
+
+  icons.forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const targetId = btn.dataset.target || "";
+      // Always expand on icon click — the rail icons are only useful
+      // when collapsed; clicking one signals "open this section."
+      if (sidebar.classList.contains("sidebar--collapsed")) {
+        sidebar.classList.remove("sidebar--collapsed");
+        const main = document.querySelector(".main");
+        if (main) main.classList.remove("sidebar-collapsed");
+      }
+      if (!targetId) return;
+      // Scroll the section into view + briefly highlight so the user
+      // sees what they jumped to.
+      requestAnimationFrame(() => {
+        const target = document.getElementById(targetId);
+        if (!target) return;
+        const section = target.closest(".sidebar-recent, .sidebar-needs-answer, .sidebar-skills, .sidebar-toast-master") as HTMLElement | null;
+        if (section) {
+          section.scrollIntoView({ behavior: "smooth", block: "start" });
+          section.classList.add("sidebar-section--flash");
+          setTimeout(() => section.classList.remove("sidebar-section--flash"), 1200);
+        }
+      });
+    });
+  });
+
+  // Wire the recent-count badge so collapsed-state shows "5" etc.
+  // Reuses the same /chat/history/recent fetch the expanded list does.
+  const updateRecentBadge = (): void => {
+    const badge = document.getElementById("railBadgeRecent");
+    if (!badge) return;
+    fetch(API_BASE + "/chat/history/recent?limit=20")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((rows: unknown[]) => {
+        const n = Array.isArray(rows) ? rows.length : 0;
+        if (n > 0) {
+          badge.textContent = String(n > 99 ? "99+" : n);
+          badge.hidden = false;
+        } else {
+          badge.hidden = true;
+        }
+      })
+      .catch(() => { /* leave hidden */ });
+  };
+  updateRecentBadge();
+}
+
 function _openSeeAllSkillsModal(): void {
   // Tiny lightweight modal listing every chat skill. Reads the
   // canonical list from /chat/config (which exposes the skill
@@ -5671,6 +5731,7 @@ function run(): void {
   initSidebarCollapsibles();
   initModelProfilePicker();
   initChatSkillsChips();
+  initSidebarRailIcons();
 
   hamburger.addEventListener("click", openDrawer);
   drawerClose.addEventListener("click", closeDrawer);

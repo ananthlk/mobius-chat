@@ -84,6 +84,21 @@
       </div>
       <div class="sidebar-rail" aria-hidden="true">
         <img class="sidebar-rail-logo" src="static/logo.svg" alt="" />
+        <button type="button" class="sidebar-rail-icon" data-target="recentListWrap" title="Recent searches" aria-label="Recent searches">
+          <span class="rail-icon-glyph">🔍</span>
+          <span class="rail-icon-badge" id="railBadgeRecent" hidden>0</span>
+        </button>
+        <button type="button" class="sidebar-rail-icon" data-target="needsAnswerWrap" title="Needs your answer" aria-label="Needs your answer">
+          <span class="rail-icon-glyph">❓</span>
+          <span class="rail-icon-badge" id="railBadgeNeeds" hidden>0</span>
+        </button>
+        <button type="button" class="sidebar-rail-icon" data-target="skillsListWrap" title="Skills" aria-label="Skills">
+          <span class="rail-icon-glyph">🛠️</span>
+        </button>
+        <button type="button" class="sidebar-rail-icon" data-target="toastMasterWrap" title="Toast Master" aria-label="Toast Master">
+          <span class="rail-icon-glyph">🥂</span>
+          <span class="rail-icon-badge" id="railBadgeToast" hidden>0</span>
+        </button>
       </div>
       <button type="button" class="sidebar-chevron" id="sidebarChevron" aria-label="Collapse sidebar" title="Collapse sidebar">
         <svg class="sidebar-chevron-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
