@@ -155,9 +155,19 @@ register(
     SkillSpec(
         name="google_search",
         description=(
-            "Search the web for current information.\n"
-            "Use for: corpus misses, or user explicitly asks to search web.\n"
-            "Do NOT use as primary route — corpus goes first.\n"
+            "Search the web for current information. LAST-RESORT external lookup.\n"
+            "Correct fallback order on a payer-specific question is:\n"
+            "  1. search_corpus  (always first)\n"
+            "  2. lookup_authoritative_sources  (when corpus is weak/empty —\n"
+            "     Mobius's curated URL registry knows the answer often lives\n"
+            "     in a payer-published page that isn't indexed YET; ingest_url\n"
+            "     can pull it in within seconds)\n"
+            "  3. google_search  (ONLY when both of the above came back empty)\n"
+            "Use for: general/non-payer questions, user explicitly asks to\n"
+            "  search the web, or steps 1+2 found nothing relevant.\n"
+            "Do NOT use as the immediate fallback after a corpus miss on a\n"
+            "  payer-specific question — call lookup_authoritative_sources\n"
+            "  FIRST. The curator likely has the URL.\n"
             "Returns: URLs and snippets, then auto-scrapes top result."
         ),
         handler=_run,

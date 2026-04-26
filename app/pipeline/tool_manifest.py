@@ -150,6 +150,17 @@ lookup_authoritative_sources(payer?, state?, topic?, authority_level?)
     docs AND known sources that haven't been pulled into the corpus yet.
     Backed by the discovered_sources table; fed by the curator's
     sitemap parser + scraper link extraction.
+
+  ★ ESCALATION ROLE ★ — This is the **mandatory next step** when
+    search_corpus returns weak/no hits on a payer-specific question.
+    The curator's URL registry is much more likely to contain the
+    answer than google_search. The correct order is:
+      search_corpus → lookup_authoritative_sources → (ingest_url if
+      a relevant URL has ingested=false) → search_corpus again →
+      google_search ONLY if all of that fails.
+    Skipping this step and going straight to google_search is wrong
+    on payer-specific questions.
+
   Use when:
     - search_corpus came back with weak/no hits and you suspect the
       answer lives in a doc Mobius knows about but hasn't indexed.
@@ -164,8 +175,30 @@ lookup_authoritative_sources(payer?, state?, topic?, authority_level?)
     authority_level  — 'payer_manual' | 'payer_policy' | 'member_handbook' | etc.
   Returns: list of {url, host, payer, ingested, last_seen_at, content_kind}.
     The ``ingested: bool`` flag tells you whether the URL is already in
-    the corpus (cite it from search_corpus) or not (ask the user
-    whether to call ingest_url for it).
+    the corpus (cite it from search_corpus) or not.
+
+  Pairing with downstream tools — pick one of these when a returned
+  URL with ``ingested: false`` matches the question:
+    • ``ingest_url(url)`` — when the URL is authoritative + likely to
+      be cited again (provider manuals, policy PDFs, member handbooks,
+      enrollment guides). Adds it to the corpus permanently;
+      future search_corpus calls cite it. Costs Vertex tokens; uses
+      the rag-admin auth path. Best when the user's question is
+      policy/process and the URL is clearly the right source.
+    • ``web_scrape(url)`` — when you just need to READ the page right
+      now without permanent indexing (one-off lookups, exploratory
+      "what's on this page" questions, time-sensitive content like
+      news/announcements). No admin auth, fast, content stays in the
+      turn only. Best for "go deeper on what this URL says" without
+      committing to long-term storage.
+
+  Auto-route guidance: for a single high-confidence URL match (host =
+    payer's domain AND path/topic clearly aligns), proceed with the
+    appropriate tool above without re-asking. Ask only when multiple
+    plausible URLs are returned and the right one is ambiguous, or
+    when the user's intent (cite vs. read-once) isn't clear from the
+    question.
+
   Do NOT use for: free-text web search — that's google_search. This
     only knows about Mobius's curated registry."""
 
