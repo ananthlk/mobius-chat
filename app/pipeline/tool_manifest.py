@@ -190,6 +190,9 @@ def _compose_manifest() -> str:
         _SEARCH_CORPUS_BLOCK,
         _RECALL_SEARCH_BLOCK,
         _PRECISION_SEARCH_BLOCK,
+        # fetch_document — registered via SkillSpec; rendered by registry.
+        # Distinct from search_corpus: returns a download URL, not an answer.
+        registry.manifest_text(names=("fetch_document",)),
         registry.manifest_text(names=("healthcare_query",)),
         _HEALTHCARE_NPI_LOOKUP_BLOCK,
         registry.manifest_text(names=("document_upload_skill",)),

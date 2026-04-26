@@ -685,6 +685,11 @@
     // source card. Override per environment via the standard
     // window.RAG_APP_BASE injection point if needed.
     window.RAG_APP_BASE = "https://mobius-rag-ortabkknqa-uc.a.run.app";
+    // RAG_API_BASE: where mobius-rag serves /documents/{id}/download/pdf
+    // (used by the Download CTA on source cards + the new fetch_document
+    // skill). Same host as RAG_APP_BASE today; kept distinct so they
+    // can diverge without touching code.
+    window.RAG_API_BASE = "https://mobius-rag-ortabkknqa-uc.a.run.app";
   </script>
   <script type="module" src="static/app.js?v=30"></script>
 </body>

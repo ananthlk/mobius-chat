@@ -64,8 +64,17 @@ class SourceRef:
     document_name: str
     index: int = 1
     text: str = ""
-    source_type: str = "external"  # external | web | internal | registry
+    source_type: str = "external"  # external | web | internal | registry | document
     url: str | None = None
+    # 2026-04-25: optional fields added so skills that return
+    # corpus-document references (fetch_document, search_corpus path B)
+    # can carry the document_id + page + arbitrary extras (e.g.
+    # download_url, fetch_intent, payer/state tags) without forcing
+    # consumers to dig into envelope.extra and correlate by index.
+    document_id: str | None = None
+    page_number: int | None = None
+    authority: str | None = None
+    extra: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Legacy bridge: callers that still consume ``list[dict]`` get
@@ -79,6 +88,19 @@ class SourceRef:
             out["text"] = self.text
         if self.url:
             out["url"] = self.url
+        if self.document_id:
+            out["document_id"] = self.document_id
+        if self.page_number is not None:
+            out["page_number"] = self.page_number
+        if self.authority:
+            out["authority"] = self.authority
+        if self.extra:
+            # Splat extras at the top level so the frontend (which reads
+            # source.download_url, source.fetch_intent, etc.) doesn't
+            # need to know about an `extra` nesting.
+            for k, v in self.extra.items():
+                if k not in out:  # don't overwrite the canonical fields
+                    out[k] = v
         return out
 
 
@@ -363,6 +385,7 @@ def _load_builtins() -> None:
     # commit that adds a new builtin is a one-line diff.
     from app.skills.builtin import cached_answer  # noqa: F401
     from app.skills.builtin import document_uploads  # noqa: F401
+    from app.skills.builtin import fetch_document  # noqa: F401
     from app.skills.builtin import healthcare  # noqa: F401
     from app.skills.builtin import vibe  # noqa: F401
     from app.skills.builtin import web  # noqa: F401

@@ -226,6 +226,10 @@ _TOOL_STAGE_FOR_USAGE: dict[str, str] = {
     # rates per mode. Aliases are normalized in _normalize_tool_name.
     "recall_search": "rag",
     "precision_search": "rag",
+    # 2026-04-25: fetch_document is metadata-only — no LLM stage,
+    # but we register it under 'rag' analytics for dashboards that
+    # bucket all corpus-touching skills together.
+    "fetch_document": "rag",
     "google_search": "web_search",
     "web_scrape": "web_scrape",
     "healthcare_query": "healthcare_query",
