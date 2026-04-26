@@ -110,12 +110,17 @@ run() {
 }
 
 # Build a delimited key=value list for gcloud run deploy --set-env-vars.
-# Uses gcloud's escaped-delimiter form (``^@^KEY1=v1@KEY2=v2...``) so
+# Uses gcloud's escaped-delimiter form (``^;^KEY1=v1;KEY2=v2...``) so
 # values that themselves contain commas (e.g. CHAT_CORS_ORIGINS with a
-# multi-origin list) parse correctly. The leading ``^@^`` tells gcloud
-# to use ``@`` as the pair separator instead of the default ``,``.
+# multi-origin list) parse correctly. The leading ``^;^`` tells gcloud
+# to use ``;`` as the pair separator instead of the default ``,``.
+#
+# Why ``;`` and not ``@`` or ``|``: ``@`` clashes with Postgres-URL
+# user-host separators (``postgres@/mobius_chat?host=...``); ``|``
+# tends to appear in regex configs and shell pipelines. Semicolon is
+# safe across every value we ship today.
 csv_env() {
-    printf '^@^%s' "$(printf '%s\n' "$@" | paste -sd@ -)"
+    printf '^;^%s' "$(printf '%s\n' "$@" | paste -sd';' -)"
 }
 
 # ── Build ───────────────────────────────────────────────────────────
