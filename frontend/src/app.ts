@@ -865,6 +865,135 @@ function initModelProfilePicker(): void {
   load();
 }
 
+// ── Chat-skills chips (Sprint 2 #0.5, 2026-04-25) ─────────────────
+//
+// Sidebar Skills section. Two surfaces in one block:
+//   1. Suite buttons (Roster, Credentialing) — already in HTML, route
+//      to product surfaces. Untouched here.
+//   2. "Chat tools" chips — drop a templated prompt into the composer
+//      so the user can edit + send. Pulls from a small curated list
+//      keyed to registered skills.
+//
+// Why curated and not "every skill in the manifest"? Most skills are
+// internal stages (phi_detector, adjudicator, planner) — they shouldn't
+// appear as user-facing chips. This list is the discoverable subset.
+// "See all skills →" opens a modal listing every visible skill from
+// the registry for power users.
+interface ChatSkillChip {
+  id: string;            // canonical skill name (matches registry)
+  icon: string;
+  label: string;
+  prompt: string;        // template dropped into the composer
+  example: string;       // shown as tooltip / sub-label
+}
+
+const _CHAT_SKILL_CHIPS: ChatSkillChip[] = [
+  { id: "fetch_document",    icon: "📄", label: "Find a document",     prompt: "Send me the ",                  example: "send me the Sunshine Provider Manual" },
+  { id: "search_corpus",     icon: "🔍", label: "Search materials",    prompt: "What does our corpus say about ", example: "what does the corpus say about prior auth" },
+  { id: "healthcare_query",  icon: "💡", label: "Look up code / NPI",  prompt: "Look up ",                       example: "look up HCPCS H0036" },
+  { id: "google_search",     icon: "🌐", label: "Search the web",      prompt: "Search the web for ",            example: "search the web for FL Medicaid timely filing" },
+  { id: "vibe",              icon: "🥂", label: "Light moment",        prompt: "Give me something light",        example: "tell me a quick toast" },
+];
+
+function initChatSkillsChips(): void {
+  const list = document.getElementById("chatSkillsList") as HTMLUListElement | null;
+  const seeAllBtn = document.getElementById("btnSeeAllSkills") as HTMLButtonElement | null;
+  if (!list) return;
+
+  // Render chips
+  list.innerHTML = "";
+  _CHAT_SKILL_CHIPS.forEach((chip) => {
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "skill-sidebar-item skill-sidebar-item--chip";
+    btn.title = chip.example;
+    btn.dataset.skillId = chip.id;
+    btn.innerHTML =
+      '<span class="skill-sidebar-icon" aria-hidden="true">' + chip.icon + '</span>' +
+      '<span class="skill-sidebar-label">' + chip.label + '</span>' +
+      '<span class="skill-sidebar-arrow" aria-hidden="true">›</span>';
+    btn.addEventListener("click", () => _dropPromptIntoComposer(chip.prompt));
+    li.appendChild(btn);
+    list.appendChild(li);
+  });
+
+  if (seeAllBtn) {
+    seeAllBtn.addEventListener("click", () => _openSeeAllSkillsModal());
+  }
+}
+
+function _dropPromptIntoComposer(template: string): void {
+  // Composer is the same input the chat uses — drop the template,
+  // focus, position cursor at end so the user can finish the prompt.
+  const input = document.getElementById("messageInput") as HTMLTextAreaElement | HTMLInputElement | null;
+  if (!input) return;
+  input.value = template;
+  input.focus();
+  // Put cursor at end (works for both textarea and input)
+  if (typeof (input as any).setSelectionRange === "function") {
+    const n = template.length;
+    (input as any).setSelectionRange(n, n);
+  }
+  // Trigger any input listeners (auto-resize, send-button enable)
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function _openSeeAllSkillsModal(): void {
+  // Tiny lightweight modal listing every chat skill. Reads the
+  // canonical list from /chat/config (which exposes the skill
+  // registry) so it stays in sync with what the planner sees.
+  let modal = document.getElementById("seeAllSkillsModal");
+  if (!modal) {
+    modal = document.createElement("div");
+    modal.id = "seeAllSkillsModal";
+    modal.className = "see-all-skills-modal";
+    modal.innerHTML =
+      '<div class="see-all-skills-backdrop"></div>' +
+      '<div class="see-all-skills-panel">' +
+        '<header class="see-all-skills-head">' +
+          '<span class="see-all-skills-title">All chat skills</span>' +
+          '<button type="button" class="see-all-skills-close" aria-label="Close">×</button>' +
+        '</header>' +
+        '<div class="see-all-skills-body">Loading…</div>' +
+      '</div>';
+    document.body.appendChild(modal);
+    const close = (): void => modal!.classList.remove("open");
+    modal.querySelector(".see-all-skills-close")!.addEventListener("click", close);
+    modal.querySelector(".see-all-skills-backdrop")!.addEventListener("click", close);
+    document.addEventListener("keydown", (e: KeyboardEvent) => {
+      if (e.key === "Escape" && modal!.classList.contains("open")) close();
+    });
+  }
+  modal.classList.add("open");
+  const body = modal.querySelector(".see-all-skills-body") as HTMLElement;
+  body.innerHTML = '<p class="see-all-skills-loading">Loading…</p>';
+  fetch(API_BASE + "/chat/skills-manifest")
+    .then((r) => (r.ok ? r.text() : Promise.reject(new Error(String(r.status)))))
+    .then((manifest) => {
+      // Manifest is a plain-text block formatted for the planner. Render
+      // as <pre> so the spacing reads correctly. Also surface the
+      // chip-list as a quick reference at the top.
+      const intro =
+        '<div class="see-all-skills-intro">' +
+        '<p>The planner picks these tools automatically when your question matches their use cases. Click a chip in the sidebar to drop a templated prompt.</p>' +
+        '</div>';
+      body.innerHTML = intro + '<pre class="see-all-skills-manifest">' +
+        manifest.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") +
+        '</pre>';
+    })
+    .catch((err: Error) => {
+      // Fall back to just the chip list if the manifest endpoint isn't
+      // available (older revs, or local dev without auth).
+      const chips = _CHAT_SKILL_CHIPS.map((c) =>
+        '<li><strong>' + c.label + '</strong> — ' + c.example + '</li>',
+      ).join("");
+      body.innerHTML =
+        '<p class="see-all-skills-error">Couldn\'t load full manifest (' + err.message + '). Showing curated list:</p>' +
+        '<ul class="see-all-skills-list">' + chips + '</ul>';
+    });
+}
+
 function setupLlmRouterReportUI(): void {
   const btn = document.getElementById("btnLlmRouterReport");
   const modal = document.getElementById("llmRouterReportModal");
@@ -5541,6 +5670,7 @@ function run(): void {
   }
   initSidebarCollapsibles();
   initModelProfilePicker();
+  initChatSkillsChips();
 
   hamburger.addEventListener("click", openDrawer);
   drawerClose.addEventListener("click", closeDrawer);

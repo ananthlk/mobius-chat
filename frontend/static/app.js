@@ -1001,6 +1001,76 @@ function initModelProfilePicker() {
   });
   load();
 }
+var _CHAT_SKILL_CHIPS = [
+  { id: "fetch_document", icon: "\u{1F4C4}", label: "Find a document", prompt: "Send me the ", example: "send me the Sunshine Provider Manual" },
+  { id: "search_corpus", icon: "\u{1F50D}", label: "Search materials", prompt: "What does our corpus say about ", example: "what does the corpus say about prior auth" },
+  { id: "healthcare_query", icon: "\u{1F4A1}", label: "Look up code / NPI", prompt: "Look up ", example: "look up HCPCS H0036" },
+  { id: "google_search", icon: "\u{1F310}", label: "Search the web", prompt: "Search the web for ", example: "search the web for FL Medicaid timely filing" },
+  { id: "vibe", icon: "\u{1F942}", label: "Light moment", prompt: "Give me something light", example: "tell me a quick toast" }
+];
+function initChatSkillsChips() {
+  const list = document.getElementById("chatSkillsList");
+  const seeAllBtn = document.getElementById("btnSeeAllSkills");
+  if (!list)
+    return;
+  list.innerHTML = "";
+  _CHAT_SKILL_CHIPS.forEach((chip) => {
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "skill-sidebar-item skill-sidebar-item--chip";
+    btn.title = chip.example;
+    btn.dataset.skillId = chip.id;
+    btn.innerHTML = '<span class="skill-sidebar-icon" aria-hidden="true">' + chip.icon + '</span><span class="skill-sidebar-label">' + chip.label + '</span><span class="skill-sidebar-arrow" aria-hidden="true">\u203A</span>';
+    btn.addEventListener("click", () => _dropPromptIntoComposer(chip.prompt));
+    li.appendChild(btn);
+    list.appendChild(li);
+  });
+  if (seeAllBtn) {
+    seeAllBtn.addEventListener("click", () => _openSeeAllSkillsModal());
+  }
+}
+function _dropPromptIntoComposer(template) {
+  const input = document.getElementById("messageInput");
+  if (!input)
+    return;
+  input.value = template;
+  input.focus();
+  if (typeof input.setSelectionRange === "function") {
+    const n = template.length;
+    input.setSelectionRange(n, n);
+  }
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+function _openSeeAllSkillsModal() {
+  let modal = document.getElementById("seeAllSkillsModal");
+  if (!modal) {
+    modal = document.createElement("div");
+    modal.id = "seeAllSkillsModal";
+    modal.className = "see-all-skills-modal";
+    modal.innerHTML = '<div class="see-all-skills-backdrop"></div><div class="see-all-skills-panel"><header class="see-all-skills-head"><span class="see-all-skills-title">All chat skills</span><button type="button" class="see-all-skills-close" aria-label="Close">\xD7</button></header><div class="see-all-skills-body">Loading\u2026</div></div>';
+    document.body.appendChild(modal);
+    const close = () => modal.classList.remove("open");
+    modal.querySelector(".see-all-skills-close").addEventListener("click", close);
+    modal.querySelector(".see-all-skills-backdrop").addEventListener("click", close);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && modal.classList.contains("open"))
+        close();
+    });
+  }
+  modal.classList.add("open");
+  const body = modal.querySelector(".see-all-skills-body");
+  body.innerHTML = '<p class="see-all-skills-loading">Loading\u2026</p>';
+  fetch(API_BASE + "/chat/skills-manifest").then((r) => r.ok ? r.text() : Promise.reject(new Error(String(r.status)))).then((manifest) => {
+    const intro = '<div class="see-all-skills-intro"><p>The planner picks these tools automatically when your question matches their use cases. Click a chip in the sidebar to drop a templated prompt.</p></div>';
+    body.innerHTML = intro + '<pre class="see-all-skills-manifest">' + manifest.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") + "</pre>";
+  }).catch((err) => {
+    const chips = _CHAT_SKILL_CHIPS.map(
+      (c) => "<li><strong>" + c.label + "</strong> \u2014 " + c.example + "</li>"
+    ).join("");
+    body.innerHTML = `<p class="see-all-skills-error">Couldn't load full manifest (` + err.message + '). Showing curated list:</p><ul class="see-all-skills-list">' + chips + "</ul>";
+  });
+}
 function setupLlmRouterReportUI() {
   const btn = document.getElementById("btnLlmRouterReport");
   const modal = document.getElementById("llmRouterReportModal");
@@ -5016,6 +5086,7 @@ function run() {
   }
   initSidebarCollapsibles();
   initModelProfilePicker();
+  initChatSkillsChips();
   hamburger.addEventListener("click", openDrawer);
   drawerClose.addEventListener("click", closeDrawer);
   drawerOverlay.addEventListener("click", closeDrawer);

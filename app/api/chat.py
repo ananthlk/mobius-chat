@@ -45,7 +45,7 @@ import uuid
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app.api.front_door import require_user
@@ -322,3 +322,25 @@ def get_chat_plan(correlation_id: str):
     if plan_payload is None:
         raise HTTPException(status_code=404, detail="Plan not found")
     return plan_payload
+
+
+@router.get("/chat/skills-manifest", response_class=PlainTextResponse)
+def get_chat_skills_manifest() -> str:
+    """Return the planner-facing tool manifest as plain text.
+
+    Used by the sidebar's "See all skills →" modal so power users can
+    inspect every skill the planner sees, without us hand-maintaining
+    a list in the frontend. Output is the same prose block fed into
+    the ReAct system prompt — kept text/plain so a frontend `<pre>`
+    block renders it 1:1.
+
+    Public (no auth gate) — the manifest is non-sensitive descriptive
+    prose. Cached client-side; no rate limiting needed beyond the
+    chat-wide L1 IP limiter.
+    """
+    from app.pipeline.tool_manifest import get_tool_manifest
+    try:
+        return get_tool_manifest()
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning("get_chat_skills_manifest failed: %s", exc)
+        return f"Skills manifest unavailable ({type(exc).__name__})"

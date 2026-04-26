@@ -31,28 +31,43 @@
             <ul class="recent-list" id="recentList"></ul>
           </div>
         </div>
-        <div class="sidebar-helpful">
-          <h3 class="sidebar-section-title sidebar-section-toggle" role="button" tabindex="0" aria-expanded="true" aria-controls="helpfulListWrap">
-            <span>Most helpful searches</span>
+        <div class="sidebar-needs-answer">
+          <h3 class="sidebar-section-title sidebar-section-toggle" role="button" tabindex="0" aria-expanded="true" aria-controls="needsAnswerWrap">
+            <span>❓ Needs your answer <span class="sidebar-section-count" id="needsAnswerCount" hidden>0</span></span>
             <span class="sidebar-section-arrow" aria-hidden="true">▾</span>
           </h3>
-          <div class="sidebar-section-body" id="helpfulListWrap">
-            <ul class="helpful-list" id="helpfulList"></ul>
+          <div class="sidebar-section-body" id="needsAnswerWrap">
+            <div class="sidebar-coming-soon">
+              <p class="sidebar-coming-soon-title">Network Q&amp;A — coming soon</p>
+              <p class="sidebar-coming-soon-body">When chat can't find an answer, the question parks here. Anyone with the answer (a payor call, a doc, a colleague tip) can contribute → it becomes a network-validated asset.</p>
+            </div>
           </div>
         </div>
-        <div class="sidebar-documents">
-          <h3 class="sidebar-section-title sidebar-section-toggle" role="button" tabindex="0" aria-expanded="true" aria-controls="documentsListWrap">
-            <span>Most helpful documents</span>
+
+        <div class="sidebar-skills">
+          <h3 class="sidebar-section-title sidebar-section-toggle" role="button" tabindex="0" aria-expanded="true" aria-controls="skillsListWrap">
+            <span>🛠️ Skills</span>
             <span class="sidebar-section-arrow" aria-hidden="true">▾</span>
           </h3>
-          <div class="sidebar-section-body" id="documentsListWrap">
-            <ul class="documents-list" id="documentsList"></ul>
+          <div class="sidebar-section-body" id="skillsListWrap">
+            <div class="skill-sidebar-suite-label">Chat tools</div>
+            <ul class="skills-list" id="chatSkillsList"></ul>
+            <button type="button" class="sidebar-skills-all-link" id="btnSeeAllSkills">See all skills →</button>
           </div>
         </div>
-        <!-- Skills section — 2026-04-18: Roster / Credentialing /
-             Financial Strategy sidebar entries REMOVED. They'll come
-             back as clean skill integrations when each one is rebuilt
-             from scratch with its own standalone UI + backend. -->
+
+        <div class="sidebar-toast-master">
+          <h3 class="sidebar-section-title sidebar-section-toggle" role="button" tabindex="0" aria-expanded="true" aria-controls="toastMasterWrap">
+            <span>🥂 Toast Master <span class="sidebar-section-count" id="toastMasterCount" hidden>0</span></span>
+            <span class="sidebar-section-arrow" aria-hidden="true">▾</span>
+          </h3>
+          <div class="sidebar-section-body" id="toastMasterWrap">
+            <div class="sidebar-coming-soon">
+              <p class="sidebar-coming-soon-title">Your contributions — coming soon</p>
+              <p class="sidebar-coming-soon-body">When you contribute a network-validated answer, it lives here. Plus a vibe-generated toast every time someone uses your work.</p>
+            </div>
+          </div>
+        </div>
 
         <div class="sidebar-user sidebar-user--clickable" id="sidebarUser" role="button" tabindex="0" title="Click to sign in or manage account">
           <span class="sidebar-user-label">Signed in as</span>
