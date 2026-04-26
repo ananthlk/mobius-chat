@@ -349,6 +349,15 @@ def get_last_turn_messages(thread_id: str, limit_turns: int = 2) -> list[dict[st
         # Downstream consumers may pass this through .isoformat(); keep string-safe.
         row = dict(r)
         out.append(row)
+    # 2026-04-26 diagnostic — Phase 13.6 surfaced empty last_turns
+    # despite chat_turns rows existing. Log when the query returns
+    # zero rows so we can tell "DB unhappy but caught" from "table
+    # genuinely empty for this thread." Remove once root-caused.
+    if not out:
+        logger.info(
+            "[phase13.6.diag] get_last_turn_messages: thread=%s rows=0 (chat_turn_messages may be empty for this thread)",
+            (thread_id or "")[:8],
+        )
     return out
 
 
