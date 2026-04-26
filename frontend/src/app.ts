@@ -5730,7 +5730,6 @@ function run(): void {
   }
   initSidebarCollapsibles();
   initModelProfilePicker();
-  initChatSkillsChips();
   initSidebarRailIcons();
 
   hamburger.addEventListener("click", openDrawer);

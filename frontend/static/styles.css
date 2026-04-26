@@ -6732,94 +6732,6 @@ body {
 .model-profile-picker__status--ok { color: #3fb950; }
 .model-profile-picker__status--err { color: #f85149; }
 
-/* ── Sidebar redesign 2026-04-25 ──────────────────────────────────── */
-
-/* Section count badge in section title */
-.sidebar-section-count {
-  display: inline-block; min-width: 20px; padding: 1px 6px;
-  margin-left: 6px; font-size: 11px; font-weight: 600;
-  background: var(--mobius-accent, #3b82f6); color: #fff;
-  border-radius: 999px; vertical-align: 1px;
-}
-
-/* "Coming soon" placeholder for unbuilt sections */
-.sidebar-coming-soon {
-  padding: 10px 14px; margin: 4px 0;
-  background: rgba(110,118,129,0.06);
-  border: 1px dashed var(--mobius-border-light, #30363d);
-  border-radius: 6px;
-}
-.sidebar-coming-soon-title {
-  margin: 0 0 4px; font-size: 12px; font-weight: 600;
-  color: var(--mobius-text-muted, #8b949e);
-}
-.sidebar-coming-soon-body {
-  margin: 0; font-size: 11.5px; line-height: 1.45;
-  color: var(--mobius-text-muted, #8b949e);
-}
-
-/* Chat-skills chips (Skills > Chat tools list) */
-.skill-sidebar-item--chip {
-  /* Slightly tighter than the suite buttons so chips read as
-     secondary actions. Inherits hover state from .skill-sidebar-item. */
-  padding: 6px 10px;
-}
-.skill-sidebar-item--chip .skill-sidebar-icon { font-size: 13px; }
-.sidebar-skills-all-link {
-  display: block; margin-top: 8px; padding: 6px 10px;
-  background: transparent; border: none; cursor: pointer;
-  color: var(--mobius-accent, #3b82f6); font-size: 12px;
-  text-align: left;
-}
-.sidebar-skills-all-link:hover { text-decoration: underline; }
-
-/* See-all-skills modal */
-.see-all-skills-modal {
-  position: fixed; inset: 0; z-index: 10010;
-  display: none; align-items: center; justify-content: center;
-}
-.see-all-skills-modal.open { display: flex; }
-.see-all-skills-backdrop {
-  position: absolute; inset: 0; background: rgba(0,0,0,0.45);
-}
-.see-all-skills-panel {
-  position: relative; width: min(720px, 92vw);
-  max-height: 80vh; display: flex; flex-direction: column;
-  background: var(--mobius-bg-primary, #0d1117);
-  border: 1px solid var(--mobius-border-light, #30363d);
-  border-radius: 10px; overflow: hidden;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
-}
-.see-all-skills-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 16px; border-bottom: 1px solid var(--mobius-border-light, #30363d);
-  background: var(--mobius-bg-secondary, #161b22);
-  font-weight: 600; font-size: 14px;
-}
-.see-all-skills-close {
-  background: transparent; border: none; font-size: 22px; line-height: 1;
-  color: var(--mobius-text-muted, #8b949e); cursor: pointer; padding: 0 6px;
-}
-.see-all-skills-close:hover { color: var(--mobius-text, #c9d1d9); }
-.see-all-skills-body {
-  flex: 1; overflow-y: auto; padding: 16px 20px;
-  font-size: 12.5px; line-height: 1.5;
-}
-.see-all-skills-intro p {
-  margin: 0 0 12px; color: var(--mobius-text-muted, #8b949e);
-}
-.see-all-skills-manifest {
-  font-family: ui-monospace, SFMono-Regular, monospace; font-size: 11.5px;
-  line-height: 1.5; white-space: pre-wrap; word-wrap: break-word;
-  background: var(--mobius-bg-secondary, #161b22);
-  padding: 12px 14px; border-radius: 6px; border: 1px solid var(--mobius-border-light, #30363d);
-  color: var(--mobius-text, #c9d1d9);
-}
-.see-all-skills-error { color: #f85149; }
-.see-all-skills-list { margin: 0; padding-left: 18px; }
-.see-all-skills-list li { margin-bottom: 6px; }
-.see-all-skills-loading { color: var(--mobius-text-muted, #8b949e); }
-
 /* ── Sidebar rail icons (collapsed state, 2026-04-25) ─────────────── */
 
 /* Hidden when sidebar is expanded — they only matter on the rail */
@@ -6849,7 +6761,13 @@ body {
 .sidebar--collapsed .sidebar-rail-icon:active {
   transform: scale(0.95);
 }
-.rail-icon-glyph { font-size: 16px; line-height: 1; }
+.sidebar--collapsed .sidebar-rail-icon svg {
+  width: 16px; height: 16px;
+  color: var(--mobius-text-muted, #8b949e);
+}
+.sidebar--collapsed .sidebar-rail-icon:hover svg {
+  color: var(--mobius-text, #c9d1d9);
+}
 .rail-icon-badge {
   position: absolute; top: 2px; right: 2px;
   min-width: 14px; height: 14px; padding: 0 3px;
@@ -6867,30 +6785,10 @@ body {
   border-radius: 6px;
 }
 
-/* Lighter coming-soon placeholder — replaces the dashed-border heavy card */
-.sidebar-coming-soon {
-  padding: 6px 12px 10px; margin: 0;
-  background: transparent;
-  border: none;
-}
-.sidebar-coming-soon-title {
-  margin: 0 0 3px; font-size: 11px;
+/* Stub copy when frontend/index.html (build-from-source dev) shows the
+   Skills section without the suite-button HTML the static build has. */
+.sidebar-skills-empty {
+  padding: 8px 12px; margin: 0;
+  font-size: 12px; line-height: 1.45;
   color: var(--mobius-text-muted, #8b949e);
-  text-transform: uppercase; letter-spacing: 0.04em;
-}
-.sidebar-coming-soon-body {
-  margin: 0; font-size: 12px; line-height: 1.5;
-  color: var(--mobius-text-muted, #8b949e); opacity: 0.85;
-}
-
-/* Chat-tools chips: match the suite-button (Roster/Credentialing) styling
-   so the section reads as one consistent ladder, not two visual tiers. */
-.skill-sidebar-item--chip {
-  /* Inherit from .skill-sidebar-item (same padding, same hover) */
-  font-weight: 400;
-}
-.skill-sidebar-item--chip .skill-sidebar-icon {
-  font-size: 14px;
-  width: 18px;
-  text-align: center;
 }
