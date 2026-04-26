@@ -935,6 +935,10 @@ _SKILL_LLM_ALLOWED_STAGES = frozenset({
     # mobius-skills/vibe (2026-04-25): one-line vibe responses (toast,
     # empathy, dry observation). Cheap+fast tier via CHEAP_STAGES.
     "vibe",
+    # mobius-skills/email (2026-04-25): LLM-drafted subject/body for
+    # craft-mode sends. Goes through the bandit so we learn which model
+    # produces emails users actually release vs. discard.
+    "email_draft",
 })
 
 
