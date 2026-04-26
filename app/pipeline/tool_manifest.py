@@ -140,6 +140,62 @@ _REGISTRY_ORDER: tuple[str, ...] = (
 )
 
 
+# ── Curator tools (Phase 13.5) — surface URLs we know about even ─────
+# when they aren't in the indexed corpus yet.
+
+_LOOKUP_AUTHORITATIVE_SOURCES_BLOCK = """\
+lookup_authoritative_sources(payer?, state?, topic?, authority_level?)
+  Search Mobius's curated registry of authoritative URLs for a payer/
+    state/topic. Returns URLs Mobius has *seen* — both already-indexed
+    docs AND known sources that haven't been pulled into the corpus yet.
+    Backed by the discovered_sources table; fed by the curator's
+    sitemap parser + scraper link extraction.
+  Use when:
+    - search_corpus came back with weak/no hits and you suspect the
+      answer lives in a doc Mobius knows about but hasn't indexed.
+    - You want to enumerate "what does Mobius know exists for X" before
+      committing to ingest_url.
+    - The user asks "do you have <X>?" — a hit here means yes, even if
+      not in the corpus yet.
+  Inputs (any combination):
+    payer            — canonical payer name, e.g. 'Sunshine Health', 'AHCA'
+    state            — 2-letter state code, e.g. 'FL'
+    topic            — semantic tag, e.g. 'ECT', 'PA', 'appeals'
+    authority_level  — 'payer_manual' | 'payer_policy' | 'member_handbook' | etc.
+  Returns: list of {url, host, payer, ingested, last_seen_at, content_kind}.
+    The ``ingested: bool`` flag tells you whether the URL is already in
+    the corpus (cite it from search_corpus) or not (ask the user
+    whether to call ingest_url for it).
+  Do NOT use for: free-text web search — that's google_search. This
+    only knows about Mobius's curated registry."""
+
+
+_INGEST_URL_BLOCK = """\
+ingest_url(url)
+  Fetch a single URL and add it to the indexed corpus right now. Goes
+    through the same chunking + embedding + lexicon + publish pipeline
+    that scraped PDFs go through; the new content is queryable in chat
+    within minutes.
+  Use ONLY when:
+    - lookup_authoritative_sources surfaced a non-ingested URL the
+      user explicitly asked you to fetch, OR
+    - The user pasted a specific authoritative URL they want indexed
+      (provider manual, policy PDF, criteria doc, etc.).
+  Do NOT use for:
+    - Arbitrary URLs the user hasn't approved (ingestion costs Vertex
+      tokens + storage; require explicit "yes, fetch it").
+    - Bulk URL lists — call repeatedly, one per turn, with confirmation.
+    - URLs that lookup_authoritative_sources reported as
+      curation_status='blocked' or 'needs_auth' — those won't fetch
+      cleanly; ask the user to upload the PDF manually instead.
+  Inputs:
+    url — the canonical URL to fetch + index. PDFs and HTML pages both
+          work; the inlet is auto-detected.
+  Returns: {document_id, status, sections}. After this returns ok,
+    immediately call search_corpus with the original question — the
+    new doc is now available to retrieve."""
+
+
 _AUTO_DISCOVERED_HEADER = """\
 ── Auto-discovered tools (from MCP) ─────────────────────────────────────
 These tools are published by a remote MCP server and auto-registered at
@@ -203,6 +259,13 @@ def _compose_manifest() -> str:
         # vibe: short, work-adjacent vibe lines (toast/empathy/dry obs/etc.)
         # Registered but was missing from the planner manifest until 2026-04-25.
         registry.manifest_text(names=("vibe",)),
+        # Curator tools (Phase 13.5) — registry of URLs Mobius knows
+        # about, including non-ingested ones. Ordered after the search
+        # tools so the planner reaches for search_corpus first; only
+        # falls through to lookup_authoritative_sources when corpus
+        # comes up empty.
+        _LOOKUP_AUTHORITATIVE_SOURCES_BLOCK,
+        _INGEST_URL_BLOCK,
         _REFUSE_BLOCK,
     ]
     auto_block = _auto_discovered_block()

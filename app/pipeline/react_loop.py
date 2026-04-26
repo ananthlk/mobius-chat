@@ -362,6 +362,29 @@ def _execute_tool(
             "is_terminal": True,
         }
 
+    # ── Curator tools (Phase 13.5) ───────────────────────────────────
+    # Surface URLs Mobius knows about even when not yet indexed; let the
+    # planner offer to ingest one on demand.
+    if tool == "lookup_authoritative_sources":
+        from app.pipeline.curator_tools import call_lookup_authoritative_sources
+        emit("◌ Searching curator registry for known sources…")
+        return call_lookup_authoritative_sources(inputs)
+
+    if tool == "ingest_url":
+        from app.pipeline.curator_tools import call_ingest_url
+        url = (inputs.get("url") or "").strip()
+        if not url:
+            emit("⊘ ingest_url called without a url")
+            return {
+                "tool": "ingest_url",
+                "success": False,
+                "result": "ingest_url requires a 'url' input",
+                "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
+                "sources": [],
+            }
+        emit(f"◌ Fetching + indexing {url}…")
+        return call_ingest_url(inputs)
+
     if tool == "document_upload_skill":
         emit("◌ Document upload skill…")
         return {
