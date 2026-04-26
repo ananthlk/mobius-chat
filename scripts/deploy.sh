@@ -109,10 +109,13 @@ run() {
     fi
 }
 
-# Build a comma-separated key=value list from a newline-delimited
-# block. ``gcloud run deploy --set-env-vars`` wants the comma form.
+# Build a delimited key=value list for gcloud run deploy --set-env-vars.
+# Uses gcloud's escaped-delimiter form (``^@^KEY1=v1@KEY2=v2...``) so
+# values that themselves contain commas (e.g. CHAT_CORS_ORIGINS with a
+# multi-origin list) parse correctly. The leading ``^@^`` tells gcloud
+# to use ``@`` as the pair separator instead of the default ``,``.
 csv_env() {
-    printf '%s\n' "$@" | paste -sd, -
+    printf '^@^%s' "$(printf '%s\n' "$@" | paste -sd@ -)"
 }
 
 # ── Build ───────────────────────────────────────────────────────────
