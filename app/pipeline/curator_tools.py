@@ -92,6 +92,21 @@ def call_lookup_authoritative_sources(inputs: dict) -> dict:
         v = inputs.get(key)
         if v:
             params[key] = v
+    # Phase 13.5d — pass the topic ALSO as q= for BM25-style relevance
+    # ranking on the registry's search_vector. topic= requires exact
+    # tag match (often empty since topic_tags isn't pre-populated);
+    # q= ranks by ts_rank over payer/path/host/authority text. With
+    # both set, planner gets exact-tag hits when they exist AND
+    # relevance-ranked fuzzy hits when they don't — best of both.
+    topic_val = inputs.get("topic")
+    if topic_val:
+        params["q"] = topic_val
+    # Caller can also pass an explicit free-text query distinct from
+    # the topic tag (rare but useful — e.g., when the planner's
+    # natural-language phrasing diverges from a one-word topic tag).
+    explicit_q = inputs.get("q") or inputs.get("query")
+    if explicit_q:
+        params["q"] = explicit_q
     # Optional: caller can ask for only-non-ingested rows to surface
     # gaps the corpus doesn't cover yet.
     if inputs.get("non_ingested_only") is True:

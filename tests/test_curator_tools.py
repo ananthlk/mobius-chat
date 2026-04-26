@@ -126,7 +126,12 @@ def test_lookup_renders_prose_summary(monkeypatch):
 
 def test_lookup_passes_filters_through_query_params(monkeypatch):
     """payer/state/topic/authority_level all forwarded as query params,
-    plus only_reachable=true and limit=20 always."""
+    plus only_reachable=true and limit=20 always.
+
+    Phase 13.5d: ``topic`` is ALSO mirrored to ``q`` so the registry's
+    BM25 relevance ranking surfaces matches even when topic_tags is
+    empty (which is most of the time before LLM categorization runs).
+    """
     _set_rag_url(monkeypatch)
     fake = _FakeClient({("GET", "https://rag.test/sources/search"): _FakeResponse(200, [])})
     with patch("httpx.Client", return_value=fake):
@@ -146,6 +151,38 @@ def test_lookup_passes_filters_through_query_params(monkeypatch):
     assert params["authority_level"] == "payer_policy"
     assert params["only_reachable"] == "true"
     assert params["limit"] == 20
+    # 13.5d: topic is mirrored to q for relevance fallback.
+    assert params["q"] == "ECT"
+
+
+def test_lookup_explicit_q_overrides_topic_mirror(monkeypatch):
+    """Caller can pass an explicit ``q`` distinct from ``topic`` —
+    e.g., when natural-language phrasing diverges from the one-word
+    tag. Explicit q wins over the topic mirror.
+    """
+    _set_rag_url(monkeypatch)
+    fake = _FakeClient({("GET", "https://rag.test/sources/search"): _FakeResponse(200, [])})
+    with patch("httpx.Client", return_value=fake):
+        ct = _import_under_test()
+        ct.call_lookup_authoritative_sources({
+            "topic": "PA",
+            "q": "prior authorization for medications",
+        })
+    _, _, params = fake.calls[0]
+    assert params["topic"] == "PA"
+    assert params["q"] == "prior authorization for medications"
+
+
+def test_lookup_no_topic_no_q_omits_q_param(monkeypatch):
+    """When neither topic nor q is set, no q= param goes to the
+    server — server falls back to canonical/ingested ordering."""
+    _set_rag_url(monkeypatch)
+    fake = _FakeClient({("GET", "https://rag.test/sources/search"): _FakeResponse(200, [])})
+    with patch("httpx.Client", return_value=fake):
+        ct = _import_under_test()
+        ct.call_lookup_authoritative_sources({"payer": "Sunshine Health"})
+    _, _, params = fake.calls[0]
+    assert "q" not in params
 
 
 def test_lookup_handles_5xx_cleanly(monkeypatch):
