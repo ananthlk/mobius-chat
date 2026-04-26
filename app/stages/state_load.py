@@ -55,21 +55,6 @@ def run_state_load(
     # Carry report_run_id from previous turn so "ask about this report" can use it
     ctx.report_run_id = (merged.get("active") or {}).get("report_run_id")
     ctx.last_turns = get_last_turn_messages(ctx.thread_id)
-    # 2026-04-26 diagnostic — Phase 13.6 saw last_turns empty on DEV
-    # despite chat_turns rows existing. Logging count + first-turn
-    # assistant length to distinguish "read failed silently" from
-    # "rows exist but assistant_content is empty/wrong shape." Remove
-    # once root-caused.
-    try:
-        _first = (ctx.last_turns or [None])[0]
-        _ac_len = len((_first or {}).get("assistant_content") or "") if _first else 0
-        _uc_len = len((_first or {}).get("user_content") or "") if _first else 0
-        logger.info(
-            "[phase13.6.diag] thread=%s last_turns=%d first.user_len=%d first.assistant_len=%d",
-            (ctx.thread_id or "")[:8], len(ctx.last_turns or []), _uc_len, _ac_len,
-        )
-    except Exception as _diag_exc:
-        logger.warning("[phase13.6.diag] log failure: %s", _diag_exc)
     ctx.last_turn_sources = get_last_turn_sources(ctx.thread_id)
     route = route_context(ctx.message, merged, ctx.last_turns, reset_reason=reset_reason)
 

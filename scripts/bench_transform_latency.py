@@ -205,10 +205,15 @@ def _run_scenario(
         res.notes.append("no thread_id returned from turn1; cannot run continuation")
         return res
 
-    # Brief settle so persistence of turn1's assistant message is
-    # visible to turn2's state-load. 500ms is generous; pipeline writes
-    # are sub-100ms typically.
-    time.sleep(0.5)
+    # Settle so persistence of turn1's assistant message is visible
+    # to turn2's state-load. The chat pipeline persists assistant_
+    # content asynchronously after the SSE 'completed' event fires,
+    # and on Cloud Run + Cloud SQL we've seen it take 1-2s. 3s is
+    # generous but still cheap, and matches the real-world pattern
+    # where users take seconds-to-minutes between turns. Without
+    # this, transform_previous_answer routes correctly but its
+    # last_turns lookup misses, masking the win as "no transform."
+    time.sleep(3.0)
 
     # Turn 2: continuation in the same thread — transform expected.
     turn2, _ = _run_one_turn(

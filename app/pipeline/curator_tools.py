@@ -59,6 +59,42 @@ def _admin_headers() -> dict:
     return headers
 
 
+# USPS state names → 2-letter code. The registry's `state` column
+# stores the 2-letter form ("FL"), but the planner often passes the
+# full name from ``active.jurisdiction`` ("Florida"). Without this
+# normalization the registry returned 0 rows on every Sunshine/Florida
+# curator call, surfacing as "no curated sources" — the RAG agent's
+# /sources/search?state=FL returns the URL fine, but state=Florida
+# doesn't match. Keep the table small and explicit; we can extend
+# when other states show up in production traces.
+_STATE_NAME_TO_CODE = {
+    "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR",
+    "california": "CA", "colorado": "CO", "connecticut": "CT", "delaware": "DE",
+    "florida": "FL", "georgia": "GA", "hawaii": "HI", "idaho": "ID",
+    "illinois": "IL", "indiana": "IN", "iowa": "IA", "kansas": "KS",
+    "kentucky": "KY", "louisiana": "LA", "maine": "ME", "maryland": "MD",
+    "massachusetts": "MA", "michigan": "MI", "minnesota": "MN", "mississippi": "MS",
+    "missouri": "MO", "montana": "MT", "nebraska": "NE", "nevada": "NV",
+    "new hampshire": "NH", "new jersey": "NJ", "new mexico": "NM", "new york": "NY",
+    "north carolina": "NC", "north dakota": "ND", "ohio": "OH", "oklahoma": "OK",
+    "oregon": "OR", "pennsylvania": "PA", "rhode island": "RI",
+    "south carolina": "SC", "south dakota": "SD", "tennessee": "TN", "texas": "TX",
+    "utah": "UT", "vermont": "VT", "virginia": "VA", "washington": "WA",
+    "west virginia": "WV", "wisconsin": "WI", "wyoming": "WY",
+    "district of columbia": "DC", "puerto rico": "PR",
+}
+
+
+def _normalize_state(v: Any) -> str:
+    """Return USPS 2-letter code; pass through if already 2 chars or unknown."""
+    s = str(v or "").strip()
+    if not s:
+        return s
+    if len(s) == 2:
+        return s.upper()
+    return _STATE_NAME_TO_CODE.get(s.lower(), s)
+
+
 def _no_rag_url_result(tool: str) -> dict:
     return {
         "tool": tool,
@@ -91,6 +127,16 @@ def call_lookup_authoritative_sources(inputs: dict) -> dict:
     for key in ("payer", "state", "program", "topic", "authority_level"):
         v = inputs.get(key)
         if v:
+            # 2026-04-26: the registry stores ``state`` as the 2-letter
+            # USPS code ("FL"), but the planner often emits the full
+            # name from ``active.jurisdiction`` ("Florida"). Without
+            # normalization the SQL state= filter returns zero rows
+            # even when the URL is in the registry — this was the
+            # "no curated sources" dead-end on the dental-plan-
+            # transition retest. Normalize on the chat side so the
+            # RAG endpoint stays simple.
+            if key == "state":
+                v = _normalize_state(v)
             params[key] = v
     # Phase 13.5d — pass the topic ALSO as q= for BM25-style relevance
     # ranking on the registry's search_vector. topic= requires exact

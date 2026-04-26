@@ -302,7 +302,13 @@ def get_last_turn_messages(thread_id: str, limit_turns: int = 2) -> list[dict[st
         SELECT p.turn_id, p.user_content, p.assistant_content, p.created_at,
                ct.context_summary
         FROM pairs p
-        LEFT JOIN chat_turns ct ON ct.correlation_id = p.turn_id
+        -- 2026-04-26: chat_turns.correlation_id is uuid, chat_turn_
+        -- messages.turn_id is text. Postgres won't auto-coerce; without
+        -- the explicit cast the entire query errors with "operator does
+        -- not exist: text = uuid" and the catch path silently returns
+        -- []. That made last_turns empty for every turn until Phase
+        -- 13.6's transform_previous_answer started depending on it.
+        LEFT JOIN chat_turns ct ON ct.correlation_id::text = p.turn_id
         WHERE p.user_content IS NOT NULL AND p.assistant_content IS NOT NULL
         ORDER BY p.created_at DESC
         LIMIT :lim
@@ -314,7 +320,19 @@ def get_last_turn_messages(thread_id: str, limit_turns: int = 2) -> list[dict[st
     code = _err_code(result)
     if code is not None:
         err = _err_message(result).lower()
-        if code == "column_missing" or "context_summary" in err or ("column" in err and "does not exist" in err):
+        # The simple-query fallback (no chat_turns join, no context_
+        # summary) is safe to run for any failure that points at the
+        # join or the joined column — including the historical
+        # "context_summary" column-missing case AND the type-mismatch
+        # case ("operator does not exist: text = uuid") that pre-dated
+        # the explicit ::text cast in the primary query above.
+        if (
+            code == "column_missing"
+            or "context_summary" in err
+            or ("column" in err and "does not exist" in err)
+            or ("operator does not exist" in err and "uuid" in err)
+            or "chat_turns" in err
+        ):
             # Fallback: no context_summary join
             result = db_query(
                 """
@@ -349,15 +367,6 @@ def get_last_turn_messages(thread_id: str, limit_turns: int = 2) -> list[dict[st
         # Downstream consumers may pass this through .isoformat(); keep string-safe.
         row = dict(r)
         out.append(row)
-    # 2026-04-26 diagnostic — Phase 13.6 surfaced empty last_turns
-    # despite chat_turns rows existing. Log when the query returns
-    # zero rows so we can tell "DB unhappy but caught" from "table
-    # genuinely empty for this thread." Remove once root-caused.
-    if not out:
-        logger.info(
-            "[phase13.6.diag] get_last_turn_messages: thread=%s rows=0 (chat_turn_messages may be empty for this thread)",
-            (thread_id or "")[:8],
-        )
     return out
 
 

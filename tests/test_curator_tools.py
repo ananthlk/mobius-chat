@@ -173,6 +173,51 @@ def test_lookup_explicit_q_overrides_topic_mirror(monkeypatch):
     assert params["q"] == "prior authorization for medications"
 
 
+def test_lookup_normalizes_full_state_name_to_uspscode(monkeypatch):
+    """The registry's ``state`` column stores 2-letter USPS codes
+    ("FL"). The planner often emits the full name from
+    ``active.jurisdiction`` ("Florida"). Without chat-side
+    normalization the SQL state= filter returns 0 rows even when the
+    URL is in the registry — that was the dental-plan-transition
+    "no curated sources" dead-end on 2026-04-26.
+    """
+    _set_rag_url(monkeypatch)
+    fake = _FakeClient({("GET", "https://rag.test/sources/search"): _FakeResponse(200, [])})
+    with patch("httpx.Client", return_value=fake):
+        ct = _import_under_test()
+        ct.call_lookup_authoritative_sources({
+            "payer": "Sunshine Health",
+            "state": "Florida",
+            "topic": "dental plan transition",
+        })
+    _, _, params = fake.calls[0]
+    assert params["state"] == "FL", f"expected normalization Florida → FL, got {params['state']!r}"
+
+
+def test_lookup_state_already_2letter_passthrough(monkeypatch):
+    """If the planner already passes the 2-letter code, leave it alone
+    (uppercased for consistency)."""
+    _set_rag_url(monkeypatch)
+    fake = _FakeClient({("GET", "https://rag.test/sources/search"): _FakeResponse(200, [])})
+    with patch("httpx.Client", return_value=fake):
+        ct = _import_under_test()
+        ct.call_lookup_authoritative_sources({"payer": "X", "state": "fl"})
+    _, _, params = fake.calls[0]
+    assert params["state"] == "FL"
+
+
+def test_lookup_unknown_state_passthrough(monkeypatch):
+    """Anything we don't recognize falls through unchanged — defensive
+    so a future state addition doesn't silently break."""
+    _set_rag_url(monkeypatch)
+    fake = _FakeClient({("GET", "https://rag.test/sources/search"): _FakeResponse(200, [])})
+    with patch("httpx.Client", return_value=fake):
+        ct = _import_under_test()
+        ct.call_lookup_authoritative_sources({"payer": "X", "state": "Atlantis"})
+    _, _, params = fake.calls[0]
+    assert params["state"] == "Atlantis"
+
+
 def test_lookup_no_topic_no_q_omits_q_param(monkeypatch):
     """When neither topic nor q is set, no q= param goes to the
     server — server falls back to canonical/ingested ordering."""

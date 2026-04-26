@@ -162,19 +162,6 @@ def _atomic_save_turn_with_messages(
     result = db_transaction(statements, "chat")
     err = result.get("error") if isinstance(result, dict) else None
     if err is None:
-        # 2026-04-26 diagnostic — Phase 13.6 surfaced empty last_turns
-        # despite chat_turns rows existing. Log per-statement row counts
-        # so we can confirm the message inserts actually wrote. Remove
-        # once root-caused.
-        try:
-            per = (result or {}).get("per_statement") or []
-            logger.info(
-                "[phase13.6.diag] save_turn_with_messages thread=%s stmts=%d per=%s",
-                (thread_val or "")[:8], len(statements),
-                [{"op": s.get("operation"), "tbl": s.get("table"), "rows": s.get("rows_affected")} for s in per],
-            )
-        except Exception:
-            pass
         return
 
     # Graceful fallback — missing user_id column (migration not yet run).
