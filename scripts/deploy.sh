@@ -169,6 +169,9 @@ SET_ENV_VARS=(
     "CHAT_SKILLS_INSTANT_RAG_URL=${CHAT_SKILLS_INSTANT_RAG_URL:-}"
     "CHAT_SKILLS_VIBE_URL=${CHAT_SKILLS_VIBE_URL:-}"
     "RAG_API_BASE=${RAG_API_BASE:-}"
+    # RAG_API_URL — read by the curator tools (lookup_authoritative_sources
+    # + ingest_url) and the legacy RAG-API retrieval path. See dev.env note.
+    "RAG_API_URL=${RAG_API_URL:-}"
     "CHROMA_HOST=${CHROMA_HOST:-}"
     "CHROMA_PORT=${CHROMA_PORT:-}"
     "CHROMA_SSL=${CHROMA_SSL:-}"
@@ -239,6 +242,12 @@ SET_SECRETS=(
     # every redeploy before 2026-04-23 because --set-secrets in this
     # script REPLACES the whole secret set. Keep this line.
     "MOBIUS_SKILL_LLM_INTERNAL_KEY=mobius-skill-llm-internal-key:latest"
+    # Curator tools (Phase 13.5, 2026-04-26): admin-write auth for
+    # lookup_authoritative_sources + ingest_url calls into mobius-rag.
+    # Read by app/pipeline/curator_tools.py (also accepts ADMIN_API_KEY
+    # as a fallback for older callers). Same secret mobius-rag mints
+    # for its own admin endpoints.
+    "MOBIUS_RAG_ADMIN_KEY=rag-admin-api-key:latest"
 )
 
 # ── Deploy ──────────────────────────────────────────────────────────
