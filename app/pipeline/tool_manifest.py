@@ -200,6 +200,9 @@ def _compose_manifest() -> str:
         _SEARCH_UPLOADED_DOCUMENT_BLOCK,
         registry.manifest_text(names=("google_search",)),
         registry.manifest_text(names=("web_scrape",)),
+        # vibe: short, work-adjacent vibe lines (toast/empathy/dry obs/etc.)
+        # Registered but was missing from the planner manifest until 2026-04-25.
+        registry.manifest_text(names=("vibe",)),
         _REFUSE_BLOCK,
     ]
     auto_block = _auto_discovered_block()
