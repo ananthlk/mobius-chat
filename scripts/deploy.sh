@@ -99,6 +99,20 @@ GIT_SHA="$(git -C "${CHAT_DIR}" rev-parse --short=10 HEAD 2>/dev/null || echo no
 BUILD_TS="$(date -u +%Y%m%d-%H%M%S)"
 IMAGE_TAG="${IMAGE_BASE}:${BUILD_TS}-${GIT_SHA}"
 
+# ── Pre-flight: which HEAD are we actually building? ────────────────
+# 2026-04-25 — RAG agent hit a worktree gotcha where the deploy ran
+# against an older HEAD because the working dir resolved to a git
+# worktree, not the main repo. These three lines catch that instantly:
+# operator sees the SHA, branch, and dirty/clean state before the
+# build submits, and can abort if it doesn't match what they expect.
+GIT_BRANCH="$(git -C "${CHAT_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+GIT_DIRTY="$(git -C "${CHAT_DIR}" diff --quiet 2>/dev/null && git -C "${CHAT_DIR}" diff --cached --quiet 2>/dev/null && echo clean || echo DIRTY)"
+echo "▸ Deploying from HEAD: ${GIT_SHA}  (branch: ${GIT_BRANCH}, working tree: ${GIT_DIRTY})"
+echo "▸ Repo path: ${CHAT_DIR}"
+if [[ "${GIT_DIRTY}" == "DIRTY" ]]; then
+    echo "  warn: working tree has uncommitted changes — image will reflect committed HEAD only" >&2
+fi
+
 # ── Helpers ─────────────────────────────────────────────────────────
 
 # Echo the command, then run it (or skip in dry-run).

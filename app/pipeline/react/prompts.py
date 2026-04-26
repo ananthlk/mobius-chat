@@ -425,15 +425,45 @@ def build_reasoning_context(
         parts.append(f"Prior failed query: {fq.get('question', '')}")
 
     if ctx.last_turns:
+        # Phase 13.6 — conversation-aware planner.
+        #
+        # The previous assistant answer is the working material when the
+        # user's next message is a continuation ("convert this to an
+        # appeal letter", "make it shorter", "rewrite for X"). Before
+        # this fix the prompt truncated assistant_content to 200 chars,
+        # which the planner could not meaningfully reshape — so it
+        # would default to retrieval and ask the user to re-paste the
+        # source. We now thread the most-recent assistant answer in at
+        # ~3000 chars (head-only — appeal-letter style transforms care
+        # about the operative facts, which sit at the top). Older
+        # turns stay short to keep the context budget in check.
+        MOST_RECENT_PREVIEW = 3000
+        OLDER_PREVIEW = 200
+
         turns_text = []
-        for turn in (ctx.last_turns or [])[:3]:
+        ordered = list(ctx.last_turns or [])[:3]
+        for idx, turn in enumerate(ordered):
             user_q = turn.get("user_content") or turn.get("message") or ""
-            assistant_a = (turn.get("assistant_content") or "")[:200]
+            assistant_full = turn.get("assistant_content") or ""
+            preview_budget = MOST_RECENT_PREVIEW if idx == 0 else OLDER_PREVIEW
+            assistant_a = assistant_full[:preview_budget]
+            ellipsis = "..." if len(assistant_full) > preview_budget else ""
             if user_q:
                 turns_text.append(f"User: {user_q}")
-                turns_text.append(f"Assistant: {assistant_a}...")
+                turns_text.append(f"Assistant: {assistant_a}{ellipsis}")
         if turns_text:
-            parts.append("Recent conversation:\n" + "\n".join(turns_text))
+            parts.append(
+                "Recent conversation (the FIRST 'Assistant:' below is the "
+                "MOST RECENT answer — treat it as available source material "
+                "when the user's current message is a continuation, e.g. "
+                "uses pronouns ('this', 'that', 'the above'), asks for a "
+                "transformation ('rewrite', 'shorten', 'convert to an "
+                "appeal letter'), or requests a downstream artifact "
+                "derived from prior substance. In those cases call "
+                "`transform_previous_answer` — do NOT re-run search_corpus "
+                "or other retrieval tools.):\n"
+                + "\n".join(turns_text)
+            )
 
     if tool_results:
         parts.append(f"\nIteration {iteration} — tools called this turn:")

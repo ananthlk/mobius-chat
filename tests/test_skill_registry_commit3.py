@@ -279,12 +279,16 @@ class TestEntityAndFollowUpViews:
         here. Currently:
           * list_thread_document_uploads — long-standing
           * vibe — added 2026-04-25 (mobius-skills/vibe)
+          * transform_previous_answer — added 2026-04-25 (Phase 13.6
+            conversation-aware planner; reshapes prior assistant
+            turn into a new artifact w/o retrieval)
         """
         from app.pipeline.tool_manifest import FOLLOW_UP_CAPABLE
 
         assert FOLLOW_UP_CAPABLE == frozenset({
             "list_thread_document_uploads",
             "vibe",
+            "transform_previous_answer",
         })
 
 

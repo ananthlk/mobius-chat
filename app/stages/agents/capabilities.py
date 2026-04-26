@@ -82,6 +82,15 @@ TOOL_CAPABILITIES: dict[str, dict[str, Any]] = {
     "search_corpus": {
         "can_answer": ["Policy lookup, appeals, PA, eligibility, claims, enrollment, credentialing process"],
     },
+    "transform_previous_answer": {
+        "can_answer": [
+            "Reshape the previous assistant answer into a new artifact (appeal letter, email, shorter version, plain-English rewrite, counter-argument, bulleted summary)",
+            "Continuation requests using pronouns ('this', 'that', 'the above')",
+            "Transformation verbs on prior content (convert/rewrite/shorten/lengthen/format-as)",
+        ],
+        "requires": "A prior assistant turn in this thread (read from ctx.last_turns); first-turn invocations return a clarifying message",
+        "cannot_answer": "Fresh substantive questions — even if topically related, those need search_corpus / curator / google_search retrieval",
+    },
     "google_search": {"can_answer": ["Web search when corpus misses or user asks"]},
     "web_scrape": {
         "can_answer": [

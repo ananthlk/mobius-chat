@@ -292,6 +292,13 @@ def _compose_manifest() -> str:
         # vibe: short, work-adjacent vibe lines (toast/empathy/dry obs/etc.)
         # Registered but was missing from the planner manifest until 2026-04-25.
         registry.manifest_text(names=("vibe",)),
+        # Phase 13.6 — conversation-aware planner. Continuation/
+        # transformation requests ("convert this to an appeal letter",
+        # "make it shorter", "rewrite for X") MUST route here, NOT to
+        # search_corpus / lookup_authoritative_sources. Placed before
+        # the curator/google blocks so the planner sees it as a first-
+        # class option for follow-up turns.
+        registry.manifest_text(names=("transform_previous_answer",)),
         # Curator tools (Phase 13.5) — registry of URLs Mobius knows
         # about, including non-ingested ones. Ordered after the search
         # tools so the planner reaches for search_corpus first; only
