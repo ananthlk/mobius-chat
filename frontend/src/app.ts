@@ -3319,14 +3319,287 @@ function renderFeedback(correlationId: string): HTMLElement {
     }
   });
 
+  // Email button — opens dialog to email the thread or last exchange.
+  // Uses POST /chat/thread/{id}/email which proxies to mobius-skills/email.
+  const emailBtn = document.createElement("button");
+  emailBtn.type = "button";
+  emailBtn.setAttribute("aria-label", "Email this conversation");
+  emailBtn.textContent = "Email";
+  emailBtn.addEventListener("click", () => {
+    const tid = window.__mobiusChatThreadId || null;
+    if (!tid) {
+      _showToast("No active thread to email");
+      return;
+    }
+    openEmailThreadDialog(tid);
+  });
+
   left.appendChild(up);
   left.appendChild(down);
   left.appendChild(commentArea);
   actions.appendChild(copy);
+  actions.appendChild(emailBtn);
   bar.appendChild(left);
   bar.appendChild(actions);
   return bar;
 }
+
+
+/** Email-thread dialog: recipient + scope + mode → Preview → Send.
+ *
+ * Two-step flow:
+ *   1. Preview → POST with confirm_before_send=true → renders drafted
+ *      subject+body in a read-only preview pane.
+ *   2. Send    → POST with confirm_before_send=false (same key, replays
+ *      the pending_confirm row and releases via the email-skill chokepoint).
+ */
+function openEmailThreadDialog(threadId: string): void {
+  // Don't double-open if one is already mounted
+  if (document.querySelector(".email-thread-dialog")) return;
+
+  const overlay = document.createElement("div");
+  overlay.className = "email-thread-dialog-overlay";
+  Object.assign(overlay.style, {
+    position: "fixed", inset: "0", background: "rgba(0,0,0,0.4)",
+    display: "flex", alignItems: "center", justifyContent: "center",
+    zIndex: "10000",
+  });
+
+  const dialog = document.createElement("div");
+  dialog.className = "email-thread-dialog";
+  Object.assign(dialog.style, {
+    background: "var(--background, #fff)",
+    color: "var(--foreground, #111)",
+    borderRadius: "8px",
+    padding: "20px",
+    width: "min(560px, 92vw)",
+    maxHeight: "92vh",
+    overflowY: "auto",
+    boxShadow: "0 8px 32px rgba(0,0,0,0.18)",
+    fontFamily: "inherit",
+  });
+
+  const title = document.createElement("h3");
+  title.textContent = "Email this conversation";
+  Object.assign(title.style, { margin: "0 0 12px 0", fontSize: "1.05rem" });
+  dialog.appendChild(title);
+
+  // Recipient
+  const toLabel = document.createElement("label");
+  toLabel.textContent = "Send to";
+  Object.assign(toLabel.style, { display: "block", fontSize: "0.85rem",
+                                  marginBottom: "4px", color: "var(--muted, #555)" });
+  const toInput = document.createElement("input");
+  toInput.type = "email";
+  toInput.placeholder = "name@example.com";
+  toInput.required = true;
+  Object.assign(toInput.style, {
+    width: "100%", boxSizing: "border-box", padding: "8px 10px",
+    border: "1px solid var(--border, #ccc)", borderRadius: "4px",
+    fontSize: "0.95rem", marginBottom: "14px",
+  });
+
+  // Scope
+  const scopeLabel = document.createElement("div");
+  scopeLabel.textContent = "What to include";
+  Object.assign(scopeLabel.style, { fontSize: "0.85rem", marginBottom: "4px",
+                                     color: "var(--muted, #555)" });
+  const scopeWrap = document.createElement("div");
+  Object.assign(scopeWrap.style, { display: "flex", gap: "16px", marginBottom: "14px" });
+  const scopeThread = _radio("scope", "thread", "Whole thread", true);
+  const scopeLast = _radio("scope", "last", "Last exchange", false);
+  scopeWrap.appendChild(scopeThread.wrap);
+  scopeWrap.appendChild(scopeLast.wrap);
+
+  // Mode
+  const modeLabel = document.createElement("div");
+  modeLabel.textContent = "How to format";
+  Object.assign(modeLabel.style, { fontSize: "0.85rem", marginBottom: "4px",
+                                    color: "var(--muted, #555)" });
+  const modeWrap = document.createElement("div");
+  Object.assign(modeWrap.style, { display: "flex", gap: "16px", marginBottom: "14px" });
+  const modeSummary = _radio("mode", "summary", "Summarize (LLM)", true);
+  const modeFull = _radio("mode", "full", "Full transcript", false);
+  modeWrap.appendChild(modeSummary.wrap);
+  modeWrap.appendChild(modeFull.wrap);
+
+  // Preview area (initially hidden)
+  const preview = document.createElement("div");
+  preview.className = "email-thread-preview";
+  Object.assign(preview.style, {
+    display: "none", border: "1px solid var(--border, #ccc)", borderRadius: "4px",
+    padding: "10px 12px", marginBottom: "12px", background: "var(--surface, #fafafa)",
+    maxHeight: "260px", overflowY: "auto", whiteSpace: "pre-wrap",
+    fontSize: "0.85rem",
+  });
+
+  // Status line
+  const status = document.createElement("div");
+  Object.assign(status.style, { fontSize: "0.85rem", marginBottom: "10px",
+                                 color: "var(--muted, #666)", minHeight: "18px" });
+
+  // Buttons
+  const btnRow = document.createElement("div");
+  Object.assign(btnRow.style, { display: "flex", gap: "8px", justifyContent: "flex-end" });
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.textContent = "Cancel";
+  Object.assign(cancelBtn.style, _btnStyle("secondary"));
+
+  const previewBtn = document.createElement("button");
+  previewBtn.type = "button";
+  previewBtn.textContent = "Preview";
+  Object.assign(previewBtn.style, _btnStyle("primary"));
+
+  const sendBtn = document.createElement("button");
+  sendBtn.type = "button";
+  sendBtn.textContent = "Send";
+  Object.assign(sendBtn.style, _btnStyle("primary"));
+  sendBtn.style.display = "none";  // shown after preview succeeds
+
+  btnRow.appendChild(cancelBtn);
+  btnRow.appendChild(previewBtn);
+  btnRow.appendChild(sendBtn);
+
+  dialog.appendChild(toLabel);
+  dialog.appendChild(toInput);
+  dialog.appendChild(scopeLabel);
+  dialog.appendChild(scopeWrap);
+  dialog.appendChild(modeLabel);
+  dialog.appendChild(modeWrap);
+  dialog.appendChild(preview);
+  dialog.appendChild(status);
+  dialog.appendChild(btnRow);
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+
+  setTimeout(() => toInput.focus(), 50);
+
+  const close = () => overlay.remove();
+  cancelBtn.addEventListener("click", close);
+  overlay.addEventListener("click", (ev) => { if (ev.target === overlay) close(); });
+
+  let lockedPayload: { to: string[]; scope: string; mode: string } | null = null;
+
+  const setBusy = (busy: boolean) => {
+    previewBtn.disabled = busy;
+    sendBtn.disabled = busy;
+    toInput.disabled = busy;
+    [scopeThread.input, scopeLast.input, modeSummary.input, modeFull.input]
+      .forEach((el) => { el.disabled = busy; });
+  };
+
+  previewBtn.addEventListener("click", async () => {
+    const to = (toInput.value || "").trim();
+    if (!to || !to.includes("@")) {
+      status.textContent = "Enter a valid email address.";
+      status.style.color = "#c0392b";
+      return;
+    }
+    const scope = scopeThread.input.checked ? "thread" : "last";
+    const mode = modeSummary.input.checked ? "summary" : "full";
+    status.textContent = "Drafting…";
+    status.style.color = "var(--muted, #666)";
+    setBusy(true);
+    try {
+      const res = await fetch(`${API_BASE}/chat/thread/${encodeURIComponent(threadId)}/email`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to: [to], scope, mode, confirm_before_send: true }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        status.textContent = `Failed: ${(data && (data.detail?.message || data.detail)) || res.statusText}`;
+        status.style.color = "#c0392b";
+        return;
+      }
+      const draft = data.draft || {};
+      preview.style.display = "block";
+      preview.textContent =
+        `To: ${(draft.to || []).join(", ")}\n` +
+        `Subject: ${draft.subject || ""}\n\n` +
+        `${draft.body || ""}`;
+      status.textContent = "Review the draft, then click Send.";
+      status.style.color = "var(--muted, #666)";
+      sendBtn.style.display = "";
+      previewBtn.textContent = "Re-draft";
+      lockedPayload = { to: [to], scope, mode };
+    } catch (err: any) {
+      status.textContent = `Error: ${err?.message || err}`;
+      status.style.color = "#c0392b";
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  sendBtn.addEventListener("click", async () => {
+    if (!lockedPayload) return;
+    setBusy(true);
+    status.textContent = "Sending…";
+    status.style.color = "var(--muted, #666)";
+    try {
+      const res = await fetch(`${API_BASE}/chat/thread/${encodeURIComponent(threadId)}/email`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...lockedPayload, confirm_before_send: false }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.sent) {
+        status.textContent = `Send failed: ${(data && (data.error || data.detail?.message || data.detail)) || res.statusText}`;
+        status.style.color = "#c0392b";
+        sendBtn.disabled = false;
+        return;
+      }
+      _showToast("Email sent");
+      close();
+    } catch (err: any) {
+      status.textContent = `Error: ${err?.message || err}`;
+      status.style.color = "#c0392b";
+      setBusy(false);
+    }
+  });
+}
+
+
+function _radio(name: string, value: string, label: string, checked: boolean): {
+  wrap: HTMLLabelElement; input: HTMLInputElement;
+} {
+  const wrap = document.createElement("label");
+  Object.assign(wrap.style, { display: "flex", alignItems: "center", gap: "6px",
+                               fontSize: "0.9rem", cursor: "pointer" });
+  const input = document.createElement("input");
+  input.type = "radio";
+  input.name = name;
+  input.value = value;
+  input.checked = checked;
+  const span = document.createElement("span");
+  span.textContent = label;
+  wrap.appendChild(input);
+  wrap.appendChild(span);
+  return { wrap, input };
+}
+
+
+function _btnStyle(variant: "primary" | "secondary"): Partial<CSSStyleDeclaration> {
+  const base: Partial<CSSStyleDeclaration> = {
+    padding: "8px 14px", borderRadius: "4px", border: "1px solid",
+    fontSize: "0.9rem", cursor: "pointer",
+  };
+  if (variant === "primary") {
+    base.background = "var(--primary, #2563eb)";
+    base.color = "#fff";
+    base.borderColor = "var(--primary, #2563eb)";
+  } else {
+    base.background = "transparent";
+    base.color = "var(--foreground, #111)";
+    base.borderColor = "var(--border, #ccc)";
+  }
+  return base;
+}
+
 
 /** RAG deep-link URL for Read tab (document + optional page + optional citation text for highlight). */
 function getRagDocumentUrl(
@@ -5346,7 +5619,9 @@ function run(): void {
   const messagesEl = el("messages");
   const inputEl = el("input") as HTMLInputElement;
   const sendBtn = el("send") as HTMLButtonElement;
-  /** Must stay in sync with server thread after upload + each /chat response. */
+  /** Must stay in sync with server thread after upload + each /chat response.
+   * Each assignment also mirrors to window.__mobiusChatThreadId so module-level
+   * code (email-thread feedback button) can read it without scope crossing. */
   let currentThreadId: string | null = null;
   const chatStatusBanner = document.getElementById("chatStatusBanner");
   const chatStatusBannerText = document.getElementById("chatStatusBannerText");
@@ -6356,7 +6631,7 @@ function run(): void {
     })
       .then((r) => r.json() as Promise<ChatPostResponse>)
       .then((data) => {
-        if (data.thread_id) currentThreadId = data.thread_id;
+        if (data.thread_id) currentThreadId = data.thread_id; window.__mobiusChatThreadId = currentThreadId;
         activeCorrelationId = data.correlation_id ?? "";
         if ((data.correlation_id || "").trim()) {
           onRequestCorrelationId();
@@ -6395,7 +6670,7 @@ function run(): void {
 
         thinkingDone(thinkingLines.length);
 
-        if (data.thread_id) currentThreadId = data.thread_id;
+        if (data.thread_id) currentThreadId = data.thread_id; window.__mobiusChatThreadId = currentThreadId;
         const cidForTurn = (data.correlation_id || activeCorrelationId || "").trim();
         if (cidForTurn) turnWrap.setAttribute("data-correlation-id", cidForTurn);
 
@@ -6881,7 +7156,7 @@ function run(): void {
         throw new Error(detail?.detail || `Upload failed (${resp.status})`);
       }
       const data = await resp.json();
-      if (data.thread_id) currentThreadId = data.thread_id;
+      if (data.thread_id) currentThreadId = data.thread_id; window.__mobiusChatThreadId = currentThreadId;
       // Success: short user-facing confirmation ("ready — searching now").
       // chunks_count is logged at the debug console for developer
       // diagnostics, but not exposed in the banner because users don't
@@ -7057,7 +7332,7 @@ function run(): void {
     // ensure_thread() creates the chat_threads row on first write,
     // matching the behavior of a fresh POST /chat turn.
     if (!currentThreadId) {
-      currentThreadId = crypto.randomUUID();
+      currentThreadId = crypto.randomUUID(); window.__mobiusChatThreadId = currentThreadId;
     }
     if (restoreInFlight.has(documentId)) return;
     restoreInFlight.add(documentId);
@@ -7451,7 +7726,7 @@ function run(): void {
         })
         .then((data: RosterUploadResponse) => {
             const org = data.org_name ?? orgName;
-            if (data.thread_id) currentThreadId = data.thread_id;
+            if (data.thread_id) currentThreadId = data.thread_id; window.__mobiusChatThreadId = currentThreadId;
             stopUploadPhaseEmits();
             uploadModal?.classList.remove("upload-modal--busy");
             uploadForm?.removeAttribute("aria-busy");
@@ -7521,7 +7796,7 @@ function run(): void {
   const btnNewChat = document.getElementById("btnNewChat");
   if (btnNewChat) {
     btnNewChat.addEventListener("click", () => {
-      currentThreadId = null;
+      currentThreadId = null; window.__mobiusChatThreadId = currentThreadId;
       hideChatStatusBanner();
       hideRosterUploadReceipt();
       messagesEl.querySelectorAll(".chat-turn").forEach((n) => n.remove());

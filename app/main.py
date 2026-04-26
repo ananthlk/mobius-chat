@@ -886,6 +886,7 @@ from app.api.admin import router as _admin_router
 from app.api.chat import router as _chat_router
 from app.api.credentialing import router as _credentialing_router
 from app.api.doc_reader import router as _doc_reader_router
+from app.api.email_thread import router as _email_thread_router
 from app.api.feedback import router as _feedback_router
 from app.api.history import router as _history_router
 from app.api.tasks import router as _tasks_router
@@ -897,6 +898,7 @@ app.include_router(_feedback_router)
 app.include_router(_tasks_router)
 app.include_router(_uploads_router)  # Phase B.1c — cross-thread uploads catalog
 app.include_router(_doc_reader_router)  # Phase 2b.1 — doc-reader proxy extracted from main.py
+app.include_router(_email_thread_router)  # POST /chat/thread/{id}/email — proxy to mobius-skills/email
 app.include_router(_admin_router)  # Dev-token minter + future ops-only endpoints
 
 # Provider skill runs as its own server (provider-roster-credentialing, :8011).
