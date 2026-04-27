@@ -310,6 +310,124 @@ def test_audit_records_error_on_db_failure(monkeypatch):
     assert m.schema_audit_status()["status"] == "error"
 
 
+# ── 4. JSON-reliability on transform path (Move 1) ───────────────────
+
+
+def test_format_response_recovers_from_bleed_on_continuation_turn(monkeypatch):
+    """When the integrator emits valid AnswerCard JSON but the sanitizer
+    can't extract human-visible text from direct_answer (returns empty),
+    AND this is a continuation turn (has previous_thread_summary),
+    recover the stub answer instead of showing 'I had trouble
+    formatting...'.
+
+    Repros the audience_rewrite bench failure mode and confirms the fix.
+    Patches display_text_for_parsed_answer_card to simulate the real
+    failure: sanitizer ate everything, returns empty.
+    """
+    import json
+    from types import SimpleNamespace
+    from app.responder import final as fr
+
+    # Valid AnswerCard but the sanitizer comes up empty.
+    valid_card = json.dumps({
+        "mode": "FACTUAL",
+        "direct_answer": "anything here",
+        "sections": [],
+    })
+
+    def fake_generate(*a, **k):
+        return (valid_card, {"input_tokens": 10, "output_tokens": 10})
+
+    monkeypatch.setattr("app.services.llm_manager.generate_sync", fake_generate)
+    # Force the bleed-fallback condition: display_text returns empty.
+    monkeypatch.setattr(fr, "display_text_for_parsed_answer_card", lambda _p: "")
+
+    plan = SimpleNamespace(subquestions=[
+        SimpleNamespace(id="sq1", text="rewrite as bullet list", intent_score=0.5)
+    ])
+    stub = "Here is the bulleted version of the prior PA timeline answer..."
+
+    msg, _usage = fr.format_response(
+        plan,
+        [stub],
+        user_message="rewrite as bullets",
+        previous_thread_summary="Sunshine FL PA timeline conversation",
+    )
+    parsed = json.loads(msg)
+    # The recovered direct_answer should be the stub, NOT the bleed
+    # fallback message.
+    assert "trouble formatting" not in parsed["direct_answer"].lower()
+    assert "bulleted version" in parsed["direct_answer"]
+
+
+def test_format_response_keeps_bleed_fallback_on_first_turn(monkeypatch):
+    """On a fresh turn (no previous_thread_summary), we DON'T recover
+    from bleed — the user genuinely got a broken answer and should
+    rephrase. The recovery is ONLY for continuation turns where we
+    have prior content as a known-good fallback."""
+    import json
+    from types import SimpleNamespace
+    from app.responder import final as fr
+
+    valid_card = json.dumps({
+        "mode": "FACTUAL",
+        "direct_answer": "x",
+        "sections": [],
+    })
+
+    def fake_generate(*a, **k):
+        return (valid_card, {"input_tokens": 10, "output_tokens": 10})
+
+    monkeypatch.setattr("app.services.llm_manager.generate_sync", fake_generate)
+    monkeypatch.setattr(fr, "display_text_for_parsed_answer_card", lambda _p: "")
+
+    plan = SimpleNamespace(subquestions=[
+        SimpleNamespace(id="sq1", text="fresh question", intent_score=0.5)
+    ])
+    msg, _usage = fr.format_response(
+        plan,
+        ["a stub from corpus retrieval, not a transform"],
+        user_message="fresh question",
+        previous_thread_summary=None,  # ← first turn
+    )
+    parsed = json.loads(msg)
+    # Falls through to the standard bleed fallback
+    assert "trouble formatting" in parsed["direct_answer"].lower()
+
+
+def test_format_response_short_stub_does_not_recover(monkeypatch):
+    """If the stub is too short (<20 chars), don't trust it — fall
+    through to the bleed fallback so the user gets a clear retry hint
+    rather than a half-broken answer."""
+    import json
+    from types import SimpleNamespace
+    from app.responder import final as fr
+
+    valid_card = json.dumps({
+        "mode": "FACTUAL",
+        "direct_answer": "x",
+        "sections": [],
+    })
+
+    def fake_generate(*a, **k):
+        return (valid_card, {"input_tokens": 10, "output_tokens": 10})
+
+    monkeypatch.setattr("app.services.llm_manager.generate_sync", fake_generate)
+    monkeypatch.setattr(fr, "display_text_for_parsed_answer_card", lambda _p: "")
+
+    plan = SimpleNamespace(subquestions=[
+        SimpleNamespace(id="sq1", text="t", intent_score=0.5)
+    ])
+    msg, _usage = fr.format_response(
+        plan,
+        ["short."],  # 6 chars; below the 20-char floor
+        user_message="x",
+        previous_thread_summary="something",
+    )
+    parsed = json.loads(msg)
+    assert "trouble formatting" in parsed["direct_answer"].lower()
+
+
 def test_audit_never_raises_even_when_module_imports_fail(monkeypatch):
     """Defensive: if the import chain itself blows up (e.g. db_client
     not importable in some test fixture), audit catches and logs."""

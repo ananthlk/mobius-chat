@@ -325,6 +325,31 @@ def format_response(
                 parsed = dict(parsed)
                 display_txt = display_text_for_parsed_answer_card(parsed)
                 if not display_txt.strip():
+                    # BETA-sprint Move 1 — JSON reliability on the
+                    # transform path. The bench surfaced a failure
+                    # mode where the integrator emits valid JSON but
+                    # the direct_answer field bleeds (nested JSON,
+                    # raw markdown). On a continuation turn (signaled
+                    # by previous_thread_summary != None) we have a
+                    # perfectly good stub answer — the transform
+                    # skill's prose — sitting in stub_answers. Use it
+                    # before going to the generic "trouble formatting"
+                    # message. This converts a user-visible "rephrase
+                    # your question" failure into the actual answer
+                    # the model intended to give.
+                    if previous_thread_summary and stub_answers:
+                        candidate = (stub_answers[0] if stub_answers else "").strip()
+                        # Require enough text that we're confident
+                        # we're not papering over a real failure.
+                        if candidate and len(candidate) >= 20:
+                            display_txt = candidate[:8000]
+                            logger.warning(
+                                "[transform-path] integrator direct_answer "
+                                "bled; recovered using stub answer (cid=%s, "
+                                "stub_len=%d)",
+                                (correlation_id or "?")[:8], len(candidate),
+                            )
+                if not display_txt.strip():
                     display_txt = DEFAULT_BLEED_FALLBACK
                 parsed["direct_answer"] = display_txt
                 _emit_integrator_chunks(display_txt, message_chunk_callback)
