@@ -43,6 +43,14 @@ _ANSWER_CARD_ENVELOPE_KEYS = (
     "confidence_note",
     "required_variables",
     "followups",
+    # Phase 13.7 — rolling thread summary. Persistence captures it
+    # via ctx.thread_summary before the card gets rebuilt here, but
+    # the response payload to the client also benefits from carrying
+    # the field (frontend audit/inspect, future "thread summary
+    # tooltip" UI, e2e bench detection). Without this key in the
+    # allowlist, the verify probe sees thread_summary: None on the
+    # response even though the DB has it.
+    "thread_summary",
 )
 
 
