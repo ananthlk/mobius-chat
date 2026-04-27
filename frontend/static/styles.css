@@ -6799,95 +6799,105 @@ body {
  * via mobius-tokens.css semantic accents.
  * ──────────────────────────────────────────────────────────────────── */
 
-/* ── Sidebar suite tiles (always-visible direct-link products) ── */
+/* ── Sidebar suite tiles (always-visible direct-link products) ──
+ *
+ * Brand register: flat text rows, NOT cards. Mirrors the existing
+ * .recent-item / .helpful-item / .skill-sidebar-item patterns —
+ * transparent background, subtle rgba(0,0,0,.05) hover tint, no
+ * borders, no shadows, no transforms. Semantic accent comes through
+ * a small colored dot to the left of the label, never via a heavy
+ * left-border or background gradient. */
 .suite-tiles {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  padding: 0.5rem 0;
+  gap: 0;
+  padding: 0;
 }
 
 .suite-tile {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  grid-template-rows: auto auto;
+  display: flex;
   align-items: center;
-  gap: 0.1rem 0.5rem;
-  padding: 0.6rem 0.75rem;
-  border: 1.5px solid transparent;
-  border-radius: 8px;
-  background: var(--mobius-bg-card);
+  gap: 0.55rem;
+  width: 100%;
+  padding: 0.45rem 0.5rem;
+  margin: 0.1rem 0;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm, 6px);
   cursor: pointer;
   text-align: left;
   font: inherit;
-  color: var(--mobius-text-primary);
-  transition: border-color 0.15s, box-shadow 0.15s, transform 0.08s;
-}
-
-.suite-tile:hover { box-shadow: var(--mobius-shadow-sm); transform: translateY(-1px); }
-.suite-tile:active { transform: translateY(0); }
-
-.suite-tile-label {
-  grid-column: 1;
-  grid-row: 1;
-  font-weight: 600;
   font-size: var(--mobius-text-sm);
-  line-height: 1.2;
+  color: var(--sidebar-text, var(--mobius-text-primary));
+  transition: background 0.15s;
 }
 
-.suite-tile-tagline {
-  grid-column: 1;
-  grid-row: 2;
-  font-size: var(--mobius-text-xs);
-  color: var(--mobius-text-muted);
-  line-height: 1.3;
+.suite-tile:hover {
+  background: rgba(0, 0, 0, 0.05);
 }
 
+/* Colored accent dot — the only visual carrier of the semantic
+ * brand color in the sidebar register. Small enough to feel like
+ * an icon dot, not a status indicator. */
+.suite-tile-label {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+
+.suite-tile-label::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 0.55rem;
+  vertical-align: middle;
+  background: var(--mobius-text-muted);
+}
+
+.suite-tile--indigo  .suite-tile-label::before { background: var(--mobius-indigo); }
+.suite-tile--violet  .suite-tile-label::before { background: var(--mobius-violet); }
+.suite-tile--emerald .suite-tile-label::before { background: var(--mobius-emerald); }
+
+/* Tagline lives in the modal, not the sidebar — kept hidden here so
+ * the renderer can still emit it without breaking the row layout. */
+.suite-tile-tagline { display: none; }
+
+/* Trailing arrow — muted, only visible on hover. */
 .suite-tile-arrow {
-  grid-column: 2;
-  grid-row: 1 / span 2;
-  font-size: 0.95rem;
+  flex-shrink: 0;
+  font-size: 0.85rem;
   color: var(--mobius-text-muted);
-  transition: transform 0.12s;
+  opacity: 0;
+  transition: opacity 0.15s, transform 0.12s;
 }
 
-.suite-tile:hover .suite-tile-arrow { transform: translate(2px, -2px); }
+.suite-tile:hover .suite-tile-arrow { opacity: 0.75; }
 
-/* Accent variants — semantic per mobius-tokens.css.
- * Left border + accent text on the label so the tiles read as a
- * coherent set without overpowering the sidebar. */
-.suite-tile--indigo  { border-left: 3px solid var(--mobius-indigo); }
-.suite-tile--violet  { border-left: 3px solid var(--mobius-violet); }
-.suite-tile--emerald { border-left: 3px solid var(--mobius-emerald); }
-.suite-tile--indigo:hover  { border-color: var(--mobius-indigo); }
-.suite-tile--violet:hover  { border-color: var(--mobius-violet); }
-.suite-tile--emerald:hover { border-color: var(--mobius-emerald); }
-.suite-tile--indigo .suite-tile-label  { color: var(--mobius-indigo); }
-.suite-tile--violet .suite-tile-label  { color: var(--mobius-violet); }
-.suite-tile--emerald .suite-tile-label { color: var(--mobius-emerald); }
-
-/* Learn-more link below the tiles */
+/* Learn-more — quiet text link with chevron. No border, no fill,
+ * no dashed boundary. Matches the muted secondary-action register. */
 .suite-learn-more {
   display: block;
   width: 100%;
-  margin-top: 0.5rem;
-  padding: 0.5rem 0.75rem;
-  background: transparent;
-  border: 1px dashed var(--mobius-border);
-  border-radius: 6px;
-  color: var(--mobius-text-secondary);
+  margin: 0.5rem 0 0.25rem;
+  padding: 0.35rem 0.5rem;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm, 6px);
+  color: var(--mobius-text-muted);
   font: inherit;
   font-size: var(--mobius-text-xs);
   text-align: left;
   cursor: pointer;
-  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  transition: color 0.12s, background 0.12s;
 }
 
 .suite-learn-more:hover {
-  background: var(--mobius-bg-hover);
-  border-color: var(--mobius-accent);
   color: var(--mobius-accent);
-  border-style: solid;
+  background: rgba(0, 0, 0, 0.04);
 }
 
 /* ── Skills modal sections ──────────────────────────────── */
