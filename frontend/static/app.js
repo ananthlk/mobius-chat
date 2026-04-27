@@ -7022,6 +7022,162 @@ ${message}`;
   (function setupSkillsModal() {
     const overlay = document.getElementById("skillsOverlay");
     const modal2 = document.getElementById("skillsModal");
+    const modalBody = document.getElementById("skillsModalBody");
+    const sidebarTilesContainer = document.getElementById("suiteTilesContainer");
+    const learnMoreBtn = document.getElementById("suiteLearnMore");
+    const SUITE_TILES = [
+      {
+        key: "strategy",
+        label: "Strategy",
+        tagline: "Benchmarking + KPIs",
+        accent: "indigo",
+        urlEnvKey: "MOBIUS_STRATEGY_URL",
+        fallbackUrl: "http://localhost:8099/financial-strategy"
+      },
+      {
+        key: "credentialing",
+        label: "Credentialing",
+        tagline: "Provider runs + reports",
+        accent: "violet",
+        urlEnvKey: "MOBIUS_CREDENTIALING_URL",
+        fallbackUrl: "http://localhost:3999/credentialing-home.html"
+      },
+      {
+        key: "roster",
+        label: "Roster",
+        tagline: "Provider directory health",
+        accent: "emerald",
+        urlEnvKey: "MOBIUS_ROSTER_URL",
+        fallbackUrl: (() => {
+          const w = window;
+          const base = w.API_BASE || window.location.origin;
+          const lastOrg = localStorage.getItem("lastOrg") || "";
+          return base + "/roster" + (lastOrg ? "?org=" + encodeURIComponent(lastOrg) : "");
+        })()
+      }
+    ];
+    function tileUrl(t) {
+      const winAny = window;
+      const fromEnv = winAny[t.urlEnvKey] || "";
+      return fromEnv && fromEnv.trim() ? fromEnv.trim() : t.fallbackUrl;
+    }
+    const CHAT_THEMES = [
+      {
+        title: "Healthcare research",
+        tagline: "What does the payer require?",
+        description: "Look up procedure and diagnosis codes, find policies in your provider corpus, verify NPI registry entries, and pull authoritative payer documents \u2014 all with source citations you can defend.",
+        examplePrompt: "What's Sunshine Health's prior authorization timeline for H0036?",
+        selected: true
+      },
+      {
+        title: "External research",
+        tagline: "Search beyond your library",
+        description: "When the answer isn't in your corpus yet, Mobius searches the web, reads specific pages, and can permanently add authoritative sources to your library \u2014 so the next person asking gets an indexed answer.",
+        examplePrompt: "Find Sunshine's dental plan transition dates and add the page to our library",
+        selected: true
+      },
+      {
+        title: "Document management",
+        tagline: "Ask questions about a specific document",
+        description: "Upload a denial letter, provider manual, or policy PDF and ask questions about it directly. Mobius keeps it on the thread and searches inside it alongside the broader corpus.",
+        examplePrompt: "What does the attached denial letter say about timely filing?",
+        selected: true
+      },
+      {
+        title: "Workflow",
+        tagline: "Make conversations actionable",
+        description: "Convert answers into letters, emails, or memos. Track follow-up tasks. Reshape a prior answer without re-running the whole research process.",
+        examplePrompt: "Convert this to an appeal letter for Sunshine Health",
+        selected: true
+      }
+    ];
+    const COMING_SOON = [
+      {
+        title: "Denial management",
+        tagline: "Build defendable appeals end-to-end",
+        description: `Intake the denial, retrieve the contract and regulatory rules that apply, construct the argument, run a counterpoint check ("what's the payer's likely rebuttal?"), and assemble the submission packet \u2014 letter, form, supporting documents, timeline.`
+      }
+    ];
+    function escapeHtml3(s) {
+      return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    }
+    function renderSidebarSuiteTiles() {
+      if (!sidebarTilesContainer)
+        return;
+      sidebarTilesContainer.innerHTML = "";
+      for (const t of SUITE_TILES) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = `suite-tile suite-tile--${t.accent}`;
+        btn.setAttribute("aria-label", `Open ${t.label}`);
+        btn.innerHTML = `<span class="suite-tile-label">${escapeHtml3(t.label)}</span><span class="suite-tile-tagline">${escapeHtml3(t.tagline)}</span><span class="suite-tile-arrow" aria-hidden="true">\u2197</span>`;
+        btn.addEventListener("click", () => {
+          window.open(tileUrl(t), "_blank", "noopener");
+        });
+        sidebarTilesContainer.appendChild(btn);
+      }
+    }
+    function renderSkillsModal() {
+      if (!modalBody)
+        return;
+      const html = [
+        // Available now in chat
+        '<div class="skills-section">',
+        '<div class="skills-section-head">',
+        '<span class="skills-section-eyebrow">Available now in chat</span>',
+        '<span class="skills-section-hint">Mobius picks these tools automatically based on your question.</span>',
+        "</div>",
+        '<div class="skills-themes-grid">',
+        ...CHAT_THEMES.map(
+          (t) => `<article class="skills-theme"><header class="skills-theme-head"><h3 class="skills-theme-title">${escapeHtml3(t.title)}</h3><p class="skills-theme-tagline">${escapeHtml3(t.tagline)}</p></header><p class="skills-theme-desc">${escapeHtml3(t.description)}</p><p class="skills-theme-example"><span class="skills-theme-example-label">Try:</span> \u201C${escapeHtml3(t.examplePrompt)}\u201D</p></article>`
+        ),
+        "</div>",
+        "</div>",
+        // Standalone products
+        '<div class="skills-section">',
+        '<div class="skills-section-head">',
+        '<span class="skills-section-eyebrow">Standalone products</span>',
+        '<span class="skills-section-hint">Open in a new tab today. Chat integration on the roadmap.</span>',
+        "</div>",
+        '<div class="skills-standalone-grid">',
+        ...SUITE_TILES.map(
+          (t) => `<article class="skills-standalone skills-standalone--${t.accent}"><h3 class="skills-standalone-title">${escapeHtml3(t.label)}</h3><p class="skills-standalone-tagline">${escapeHtml3(t.tagline)}</p><button type="button" class="skills-standalone-open" data-suite-key="${escapeHtml3(t.key)}">Open ${escapeHtml3(t.label)} \u2197</button></article>`
+        ),
+        "</div>",
+        "</div>",
+        // Coming soon
+        '<div class="skills-section">',
+        '<div class="skills-section-head">',
+        '<span class="skills-section-eyebrow">Coming soon</span>',
+        "</div>",
+        '<div class="skills-coming-grid">',
+        ...COMING_SOON.map(
+          (c) => `<article class="skills-coming"><h3 class="skills-coming-title">${escapeHtml3(c.title)}</h3><p class="skills-coming-tagline">${escapeHtml3(c.tagline)}</p><p class="skills-coming-desc">${escapeHtml3(c.description)}</p></article>`
+        ),
+        "</div>",
+        "</div>",
+        // Trust footer
+        '<div class="skills-trust">',
+        '<span class="skills-trust-eyebrow">How Mobius protects you</span>',
+        '<ul class="skills-trust-list">',
+        "<li>Cached answers for repeated lookups \u2014 fast when it matters</li>",
+        "<li>Hard refuse on questions about specific patients</li>",
+        "<li>Every claim cited to its source</li>",
+        "</ul>",
+        "</div>"
+      ].join("");
+      modalBody.innerHTML = html;
+      modalBody.querySelectorAll("[data-suite-key]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const key = btn.getAttribute("data-suite-key") || "";
+          const tile = SUITE_TILES.find((t) => t.key === key);
+          if (!tile)
+            return;
+          closeSkillsModal();
+          window.open(tileUrl(tile), "_blank", "noopener");
+        });
+      });
+    }
     function openSkillsModal() {
       overlay?.removeAttribute("hidden");
       modal2?.removeAttribute("hidden");
@@ -7030,33 +7186,36 @@ ${message}`;
       overlay?.setAttribute("hidden", "");
       modal2?.setAttribute("hidden", "");
     }
-    document.getElementById("btnOpenSkillPipeline")?.addEventListener("click", () => {
-      closeSkillsModal();
-      window.open("http://localhost:3999/credentialing-home.html", "_blank", "noopener");
-    });
-    document.getElementById("btnOpenFinancialStrategy")?.addEventListener("click", () => {
-      closeSkillsModal();
-      window.open("http://localhost:8099/financial-strategy", "_blank", "noopener");
-    });
+    renderSidebarSuiteTiles();
+    renderSkillsModal();
+    learnMoreBtn?.addEventListener("click", openSkillsModal);
     document.getElementById("skillsModalClose")?.addEventListener("click", closeSkillsModal);
     overlay?.addEventListener("click", closeSkillsModal);
-    document.getElementById("skillPipelineOpen")?.addEventListener("click", () => {
-      closeSkillsModal();
-      window.open("http://localhost:3999/credentialing-home.html", "_blank", "noopener");
-    });
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && !modal2?.hasAttribute("hidden"))
         closeSkillsModal();
     });
-    function openRosterPage() {
-      closeSkillsModal();
-      const base = window.API_BASE || window.location.origin;
-      const lastOrg = localStorage.getItem("lastOrg") || "";
-      const url = base + "/roster" + (lastOrg ? "?org=" + encodeURIComponent(lastOrg) : "");
-      window.open(url, "_blank", "noopener");
-    }
-    document.getElementById("btnOpenRoster")?.addEventListener("click", openRosterPage);
-    document.getElementById("skillRosterOpen")?.addEventListener("click", openRosterPage);
+    document.getElementById("btnOpenSkillPipeline")?.addEventListener("click", () => {
+      const t = SUITE_TILES.find((x) => x.key === "credentialing");
+      if (t) {
+        closeSkillsModal();
+        window.open(tileUrl(t), "_blank", "noopener");
+      }
+    });
+    document.getElementById("btnOpenFinancialStrategy")?.addEventListener("click", () => {
+      const t = SUITE_TILES.find((x) => x.key === "strategy");
+      if (t) {
+        closeSkillsModal();
+        window.open(tileUrl(t), "_blank", "noopener");
+      }
+    });
+    document.getElementById("btnOpenRoster")?.addEventListener("click", () => {
+      const t = SUITE_TILES.find((x) => x.key === "roster");
+      if (t) {
+        closeSkillsModal();
+        window.open(tileUrl(t), "_blank", "noopener");
+      }
+    });
   })();
   _initLandingDashboard();
 }

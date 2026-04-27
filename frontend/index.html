@@ -43,16 +43,18 @@
 
         <div class="sidebar-skills">
           <h3 class="sidebar-section-title sidebar-section-toggle" role="button" tabindex="0" aria-expanded="true" aria-controls="skillsListWrap">
-            <span>Skills</span>
+            <span>Operations Suite</span>
             <span class="sidebar-section-arrow" aria-hidden="true">▾</span>
           </h3>
           <div class="sidebar-section-body" id="skillsListWrap">
-            <!-- frontend/index.html doesn't ship the suite buttons (Roster /
-                 Credentialing) — those are in the static/ build. Keep this
-                 section as a stub so the rail-icon target still resolves;
-                 a "Skills coming online" placeholder reads cleaner than
-                 an empty box. -->
-            <p class="sidebar-skills-empty">Skills available in the hosted build.</p>
+            <!-- Populated by renderSidebarSuiteTiles() in app.ts. Always-
+                 visible direct-link tiles for products with their own
+                 UI (Strategy, Credentialing, Roster). The "Learn more"
+                 link below opens the full themed skills modal. -->
+            <div class="suite-tiles" id="suiteTilesContainer"></div>
+            <button type="button" class="suite-learn-more" id="suiteLearnMore">
+              Learn more about chat skills →
+            </button>
           </div>
         </div>
 
@@ -560,37 +562,23 @@
     </div>
   </div>
 
-  <!-- Skills modal -->
+  <!-- Skills modal — Mobius Operations Suite -->
   <div class="skills-overlay" id="skillsOverlay" hidden></div>
   <div class="skills-modal" id="skillsModal" role="dialog" aria-labelledby="skillsModalTitle" aria-modal="true" hidden>
     <div class="skills-modal-header">
       <div>
-        <h2 id="skillsModalTitle" class="skills-modal-title">Skills</h2>
-        <p class="skills-modal-subtitle">Specialized tools that work alongside your chat.</p>
+        <h2 id="skillsModalTitle" class="skills-modal-title">Mobius Operations Suite</h2>
+        <p class="skills-modal-subtitle">Everything around care delivery — billing, credentialing, contracting, denials, strategy. Not clinical support; not patient engagement. The work that keeps your clinic running.</p>
       </div>
       <button type="button" class="skills-modal-close" id="skillsModalClose" aria-label="Close skills">×</button>
     </div>
-    <!-- Roadmap banner: two skills converging into one -->
-    <div class="skills-suite-banner">
-      <span class="skills-suite-icon">◎</span>
-      <div>
-        <span class="skills-suite-title">Provider Roster Health</span>
-        <span class="skills-suite-desc">These two skills work together and will merge into a single <strong>Roster Health</strong> workspace — roster as the permanent record, credentialing as the engine that keeps it current.</span>
-      </div>
-    </div>
 
-    <!-- 2026-04-18: Roster + Credentialing skill cards REMOVED.
-         Disconnecting the half-integrated credentialing+roster chat
-         surface so it can be rebuilt cleanly as a standalone skill
-         with its own UI later. Chat now focuses on ask-and-answer
-         with search_corpus / search_uploaded_document / google /
-         healthcare_query. -->
-    <div class="skills-modal-grid" id="skillsModalGrid">
-      <p class="skill-card-desc" style="margin: 0; padding: 12px;">
-        No skill integrations are configured yet. Ask a question, upload
-        a document, or drag a file onto the composer to get started.
-      </p>
-    </div>
+    <!-- Body populated by renderSkillsModal() in app.ts. Sections:
+         - Available now in chat (4 themes)
+         - Standalone products (3 with direct-link buttons)
+         - Coming soon (1 tease)
+         - How Mobius protects you (footer) -->
+    <div class="skills-modal-body" id="skillsModalBody"></div>
   </div>
 
   <script>

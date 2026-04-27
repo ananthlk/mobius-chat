@@ -8136,10 +8136,239 @@ function run(): void {
 
   updateSendState();
 
-  // ── Skills modal ────────────────────────────────────────────────────────────
+  // ── Operations Suite + Skills modal ─────────────────────────────────────────
+  //
+  // Two-layer discoverability:
+  //   1. Sidebar "Operations Suite" → 3 always-visible direct-link tiles
+  //      (Strategy, Credentialing, Roster) — each opens the standalone
+  //      product in a new tab.
+  //   2. "Learn more about chat skills →" link below the tiles → opens
+  //      the full themed modal with all categories.
+  //
+  // No tool names ("search_corpus", "healthcare_query") leak into user-
+  // facing copy — themes are described by what they do for the operator.
+  // Power users wanting the raw planner manifest still have
+  // _openSeeAllSkillsModal() (the chip-list).
+  //
+  // The data structure carries `selected: true` per theme, decorative
+  // today; it becomes a per-role toggle when tool-gating ships (queued).
+  //
+  // Brand colors are semantic (mobius-tokens.css):
+  //   indigo  → runs / pipeline / process state   (Strategy)
+  //   violet  → credentialing (policy-of-record)  (Credentialing)
+  //   emerald → roster (operational data)         (Roster)
+  //
   (function setupSkillsModal(): void {
     const overlay = document.getElementById("skillsOverlay");
     const modal = document.getElementById("skillsModal");
+    const modalBody = document.getElementById("skillsModalBody");
+    const sidebarTilesContainer = document.getElementById("suiteTilesContainer");
+    const learnMoreBtn = document.getElementById("suiteLearnMore");
+
+    type SuiteTile = {
+      key: string;
+      label: string;
+      tagline: string;
+      accent: "indigo" | "violet" | "emerald";
+      urlEnvKey: string;       // window.<key> read first
+      fallbackUrl: string;     // dev / unconfigured fallback
+    };
+
+    const SUITE_TILES: SuiteTile[] = [
+      {
+        key: "strategy",
+        label: "Strategy",
+        tagline: "Benchmarking + KPIs",
+        accent: "indigo",
+        urlEnvKey: "MOBIUS_STRATEGY_URL",
+        fallbackUrl: "http://localhost:8099/financial-strategy",
+      },
+      {
+        key: "credentialing",
+        label: "Credentialing",
+        tagline: "Provider runs + reports",
+        accent: "violet",
+        urlEnvKey: "MOBIUS_CREDENTIALING_URL",
+        fallbackUrl: "http://localhost:3999/credentialing-home.html",
+      },
+      {
+        key: "roster",
+        label: "Roster",
+        tagline: "Provider directory health",
+        accent: "emerald",
+        urlEnvKey: "MOBIUS_ROSTER_URL",
+        fallbackUrl: ((): string => {
+          const w = window as Window & typeof globalThis & { API_BASE?: string };
+          const base = w.API_BASE || window.location.origin;
+          const lastOrg = localStorage.getItem("lastOrg") || "";
+          return base + "/roster" + (lastOrg ? "?org=" + encodeURIComponent(lastOrg) : "");
+        })(),
+      },
+    ];
+
+    function tileUrl(t: SuiteTile): string {
+      const winAny = window as Window & typeof globalThis & Record<string, unknown>;
+      const fromEnv = (winAny[t.urlEnvKey] as string | undefined) || "";
+      return (fromEnv && fromEnv.trim()) ? fromEnv.trim() : t.fallbackUrl;
+    }
+
+    type ChatTheme = {
+      title: string;
+      tagline: string;
+      description: string;
+      examplePrompt: string;
+      selected: boolean;       // hook for future per-role gating
+    };
+
+    // TODO: hydrate from /chat/skills/catalog when the backend exposes it.
+    const CHAT_THEMES: ChatTheme[] = [
+      {
+        title: "Healthcare research",
+        tagline: "What does the payer require?",
+        description: "Look up procedure and diagnosis codes, find policies in your provider corpus, verify NPI registry entries, and pull authoritative payer documents — all with source citations you can defend.",
+        examplePrompt: "What's Sunshine Health's prior authorization timeline for H0036?",
+        selected: true,
+      },
+      {
+        title: "External research",
+        tagline: "Search beyond your library",
+        description: "When the answer isn't in your corpus yet, Mobius searches the web, reads specific pages, and can permanently add authoritative sources to your library — so the next person asking gets an indexed answer.",
+        examplePrompt: "Find Sunshine's dental plan transition dates and add the page to our library",
+        selected: true,
+      },
+      {
+        title: "Document management",
+        tagline: "Ask questions about a specific document",
+        description: "Upload a denial letter, provider manual, or policy PDF and ask questions about it directly. Mobius keeps it on the thread and searches inside it alongside the broader corpus.",
+        examplePrompt: "What does the attached denial letter say about timely filing?",
+        selected: true,
+      },
+      {
+        title: "Workflow",
+        tagline: "Make conversations actionable",
+        description: "Convert answers into letters, emails, or memos. Track follow-up tasks. Reshape a prior answer without re-running the whole research process.",
+        examplePrompt: "Convert this to an appeal letter for Sunshine Health",
+        selected: true,
+      },
+    ];
+
+    type ComingSoon = { title: string; tagline: string; description: string };
+    const COMING_SOON: ComingSoon[] = [
+      {
+        title: "Denial management",
+        tagline: "Build defendable appeals end-to-end",
+        description: "Intake the denial, retrieve the contract and regulatory rules that apply, construct the argument, run a counterpoint check (\"what's the payer's likely rebuttal?\"), and assemble the submission packet — letter, form, supporting documents, timeline.",
+      },
+    ];
+
+    // ── Renderers ────────────────────────────────────────────────────
+
+    function escapeHtml(s: string): string {
+      return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    }
+
+    function renderSidebarSuiteTiles(): void {
+      if (!sidebarTilesContainer) return;
+      sidebarTilesContainer.innerHTML = "";
+      for (const t of SUITE_TILES) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = `suite-tile suite-tile--${t.accent}`;
+        btn.setAttribute("aria-label", `Open ${t.label}`);
+        btn.innerHTML =
+          `<span class="suite-tile-label">${escapeHtml(t.label)}</span>` +
+          `<span class="suite-tile-tagline">${escapeHtml(t.tagline)}</span>` +
+          `<span class="suite-tile-arrow" aria-hidden="true">↗</span>`;
+        btn.addEventListener("click", () => {
+          window.open(tileUrl(t), "_blank", "noopener");
+        });
+        sidebarTilesContainer.appendChild(btn);
+      }
+    }
+
+    function renderSkillsModal(): void {
+      if (!modalBody) return;
+      const html = [
+        // Available now in chat
+        '<div class="skills-section">',
+          '<div class="skills-section-head">',
+            '<span class="skills-section-eyebrow">Available now in chat</span>',
+            '<span class="skills-section-hint">Mobius picks these tools automatically based on your question.</span>',
+          '</div>',
+          '<div class="skills-themes-grid">',
+            ...CHAT_THEMES.map((t) =>
+              '<article class="skills-theme">' +
+                '<header class="skills-theme-head">' +
+                  `<h3 class="skills-theme-title">${escapeHtml(t.title)}</h3>` +
+                  `<p class="skills-theme-tagline">${escapeHtml(t.tagline)}</p>` +
+                '</header>' +
+                `<p class="skills-theme-desc">${escapeHtml(t.description)}</p>` +
+                '<p class="skills-theme-example">' +
+                  '<span class="skills-theme-example-label">Try:</span> ' +
+                  `\u201c${escapeHtml(t.examplePrompt)}\u201d` +
+                '</p>' +
+              '</article>'
+            ),
+          '</div>',
+        '</div>',
+        // Standalone products
+        '<div class="skills-section">',
+          '<div class="skills-section-head">',
+            '<span class="skills-section-eyebrow">Standalone products</span>',
+            '<span class="skills-section-hint">Open in a new tab today. Chat integration on the roadmap.</span>',
+          '</div>',
+          '<div class="skills-standalone-grid">',
+            ...SUITE_TILES.map((t) =>
+              `<article class="skills-standalone skills-standalone--${t.accent}">` +
+                `<h3 class="skills-standalone-title">${escapeHtml(t.label)}</h3>` +
+                `<p class="skills-standalone-tagline">${escapeHtml(t.tagline)}</p>` +
+                `<button type="button" class="skills-standalone-open" data-suite-key="${escapeHtml(t.key)}">` +
+                  `Open ${escapeHtml(t.label)} \u2197` +
+                '</button>' +
+              '</article>'
+            ),
+          '</div>',
+        '</div>',
+        // Coming soon
+        '<div class="skills-section">',
+          '<div class="skills-section-head">',
+            '<span class="skills-section-eyebrow">Coming soon</span>',
+          '</div>',
+          '<div class="skills-coming-grid">',
+            ...COMING_SOON.map((c) =>
+              '<article class="skills-coming">' +
+                `<h3 class="skills-coming-title">${escapeHtml(c.title)}</h3>` +
+                `<p class="skills-coming-tagline">${escapeHtml(c.tagline)}</p>` +
+                `<p class="skills-coming-desc">${escapeHtml(c.description)}</p>` +
+              '</article>'
+            ),
+          '</div>',
+        '</div>',
+        // Trust footer
+        '<div class="skills-trust">',
+          '<span class="skills-trust-eyebrow">How Mobius protects you</span>',
+          '<ul class="skills-trust-list">',
+            '<li>Cached answers for repeated lookups — fast when it matters</li>',
+            '<li>Hard refuse on questions about specific patients</li>',
+            '<li>Every claim cited to its source</li>',
+          '</ul>',
+        '</div>',
+      ].join("");
+      modalBody.innerHTML = html;
+
+      // Wire the standalone-product Open buttons inside the modal.
+      modalBody.querySelectorAll<HTMLButtonElement>("[data-suite-key]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const key = btn.getAttribute("data-suite-key") || "";
+          const tile = SUITE_TILES.find((t) => t.key === key);
+          if (!tile) return;
+          closeSkillsModal();
+          window.open(tileUrl(tile), "_blank", "noopener");
+        });
+      });
+    }
+
+    // ── Open / close ─────────────────────────────────────────────────
 
     function openSkillsModal(): void {
       overlay?.removeAttribute("hidden");
@@ -8151,42 +8380,36 @@ function run(): void {
       modal?.setAttribute("hidden", "");
     }
 
-    // Sidebar entry points
-    document.getElementById("btnOpenSkillPipeline")?.addEventListener("click", () => {
-      closeSkillsModal();
-      window.open("http://localhost:3999/credentialing-home.html", "_blank", "noopener");
-    });
+    // Initial render — sidebar tiles + modal body (modal stays hidden
+    // until learn-more click).
+    renderSidebarSuiteTiles();
+    renderSkillsModal();
 
-    document.getElementById("btnOpenFinancialStrategy")?.addEventListener("click", () => {
-      closeSkillsModal();
-      window.open("http://localhost:8099/financial-strategy", "_blank", "noopener");
-    });
+    // Sidebar "Learn more about chat skills →" → open modal.
+    learnMoreBtn?.addEventListener("click", openSkillsModal);
 
-    // Close button
+    // Modal close button + overlay click + Esc.
     document.getElementById("skillsModalClose")?.addEventListener("click", closeSkillsModal);
     overlay?.addEventListener("click", closeSkillsModal);
-
-    // "Open Pipeline" from skills modal card
-    document.getElementById("skillPipelineOpen")?.addEventListener("click", () => {
-      closeSkillsModal();
-      window.open("http://localhost:3999/credentialing-home.html", "_blank", "noopener");
-    });
-
-    // Keyboard escape
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && !modal?.hasAttribute("hidden")) closeSkillsModal();
     });
 
-    // ── Roster buttons (sidebar + skill card) ──────────────
-    function openRosterPage(): void {
-      closeSkillsModal();
-      const base = (window as Window & typeof globalThis & { API_BASE?: string }).API_BASE || window.location.origin;
-      const lastOrg = localStorage.getItem("lastOrg") || "";
-      const url = base + "/roster" + (lastOrg ? "?org=" + encodeURIComponent(lastOrg) : "");
-      window.open(url, "_blank", "noopener");
-    }
-    document.getElementById("btnOpenRoster")?.addEventListener("click", openRosterPage);
-    document.getElementById("skillRosterOpen")?.addEventListener("click", openRosterPage);
+    // Defensive: keep handlers for legacy element ids in case any
+    // ancillary HTML (static/index.html) still references them. They
+    // delegate to the same SUITE_TILES URL resolution.
+    document.getElementById("btnOpenSkillPipeline")?.addEventListener("click", () => {
+      const t = SUITE_TILES.find((x) => x.key === "credentialing");
+      if (t) { closeSkillsModal(); window.open(tileUrl(t), "_blank", "noopener"); }
+    });
+    document.getElementById("btnOpenFinancialStrategy")?.addEventListener("click", () => {
+      const t = SUITE_TILES.find((x) => x.key === "strategy");
+      if (t) { closeSkillsModal(); window.open(tileUrl(t), "_blank", "noopener"); }
+    });
+    document.getElementById("btnOpenRoster")?.addEventListener("click", () => {
+      const t = SUITE_TILES.find((x) => x.key === "roster");
+      if (t) { closeSkillsModal(); window.open(tileUrl(t), "_blank", "noopener"); }
+    });
   })();
 
   // ── Boot landing dashboard ──────────────────────────────────

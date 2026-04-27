@@ -6792,3 +6792,332 @@ body {
   font-size: 12px; line-height: 1.45;
   color: var(--mobius-text-muted, #8b949e);
 }
+
+/* ────────────────────────────────────────────────────────────────────
+ * Operations Suite — sidebar tiles + skills modal sections
+ * Added 2026-04-27. Brand-token disciplined: no raw hex, all colors
+ * via mobius-tokens.css semantic accents.
+ * ──────────────────────────────────────────────────────────────────── */
+
+/* ── Sidebar suite tiles (always-visible direct-link products) ── */
+.suite-tiles {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.5rem 0;
+}
+
+.suite-tile {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 0.1rem 0.5rem;
+  padding: 0.6rem 0.75rem;
+  border: 1.5px solid transparent;
+  border-radius: 8px;
+  background: var(--mobius-bg-card);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: var(--mobius-text-primary);
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.08s;
+}
+
+.suite-tile:hover { box-shadow: var(--mobius-shadow-sm); transform: translateY(-1px); }
+.suite-tile:active { transform: translateY(0); }
+
+.suite-tile-label {
+  grid-column: 1;
+  grid-row: 1;
+  font-weight: 600;
+  font-size: var(--mobius-text-sm);
+  line-height: 1.2;
+}
+
+.suite-tile-tagline {
+  grid-column: 1;
+  grid-row: 2;
+  font-size: var(--mobius-text-xs);
+  color: var(--mobius-text-muted);
+  line-height: 1.3;
+}
+
+.suite-tile-arrow {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  font-size: 0.95rem;
+  color: var(--mobius-text-muted);
+  transition: transform 0.12s;
+}
+
+.suite-tile:hover .suite-tile-arrow { transform: translate(2px, -2px); }
+
+/* Accent variants — semantic per mobius-tokens.css.
+ * Left border + accent text on the label so the tiles read as a
+ * coherent set without overpowering the sidebar. */
+.suite-tile--indigo  { border-left: 3px solid var(--mobius-indigo); }
+.suite-tile--violet  { border-left: 3px solid var(--mobius-violet); }
+.suite-tile--emerald { border-left: 3px solid var(--mobius-emerald); }
+.suite-tile--indigo:hover  { border-color: var(--mobius-indigo); }
+.suite-tile--violet:hover  { border-color: var(--mobius-violet); }
+.suite-tile--emerald:hover { border-color: var(--mobius-emerald); }
+.suite-tile--indigo .suite-tile-label  { color: var(--mobius-indigo); }
+.suite-tile--violet .suite-tile-label  { color: var(--mobius-violet); }
+.suite-tile--emerald .suite-tile-label { color: var(--mobius-emerald); }
+
+/* Learn-more link below the tiles */
+.suite-learn-more {
+  display: block;
+  width: 100%;
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: transparent;
+  border: 1px dashed var(--mobius-border);
+  border-radius: 6px;
+  color: var(--mobius-text-secondary);
+  font: inherit;
+  font-size: var(--mobius-text-xs);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.suite-learn-more:hover {
+  background: var(--mobius-bg-hover);
+  border-color: var(--mobius-accent);
+  color: var(--mobius-accent);
+  border-style: solid;
+}
+
+/* ── Skills modal sections ──────────────────────────────── */
+.skills-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1.75rem;
+}
+
+.skills-section { display: flex; flex-direction: column; gap: 0.875rem; }
+
+.skills-section-head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--mobius-border);
+}
+
+.skills-section-eyebrow {
+  font-size: var(--mobius-text-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--mobius-text-muted);
+}
+
+.skills-section-hint {
+  font-size: var(--mobius-text-sm);
+  color: var(--mobius-text-secondary);
+}
+
+/* Available-now theme grid */
+.skills-themes-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1rem;
+}
+
+.skills-theme {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 1rem;
+  background: var(--mobius-bg-card);
+  border: 1px solid var(--mobius-border);
+  border-radius: 10px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.skills-theme:hover {
+  border-color: var(--mobius-accent);
+  box-shadow: var(--mobius-shadow-sm);
+}
+
+.skills-theme-head { display: flex; flex-direction: column; gap: 0.1rem; }
+
+.skills-theme-title {
+  margin: 0;
+  font-size: var(--mobius-text-md);
+  font-weight: 700;
+  color: var(--mobius-text-primary);
+}
+
+.skills-theme-tagline {
+  margin: 0;
+  font-size: var(--mobius-text-sm);
+  font-style: italic;
+  color: var(--mobius-text-secondary);
+}
+
+.skills-theme-desc {
+  margin: 0;
+  font-size: var(--mobius-text-sm);
+  line-height: 1.5;
+  color: var(--mobius-text-primary);
+}
+
+.skills-theme-example {
+  margin: 0;
+  padding: 0.5rem 0.65rem;
+  background: var(--mobius-bg-tertiary);
+  border-radius: 6px;
+  font-size: var(--mobius-text-xs);
+  color: var(--mobius-text-secondary);
+  line-height: 1.4;
+}
+
+.skills-theme-example-label {
+  font-weight: 600;
+  color: var(--mobius-text-primary);
+  margin-right: 0.25rem;
+}
+
+/* Standalone products grid (with Open buttons) */
+.skills-standalone-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 1rem;
+}
+
+.skills-standalone {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 1rem;
+  background: var(--mobius-bg-card);
+  border: 1px solid var(--mobius-border);
+  border-radius: 10px;
+  border-left-width: 4px;
+}
+
+.skills-standalone--indigo  { border-left-color: var(--mobius-indigo); }
+.skills-standalone--violet  { border-left-color: var(--mobius-violet); }
+.skills-standalone--emerald { border-left-color: var(--mobius-emerald); }
+
+.skills-standalone-title {
+  margin: 0;
+  font-size: var(--mobius-text-md);
+  font-weight: 700;
+  color: var(--mobius-text-primary);
+}
+
+.skills-standalone-tagline {
+  margin: 0;
+  font-size: var(--mobius-text-sm);
+  color: var(--mobius-text-muted);
+  flex: 1;
+}
+
+.skills-standalone-open {
+  margin-top: 0.4rem;
+  padding: 0.5rem 0.85rem;
+  background: var(--mobius-bg-card);
+  border: 1.5px solid var(--mobius-accent);
+  border-radius: 8px;
+  color: var(--mobius-accent);
+  font: inherit;
+  font-size: var(--mobius-text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s, color 0.12s;
+}
+
+.skills-standalone-open:hover {
+  background: var(--mobius-accent);
+  color: var(--mobius-accent-text);
+}
+
+/* Match the suite tile accent on the standalone Open buttons. */
+.skills-standalone--indigo .skills-standalone-open {
+  border-color: var(--mobius-indigo); color: var(--mobius-indigo);
+}
+.skills-standalone--indigo .skills-standalone-open:hover {
+  background: var(--mobius-indigo); color: #fff;
+}
+.skills-standalone--violet .skills-standalone-open {
+  border-color: var(--mobius-violet); color: var(--mobius-violet);
+}
+.skills-standalone--violet .skills-standalone-open:hover {
+  background: var(--mobius-violet); color: #fff;
+}
+.skills-standalone--emerald .skills-standalone-open {
+  border-color: var(--mobius-emerald); color: var(--mobius-emerald);
+}
+.skills-standalone--emerald .skills-standalone-open:hover {
+  background: var(--mobius-emerald); color: #fff;
+}
+
+/* Coming soon — muted, dashed border */
+.skills-coming-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1rem;
+}
+
+.skills-coming {
+  padding: 1rem;
+  background: var(--mobius-bg-secondary);
+  border: 1.5px dashed var(--mobius-border);
+  border-radius: 10px;
+  opacity: 0.85;
+}
+
+.skills-coming-title {
+  margin: 0 0 0.2rem;
+  font-size: var(--mobius-text-md);
+  font-weight: 700;
+  color: var(--mobius-text-secondary);
+}
+
+.skills-coming-tagline {
+  margin: 0 0 0.5rem;
+  font-size: var(--mobius-text-sm);
+  font-style: italic;
+  color: var(--mobius-text-muted);
+}
+
+.skills-coming-desc {
+  margin: 0;
+  font-size: var(--mobius-text-sm);
+  line-height: 1.5;
+  color: var(--mobius-text-secondary);
+}
+
+/* Trust footer */
+.skills-trust {
+  margin-top: 0.5rem;
+  padding: 1rem 1.25rem;
+  background: var(--mobius-bg-tertiary);
+  border-radius: 10px;
+}
+
+.skills-trust-eyebrow {
+  display: block;
+  font-size: var(--mobius-text-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--mobius-text-muted);
+  margin-bottom: 0.5rem;
+}
+
+.skills-trust-list {
+  margin: 0;
+  padding-left: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: var(--mobius-text-sm);
+  color: var(--mobius-text-secondary);
+}
