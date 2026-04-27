@@ -273,7 +273,8 @@ def get_thread_turns(thread_id: str, limit: int = 50) -> list[dict[str, Any]]:
         return []
     result = db_query(
         """
-        SELECT correlation_id, question, final_message, sources, created_at
+        SELECT correlation_id, question, final_message, sources,
+               thinking_log, source_confidence_strip, created_at
         FROM chat_turns
         WHERE thread_id = :tid
         ORDER BY created_at ASC
@@ -288,26 +289,36 @@ def get_thread_turns(thread_id: str, limit: int = 50) -> list[dict[str, Any]]:
             tid[:8], _err_message(result),
         )
         return []
+
+    def _decode_jsonb(raw: Any) -> Any:
+        """jsonb columns come back as Python objects via psycopg2, but
+        the fallback path can hand back a JSON string. Decode either."""
+        if raw is None:
+            return None
+        if isinstance(raw, (list, dict)):
+            return raw
+        if isinstance(raw, str):
+            try:
+                return json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                return None
+        return None
+
     out: list[dict[str, Any]] = []
     for r in _rows_as_dicts(result):
-        # ``sources`` is a jsonb column. psycopg2 hands it back as a
-        # list/dict already, but the fallback path can give us a JSON
-        # string — defensively decode either.
-        raw_sources = r.get("sources")
-        if isinstance(raw_sources, str):
-            try:
-                sources = json.loads(raw_sources) or []
-            except (json.JSONDecodeError, TypeError):
-                sources = []
-        elif isinstance(raw_sources, list):
-            sources = raw_sources
-        else:
-            sources = []
+        sources = _decode_jsonb(r.get("sources")) or []
+        thinking_log = _decode_jsonb(r.get("thinking_log")) or []
         out.append({
             "correlation_id": str(r.get("correlation_id") or ""),
             "question": (r.get("question") or "").strip(),
             "final_message": r.get("final_message") or "",
-            "sources": sources,
+            "sources": sources if isinstance(sources, list) else [],
+            # Phase 13.7 — thinking_log + source_confidence_strip carried
+            # so the rehydrated turn can render the same Thinking preview
+            # block + Source confidence badge the live turn shows. List
+            # may be empty for older turns persisted before instrumentation.
+            "thinking_log": thinking_log if isinstance(thinking_log, list) else [],
+            "source_confidence_strip": (r.get("source_confidence_strip") or "").strip() or None,
             "created_at": _iso(r.get("created_at")),
         })
     return out

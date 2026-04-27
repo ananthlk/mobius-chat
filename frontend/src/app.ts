@@ -7821,13 +7821,27 @@ function run(): void {
   async function loadAndRenderThread(threadId: string): Promise<void> {
     const tid = (threadId || "").trim();
     if (!tid) return;
-    let turns: Array<{
+    type RehydratedTurn = {
       correlation_id: string;
       question: string;
       final_message: string;
-      sources: unknown[];
+      sources: Array<{
+        index?: number;
+        document_name?: string;
+        document_id?: string | null;
+        page_number?: number | null;
+        text?: string;
+        cite_text?: string | null;
+        source_type?: string | null;
+        match_score?: number | null;
+        confidence?: number | null;
+        open_href?: string | null;
+      }>;
+      thinking_log: string[];
+      source_confidence_strip: string | null;
       created_at: string;
-    }>;
+    };
+    let turns: RehydratedTurn[];
     try {
       const r = await fetch(
         API_BASE + "/chat/history/threads/" + encodeURIComponent(tid) + "/turns?limit=50"
@@ -7854,22 +7868,61 @@ function run(): void {
     for (const turn of turns) {
       const turnWrap = document.createElement("div");
       turnWrap.className = "chat-turn";
-      // User side — same renderer the live path uses.
+      // 1. User message — same renderer the live path uses.
       turnWrap.appendChild(renderUserMessage(turn.question || "", undefined));
-      // Assistant side — final_message is the AnswerCard JSON exactly
-      // as we render live turns. renderAssistantContent handles both
-      // AnswerCard and prose-fallback shapes.
+
+      // 2. Thinking-log preview (collapsed by default; matches live shape).
+      // We seed all lines and immediately call done() so it renders in
+      // its terminal state — no streaming, no "Queued" pulse.
+      if (Array.isArray(turn.thinking_log) && turn.thinking_log.length > 0) {
+        const tb = renderThinkingBlock(turn.thinking_log);
+        try { tb.done(turn.thinking_log.length); } catch { /* noop */ }
+        turnWrap.appendChild(tb.el);
+      }
+
+      // 3. Assistant answer — final_message is the AnswerCard JSON
+      // exactly as live turns render. renderAssistantContent handles
+      // both AnswerCard and prose-fallback shapes.
       const finalBody = turn.final_message || "";
       if (finalBody.trim()) {
         turnWrap.appendChild(
           renderAssistantContent(finalBody, false, {
-            // No re-evaluation of confidence on rehydrate — the badge
-            // was stamped at write time, but we don't have it in the
-            // payload; default placeholder is informational.
-            sourceConfidenceStrip: "",
+            onFollowupClick: (q) => sendMessage(q),
+            sourceConfidenceStrip: turn.source_confidence_strip || undefined,
           })
         );
       }
+
+      // 4. Sources panel — same shape conversion the live path uses
+      // (data.sources -> ParsedSource list -> renderSourceCiter).
+      // Pass [] for cited indices since we don't persist them per turn;
+      // the citer falls back to showing all sources in that case.
+      if (Array.isArray(turn.sources) && turn.sources.length > 0) {
+        const sourceList: ParsedSource[] = turn.sources.map((s) => ({
+          index: s.index ?? 0,
+          document_name: s.document_name ?? "document",
+          document_id: s.document_id ?? null,
+          page_number: s.page_number ?? null,
+          snippet: (s.text ?? "").slice(0, 200),
+          cite_text: (s.cite_text ?? s.text ?? "").trim().slice(0, 400) || null,
+          source_type: s.source_type ?? null,
+          match_score: s.match_score ?? null,
+          confidence: s.confidence ?? null,
+          open_href: s.open_href ?? null,
+        }));
+        turnWrap.appendChild(
+          renderSourceCiter(sourceList, [], turn.correlation_id)
+        );
+      }
+
+      // 5. Feedback bar — thumbs + Copy + Email. Same correlation_id
+      // wiring as the live path; thumbs vote against the historical
+      // turn, Copy grabs the assistant bubble text, Email opens the
+      // thread-email dialog.
+      if (turn.correlation_id) {
+        turnWrap.appendChild(renderFeedback(turn.correlation_id));
+      }
+
       messagesEl.appendChild(turnWrap);
     }
     scrollToBottom(messagesEl);

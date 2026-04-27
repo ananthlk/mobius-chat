@@ -6801,16 +6801,42 @@ ${message}`;
       const turnWrap = document.createElement("div");
       turnWrap.className = "chat-turn";
       turnWrap.appendChild(renderUserMessage(turn.question || "", void 0));
+      if (Array.isArray(turn.thinking_log) && turn.thinking_log.length > 0) {
+        const tb = renderThinkingBlock(turn.thinking_log);
+        try {
+          tb.done(turn.thinking_log.length);
+        } catch {
+        }
+        turnWrap.appendChild(tb.el);
+      }
       const finalBody = turn.final_message || "";
       if (finalBody.trim()) {
         turnWrap.appendChild(
           renderAssistantContent(finalBody, false, {
-            // No re-evaluation of confidence on rehydrate — the badge
-            // was stamped at write time, but we don't have it in the
-            // payload; default placeholder is informational.
-            sourceConfidenceStrip: ""
+            onFollowupClick: (q) => sendMessage(q),
+            sourceConfidenceStrip: turn.source_confidence_strip || void 0
           })
         );
+      }
+      if (Array.isArray(turn.sources) && turn.sources.length > 0) {
+        const sourceList = turn.sources.map((s) => ({
+          index: s.index ?? 0,
+          document_name: s.document_name ?? "document",
+          document_id: s.document_id ?? null,
+          page_number: s.page_number ?? null,
+          snippet: (s.text ?? "").slice(0, 200),
+          cite_text: (s.cite_text ?? s.text ?? "").trim().slice(0, 400) || null,
+          source_type: s.source_type ?? null,
+          match_score: s.match_score ?? null,
+          confidence: s.confidence ?? null,
+          open_href: s.open_href ?? null
+        }));
+        turnWrap.appendChild(
+          renderSourceCiter(sourceList, [], turn.correlation_id)
+        );
+      }
+      if (turn.correlation_id) {
+        turnWrap.appendChild(renderFeedback(turn.correlation_id));
       }
       messagesEl.appendChild(turnWrap);
     }
