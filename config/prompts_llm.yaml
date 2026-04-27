@@ -428,8 +428,8 @@ prompts:
 
     CRITICAL: direct_answer must be plain human-readable sentences only. Never embed JSON, nested AnswerCard text, ``` fences, or a "json {" prefix inside direct_answer. If you need structure, use sections and resolutions — not a JSON blob in direct_answer.
 
-    AnswerCard schema (resolutions and next_questions_for_user are required for structured output):
-    {"mode":"FACTUAL","direct_answer":"string","sections":[...],"resolutions":[{"sq_id":"sq1","question":"short question","resolution":"answer text","source":"user_input|rag|google|planner"}],"closed_task_ids":["sq1","sq2"],"open_task_ids":["sq3"],"next_steps":["Call payer",{"text":"Retry with NPI","clickable":true}],"next_questions_for_user":["Short question?",{"text":"FYI only","clickable":false}],"resolved_subquestions":["sq1","sq2"],...}
+    AnswerCard schema (resolutions, next_questions_for_user, AND thread_summary are required for structured output):
+    {"mode":"FACTUAL","direct_answer":"string","thread_summary":"≤60 words; current state of THIS conversation — payer/jurisdiction, what the user is working on, key decisions or blockers from prior turns","sections":[...],"resolutions":[{"sq_id":"sq1","question":"short question","resolution":"answer text","source":"user_input|rag|google|planner"}],"closed_task_ids":["sq1","sq2"],"open_task_ids":["sq3"],"next_steps":["Call payer",{"text":"Retry with NPI","clickable":true}],"next_questions_for_user":["Short question?",{"text":"FYI only","clickable":false}],"resolved_subquestions":["sq1","sq2"],...}
 
     Source confidence: The input includes retrieval_metadata with default_source_confidence. We expect you to use the highest-rated document(s). If you override (e.g. conflicting messages, more recent than authoritative), set source_confidence_override and explain in confidence_note. Omit source_confidence_override to use the default. List which source indices you actually used in cited_source_indices (1-based).
 
@@ -437,7 +437,7 @@ prompts:
 
     User-provided context: When user_provided_context is present, the user is authoritative. Treat what they provide as fact. You MUST use it to answer subquestions. Never say "cannot be confirmed" for facts the user supplied. Set source="user_input" in resolutions for those.
 
-    Thread summary (always emit): Output a top-level "thread_summary" string field — one sentence, ≤60 words — that captures the current state of THIS conversation: payer/jurisdiction, what the user is working on, key decisions or blockers from prior turns, and where THIS turn moves things. If "previous_thread_summary" is in the input, REFINE it (don't append) to integrate this turn. If absent, produce a fresh summary. The summary is shown in the sidebar; treat it as a tooltip-length tldr, not a log. Stay grounded in the input — never invent topics or facts.
+    Thread summary (REQUIRED — always emit): Output a top-level "thread_summary" string field — one sentence, ≤60 words — that captures the current state of THIS conversation: payer/jurisdiction, what the user is working on, key decisions or blockers from prior turns, and where THIS turn moves things. If "previous_thread_summary" is in the input, REFINE it (don't append) to integrate this turn. If absent, produce a fresh summary. The summary is shown in the sidebar; treat it as a tooltip-length tldr, not a log. Stay grounded in the input — never invent topics or facts. Missing this field is a validation failure.
 
     Plan IDs are canonical: use ONLY the subquestion ids from the input. Do not add, remove, or rename subquestions. closed_task_ids and open_task_ids must be subsets of the input subquestion ids. resolutions must use sq_id from the input only. This is an upsert-only operation—fill in answers for existing ids, never invent new ones.
 
@@ -480,7 +480,9 @@ prompts:
 
     CRITICAL: direct_answer must be plain human-readable text only. Never embed JSON objects, nested AnswerCard text, code fences, or "json {" inside direct_answer.
 
-    AnswerCard schema: Include resolutions, closed_task_ids, open_task_ids, next_steps, next_questions_for_user. resolutions: [{sq_id, question, resolution, source}]. source: user_input|rag|google|planner.
+    AnswerCard schema (thread_summary is REQUIRED — emit every turn):
+    {"mode":"CANONICAL","direct_answer":"string","thread_summary":"≤60 words; current state of THIS conversation — payer/jurisdiction, what the user is working on, key decisions or blockers from prior turns","sections":[...],"resolutions":[{sq_id,question,resolution,source}],"closed_task_ids":[...],"open_task_ids":[...],"next_steps":[...],"next_questions_for_user":[...]}
+    source: user_input|rag|google|planner.
     next_steps / next_questions_for_user: each entry = string OR {"text":"...","clickable":bool}. Plain next_steps string → not clickable by default; plain next_questions string → clickable by default. Use clickable:false on follow-ups that must not be sent verbatim.
     When retrieval already returned corpus/manual sources and required_variables is empty, do NOT suggest follow-ups that ask the user to upload, attach, or share documents or links.
 
@@ -492,7 +494,7 @@ prompts:
 
     User-provided context: When user_provided_context is present, the user is authoritative. Use it; set source="user_input" in resolutions. Include resolutions, closed/open_task_ids, next_questions_for_user.
 
-    Thread summary (always emit): Output a top-level "thread_summary" string field — one sentence, ≤60 words — capturing the current state of THIS conversation: payer/jurisdiction, what the user is working on, key decisions or blockers from prior turns, and where THIS turn moves things. If "previous_thread_summary" is in the input, REFINE it (don't append) to integrate this turn. If absent, produce a fresh summary. The summary is shown in the sidebar.
+    Thread summary (REQUIRED — always emit): Output a top-level "thread_summary" string field — one sentence, ≤60 words — capturing the current state of THIS conversation: payer/jurisdiction, what the user is working on, key decisions or blockers from prior turns, and where THIS turn moves things. If "previous_thread_summary" is in the input, REFINE it (don't append) to integrate this turn. If absent, produce a fresh summary. The summary is shown in the sidebar. Missing this field is a validation failure.
 
     Workflow selection UI: When the JSON includes "workflow_selection_ui" with "active": true, the chat shows choice buttons for the full list. Keep direct_answer to 1–2 sentences (counts only). Do NOT list names, NPIs, or duplicate rows in ui_blocks tables.
 
@@ -525,7 +527,9 @@ prompts:
 
     CRITICAL: direct_answer must be plain human-readable text only. Never embed JSON objects, nested AnswerCard text, code fences, or "json {" inside direct_answer.
 
-    AnswerCard schema: Include resolutions, closed_task_ids, open_task_ids, next_steps, next_questions_for_user. resolutions: [{sq_id, question, resolution, source}]. source: user_input|rag|google|planner.
+    AnswerCard schema (thread_summary is REQUIRED — emit every turn):
+    {"mode":"BLENDED","direct_answer":"string","thread_summary":"≤60 words; current state of THIS conversation — payer/jurisdiction, what the user is working on, key decisions or blockers from prior turns","sections":[...],"resolutions":[{sq_id,question,resolution,source}],"closed_task_ids":[...],"open_task_ids":[...],"next_steps":[...],"next_questions_for_user":[...]}
+    source: user_input|rag|google|planner.
     next_steps / next_questions_for_user: each entry = string OR {"text":"...","clickable":bool}. Plain next_steps → not clickable by default; plain next_questions → clickable. Set clickable:false when a line must not be sent as the user message.
     When retrieval already returned corpus/manual sources and required_variables is empty, do NOT suggest follow-ups that ask the user to upload, attach, or share documents or links.
 
@@ -537,7 +541,7 @@ prompts:
 
     User-provided context: When user_provided_context is present, the user is authoritative. Use it; set source="user_input" in resolutions. Include resolutions, closed/open_task_ids, next_questions_for_user.
 
-    Thread summary (always emit): Output a top-level "thread_summary" string field — one sentence, ≤60 words — capturing the current state of THIS conversation: payer/jurisdiction, what the user is working on, key decisions or blockers from prior turns, and where THIS turn moves things. If "previous_thread_summary" is in the input, REFINE it (don't append) to integrate this turn. If absent, produce a fresh summary. The summary is shown in the sidebar.
+    Thread summary (REQUIRED — always emit): Output a top-level "thread_summary" string field — one sentence, ≤60 words — capturing the current state of THIS conversation: payer/jurisdiction, what the user is working on, key decisions or blockers from prior turns, and where THIS turn moves things. If "previous_thread_summary" is in the input, REFINE it (don't append) to integrate this turn. If absent, produce a fresh summary. The summary is shown in the sidebar. Missing this field is a validation failure.
 
     Workflow selection UI: When the JSON includes "workflow_selection_ui" with "active": true, the chat shows choice buttons for the full list. Keep direct_answer to 1–2 sentences (counts only). Do NOT list names, NPIs, or duplicate rows in ui_blocks tables.
 
