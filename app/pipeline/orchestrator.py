@@ -1005,6 +1005,11 @@ def _publish_completed(ctx: PipelineContext, t0_start: float) -> None:
                 source_confidence_strip=payload.get("source_confidence_strip"),
                 config_sha=config_sha,
                 user_id=ctx.user_id,
+                # Phase 13.7 — rolling thread summary from the integrator.
+                # None for first-turn / parse-failure / non-success paths;
+                # the persist path falls through to either the legacy
+                # regex-based summary (insert_turn) or null.
+                context_summary=getattr(ctx, "thread_summary", None),
             )
         else:
             persistence.save_turn(

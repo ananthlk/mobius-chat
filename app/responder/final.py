@@ -66,8 +66,9 @@ def _build_consolidator_input_json(
     jurisdiction_summary: str | None = None,
     user_provided_context: str | None = None,
     workflow_selection_ui: dict[str, Any] | None = None,
+    previous_thread_summary: str | None = None,
 ) -> str:
-    """Build JSON payload for consolidator: user_message, subquestions, answers, retrieval_metadata, sources_summary, jurisdiction_summary, user_provided_context."""
+    """Build JSON payload for consolidator: user_message, subquestions, answers, retrieval_metadata, sources_summary, jurisdiction_summary, user_provided_context, previous_thread_summary."""
     _subs = getattr(plan, "subquestions", None) or []
     _stub = stub_answers if stub_answers is not None else []
     subquestions = [{"id": sq.id, "text": sq.text} for sq in _subs]
@@ -90,6 +91,12 @@ def _build_consolidator_input_json(
         payload["user_provided_context"] = user_provided_context.strip()
     if workflow_selection_ui:
         payload["workflow_selection_ui"] = workflow_selection_ui
+    # Phase 13.7 — rolling thread summary. The integrator gets the
+    # PREVIOUS summary as input and is asked to refine it (not append)
+    # to integrate this turn. Output goes back as ``thread_summary`` in
+    # the AnswerCard JSON. ≤60 words. See prompt instructions.
+    if previous_thread_summary and previous_thread_summary.strip():
+        payload["previous_thread_summary"] = previous_thread_summary.strip()
     return json.dumps(payload, indent=2)
 
 
@@ -243,6 +250,7 @@ def format_response(
     phi_detected: bool = False,
     llm_stage: str = "integrator",
     mode: str | None = None,
+    previous_thread_summary: str | None = None,
 ) -> tuple[str, LLMUsageDict | None]:
     """Turn plan + answers into one chat-friendly message via llm_manager (integrator or integrator_roster).
     On LLM failure, returns fallback and None usage."""
@@ -266,6 +274,7 @@ def format_response(
             jurisdiction_summary=jurisdiction_summary,
             user_provided_context=user_provided_context,
             workflow_selection_ui=workflow_selection_ui,
+            previous_thread_summary=previous_thread_summary,
         )
         canonical_score = blended_canonical_score(plan)
         consolidator_type = choose_consolidator_type(

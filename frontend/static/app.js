@@ -6770,6 +6770,56 @@ ${message}`;
       loadSidebarHistory();
     });
   }
+  async function loadAndRenderThread(threadId) {
+    const tid = (threadId || "").trim();
+    if (!tid)
+      return;
+    let turns;
+    try {
+      const r = await fetch(
+        API_BASE + "/chat/history/threads/" + encodeURIComponent(tid) + "/turns?limit=50"
+      );
+      if (!r.ok) {
+        console.warn("[loadAndRenderThread] HTTP", r.status, "for", tid);
+        return;
+      }
+      turns = await r.json();
+    } catch (err) {
+      console.warn("[loadAndRenderThread] fetch failed:", err);
+      return;
+    }
+    if (!Array.isArray(turns))
+      return;
+    currentThreadId = tid;
+    window.__mobiusChatThreadId = currentThreadId;
+    if (chatEmpty)
+      chatEmpty.classList.add("hidden");
+    messagesEl.querySelectorAll(".chat-turn").forEach((n) => n.remove());
+    hideChatStatusBanner();
+    hideRosterUploadReceipt();
+    for (const turn of turns) {
+      const turnWrap = document.createElement("div");
+      turnWrap.className = "chat-turn";
+      turnWrap.appendChild(renderUserMessage(turn.question || "", void 0));
+      const finalBody = turn.final_message || "";
+      if (finalBody.trim()) {
+        turnWrap.appendChild(
+          renderAssistantContent(finalBody, false, {
+            // No re-evaluation of confidence on rehydrate — the badge
+            // was stamped at write time, but we don't have it in the
+            // payload; default placeholder is informational.
+            sourceConfidenceStrip: ""
+          })
+        );
+      }
+      messagesEl.appendChild(turnWrap);
+    }
+    scrollToBottom(messagesEl);
+    try {
+      inputEl.focus();
+    } catch {
+    }
+  }
   function loadSidebarHistory() {
     const recentList = document.getElementById("recentList");
     const helpfulList = document.getElementById("helpfulList");
@@ -6796,7 +6846,7 @@ ${message}`;
       for (const th of recentThreads) {
         const li = document.createElement("li");
         li.className = "recent-item";
-        const label = th.title || "Untitled chat";
+        const label = th.summary && th.summary.trim() || th.title || "Untitled chat";
         const countSuffix = th.turn_count > 1 ? `  (${th.turn_count})` : "";
         li.textContent = snippet(label) + countSuffix;
         li.title = label;
@@ -6804,14 +6854,12 @@ ${message}`;
         li.setAttribute("tabindex", "0");
         li.setAttribute("data-thread-id", th.thread_id);
         li.addEventListener("click", () => {
-          inputEl.value = label;
-          updateSendState();
+          void loadAndRenderThread(th.thread_id);
         });
         li.addEventListener("keydown", (e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
-            inputEl.value = label;
-            updateSendState();
+            void loadAndRenderThread(th.thread_id);
           }
         });
         recentList.appendChild(li);

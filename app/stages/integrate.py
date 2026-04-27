@@ -438,8 +438,29 @@ def run_integrate(
         phi_detected=False,
         llm_stage=_integ_stage,
         mode=getattr(ctx, "chat_mode", None),
+        previous_thread_summary=getattr(ctx, "previous_thread_summary", None),
     )
     ctx.final_message = final_message
+
+    # Phase 13.7 — extract the integrator's rolling thread summary out
+    # of the AnswerCard JSON so the persistence layer can stamp it into
+    # chat_turns.context_summary. The frontend gets the same field via
+    # final_message; persistence wants a strict string column. We don't
+    # rely on the field being present (legacy prompts and parse-failure
+    # fallbacks won't have it) — None is fine, the persist path falls
+    # back to the regex-based build_context_summary for those cases.
+    try:
+        if final_message:
+            _parsed = json.loads(final_message)
+            if isinstance(_parsed, dict):
+                _ts = _parsed.get("thread_summary")
+                if isinstance(_ts, str) and _ts.strip():
+                    # Cap at ~600 chars to match the legacy regex-built
+                    # summary's storage budget; extra is dropped.
+                    ctx.thread_summary = _ts.strip()[:600]
+    except (json.JSONDecodeError, TypeError):
+        # Non-JSON final_message (e.g. fallback path); leave None.
+        pass
 
     # Response-side PHI audit (2026-04-20). Mirror of the resolve-stage
     # hook for user-input side: LLM outputs can contain PHI too (the

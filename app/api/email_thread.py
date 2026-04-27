@@ -77,8 +77,11 @@ def _fetch_turns(thread_id: str) -> list[dict[str, Any]]:
         "chat",
         params={"thread_id": thread_id.strip()},
     )
+    # db_query returns {"columns": [...], "rows": [tuple, ...]} — must zip
+    # columns to keys (mirrors mobius-chat/app/storage/turns._rows_as_dicts).
+    cols = result.get("columns") or []
     rows = result.get("rows") or []
-    return [dict(r) for r in rows]
+    return [dict(zip(cols, r)) for r in rows]
 
 
 def _format_transcript(turns: list[dict[str, Any]]) -> str:

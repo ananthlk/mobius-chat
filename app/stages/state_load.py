@@ -56,6 +56,20 @@ def run_state_load(
     ctx.report_run_id = (merged.get("active") or {}).get("report_run_id")
     ctx.last_turns = get_last_turn_messages(ctx.thread_id)
     ctx.last_turn_sources = get_last_turn_sources(ctx.thread_id)
+    # Phase 13.7 — pull the rolling thread summary from the most-recent
+    # turn that has a non-null context_summary. Threaded into the
+    # integrator so it can REFINE rather than rebuild. Newest-first
+    # order in last_turns means we walk forward and stop on first
+    # non-empty value.
+    _prev_summary: str | None = None
+    for _turn in (ctx.last_turns or []):
+        if not isinstance(_turn, dict):
+            continue
+        cs = (_turn.get("context_summary") or "").strip()
+        if cs:
+            _prev_summary = cs
+            break
+    ctx.previous_thread_summary = _prev_summary
     route = route_context(ctx.message, merged, ctx.last_turns, reset_reason=reset_reason)
 
     # Improvements 3 & 5: on STANDALONE, evict slots and result cache so stale context doesn't bleed

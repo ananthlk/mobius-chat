@@ -33,13 +33,13 @@ INSERT INTO chat_turns (
     correlation_id, question, thinking_log, final_message, sources,
     duration_ms, model_used, llm_provider, session_id, thread_id,
     plan_snapshot, blueprint_snapshot, agent_cards, source_confidence_strip, config_sha,
-    user_id
+    context_summary, user_id
 )
 VALUES (
     :correlation_id, :question, :thinking_log, :final_message, :sources,
     :duration_ms, :model_used, :llm_provider, :session_id, :thread_id,
     :plan_snapshot, :blueprint_snapshot, :agent_cards, :source_confidence_strip, :config_sha,
-    :user_id
+    :context_summary, :user_id
 )
 ON CONFLICT (correlation_id) DO UPDATE SET
     question = EXCLUDED.question,
@@ -56,10 +56,48 @@ ON CONFLICT (correlation_id) DO UPDATE SET
     agent_cards = EXCLUDED.agent_cards,
     source_confidence_strip = EXCLUDED.source_confidence_strip,
     config_sha = EXCLUDED.config_sha,
+    context_summary = COALESCE(EXCLUDED.context_summary, chat_turns.context_summary),
     user_id = COALESCE(EXCLUDED.user_id, chat_turns.user_id)
 """
 
 _TURN_INSERT_SQL_NO_USER_ID = """
+INSERT INTO chat_turns (
+    correlation_id, question, thinking_log, final_message, sources,
+    duration_ms, model_used, llm_provider, session_id, thread_id,
+    plan_snapshot, blueprint_snapshot, agent_cards, source_confidence_strip, config_sha,
+    context_summary
+)
+VALUES (
+    :correlation_id, :question, :thinking_log, :final_message, :sources,
+    :duration_ms, :model_used, :llm_provider, :session_id, :thread_id,
+    :plan_snapshot, :blueprint_snapshot, :agent_cards, :source_confidence_strip, :config_sha,
+    :context_summary
+)
+ON CONFLICT (correlation_id) DO UPDATE SET
+    question = EXCLUDED.question,
+    thinking_log = EXCLUDED.thinking_log,
+    final_message = EXCLUDED.final_message,
+    sources = EXCLUDED.sources,
+    duration_ms = EXCLUDED.duration_ms,
+    model_used = EXCLUDED.model_used,
+    llm_provider = EXCLUDED.llm_provider,
+    session_id = EXCLUDED.session_id,
+    thread_id = EXCLUDED.thread_id,
+    plan_snapshot = EXCLUDED.plan_snapshot,
+    blueprint_snapshot = EXCLUDED.blueprint_snapshot,
+    agent_cards = EXCLUDED.agent_cards,
+    source_confidence_strip = EXCLUDED.source_confidence_strip,
+    config_sha = EXCLUDED.config_sha,
+    context_summary = COALESCE(EXCLUDED.context_summary, chat_turns.context_summary)
+"""
+
+# Fallback used when chat_turns has neither user_id NOR context_summary
+# columns (older schemas). Mirrors the historical behavior before
+# Phase 13.7 added the context_summary write to this code path. The
+# turns.py path already handles its own column-missing fallback for
+# the no-thread save flow; this one covers the thread-with-messages
+# flow.
+_TURN_INSERT_SQL_LEGACY_NO_CONTEXT = """
 INSERT INTO chat_turns (
     correlation_id, question, thinking_log, final_message, sources,
     duration_ms, model_used, llm_provider, session_id, thread_id,
@@ -110,6 +148,7 @@ def _atomic_save_turn_with_messages(
     source_confidence_strip: str | None,
     config_sha: str | None,
     user_id: str | None = None,
+    context_summary: str | None = None,
 ) -> None:
     """Single transaction: insert turn + append user/assistant messages.
 
@@ -117,11 +156,22 @@ def _atomic_save_turn_with_messages(
     None in dev / no-auth mode. On hosts where the ``user_id`` column
     hasn't been added yet we retry with the non-user_id column list —
     same graceful fallback the pre-refactor code had.
+
+    ``context_summary`` (Phase 13.7): rolling thread summary produced
+    by the integrator. Persisted to ``chat_turns.context_summary`` so
+    the sidebar can show a per-thread tldr that morphs across turns
+    AND so the next turn's state_load can pull it back in for refine
+    (vs. rebuild). Single-shot (no-thread) saves go through
+    ``insert_turn`` in storage/turns.py which has its own context_
+    summary write path (regex-based heuristic) — this thread-with-
+    messages path now mirrors that behavior, but with the LLM-built
+    summary instead of the regex one.
     """
     thread_val = (thread_id or "").strip() or None
     strip_val = (source_confidence_strip or "").strip() or None
     config_sha_val = (config_sha or "").strip() or None
     user_id_val = (user_id or "").strip() or None
+    context_summary_val = (context_summary or "").strip() or None
 
     turn_params_full = {
         "correlation_id": correlation_id,
@@ -139,6 +189,7 @@ def _atomic_save_turn_with_messages(
         "agent_cards": None,
         "source_confidence_strip": strip_val,
         "config_sha": config_sha_val,
+        "context_summary": context_summary_val,
         "user_id": user_id_val,
     }
 
@@ -175,9 +226,11 @@ def _atomic_save_turn_with_messages(
         logger.warning("db-agent unreachable (or CHAT_RAG_DATABASE_URL unset); turn not persisted: %s", msg)
         return
 
-    if code == "column_missing" or "user_id" in msg_lower or (
+    if code == "column_missing" or "user_id" in msg_lower or "context_summary" in msg_lower or (
         "column" in msg_lower and "does not exist" in msg_lower
     ):
+        # First fallback: drop user_id, keep context_summary (covers the
+        # most-common case: user_id column missing on older schemas).
         fallback_turn_params = {k: v for k, v in turn_params_full.items() if k != "user_id"}
         fallback_statements = [
             {"sql": _TURN_INSERT_SQL_NO_USER_ID, "params": fallback_turn_params}
@@ -189,7 +242,31 @@ def _atomic_save_turn_with_messages(
         err2 = result2.get("error") if isinstance(result2, dict) else None
         if err2 is None:
             return
-        msg2 = err2.get("message") if isinstance(err2, dict) else str(err2)
+
+        # Second fallback: drop context_summary too. Covers older
+        # schemas where neither column is present. Phase 13.7's
+        # context_summary column has been on dev's schema for a while
+        # (used by the regex-based insert_turn path), but be defensive.
+        msg2 = (err2.get("message") if isinstance(err2, dict) else str(err2)) or ""
+        if "context_summary" in msg2.lower() or "column" in msg2.lower():
+            legacy_params = {
+                k: v for k, v in turn_params_full.items()
+                if k not in ("user_id", "context_summary")
+            }
+            legacy_statements = [
+                {"sql": _TURN_INSERT_SQL_LEGACY_NO_CONTEXT, "params": legacy_params}
+            ]
+            if thread_id and thread_val:
+                legacy_statements.append(statements[1])
+                legacy_statements.append(statements[2])
+            result3 = db_transaction(legacy_statements, "chat")
+            err3 = result3.get("error") if isinstance(result3, dict) else None
+            if err3 is None:
+                return
+            msg3 = err3.get("message") if isinstance(err3, dict) else str(err3)
+            logger.exception("Atomic turn save (legacy-no-context fallback) failed: %s", msg3)
+            raise RuntimeError(msg3)
+
         logger.exception("Atomic turn save (fallback) failed: %s", msg2)
         raise RuntimeError(msg2)
 
@@ -218,14 +295,22 @@ class PostgresPersistence(PersistencePort):
         source_confidence_strip: str | None = None,
         config_sha: str | None = None,
         user_id: str | None = None,
+        context_summary: str | None = None,
     ) -> None:
-        """Atomic: turn + messages in one transaction."""
+        """Atomic: turn + messages in one transaction.
+
+        ``context_summary`` is the rolling thread summary produced by
+        the integrator (Phase 13.7). Optional — None falls back to
+        existing behavior (no summary stamped, sidebar will use the
+        first-turn question as title).
+        """
         _atomic_save_turn_with_messages(
             correlation_id, question, thinking_log, final_message, sources,
             duration_ms, model_used, llm_provider, thread_id,
             user_content, assistant_content,
             plan_snapshot, source_confidence_strip, config_sha,
             user_id,
+            context_summary=context_summary,
         )
 
     def save_turn(

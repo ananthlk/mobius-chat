@@ -100,7 +100,10 @@ class MemoryPersistence(PersistencePort):
         source_confidence_strip: str | None = None,
         config_sha: str | None = None,
         user_id: str | None = None,
+        context_summary: str | None = None,
     ) -> None:
+        # Memory backend ignores context_summary — kwarg is accepted for
+        # interface parity with PostgresPersistence (Phase 13.7).
         self.save_turn(
             correlation_id, question, thinking_log, final_message, sources,
             duration_ms, model_used, llm_provider,

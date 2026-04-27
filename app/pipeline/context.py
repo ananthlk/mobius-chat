@@ -72,6 +72,16 @@ class PipelineContext:
     """Sources (document_id, document_name) from previous turns for continuity."""
     context_pack: str = ""
     """Context string passed to parser (from route_context + build_context_pack)."""
+    previous_thread_summary: str | None = None
+    """Phase 13.7 — rolling thread summary from the most recent prior turn.
+    Loaded by state_load from chat_turns.context_summary (latest non-null
+    row in last_turns). Threaded into the integrator so it can REFINE
+    the summary to integrate THIS turn rather than starting fresh."""
+    thread_summary: str | None = None
+    """Phase 13.7 — refined rolling summary produced by THIS turn's
+    integrator. Persisted to chat_turns.context_summary in
+    _atomic_save_turn_with_messages. Sidebar reads the latest non-null
+    value across a thread's turns."""
 
     # Classification
     classification: str = ""

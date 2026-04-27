@@ -437,6 +437,8 @@ prompts:
 
     User-provided context: When user_provided_context is present, the user is authoritative. Treat what they provide as fact. You MUST use it to answer subquestions. Never say "cannot be confirmed" for facts the user supplied. Set source="user_input" in resolutions for those.
 
+    Thread summary (always emit): Output a top-level "thread_summary" string field — one sentence, ≤60 words — that captures the current state of THIS conversation: payer/jurisdiction, what the user is working on, key decisions or blockers from prior turns, and where THIS turn moves things. If "previous_thread_summary" is in the input, REFINE it (don't append) to integrate this turn. If absent, produce a fresh summary. The summary is shown in the sidebar; treat it as a tooltip-length tldr, not a log. Stay grounded in the input — never invent topics or facts.
+
     Plan IDs are canonical: use ONLY the subquestion ids from the input. Do not add, remove, or rename subquestions. closed_task_ids and open_task_ids must be subsets of the input subquestion ids. resolutions must use sq_id from the input only. This is an upsert-only operation—fill in answers for existing ids, never invent new ones.
 
     Structured output (required): For each subquestion, include one entry in resolutions: {sq_id, question, resolution, source}. source must be "user_input"|"rag"|"google"|"planner". Set closed_task_ids for resolved subquestions, open_task_ids for unresolved.
@@ -490,6 +492,8 @@ prompts:
 
     User-provided context: When user_provided_context is present, the user is authoritative. Use it; set source="user_input" in resolutions. Include resolutions, closed/open_task_ids, next_questions_for_user.
 
+    Thread summary (always emit): Output a top-level "thread_summary" string field — one sentence, ≤60 words — capturing the current state of THIS conversation: payer/jurisdiction, what the user is working on, key decisions or blockers from prior turns, and where THIS turn moves things. If "previous_thread_summary" is in the input, REFINE it (don't append) to integrate this turn. If absent, produce a fresh summary. The summary is shown in the sidebar.
+
     Workflow selection UI: When the JSON includes "workflow_selection_ui" with "active": true, the chat shows choice buttons for the full list. Keep direct_answer to 1–2 sentences (counts only). Do NOT list names, NPIs, or duplicate rows in ui_blocks tables.
 
     Practice locations (find_org_locations): Long site lists appear in the collapsible **Practice locations (expand for full list)** panel; summarize in direct_answer and refer users there for all rows.
@@ -532,6 +536,8 @@ prompts:
     Jurisdiction: When jurisdiction_summary is present in the input, include a short jurisdiction line for the answer (e.g. "For Sunshine Health in Florida …"). If different subanswers apply to different payers or states, add a one-line hint when jurisdiction changes (e.g. "Note: the following applies to United Healthcare, not Sunshine.").
 
     User-provided context: When user_provided_context is present, the user is authoritative. Use it; set source="user_input" in resolutions. Include resolutions, closed/open_task_ids, next_questions_for_user.
+
+    Thread summary (always emit): Output a top-level "thread_summary" string field — one sentence, ≤60 words — capturing the current state of THIS conversation: payer/jurisdiction, what the user is working on, key decisions or blockers from prior turns, and where THIS turn moves things. If "previous_thread_summary" is in the input, REFINE it (don't append) to integrate this turn. If absent, produce a fresh summary. The summary is shown in the sidebar.
 
     Workflow selection UI: When the JSON includes "workflow_selection_ui" with "active": true, the chat shows choice buttons for the full list. Keep direct_answer to 1–2 sentences (counts only). Do NOT list names, NPIs, or duplicate rows in ui_blocks tables.
 

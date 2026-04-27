@@ -44,8 +44,16 @@ class PersistencePort(ABC):
         source_confidence_strip: str | None = None,
         config_sha: str | None = None,
         user_id: str | None = None,
+        context_summary: str | None = None,
     ) -> None:
-        """Atomic when possible: save turn + append messages. Default: separate calls."""
+        """Atomic when possible: save turn + append messages. Default: separate calls.
+
+        ``context_summary`` (Phase 13.7) is the rolling thread summary
+        from the integrator. The default implementation here drops it
+        on the floor — concrete subclasses (PostgresPersistence) write
+        it to chat_turns.context_summary. Memory/test backends ignore
+        it without error.
+        """
         self.save_turn(
             correlation_id, question, thinking_log, final_message, sources,
             duration_ms, model_used, llm_provider,

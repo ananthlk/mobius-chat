@@ -7805,6 +7805,78 @@ function run(): void {
     });
   }
 
+  /**
+   * Phase 13.7 — Load a thread's existing turns into the chat pane and
+   * set it as the active thread for follow-ups.
+   *
+   * Replaces the previous "click pre-fills input" behavior with full
+   * rehydration. The user sees the conversation as it was; their next
+   * message continues that thread (state_load picks up active context,
+   * previous_thread_summary, last_turns from the same thread_id).
+   *
+   * Failure modes are non-destructive: a network error or empty payload
+   * leaves the chat pane untouched and logs a console warning. We do
+   * NOT clear messagesEl until we have data in hand.
+   */
+  async function loadAndRenderThread(threadId: string): Promise<void> {
+    const tid = (threadId || "").trim();
+    if (!tid) return;
+    let turns: Array<{
+      correlation_id: string;
+      question: string;
+      final_message: string;
+      sources: unknown[];
+      created_at: string;
+    }>;
+    try {
+      const r = await fetch(
+        API_BASE + "/chat/history/threads/" + encodeURIComponent(tid) + "/turns?limit=50"
+      );
+      if (!r.ok) {
+        console.warn("[loadAndRenderThread] HTTP", r.status, "for", tid);
+        return;
+      }
+      turns = await r.json();
+    } catch (err) {
+      console.warn("[loadAndRenderThread] fetch failed:", err);
+      return;
+    }
+    if (!Array.isArray(turns)) return;
+
+    // Now that we have the data, swap the chat pane.
+    currentThreadId = tid;
+    window.__mobiusChatThreadId = currentThreadId;
+    if (chatEmpty) chatEmpty.classList.add("hidden");
+    messagesEl.querySelectorAll(".chat-turn").forEach((n) => n.remove());
+    hideChatStatusBanner();
+    hideRosterUploadReceipt();
+
+    for (const turn of turns) {
+      const turnWrap = document.createElement("div");
+      turnWrap.className = "chat-turn";
+      // User side — same renderer the live path uses.
+      turnWrap.appendChild(renderUserMessage(turn.question || "", undefined));
+      // Assistant side — final_message is the AnswerCard JSON exactly
+      // as we render live turns. renderAssistantContent handles both
+      // AnswerCard and prose-fallback shapes.
+      const finalBody = turn.final_message || "";
+      if (finalBody.trim()) {
+        turnWrap.appendChild(
+          renderAssistantContent(finalBody, false, {
+            // No re-evaluation of confidence on rehydrate — the badge
+            // was stamped at write time, but we don't have it in the
+            // payload; default placeholder is informational.
+            sourceConfidenceStrip: "",
+          })
+        );
+      }
+      messagesEl.appendChild(turnWrap);
+    }
+    scrollToBottom(messagesEl);
+    // Refocus input so the user can immediately type a follow-up.
+    try { (inputEl as HTMLInputElement).focus(); } catch { /* noop */ }
+  }
+
   function loadSidebarHistory(): void {
     const recentList = document.getElementById("recentList");
     const helpfulList = document.getElementById("helpfulList");
@@ -7820,7 +7892,7 @@ function run(): void {
       // returns {thread_id, title, updated_at, turn_count}. Gracefully returns
       // [] if migration 030 hasn't run, so the list is empty rather than broken.
       fetch(API_BASE + "/chat/history/threads?limit=20").then(
-        (r) => r.json() as Promise<Array<{ thread_id: string; title: string; updated_at: string; turn_count: number }>>
+        (r) => r.json() as Promise<Array<{ thread_id: string; title: string; summary?: string | null; updated_at: string; turn_count: number }>>
       ),
       helpfulList
         ? fetch(API_BASE + "/chat/history/most-helpful-searches?limit=10").then(
@@ -7838,24 +7910,27 @@ function run(): void {
         for (const th of recentThreads) {
           const li = document.createElement("li");
           li.className = "recent-item";
-          const label = th.title || "Untitled chat";
+          // Phase 13.7 — prefer the rolling thread summary as the
+          // sidebar label (morphs across turns, captures current
+          // state). Fall back to title (=first turn's question), then
+          // 'Untitled'. Tooltip shows the full string.
+          const label = (th.summary && th.summary.trim()) || th.title || "Untitled chat";
           const countSuffix = th.turn_count > 1 ? `  (${th.turn_count})` : "";
           li.textContent = snippet(label) + countSuffix;
           li.title = label;
           li.setAttribute("role", "button");
           li.setAttribute("tabindex", "0");
           li.setAttribute("data-thread-id", th.thread_id);
-          // Click: pre-fill input with the thread title for discoverability
-          // (thread-restore UI is a future phase — 2.3b).
+          // Phase 13.7 — click loads the existing thread instead of
+          // re-submitting the question as a fresh turn (which lost
+          // continuity AND burned LLM cost on already-answered work).
           li.addEventListener("click", () => {
-            (inputEl as HTMLInputElement).value = label;
-            updateSendState();
+            void loadAndRenderThread(th.thread_id);
           });
           li.addEventListener("keydown", (e) => {
             if (e.key === "Enter" || e.key === " ") {
               e.preventDefault();
-              (inputEl as HTMLInputElement).value = label;
-              updateSendState();
+              void loadAndRenderThread(th.thread_id);
             }
           });
           recentList.appendChild(li);

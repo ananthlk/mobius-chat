@@ -159,18 +159,23 @@ def set_thread_title_if_empty(thread_id: str, question: str) -> None:
 
 
 def get_recent_threads(limit: int = 10) -> list[dict[str, Any]]:
-    """Return distinct threads for the sidebar: ``[{thread_id, title, updated_at, turn_count}]``.
+    """Return distinct threads for the sidebar:
+    ``[{thread_id, title, summary, updated_at, turn_count}]``.
 
-    2026-04-24: the pre-2026-04-24 query filtered ``WHERE title IS NOT NULL``
-    which silently excluded every thread on dev because
-    ``set_thread_title_if_empty`` was not persisting the title column (root
-    cause of that write bug is still under investigation — the UPDATE call
-    returns no error but the column stays NULL). To unblock the sidebar
-    in the meantime, this query now LEFT JOINs the first turn's question
-    as a fallback title and also derives live ``turn_count`` from the
-    chat_turns table so the sidebar never depends on the (buggy) stamped
-    values. When the write path is fixed, the stamped ``title`` /
-    ``turn_count`` will simply take precedence via COALESCE.
+    Phase 13.7 (2026-04-26): added ``summary`` — the LATEST non-null
+    ``context_summary`` for the thread, produced by the integrator's
+    rolling thread-summary field. The sidebar prefers ``summary`` over
+    ``title`` for the displayed label so users see "what's this thread
+    about NOW" rather than the question they happened to type first.
+    Falls back to title (then first-turn question, then 'Untitled thread')
+    when no summary exists yet (legacy threads, or first-turn before
+    integrator commits).
+
+    2026-04-24 history: the pre-2026-04-24 query filtered
+    ``WHERE title IS NOT NULL`` which silently excluded every thread on
+    dev because ``set_thread_title_if_empty`` was not persisting the
+    title column. The fallback chain below works around that until the
+    title-write bug is independently fixed.
 
     Threads with zero persisted turns are still excluded — the sidebar
     should not surface empty shells created by an aborted request.
@@ -184,6 +189,18 @@ def get_recent_threads(limit: int = 10) -> list[dict[str, Any]]:
             WHERE thread_id IS NOT NULL
             ORDER BY thread_id, created_at ASC
         ),
+        latest_summary AS (
+            -- Latest non-null context_summary per thread. DISTINCT ON
+            -- keeps the most recent. Phase 13.7's integrator stamps
+            -- this via _atomic_save_turn_with_messages.
+            SELECT DISTINCT ON (thread_id)
+                   thread_id, context_summary
+            FROM chat_turns
+            WHERE thread_id IS NOT NULL
+              AND context_summary IS NOT NULL
+              AND context_summary <> ''
+            ORDER BY thread_id, created_at DESC
+        ),
         turn_counts AS (
             SELECT thread_id, COUNT(*) AS n
             FROM chat_turns
@@ -192,11 +209,13 @@ def get_recent_threads(limit: int = 10) -> list[dict[str, Any]]:
         )
         SELECT t.thread_id,
                COALESCE(NULLIF(t.title, ''), ft.question, 'Untitled thread') AS title,
+               ls.context_summary AS summary,
                t.updated_at,
                COALESCE(NULLIF(t.turn_count, 0), tc.n, 0) AS turn_count
         FROM chat_threads t
-        LEFT JOIN first_turn  ft ON ft.thread_id = t.thread_id
-        LEFT JOIN turn_counts tc ON tc.thread_id = t.thread_id
+        LEFT JOIN first_turn      ft ON ft.thread_id = t.thread_id
+        LEFT JOIN latest_summary  ls ON ls.thread_id = t.thread_id
+        LEFT JOIN turn_counts     tc ON tc.thread_id = t.thread_id
         WHERE tc.n IS NOT NULL AND tc.n > 0
         ORDER BY t.updated_at DESC
         LIMIT :lim
@@ -207,9 +226,15 @@ def get_recent_threads(limit: int = 10) -> list[dict[str, Any]]:
     code = _err_code(result)
     if code is not None:
         err = _err_message(result).lower()
-        if code == "column_missing" or "title" in err or "turn_count" in err or "column" in err:
+        if (
+            code == "column_missing"
+            or "title" in err
+            or "turn_count" in err
+            or "context_summary" in err  # Phase 13.7 — column may be missing on legacy schemas
+            or "column" in err
+        ):
             logger.debug(
-                "chat_threads.title/turn_count missing (run migration 030); returning empty thread list"
+                "chat_threads.title/turn_count/context_summary missing (run migration 030); returning empty thread list"
             )
             return []
         logger.warning("Failed to get recent threads: %s", _err_message(result))
@@ -218,11 +243,74 @@ def get_recent_threads(limit: int = 10) -> list[dict[str, Any]]:
         {
             "thread_id": str(r["thread_id"]),
             "title": (r.get("title") or "").strip() or "Untitled thread",
+            "summary": (r.get("summary") or "").strip() or None,
             "updated_at": _iso(r.get("updated_at")),
             "turn_count": int(r.get("turn_count") or 0),
         }
         for r in _rows_as_dicts(result)
     ]
+
+
+def get_thread_turns(thread_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    """Return turns for a thread in chronological order (oldest first).
+
+    Phase 13.7 — feeds the sidebar-rehydration endpoint so clicking a
+    recent thread opens the full conversation instead of re-running
+    the original query. Returns the AnswerCard JSON in ``final_message``
+    exactly as the frontend renders new turns; ``sources`` is the list
+    stored at write time.
+
+    Caps at ``limit`` turns (default 50) to bound payload size; for
+    threads longer than that we keep the OLDEST turns dropping the
+    most recent — which is wrong for chat history but right for our
+    near-term reality of short threads. Revisit when/if multi-day
+    thread histories show up.
+
+    Returns [] on DB error (sidebar must never 500).
+    """
+    tid = (thread_id or "").strip()
+    if not tid:
+        return []
+    result = db_query(
+        """
+        SELECT correlation_id, question, final_message, sources, created_at
+        FROM chat_turns
+        WHERE thread_id = :tid
+        ORDER BY created_at ASC
+        LIMIT :lim
+        """,
+        _DB,
+        params={"tid": tid, "lim": max(1, min(limit, 200))},
+    )
+    if _err_code(result) is not None:
+        logger.warning(
+            "Failed to get thread turns for %s: %s",
+            tid[:8], _err_message(result),
+        )
+        return []
+    out: list[dict[str, Any]] = []
+    for r in _rows_as_dicts(result):
+        # ``sources`` is a jsonb column. psycopg2 hands it back as a
+        # list/dict already, but the fallback path can give us a JSON
+        # string — defensively decode either.
+        raw_sources = r.get("sources")
+        if isinstance(raw_sources, str):
+            try:
+                sources = json.loads(raw_sources) or []
+            except (json.JSONDecodeError, TypeError):
+                sources = []
+        elif isinstance(raw_sources, list):
+            sources = raw_sources
+        else:
+            sources = []
+        out.append({
+            "correlation_id": str(r.get("correlation_id") or ""),
+            "question": (r.get("question") or "").strip(),
+            "final_message": r.get("final_message") or "",
+            "sources": sources,
+            "created_at": _iso(r.get("created_at")),
+        })
+    return out
 
 
 # -------------------------------------------------------------------
