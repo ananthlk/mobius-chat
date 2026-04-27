@@ -177,6 +177,9 @@ SET_ENV_VARS=(
     "CHAT_ENV_STRICT=${CHAT_ENV_STRICT}"
     "MOBIUS_PROD=${MOBIUS_PROD}"
     "CHAT_QUEUE_TYPE=${CHAT_QUEUE_TYPE}"
+    # 2026-04-27 — Memorystore Redis URL for the queue. Required when
+    # CHAT_QUEUE_TYPE=redis. Reached via VPC connector below.
+    "REDIS_URL=${REDIS_URL:-}"
     "CHAT_DB_MODE=${CHAT_DB_MODE:-}"
     "MOBIUS_TURN_DEADLINE_S=${MOBIUS_TURN_DEADLINE_S}"
     "CHAT_MAX_REQUEST_BYTES=${CHAT_MAX_REQUEST_BYTES}"
@@ -290,6 +293,8 @@ run gcloud run deploy "${SERVICE_NAME}" \
     --max-instances="${RUN_MAX_INSTANCES}" \
     --port=8080 \
     --add-cloudsql-instances="${CLOUDSQL_INSTANCE}" \
+    ${RUN_VPC_CONNECTOR:+--vpc-connector="${RUN_VPC_CONNECTOR}"} \
+    ${RUN_VPC_EGRESS:+--vpc-egress="${RUN_VPC_EGRESS}"} \
     --set-env-vars="$(csv_env "${SET_ENV_VARS[@]}")" \
     --set-secrets="$(csv_env "${SET_SECRETS[@]}")" \
     --cpu-boost \
