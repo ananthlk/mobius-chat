@@ -357,12 +357,28 @@ def maybe_start_worker():
     assert_hosted_config()
 
     cfg = get_config()
-    if cfg.queue_type == "memory":
-        start_worker_background()
-        _worker_started = True
-        logger.info("Started in-process worker (memory queue)")
-    else:
-        logger.info("Queue type=%s: run worker separately with: python -m app.worker", cfg.queue_type)
+    # 2026-04-27 — always spawn the in-process worker regardless of
+    # queue type. Pre-Redis, this was gated to ``memory`` only because
+    # the assumption was that ``redis`` would have a separate worker
+    # process running ``python -m app.worker``. Cloud Run deploys the
+    # API container only — so without an in-process worker, jobs land
+    # in Redis but nothing pulls them.
+    #
+    # With ``CHAT_QUEUE_TYPE=redis`` and N Cloud Run instances, this
+    # gives us N workers all BRPOPping from the same Redis list, which
+    # is exactly the multi-instance parallelism we want. The earlier
+    # comment about a separate worker process is preserved at the
+    # bottom of this branch for future operators who want to scale
+    # workers independently of the API.
+    start_worker_background()
+    _worker_started = True
+    logger.info("Started in-process worker (queue_type=%s)", cfg.queue_type)
+    if cfg.queue_type != "memory":
+        logger.info(
+            "(Optional: scale workers independently by running "
+            "'python -m app.worker' as a separate Cloud Run service "
+            "or sidecar — they'll all consume from the same Redis list.)"
+        )
 
     # Phase 13.7 — audit chat_turns.context_summary presence + nullability.
     # Logs a structured WARNING (channel=phase13_7_schema_audit) if the
