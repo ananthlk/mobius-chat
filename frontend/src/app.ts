@@ -1366,8 +1366,12 @@ function isAllowedOpenHref(href: string): boolean {
 }
 
 /** Map raw thinking log lines to short user-facing status (no step counts). */
-function thinkingFriendlyStatus(line: string): string {
-  const l = (line ?? "").toLowerCase();
+function thinkingFriendlyStatus(line: unknown): string {
+  // Defensive: ``line`` is typed string, but rehydrated thinking_log
+  // entries can be dicts (signal events) — coerce so a non-string
+  // never crashes the chain via .toLowerCase().
+  const raw = typeof line === "string" ? line : (line == null ? "" : String(line));
+  const l = raw.toLowerCase();
   if (l.includes("waiting for worker") || l.includes("request sent")) return "Connecting…";
   if (l.includes("searching our materials") || l.includes("search_corpus") || l.includes("library research")) {
     return "Searching provider materials…";
@@ -7874,10 +7878,37 @@ function run(): void {
       // 2. Thinking-log preview (collapsed by default; matches live shape).
       // We seed all lines and immediately call done() so it renders in
       // its terminal state — no streaming, no "Queued" pulse.
+      //
+      // chat_turns.thinking_log holds mixed types: some entries are
+      // plain progress strings ("◌ Thinking…"), others are signal
+      // dicts ({event, message, correlation_id}). renderThinkingBlock
+      // expects string[] and calls .toLowerCase() per entry — pass a
+      // dict in and it crashes. Coerce defensively: keep strings as
+      // strings, render dict entries via their .message field if
+      // present (the human-readable line), JSON-stringify everything
+      // else, and drop empties.
       if (Array.isArray(turn.thinking_log) && turn.thinking_log.length > 0) {
-        const tb = renderThinkingBlock(turn.thinking_log);
-        try { tb.done(turn.thinking_log.length); } catch { /* noop */ }
-        turnWrap.appendChild(tb.el);
+        const lines: string[] = [];
+        for (const entry of turn.thinking_log) {
+          if (typeof entry === "string") {
+            const s = entry.trim();
+            if (s) lines.push(s);
+          } else if (entry && typeof entry === "object") {
+            const e = entry as { message?: unknown; line?: unknown };
+            const msg = typeof e.message === "string" ? e.message : (typeof e.line === "string" ? e.line : "");
+            if (msg && msg.trim()) {
+              lines.push(msg.trim());
+            } else {
+              // Last-resort serialization so debug info isn't lost.
+              try { lines.push(JSON.stringify(entry).slice(0, 200)); } catch { /* noop */ }
+            }
+          }
+        }
+        if (lines.length > 0) {
+          const tb = renderThinkingBlock(lines);
+          try { tb.done(lines.length); } catch { /* noop */ }
+          turnWrap.appendChild(tb.el);
+        }
       }
 
       // 3. Assistant answer — final_message is the AnswerCard JSON

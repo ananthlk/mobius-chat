@@ -1308,7 +1308,8 @@ function isAllowedOpenHref(href) {
   return /^https?:\/\//i.test(t);
 }
 function thinkingFriendlyStatus(line) {
-  const l = (line ?? "").toLowerCase();
+  const raw = typeof line === "string" ? line : line == null ? "" : String(line);
+  const l = raw.toLowerCase();
   if (l.includes("waiting for worker") || l.includes("request sent"))
     return "Connecting\u2026";
   if (l.includes("searching our materials") || l.includes("search_corpus") || l.includes("library research")) {
@@ -6802,12 +6803,33 @@ ${message}`;
       turnWrap.className = "chat-turn";
       turnWrap.appendChild(renderUserMessage(turn.question || "", void 0));
       if (Array.isArray(turn.thinking_log) && turn.thinking_log.length > 0) {
-        const tb = renderThinkingBlock(turn.thinking_log);
-        try {
-          tb.done(turn.thinking_log.length);
-        } catch {
+        const lines = [];
+        for (const entry of turn.thinking_log) {
+          if (typeof entry === "string") {
+            const s = entry.trim();
+            if (s)
+              lines.push(s);
+          } else if (entry && typeof entry === "object") {
+            const e = entry;
+            const msg = typeof e.message === "string" ? e.message : typeof e.line === "string" ? e.line : "";
+            if (msg && msg.trim()) {
+              lines.push(msg.trim());
+            } else {
+              try {
+                lines.push(JSON.stringify(entry).slice(0, 200));
+              } catch {
+              }
+            }
+          }
         }
-        turnWrap.appendChild(tb.el);
+        if (lines.length > 0) {
+          const tb = renderThinkingBlock(lines);
+          try {
+            tb.done(lines.length);
+          } catch {
+          }
+          turnWrap.appendChild(tb.el);
+        }
       }
       const finalBody = turn.final_message || "";
       if (finalBody.trim()) {
