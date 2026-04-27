@@ -28,6 +28,19 @@ from app.storage.turns import insert_turn
 logger = logging.getLogger(__name__)
 
 
+#
+# Schema dependencies (run order matters):
+#   * 017_chat_turns_context_summary.sql — adds context_summary TEXT
+#   * 032_chat_turns_user_id.sql         — adds user_id TEXT
+#   * 033_phase_13_7_thread_summary.sql  — adds the (thread_id, created_at DESC)
+#       partial index used by the sidebar's latest-summary query
+#
+# Both columns ARE on dev/prod. The two-tier fallback below (drop
+# user_id; drop user_id+context_summary) is purely defensive against
+# environments that lag on migrations — in normal operation it never
+# fires. If you see fallback warnings in Cloud Run logs, treat that as
+# a schema-drift incident, not a routine event.
+#
 _TURN_INSERT_SQL_WITH_USER_ID = """
 INSERT INTO chat_turns (
     correlation_id, question, thinking_log, final_message, sources,
