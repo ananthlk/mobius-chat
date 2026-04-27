@@ -7852,14 +7852,24 @@ function run(): void {
       );
       if (!r.ok) {
         console.warn("[loadAndRenderThread] HTTP", r.status, "for", tid);
+        // BETA-sprint Move 2 — loud failure on user-visible path. The
+        // sidebar click is an explicit user action; if it silently
+        // fails the user is left with an unchanged pane and no clue
+        // why. Toast surfaces the problem without blocking the app.
+        _showToast(`Couldn't load thread (HTTP ${r.status}). Please retry.`);
         return;
       }
       turns = await r.json();
     } catch (err) {
       console.warn("[loadAndRenderThread] fetch failed:", err);
+      _showToast("Couldn't load thread. Check your connection and retry.");
       return;
     }
-    if (!Array.isArray(turns)) return;
+    if (!Array.isArray(turns)) {
+      console.warn("[loadAndRenderThread] non-array response", typeof turns);
+      _showToast("Thread response was unexpected. Please retry.");
+      return;
+    }
 
     // Now that we have the data, swap the chat pane.
     currentThreadId = tid;

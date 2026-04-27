@@ -6782,15 +6782,20 @@ ${message}`;
       );
       if (!r.ok) {
         console.warn("[loadAndRenderThread] HTTP", r.status, "for", tid);
+        _showToast(`Couldn't load thread (HTTP ${r.status}). Please retry.`);
         return;
       }
       turns = await r.json();
     } catch (err) {
       console.warn("[loadAndRenderThread] fetch failed:", err);
+      _showToast("Couldn't load thread. Check your connection and retry.");
       return;
     }
-    if (!Array.isArray(turns))
+    if (!Array.isArray(turns)) {
+      console.warn("[loadAndRenderThread] non-array response", typeof turns);
+      _showToast("Thread response was unexpected. Please retry.");
       return;
+    }
     currentThreadId = tid;
     window.__mobiusChatThreadId = currentThreadId;
     if (chatEmpty)

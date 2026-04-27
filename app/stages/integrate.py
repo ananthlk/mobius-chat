@@ -466,9 +466,34 @@ def run_integrate(
                     # Cap at ~600 chars to match the legacy regex-built
                     # summary's storage budget; extra is dropped.
                     ctx.thread_summary = _ts.strip()[:600]
-    except (json.JSONDecodeError, TypeError):
-        # Non-JSON final_message (e.g. fallback path); leave None.
-        pass
+                else:
+                    # BETA-sprint Move 2 — loud-fail when the integrator
+                    # produces a valid AnswerCard but is missing the
+                    # required thread_summary field. Tells ops "the
+                    # prompt is fine, the model just dropped the field"
+                    # vs the JSONDecodeError below which means the
+                    # whole response was unparseable. Both are 'sidebar
+                    # summary will be NULL for this turn,' but the
+                    # remediation differs.
+                    logger.warning(
+                        "[phase13.7] integrator emitted AnswerCard without "
+                        "thread_summary field (cid=%s mode=%s). Sidebar "
+                        "rolling summary will be NULL for this turn.",
+                        getattr(ctx, "correlation_id", "?")[:8],
+                        _parsed.get("mode", "?"),
+                    )
+    except (json.JSONDecodeError, TypeError) as _e:
+        # Non-JSON final_message (e.g. fallback path); leave None. Log
+        # the cid + truncated head so ops can correlate to the integrator
+        # response logs and see what shape the model actually returned.
+        logger.warning(
+            "[phase13.7] integrator final_message not JSON-parseable "
+            "(cid=%s err=%s); thread_summary unavailable for this turn. "
+            "head=%r",
+            getattr(ctx, "correlation_id", "?")[:8],
+            type(_e).__name__,
+            (final_message or "")[:120],
+        )
 
     # Response-side PHI audit (2026-04-20). Mirror of the resolve-stage
     # hook for user-input side: LLM outputs can contain PHI too (the
