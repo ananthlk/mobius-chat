@@ -102,31 +102,38 @@ def retrieve_via_rag_api(
     filter_program: str = "",
     filter_authority_level: str = "",
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
-    """Call RAG API. Returns (assembled docs, trace or None). Docs already have confidence labels."""
+    """Call RAG API. Returns (chunks, trace or None).
+
+    2026-04-27: contract change. The mobius-rag service deprecated
+    ``POST /retrieve`` (returned ``{docs, retrieval_trace}`` and accepted
+    payer/state/program filters + factual/hierarchical knobs) in favor of
+    a lightweight ``POST /api/query`` that takes ``{query, k}`` and
+    returns ``{chunks: [ChunkOut, ...]}`` — embed query, vector search,
+    resolve source_id to text. No filters, no trace.
+
+    Symptom before this fix: every search_corpus call hit the dead
+    ``/retrieve`` endpoint, got HTTP 405, and silently fell through to
+    the inline-BM25 path. Result: corpus answers were running on a
+    direct-DB BM25 with stale tagging instead of the RAG service.
+
+    Args ``path``, ``apply_google``, ``include_trace``, ``n_factual``,
+    ``n_hierarchical``, ``filter_*`` are accepted for caller stability
+    but the new endpoint silently ignores all of them. Filters that
+    used to narrow at retrieval time now have to be enforced upstream
+    (curator / search_corpus filtering) or downstream (post-fetch
+    filtering on the returned chunks). See note in caller for the
+    transitional plan.
+    """
     url = (os.environ.get("RAG_API_URL") or "").strip()
     if not url:
         return [], None
     base = url.rstrip("/")
-    api_url = f"{base}/retrieve"
+    api_url = f"{base}/api/query"
+    # New contract: {query, k} only. Field renames + everything else dropped.
     payload_obj: dict = {
-        "question": question,
-        "path": path if path in ("mobius", "lazy") else "mobius",
-        "top_k": top_k,
-        "apply_google": apply_google,
-        "include_trace": include_trace,
+        "query": question,
+        "k": int(top_k) if top_k else 10,
     }
-    if n_factual is not None:
-        payload_obj["n_factual"] = n_factual
-    if n_hierarchical is not None:
-        payload_obj["n_hierarchical"] = n_hierarchical
-    if filter_payer and filter_payer.strip():
-        payload_obj["filter_payer"] = filter_payer.strip()
-    if filter_state and filter_state.strip():
-        payload_obj["filter_state"] = filter_state.strip()
-    if filter_program and filter_program.strip():
-        payload_obj["filter_program"] = filter_program.strip()
-    if filter_authority_level and filter_authority_level.strip():
-        payload_obj["filter_authority_level"] = filter_authority_level.strip()
     payload = json.dumps(payload_obj).encode("utf-8")
     try:
         req = urllib.request.Request(
@@ -139,35 +146,37 @@ def retrieve_via_rag_api(
             data = json.loads(resp.read().decode())
         if _DEBUG_RAG:
             logger.info("[DEBUG_RAG] RAG API response type=%s keys=%s", type(data).__name__, list(data.keys()) if isinstance(data, dict) else "n/a")
-        if not isinstance(data, dict):
-            # Handle legacy / proxy response that returns a list of docs at top level
-            docs = data if isinstance(data, list) else []
+        if isinstance(data, dict):
+            chunks = data.get("chunks") or []
+            # New endpoint never returns a trace. Keep ``trace`` None
+            # so callers that branched on its presence still work.
+            trace = None
+        elif isinstance(data, list):
+            # Defensive: handle list-of-chunks shape if some ancestor
+            # of the new endpoint ever returns the bare array.
+            chunks = data
             trace = None
         else:
-            docs = data.get("docs") or []
-            trace = data.get("retrieval_trace") if include_trace else None
-            if trace is not None and not isinstance(trace, dict):
-                if _DEBUG_RAG:
-                    logger.warning("[DEBUG_RAG] RAG API retrieval_trace is %s not dict, ignoring", type(trace).__name__)
-                trace = None
-        # Normalize to plain dicts (API may return Row-like or list-of-pairs)
+            chunks = []
+            trace = None
         if _DEBUG_RAG:
-            logger.info("[DEBUG_RAG] docs len=%s", len(docs) if docs else 0)
+            logger.info("[DEBUG_RAG] chunks len=%s", len(chunks) if chunks else 0)
         out: list[dict[str, Any]] = []
-        for idx, d in enumerate(docs):
-            if isinstance(d, dict):
-                out.append(dict(d))
-            elif isinstance(d, (list, tuple)) and d and all(
-                isinstance(x, (list, tuple)) and len(x) == 2 for x in d
+        for idx, c in enumerate(chunks):
+            if isinstance(c, dict):
+                out.append(dict(c))
+            elif isinstance(c, (list, tuple)) and c and all(
+                isinstance(x, (list, tuple)) and len(x) == 2 for x in c
             ):
-                out.append(dict(d))
+                # Tolerate list-of-pairs shape from older proxies.
+                out.append(dict(c))
             else:
                 if _DEBUG_RAG:
                     try:
-                        t0 = type(d[0]).__name__ if (isinstance(d, (list, tuple)) and d) else "n/a"
+                        t0 = type(c[0]).__name__ if (isinstance(c, (list, tuple)) and c) else "n/a"
                     except (TypeError, IndexError, KeyError):
                         t0 = "n/a"
-                    logger.warning("[DEBUG_RAG] RAG API doc[%s] skip type=%s first_el=%s", idx, type(d).__name__, t0)
+                    logger.warning("[DEBUG_RAG] RAG API chunk[%s] skip type=%s first_el=%s", idx, type(c).__name__, t0)
                 continue
         return out, trace
     except Exception as e:

@@ -370,6 +370,7 @@ def _vertex_generate_sync(
     gen_config: dict,
     tools: list | None = None,
 ) -> tuple[str, LLMUsageDict]:
+    import os as _os
     import time as _time
     t0 = _time.perf_counter()
     logger.info(
@@ -402,29 +403,75 @@ def _vertex_generate_sync(
     from vertexai.generative_models import GenerativeModel
     model = GenerativeModel(model_name)
     req_opts = _vertex_request_options()
-    try:
-        # Defensive kwargs: pass ``timeout`` positionally via kwargs so
-        # SDK versions that don't recognize it raise cleanly (caught
-        # below) rather than silently ignoring the cap.
+
+    # 2026-04-27 — outer-bound wrapper.
+    #
+    # The vertexai SDK 1.142.0 silently ignores both ``timeout=`` and
+    # ``retry=`` kwargs in some throttled paths. Observed in prod:
+    # ``generate_content`` ran for 596.7s on a 429 retry storm despite
+    # ``Retry(deadline=45)`` being set. Even when we caught the
+    # exception, the inner SDK thread had already wedged the worker for
+    # nearly 10 minutes — single-threaded queue → 10-minute hostage
+    # for every other queued turn.
+    #
+    # Fix: run the call in a daemon ThreadPoolExecutor and wait at
+    # most ``deadline`` seconds via ``Future.result(timeout=...)``.
+    # Python can't actually kill the inner thread, but we don't have
+    # to — once we raise FutureTimeoutError, the caller treats it as
+    # a normal LLM error (bandit swaps models, fallback chain runs).
+    # The zombie thread bleeds CPU until it finishes on its own,
+    # but the worker thread is freed instantly.
+    #
+    # Why this matters even with our async ``asyncio.wait_for`` outer
+    # cap: that cap cancels the awaiting coroutine but doesn't reach
+    # into the synchronous SDK call. This wrapper does.
+
+    import concurrent.futures as _futs
+    deadline = float(_os.environ.get("VERTEX_TOTAL_DEADLINE_SECONDS", "45") or 45)
+    # A pool max-1 is fine — each Vertex call gets its own pool
+    # instance; we never queue calls inside one pool. Daemon threads
+    # so process exit isn't blocked by zombies.
+    _pool = _futs.ThreadPoolExecutor(max_workers=1, thread_name_prefix="vertex-call")
+
+    def _call_sdk():
         if tools:
             try:
-                response = model.generate_content(
+                return model.generate_content(
                     prompt, generation_config=gen_config, tools=tools, **req_opts
                 )
             except TypeError:
-                # SDK version doesn't accept timeout; fall back without it.
-                response = model.generate_content(
+                return model.generate_content(
                     prompt, generation_config=gen_config, tools=tools
                 )
         else:
             try:
-                response = model.generate_content(
+                return model.generate_content(
                     prompt, generation_config=gen_config, **req_opts
                 )
             except TypeError:
-                response = model.generate_content(
+                return model.generate_content(
                     prompt, generation_config=gen_config
                 )
+
+    _future = _pool.submit(_call_sdk)
+    try:
+        # ``shutdown(wait=False)`` first so the pool stops accepting
+        # new submissions but doesn't block on the in-flight call.
+        # Then bound the wait. If the deadline fires, the worker
+        # thread keeps running but we've already returned.
+        _pool.shutdown(wait=False)
+        try:
+            response = _future.result(timeout=deadline)
+        except _futs.TimeoutError as _te:
+            elapsed = _time.perf_counter() - t0
+            logger.error(
+                "[vertex] generate_content abandoned after deadline=%.1fs "
+                "(elapsed=%.1fs, model=%s) — SDK retry ignored our cap",
+                deadline, elapsed, model_name,
+            )
+            # Re-raise as a TimeoutError that downstream code already
+            # handles as a transient (bandit swaps model, fallback).
+            raise TimeoutError(f"vertex.generate_content abandoned after {deadline:.0f}s") from _te
     except Exception as e:
         logger.error("[vertex] generate_content raised: %s (elapsed=%.1fs)", e, _time.perf_counter() - t0)
         # Record the exception on the span so Cloud Trace's error
