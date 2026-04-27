@@ -588,6 +588,15 @@
     // Cloud Run because getRagDocumentUrl falls back to localhost:5173.
     window.RAG_APP_BASE = "https://mobius-rag-ortabkknqa-uc.a.run.app";
     window.RAG_API_BASE = "https://mobius-rag-ortabkknqa-uc.a.run.app";
+
+    // Operations Suite tile destinations. Read by setupSkillsModal()
+    // in app.ts; falls back to localhost if a var is unset (dev only).
+    // For the deployed dev build these point at the actual Cloud Run
+    // services — no developer's-laptop dependency.
+    window.MOBIUS_STRATEGY_URL      = "https://mobius-story-ui-ortabkknqa-uc.a.run.app";
+    window.MOBIUS_CREDENTIALING_URL = "https://mobius-provider-roster-credentialing-ortabkknqa-uc.a.run.app";
+    window.MOBIUS_ROSTER_URL        = "https://mobius-provider-roster-credentialing-ortabkknqa-uc.a.run.app/roster";
+    window.MOBIUS_LIBRARY_URL       = "https://mobius-rag-ortabkknqa-uc.a.run.app";
   </script>
   <script src="static/task-manager.js"></script>
   <script type="module" src="static/app.js?v=30"></script>

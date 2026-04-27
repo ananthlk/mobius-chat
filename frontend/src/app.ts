@@ -8199,7 +8199,7 @@ function run(): void {
       key: string;
       label: string;
       tagline: string;
-      accent: "indigo" | "violet" | "emerald";
+      accent: "indigo" | "violet" | "emerald" | "accent";
       urlEnvKey: string;       // window.<key> read first
       fallbackUrl: string;     // dev / unconfigured fallback
     };
@@ -8211,7 +8211,7 @@ function run(): void {
         tagline: "Benchmarking + KPIs",
         accent: "indigo",
         urlEnvKey: "MOBIUS_STRATEGY_URL",
-        fallbackUrl: "http://localhost:8099/financial-strategy",
+        fallbackUrl: "https://mobius-story-ui-ortabkknqa-uc.a.run.app",
       },
       {
         key: "credentialing",
@@ -8219,7 +8219,7 @@ function run(): void {
         tagline: "Provider runs + reports",
         accent: "violet",
         urlEnvKey: "MOBIUS_CREDENTIALING_URL",
-        fallbackUrl: "http://localhost:3999/credentialing-home.html",
+        fallbackUrl: "https://mobius-provider-roster-credentialing-ortabkknqa-uc.a.run.app",
       },
       {
         key: "roster",
@@ -8227,12 +8227,15 @@ function run(): void {
         tagline: "Provider directory health",
         accent: "emerald",
         urlEnvKey: "MOBIUS_ROSTER_URL",
-        fallbackUrl: ((): string => {
-          const w = window as Window & typeof globalThis & { API_BASE?: string };
-          const base = w.API_BASE || window.location.origin;
-          const lastOrg = localStorage.getItem("lastOrg") || "";
-          return base + "/roster" + (lastOrg ? "?org=" + encodeURIComponent(lastOrg) : "");
-        })(),
+        fallbackUrl: "https://mobius-provider-roster-credentialing-ortabkknqa-uc.a.run.app/roster",
+      },
+      {
+        key: "library",
+        label: "Library",
+        tagline: "Corpus + ingestion",
+        accent: "accent",
+        urlEnvKey: "MOBIUS_LIBRARY_URL",
+        fallbackUrl: "https://mobius-rag-ortabkknqa-uc.a.run.app",
       },
     ];
 

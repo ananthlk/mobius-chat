@@ -6861,6 +6861,7 @@ body {
 .suite-tile--indigo  .suite-tile-label::before { background: var(--mobius-indigo); }
 .suite-tile--violet  .suite-tile-label::before { background: var(--mobius-violet); }
 .suite-tile--emerald .suite-tile-label::before { background: var(--mobius-emerald); }
+.suite-tile--accent  .suite-tile-label::before { background: var(--mobius-accent); }
 
 /* Tagline lives in the modal, not the sidebar — kept hidden here so
  * the renderer can still emit it without breaking the row layout. */
@@ -7013,6 +7014,7 @@ body {
 .skills-standalone--indigo  { border-left-color: var(--mobius-indigo); }
 .skills-standalone--violet  { border-left-color: var(--mobius-violet); }
 .skills-standalone--emerald { border-left-color: var(--mobius-emerald); }
+.skills-standalone--accent  { border-left-color: var(--mobius-accent); }
 
 .skills-standalone-title {
   margin: 0;
@@ -7066,6 +7068,12 @@ body {
 }
 .skills-standalone--emerald .skills-standalone-open:hover {
   background: var(--mobius-emerald); color: #fff;
+}
+.skills-standalone--accent .skills-standalone-open {
+  border-color: var(--mobius-accent); color: var(--mobius-accent);
+}
+.skills-standalone--accent .skills-standalone-open:hover {
+  background: var(--mobius-accent); color: var(--mobius-accent-text, #fff);
 }
 
 /* Coming soon — muted, dashed border */
