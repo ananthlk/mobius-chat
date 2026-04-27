@@ -226,6 +226,13 @@ def _atomic_save_turn_with_messages(
     result = db_transaction(statements, "chat")
     err = result.get("error") if isinstance(result, dict) else None
     if err is None:
+        # BETA-sprint Move 3 — record happy-path so dashboard ratios
+        # work (fallback rate = tier_1+2 / total). Fire-and-forget.
+        try:
+            from app.services.phase_13_7_metrics import record_persist_fallback_tier
+            record_persist_fallback_tier(0)
+        except Exception:
+            pass
         return
 
     # Graceful fallback — missing user_id column (migration not yet run).
@@ -254,6 +261,13 @@ def _atomic_save_turn_with_messages(
         result2 = db_transaction(fallback_statements, "chat")
         err2 = result2.get("error") if isinstance(result2, dict) else None
         if err2 is None:
+            # BETA-sprint Move 3 — first-tier fallback fired (user_id
+            # column missing). Schema-drift signal; alert on count > 0.
+            try:
+                from app.services.phase_13_7_metrics import record_persist_fallback_tier
+                record_persist_fallback_tier(1)
+            except Exception:
+                pass
             return
 
         # Second fallback: drop context_summary too. Covers older
@@ -275,6 +289,15 @@ def _atomic_save_turn_with_messages(
             result3 = db_transaction(legacy_statements, "chat")
             err3 = result3.get("error") if isinstance(result3, dict) else None
             if err3 is None:
+                # BETA-sprint Move 3 — second-tier fallback fired (BOTH
+                # user_id and context_summary columns missing). This is
+                # a serious schema-drift incident — the rolling summary
+                # write is silently dropped on this turn. Alert hard.
+                try:
+                    from app.services.phase_13_7_metrics import record_persist_fallback_tier
+                    record_persist_fallback_tier(2)
+                except Exception:
+                    pass
                 return
             msg3 = err3.get("message") if isinstance(err3, dict) else str(err3)
             logger.exception("Atomic turn save (legacy-no-context fallback) failed: %s", msg3)

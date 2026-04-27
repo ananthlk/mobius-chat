@@ -457,15 +457,19 @@ def run_integrate(
     # rely on the field being present (legacy prompts and parse-failure
     # fallbacks won't have it) — None is fine, the persist path falls
     # back to the regex-based build_context_summary for those cases.
+    _ts_emitted = False
+    _ts_mode: str | None = None
     try:
         if final_message:
             _parsed = json.loads(final_message)
             if isinstance(_parsed, dict):
+                _ts_mode = _parsed.get("mode") if isinstance(_parsed.get("mode"), str) else None
                 _ts = _parsed.get("thread_summary")
                 if isinstance(_ts, str) and _ts.strip():
                     # Cap at ~600 chars to match the legacy regex-built
                     # summary's storage budget; extra is dropped.
                     ctx.thread_summary = _ts.strip()[:600]
+                    _ts_emitted = True
                 else:
                     # BETA-sprint Move 2 — loud-fail when the integrator
                     # produces a valid AnswerCard but is missing the
@@ -494,6 +498,16 @@ def run_integrate(
             type(_e).__name__,
             (final_message or "")[:120],
         )
+
+    # BETA-sprint Move 3 — structured metric. Fired regardless of which
+    # branch above set _ts_emitted; aggregate the rate to detect prompt
+    # drift or model-compliance regressions.
+    try:
+        from app.services.phase_13_7_metrics import record_thread_summary_emitted
+        record_thread_summary_emitted(emitted=_ts_emitted, mode=_ts_mode)
+    except Exception:
+        # Metric emission is fire-and-forget — never breaks the turn.
+        pass
 
     # Response-side PHI audit (2026-04-20). Mirror of the resolve-stage
     # hook for user-input side: LLM outputs can contain PHI too (the

@@ -87,7 +87,15 @@ def get_chat_history_thread_turns(thread_id: str, limit: int | None = 50):
     tid = (thread_id or "").strip()
     if not tid:
         raise HTTPException(status_code=400, detail="thread_id required")
-    return get_thread_turns(tid, _parse_limit(limit))
+    turns = get_thread_turns(tid, _parse_limit(limit))
+    # BETA-sprint Move 3 — emit a structured metric so the sidebar-
+    # rehydration adoption rate is observable. Fire-and-forget.
+    try:
+        from app.services.phase_13_7_metrics import record_rehydrate_request
+        record_rehydrate_request(thread_id=tid, turn_count=len(turns))
+    except Exception:
+        pass
+    return turns
 
 
 @router.get("/most-helpful-searches")

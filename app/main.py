@@ -364,6 +364,17 @@ def maybe_start_worker():
     else:
         logger.info("Queue type=%s: run worker separately with: python -m app.worker", cfg.queue_type)
 
+    # Phase 13.7 — audit chat_turns.context_summary presence + nullability.
+    # Logs a structured WARNING (channel=phase13_7_schema_audit) if the
+    # column is missing or NOT NULL. /ready surfaces the cached status
+    # so on-call can see schema state without grepping logs. Never
+    # raises — Phase 13.7 degrades gracefully when the column is absent.
+    try:
+        from app.services.phase_13_7_metrics import audit_thread_summary_schema
+        audit_thread_summary_schema()
+    except Exception as e:
+        logger.warning("Phase 13.7 schema audit failed to run: %s", e)
+
     # Warn when DB not configured: chat history, jurisdiction state, and retrieval persistence will not work.
     # (In hosted envs this fails earlier via assert_hosted_config; the
     # warning below is the dev-env soft reminder.)
@@ -1111,7 +1122,28 @@ def ready():
         checks["queue"] = {"status": "fail", "error": str(e)[:200]}
         all_ok = False
 
-    # 3. skills-mcp — degraded (warn) on failure, not 503. Chat can
+    # 3. Phase 13.7 schema audit — read the cached startup result.
+    #    If status != ok, surface as degraded (not a 503) — chat still
+    #    works, the rolling thread summary just won't persist. Operators
+    #    look at this when sidebar summaries are silent.
+    try:
+        from app.services.phase_13_7_metrics import schema_audit_status
+        audit = schema_audit_status()
+        if audit.get("status") == "ok":
+            checks["phase_13_7_schema"] = {"status": "ok"}
+        else:
+            checks["phase_13_7_schema"] = {
+                "status": "degraded",
+                "audit_status": audit.get("status"),
+                "detail": (audit.get("detail") or "")[:200],
+            }
+            # Intentionally NOT flipping all_ok — Phase 13.7 is a
+            # feature, not a critical path. Sidebar summary degrades;
+            # nothing else.
+    except Exception as e:
+        checks["phase_13_7_schema"] = {"status": "error", "error": str(e)[:200]}
+
+    # 4. skills-mcp — degraded (warn) on failure, not 503. Chat can
     #    serve built-in tools without skills-mcp.
     try:
         base = (os.environ.get("CHAT_SKILLS_MCP_URL") or "").strip()
