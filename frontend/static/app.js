@@ -949,15 +949,35 @@ function initModelProfilePicker() {
     status.textContent = text || "";
     status.className = "sidebar-llm-status" + (kind ? " sidebar-llm-status--" + kind : "");
   };
+  const HIDDEN_PROFILES = /* @__PURE__ */ new Set(["default", "bandit"]);
+  const LEGACY_TO_DISPLAY = {
+    default: "auto",
+    bandit: "auto"
+  };
   const render = (data) => {
-    const profiles = data && data.available_profiles || [];
-    const active = data && data.active_profile || "default";
+    const profilesRaw = data && data.available_profiles || [];
+    const activeRaw = data && data.active_profile || "default";
+    const seen = /* @__PURE__ */ new Set();
+    const display = [];
+    if (profilesRaw.includes("auto") || profilesRaw.includes("default") || profilesRaw.includes("bandit")) {
+      display.push("auto");
+      seen.add("auto");
+    }
+    for (const p of profilesRaw) {
+      if (HIDDEN_PROFILES.has(p) || p === "auto")
+        continue;
+      if (!seen.has(p)) {
+        display.push(p);
+        seen.add(p);
+      }
+    }
+    const activeDisplay = LEGACY_TO_DISPLAY[activeRaw] || activeRaw;
     sel.innerHTML = "";
-    profiles.forEach((p) => {
+    display.forEach((p) => {
       const opt = document.createElement("option");
       opt.value = p;
       opt.textContent = p;
-      if (p === active)
+      if (p === activeDisplay)
         opt.selected = true;
       sel.appendChild(opt);
     });

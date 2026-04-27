@@ -31,11 +31,16 @@
 profiles:
 
   # ────────────────────────────────────────────────────────────────
-  # default / bandit — Thompson sampling fully in charge.
-  # ``bandit`` is an alias exposed to the frontend picker.
+  # auto — Thompson sampling fully in charge. The user-facing name
+  # in the picker (parallel to ``optimal`` / ``gemini`` / ``anthropic``).
+  # ``default`` and ``bandit`` are kept as deprecated aliases so the
+  # MOBIUS_MODEL_PROFILE env var, the admin API, and any external
+  # tooling that still references those names keep working. Frontend
+  # picker filters them out of the visible dropdown.
   # ────────────────────────────────────────────────────────────────
-  default: {}
-  bandit: {}
+  auto: {}
+  default: {}    # deprecated alias of ``auto`` — env-var compat
+  bandit: {}     # deprecated alias of ``auto`` — historical jargon
 
   # ────────────────────────────────────────────────────────────────
   # optimal — best reliability/speed/quality mix. Groq excluded for

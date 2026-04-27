@@ -43,17 +43,21 @@ def _write_profile_yaml(tmp_path: Path, body: str) -> Path:
 
 
 class TestLoader:
-    def test_missing_file_returns_default_only(self, monkeypatch):
+    def test_missing_file_returns_canonical_empty_profiles(self, monkeypatch):
+        """2026-04-27: ``auto`` is now the canonical empty-map profile;
+        ``default`` and ``bandit`` are kept as deprecated aliases for
+        env-var / admin-API stability. All three must be present so a
+        broken / missing config still surfaces a usable picker."""
         monkeypatch.setenv("MOBIUS_MODEL_PROFILE_FILE", "/nonexistent.yaml")
         profiles = mp._load()
-        assert profiles == {"default": {}}
+        assert profiles == {"auto": {}, "default": {}, "bandit": {}}
 
-    def test_malformed_yaml_falls_back_to_default(self, tmp_path, monkeypatch):
+    def test_malformed_yaml_falls_back_to_canonical_profiles(self, tmp_path, monkeypatch):
         p = tmp_path / "bad.yaml"
         p.write_text("not: valid: yaml: at: all: [")
         monkeypatch.setenv("MOBIUS_MODEL_PROFILE_FILE", str(p))
         profiles = mp._load()
-        assert profiles == {"default": {}}
+        assert profiles == {"auto": {}, "default": {}, "bandit": {}}
 
     def test_well_formed_yaml_loads(self, tmp_path, monkeypatch):
         _write_profile_yaml(tmp_path, """

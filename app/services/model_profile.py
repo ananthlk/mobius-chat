@@ -90,7 +90,7 @@ def _load() -> dict[str, dict[str, Any]]:
             logger.warning(
                 "model_profile: config not found at %s; all profiles empty", path,
             )
-            _PROFILES = {"default": {}}
+            _PROFILES = {"auto": {}, "default": {}, "bandit": {}}
             return _PROFILES
         try:
             import yaml
@@ -100,8 +100,13 @@ def _load() -> dict[str, dict[str, Any]]:
             if not isinstance(profiles, dict):
                 logger.warning("model_profile: 'profiles' not a dict; using default only")
                 profiles = {}
-            # Always include a ``default`` entry even if the file omits it.
+            # Always include the canonical empty-map profiles even if
+            # the YAML omits them. ``auto`` is the user-facing name (added
+            # 2026-04-27); ``default`` and ``bandit`` are deprecated
+            # aliases kept for env-var / admin-API stability.
+            profiles.setdefault("auto", {})
             profiles.setdefault("default", {})
+            profiles.setdefault("bandit", {})
             _PROFILES = profiles
             logger.info(
                 "model_profile: loaded %d profile(s) from %s",
@@ -110,7 +115,7 @@ def _load() -> dict[str, dict[str, Any]]:
             return _PROFILES
         except Exception as exc:
             logger.exception("model_profile: load failed; falling back to default-only: %s", exc)
-            _PROFILES = {"default": {}}
+            _PROFILES = {"auto": {}, "default": {}, "bandit": {}}
             return _PROFILES
 
 

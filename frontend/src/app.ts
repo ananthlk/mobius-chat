@@ -823,15 +823,45 @@ function initModelProfilePicker(): void {
     status.textContent = text || "";
     status.className = "sidebar-llm-status" + (kind ? " sidebar-llm-status--" + kind : "");
   };
+  // 2026-04-27: rename ``default`` / ``bandit`` → ``auto`` in the
+  // picker. Both YAML profiles are empty maps (Thompson-bandit fully
+  // in charge); ``default`` doesn't read parallel with ``optimal`` /
+  // ``gemini`` / ``anthropic``, and ``bandit`` is implementation
+  // jargon. ``auto`` describes the experience and matches industry
+  // convention (auto-router, auto-scaling).
+  //
+  // Backend keeps the deprecated names so MOBIUS_MODEL_PROFILE env
+  // and the admin API remain stable. We just hide the duplicates from
+  // the user-facing dropdown and remap the active label when one of
+  // the legacy names comes back from /chat/admin/model-profile.
+  const HIDDEN_PROFILES = new Set(["default", "bandit"]);
+  const LEGACY_TO_DISPLAY: Record<string, string> = {
+    default: "auto",
+    bandit:  "auto",
+  };
+
   const render = (data: any) => {
-    const profiles: string[] = (data && data.available_profiles) || [];
-    const active: string = (data && data.active_profile) || "default";
+    const profilesRaw: string[] = (data && data.available_profiles) || [];
+    const activeRaw: string = (data && data.active_profile) || "default";
+    // Build the display list: drop legacy aliases, ensure ``auto`` is
+    // present (the YAML may still emit only ``default`` / ``bandit``
+    // until that change ships).
+    const seen = new Set<string>();
+    const display: string[] = [];
+    if (profilesRaw.includes("auto") || profilesRaw.includes("default") || profilesRaw.includes("bandit")) {
+      display.push("auto"); seen.add("auto");
+    }
+    for (const p of profilesRaw) {
+      if (HIDDEN_PROFILES.has(p) || p === "auto") continue;
+      if (!seen.has(p)) { display.push(p); seen.add(p); }
+    }
+    const activeDisplay = LEGACY_TO_DISPLAY[activeRaw] || activeRaw;
     sel.innerHTML = "";
-    profiles.forEach((p) => {
+    display.forEach((p) => {
       const opt = document.createElement("option");
       opt.value = p;
       opt.textContent = p;
-      if (p === active) opt.selected = true;
+      if (p === activeDisplay) opt.selected = true;
       sel.appendChild(opt);
     });
   };
