@@ -79,25 +79,48 @@ _CONFIDENCE_LABEL_SCORE: dict[str, float] = {
 def _score_chunk_for_confidence_filter(c: dict) -> float:
     """Return a 0.0–1.0 numeric score usable by ``confidence_min`` filtering.
 
-    Works for both chunk shapes the retrieval layer produces:
+    Works for the chunk shapes the retrieval layer produces:
 
-    - **Inline BM25** — keys include ``match_score`` (normalized BM25 sigmoid) and/or
-      ``confidence`` (numeric). Pre-0.18 filter only looked at these.
-    - **RAG API** — keys include ``rerank_score`` (numeric) and ``confidence_label``
-      (string: "high" / "informational" / etc.). Pre-0.18 filter missed both and
-      treated every RAG-API chunk as 0.0 confidence → silently filtered the entire
-      corpus answer out of the ReAct turn.
+    - **Inline BM25** — ``match_score`` (BM25 sigmoid) and/or ``confidence``.
+    - **Legacy RAG API (Chroma path)** — ``rerank_score`` and/or ``confidence_label``
+      (string: "high" / "informational" / etc.).
+    - **Post-pgvector RAG API** — ``distance`` (which is *similarity*
+      after the cutover; polarity reversed from Chroma — 1.0 = identical).
+      We map it to the same 0..1 scale.
+    - **No-signal chunks (current /api/query path)** — mobius-rag's
+      QueryResponse.ChunkOut emits text + source_id + document fields
+      but no score field at all. Until the rag agent adds the score
+      to the contract (see CORPUS_RETRIEVAL_SKILL_EXTRACTION_PLAN.md
+      §3 / §6.1), treat these as PASS-THROUGH at score=1.0. The
+      reasoning: rag has already applied its own k-cutoff and any
+      backend-level filtering, so chat applying a *second* unscored
+      0.30 floor was filtering everything out (observed 2026-04-27,
+      cid=83304423: 8 → 0). Trusting rag's ordering is the right
+      default until the contract is fixed.
 
-    Lookup order: ``match_score`` → ``confidence`` → ``rerank_score`` →
-    ``confidence_label`` (via ``_CONFIDENCE_LABEL_SCORE``). First numeric hit
-    wins. Non-numeric / unknown values fall through.
+    Lookup order:
+      ``match_score`` → ``confidence`` → ``rerank_score`` →
+      ``distance`` (similarity polarity) → ``confidence_label`` →
+      pass-through 1.0 if no signal at all.
     """
     for field in ("match_score", "confidence", "rerank_score"):
         v = c.get(field)
         if isinstance(v, (int, float)) and v >= 0:
             return float(v)
+    # Post-pgvector ``distance`` is similarity (1 = identical). Same
+    # 0..1 scale as the other fields above, just under a different name
+    # for Chroma drop-in compatibility (which was misleading — see
+    # bench_pgvector_signoff.py).
+    d = c.get("distance")
+    if isinstance(d, (int, float)) and 0.0 <= d <= 1.0:
+        return float(d)
     lbl = (c.get("confidence_label") or "").strip().lower()
-    return _CONFIDENCE_LABEL_SCORE.get(lbl, 0.0)
+    if lbl:
+        return _CONFIDENCE_LABEL_SCORE.get(lbl, 0.0)
+    # No signal of any kind → trust rag's ordering, pass through. The
+    # alternative (return 0.0) silently nukes every chunk from the
+    # current /api/query path because ChunkOut omits the score field.
+    return 1.0
 
 
 def answer_non_patient(
