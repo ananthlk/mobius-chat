@@ -104,16 +104,26 @@ def _post_skill(
     include_document_ids: list[str] | None,
     assembly_strategy: str | None,
     canonical_floor: float | None,
+    caller_id: str | None,
 ) -> dict[str, Any]:
     """POST to rag's v1 corpus_search skill.
 
     Returns parsed JSON ``{chunks, telemetry}``. Raises on HTTP /
     network / JSON errors; caller maps to a ``no_sources`` envelope.
 
-    ``caller`` is in the request BODY (not a header). Rag writes it
-    onto search_events.caller for per-caller analytics. Worker /
-    cron / other chat-side callers that copy this pattern should set
-    their own caller (e.g. ``"mobius_chat_bench"``).
+    Caller attribution is sent THREE ways for cross-rev compatibility
+    with rag's evolving spec (2026-04-28):
+      * Body field   ``caller``       — original spec
+      * Header       ``X-Caller``     — newer spec, used by
+                                        search_events writer
+      * Header       ``X-Caller-Id``  — per-request unique id, lets
+                                        rag correlate a search row
+                                        with the chat turn that
+                                        triggered it (chat passes
+                                        the turn correlation_id)
+
+    Rag's writer reads whichever shape it understands; we send all
+    three to avoid coordinated rollouts.
     """
     url = base_url.rstrip("/") + _SKILL_PATH
     body: dict[str, Any] = {
@@ -130,10 +140,16 @@ def _post_skill(
     if canonical_floor is not None:
         body["canonical_floor"] = float(canonical_floor)
     payload = json.dumps(body).encode("utf-8")
+    headers: dict[str, str] = {
+        "Content-Type": "application/json",
+        "X-Caller": _CALLER,
+    }
+    if caller_id:
+        headers["X-Caller-Id"] = str(caller_id)
     req = urllib.request.Request(
         url,
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:
@@ -432,6 +448,12 @@ def _run(call: SkillCall) -> SkillEnvelope:
         else:
             call.emitter("◌ Searching our materials…")
 
+    # X-Caller-Id = the chat turn correlation_id when present, else
+    # a fresh uuid. Lets rag correlate a search_events row with the
+    # chat turn that triggered it (the lexicon-coaching feed reads
+    # this for "which turn surfaced the unmatched phrase").
+    caller_id = getattr(call.pipeline_ctx, "correlation_id", None) or str(uuid.uuid4())
+
     t0 = time.perf_counter()
     try:
         resp = _post_skill(
@@ -443,6 +465,7 @@ def _run(call: SkillCall) -> SkillEnvelope:
             include_document_ids=include_document_ids,
             assembly_strategy=assembly_strategy,
             canonical_floor=canonical_floor,
+            caller_id=caller_id,
         )
     except urllib.error.HTTPError as e:
         body = ""
