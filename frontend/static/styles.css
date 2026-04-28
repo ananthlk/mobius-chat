@@ -6878,6 +6878,58 @@ body {
 
 .suite-tile:hover .suite-tile-arrow { opacity: 0.75; }
 
+/* Coming-soon variant — visible but disabled. The label stays
+ * legible (so users still see what's planned), but the row is
+ * dimmed, the cursor is default, and the right side shows a
+ * "Coming soon" badge in place of the arrow. 2026-04-28. */
+.suite-tile--coming-soon {
+  cursor: default;
+  opacity: 0.55;
+}
+.suite-tile--coming-soon:hover { background: transparent; }
+.suite-tile-coming-soon {
+  flex-shrink: 0;
+  font-size: 0.65rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--mobius-text-muted);
+  padding: 0.12rem 0.45rem;
+  border: 1px solid var(--mobius-border, rgba(0,0,0,0.12));
+  border-radius: 999px;
+}
+
+/* Sidebar Roster/Credentialing legacy buttons get the same treatment. */
+.skill-sidebar-item--coming-soon {
+  cursor: default;
+  opacity: 0.55;
+}
+.skill-sidebar-item--coming-soon:hover { background: transparent; }
+.skill-sidebar-coming-soon {
+  margin-left: auto;
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--mobius-text-muted);
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--mobius-border, rgba(0,0,0,0.12));
+  border-radius: 999px;
+}
+
+/* Standalone-product cards in the skills modal — coming-soon
+ * variant replaces the Open button with a small badge. */
+.skills-standalone--coming-soon { opacity: 0.6; }
+.skills-standalone-badge {
+  display: inline-block;
+  margin-top: 0.55rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--mobius-text-muted);
+  padding: 0.2rem 0.55rem;
+  border: 1px solid var(--mobius-border, rgba(0,0,0,0.12));
+  border-radius: 999px;
+}
+
 /* Learn-more — quiet text link with chevron. No border, no fill,
  * no dashed boundary. Matches the muted secondary-action register. */
 .suite-learn-more {

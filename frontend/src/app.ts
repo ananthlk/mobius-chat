@@ -8500,8 +8500,15 @@ function run(): void {
       accent: "indigo" | "violet" | "emerald" | "accent";
       urlEnvKey: string;       // window.<key> read first
       fallbackUrl: string;     // dev / unconfigured fallback
+      comingSoon?: boolean;    // 2026-04-28 — disabled in UI until ready
     };
 
+    // 2026-04-28: Strategy / Credentialing / Roster surface in the
+    // sidebar + skills modal, but their backends are not yet hardened
+    // for production use. Marking them ``comingSoon`` keeps the visual
+    // hint (so users know they're planned) while disabling the click
+    // handler — no tab opens, no broken landing page. Library stays
+    // active because the corpus UI is the one that is in good shape.
     const SUITE_TILES: SuiteTile[] = [
       {
         key: "strategy",
@@ -8510,6 +8517,7 @@ function run(): void {
         accent: "indigo",
         urlEnvKey: "MOBIUS_STRATEGY_URL",
         fallbackUrl: "https://mobius-story-ui-ortabkknqa-uc.a.run.app",
+        comingSoon: true,
       },
       {
         key: "credentialing",
@@ -8518,6 +8526,7 @@ function run(): void {
         accent: "violet",
         urlEnvKey: "MOBIUS_CREDENTIALING_URL",
         fallbackUrl: "https://mobius-provider-roster-credentialing-ortabkknqa-uc.a.run.app",
+        comingSoon: true,
       },
       {
         key: "roster",
@@ -8526,6 +8535,7 @@ function run(): void {
         accent: "emerald",
         urlEnvKey: "MOBIUS_ROSTER_URL",
         fallbackUrl: "https://mobius-provider-roster-credentialing-ortabkknqa-uc.a.run.app/roster",
+        comingSoon: true,
       },
       {
         key: "library",
@@ -8604,15 +8614,26 @@ function run(): void {
       for (const t of SUITE_TILES) {
         const btn = document.createElement("button");
         btn.type = "button";
-        btn.className = `suite-tile suite-tile--${t.accent}`;
-        btn.setAttribute("aria-label", `Open ${t.label}`);
+        const baseCls = `suite-tile suite-tile--${t.accent}`;
+        btn.className = t.comingSoon ? `${baseCls} suite-tile--coming-soon` : baseCls;
+        btn.setAttribute("aria-label", t.comingSoon ? `${t.label} (coming soon)` : `Open ${t.label}`);
+        if (t.comingSoon) {
+          btn.disabled = true;
+          btn.setAttribute("aria-disabled", "true");
+          btn.title = "Coming soon";
+        }
+        const arrowOrBadge = t.comingSoon
+          ? `<span class="suite-tile-coming-soon" aria-hidden="true">Coming soon</span>`
+          : `<span class="suite-tile-arrow" aria-hidden="true">↗</span>`;
         btn.innerHTML =
           `<span class="suite-tile-label">${escapeHtml(t.label)}</span>` +
           `<span class="suite-tile-tagline">${escapeHtml(t.tagline)}</span>` +
-          `<span class="suite-tile-arrow" aria-hidden="true">↗</span>`;
-        btn.addEventListener("click", () => {
-          window.open(tileUrl(t), "_blank", "noopener");
-        });
+          arrowOrBadge;
+        if (!t.comingSoon) {
+          btn.addEventListener("click", () => {
+            window.open(tileUrl(t), "_blank", "noopener");
+          });
+        }
         sidebarTilesContainer.appendChild(btn);
       }
     }
@@ -8650,12 +8671,14 @@ function run(): void {
           '</div>',
           '<div class="skills-standalone-grid">',
             ...SUITE_TILES.map((t) =>
-              `<article class="skills-standalone skills-standalone--${t.accent}">` +
+              `<article class="skills-standalone skills-standalone--${t.accent}${t.comingSoon ? ' skills-standalone--coming-soon' : ''}">` +
                 `<h3 class="skills-standalone-title">${escapeHtml(t.label)}</h3>` +
                 `<p class="skills-standalone-tagline">${escapeHtml(t.tagline)}</p>` +
-                `<button type="button" class="skills-standalone-open" data-suite-key="${escapeHtml(t.key)}">` +
-                  `Open ${escapeHtml(t.label)} \u2197` +
-                '</button>' +
+                (t.comingSoon
+                  ? '<span class="skills-standalone-badge">Coming soon</span>'
+                  : `<button type="button" class="skills-standalone-open" data-suite-key="${escapeHtml(t.key)}">` +
+                      `Open ${escapeHtml(t.label)} \u2197` +
+                    '</button>') +
               '</article>'
             ),
           '</div>',
@@ -8728,19 +8751,34 @@ function run(): void {
 
     // Defensive: keep handlers for legacy element ids in case any
     // ancillary HTML (static/index.html) still references them. They
-    // delegate to the same SUITE_TILES URL resolution.
-    document.getElementById("btnOpenSkillPipeline")?.addEventListener("click", () => {
-      const t = SUITE_TILES.find((x) => x.key === "credentialing");
-      if (t) { closeSkillsModal(); window.open(tileUrl(t), "_blank", "noopener"); }
-    });
-    document.getElementById("btnOpenFinancialStrategy")?.addEventListener("click", () => {
-      const t = SUITE_TILES.find((x) => x.key === "strategy");
-      if (t) { closeSkillsModal(); window.open(tileUrl(t), "_blank", "noopener"); }
-    });
-    document.getElementById("btnOpenRoster")?.addEventListener("click", () => {
-      const t = SUITE_TILES.find((x) => x.key === "roster");
-      if (t) { closeSkillsModal(); window.open(tileUrl(t), "_blank", "noopener"); }
-    });
+    // delegate to the same SUITE_TILES URL resolution and respect the
+    // ``comingSoon`` flag so a temporarily-disabled tile doesn't open
+    // a broken page when the legacy button is clicked.
+    function _wireLegacySuiteButton(btnId: string, tileKey: string): void {
+      const el = document.getElementById(btnId) as HTMLButtonElement | null;
+      if (!el) return;
+      const t = SUITE_TILES.find((x) => x.key === tileKey);
+      if (t?.comingSoon) {
+        el.disabled = true;
+        el.classList.add("skill-sidebar-item--coming-soon");
+        el.title = "Coming soon";
+        el.setAttribute("aria-disabled", "true");
+        // Append a small badge so the disabled state is legible.
+        if (!el.querySelector(".skill-sidebar-coming-soon")) {
+          const badge = document.createElement("span");
+          badge.className = "skill-sidebar-coming-soon";
+          badge.textContent = "Coming soon";
+          el.appendChild(badge);
+        }
+        return;
+      }
+      el.addEventListener("click", () => {
+        if (t) { closeSkillsModal(); window.open(tileUrl(t), "_blank", "noopener"); }
+      });
+    }
+    _wireLegacySuiteButton("btnOpenSkillPipeline", "credentialing");
+    _wireLegacySuiteButton("btnOpenFinancialStrategy", "strategy");
+    _wireLegacySuiteButton("btnOpenRoster", "roster");
   })();
 
   // ── Boot landing dashboard ──────────────────────────────────

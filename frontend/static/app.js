@@ -7264,7 +7264,8 @@ ${message}`;
         tagline: "Benchmarking + KPIs",
         accent: "indigo",
         urlEnvKey: "MOBIUS_STRATEGY_URL",
-        fallbackUrl: "https://mobius-story-ui-ortabkknqa-uc.a.run.app"
+        fallbackUrl: "https://mobius-story-ui-ortabkknqa-uc.a.run.app",
+        comingSoon: true
       },
       {
         key: "credentialing",
@@ -7272,7 +7273,8 @@ ${message}`;
         tagline: "Provider runs + reports",
         accent: "violet",
         urlEnvKey: "MOBIUS_CREDENTIALING_URL",
-        fallbackUrl: "https://mobius-provider-roster-credentialing-ortabkknqa-uc.a.run.app"
+        fallbackUrl: "https://mobius-provider-roster-credentialing-ortabkknqa-uc.a.run.app",
+        comingSoon: true
       },
       {
         key: "roster",
@@ -7280,7 +7282,8 @@ ${message}`;
         tagline: "Provider directory health",
         accent: "emerald",
         urlEnvKey: "MOBIUS_ROSTER_URL",
-        fallbackUrl: "https://mobius-provider-roster-credentialing-ortabkknqa-uc.a.run.app/roster"
+        fallbackUrl: "https://mobius-provider-roster-credentialing-ortabkknqa-uc.a.run.app/roster",
+        comingSoon: true
       },
       {
         key: "library",
@@ -7343,12 +7346,21 @@ ${message}`;
       for (const t of SUITE_TILES) {
         const btn = document.createElement("button");
         btn.type = "button";
-        btn.className = `suite-tile suite-tile--${t.accent}`;
-        btn.setAttribute("aria-label", `Open ${t.label}`);
-        btn.innerHTML = `<span class="suite-tile-label">${escapeHtml3(t.label)}</span><span class="suite-tile-tagline">${escapeHtml3(t.tagline)}</span><span class="suite-tile-arrow" aria-hidden="true">\u2197</span>`;
-        btn.addEventListener("click", () => {
-          window.open(tileUrl(t), "_blank", "noopener");
-        });
+        const baseCls = `suite-tile suite-tile--${t.accent}`;
+        btn.className = t.comingSoon ? `${baseCls} suite-tile--coming-soon` : baseCls;
+        btn.setAttribute("aria-label", t.comingSoon ? `${t.label} (coming soon)` : `Open ${t.label}`);
+        if (t.comingSoon) {
+          btn.disabled = true;
+          btn.setAttribute("aria-disabled", "true");
+          btn.title = "Coming soon";
+        }
+        const arrowOrBadge = t.comingSoon ? `<span class="suite-tile-coming-soon" aria-hidden="true">Coming soon</span>` : `<span class="suite-tile-arrow" aria-hidden="true">\u2197</span>`;
+        btn.innerHTML = `<span class="suite-tile-label">${escapeHtml3(t.label)}</span><span class="suite-tile-tagline">${escapeHtml3(t.tagline)}</span>` + arrowOrBadge;
+        if (!t.comingSoon) {
+          btn.addEventListener("click", () => {
+            window.open(tileUrl(t), "_blank", "noopener");
+          });
+        }
         sidebarTilesContainer.appendChild(btn);
       }
     }
@@ -7376,7 +7388,7 @@ ${message}`;
         "</div>",
         '<div class="skills-standalone-grid">',
         ...SUITE_TILES.map(
-          (t) => `<article class="skills-standalone skills-standalone--${t.accent}"><h3 class="skills-standalone-title">${escapeHtml3(t.label)}</h3><p class="skills-standalone-tagline">${escapeHtml3(t.tagline)}</p><button type="button" class="skills-standalone-open" data-suite-key="${escapeHtml3(t.key)}">Open ${escapeHtml3(t.label)} \u2197</button></article>`
+          (t) => `<article class="skills-standalone skills-standalone--${t.accent}${t.comingSoon ? " skills-standalone--coming-soon" : ""}"><h3 class="skills-standalone-title">${escapeHtml3(t.label)}</h3><p class="skills-standalone-tagline">${escapeHtml3(t.tagline)}</p>` + (t.comingSoon ? '<span class="skills-standalone-badge">Coming soon</span>' : `<button type="button" class="skills-standalone-open" data-suite-key="${escapeHtml3(t.key)}">Open ${escapeHtml3(t.label)} \u2197</button>`) + "</article>"
         ),
         "</div>",
         "</div>",
@@ -7430,27 +7442,34 @@ ${message}`;
       if (e.key === "Escape" && !modal2?.hasAttribute("hidden"))
         closeSkillsModal();
     });
-    document.getElementById("btnOpenSkillPipeline")?.addEventListener("click", () => {
-      const t = SUITE_TILES.find((x) => x.key === "credentialing");
-      if (t) {
-        closeSkillsModal();
-        window.open(tileUrl(t), "_blank", "noopener");
+    function _wireLegacySuiteButton(btnId, tileKey) {
+      const el2 = document.getElementById(btnId);
+      if (!el2)
+        return;
+      const t = SUITE_TILES.find((x) => x.key === tileKey);
+      if (t?.comingSoon) {
+        el2.disabled = true;
+        el2.classList.add("skill-sidebar-item--coming-soon");
+        el2.title = "Coming soon";
+        el2.setAttribute("aria-disabled", "true");
+        if (!el2.querySelector(".skill-sidebar-coming-soon")) {
+          const badge = document.createElement("span");
+          badge.className = "skill-sidebar-coming-soon";
+          badge.textContent = "Coming soon";
+          el2.appendChild(badge);
+        }
+        return;
       }
-    });
-    document.getElementById("btnOpenFinancialStrategy")?.addEventListener("click", () => {
-      const t = SUITE_TILES.find((x) => x.key === "strategy");
-      if (t) {
-        closeSkillsModal();
-        window.open(tileUrl(t), "_blank", "noopener");
-      }
-    });
-    document.getElementById("btnOpenRoster")?.addEventListener("click", () => {
-      const t = SUITE_TILES.find((x) => x.key === "roster");
-      if (t) {
-        closeSkillsModal();
-        window.open(tileUrl(t), "_blank", "noopener");
-      }
-    });
+      el2.addEventListener("click", () => {
+        if (t) {
+          closeSkillsModal();
+          window.open(tileUrl(t), "_blank", "noopener");
+        }
+      });
+    }
+    _wireLegacySuiteButton("btnOpenSkillPipeline", "credentialing");
+    _wireLegacySuiteButton("btnOpenFinancialStrategy", "strategy");
+    _wireLegacySuiteButton("btnOpenRoster", "roster");
   })();
   _initLandingDashboard();
 }
