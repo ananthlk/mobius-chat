@@ -95,6 +95,7 @@ Signal = Literal[
     "instant_rag_hit",                # derivable from turn_completed
     "mcp_skill_invoked",              # derivable from tool_called
     "healthcare_query_no_match",      # rare; kept chat-side for now
+    "retrieval_trace",                # corpus_search skill telemetry — diagnostic UI panel
     "note",                           # generic fallback — plain-text emits migrated later
 ]
 
@@ -192,6 +193,62 @@ def make_note(
         round=round,
         thread_id=thread_id,
         user_id=user_id,
+    )
+
+
+def make_retrieval_trace(
+    correlation_id: str,
+    *,
+    search_id: str,
+    query: str,
+    mode: str,
+    k: int,
+    telemetry: dict[str, Any],
+    round: int | None = None,
+    thread_id: str | None = None,
+) -> EmitEnvelope:
+    """Retrieval trace emitted by the search_corpus skill (2026-04-28).
+
+    Carries the rag service's ``RetrievalTracePayload`` (timing per
+    stage, arm hit counts, top-N chunks with their reranker signal
+    breakdown). Surfaces in the chat thinking_log under a "Retrieval"
+    panel — analogous to how llm_calls and qa_score blocks render in
+    the current technical-mode UI.
+
+    Diagnostic-only: ``report_to_task_manager=False``. Same tier as
+    ``critic_approved`` — useful for debugging retrieval quality but
+    not actionable as a top-level dashboard event.
+
+    The ``data`` dict mirrors the rag agent's spec verbatim so the FE
+    panel can render top_chunks[].signals (per-chunk reranker
+    contributions) directly without reshaping.
+    """
+    timing = (telemetry or {}).get("timing") or {}
+    arms = (telemetry or {}).get("arms") or {}
+    bm25 = arms.get("bm25_hits", 0) or 0
+    vec = arms.get("vec_hits", 0) or 0
+    returned = arms.get("returned", 0) or 0
+    total_ms = int((timing.get("total_ms") or 0) + 0.5)
+    note = (
+        f"◌ corpus search: {returned} chunk{'s' if returned != 1 else ''} · "
+        f"{total_ms}ms · BM25={bm25} vec={vec}"
+    )
+    step_id = f"round_{round}.retrieval" if round is not None else "retrieval"
+    return EmitEnvelope(
+        signal="retrieval_trace",
+        correlation_id=correlation_id,
+        step_id=step_id,
+        data={
+            "search_id": search_id,
+            "query": (query or "")[:500],
+            "mode": mode,
+            "k": k,
+            **(telemetry or {}),
+        },
+        note=note,
+        round=round,
+        thread_id=thread_id,
+        report_to_task_manager=False,
     )
 
 

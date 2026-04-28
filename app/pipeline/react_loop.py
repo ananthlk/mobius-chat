@@ -463,25 +463,47 @@ def _execute_tool(
         from app.services.instant_rag_search import lazy_rag_search
 
         def _run_corpus() -> tuple[str, list[dict], dict | None, str]:
-            return answer_non_patient(
-                question=query,
-                k=10,
-                # 2026-04-19: was 0.5 hardcoded, which silently dropped
-                # "abstain"-grade chunks (score 0.3). Live validation
-                # showed the planner missing the Sunshine Provider
-                # Manual entirely even though the RAG backend retrieved
-                # it — now tunable via MOBIUS_REACT_CORPUS_CONFIDENCE_MIN
-                # (default 0.3 — admits abstain chunks as partial
-                # evidence for guidance mode to work with).
-                confidence_min=_corpus_confidence_min(),
-                emitter=emitter,
-                correlation_id=ctx.correlation_id,
-                subquestion_id="react_1",
-                rag_filter_overrides=rag_overrides,
-                thread_id=ctx.thread_id,
-                phi_detected=False,
-                config_sha=_get_config_sha() or None,
-                mode=getattr(ctx, "chat_mode", None),
+            # 2026-04-28 — corpus retrieval moved to mobius-rag's
+            # /api/skills/v1/corpus_search per the extraction plan
+            # (docs/CORPUS_RETRIEVAL_SKILL_EXTRACTION_PLAN.md). The
+            # skill handler is in app/skills/builtin/corpus_search.py
+            # and runs the full BM25 ⊕ vector + per-arm rerank pipeline
+            # server-side, where each arm has its own score currency
+            # and chat doesn't have to recreate them locally. This
+            # call stays synchronous and returns the same 4-tuple
+            # shape the rest of this dispatcher already expects, so
+            # the upload-fan-out wrapper around it is unchanged.
+            from app.skills.registry import SkillCall, SkillEnvelope, dispatch
+            try:
+                env = dispatch(
+                    SkillCall(
+                        name="search_corpus",
+                        inputs={
+                            "query": query,
+                            "mode": "corpus",
+                            "k": 10,
+                            **({"include_document_ids": rag_overrides.get("include_document_ids")}
+                               if rag_overrides.get("include_document_ids") else {}),
+                        },
+                        question=query,
+                        user_message=ctx.message,
+                        thread_id=ctx.thread_id,
+                        active_context=active,
+                        mode=getattr(ctx, "chat_mode", "copilot") or "copilot",
+                        emitter=emitter,
+                        pipeline_ctx=ctx,
+                    )
+                )
+            except Exception as _e:
+                logger.warning("search_corpus skill dispatch failed: %s", _e, exc_info=True)
+                return ("", [], None, "no_sources")
+            # Map SkillEnvelope → 4-tuple (text, sources_list[dict], usage, signal)
+            sources_dicts = [s.to_dict() for s in env.sources]
+            return (
+                env.text or "",
+                sources_dicts,
+                env.usage,
+                env.signal or "no_sources",
             )
 
         def _run_upload(doc_id: str) -> tuple[str, list[dict], dict | None, str]:
