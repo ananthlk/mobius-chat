@@ -464,16 +464,22 @@ def _execute_tool(
 
         def _run_corpus() -> tuple[str, list[dict], dict | None, str]:
             # 2026-04-28 — corpus retrieval moved to mobius-rag's
-            # /api/skills/v1/corpus_search per the extraction plan
-            # (docs/CORPUS_RETRIEVAL_SKILL_EXTRACTION_PLAN.md). The
-            # skill handler is in app/skills/builtin/corpus_search.py
-            # and runs the full BM25 ⊕ vector + per-arm rerank pipeline
-            # server-side, where each arm has its own score currency
-            # and chat doesn't have to recreate them locally. This
-            # call stays synchronous and returns the same 4-tuple
-            # shape the rest of this dispatcher already expects, so
-            # the upload-fan-out wrapper around it is unchanged.
-            from app.skills.registry import SkillCall, SkillEnvelope, dispatch
+            # corpus_search skill, fronted by the mobius-os gateway
+            # at {OS_API_URL}/api/v1/skills/corpus_search per the
+            # extraction plan (docs/CORPUS_RETRIEVAL_SKILL_EXTRACTION_
+            # PLAN.md). Skill handler in app/skills/builtin/corpus_
+            # search.py.
+            #
+            # Fallback policy: if the skill is unconfigured (OS_API_URL
+            # unset) or its HTTP transport fails, fall back to the
+            # legacy answer_non_patient path so chat keeps working
+            # while mobius-os ramps up. The legacy path returns
+            # single-arm pgvector via /api/query (the same code that
+            # carried chat earlier today). We DON'T fall back when
+            # the skill returned cleanly with zero chunks — that's a
+            # legitimate "no corpus match" answer; falling back to
+            # the same backend would just repeat the empty result.
+            from app.skills.registry import SkillCall, dispatch
             try:
                 env = dispatch(
                     SkillCall(
@@ -494,10 +500,36 @@ def _execute_tool(
                         pipeline_ctx=ctx,
                     )
                 )
+                # ``extra.error`` is set by the skill ONLY on transport /
+                # config failures (os_api_url_unset, http_5xx, ConnectionError,
+                # etc.). A clean "ran successfully, found nothing" result
+                # has no error key.
+                skill_error = (env.extra or {}).get("error") if env else None
+                if skill_error:
+                    logger.warning(
+                        "search_corpus skill error=%r; falling back to "
+                        "legacy answer_non_patient", skill_error,
+                    )
+                    raise RuntimeError(f"skill_error:{skill_error}")
             except Exception as _e:
-                logger.warning("search_corpus skill dispatch failed: %s", _e, exc_info=True)
-                return ("", [], None, "no_sources")
-            # Map SkillEnvelope → 4-tuple (text, sources_list[dict], usage, signal)
+                logger.warning(
+                    "search_corpus skill unavailable (%s); falling back to "
+                    "legacy retriever", _e,
+                )
+                return answer_non_patient(
+                    question=query,
+                    k=10,
+                    confidence_min=_corpus_confidence_min(),
+                    emitter=emitter,
+                    correlation_id=ctx.correlation_id,
+                    subquestion_id="react_1",
+                    rag_filter_overrides=rag_overrides,
+                    thread_id=ctx.thread_id,
+                    phi_detected=False,
+                    config_sha=_get_config_sha() or None,
+                    mode=getattr(ctx, "chat_mode", None),
+                )
+            # Map SkillEnvelope → 4-tuple the rest of this dispatcher consumes.
             sources_dicts = [s.to_dict() for s in env.sources]
             return (
                 env.text or "",
