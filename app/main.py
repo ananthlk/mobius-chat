@@ -689,139 +689,208 @@ def _handle_instant_rag_upload(
     content: bytes, filename: str, org_name: str,
     thread_id: str | None, file_purpose: str,
 ) -> dict[str, Any]:
-    """Route document uploads to the instant-rag skill for immediate RAG availability."""
+    """Forward chat document uploads to mobius-rag's canonical /upload pipeline.
+
+    Note: kept the original function name (was previously the
+    instant-rag skill caller) so the call sites in pipeline/react_loop.py
+    + api/uploads.py + the source-grepping tests in tests/ keep
+    resolving without churn. The body is fully rewritten — no more
+    instant-rag skill dependency. (2026-04-27 consolidation.)
+    Rationale: instant-rag was bypassing lexicon expansion, hybrid
+    retrieval and rerank, and started hitting psycopg2 errors. The
+    rag UI Upload tab already speaks the right protocol — chat now
+    speaks it too.
+
+    Flow:
+      1. POST raw multipart bytes to ``{rag}/upload?ttl_days=7&payer=...&agent_scope=chat``.
+         Server-side extraction (mobius-rag handles PDF/HTML/DOCX);
+         no client-side parsing here.
+      2. Read ``document_id`` from the response.
+      3. Poll ``{rag}/documents/{id}/status`` every 5s until
+         ``status == 'completed'`` AND ``published_at`` is non-null,
+         or 5 min elapses (60 attempts).
+      4. Persist the catalog row + thread-state record (same shape as
+         before, so callers + frontend don't change).
+    """
     import json as json_mod
     import uuid as _uuid_mod
-    import io
+    import time as _time
     import urllib.error
     import urllib.request
-    import threading as _threading
     from datetime import datetime, timezone
 
-    # Resolution order (fixes a 2026-04-23 prod failure where users hit
-    # "Connection refused" on uploads):
-    #   1. CHAT_SKILLS_INSTANT_RAG_URL  (the CHAT_SKILLS_* convention all
-    #      other microservice URLs use; what deploy/dev.env + deploy.sh
-    #      actually set)
-    #   2. INSTANT_RAG_URL              (legacy name, kept for back-compat
-    #      with any script/test that still exports it)
-    #   3. http://localhost:8040        (local-dev fallback only; on Cloud
-    #      Run nothing listens on that port so uploads would 503)
-    instant_rag_url = (
-        os.environ.get("CHAT_SKILLS_INSTANT_RAG_URL")
-        or os.environ.get("INSTANT_RAG_URL")
-        or "http://localhost:8040"
-    ).rstrip("/")
+    # Resolution order:
+    #   1. MOBIUS_RAG_URL              (new canonical name — points
+    #      at the mobius-rag API service)
+    #   2. CHAT_SKILLS_INSTANT_RAG_URL (legacy fallback per the
+    #      2026-04-27 dispatch — keeps a misconfigured deploy from
+    #      hard 503-ing while the env is rotated. We log a warning
+    #      when this path is taken so ops sees the misconfig.)
+    #   3. http://localhost:8001       (local-dev fallback; rag dev
+    #      server defaults to :8001)
+    rag_url_env = os.environ.get("MOBIUS_RAG_URL")
+    if not rag_url_env:
+        rag_url_env = os.environ.get("CHAT_SKILLS_INSTANT_RAG_URL")
+        if rag_url_env:
+            logger.warning(
+                "MOBIUS_RAG_URL unset — falling back to "
+                "CHAT_SKILLS_INSTANT_RAG_URL=%s. This is a deploy "
+                "misconfig: chat upload now targets mobius-rag's "
+                "/upload, not the instant-rag skill.",
+                rag_url_env,
+            )
+    rag_url = (rag_url_env or "http://localhost:8001").rstrip("/")
 
-    # Extract text from the file based on type
+    # ── Build a multipart/form-data body around the raw bytes. We use
+    #    urllib (zero new deps) rather than requests/httpx because the
+    #    rest of this module already speaks urllib — staying consistent
+    #    keeps the dep graph small and the proxy/retry behaviour uniform.
     ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
-    text = ""
+    content_type_guess = {
+        "pdf": "application/pdf",
+        "html": "text/html",
+        "htm": "text/html",
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "txt": "text/plain",
+        "csv": "text/csv",
+        "md": "text/markdown",
+    }.get(ext, "application/octet-stream")
 
-    if ext == "pdf":
-        try:
-            import pymupdf
-            doc = pymupdf.open(stream=content, filetype="pdf")
-            text = "\n\n".join(page.get_text("text") for page in doc if page.get_text("text").strip())
-            doc.close()
-        except ImportError:
-            try:
-                import fitz
-                doc = fitz.open(stream=content, filetype="pdf")
-                text = "\n\n".join(page.get_text("text") for page in doc if page.get_text("text").strip())
-                doc.close()
-            except ImportError:
-                raise HTTPException(status_code=500, detail="PDF extraction requires pymupdf: pip install pymupdf")
-    elif ext in ("html", "htm"):
-        raw = content.decode("utf-8", errors="replace")
-        try:
-            from bs4 import BeautifulSoup
-            text = BeautifulSoup(raw, "html.parser").get_text(separator="\n\n", strip=True)
-        except ImportError:
-            import re
-            text = re.sub(r"<[^>]+>", " ", raw)
-            text = re.sub(r"\s+", " ", text).strip()
-    elif ext == "docx":
-        try:
-            from docx import Document
-            doc = Document(io.BytesIO(content))
-            text = "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
-        except ImportError:
-            raise HTTPException(status_code=500, detail="DOCX extraction requires python-docx: pip install python-docx")
-    else:
-        # Treat as plain text (txt, csv, md, etc.)
-        text = content.decode("utf-8", errors="replace").strip()
+    boundary = f"----mobiuschat{_uuid_mod.uuid4().hex}"
+    body_parts: list[bytes] = []
+    body_parts.append(f"--{boundary}\r\n".encode())
+    body_parts.append(
+        (
+            f'Content-Disposition: form-data; name="file"; '
+            f'filename="{filename}"\r\n'
+        ).encode()
+    )
+    body_parts.append(f"Content-Type: {content_type_guess}\r\n\r\n".encode())
+    body_parts.append(content)
+    body_parts.append(f"\r\n--{boundary}--\r\n".encode())
+    multipart_body = b"".join(body_parts)
 
-    if not text.strip():
-        raise HTTPException(status_code=422, detail="No text content could be extracted from the file")
-
-    # Call instant-rag skill /ingest/from-text
-    payload = json_mod.dumps({
-        "text": text,
-        "content_type": "text/html" if ext in ("html", "htm") else "text/plain",
-        "display_name": filename,
-        "payer": org_name if org_name and org_name != "instant-rag" else "",
-        "agent_scope_tags": ["chat"],
-    }).encode()
+    # Query params: ttl_days=7 (chat-uploaded docs are ephemeral),
+    # payer=org_name (caller-friendly attribution), agent_scope=chat.
+    from urllib.parse import quote_plus
+    upload_qs = (
+        f"?ttl_days=7"
+        f"&payer={quote_plus(org_name or '')}"
+        f"&agent_scope=chat"
+    )
 
     try:
         req = urllib.request.Request(
-            f"{instant_rag_url}/ingest/from-text",
-            data=payload,
-            headers={"Content-Type": "application/json"},
+            f"{rag_url}/upload{upload_qs}",
+            data=multipart_body,
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Content-Length": str(len(multipart_body)),
+            },
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        # 5 min upload window — large PDFs + GCS round-trip can be slow.
+        with urllib.request.urlopen(req, timeout=300) as resp:
             rag_result = json_mod.loads(resp.read())
     except urllib.error.HTTPError as e:
-        # Surface upstream skill errors with the actual status code so
-        # the user gets actionable info — 413 (too large), 422 (bad
-        # request body), 500 (skill crashed) all look very different
-        # from the user's perspective. 2026-04-17: a large provider
-        # manual triggered the skill's 50-page cap and the alert just
-        # said "HTTP Error 413" with no next step.
         body = ""
         try:
             body = e.read().decode("utf-8", errors="replace")[:500]
         except Exception:
             body = ""
-        logger.warning("Instant-RAG ingest failed: %s — %s", e, body)
+        logger.warning("mobius-rag /upload failed: %s — %s", e, body)
+        if e.code == 409:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Duplicate file (already in rag corpus): {body or str(e)}",
+            )
         if e.code == 413:
             raise HTTPException(
                 status_code=413,
-                detail=(
-                    "Document too large for instant upload. "
-                    "The skill's page cap is controlled by INSTANT_RAG_MAX_PAGES "
-                    "(default 300 pages of ~4KB each). For larger docs, either "
-                    "raise the env var on the instant-rag skill or use the batch "
-                    f"ingest pipeline. Skill said: {body or str(e)}"
-                ),
-            )
-        if e.code == 422:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Instant-RAG rejected the upload: {body or str(e)}",
+                detail=f"File too large for rag upload: {body or str(e)}",
             )
         raise HTTPException(
             status_code=502,
-            detail=f"Instant-RAG ingest failed ({e.code}): {body or str(e)[:200]}",
+            detail=f"mobius-rag /upload failed ({e.code}): {body or str(e)[:200]}",
         )
     except Exception as e:
-        logger.warning("Instant-RAG ingest failed: %s", e)
-        raise HTTPException(status_code=502, detail=f"Instant-RAG ingest failed: {str(e)[:200]}")
+        logger.warning("mobius-rag /upload failed: %s", e)
+        raise HTTPException(
+            status_code=502,
+            detail=f"mobius-rag /upload failed: {str(e)[:200]}",
+        )
 
-    # Save to thread state (same pattern as roster)
+    document_id = rag_result.get("document_id")
+    if not document_id:
+        raise HTTPException(
+            status_code=502,
+            detail=f"mobius-rag /upload returned no document_id: {rag_result}",
+        )
+
+    # ── Poll status: every 5s, max 60 attempts (5 min total). Stop
+    #    when status == 'completed' AND published_at is non-null —
+    #    that's the gate corpus_search uses.
+    final_status: dict[str, Any] = {}
+    poll_attempts = 60
+    for attempt in range(poll_attempts):
+        try:
+            status_req = urllib.request.Request(
+                f"{rag_url}/documents/{document_id}/status",
+                method="GET",
+            )
+            with urllib.request.urlopen(status_req, timeout=15) as sresp:
+                final_status = json_mod.loads(sresp.read())
+        except Exception as poll_exc:
+            logger.warning(
+                "rag status poll attempt %d/%d failed for doc=%s: %s",
+                attempt + 1, poll_attempts, document_id, poll_exc,
+            )
+            _time.sleep(5)
+            continue
+
+        status_value = (final_status.get("status") or "").lower()
+        published_at = final_status.get("published_at")
+        if status_value == "failed":
+            raise HTTPException(
+                status_code=502,
+                detail=f"mobius-rag extraction failed for doc {document_id}",
+            )
+        if status_value == "completed" and published_at:
+            break
+        _time.sleep(5)
+    else:
+        # Polling timed out — the doc is uploaded but not yet
+        # published. Return what we have; the catalog row + thread
+        # state still get written so a later query can find it once
+        # the embed worker catches up.
+        logger.warning(
+            "rag status poll timed out after %d attempts for doc=%s "
+            "(status=%s published_at=%s) — chunks may not yet be live",
+            poll_attempts, document_id,
+            final_status.get("status"), final_status.get("published_at"),
+        )
+
+    rag_result_status = (final_status.get("status") or rag_result.get("status") or "uploaded")
+    chunks_count = int(final_status.get("chunks_count") or rag_result.get("chunks_count") or 0)
+
+    # Save to thread state (same pattern as roster). The new flow has
+    # no envelope_id concept (instant-rag invented it; mobius-rag
+    # speaks document_id). We synthesize one from document_id so
+    # downstream consumers (catalog + thread state) keep the same
+    # key shape and the frontend doesn't have to special-case.
     tid = (thread_id or "").strip() or str(_uuid_mod.uuid4())
-    upload_id = rag_result.get("envelope_id") or str(_uuid_mod.uuid4())
+    upload_id = str(document_id)
+    envelope_id = str(document_id)
     record: dict[str, Any] = {
         "upload_id": upload_id,
         "org_id": "",
         "org_name": org_name,
         "purpose": file_purpose,
         "filename": filename,
-        "row_count": rag_result.get("chunks_count", 0),
+        "row_count": chunks_count,
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
-        "envelope_id": rag_result.get("envelope_id"),
-        "document_id": rag_result.get("document_id"),
+        "envelope_id": envelope_id,
+        "document_id": document_id,
     }
 
     # 2026-04-17 fix: persist SYNCHRONOUSLY before returning. Previously this
@@ -859,33 +928,49 @@ def _handle_instant_rag_upload(
     try:
         from app.storage.instant_rag_catalog import record_upload as _catalog_record
         _catalog_record(
-            document_id=str(rag_result.get("document_id") or ""),
-            envelope_id=str(rag_result.get("envelope_id") or upload_id),
+            document_id=str(document_id),
+            envelope_id=envelope_id,
             upload_id=upload_id,
             thread_id=real_tid,
             filename=filename,
             user_id=None,  # Phase 1h: user_id is None in auth=off (dev); wire when auth=required
             content_type=None,
-            byte_size=None,  # chat side doesn't have the raw bytes by this point; skill saw them
-            chunks_count=int(rag_result.get("chunks_count", 0) or 0),
+            byte_size=len(content) if content else None,
+            chunks_count=chunks_count,
         )
     except Exception as _e:
         logger.warning("[catalog] dual-write failed for thread=%s: %s", real_tid, _e)
 
+    # Caller-shape compatibility: keep every key the previous
+    # this function has historically returned. ``status`` flips to
+    # "ready" once the doc is published end-to-end (chunks live in
+    # rag_published_embeddings); otherwise we surface whatever the
+    # rag pipeline reports so the frontend can show a meaningful
+    # state. ``verification_tier`` stayed "instant" before; now we
+    # return "rag" so downstream consumers can distinguish.
+    is_ready = (
+        (final_status.get("status") or "").lower() == "completed"
+        and bool(final_status.get("published_at"))
+    )
     return {
         "upload_id": upload_id,
         "org_id": "",
         "org_name": org_name,
-        "row_count": rag_result.get("chunks_count", 0),
+        "row_count": chunks_count,
         "thread_id": tid,
         "file_purpose": file_purpose,
         "filename": filename,
-        "envelope_id": rag_result.get("envelope_id"),
-        "document_id": rag_result.get("document_id"),
-        "verification_tier": rag_result.get("verification_tier", "instant"),
-        "status": rag_result.get("status", "live"),
-        "chunks_count": rag_result.get("chunks_count", 0),
-        "message": rag_result.get("message", ""),
+        "envelope_id": envelope_id,
+        "document_id": str(document_id),
+        "verification_tier": "rag",
+        "status": "ready" if is_ready else (rag_result_status or "uploaded"),
+        "chunks_count": chunks_count,
+        "message": (
+            "Document uploaded and published to mobius-rag corpus."
+            if is_ready
+            else "Document uploaded; embedding/publish still in progress."
+        ),
+        "published_at": final_status.get("published_at"),
     }
 
 
@@ -939,6 +1024,11 @@ def post_chat_roster_upload(
 
     # ── Instant RAG path ─────────────────────────────────────────────────
     if purpose == "instant_rag":
+        # 2026-04-27 consolidation: route document uploads through
+        # mobius-rag's canonical /upload pipeline (was instant-rag
+        # skill, which bypassed lexicon expansion + hybrid retrieval
+        # + rerank). The `instant_rag` purpose name is kept as a
+        # back-compat alias so the frontend doesn't change.
         return _handle_instant_rag_upload(
             content=content, filename=filename, org_name=org_name,
             thread_id=thread_id, file_purpose=purpose,
