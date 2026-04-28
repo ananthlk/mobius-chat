@@ -9,6 +9,8 @@ mount, and /internal/skill-llm.
 """
 import os
 import logging
+import threading
+import time
 from pathlib import Path
 from typing import Any, Literal
 
@@ -342,6 +344,80 @@ async def _enforce_request_body_cap(request, call_next):
 _worker_started = False
 
 
+def _warmup_vertex_sdk() -> None:
+    """Pre-pay the Vertex-SDK first-call tax so the user's first turn
+    doesn't.
+
+    Steps mirror what the FIRST generate_content call would do anyway —
+    we just do it on a daemon thread at startup so the user never sees
+    the 12-15s init tail:
+
+      1. Import ``vertexai`` + ``GenerativeModel`` (~3-5s on first
+         import; the google-cloud-aiplatform wheel is heavy).
+      2. ``vertexai.init(project=..., location=...)`` — ADC chain
+         resolution + project/location binding.
+      3. Construct a ``GenerativeModel`` for the cheapest gemini we
+         use (gemini-2.5-flash) — instantiates the gRPC channel and
+         opens the TLS connection.
+      4. Issue ONE tiny ``generate_content`` (max_output_tokens=8) so
+         the first-byte path warms end-to-end.
+
+    Best-effort. Failures are logged at WARNING but never raise — the
+    actual user request will surface a real error if Vertex is genuinely
+    broken; the warm-up is purely a latency optimization.
+
+    No-op when ``VERTEX_PROJECT_ID`` / ``CHAT_VERTEX_PROJECT_ID`` is
+    unset (local dev with ollama-only) or when
+    ``CHAT_VERTEX_WARMUP_DISABLED=1``.
+    """
+    pid = (os.environ.get("VERTEX_PROJECT_ID") or os.environ.get("CHAT_VERTEX_PROJECT_ID") or "").strip()
+    if not pid:
+        logger.info("vertex-warmup: VERTEX_PROJECT_ID unset; skipping")
+        return
+    location = (os.environ.get("VERTEX_LOCATION") or "us-central1").strip()
+    model_name = (os.environ.get("CHAT_VERTEX_WARMUP_MODEL") or "gemini-2.5-flash").strip()
+    t0 = time.perf_counter()
+    try:
+        # Import + init — these are the slow parts on a cold container.
+        import vertexai  # type: ignore
+        from vertexai.generative_models import GenerativeModel  # type: ignore
+
+        t_import = time.perf_counter()
+        vertexai.init(project=pid, location=location)
+        t_init = time.perf_counter()
+        model = GenerativeModel(model_name)
+        t_construct = time.perf_counter()
+
+        # One small request — the FIRST generate_content is what pays
+        # the gRPC + TLS + auth handshake cost. Cap output so the call
+        # bills near-zero. We don't care about the response text.
+        resp = model.generate_content(
+            "ping",
+            generation_config={"max_output_tokens": 8, "temperature": 0.0},
+        )
+        t_call = time.perf_counter()
+        try:
+            _ = (resp.text or "")[:8]
+        except Exception:
+            pass
+
+        logger.info(
+            "vertex-warmup: complete in %.2fs (import=%.2fs init=%.2fs "
+            "construct=%.2fs first_call=%.2fs) — first user turn skips "
+            "the SDK cold-start tax",
+            t_call - t0,
+            t_import - t0,
+            t_init - t_import,
+            t_construct - t_init,
+            t_call - t_construct,
+        )
+    except Exception as e:
+        logger.warning(
+            "vertex-warmup: failed (non-fatal — first real turn pays the "
+            "init tax): %s", e,
+        )
+
+
 @app.on_event("startup")
 def maybe_start_worker():
     global _worker_started
@@ -379,6 +455,28 @@ def maybe_start_worker():
             "'python -m app.worker' as a separate Cloud Run service "
             "or sidecar — they'll all consume from the same Redis list.)"
         )
+
+    # Vertex SDK warm-up (2026-04-28).
+    #
+    # The first generate_content call after a fresh worker process starts
+    # pays a 12-15s tax for SDK init: google-cloud-aiplatform library
+    # import, ADC credential resolution, gRPC channel build, TLS handshake
+    # to us-central1-aiplatform.googleapis.com, internal model registry
+    # warm-up. Latency-anatomy probe (cid 56bfb67d) measured 15.3s of
+    # silent gap before the first vertex log line on a cold worker.
+    #
+    # Pre-pay it on a daemon thread at startup. Doesn't block /health
+    # (Cloud Run readiness uses /health which returns immediately). Once
+    # this completes, the user's first turn doesn't pay the SDK init.
+    # Subsequent worker processes (autoscale) each warm independently.
+    #
+    # CHAT_VERTEX_WARMUP_DISABLED=1 to skip (e.g. local dev or tests).
+    if (os.environ.get("CHAT_VERTEX_WARMUP_DISABLED") or "").strip().lower() not in ("1", "true", "yes"):
+        threading.Thread(
+            target=_warmup_vertex_sdk,
+            name="vertex-warmup",
+            daemon=True,
+        ).start()
 
     # Phase 13.7 — audit chat_turns.context_summary presence + nullability.
     # Logs a structured WARNING (channel=phase13_7_schema_audit) if the
