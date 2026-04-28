@@ -4874,30 +4874,59 @@ function renderRetrievalTrace(
       round.appendChild(nq);
     }
 
-    // Top chunks with rerank signals
+    // Top chunks with rerank signals — visual treatment matching the
+    // rag agent's PIPELINE TRACE UI: ARMS as colored badges, SIM/AUTH/LEN
+    // as horizontal bars + numeric value, weights surfaced in the
+    // header when the envelope provides them.
     const topChunks: any[] = data.top_chunks ?? data.scoring_trace ?? [];
     if (Array.isArray(topChunks) && topChunks.length > 0) {
+      // Pull rerank weights so we can label "SIM ×.30 / AUTH ×.15 / LEN ×.10".
+      // Refined envelope shape: data.rerank_weights = {sim, auth, length, jpd}.
+      // Fall back to a less-decorated header if absent.
+      const weights = (data.rerank_weights || data.weights || {}) as Record<string, number>;
+      const wLabel = (k: string): string => {
+        const v = Number(weights[k]);
+        return Number.isFinite(v) && v > 0 ? ` ×${v.toFixed(2).replace(/^0/, "")}` : "";
+      };
       const table = document.createElement("table");
-      table.className = "retrieval-trace-chunks";
+      table.className = "retrieval-trace-chunks retrieval-trace-chunks--rich";
       const head = document.createElement("thead");
       head.innerHTML =
-        "<tr><th>#</th><th>doc</th><th>p</th><th>arms</th>" +
-        "<th>conf</th><th>rerank</th><th>sim</th><th>auth</th><th>jpd</th></tr>";
+        "<tr><th>#</th><th>doc</th><th class=\"rt-col-p\">p</th><th>arms</th>" +
+        "<th>conf</th><th class=\"rt-col-num\">rerank</th>" +
+        `<th class="rt-col-bar">sim${wLabel("sim")}</th>` +
+        `<th class="rt-col-bar">auth${wLabel("auth")}</th>` +
+        `<th class="rt-col-bar">jpd${wLabel("jpd")}</th></tr>`;
       table.appendChild(head);
       const tb = document.createElement("tbody");
       topChunks.slice(0, 10).forEach((c: any, i: number) => {
         const sig = c.signals ?? c.rerank_signals ?? {};
+        const arms: string[] = Array.isArray(c.retrieval_arms) ? c.retrieval_arms : [];
+        const armBadges = (() => {
+          if (!arms.length) return "—";
+          const both = arms.length >= 2;
+          if (both) {
+            return '<span class="rt-arm rt-arm--both">BOTH</span>';
+          }
+          const a = arms[0];
+          if (a === "bm25") return '<span class="rt-arm rt-arm--bm25">BM25</span>';
+          if (a === "vector") return '<span class="rt-arm rt-arm--vec">VEC</span>';
+          return `<span class="rt-arm">${rtEscapeAttr(a.toUpperCase())}</span>`;
+        })();
+        const sim = Number(sig.sim_weighted ?? sig.sim_raw ?? 0);
+        const auth = Number(sig.auth_weighted ?? sig.authority_weighted ?? 0);
+        const jpd = Number(sig.jpd_weighted ?? 0);
         const tr = document.createElement("tr");
         tr.innerHTML =
           `<td>${i + 1}</td>` +
-          `<td title="${rtEscapeAttr(c.document_name || "")}">${rtEscapeAttr((c.document_name || "").slice(0, 30))}</td>` +
-          `<td>${c.page ?? c.page_number ?? "—"}</td>` +
-          `<td>${(c.retrieval_arms || []).join("+") || "—"}</td>` +
-          `<td>${c.confidence_label ?? "—"}</td>` +
-          `<td>${rtFormatSig(c.rerank_score)}</td>` +
-          `<td>${rtFormatSig(sig.sim_weighted ?? sig.sim_raw)}</td>` +
-          `<td>${rtFormatSig(sig.auth_weighted ?? sig.authority_weighted)}</td>` +
-          `<td>${rtFormatSig(sig.jpd_weighted)}</td>`;
+          `<td title="${rtEscapeAttr(c.document_name || "")}" class="rt-col-doc">${rtEscapeAttr((c.document_name || "").slice(0, 32))}</td>` +
+          `<td class="rt-col-p">${c.page ?? c.page_number ?? "—"}</td>` +
+          `<td>${armBadges}</td>` +
+          `<td>${rtConfBadge(c.confidence_label)}</td>` +
+          `<td class="rt-col-num">${rtFormatSig(c.rerank_score)}</td>` +
+          `<td class="rt-col-bar">${rtBar(sim, "sim")}</td>` +
+          `<td class="rt-col-bar">${rtBar(auth, "auth")}</td>` +
+          `<td class="rt-col-bar">${rtBar(jpd, "jpd")}</td>`;
         tb.appendChild(tr);
       });
       table.appendChild(tb);
@@ -4936,6 +4965,37 @@ function rtEscapeAttr(s: string): string {
 function rtFormatSig(v: unknown): string {
   if (typeof v !== "number") return "—";
   return v.toFixed(3);
+}
+
+/** Render a horizontal bar + numeric value for a rerank signal (sim/auth/jpd).
+ * Bar width is the value as a percent of 1.0 (clamped). Color is chosen
+ * per signal so a row reads at a glance: sim = purple, auth = green,
+ * jpd = teal. Empty/zero values render as a faint baseline + dash. */
+function rtBar(value: number, kind: "sim" | "auth" | "jpd"): string {
+  if (!Number.isFinite(value) || value <= 0) {
+    return '<span class="rt-bar rt-bar--empty">—</span>';
+  }
+  const pct = Math.max(0, Math.min(100, value * 100));
+  return (
+    `<span class="rt-bar rt-bar--${kind}">` +
+      `<span class="rt-bar-track">` +
+        `<span class="rt-bar-fill" style="width:${pct.toFixed(1)}%"></span>` +
+      `</span>` +
+      `<span class="rt-bar-val">${value.toFixed(3)}</span>` +
+    `</span>`
+  );
+}
+
+/** Confidence label as a small pill — high/med/low/—. Lets the viewer
+ * scan a column of confidences without parsing text. */
+function rtConfBadge(label: unknown): string {
+  if (typeof label !== "string" || !label) return "—";
+  const lc = label.toLowerCase();
+  let cls = "rt-conf";
+  if (lc === "high") cls += " rt-conf--high";
+  else if (lc === "medium" || lc === "med") cls += " rt-conf--med";
+  else if (lc === "low") cls += " rt-conf--low";
+  return `<span class="${cls}">${rtEscapeAttr(label)}</span>`;
 }
 
 

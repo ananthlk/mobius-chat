@@ -4340,16 +4340,39 @@ function renderRetrievalTrace(thinkingLog) {
     }
     const topChunks = data.top_chunks ?? data.scoring_trace ?? [];
     if (Array.isArray(topChunks) && topChunks.length > 0) {
+      const weights = data.rerank_weights || data.weights || {};
+      const wLabel = (k2) => {
+        const v = Number(weights[k2]);
+        return Number.isFinite(v) && v > 0 ? ` \xD7${v.toFixed(2).replace(/^0/, "")}` : "";
+      };
       const table = document.createElement("table");
-      table.className = "retrieval-trace-chunks";
+      table.className = "retrieval-trace-chunks retrieval-trace-chunks--rich";
       const head = document.createElement("thead");
-      head.innerHTML = "<tr><th>#</th><th>doc</th><th>p</th><th>arms</th><th>conf</th><th>rerank</th><th>sim</th><th>auth</th><th>jpd</th></tr>";
+      head.innerHTML = `<tr><th>#</th><th>doc</th><th class="rt-col-p">p</th><th>arms</th><th>conf</th><th class="rt-col-num">rerank</th><th class="rt-col-bar">sim${wLabel("sim")}</th><th class="rt-col-bar">auth${wLabel("auth")}</th><th class="rt-col-bar">jpd${wLabel("jpd")}</th></tr>`;
       table.appendChild(head);
       const tb = document.createElement("tbody");
       topChunks.slice(0, 10).forEach((c, i) => {
         const sig = c.signals ?? c.rerank_signals ?? {};
+        const arms2 = Array.isArray(c.retrieval_arms) ? c.retrieval_arms : [];
+        const armBadges = (() => {
+          if (!arms2.length)
+            return "\u2014";
+          const both = arms2.length >= 2;
+          if (both) {
+            return '<span class="rt-arm rt-arm--both">BOTH</span>';
+          }
+          const a = arms2[0];
+          if (a === "bm25")
+            return '<span class="rt-arm rt-arm--bm25">BM25</span>';
+          if (a === "vector")
+            return '<span class="rt-arm rt-arm--vec">VEC</span>';
+          return `<span class="rt-arm">${rtEscapeAttr(a.toUpperCase())}</span>`;
+        })();
+        const sim = Number(sig.sim_weighted ?? sig.sim_raw ?? 0);
+        const auth = Number(sig.auth_weighted ?? sig.authority_weighted ?? 0);
+        const jpd = Number(sig.jpd_weighted ?? 0);
         const tr = document.createElement("tr");
-        tr.innerHTML = `<td>${i + 1}</td><td title="${rtEscapeAttr(c.document_name || "")}">${rtEscapeAttr((c.document_name || "").slice(0, 30))}</td><td>${c.page ?? c.page_number ?? "\u2014"}</td><td>${(c.retrieval_arms || []).join("+") || "\u2014"}</td><td>${c.confidence_label ?? "\u2014"}</td><td>${rtFormatSig(c.rerank_score)}</td><td>${rtFormatSig(sig.sim_weighted ?? sig.sim_raw)}</td><td>${rtFormatSig(sig.auth_weighted ?? sig.authority_weighted)}</td><td>${rtFormatSig(sig.jpd_weighted)}</td>`;
+        tr.innerHTML = `<td>${i + 1}</td><td title="${rtEscapeAttr(c.document_name || "")}" class="rt-col-doc">${rtEscapeAttr((c.document_name || "").slice(0, 32))}</td><td class="rt-col-p">${c.page ?? c.page_number ?? "\u2014"}</td><td>${armBadges}</td><td>${rtConfBadge(c.confidence_label)}</td><td class="rt-col-num">${rtFormatSig(c.rerank_score)}</td><td class="rt-col-bar">${rtBar(sim, "sim")}</td><td class="rt-col-bar">${rtBar(auth, "auth")}</td><td class="rt-col-bar">${rtBar(jpd, "jpd")}</td>`;
         tb.appendChild(tr);
       });
       table.appendChild(tb);
@@ -4380,6 +4403,26 @@ function rtFormatSig(v) {
   if (typeof v !== "number")
     return "\u2014";
   return v.toFixed(3);
+}
+function rtBar(value, kind) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return '<span class="rt-bar rt-bar--empty">\u2014</span>';
+  }
+  const pct = Math.max(0, Math.min(100, value * 100));
+  return `<span class="rt-bar rt-bar--${kind}"><span class="rt-bar-track"><span class="rt-bar-fill" style="width:${pct.toFixed(1)}%"></span></span><span class="rt-bar-val">${value.toFixed(3)}</span></span>`;
+}
+function rtConfBadge(label) {
+  if (typeof label !== "string" || !label)
+    return "\u2014";
+  const lc = label.toLowerCase();
+  let cls = "rt-conf";
+  if (lc === "high")
+    cls += " rt-conf--high";
+  else if (lc === "medium" || lc === "med")
+    cls += " rt-conf--med";
+  else if (lc === "low")
+    cls += " rt-conf--low";
+  return `<span class="${cls}">${rtEscapeAttr(label)}</span>`;
 }
 function renderLlmPerformance(rows, meta, opts) {
   const wrap = document.createElement("div");

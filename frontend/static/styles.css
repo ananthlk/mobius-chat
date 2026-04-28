@@ -7253,3 +7253,88 @@ body {
 }
 .retrieval-trace-chunks td:first-child,
 .retrieval-trace-chunks th:first-child { width: 1.5rem; }
+
+/* Rich variant — visual treatment matching the rag agent's
+ * PIPELINE TRACE: arms as colored badges, sim/auth/jpd as
+ * horizontal bars + numeric value. 2026-04-28. */
+.retrieval-trace-chunks--rich {
+  table-layout: auto;
+}
+.retrieval-trace-chunks--rich th,
+.retrieval-trace-chunks--rich td {
+  vertical-align: middle;
+  padding: 0.3rem 0.45rem;
+}
+.retrieval-trace-chunks--rich .rt-col-doc {
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.retrieval-trace-chunks--rich .rt-col-p,
+.retrieval-trace-chunks--rich .rt-col-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.retrieval-trace-chunks--rich .rt-col-bar { min-width: 5.5rem; }
+
+/* ARMS badges — BM25 (orange-ish), VEC (purple-ish), BOTH (gold). */
+.rt-arm {
+  display: inline-block;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  border: 1px solid currentColor;
+  line-height: 1.3;
+}
+.rt-arm--bm25 { color: #c87b1f; background: rgba(200, 123, 31, 0.10); }
+.rt-arm--vec  { color: #6c5ce7; background: rgba(108, 92, 231, 0.10); }
+.rt-arm--both { color: #b8860b; background: rgba(184, 134, 11, 0.12); }
+
+/* Confidence pill — quiet by default, color-coded so high stands out. */
+.rt-conf {
+  display: inline-block;
+  padding: 0.02rem 0.35rem;
+  border-radius: 4px;
+  font-size: 0.62rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--mobius-text-secondary);
+}
+.rt-conf--high { color: #2e9a4f; background: rgba(46, 154, 79, 0.12); }
+.rt-conf--med  { color: #c87b1f; background: rgba(200, 123, 31, 0.12); }
+.rt-conf--low  { color: #8a8a8a; background: rgba(138, 138, 138, 0.10); }
+
+/* Horizontal bar for sim/auth/jpd — track + fill + value. The bar
+ * gives an at-a-glance visual; the value preserves precision. */
+.rt-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-variant-numeric: tabular-nums;
+}
+.rt-bar--empty {
+  color: var(--mobius-text-secondary);
+  opacity: 0.55;
+}
+.rt-bar-track {
+  display: inline-block;
+  position: relative;
+  width: 3.4rem;
+  height: 0.5rem;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+.rt-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 3px;
+}
+.rt-bar--sim  .rt-bar-fill { background: #6c5ce7; }
+.rt-bar--auth .rt-bar-fill { background: #2e9a4f; }
+.rt-bar--jpd  .rt-bar-fill { background: #1f8e9a; }
+.rt-bar-val { font-size: 0.7rem; color: var(--mobius-text-secondary); }
