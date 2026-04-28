@@ -223,12 +223,22 @@ def make_retrieval_trace(
     panel can render top_chunks[].signals (per-chunk reranker
     contributions) directly without reshaping.
     """
-    timing = (telemetry or {}).get("timing") or {}
-    arms = (telemetry or {}).get("arms") or {}
-    bm25 = arms.get("bm25_hits", 0) or 0
-    vec = arms.get("vec_hits", 0) or 0
-    returned = arms.get("returned", 0) or 0
-    total_ms = int((timing.get("total_ms") or 0) + 0.5)
+    # Rag refined the spec 2026-04-28: top-level total_ms +
+    # arm_hits.{bm25,vector}; older draft used nested timing.* +
+    # arms.{bm25_hits,vec_hits}. Read both so the helper works
+    # against whichever rev is live.
+    t = telemetry or {}
+    arm_hits = t.get("arm_hits") or {}
+    arms_legacy = t.get("arms") or {}
+    timing_legacy = t.get("timing") or {}
+    bm25 = int(arm_hits.get("bm25") or arms_legacy.get("bm25_hits") or 0)
+    vec = int(arm_hits.get("vector") or arms_legacy.get("vec_hits") or 0)
+    returned = int(
+        arms_legacy.get("returned")
+        or len(t.get("chunks") or [])
+        or 0
+    )
+    total_ms = int((t.get("total_ms") or timing_legacy.get("total_ms") or 0) + 0.5)
     note = (
         f"◌ corpus search: {returned} chunk{'s' if returned != 1 else ''} · "
         f"{total_ms}ms · BM25={bm25} vec={vec}"

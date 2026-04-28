@@ -65,35 +65,32 @@ logger = logging.getLogger(__name__)
 
 
 _VALID_MODES = ("corpus", "precision", "recall")
+_VALID_ASSEMBLY = ("score", "canonical_first", "balanced")
 _DEFAULT_K = 10
 _HTTP_TIMEOUT_S = 60.0
-# Endpoint shape per the rag-agent spec (2026-04-28):
+# Endpoint shape per the rag-agent spec (2026-04-28, refined):
 #
-#   POST {OS_API_URL}/api/v1/skills/corpus_search
-#     X-Caller: chat
+#   POST {RAG_API_URL}/api/skills/v1/corpus_search
+#   Content-Type: application/json
+#   {"query": ..., "caller": "mobius_chat", ...}
 #
-# Chat does NOT call mobius-rag directly. mobius-os is the gateway —
-# it proxies to rag, attaches caller attribution, and writes the
-# search_events row (caller="chat"). This keeps cross-service auth +
-# audit + observability in one place rather than fanning per-skill.
-_SKILL_PATH = "/api/v1/skills/corpus_search"
-_CALLER = "chat"
+# Direct call to rag — no gateway in dev. The earlier intent was to
+# proxy through mobius-os for caller attribution, but rag now writes
+# search_events.caller from the body field, so the indirection adds
+# no value. If/when prod adds X-Skill-Token auth, only this file
+# changes.
+_SKILL_PATH = "/api/skills/v1/corpus_search"
+_CALLER = "mobius_chat"
 
 
-def _resolve_os_url() -> str | None:
-    """Resolve the mobius-os API base URL.
+def _resolve_base_url() -> str | None:
+    """Resolve the rag service base URL.
 
-    Reads ``OS_API_URL`` (the gateway/proxy that fronts rag for
-    cross-service skill calls). Returns None when unset so the caller
-    can produce a clean ``no_sources`` with a diagnostic message — we
-    don't want chat to silently use a stale legacy URL or guess.
-
-    Backward-compat: if OS_API_URL is unset but ``RAG_API_URL`` is,
-    we do NOT fall back to it. The contract changed; calling rag
-    directly would skip the audit row and break attribution. Better
-    to fail loud and fix the env than ship subtly-wrong telemetry.
+    ``RAG_API_URL`` is what every other chat caller already uses
+    (curator tools, retriever_backend's legacy path, etc.). Same
+    knob, no new env to manage.
     """
-    url = (os.environ.get("OS_API_URL") or "").strip()
+    url = (os.environ.get("RAG_API_URL") or "").strip()
     return url or None
 
 
@@ -106,16 +103,17 @@ def _post_skill(
     filters: dict[str, Any],
     include_document_ids: list[str] | None,
     assembly_strategy: str | None,
+    canonical_floor: float | None,
 ) -> dict[str, Any]:
-    """POST to mobius-os's v1 corpus_search proxy.
+    """POST to rag's v1 corpus_search skill.
 
     Returns parsed JSON ``{chunks, telemetry}``. Raises on HTTP /
     network / JSON errors; caller maps to a ``no_sources`` envelope.
 
-    The ``X-Caller`` header drives the search_events.caller column on
-    the rag side — every chat-originated search ends up tagged
-    ``caller="chat"`` for audit + analytics. Worker / cron / other
-    callers should set their own.
+    ``caller`` is in the request BODY (not a header). Rag writes it
+    onto search_events.caller for per-caller analytics. Worker /
+    cron / other chat-side callers that copy this pattern should set
+    their own caller (e.g. ``"mobius_chat_bench"``).
     """
     url = base_url.rstrip("/") + _SKILL_PATH
     body: dict[str, Any] = {
@@ -123,19 +121,19 @@ def _post_skill(
         "k": int(k),
         "mode": mode,
         "filters": filters or {},
+        "caller": _CALLER,
     }
     if include_document_ids:
         body["include_document_ids"] = list(include_document_ids)
     if assembly_strategy:
         body["assembly_strategy"] = assembly_strategy
+    if canonical_floor is not None:
+        body["canonical_floor"] = float(canonical_floor)
     payload = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "X-Caller": _CALLER,
-        },
+        headers={"Content-Type": "application/json"},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:
@@ -200,35 +198,46 @@ def _persist_retrieval_run(
     """
     if not correlation_id:
         return
-    timing = (telemetry or {}).get("timing") or {}
-    arms = (telemetry or {}).get("arms") or {}
-    bm25_ms = float(timing.get("bm25_ms") or 0.0)
-    vec_ms = float(timing.get("vec_ms") or 0.0)
+    # Read both the refined (2026-04-28) and earlier-draft shapes so
+    # the adapter works regardless of which rag rev is live:
+    #   refined:  telemetry.arm_hits.{bm25,vector} + telemetry.total_ms
+    #   draft:    telemetry.arms.{bm25_hits,vec_hits} + telemetry.timing.*
+    t = telemetry or {}
+    arm_hits = t.get("arm_hits") or {}
+    arms_legacy = t.get("arms") or {}
+    timing_legacy = t.get("timing") or {}
+    bm25_n = int(arm_hits.get("bm25") or arms_legacy.get("bm25_hits") or 0)
+    vec_n = int(arm_hits.get("vector") or arms_legacy.get("vec_hits") or 0)
+    returned = int(arms_legacy.get("returned") or len(chunks) or 0)
+    bm25_ms = float(timing_legacy.get("bm25_ms") or 0.0)
+    vec_ms = float(timing_legacy.get("vec_ms") or 0.0)
+    rerank_ms = float(timing_legacy.get("rerank_ms") or 0.0)
+    total_ms = float(t.get("total_ms") or timing_legacy.get("total_ms") or 0.0)
     legacy_trace: dict[str, Any] = {
         "extract": {
-            "bm25_raw_n": arms.get("bm25_hits"),
-            "vector_raw_n": arms.get("vec_hits"),
-            "merged_n": arms.get("returned"),
+            "bm25_raw_n": bm25_n,
+            "vector_raw_n": vec_n,
+            "merged_n": returned,
             "extract_ms": int(bm25_ms + vec_ms + 0.5),
-            "bm25_normalized_query": telemetry.get("bm25_normalized_query"),
+            "bm25_normalized_query": t.get("bm25_normalized_query"),
         },
         "merge": {
-            "n_added_bm25": arms.get("bm25_hits"),
-            "n_added_vector": arms.get("vec_hits"),
+            "n_added_bm25": bm25_n,
+            "n_added_vector": vec_n,
         },
         "rerank": {
-            "rerank_ms": int(float(timing.get("rerank_ms") or 0.0) + 0.5),
-            "n_chunks_input": (arms.get("bm25_hits") or 0) + (arms.get("vec_hits") or 0),
-            "n_chunks_after_decay": arms.get("returned"),
+            "rerank_ms": int(rerank_ms + 0.5),
+            "n_chunks_input": bm25_n + vec_n,
+            "n_chunks_after_decay": returned,
         },
         "blend_selection": {
-            "chunks_input_n": (arms.get("bm25_hits") or 0) + (arms.get("vec_hits") or 0),
-            "n_output": arms.get("returned"),
+            "chunks_input_n": bm25_n + vec_n,
+            "n_output": returned,
         },
-        "n_assembled": arms.get("returned"),
-        "n_corpus": arms.get("returned"),
+        "n_assembled": returned,
+        "n_corpus": returned,
         "n_google": 0,
-        "assemble_ms": int(float(timing.get("total_ms") or 0.0) + 0.5),
+        "assemble_ms": int(total_ms + 0.5),
         "path": "skill_v1",
     }
     try:
@@ -335,26 +344,33 @@ def _run(call: SkillCall) -> SkillEnvelope:
     assembly_strategy = inputs.get("assembly_strategy")
     if assembly_strategy is not None:
         assembly_strategy = str(assembly_strategy).strip().lower() or None
-        if assembly_strategy not in (None, "score", "canonical_first", "balanced"):
+        if assembly_strategy not in (None,) + _VALID_ASSEMBLY:
             logger.warning(
                 "corpus_search: unknown assembly_strategy=%r; passing through",
                 assembly_strategy,
             )
 
+    canonical_floor = inputs.get("canonical_floor")
+    if canonical_floor is not None:
+        try:
+            canonical_floor = float(canonical_floor)
+        except (TypeError, ValueError):
+            canonical_floor = None
+
     include_document_ids = inputs.get("include_document_ids")
     if include_document_ids and not isinstance(include_document_ids, list):
         include_document_ids = None
 
-    base_url = _resolve_os_url()
+    base_url = _resolve_base_url()
     if not base_url:
-        logger.warning("corpus_search: OS_API_URL not set; mobius-os gateway unreachable")
+        logger.warning("corpus_search: RAG_API_URL not set")
         if call.emitter:
-            call.emitter("↓ Corpus skill not configured (OS_API_URL unset).")
+            call.emitter("↓ Corpus skill not configured (RAG_API_URL unset).")
         return SkillEnvelope(
             text="",
             sources=[],
             signal="no_sources",
-            extra={"error": "os_api_url_unset"},
+            extra={"error": "rag_api_url_unset"},
         )
 
     filters = _filters_from_active(call.active_context)
@@ -377,6 +393,7 @@ def _run(call: SkillCall) -> SkillEnvelope:
             filters=filters,
             include_document_ids=include_document_ids,
             assembly_strategy=assembly_strategy,
+            canonical_floor=canonical_floor,
         )
     except urllib.error.HTTPError as e:
         body = ""
@@ -437,8 +454,18 @@ def _run(call: SkillCall) -> SkillEnvelope:
         )
 
     # ── Build SourceRef list ─────────────────────────────────────────
+    # Map every field rag returns into SourceRef.extra so downstream
+    # consumers (integrator citation rendering, retrieval_runs writer,
+    # technical-mode UI panel) all see the full chunk shape without
+    # reaching back into pipeline_trace.
     sources: list[SourceRef] = []
     for i, c in enumerate(chunks, 1):
+        # ``source_type`` from rag is "hierarchical" / "fact" — that's
+        # the chunk's structural grain. Map it onto SourceRef's
+        # ``source_type`` field where the chat shape uses
+        # "document" / "web" / etc. We pin to "document" here and
+        # stash rag's grain under extra.chunk_grain so neither
+        # consumer is confused.
         sources.append(
             SourceRef(
                 document_name=str(c.get("document_name") or "document"),
@@ -450,9 +477,14 @@ def _run(call: SkillCall) -> SkillEnvelope:
                 authority=(str(c.get("authority_level") or "") or None),
                 extra={
                     "rerank_score": c.get("rerank_score"),
+                    "similarity": c.get("similarity"),
                     "confidence_label": c.get("confidence_label"),
-                    "jpd_tags": c.get("jpd_tags") or [],
                     "retrieval_arms": c.get("retrieval_arms") or [],
+                    "jpd_tags": c.get("jpd_tags") or [],
+                    "paragraph_index": c.get("paragraph_index"),
+                    "chunk_grain": c.get("source_type"),
+                    "payer": c.get("payer"),
+                    "state": c.get("state"),
                 },
             )
         )
@@ -468,15 +500,22 @@ def _run(call: SkillCall) -> SkillEnvelope:
     )
 
     # ── User-facing emit ─────────────────────────────────────────────
+    # Rag's response shape (refined 2026-04-28) puts arm counts under
+    # ``telemetry.arm_hits.bm25 / .vector``. The earlier draft used
+    # ``arms.bm25_hits / .vec_hits`` — we read both keys so the emit
+    # works against whichever rag rev is live without coordination.
     if call.emitter:
-        arms = telemetry.get("arms") or {}
-        bm25 = int(arms.get("bm25_hits") or 0)
-        vec = int(arms.get("vec_hits") or 0)
-        overlap = int(arms.get("overlap") or 0)
-        ret_n = int(arms.get("returned") or len(chunks))
+        arm_hits = telemetry.get("arm_hits") or {}
+        arms_legacy = telemetry.get("arms") or {}
+        bm25 = int(arm_hits.get("bm25") or arms_legacy.get("bm25_hits") or 0)
+        vec = int(arm_hits.get("vector") or arms_legacy.get("vec_hits") or 0)
+        overlap = int(arms_legacy.get("overlap") or 0)
+        ret_n = int(arms_legacy.get("returned") or len(chunks))
         call.emitter(
             f"  ✓ {ret_n} match{'es' if ret_n != 1 else ''} "
-            f"(BM25 {bm25} · pgvector {vec} · overlap {overlap})"
+            f"(BM25 {bm25} · pgvector {vec}"
+            + (f" · overlap {overlap}" if overlap else "")
+            + ")"
         )
 
     return SkillEnvelope(
@@ -516,7 +555,12 @@ SPEC = SkillSpec(
             "k": {"type": "integer", "minimum": 1, "maximum": 50},
             "assembly_strategy": {
                 "type": "string",
-                "enum": ["score", "canonical_first", "balanced"],
+                "enum": list(_VALID_ASSEMBLY),
+            },
+            "canonical_floor": {
+                "type": "number",
+                "minimum": 0.0,
+                "maximum": 1.0,
             },
         },
     },
