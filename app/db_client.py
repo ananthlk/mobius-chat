@@ -265,37 +265,100 @@ def _get_pool(url: str):
         return pool
 
 
+def _pool_acquire_timeout_s() -> float:
+    """Per-acquire deadline on ``pool.getconn()``.
+
+    The default ``ThreadedConnectionPool.getconn()`` either raises
+    ``PoolError`` immediately (most versions) or blocks indefinitely
+    on the pool's lock (rare contention modes). Either way, the
+    chat-side worker should NEVER wait more than a few seconds for a
+    connection — if it does, the pool is undersized for the workload
+    and we want to know loudly, not silently hang.
+
+    Default 5s is ~50× the typical hot-path query latency. Override
+    via ``CHAT_DB_POOL_ACQUIRE_TIMEOUT_S`` if a deploy needs more.
+    """
+    raw = (os.environ.get("CHAT_DB_POOL_ACQUIRE_TIMEOUT_S") or "5").strip()
+    try:
+        return max(0.5, min(30.0, float(raw)))
+    except ValueError:
+        return 5.0
+
+
 def _acquire_conn(url: str):
     """Get a connection from the pool; fall back to a direct connect.
 
     Returns ``(conn, is_pooled)`` tuple. Callers MUST release via
     ``_release_conn(url, conn, is_pooled, is_broken)``.
+
+    Bounded acquire (2026-04-28): wraps ``pool.getconn()`` in a
+    deadline-bounded loop. Saturated-pool conditions raise loudly
+    after the timeout instead of silently blocking the worker
+    thread — we observed silent worker hangs on cid 949df5ea where
+    the diagnostic trail went cold mid-turn; that pattern is
+    exactly what an unbounded ``getconn()`` produces. With the
+    timeout, those failures surface as a warning + a direct
+    connect fallback, so a single hot moment doesn't take a turn
+    silently to its 300s deadline.
     """
+    import time as _time
+
     import psycopg2
+    from psycopg2 import pool as _psycopg2_pool
 
     pool = _get_pool(url)
     if pool is not None:
-        try:
-            conn = pool.getconn()
-            # pg server may have dropped an idle conn in the pool; a
-            # quick SELECT 1 confirms liveness before we use it. Cheap
-            # when conn is healthy, avoids a mysterious query failure
-            # when it's not.
+        deadline = _time.monotonic() + _pool_acquire_timeout_s()
+        attempts = 0
+        last_exc: Exception | None = None
+        while _time.monotonic() < deadline:
+            attempts += 1
+            try:
+                conn = pool.getconn()
+            except _psycopg2_pool.PoolError as exc:
+                # "connection pool exhausted" — wait a little and retry
+                # within the deadline. Tight loop on a brief contention
+                # spike, exits via timeout if real saturation.
+                last_exc = exc
+                _time.sleep(0.05)
+                continue
+            except Exception as exc:
+                # Other exception types — fall through to direct
+                # connect immediately; these are rare and unlikely to
+                # self-resolve.
+                logger.warning(
+                    "DB pool getconn unexpected error: %s; using direct connect",
+                    exc,
+                )
+                break
+            # Got a conn — verify liveness with SELECT 1.
             try:
                 with conn.cursor() as _cur:
                     _cur.execute("SELECT 1")
                 conn.commit()
                 return conn, True
             except Exception:
-                # Dead conn — return broken to the pool so it reopens,
-                # then fall through to direct connect below.
                 try:
                     pool.putconn(conn, close=True)
                 except Exception:
                     pass
-        except Exception as exc:
-            logger.debug("DB pool getconn failed: %s; using direct connect", exc)
-    # Legacy path
+                # Dead conn — fall through to direct connect.
+                break
+        else:
+            # Loop exited via while-condition (deadline). Loud warning
+            # so an undersized pool is visible in logs and we can size
+            # CHAT_DB_POOL_MAX up. Falls through to direct connect so
+            # the request still completes.
+            logger.warning(
+                "DB pool acquire timed out after %.1fs (attempts=%d, "
+                "maxconn=%d, last_exc=%s); using direct connect — "
+                "consider raising CHAT_DB_POOL_MAX.",
+                _pool_acquire_timeout_s(),
+                attempts,
+                _get_pool_max(),
+                last_exc,
+            )
+    # Legacy / fallback path.
     return psycopg2.connect(url, connect_timeout=10), False
 
 
