@@ -103,14 +103,14 @@ def _score_chunk_for_confidence_filter(c: dict) -> float:
       ``distance`` (similarity polarity) → ``confidence_label`` →
       pass-through 1.0 if no signal at all.
     """
-    for field in ("match_score", "confidence", "rerank_score"):
+    for field in ("match_score", "confidence", "rerank_score", "similarity"):
         v = c.get(field)
         if isinstance(v, (int, float)) and v >= 0:
             return float(v)
-    # Post-pgvector ``distance`` is similarity (1 = identical). Same
-    # 0..1 scale as the other fields above, just under a different name
-    # for Chroma drop-in compatibility (which was misleading — see
-    # bench_pgvector_signoff.py).
+    # Legacy: ``distance`` was the Chroma drop-in name pgvector reused;
+    # value is similarity (1 = identical). Kept for any chunk path that
+    # still emits the old name. Once rag's ChunkOut.similarity rollout
+    # is fully live, this can be removed.
     d = c.get("distance")
     if isinstance(d, (int, float)) and 0.0 <= d <= 1.0:
         return float(d)
