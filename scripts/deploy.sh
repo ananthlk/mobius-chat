@@ -197,6 +197,9 @@ SET_ENV_VARS=(
     # RAG_API_URL — read by the curator tools (lookup_authoritative_sources
     # + ingest_url) and the legacy RAG-API retrieval path. See dev.env note.
     "RAG_API_URL=${RAG_API_URL:-}"
+    # OS_API_URL — mobius-os gateway. corpus_search skill posts to
+    # {OS_API_URL}/api/v1/skills/corpus_search with X-Caller=chat header.
+    "OS_API_URL=${OS_API_URL:-}"
     "CHROMA_HOST=${CHROMA_HOST:-}"
     "CHROMA_PORT=${CHROMA_PORT:-}"
     "CHROMA_SSL=${CHROMA_SSL:-}"

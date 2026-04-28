@@ -67,7 +67,34 @@ logger = logging.getLogger(__name__)
 _VALID_MODES = ("corpus", "precision", "recall")
 _DEFAULT_K = 10
 _HTTP_TIMEOUT_S = 60.0
-_SKILL_PATH = "/api/skills/v1/corpus_search"
+# Endpoint shape per the rag-agent spec (2026-04-28):
+#
+#   POST {OS_API_URL}/api/v1/skills/corpus_search
+#     X-Caller: chat
+#
+# Chat does NOT call mobius-rag directly. mobius-os is the gateway —
+# it proxies to rag, attaches caller attribution, and writes the
+# search_events row (caller="chat"). This keeps cross-service auth +
+# audit + observability in one place rather than fanning per-skill.
+_SKILL_PATH = "/api/v1/skills/corpus_search"
+_CALLER = "chat"
+
+
+def _resolve_os_url() -> str | None:
+    """Resolve the mobius-os API base URL.
+
+    Reads ``OS_API_URL`` (the gateway/proxy that fronts rag for
+    cross-service skill calls). Returns None when unset so the caller
+    can produce a clean ``no_sources`` with a diagnostic message — we
+    don't want chat to silently use a stale legacy URL or guess.
+
+    Backward-compat: if OS_API_URL is unset but ``RAG_API_URL`` is,
+    we do NOT fall back to it. The contract changed; calling rag
+    directly would skip the audit row and break attribution. Better
+    to fail loud and fix the env than ship subtly-wrong telemetry.
+    """
+    url = (os.environ.get("OS_API_URL") or "").strip()
+    return url or None
 
 
 def _post_skill(
@@ -80,11 +107,15 @@ def _post_skill(
     include_document_ids: list[str] | None,
     assembly_strategy: str | None,
 ) -> dict[str, Any]:
-    """POST to the rag service's v1 corpus_search endpoint.
+    """POST to mobius-os's v1 corpus_search proxy.
 
-    Returns the parsed JSON response (``{chunks, telemetry}``). Raises
-    on HTTP / network / JSON failure; the caller maps that to a
-    ``no_sources`` envelope.
+    Returns parsed JSON ``{chunks, telemetry}``. Raises on HTTP /
+    network / JSON errors; caller maps to a ``no_sources`` envelope.
+
+    The ``X-Caller`` header drives the search_events.caller column on
+    the rag side — every chat-originated search ends up tagged
+    ``caller="chat"`` for audit + analytics. Worker / cron / other
+    callers should set their own.
     """
     url = base_url.rstrip("/") + _SKILL_PATH
     body: dict[str, Any] = {
@@ -101,7 +132,10 @@ def _post_skill(
     req = urllib.request.Request(
         url,
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "X-Caller": _CALLER,
+        },
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:
@@ -311,16 +345,16 @@ def _run(call: SkillCall) -> SkillEnvelope:
     if include_document_ids and not isinstance(include_document_ids, list):
         include_document_ids = None
 
-    base_url = (os.environ.get("RAG_API_URL") or "").strip()
+    base_url = _resolve_os_url()
     if not base_url:
-        logger.warning("corpus_search: RAG_API_URL not set")
+        logger.warning("corpus_search: OS_API_URL not set; mobius-os gateway unreachable")
         if call.emitter:
-            call.emitter("↓ Corpus skill not configured (RAG_API_URL unset).")
+            call.emitter("↓ Corpus skill not configured (OS_API_URL unset).")
         return SkillEnvelope(
             text="",
             sources=[],
             signal="no_sources",
-            extra={"error": "rag_api_url_unset"},
+            extra={"error": "os_api_url_unset"},
         )
 
     filters = _filters_from_active(call.active_context)
