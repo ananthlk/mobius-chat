@@ -212,32 +212,22 @@ def run_bm25_only(
     filter_state: str = "",
     filter_program: str = "",
     filter_authority_level: str = "",
-    n_factual: int | None = None,
-    n_hierarchical: int | None = None,
     emitter: Callable[[str], None] | None = None,
     include_document_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Pure BM25 retrieval against Postgres FTS via mobius-retriever.
 
-    No /api/query call, no fallback. This is the actual BM25 arm —
-    used by ``retriever_hybrid._run_bm25_arm`` and by precision_search
-    (mode="precision") so the planner gets a real keyword/phrase
-    search distinct from pgvector.
-
-    Returns chunks in chat dict shape with rerank applied. Empty list
-    if database_url is missing or mobius-retriever isn't installed
-    (logged loudly).
+    No /api/query call, no fallback. Returns BM25-scored chunks in chat
+    dict shape (sigmoid-normalized match_score). **No rerank, no blend
+    selection** — those run downstream uniformly for both arms via
+    ``rerank_fused_chunks`` + ``_apply_blend_selection``. Keeping this
+    function strictly retrieval-only means the post-RRF rerank pass
+    sees BM25 + vector chunks on equal footing.
     """
     try:
         from mobius_retriever.retriever import retrieve_bm25
         from mobius_retriever.config import (
-            apply_normalize_bm25, load_bm25_sigmoid_config, load_reranker_config,
-        )
-        from mobius_retriever.reranker import rerank_with_config
-        from mobius_retriever.jpd_tagger import (
-            tag_question_and_resolve_document_ids,
-            fetch_document_tags_by_ids,
-            fetch_line_tags_for_chunks,
+            apply_normalize_bm25, load_bm25_sigmoid_config,
         )
     except ImportError as e:
         logger.warning("run_bm25_only: mobius-retriever not installed: %s", e)
@@ -270,46 +260,11 @@ def run_bm25_only(
     )
 
     bm25_cfg = load_bm25_sigmoid_config()
-    chunks_to_convert = result.raw
-
-    # Rerank: retrieve → rerank → assemble
-    try:
-        reranker_cfg = load_reranker_config(_DEFAULT_RERANKER_CONFIG)
-        if reranker_cfg.signals and chunks_to_convert:
-            dicts = []
-            for c in chunks_to_convert:
-                if not isinstance(c, dict):
-                    continue
-                try:
-                    dicts.append(_bm25_to_rerank_dict(c, bm25_cfg))
-                except (TypeError, AttributeError, KeyError) as e:
-                    logger.debug("Skip chunk (not dict-like): %s", e)
-                    continue
-            doc_ids = list({str(d.get("document_id", "")) for d in dicts if d.get("document_id")})
-            doc_tags_by_id = fetch_document_tags_by_ids(database_url, doc_ids) if doc_ids else {}
-            line_tags_by_key = fetch_line_tags_for_chunks(database_url, dicts) if dicts else {}
-            jpd = tag_question_and_resolve_document_ids(question, database_url, emitter=None)
-            qtags = jpd if ("tag_match" in (reranker_cfg.signals or {}) and jpd.has_tags) else None
-            chunks_to_convert = rerank_with_config(
-                dicts,
-                reranker_cfg,
-                question_tags=qtags,
-                doc_tags_by_id=doc_tags_by_id,
-                line_tags_by_key=line_tags_by_key,
-            )
-            _debug_chunks("after rerank (chunks_to_convert)", chunks_to_convert)
-    except FileNotFoundError as _fnf:
-        logger.warning(
-            "Reranker config not found (%s); falling back to BM25-only "
-            "scoring. tag_match contribution will be zero.", _fnf,
-        )
-    except Exception as e:
-        logger.warning("Reranker failed: %s; using BM25 scores only.", e, exc_info=True)
 
     out: list[dict[str, Any]] = []
-    for i, c in enumerate(chunks_to_convert):
+    for i, c in enumerate(result.raw):
         if not isinstance(c, dict):
-            logger.warning("[DEBUG_RAG] inline chunk[%s] NOT dict type=%s skipping", i, type(c).__name__)
+            logger.warning("[DEBUG_RAG] bm25 chunk[%s] NOT dict type=%s skipping", i, type(c).__name__)
             continue
         c = dict(c)
         raw = c.get("raw_score")
@@ -322,14 +277,136 @@ def run_bm25_only(
             match_score = c.get("similarity") or c.get("rerank_score")
         out.append(_raw_to_chat_chunk(c, match_score))
 
-    if (n_factual is not None or n_hierarchical is not None) and out:
-        try:
-            from mobius_retriever.assemble import _apply_blend_selection
-            out = _apply_blend_selection(out, n_factual, n_hierarchical)
-        except Exception as e:
-            logger.debug("Blend selection failed (non-fatal): %s", e)
-
     _debug_chunks("bm25 return (out)", out)
+    return out
+
+
+def rerank_fused_chunks(
+    chunks: list[dict[str, Any]],
+    *,
+    question: str,
+    database_url: str,
+    emitter: Callable[[str], None] | None = None,
+) -> list[dict[str, Any]]:
+    """Apply the mobius-retriever reranker to a list of fused chunks.
+
+    Used by:
+      * ``retrieve_corpus_hybrid`` after RRF — so BM25 and vector
+        chunks get the same content-quality polish (JPD tag matching,
+        authority weighting, provision_type weight, title-stub
+        penalty via reranker_cfg signals).
+      * ``retrieve_precision`` after the BM25 arm — same as the legacy
+        in-arm rerank used to do, just relocated.
+
+    Tolerant of mixed-shape inputs: chunks from /api/query (vector
+    arm) won't have ``raw_score`` but DO have ``similarity`` and
+    ``document_id``; the reranker uses what's present and zero-weights
+    missing signals. Falls back to input order on any failure
+    (FileNotFoundError on the config, ImportError on the package,
+    or unexpected reranker exceptions). Reranker is sub-second on
+    typical fused-list sizes (~20 chunks), so the cost is negligible.
+    """
+    if not chunks or not database_url:
+        return chunks
+    try:
+        from mobius_retriever.config import load_reranker_config
+        from mobius_retriever.reranker import rerank_with_config
+        from mobius_retriever.jpd_tagger import (
+            tag_question_and_resolve_document_ids,
+            fetch_document_tags_by_ids,
+            fetch_line_tags_for_chunks,
+        )
+    except ImportError as e:
+        logger.warning("rerank_fused_chunks: mobius-retriever missing: %s; skip", e)
+        return chunks
+    try:
+        cfg = load_reranker_config(_DEFAULT_RERANKER_CONFIG)
+    except FileNotFoundError as e:
+        logger.warning("rerank_fused_chunks: config not found (%s); skip", e)
+        return chunks
+    if not cfg.signals:
+        return chunks
+
+    # Project to rerank input shape; preserve back-pointer to originals
+    # via a synthetic ``_rk_key`` so we can map results back without
+    # losing arm origin / RRF metadata.
+    rerank_in: list[dict[str, Any]] = []
+    by_key: dict[str, dict[str, Any]] = {}
+    for i, c in enumerate(chunks):
+        key = f"{i}::{c.get('id') or c.get('source_id') or c.get('document_id') or i}"
+        by_key[key] = c
+        pt = c.get("provision_type")
+        if not pt:
+            st = (c.get("source_type") or "").lower()
+            pt = "paragraph" if st in ("hierarchical", "policy", "section") else "sentence"
+        # Score for the reranker's bm25/similarity signal: prefer the
+        # arm's natural score, fall back to RRF score.
+        score = (
+            c.get("similarity")
+            or c.get("match_score")
+            or c.get("rrf_score")
+            or c.get("rerank_score")
+            or 0.0
+        )
+        origin = c.get("_arm_origin") or "vector"
+        retrieval_source = c.get("retrieval_source") or f"{origin}_{pt}"
+        rerank_in.append({
+            "_rk_key": key,
+            "id": c.get("id"),
+            "text": c.get("text") or "",
+            "document_id": c.get("document_id"),
+            "document_name": c.get("document_name"),
+            "document_authority_level": c.get("document_authority_level"),
+            "page_number": c.get("page_number"),
+            "paragraph_index": c.get("paragraph_index"),
+            "sentence_index": c.get("sentence_index"),
+            "similarity": float(score) if isinstance(score, (int, float)) else 0.0,
+            "raw_score": c.get("raw_score"),
+            "provision_type": pt,
+            "source_type": c.get("source_type") or "hierarchical",
+            "retrieval_source": retrieval_source,
+        })
+
+    doc_ids = list({str(d.get("document_id", "")) for d in rerank_in if d.get("document_id")})
+    try:
+        doc_tags_by_id = fetch_document_tags_by_ids(database_url, doc_ids) if doc_ids else {}
+        line_tags_by_key = fetch_line_tags_for_chunks(database_url, rerank_in) if rerank_in else {}
+        jpd = tag_question_and_resolve_document_ids(question, database_url, emitter=None)
+        qtags = jpd if ("tag_match" in (cfg.signals or {}) and jpd.has_tags) else None
+    except Exception as e:
+        logger.warning("rerank_fused_chunks: tag lookup failed (%s); skip rerank", e)
+        return chunks
+
+    try:
+        reranked = rerank_with_config(
+            rerank_in, cfg,
+            question_tags=qtags,
+            doc_tags_by_id=doc_tags_by_id,
+            line_tags_by_key=line_tags_by_key,
+        )
+    except Exception as e:
+        logger.warning("rerank_fused_chunks: rerank_with_config failed (%s); skip", e, exc_info=True)
+        return chunks
+
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for r in reranked:
+        key = r.get("_rk_key")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        orig = by_key.get(key)
+        if orig is None:
+            continue
+        if r.get("rerank_score") is not None:
+            orig["rerank_score"] = r["rerank_score"]
+        out.append(orig)
+    # Defensive: append any chunks the reranker dropped so we don't
+    # silently lose evidence to a reranker bug.
+    for key, orig in by_key.items():
+        if key not in seen:
+            out.append(orig)
+    _debug_chunks("rerank_fused_chunks (out)", out)
     return out
 
 

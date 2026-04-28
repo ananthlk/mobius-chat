@@ -177,6 +177,10 @@ def _run_bm25_arm(
     """
     from app.services.retriever_backend import run_bm25_only
 
+    # n_factual / n_hierarchical are intentionally NOT passed: blend
+    # selection now happens once at the consumer (post-RRF in hybrid,
+    # post-rerank in precision) so both arms feed equal-shape candidates
+    # into the rerank.
     chunks = run_bm25_only(
         question=question,
         top_k=top_k,
@@ -185,8 +189,6 @@ def _run_bm25_arm(
         filter_state=filter_state,
         filter_program=filter_program,
         filter_authority_level=filter_authority_level,
-        n_factual=n_factual,
-        n_hierarchical=n_hierarchical,
         emitter=emitter,
         include_document_ids=include_document_ids,
     )
@@ -331,6 +333,25 @@ def retrieve_corpus_hybrid(
     # RRF fuse
     fused = _rrf_merge(arm_results)
 
+    # Single rerank pass over the fused list (Option B, 2026-04-27).
+    # Both arms contribute to the same input; reranker applies
+    # JPD tag matching, authority weighting, and provision_type
+    # signals uniformly. Catches title-only stubs (the "Medicaid"
+    # 1-token chunks observed earlier) that vector-arm cosine
+    # similarity alone can't filter. Reranker is sub-second on
+    # ~20 fused candidates so the cost is negligible.
+    if fused:
+        try:
+            from app.services.retriever_backend import rerank_fused_chunks
+            fused = rerank_fused_chunks(
+                fused,
+                question=question,
+                database_url=database_url,
+                emitter=None,
+            )
+        except Exception as exc:
+            logger.warning("hybrid: post-RRF rerank failed (%s); using RRF order", exc)
+
     # Blend selection: paragraph slots first, sentence slots second.
     # When neither n_* is set we just truncate to top_k.
     if (n_factual is not None or n_hierarchical is not None) and fused:
@@ -443,6 +464,32 @@ def retrieve_precision(
         n_factual=n_factual, n_hierarchical=n_hierarchical,
         emitter=emitter, include_document_ids=include_document_ids,
     )
+
+    # Single rerank pass — BM25 chunks no longer self-rerank inside
+    # ``run_bm25_only`` (Option B refactor 2026-04-27 lifted rerank to
+    # the consumer so hybrid + precision share one pass). For precision
+    # this restores the legacy BM25-with-rerank behavior; for hybrid,
+    # the pass runs over the fused list (see retrieve_corpus_hybrid).
+    if chunks:
+        try:
+            from app.services.retriever_backend import rerank_fused_chunks
+            chunks = rerank_fused_chunks(
+                chunks,
+                question=question,
+                database_url=database_url,
+                emitter=None,
+            )
+        except Exception as exc:
+            logger.warning("precision: rerank failed (%s); using BM25 order", exc)
+
+    # Blend selection: paragraph slots first, sentence slots second.
+    if (n_factual is not None or n_hierarchical is not None) and chunks:
+        try:
+            from mobius_retriever.assemble import _apply_blend_selection
+            chunks = _apply_blend_selection(chunks, n_factual, n_hierarchical)
+        except Exception as exc:
+            logger.warning("precision: blend selection failed (%s); using rerank order", exc)
+
     telemetry = {
         "mode": "corpus_precision",
         "k": top_k,
