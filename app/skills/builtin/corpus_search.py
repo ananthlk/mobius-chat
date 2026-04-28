@@ -158,13 +158,62 @@ def _format_context(chunks: list[dict[str, Any]]) -> str:
     return "\n\n".join(parts)
 
 
+_US_STATES_TO_CODE: dict[str, str] = {
+    "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR",
+    "california": "CA", "colorado": "CO", "connecticut": "CT", "delaware": "DE",
+    "district of columbia": "DC", "florida": "FL", "georgia": "GA", "hawaii": "HI",
+    "idaho": "ID", "illinois": "IL", "indiana": "IN", "iowa": "IA", "kansas": "KS",
+    "kentucky": "KY", "louisiana": "LA", "maine": "ME", "maryland": "MD",
+    "massachusetts": "MA", "michigan": "MI", "minnesota": "MN", "mississippi": "MS",
+    "missouri": "MO", "montana": "MT", "nebraska": "NE", "nevada": "NV",
+    "new hampshire": "NH", "new jersey": "NJ", "new mexico": "NM", "new york": "NY",
+    "north carolina": "NC", "north dakota": "ND", "ohio": "OH", "oklahoma": "OK",
+    "oregon": "OR", "pennsylvania": "PA", "rhode island": "RI", "south carolina": "SC",
+    "south dakota": "SD", "tennessee": "TN", "texas": "TX", "utah": "UT",
+    "vermont": "VT", "virginia": "VA", "washington": "WA", "west virginia": "WV",
+    "wisconsin": "WI", "wyoming": "WY", "puerto rico": "PR",
+}
+
+
+def _normalize_state(s: str | None) -> str | None:
+    """Canonicalize a state value to its 2-letter USPS code.
+
+    The corpus tags documents with 2-letter state codes ("FL"). Chat's
+    active_context typically stores the full name ("Florida") because
+    that's what the user / planner emits. Without normalization, every
+    chat search with a state filter returns 0 chunks (observed
+    2026-04-28: cid=28b2ae20, "timely filing window Florida Medicaid"
+    → bm25_hits=0 vector_hits=0 because filters={'state':'Florida'}).
+
+    Behavior:
+      "Florida"  → "FL"
+      "florida"  → "FL"
+      "FL"       → "FL"
+      "fl"       → "FL"
+      "Floor"    → "Floor"   (unknown — pass through, server may match)
+      None / "" → None
+    """
+    if not s:
+        return None
+    s = s.strip()
+    if not s:
+        return None
+    if len(s) == 2:
+        return s.upper()
+    code = _US_STATES_TO_CODE.get(s.lower())
+    return code or s
+
+
 def _filters_from_active(active: dict[str, Any] | None) -> dict[str, Any]:
     """Extract the four jurisdiction filters from the chat thread's
-    active context. Empty / None entries are dropped server-side."""
+    active context. State is normalized to the 2-letter USPS code so
+    the rag-side tag filter matches (corpus uses "FL" not "Florida").
+    Empty / None entries are dropped before sending."""
     a = active or {}
+    raw_state = a.get("state") or a.get("jurisdiction") or ""
     out = {
         "payer": (a.get("payer") or "").strip() or None,
-        "state": (a.get("state") or a.get("jurisdiction") or "").strip() or None,
+        "state": _normalize_state(str(raw_state)),
         "program": (a.get("program") or "").strip() or None,
         "authority_level": (a.get("authority_level") or "").strip() or None,
     }
