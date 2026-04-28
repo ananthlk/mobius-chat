@@ -6392,13 +6392,22 @@ function run(): void {
     return new Promise((resolve, reject) => {
       // 30 min at 400ms poll = 4500 attempts (match backend CHAT_STREAM_TIMEOUT_S for credentialing reports)
       const maxAttempts = 4500;
+      // Stall bailout: if no new progress (thinking line / message growth / status change)
+      // for STALL_MS, treat as orphaned turn and reject. Protects against backend
+      // jobs lost mid-flight (BRPOP-without-ack pattern in queue/redis_queue.py) so the
+      // user isn't stuck in a "Thinking…" forever poll loop.
+      const STALL_MS = 90_000;
       let attempts = 0;
       const seenLines = new Set<string>();
+      let lastMessageLen = 0;
+      let lastStatus: string | undefined;
+      let lastProgressMs = Date.now();
 
       function poll(): void {
         fetch(API_BASE + "/chat/response/" + correlationId)
           .then((r) => r.json() as Promise<ChatResponse>)
           .then((data) => {
+            let progressed = false;
             if (data.thinking_log?.length && onThinking) {
               data.thinking_log.forEach((entry) => {
                 // Mixed array (Sprint A.1): string OR envelope dict.
@@ -6406,14 +6415,37 @@ function run(): void {
                 if (!seenLines.has(line)) {
                   seenLines.add(line);
                   onThinking(line);
+                  progressed = true;
                 }
               });
             }
             if (data.message != null && data.message !== "" && onStreamingMessage) {
               onStreamingMessage(data.message);
+              if (data.message.length !== lastMessageLen) {
+                lastMessageLen = data.message.length;
+                progressed = true;
+              }
+            }
+            if (data.status && data.status !== lastStatus) {
+              lastStatus = data.status;
+              progressed = true;
+            }
+            if (progressed) {
+              lastProgressMs = Date.now();
             }
             if (data.status === "completed" || data.status === "clarification" || data.status === "refinement_ask" || data.status === "failed") {
               resolve(data);
+              return;
+            }
+            // Stall check: no new thinking lines, no message growth, no status change for STALL_MS.
+            // Backend likely lost the job (instance scale-in, crash, deploy) — abort so the
+            // user can retry instead of spinning forever.
+            if (Date.now() - lastProgressMs > STALL_MS) {
+              reject(new Error(
+                "Request appears to have been lost (no progress for " +
+                Math.round(STALL_MS / 1000) +
+                "s). Please retry."
+              ));
               return;
             }
             attempts++;
@@ -6442,8 +6474,26 @@ function run(): void {
     return new Promise((resolve, reject) => {
       let messageSoFar = "";
       let resolved = false;
+      // Stall bailout (mirrors pollResponse): if SSE delivers no events for STALL_MS,
+      // treat as orphaned turn. Protects against the backend losing the job silently.
+      const STALL_MS = 90_000;
+      let lastEventMs = Date.now();
       const es = new EventSource(streamUrl);
+      const stallTimer = window.setInterval(() => {
+        if (resolved) return;
+        if (Date.now() - lastEventMs > STALL_MS) {
+          resolved = true;
+          es.close();
+          window.clearInterval(stallTimer);
+          reject(new Error(
+            "Request appears to have been lost (no progress for " +
+            Math.round(STALL_MS / 1000) +
+            "s). Please retry."
+          ));
+        }
+      }, 5000);
       es.onmessage = (e: MessageEvent) => {
+        lastEventMs = Date.now();
         try {
           const parsed = JSON.parse(e.data as string) as { event: string; data?: unknown };
           const ev = parsed.event;
@@ -6458,21 +6508,25 @@ function run(): void {
           } else if (ev === "completed" && data) {
             resolved = true;
             es.close();
+            window.clearInterval(stallTimer);
             resolve(data as unknown as ChatResponse);
           } else if (ev === "error" && data.message != null) {
             resolved = true;
             es.close();
+            window.clearInterval(stallTimer);
             reject(new Error(String(data.message)));
           }
         } catch (err) {
           resolved = true;
           es.close();
+          window.clearInterval(stallTimer);
           reject(err instanceof Error ? err : new Error(String(err)));
         }
       };
       es.onerror = () => {
         es.close();
         if (resolved) return;
+        window.clearInterval(stallTimer);
         pollResponse(correlationId, onThinking, onStreamingMessage).then(resolve).catch(reject);
       };
     });

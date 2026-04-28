@@ -5616,24 +5616,47 @@ function run() {
   function pollResponse(correlationId, onThinking, onStreamingMessage) {
     return new Promise((resolve, reject) => {
       const maxAttempts = 4500;
+      const STALL_MS = 9e4;
       let attempts = 0;
       const seenLines = /* @__PURE__ */ new Set();
+      let lastMessageLen = 0;
+      let lastStatus;
+      let lastProgressMs = Date.now();
       function poll() {
         fetch(API_BASE + "/chat/response/" + correlationId).then((r) => r.json()).then((data) => {
+          let progressed = false;
           if (data.thinking_log?.length && onThinking) {
             data.thinking_log.forEach((entry) => {
               const line = thinkingLineFromEntry(entry);
               if (!seenLines.has(line)) {
                 seenLines.add(line);
                 onThinking(line);
+                progressed = true;
               }
             });
           }
           if (data.message != null && data.message !== "" && onStreamingMessage) {
             onStreamingMessage(data.message);
+            if (data.message.length !== lastMessageLen) {
+              lastMessageLen = data.message.length;
+              progressed = true;
+            }
+          }
+          if (data.status && data.status !== lastStatus) {
+            lastStatus = data.status;
+            progressed = true;
+          }
+          if (progressed) {
+            lastProgressMs = Date.now();
           }
           if (data.status === "completed" || data.status === "clarification" || data.status === "refinement_ask" || data.status === "failed") {
             resolve(data);
+            return;
+          }
+          if (Date.now() - lastProgressMs > STALL_MS) {
+            reject(new Error(
+              "Request appears to have been lost (no progress for " + Math.round(STALL_MS / 1e3) + "s). Please retry."
+            ));
             return;
           }
           attempts++;
@@ -5655,8 +5678,23 @@ function run() {
     return new Promise((resolve, reject) => {
       let messageSoFar = "";
       let resolved = false;
+      const STALL_MS = 9e4;
+      let lastEventMs = Date.now();
       const es = new EventSource(streamUrl);
+      const stallTimer = window.setInterval(() => {
+        if (resolved)
+          return;
+        if (Date.now() - lastEventMs > STALL_MS) {
+          resolved = true;
+          es.close();
+          window.clearInterval(stallTimer);
+          reject(new Error(
+            "Request appears to have been lost (no progress for " + Math.round(STALL_MS / 1e3) + "s). Please retry."
+          ));
+        }
+      }, 5e3);
       es.onmessage = (e) => {
+        lastEventMs = Date.now();
         try {
           const parsed = JSON.parse(e.data);
           const ev = parsed.event;
@@ -5671,15 +5709,18 @@ function run() {
           } else if (ev === "completed" && data) {
             resolved = true;
             es.close();
+            window.clearInterval(stallTimer);
             resolve(data);
           } else if (ev === "error" && data.message != null) {
             resolved = true;
             es.close();
+            window.clearInterval(stallTimer);
             reject(new Error(String(data.message)));
           }
         } catch (err) {
           resolved = true;
           es.close();
+          window.clearInterval(stallTimer);
           reject(err instanceof Error ? err : new Error(String(err)));
         }
       };
@@ -5687,6 +5728,7 @@ function run() {
         es.close();
         if (resolved)
           return;
+        window.clearInterval(stallTimer);
         pollResponse(correlationId, onThinking, onStreamingMessage).then(resolve).catch(reject);
       };
     });
