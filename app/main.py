@@ -525,6 +525,24 @@ def maybe_start_worker():
             "or sidecar — they'll all consume from the same Redis list.)"
         )
 
+    # Live-health refresher (2026-04-28).
+    #
+    # Polls model_health_recent (Postgres view) every 10s and caches
+    # degraded-model state in memory. The bandit's circuit breaker
+    # reads this cache to route around backends that are timing out
+    # or running abnormally slow RIGHT NOW — the 24h-averaged
+    # circuit breakers can't see a 5-minute spike.
+    #
+    # All instances poll the same view from the same Postgres, so
+    # degradation signal is naturally consistent across instances.
+    # No-op if the view is missing (migration 034 not applied) or if
+    # LLM_HEALTH_DISABLED=1.
+    try:
+        from app.services.llm_health import LIVE_HEALTH as _LLM_HEALTH
+        _LLM_HEALTH.start()
+    except Exception as e:
+        logger.warning("llm-health: failed to start refresher (non-fatal): %s", e)
+
     # Vertex SDK warm-up (2026-04-28).
     #
     # The first generate_content call after a fresh worker process starts

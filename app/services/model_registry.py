@@ -1646,12 +1646,25 @@ class ModelRouter:
         safe = []
         for spec in candidates:
             # Live-health: short-window, fast-reacting. Reads in-memory
-            # state populated by record_call_failure / update_ema. No
-            # 20-call warmup gate — a single 5-minute degradation should
-            # route around the model immediately.
+            # cache that's refreshed every 10s from the Postgres
+            # ``model_health_recent`` view (single source of truth
+            # across all chat instances). No 20-call warmup gate —
+            # a single 5-minute degradation should route around the
+            # model immediately. Falls back to the per-instance signal
+            # if Postgres is unavailable.
+            try:
+                from app.services.llm_health import LIVE_HEALTH as _PG_LIVE_HEALTH
+                if _PG_LIVE_HEALTH.is_degraded(spec.model_id):
+                    logger.warning(
+                        "Circuit breaker [live-pg]: stage=%s model=%s — %s",
+                        stage, spec.model_id, _PG_LIVE_HEALTH.degradation_reason(spec.model_id),
+                    )
+                    continue
+            except Exception:
+                pass
             if _LIVE_HEALTH.is_degraded(spec.model_id):
                 logger.warning(
-                    "Circuit breaker [live]: stage=%s model=%s — %s",
+                    "Circuit breaker [live-local]: stage=%s model=%s — %s",
                     stage, spec.model_id, _LIVE_HEALTH.degradation_reason(spec.model_id),
                 )
                 continue

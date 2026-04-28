@@ -234,9 +234,17 @@ def get_model_health() -> dict:
     """
     if not _admin_enabled():
         raise HTTPException(status_code=404, detail="Not found")
+    out: dict = {}
+    # Postgres-backed (canonical, cross-instance via model_health_recent view)
+    try:
+        from app.services.llm_health import LIVE_HEALTH as _PG_LIVE_HEALTH
+        out["postgres"] = _PG_LIVE_HEALTH.snapshot()
+    except Exception as exc:
+        out["postgres"] = {"error": f"{type(exc).__name__}: {exc}"}
+    # Per-instance in-memory (fallback layer)
     try:
         from app.services.model_registry import _LIVE_HEALTH
-        return _LIVE_HEALTH.snapshot()
-    except Exception as exc:  # pragma: no cover — defensive
-        logger.warning("model-health snapshot failed: %s", exc)
-        return {"error": f"{type(exc).__name__}: {exc}", "degraded": {}, "windows": {}}
+        out["local"] = _LIVE_HEALTH.snapshot()
+    except Exception as exc:
+        out["local"] = {"error": f"{type(exc).__name__}: {exc}"}
+    return out
