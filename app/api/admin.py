@@ -216,3 +216,27 @@ def set_model_profile(body: SetModelProfileRequest) -> ModelProfileState:
         raise HTTPException(status_code=400, detail=str(exc))
     logger.info("model_profile admin switch: active=%s", state["active_profile"])
     return ModelProfileState(**state)
+
+
+@router.get("/chat/admin/model-health")
+def get_model_health() -> dict:
+    """Snapshot of the live-health detector — degraded models, recent
+    call windows, time-to-next-probe.
+
+    Per Cloud Run instance: each instance learns independently. Hitting
+    this endpoint multiple times can return different snapshots
+    depending on which instance the LB picks. That's intentional — a
+    healthy aggregate view requires the cross-instance Redis broadcast
+    we haven't built yet (tracked separately).
+
+    Use this during testing/incident triage to see which models the
+    bandit is currently routing around and why.
+    """
+    if not _admin_enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        from app.services.model_registry import _LIVE_HEALTH
+        return _LIVE_HEALTH.snapshot()
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning("model-health snapshot failed: %s", exc)
+        return {"error": f"{type(exc).__name__}: {exc}", "degraded": {}, "windows": {}}
