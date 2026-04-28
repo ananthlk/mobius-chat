@@ -4220,6 +4220,167 @@ function syncAdjudicatorScorecardDom(wrap, qc, oneline, badgesWrap) {
   if (note && qc.user_score_comment != null)
     note.value = String(qc.user_score_comment);
 }
+function renderRetrievalTrace(thinkingLog) {
+  if (!Array.isArray(thinkingLog) || thinkingLog.length === 0)
+    return null;
+  const traces = [];
+  for (const entry of thinkingLog) {
+    if (entry && typeof entry === "object" && entry.signal === "retrieval_trace") {
+      const e = entry;
+      traces.push({
+        data: e.data ?? {},
+        step_id: e.step_id,
+        note: e.note
+      });
+    }
+  }
+  if (traces.length === 0)
+    return null;
+  const wrap = document.createElement("div");
+  wrap.className = "llm-performance retrieval-trace collapsed";
+  const last = traces[traces.length - 1];
+  const tel = last.data ?? {};
+  const armHits = tel.arm_hits ?? tel.arms ?? {};
+  const bm25 = Number(armHits.bm25 ?? armHits.bm25_hits ?? 0);
+  const vec = Number(armHits.vector ?? armHits.vec_hits ?? 0);
+  const totalMs = Number(
+    tel.total_ms ?? (tel.timing && tel.timing.total_ms) ?? 0
+  );
+  const totalSec = totalMs > 0 ? (totalMs / 1e3).toFixed(2) : "0.00";
+  const k = Number(tel.k ?? 0);
+  const mode = String(tel.mode ?? "corpus");
+  const preview = document.createElement("div");
+  preview.className = "llm-performance-preview";
+  preview.setAttribute("role", "button");
+  preview.setAttribute("tabindex", "0");
+  preview.setAttribute("aria-expanded", "false");
+  const titleEl = document.createElement("span");
+  titleEl.className = "llm-performance-title";
+  titleEl.textContent = "Retrieval";
+  const oneline = document.createElement("span");
+  oneline.className = "llm-performance-oneline";
+  oneline.textContent = `${mode} \xB7 BM25 ${bm25} \xB7 pgvector ${vec} \xB7 ${totalSec}s` + (traces.length > 1 ? ` \xB7 ${traces.length} rounds` : "") + (k ? ` \xB7 k=${k}` : "");
+  const chev = document.createElement("span");
+  chev.className = "llm-performance-chevron";
+  chev.setAttribute("aria-hidden", "true");
+  chev.textContent = "\u25BC";
+  preview.appendChild(titleEl);
+  preview.appendChild(oneline);
+  preview.appendChild(chev);
+  const body = document.createElement("div");
+  body.className = "llm-performance-body";
+  traces.forEach((t, idx) => {
+    const data = t.data ?? {};
+    const arms = data.arm_hits ?? data.arms ?? {};
+    const ah_b = Number(arms.bm25 ?? arms.bm25_hits ?? 0);
+    const ah_v = Number(arms.vector ?? arms.vec_hits ?? 0);
+    const overlap = Number(arms.overlap ?? 0);
+    const tim = data.timing ?? data;
+    const embed_ms = Number(tim.embed_ms ?? 0);
+    const bm25_ms = Number(tim.bm25_ms ?? 0);
+    const vec_ms = Number(tim.vec_ms ?? 0);
+    const rerank_ms = Number(tim.rerank_ms ?? 0);
+    const total_ms = Number(data.total_ms ?? tim.total_ms ?? 0);
+    const norm_q = data.bm25_normalized_query;
+    const orig_q = data.query ?? "";
+    const search_id = String(data.search_id ?? "").slice(0, 12);
+    const round = document.createElement("div");
+    round.className = "retrieval-trace-round";
+    if (traces.length > 1) {
+      const h = document.createElement("div");
+      h.className = "retrieval-trace-round-header";
+      h.textContent = `Round ${idx + 1}${t.step_id ? `  \xB7  ${t.step_id}` : ""}${search_id ? `  \xB7  search_id=${search_id}` : ""}`;
+      round.appendChild(h);
+    }
+    const badges = document.createElement("div");
+    badges.className = "llm-performance-badges";
+    const specs = [
+      { cls: "llm-performance-badge llm-performance-badge--model", text: `mode: ${data.mode || "corpus"}` },
+      { cls: "llm-performance-badge llm-performance-badge--latency", text: `${(total_ms / 1e3).toFixed(2)}s` },
+      { cls: "llm-performance-badge", text: `BM25 ${ah_b}` },
+      { cls: "llm-performance-badge", text: `pgvector ${ah_v}` }
+    ];
+    if (overlap)
+      specs.push({ cls: "llm-performance-badge", text: `overlap ${overlap}` });
+    specs.forEach((s) => {
+      const el2 = document.createElement("span");
+      el2.className = s.cls;
+      el2.textContent = s.text;
+      badges.appendChild(el2);
+    });
+    round.appendChild(badges);
+    if (embed_ms || bm25_ms || vec_ms || rerank_ms) {
+      const tdiv = document.createElement("div");
+      tdiv.className = "retrieval-trace-timing";
+      const stages = [
+        ["embed", embed_ms],
+        ["BM25", bm25_ms],
+        ["vector", vec_ms],
+        ["rerank", rerank_ms]
+      ];
+      stages.filter(([, ms]) => ms > 0).forEach(([label, ms]) => {
+        const cell = document.createElement("span");
+        cell.className = "retrieval-trace-timing-cell";
+        cell.textContent = `${label} ${ms.toFixed(0)}ms`;
+        tdiv.appendChild(cell);
+      });
+      round.appendChild(tdiv);
+    }
+    if (orig_q) {
+      const q = document.createElement("div");
+      q.className = "retrieval-trace-query";
+      q.textContent = `query: ${orig_q}`;
+      round.appendChild(q);
+    }
+    if (norm_q && norm_q !== orig_q) {
+      const nq = document.createElement("div");
+      nq.className = "retrieval-trace-query retrieval-trace-query--norm";
+      nq.textContent = `bm25 normalized: ${norm_q}`;
+      round.appendChild(nq);
+    }
+    const topChunks = data.top_chunks ?? data.scoring_trace ?? [];
+    if (Array.isArray(topChunks) && topChunks.length > 0) {
+      const table = document.createElement("table");
+      table.className = "retrieval-trace-chunks";
+      const head = document.createElement("thead");
+      head.innerHTML = "<tr><th>#</th><th>doc</th><th>p</th><th>arms</th><th>conf</th><th>rerank</th><th>sim</th><th>auth</th><th>jpd</th></tr>";
+      table.appendChild(head);
+      const tb = document.createElement("tbody");
+      topChunks.slice(0, 10).forEach((c, i) => {
+        const sig = c.signals ?? c.rerank_signals ?? {};
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${i + 1}</td><td title="${rtEscapeAttr(c.document_name || "")}">${rtEscapeAttr((c.document_name || "").slice(0, 30))}</td><td>${c.page ?? c.page_number ?? "\u2014"}</td><td>${(c.retrieval_arms || []).join("+") || "\u2014"}</td><td>${c.confidence_label ?? "\u2014"}</td><td>${rtFormatSig(c.rerank_score)}</td><td>${rtFormatSig(sig.sim_weighted ?? sig.sim_raw)}</td><td>${rtFormatSig(sig.auth_weighted ?? sig.authority_weighted)}</td><td>${rtFormatSig(sig.jpd_weighted)}</td>`;
+        tb.appendChild(tr);
+      });
+      table.appendChild(tb);
+      round.appendChild(table);
+    }
+    body.appendChild(round);
+  });
+  wrap.appendChild(preview);
+  wrap.appendChild(body);
+  const toggle = () => {
+    const expanded = wrap.classList.toggle("collapsed");
+    preview.setAttribute("aria-expanded", expanded ? "false" : "true");
+    chev.textContent = expanded ? "\u25BC" : "\u25B2";
+  };
+  preview.addEventListener("click", toggle);
+  preview.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      toggle();
+    }
+  });
+  return wrap;
+}
+function rtEscapeAttr(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function rtFormatSig(v) {
+  if (typeof v !== "number")
+    return "\u2014";
+  return v.toFixed(3);
+}
 function renderLlmPerformance(rows, meta, opts) {
   const wrap = document.createElement("div");
   wrap.className = "llm-performance collapsed";
@@ -6044,6 +6205,9 @@ ${message}`;
             routingFeedback: data.technical_feedback?.llm_performance ?? null
           })
         );
+        const retrievalPanel = renderRetrievalTrace(data.thinking_log);
+        if (retrievalPanel)
+          turnWrap.appendChild(retrievalPanel);
       }
       mergeTechnicalPanels(turnWrap, data);
       mergeLlmPerformanceRoutingHydrate(turnWrap, data);

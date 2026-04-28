@@ -7139,3 +7139,65 @@ body {
   font-size: var(--mobius-text-sm);
   color: var(--mobius-text-secondary);
 }
+
+/* Retrieval-trace panel — reuses .llm-performance shell + adds
+ * domain-specific bits (per-round timing, top-chunks table, query
+ * preview). Same collapsed/expanded rhythm as the LLM-perf panel
+ * so technical users see one consistent diagnostic surface. */
+.retrieval-trace .llm-performance-title::before {
+  content: "◌ ";
+  color: var(--mobius-text-secondary);
+}
+.retrieval-trace-round {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--mobius-border, #2a2a2a);
+}
+.retrieval-trace-round:first-child { border-top: none; }
+.retrieval-trace-round-header {
+  font-size: var(--mobius-text-sm);
+  color: var(--mobius-text-secondary);
+  font-weight: 500;
+}
+.retrieval-trace-timing {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  font-size: var(--mobius-text-sm);
+  color: var(--mobius-text-secondary);
+}
+.retrieval-trace-timing-cell {
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.04);
+  font-variant-numeric: tabular-nums;
+}
+.retrieval-trace-query {
+  font-family: var(--mobius-mono, ui-monospace, monospace);
+  font-size: var(--mobius-text-sm);
+  color: var(--mobius-text-secondary);
+  word-break: break-word;
+}
+.retrieval-trace-query--norm { opacity: 0.75; }
+.retrieval-trace-chunks {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--mobius-text-xs, 0.72rem);
+  font-variant-numeric: tabular-nums;
+  margin-top: 0.3rem;
+}
+.retrieval-trace-chunks th,
+.retrieval-trace-chunks td {
+  padding: 0.2rem 0.35rem;
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  white-space: nowrap;
+}
+.retrieval-trace-chunks th {
+  color: var(--mobius-text-secondary);
+  font-weight: 500;
+}
+.retrieval-trace-chunks td:first-child,
+.retrieval-trace-chunks th:first-child { width: 1.5rem; }

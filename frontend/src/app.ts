@@ -4718,6 +4718,228 @@ function syncAdjudicatorScorecardDom(
 }
 
 /**
+ * Retrieval trace panel — surfaces the rag-side corpus_search
+ * telemetry envelope (signal="retrieval_trace") in a collapsible
+ * widget alongside the existing LLM-perf / QC panels. The data
+ * shape is whatever rag's RetrievalTracePayload sent: timing per
+ * stage, arm hits, top chunks with their per-signal reranker
+ * contributions. Same pattern as renderLlmPerformance below.
+ *
+ * Renders nothing if no retrieval_trace envelope is found in the
+ * thinking_log.
+ */
+function renderRetrievalTrace(
+  thinkingLog: ReadonlyArray<unknown> | null | undefined,
+): HTMLElement | null {
+  if (!Array.isArray(thinkingLog) || thinkingLog.length === 0) return null;
+  // Find the most recent retrieval_trace envelope. Multiple may
+  // appear if the planner did multiple corpus_search rounds; show
+  // the latest in the preview, list all in the body.
+  const traces: Array<{ data: any; step_id?: string; note?: string }> = [];
+  for (const entry of thinkingLog) {
+    if (
+      entry &&
+      typeof entry === "object" &&
+      (entry as any).signal === "retrieval_trace"
+    ) {
+      const e = entry as any;
+      traces.push({
+        data: (e.data as any) ?? {},
+        step_id: e.step_id,
+        note: e.note,
+      });
+    }
+  }
+  if (traces.length === 0) return null;
+
+  const wrap = document.createElement("div");
+  wrap.className = "llm-performance retrieval-trace collapsed";
+
+  const last = traces[traces.length - 1];
+  const tel = last.data ?? {};
+  const armHits = tel.arm_hits ?? tel.arms ?? {};
+  const bm25 = Number(armHits.bm25 ?? armHits.bm25_hits ?? 0);
+  const vec = Number(armHits.vector ?? armHits.vec_hits ?? 0);
+  const totalMs = Number(
+    (tel.total_ms ?? (tel.timing && tel.timing.total_ms)) ?? 0
+  );
+  const totalSec = totalMs > 0 ? (totalMs / 1000).toFixed(2) : "0.00";
+  const k = Number(tel.k ?? 0);
+  const mode = String(tel.mode ?? "corpus");
+
+  // Preview row: title + one-liner + chevron, matching LLM perf rhythm
+  const preview = document.createElement("div");
+  preview.className = "llm-performance-preview";
+  preview.setAttribute("role", "button");
+  preview.setAttribute("tabindex", "0");
+  preview.setAttribute("aria-expanded", "false");
+  const titleEl = document.createElement("span");
+  titleEl.className = "llm-performance-title";
+  titleEl.textContent = "Retrieval";
+  const oneline = document.createElement("span");
+  oneline.className = "llm-performance-oneline";
+  oneline.textContent =
+    `${mode} · BM25 ${bm25} · pgvector ${vec} · ${totalSec}s` +
+    (traces.length > 1 ? ` · ${traces.length} rounds` : "") +
+    (k ? ` · k=${k}` : "");
+  const chev = document.createElement("span");
+  chev.className = "llm-performance-chevron";
+  chev.setAttribute("aria-hidden", "true");
+  chev.textContent = "▼";
+  preview.appendChild(titleEl);
+  preview.appendChild(oneline);
+  preview.appendChild(chev);
+
+  // Expanded body
+  const body = document.createElement("div");
+  body.className = "llm-performance-body";
+
+  traces.forEach((t, idx) => {
+    const data = t.data ?? {};
+    const arms = data.arm_hits ?? data.arms ?? {};
+    const ah_b = Number(arms.bm25 ?? arms.bm25_hits ?? 0);
+    const ah_v = Number(arms.vector ?? arms.vec_hits ?? 0);
+    const overlap = Number(arms.overlap ?? 0);
+    const tim = data.timing ?? data; // refined spec puts ms at top level
+    const embed_ms = Number(tim.embed_ms ?? 0);
+    const bm25_ms = Number(tim.bm25_ms ?? 0);
+    const vec_ms = Number(tim.vec_ms ?? 0);
+    const rerank_ms = Number(tim.rerank_ms ?? 0);
+    const total_ms = Number(data.total_ms ?? tim.total_ms ?? 0);
+    const norm_q = data.bm25_normalized_query;
+    const orig_q = data.query ?? "";
+    const search_id = String(data.search_id ?? "").slice(0, 12);
+
+    const round = document.createElement("div");
+    round.className = "retrieval-trace-round";
+    if (traces.length > 1) {
+      const h = document.createElement("div");
+      h.className = "retrieval-trace-round-header";
+      h.textContent = `Round ${idx + 1}${t.step_id ? `  ·  ${t.step_id}` : ""}${
+        search_id ? `  ·  search_id=${search_id}` : ""
+      }`;
+      round.appendChild(h);
+    }
+
+    // Badges
+    const badges = document.createElement("div");
+    badges.className = "llm-performance-badges";
+    const specs: Array<{ cls: string; text: string }> = [
+      { cls: "llm-performance-badge llm-performance-badge--model", text: `mode: ${data.mode || "corpus"}` },
+      { cls: "llm-performance-badge llm-performance-badge--latency", text: `${(total_ms / 1000).toFixed(2)}s` },
+      { cls: "llm-performance-badge", text: `BM25 ${ah_b}` },
+      { cls: "llm-performance-badge", text: `pgvector ${ah_v}` },
+    ];
+    if (overlap) specs.push({ cls: "llm-performance-badge", text: `overlap ${overlap}` });
+    specs.forEach((s) => {
+      const el = document.createElement("span");
+      el.className = s.cls;
+      el.textContent = s.text;
+      badges.appendChild(el);
+    });
+    round.appendChild(badges);
+
+    // Timing breakdown
+    if (embed_ms || bm25_ms || vec_ms || rerank_ms) {
+      const tdiv = document.createElement("div");
+      tdiv.className = "retrieval-trace-timing";
+      const stages: Array<[string, number]> = [
+        ["embed", embed_ms],
+        ["BM25", bm25_ms],
+        ["vector", vec_ms],
+        ["rerank", rerank_ms],
+      ];
+      stages
+        .filter(([, ms]) => ms > 0)
+        .forEach(([label, ms]) => {
+          const cell = document.createElement("span");
+          cell.className = "retrieval-trace-timing-cell";
+          cell.textContent = `${label} ${ms.toFixed(0)}ms`;
+          tdiv.appendChild(cell);
+        });
+      round.appendChild(tdiv);
+    }
+
+    // Query (raw + normalized if bm25 expanded)
+    if (orig_q) {
+      const q = document.createElement("div");
+      q.className = "retrieval-trace-query";
+      q.textContent = `query: ${orig_q}`;
+      round.appendChild(q);
+    }
+    if (norm_q && norm_q !== orig_q) {
+      const nq = document.createElement("div");
+      nq.className = "retrieval-trace-query retrieval-trace-query--norm";
+      nq.textContent = `bm25 normalized: ${norm_q}`;
+      round.appendChild(nq);
+    }
+
+    // Top chunks with rerank signals
+    const topChunks: any[] = data.top_chunks ?? data.scoring_trace ?? [];
+    if (Array.isArray(topChunks) && topChunks.length > 0) {
+      const table = document.createElement("table");
+      table.className = "retrieval-trace-chunks";
+      const head = document.createElement("thead");
+      head.innerHTML =
+        "<tr><th>#</th><th>doc</th><th>p</th><th>arms</th>" +
+        "<th>conf</th><th>rerank</th><th>sim</th><th>auth</th><th>jpd</th></tr>";
+      table.appendChild(head);
+      const tb = document.createElement("tbody");
+      topChunks.slice(0, 10).forEach((c: any, i: number) => {
+        const sig = c.signals ?? c.rerank_signals ?? {};
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          `<td>${i + 1}</td>` +
+          `<td title="${rtEscapeAttr(c.document_name || "")}">${rtEscapeAttr((c.document_name || "").slice(0, 30))}</td>` +
+          `<td>${c.page ?? c.page_number ?? "—"}</td>` +
+          `<td>${(c.retrieval_arms || []).join("+") || "—"}</td>` +
+          `<td>${c.confidence_label ?? "—"}</td>` +
+          `<td>${rtFormatSig(c.rerank_score)}</td>` +
+          `<td>${rtFormatSig(sig.sim_weighted ?? sig.sim_raw)}</td>` +
+          `<td>${rtFormatSig(sig.auth_weighted ?? sig.authority_weighted)}</td>` +
+          `<td>${rtFormatSig(sig.jpd_weighted)}</td>`;
+        tb.appendChild(tr);
+      });
+      table.appendChild(tb);
+      round.appendChild(table);
+    }
+
+    body.appendChild(round);
+  });
+
+  wrap.appendChild(preview);
+  wrap.appendChild(body);
+  // Toggle expand/collapse
+  const toggle = () => {
+    const expanded = wrap.classList.toggle("collapsed");
+    preview.setAttribute("aria-expanded", expanded ? "false" : "true");
+    chev.textContent = expanded ? "▼" : "▲";
+  };
+  preview.addEventListener("click", toggle);
+  preview.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      toggle();
+    }
+  });
+
+  return wrap;
+}
+
+function rtEscapeAttr(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+function rtFormatSig(v: unknown): string {
+  if (typeof v !== "number") return "—";
+  return v.toFixed(3);
+}
+
+
+/**
  * LLM performance — same collapsible rhythm as Sources; permission-gated in app.
  * Collapsed: title + one-liner (hidden when expanded). Expanded: badges, stage table w/ latency bars, router note, footer thumbs.
  */
@@ -6939,6 +7161,14 @@ function run(): void {
               routingFeedback: data.technical_feedback?.llm_performance ?? null,
             })
           );
+
+          // Retrieval trace panel — companion to LLM performance,
+          // gated on the same admin flag so non-technical users don't
+          // see it. Renders only if a retrieval_trace envelope is in
+          // thinking_log (rag emits one per corpus_search call from
+          // the chat-side skill consumer).
+          const retrievalPanel = renderRetrievalTrace(data.thinking_log);
+          if (retrievalPanel) turnWrap.appendChild(retrievalPanel);
         }
 
         mergeTechnicalPanels(turnWrap, data);
