@@ -59,9 +59,23 @@ logger = logging.getLogger(__name__)
 _PROFILES: dict[str, dict[str, Any]] | None = None
 _LOAD_LOCK = threading.Lock()
 
-# Runtime-overridable active profile. None = use env var / default.
+# Process-wide override (admin POST /chat/admin/model-profile). None =
+# use env var / default. Per-instance state — useful for ad-hoc admin
+# switches but does NOT travel across instances. For per-turn overrides
+# carried in the chat request payload, use ``profile_override(name)``
+# below — that's a contextvars.ContextVar and beats this global.
 _ACTIVE_PROFILE_OVERRIDE: str | None = None
 _OVERRIDE_LOCK = threading.Lock()
+
+# Per-turn override (set by the worker from the chat request payload).
+# ContextVar isolates per-thread / per-asyncio-task automatically, so
+# concurrent turns can each have their own profile. Resolution order
+# in get_active_profile_name(): per-turn ContextVar > admin global >
+# env var > "default".
+import contextvars as _ctxvars  # noqa: E402  (after the module-level vars above)
+_TURN_PROFILE: _ctxvars.ContextVar[str | None] = _ctxvars.ContextVar(
+    "_TURN_PROFILE", default=None,
+)
 
 
 # ── Loader ────────────────────────────────────────────────────────────
@@ -132,14 +146,58 @@ def _reset_for_tests() -> None:
 
 
 def get_active_profile_name() -> str:
-    """Current active profile name. Runtime override wins; then env;
-    then ``default``."""
+    """Current active profile name.
+
+    Resolution order (highest priority first):
+
+    1. Per-turn override (``profile_override(...)`` context manager —
+       set by the worker from the chat request payload). Isolated
+       per-thread / per-asyncio-task, so concurrent turns don't fight.
+    2. Process-wide override (``set_active_profile(name)`` — admin
+       POST endpoint). Per-instance, doesn't travel.
+    3. ``MOBIUS_MODEL_PROFILE`` env var (deploy-baked default).
+    4. ``default`` (= bandit).
+    """
+    turn = _TURN_PROFILE.get()
+    if turn:
+        return turn
     with _OVERRIDE_LOCK:
         override = _ACTIVE_PROFILE_OVERRIDE
     if override:
         return override
     env = (os.environ.get("MOBIUS_MODEL_PROFILE") or "").strip()
     return env or "default"
+
+
+def profile_override(name: str | None):
+    """Context manager for a per-turn profile override.
+
+    Used by the worker: ``with profile_override(payload['model_profile']):
+    run_pipeline(...)``. Validates against loaded profiles; an unknown
+    name is dropped silently with a warning rather than raising — a
+    bad payload from a stale frontend shouldn't kill the turn.
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _cm():
+        token = None
+        if name:
+            profiles = _load()
+            if name in profiles:
+                token = _TURN_PROFILE.set(name)
+            else:
+                logger.warning(
+                    "profile_override: unknown profile %r; ignoring "
+                    "(known: %s)", name, sorted(profiles.keys()),
+                )
+        try:
+            yield
+        finally:
+            if token is not None:
+                _TURN_PROFILE.reset(token)
+
+    return _cm()
 
 
 def set_active_profile(name: str | None) -> dict[str, Any]:

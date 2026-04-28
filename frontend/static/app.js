@@ -5847,6 +5847,12 @@ ${message}`;
     if (opts?.use_react !== void 0) {
       payload.use_react = opts.use_react;
     }
+    {
+      const sel = document.getElementById("modelProfileSelect");
+      const v = (sel && sel.value || "").trim();
+      if (v)
+        payload.model_profile = v;
+    }
     let activeCorrelationId = "";
     fetch(API_BASE + "/chat", {
       method: "POST",

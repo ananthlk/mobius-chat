@@ -82,6 +82,18 @@ class ChatRequest(BaseModel):
     chat_mode: Literal["copilot", "agentic", "quick"] | None = None
     """copilot: registry-first, 3 rounds. agentic: web escalation, 6 rounds. quick: mini-container, 2 rounds, brief answers."""
 
+    model_profile: str | None = None
+    """Per-turn override for the model-profile selection.
+
+    When set (e.g. ``"optimal"``, ``"anthropic"``, ``"gemini"``,
+    ``"auto"``), the worker pins the resolution to that profile for
+    THIS turn only via ``profile_override(...)``. Lets the UI dropdown
+    actually travel with the request — without this field, the worker
+    reads its own per-instance ``set_active_profile()`` state, which
+    fragments across the 4 Cloud Run instances (POST hits one, GET
+    hits another). Unknown profile names are dropped silently by the
+    worker and the turn falls through to env / default."""
+
     cache_assist: bool | None = None
     """Per-turn override for the cache-assist feature.
 
@@ -185,6 +197,14 @@ def post_chat(
         payload["system_context"] = body.system_context
     if body.cache_assist is not None:
         payload["cache_assist"] = bool(body.cache_assist)
+    # Per-turn model profile (UI dropdown / API caller). Worker applies
+    # via profile_override(...) — the override is scoped to the turn,
+    # so concurrent turns from different users on different profiles
+    # don't fight for one process-wide global.
+    if body.model_profile:
+        mp = body.model_profile.strip().lower()
+        if mp:
+            payload["model_profile"] = mp
     get_queue().publish_request(correlation_id, payload)
     return ChatResponse(correlation_id=correlation_id, thread_id=thread_id)
 

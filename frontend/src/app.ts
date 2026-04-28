@@ -6643,6 +6643,7 @@ function run(): void {
       credentialing_options?: CredentialingOptionsPayload;
       use_react?: boolean;
       chat_mode?: "copilot" | "agentic" | "quick";
+      model_profile?: string;
     } = { message };
     if (currentThreadId) payload.thread_id = currentThreadId;
     if (opts?.credentialing_options) {
@@ -6656,6 +6657,19 @@ function run(): void {
     // Explicit override still honored for internal callers.
     if (opts?.use_react !== undefined) {
       payload.use_react = opts.use_react;
+    }
+    // 2026-04-27: include the model_profile dropdown selection in the
+    // request payload. Previously the dropdown only POSTed to
+    // /chat/admin/model-profile which sets a per-instance global —
+    // fragile across the 4 Cloud Run instances (the LB picks a
+    // different instance for the chat POST than for the admin POST).
+    // Sending model_profile here makes the worker apply it for THIS
+    // turn via profile_override(...), regardless of which instance
+    // picks up the job.
+    {
+      const sel = document.getElementById("modelProfileSelect") as HTMLSelectElement | null;
+      const v = (sel && sel.value || "").trim();
+      if (v) payload.model_profile = v;
     }
     let activeCorrelationId = "";
     fetch(API_BASE + "/chat", {

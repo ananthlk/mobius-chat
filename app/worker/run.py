@@ -86,6 +86,18 @@ def process_one(correlation_id: str, payload: dict) -> None:
     cache_assist = payload.get("cache_assist")
     if cache_assist is not None and not isinstance(cache_assist, bool):
         cache_assist = None
+    # model_profile (2026-04-27): per-turn override that travels with
+    # the chat request payload (set by the UI dropdown / API caller via
+    # ChatRequest.model_profile). Worker enters profile_override(...)
+    # around run_pipeline so resolution is correct for this turn only;
+    # other concurrent turns on this worker are unaffected. Unknown
+    # profile names get a warning + ignored — bad payload from a stale
+    # frontend shouldn't kill the turn.
+    model_profile = payload.get("model_profile")
+    if model_profile is not None and not isinstance(model_profile, str):
+        model_profile = None
+    if isinstance(model_profile, str):
+        model_profile = model_profile.strip().lower() or None
 
     deadline_s = _turn_deadline_seconds()
     is_main_thread = threading.current_thread() is threading.main_thread()
@@ -129,17 +141,19 @@ def process_one(correlation_id: str, payload: dict) -> None:
             logger.exception("Failed to publish deadline-exceeded response: %s", _pub_err)
 
     def _run_pipeline() -> None:
-        run_pipeline(
-            correlation_id,
-            message,
-            thread_id,
-            t0_start=time.perf_counter(),
-            use_react_override=use_react,
-            chat_mode=chat_mode,
-            user_id=user_id,
-            system_context=system_context,
-            cache_assist=cache_assist,
-        )
+        from app.services.model_profile import profile_override
+        with profile_override(model_profile):
+            run_pipeline(
+                correlation_id,
+                message,
+                thread_id,
+                t0_start=time.perf_counter(),
+                use_react_override=use_react,
+                chat_mode=chat_mode,
+                user_id=user_id,
+                system_context=system_context,
+                cache_assist=cache_assist,
+            )
 
     if is_main_thread and hasattr(signal, "SIGALRM"):
         # Path 1: signal.alarm
