@@ -166,18 +166,18 @@ def _run_bm25_arm(
     emitter: Callable[[str], None] | None,
     include_document_ids: list[str] | None,
 ) -> list[dict[str, Any]]:
-    """Run BM25 path via the existing retriever_backend logic.
+    """True BM25 against Postgres FTS via mobius-retriever.
 
-    Reuses ``retrieve_for_chat`` with the BM25-only branch — which
-    means the ``RAG_API_URL`` and inline-BM25 flow stays untouched.
-    Returns chunks in normalized chat shape with ``provision_type``
-    and ``match_score`` populated, ready for fusion.
+    2026-04-27 — was previously calling retrieve_for_chat which
+    routed to /api/query (pgvector) when RAG_API_URL was set. That
+    made the "BM25" arm of the hybrid actually run pgvector, so the
+    fusion was degenerate (one arm calling a vector backend, the
+    other no-op). Now calls run_bm25_only() which talks directly to
+    Postgres FTS — distinct primitive from the vector arm.
     """
-    # Local import: retriever_backend imports us indirectly (when the
-    # hybrid is wired in). Late binding sidesteps the cycle.
-    from app.services.retriever_backend import retrieve_for_chat
+    from app.services.retriever_backend import run_bm25_only
 
-    chunks, _trace = retrieve_for_chat(
+    chunks = run_bm25_only(
         question=question,
         top_k=top_k,
         database_url=database_url,
@@ -188,13 +188,11 @@ def _run_bm25_arm(
         n_factual=n_factual,
         n_hierarchical=n_hierarchical,
         emitter=emitter,
-        include_trace=False,
         include_document_ids=include_document_ids,
-        _hybrid_internal=True,   # signal: don't recurse into hybrid
     )
-    for c in chunks or []:
+    for c in chunks:
         c["_arm_origin"] = "bm25"
-    return chunks or []
+    return chunks
 
 
 def _run_vector_arm(
@@ -204,36 +202,43 @@ def _run_vector_arm(
     confidence_min: float | None,
     source_type_allow: list[str] | None,
     emitter: Callable[[str], None] | None,
+    filter_payer: str = "",
+    filter_state: str = "",
+    filter_program: str = "",
+    filter_authority_level: str = "",
+    include_document_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Vector arm — RETIRED 2026-04-27 post-pgvector cutover.
+    """Pure pgvector ANN via mobius-rag /api/query.
 
-    Until the cutover this called ``search_published_rag`` which talked
-    directly to the chat-owned Chroma VM (collection ``published_rag``).
-    Two things made that path wrong post-cutover:
+    2026-04-27 — un-retired. Briefly was a no-op (between Chroma
+    retirement and the three-mode rebuild). Now calls run_vector_only()
+    so the hybrid actually fuses BM25 + vector and the planner's
+    recall_search tool gets distinct semantic recall.
 
-    1. The Chroma VM is no longer the source of truth — pgvector is.
-       Anything Chroma returned was at best stale, at worst phantoms
-       (doc_ids deleted from Postgres but still indexed in Chroma).
-    2. Connection-level instability on the e2-micro VM caused 2+ minute
-       TCP hangs per call (observed 2026-04-27 cid=fb0726d8: 138s gap
-       between BM25 arm returning and the vector arm finally erroring
-       out with "Connection reset by peer"). That alone consumed half
-       the 300s ReAct turn budget, leading to ``turn_deadline_exceeded``
-       on every call.
-
-    The fix is not a timeout (that hides the dead path); it's removing
-    the call. The "BM25" arm in this hybrid already routes through
-    mobius-rag's ``/api/query`` which now serves pgvector results, so
-    vector recall is preserved via that single path. The hybrid scaffold
-    is kept so we can plug a proper second arm back in later (e.g. a
-    second ``/api/query`` call with different params for dual-pass
-    recall, or a re-ranker arm) without re-introducing direct Chroma.
+    The legacy chat-side direct-Chroma path (``search_published_rag``)
+    is gone for good — instability + phantoms made it the wrong
+    backend regardless of latency.
     """
-    logger.info(
-        "hybrid: vector arm is a no-op (chat-side Chroma path retired "
-        "post-pgvector cutover; recall now flows through mobius-rag /api/query)"
+    from app.services.retriever_backend import run_vector_only
+
+    chunks = run_vector_only(
+        question=question,
+        top_k=top_k,
+        filter_payer=filter_payer,
+        filter_state=filter_state,
+        filter_program=filter_program,
+        filter_authority_level=filter_authority_level,
+        emitter=emitter,
+        include_document_ids=include_document_ids,
     )
-    return []
+    for c in chunks:
+        c["_arm_origin"] = "vector"
+        if "provision_type" not in c:
+            st = (c.get("source_type") or "").lower()
+            c["provision_type"] = (
+                "paragraph" if st in ("hierarchical", "policy", "section") else "sentence"
+            )
+    return chunks
 
 
 # ── Public entry points (one per call mode) ──────────────────────────
@@ -303,6 +308,11 @@ def retrieve_corpus_hybrid(
                 confidence_min=None,
                 source_type_allow=None,
                 emitter=None,
+                filter_payer=filter_payer,
+                filter_state=filter_state,
+                filter_program=filter_program,
+                filter_authority_level=filter_authority_level,
+                include_document_ids=include_document_ids,
             )
             return r
         except Exception as exc:
@@ -353,7 +363,12 @@ def retrieve_corpus_hybrid(
 
     if emitter:
         if fused:
-            emitter(f"Found {len(fused)} matches (BM25 {len(arm_results['bm25'])}, vector {len(arm_results['vector'])}, overlap {overlap}).")
+            emitter(
+                f"Found {len(fused)} matches "
+                f"(BM25 {len(arm_results['bm25'])}, "
+                f"pgvector {len(arm_results['vector'])}, "
+                f"overlap {overlap})."
+            )
         else:
             emitter("I didn't find anything specific in the corpus.")
 
@@ -365,6 +380,11 @@ def retrieve_recall(
     *,
     top_k: int = 16,
     emitter: Callable[[str], None] | None = None,
+    filter_payer: str = "",
+    filter_state: str = "",
+    filter_program: str = "",
+    filter_authority_level: str = "",
+    include_document_ids: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Vector-only, broad-recall search. No confidence filter.
 
@@ -374,8 +394,16 @@ def retrieve_recall(
     import time
     t0 = time.monotonic()
     chunks = _run_vector_arm(
-        question, top_k=top_k, confidence_min=None,
-        source_type_allow=None, emitter=emitter,
+        question,
+        top_k=top_k,
+        confidence_min=None,
+        source_type_allow=None,
+        emitter=emitter,
+        filter_payer=filter_payer,
+        filter_state=filter_state,
+        filter_program=filter_program,
+        filter_authority_level=filter_authority_level,
+        include_document_ids=include_document_ids,
     )
     telemetry = {
         "mode": "corpus_recall",

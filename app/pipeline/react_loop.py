@@ -616,114 +616,74 @@ def _execute_tool(
         query = inputs.get("query") or (ctx.effective_message or ctx.message)
         rag_overrides = rag_filters_from_active(active) or {}
 
-        # Recall search retired 2026-04-27 post-pgvector cutover.
-        #
-        # The previous body called ``run_lazy_corpus_search`` which talked
-        # directly to the chat-owned Chroma VM (collection
-        # ``published_rag``). Two reasons that path is wrong now:
-        #
-        #   1. The Chroma VM is no longer source of truth — pgvector is.
-        #      Any chunks Chroma surfaced were stale or phantom.
-        #   2. Connection-level instability on the e2-micro VM caused
-        #      multi-minute TCP hangs per call (observed 2026-04-27,
-        #      cid=fb0726d8: 138s gap before "Connection reset by peer").
-        #      With recall_search picked early in a ReAct round it
-        #      single-handedly burned through the 300s turn budget.
-        #
-        # Until we wire a proper recall path to mobius-rag's /api/query
-        # (with vector-only / no-confidence-floor params), this tool
-        # returns "no sources" cleanly. The planner will see no recall
-        # signal and pick search_corpus (hybrid) or precision_search,
-        # both of which already route through pgvector via mobius-rag.
-        emit("↓ Recall search retired (pgvector cutover); use search_corpus.")
-        logger.info(
-            "recall_search: retired post-pgvector cutover; returning no sources"
-        )
-        return {
-            "tool": "recall_search",
-            "success": False,
-            "result": (
-                "Recall search is temporarily disabled while we migrate the "
-                "vector-only path to pgvector. Use search_corpus or "
-                "precision_search instead."
-            ),
-            "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
-            "sources": [],
-        }
-        # The unreachable code below preserves the original Chroma call
-        # for reference until the pgvector recall arm lands.
-        if False:  # pragma: no cover  -- retired path
-            from app.chat_config import get_chat_config  # noqa: F401
-            from app.services.embedding_provider import get_query_embedding  # noqa: F401
-            from mobius_skills_core.skills.corpus_search import (  # noqa: F401
-                ChromaConfig,
-                CorpusFilters,
-            )
-            from mobius_skills_core.skills.lazy_corpus_search import (  # noqa: F401
-                run_lazy_corpus_search,
-            )
-            rag = get_chat_config().rag
-            filters = CorpusFilters(
-                payer=(rag_overrides.get("filter_payer") or rag.filter_payer or "").strip(),
-                state=(rag_overrides.get("filter_state") or rag.filter_state or "").strip(),
-                program=(rag_overrides.get("filter_program") or rag.filter_program or "").strip(),
-                authority_level=(rag.filter_authority_level or "").strip(),
-            )
-            _chroma_host = (os.environ.get("CHROMA_HOST") or "").strip()
-            _chroma_cfg_kwargs = {"collection": rag.chroma_collection or "published_rag"}
-            if _chroma_host:
-                _chroma_cfg_kwargs.update(
-                    host=_chroma_host,
-                    port=int((os.environ.get("CHROMA_PORT") or "8000").strip()),
-                    ssl=(os.environ.get("CHROMA_SSL") or "").strip().lower() in {"1","true","yes"},
-                    auth_token=(os.environ.get("CHROMA_AUTH_TOKEN") or "").strip(),
-                )
-            else:
-                _chroma_cfg_kwargs["persist_dir"] = rag.chroma_persist_dir
-            result = run_lazy_corpus_search(
-                query=query,
-                embed_query=get_query_embedding,
-                chroma=ChromaConfig(**_chroma_cfg_kwargs),
-                filters=filters,
-                k=16,
-            )
+        # 2026-04-27 — un-retired. Now calls the real three-mode dispatcher
+        # via retrieve_for_chat(mode="recall") → retrieve_recall →
+        # _run_vector_arm → run_vector_only → mobius-rag /api/query
+        # (pgvector). Distinct primitive from precision_search (BM25) and
+        # search_corpus (hybrid RRF of both arms).
+        from app.services.retriever_backend import retrieve_for_chat
 
-        if result.signal != "ok":
-            emit("↓ Lazy scan found nothing matching this query.")
+        emit("◌ Recall (vector) scan of our materials…")
+        try:
+            chunks, _telemetry = retrieve_for_chat(
+                question=query,
+                top_k=16,
+                database_url="",          # vector arm doesn't need it
+                filter_payer=(rag_overrides.get("filter_payer") or "").strip(),
+                filter_state=(rag_overrides.get("filter_state") or "").strip(),
+                filter_program=(rag_overrides.get("filter_program") or "").strip(),
+                filter_authority_level="",
+                emitter=None,
+                include_trace=False,
+                mode="recall",
+            )
+        except Exception as exc:
+            logger.warning("recall_search failed: %s", exc, exc_info=True)
             return {
                 "tool": "recall_search",
                 "success": False,
-                "result": result.text or "No chunks from lazy corpus scan.",
+                "result": f"Recall search failed: {exc}",
                 "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
                 "sources": [],
             }
 
-        # Convert ChunkRef → legacy source dict shape the integrator
-        # already knows how to cite. Matches what lazy_rag_search
-        # produces on the thread-upload side.
+        if not chunks:
+            emit("↓ Recall scan found nothing matching this query.")
+            return {
+                "tool": "recall_search",
+                "success": False,
+                "result": "No chunks from recall scan.",
+                "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
+                "sources": [],
+            }
+
+        # chunks already come back in chat dict shape from run_vector_only
+        # (with ``id``, ``text``, ``document_id``, ``document_name``,
+        # ``page_number``, ``source_type``, ``similarity``). Forward
+        # directly — the integrator's source-rendering code expects
+        # exactly these keys.
         sources_out: list[dict] = []
-        for idx, chunk in enumerate(result.chunks, 1):
-            md = chunk.metadata or {}
+        for c in chunks:
             sources_out.append({
-                "id": chunk.chunk_id,
-                "text": chunk.text,
-                "document_id": chunk.document_id or None,
-                "document_name": chunk.document_name,
-                "page_number": chunk.page_number,
-                "source_type": md.get("source_type") or "chunk",
-                "rerank_score": chunk.score,
+                "id":              c.get("id"),
+                "text":            c.get("text") or "",
+                "document_id":     c.get("document_id"),
+                "document_name":   c.get("document_name") or c.get("document_display_name") or "document",
+                "page_number":     c.get("page_number"),
+                "source_type":     c.get("source_type") or "chunk",
+                "rerank_score":    c.get("similarity") or c.get("match_score"),
             })
 
         emit(
-            f"  ✓ found {len(sources_out)} corpus passage"
-            f"{'s' if len(sources_out) != 1 else ''} (fast scan)."
+            f"  ✓ recall scan: {len(sources_out)} vector hit"
+            f"{'s' if len(sources_out) != 1 else ''}."
         )
 
         return {
             "tool": "recall_search",
             "success": True,
-            "result": result.text,
-            "signal": "corpus_only",  # integrator treats these like search_corpus hits
+            "result": f"Found {len(sources_out)} chunks via vector recall.",
+            "signal": "corpus_only",
             "sources": sources_out,
             "usage": None,
         }

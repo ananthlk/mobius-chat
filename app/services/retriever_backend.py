@@ -203,6 +203,175 @@ def retrieve_via_rag_api(
         return [], None
 
 
+def run_bm25_only(
+    question: str,
+    *,
+    top_k: int = 10,
+    database_url: str,
+    filter_payer: str = "",
+    filter_state: str = "",
+    filter_program: str = "",
+    filter_authority_level: str = "",
+    n_factual: int | None = None,
+    n_hierarchical: int | None = None,
+    emitter: Callable[[str], None] | None = None,
+    include_document_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Pure BM25 retrieval against Postgres FTS via mobius-retriever.
+
+    No /api/query call, no fallback. This is the actual BM25 arm —
+    used by ``retriever_hybrid._run_bm25_arm`` and by precision_search
+    (mode="precision") so the planner gets a real keyword/phrase
+    search distinct from pgvector.
+
+    Returns chunks in chat dict shape with rerank applied. Empty list
+    if database_url is missing or mobius-retriever isn't installed
+    (logged loudly).
+    """
+    try:
+        from mobius_retriever.retriever import retrieve_bm25
+        from mobius_retriever.config import (
+            apply_normalize_bm25, load_bm25_sigmoid_config, load_reranker_config,
+        )
+        from mobius_retriever.reranker import rerank_with_config
+        from mobius_retriever.jpd_tagger import (
+            tag_question_and_resolve_document_ids,
+            fetch_document_tags_by_ids,
+            fetch_line_tags_for_chunks,
+        )
+    except ImportError as e:
+        logger.warning("run_bm25_only: mobius-retriever not installed: %s", e)
+        return []
+
+    if not database_url:
+        logger.warning("run_bm25_only: database_url not set; returning []")
+        return []
+
+    tag_filters: dict[str, str] = {}
+    if filter_payer:
+        tag_filters["document_payer"] = filter_payer
+    if filter_state:
+        tag_filters["document_state"] = filter_state
+    if filter_program:
+        tag_filters["document_program"] = filter_program
+    if filter_authority_level:
+        tag_filters["document_authority_level"] = filter_authority_level
+
+    result = retrieve_bm25(
+        question=question,
+        postgres_url=database_url,
+        rag_database_url=database_url,
+        authority_level=filter_authority_level or None,
+        tag_filters=tag_filters or None,
+        top_k=top_k,
+        use_jpd_tagger=True,
+        emitter=emitter,
+        include_document_ids=include_document_ids,
+    )
+
+    bm25_cfg = load_bm25_sigmoid_config()
+    chunks_to_convert = result.raw
+
+    # Rerank: retrieve → rerank → assemble
+    try:
+        reranker_cfg = load_reranker_config(_DEFAULT_RERANKER_CONFIG)
+        if reranker_cfg.signals and chunks_to_convert:
+            dicts = []
+            for c in chunks_to_convert:
+                if not isinstance(c, dict):
+                    continue
+                try:
+                    dicts.append(_bm25_to_rerank_dict(c, bm25_cfg))
+                except (TypeError, AttributeError, KeyError) as e:
+                    logger.debug("Skip chunk (not dict-like): %s", e)
+                    continue
+            doc_ids = list({str(d.get("document_id", "")) for d in dicts if d.get("document_id")})
+            doc_tags_by_id = fetch_document_tags_by_ids(database_url, doc_ids) if doc_ids else {}
+            line_tags_by_key = fetch_line_tags_for_chunks(database_url, dicts) if dicts else {}
+            jpd = tag_question_and_resolve_document_ids(question, database_url, emitter=None)
+            qtags = jpd if ("tag_match" in (reranker_cfg.signals or {}) and jpd.has_tags) else None
+            chunks_to_convert = rerank_with_config(
+                dicts,
+                reranker_cfg,
+                question_tags=qtags,
+                doc_tags_by_id=doc_tags_by_id,
+                line_tags_by_key=line_tags_by_key,
+            )
+            _debug_chunks("after rerank (chunks_to_convert)", chunks_to_convert)
+    except FileNotFoundError as _fnf:
+        logger.warning(
+            "Reranker config not found (%s); falling back to BM25-only "
+            "scoring. tag_match contribution will be zero.", _fnf,
+        )
+    except Exception as e:
+        logger.warning("Reranker failed: %s; using BM25 scores only.", e, exc_info=True)
+
+    out: list[dict[str, Any]] = []
+    for i, c in enumerate(chunks_to_convert):
+        if not isinstance(c, dict):
+            logger.warning("[DEBUG_RAG] inline chunk[%s] NOT dict type=%s skipping", i, type(c).__name__)
+            continue
+        c = dict(c)
+        raw = c.get("raw_score")
+        pt = c.get("provision_type", "sentence")
+        if raw is not None and bm25_cfg:
+            match_score = apply_normalize_bm25(float(raw), pt, bm25_cfg)
+        elif raw is not None:
+            match_score = min(1.0, float(raw) / 50.0)
+        else:
+            match_score = c.get("similarity") or c.get("rerank_score")
+        out.append(_raw_to_chat_chunk(c, match_score))
+
+    if (n_factual is not None or n_hierarchical is not None) and out:
+        try:
+            from mobius_retriever.assemble import _apply_blend_selection
+            out = _apply_blend_selection(out, n_factual, n_hierarchical)
+        except Exception as e:
+            logger.debug("Blend selection failed (non-fatal): %s", e)
+
+    _debug_chunks("bm25 return (out)", out)
+    return out
+
+
+def run_vector_only(
+    question: str,
+    *,
+    top_k: int = 10,
+    filter_payer: str = "",
+    filter_state: str = "",
+    filter_program: str = "",
+    filter_authority_level: str = "",
+    emitter: Callable[[str], None] | None = None,
+    include_document_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Pure pgvector ANN via mobius-rag /api/query.
+
+    No BM25, no fallback. Used by ``retriever_hybrid._run_vector_arm``
+    and by recall_search (mode="recall") so the planner gets real
+    semantic recall distinct from BM25.
+
+    Returns chunks with the chunk-id backfill (id ← source_id) and
+    rag's similarity score preserved as ``similarity``. Caller is
+    responsible for any confidence floor.
+    """
+    chunks, _trace = retrieve_via_rag_api(
+        question=question,
+        path="mobius",
+        top_k=top_k,
+        apply_google=False,
+        n_factual=None,
+        n_hierarchical=None,
+        emitter=emitter,
+        include_trace=False,
+        filter_payer=filter_payer,
+        filter_state=filter_state,
+        filter_program=filter_program,
+        filter_authority_level=filter_authority_level,
+    )
+    _debug_chunks("vector return (out)", chunks)
+    return chunks or []
+
+
 def retrieve_for_chat(
     question: str,
     top_k: int = 10,
@@ -266,6 +435,10 @@ def retrieve_for_chat(
             from app.services.retriever_hybrid import retrieve_recall
             chunks, telemetry = retrieve_recall(
                 question=question, top_k=top_k, emitter=emitter,
+                filter_payer=filter_payer, filter_state=filter_state,
+                filter_program=filter_program,
+                filter_authority_level=filter_authority_level,
+                include_document_ids=include_document_ids,
             )
             return chunks, (telemetry if include_trace else None)
         # Unknown mode falls through to legacy BM25 path with a warning.
