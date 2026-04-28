@@ -1,0 +1,17 @@
+# mobius-answer-cache deps. Keep this lean — service has one job.
+
+fastapi>=0.115
+uvicorn[standard]>=0.32
+pydantic>=2.7
+
+# Phase 0 backend
+chromadb>=0.5
+
+# Phase 1+ backend (asyncpg pool + raw psycopg2 for migration script)
+asyncpg>=0.30
+psycopg2-binary>=2.9
+sqlalchemy>=2.0
+
+# Vertex embedding (gemini-embedding-001, 1536-dim)
+google-cloud-aiplatform>=1.70
+vertexai>=1.70
