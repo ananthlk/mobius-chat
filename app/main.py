@@ -57,6 +57,75 @@ from app.worker import start_worker_background
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ── Eager cold-import block ─────────────────────────────────────────
+#
+# 2026-04-28 — Cold instances were paying 17–516s of lazy module
+# imports inside the user's first request budget. Trace of a 5-min
+# turn (cid 0479bc18) showed: payer_normalization YAML load 5s into
+# the request, model_registry "Auto-enabled models" log 50s in,
+# vertexai SDK init another 17s after that — none of it happening
+# at startup, all on the user's clock.
+#
+# Cloud Run holds traffic until module imports complete, so doing
+# them at module-load time (here) shifts the cost from
+# user-visible to autoscaler-visible. With min-instances=4, scale-up
+# cost is hidden by the warm pool. The earlier daemon-thread warmup
+# was racing the user's request — when the warmup thread lost the
+# race (e.g. CPU contention), turns paid the full tax.
+#
+# Each import below was observed firing inside a user turn on a
+# cold instance:
+#   - vertexai + GenerativeModel: heaviest, 12-15s typical, up to 8min
+#     under contention because google-cloud-aiplatform pulls in
+#     ~100 transitive deps.
+#   - app.services.llm_provider: imports vertexai too + builds gRPC
+#     client class hierarchy.
+#   - app.skills.registry: triggers _load_builtins() which imports
+#     all 9 builtin skill modules (cached_answer, corpus_search,
+#     document_uploads, fetch_document, healthcare,
+#     transform_previous, vibe, web, web_search).
+#   - app.pipeline.orchestrator + react_loop: heaviest single
+#     pipeline files; pulled in by worker on first request.
+#   - app.payer_normalization: small YAML load, gated behind
+#     _load_config() lazy init.
+#
+# Failures are logged at WARNING but never raise — if vertexai or a
+# skill module has a real import error, /health will still respond
+# and the actual failure surfaces on the first request as it would
+# have anyway.
+_cold_import_t0 = time.perf_counter()
+try:
+    import vertexai  # noqa: F401
+    from vertexai.generative_models import GenerativeModel  # noqa: F401
+    _t_vertex = time.perf_counter()
+    from app.services import llm_provider  # noqa: F401
+    _t_llm_provider = time.perf_counter()
+    from app.skills import registry as _skill_registry  # noqa: F401  # triggers _load_builtins()
+    _t_skills = time.perf_counter()
+    from app.pipeline import orchestrator as _orchestrator  # noqa: F401
+    from app.pipeline import react_loop as _react_loop  # noqa: F401
+    from app.pipeline import tool_manifest as _tool_manifest  # noqa: F401
+    _t_pipeline = time.perf_counter()
+    from app.payer_normalization import _load_config as _payer_load
+    _payer_load()  # warm the YAML alias map so first user turn doesn't
+    _t_payer = time.perf_counter()
+    logger.info(
+        "cold-import: total=%.2fs (vertex=%.2fs llm_provider=%.2fs "
+        "skills=%.2fs pipeline=%.2fs payer=%.2fs)",
+        _t_payer - _cold_import_t0,
+        _t_vertex - _cold_import_t0,
+        _t_llm_provider - _t_vertex,
+        _t_skills - _t_llm_provider,
+        _t_pipeline - _t_skills,
+        _t_payer - _t_pipeline,
+    )
+except Exception as _e:
+    logger.warning(
+        "cold-import: one or more eager imports failed (non-fatal — "
+        "first user request will pay any remaining lazy import cost): %s",
+        _e,
+    )
+
 
 def _roster_freshness_days_threshold() -> int:
     try:
