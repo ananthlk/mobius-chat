@@ -55,6 +55,213 @@ CIRCUIT_BREAKER_ERROR = 0.20  # hard error rate threshold → pull from rotation
 CIRCUIT_BREAKER_24H   = 0.15  # 24h error spike threshold → temp pull
 EMA_ALPHA             = 0.15  # learning rate for in-memory EMA (supplements PG)
 
+# Fast live-health detector (2026-04-28).
+# The 24h-averaged circuit breakers above don't catch a 5-minute backend
+# slowdown — two consecutive Vertex flash 45s timeouts barely shift the
+# rolling average. This sliding-window detector catches that case and
+# marks a model "degraded" for a cool-off window so the bandit routes
+# around it without us shipping a new revision.
+LIVE_HEALTH_WINDOW          = 5     # number of recent calls per model to track
+LIVE_HEALTH_FAIL_THRESHOLD  = 3     # ≥N timeouts in the window → degraded
+LIVE_HEALTH_LATENCY_RATIO   = 3.0   # mean recent latency > N × ema_latency → degraded
+LIVE_HEALTH_COOLOFF_SECONDS = 300   # 5 minutes; auto-clear after this with no new bad signals
+LIVE_HEALTH_MIN_SAMPLES     = 3     # don't degrade a model on its first call
+
+
+class _LiveHealth:
+    """Per-model in-memory sliding window of recent call outcomes.
+
+    Detects "Vertex is slow RIGHT NOW" within seconds, where the 24h
+    error-rate breaker would take hours to react. Per Cloud Run instance
+    (each instance reaches Vertex independently) — that's fine because
+    a global Vertex slowdown will be observed by every instance within
+    a few calls and they all converge to routing around it.
+
+    Two degradation triggers:
+      1. ≥3 of the last 5 calls were TIMEOUTS — clear "backend
+         exceeded our deadline" signal. Used today to detect Vertex
+         retry-bypass cases.
+      2. Mean of last 5 latencies > 3× the model's EMA — the model
+         is technically responding but much slower than its baseline.
+
+    Recovery: HELD until a probe call actually succeeds. Auto-clear by
+    timer alone is wrong — if Vertex is broken for 30 minutes we want
+    to keep routing around it, not flip back every 5 minutes hoping it
+    recovered. Instead, after each cool-off interval we let exactly
+    ONE probe call through. Probe outcome decides:
+
+        Probe succeeds  → clear degraded; model returns to rotation.
+        Probe fails     → reset the cool-off; back to fully blocked.
+
+    This way the model stays out of rotation for as long as it's
+    actually broken, but recovers automatically once the backend
+    heals (with at most one user turn paying the probe cost per
+    cool-off interval).
+    """
+    def __init__(self) -> None:
+        import threading as _thr
+        self._lock = _thr.Lock()
+        # model_id -> list[(ts, latency_ms, was_timeout)]
+        self._window: dict[str, list[tuple[float, int, bool]]] = {}
+        # model_id -> {probe_after: ts, reason: str, probe_in_flight: bool, since: ts}
+        self._degraded: dict[str, dict] = {}
+
+    def record_outcome(
+        self,
+        model_id: str,
+        *,
+        latency_ms: int,
+        was_timeout: bool,
+        ema_latency_ms: float = 0.0,
+    ) -> None:
+        import time as _t
+        now = _t.time()
+        with self._lock:
+            buf = self._window.setdefault(model_id, [])
+            buf.append((now, int(latency_ms), bool(was_timeout)))
+            # Trim to last LIVE_HEALTH_WINDOW entries.
+            if len(buf) > LIVE_HEALTH_WINDOW:
+                del buf[: len(buf) - LIVE_HEALTH_WINDOW]
+
+            entry = self._degraded.get(model_id)
+
+            if entry is not None and entry.get("probe_in_flight"):
+                # This outcome is the probe result.
+                if not was_timeout:
+                    # Probe succeeded — backend recovered.
+                    held_for_s = now - entry.get("since", now)
+                    logger.info(
+                        "live-health: model=%s RECOVERED after probe succeeded "
+                        "(held degraded for %.0fs, probe latency %dms); "
+                        "clearing degraded flag",
+                        model_id, held_for_s, latency_ms,
+                    )
+                    self._degraded.pop(model_id, None)
+                    return
+                else:
+                    # Probe failed — extend cool-off, keep blocked.
+                    entry["probe_in_flight"] = False
+                    entry["probe_after"] = now + LIVE_HEALTH_COOLOFF_SECONDS
+                    entry["reason"] = (
+                        f"probe failed at {latency_ms}ms; "
+                        + entry.get("reason", "previously degraded")
+                    )
+                    logger.warning(
+                        "live-health: model=%s probe FAILED; keeping degraded "
+                        "for another %ds",
+                        model_id, LIVE_HEALTH_COOLOFF_SECONDS,
+                    )
+                    return
+
+            # Not in probe-flight. A successful call when not degraded
+            # is a no-op; a successful call while degraded shouldn't
+            # actually happen (is_degraded would have blocked it) but
+            # we treat it as recovery just in case.
+            if not was_timeout and model_id in self._degraded:
+                logger.info(
+                    "live-health: model=%s recovered (call in %dms slipped through); clearing",
+                    model_id, latency_ms,
+                )
+                self._degraded.pop(model_id, None)
+                return
+
+            # Evaluate degradation triggers from the rolling window.
+            if len(buf) < LIVE_HEALTH_MIN_SAMPLES:
+                return
+            timeouts = sum(1 for _, _, t in buf if t)
+            if timeouts >= LIVE_HEALTH_FAIL_THRESHOLD:
+                self._mark_degraded(
+                    model_id,
+                    f"{timeouts}/{len(buf)} recent calls timed out",
+                    now,
+                )
+                return
+            if ema_latency_ms > 0 and len(buf) >= LIVE_HEALTH_MIN_SAMPLES:
+                mean_recent = sum(lat for _, lat, _ in buf) / len(buf)
+                if mean_recent > LIVE_HEALTH_LATENCY_RATIO * ema_latency_ms:
+                    self._mark_degraded(
+                        model_id,
+                        f"recent mean {mean_recent:.0f}ms > {LIVE_HEALTH_LATENCY_RATIO:.1f}× ema {ema_latency_ms:.0f}ms",
+                        now,
+                    )
+
+    def _mark_degraded(self, model_id: str, reason: str, now: float) -> None:
+        prev = self._degraded.get(model_id)
+        if prev is not None:
+            # Already degraded — refresh the reason but don't reset
+            # `since` (keeps the held-for-s log honest).
+            prev["reason"] = reason
+            prev["probe_after"] = now + LIVE_HEALTH_COOLOFF_SECONDS
+            prev["probe_in_flight"] = False
+            return
+        self._degraded[model_id] = {
+            "since": now,
+            "probe_after": now + LIVE_HEALTH_COOLOFF_SECONDS,
+            "probe_in_flight": False,
+            "reason": reason,
+        }
+        logger.warning(
+            "live-health: model=%s DEGRADED (%s); routing around it. "
+            "Will probe in %ds.",
+            model_id, reason, LIVE_HEALTH_COOLOFF_SECONDS,
+        )
+
+    def is_degraded(self, model_id: str) -> bool:
+        """Return True if the model should be excluded from routing.
+
+        After cool-off elapses, releases ONE call as a probe (returns
+        False that one time) and marks ``probe_in_flight`` so the next
+        ``record_outcome`` knows to interpret it as a probe result.
+        """
+        import time as _t
+        with self._lock:
+            entry = self._degraded.get(model_id)
+            if not entry:
+                return False
+            now = _t.time()
+            if now >= entry["probe_after"] and not entry["probe_in_flight"]:
+                # Release exactly one probe call — bandit picks model
+                # this turn, we observe outcome, decide on next cycle.
+                entry["probe_in_flight"] = True
+                logger.info(
+                    "live-health: model=%s probe window opened — releasing one call to test recovery",
+                    model_id,
+                )
+                return False
+            return True
+
+    def degradation_reason(self, model_id: str) -> str:
+        with self._lock:
+            entry = self._degraded.get(model_id)
+            return entry.get("reason", "") if entry else ""
+
+    def snapshot(self) -> dict:
+        """Admin/debug — current state for /admin/model-health endpoint."""
+        import time as _t
+        now = _t.time()
+        with self._lock:
+            return {
+                "degraded": {
+                    mid: {
+                        "reason": e["reason"],
+                        "since_s_ago": now - e["since"],
+                        "probe_in_s": max(0, e["probe_after"] - now),
+                        "probe_in_flight": e["probe_in_flight"],
+                    }
+                    for mid, e in self._degraded.items()
+                },
+                "windows": {
+                    mid: [
+                        {"latency_ms": lat, "timeout": t, "age_s": now - ts}
+                        for (ts, lat, t) in buf
+                    ]
+                    for mid, buf in self._window.items()
+                },
+            }
+
+
+_LIVE_HEALTH = _LiveHealth()
+
 # Keep in sync with app.pipeline.react_loop.MAX_ITERATIONS (ReAct reasoning rounds).
 REACT_REASONING_ROUNDS_MAX = 4
 
@@ -1300,6 +1507,29 @@ class ModelRouter:
         if quality_score is not None:
             spec.ema_quality    = EMA_ALPHA * quality_score + (1 - EMA_ALPHA) * spec.ema_quality
             spec.quality_samples += 1
+        # Live-health: a successful call resets the model from any
+        # active degraded state — Vertex is back, route to it again.
+        _LIVE_HEALTH.record_outcome(model_id, latency_ms=latency_ms, was_timeout=False, ema_latency_ms=spec.ema_latency_ms)
+
+    def record_call_failure(
+        self,
+        model_id: str,
+        latency_ms: int,
+        was_timeout: bool,
+    ) -> None:
+        """Record a failed call into the live-health window.
+
+        Called from llm_manager's exception path. ``was_timeout=True``
+        when the wrapper hit ``VERTEX_TOTAL_DEADLINE_SECONDS`` (or the
+        equivalent for other providers); ``False`` for other exceptions
+        (auth errors, schema errors) that don't indicate backend slowness.
+
+        We track timeouts specifically because they indicate "backend
+        is slow" — exactly the signal the bandit was missing.
+        """
+        spec = MODEL_ROSTER.get(model_id)
+        ema = spec.ema_latency_ms if spec else 0.0
+        _LIVE_HEALTH.record_outcome(model_id, latency_ms=latency_ms, was_timeout=was_timeout, ema_latency_ms=ema)
 
     def observe_quality(self, model_id: str, quality_score: float) -> None:
         """Apply an external quality observation (e.g. post-run adjudicator) without bumping call_count."""
@@ -1406,9 +1636,26 @@ class ModelRouter:
 
         When every candidate would be pulled, we return a single least-bad model and
         ``relief_all_tripped=True`` so the UI can explain the override.
+
+        Three layers of breakers, increasing patience:
+          1. Live health (5-call window) — catches *right now* spikes
+             that the 24h average dilutes to invisibility. Per-instance.
+          2. Hard error rate (lifetime) — model is genuinely broken.
+          3. 24h error rate — recent regression worth temp-pulling.
         """
         safe = []
         for spec in candidates:
+            # Live-health: short-window, fast-reacting. Reads in-memory
+            # state populated by record_call_failure / update_ema. No
+            # 20-call warmup gate — a single 5-minute degradation should
+            # route around the model immediately.
+            if _LIVE_HEALTH.is_degraded(spec.model_id):
+                logger.warning(
+                    "Circuit breaker [live]: stage=%s model=%s — %s",
+                    stage, spec.model_id, _LIVE_HEALTH.degradation_reason(spec.model_id),
+                )
+                continue
+
             s = stats.get(spec.model_id, {})
             hard_err   = s.get("hard_error_rate", 0.0)
             err_24h    = s.get("error_rate_24h", 0.0)

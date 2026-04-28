@@ -186,14 +186,34 @@ async def generate(
             except Exception:
                 pass
 
-        # Update router EMA (quality score added later by adjudicator)
+        # Update router EMA (quality score added later by adjudicator).
+        # On failure, also feed the live-health detector so the bandit
+        # routes around models that are currently misbehaving (Vertex
+        # backend slow, Anthropic 529, etc.) without waiting for the
+        # 24h average to shift.
         if spec and router is not None:
             try:
-                router.update_ema(
-                    model_id=model_id,
-                    latency_ms=latency_ms,
-                    cost_usd=cost_usd,
-                )
+                if success:
+                    router.update_ema(
+                        model_id=model_id,
+                        latency_ms=latency_ms,
+                        cost_usd=cost_usd,
+                    )
+                else:
+                    # error_type set in the except block above. Treat
+                    # TimeoutError (and our wrapper's variant) as the
+                    # canonical "backend slow" signal; other exceptions
+                    # are recorded too but don't trigger latency-based
+                    # degradation, only the timeout-count threshold.
+                    is_timeout = (error_type or "").lower() in (
+                        "timeouterror", "asynciotimeouterror", "futuretimeouterror"
+                    ) or "abandoned after" in str(usage.get("error") or "")
+                    if hasattr(router, "record_call_failure"):
+                        router.record_call_failure(
+                            model_id=model_id,
+                            latency_ms=latency_ms,
+                            was_timeout=bool(is_timeout),
+                        )
             except Exception:
                 pass
 
