@@ -164,7 +164,26 @@ def retrieve_via_rag_api(
         out: list[dict[str, Any]] = []
         for idx, c in enumerate(chunks):
             if isinstance(c, dict):
-                out.append(dict(c))
+                nc = dict(c)
+                # 2026-04-27: mobius-rag's QueryResponse.ChunkOut emits
+                # ``source_id`` (the hierarchical_chunks UUID) but no
+                # ``id`` field. The chat-side RRF merger keys on ``id``
+                # — chunks without it are silently dropped, which
+                # produced len(chunks)=10 → len(retrieve_for_chat)=0
+                # for every turn after the pgvector cutover. Backfill
+                # ``id`` from source_id (preferred) or document_id so
+                # the merger has a stable key. Don't overwrite if the
+                # response already carries an explicit ``id``.
+                if not nc.get("id"):
+                    nc["id"] = nc.get("source_id") or nc.get("document_id") or ""
+                # Same defensive backfill for ``match_score``: the
+                # /api/query response doesn't carry a similarity score,
+                # so without this RRF gets no score telemetry. We
+                # synthesize a rank-based proxy later in the pipeline,
+                # but a missing ``match_score`` shouldn't drop chunks
+                # outright. (Currently RRF only drops on missing id,
+                # so this is belt-and-suspenders.)
+                out.append(nc)
             elif isinstance(c, (list, tuple)) and c and all(
                 isinstance(x, (list, tuple)) and len(x) == 2 for x in c
             ):
