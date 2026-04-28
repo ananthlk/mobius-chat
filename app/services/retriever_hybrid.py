@@ -330,39 +330,83 @@ def retrieve_corpus_hybrid(
         arm_results["bm25"]   = f_bm25.result()
         arm_results["vector"] = f_vec.result()
 
-    # RRF fuse
-    fused = _rrf_merge(arm_results)
+    # 2026-04-27 — Per-arm rerank + per-arm blend, NO cross-arm RRF.
+    #
+    # Why no RRF / no cross-arm rerank: BM25 and vector scores aren't
+    # comparable scales (BM25 sigmoid vs cosine similarity), so any
+    # single ranker that mixes them — RRF score-fusion or a unified
+    # rerank-with-similarity-signal — leaks the comparability problem.
+    # The original design we're restoring: each arm reranks in its own
+    # score currency, blend selection picks n_hierarchical paragraphs
+    # + n_factual sentences from each arm independently, then we
+    # concat + dedupe by id. Chunks present in both arms collapse to
+    # one entry with retrieval_arms=["bm25","vector"].
+    #
+    # n_factual / n_hierarchical are interpreted as PER-ARM counts
+    # here. Total chunks = up to 2 × (n_factual + n_hierarchical)
+    # before dedupe; doc_assembly downstream applies its own cap if
+    # needed. Default: 2 sentence + 3 paragraph slots per arm = up to
+    # 10 chunks pre-dedupe.
+    from app.services.retriever_backend import rerank_fused_chunks
+    try:
+        from mobius_retriever.assemble import _apply_blend_selection
+    except ImportError:
+        _apply_blend_selection = None  # type: ignore[assignment]
 
-    # Single rerank pass over the fused list (Option B, 2026-04-27).
-    # Both arms contribute to the same input; reranker applies
-    # JPD tag matching, authority weighting, and provision_type
-    # signals uniformly. Catches title-only stubs (the "Medicaid"
-    # 1-token chunks observed earlier) that vector-arm cosine
-    # similarity alone can't filter. Reranker is sub-second on
-    # ~20 fused candidates so the cost is negligible.
-    if fused:
+    n_hier_per_arm = n_hierarchical if n_hierarchical is not None else 3
+    n_fact_per_arm = n_factual if n_factual is not None else 2
+
+    def _process_arm(arm_chunks: list[dict[str, Any]], arm_name: str) -> list[dict[str, Any]]:
+        if not arm_chunks:
+            return []
+        # Rerank in this arm's own score currency
         try:
-            from app.services.retriever_backend import rerank_fused_chunks
-            fused = rerank_fused_chunks(
-                fused,
+            reranked = rerank_fused_chunks(
+                arm_chunks,
                 question=question,
                 database_url=database_url,
                 emitter=None,
             )
         except Exception as exc:
-            logger.warning("hybrid: post-RRF rerank failed (%s); using RRF order", exc)
+            logger.warning("hybrid: %s arm rerank failed (%s); using arm order", arm_name, exc)
+            reranked = arm_chunks
+        # Per-arm blend (paragraph slots + sentence slots)
+        if _apply_blend_selection is not None and reranked:
+            try:
+                return _apply_blend_selection(reranked, n_fact_per_arm, n_hier_per_arm)
+            except Exception as exc:
+                logger.warning("hybrid: %s blend failed (%s); using rerank order", arm_name, exc)
+        return reranked[: n_fact_per_arm + n_hier_per_arm]
 
-    # Blend selection: paragraph slots first, sentence slots second.
-    # When neither n_* is set we just truncate to top_k.
-    if (n_factual is not None or n_hierarchical is not None) and fused:
-        try:
-            from mobius_retriever.assemble import _apply_blend_selection
-            fused = _apply_blend_selection(fused, n_factual, n_hierarchical)
-        except Exception as exc:
-            logger.warning("hybrid: blend selection failed (%s); using fused order", exc)
-            fused = fused[: (n_factual or 0) + (n_hierarchical or 0) or top_k]
-    else:
-        fused = fused[:top_k]
+    bm25_picked = _process_arm(arm_results.get("bm25") or [], "bm25")
+    vec_picked  = _process_arm(arm_results.get("vector") or [], "vector")
+
+    # Concat + dedupe by chunk id. When a chunk is present in both
+    # arms the dedupe picks the one with the higher rerank_score and
+    # records both arms in retrieval_arms (telemetry / source-attribution).
+    fused: list[dict[str, Any]] = []
+    by_id: dict[str, dict[str, Any]] = {}
+    for c in bm25_picked + vec_picked:
+        cid = str(c.get("id") or "")
+        if not cid:
+            continue
+        origin = c.get("_arm_origin") or "unknown"
+        if cid in by_id:
+            existing = by_id[cid]
+            arms = existing.setdefault("retrieval_arms", [existing.get("_arm_origin") or "unknown"])
+            if origin not in arms:
+                arms.append(origin)
+            # Keep whichever arm gave the higher rerank_score
+            try:
+                if (c.get("rerank_score") or 0.0) > (existing.get("rerank_score") or 0.0):
+                    existing.update({k: v for k, v in c.items() if k != "retrieval_arms"})
+                    existing["retrieval_arms"] = arms
+            except Exception:
+                pass
+            continue
+        c.setdefault("retrieval_arms", [origin])
+        by_id[cid] = c
+        fused.append(c)
 
     # Telemetry
     overlap = sum(
@@ -374,6 +418,8 @@ def retrieve_corpus_hybrid(
         "k": top_k,
         "arm_bm25_hits": len(arm_results["bm25"]),
         "arm_vector_hits": len(arm_results["vector"]),
+        "arm_bm25_picked": len(bm25_picked),
+        "arm_vector_picked": len(vec_picked),
         "fused_count": len(fused),
         "fusion_overlap": overlap,
         "total_ms": (time.monotonic() - t0) * 1000,
@@ -386,8 +432,8 @@ def retrieve_corpus_hybrid(
         if fused:
             emitter(
                 f"Found {len(fused)} matches "
-                f"(BM25 {len(arm_results['bm25'])}, "
-                f"pgvector {len(arm_results['vector'])}, "
+                f"(BM25 picked {len(bm25_picked)}/{len(arm_results['bm25'])}, "
+                f"pgvector picked {len(vec_picked)}/{len(arm_results['vector'])}, "
                 f"overlap {overlap})."
             )
         else:
@@ -400,6 +446,9 @@ def retrieve_recall(
     question: str,
     *,
     top_k: int = 16,
+    database_url: str = "",
+    n_factual: int | None = 4,
+    n_hierarchical: int | None = 6,
     emitter: Callable[[str], None] | None = None,
     filter_payer: str = "",
     filter_state: str = "",
@@ -407,12 +456,17 @@ def retrieve_recall(
     filter_authority_level: str = "",
     include_document_ids: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Vector-only, broad-recall search. No confidence filter.
+    """Vector-only, broad-recall search.
 
-    Backs ``recall_search`` (was ``lazy_corpus_search``). Used by
-    agentic first-pass exploration when "what do we know about X"
-    matters more than precision."""
+    Backs ``recall_search``. Used by agentic first-pass exploration
+    when "what do we know about X" matters more than precision.
+    Reranked using the vector arm's own score currency (cosine
+    similarity), then per-arm blend selects top n_hierarchical
+    paragraphs + top n_factual sentences. Generous defaults
+    (8 hierarchical + 4 factual) give a wide net for round-1 scans.
+    """
     import time
+    from app.services.retriever_backend import rerank_fused_chunks
     t0 = time.monotonic()
     chunks = _run_vector_arm(
         question,
@@ -426,6 +480,19 @@ def retrieve_recall(
         filter_authority_level=filter_authority_level,
         include_document_ids=include_document_ids,
     )
+    if chunks and database_url:
+        try:
+            chunks = rerank_fused_chunks(
+                chunks, question=question, database_url=database_url, emitter=None,
+            )
+        except Exception as exc:
+            logger.warning("recall: vector rerank failed (%s); using arm order", exc)
+    if chunks and (n_factual is not None or n_hierarchical is not None):
+        try:
+            from mobius_retriever.assemble import _apply_blend_selection
+            chunks = _apply_blend_selection(chunks, n_factual, n_hierarchical)
+        except Exception as exc:
+            logger.warning("recall: blend failed (%s); using rerank order", exc)
     telemetry = {
         "mode": "corpus_recall",
         "k": top_k,

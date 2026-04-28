@@ -512,6 +512,8 @@ def retrieve_for_chat(
             from app.services.retriever_hybrid import retrieve_recall
             chunks, telemetry = retrieve_recall(
                 question=question, top_k=top_k, emitter=emitter,
+                database_url=database_url,
+                n_factual=n_factual, n_hierarchical=n_hierarchical,
                 filter_payer=filter_payer, filter_state=filter_state,
                 filter_program=filter_program,
                 filter_authority_level=filter_authority_level,

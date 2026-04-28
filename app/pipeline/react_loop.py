@@ -622,13 +622,18 @@ def _execute_tool(
         # (pgvector). Distinct primitive from precision_search (BM25) and
         # search_corpus (hybrid RRF of both arms).
         from app.services.retriever_backend import retrieve_for_chat
+        from app.db_client import _get_fallback_url
+        from app.chat_config import get_chat_config
+
+        rag_cfg = get_chat_config().rag
+        retrieval_db_url = _get_fallback_url("chat") or rag_cfg.database_url
 
         emit("◌ Recall (vector) scan of our materials…")
         try:
             chunks, _telemetry = retrieve_for_chat(
                 question=query,
                 top_k=16,
-                database_url="",          # vector arm doesn't need it
+                database_url=retrieval_db_url,   # needed for the vector reranker's tag/authority lookups
                 filter_payer=(rag_overrides.get("filter_payer") or "").strip(),
                 filter_state=(rag_overrides.get("filter_state") or "").strip(),
                 filter_program=(rag_overrides.get("filter_program") or "").strip(),
