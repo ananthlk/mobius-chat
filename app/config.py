@@ -61,8 +61,17 @@ class Config:
 
 
 def get_config() -> Config:
+    # 2026-04-27: queue_type honors CHAT_QUEUE_TYPE first, then QUEUE_TYPE,
+    # then falls back to "memory". Historical inconsistency: the deploy
+    # script + Dockerfile + dev.env all set ``CHAT_QUEUE_TYPE`` (chat-
+    # namespaced, matches CHAT_DATABASE_URL etc.) but the code only read
+    # the bare ``QUEUE_TYPE``. Result: every Cloud Run instance booted
+    # with MemoryQueue regardless of what the deploy intended, so a
+    # response published by the worker on instance A was invisible to
+    # the API thread on instance B-D — matching the observed
+    # "1 in 4 polls returns the completed response" pattern.
     return Config(
-        queue_type=os.getenv("QUEUE_TYPE", "memory"),
+        queue_type=os.getenv("CHAT_QUEUE_TYPE") or os.getenv("QUEUE_TYPE", "memory"),
         redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
         redis_request_key=os.getenv("REDIS_REQUEST_KEY", "mobius:chat:requests"),
         redis_response_key_prefix=os.getenv("REDIS_RESPONSE_KEY_PREFIX", "mobius:chat:response:"),
