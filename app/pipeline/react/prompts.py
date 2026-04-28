@@ -425,20 +425,73 @@ def build_reasoning_context(
         parts.append(f"Prior failed query: {fq.get('question', '')}")
 
     if ctx.last_turns:
-        # Phase 13.6 — conversation-aware planner.
+        # Phase 13.6 + 2026-04-28 follow-up-latency fix.
         #
-        # The previous assistant answer is the working material when the
-        # user's next message is a continuation ("convert this to an
-        # appeal letter", "make it shorter", "rewrite for X"). Before
-        # this fix the prompt truncated assistant_content to 200 chars,
-        # which the planner could not meaningfully reshape — so it
-        # would default to retrieval and ask the user to re-paste the
-        # source. We now thread the most-recent assistant answer in at
-        # ~3000 chars (head-only — appeal-letter style transforms care
-        # about the operative facts, which sit at the top). Older
-        # turns stay short to keep the context budget in check.
-        MOST_RECENT_PREVIEW = 3000
-        OLDER_PREVIEW = 200
+        # The original Phase-13.6 logic always inlined the most-recent
+        # assistant answer at 3000 chars (~750 tokens) so the planner
+        # could reshape it for transform queries ("convert this to an
+        # appeal letter", "make it shorter", "rewrite for X"). That
+        # 3000-char dump went into EVERY ReAct round of EVERY follow-up,
+        # plus into critic and consolidator — accounting for ~3-5k of
+        # the prompt-size growth between turn 1 (23k) and turn 2 (26k)
+        # observed in latency traces, and ~7x of the LLM elapsed time.
+        #
+        # The integrator already produces a compact rolling summary
+        # (``ctx.previous_thread_summary``, ~600 chars) which is exactly
+        # what we want for substantive follow-ups — we just weren't
+        # using it. So the new policy is:
+        #
+        #   - Transform-intent follow-up:  keep the 3000-char raw dump
+        #                                  (transform_previous_answer
+        #                                   needs the full text).
+        #   - Substantive follow-up:       use previous_thread_summary
+        #                                  + a short head of the prior
+        #                                  answer for pronoun grounding.
+        #
+        # Detection is keyword-based — same flavor as the existing
+        # planner instruction. Keep deliberately permissive: a false
+        # positive costs ~750 tokens; a false negative breaks transform.
+        msg_lower = (
+            getattr(ctx, "effective_message", None) or ctx.message or ""
+        ).lower()
+        _TRANSFORM_TRIGGERS = (
+            # transformation verbs
+            "rewrite", "rephrase", "reword", "shorten", "lengthen",
+            "expand", "summarize", "condense", "tighten", "polish",
+            "convert to", "convert it", "convert this", "turn it into",
+            "turn this into", "make it ", "make this ",
+            # artifact requests built off prior substance
+            "appeal letter", "denial letter", "memo", "email", "draft",
+            "letter for", "letter to",
+            # pronouns referring to prior content as material
+            "the above", "the previous", "the prior",
+        )
+        is_transform = any(t in msg_lower for t in _TRANSFORM_TRIGGERS)
+
+        if is_transform:
+            MOST_RECENT_PREVIEW = 3000
+            OLDER_PREVIEW = 200
+            preamble = (
+                "Recent conversation (the FIRST 'Assistant:' below is the "
+                "MOST RECENT answer — treat it as available source material. "
+                "The user's message looks like a transformation/continuation "
+                "('rewrite', 'shorten', 'convert to an appeal letter', "
+                "'the above'). Call `transform_previous_answer` — do NOT "
+                "re-run search_corpus or other retrieval tools.):\n"
+            )
+        else:
+            # Compact form for substantive follow-ups. A short head of the
+            # most-recent answer is still helpful for pronoun resolution
+            # ("what does that mean for...", "for that payer...") but the
+            # full body is not — that's what previous_thread_summary is for.
+            MOST_RECENT_PREVIEW = 400
+            OLDER_PREVIEW = 120
+            preamble = (
+                "Recent conversation (compact preview — for full prior "
+                "substance see the rolling thread summary above; for raw "
+                "transformation source the user must signal a transform "
+                "intent):\n"
+            )
 
         turns_text = []
         ordered = list(ctx.last_turns or [])[:3]
@@ -452,18 +505,19 @@ def build_reasoning_context(
                 turns_text.append(f"User: {user_q}")
                 turns_text.append(f"Assistant: {assistant_a}{ellipsis}")
         if turns_text:
-            parts.append(
-                "Recent conversation (the FIRST 'Assistant:' below is the "
-                "MOST RECENT answer — treat it as available source material "
-                "when the user's current message is a continuation, e.g. "
-                "uses pronouns ('this', 'that', 'the above'), asks for a "
-                "transformation ('rewrite', 'shorten', 'convert to an "
-                "appeal letter'), or requests a downstream artifact "
-                "derived from prior substance. In those cases call "
-                "`transform_previous_answer` — do NOT re-run search_corpus "
-                "or other retrieval tools.):\n"
-                + "\n".join(turns_text)
-            )
+            parts.append(preamble + "\n".join(turns_text))
+
+    # Inject the integrator-produced rolling summary on follow-up turns.
+    # This is the cheap, condensed form of conversation history — does the
+    # job for substantive follow-ups without paying the full-prior-answer
+    # tax. Capped to 600 chars (matches the integrator's own truncate).
+    _prev_summary = (getattr(ctx, "previous_thread_summary", None) or "").strip()
+    if _prev_summary:
+        parts.append(
+            "Rolling thread summary (from prior turns — use this as the "
+            "primary continuity signal; do NOT re-summarize):\n"
+            + _prev_summary[:600]
+        )
 
     if tool_results:
         parts.append(f"\nIteration {iteration} — tools called this turn:")
