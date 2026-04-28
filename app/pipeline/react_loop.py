@@ -616,67 +616,77 @@ def _execute_tool(
         query = inputs.get("query") or (ctx.effective_message or ctx.message)
         rag_overrides = rag_filters_from_active(active) or {}
 
-        from app.chat_config import get_chat_config
-        from app.services.embedding_provider import get_query_embedding
-        from mobius_skills_core.skills.corpus_search import (
-            ChromaConfig,
-            CorpusFilters,
+        # Recall search retired 2026-04-27 post-pgvector cutover.
+        #
+        # The previous body called ``run_lazy_corpus_search`` which talked
+        # directly to the chat-owned Chroma VM (collection
+        # ``published_rag``). Two reasons that path is wrong now:
+        #
+        #   1. The Chroma VM is no longer source of truth — pgvector is.
+        #      Any chunks Chroma surfaced were stale or phantom.
+        #   2. Connection-level instability on the e2-micro VM caused
+        #      multi-minute TCP hangs per call (observed 2026-04-27,
+        #      cid=fb0726d8: 138s gap before "Connection reset by peer").
+        #      With recall_search picked early in a ReAct round it
+        #      single-handedly burned through the 300s turn budget.
+        #
+        # Until we wire a proper recall path to mobius-rag's /api/query
+        # (with vector-only / no-confidence-floor params), this tool
+        # returns "no sources" cleanly. The planner will see no recall
+        # signal and pick search_corpus (hybrid) or precision_search,
+        # both of which already route through pgvector via mobius-rag.
+        emit("↓ Recall search retired (pgvector cutover); use search_corpus.")
+        logger.info(
+            "recall_search: retired post-pgvector cutover; returning no sources"
         )
-        from mobius_skills_core.skills.lazy_corpus_search import (
-            run_lazy_corpus_search,
-        )
-
-        rag = get_chat_config().rag
-        # Chroma is "configured" when either a persist dir (legacy
-        # local mode) OR a host (HttpClient mode — Cloud Run + shared
-        # GCE server) is set. Pre-2026-04-21 the guard only knew
-        # about persist_dir, so lazy_corpus_search always gave up in
-        # Cloud Run with "Corpus not configured" even though the
-        # shared Chroma was reachable.
-        chroma_host = (os.environ.get("CHROMA_HOST") or "").strip()
-        if not rag.chroma_persist_dir and not chroma_host:
-            emit("↓ Corpus not configured on this deploy.")
-            return {
-                "tool": "recall_search",
-                "success": False,
-                "result": "Corpus backend not configured.",
-                "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
-                "sources": [],
-            }
-
-        emit("◌ Lazy scan of our materials…")
-
-        # Build filters from the active thread jurisdiction (same
-        # semantics the heavy corpus_search path uses).
-        filters = CorpusFilters(
-            payer=(rag_overrides.get("filter_payer") or rag.filter_payer or "").strip(),
-            state=(rag_overrides.get("filter_state") or rag.filter_state or "").strip(),
-            program=(rag_overrides.get("filter_program") or rag.filter_program or "").strip(),
-            authority_level=(rag.filter_authority_level or "").strip(),
-        )
-
-        # Chroma connection: HttpClient for Cloud Run (shared GCE
-        # server), PersistentClient for legacy local dev. Env vars
-        # here mirror what published_rag_search.py reads so the two
-        # paths stay in sync.
-        _chroma_host = (os.environ.get("CHROMA_HOST") or "").strip()
-        _chroma_cfg_kwargs = {"collection": rag.chroma_collection or "published_rag"}
-        if _chroma_host:
-            _chroma_cfg_kwargs.update(
-                host=_chroma_host,
-                port=int((os.environ.get("CHROMA_PORT") or "8000").strip()),
-                ssl=(os.environ.get("CHROMA_SSL") or "").strip().lower() in {"1","true","yes"},
-                auth_token=(os.environ.get("CHROMA_AUTH_TOKEN") or "").strip(),
+        return {
+            "tool": "recall_search",
+            "success": False,
+            "result": (
+                "Recall search is temporarily disabled while we migrate the "
+                "vector-only path to pgvector. Use search_corpus or "
+                "precision_search instead."
+            ),
+            "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
+            "sources": [],
+        }
+        # The unreachable code below preserves the original Chroma call
+        # for reference until the pgvector recall arm lands.
+        if False:  # pragma: no cover  -- retired path
+            from app.chat_config import get_chat_config  # noqa: F401
+            from app.services.embedding_provider import get_query_embedding  # noqa: F401
+            from mobius_skills_core.skills.corpus_search import (  # noqa: F401
+                ChromaConfig,
+                CorpusFilters,
             )
-        else:
-            _chroma_cfg_kwargs["persist_dir"] = rag.chroma_persist_dir
-        result = run_lazy_corpus_search(
-            query=query,
-            embed_query=get_query_embedding,
-            chroma=ChromaConfig(**_chroma_cfg_kwargs),
-            filters=filters,
-            k=16,
-        )
+            from mobius_skills_core.skills.lazy_corpus_search import (  # noqa: F401
+                run_lazy_corpus_search,
+            )
+            rag = get_chat_config().rag
+            filters = CorpusFilters(
+                payer=(rag_overrides.get("filter_payer") or rag.filter_payer or "").strip(),
+                state=(rag_overrides.get("filter_state") or rag.filter_state or "").strip(),
+                program=(rag_overrides.get("filter_program") or rag.filter_program or "").strip(),
+                authority_level=(rag.filter_authority_level or "").strip(),
+            )
+            _chroma_host = (os.environ.get("CHROMA_HOST") or "").strip()
+            _chroma_cfg_kwargs = {"collection": rag.chroma_collection or "published_rag"}
+            if _chroma_host:
+                _chroma_cfg_kwargs.update(
+                    host=_chroma_host,
+                    port=int((os.environ.get("CHROMA_PORT") or "8000").strip()),
+                    ssl=(os.environ.get("CHROMA_SSL") or "").strip().lower() in {"1","true","yes"},
+                    auth_token=(os.environ.get("CHROMA_AUTH_TOKEN") or "").strip(),
+                )
+            else:
+                _chroma_cfg_kwargs["persist_dir"] = rag.chroma_persist_dir
+            result = run_lazy_corpus_search(
+                query=query,
+                embed_query=get_query_embedding,
+                chroma=ChromaConfig(**_chroma_cfg_kwargs),
+                filters=filters,
+                k=16,
+            )
 
         if result.signal != "ok":
             emit("↓ Lazy scan found nothing matching this query.")

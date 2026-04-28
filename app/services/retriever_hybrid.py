@@ -205,34 +205,35 @@ def _run_vector_arm(
     source_type_allow: list[str] | None,
     emitter: Callable[[str], None] | None,
 ) -> list[dict[str, Any]]:
-    """Run vector path via published_rag_search (Chroma + Postgres metadata).
+    """Vector arm — RETIRED 2026-04-27 post-pgvector cutover.
 
-    Returns chunks in the same shape as the BM25 arm so RRF can merge them.
-    Note: confidence_min applies inside ``search_published_rag`` (it's the
-    pre-rerank similarity floor). For the hybrid we typically pass
-    ``confidence_min=None`` to keep recall high; the post-fusion
-    confidence label/floor handles drop logic uniformly.
+    Until the cutover this called ``search_published_rag`` which talked
+    directly to the chat-owned Chroma VM (collection ``published_rag``).
+    Two things made that path wrong post-cutover:
+
+    1. The Chroma VM is no longer the source of truth — pgvector is.
+       Anything Chroma returned was at best stale, at worst phantoms
+       (doc_ids deleted from Postgres but still indexed in Chroma).
+    2. Connection-level instability on the e2-micro VM caused 2+ minute
+       TCP hangs per call (observed 2026-04-27 cid=fb0726d8: 138s gap
+       between BM25 arm returning and the vector arm finally erroring
+       out with "Connection reset by peer"). That alone consumed half
+       the 300s ReAct turn budget, leading to ``turn_deadline_exceeded``
+       on every call.
+
+    The fix is not a timeout (that hides the dead path); it's removing
+    the call. The "BM25" arm in this hybrid already routes through
+    mobius-rag's ``/api/query`` which now serves pgvector results, so
+    vector recall is preserved via that single path. The hybrid scaffold
+    is kept so we can plug a proper second arm back in later (e.g. a
+    second ``/api/query`` call with different params for dual-pass
+    recall, or a re-ranker arm) without re-introducing direct Chroma.
     """
-    from app.services.published_rag_search import search_published_rag
-
-    chunks = search_published_rag(
-        question=question,
-        k=top_k,
-        confidence_min=confidence_min,
-        source_type_allow=source_type_allow,
-        emitter=emitter,
+    logger.info(
+        "hybrid: vector arm is a no-op (chat-side Chroma path retired "
+        "post-pgvector cutover; recall now flows through mobius-rag /api/query)"
     )
-    for c in chunks or []:
-        # The vector path returns chunks with ``source_type`` (chunk /
-        # hierarchical / fact). Map to ``provision_type`` so blend
-        # selection (which reads provision_type) works uniformly.
-        if "provision_type" not in c:
-            st = (c.get("source_type") or "").lower()
-            c["provision_type"] = (
-                "paragraph" if st in ("hierarchical", "policy", "section") else "sentence"
-            )
-        c["_arm_origin"] = "vector"
-    return chunks or []
+    return []
 
 
 # ── Public entry points (one per call mode) ──────────────────────────
