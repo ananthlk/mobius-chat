@@ -683,9 +683,15 @@ GROQ_MODEL_IDS_EXCLUDE_PLANNER_REACT: frozenset[str] = frozenset(
 )
 
 # Thompson sampling: copilot chat mode must not draw frontier / large reasoning models.
+# ``frontier_reasoning_premium`` is the Opus tier — even more aggressive
+# exclusion than ``frontier_reasoning`` because Opus is ~5× the cost
+# and ~2× the latency of Sonnet. Reserved for stages where the bandit
+# explicitly demands premium reasoning (critique, integrator under
+# specific quality conditions).
 COPILOT_EXCLUDED_THOMPSON_BENCHMARK_CATEGORIES: frozenset[str] = frozenset(
     {
         "frontier_reasoning",
+        "frontier_reasoning_premium",
         "open_large",
     }
 )
@@ -710,6 +716,9 @@ MODEL_CATEGORIES: dict[str, str] = {
     "gemini-2.0-flash-lite":                         "tiny_classifier",
     "claude-sonnet-4-6":                             "frontier_reasoning",
     "claude-haiku-4-5-20251001":                     "frontier_fast",
+    "claude-opus-4-7":                               "frontier_reasoning_premium",
+    "claude-opus-4-6":                               "frontier_reasoning_premium",
+    "claude-opus-4-5-20251101":                      "frontier_reasoning_premium",
     "gpt-4o":                                        "frontier_reasoning",
     "gpt-4o-mini":                                   "frontier_fast",
     "llama-3.3-70b-versatile":                       "groq_fast",
@@ -1080,6 +1089,82 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         ema_quality=0.80,
         ema_latency_ms=1200.0,
         ema_cost_usd=0.005,
+    ),
+
+    # ── ANTHROPIC OPUS (premium reasoning tier) ───────────────────────────────
+    # Three Opus generations available on our API key (probed 2026-04-29
+    # via /v1/models): 4-7 (newest, April 2026), 4-6 (Feb 2026), 4-5
+    # (Nov 2025). All share the same pricing tier ($15/M input,
+    # $75/M output — 5× Sonnet, 19× Haiku). Speed is roughly half Sonnet's
+    # because Opus is the heavyweight model.
+    #
+    # Quality priors: stepped down by generation. Each new Opus release
+    # has measurably improved on the previous (Anthropic's own benchmarks
+    # + community evals); 4-7 starts at 0.94 (highest in our roster),
+    # with 4-6 at 0.93 and 4-5 at 0.91. The bandit will refine these
+    # from real usage; the priors just make sure 4-7 is preferred over
+    # 4-5 absent contradicting evidence.
+    #
+    # Eligible stages: CORE_REASONING_STAGES (same as Sonnet). The
+    # bandit's composite score (quality, cost, latency) will naturally
+    # route Opus to high-quality-need stages (critique, integrator) and
+    # away from the cheap-stage flow because the cost penalty is large.
+    # Copilot chat mode excludes ``frontier_reasoning_premium`` entirely
+    # — Opus is never sampled there to keep beta cost predictable.
+    #
+    # Idle when ANTHROPIC_API_KEY is unset (auto_enable_from_env gates
+    # this); enabled=False is the default for all anthropic models for
+    # the same reason.
+
+    "claude-opus-4-7": ModelSpec(
+        model_id="claude-opus-4-7",
+        provider="anthropic",
+        display_name="Claude Opus 4.7",
+        enabled=False,
+        hipaa_eligible=False,
+        eligible_stages=list(CORE_REASONING_STAGES),
+        spec_tokens_per_sec=70.0,
+        spec_context_k=200,
+        spec_input_per_1m_usd=15.00,
+        spec_output_per_1m_usd=75.00,
+        benchmark_category="frontier_reasoning_premium",
+        ema_quality=0.94,
+        ema_latency_ms=5500.0,
+        ema_cost_usd=0.075,
+    ),
+
+    "claude-opus-4-6": ModelSpec(
+        model_id="claude-opus-4-6",
+        provider="anthropic",
+        display_name="Claude Opus 4.6",
+        enabled=False,
+        hipaa_eligible=False,
+        eligible_stages=list(CORE_REASONING_STAGES),
+        spec_tokens_per_sec=70.0,
+        spec_context_k=200,
+        spec_input_per_1m_usd=15.00,
+        spec_output_per_1m_usd=75.00,
+        benchmark_category="frontier_reasoning_premium",
+        ema_quality=0.93,
+        ema_latency_ms=5800.0,
+        ema_cost_usd=0.075,
+    ),
+
+    "claude-opus-4-5-20251101": ModelSpec(
+        model_id="claude-opus-4-5-20251101",
+        provider="anthropic",
+        display_name="Claude Opus 4.5",
+        enabled=False,
+        hipaa_eligible=False,
+        eligible_stages=list(CORE_REASONING_STAGES),
+        spec_tokens_per_sec=70.0,
+        spec_context_k=200,
+        spec_input_per_1m_usd=15.00,
+        spec_output_per_1m_usd=75.00,
+        benchmark_category="frontier_reasoning_premium",
+        ema_quality=0.91,
+        ema_latency_ms=6000.0,
+        ema_cost_usd=0.075,
     ),
 
     # ── TOGETHER.AI (big open-source, cheap) ──────────────────────────────────
