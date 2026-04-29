@@ -8610,6 +8610,15 @@ function run(): void {
     // hint (so users know they're planned) while disabling the click
     // handler — no tab opens, no broken landing page. Library stays
     // active because the corpus UI is the one that is in good shape.
+    // 2026-04-29: layout cleanup
+    //   * Credentialing folded into Roster (same backing service today;
+    //     surfacing both as separate tiles confused users).
+    //   * Library renamed → "Public Library" to leave room for the Vault
+    //     concept: future per-org / per-user / per-patient namespaces
+    //     served via a separate agent + isolation boundary.
+    //   * Vault tile added as ``comingSoon`` so the surface area is
+    //     visible to users now even though the backing implementation
+    //     is the next sprint.
     const SUITE_TILES: SuiteTile[] = [
       {
         key: "strategy",
@@ -8621,18 +8630,9 @@ function run(): void {
         comingSoon: true,
       },
       {
-        key: "credentialing",
-        label: "Credentialing",
-        tagline: "Provider runs + reports",
-        accent: "violet",
-        urlEnvKey: "MOBIUS_CREDENTIALING_URL",
-        fallbackUrl: "https://mobius-provider-roster-credentialing-ortabkknqa-uc.a.run.app",
-        comingSoon: true,
-      },
-      {
         key: "roster",
         label: "Roster",
-        tagline: "Provider directory health",
+        tagline: "Provider directory + credentialing",
         accent: "emerald",
         urlEnvKey: "MOBIUS_ROSTER_URL",
         fallbackUrl: "https://mobius-provider-roster-credentialing-ortabkknqa-uc.a.run.app/roster",
@@ -8640,11 +8640,20 @@ function run(): void {
       },
       {
         key: "library",
-        label: "Library",
-        tagline: "Corpus + ingestion",
+        label: "Public Library",
+        tagline: "Shared corpus — payer manuals, regs, public sources",
         accent: "accent",
         urlEnvKey: "MOBIUS_LIBRARY_URL",
         fallbackUrl: "https://mobius-rag-ortabkknqa-uc.a.run.app",
+      },
+      {
+        key: "vault",
+        label: "Vault",
+        tagline: "Your org, personal & patient documents (private namespaces)",
+        accent: "violet",
+        urlEnvKey: "MOBIUS_VAULT_URL",
+        fallbackUrl: "https://mobius-rag-ortabkknqa-uc.a.run.app",
+        comingSoon: true,
       },
     ];
 
@@ -8877,7 +8886,11 @@ function run(): void {
         if (t) { closeSkillsModal(); window.open(tileUrl(t), "_blank", "noopener"); }
       });
     }
-    _wireLegacySuiteButton("btnOpenSkillPipeline", "credentialing");
+    // 2026-04-29: btnOpenSkillPipeline removed from sidebar HTML
+    // (Credentialing folded into Roster). Wire-up kept for old open
+    // tabs that still reference the button — null-safe via the
+    // helper's element lookup.
+    _wireLegacySuiteButton("btnOpenSkillPipeline", "roster");
     _wireLegacySuiteButton("btnOpenFinancialStrategy", "strategy");
     _wireLegacySuiteButton("btnOpenRoster", "roster");
   })();

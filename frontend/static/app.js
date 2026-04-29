@@ -7341,18 +7341,9 @@ ${message}`;
         comingSoon: true
       },
       {
-        key: "credentialing",
-        label: "Credentialing",
-        tagline: "Provider runs + reports",
-        accent: "violet",
-        urlEnvKey: "MOBIUS_CREDENTIALING_URL",
-        fallbackUrl: "https://mobius-provider-roster-credentialing-ortabkknqa-uc.a.run.app",
-        comingSoon: true
-      },
-      {
         key: "roster",
         label: "Roster",
-        tagline: "Provider directory health",
+        tagline: "Provider directory + credentialing",
         accent: "emerald",
         urlEnvKey: "MOBIUS_ROSTER_URL",
         fallbackUrl: "https://mobius-provider-roster-credentialing-ortabkknqa-uc.a.run.app/roster",
@@ -7360,11 +7351,20 @@ ${message}`;
       },
       {
         key: "library",
-        label: "Library",
-        tagline: "Corpus + ingestion",
+        label: "Public Library",
+        tagline: "Shared corpus \u2014 payer manuals, regs, public sources",
         accent: "accent",
         urlEnvKey: "MOBIUS_LIBRARY_URL",
         fallbackUrl: "https://mobius-rag-ortabkknqa-uc.a.run.app"
+      },
+      {
+        key: "vault",
+        label: "Vault",
+        tagline: "Your org, personal & patient documents (private namespaces)",
+        accent: "violet",
+        urlEnvKey: "MOBIUS_VAULT_URL",
+        fallbackUrl: "https://mobius-rag-ortabkknqa-uc.a.run.app",
+        comingSoon: true
       }
     ];
     function tileUrl(t) {
@@ -7540,7 +7540,7 @@ ${message}`;
         }
       });
     }
-    _wireLegacySuiteButton("btnOpenSkillPipeline", "credentialing");
+    _wireLegacySuiteButton("btnOpenSkillPipeline", "roster");
     _wireLegacySuiteButton("btnOpenFinancialStrategy", "strategy");
     _wireLegacySuiteButton("btnOpenRoster", "roster");
   })();
