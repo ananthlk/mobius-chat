@@ -8602,6 +8602,7 @@ function run(): void {
       urlEnvKey: string;       // window.<key> read first
       fallbackUrl: string;     // dev / unconfigured fallback
       comingSoon?: boolean;    // 2026-04-28 — disabled in UI until ready
+      description?: string;    // 2026-04-29 — long blurb shown in skills modal
     };
 
     // 2026-04-28: Strategy / Credentialing / Roster surface in the
@@ -8671,34 +8672,44 @@ function run(): void {
       selected: boolean;       // hook for future per-role gating
     };
 
-    // TODO: hydrate from /chat/skills/catalog when the backend exposes it.
+    // 2026-04-29: framed as "universal capabilities" — these are baked
+    // into every chat turn (planner picks them automatically based on
+    // the question). Distinct from Suite modules (Strategy / Roster /
+    // Public Library / Vault) which are open-in-tab products.
     const CHAT_THEMES: ChatTheme[] = [
       {
-        title: "Healthcare research",
-        tagline: "What does the payer require?",
-        description: "Look up procedure and diagnosis codes, find policies in your provider corpus, verify NPI registry entries, and pull authoritative payer documents — all with source citations you can defend.",
+        title: "Healthcare lookup",
+        tagline: "Codes, NPIs, payer policies",
+        description: "Look up procedure and diagnosis codes, verify NPI registry entries, and pull authoritative payer documents from your corpus — all with source citations you can defend.",
         examplePrompt: "What's Sunshine Health's prior authorization timeline for H0036?",
         selected: true,
       },
       {
-        title: "External research",
+        title: "External search",
         tagline: "Search beyond your library",
         description: "When the answer isn't in your corpus yet, Mobius searches the web, reads specific pages, and can permanently add authoritative sources to your library — so the next person asking gets an indexed answer.",
         examplePrompt: "Find Sunshine's dental plan transition dates and add the page to our library",
         selected: true,
       },
       {
-        title: "Document management",
-        tagline: "Ask questions about a specific document",
+        title: "Document chat",
+        tagline: "Ask about a file you uploaded",
         description: "Upload a denial letter, provider manual, or policy PDF and ask questions about it directly. Mobius keeps it on the thread and searches inside it alongside the broader corpus.",
         examplePrompt: "What does the attached denial letter say about timely filing?",
         selected: true,
       },
       {
-        title: "Workflow",
+        title: "Task management",
         tagline: "Make conversations actionable",
         description: "Convert answers into letters, emails, or memos. Track follow-up tasks. Reshape a prior answer without re-running the whole research process.",
         examplePrompt: "Convert this to an appeal letter for Sunshine Health",
+        selected: true,
+      },
+      {
+        title: "PHI guardrail",
+        tagline: "Refuses questions about specific patients",
+        description: "Mobius will not answer questions tied to specific named patients, MRNs, or identifying combinations. The refusal happens up-front — before any retrieval or model call — and is consistent across every model the bandit might pick.",
+        examplePrompt: "(Mobius will refuse questions like 'Has patient John Doe had his colonoscopy approved?')",
         selected: true,
       },
     ];
@@ -8748,14 +8759,50 @@ function run(): void {
       }
     }
 
+    // 2026-04-29: long-form descriptions for each suite module, shown
+    // in the skills modal so users learn what each module is for. Kept
+    // local to the modal renderer rather than added to the SuiteTile
+    // type because they're modal-display copy, not data-model.
+    const SUITE_LONG_DESC: Record<string, string> = {
+      strategy: (
+        "Benchmarks your organization against peer CMHCs on revenue, " +
+        "denials, panel mix, and credentialing throughput. Pulls from " +
+        "our public payer + DOGE rate datasets and overlays your roster " +
+        "to show where you sit on each KPI. Useful when board / leadership " +
+        "asks 'how do we compare?'."
+      ),
+      roster: (
+        "Single source of truth for your provider directory + the " +
+        "credentialing pipeline. Tracks who's enrolled with which payer, " +
+        "what's pending, what's expired, and surfaces re-credentialing " +
+        "windows before they lapse. Roster reconciliation, NPI verification, " +
+        "and run-by-run credentialing reports all live here."
+      ),
+      library: (
+        "The shared corpus \u2014 payer manuals, state Medicaid handbooks, " +
+        "federal regs, public CMS guidance. Anything anyone uploads as a " +
+        "public source becomes searchable across every chat (with source " +
+        "citation). Mobius retrieves from this library automatically when " +
+        "you ask a payer / policy / regulatory question."
+      ),
+      vault: (
+        "Private namespace for documents that should NOT be public \u2014 your " +
+        "org's contracts, internal SOPs, individual user notes, and " +
+        "(future) per-patient material under HIPAA. Each namespace gets a " +
+        "dedicated agent + isolation boundary; cross-namespace retrieval " +
+        "only happens with explicit consent. Lands as a separate workspace " +
+        "in the next sprint."
+      ),
+    };
+
     function renderSkillsModal(): void {
       if (!modalBody) return;
       const html = [
-        // Available now in chat
+        // Universal capabilities \u2014 baked into every chat
         '<div class="skills-section">',
           '<div class="skills-section-head">',
-            '<span class="skills-section-eyebrow">Available now in chat</span>',
-            '<span class="skills-section-hint">Mobius picks these tools automatically based on your question.</span>',
+            '<span class="skills-section-eyebrow">Always on \u2014 baked into every chat</span>',
+            '<span class="skills-section-hint">These five capabilities run in every turn. Mobius picks the right ones automatically based on your question.</span>',
           '</div>',
           '<div class="skills-themes-grid">',
             ...CHAT_THEMES.map((t) =>
@@ -8773,17 +8820,20 @@ function run(): void {
             ),
           '</div>',
         '</div>',
-        // Standalone products
+        // Mobius modules \u2014 open-in-tab today, with descriptions
         '<div class="skills-section">',
           '<div class="skills-section-head">',
-            '<span class="skills-section-eyebrow">Standalone products</span>',
-            '<span class="skills-section-hint">Open in a new tab today. Chat integration on the roadmap.</span>',
+            '<span class="skills-section-eyebrow">Mobius modules</span>',
+            '<span class="skills-section-hint">Standalone workspaces that complement chat. Open in a new tab today; deeper chat integration on the roadmap.</span>',
           '</div>',
           '<div class="skills-standalone-grid">',
             ...SUITE_TILES.map((t) =>
               `<article class="skills-standalone skills-standalone--${t.accent}${t.comingSoon ? ' skills-standalone--coming-soon' : ''}">` +
                 `<h3 class="skills-standalone-title">${escapeHtml(t.label)}</h3>` +
                 `<p class="skills-standalone-tagline">${escapeHtml(t.tagline)}</p>` +
+                (SUITE_LONG_DESC[t.key]
+                  ? `<p class="skills-standalone-desc">${escapeHtml(SUITE_LONG_DESC[t.key])}</p>`
+                  : "") +
                 (t.comingSoon
                   ? '<span class="skills-standalone-badge">Coming soon</span>'
                   : `<button type="button" class="skills-standalone-open" data-suite-key="${escapeHtml(t.key)}">` +

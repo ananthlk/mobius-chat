@@ -7079,6 +7079,17 @@ body {
   margin: 0;
   font-size: var(--mobius-text-sm);
   color: var(--mobius-text-muted);
+}
+
+/* Long-form description shown in the skills modal under each module
+ * tagline. Same color as standalone tagline but slightly tighter
+ * line-height + bottom margin so the Open / Coming-soon affordance
+ * still anchors visually at the bottom of the card. 2026-04-29. */
+.skills-standalone-desc {
+  margin: 0.45rem 0 0.6rem 0;
+  font-size: var(--mobius-text-sm);
+  color: var(--mobius-text-muted);
+  line-height: 1.45;
   flex: 1;
 }
 
