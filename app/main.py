@@ -413,6 +413,64 @@ async def _enforce_request_body_cap(request, call_next):
 _worker_started = False
 
 
+def _prewarm_worker_caches() -> None:
+    """Warm runtime caches the worker's first turn would otherwise
+    pay for inside the user's request. Best-effort.
+
+    Specifically warms:
+      1. DB connection pool — opens one connection via the same code
+         path ``run_state_load`` uses. The handshake + initial SELECT
+         is 100-300ms of dead time on a fresh process; better paid
+         here than inside the user's first turn.
+      2. Redis client — same idea: ping the response store so the
+         TCP socket is open before BRPOP receives a real job.
+      3. ReAct prompt builders — render the system prompt + tool
+         manifest once so any internal lazy caches (regex compile,
+         YAML parse) settle.
+
+    No LLM token is spent. If any step fails, log and return — a
+    real failure here would have surfaced as a startup probe failure
+    via the eager-import block already.
+    """
+    t0 = time.perf_counter()
+    parts: list[str] = []
+    try:
+        from app.db_client import _get_fallback_url, _acquire_conn, _release_conn
+        url = _get_fallback_url("chat")
+        if url:
+            t = time.perf_counter()
+            conn, is_pooled = _acquire_conn(url)
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+                    cur.fetchone()
+            finally:
+                _release_conn(url, conn, is_pooled, is_broken=False)
+            parts.append(f"db_pool={int((time.perf_counter()-t)*1000)}ms")
+    except Exception as e:
+        parts.append(f"db_pool=FAIL({type(e).__name__})")
+    try:
+        from app.queue import get_queue
+        q = get_queue()
+        # Touch the response API — instantiates the redis client + opens TCP
+        t = time.perf_counter()
+        q.get_response("__prewarm_noop__")
+        parts.append(f"redis={int((time.perf_counter()-t)*1000)}ms")
+    except Exception as e:
+        parts.append(f"redis=FAIL({type(e).__name__})")
+    try:
+        from app.pipeline.react.prompts import _react_reasoning_system
+        t = time.perf_counter()
+        _react_reasoning_system(4, "fast")
+        parts.append(f"react_prompt={int((time.perf_counter()-t)*1000)}ms")
+    except Exception as e:
+        parts.append(f"react_prompt=FAIL({type(e).__name__})")
+    logger.info(
+        "worker-prewarm: complete in %.2fs (%s) — first user turn skips this work",
+        time.perf_counter() - t0, " ".join(parts),
+    )
+
+
 def _warmup_vertex_sdk() -> None:
     """Pre-pay the Vertex-SDK first-call tax so the user's first turn
     doesn't.
@@ -524,6 +582,27 @@ def maybe_start_worker():
             "'python -m app.worker' as a separate Cloud Run service "
             "or sidecar — they'll all consume from the same Redis list.)"
         )
+
+    # Worker pre-warm (2026-04-29).
+    #
+    # Eager imports loaded the modules; this warms the runtime CACHES
+    # the worker's first real turn would otherwise pay for:
+    #   - psycopg2 ThreadedConnectionPool (each first-conn = 100-300ms
+    #     TCP handshake + auth + initial SELECT round-trip)
+    #   - Redis client (first ping after import = full TCP+auth)
+    #   - prompt-builder caches inside react/prompts (jurisdiction
+    #     summary helpers, manifest text rendering)
+    #
+    # We don't run a real LLM call (would burn tokens with no value)
+    # — just hit the read-only paths a follow-up turn touches before
+    # the first generate_content. If any step fails we log and move
+    # on; production traffic doesn't depend on this succeeding.
+    if (os.environ.get("CHAT_WORKER_PREWARM_DISABLED") or "").strip().lower() not in ("1", "true", "yes"):
+        threading.Thread(
+            target=_prewarm_worker_caches,
+            name="worker-prewarm",
+            daemon=True,
+        ).start()
 
     # Live-health refresher (2026-04-28).
     #

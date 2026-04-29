@@ -431,8 +431,27 @@ def run_pipeline(
         # thinking_log for replay.
         on_thinking("◌ Thinking…")
 
+        # Preflight timing (2026-04-29) — surface the silent gap between
+        # request receipt and first LLM call. Earlier follow-up traces
+        # showed 11-15s of zero-log silence after USE_REACT=true and
+        # before [vertex] generate_content; we couldn't tell what was
+        # eating that time. These ``[preflight]`` markers let us pinpoint
+        # the slow step (state_load DB queries, cache-assist HTTP, pronoun
+        # resolution, active_skill build, etc.) without rebuilding logs.
+        _t_pf = time.perf_counter()
+        def _pf(label: str, t_prev: float) -> float:
+            now = time.perf_counter()
+            elapsed_ms = int((now - t_prev) * 1000)
+            if elapsed_ms >= 50:  # only log nontrivial steps; spare the noise
+                logger.info(
+                    "[preflight] cid=%s step=%s elapsed_ms=%d",
+                    correlation_id[:8], label, elapsed_ms,
+                )
+            return now
+
         trace_entered(f"pipeline.stage.{STATE_LOAD}", correlation_id=correlation_id[:8])
         run_state_load(ctx)
+        _t_pf = _pf("state_load", _t_pf)
 
         # Cache-assist invocation (2026-04-23). Runs AFTER state_load so
         # chat_mode + merged_state are populated (the mode selector and
@@ -448,6 +467,7 @@ def run_pipeline(
             _invoke_cache_assist(ctx, chat_mode_hint=chat_mode, emitter=on_thinking)
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning("cache-assist invocation failed (non-fatal): %s", exc)
+        _t_pf = _pf("cache_assist", _t_pf)
 
         prev_mode = (ctx.merged_state or {}).get("last_chat_mode")
         if chat_mode is not None and str(chat_mode).strip():
@@ -493,6 +513,7 @@ def run_pipeline(
                 on_thinking(f"↺ Understood: {(resolved_message or '')[:100]}")
         else:
             ctx.effective_message = ctx.message
+        _t_pf = _pf("pronoun_resolve", _t_pf)
 
         # Active skill context: inject summary when message refers to it (no re-run)
         active_skill = (ctx.merged_state or {}).get("active_skill")
@@ -504,6 +525,7 @@ def run_pipeline(
                 on_thinking("Your report is stored. You can ask any question — answering from it.")
         ctx.active_skill_reference = bool(is_skill_ref)
         ctx.active_skill_name = skill_name
+        _t_pf = _pf("active_skill_detect", _t_pf)
 
         if use_react:
             # ReAct path: Reason → Act → Observe; run_react sets ctx.plan, ctx.answers, ctx.answer_set, etc.

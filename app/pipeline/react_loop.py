@@ -1631,6 +1631,23 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
     from app.pipeline.active_context import load_active_context, load_failed_query
     from app.pipeline.message_resolver import detect_skill_reference, resolve_pronouns
 
+    # Preflight timing inside ReAct (2026-04-29) — same pattern as
+    # orchestrator's outer ``[preflight]`` markers. Helps pin down the
+    # 11-15s gap we saw on follow-ups between USE_REACT log and the
+    # first generate_content call.
+    import time as _t_mod
+    _cid_short = (getattr(ctx, "correlation_id", "") or "")[:8]
+    _t_react_pf = _t_mod.perf_counter()
+    def _react_pf(label: str, t_prev: float) -> float:
+        now = _t_mod.perf_counter()
+        ms = int((now - t_prev) * 1000)
+        if ms >= 50:
+            logger.info(
+                "[react-preflight] cid=%s step=%s elapsed_ms=%d",
+                _cid_short, label, ms,
+            )
+        return now
+
     def emit(msg: str) -> None:
         if emitter and msg:
             emitter(str(msg).strip())
@@ -1645,8 +1662,11 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
     if was_enriched:
         emit(f"↺ Understood: {(resolved or '')[:100]}")
 
+    _t_react_pf = _react_pf("preflight_pronoun", _t_react_pf)
+
     # Load active context from state (for follow-up detection)
     ctx.active_context = load_active_context(ctx.merged_state, ctx.last_turns)
+    _t_react_pf = _react_pf("preflight_active_context", _t_react_pf)
 
     # Follow-up to active context? Answer from context without tool.
     if (
@@ -1671,12 +1691,15 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
     # answer from it directly before entering the tool loop. Returns True
     # when a complete answer was produced; caller returns immediately.
     if _try_system_context_round0(ctx, emitter):
+        _react_pf("preflight_round0_short_circuit_taken", _t_react_pf)
         return
+    _t_react_pf = _react_pf("preflight_round0_check", _t_react_pf)
 
     # Emit jurisdiction
     active = (ctx.merged_state or {}).get("active") or {}
     reset_reason = (ctx.merged_state or {}).get("_reset_reason")
     emit_jurisdiction_context(active, reset_reason, emitter)
+    _t_react_pf = _react_pf("preflight_jurisdiction", _t_react_pf)
 
     mode_label = react_chat_mode_label(getattr(ctx, "chat_mode", None))
     max_it = react_max_iterations_for_mode(getattr(ctx, "chat_mode", None))
@@ -1729,6 +1752,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
     # to answer "how long did round N's LLM + tool take" by summing
     # children in Cloud Trace — no per-round parent span needed.
 
+    _react_pf("preflight_TOTAL_to_iteration_start", _t_react_pf)
     for iteration in range(max_it):
         rn = iteration + 1
         # Keep ctx.react_rounds_used current so whichever exit path
