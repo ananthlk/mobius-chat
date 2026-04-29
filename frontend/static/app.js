@@ -6508,7 +6508,37 @@ ${message}`;
       if (chunks > 0) {
         console.debug(`[composer-attach] "${filename}" ingested as ${chunks} chunk${chunks === 1 ? "" : "s"}`);
       }
-      showChatStatusBanner(`\u2713 "${filename}" is ready \u2014 searching now\u2026`, 4e3);
+      const uxPath = String(data.ux_path || "blocking");
+      const etaMin = Number(data.eta_minutes) || 0;
+      const pageCount = Number(data.page_count) || 0;
+      const redirectUrl = String(data.redirect_url || "");
+      if (uxPath === "background") {
+        const sub = pageCount ? ` (${pageCount} pages, ~${etaMin} min)` : ` (~${etaMin} min)`;
+        showChatStatusBanner(
+          `\u25CC Uploading "${filename}"${sub}. I'll let you know when it's ready.`,
+          12e3
+        );
+      } else if (uxPath === "redirect") {
+        const sub = pageCount ? `${pageCount}-page document \u2014 ~${etaMin} min` : `~${etaMin} min`;
+        if (redirectUrl) {
+          showChatStatusBanner(
+            `"${filename}" is large (${sub}). Open Mobius RAG \u2192 <a href="${redirectUrl}" target="_blank" rel="noopener">${redirectUrl}</a>`,
+            2e4
+          );
+        } else {
+          showChatStatusBanner(
+            `"${filename}" is large (${sub}). Processing in background \u2014 you can keep chatting; a system message will confirm when it's ready.`,
+            12e3
+          );
+        }
+      } else if (uxPath === "duplicate") {
+        showChatStatusBanner(
+          `\u2713 "${filename}" was already in our corpus \u2014 using the existing copy.`,
+          5e3
+        );
+      } else {
+        showChatStatusBanner(`\u2713 "${filename}" is ready \u2014 searching now\u2026`, 4e3);
+      }
       return data;
     } finally {
       stopComposerUploadPhaseEmits();

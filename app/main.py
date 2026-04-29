@@ -764,32 +764,175 @@ def post_chat_org_name_candidates(body: OrgNameCandidatesRequest) -> dict[str, A
 # Phase 2b.2: POST /chat moved to app.api.chat.
 
 
+def _post_system_message_to_thread(thread_id: str, content: str) -> None:
+    """Insert a role='system' row into chat_turn_messages.
+
+    Used by the background-publish watcher to post "✓ X is ready" once
+    rag finishes processing. Generates a fresh turn_id since the system
+    message isn't tied to any user turn — the chat UI just renders it
+    inline like any other message in the thread.
+
+    Best-effort: failures are logged and swallowed; a missed system
+    message is bad UX but not data loss (the catalog row already
+    persisted, and the document is searchable as soon as rag publishes).
+
+    TODO: this is the minimal version. A cleaner system-message helper
+    (with a dedicated table or a proper `system_messages` role with FE
+    rendering) is tracked separately.
+    """
+    import uuid as _uuid_mod
+    tid = (thread_id or "").strip()
+    if not tid:
+        logger.warning("system-message: thread_id empty; skipping post")
+        return
+    try:
+        from app.storage.threads import _insert_message, ensure_thread
+        try:
+            ensure_thread(tid)
+        except Exception:
+            pass
+        _insert_message(tid, str(_uuid_mod.uuid4()), "system", content)
+        logger.info("system-message posted to thread=%s: %s", tid[:8], content[:80])
+    except Exception as e:
+        logger.warning("system-message post failed for thread=%s: %s", tid[:8], e)
+
+
+def _wait_for_publish_inline(
+    rag_url: str, document_id: str, eta_seconds: int,
+) -> dict[str, Any]:
+    """Poll rag's status endpoint until published_at is set, or
+    eta_seconds + 30s buffer elapses. Returns the final status dict
+    (which the caller maps into the response shape).
+    """
+    import json as _json
+    import time as _time
+    import urllib.request
+
+    max_attempts = max(20, (eta_seconds + 30) // 5)  # 5s intervals
+    final_status: dict[str, Any] = {}
+    for attempt in range(max_attempts):
+        try:
+            req = urllib.request.Request(
+                f"{rag_url}/documents/{document_id}/status", method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=15) as r:
+                final_status = _json.loads(r.read())
+        except Exception as e:
+            logger.warning(
+                "rag status poll attempt %d/%d failed for doc=%s: %s",
+                attempt + 1, max_attempts, document_id, e,
+            )
+            _time.sleep(5)
+            continue
+        status_value = (final_status.get("status") or "").lower()
+        if status_value == "failed":
+            return {"_failed": True, **final_status}
+        if status_value == "completed" and final_status.get("published_at"):
+            return final_status
+        _time.sleep(5)
+    return final_status  # caller treats as "still processing"
+
+
+_BACKGROUND_WATCHERS: dict[str, threading.Thread] = {}
+
+
+def _spawn_background_publish_watcher(
+    rag_url: str,
+    document_id: str,
+    thread_id: str,
+    filename: str,
+    eta_seconds: int,
+) -> None:
+    """Detached thread that polls rag status and posts a system message
+    to the originating chat thread once the doc is published.
+
+    Implementation notes:
+      * Uses ``threading.Thread`` (not FastAPI BackgroundTasks — those
+        die when the request ends) so the watcher survives the original
+        upload's HTTP response.
+      * Module-level registry guards against duplicate watchers if the
+        same upload retries.
+      * Cap = eta_seconds + 5min (rag's own ETA isn't perfectly
+        accurate; the buffer covers tail variance).
+    """
+    if document_id in _BACKGROUND_WATCHERS:
+        logger.info("upload-watcher: doc=%s already being watched; skipping spawn", document_id[:8])
+        return
+    if not (thread_id or "").strip():
+        logger.warning("upload-watcher: empty thread_id for doc=%s; cannot post system message", document_id[:8])
+        return
+
+    def _watch() -> None:
+        import json as _json
+        import time as _time
+        import urllib.request
+        max_seconds = eta_seconds + 300
+        poll_interval = 15
+        elapsed = 0
+        try:
+            while elapsed < max_seconds:
+                _time.sleep(poll_interval)
+                elapsed += poll_interval
+                try:
+                    req = urllib.request.Request(
+                        f"{rag_url}/documents/{document_id}/status", method="GET",
+                    )
+                    with urllib.request.urlopen(req, timeout=15) as r:
+                        s = _json.loads(r.read())
+                except Exception as e:
+                    logger.warning("upload-watcher: status fetch failed for doc=%s: %s", document_id[:8], e)
+                    continue
+                status_value = (s.get("status") or "").lower()
+                if status_value == "failed":
+                    _post_system_message_to_thread(
+                        thread_id,
+                        f"⚠ {filename} failed to process. Please try uploading again or open Mobius RAG to investigate.",
+                    )
+                    return
+                if s.get("published_at"):
+                    _post_system_message_to_thread(
+                        thread_id,
+                        f"✓ {filename} is ready. You can ask me about it now.",
+                    )
+                    return
+            # Timed out
+            _post_system_message_to_thread(
+                thread_id,
+                f"⚠ {filename} is still processing — taking longer than expected. "
+                f"Check Mobius RAG for status, or try asking in a few minutes.",
+            )
+        finally:
+            _BACKGROUND_WATCHERS.pop(document_id, None)
+
+    t = threading.Thread(target=_watch, name=f"upload-watcher-{document_id[:8]}", daemon=True)
+    _BACKGROUND_WATCHERS[document_id] = t
+    t.start()
+    logger.info(
+        "upload-watcher: spawned for doc=%s thread=%s eta=%ds",
+        document_id[:8], thread_id[:8], eta_seconds,
+    )
+
+
 def _handle_instant_rag_upload(
     content: bytes, filename: str, org_name: str,
     thread_id: str | None, file_purpose: str,
 ) -> dict[str, Any]:
     """Forward chat document uploads to mobius-rag's canonical /upload pipeline.
 
-    Note: kept the original function name (was previously the
-    instant-rag skill caller) so the call sites in pipeline/react_loop.py
-    + api/uploads.py + the source-grepping tests in tests/ keep
-    resolving without churn. The body is fully rewritten — no more
-    instant-rag skill dependency. (2026-04-27 consolidation.)
-    Rationale: instant-rag was bypassing lexicon expansion, hybrid
-    retrieval and rerank, and started hitting psycopg2 errors. The
-    rag UI Upload tab already speaks the right protocol — chat now
-    speaks it too.
+    2026-04-29 rewrite — non-blocking with ETA-based UX path.
 
-    Flow:
-      1. POST raw multipart bytes to ``{rag}/upload?ttl_days=7&payer=...&agent_scope=chat``.
-         Server-side extraction (mobius-rag handles PDF/HTML/DOCX);
-         no client-side parsing here.
-      2. Read ``document_id`` from the response.
-      3. Poll ``{rag}/documents/{id}/status`` every 5s until
-         ``status == 'completed'`` AND ``published_at`` is non-null,
-         or 5 min elapses (60 attempts).
-      4. Persist the catalog row + thread-state record (same shape as
-         before, so callers + frontend don't change).
+    Three paths based on rag's ``estimated_processing_seconds`` response:
+      * eta < 120s   → BLOCKING. Wait inline, return when published.
+      * eta < 600s   → BACKGROUND. Spawn a watcher thread, return now.
+                       System message posts to thread when ready.
+      * eta >= 600s  → REDIRECT. Return immediately with a link to the
+                       mobius-rag UI; doc is still being processed (the
+                       background pipeline runs regardless of UX path),
+                       so the user can choose to wait OR redirect.
+
+    Backwards-compat: every field the old response returned is still
+    present. New optional fields: ``ux_path``, ``page_count``,
+    ``eta_minutes``, ``redirect_url``.
     """
     import json as json_mod
     import uuid as _uuid_mod
@@ -879,6 +1022,41 @@ def _handle_instant_rag_upload(
             body = ""
         logger.warning("mobius-rag /upload failed: %s — %s", e, body)
         if e.code == 409:
+            # Duplicate-hash response from rag — surface the existing
+            # document_id so the chat can use the prior copy without
+            # forcing the user to find/dedupe themselves. Returns a
+            # success-shaped dict (ux_path=duplicate) rather than
+            # raising, per the 2026-04-29 upload spec.
+            try:
+                detail = json_mod.loads(body or "{}").get("detail") or {}
+            except Exception:
+                detail = {}
+            existing_doc_id = (detail.get("document_id") or "").strip()
+            if existing_doc_id:
+                tid_dup = (thread_id or "").strip() or str(_uuid_mod.uuid4())
+                return {
+                    "upload_id": existing_doc_id,
+                    "org_id": "",
+                    "org_name": org_name,
+                    "row_count": int(detail.get("chunks_count") or 0),
+                    "thread_id": tid_dup,
+                    "file_purpose": file_purpose,
+                    "filename": filename,
+                    "envelope_id": existing_doc_id,
+                    "document_id": existing_doc_id,
+                    "verification_tier": "rag",
+                    "status": "ready",
+                    "chunks_count": int(detail.get("chunks_count") or 0),
+                    "message": "This file was already uploaded — using the existing copy.",
+                    "published_at": detail.get("published_at"),
+                    "ux_path": "duplicate",
+                    "page_count": int(detail.get("page_count") or 1),
+                    "eta_minutes": 0,
+                    "eta_seconds": 0,
+                    "original_filename": detail.get("original_filename") or filename,
+                }
+            # Couldn't parse the duplicate detail — fall through to the
+            # legacy 409 raise so the caller surfaces a real error.
             raise HTTPException(
                 status_code=409,
                 detail=f"Duplicate file (already in rag corpus): {body or str(e)}",
@@ -906,47 +1084,51 @@ def _handle_instant_rag_upload(
             detail=f"mobius-rag /upload returned no document_id: {rag_result}",
         )
 
-    # ── Poll status: every 5s, max 60 attempts (5 min total). Stop
-    #    when status == 'completed' AND published_at is non-null —
-    #    that's the gate corpus_search uses.
-    final_status: dict[str, Any] = {}
-    poll_attempts = 60
-    for attempt in range(poll_attempts):
-        try:
-            status_req = urllib.request.Request(
-                f"{rag_url}/documents/{document_id}/status",
-                method="GET",
-            )
-            with urllib.request.urlopen(status_req, timeout=15) as sresp:
-                final_status = json_mod.loads(sresp.read())
-        except Exception as poll_exc:
-            logger.warning(
-                "rag status poll attempt %d/%d failed for doc=%s: %s",
-                attempt + 1, poll_attempts, document_id, poll_exc,
-            )
-            _time.sleep(5)
-            continue
+    # ── ETA-based UX path selection ────────────────────────────────
+    # Rag's /upload now returns ``estimated_processing_seconds`` for the
+    # full pipeline (extract+chunk+embed+publish). Branch on that to
+    # avoid the 5-minute blocking poll that locked the chat conversation.
+    page_count = int(rag_result.get("page_count") or 1)
+    eta_seconds = int(rag_result.get("estimated_processing_seconds") or 60)
+    eta_minutes = max(1, eta_seconds // 60)
 
-        status_value = (final_status.get("status") or "").lower()
-        published_at = final_status.get("published_at")
-        if status_value == "failed":
+    final_status: dict[str, Any] = {}
+    ux_path = "blocking"
+    redirect_url: str | None = None
+
+    if eta_seconds < 120:
+        # BLOCKING — small file, wait inline (user expects ~1-2 min).
+        ux_path = "blocking"
+        wait_result = _wait_for_publish_inline(rag_url, document_id, eta_seconds)
+        if wait_result.get("_failed"):
             raise HTTPException(
                 status_code=502,
                 detail=f"mobius-rag extraction failed for doc {document_id}",
             )
-        if status_value == "completed" and published_at:
-            break
-        _time.sleep(5)
+        final_status = wait_result
+    elif eta_seconds < 600:
+        # BACKGROUND — spawn watcher; return immediately with status=processing.
+        ux_path = "background"
+        _spawn_background_publish_watcher(
+            rag_url=rag_url,
+            document_id=str(document_id),
+            thread_id=(thread_id or ""),
+            filename=filename,
+            eta_seconds=eta_seconds,
+        )
     else:
-        # Polling timed out — the doc is uploaded but not yet
-        # published. Return what we have; the catalog row + thread
-        # state still get written so a later query can find it once
-        # the embed worker catches up.
-        logger.warning(
-            "rag status poll timed out after %d attempts for doc=%s "
-            "(status=%s published_at=%s) — chunks may not yet be live",
-            poll_attempts, document_id,
-            final_status.get("status"), final_status.get("published_at"),
+        # REDIRECT — too large to chat-block; surface rag UI link.
+        ux_path = "redirect"
+        rag_ui_url = (os.environ.get("MOBIUS_RAG_UI_URL") or rag_url).rstrip("/")
+        redirect_url = f"{rag_ui_url}/?prefill=true&filename={quote_plus(filename)}"
+        # Still spawn a watcher so the user gets a system message if
+        # they wait in chat instead of redirecting. Cheap insurance.
+        _spawn_background_publish_watcher(
+            rag_url=rag_url,
+            document_id=str(document_id),
+            thread_id=(thread_id or ""),
+            filename=filename,
+            eta_seconds=eta_seconds,
         )
 
     rag_result_status = (final_status.get("status") or rag_result.get("status") or "uploaded")
@@ -1031,7 +1213,34 @@ def _handle_instant_rag_upload(
         (final_status.get("status") or "").lower() == "completed"
         and bool(final_status.get("published_at"))
     )
-    return {
+
+    # Per-ux-path status + message tuning. ``status`` collapses to
+    # "ready" or "processing" for the FE; the legacy ``rag_result_status``
+    # is preserved as ``rag_status`` for diagnostics.
+    if ux_path == "blocking":
+        status_out = "ready" if is_ready else "processing"
+        message_out = (
+            f"{filename} is ready."
+            if is_ready
+            else f"{filename} is taking longer than expected. It will become available shortly."
+        )
+    elif ux_path == "background":
+        status_out = "processing"
+        message_out = (
+            f"Uploading {filename} ({page_count} pages, ~{eta_minutes} min). "
+            f"I'll let you know when it's ready."
+        )
+    else:  # redirect
+        status_out = "processing"
+        message_out = (
+            f"{filename} is a {page_count}-page document — processing it in chat will take "
+            f"~{eta_minutes} min and lock the conversation. Recommend opening Mobius RAG to "
+            f"upload there (it'll be available across all chats)."
+        )
+
+    response: dict[str, Any] = {
+        # Legacy fields — every key the old return shape had, preserved
+        # so existing callers (FE, react_loop, tests) keep working.
         "upload_id": upload_id,
         "org_id": "",
         "org_name": org_name,
@@ -1042,15 +1251,20 @@ def _handle_instant_rag_upload(
         "envelope_id": envelope_id,
         "document_id": str(document_id),
         "verification_tier": "rag",
-        "status": "ready" if is_ready else (rag_result_status or "uploaded"),
+        "status": status_out,
         "chunks_count": chunks_count,
-        "message": (
-            "Document uploaded and published to mobius-rag corpus."
-            if is_ready
-            else "Document uploaded; embedding/publish still in progress."
-        ),
+        "message": message_out,
         "published_at": final_status.get("published_at"),
+        # New fields (2026-04-29) — UX-path metadata for the FE.
+        "ux_path": ux_path,
+        "page_count": page_count,
+        "eta_minutes": eta_minutes,
+        "eta_seconds": eta_seconds,
+        "rag_status": rag_result_status,
     }
+    if redirect_url:
+        response["redirect_url"] = redirect_url
+    return response
 
 
 @app.post("/chat/roster-upload")

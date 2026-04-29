@@ -7558,7 +7558,48 @@ function run(): void {
       if (chunks > 0) {
         console.debug(`[composer-attach] "${filename}" ingested as ${chunks} chunk${chunks === 1 ? "" : "s"}`);
       }
-      showChatStatusBanner(`✓ "${filename}" is ready — searching now…`, 4000);
+      // 2026-04-29: ux_path-aware banner. Backend now returns one of
+      // four UX paths depending on the file's full-pipeline ETA:
+      //   blocking   → ready inline  (small files, <2 min)
+      //   background → still processing; system message will follow
+      //   redirect   → too large; surface rag-UI link
+      //   duplicate  → existing copy used; ready immediately
+      const uxPath = String((data as any).ux_path || "blocking");
+      const etaMin = Number((data as any).eta_minutes) || 0;
+      const pageCount = Number((data as any).page_count) || 0;
+      const redirectUrl = String((data as any).redirect_url || "");
+      if (uxPath === "background") {
+        const sub = pageCount ? ` (${pageCount} pages, ~${etaMin} min)` : ` (~${etaMin} min)`;
+        showChatStatusBanner(
+          `◌ Uploading "${filename}"${sub}. I'll let you know when it's ready.`,
+          12000,
+        );
+      } else if (uxPath === "redirect") {
+        // Banner with a clickable link to the rag UI. Falls back to
+        // text-only when redirectUrl is missing for any reason.
+        const sub = pageCount ? `${pageCount}-page document — ~${etaMin} min` : `~${etaMin} min`;
+        if (redirectUrl) {
+          showChatStatusBanner(
+            `"${filename}" is large (${sub}). Open Mobius RAG → ` +
+            `<a href="${redirectUrl}" target="_blank" rel="noopener">${redirectUrl}</a>`,
+            20000,
+          );
+        } else {
+          showChatStatusBanner(
+            `"${filename}" is large (${sub}). Processing in background — you can ` +
+            `keep chatting; a system message will confirm when it's ready.`,
+            12000,
+          );
+        }
+      } else if (uxPath === "duplicate") {
+        showChatStatusBanner(
+          `✓ "${filename}" was already in our corpus — using the existing copy.`,
+          5000,
+        );
+      } else {
+        // blocking (or legacy)
+        showChatStatusBanner(`✓ "${filename}" is ready — searching now…`, 4000);
+      }
       return data;
     } finally {
       stopComposerUploadPhaseEmits();
