@@ -302,6 +302,7 @@ run gcloud run deploy "${SERVICE_NAME}" \
     --set-env-vars="$(csv_env "${SET_ENV_VARS[@]}")" \
     --set-secrets="$(csv_env "${SET_SECRETS[@]}")" \
     --cpu-boost \
+    --no-cpu-throttling \
     --execution-environment=gen2
 
 # ── Post-deploy: populate CHAT_CORS_ORIGINS with the real URL ───────

@@ -417,20 +417,29 @@ def _prewarm_worker_caches() -> None:
     """Warm runtime caches the worker's first turn would otherwise
     pay for inside the user's request. Best-effort.
 
-    Specifically warms:
+    Currently warms:
       1. DB connection pool — opens one connection via the same code
          path ``run_state_load`` uses. The handshake + initial SELECT
          is 100-300ms of dead time on a fresh process; better paid
          here than inside the user's first turn.
-      2. Redis client — same idea: ping the response store so the
-         TCP socket is open before BRPOP receives a real job.
-      3. ReAct prompt builders — render the system prompt + tool
+      2. ReAct prompt builders — render the system prompt + tool
          manifest once so any internal lazy caches (regex compile,
          YAML parse) settle.
 
-    No LLM token is spent. If any step fails, log and return — a
-    real failure here would have surfaced as a startup probe failure
-    via the eager-import block already.
+    Explicitly does NOT warm Redis. The Redis client's first ping
+    over the VPC connector takes 60-100s on a cold Cloud Run instance
+    (observed in production logs 2026-04-29). Running that on a
+    daemon thread DOES NOT help — Python's GIL means the slow ping
+    competes with the user's first request handler and starves
+    state_load of CPU. Net effect: state_load that should take 0.3s
+    takes 13-19s on cold instances.
+
+    Redis warms naturally on its actual first use (publish_progress
+    inside the worker callback), which happens AFTER state_load
+    completes — so the user's first DB read no longer pays the GIL
+    contention tax.
+
+    No LLM token is spent. If any step fails, log and return.
     """
     t0 = time.perf_counter()
     parts: list[str] = []
@@ -449,15 +458,6 @@ def _prewarm_worker_caches() -> None:
             parts.append(f"db_pool={int((time.perf_counter()-t)*1000)}ms")
     except Exception as e:
         parts.append(f"db_pool=FAIL({type(e).__name__})")
-    try:
-        from app.queue import get_queue
-        q = get_queue()
-        # Touch the response API — instantiates the redis client + opens TCP
-        t = time.perf_counter()
-        q.get_response("__prewarm_noop__")
-        parts.append(f"redis={int((time.perf_counter()-t)*1000)}ms")
-    except Exception as e:
-        parts.append(f"redis=FAIL({type(e).__name__})")
     try:
         from app.pipeline.react.prompts import _react_reasoning_system
         t = time.perf_counter()
