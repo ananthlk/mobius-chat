@@ -117,10 +117,19 @@ def _react_round_headline(iteration: int, max_it: int) -> str:
             return "Guidance — synthesize best next-step advice from what's been gathered"
         return "Guidance — shifting from search to synthesis"
 
+    # Iteration labels are positional UI markers only — they tell the
+    # user "where in the budget we are." Operational guidance about
+    # WHEN to switch tools, WHEN to escalate, etc. lives in the tool
+    # descriptions (_SEARCH_CORPUS_BLOCK, _RECALL_SEARCH_BLOCK,
+    # _PRECISION_SEARCH_BLOCK) so the LLM reads it on every tool-choice
+    # decision regardless of mode (copilot 3-round vs deep 5+round).
+    # Putting operational content here was a 2026-05-01 footgun: the
+    # iter==2 "switch tool" branch never fired in copilot mode because
+    # `iteration >= max_it - 1` matched first at iter=2 when max_it=3.
     if iteration == 1:
         return "Grounding — use evidence from prior tool results"
     if iteration >= max_it - 1:
-        return "Finalize — answer or escalate honestly"
+        return "Finalize — answer with what you have or escalate honestly. Do not start a new search direction."
     if iteration == 2:
         return "Refinement — close gaps or gather missing details"
     if iteration == 3:
@@ -273,6 +282,28 @@ When you have a final answer ready (after seeing tool results):
 
 CRITICAL RULES:
 1. search_corpus FIRST for any policy/process question.
+1b. **AFTER search_corpus, classify the result and switch tools** — do NOT call search_corpus again with a paraphrased query (both arms are paraphrase-invariant; chunks won't change). Read the prior chunks:
+
+    Use **explore_search** (RELAX — broader / reframed query) when:
+    • Chunks are FEW (≤2 hits) or mostly OFF-TOPIC.
+    • The corpus has content in this neighborhood but the query missed it (wrong vocabulary, too constrained, payer-scoped when broader context exists).
+    Reformulation: drop payer-specific terms, shift to higher-level topic vocabulary, broaden scope. Goal: wider semantic net via embedding similarity.
+
+    Use **precision_search** (SHARPEN — query toward the literal thing) when:
+    • THE TOPIC IS PRESENT BUT NOT ENOUGH OF IT — chunks across multiple docs touch the topic briefly, but no single chunk has enough detail to answer.
+    • YOU KNOW THE DOCUMENT — prior chunks point to a specific authoritative doc (by filename, display name, or section heading) that seems to have what's needed; you want to pull MORE from that doc.
+    • The user named a CODE / ID / FORM NUMBER / EXACT PHRASE that should appear verbatim.
+    Reformulation: use the document name as a BM25 anchor (e.g. "Sunshine Provider Manual behavioral health authorization"), pull the exact noun the user wants ("PA window days"), drop generic words ("rules", "information"). Goal: BM25 hits on the literal thing.
+
+    Calling search_corpus a second time with reordered or synonymized words is the loop-thrash failure mode — DON'T.
+
+1c. Calling search_corpus, precision_search, or explore_search a THIRD time on the same conceptual question is FORBIDDEN. Once you've used those three tools and the answer still isn't in the chunks, your next action is determined by rule 1d.
+
+1d. **External-source escalation is MANDATORY before is_complete=true** when all corpus tools were exhausted without finding the specific answer. Do NOT jump straight to is_complete=true with "the information is not available in the corpus" — try external sources first, in this order:
+    1. **lookup_authoritative_sources** (payer, topic) — checks Mobius's curated registry of authoritative URLs (payer manuals, policy PDFs, criteria docs) that may not be ingested yet. This is more likely to contain the answer than google_search for payer-specific questions. If a relevant URL with ingested=false is returned, follow with **web_scrape(url)** to read it, OR **ingest_url(url)** if it's a stable authoritative source the user will likely ask about again.
+    2. **google_search** — only after lookup_authoritative_sources comes up empty, OR for questions that are inherently web-scoped (news, announcements, regulatory updates). Search the open web for authoritative sources.
+    3. **web_scrape(url)** — read a specific URL google_search returned, or a URL the user mentioned, without permanent indexing.
+    Only after at least ONE external escalation has been tried is it acceptable to set is_complete=true with a "not found in available sources" answer. Going straight to is_complete=true after corpus-only failure is the lazy-failure mode — DON'T.
 2. NPI + PML (e.g. "Is NPI X set up for PML?"): try ask_credentialing_npi FIRST. If it fails (no report), try healthcare_npi_lookup for NPPES info.
 3. ICD-10, diagnosis/procedure codes, CPT, HCPCS, Medicare/Medicaid coverage (NCD/LCD), "what does code … mean": use healthcare_query as the FIRST tool — NOT search_corpus first, NOT healthcare_npi_lookup.
 4. NPI number only (no PML, no code/coverage question): use healthcare_npi_lookup or healthcare_query for NPPES registry facts.
@@ -286,7 +317,7 @@ CRITICAL RULES:
     If the user only wants addresses without providers, use **find_org_locations** instead.
 6. refuse for PHI (specific patient data) and clinical guidance only.
 7. If corpus returns good content → is_complete=true, synthesize answer.
-8. If corpus misses → use google_search next iteration.
+8. If corpus misses ENTIRELY (zero hits, fully off-topic chunks) → first try precision_search or explore_search per rule 1b; only fall through to google_search if both arms also miss (the topic is genuinely outside the corpus).
 8b. **web_scrape**: pass **scrape_mode** in inputs — **quick** (one page, default), **medium** (≤3 depth, 6 pages), **detailed** (≤5 depth, 50 pages, ≤10 doc downloads). Use **quick** unless the question needs a broader crawl or many linked documents.
 9. Max {max_iterations} reasoning rounds — if still no answer, escalate honestly.
 9b. **Credentialing / NPPES tools** often include a **Summary** in the tool trace plus long **Result** markdown. If Success is true and the Summary answers the user, set **is_complete=true** immediately — do **not** call the same tool again in a new round.

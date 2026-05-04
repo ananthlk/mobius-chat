@@ -194,7 +194,9 @@ def run_one(
         question=question,
         cid="",
     )
-    thread_id = f"stress-r{round_id}-q{question_id}-{uuid.uuid4().hex[:8]}"
+    # thread_id MUST be a UUID — chat's ensure_thread() casts to pg uuid.
+    # Round/question metadata captured on TurnResult, not in the id.
+    thread_id = str(uuid.uuid4())
     started_at = time.time()
     res.started_at = started_at
     with httpx.Client() as client:

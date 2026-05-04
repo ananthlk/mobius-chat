@@ -224,6 +224,9 @@ _TOOL_STAGE_FOR_USAGE: dict[str, str] = {
     # Sprint 2 #0.2 (2026-04-24): retrieval-mode taxonomy. recall and
     # precision share the rag analytics stage so we can compare hit
     # rates per mode. Aliases are normalized in _normalize_tool_name.
+    # The prompt-facing name is now ``explore_search`` (2026-05-01),
+    # but the canonical key in this map stays ``recall_search`` so
+    # existing analytics aggregations keep working.
     "recall_search": "rag",
     "precision_search": "rag",
     # 2026-04-25: fetch_document is metadata-only — no LLM stage,
@@ -305,11 +308,19 @@ _TOOL_ALIASES: dict[str, str] = {
     "hybrid_search":         "search_corpus",
     "hybrid":                "search_corpus",
 
-    # recall_search aliases (vector-only, broad)
-    "lazy_corpus_search":    "recall_search",   # back-compat: old name
+    # vector-only broad-recall aliases. Canonical name remains
+    # ``recall_search`` for code-path stability (dispatcher at
+    # line ~660 checks ``tool == "recall_search"``); the prompt-
+    # facing name is now ``explore_search`` (2026-05-01) — the
+    # word "recall" was ambiguous to LLMs (read as "the tool for
+    # empty returns" rather than "the broader-semantic-net tool").
+    # "explore" is the everyday-English signal for "scan widely,
+    # find what's out there."
+    "explore_search":        "recall_search",   # new prompt-facing name
+    "explore":               "recall_search",
+    "lazy_corpus_search":    "recall_search",   # back-compat: oldest name
     "broad":                 "recall_search",
     "broad_search":          "recall_search",
-    "explore":               "recall_search",
     "vector_search":         "recall_search",
     "semantic_search":       "recall_search",
 

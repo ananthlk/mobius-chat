@@ -33,6 +33,29 @@ def _debug_chunks(label: str, chunks: list, max_items: int = 3) -> None:
 _DEFAULT_RERANKER_CONFIG = "configs/reranker_v1.yaml"
 
 
+def _corpus_db_url(passed: str) -> str:
+    """Resolve the DB URL for corpus reads (BM25 + JPD tagger + doc tags).
+
+    Prefers ``CORPUS_RAG_DATABASE_URL`` env (added 2026-04-27) so chat
+    can read corpus tables directly from the mobius_rag DB instead of
+    the chat-side stale copy. Falls back to the URL the caller passed
+    (typically ``CHAT_RAG_DATABASE_URL``) when the corpus override
+    isn't set — keeps single-DB dev / local setups working.
+
+    The chat WRITE path (chat_state, threads, turns) is unaffected;
+    only retrieval-side reads use this override.
+    """
+    override = (os.environ.get("CORPUS_RAG_DATABASE_URL") or "").strip()
+    if override:
+        # When chat code adds its CHAT_DB_PASSWORD on the fly, the
+        # passed URL has the password baked in. The override here is
+        # raw (no password) — let _get_fallback_url logic upstream
+        # inject it. For now we trust the env value as-is; if password
+        # injection becomes needed we can route through db_client.
+        return override
+    return passed
+
+
 def _emit(emitter: Callable[[str], None] | None, msg: str) -> None:
     if emitter and msg.strip():
         emitter(msg.strip())
