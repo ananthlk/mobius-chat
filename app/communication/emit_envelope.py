@@ -97,6 +97,17 @@ Signal = Literal[
     "healthcare_query_no_match",      # rare; kept chat-side for now
     "retrieval_trace",                # corpus_search skill telemetry — diagnostic UI panel
     "note",                           # generic fallback — plain-text emits migrated later
+
+    # ── Thinking-chain trace (2026-05-04) ──────────────────────────────
+    # User-visible progress steps that tell the story of how a question
+    # was understood, searched, and evaluated. Two-tier rendering:
+    #   ``note``  → plain-English line shown to all users
+    #   ``data``  → structured payload surfaced in technical mode only
+    "query_understood",               # question parsed into searchable intent
+    "strategy_selected",              # search mode (auto/precision/recall) chosen
+    "retrieval_complete",             # search round finished; N chunks returned
+    "fallback_triggered",             # corpus missed; escalating to web / guidance
+    "answer_quality",                 # adjudicator verdict (PASS/PARTIAL/FAIL)
 ]
 
 
@@ -795,4 +806,204 @@ def make_cache_rejected_by_llm(
         data={"reason": reason},
         thread_id=thread_id,
         user_id=user_id,
+    )
+
+
+# ── Thinking-chain trace signals (2026-05-04) ─────────────────────────
+#
+# Five signals that narrate what the system is doing in plain English.
+# All fire in react_loop.py during search tool dispatch, plus
+# answer_quality fires from post_run_adjudication.py.
+#
+# Two-tier rendering contract:
+#   ``note``  — plain English; shown to every user in the thinking trail
+#   ``data``  — structured payload; rendered in technical mode only
+#               (the FE checks ctx.chat_mode or a user preference flag)
+
+
+def make_query_understood(
+    correlation_id: str,
+    *,
+    query: str,
+    intent_summary: str,
+    round: int | None = None,
+    thread_id: str | None = None,
+    user_id: str | None = None,
+) -> EmitEnvelope:
+    """Fires once per search invocation after the tool receives the query.
+
+    ``intent_summary`` is a short phrase the pipeline derives from the
+    query — e.g. "Molina mental-health billing codes in Florida". The
+    note is what the user sees; data carries the raw query for
+    technical-mode diff."""
+    note = f"Got it — searching for: {intent_summary or query[:120]}"
+    return EmitEnvelope(
+        signal="query_understood",
+        correlation_id=correlation_id,
+        step_id=f"round_{round}.query_understood" if round is not None else "query_understood",
+        note=note,
+        data={
+            "query": (query or "")[:400],
+            "intent_summary": (intent_summary or "")[:200],
+        },
+        round=round,
+        thread_id=thread_id,
+        user_id=user_id,
+    )
+
+
+def make_strategy_selected(
+    correlation_id: str,
+    *,
+    mode: str,
+    reason: str | None = None,
+    round: int | None = None,
+    thread_id: str | None = None,
+    user_id: str | None = None,
+) -> EmitEnvelope:
+    """Fires immediately after make_query_understood.
+
+    Translates the technical ``mode`` into plain English so users
+    understand what kind of search is about to run.
+    """
+    _mode_notes = {
+        "auto":      "Searching our authoritative materials…",
+        "corpus":    "Searching our authoritative materials…",
+        "precision": "Checking for exact policy text…",
+        "recall":    "Doing a broad scan across our materials…",
+        "fallback":  "Checking external sources…",
+    }
+    note = _mode_notes.get(mode, "Searching…")
+    return EmitEnvelope(
+        signal="strategy_selected",
+        correlation_id=correlation_id,
+        step_id=f"round_{round}.strategy_selected" if round is not None else "strategy_selected",
+        note=note,
+        data={
+            "mode": mode,
+            "reason": (reason or "")[:200],
+        },
+        round=round,
+        thread_id=thread_id,
+        user_id=user_id,
+    )
+
+
+def make_retrieval_complete(
+    correlation_id: str,
+    *,
+    chunks_returned: int,
+    tool: str,
+    mode: str,
+    top_score: float | None = None,
+    round: int | None = None,
+    thread_id: str | None = None,
+    user_id: str | None = None,
+) -> EmitEnvelope:
+    """Fires after a search round completes and we know how many chunks
+    came back. ``top_score`` is the reranker score of the best chunk
+    (0–1); rendered in technical mode, omitted in copilot."""
+    if chunks_returned == 0:
+        note = "Nothing found in this search — may try a different approach."
+    elif chunks_returned == 1:
+        note = "Found 1 relevant passage."
+    else:
+        note = f"Found {chunks_returned} relevant passages."
+    if top_score is not None and chunks_returned > 0:
+        note += f" (top relevance: {top_score:.0%})"
+    return EmitEnvelope(
+        signal="retrieval_complete",
+        correlation_id=correlation_id,
+        step_id=f"round_{round}.retrieval_complete" if round is not None else "retrieval_complete",
+        note=note,
+        data={
+            "tool": tool,
+            "mode": mode,
+            "chunks_returned": chunks_returned,
+            "top_score": top_score,
+        },
+        round=round,
+        thread_id=thread_id,
+        user_id=user_id,
+    )
+
+
+def make_fallback_triggered(
+    correlation_id: str,
+    *,
+    from_tool: str,
+    to_tool: str,
+    reason: str,
+    round: int | None = None,
+    thread_id: str | None = None,
+    user_id: str | None = None,
+) -> EmitEnvelope:
+    """Fires when corpus search produces no usable evidence and the
+    pipeline escalates to an external source or guidance mode."""
+    _to_labels = {
+        "google_search":  "checking external sources",
+        "web_scrape":     "reading a web page",
+        "guidance_mode":  "synthesizing from what we know",
+    }
+    to_label = _to_labels.get(to_tool, to_tool)
+    note = f"Our materials didn't cover this — {to_label}."
+    return EmitEnvelope(
+        signal="fallback_triggered",
+        correlation_id=correlation_id,
+        step_id=f"round_{round}.fallback_triggered" if round is not None else "fallback_triggered",
+        note=note,
+        data={
+            "from_tool": from_tool,
+            "to_tool": to_tool,
+            "reason": (reason or "")[:300],
+        },
+        round=round,
+        thread_id=thread_id,
+        user_id=user_id,
+    )
+
+
+def make_answer_quality(
+    correlation_id: str,
+    *,
+    verdict: str,
+    score: float,
+    sub_scores: dict[str, Any],
+    failure_stage: str | None = None,
+    thread_id: str | None = None,
+    user_id: str | None = None,
+) -> EmitEnvelope:
+    """Fires after the adjudicator completes. Promoted to task-manager
+    as ``insight`` (med) — tracks answer quality over time and surfaces
+    systemic coverage gaps.
+
+    ``verdict`` is one of PASS / PARTIAL / FAIL.
+    ``score`` is 0–1 (overall adjudicator score).
+    ``sub_scores`` is the adjudicator's per-dimension breakdown dict.
+    ``failure_stage`` (optional) names where the answer fell short.
+    """
+    v = (verdict or "FAIL").upper()
+    if v == "PASS":
+        note = "Answer verified — well grounded in our materials."
+    elif v == "PARTIAL":
+        note = "Partial answer — we found some but not all of what you need."
+    else:
+        note = "Couldn't fully answer this — may not be in our materials yet."
+
+    return EmitEnvelope(
+        signal="answer_quality",
+        correlation_id=correlation_id,
+        step_id="adjudicator.answer_quality",
+        note=note,
+        data={
+            "verdict": v,
+            "score": round(score, 3),
+            "sub_scores": sub_scores or {},
+            "failure_stage": failure_stage,
+        },
+        thread_id=thread_id,
+        user_id=user_id,
+        report_to_task_manager=True,
+        task_type="insight",
+        task_severity="med",
     )

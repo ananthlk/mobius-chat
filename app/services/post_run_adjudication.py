@@ -281,7 +281,16 @@ async def _run_async(ctx: PipelineContext, payload: dict[str, Any]) -> None:
             adj_row = breakdown_row_from_usage(dict(adjud_usage))
         except Exception as e:
             logger.debug("post_run: breakdown_row_from_usage skipped: %s", e)
-    merge_updates: dict[str, Any] = {"qc_audit": qc_for_client, "thinking_log": [line]}
+    from app.communication.emit_envelope import make_answer_quality
+    _aq_envelope = make_answer_quality(
+        ctx.correlation_id,
+        verdict=verdict,
+        score=score,
+        sub_scores=_sub_scores_client(merged),
+        failure_stage=attr.get("failure_stage"),
+        thread_id=ctx.thread_id,
+    )
+    merge_updates: dict[str, Any] = {"qc_audit": qc_for_client, "thinking_log": [line, _aq_envelope.to_dict()]}
     enrich: dict[str, Any] = {}
     try:
         enrich = await fetch_quality_enrich_map_for_correlation_async(ctx.correlation_id)

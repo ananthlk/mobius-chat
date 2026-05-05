@@ -361,6 +361,12 @@ def _execute_tool(
         if emitter and msg:
             emitter(str(msg).strip())
 
+    def emit_signal(envelope) -> None:
+        if emitter:
+            emitter(envelope.to_dict())
+
+    _rn = getattr(ctx, "react_rounds_used", None)
+
     if tool == "refuse":
         reason = inputs.get("reason", "PHI or clinical guidance")
         emit(f"⊘ {reason}")
@@ -428,6 +434,19 @@ def _execute_tool(
     if tool == "search_corpus":
         query = inputs.get("query") or (ctx.effective_message or ctx.message)
         rag_overrides = rag_filters_from_active(active) or {}
+
+        from app.communication.emit_envelope import (
+            make_query_understood, make_strategy_selected,
+            make_retrieval_complete, make_fallback_triggered,
+        )
+        emit_signal(make_query_understood(
+            ctx.correlation_id, query=query, intent_summary=query[:120],
+            round=_rn, thread_id=ctx.thread_id,
+        ))
+        emit_signal(make_strategy_selected(
+            ctx.correlation_id, mode="auto",
+            round=_rn, thread_id=ctx.thread_id,
+        ))
 
         # Phase B.4 — parallel retrieval.
         #
@@ -642,8 +661,24 @@ def _execute_tool(
         else:
             merged_signal = RETRIEVAL_SIGNAL_NO_SOURCES
 
+        emit_signal(make_retrieval_complete(
+            ctx.correlation_id,
+            chunks_returned=len(merged_sources),
+            tool="search_corpus",
+            mode="auto",
+            round=_rn,
+            thread_id=ctx.thread_id,
+        ))
+
         if not success:
-            emit("↓ Not in our materials — will try web next if needed.")
+            emit_signal(make_fallback_triggered(
+                ctx.correlation_id,
+                from_tool="search_corpus",
+                to_tool="google_search",
+                reason="corpus returned no usable evidence",
+                round=_rn,
+                thread_id=ctx.thread_id,
+            ))
 
         return {
             "tool": "search_corpus",  # keep tool name stable for retry-guard + observability
@@ -659,56 +694,41 @@ def _execute_tool(
         }
 
     if tool == "recall_search":
-        # Day 6 (2026-04-20) — the "light" retrieval skill. Fast
-        # vector-only scan of the approved corpus. No confidence
-        # filter, no neighbor expansion, no per-round LLM synthesis
-        # (the integrator synthesizes at turn end, matching the
-        # thread_corpus_search / lazy_rag_search pattern).
-        #
-        # Renamed from ``lazy_corpus_search`` (Sprint 2 #0.2,
-        # 2026-04-24) to make planner intent explicit alongside
-        # ``precision_search`` and the new hybrid ``search_corpus``
-        # default. The old name is preserved as an alias in
-        # ``_TOOL_ALIASES`` for back-compat.
-        #
-        # When the planner picks this tool over search_corpus:
-        #   - copilot mode / speed > precision
-        #   - first-pass exploration before a heavier retrieval round
-        #   - broad "what do we know about X" scans
-        #   - paraphrased queries that may not share keywords with corpus
-        #
-        # Thin dispatcher; the shared skill does everything.
+        # Thin alias — routes to the mobius-rag corpus_search skill with
+        # mode="recall" (vector-only arm). Replaced the old
+        # retrieve_for_chat → retriever_backend → ChromaDB path.
         query = inputs.get("query") or (ctx.effective_message or ctx.message)
-        rag_overrides = rag_filters_from_active(active) or {}
-
-        # 2026-04-27 — un-retired. Now calls the real three-mode dispatcher
-        # via retrieve_for_chat(mode="recall") → retrieve_recall →
-        # _run_vector_arm → run_vector_only → mobius-rag /api/query
-        # (pgvector). Distinct primitive from precision_search (BM25) and
-        # search_corpus (hybrid RRF of both arms).
-        from app.services.retriever_backend import retrieve_for_chat
-        from app.db_client import _get_fallback_url
-        from app.chat_config import get_chat_config
-
-        rag_cfg = get_chat_config().rag
-        retrieval_db_url = _get_fallback_url("chat") or rag_cfg.database_url
-
-        emit("◌ Recall (vector) scan of our materials…")
+        from app.communication.emit_envelope import (
+            make_query_understood, make_strategy_selected, make_retrieval_complete,
+        )
+        emit_signal(make_query_understood(
+            ctx.correlation_id, query=query, intent_summary=query[:120],
+            round=_rn, thread_id=ctx.thread_id,
+        ))
+        emit_signal(make_strategy_selected(
+            ctx.correlation_id, mode="recall",
+            round=_rn, thread_id=ctx.thread_id,
+        ))
+        from app.skills.registry import SkillCall, dispatch
         try:
-            chunks, _telemetry = retrieve_for_chat(
-                question=query,
-                top_k=16,
-                database_url=retrieval_db_url,   # needed for the vector reranker's tag/authority lookups
-                filter_payer=(rag_overrides.get("filter_payer") or "").strip(),
-                filter_state=(rag_overrides.get("filter_state") or "").strip(),
-                filter_program=(rag_overrides.get("filter_program") or "").strip(),
-                filter_authority_level="",
-                emitter=None,
-                include_trace=False,
-                mode="recall",
+            env = dispatch(
+                SkillCall(
+                    name="search_corpus",
+                    inputs={"query": query, "mode": "recall", "k": 16},
+                    question=query,
+                    user_message=ctx.message,
+                    thread_id=ctx.thread_id,
+                    active_context=active,
+                    mode=getattr(ctx, "chat_mode", "copilot") or "copilot",
+                    emitter=emitter,
+                    pipeline_ctx=ctx,
+                )
             )
+            skill_error = (env.extra or {}).get("error") if env else None
+            if skill_error:
+                raise RuntimeError(f"skill_error:{skill_error}")
         except Exception as exc:
-            logger.warning("recall_search failed: %s", exc, exc_info=True)
+            logger.warning("recall_search skill failed: %s", exc, exc_info=True)
             return {
                 "tool": "recall_search",
                 "success": False,
@@ -716,84 +736,63 @@ def _execute_tool(
                 "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
                 "sources": [],
             }
-
-        if not chunks:
-            emit("↓ Recall scan found nothing matching this query.")
-            return {
-                "tool": "recall_search",
-                "success": False,
-                "result": "No chunks from recall scan.",
-                "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
-                "sources": [],
-            }
-
-        # chunks already come back in chat dict shape from run_vector_only
-        # (with ``id``, ``text``, ``document_id``, ``document_name``,
-        # ``page_number``, ``source_type``, ``similarity``). Forward
-        # directly — the integrator's source-rendering code expects
-        # exactly these keys.
-        sources_out: list[dict] = []
-        for c in chunks:
-            sources_out.append({
-                "id":              c.get("id"),
-                "text":            c.get("text") or "",
-                "document_id":     c.get("document_id"),
-                "document_name":   c.get("document_name") or c.get("document_display_name") or "document",
-                "page_number":     c.get("page_number"),
-                "source_type":     c.get("source_type") or "chunk",
-                "rerank_score":    c.get("similarity") or c.get("match_score"),
-            })
-
-        emit(
-            f"  ✓ recall scan: {len(sources_out)} vector hit"
-            f"{'s' if len(sources_out) != 1 else ''}."
-        )
-
+        sources_out = [s.to_dict() for s in env.sources]
+        success = bool(sources_out)
+        emit_signal(make_retrieval_complete(
+            ctx.correlation_id,
+            chunks_returned=len(sources_out),
+            tool="recall_search",
+            mode="recall",
+            round=_rn,
+            thread_id=ctx.thread_id,
+        ))
+        if not success:
+            emit("\u2193 Recall scan found nothing matching this query.")
         return {
             "tool": "recall_search",
-            "success": True,
-            "result": f"Found {len(sources_out)} chunks via vector recall.",
-            "signal": "corpus_only",
+            "success": success,
+            "result": env.text or f"Found {len(sources_out)} chunks via vector recall.",
+            "signal": env.signal or RETRIEVAL_SIGNAL_NO_SOURCES,
             "sources": sources_out,
-            "usage": None,
+            "usage": env.usage,
         }
 
     if tool == "precision_search":
-        # Sprint 2 #0.2 (2026-04-24) — BM25-only exact-phrase search.
-        # The complement of recall_search: same Chroma index? No —
-        # this path skips Chroma entirely and runs pure BM25 on
-        # Postgres text via mobius-retriever. Best for code / policy-ID
-        # / exact-phrase lookups (HCPCS, FL.UM.87, etc.).
-        #
-        # Reuses retrieve_for_chat with mode="precision" — same machinery
-        # the legacy BM25 fallback uses, just exposed as a first-class
-        # tool the planner can pick deliberately.
-        from app.services.retriever_backend import retrieve_for_chat
-
+        # Thin alias — routes to the mobius-rag corpus_search skill with
+        # mode="precision" (BM25-only arm). Replaced the old
+        # retrieve_for_chat → retriever_backend → BM25 path.
         query = inputs.get("query") or (ctx.effective_message or ctx.message)
-        rag_overrides = rag_filters_from_active(active) or {}
-
-        from app.chat_config import get_chat_config
-        from app.db_client import _get_fallback_url
-        rag = get_chat_config().rag
-        retrieval_db_url = _get_fallback_url("chat") or rag.database_url
-
-        emit("◌ Precision (BM25) search of our materials…")
+        from app.communication.emit_envelope import (
+            make_query_understood, make_strategy_selected, make_retrieval_complete,
+        )
+        emit_signal(make_query_understood(
+            ctx.correlation_id, query=query, intent_summary=query[:120],
+            round=_rn, thread_id=ctx.thread_id,
+        ))
+        emit_signal(make_strategy_selected(
+            ctx.correlation_id, mode="precision",
+            round=_rn, thread_id=ctx.thread_id,
+        ))
+        from app.skills.registry import SkillCall, dispatch
         try:
-            chunks, telemetry = retrieve_for_chat(
-                question=query,
-                top_k=10,
-                database_url=retrieval_db_url,
-                filter_payer=(rag_overrides.get("filter_payer") or rag.filter_payer or "").strip(),
-                filter_state=(rag_overrides.get("filter_state") or rag.filter_state or "").strip(),
-                filter_program=(rag_overrides.get("filter_program") or rag.filter_program or "").strip(),
-                filter_authority_level=(rag.filter_authority_level or "").strip(),
-                emitter=None,
-                include_trace=True,
-                mode="precision",
+            env = dispatch(
+                SkillCall(
+                    name="search_corpus",
+                    inputs={"query": query, "mode": "precision", "k": 10},
+                    question=query,
+                    user_message=ctx.message,
+                    thread_id=ctx.thread_id,
+                    active_context=active,
+                    mode=getattr(ctx, "chat_mode", "copilot") or "copilot",
+                    emitter=emitter,
+                    pipeline_ctx=ctx,
+                )
             )
+            skill_error = (env.extra or {}).get("error") if env else None
+            if skill_error:
+                raise RuntimeError(f"skill_error:{skill_error}")
         except Exception as exc:
-            logger.warning("precision_search failed: %s", exc, exc_info=True)
+            logger.warning("precision_search skill failed: %s", exc, exc_info=True)
             return {
                 "tool": "precision_search",
                 "success": False,
@@ -801,41 +800,25 @@ def _execute_tool(
                 "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
                 "sources": [],
             }
-
-        if not chunks:
-            emit("↓ Precision search found no exact-phrase matches.")
-            return {
-                "tool": "precision_search",
-                "success": False,
-                "result": "No exact-phrase matches in the corpus.",
-                "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
-                "sources": [],
-            }
-
-        sources_out = []
-        for c in chunks:
-            sources_out.append({
-                "id": c.get("id"),
-                "text": c.get("text") or "",
-                "document_id": c.get("document_id"),
-                "document_name": c.get("document_name") or c.get("document_display_name") or "document",
-                "page_number": c.get("page_number"),
-                "source_type": c.get("source_type") or "chunk",
-                "rerank_score": c.get("match_score") or c.get("rerank_score"),
-            })
-
-        emit(
-            f"  ✓ precision search: {len(sources_out)} BM25 hit"
-            f"{'s' if len(sources_out) != 1 else ''}."
-        )
+        sources_out = [s.to_dict() for s in env.sources]
+        success = bool(sources_out)
+        emit_signal(make_retrieval_complete(
+            ctx.correlation_id,
+            chunks_returned=len(sources_out),
+            tool="precision_search",
+            mode="precision",
+            round=_rn,
+            thread_id=ctx.thread_id,
+        ))
+        if not success:
+            emit("\u2193 Precision search found no exact-phrase matches.")
         return {
             "tool": "precision_search",
-            "success": True,
-            "result": f"Found {len(sources_out)} exact-match chunk(s).",
-            "signal": "corpus_only",
+            "success": success,
+            "result": env.text or f"Found {len(sources_out)} exact-match chunks.",
+            "signal": env.signal or RETRIEVAL_SIGNAL_NO_SOURCES,
             "sources": sources_out,
-            "usage": None,
-            "telemetry": telemetry,
+            "usage": env.usage,
         }
 
     if tool == "search_uploaded_document":

@@ -40,291 +40,73 @@ from app.stages.agents.capabilities import tool_capabilities_for_parser
 # from first principles instead of memorized symptoms.
 
 _RETRIEVAL_METHODOLOGY_PRIMER = """\
-RETRIEVAL METHODOLOGY — three search tools, one diagnostic model.
+RETRIEVAL — one tool, one index, three modes.
 
-The three corpus search tools (search_corpus, precision_search,
-explore_search) share one index but score candidates by
-FUNDAMENTALLY DIFFERENT mechanisms:
+search_corpus is the single entry point for all corpus retrieval.
+The ``mode`` parameter selects the scoring arm:
 
-  • BM25 — bag-of-words token-frequency scoring. Used by
-    precision_search and as one arm of search_corpus. Rewards
-    documents with high literal-token overlap with the query.
-    Strong on exact codes, IDs, verbatim phrases. Weak when the
-    user's question uses different vocabulary than the corpus.
-    Paraphrase-invariant: rewording the same query → same chunks.
+  auto (default) — BM25 + pgvector hybrid via Reciprocal Rank Fusion.
+    Best for most questions. Balances keyword precision and semantic
+    recall in one call. Use this unless you have a specific reason not to.
 
-  • Vector / pgvector ANN — cosine similarity between query and
-    chunk embeddings in 1536-D space. Used by explore_search and
-    as the other arm of search_corpus. Rewards semantic neighbors,
-    not literal token match. Strong on conceptual / paraphrased
-    questions, surfaces docs that don't share vocabulary with the
-    query. Also paraphrase-invariant on the SAME concept.
+  precision — BM25-only. Strong on exact codes, IDs, form names,
+    verbatim policy text. Use when you know the answer contains a
+    specific token the user mentioned ("FL.UM.02", "H0019", "eAUTH").
 
-  • RRF fusion — search_corpus runs BM25 and vector arms in
-    parallel, fuses by reciprocal-rank, and applies a healthcare
-    reranker. Balances precision (BM25) and recall (vector) in
-    one call.
+  recall — vector-only. Strong on paraphrased / conceptual questions
+    and broad "what do we know about X" scans. Use when auto returned
+    too-narrow results dominated by one doc or payer.
 
-DECISION MODEL — one default, two diagnostic escalations.
-
-  (1) DEFAULT: search_corpus. It tries to balance both signals.
-      Right for almost every first call.
-
-  (2) AFTER search_corpus, classify what the answer was LACKING:
-
-      ┌──────────────────────────┬──────────────────────────────┐
-      │ LACKING PRECISION        │ LACKING RECALL               │
-      │ ───────────────────      │ ───────────────              │
-      │ Chunks are roughly       │ Chunks are all from one doc  │
-      │ on-topic but didn't pin  │ or one source; question      │
-      │ down the specific code,  │ wanted breadth across docs/  │
-      │ ID, day count, dollar    │ payers/topics; we surfaced   │
-      │ amount, form name, or    │ a narrow slice when the user │
-      │ verbatim policy text     │ asked for a survey or scan   │
-      │ the user wanted.         │ of what the corpus knows.    │
-      │                          │                              │
-      │ Action: precision_search │ Action: explore_search        │
-      │ with a SHARPER query —   │ with a REFRAMED query —      │
-      │ go DEEPER on the         │ broaden conceptually, drop   │
-      │ specific thing that's    │ payer/scope constraints,     │
-      │ missing. Use the names,  │ shift to higher-level        │
-      │ codes, document titles,  │ vocabulary that captures     │
-      │ or exact phrases the     │ the wider topic the user     │
-      │ corpus chunks already    │ is exploring.                │
-      │ surfaced as anchors.     │                              │
-      └──────────────────────────┴──────────────────────────────┘
-
-  (3) After at most two retrieval rounds total, prefer surfacing
-      the gap honestly to a third round. Both arms are paraphrase-
-      invariant — paraphrasing the same conceptual query is wasted.
-
-QUERY REFORMULATION RULES — when escalating, the query MUST change
-in a meaningful way, not just word order:
-
-  • Going to PRECISION → make the query MORE specific. Pull the
-    exact noun the user wants pinned down ("PA criteria",
-    "appeal deadline", "fee schedule"), or a doc/form name the
-    prior chunks mentioned ("eAUTH form", "MH-RTC-PHP Initial
-    Request"), or a code/ID. Drop generic words ("rules",
-    "requirements", "information"). Goal: hit BM25 on the
-    literal thing the user wants.
-
-  • Going to RECALL → make the query MORE conceptual. Replace
-    payer-specific phrasing with the topic ("Sunshine Health BH
-    PA" → "psychiatric residential treatment authorization").
-    Drop scope constraints. Goal: cast a wider semantic net so
-    the vector arm reaches docs the prior call missed.
-
-  • Word reordering, synonym substitution, or adding generic
-    qualifiers ("rules", "policy", "guidelines") does NOT
-    count as reformulation — both arms ignore those changes."""
+WHEN TO OVERRIDE mode:
+  • Start with auto (or omit mode entirely).
+  • If auto returned on-topic chunks but missed the SPECIFIC code /
+    day-count / dollar amount → retry with mode="precision" + a sharper
+    query (pull the exact noun from prior chunks).
+  • If auto returned results from only one doc/payer when the user
+    wanted breadth → retry with mode="recall" + a more conceptual query
+    (drop payer-specific phrasing, raise abstraction level).
+  • After at most two rounds, surface the gap honestly — both arms are
+    paraphrase-invariant; rephrasing the same query won't change results."""
 
 
 # ── Router-owned prose (search_corpus, healthcare_npi_lookup, etc.) ──
 
 _SEARCH_CORPUS_BLOCK = """\
-search_corpus(query)
-  Default corpus search — HYBRID BM25 ⊕ vector via Reciprocal Rank
-    Fusion. Combines keyword precision with semantic recall in one
-    ranked list. Honors the canonical (n_hierarchical) vs factual
-    (n_factual) blend so paragraph-level policy answers surface above
-    sentence-level fragments.
-  Use for: ANY question not requiring structured data, when citations
-    and confidence matter. This is the right default for everything
-    except specific code/ID lookups (precision_search) or pure
-    exploratory passes (explore_search).
-  This includes: enrollment, PA, appeals, credentialing process,
-    timely filing, covered services, claims process, policy questions.
-  Try this FIRST for everything except the tools below.
-  Aliases the planner / ReAct can use interchangeably:
-    corpus, default_search, hybrid_search
-  Returns: answer with page citations, per-arm provenance
-    (retrieval_arms = ["bm25"], ["vector"], or both), and confidence.
-  FAILURE MODES — read your prior chunks, classify the deficit,
-  pick the matching escalation. See the methodology primer above
-  for the diagnostic model and query-reformulation rules.
+search_corpus(query, mode="auto")
+  Corpus search — hybrid BM25 + pgvector by default. Single entry
+    point for all curated-corpus retrieval. See the methodology
+    primer above for mode selection.
+  Use for: ANY question about policy, enrollment, PA, appeals,
+    credentialing, timely filing, covered services, claims — anything
+    that should be answered from authoritative materials.
+  Aliases: corpus, default_search, hybrid_search, precision_search,
+    explore_search, recall_search (all route here with the matching mode).
+  Returns: numbered passages [1]…[N] with page citations, per-arm
+    provenance (retrieval_arms), and confidence label.
 
-    F1. PRECISION DEFICIT — chunks are roughly on-topic but the
-        SPECIFIC thing the user asked for (code, ID, day count,
-        dollar amount, deadline, form name, verbatim policy
-        text) is not in them.
-        Examples:
-          • "What is Sunshine BH PA window?" — chunks mention BH
-            and PA but no day count.
-          • "Show me the FL.UM.02 policy" — chunks reference
-            FL.UM.02 in lists but don't include the policy body.
-          • "What's the appeal fee?" — chunks discuss appeals
-            but no dollar amount.
-        Action: precision_search with a SHARPER query. Pull the
-          exact noun the user wants ("PA window days", "FL.UM.02
-          policy text", "appeal fee schedule"); use any document
-          or form name the prior chunks mentioned as an anchor;
-          drop generic words ("rules", "information"). Goal: BM25
-          hit on the literal thing the user wants.
+  FAILURE MODES:
+    F1. PRECISION DEFICIT — chunks on-topic but missing the specific
+        code / day count / dollar amount / form name.
+        Action: retry with mode="precision" + sharper query. Pull
+          the exact noun from prior chunks as the anchor. Drop
+          generic words ("rules", "information").
 
-    F2. RECALL DEFICIT — chunks are all from one doc / one
-        source / one payer when the user wanted a broader scan.
-        Symptom: top hits dominated by one document, OR the
-        user's question was exploratory ("tell me about X",
-        "what do we know about Y", "summarize Z across payers")
-        and we surfaced a narrow slice.
-        Examples:
-          • "Tell me about behavioral health policies" — 9 of 10
-            hits from the Sunshine Provider Manual.
-          • "What do we know about PA across payers?" — only one
-            payer's docs surfaced.
-          • "Summarize credentialing requirements" — chunks all
-            from one section of one manual.
-        Action: explore_search with a REFRAMED query. Replace
-          payer-specific phrasing with the topic, drop scope
-          constraints, shift to higher-level vocabulary. Goal:
-          wider semantic net across the corpus.
+    F2. RECALL DEFICIT — hits dominated by one doc/payer when user
+        wanted breadth ("tell me about X across payers").
+        Action: retry with mode="recall" + more conceptual query.
+          Drop payer-specific phrasing, raise abstraction level.
 
-    F3. ZERO HITS — arm_hits both 0, chunks empty.
-        Action: search_corpus once with tag_mode="none". If still
-          zero, surface the coverage gap honestly — we likely
-          lack docs for the payer or topic.
+    F3. ZERO HITS — retry once with a reformulated query. If still
+        zero, surface the coverage gap honestly.
 
-    F4. STILL NO ANSWER AFTER ONE ESCALATION — you've already
-        called search_corpus + (precision_search OR explore_search)
-        and the answer still isn't in the chunks.
-        Action: surface the gap honestly. Tell the user what was
-          found, what specifically wasn't, and where they could
-          verify externally. Do NOT keep searching — both arms
-          are paraphrase-invariant and a third round won't change
-          which chunks come back."""
+    F4. NO ANSWER AFTER ONE ESCALATION — surface the gap. Do not
+        keep searching; both arms are paraphrase-invariant."""
 
 
-_RECALL_SEARCH_BLOCK = """\
-explore_search(query)
-  Vector-only semantic search — pgvector ANN, no BM25 keyword
-    constraint, no rerank confidence floor. Surfaces semantic
-    neighbors regardless of literal token overlap. Returns a
-    DIFFERENT set of chunks than search_corpus, not a lighter
-    version of the same set.
-
-  Position in the diagnostic model: this is the RECALL-DEFICIT
-    escalation. Call it AFTER search_corpus when the prior chunks
-    were too narrow — dominated by one document, one source, or
-    one payer when the user wanted a broader scan. See the
-    methodology primer above for the full diagnostic model and
-    the query-reformulation rule (REFRAME conceptually — drop
-    payer-specific phrasing, shift to higher-level topic
-    vocabulary, drop scope constraints).
-
-  Use when:
-    1. RECALL DEFICIT after search_corpus — most common. The
-       prior chunks were too narrow for the user's exploratory
-       question. Reformulate the query broader and call this.
-    2. EXPLORATORY OPENING — if the user's question is so
-       open-ended that even search_corpus's BM25 arm would
-       waste effort ("what do we know about X across the entire
-       corpus?"), explore_search can be the FIRST call. Rare.
-    3. SEARCH_CORPUS PARAPHRASE TRAP — you've already called
-       search_corpus and are tempted to call it again with
-       reworded query. STOP. Both arms of search_corpus are
-       paraphrase-invariant. If chunks felt too narrow, switch
-       to explore_search (don't re-run search_corpus). If chunks
-       felt too vague on the specific answer, switch to
-       precision_search.
-
-  Do NOT use for:
-    - First retrieval on a normal scoped question — start with
-      search_corpus.
-    - Specific code / ID / exact-phrase lookups — use
-      precision_search.
-    - User-uploaded documents — use search_uploaded_document.
-
-  Aliases: lazy_corpus_search (back-compat), broad, explore
-  Returns: ranked chunks with doc name + page citation, no synthesis.
-
-  FAILURE MODES — when explore_search ran but the answer wasn't
-  in the chunks:
-
-    R1. EMPTY OR <3 HITS — semantic neighborhood is sparse.
-        Diagnosis: query embeds far from any chunk. Either the
-          query is too abstract OR the corpus lacks the topic.
-        Action: if the question has any concrete anchor (a code,
-          ID, doc name, proper noun), try precision_search on
-          that anchor. Otherwise surface the gap honestly.
-
-    R2. STILL NO PRECISE ANSWER — recall surfaced new docs you
-        hadn't seen, but the specific code / day count / dollar
-        amount the user wanted still isn't in any chunk.
-        Action: precision_search with a sharper query targeting
-          the specific noun, using doc names recall surfaced as
-          anchors. This is the recall-then-precision sequence:
-          recall discovered the right docs, precision pins down
-          the literal answer.
-
-    R3. LOW SIMILARITY ACROSS ALL HITS — top similarity below
-        ~0.2 cosine, chunks are tangentially related at best.
-        Diagnosis: corpus genuinely lacks the topic.
-        Action: surface the gap honestly. Do not retry recall
-          with a paraphrase (paraphrase-invariant)."""
+_RECALL_SEARCH_BLOCK = ""  # retired — merged into search_corpus(mode="recall")
 
 
-_PRECISION_SEARCH_BLOCK = """\
-precision_search(query)
-  BM25-only exact-phrase search — keyword precision, no semantic
-    similarity. Strong on literal token overlap; zero contribution
-    from vector embeddings.
-
-  Position in the diagnostic model: this is the PRECISION-DEFICIT
-    escalation. Call it AFTER search_corpus when the prior chunks
-    were on-topic but didn't pin down the specific code / ID /
-    day count / dollar amount / verbatim policy text the user
-    wanted. See the methodology primer above for the diagnostic
-    model and the query-reformulation rule (SHARPEN — pull the
-    exact noun the user wants, use doc/form names from prior
-    chunks as anchors, drop generic words).
-
-  Use when:
-    1. PRECISION DEFICIT after search_corpus — most common. The
-       prior chunks mentioned the topic but not the specific
-       data point. Reformulate the query sharper and call this.
-    2. NEEDLE-IN-HAYSTACK OPENING — the user named a specific
-       code, policy ID, form number, or exact phrase that should
-       appear verbatim somewhere ("FL.UM.02", "H0019", "eAUTH
-       form", "CP.MP.98"). precision_search can be the FIRST
-       call here — going through search_corpus first risks the
-       vector arm diluting the exact-token signal.
-    3. SEARCH_CORPUS PARAPHRASE TRAP (precision side) — you've
-       already called search_corpus and are tempted to reword.
-       STOP. If chunks were on-topic but missing the specific
-       answer, switch to precision_search (don't re-run
-       search_corpus).
-
-  Do NOT use for:
-    - Conceptual / paraphrased questions — vector wins those, use
-      explore_search.
-    - Exploratory "what do we know about X" scans — explore_search.
-    - User-uploaded documents — search_uploaded_document.
-
-  Aliases: exact, keyword_search, bm25_search, lookup
-  Returns: ranked chunks with doc name + page citation, BM25 score.
-
-  FAILURE MODES — when precision_search ran but the answer
-  wasn't in the chunks:
-
-    P1. ZERO HITS — exact phrase / code is not in the corpus.
-        Diagnosis: either the code/ID doesn't exist, the corpus
-          is missing that document, or the user's spelling
-          differs from the corpus's spelling.
-        Action: try explore_search — semantic match may surface
-          adjacent terminology (e.g. user typed "BH PA" and the
-          corpus uses "behavioral health authorization request").
-          If recall also misses, surface the gap.
-
-    P2. CODE FOUND IN INDEX BUT NOT IN BODY — chunks include the
-        code/ID in list pages, table-of-contents, or cross-
-        references, but the substantive policy section isn't
-        present.
-        Action: search_corpus(<code> + "criteria" or "policy"
-          or "requirements"). Paragraph-level rerank often
-          surfaces the substantive section that BM25-only
-          missed because the body section doesn't repeat the
-          code on every paragraph."""
+_PRECISION_SEARCH_BLOCK = ""  # retired — merged into search_corpus(mode="precision")
 
 _HEALTHCARE_NPI_LOOKUP_BLOCK = """\
 healthcare_npi_lookup(question)
