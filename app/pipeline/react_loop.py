@@ -516,11 +516,41 @@ def _execute_tool(
         # same index arm.
         _ROTATION_ORDER = ["precision", "recall", "corpus"]
         _modes_used: list[str] = getattr(ctx, "_search_corpus_modes_used", [])
+        _corpus_all_exhausted = all(m in _modes_used for m in _ROTATION_ORDER)
+
+        if _corpus_all_exhausted:
+            # Every retrieval arm has already returned 0 useful chunks for
+            # this query.  Return an escalation sentinel directly — do NOT
+            # hit the RAG service again with the same query; it will return
+            # the same nothing.  The planner must try google_search or admit
+            # the answer is not in the corpus.
+            _escalation_msg = (
+                "[CORPUS_EXHAUSTED] All three retrieval strategies "
+                "(precision/BM25, recall/vector, corpus/hybrid) returned 0 "
+                "chunks for this query.  Do NOT call search_corpus again. "
+                "Options: (1) call google_search with a targeted web query, "
+                "(2) answer from what you already know with appropriate "
+                "caveats, or (3) tell the user the information is not in the "
+                "corpus and suggest they check the payer's website directly."
+            )
+            logger.info(
+                "search_corpus corpus_exhausted — all arms tried, "
+                "returning escalation sentinel cid=%s",
+                str(getattr(ctx, "correlation_id", ""))[:8],
+            )
+            return {
+                "tool": "search_corpus",
+                "success": False,
+                "result": _escalation_msg,
+                "sources": [],
+                "signal": "no_sources",
+            }
+
         if _modes_used:
             # Pick first rotation mode not yet tried this turn.
             _next = next(
                 (m for m in _ROTATION_ORDER if m not in _modes_used),
-                _auto_mode,  # all tried → fall back to classifier choice
+                _auto_mode,  # safety fallback (can't happen if exhaustion guard above fires)
             )
             if _next != _auto_mode:
                 _auto_reason = f"trying {'exact-match' if _next == 'precision' else 'broad semantic' if _next == 'recall' else 'hybrid'} search after earlier attempt"
