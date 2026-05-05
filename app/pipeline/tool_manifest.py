@@ -39,6 +39,38 @@ from app.stages.agents.capabilities import tool_capabilities_for_parser
 # behavioral rules (e.g. "switch to recall if BM25 dominates") follow
 # from first principles instead of memorized symptoms.
 
+_FL_MEDICAID_DATA_ROUTING_BLOCK = """\
+FL MEDICAID BH MARKET DATA — read this FIRST before picking a tool.
+
+These tools query BigQuery directly and return verified numbers. Use them
+(NOT search_corpus) whenever the question is about quantitative FL Medicaid
+behavioral-health market data:
+
+  • Org rankings, market share, total benes/revenue/claims by org or type
+  • New entrant analysis — who entered, when, which codes/service lines
+  • Benchmarks — how a specific org compares to peers or the market
+  • Rate benchmarks — HCPCS-level rates, gaps, trends
+  • Service-line mix, utilization, market retention
+  • Market size totals or year-over-year trends (2019–2024)
+
+Quick-pick guide (use the first match):
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │ Largest / top orgs, who serves the most benes  → get_top_orgs      │
+  │ New entrants, who captured CMHC share          → get_entrant_analysis │
+  │ Specific org profile (name given)              → get_org_profile    │
+  │ How org X compares to peers                    → get_org_benchmark  │
+  │ Market share over time (2019-2024)             → get_market_timeseries │
+  │ Rate benchmarks, HCPCS rates                   → get_rate_benchmarks │
+  │ Service line breakdown / mix                   → get_market_decomposition │
+  │ Find an org by name / get its slug             → search_orgs        │
+  │ All BHPF or FBHA member orgs                   → get_org_universe   │
+  └─────────────────────────────────────────────────────────────────────┘
+
+Full parameter details for every get_* tool are in the
+"Auto-discovered tools (from MCP)" section below — refer there for
+optional filter params (org_type, period_year, service_line, etc.)."""
+
+
 _RETRIEVAL_METHODOLOGY_PRIMER = """\
 RETRIEVAL — one tool, one index, three modes.
 
@@ -47,54 +79,55 @@ The ``mode`` parameter selects the scoring arm:
 
   auto (default) — BM25 + pgvector hybrid via Reciprocal Rank Fusion.
     Best for most questions. Balances keyword precision and semantic
-    recall in one call. Use this unless you have a specific reason not to.
+    recall in one call. Always use this (omit mode entirely or pass
+    mode="auto"). The corpus search agent selects the optimal internal
+    strategy and cascades through fallbacks automatically.
 
-  precision — BM25-only. Strong on exact codes, IDs, form names,
-    verbatim policy text. Use when you know the answer contains a
-    specific token the user mentioned ("FL.UM.02", "H0019", "eAUTH").
+  precision / recall — available but NOT for planner use. The agent's
+    internal router already applies these arms when appropriate. Passing
+    an explicit mode overrides the agent's cascade and prevents it from
+    trying other strategies on your behalf. Do not pass mode="precision"
+    or mode="recall" — leave mode unset on every call.
 
-  recall — vector-only. Strong on paraphrased / conceptual questions
-    and broad "what do we know about X" scans. Use when auto returned
-    too-narrow results dominated by one doc or payer.
-
-WHEN TO OVERRIDE mode:
-  • Start with auto (or omit mode entirely).
-  • If auto returned on-topic chunks but missed the SPECIFIC code /
-    day-count / dollar amount → retry with mode="precision" + a sharper
-    query (pull the exact noun from prior chunks).
-  • If auto returned results from only one doc/payer when the user
-    wanted breadth → retry with mode="recall" + a more conceptual query
-    (drop payer-specific phrasing, raise abstraction level).
-  • After at most two rounds, surface the gap honestly — both arms are
-    paraphrase-invariant; rephrasing the same query won't change results."""
+RETRY GUIDANCE:
+  • When the first search returns weak results, retry with a BETTER
+    QUERY (sharper noun, different phrasing, drop payer-specific terms)
+    but NO mode override. The agent handles arm selection internally.
+  • After at most two query reformulations, surface the gap honestly —
+    rephrasing the same query without new information won't help further."""
 
 
 # ── Router-owned prose (search_corpus, healthcare_npi_lookup, etc.) ──
 
 _SEARCH_CORPUS_BLOCK = """\
-search_corpus(query, mode="auto")
+search_corpus(query)
   Corpus search — hybrid BM25 + pgvector by default. Single entry
-    point for all curated-corpus retrieval. See the methodology
-    primer above for mode selection.
-  Use for: ANY question about policy, enrollment, PA, appeals,
-    credentialing, timely filing, covered services, claims — anything
-    that should be answered from authoritative materials.
+    point for all curated-corpus retrieval. Always omit the mode
+    parameter — the agent selects and cascades through strategies
+    internally. See the methodology primer above.
+  Use for: Questions about policy, PA rules, appeals, credentialing
+    process, timely filing, covered services, claims procedures —
+    anything answered from authoritative payer documents or manuals.
+  Do NOT use for: FL Medicaid BH market data questions (org rankings,
+    market share, new entrants, benchmarks, rate data, utilization).
+    Those are quantitative BigQuery data — use the get_* analytics
+    tools listed in the FL MEDICAID BH MARKET DATA section above.
   Aliases: corpus, default_search, hybrid_search, precision_search,
-    explore_search, recall_search (all route here with the matching mode).
+    explore_search, recall_search (all route here).
   Returns: numbered passages [1]…[N] with page citations, per-arm
     provenance (retrieval_arms), and confidence label.
 
   FAILURE MODES:
     F1. PRECISION DEFICIT — chunks on-topic but missing the specific
         code / day count / dollar amount / form name.
-        Action: retry with mode="precision" + sharper query. Pull
-          the exact noun from prior chunks as the anchor. Drop
-          generic words ("rules", "information").
+        Action: retry with a SHARPER QUERY (pull the exact noun from
+          prior chunks as the anchor; drop generic words like "rules"
+          or "information"). Do NOT pass mode="precision".
 
     F2. RECALL DEFICIT — hits dominated by one doc/payer when user
         wanted breadth ("tell me about X across payers").
-        Action: retry with mode="recall" + more conceptual query.
-          Drop payer-specific phrasing, raise abstraction level.
+        Action: retry with a MORE CONCEPTUAL QUERY (drop payer-specific
+          phrasing, raise abstraction level). Do NOT pass mode="recall".
 
     F3. ZERO HITS — retry once with a reformulated query. If still
         zero, surface the coverage gap honestly.
@@ -288,10 +321,14 @@ def _compose_manifest() -> str:
       3. Per-tool capabilities footer (structured JSON for parser use).
     """
     curated_blocks = [
-        # Methodology primer first — the three search tools below
-        # reference its concepts (BM25 / vector / RRF / what
-        # actually changes retrieval). Without this primer the LLM
-        # would have to infer mechanism from per-tool symptom lists.
+        # FL Medicaid data routing gate — must come FIRST so the planner
+        # sees the quick-pick guide before it reaches search_corpus.
+        # Without this, the planner over-selects search_corpus for
+        # quantitative market data questions (which aren't in the corpus).
+        _FL_MEDICAID_DATA_ROUTING_BLOCK,
+        # Methodology primer — the search tools below reference its
+        # concepts (BM25 / vector / RRF). Without this the LLM has to
+        # infer mechanism from per-tool symptom lists.
         _RETRIEVAL_METHODOLOGY_PRIMER,
         _SEARCH_CORPUS_BLOCK,
         _RECALL_SEARCH_BLOCK,
