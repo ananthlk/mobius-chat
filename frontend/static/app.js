@@ -4338,6 +4338,90 @@ function renderRetrievalTrace(thinkingLog) {
       nq.textContent = `bm25 normalized: ${norm_q}`;
       round.appendChild(nq);
     }
+    const bm25Exp = data.bm25_expansion;
+    if (bm25Exp && typeof bm25Exp === "object") {
+      const sec = rtMakeSection(
+        "Query Rewrite",
+        bm25Exp.matched_codes?.length > 0 ? `${bm25Exp.matched_codes.length} lex hit \xB7 +${bm25Exp.expansion_phrases_count ?? 0} phrases` : "no lexicon match (raw fallback)",
+        /* collapsed= */
+        true
+      );
+      const expDiv = document.createElement("div");
+      expDiv.className = "rt-expansion";
+      const rwBlock = document.createElement("div");
+      rwBlock.className = "rt-rewrite-block";
+      const orig = data.query || "";
+      const norm = data.bm25_normalized_query;
+      const tsq = bm25Exp.final_tsquery || "";
+      [
+        { label: "user typed", text: orig || "(empty)", cls: "" },
+        ...norm && norm !== orig ? [{ label: "stripped to", text: norm, cls: "" }] : [],
+        { label: "tsquery run", text: tsq || "(empty)", cls: "rt-rw-final" }
+      ].forEach(({ label, text, cls }) => {
+        const row = document.createElement("div");
+        row.className = "rt-rewrite-row";
+        const lbl = document.createElement("span");
+        lbl.className = `rt-rewrite-label ${cls}`;
+        lbl.textContent = label;
+        const val = document.createElement("code");
+        val.className = "rt-rewrite-val";
+        val.title = text;
+        val.textContent = text.length > 80 ? text.slice(0, 80) + "\u2026" : text;
+        row.appendChild(lbl);
+        row.appendChild(val);
+        rwBlock.appendChild(row);
+      });
+      expDiv.appendChild(rwBlock);
+      const tagKinds = [
+        ["domain", bm25Exp.domain_tags ?? [], "rt-code-pill--d"],
+        ["jurisdiction", bm25Exp.jurisdiction_tags ?? [], "rt-code-pill--j"],
+        ["process", bm25Exp.process_tags ?? [], "rt-code-pill--p"]
+      ];
+      tagKinds.forEach(([kind, tags, pillCls]) => {
+        if (!tags.length)
+          return;
+        const row = document.createElement("div");
+        row.className = "rt-codes-row";
+        const kindEl = document.createElement("span");
+        kindEl.className = `rt-codes-kind rt-codes-kind--${kind[0]}`;
+        kindEl.textContent = kind;
+        row.appendChild(kindEl);
+        tags.forEach((code) => {
+          const p = document.createElement("span");
+          p.className = `rt-code-pill ${pillCls}`;
+          p.textContent = code;
+          row.appendChild(p);
+        });
+        expDiv.appendChild(row);
+      });
+      const phrases = bm25Exp.expansion_phrases ?? [];
+      if (phrases.length > 0) {
+        const phDiv = document.createElement("div");
+        phDiv.className = "rt-phrases";
+        const phLabel = document.createElement("div");
+        phLabel.className = "rt-phrases-label";
+        phLabel.textContent = `+${phrases.length} expansion phrases`;
+        phDiv.appendChild(phLabel);
+        const phCloud = document.createElement("div");
+        phCloud.className = "rt-phrases-cloud";
+        phrases.forEach((ph) => {
+          const chip = document.createElement("span");
+          chip.className = "rt-phrase-chip";
+          chip.textContent = ph;
+          phCloud.appendChild(chip);
+        });
+        phDiv.appendChild(phCloud);
+        expDiv.appendChild(phDiv);
+      }
+      if (!bm25Exp.matched_codes?.length) {
+        const hint = document.createElement("div");
+        hint.className = "rt-expansion-hint";
+        hint.textContent = "\u26A0 No lexicon entry matched \u2014 falling back to OR-joined raw tokens. Candidate for lexicon addition.";
+        expDiv.appendChild(hint);
+      }
+      sec.body.appendChild(expDiv);
+      round.appendChild(sec.el);
+    }
     const topChunks = data.top_chunks ?? data.scoring_trace ?? [];
     if (Array.isArray(topChunks) && topChunks.length > 0) {
       const weights = data.rerank_weights || data.weights || {};
@@ -4378,6 +4462,84 @@ function renderRetrievalTrace(thinkingLog) {
       table.appendChild(tb);
       round.appendChild(table);
     }
+    const assembly = data.assembly;
+    if (assembly && typeof assembly === "object") {
+      const canonPct = Math.round(Math.min(100, Math.max(0, (assembly.canonical_ratio ?? 0) * 100)));
+      const strictPct = Math.round(Math.min(100, Math.max(0, (assembly.strict_canonical_ratio ?? 0) * 100)));
+      const sec = rtMakeSection(
+        "Assembly",
+        `${assembly.strategy ?? "score"} \xB7 ${canonPct}% canonical`,
+        /* collapsed= */
+        true
+      );
+      const asmDiv = document.createElement("div");
+      asmDiv.className = "rt-assembly";
+      const metaRow = document.createElement("div");
+      metaRow.className = "rt-assembly-meta";
+      [
+        ["strategy", assembly.strategy ?? "score"],
+        ...assembly.canonical_floor != null ? [["floor", `${Math.round(assembly.canonical_floor * 100)}%`]] : [],
+        ["selected", String(assembly.total_selected ?? "?")]
+      ].forEach(([k2, v]) => {
+        const kv = document.createElement("span");
+        kv.className = "rt-kv";
+        kv.innerHTML = `<span class="rt-k">${k2}</span><code class="rt-v">${v}</code>`;
+        metaRow.appendChild(kv);
+      });
+      asmDiv.appendChild(metaRow);
+      [
+        { label: "Canonical (CoT + PP)", pct: canonPct, color: "#2563eb" },
+        { label: "Strict (CoT only)", pct: strictPct, color: "#16a34a" }
+      ].forEach(({ label, pct, color }) => {
+        const row = document.createElement("div");
+        row.className = "rt-ratio-row";
+        const lbl = document.createElement("span");
+        lbl.className = "rt-ratio-label";
+        lbl.textContent = label;
+        const track = document.createElement("div");
+        track.className = "rt-ratio-track";
+        const fill = document.createElement("div");
+        fill.className = "rt-ratio-fill";
+        fill.style.cssText = `width:${pct}%;background:${color}`;
+        track.appendChild(fill);
+        const pctEl = document.createElement("span");
+        pctEl.className = "rt-ratio-pct";
+        pctEl.textContent = `${pct}%`;
+        row.appendChild(lbl);
+        row.appendChild(track);
+        row.appendChild(pctEl);
+        asmDiv.appendChild(row);
+      });
+      const tierOrder = ["contract_source_of_truth", "payer_policy", "operational_suggested", "fyi_not_citable"];
+      const tierLabel = { contract_source_of_truth: "CoT", payer_policy: "PP", operational_suggested: "Ops", fyi_not_citable: "FYI" };
+      const tierColor = { contract_source_of_truth: "#16a34a", payer_policy: "#2563eb", operational_suggested: "#0891b2", fyi_not_citable: "#d97706" };
+      const breakdown = assembly.tier_breakdown ?? {};
+      const tierRow = document.createElement("div");
+      tierRow.className = "rt-tier-row";
+      tierOrder.forEach((tier) => {
+        const n = breakdown[tier] ?? 0;
+        if (!n)
+          return;
+        const pill = document.createElement("span");
+        pill.className = "rt-tier-pill";
+        pill.style.cssText = `border-color:${tierColor[tier]};color:${tierColor[tier]}`;
+        pill.title = tier;
+        pill.textContent = `${tierLabel[tier]} \xD7${n}`;
+        tierRow.appendChild(pill);
+      });
+      const untagged = (breakdown["untagged"] ?? 0) + (breakdown["null"] ?? 0) + (breakdown["None"] ?? 0);
+      if (untagged) {
+        const pill = document.createElement("span");
+        pill.className = "rt-tier-pill";
+        pill.style.cssText = "border-color:#9ca3af;color:#9ca3af";
+        pill.textContent = `untagged \xD7${untagged}`;
+        tierRow.appendChild(pill);
+      }
+      if (tierRow.children.length)
+        asmDiv.appendChild(tierRow);
+      sec.body.appendChild(asmDiv);
+      round.appendChild(sec.el);
+    }
     body.appendChild(round);
   });
   wrap.appendChild(preview);
@@ -4395,6 +4557,40 @@ function renderRetrievalTrace(thinkingLog) {
     }
   });
   return wrap;
+}
+function rtMakeSection(title, badge, collapsed = false) {
+  const el2 = document.createElement("div");
+  el2.className = "rt-section" + (collapsed ? " rt-section--collapsed" : "");
+  const hdr = document.createElement("button");
+  hdr.type = "button";
+  hdr.className = "rt-section-hdr";
+  hdr.setAttribute("aria-expanded", String(!collapsed));
+  const chev = document.createElement("span");
+  chev.className = "rt-section-chev";
+  chev.setAttribute("aria-hidden", "true");
+  chev.textContent = collapsed ? "\u25B6" : "\u25BC";
+  const titleEl = document.createElement("span");
+  titleEl.className = "rt-section-title";
+  titleEl.textContent = title;
+  const badgeEl = document.createElement("span");
+  badgeEl.className = "rt-section-badge";
+  badgeEl.textContent = badge;
+  hdr.appendChild(chev);
+  hdr.appendChild(titleEl);
+  hdr.appendChild(badgeEl);
+  const body = document.createElement("div");
+  body.className = "rt-section-body";
+  if (collapsed)
+    body.style.display = "none";
+  hdr.addEventListener("click", () => {
+    const isCollapsed = el2.classList.toggle("rt-section--collapsed");
+    body.style.display = isCollapsed ? "none" : "";
+    chev.textContent = isCollapsed ? "\u25B6" : "\u25BC";
+    hdr.setAttribute("aria-expanded", String(!isCollapsed));
+  });
+  el2.appendChild(hdr);
+  el2.appendChild(body);
+  return { el: el2, body };
 }
 function rtEscapeAttr(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");

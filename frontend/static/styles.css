@@ -7349,3 +7349,127 @@ body {
 .rt-bar--auth .rt-bar-fill { background: #2e9a4f; }
 .rt-bar--jpd  .rt-bar-fill { background: #1f8e9a; }
 .rt-bar-val { font-size: 0.7rem; color: var(--mobius-text-secondary); }
+
+/* ── Collapsible sub-sections (BM25 expansion, Assembly) ─────────────── */
+.rt-section {
+  border-top: 1px solid var(--mobius-border);
+  margin-top: 0.5rem;
+}
+.rt-section-hdr {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.28rem 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--mobius-font-sans);
+}
+.rt-section-hdr:hover { opacity: 0.8; }
+.rt-section-chev { font-size: 0.5rem; color: var(--mobius-text-muted); flex-shrink: 0; }
+.rt-section-title {
+  font-size: 0.64rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--mobius-text-secondary);
+}
+.rt-section-badge {
+  font-size: 0.58rem;
+  color: var(--mobius-text-muted);
+  font-family: var(--mobius-font-mono, monospace);
+  margin-left: auto;
+}
+.rt-section-body { padding-bottom: 0.5rem; }
+
+/* ── BM25 Expansion (Query Rewrite) ──────────────────────────────────── */
+.rt-expansion { display: flex; flex-direction: column; gap: 0.5rem; }
+.rt-rewrite-block { display: flex; flex-direction: column; gap: 0.2rem; }
+.rt-rewrite-row { display: flex; align-items: baseline; gap: 0.5rem; }
+.rt-rewrite-label {
+  font-size: 0.62rem;
+  color: var(--mobius-text-muted);
+  width: 5.5rem;
+  flex-shrink: 0;
+  text-align: right;
+}
+.rt-rw-final { color: var(--mobius-accent, #2563eb); font-weight: 600; }
+.rt-rewrite-val {
+  font-size: 0.64rem;
+  font-family: var(--mobius-font-mono, monospace);
+  color: var(--mobius-text-primary);
+  word-break: break-all;
+}
+.rt-codes-row { display: flex; align-items: center; flex-wrap: wrap; gap: 0.25rem; }
+.rt-codes-kind {
+  font-size: 0.58rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  padding: 0.05rem 0.35rem;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.rt-codes-kind--d { color: #6c5ce7; background: rgba(108,92,231,0.10); }
+.rt-codes-kind--j { color: #0891b2; background: rgba(8,145,178,0.10); }
+.rt-codes-kind--p { color: #d97706; background: rgba(217,119,6,0.10); }
+.rt-code-pill {
+  font-size: 0.60rem;
+  font-family: var(--mobius-font-mono, monospace);
+  padding: 0.05rem 0.3rem;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+}
+.rt-code-pill--d { color: #6c5ce7; }
+.rt-code-pill--j { color: #0891b2; }
+.rt-code-pill--p { color: #d97706; }
+.rt-phrases { display: flex; flex-direction: column; gap: 0.2rem; }
+.rt-phrases-label { font-size: 0.60rem; color: var(--mobius-text-muted); }
+.rt-phrases-cloud { display: flex; flex-wrap: wrap; gap: 0.2rem; }
+.rt-phrase-chip {
+  font-size: 0.60rem;
+  padding: 0.05rem 0.35rem;
+  background: var(--mobius-bg-secondary);
+  border: 1px solid var(--mobius-border);
+  border-radius: 999px;
+  color: var(--mobius-text-secondary);
+}
+.rt-expansion-hint {
+  font-size: 0.62rem;
+  color: #c87b1f;
+  padding: 0.25rem 0.4rem;
+  background: rgba(200,123,31,0.08);
+  border-radius: 4px;
+}
+
+/* ── Assembly (canonical ratio + tier breakdown) ────────────────────── */
+.rt-assembly { display: flex; flex-direction: column; gap: 0.4rem; }
+.rt-assembly-meta { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.rt-kv { display: flex; align-items: baseline; gap: 0.3rem; }
+.rt-k { font-size: 0.60rem; color: var(--mobius-text-muted); }
+.rt-v { font-size: 0.62rem; font-family: var(--mobius-font-mono, monospace); color: var(--mobius-text-primary); }
+.rt-ratio-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.rt-ratio-label { font-size: 0.60rem; color: var(--mobius-text-muted); width: 8rem; flex-shrink: 0; }
+.rt-ratio-track {
+  flex: 1;
+  height: 5px;
+  background: var(--mobius-bg-secondary);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.rt-ratio-fill { height: 100%; border-radius: 999px; transition: width 0.2s; }
+.rt-ratio-pct { font-size: 0.60rem; color: var(--mobius-text-muted); width: 2.5rem; text-align: right; flex-shrink: 0; }
+.rt-tier-row { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+.rt-tier-pill {
+  font-size: 0.60rem;
+  font-family: var(--mobius-font-mono, monospace);
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
