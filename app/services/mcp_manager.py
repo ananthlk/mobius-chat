@@ -13,8 +13,14 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # Default: mobius-skills-mcp runs on port 8006, path /mcp
+# CHAT_SKILLS_MCP_URL is the canonical env var (set in deploy/dev.env).
+# MCP_SERVER_URL is kept for backward-compat with local-dev overrides.
 DEFAULT_MCP_URL = "http://localhost:8006/mcp"
-MCP_SERVER_URL = os.environ.get("MCP_SERVER_URL", DEFAULT_MCP_URL).strip() or DEFAULT_MCP_URL
+MCP_SERVER_URL = (
+    os.environ.get("CHAT_SKILLS_MCP_URL")
+    or os.environ.get("MCP_SERVER_URL")
+    or DEFAULT_MCP_URL
+).strip() or DEFAULT_MCP_URL
 MCP_CONNECT_TIMEOUT = float(os.environ.get("MCP_CONNECT_TIMEOUT", "10"))
 MCP_READ_TIMEOUT = float(os.environ.get("MCP_READ_TIMEOUT", "60"))
 MCP_MAX_RETRIES = 2
