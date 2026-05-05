@@ -4422,6 +4422,138 @@ function renderRetrievalTrace(thinkingLog) {
       sec.body.appendChild(expDiv);
       round.appendChild(sec.el);
     }
+    const qp = data.query_profile;
+    if (qp && typeof qp === "object") {
+      const qtype = String(qp.query_type ?? "");
+      const coverage = typeof qp.coverage === "number" ? `cov=${qp.coverage.toFixed(2)}` : "";
+      const tags = Array.isArray(qp.tag_matches) ? qp.tag_matches : [];
+      const anchors = Array.isArray(qp.literal_anchors) ? qp.literal_anchors : [];
+      const badge = [qtype, coverage].filter(Boolean).join(" \xB7 ") || "classified";
+      const sec = rtMakeSection(
+        "Parser",
+        badge,
+        /* collapsed= */
+        true
+      );
+      const pDiv = document.createElement("div");
+      pDiv.className = "rt-parser";
+      if (qtype) {
+        const typeRow = document.createElement("div");
+        typeRow.className = "rt-kv";
+        typeRow.innerHTML = `<span class="rt-kv-k">type</span><span class="rt-kv-v">${rtEscapeAttr(qtype)}</span>`;
+        pDiv.appendChild(typeRow);
+      }
+      if (typeof qp.coverage === "number") {
+        const covRow = document.createElement("div");
+        covRow.className = "rt-kv";
+        covRow.innerHTML = `<span class="rt-kv-k">coverage</span><span class="rt-kv-v">${qp.coverage.toFixed(3)}</span>`;
+        pDiv.appendChild(covRow);
+      }
+      if (anchors.length) {
+        const aRow = document.createElement("div");
+        aRow.className = "rt-kv";
+        aRow.innerHTML = `<span class="rt-kv-k">anchors</span><span class="rt-kv-v">${rtEscapeAttr(anchors.join(" \xB7 "))}</span>`;
+        pDiv.appendChild(aRow);
+      }
+      if (tags.length) {
+        const tRow = document.createElement("div");
+        tRow.className = "rt-codes-row";
+        tags.forEach((t2) => {
+          const prefix = t2.split(":")[0] ?? "";
+          const pill = document.createElement("span");
+          pill.className = `rt-code-pill rt-code-pill--${prefix === "d" ? "d" : prefix === "j" ? "j" : "p"}`;
+          pill.textContent = t2;
+          tRow.appendChild(pill);
+        });
+        pDiv.appendChild(tRow);
+      }
+      const untagged = Array.isArray(qp.untagged_meaningful_tokens) ? qp.untagged_meaningful_tokens : [];
+      if (untagged.length) {
+        const uRow = document.createElement("div");
+        uRow.className = "rt-kv";
+        uRow.innerHTML = `<span class="rt-kv-k">untagged tokens</span><span class="rt-kv-v">${rtEscapeAttr(untagged.join(" "))}</span>`;
+        pDiv.appendChild(uRow);
+      }
+      sec.body.appendChild(pDiv);
+      round.appendChild(sec.el);
+    }
+    const routing = data.routing;
+    if (routing && typeof routing === "object") {
+      const strat = String(routing.strategy ?? routing.executed_strategy ?? "?");
+      const method = String(routing.method ?? "");
+      const qclass = String(routing.query_class ?? "");
+      const badge = `\u2192 ${strat}${qclass ? ` (${qclass})` : ""}${method ? ` via ${method}` : ""}`;
+      const sec = rtMakeSection(
+        "Router",
+        badge,
+        /* collapsed= */
+        true
+      );
+      const rDiv = document.createElement("div");
+      rDiv.className = "rt-router";
+      const stratRow = document.createElement("div");
+      stratRow.className = "rt-kv";
+      stratRow.innerHTML = `<span class="rt-kv-k">strategy</span><span class="rt-kv-v">${rtEscapeAttr(strat)}` + (routing.fallback ? ` \u2192 fallback: ${rtEscapeAttr(String(routing.fallback))}` : "") + `</span>`;
+      rDiv.appendChild(stratRow);
+      const scores = routing.scores ?? {};
+      if (typeof scores === "object" && Object.keys(scores).length > 0) {
+        const scRow = document.createElement("div");
+        scRow.className = "rt-kv";
+        const scoreStr = Object.entries(scores).map(([k2, v]) => `${k2}=${typeof v === "number" ? v.toFixed(2) : v}`).join("  ");
+        scRow.innerHTML = `<span class="rt-kv-k">scores</span><span class="rt-kv-v rt-mono">${rtEscapeAttr(scoreStr)}</span>`;
+        rDiv.appendChild(scRow);
+      }
+      const sa = routing.self_assessments ?? {};
+      if (typeof sa === "object" && Object.keys(sa).length > 0) {
+        const saRow = document.createElement("div");
+        saRow.className = "rt-kv";
+        const saStr = Object.entries(sa).map(([k2, v]) => {
+          const arr = Array.isArray(v) ? v : [v, ""];
+          return `${k2}=${typeof arr[0] === "number" ? arr[0].toFixed(2) : arr[0]}`;
+        }).join("  ");
+        saRow.innerHTML = `<span class="rt-kv-k">self-assess</span><span class="rt-kv-v rt-mono">${rtEscapeAttr(saStr)}</span>`;
+        rDiv.appendChild(saRow);
+      }
+      const withdrawn = Array.isArray(routing.withdrawn) ? routing.withdrawn : [];
+      if (withdrawn.length) {
+        const wRow = document.createElement("div");
+        wRow.className = "rt-kv";
+        wRow.innerHTML = `<span class="rt-kv-k">withdrawn</span><span class="rt-kv-v">${rtEscapeAttr(withdrawn.join(", "))}</span>`;
+        rDiv.appendChild(wRow);
+      }
+      const pool = data.candidate_pool;
+      if (pool && typeof pool === "object") {
+        const poolRow = document.createElement("div");
+        poolRow.className = "rt-kv";
+        poolRow.innerHTML = `<span class="rt-kv-k">pool</span><span class="rt-kv-v">${rtEscapeAttr(String(pool.cascade_level ?? "?"))} \xB7 ${pool.size ?? "?"} docs</span>`;
+        rDiv.appendChild(poolRow);
+      }
+      sec.body.appendChild(rDiv);
+      round.appendChild(sec.el);
+    }
+    const themes = Array.isArray(data.themes) ? data.themes : [];
+    const themeDiag = data.theme_diagnostic;
+    if (themes.length > 0) {
+      const domShare = typeof themeDiag?.dominant_theme_share === "number" ? ` \xB7 dom ${(themeDiag.dominant_theme_share * 100).toFixed(0)}%` : "";
+      const sec = rtMakeSection(
+        "Themes",
+        `${themes.length} theme${themes.length !== 1 ? "s" : ""}${domShare}`,
+        /* collapsed= */
+        true
+      );
+      const tDiv = document.createElement("div");
+      tDiv.className = "rt-themes";
+      themes.forEach((th) => {
+        const row = document.createElement("div");
+        row.className = "rt-kv";
+        const n = th.n_chunks_seen ?? th.top_chunks?.length ?? 0;
+        const rerank = typeof th.top_rerank === "number" ? ` \xB7 rerank=${th.top_rerank.toFixed(2)}` : "";
+        row.innerHTML = `<span class="rt-kv-k">${rtEscapeAttr(th.label ?? th.full_code ?? "?")}</span><span class="rt-kv-v">${n} chunks${rerank}</span>`;
+        tDiv.appendChild(row);
+      });
+      sec.body.appendChild(tDiv);
+      round.appendChild(sec.el);
+    }
     const topChunks = data.top_chunks ?? data.scoring_trace ?? [];
     if (Array.isArray(topChunks) && topChunks.length > 0) {
       const weights = data.rerank_weights || data.weights || {};

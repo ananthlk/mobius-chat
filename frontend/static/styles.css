@@ -7448,6 +7448,10 @@ body {
 .rt-assembly { display: flex; flex-direction: column; gap: 0.4rem; }
 .rt-assembly-meta { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
 .rt-kv { display: flex; align-items: baseline; gap: 0.3rem; }
+.rt-kv-k { font-size: 0.60rem; color: var(--mobius-text-muted); flex-shrink: 0; min-width: 7rem; }
+.rt-kv-v { font-size: 0.62rem; font-family: var(--mobius-font-mono, monospace); color: var(--mobius-text-primary); }
+.rt-mono { font-family: var(--mobius-font-mono, monospace); font-size: 0.60rem; }
+.rt-parser, .rt-router, .rt-themes { display: flex; flex-direction: column; gap: 0.35rem; padding: 0.25rem 0; }
 .rt-k { font-size: 0.60rem; color: var(--mobius-text-muted); }
 .rt-v { font-size: 0.62rem; font-family: var(--mobius-font-mono, monospace); color: var(--mobius-text-primary); }
 .rt-ratio-row {

@@ -8,7 +8,7 @@ the 22% completion-rate baseline that drove this extraction.
 What this file does
 -------------------
 
-* HTTP client for ``POST {RAG_API_URL}/api/skills/v1/corpus_search``.
+* HTTP client for ``POST {RAG_API_URL}/api/skills/v1/corpus_search_agent``.
 * Maps the rag service response (chunks + telemetry) into the
   ``SkillEnvelope`` shape chat consumers already understand:
   ``text`` (formatted ``[1]…[N]`` context block), ``sources``
@@ -79,7 +79,7 @@ _HTTP_TIMEOUT_S = 60.0
 # search_events.caller from the body field, so the indirection adds
 # no value. If/when prod adds X-Skill-Token auth, only this file
 # changes.
-_SKILL_PATH = "/api/skills/v1/corpus_search"
+_SKILL_PATH = "/api/skills/v1/corpus_search_agent"
 _CALLER = "mobius_chat"
 
 
@@ -106,13 +106,15 @@ def _post_skill(
     canonical_floor: float | None,
     caller_id: str | None,
 ) -> dict[str, Any]:
-    """POST to rag's v1 corpus_search skill.
+    """POST to rag's v1 corpus_search_agent skill.
 
-    Returns parsed JSON ``{chunks, telemetry}``. Raises on HTTP /
-    network / JSON errors; caller maps to a ``no_sources`` envelope.
+    Returns the full CorpusSearchAgentResponse JSON which includes
+    ``chunks``, ``telemetry``, and the rich pipeline trace fields:
+    ``query_profile``, ``routing``, ``themes``, ``candidate_pool``.
+    Raises on HTTP / network / JSON errors; caller maps to a
+    ``no_sources`` envelope.
 
-    Caller attribution is sent THREE ways for cross-rev compatibility
-    with rag's evolving spec (2026-04-28):
+    Caller attribution is sent THREE ways for cross-rev compatibility:
       * Body field   ``caller``       — original spec
       * Header       ``X-Caller``     — newer spec, used by
                                         search_events writer
@@ -121,24 +123,27 @@ def _post_skill(
                                         with the chat turn that
                                         triggered it (chat passes
                                         the turn correlation_id)
-
-    Rag's writer reads whichever shape it understands; we send all
-    three to avoid coordinated rollouts.
     """
     url = base_url.rstrip("/") + _SKILL_PATH
     body: dict[str, Any] = {
         "query": query,
         "k": int(k),
-        "mode": mode,
         "filters": filters or {},
-        "caller": _CALLER,
     }
+    # Pass mode as a strategy override when explicitly set (precision/recall).
+    # The agent picks its own strategy when mode is "corpus" / unset —
+    # that gives the router more signal. Explicit arms still win.
+    if mode and mode != "corpus":
+        body["mode"] = mode
     if include_document_ids:
         body["include_document_ids"] = list(include_document_ids)
+    # assembly_strategy / canonical_floor are not in CorpusSearchAgentRequest;
+    # the agent owns assembly internally. Pass them as caller_mode hints
+    # instead so the router can factor them into its preference resolution.
     if assembly_strategy:
-        body["assembly_strategy"] = assembly_strategy
+        body["caller_mode"] = assembly_strategy
     if canonical_floor is not None:
-        body["canonical_floor"] = float(canonical_floor)
+        body["accuracy_need"] = float(canonical_floor)
     payload = json.dumps(body).encode("utf-8")
     headers: dict[str, str] = {
         "Content-Type": "application/json",
@@ -498,6 +503,27 @@ def _run(call: SkillCall) -> SkillEnvelope:
     telemetry = resp.get("telemetry") or {}
     search_id = str(uuid.uuid4())
 
+    # Merge the agent's rich pipeline trace fields into telemetry so
+    # make_retrieval_trace spreads them into data.* and the chat UI
+    # can render Parser + Router sections matching the RAG Test tab.
+    _agent_trace: dict[str, Any] = {}
+    if resp.get("query_profile"):
+        _agent_trace["query_profile"] = resp["query_profile"]
+    if resp.get("routing"):
+        _agent_trace["routing"] = resp["routing"]
+    if resp.get("themes") is not None:
+        _agent_trace["themes"] = resp["themes"]
+    if resp.get("theme_diagnostic"):
+        _agent_trace["theme_diagnostic"] = resp["theme_diagnostic"]
+    if resp.get("candidate_pool"):
+        _agent_trace["candidate_pool"] = resp["candidate_pool"]
+    if resp.get("strategy_used"):
+        _agent_trace["strategy_used"] = resp["strategy_used"]
+    if resp.get("queries_per_strategy"):
+        _agent_trace["queries_per_strategy"] = resp["queries_per_strategy"]
+    if _agent_trace:
+        telemetry = {**telemetry, **_agent_trace}
+
     # Always emit the retrieval_trace envelope, even on zero hits — the
     # technical UI panel needs to show "BM25 0 vec 0" for failure
     # modes, not silently elide the diagnostic.
@@ -505,7 +531,7 @@ def _run(call: SkillCall) -> SkillEnvelope:
         call=call,
         search_id=search_id,
         query=query,
-        mode=mode,
+        mode=resp.get("strategy_used") or mode,
         k=k,
         telemetry=telemetry,
     )

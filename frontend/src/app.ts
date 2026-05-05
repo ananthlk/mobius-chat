@@ -4973,6 +4973,155 @@ function renderRetrievalTrace(
       round.appendChild(sec.el);
     }
 
+    // ── Parser (query_profile from corpus_search_agent) ───────────────
+    // Mirrors the RAG UI's "Parser → classify_query" section.
+    const qp = data.query_profile;
+    if (qp && typeof qp === "object") {
+      const qtype = String(qp.query_type ?? "");
+      const coverage = typeof qp.coverage === "number" ? `cov=${qp.coverage.toFixed(2)}` : "";
+      const tags: string[] = Array.isArray(qp.tag_matches) ? qp.tag_matches : [];
+      const anchors: string[] = Array.isArray(qp.literal_anchors) ? qp.literal_anchors : [];
+      const badge = [qtype, coverage].filter(Boolean).join(" · ") || "classified";
+      const sec = rtMakeSection("Parser", badge, /* collapsed= */ true);
+      const pDiv = document.createElement("div");
+      pDiv.className = "rt-parser";
+
+      if (qtype) {
+        const typeRow = document.createElement("div");
+        typeRow.className = "rt-kv";
+        typeRow.innerHTML = `<span class="rt-kv-k">type</span><span class="rt-kv-v">${rtEscapeAttr(qtype)}</span>`;
+        pDiv.appendChild(typeRow);
+      }
+      if (typeof qp.coverage === "number") {
+        const covRow = document.createElement("div");
+        covRow.className = "rt-kv";
+        covRow.innerHTML = `<span class="rt-kv-k">coverage</span><span class="rt-kv-v">${qp.coverage.toFixed(3)}</span>`;
+        pDiv.appendChild(covRow);
+      }
+      if (anchors.length) {
+        const aRow = document.createElement("div");
+        aRow.className = "rt-kv";
+        aRow.innerHTML = `<span class="rt-kv-k">anchors</span><span class="rt-kv-v">${rtEscapeAttr(anchors.join(" · "))}</span>`;
+        pDiv.appendChild(aRow);
+      }
+      if (tags.length) {
+        const tRow = document.createElement("div");
+        tRow.className = "rt-codes-row";
+        tags.forEach((t: string) => {
+          const prefix = t.split(":")[0] ?? "";
+          const pill = document.createElement("span");
+          pill.className = `rt-code-pill rt-code-pill--${prefix === "d" ? "d" : prefix === "j" ? "j" : "p"}`;
+          pill.textContent = t;
+          tRow.appendChild(pill);
+        });
+        pDiv.appendChild(tRow);
+      }
+      const untagged: string[] = Array.isArray(qp.untagged_meaningful_tokens) ? qp.untagged_meaningful_tokens : [];
+      if (untagged.length) {
+        const uRow = document.createElement("div");
+        uRow.className = "rt-kv";
+        uRow.innerHTML = `<span class="rt-kv-k">untagged tokens</span><span class="rt-kv-v">${rtEscapeAttr(untagged.join(" "))}</span>`;
+        pDiv.appendChild(uRow);
+      }
+      sec.body.appendChild(pDiv);
+      round.appendChild(sec.el);
+    }
+
+    // ── Router (routing decision from corpus_search_agent) ────────────
+    // Mirrors the RAG UI's "Router → strategy choice" section.
+    const routing = data.routing;
+    if (routing && typeof routing === "object") {
+      const strat = String(routing.strategy ?? routing.executed_strategy ?? "?");
+      const method = String(routing.method ?? "");
+      const qclass = String(routing.query_class ?? "");
+      const badge = `→ ${strat}${qclass ? ` (${qclass})` : ""}${method ? ` via ${method}` : ""}`;
+      const sec = rtMakeSection("Router", badge, /* collapsed= */ true);
+      const rDiv = document.createElement("div");
+      rDiv.className = "rt-router";
+
+      // Strategy + fallback
+      const stratRow = document.createElement("div");
+      stratRow.className = "rt-kv";
+      stratRow.innerHTML = `<span class="rt-kv-k">strategy</span><span class="rt-kv-v">${rtEscapeAttr(strat)}` +
+        (routing.fallback ? ` → fallback: ${rtEscapeAttr(String(routing.fallback))}` : "") + `</span>`;
+      rDiv.appendChild(stratRow);
+
+      // Scores for each strategy (a/b/c/d/e)
+      const scores = routing.scores ?? {};
+      if (typeof scores === "object" && Object.keys(scores).length > 0) {
+        const scRow = document.createElement("div");
+        scRow.className = "rt-kv";
+        const scoreStr = Object.entries(scores as Record<string, unknown>)
+          .map(([k, v]) => `${k}=${typeof v === "number" ? v.toFixed(2) : v}`)
+          .join("  ");
+        scRow.innerHTML = `<span class="rt-kv-k">scores</span><span class="rt-kv-v rt-mono">${rtEscapeAttr(scoreStr)}</span>`;
+        rDiv.appendChild(scRow);
+      }
+
+      // Self-assessments (expected recall per strategy)
+      const sa = routing.self_assessments ?? {};
+      if (typeof sa === "object" && Object.keys(sa).length > 0) {
+        const saRow = document.createElement("div");
+        saRow.className = "rt-kv";
+        const saStr = Object.entries(sa as Record<string, unknown>)
+          .map(([k, v]) => {
+            const arr = Array.isArray(v) ? v : [v, ""];
+            return `${k}=${typeof arr[0] === "number" ? arr[0].toFixed(2) : arr[0]}`;
+          })
+          .join("  ");
+        saRow.innerHTML = `<span class="rt-kv-k">self-assess</span><span class="rt-kv-v rt-mono">${rtEscapeAttr(saStr)}</span>`;
+        rDiv.appendChild(saRow);
+      }
+
+      // Withdrawn strategies
+      const withdrawn: string[] = Array.isArray(routing.withdrawn) ? routing.withdrawn : [];
+      if (withdrawn.length) {
+        const wRow = document.createElement("div");
+        wRow.className = "rt-kv";
+        wRow.innerHTML = `<span class="rt-kv-k">withdrawn</span><span class="rt-kv-v">${rtEscapeAttr(withdrawn.join(", "))}</span>`;
+        rDiv.appendChild(wRow);
+      }
+
+      // Cascade pool from candidate_pool
+      const pool = data.candidate_pool;
+      if (pool && typeof pool === "object") {
+        const poolRow = document.createElement("div");
+        poolRow.className = "rt-kv";
+        poolRow.innerHTML = `<span class="rt-kv-k">pool</span><span class="rt-kv-v">${rtEscapeAttr(String(pool.cascade_level ?? "?"))} · ${pool.size ?? "?"} docs</span>`;
+        rDiv.appendChild(poolRow);
+      }
+
+      sec.body.appendChild(rDiv);
+      round.appendChild(sec.el);
+    }
+
+    // ── Themes (strategy b: Wide→Themes→Narrow) ───────────────────────
+    const themes: any[] = Array.isArray(data.themes) ? data.themes : [];
+    const themeDiag = data.theme_diagnostic;
+    if (themes.length > 0) {
+      const domShare = typeof themeDiag?.dominant_theme_share === "number"
+        ? ` · dom ${(themeDiag.dominant_theme_share * 100).toFixed(0)}%`
+        : "";
+      const sec = rtMakeSection(
+        "Themes",
+        `${themes.length} theme${themes.length !== 1 ? "s" : ""}${domShare}`,
+        /* collapsed= */ true,
+      );
+      const tDiv = document.createElement("div");
+      tDiv.className = "rt-themes";
+      themes.forEach((th: any) => {
+        const row = document.createElement("div");
+        row.className = "rt-kv";
+        const n = th.n_chunks_seen ?? th.top_chunks?.length ?? 0;
+        const rerank = typeof th.top_rerank === "number" ? ` · rerank=${th.top_rerank.toFixed(2)}` : "";
+        row.innerHTML = `<span class="rt-kv-k">${rtEscapeAttr(th.label ?? th.full_code ?? "?")}</span>` +
+          `<span class="rt-kv-v">${n} chunks${rerank}</span>`;
+        tDiv.appendChild(row);
+      });
+      sec.body.appendChild(tDiv);
+      round.appendChild(sec.el);
+    }
+
     // Top chunks with rerank signals — visual treatment matching the
     // rag agent's PIPELINE TRACE UI: ARMS as colored badges, SIM/AUTH/LEN
     // as horizontal bars + numeric value, weights surfaced in the
