@@ -507,36 +507,49 @@ def _execute_tool(
         )
         _auto_mode, _auto_reason = _classify_query_strategy(query)
 
-        # Strategy rotation on repeat — when ReAct calls search_corpus a
-        # second time (refinement round), try a different retrieval arm
-        # instead of repeating the same one.  Rotation order:
-        #   precision → recall → corpus (hybrid)
-        # This gives the integrator genuinely different evidence pools
-        # across rounds rather than just a reworded query against the
-        # same index arm.
-        _ROTATION_ORDER = ["precision", "recall", "corpus"]
-        _modes_used: list[str] = getattr(ctx, "_search_corpus_modes_used", [])
-        _corpus_all_exhausted = all(m in _modes_used for m in _ROTATION_ORDER)
+        # ── 5-arm strategy bandit ─────────────────────────────────────────
+        # Full ordered strategy sequence for a turn (arm → description):
+        #   precision  — BM25 exact-token match (best for codes/names)
+        #   recall     — vector semantic match (best for concepts)
+        #   hybrid     — BM25 ⊕ vector (RRF fusion, the default)
+        #   google     — external web search (rule 1d escalation)
+        #   llm_direct — answer from model knowledge, no retrieval
+        #
+        # Arms are eliminated as they're tried. Once all 3 CORPUS arms
+        # (precision/recall/hybrid) are exhausted, search_corpus returns a
+        # sentinel instructing the planner to try the NEXT arm (google).
+        # The planner is responsible for calling google_search — that call
+        # eliminates the "google" arm (tracked in google_search handler).
+        # "llm_direct" is the implicit final arm: the planner sets
+        # is_complete=true with honest caveats when no tool arms remain.
+        _CORPUS_ARM_ORDER = ["precision", "recall", "hybrid"]
+        # Arm key "hybrid" maps to skill mode "corpus" (hybrid BM25+vec).
+        _ARM_TO_MODE = {"precision": "precision", "recall": "recall", "hybrid": "corpus"}
+        _arms_tried: set[str] = getattr(ctx, "_strategy_arms_tried", set())
+        _corpus_arms_exhausted = all(a in _arms_tried for a in _CORPUS_ARM_ORDER)
 
-        if _corpus_all_exhausted:
-            # Every retrieval arm has already returned 0 useful chunks for
-            # this query.  Return an escalation sentinel directly — do NOT
-            # hit the RAG service again with the same query; it will return
-            # the same nothing.  The planner must try google_search or admit
-            # the answer is not in the corpus.
+        if _corpus_arms_exhausted:
+            # All three corpus arms tried — return sentinel so the planner
+            # escalates to google_search (arm d) per rule 1d.
+            _remaining_arms = [a for a in ("google", "llm_direct") if a not in _arms_tried]
+            _next_arm_hint = (
+                f"Next available arm: {_remaining_arms[0]}. "
+                if _remaining_arms else "All arms exhausted. "
+            )
             _escalation_msg = (
-                "[CORPUS_EXHAUSTED] All three retrieval strategies "
-                "(precision/BM25, recall/vector, corpus/hybrid) returned 0 "
-                "chunks for this query.  Do NOT call search_corpus again. "
-                "Options: (1) call google_search with a targeted web query, "
-                "(2) answer from what you already know with appropriate "
-                "caveats, or (3) tell the user the information is not in the "
-                "corpus and suggest they check the payer's website directly."
+                "[CORPUS_EXHAUSTED] Arms precision/BM25, recall/vector, and "
+                "hybrid (BM25+vector) have all been tried for this query and "
+                "returned 0 usable chunks. Do NOT call search_corpus again. "
+                + _next_arm_hint
+                + "Rule 1d: call google_search with a targeted query (e.g. "
+                "site:sunshinehealth.com OR 'sunshine health H0036 medical "
+                "necessity criteria'), OR answer from model knowledge with "
+                "appropriate caveats if web search is also unavailable."
             )
             logger.info(
-                "search_corpus corpus_exhausted — all arms tried, "
-                "returning escalation sentinel cid=%s",
+                "search_corpus all corpus arms exhausted cid=%s remaining=%s",
                 str(getattr(ctx, "correlation_id", ""))[:8],
+                _remaining_arms,
             )
             return {
                 "tool": "search_corpus",
@@ -546,17 +559,24 @@ def _execute_tool(
                 "signal": "no_sources",
             }
 
-        if _modes_used:
-            # Pick first rotation mode not yet tried this turn.
-            _next = next(
-                (m for m in _ROTATION_ORDER if m not in _modes_used),
-                _auto_mode,  # safety fallback (can't happen if exhaustion guard above fires)
+        # Pick the next untried corpus arm. First call: classifier
+        # picks the best arm for the query type; subsequent calls:
+        # rotate through the remaining untried arms.
+        if _auto_mode not in _arms_tried and _auto_mode in _CORPUS_ARM_ORDER:
+            _selected_arm = _auto_mode
+        else:
+            _selected_arm = next(
+                (a for a in _CORPUS_ARM_ORDER if a not in _arms_tried),
+                "hybrid",  # safety fallback (exhaustion guard fires before this)
             )
-            if _next != _auto_mode:
-                _auto_reason = f"trying {'exact-match' if _next == 'precision' else 'broad semantic' if _next == 'recall' else 'hybrid'} search after earlier attempt"
-                _auto_mode = _next
-        _modes_used = _modes_used + [_auto_mode]
-        ctx._search_corpus_modes_used = _modes_used  # type: ignore[attr-defined]
+            _arm_labels = {"precision": "exact-match", "recall": "broad semantic", "hybrid": "hybrid"}
+            _auto_reason = f"trying {_arm_labels.get(_selected_arm, _selected_arm)} search after earlier attempt"
+
+        _auto_mode = _ARM_TO_MODE[_selected_arm]
+        _arms_tried = _arms_tried | {_selected_arm}
+        ctx._strategy_arms_tried = _arms_tried  # type: ignore[attr-defined]
+        # Back-compat alias for any code that still reads the old name.
+        ctx._search_corpus_modes_used = list(_arms_tried)  # type: ignore[attr-defined]
 
         emit_signal(make_query_understood(
             ctx.correlation_id, query=query, intent_summary=query[:120],
@@ -1084,6 +1104,10 @@ def _execute_tool(
     if tool == "google_search":
         query = inputs.get("query") or (ctx.effective_message or ctx.message)
         emit(f"◌ Searching the web for: {(query or '')[:60]}…")
+        # Mark the "google" arm as tried in the 5-arm bandit so the planner
+        # knows only "llm_direct" remains if this also returns nothing.
+        _g_arms: set[str] = getattr(ctx, "_strategy_arms_tried", set())
+        ctx._strategy_arms_tried = _g_arms | {"google"}  # type: ignore[attr-defined]
         answer, sources, usage, signal = answer_tool(
             query or "",
             emitter=emitter,
@@ -1094,10 +1118,19 @@ def _execute_tool(
             pipeline_ctx=ctx,
         )
         success = bool(answer and len(answer.strip()) > 50)
+        if not success:
+            _result_msg = (
+                "[GOOGLE_EXHAUSTED] Web search returned no usable results. "
+                "Only llm_direct arm remains: answer from model knowledge "
+                "with appropriate caveats, or set is_complete=true and tell "
+                "the user the information could not be located in any source."
+            )
+        else:
+            _result_msg = answer or ""
         return {
             "tool": "google_search",
             "success": success,
-            "result": answer or "",
+            "result": _result_msg,
             "signal": signal,
             "sources": sources or [],
             "usage": usage,

@@ -550,6 +550,28 @@ def build_reasoning_context(
             + _prev_summary[:600]
         )
 
+    # ── 5-arm strategy bandit state ──────────────────────────────────────
+    # Expose which retrieval/answer strategies have been tried this turn
+    # so the planner can pick from only the remaining arms.
+    #   a) precision   — BM25 exact-match (corpus)
+    #   b) recall      — vector semantic (corpus)
+    #   c) hybrid      — BM25 ⊕ vector RRF (corpus)
+    #   d) google      — external web search
+    #   e) llm_direct  — answer from model knowledge (implicit: set is_complete=true)
+    _ALL_ARMS = ["precision", "recall", "hybrid", "google", "llm_direct"]
+    _arms_tried_ctx: set[str] = getattr(ctx, "_strategy_arms_tried", set())
+    if _arms_tried_ctx:
+        _remaining = [a for a in _ALL_ARMS if a not in _arms_tried_ctx]
+        _tried_str = ", ".join(_arms_tried_ctx) if _arms_tried_ctx else "none"
+        _remaining_str = ", ".join(_remaining) if _remaining else "NONE — set is_complete=true"
+        parts.append(
+            f"Strategy arms tried this turn: {_tried_str}\n"
+            f"Strategy arms still available: {_remaining_str}\n"
+            "Do NOT repeat an arm that has already been tried. "
+            "If no corpus arms (precision/recall/hybrid) remain, call google_search. "
+            "If google is also tried, answer from model knowledge (llm_direct = is_complete=true with caveats)."
+        )
+
     if tool_results:
         parts.append(f"\nIteration {iteration} — tools called this turn:")
         parts.append(
