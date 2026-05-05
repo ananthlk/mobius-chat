@@ -205,6 +205,72 @@ def _corpus_confidence_min() -> float:
 
 
 # ---------------------------------------------------------------------------
+# Query strategy classifier
+# ---------------------------------------------------------------------------
+#
+# Lightweight rule-based classifier that selects the retrieval arm for
+# auto mode.  Runs in <1ms — no LLM call. The three arms:
+#
+#   precision  BM25-only.   Best for exact codes, IDs, verbatim phrases.
+#              Fires when the query contains a clinical code (HCPCS, CPT,
+#              ICD-10, revenue code, NDC).
+#
+#   recall     vector-only. Best for conceptual / paraphrased questions.
+#              Fires when the query is clearly explanatory ("explain",
+#              "criteria for", "overview of", "what does X mean").
+#
+#   corpus     hybrid RRF.  Default when neither signal is strong.
+#              Runs both arms in parallel and fuses via reciprocal rank.
+#
+# The classifier feeds strategy_selected so the thinking-chain and the
+# retrieval panel show WHAT was chosen and WHY, not just "auto".
+
+import re as _re
+
+_HCPCS_RE  = _re.compile(r'\b[A-Z]\d{4}\b')                    # H0036, T1017
+_CPT_RE    = _re.compile(r'\b\d{4}[A-Z0-9]\b')                 # 90837, 99213
+_ICD10_RE  = _re.compile(r'\b[A-Z]\d{2}(?:\.\d+)?\b')          # F32.1, Z23
+_REV_RE    = _re.compile(r'\brevenue\s+code\s+\d{3,4}\b', _re.I)
+_NDC_RE    = _re.compile(r'\b\d{11}\b|\bndc\b', _re.I)
+
+_CONCEPTUAL_PHRASES = (
+    "what does", "what is the", "what are the",
+    "explain", "describe", "overview", "criteria for",
+    "difference between", "how does", "why does", "philosophy",
+    "general policy", "guidance on", "approach to",
+    "what counts as", "definition of", "meaning of",
+)
+
+
+def _classify_query_strategy(query: str) -> tuple[str, str]:
+    """Return (mode, reason) for a search_corpus call.
+
+    mode is one of: ``precision`` | ``recall`` | ``corpus`` (hybrid).
+    reason is a short phrase shown in strategy_selected.note.
+    """
+    q_lower = query.lower()
+
+    # Code-heavy → precision (BM25 handles exact tokens best)
+    if _HCPCS_RE.search(query):
+        return "precision", "HCPCS code in query"
+    if _CPT_RE.search(query):
+        return "precision", "CPT code in query"
+    if _ICD10_RE.search(query):
+        return "precision", "ICD-10 code in query"
+    if _REV_RE.search(query):
+        return "precision", "revenue code in query"
+    if _NDC_RE.search(query):
+        return "precision", "NDC/drug code in query"
+
+    # Conceptual phrasing → recall (vector handles semantics better)
+    if any(phrase in q_lower for phrase in _CONCEPTUAL_PHRASES):
+        return "recall", "conceptual question"
+
+    # Default → hybrid
+    return "corpus", "mixed query"
+
+
+# ---------------------------------------------------------------------------
 # Tool executor (skeleton: search_corpus only)
 # ---------------------------------------------------------------------------
 
@@ -439,6 +505,7 @@ def _execute_tool(
             make_query_understood, make_strategy_selected,
             make_retrieval_complete, make_fallback_triggered,
         )
+        _auto_mode, _auto_reason = _classify_query_strategy(query)
         emit_signal(make_query_understood(
             ctx.correlation_id, query=query, intent_summary=query[:120],
             round=_rn, thread_id=ctx.thread_id,
@@ -475,10 +542,10 @@ def _execute_tool(
 
         _strategy_reason = (
             f"and your attached doc{'s' if len(upload_candidates) > 1 else ''}"
-            if upload_candidates else None
+            if upload_candidates else _auto_reason
         )
         emit_signal(make_strategy_selected(
-            ctx.correlation_id, mode="auto",
+            ctx.correlation_id, mode=_auto_mode,
             reason=_strategy_reason,
             round=_rn, thread_id=ctx.thread_id,
         ))
@@ -513,7 +580,7 @@ def _execute_tool(
                         name="search_corpus",
                         inputs={
                             "query": query,
-                            "mode": "corpus",
+                            "mode": _auto_mode,
                             "k": 10,
                             **({"include_document_ids": rag_overrides.get("include_document_ids")}
                                if rag_overrides.get("include_document_ids") else {}),
