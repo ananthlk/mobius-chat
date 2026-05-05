@@ -506,6 +506,28 @@ def _execute_tool(
             make_retrieval_complete, make_fallback_triggered,
         )
         _auto_mode, _auto_reason = _classify_query_strategy(query)
+
+        # Strategy rotation on repeat — when ReAct calls search_corpus a
+        # second time (refinement round), try a different retrieval arm
+        # instead of repeating the same one.  Rotation order:
+        #   precision → recall → corpus (hybrid)
+        # This gives the integrator genuinely different evidence pools
+        # across rounds rather than just a reworded query against the
+        # same index arm.
+        _ROTATION_ORDER = ["precision", "recall", "corpus"]
+        _modes_used: list[str] = getattr(ctx, "_search_corpus_modes_used", [])
+        if _modes_used:
+            # Pick first rotation mode not yet tried this turn.
+            _next = next(
+                (m for m in _ROTATION_ORDER if m not in _modes_used),
+                _auto_mode,  # all tried → fall back to classifier choice
+            )
+            if _next != _auto_mode:
+                _auto_reason = f"trying {'exact-match' if _next == 'precision' else 'broad semantic' if _next == 'recall' else 'hybrid'} search after earlier attempt"
+                _auto_mode = _next
+        _modes_used = _modes_used + [_auto_mode]
+        ctx._search_corpus_modes_used = _modes_used  # type: ignore[attr-defined]
+
         emit_signal(make_query_understood(
             ctx.correlation_id, query=query, intent_summary=query[:120],
             round=_rn, thread_id=ctx.thread_id,
