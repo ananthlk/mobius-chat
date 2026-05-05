@@ -443,11 +443,6 @@ def _execute_tool(
             ctx.correlation_id, query=query, intent_summary=query[:120],
             round=_rn, thread_id=ctx.thread_id,
         ))
-        emit_signal(make_strategy_selected(
-            ctx.correlation_id, mode="auto",
-            round=_rn, thread_id=ctx.thread_id,
-        ))
-
         # Phase B.4 — parallel retrieval.
         #
         # When the thread has instant_rag uploads, the user's uploaded doc
@@ -478,13 +473,15 @@ def _execute_tool(
         # faster than we add signal.
         upload_candidates = upload_candidates[:3]
 
-        if upload_candidates:
-            emit(
-                f"◌ Searching our materials and your attached "
-                f"doc{'s' if len(upload_candidates) > 1 else ''}…"
-            )
-        else:
-            emit("◌ Searching our materials…")
+        _strategy_reason = (
+            f"and your attached doc{'s' if len(upload_candidates) > 1 else ''}"
+            if upload_candidates else None
+        )
+        emit_signal(make_strategy_selected(
+            ctx.correlation_id, mode="auto",
+            reason=_strategy_reason,
+            round=_rn, thread_id=ctx.thread_id,
+        ))
 
         # Run all retrievals concurrently. ThreadPoolExecutor (not asyncio)
         # because answer_non_patient + lazy_rag_search are both sync and

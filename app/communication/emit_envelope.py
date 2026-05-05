@@ -867,13 +867,14 @@ def make_strategy_selected(
     understand what kind of search is about to run.
     """
     _mode_notes = {
-        "auto":      "Searching our authoritative materials…",
-        "corpus":    "Searching our authoritative materials…",
-        "precision": "Checking for exact policy text…",
-        "recall":    "Doing a broad scan across our materials…",
-        "fallback":  "Checking external sources…",
+        "auto":      "Searching our authoritative materials",
+        "corpus":    "Searching our authoritative materials",
+        "precision": "Checking for exact policy text",
+        "recall":    "Doing a broad scan across our materials",
+        "fallback":  "Checking external sources",
     }
-    note = _mode_notes.get(mode, "Searching…")
+    base = _mode_notes.get(mode, "Searching")
+    note = f"{base} {reason}…" if reason else f"{base}…"
     return EmitEnvelope(
         signal="strategy_selected",
         correlation_id=correlation_id,
