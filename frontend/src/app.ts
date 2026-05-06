@@ -7825,7 +7825,8 @@ function run(): void {
     orgEl.focus();
   }
 
-  function sendMessage(overrideMessage?: string, opts?: SendMessageOpts): void {
+  function sendMessage(overrideMessage?: string, opts?: SendMessageOpts): void { void _sendMessageAsync(overrideMessage, opts); }
+  async function _sendMessageAsync(overrideMessage?: string, opts?: SendMessageOpts): Promise<void> {
     let message = (overrideMessage ?? (inputEl.value ?? "").trim()).trim();
     if (overrideMessage !== undefined && overrideMessage !== null) {
       activeClarificationDraft = null;
@@ -7956,9 +7957,10 @@ function run(): void {
       (payload as Record<string, unknown>).profile = cachedUserProfileNested;
     }
     let activeCorrelationId = "";
+    const _chatAuthHeaders = await auth.getAuthHeader?.() ?? {};
     fetch(API_BASE + "/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ..._chatAuthHeaders },
       body: JSON.stringify(payload),
     })
       .then((r) => r.json() as Promise<ChatPostResponse>)

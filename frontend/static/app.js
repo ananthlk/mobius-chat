@@ -7628,6 +7628,9 @@ function run() {
     orgEl.focus();
   }
   function sendMessage(overrideMessage, opts) {
+    void _sendMessageAsync(overrideMessage, opts);
+  }
+  async function _sendMessageAsync(overrideMessage, opts) {
     let message = (overrideMessage ?? (inputEl.value ?? "").trim()).trim();
     if (overrideMessage !== void 0 && overrideMessage !== null) {
       activeClarificationDraft = null;
@@ -7726,9 +7729,10 @@ ${message}`;
       payload.profile = cachedUserProfileNested;
     }
     let activeCorrelationId = "";
+    const _chatAuthHeaders = await auth.getAuthHeader?.() ?? {};
     fetch(API_BASE + "/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ..._chatAuthHeaders },
       body: JSON.stringify(payload)
     }).then((r) => r.json()).then((data) => {
       if (data.thread_id)
