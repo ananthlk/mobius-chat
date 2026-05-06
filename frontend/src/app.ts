@@ -484,6 +484,10 @@ interface ParsedSource {
 /** GET /chat/history/recent or most-helpful-searches */
 interface HistoryTurnItem {
   correlation_id: string;
+  /** thread_id added 2026-05-05 so sidebar can re-open the existing
+   * thread on click instead of re-running the question as a fresh turn.
+   * Optional because older rows may not have it backfilled. */
+  thread_id?: string | null;
   question: string;
   created_at: string | null;
 }
@@ -8848,17 +8852,25 @@ function run(): void {
             li.title = t.question || "";
             li.setAttribute("role", "button");
             li.setAttribute("tabindex", "0");
-            li.addEventListener("click", () => {
-              (inputEl as HTMLInputElement).value = t.question ?? "";
-              updateSendState();
-              sendMessage();
-            });
-            li.addEventListener("keydown", (e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
+            // 2026-05-05: re-open the existing thread instead of
+            // re-running the question. Same behavior as recent threads.
+            // Falls back to re-submit if thread_id is missing (older
+            // rows pre-backend-fix) so the click is never a dead end.
+            const tid = (t.thread_id || "").trim();
+            const openOrReSubmit = (): void => {
+              if (tid) {
+                void loadAndRenderThread(tid);
+              } else {
                 (inputEl as HTMLInputElement).value = t.question ?? "";
                 updateSendState();
                 sendMessage();
+              }
+            };
+            li.addEventListener("click", openOrReSubmit);
+            li.addEventListener("keydown", (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                openOrReSubmit();
               }
             });
             helpfulList.appendChild(li);

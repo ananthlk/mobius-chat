@@ -7559,17 +7559,21 @@ ${message}`;
           li.title = t.question || "";
           li.setAttribute("role", "button");
           li.setAttribute("tabindex", "0");
-          li.addEventListener("click", () => {
-            inputEl.value = t.question ?? "";
-            updateSendState();
-            sendMessage();
-          });
-          li.addEventListener("keydown", (e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
+          const tid = (t.thread_id || "").trim();
+          const openOrReSubmit = () => {
+            if (tid) {
+              void loadAndRenderThread(tid);
+            } else {
               inputEl.value = t.question ?? "";
               updateSendState();
               sendMessage();
+            }
+          };
+          li.addEventListener("click", openOrReSubmit);
+          li.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              openOrReSubmit();
             }
           });
           helpfulList.appendChild(li);

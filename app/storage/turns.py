@@ -396,10 +396,15 @@ def get_recent_turns(limit: int = 10) -> list[dict[str, Any]]:
 
 
 def get_most_helpful_turns(limit: int = 10) -> list[dict[str, Any]]:
-    """Return turns that have feedback rating = 'up', same shape as get_recent_turns."""
+    """Return turns that have feedback rating = 'up', same shape as get_recent_turns.
+
+    Includes ``thread_id`` so the sidebar can navigate back to the existing
+    thread instead of re-running the question as a fresh turn (which burns
+    LLM cost on already-answered work + breaks continuity). 2026-05-05.
+    """
     result = db_query(
         """
-        SELECT t.correlation_id, t.question, t.created_at
+        SELECT t.correlation_id, t.thread_id, t.question, t.created_at
         FROM chat_turns t
         INNER JOIN chat_feedback f ON f.correlation_id = t.correlation_id AND f.rating = 'up'
         ORDER BY t.created_at DESC
@@ -414,6 +419,7 @@ def get_most_helpful_turns(limit: int = 10) -> list[dict[str, Any]]:
     return [
         {
             "correlation_id": r["correlation_id"],
+            "thread_id": (r.get("thread_id") or None),
             "question": r.get("question") or "",
             "created_at": _iso(r.get("created_at")),
         }
