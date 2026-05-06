@@ -483,7 +483,7 @@ function escapeHtml(s) {
   return div.innerHTML;
 }
 function createAuthModal(options) {
-  const { auth, showOAuth = true, demoEmail, googleClientId, onSuccess, onClose } = options;
+  const { auth: auth2, showOAuth = true, demoEmail, googleClientId, onSuccess, onClose } = options;
   let currentUser = null;
   let pendingWelcomeName = null;
   const overlay = document.createElement("div");
@@ -500,7 +500,7 @@ function createAuthModal(options) {
   }
   function open(mode = "login") {
     currentUser = null;
-    auth.getUserProfile().then((p) => {
+    auth2.getUserProfile().then((p) => {
       currentUser = p ?? null;
       const m = mode === "account" && currentUser ? "account" : mode;
       render(m);
@@ -604,7 +604,7 @@ function createAuthModal(options) {
           loginBtn.textContent = "Signing in...";
           loginBtn.disabled = true;
         }
-        const result = await auth.login(email, password);
+        const result = await auth2.login(email, password);
         if (result.success && result.user) {
           showToast(`Signed in as ${result.user.greeting_name || result.user.email || "user"}`, "success");
           onSuccess?.(result.user);
@@ -646,7 +646,7 @@ function createAuthModal(options) {
         errorEl.style.display = "none";
       try {
         const idToken = await getGoogleIdToken(googleClientId);
-        const result = await auth.loginWithGoogle(idToken);
+        const result = await auth2.loginWithGoogle(idToken);
         if (!result.success) {
           if (errorEl) {
             errorEl.textContent = result.error || "Google sign-in failed";
@@ -713,7 +713,7 @@ function createAuthModal(options) {
           signupBtn.textContent = "Creating...";
           signupBtn.disabled = true;
         }
-        const result = await auth.register(
+        const result = await auth2.register(
           email,
           password,
           displayNameInput?.value?.trim() || void 0,
@@ -770,7 +770,7 @@ function createAuthModal(options) {
           logoutBtn.disabled = false;
       });
       confirmEl?.querySelector('[data-confirm="ok"]')?.addEventListener("click", async () => {
-        await auth.logout();
+        await auth2.logout();
         updateUser(null);
         showToast("Signed out", "info");
         close();
@@ -807,7 +807,7 @@ function prefsFromProfile(profile) {
     autonomy_sensitive_tasks: profile.autonomy_sensitive_tasks ?? "manual"
   };
 }
-function createPreferencesModal(apiBase, auth, options) {
+function createPreferencesModal(apiBase, auth2, options) {
   const base = apiBase.replace(/\/$/, "");
   const authBase = `${base}/auth`;
   let modalEl = null;
@@ -831,7 +831,7 @@ function createPreferencesModal(apiBase, auth, options) {
     options?.onClose?.();
   }
   async function open() {
-    const token = await auth.getAccessToken();
+    const token = await auth2.getAccessToken();
     if (!token) {
       console.warn("[PreferencesModal] Not signed in");
       return;
@@ -851,7 +851,7 @@ function createPreferencesModal(apiBase, auth, options) {
     } catch (e) {
       console.error("[PreferencesModal] Error fetching activities:", e);
     }
-    const profile = await auth.getCurrentUser();
+    const profile = await auth2.getCurrentUser();
     const initialPrefs = profile ? prefsFromProfile(profile) : prefsFromProfile({});
     const prefs = { ...initialPrefs, activities: [...initialPrefs.activities ?? []] };
     const selectedActivities = [...prefs.activities ?? []];
@@ -1016,7 +1016,7 @@ function createPreferencesModal(apiBase, auth, options) {
           saveBtn.disabled = true;
         }
         try {
-          const t = await auth.getAccessToken();
+          const t = await auth2.getAccessToken();
           if (!t) {
             close();
             return;
@@ -1039,7 +1039,7 @@ function createPreferencesModal(apiBase, auth, options) {
           });
           if (response.ok) {
             prefs.activities = [...selectedActivities];
-            await auth.getCurrentUser();
+            await auth2.getCurrentUser();
             options?.onSave?.(prefs);
             showToast("Preferences saved", "success");
             close();
@@ -1949,7 +1949,7 @@ function initSidebarRailIcons() {
     const badge = document.getElementById("railBadgeRecent");
     if (!badge)
       return;
-    fetch(API_BASE + "/chat/history/recent?limit=20").then((r) => r.ok ? r.json() : []).then((rows) => {
+    fetch(API_BASE + "/chat/history/recent?limit=20", { headers: auth.getAuthHeader?.() ?? {} }).then((r) => r.ok ? r.json() : []).then((rows) => {
       const n = Array.isArray(rows) ? rows.length : 0;
       if (n > 0) {
         badge.textContent = String(n > 99 ? "99+" : n);
@@ -5758,10 +5758,10 @@ function renderRetrievalTrace(thinkingLog) {
           return `<span class="rt-arm">${rtEscapeAttr(a.toUpperCase())}</span>`;
         })();
         const sim = Number(sig.sim_weighted ?? sig.sim_raw ?? 0);
-        const auth = Number(sig.auth_weighted ?? sig.authority_weighted ?? 0);
+        const auth2 = Number(sig.auth_weighted ?? sig.authority_weighted ?? 0);
         const jpd = Number(sig.jpd_weighted ?? 0);
         const tr = document.createElement("tr");
-        tr.innerHTML = `<td>${i + 1}</td><td title="${rtEscapeAttr(c.document_name || "")}" class="rt-col-doc">${rtEscapeAttr((c.document_name || "").slice(0, 32))}</td><td class="rt-col-p">${c.page ?? c.page_number ?? "\u2014"}</td><td>${armBadges}</td><td>${rtConfBadge(c.confidence_label)}</td><td class="rt-col-num">${rtFormatSig(c.rerank_score)}</td><td class="rt-col-bar">${rtBar(sim, "sim")}</td><td class="rt-col-bar">${rtBar(auth, "auth")}</td><td class="rt-col-bar">${rtBar(jpd, "jpd")}</td>`;
+        tr.innerHTML = `<td>${i + 1}</td><td title="${rtEscapeAttr(c.document_name || "")}" class="rt-col-doc">${rtEscapeAttr((c.document_name || "").slice(0, 32))}</td><td class="rt-col-p">${c.page ?? c.page_number ?? "\u2014"}</td><td>${armBadges}</td><td>${rtConfBadge(c.confidence_label)}</td><td class="rt-col-num">${rtFormatSig(c.rerank_score)}</td><td class="rt-col-bar">${rtBar(sim, "sim")}</td><td class="rt-col-bar">${rtBar(auth2, "auth")}</td><td class="rt-col-bar">${rtBar(jpd, "jpd")}</td>`;
         tb.appendChild(tr);
       });
       table.appendChild(tb);
@@ -6899,7 +6899,7 @@ function run() {
   const sidebarUser = document.getElementById("sidebarUser");
   const sidebarUserName = document.getElementById("sidebarUserName");
   const authApiBase = `${API_BASE.replace(/\/$/, "")}/api/v1`;
-  const auth = createAuthService({ apiBase: authApiBase, storage: localStorageAdapter });
+  const auth2 = createAuthService({ apiBase: authApiBase, storage: localStorageAdapter });
   const authGateEl = document.getElementById("authGate");
   const appLayoutEl = document.querySelector(".app-layout");
   function _setAuthGate(visible) {
@@ -6914,7 +6914,7 @@ function run() {
   const _authStyleEl = document.createElement("style");
   _authStyleEl.textContent = AUTH_STYLES + (PREFERENCES_MODAL_STYLES || "");
   document.head.appendChild(_authStyleEl);
-  let modal = createAuthModal({ auth, showOAuth: false });
+  let modal = createAuthModal({ auth: auth2, showOAuth: false });
   document.body.appendChild(modal.el);
   document.getElementById("authGateBtn")?.addEventListener("click", () => {
     modal.open("login");
@@ -6930,7 +6930,7 @@ function run() {
       });
     }
   }
-  const prefsModal = createPreferencesModal(authApiBase, auth, {
+  const prefsModal = createPreferencesModal(authApiBase, auth2, {
     onSave: () => {
       void _fetchNestedUserProfile();
     }
@@ -6947,7 +6947,7 @@ function run() {
     if (!gid)
       return;
     const oldEl = modal.el;
-    modal = createAuthModal({ auth, showOAuth: true, googleClientId: gid });
+    modal = createAuthModal({ auth: auth2, showOAuth: true, googleClientId: gid });
     if (oldEl.parentNode)
       oldEl.parentNode.replaceChild(modal.el, oldEl);
     else
@@ -7043,7 +7043,7 @@ function run() {
   let cachedUserProfileNested = null;
   async function _fetchNestedUserProfile() {
     try {
-      const headers = auth.getAuthHeader?.();
+      const headers = auth2.getAuthHeader?.();
       if (!headers) {
         cachedUserProfileNested = null;
         return;
@@ -7069,8 +7069,8 @@ function run() {
       cachedUserProfileNested = null;
     }
   }
-  auth.on(() => {
-    void auth.getUserProfile().then((p) => {
+  auth2.on(() => {
+    void auth2.getUserProfile().then((p) => {
       cachedProfile = p;
       updateSidebarUser(p);
       syncAnswerInsightsCheckbox();
@@ -7080,7 +7080,7 @@ function run() {
     });
     void _fetchNestedUserProfile();
   });
-  void auth.getUserProfile().then((p) => {
+  void auth2.getUserProfile().then((p) => {
     cachedProfile = p;
     updateSidebarUser(p);
     syncAnswerInsightsCheckbox();
@@ -7099,7 +7099,7 @@ function run() {
   });
   if (sidebarUser) {
     sidebarUser.addEventListener("click", () => {
-      void auth.getUserProfile().then((user) => {
+      void auth2.getUserProfile().then((user) => {
         modal.open(user ? "account" : "login");
       });
     });
@@ -7718,7 +7718,7 @@ ${message}`;
       (data) => (
         // Refresh profile before admin-gated UI. Otherwise the first reply can render while
         // cachedProfile is still null (getUserProfile not resolved), hiding LLM performance.
-        auth.getUserProfile().then((p) => {
+        auth2.getUserProfile().then((p) => {
           cachedProfile = p;
           syncAnswerInsightsCheckbox();
           return data;
@@ -8683,7 +8683,8 @@ ${message}`;
     let turns;
     try {
       const r = await fetch(
-        API_BASE + "/chat/history/threads/" + encodeURIComponent(tid) + "/turns?limit=50"
+        API_BASE + "/chat/history/threads/" + encodeURIComponent(tid) + "/turns?limit=50",
+        { headers: auth2.getAuthHeader?.() ?? {} }
       );
       if (!r.ok) {
         console.warn("[loadAndRenderThread] HTTP", r.status, "for", tid);
@@ -8785,18 +8786,20 @@ ${message}`;
     if (!recentList)
       return;
     const snippet = (q, max = 80) => (q ?? "").trim().slice(0, max) + ((q ?? "").length > max ? "\u2026" : "");
+    const _authHeaders = auth2.getAuthHeader?.() ?? {};
     Promise.all([
       // Phase 2.3: sidebar now shows deduplicated *threads* with real titles
       // instead of per-turn rows that exposed raw URLs / tool inputs. Endpoint
       // returns {thread_id, title, updated_at, turn_count}. Gracefully returns
       // [] if migration 030 hasn't run, so the list is empty rather than broken.
-      fetch(API_BASE + "/chat/history/threads?limit=20").then(
+      // Auth header required — history is user-scoped (fix 2026-05-06).
+      fetch(API_BASE + "/chat/history/threads?limit=20", { headers: _authHeaders }).then(
         (r) => r.json()
       ),
-      helpfulList ? fetch(API_BASE + "/chat/history/most-helpful-searches?limit=10").then(
+      helpfulList ? fetch(API_BASE + "/chat/history/most-helpful-searches?limit=10", { headers: _authHeaders }).then(
         (r) => r.json()
       ) : Promise.resolve([]),
-      documentsList ? fetch(API_BASE + "/chat/history/most-helpful-documents?limit=10").then(
+      documentsList ? fetch(API_BASE + "/chat/history/most-helpful-documents?limit=10", { headers: _authHeaders }).then(
         (r) => r.json()
       ) : Promise.resolve([])
     ]).then(([recentThreads, helpful, documents]) => {

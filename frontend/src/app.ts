@@ -1023,7 +1023,7 @@ function initSidebarRailIcons(): void {
   const updateRecentBadge = (): void => {
     const badge = document.getElementById("railBadgeRecent");
     if (!badge) return;
-    fetch(API_BASE + "/chat/history/recent?limit=20")
+    fetch(API_BASE + "/chat/history/recent?limit=20", { headers: auth.getAuthHeader?.() ?? {} })
       .then((r) => (r.ok ? r.json() : []))
       .then((rows: unknown[]) => {
         const n = Array.isArray(rows) ? rows.length : 0;
@@ -9190,7 +9190,8 @@ function run(): void {
     let turns: RehydratedTurn[];
     try {
       const r = await fetch(
-        API_BASE + "/chat/history/threads/" + encodeURIComponent(tid) + "/turns?limit=50"
+        API_BASE + "/chat/history/threads/" + encodeURIComponent(tid) + "/turns?limit=50",
+        { headers: auth.getAuthHeader?.() ?? {} }
       );
       if (!r.ok) {
         console.warn("[loadAndRenderThread] HTTP", r.status, "for", tid);
@@ -9322,21 +9323,23 @@ function run(): void {
     const snippet = (q: string, max = 80) =>
       (q ?? "").trim().slice(0, max) + ((q ?? "").length > max ? "…" : "");
 
+    const _authHeaders = auth.getAuthHeader?.() ?? {};
     Promise.all([
       // Phase 2.3: sidebar now shows deduplicated *threads* with real titles
       // instead of per-turn rows that exposed raw URLs / tool inputs. Endpoint
       // returns {thread_id, title, updated_at, turn_count}. Gracefully returns
       // [] if migration 030 hasn't run, so the list is empty rather than broken.
-      fetch(API_BASE + "/chat/history/threads?limit=20").then(
+      // Auth header required — history is user-scoped (fix 2026-05-06).
+      fetch(API_BASE + "/chat/history/threads?limit=20", { headers: _authHeaders }).then(
         (r) => r.json() as Promise<Array<{ thread_id: string; title: string; summary?: string | null; updated_at: string; turn_count: number }>>
       ),
       helpfulList
-        ? fetch(API_BASE + "/chat/history/most-helpful-searches?limit=10").then(
+        ? fetch(API_BASE + "/chat/history/most-helpful-searches?limit=10", { headers: _authHeaders }).then(
             (r) => r.json() as Promise<HistoryTurnItem[]>
           )
         : Promise.resolve([] as HistoryTurnItem[]),
       documentsList
-        ? fetch(API_BASE + "/chat/history/most-helpful-documents?limit=10").then(
+        ? fetch(API_BASE + "/chat/history/most-helpful-documents?limit=10", { headers: _authHeaders }).then(
             (r) => r.json() as Promise<HistoryDocumentItem[]>
           )
         : Promise.resolve([] as HistoryDocumentItem[]),
