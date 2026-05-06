@@ -221,7 +221,8 @@ class ChatPromptsConfig:
         '{"mode":"FACTUAL","direct_answer":"string","sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string","bullets":["string"]}],'
         '"required_variables":["string"],"confidence_note":"string",'
         '"citations":[{"id":"string","doc_title":"string","locator":"string","snippet":"string"}],'
-        '"followups":[{"question":"string","reason":"string","field":"string"}]}\n\n'
+        '"followups":[{"question":"string","reason":"string","field":"string"}],'
+        '"thread_summary":"string"}\n\n'
         "Rules for FACTUAL mode:\n"
         "- direct_answer is required and must stand alone.\n"
         "- Each section MUST include either a non-empty bullets array or a non-empty body string so the Details panel has content.\n"
@@ -239,7 +240,10 @@ class ChatPromptsConfig:
         "- direct_answer must be one sentence, operational, and non-hedgy. "
         "FACTUAL direct_answer is the SHORTEST of the three modes — one line carries the operative fact; everything else belongs in the sections.\n"
         "If the facts are insufficient: direct_answer should say what is missing (one sentence). "
-        "sections may include a label \"What's missing\" with bullets. Do not guess."
+        "sections may include a label \"What's missing\" with bullets. Do not guess.\n"
+        "- thread_summary: a short topic label (max 60 chars) for the sidebar. "
+        "Capture the subject matter — NOT the user's question, no 'User asked', no question marks. "
+        "Example: 'Claim dispute process — Sunshine Health' or 'Prior auth requirements for H0036'."
     )
     integrator_canonical_system: str = (
         "You are the CONSOLIDATOR for a retrieval-based system.\n\n"
@@ -248,7 +252,8 @@ class ChatPromptsConfig:
         '{"mode":"CANONICAL","direct_answer":"string","sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string","bullets":["string"]}],'
         '"required_variables":["string"],"confidence_note":"string",'
         '"citations":[{"id":"string","doc_title":"string","locator":"string","snippet":"string"}],'
-        '"followups":[{"question":"string","reason":"string","field":"string"}]}\n\n'
+        '"followups":[{"question":"string","reason":"string","field":"string"}],'
+        '"thread_summary":"string"}\n\n'
         "Rules for CANONICAL mode:\n"
         "- direct_answer is required and must stand alone. Classify each section with exactly one intent: process, requirements, definitions, exceptions, or references. The UI will show direct_answer and all sections.\n"
         "- Use ONLY the information provided in the input.\n"
@@ -265,7 +270,10 @@ class ChatPromptsConfig:
         "the canonical rule/scope, and the key conditions or values that usually apply. "
         "Inline specifics (codes, numbers, named standards, page refs) when the input supplies them.\n"
         "- Do not include procedural \"how to submit\" steps unless the policy explicitly describes the process.\n"
-        "If insufficient: direct_answer should state what is missing to give a canonical explanation."
+        "If insufficient: direct_answer should state what is missing to give a canonical explanation.\n"
+        "- thread_summary: a short topic label (max 60 chars) for the sidebar. "
+        "Capture the subject matter — NOT the user's question, no 'User asked', no question marks. "
+        "Example: 'Provider enrollment with Sunshine Health' or 'H0036 definition and criteria'."
     )
     integrator_blended_system: str = (
         "You are the CONSOLIDATOR for a retrieval-based system.\n\n"
@@ -274,7 +282,8 @@ class ChatPromptsConfig:
         '{"mode":"BLENDED","direct_answer":"string","sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string","bullets":["string"]}],'
         '"required_variables":["string"],"confidence_note":"string",'
         '"citations":[{"id":"string","doc_title":"string","locator":"string","snippet":"string"}],'
-        '"followups":[{"question":"string","reason":"string","field":"string"}]}\n\n'
+        '"followups":[{"question":"string","reason":"string","field":"string"}],'
+        '"thread_summary":"string"}\n\n'
         "Rules for BLENDED mode:\n"
         "- direct_answer is required and must stand alone. Classify each section with exactly one intent: process, requirements, definitions, exceptions, or references. "
         "The UI will show direct_answer plus **requirements AND definitions** sections by default; process, exceptions, and references will be behind 'Show details'.\n"
@@ -295,7 +304,10 @@ class ChatPromptsConfig:
         "No single-word or stub bullets (\"required\", \"see manual\", \"applicable\") — if a bullet would be a stub, drop it.\n"
         "- If the answer depends on an unknown variable, include it in required_variables and add at most one followup question.\n"
         "- Do not speculate or add hypotheticals.\n"
-        "If insufficient: direct_answer should state what is missing; do not guess."
+        "If insufficient: direct_answer should state what is missing; do not guess.\n"
+        "- thread_summary: a short topic label (max 60 chars) for the sidebar. "
+        "Capture the subject matter — NOT the user's question, no 'User asked', no question marks. "
+        "Example: 'Claim dispute process — Sunshine Health' or 'Prior auth for behavioral health'."
     )
 
 
