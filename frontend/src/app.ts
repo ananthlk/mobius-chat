@@ -984,7 +984,7 @@ function _dropPromptIntoComposer(template: string): void {
 // to a section without expanding the whole panel manually. Click →
 // expand sidebar AND scroll to the section. Counts feed from the same
 // data source the expanded sections render from.
-function initSidebarRailIcons(authService?: { getAuthHeader?: () => Record<string, string> }): void {
+function initSidebarRailIcons(authService?: { getAuthHeader?: () => Promise<Record<string, string> | null> | Record<string, string> }): void {
   const sidebar = document.getElementById("sidebar");
   if (!sidebar) return;
   const icons = Array.from(sidebar.querySelectorAll<HTMLButtonElement>(".sidebar-rail-icon"));
@@ -1023,7 +1023,8 @@ function initSidebarRailIcons(authService?: { getAuthHeader?: () => Record<strin
   const updateRecentBadge = (): void => {
     const badge = document.getElementById("railBadgeRecent");
     if (!badge) return;
-    fetch(API_BASE + "/chat/history/recent?limit=20", { headers: authService?.getAuthHeader?.() ?? {} })
+    void Promise.resolve(authService?.getAuthHeader?.() ?? {}).then((hdrs) =>
+    fetch(API_BASE + "/chat/history/recent?limit=20", { headers: hdrs ?? {} }))
       .then((r) => (r.ok ? r.json() : []))
       .then((rows: unknown[]) => {
         const n = Array.isArray(rows) ? rows.length : 0;
@@ -7113,7 +7114,7 @@ function run(): void {
 
   async function _fetchNestedUserProfile(): Promise<void> {
     try {
-      const headers = auth.getAuthHeader?.();
+      const headers = await auth.getAuthHeader?.();
       if (!headers) {
         cachedUserProfileNested = null;
         return;
@@ -9225,7 +9226,7 @@ function run(): void {
     try {
       const r = await fetch(
         API_BASE + "/chat/history/threads/" + encodeURIComponent(tid) + "/turns?limit=50",
-        { headers: auth.getAuthHeader?.() ?? {} }
+        { headers: (await auth.getAuthHeader?.()) ?? {} }
       );
       if (!r.ok) {
         console.warn("[loadAndRenderThread] HTTP", r.status, "for", tid);
@@ -9357,7 +9358,10 @@ function run(): void {
     const snippet = (q: string, max = 80) =>
       (q ?? "").trim().slice(0, max) + ((q ?? "").length > max ? "…" : "");
 
-    const _authHeaders = auth.getAuthHeader?.() ?? {};
+    // getAuthHeader() is async — must await it before passing to fetch().
+    // Wrapping in an async IIFE keeps the outer function signature void.
+    void (async () => {
+    const _authHeaders = (await auth.getAuthHeader?.()) ?? {};
     Promise.all([
       // Phase 2.3: sidebar now shows deduplicated *threads* with real titles
       // instead of per-turn rows that exposed raw URLs / tool inputs. Endpoint
@@ -9490,6 +9494,7 @@ function run(): void {
         if (helpfulList) helpfulList.innerHTML = "";
         if (documentsList) documentsList.innerHTML = "";
       });
+    })();
   }
 
   const chatEmptyLanding = document.getElementById("chatEmpty");

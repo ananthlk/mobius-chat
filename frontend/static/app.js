@@ -1949,7 +1949,7 @@ function initSidebarRailIcons(authService) {
     const badge = document.getElementById("railBadgeRecent");
     if (!badge)
       return;
-    fetch(API_BASE + "/chat/history/recent?limit=20", { headers: authService?.getAuthHeader?.() ?? {} }).then((r) => r.ok ? r.json() : []).then((rows) => {
+    void Promise.resolve(authService?.getAuthHeader?.() ?? {}).then((hdrs) => fetch(API_BASE + "/chat/history/recent?limit=20", { headers: hdrs ?? {} })).then((r) => r.ok ? r.json() : []).then((rows) => {
       const n = Array.isArray(rows) ? rows.length : 0;
       if (n > 0) {
         badge.textContent = String(n > 99 ? "99+" : n);
@@ -7066,7 +7066,7 @@ function run() {
   let cachedUserProfileNested = null;
   async function _fetchNestedUserProfile() {
     try {
-      const headers = auth.getAuthHeader?.();
+      const headers = await auth.getAuthHeader?.();
       if (!headers) {
         cachedUserProfileNested = null;
         return;
@@ -8710,7 +8710,7 @@ ${message}`;
     try {
       const r = await fetch(
         API_BASE + "/chat/history/threads/" + encodeURIComponent(tid) + "/turns?limit=50",
-        { headers: auth.getAuthHeader?.() ?? {} }
+        { headers: await auth.getAuthHeader?.() ?? {} }
       );
       if (!r.ok) {
         console.warn("[loadAndRenderThread] HTTP", r.status, "for", tid);
@@ -8812,122 +8812,124 @@ ${message}`;
     if (!recentList)
       return;
     const snippet = (q, max = 80) => (q ?? "").trim().slice(0, max) + ((q ?? "").length > max ? "\u2026" : "");
-    const _authHeaders = auth.getAuthHeader?.() ?? {};
-    Promise.all([
-      // Phase 2.3: sidebar now shows deduplicated *threads* with real titles
-      // instead of per-turn rows that exposed raw URLs / tool inputs. Endpoint
-      // returns {thread_id, title, updated_at, turn_count}. Gracefully returns
-      // [] if migration 030 hasn't run, so the list is empty rather than broken.
-      // Auth header required — history is user-scoped (fix 2026-05-06).
-      fetch(API_BASE + "/chat/history/threads?limit=20", { headers: _authHeaders }).then(
-        (r) => r.json()
-      ),
-      helpfulList ? fetch(API_BASE + "/chat/history/most-helpful-searches?limit=10", { headers: _authHeaders }).then(
-        (r) => r.json()
-      ) : Promise.resolve([]),
-      documentsList ? fetch(API_BASE + "/chat/history/most-helpful-documents?limit=10", { headers: _authHeaders }).then(
-        (r) => r.json()
-      ) : Promise.resolve([])
-    ]).then(([recentThreads, helpful, documents]) => {
-      recentList.innerHTML = "";
-      for (const th of recentThreads) {
-        const li = document.createElement("li");
-        li.className = "recent-item";
-        const label = th.summary && th.summary.trim() || th.title || "Untitled chat";
-        const countSuffix = th.turn_count > 1 ? `  (${th.turn_count})` : "";
-        li.textContent = snippet(label) + countSuffix;
-        li.title = label;
-        li.setAttribute("role", "button");
-        li.setAttribute("tabindex", "0");
-        li.setAttribute("data-thread-id", th.thread_id);
-        li.addEventListener("click", () => {
-          void loadAndRenderThread(th.thread_id);
-        });
-        li.addEventListener("keydown", (e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            void loadAndRenderThread(th.thread_id);
-          }
-        });
-        recentList.appendChild(li);
-      }
-      if (helpfulList) {
-        helpfulList.innerHTML = "";
-        for (const t of helpful) {
+    void (async () => {
+      const _authHeaders = await auth.getAuthHeader?.() ?? {};
+      Promise.all([
+        // Phase 2.3: sidebar now shows deduplicated *threads* with real titles
+        // instead of per-turn rows that exposed raw URLs / tool inputs. Endpoint
+        // returns {thread_id, title, updated_at, turn_count}. Gracefully returns
+        // [] if migration 030 hasn't run, so the list is empty rather than broken.
+        // Auth header required — history is user-scoped (fix 2026-05-06).
+        fetch(API_BASE + "/chat/history/threads?limit=20", { headers: _authHeaders }).then(
+          (r) => r.json()
+        ),
+        helpfulList ? fetch(API_BASE + "/chat/history/most-helpful-searches?limit=10", { headers: _authHeaders }).then(
+          (r) => r.json()
+        ) : Promise.resolve([]),
+        documentsList ? fetch(API_BASE + "/chat/history/most-helpful-documents?limit=10", { headers: _authHeaders }).then(
+          (r) => r.json()
+        ) : Promise.resolve([])
+      ]).then(([recentThreads, helpful, documents]) => {
+        recentList.innerHTML = "";
+        for (const th of recentThreads) {
           const li = document.createElement("li");
-          li.className = "helpful-item";
-          li.textContent = snippet(t.question || "(empty)");
-          li.title = t.question || "";
+          li.className = "recent-item";
+          const label = th.summary && th.summary.trim() || th.title || "Untitled chat";
+          const countSuffix = th.turn_count > 1 ? `  (${th.turn_count})` : "";
+          li.textContent = snippet(label) + countSuffix;
+          li.title = label;
           li.setAttribute("role", "button");
           li.setAttribute("tabindex", "0");
-          const tid = (t.thread_id || "").trim();
-          const openOrReSubmit = () => {
-            if (tid) {
-              void loadAndRenderThread(tid);
-            } else {
-              inputEl.value = t.question ?? "";
-              updateSendState();
-              sendMessage();
-            }
-          };
-          li.addEventListener("click", openOrReSubmit);
+          li.setAttribute("data-thread-id", th.thread_id);
+          li.addEventListener("click", () => {
+            void loadAndRenderThread(th.thread_id);
+          });
           li.addEventListener("keydown", (e) => {
             if (e.key === "Enter" || e.key === " ") {
               e.preventDefault();
-              openOrReSubmit();
+              void loadAndRenderThread(th.thread_id);
             }
           });
-          helpfulList.appendChild(li);
+          recentList.appendChild(li);
         }
-      }
-      if (documentsList) {
-        documentsList.innerHTML = "";
-        for (const item of documents) {
-          const li = document.createElement("li");
-          li.className = "documents-item documents-item--clickable";
-          const nameSpan = document.createElement("span");
-          nameSpan.textContent = item.document_name;
-          li.appendChild(nameSpan);
-          const n = item.cited_in_count ?? 0;
-          if (n > 0) {
-            const citedSpan = document.createElement("span");
-            citedSpan.className = "documents-item-cited";
-            citedSpan.textContent = n === 1 ? " \u2014 Cited in 1 recent answer." : ` \u2014 Cited in ${n} recent answers.`;
-            li.appendChild(citedSpan);
+        if (helpfulList) {
+          helpfulList.innerHTML = "";
+          for (const t of helpful) {
+            const li = document.createElement("li");
+            li.className = "helpful-item";
+            li.textContent = snippet(t.question || "(empty)");
+            li.title = t.question || "";
+            li.setAttribute("role", "button");
+            li.setAttribute("tabindex", "0");
+            const tid = (t.thread_id || "").trim();
+            const openOrReSubmit = () => {
+              if (tid) {
+                void loadAndRenderThread(tid);
+              } else {
+                inputEl.value = t.question ?? "";
+                updateSendState();
+                sendMessage();
+              }
+            };
+            li.addEventListener("click", openOrReSubmit);
+            li.addEventListener("keydown", (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                openOrReSubmit();
+              }
+            });
+            helpfulList.appendChild(li);
           }
-          li.title = "View document";
-          li.setAttribute("role", "button");
-          li.setAttribute("tabindex", "0");
-          li.addEventListener(
-            "click",
-            () => openDocumentOrSnippet({
-              document_id: item.document_id ?? null,
-              document_name: item.document_name,
-              page_number: null,
-              snippet: ""
-            })
-          );
-          li.addEventListener("keydown", (e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              openDocumentOrSnippet({
+        }
+        if (documentsList) {
+          documentsList.innerHTML = "";
+          for (const item of documents) {
+            const li = document.createElement("li");
+            li.className = "documents-item documents-item--clickable";
+            const nameSpan = document.createElement("span");
+            nameSpan.textContent = item.document_name;
+            li.appendChild(nameSpan);
+            const n = item.cited_in_count ?? 0;
+            if (n > 0) {
+              const citedSpan = document.createElement("span");
+              citedSpan.className = "documents-item-cited";
+              citedSpan.textContent = n === 1 ? " \u2014 Cited in 1 recent answer." : ` \u2014 Cited in ${n} recent answers.`;
+              li.appendChild(citedSpan);
+            }
+            li.title = "View document";
+            li.setAttribute("role", "button");
+            li.setAttribute("tabindex", "0");
+            li.addEventListener(
+              "click",
+              () => openDocumentOrSnippet({
                 document_id: item.document_id ?? null,
                 document_name: item.document_name,
                 page_number: null,
                 snippet: ""
-              });
-            }
-          });
-          documentsList.appendChild(li);
+              })
+            );
+            li.addEventListener("keydown", (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                openDocumentOrSnippet({
+                  document_id: item.document_id ?? null,
+                  document_name: item.document_name,
+                  page_number: null,
+                  snippet: ""
+                });
+              }
+            });
+            documentsList.appendChild(li);
+          }
         }
-      }
-    }).catch(() => {
-      recentList.innerHTML = "";
-      if (helpfulList)
-        helpfulList.innerHTML = "";
-      if (documentsList)
-        documentsList.innerHTML = "";
-    });
+      }).catch(() => {
+        recentList.innerHTML = "";
+        if (helpfulList)
+          helpfulList.innerHTML = "";
+        if (documentsList)
+          documentsList.innerHTML = "";
+      });
+    })();
   }
   const chatEmptyLanding = document.getElementById("chatEmpty");
   chatEmptyLanding?.addEventListener("click", (e) => {
