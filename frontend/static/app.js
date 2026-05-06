@@ -204,16 +204,54 @@ var AuthService = class {
         refresh_token: data.refresh_token,
         expires_in: data.expires_in || 3600
       });
+      const isNewUser = data.is_new_user !== false;
       if (data.user) {
         const profile = normalizeUser(data.user);
         await this.storeUserProfile(profile);
         this.emit("login", profile);
-        return { success: true, user: profile };
+        return { success: true, user: profile, isNewUser };
       }
       this.emit("login");
-      return { success: true };
+      return { success: true, isNewUser };
     } catch (e) {
       console.error("[AuthService] register:", e);
+      return { success: false, error: "Network error" };
+    }
+  }
+  async loginWithGoogle(idToken, tenantId) {
+    if (!idToken)
+      return { success: false, error: "Missing Google ID token" };
+    try {
+      const res = await fetch(`${this.apiBase}/auth/google`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id_token: idToken, tenant_id: tenantId })
+      });
+      let data = {};
+      try {
+        data = await res.json();
+      } catch {
+      }
+      const dataTyped = data;
+      if (!res.ok || !dataTyped.ok) {
+        return { success: false, error: dataTyped.error || "Google sign-in failed" };
+      }
+      await this.storeTokens({
+        access_token: dataTyped.access_token,
+        refresh_token: dataTyped.refresh_token,
+        expires_in: dataTyped.expires_in || 3600
+      });
+      const isNewUser = !!dataTyped.is_new_user;
+      if (dataTyped.user) {
+        const profile = normalizeUser(dataTyped.user);
+        await this.storeUserProfile(profile);
+        this.emit("login", profile);
+        return { success: true, user: profile, isNewUser };
+      }
+      this.emit("login");
+      return { success: true, isNewUser };
+    } catch (e) {
+      console.error("[AuthService] loginWithGoogle:", e);
       return { success: false, error: "Network error" };
     }
   }
@@ -331,14 +369,123 @@ var localStorageAdapter = {
       localStorage.removeItem(k);
   }
 };
+var GIS_SCRIPT_SRC = "https://accounts.google.com/gsi/client";
+var scriptPromise = null;
+function loadGisScript() {
+  if (window.google?.accounts?.id)
+    return Promise.resolve();
+  if (scriptPromise)
+    return scriptPromise;
+  scriptPromise = new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[src="${GIS_SCRIPT_SRC}"]`);
+    if (existing) {
+      existing.addEventListener("load", () => resolve());
+      existing.addEventListener("error", () => reject(new Error("Failed to load Google Identity Services")));
+      if (window.google?.accounts?.id)
+        resolve();
+      return;
+    }
+    const s = document.createElement("script");
+    s.src = GIS_SCRIPT_SRC;
+    s.async = true;
+    s.defer = true;
+    s.onload = () => resolve();
+    s.onerror = () => {
+      scriptPromise = null;
+      reject(new Error("Failed to load Google Identity Services"));
+    };
+    document.head.appendChild(s);
+  });
+  return scriptPromise;
+}
+async function getGoogleIdToken(clientId) {
+  if (!clientId)
+    throw new Error("Google client ID not configured");
+  await loadGisScript();
+  const accountsId = window.google?.accounts?.id;
+  if (!accountsId)
+    throw new Error("Google Identity Services unavailable");
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    accountsId.initialize({
+      client_id: clientId,
+      ux_mode: "popup",
+      auto_select: false,
+      cancel_on_tap_outside: true,
+      callback: (resp) => {
+        if (settled)
+          return;
+        settled = true;
+        if (resp && typeof resp.credential === "string" && resp.credential) {
+          resolve(resp.credential);
+        } else {
+          reject(new Error("Google did not return a credential"));
+        }
+      }
+    });
+    accountsId.prompt((notification) => {
+      const n = notification;
+      try {
+        if (n.isDismissedMoment?.() || n.isSkippedMoment?.() || n.isNotDisplayed?.()) {
+          if (settled)
+            return;
+          settled = true;
+          reject(new Error("Google sign-in was dismissed"));
+        }
+      } catch {
+      }
+    });
+  });
+}
+var hostEl = null;
+function ensureHost() {
+  if (hostEl && hostEl.isConnected)
+    return hostEl;
+  const existing = document.querySelector(".mobius-auth-toast-host");
+  if (existing) {
+    hostEl = existing;
+    return hostEl;
+  }
+  const el2 = document.createElement("div");
+  el2.className = "mobius-auth-toast-host";
+  document.body.appendChild(el2);
+  hostEl = el2;
+  return el2;
+}
+function showToast(message, variant = "info", durationMs = 2800) {
+  if (!message)
+    return;
+  const hostToast = window.showToast;
+  if (typeof hostToast === "function") {
+    try {
+      hostToast(message);
+      return;
+    } catch {
+    }
+  }
+  const host = ensureHost();
+  const toast = document.createElement("div");
+  toast.className = `mobius-auth-toast mobius-auth-toast--${variant}`;
+  toast.setAttribute("role", variant === "error" ? "alert" : "status");
+  toast.textContent = message;
+  host.appendChild(toast);
+  void toast.offsetWidth;
+  toast.classList.add("open");
+  const remove = () => {
+    toast.classList.remove("open");
+    setTimeout(() => toast.remove(), 200);
+  };
+  setTimeout(remove, durationMs);
+}
 function escapeHtml(s) {
   const div = document.createElement("div");
   div.textContent = s;
   return div.innerHTML;
 }
 function createAuthModal(options) {
-  const { auth, showOAuth = true, demoEmail, onSuccess, onClose } = options;
+  const { auth, showOAuth = true, demoEmail, googleClientId, onSuccess, onClose } = options;
   let currentUser = null;
+  let pendingWelcomeName = null;
   const overlay = document.createElement("div");
   overlay.className = "mobius-auth-overlay";
   overlay.setAttribute("aria-hidden", "true");
@@ -406,9 +553,29 @@ function createAuthModal(options) {
         <p class="mobius-auth-user-info">${escapeHtml(currentUser?.greeting_name || currentUser?.email || currentUser?.display_name || "User")}</p>
         <a href="#" class="mobius-auth-prefs-link">Preferences</a>
         <button type="button" class="mobius-auth-btn mobius-auth-logout-btn">Sign out</button>
+        <div class="mobius-auth-confirm" data-role="logout-confirm" style="display:none">
+          <p class="mobius-auth-confirm-text">Sign out of Mobius?</p>
+          <div class="mobius-auth-confirm-actions">
+            <button type="button" class="mobius-auth-btn mobius-auth-btn-secondary" data-confirm="cancel">Cancel</button>
+            <button type="button" class="mobius-auth-btn mobius-auth-btn-danger" data-confirm="ok">Sign out</button>
+          </div>
+        </div>
       </div>
     `;
-    panel.innerHTML = mode === "login" ? loginHtml : mode === "signup" ? signupHtml : accountHtml;
+    const welcomeName = pendingWelcomeName || currentUser?.first_name || currentUser?.greeting_name || "";
+    const welcomeHtml = `
+      <button type="button" class="mobius-auth-close" aria-label="Close">&times;</button>
+      <h2 id="${titleId}" class="mobius-auth-title">Welcome to Mobius${welcomeName ? `, ${escapeHtml(welcomeName)}` : ""}</h2>
+      <div class="mobius-auth-form mobius-auth-welcome" data-mode="welcome">
+        <div class="mobius-auth-welcome-emoji" aria-hidden="true">\u{1F44B}</div>
+        <p class="mobius-auth-welcome-body">
+          Thanks for signing up. We sent a welcome email to confirm.
+          You can start using Mobius right now.
+        </p>
+        <button type="button" class="mobius-auth-btn mobius-auth-welcome-btn">Get started</button>
+      </div>
+    `;
+    panel.innerHTML = mode === "login" ? loginHtml : mode === "signup" ? signupHtml : mode === "welcome" ? welcomeHtml : accountHtml;
     panel.querySelector(".mobius-auth-close")?.addEventListener("click", close);
     overlay.addEventListener("click", (e) => {
       if (e.target === overlay)
@@ -437,6 +604,7 @@ function createAuthModal(options) {
         }
         const result = await auth.login(email, password);
         if (result.success && result.user) {
+          showToast(`Signed in as ${result.user.greeting_name || result.user.email || "user"}`, "success");
           onSuccess?.(result.user);
           close();
         } else {
@@ -456,12 +624,62 @@ function createAuthModal(options) {
           void doLogin();
       });
       panel.querySelectorAll(".mobius-auth-oauth-btn, .mobius-auth-sso-btn").forEach((btn) => {
+        const provider = btn.getAttribute("data-provider") || "";
         btn.addEventListener("click", () => {
-          if (typeof window.showToast === "function") {
-            window.showToast("Coming soon");
+          if (provider === "google" && googleClientId) {
+            void doGoogleSignIn(btn, errorEl);
+            return;
           }
+          showToast("Coming soon", "info");
         });
       });
+    }
+    async function doGoogleSignIn(btn, errorEl) {
+      if (!googleClientId)
+        return;
+      const originalText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "Connecting\u2026";
+      if (errorEl)
+        errorEl.style.display = "none";
+      try {
+        const idToken = await getGoogleIdToken(googleClientId);
+        const result = await auth.loginWithGoogle(idToken);
+        if (!result.success) {
+          if (errorEl) {
+            errorEl.textContent = result.error || "Google sign-in failed";
+            errorEl.style.display = "block";
+          } else {
+            showToast(result.error || "Google sign-in failed", "error");
+          }
+          return;
+        }
+        if (result.isNewUser) {
+          pendingWelcomeName = result.user?.first_name || result.user?.greeting_name || null;
+          showToast("Account created", "success");
+          if (result.user)
+            onSuccess?.(result.user);
+          render("welcome");
+          return;
+        }
+        showToast(`Signed in as ${result.user?.greeting_name || result.user?.email || "user"}`, "success");
+        if (result.user)
+          onSuccess?.(result.user);
+        close();
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Google sign-in failed";
+        if (!/dismissed|skipped|not displayed/i.test(msg)) {
+          if (errorEl) {
+            errorEl.textContent = msg;
+            errorEl.style.display = "block";
+          } else {
+            showToast(msg, "error");
+          }
+        }
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalText || "Google";
+      }
     }
     if (mode === "signup") {
       const signupBtn = panel.querySelector(".mobius-auth-signup-btn");
@@ -500,8 +718,10 @@ function createAuthModal(options) {
           firstNameInput?.value?.trim() || void 0
         );
         if (result.success && result.user) {
+          pendingWelcomeName = result.user.first_name || firstNameInput?.value?.trim() || result.user.greeting_name || null;
+          showToast("Account created", "success");
           onSuccess?.(result.user);
-          close();
+          render("welcome");
         } else {
           if (errorEl) {
             errorEl.textContent = result.error || "Sign up failed";
@@ -519,10 +739,30 @@ function createAuthModal(options) {
           void doSignup();
       });
     }
+    if (mode === "welcome") {
+      panel.querySelector(".mobius-auth-welcome-btn")?.addEventListener("click", () => {
+        pendingWelcomeName = null;
+        close();
+      });
+    }
     if (mode === "account") {
-      panel.querySelector(".mobius-auth-logout-btn")?.addEventListener("click", async () => {
+      const logoutBtn = panel.querySelector(".mobius-auth-logout-btn");
+      const confirmEl = panel.querySelector('[data-role="logout-confirm"]');
+      logoutBtn?.addEventListener("click", () => {
+        if (!confirmEl)
+          return;
+        confirmEl.style.display = "block";
+        logoutBtn.disabled = true;
+      });
+      confirmEl?.querySelector('[data-confirm="cancel"]')?.addEventListener("click", () => {
+        confirmEl.style.display = "none";
+        if (logoutBtn)
+          logoutBtn.disabled = false;
+      });
+      confirmEl?.querySelector('[data-confirm="ok"]')?.addEventListener("click", async () => {
         await auth.logout();
         updateUser(null);
+        showToast("Signed out", "info");
         close();
       });
       panel.querySelector(".mobius-auth-prefs-link")?.addEventListener("click", (e) => {
@@ -791,15 +1031,16 @@ function createPreferencesModal(apiBase, auth, options) {
             prefs.activities = [...selectedActivities];
             await auth.getCurrentUser();
             options?.onSave?.(prefs);
+            showToast("Preferences saved", "success");
             close();
           } else {
             const errData = await response.json().catch(() => ({}));
             console.error("[PreferencesModal] Error saving preferences:", errData);
-            alert("Failed to save preferences. Please try again.");
+            showToast("Failed to save preferences", "error");
           }
         } catch (error) {
           console.error("[PreferencesModal] Error saving preferences:", error);
-          alert("Failed to save preferences. Please try again.");
+          showToast("Failed to save preferences", "error");
         } finally {
           const btn = modal.querySelector(".mobius-prefs-btn-save");
           if (btn) {
@@ -1122,12 +1363,12 @@ var AUTH_STYLES = `
 }
 .mobius-auth-overlay.open { display: flex; }
 .mobius-auth-panel {
-  background: #fafbfc;
-  border-radius: 12px;
+  background: var(--mobius-bg-primary, #fafbfc);
+  border-radius: var(--mobius-radius-md, 12px);
   padding: 1.5rem;
   max-width: 360px;
   width: 90%;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.08);
+  box-shadow: var(--mobius-shadow-lg, 0 8px 24px rgba(0,0,0,0.08));
   position: relative;
 }
 .mobius-auth-close {
@@ -1138,31 +1379,31 @@ var AUTH_STYLES = `
   border: none;
   font-size: 1.5rem;
   cursor: pointer;
-  color: #64748b;
+  color: var(--mobius-text-muted, #64748b);
   line-height: 1;
   padding: 0;
 }
-.mobius-auth-close:hover { color: #1a1d21; }
-.mobius-auth-title { margin: 0 0 1rem; font-size: 1.125rem; }
+.mobius-auth-close:hover { color: var(--mobius-text-primary, #1a1d21); }
+.mobius-auth-title { margin: 0 0 1rem; font-size: var(--mobius-text-lg, 1.125rem); }
 .mobius-auth-form input,
 .mobius-auth-form .mobius-auth-btn {
   display: block;
   width: 100%;
   margin-bottom: 0.75rem;
   padding: 0.5rem 0.75rem;
-  font-size: 0.9375rem;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
+  font-size: var(--mobius-text-base, 0.9375rem);
+  border: 1px solid var(--mobius-border, #e2e8f0);
+  border-radius: var(--mobius-radius-base, 8px);
 }
 .mobius-auth-form .mobius-auth-btn {
-  background: #3b82f6;
-  color: white;
+  background: var(--mobius-accent, #3b82f6);
+  color: var(--mobius-accent-text, white);
   border: none;
   cursor: pointer;
   font-weight: 500;
 }
-.mobius-auth-form .mobius-auth-btn:hover { background: #2563eb; }
-.mobius-auth-error { font-size: 0.8125rem; color: #dc2626; margin-top: 0.5rem; }
+.mobius-auth-form .mobius-auth-btn:hover { background: var(--mobius-accent-hover, #2563eb); }
+.mobius-auth-error { font-size: var(--mobius-text-sm, 0.8125rem); color: var(--mobius-error, #dc2626); margin-top: 0.5rem; }
 .mobius-auth-divider {
   display: flex;
   align-items: center;
@@ -1177,7 +1418,7 @@ var AUTH_STYLES = `
 }
 .mobius-auth-divider span {
   padding: 0 8px;
-  font-size: 0.7rem;
+  font-size: var(--mobius-text-xs, 0.7rem);
   color: #94a3b8;
 }
 .mobius-auth-oauth {
@@ -1191,31 +1432,97 @@ var AUTH_STYLES = `
   padding: 8px;
   background: white;
   border: 1px solid rgba(0,0,0,0.15);
-  border-radius: 6px;
-  font-size: 0.7rem;
+  border-radius: var(--mobius-radius-sm, 6px);
+  font-size: var(--mobius-text-xs, 0.7rem);
   cursor: pointer;
 }
 .mobius-auth-switch {
   margin: 1rem 0 0;
-  font-size: 0.8125rem;
-  color: #64748b;
+  font-size: var(--mobius-text-sm, 0.8125rem);
+  color: var(--mobius-text-muted, #64748b);
 }
 .mobius-auth-switch-btn {
   background: none;
   border: none;
-  color: #3b82f6;
+  color: var(--mobius-accent, #3b82f6);
   cursor: pointer;
   padding: 0;
   font-size: inherit;
 }
 .mobius-auth-switch-btn:hover { text-decoration: underline; }
-.mobius-auth-user-info { margin: 0 0 1rem; font-size: 0.8125rem; }
+.mobius-auth-user-info { margin: 0 0 1rem; font-size: var(--mobius-text-sm, 0.8125rem); }
 .mobius-auth-prefs-link {
   display: block;
   margin-bottom: 1rem;
-  color: #3b82f6;
-  font-size: 0.8125rem;
+  color: var(--mobius-accent, #3b82f6);
+  font-size: var(--mobius-text-sm, 0.8125rem);
 }
+
+/* Welcome panel (post-signup) */
+.mobius-auth-welcome { text-align: center; padding: 0.5rem 0 0; }
+.mobius-auth-welcome-emoji { font-size: 2rem; margin-bottom: 0.5rem; }
+.mobius-auth-welcome-body {
+  margin: 0 0 1rem;
+  font-size: var(--mobius-text-sm, 0.8125rem);
+  color: var(--mobius-text-muted, #64748b);
+  line-height: 1.5;
+}
+
+/* Inline confirm (logout, etc.) */
+.mobius-auth-confirm {
+  margin-top: 0.5rem;
+  padding: 0.75rem;
+  background: var(--mobius-bg-muted, #f3f4f6);
+  border: 1px solid var(--mobius-border, #e2e8f0);
+  border-radius: var(--mobius-radius-base, 8px);
+}
+.mobius-auth-confirm-text {
+  margin: 0 0 0.75rem;
+  font-size: var(--mobius-text-sm, 0.8125rem);
+}
+.mobius-auth-confirm-actions { display: flex; gap: 8px; }
+.mobius-auth-confirm-actions .mobius-auth-btn { margin: 0; flex: 1; }
+.mobius-auth-confirm-actions .mobius-auth-btn-secondary {
+  background: white;
+  color: var(--mobius-text-primary, #1a1d21);
+  border: 1px solid var(--mobius-border, #e2e8f0);
+}
+.mobius-auth-confirm-actions .mobius-auth-btn-danger {
+  background: var(--mobius-error, #dc2626);
+}
+.mobius-auth-confirm-actions .mobius-auth-btn-danger:hover {
+  background: var(--mobius-error-hover, #b91c1c);
+}
+
+/* Toasts */
+.mobius-auth-toast-host {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 1100;
+  pointer-events: none;
+}
+.mobius-auth-toast {
+  pointer-events: auto;
+  min-width: 220px;
+  max-width: 320px;
+  padding: 10px 14px;
+  border-radius: var(--mobius-radius-base, 8px);
+  background: var(--mobius-bg-primary, #1a1d21);
+  color: var(--mobius-bg-inverse-text, #fafbfc);
+  box-shadow: var(--mobius-shadow-lg, 0 8px 24px rgba(0,0,0,0.18));
+  font-size: var(--mobius-text-sm, 0.8125rem);
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+.mobius-auth-toast.open { opacity: 1; transform: translateY(0); }
+.mobius-auth-toast--success { background: #166534; color: #f0fdf4; }
+.mobius-auth-toast--error { background: #991b1b; color: #fef2f2; }
+.mobius-auth-toast--info { background: #1e3a8a; color: #eff6ff; }
 `;
 function createAuthService(config) {
   return new AuthService(config);
