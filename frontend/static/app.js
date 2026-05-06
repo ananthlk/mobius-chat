@@ -4163,6 +4163,9 @@ function renderFeedback(correlationId) {
       up.classList.toggle("selected", rating === "up");
       down.classList.toggle("selected", rating === "down");
       commentArea.style.display = "none";
+      if (rating === "up") {
+        window.dispatchEvent(new CustomEvent("mobiusFeedbackUp"));
+      }
     }).catch(() => {
     });
   }
@@ -8953,6 +8956,7 @@ ${message}`;
   } catch {
   }
   loadSidebarHistory();
+  window.addEventListener("mobiusFeedbackUp", () => loadSidebarHistory());
   updateSendState();
   (function setupSkillsModal() {
     const overlay = document.getElementById("skillsOverlay");

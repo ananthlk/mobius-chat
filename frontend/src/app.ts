@@ -3661,6 +3661,11 @@ function renderFeedback(correlationId: string): HTMLElement {
         up.classList.toggle("selected", rating === "up");
         down.classList.toggle("selected", rating === "down");
         commentArea.style.display = "none";
+        // Refresh sidebar so the most-helpful lists update immediately
+        // after a thumbs-up without waiting for the next page load.
+        if (rating === "up") {
+          window.dispatchEvent(new CustomEvent("mobiusFeedbackUp"));
+        }
       })
       .catch(() => {});
   }
@@ -9515,6 +9520,11 @@ function run(): void {
   }
 
   loadSidebarHistory();
+
+  // Thumbs-up on any turn fires mobiusFeedbackUp (from renderFeedback, which
+  // lives at module scope and can't call loadSidebarHistory directly). Refresh
+  // the most-helpful lists immediately so the rated query appears without reload.
+  window.addEventListener("mobiusFeedbackUp", () => loadSidebarHistory());
 
   updateSendState();
 
