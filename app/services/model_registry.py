@@ -889,7 +889,11 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         display_name="Gemini 2.5 Flash",
         enabled=True,
         hipaa_eligible=True,
-        eligible_stages=vertex_roster_eligible_stages() + [ROSTER_CLEAN_STAGE],
+        # 2026-05-05: added "vibe" so the vibe stage has an explicit
+        # vertex candidate. Pre-fix, the router fell through to flash
+        # via the hard "fallback_no_models" path; making it intentional
+        # gives the bandit a real comparison vs. flash-lite + Haiku.
+        eligible_stages=vertex_roster_eligible_stages() + [ROSTER_CLEAN_STAGE, "vibe"],
         spec_tokens_per_sec=300.0,
         spec_context_k=1000,
         spec_input_per_1m_usd=0.075,
@@ -1080,7 +1084,13 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         display_name="Claude Haiku 4.5",
         enabled=False,
         hipaa_eligible=False,
-        eligible_stages=list(CORE_REASONING_STAGES) + [ROSTER_CLEAN_STAGE],
+        # 2026-05-05: added "vibe" — the vibe-agent skill ("light moment"
+        # / toast outputs) was hitting fallback_no_models in the router
+        # because gemini-2.0-flash-lite was the only model with vibe in
+        # its eligible_stages. With Haiku in the pool the bandit can
+        # actually compare quality across candidates instead of
+        # silently degrading to gemini-2.5-flash on hard fallback.
+        eligible_stages=list(CORE_REASONING_STAGES) + [ROSTER_CLEAN_STAGE, "vibe"],
         spec_tokens_per_sec=300.0,
         spec_context_k=200,
         spec_input_per_1m_usd=0.80,
