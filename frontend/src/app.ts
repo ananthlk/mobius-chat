@@ -10,6 +10,10 @@ import {
 /** Subset of auth profile for sidebar + answer insights gating */
 interface MobiusChatUserProfile {
   greeting_name?: string;
+  display_name?: string;
+  first_name?: string;
+  preferred_name?: string;
+  email?: string;
   activities?: string[];
 }
 
@@ -6894,6 +6898,25 @@ function run(): void {
   const authApiBase = `${API_BASE.replace(/\/$/, "")}/api/v1`;
   const auth = createAuthService({ apiBase: authApiBase, storage: localStorageAdapter });
 
+  // Auth gate — blocks the UI until sign-in is confirmed.
+  // The gate element starts visible (class auth-gate--visible) in HTML
+  // so there is zero flash of chat content for unauthenticated users.
+  const authGateEl = document.getElementById("authGate");
+  const appLayoutEl = document.querySelector(".app-layout") as HTMLElement | null;
+  function _setAuthGate(visible: boolean): void {
+    if (!authGateEl) return;
+    authGateEl.classList.toggle("auth-gate--visible", visible);
+    // Make the gate itself inert when hidden (tabs can't land on it).
+    (authGateEl as HTMLElement & { inert?: boolean }).inert = !visible;
+    // Make the chat layout inert while the gate is up so keyboard users
+    // can't bypass the sign-in wall by tabbing into the background.
+    if (appLayoutEl) {
+      (appLayoutEl as HTMLElement & { inert?: boolean }).inert = visible;
+    }
+  }
+  // Wire the "Sign in" button on the gate to open the auth modal.
+  // (modal variable declared below — gate btn listener deferred until after modal is built.)
+
   // Style injection happens once, before either modal is built — both
   // share the same overlay/panel CSS classes.
   const _authStyleEl = document.createElement("style");
@@ -6904,6 +6927,10 @@ function run(): void {
   // modal without breaking call sites that hold a stale reference.
   let modal = createAuthModal({ auth, showOAuth: false });
   document.body.appendChild(modal.el);
+  // Gate "Sign in" button opens the auth modal in login mode.
+  document.getElementById("authGateBtn")?.addEventListener("click", () => {
+    modal.open("login");
+  });
 
   // PreferencesModal — instant; doesn't depend on public-config.
   // Note: createPreferencesModal returns { open, close } only — it
@@ -6923,6 +6950,12 @@ function run(): void {
   (window as unknown as { onOpenPreferences?: () => void }).onOpenPreferences = () => {
     void prefsModal.open();
   };
+  // Onboarding nudge — shown when user is signed in but hasn't completed setup.
+  // Clicking it opens PreferencesModal so they can finish and unlock personalization.
+  document.getElementById("onboardingNudge")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    void prefsModal.open();
+  });
 
   // Public-config bootstrap. Best-effort: if it fails, AuthModal stays
   // in email/password-only mode and the user can still sign up.
@@ -6942,9 +6975,21 @@ function run(): void {
       console.warn("[auth] public-config fetch failed; Google sign-in disabled:", e);
     });
 
-  function updateSidebarUser(user: { greeting_name?: string } | null): void {
-    if (sidebarUserName)
-      sidebarUserName.textContent = user?.greeting_name ?? "Guest";
+  function updateSidebarUser(user: { greeting_name?: string; display_name?: string; first_name?: string; preferred_name?: string; email?: string } | null): void {
+    if (!sidebarUserName) return;
+    const name =
+      user?.greeting_name ||
+      user?.preferred_name ||
+      user?.first_name ||
+      user?.display_name ||
+      (user?.email ? user.email.split("@")[0] : null) ||
+      "Guest";
+    sidebarUserName.textContent = name;
+  }
+
+  function _syncOnboardingNudge(isOnboarded: boolean): void {
+    const nudge = document.getElementById("onboardingNudge");
+    if (nudge) nudge.hidden = isOnboarded;
   }
 
   let cachedProfile: MobiusChatUserProfile | null = null;
@@ -7039,9 +7084,34 @@ function run(): void {
         cachedUserProfileNested = null;
         return;
       }
-      const data = (await r.json()) as { ok?: boolean; user?: { profile?: Record<string, unknown> | null } };
-      const p = (data && data.user && data.user.profile) || null;
+      const data = (await r.json()) as {
+        ok?: boolean;
+        user?: {
+          profile?: Record<string, unknown> | null;
+          is_onboarded?: boolean;
+          preferred_name?: string;
+          first_name?: string;
+          display_name?: string;
+          email?: string;
+        };
+      };
+      const user = (data && data.user) ? data.user : null;
+      const p = (user && user.profile) || null;
       cachedUserProfileNested = (p && typeof p === "object") ? p : null;
+      if (user) {
+        // Update sidebar name from /me when the auth-service normalized profile
+        // hasn't populated it yet (un-onboarded accounts, page-load race, etc.).
+        if (sidebarUserName && (!sidebarUserName.textContent || sidebarUserName.textContent === "Guest")) {
+          const nameFromMe =
+            user.preferred_name ||
+            user.first_name ||
+            user.display_name ||
+            (user.email ? user.email.split("@")[0] : null);
+          if (nameFromMe) sidebarUserName.textContent = nameFromMe;
+        }
+        // Show/hide onboarding setup nudge for signed-in but un-onboarded users.
+        _syncOnboardingNudge(user.is_onboarded !== false);
+      }
     } catch {
       cachedUserProfileNested = null;
     }
@@ -7052,6 +7122,11 @@ function run(): void {
       cachedProfile = p as MobiusChatUserProfile | null;
       updateSidebarUser(p as MobiusChatUserProfile | null);
       syncAnswerInsightsCheckbox();
+      // Show/hide auth gate based on sign-in status.
+      _setAuthGate(!p);
+      // Hide nudge immediately on sign-out; _fetchNestedUserProfile will
+      // show it again if the signed-in user is un-onboarded.
+      if (!p) _syncOnboardingNudge(true);
     });
     void _fetchNestedUserProfile();
   });
@@ -7059,6 +7134,8 @@ function run(): void {
     cachedProfile = p as MobiusChatUserProfile | null;
     updateSidebarUser(p as MobiusChatUserProfile | null);
     syncAnswerInsightsCheckbox();
+    // Resolve gate on initial page load.
+    _setAuthGate(!p);
   });
   void _fetchNestedUserProfile();
 

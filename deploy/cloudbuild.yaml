@@ -18,7 +18,7 @@ steps:
       - build
       - --file=${_DOCKERFILE}
       - --tag=${_IMAGE}
-      - --cache-from=${_IMAGE_BASE}:latest
+      - --no-cache
       - .
   - name: gcr.io/cloud-builders/docker
     args: [push, "${_IMAGE}"]

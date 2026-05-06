@@ -12,6 +12,22 @@
   <link rel="stylesheet" href="static/task-manager.css" />
 </head>
 <body>
+  <!-- Auth gate — covers the app until sign-in resolves.
+       Visible by default so there is no flash of the chat UI for
+       unauthenticated users. JS removes the .auth-gate--visible class
+       the moment getUserProfile() returns a signed-in user. -->
+  <div class="auth-gate auth-gate--visible" id="authGate" role="dialog" aria-modal="true" aria-labelledby="authGateTitle">
+    <div class="auth-gate-card">
+      <div class="auth-gate-brand">
+        <img class="auth-gate-logo" src="static/logo.svg" alt="Mobius" />
+        <span class="auth-gate-wordmark">Mobius Chat</span>
+      </div>
+      <h1 class="auth-gate-title" id="authGateTitle">Sign in to continue</h1>
+      <p class="auth-gate-sub">Administrative intelligence for community mental health centers.</p>
+      <button type="button" class="auth-gate-btn" id="authGateBtn">Sign in</button>
+    </div>
+  </div>
+
   <div class="app-layout">
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-inner">
@@ -61,6 +77,11 @@
         <div class="sidebar-user sidebar-user--clickable" id="sidebarUser" role="button" tabindex="0" title="Click to sign in or manage account">
           <span class="sidebar-user-label">Signed in as</span>
           <span class="sidebar-user-name" id="sidebarUserName">Guest</span>
+        </div>
+        <div class="sidebar-onboarding-nudge" id="onboardingNudge" hidden>
+          <button type="button" class="sidebar-onboarding-nudge-btn" title="Finish setting up your profile to enable personalization">
+            ⚙ Set up your profile
+          </button>
         </div>
         <div class="sidebar-llm" id="modelProfileWrap">
           <span class="sidebar-llm-label">LLM</span>

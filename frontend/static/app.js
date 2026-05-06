@@ -6900,11 +6900,25 @@ function run() {
   const sidebarUserName = document.getElementById("sidebarUserName");
   const authApiBase = `${API_BASE.replace(/\/$/, "")}/api/v1`;
   const auth = createAuthService({ apiBase: authApiBase, storage: localStorageAdapter });
+  const authGateEl = document.getElementById("authGate");
+  const appLayoutEl = document.querySelector(".app-layout");
+  function _setAuthGate(visible) {
+    if (!authGateEl)
+      return;
+    authGateEl.classList.toggle("auth-gate--visible", visible);
+    authGateEl.inert = !visible;
+    if (appLayoutEl) {
+      appLayoutEl.inert = visible;
+    }
+  }
   const _authStyleEl = document.createElement("style");
   _authStyleEl.textContent = AUTH_STYLES + (PREFERENCES_MODAL_STYLES || "");
   document.head.appendChild(_authStyleEl);
   let modal = createAuthModal({ auth, showOAuth: false });
   document.body.appendChild(modal.el);
+  document.getElementById("authGateBtn")?.addEventListener("click", () => {
+    modal.open("login");
+  });
   const prefsModal = createPreferencesModal(authApiBase, auth, {
     onSave: () => {
       void _fetchNestedUserProfile();
@@ -6913,6 +6927,10 @@ function run() {
   window.onOpenPreferences = () => {
     void prefsModal.open();
   };
+  document.getElementById("onboardingNudge")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    void prefsModal.open();
+  });
   fetch(`${authApiBase}/public-config`, { method: "GET" }).then((r) => r.ok ? r.json() : null).then((cfg) => {
     const gid = cfg && cfg.google_client_id ? String(cfg.google_client_id).trim() : "";
     if (!gid)
@@ -6927,8 +6945,15 @@ function run() {
     console.warn("[auth] public-config fetch failed; Google sign-in disabled:", e);
   });
   function updateSidebarUser(user) {
-    if (sidebarUserName)
-      sidebarUserName.textContent = user?.greeting_name ?? "Guest";
+    if (!sidebarUserName)
+      return;
+    const name = user?.greeting_name || user?.preferred_name || user?.first_name || user?.display_name || (user?.email ? user.email.split("@")[0] : null) || "Guest";
+    sidebarUserName.textContent = name;
+  }
+  function _syncOnboardingNudge(isOnboarded) {
+    const nudge = document.getElementById("onboardingNudge");
+    if (nudge)
+      nudge.hidden = isOnboarded;
   }
   let cachedProfile = null;
   function syncAnswerInsightsCheckbox() {
@@ -7018,8 +7043,17 @@ function run() {
         return;
       }
       const data = await r.json();
-      const p = data && data.user && data.user.profile || null;
+      const user = data && data.user ? data.user : null;
+      const p = user && user.profile || null;
       cachedUserProfileNested = p && typeof p === "object" ? p : null;
+      if (user) {
+        if (sidebarUserName && (!sidebarUserName.textContent || sidebarUserName.textContent === "Guest")) {
+          const nameFromMe = user.preferred_name || user.first_name || user.display_name || (user.email ? user.email.split("@")[0] : null);
+          if (nameFromMe)
+            sidebarUserName.textContent = nameFromMe;
+        }
+        _syncOnboardingNudge(user.is_onboarded !== false);
+      }
     } catch {
       cachedUserProfileNested = null;
     }
@@ -7029,6 +7063,9 @@ function run() {
       cachedProfile = p;
       updateSidebarUser(p);
       syncAnswerInsightsCheckbox();
+      _setAuthGate(!p);
+      if (!p)
+        _syncOnboardingNudge(true);
     });
     void _fetchNestedUserProfile();
   });
@@ -7036,6 +7073,7 @@ function run() {
     cachedProfile = p;
     updateSidebarUser(p);
     syncAnswerInsightsCheckbox();
+    _setAuthGate(!p);
   });
   void _fetchNestedUserProfile();
   const prefShowAnswerInsights = document.getElementById(

@@ -68,6 +68,86 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* ── Auth gate ──────────────────────────────────────────────── */
+.auth-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--main-bg, #fff);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+.auth-gate--visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.auth-gate-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  padding: 2.5rem 2rem;
+  max-width: 360px;
+  width: 100%;
+  text-align: center;
+}
+
+.auth-gate-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.5rem;
+}
+
+.auth-gate-logo {
+  width: 36px;
+  height: 36px;
+}
+
+.auth-gate-wordmark {
+  font-size: 1.2rem;
+  font-weight: 600;
+  color: var(--sidebar-text, #1a1a2e);
+  letter-spacing: -0.01em;
+}
+
+.auth-gate-title {
+  margin: 0;
+  font-size: 1.4rem;
+  font-weight: 600;
+  color: var(--main-text, #111);
+}
+
+.auth-gate-sub {
+  margin: 0;
+  font-size: var(--text-sm, 0.875rem);
+  color: var(--sidebar-text-muted, #666);
+  line-height: 1.5;
+}
+
+.auth-gate-btn {
+  margin-top: 0.5rem;
+  padding: 0.65rem 2.2rem;
+  font-size: var(--text-base, 1rem);
+  font-weight: 500;
+  background: var(--accent, #4f46e5);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.auth-gate-btn:hover {
+  background: var(--accent-hover, #4338ca);
+}
+
 /* Layout: sidebar + main */
 .app-layout {
   display: flex;
@@ -682,6 +762,30 @@ body {
 
 .sidebar-user--clickable:hover {
   background: rgba(0, 0, 0, 0.04);
+}
+
+.sidebar-onboarding-nudge {
+  padding: 0.25rem 1rem 0.5rem;
+}
+
+.sidebar-onboarding-nudge-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  padding: 0.25rem 0.6rem;
+  font-size: var(--text-xs);
+  background: transparent;
+  border: 1px solid var(--sidebar-border);
+  border-radius: 4px;
+  color: var(--sidebar-text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+
+.sidebar-onboarding-nudge-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--sidebar-text);
 }
 
 .sidebar-llm {
