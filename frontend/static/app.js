@@ -6584,9 +6584,8 @@ function run() {
   let modal = createAuthModal({ auth, showOAuth: false });
   document.body.appendChild(modal.el);
   const prefsModal = createPreferencesModal(authApiBase, auth);
-  document.body.appendChild(prefsModal.el);
   window.onOpenPreferences = () => {
-    prefsModal.open();
+    void prefsModal.open();
   };
   fetch(`${authApiBase}/public-config`, { method: "GET" }).then((r) => r.ok ? r.json() : null).then((cfg) => {
     const gid = cfg && cfg.google_client_id ? String(cfg.google_client_id).trim() : "";

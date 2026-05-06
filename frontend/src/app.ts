@@ -6906,10 +6906,13 @@ function run(): void {
   document.body.appendChild(modal.el);
 
   // PreferencesModal — instant; doesn't depend on public-config.
+  // Note: createPreferencesModal returns { open, close } only — it
+  // manages its own DOM mount lazily when open() is first called.
+  // Don't try to appendChild a (.el) here — that property doesn't
+  // exist on this modal (vs. createAuthModal which DOES expose .el).
   const prefsModal = createPreferencesModal(authApiBase, auth);
-  document.body.appendChild(prefsModal.el);
   (window as unknown as { onOpenPreferences?: () => void }).onOpenPreferences = () => {
-    prefsModal.open();
+    void prefsModal.open();
   };
 
   // Public-config bootstrap. Best-effort: if it fails, AuthModal stays
