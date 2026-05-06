@@ -1254,74 +1254,84 @@ function renderQueriesDumpBody(container, summaryEl, data) {
       summaryEl.hidden = false;
     }
   }
-  const cols = [
-    { key: "created_at", label: "time" },
-    { key: "user_id", label: "user" },
-    { key: "thread_id", label: "thread", cls: "qd-dim" },
-    { key: "question_preview", label: "question", cls: "qd-q" },
-    { key: "total_latency_ms", label: "ms", cls: "qd-num" },
-    { key: "llm_call_count", label: "llm", cls: "qd-num" },
-    { key: "input_tokens", label: "in tok", cls: "qd-num" },
-    { key: "output_tokens", label: "out tok", cls: "qd-num" },
-    { key: "cost_usd", label: "$", cls: "qd-num" },
-    { key: "models_used", label: "models", cls: "qd-dim" },
-    { key: "llm_error_count", label: "errs" },
-    { key: "retrieval_runs_count", label: "rag", cls: "qd-num" },
-    { key: "cache_mode", label: "cache" },
-    { key: "_fb", label: "fb" }
-  ];
   const escapeHtml3 = (s) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-  const fmtCell = (r, key) => {
-    if (key === "_fb") {
-      if (r.feedback_rating === "up")
-        return '<span class="qd-pill qd-pill-up">\u2191</span>';
-      if (r.feedback_rating === "down")
-        return '<span class="qd-pill qd-pill-down">\u2193</span>';
-      return "";
+  const fbPill = (rating) => {
+    if (rating === "up")
+      return '<span class="qd-pill qd-pill-up">\u2191</span>';
+    if (rating === "down")
+      return '<span class="qd-pill qd-pill-down">\u2193</span>';
+    return "";
+  };
+  const formatTime = (iso) => {
+    try {
+      return new Date(iso).toLocaleString();
+    } catch {
+      return iso;
     }
-    const v = r[key];
-    if (v === null || v === void 0 || v === "")
-      return "";
-    if (key === "created_at") {
-      try {
-        return escapeHtml3(new Date(String(v)).toLocaleString());
-      } catch {
-        return escapeHtml3(String(v));
-      }
-    }
-    if (key === "thread_id" && typeof v === "string")
-      return escapeHtml3(v.slice(0, 8) + "\u2026");
-    if (key === "cost_usd")
-      return Number(v).toFixed(4);
-    if (key === "input_tokens" || key === "output_tokens")
-      return Number(v).toLocaleString();
-    if (key === "llm_error_count") {
-      const n = Number(v);
-      if (!n)
-        return "0";
-      return `<span class="qd-err">${n}${r.last_error_type ? " (" + escapeHtml3(r.last_error_type) + ")" : ""}</span>`;
-    }
-    if (key === "cache_mode") {
-      const m = String(v);
-      const cls = "qd-pill-cache-" + m;
-      const sim = r.cache_top_similarity ? ` ${Number(r.cache_top_similarity).toFixed(2)}` : "";
-      return `<span class="qd-pill ${cls}">${escapeHtml3(m)}${sim}</span>`;
-    }
-    if (typeof v === "string")
-      return escapeHtml3(v);
-    return String(v);
   };
   if (rows.length === 0) {
     container.innerHTML = data.warning ? `<p class="llm-router-report-error" style="padding:1rem">${escapeHtml3(data.warning)}</p>` : '<p class="llm-router-report-meta" style="padding:1rem">No turns match the current filters.</p>';
     return;
   }
-  const head = cols.map((c) => `<th>${c.label}</th>`).join("");
-  const tbody = rows.map((r) => {
-    const cells = cols.map((c) => `<td class="${c.cls ?? ""}">${fmtCell(r, c.key)}</td>`).join("");
-    return `<tr>${cells}</tr>`;
-  }).join("");
+  const renderRow = (r) => {
+    const ms = r.total_latency_ms || 0;
+    const slowCls = ms >= 2e3 ? " qd-slow" : "";
+    const errDot = r.llm_error_count > 0 ? `<span class="qd-err-dot" title="${escapeHtml3(r.last_error_type || "error")}"></span>` : "";
+    const cost = Number(r.cost_usd || 0).toFixed(4);
+    const userLabel = r.user_id || "\u2014";
+    const question = r.question_preview || "(no question)";
+    const fb = fbPill(r.feedback_rating);
+    const detailRows = [
+      `<dt>question</dt><dd class="qd-full-q">${escapeHtml3(question)}</dd>`
+    ];
+    if (r.thread_id) {
+      detailRows.push(`<dt>thread</dt><dd><span class="qd-mono-dim">${escapeHtml3(String(r.thread_id))}</span></dd>`);
+    }
+    if (r.models_used) {
+      detailRows.push(`<dt>models</dt><dd>${escapeHtml3(r.models_used)}</dd>`);
+    }
+    detailRows.push(`<dt>llm calls</dt><dd>${r.llm_call_count}</dd>`);
+    detailRows.push(
+      `<dt>tokens</dt><dd>${Number(r.input_tokens || 0).toLocaleString()} in <span class="qd-mono-dim">\xB7</span> ${Number(r.output_tokens || 0).toLocaleString()} out</dd>`
+    );
+    detailRows.push(
+      `<dt>rag</dt><dd>${r.chunks_assembled} chunk${r.chunks_assembled === 1 ? "" : "s"} <span class="qd-mono-dim">\xB7</span> ${r.retrieval_runs_count} run${r.retrieval_runs_count === 1 ? "" : "s"}</dd>`
+    );
+    if (r.cache_mode) {
+      const sim = r.cache_top_similarity != null ? ` <span class="qd-mono-dim">sim ${Number(r.cache_top_similarity).toFixed(2)}</span>` : "";
+      detailRows.push(
+        `<dt>cache</dt><dd><span class="qd-pill qd-pill-cache-${escapeHtml3(r.cache_mode)}">${escapeHtml3(r.cache_mode)}</span>${sim}</dd>`
+      );
+    }
+    if (r.llm_error_count > 0) {
+      detailRows.push(
+        `<dt>errors</dt><dd class="qd-err-line">${r.llm_error_count}${r.last_error_type ? " (" + escapeHtml3(r.last_error_type) + ")" : ""}</dd>`
+      );
+    }
+    if (r.feedback_comment) {
+      detailRows.push(
+        `<dt>feedback</dt><dd>${fb} ${escapeHtml3(r.feedback_comment)}</dd>`
+      );
+    }
+    detailRows.push(
+      `<dt>correlation</dt><dd><span class="qd-mono-dim">${escapeHtml3(r.correlation_id)}</span></dd>`
+    );
+    return `
+      <details class="qd-row">
+        <summary>
+          <span class="qd-col-time">${escapeHtml3(formatTime(r.created_at))}</span>
+          <span class="qd-col-user">${escapeHtml3(userLabel)}</span>
+          <span class="qd-col-q">${errDot}${escapeHtml3(question)}</span>
+          <span class="qd-col-ms${slowCls}">${formatMs(ms)}</span>
+          <span class="qd-col-cost">$${cost}</span>
+          <span class="qd-col-fb">${fb}</span>
+          <span class="qd-col-chev">\u25B6</span>
+        </summary>
+        <dl class="qd-row-detail">${detailRows.join("")}</dl>
+      </details>`;
+  };
   const warn = data.warning ? `<div class="llm-router-report-error" style="padding:0.5rem 1rem">DB warning: ${escapeHtml3(data.warning)}</div>` : "";
-  container.innerHTML = `${warn}<table class="queries-dump-table"><thead><tr>${head}</tr></thead><tbody>${tbody}</tbody></table>`;
+  container.innerHTML = warn + rows.map(renderRow).join("");
 }
 function formatMs(ms) {
   if (!ms)

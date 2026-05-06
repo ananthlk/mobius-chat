@@ -150,27 +150,68 @@
   .summary .stat .n { font-size: 15px; font-weight: 600; color: var(--ink); }
   .summary .stat .label { font-size: 10px; text-transform: uppercase; color: var(--ink-faint); letter-spacing: .06em; }
 
-  /* ── table ─────────────────────────────────────────────────── */
-  .table-wrap { flex: 1; overflow: auto; }
-  table.dump {
-    width: 100%; border-collapse: collapse; font: 12px/1.4 ui-monospace, Menlo, monospace;
+  /* ── collapsible rows ─────────────────────────────────────── */
+  .rows-wrap { flex: 1; overflow: auto; }
+  .row {
+    border-bottom: 1px solid var(--line);
   }
-  table.dump th, table.dump td {
-    border-bottom: 1px solid var(--line); padding: 6px 8px;
-    vertical-align: top; max-width: 320px;
+  .row > summary {
+    list-style: none;
+    cursor: pointer; user-select: none;
+    display: grid;
+    grid-template-columns: 78px 80px 1fr 70px 78px 28px 18px;
+    align-items: center; gap: 12px;
+    padding: 8px 16px;
+    font-size: 12px;
+  }
+  .row > summary::-webkit-details-marker { display: none; }
+  .row > summary:hover { background: #fafbfc; }
+  .row[open] > summary { background: #f6f9ff; border-bottom: 1px solid var(--line); }
+  .row .col-time { color: var(--ink-faint); font-variant-numeric: tabular-nums; font-family: ui-monospace, Menlo, monospace; }
+  .row .col-user { color: var(--ink-soft); }
+  .row .col-q {
+    color: var(--ink);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  table.dump thead th {
-    position: sticky; top: 0; background: #f4f4f4; z-index: 1;
-    font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
-    color: var(--ink-soft); border-bottom: 1px solid var(--line-strong);
+  .row .col-ms,
+  .row .col-cost {
+    text-align: right; font-variant-numeric: tabular-nums;
+    color: var(--ink); font-family: ui-monospace, Menlo, monospace;
   }
-  table.dump tr:hover td { background: #fafbfc; }
-  table.dump td.q { white-space: normal; max-width: 380px; color: var(--ink); }
-  table.dump td.num { text-align: right; font-variant-numeric: tabular-nums; }
-  table.dump td.dim { color: var(--ink-faint); }
-  table.dump td.ok { color: var(--good); }
-  table.dump td.err { color: var(--bad); }
+  .row .col-ms.slow { color: #a86200; }
+  .row .col-cost { color: var(--ink-soft); }
+  .row .col-fb { text-align: center; }
+  .row .col-chev {
+    color: var(--ink-faint); transition: transform .15s ease;
+    text-align: center; font-size: 10px;
+  }
+  .row[open] .col-chev { transform: rotate(90deg); }
+  .row .err-dot {
+    display: inline-block; width: 6px; height: 6px; margin-right: 4px;
+    border-radius: 999px; background: var(--bad); vertical-align: middle;
+  }
+
+  .row-detail {
+    background: #fdfdfd;
+    padding: 10px 16px 14px 80px;
+    font-size: 12px;
+    display: grid;
+    grid-template-columns: 100px 1fr;
+    row-gap: 4px; column-gap: 12px;
+  }
+  .row-detail dt {
+    color: var(--ink-faint); font-size: 10px;
+    text-transform: uppercase; letter-spacing: .06em;
+    align-self: center;
+  }
+  .row-detail dd {
+    margin: 0; color: var(--ink);
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  .row-detail dd .mono-dim { color: var(--ink-faint); }
+  .row-detail dd.full-q { white-space: pre-wrap; word-break: break-word; font-family: inherit; }
+  .row-detail .err-line { color: var(--bad); }
+
   .pill {
     display: inline-block; padding: 1px 8px; border-radius: 999px;
     font-size: 10px; font-weight: 600; letter-spacing: .04em;
@@ -179,7 +220,8 @@
   .pill.down { background: #fde0e0; color: var(--bad); }
   .pill.cache-active { background: #e6efff; color: var(--accent); }
   .pill.cache-shadow { background: #f0e6ff; color: #5e3aa8; }
-  .pill.cache-off { background: #f0f0f0; color: var(--ink-faint); }
+  .pill.cache-off,
+  .pill.cache-none { background: #f0f0f0; color: var(--ink-faint); }
 
   /* ── footer ───────────────────────────────────────────────── */
   .modal-foot {
@@ -319,30 +361,8 @@
     <div class="stat"><span class="n">3 / 4</span><span class="label">feedback (↑/↓)</span></div>
   </div>
 
-  <div class="table-wrap">
-    <table class="dump">
-      <thead>
-        <tr>
-          <th>time</th>
-          <th>user</th>
-          <th>thread</th>
-          <th>question</th>
-          <th class="num">ms</th>
-          <th class="num">llm</th>
-          <th class="num">in tok</th>
-          <th class="num">out tok</th>
-          <th class="num">$</th>
-          <th>models</th>
-          <th>errs</th>
-          <th class="num">rag</th>
-          <th>cache</th>
-          <th>fb</th>
-        </tr>
-      </thead>
-      <tbody id="rows">
-        <!-- rows injected by JS below -->
-      </tbody>
-    </table>
+  <div class="rows-wrap" id="rows">
+    <!-- collapsible rows injected by JS below -->
   </div>
 
   <footer class="modal-foot">
@@ -363,6 +383,7 @@
       ms: 1842, llm: 4, in_tok: 3120, out_tok: 612, cost: 0.0094,
       models: "opus-4-7, sonnet-4-6", errs: 0, rag: 12, cache: "active",
       cache_pill: "cache-active", fb: "up",
+      fb_comment: "Exactly the comparison I wanted, with sources.",
     },
     {
       time: "12:38:50", user: "ananth", thread: "9f2a…",
@@ -377,6 +398,7 @@
       ms: 2410, llm: 5, in_tok: 4880, out_tok: 940, cost: 0.0142,
       models: "opus-4-7", errs: 0, rag: 0, cache: "off",
       cache_pill: "cache-off", fb: "down",
+      fb_comment: "Missed the geographic filter — returned statewide instead of county.",
     },
     {
       time: "12:30:47", user: "demo", thread: "a1c8…",
@@ -408,26 +430,47 @@
     },
   ];
 
+  function fmtMs(ms) {
+    if (ms < 1000) return ms + " ms";
+    return (ms / 1000).toFixed(2) + " s";
+  }
+  function fbPill(fb) {
+    if (fb === "up")   return '<span class="pill up">↑</span>';
+    if (fb === "down") return '<span class="pill down">↓</span>';
+    return "";
+  }
+
   function renderRows() {
-    const tbody = document.getElementById("rows");
-    tbody.innerHTML = ROWS.map(r => `
-      <tr>
-        <td class="dim">${r.time}</td>
-        <td>${r.user}</td>
-        <td class="dim">${r.thread}</td>
-        <td class="q">${r.q}</td>
-        <td class="num">${r.ms.toLocaleString()}</td>
-        <td class="num">${r.llm}</td>
-        <td class="num">${r.in_tok.toLocaleString()}</td>
-        <td class="num">${r.out_tok.toLocaleString()}</td>
-        <td class="num">${r.cost.toFixed(4)}</td>
-        <td class="dim">${r.models}</td>
-        <td class="${r.errs ? 'err' : 'dim'}">${r.errs ? r.errs + ' (' + (r.err_type || '?') + ')' : '0'}</td>
-        <td class="num dim">${r.rag}</td>
-        <td><span class="pill ${r.cache_pill}">${r.cache}</span></td>
-        <td>${r.fb === 'up' ? '<span class="pill up">↑</span>' : r.fb === 'down' ? '<span class="pill down">↓</span>' : ''}</td>
-      </tr>
-    `).join("");
+    const wrap = document.getElementById("rows");
+    wrap.innerHTML = ROWS.map(r => {
+      const slow = r.ms >= 2000 ? " slow" : "";
+      const errIndicator = r.errs ? '<span class="err-dot" title="' + (r.err_type || 'error') + '"></span>' : "";
+      const detail = `
+        <dl class="row-detail">
+          <dt>question</dt><dd class="full-q">${r.q}</dd>
+          <dt>thread</dt><dd><span class="mono-dim">${r.thread}</span></dd>
+          <dt>models</dt><dd>${r.models}</dd>
+          <dt>llm calls</dt><dd>${r.llm}</dd>
+          <dt>tokens</dt><dd>${r.in_tok.toLocaleString()} in <span class="mono-dim">·</span> ${r.out_tok.toLocaleString()} out</dd>
+          <dt>rag</dt><dd>${r.rag} chunk${r.rag === 1 ? '' : 's'}</dd>
+          <dt>cache</dt><dd><span class="pill ${r.cache_pill}">${r.cache}</span></dd>
+          ${r.errs ? `<dt>errors</dt><dd class="err-line">${r.errs} (${r.err_type || '?'})</dd>` : ''}
+          ${r.fb_comment ? `<dt>feedback</dt><dd>${fbPill(r.fb)} ${r.fb_comment}</dd>` : ''}
+        </dl>`;
+      return `
+        <details class="row">
+          <summary>
+            <span class="col-time">${r.time}</span>
+            <span class="col-user">${r.user}</span>
+            <span class="col-q">${errIndicator}${r.q}</span>
+            <span class="col-ms${slow}">${fmtMs(r.ms)}</span>
+            <span class="col-cost">$${r.cost.toFixed(4)}</span>
+            <span class="col-fb">${fbPill(r.fb)}</span>
+            <span class="col-chev">▶</span>
+          </summary>
+          ${detail}
+        </details>`;
+    }).join("");
   }
   renderRows();
 

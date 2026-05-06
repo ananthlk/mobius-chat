@@ -1308,53 +1308,17 @@ function renderQueriesDumpBody(
     }
   }
 
-  const cols: { key: keyof QueryDumpRow | "_fb"; label: string; cls?: string }[] = [
-    { key: "created_at",           label: "time" },
-    { key: "user_id",              label: "user" },
-    { key: "thread_id",            label: "thread", cls: "qd-dim" },
-    { key: "question_preview",     label: "question", cls: "qd-q" },
-    { key: "total_latency_ms",     label: "ms",     cls: "qd-num" },
-    { key: "llm_call_count",       label: "llm",    cls: "qd-num" },
-    { key: "input_tokens",         label: "in tok", cls: "qd-num" },
-    { key: "output_tokens",        label: "out tok",cls: "qd-num" },
-    { key: "cost_usd",             label: "$",      cls: "qd-num" },
-    { key: "models_used",          label: "models", cls: "qd-dim" },
-    { key: "llm_error_count",      label: "errs" },
-    { key: "retrieval_runs_count", label: "rag",    cls: "qd-num" },
-    { key: "cache_mode",           label: "cache" },
-    { key: "_fb",                  label: "fb" },
-  ];
-
   const escapeHtml = (s: string): string =>
     s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] as string));
 
-  const fmtCell = (r: QueryDumpRow, key: keyof QueryDumpRow | "_fb"): string => {
-    if (key === "_fb") {
-      if (r.feedback_rating === "up") return '<span class="qd-pill qd-pill-up">↑</span>';
-      if (r.feedback_rating === "down") return '<span class="qd-pill qd-pill-down">↓</span>';
-      return "";
-    }
-    const v = r[key];
-    if (v === null || v === undefined || v === "") return "";
-    if (key === "created_at") {
-      try { return escapeHtml(new Date(String(v)).toLocaleString()); } catch { return escapeHtml(String(v)); }
-    }
-    if (key === "thread_id" && typeof v === "string") return escapeHtml(v.slice(0, 8) + "…");
-    if (key === "cost_usd") return Number(v).toFixed(4);
-    if (key === "input_tokens" || key === "output_tokens") return Number(v).toLocaleString();
-    if (key === "llm_error_count") {
-      const n = Number(v);
-      if (!n) return "0";
-      return `<span class="qd-err">${n}${r.last_error_type ? " (" + escapeHtml(r.last_error_type) + ")" : ""}</span>`;
-    }
-    if (key === "cache_mode") {
-      const m = String(v);
-      const cls = "qd-pill-cache-" + m;
-      const sim = r.cache_top_similarity ? ` ${Number(r.cache_top_similarity).toFixed(2)}` : "";
-      return `<span class="qd-pill ${cls}">${escapeHtml(m)}${sim}</span>`;
-    }
-    if (typeof v === "string") return escapeHtml(v);
-    return String(v);
+  const fbPill = (rating: string | null): string => {
+    if (rating === "up") return '<span class="qd-pill qd-pill-up">↑</span>';
+    if (rating === "down") return '<span class="qd-pill qd-pill-down">↓</span>';
+    return "";
+  };
+
+  const formatTime = (iso: string): string => {
+    try { return new Date(iso).toLocaleString(); } catch { return iso; }
   };
 
   if (rows.length === 0) {
@@ -1365,21 +1329,75 @@ function renderQueriesDumpBody(
     return;
   }
 
-  const head = cols.map((c) => `<th>${c.label}</th>`).join("");
-  const tbody = rows
-    .map((r) => {
-      const cells = cols
-        .map((c) => `<td class="${c.cls ?? ""}">${fmtCell(r, c.key)}</td>`)
-        .join("");
-      return `<tr>${cells}</tr>`;
-    })
-    .join("");
+  const renderRow = (r: QueryDumpRow): string => {
+    const ms = r.total_latency_ms || 0;
+    const slowCls = ms >= 2000 ? " qd-slow" : "";
+    const errDot = r.llm_error_count > 0
+      ? `<span class="qd-err-dot" title="${escapeHtml(r.last_error_type || 'error')}"></span>`
+      : "";
+    const cost = Number(r.cost_usd || 0).toFixed(4);
+    const userLabel = r.user_id || "—";
+    const question = r.question_preview || "(no question)";
+    const fb = fbPill(r.feedback_rating);
+
+    const detailRows: string[] = [
+      `<dt>question</dt><dd class="qd-full-q">${escapeHtml(question)}</dd>`,
+    ];
+    if (r.thread_id) {
+      detailRows.push(`<dt>thread</dt><dd><span class="qd-mono-dim">${escapeHtml(String(r.thread_id))}</span></dd>`);
+    }
+    if (r.models_used) {
+      detailRows.push(`<dt>models</dt><dd>${escapeHtml(r.models_used)}</dd>`);
+    }
+    detailRows.push(`<dt>llm calls</dt><dd>${r.llm_call_count}</dd>`);
+    detailRows.push(
+      `<dt>tokens</dt><dd>${Number(r.input_tokens || 0).toLocaleString()} in <span class="qd-mono-dim">·</span> ${Number(r.output_tokens || 0).toLocaleString()} out</dd>`,
+    );
+    detailRows.push(
+      `<dt>rag</dt><dd>${r.chunks_assembled} chunk${r.chunks_assembled === 1 ? "" : "s"} <span class="qd-mono-dim">·</span> ${r.retrieval_runs_count} run${r.retrieval_runs_count === 1 ? "" : "s"}</dd>`,
+    );
+    if (r.cache_mode) {
+      const sim = r.cache_top_similarity != null
+        ? ` <span class="qd-mono-dim">sim ${Number(r.cache_top_similarity).toFixed(2)}</span>`
+        : "";
+      detailRows.push(
+        `<dt>cache</dt><dd><span class="qd-pill qd-pill-cache-${escapeHtml(r.cache_mode)}">${escapeHtml(r.cache_mode)}</span>${sim}</dd>`,
+      );
+    }
+    if (r.llm_error_count > 0) {
+      detailRows.push(
+        `<dt>errors</dt><dd class="qd-err-line">${r.llm_error_count}${r.last_error_type ? " (" + escapeHtml(r.last_error_type) + ")" : ""}</dd>`,
+      );
+    }
+    if (r.feedback_comment) {
+      detailRows.push(
+        `<dt>feedback</dt><dd>${fb} ${escapeHtml(r.feedback_comment)}</dd>`,
+      );
+    }
+    detailRows.push(
+      `<dt>correlation</dt><dd><span class="qd-mono-dim">${escapeHtml(r.correlation_id)}</span></dd>`,
+    );
+
+    return `
+      <details class="qd-row">
+        <summary>
+          <span class="qd-col-time">${escapeHtml(formatTime(r.created_at))}</span>
+          <span class="qd-col-user">${escapeHtml(userLabel)}</span>
+          <span class="qd-col-q">${errDot}${escapeHtml(question)}</span>
+          <span class="qd-col-ms${slowCls}">${formatMs(ms)}</span>
+          <span class="qd-col-cost">$${cost}</span>
+          <span class="qd-col-fb">${fb}</span>
+          <span class="qd-col-chev">▶</span>
+        </summary>
+        <dl class="qd-row-detail">${detailRows.join("")}</dl>
+      </details>`;
+  };
 
   const warn = data.warning
     ? `<div class="llm-router-report-error" style="padding:0.5rem 1rem">DB warning: ${escapeHtml(data.warning)}</div>`
     : "";
 
-  container.innerHTML = `${warn}<table class="queries-dump-table"><thead><tr>${head}</tr></thead><tbody>${tbody}</tbody></table>`;
+  container.innerHTML = warn + rows.map(renderRow).join("");
 }
 
 function formatMs(ms: number): string {
