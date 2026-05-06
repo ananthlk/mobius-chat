@@ -543,6 +543,14 @@ function createAuthModal(options) {
         <input type="password" class="mobius-auth-password" placeholder="Password (min 8 chars)" autocomplete="new-password" />
         <button type="button" class="mobius-auth-btn mobius-auth-signup-btn">Create account</button>
         <div class="mobius-auth-error" style="display:none"></div>
+        ${hasOAuth ? `
+          <div class="mobius-auth-divider"><span>or continue with</span></div>
+          <div class="mobius-auth-oauth">
+            <button type="button" class="mobius-auth-oauth-btn" data-provider="google">Google</button>
+            <button type="button" class="mobius-auth-oauth-btn" data-provider="microsoft">Microsoft</button>
+            <button type="button" class="mobius-auth-sso-btn">Enterprise SSO</button>
+          </div>
+        ` : ""}
         <p class="mobius-auth-switch">Already have an account? <button type="button" class="mobius-auth-switch-btn" data-to="login">Sign in</button></p>
       </div>
     `;
@@ -737,6 +745,16 @@ function createAuthModal(options) {
       passwordInput?.addEventListener("keydown", (e) => {
         if (e.key === "Enter")
           void doSignup();
+      });
+      panel.querySelectorAll(".mobius-auth-oauth-btn, .mobius-auth-sso-btn").forEach((btn) => {
+        const provider = btn.getAttribute("data-provider") || "";
+        btn.addEventListener("click", () => {
+          if (provider === "google" && googleClientId) {
+            void doGoogleSignIn(btn, errorEl);
+            return;
+          }
+          showToast("Coming soon", "info");
+        });
       });
     }
     if (mode === "welcome") {
