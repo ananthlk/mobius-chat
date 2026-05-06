@@ -570,9 +570,11 @@ function createAuthModal(options) {
         <div class="mobius-auth-welcome-emoji" aria-hidden="true">\u{1F44B}</div>
         <p class="mobius-auth-welcome-body">
           Thanks for signing up. We sent a welcome email to confirm.
-          You can start using Mobius right now.
+          Take a minute to set up how you'd like to work \u2014 or jump in
+          right away.
         </p>
-        <button type="button" class="mobius-auth-btn mobius-auth-welcome-btn">Get started</button>
+        <button type="button" class="mobius-auth-btn mobius-auth-welcome-prefs-btn">Set up preferences</button>
+        <button type="button" class="mobius-auth-btn mobius-auth-btn-secondary mobius-auth-welcome-btn">Skip for now</button>
       </div>
     `;
     panel.innerHTML = mode === "login" ? loginHtml : mode === "signup" ? signupHtml : mode === "welcome" ? welcomeHtml : accountHtml;
@@ -740,6 +742,14 @@ function createAuthModal(options) {
       });
     }
     if (mode === "welcome") {
+      panel.querySelector(".mobius-auth-welcome-prefs-btn")?.addEventListener("click", () => {
+        pendingWelcomeName = null;
+        close();
+        const fn = window.onOpenPreferences;
+        if (typeof fn === "function") {
+          fn();
+        }
+      });
       panel.querySelector(".mobius-auth-welcome-btn")?.addEventListener("click", () => {
         pendingWelcomeName = null;
         close();
@@ -1482,10 +1492,15 @@ var AUTH_STYLES = `
 }
 .mobius-auth-confirm-actions { display: flex; gap: 8px; }
 .mobius-auth-confirm-actions .mobius-auth-btn { margin: 0; flex: 1; }
-.mobius-auth-confirm-actions .mobius-auth-btn-secondary {
+/* Generic secondary-button style \u2014 quiet alternate when a primary CTA
+ * sits next to it (welcome panel "Skip for now", confirm "Cancel"). */
+.mobius-auth-btn-secondary {
   background: white;
   color: var(--mobius-text-primary, #1a1d21);
   border: 1px solid var(--mobius-border, #e2e8f0);
+}
+.mobius-auth-btn-secondary:hover {
+  background: var(--mobius-bg-muted, #f8fafc);
 }
 .mobius-auth-confirm-actions .mobius-auth-btn-danger {
   background: var(--mobius-error, #dc2626);
