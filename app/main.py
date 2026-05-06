@@ -1436,9 +1436,80 @@ def get_skills_urls():
     }
 
 
+@app.get("/api/v1/public-config")
+def get_public_config():
+    """Public, unauthenticated config consumed by the frontend on boot.
+
+    Only safe-to-expose values: OAuth client IDs (designed to be public), feature flags.
+    Never put secrets here.
+    """
+    return {
+        "google_client_id": (os.getenv("GOOGLE_CLIENT_ID") or "").strip() or None,
+    }
+
+
+# Auth proxy: forward /api/v1/auth/* to MOBIUS_OS_AUTH_URL.
+# The chat frontend's AuthService is configured with apiBase=window.origin/api/v1,
+# so register/login/refresh/logout/me/google/check-email/preferences all hit chat
+# first. Chat doesn't host auth itself — mobius-os does. This thin proxy is the
+# bridge promised by the "proxy /api/v1/auth/* to Mobius-OS" comment in config.py.
+from fastapi import Request
+from fastapi.responses import Response as FastAPIResponse
+
+
+@app.api_route(
+    "/api/v1/auth/{auth_path:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+)
+async def proxy_auth(auth_path: str, request: Request):
+    base = (os.getenv("MOBIUS_OS_AUTH_URL") or "").rstrip("/")
+    if not base or "not-yet-deployed" in base:
+        return FastAPIResponse(
+            content='{"error":"auth not configured (MOBIUS_OS_AUTH_URL unset)"}',
+            status_code=503,
+            media_type="application/json",
+        )
+    target = f"{base}/api/v1/auth/{auth_path}"
+    body = await request.body()
+
+    forward_headers = {}
+    for h in ("authorization", "content-type", "user-agent"):
+        v = request.headers.get(h)
+        if v:
+            forward_headers[h] = v
+
+    import httpx  # local import; chat already pulls httpx in for outbound calls
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            up = await client.request(
+                request.method,
+                target,
+                content=body if body else None,
+                headers=forward_headers,
+                params=dict(request.query_params),
+            )
+    except httpx.RequestError as exc:
+        return FastAPIResponse(
+            content=f'{{"error":"auth upstream unreachable: {type(exc).__name__}"}}',
+            status_code=502,
+            media_type="application/json",
+        )
+
+    response_headers = {}
+    ct = up.headers.get("content-type")
+    if ct:
+        response_headers["content-type"] = ct
+    return FastAPIResponse(
+        content=up.content,
+        status_code=up.status_code,
+        headers=response_headers,
+    )
+
+
 # Phase 1d: /chat/roster-reconcile/*, /chat/roster-truth/*, and
 # /chat/roster-org/* endpoints extracted to app.api.roster. Router
 # mounted near the top of this file.
+
 
 @app.get("/chat/llm-router-report")
 def get_llm_router_report(window_days: int = 30):
