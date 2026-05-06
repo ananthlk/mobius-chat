@@ -1478,6 +1478,7 @@ def get_chat_config_by_sha(config_sha: str):
 # app.services.credentialing_* and app.storage.credentialing_* for
 # server-side orchestration — only the public HTTP surface was removed.
 from app.api.admin import router as _admin_router
+from app.api.auth_proxy import router as _auth_proxy_router
 from app.api.chat import router as _chat_router
 from app.api.credentialing import router as _credentialing_router
 from app.api.doc_reader import router as _doc_reader_router
@@ -1495,6 +1496,7 @@ app.include_router(_uploads_router)  # Phase B.1c — cross-thread uploads catal
 app.include_router(_doc_reader_router)  # Phase 2b.1 — doc-reader proxy extracted from main.py
 app.include_router(_email_thread_router)  # POST /chat/thread/{id}/email — proxy to mobius-skills/email
 app.include_router(_admin_router)  # Dev-token minter + future ops-only endpoints
+app.include_router(_auth_proxy_router)  # 2026-05-06 — /api/v1/auth/* + /api/v1/public-config → mobius-user
 
 # Provider skill runs as its own server (provider-roster-credentialing, :8011).
 # Chat calls it via CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL.
@@ -1520,6 +1522,13 @@ _SKILL_LLM_ALLOWED_STAGES = frozenset({
     "rag_extraction",        # stream_extract_facts → structured fact JSON
     "rag_critique",          # critique_extraction → quality score + feedback
     "rag_lexicon_triage",    # candidate → {new_tag, alias, reject} verdict
+    # mobius-rag corpus_search_agent strategy stages (2026-05-05): the
+    # agent's per-strategy LLM synthesis passes route through here so
+    # bandit routing + llm_calls analytics cover retrieval reasoning.
+    "rag_strategy_a_synth",     # Strategy (a) BM25 cascade synthesis pass
+    "rag_strategy_b_synth",     # Strategy (b) Wide-Themes-Narrow synthesis pass
+    "rag_strategy_c_validate",  # Strategy (c) LLM→Validate citation generation
+    "rag_strategy_d_external",  # Strategy (d) External First synthesis
     # mobius-qa/lexicon-maintenance stages (2026-04-23): curator UI's
     # LLM calls route through here. Same reason as rag — unified
     # bandit + telemetry. Three stages cover the four endpoint needs:

@@ -2,7 +2,9 @@ import {
   createAuthService,
   localStorageAdapter,
   createAuthModal,
+  createPreferencesModal,
   AUTH_STYLES,
+  PREFERENCES_MODAL_STYLES,
 } from "@mobius/auth";
 
 /** Subset of auth profile for sidebar + answer insights gating */
@@ -6870,13 +6872,63 @@ function run(): void {
   const sidebarUser = document.getElementById("sidebarUser");
   const sidebarUserName = document.getElementById("sidebarUserName");
 
+  // 2026-05-06: full mobius-user wire-up per Mobius-user/SPEC.md.
+  //
+  //   1. Bootstrap fetch /api/v1/public-config → google_client_id (proxied
+  //      by chat to mobius-user). Without this, AuthModal renders the
+  //      Google button as a placeholder that 401s on submission.
+  //   2. createAuthService + createAuthModal as before, now with
+  //      googleClientId so OAuth actually works.
+  //   3. createPreferencesModal — first-run onboarding + post-onboarding
+  //      edits. Same apiBase as auth (proxied to mobius-user).
+  //   4. window.onOpenPreferences bridge — AuthModal's "Set up
+  //      preferences" button (welcome panel) and "Preferences" link
+  //      (account view) call into this; host wires the destination.
+  //
+  // googleClientId arrives async, but createAuthModal accepts it at
+  // construction time only. We start the modal with showOAuth=false,
+  // then re-create it once the config lands. The race window is the
+  // few hundred ms between page load and the public-config response —
+  // sidebar user button is hidden during that window so no click can
+  // reach the wrong modal.
   const authApiBase = `${API_BASE.replace(/\/$/, "")}/api/v1`;
   const auth = createAuthService({ apiBase: authApiBase, storage: localStorageAdapter });
-  const modal = createAuthModal({ auth, showOAuth: true });
+
+  // Style injection happens once, before either modal is built — both
+  // share the same overlay/panel CSS classes.
+  const _authStyleEl = document.createElement("style");
+  _authStyleEl.textContent = AUTH_STYLES + (PREFERENCES_MODAL_STYLES || "");
+  document.head.appendChild(_authStyleEl);
+
+  // Mutable handle so the public-config fetch can swap in a Google-enabled
+  // modal without breaking call sites that hold a stale reference.
+  let modal = createAuthModal({ auth, showOAuth: false });
   document.body.appendChild(modal.el);
-  const styleEl = document.createElement("style");
-  styleEl.textContent = AUTH_STYLES;
-  document.head.appendChild(styleEl);
+
+  // PreferencesModal — instant; doesn't depend on public-config.
+  const prefsModal = createPreferencesModal(authApiBase, auth);
+  document.body.appendChild(prefsModal.el);
+  (window as unknown as { onOpenPreferences?: () => void }).onOpenPreferences = () => {
+    prefsModal.open();
+  };
+
+  // Public-config bootstrap. Best-effort: if it fails, AuthModal stays
+  // in email/password-only mode and the user can still sign up.
+  fetch(`${authApiBase}/public-config`, { method: "GET" })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((cfg) => {
+      const gid = (cfg && cfg.google_client_id) ? String(cfg.google_client_id).trim() : "";
+      if (!gid) return;
+      // Re-create modal with Google enabled. Replace the DOM node in
+      // place so any cached references stay valid for the next click.
+      const oldEl = modal.el;
+      modal = createAuthModal({ auth, showOAuth: true, googleClientId: gid });
+      if (oldEl.parentNode) oldEl.parentNode.replaceChild(modal.el, oldEl);
+      else document.body.appendChild(modal.el);
+    })
+    .catch((e) => {
+      console.warn("[auth] public-config fetch failed; Google sign-in disabled:", e);
+    });
 
   function updateSidebarUser(user: { greeting_name?: string } | null): void {
     if (sidebarUserName)
