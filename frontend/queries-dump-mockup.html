@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mockup — Recent queries (hamburger → drawer → modal)</title>
+<style>
+  /* Approximates the chat app's drawer + modal styling so this preview
+     reads like the real thing without depending on the actual stylesheet. */
+  :root {
+    --bg: #fafafa;
+    --panel: #ffffff;
+    --line: #e2e2e2;
+    --line-strong: #c8c8c8;
+    --ink: #1d1d1d;
+    --ink-soft: #555;
+    --ink-faint: #888;
+    --accent: #2b5fb3;
+    --accent-soft: #eaf1fb;
+    --good: #2c7a3e;
+    --bad: #b22f2f;
+    --warn-bg: #fff7e1;
+    --warn-line: #d4a000;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  .stage {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    min-height: 100vh;
+  }
+  /* ── faux chat shell ───────────────────────────────────────── */
+  .sidebar {
+    background: #f1efe9;
+    border-right: 1px solid var(--line);
+    padding: 12px;
+    color: var(--ink-soft);
+  }
+  .sidebar h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-faint); margin: 0 0 8px; }
+  .sidebar ul { list-style: none; padding: 0; margin: 0; }
+  .sidebar li { padding: 6px 8px; border-radius: 6px; cursor: default; color: var(--ink); }
+  .sidebar li.active { background: #fff; box-shadow: 0 0 0 1px var(--line); }
+  .main { display: flex; flex-direction: column; }
+  .main-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 16px; border-bottom: 1px solid var(--line); background: #fff;
+  }
+  .main-head h1 { margin: 0; font-size: 15px; }
+  .hamburger {
+    background: none; border: 1px solid var(--line); padding: 4px 10px;
+    border-radius: 6px; font-size: 16px; cursor: pointer; color: var(--ink);
+  }
+  .hamburger:hover { background: #f4f4f4; }
+  .chat-body { padding: 24px; color: var(--ink-faint); }
+
+  /* ── drawer (Chat config) ──────────────────────────────────── */
+  .drawer-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,.25);
+    opacity: 0; pointer-events: none; transition: opacity .15s ease;
+    z-index: 50;
+  }
+  .drawer {
+    position: fixed; top: 0; right: 0; height: 100vh; width: 380px;
+    background: var(--panel); border-left: 1px solid var(--line);
+    transform: translateX(100%); transition: transform .18s ease;
+    box-shadow: -8px 0 30px rgba(0,0,0,.06);
+    z-index: 60; padding: 16px 18px; overflow-y: auto;
+  }
+  .drawer.open { transform: translateX(0); }
+  .drawer-overlay.open { opacity: 1; pointer-events: auto; }
+  .drawer h2 { margin: 0 0 12px; font-size: 14px; }
+  .drawer .row {
+    margin: 12px 0; padding: 10px 12px; border: 1px solid var(--line);
+    border-radius: 8px; background: #fdfdfd;
+  }
+  .drawer .row strong { font-size: 13px; }
+  .drawer .row .hint { font-size: 11px; color: var(--ink-faint); margin-top: 4px; }
+  .drawer button.launch {
+    display: block; width: 100%; padding: 8px 12px; border-radius: 6px;
+    background: #fff; border: 1px solid var(--line-strong); cursor: pointer;
+    text-align: left; font: inherit; color: var(--ink);
+  }
+  .drawer button.launch:hover { background: var(--accent-soft); border-color: var(--accent); }
+  .drawer button.launch.new::after {
+    content: "NEW"; float: right; background: var(--accent); color: #fff;
+    font-size: 10px; padding: 1px 6px; border-radius: 999px; letter-spacing: .04em;
+  }
+  .drawer-close {
+    position: absolute; top: 10px; right: 12px; background: none; border: 0;
+    font-size: 22px; cursor: pointer; color: var(--ink-faint);
+  }
+
+  /* ── modal (queries dump) ──────────────────────────────────── */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,.35);
+    opacity: 0; pointer-events: none; transition: opacity .15s ease;
+    z-index: 70;
+  }
+  .modal-backdrop.open { opacity: 1; pointer-events: auto; }
+  .modal {
+    position: fixed; inset: 24px; background: var(--panel);
+    border-radius: 10px; box-shadow: 0 10px 40px rgba(0,0,0,.2);
+    display: none; flex-direction: column; z-index: 80;
+  }
+  .modal.open { display: flex; }
+  .modal-head {
+    display: flex; align-items: center; gap: 16px;
+    padding: 12px 16px; border-bottom: 1px solid var(--line);
+  }
+  .modal-head h3 { margin: 0; font-size: 14px; }
+  .modal-head .grow { flex: 1; }
+  .modal-close {
+    background: none; border: 0; font-size: 22px; cursor: pointer; color: var(--ink-faint);
+  }
+
+  /* ── filter bar ────────────────────────────────────────────── */
+  .filters {
+    display: flex; flex-wrap: wrap; align-items: end; gap: 12px;
+    padding: 10px 16px; border-bottom: 1px solid var(--line); background: #fbfbfb;
+  }
+  .filters .field { display: flex; flex-direction: column; gap: 3px; }
+  .filters label { font-size: 10px; text-transform: uppercase; color: var(--ink-faint); letter-spacing: .06em; }
+  .filters input, .filters select {
+    font: inherit; padding: 4px 6px; border: 1px solid var(--line-strong);
+    border-radius: 4px; background: #fff; min-width: 120px;
+  }
+  .filters .toggle {
+    display: inline-flex; gap: 6px; padding: 5px 8px; border: 1px solid var(--line-strong);
+    border-radius: 4px; background: #fff; align-items: center;
+  }
+  .filters .actions { margin-left: auto; display: flex; gap: 8px; }
+  .filters button {
+    padding: 5px 12px; border-radius: 4px; border: 1px solid var(--line-strong);
+    background: #fff; cursor: pointer; font: inherit;
+  }
+  .filters button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .filters button:hover { filter: brightness(.97); }
+
+  /* ── summary strip ─────────────────────────────────────────── */
+  .summary {
+    display: flex; gap: 24px; padding: 10px 16px;
+    border-bottom: 1px solid var(--line); background: #fff;
+    font-size: 12px;
+  }
+  .summary .stat { display: flex; flex-direction: column; }
+  .summary .stat .n { font-size: 15px; font-weight: 600; color: var(--ink); }
+  .summary .stat .label { font-size: 10px; text-transform: uppercase; color: var(--ink-faint); letter-spacing: .06em; }
+
+  /* ── table ─────────────────────────────────────────────────── */
+  .table-wrap { flex: 1; overflow: auto; }
+  table.dump {
+    width: 100%; border-collapse: collapse; font: 12px/1.4 ui-monospace, Menlo, monospace;
+  }
+  table.dump th, table.dump td {
+    border-bottom: 1px solid var(--line); padding: 6px 8px;
+    vertical-align: top; max-width: 320px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  table.dump thead th {
+    position: sticky; top: 0; background: #f4f4f4; z-index: 1;
+    font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--ink-soft); border-bottom: 1px solid var(--line-strong);
+  }
+  table.dump tr:hover td { background: #fafbfc; }
+  table.dump td.q { white-space: normal; max-width: 380px; color: var(--ink); }
+  table.dump td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  table.dump td.dim { color: var(--ink-faint); }
+  table.dump td.ok { color: var(--good); }
+  table.dump td.err { color: var(--bad); }
+  .pill {
+    display: inline-block; padding: 1px 8px; border-radius: 999px;
+    font-size: 10px; font-weight: 600; letter-spacing: .04em;
+  }
+  .pill.up { background: #dff5e1; color: var(--good); }
+  .pill.down { background: #fde0e0; color: var(--bad); }
+  .pill.cache-active { background: #e6efff; color: var(--accent); }
+  .pill.cache-shadow { background: #f0e6ff; color: #5e3aa8; }
+  .pill.cache-off { background: #f0f0f0; color: var(--ink-faint); }
+
+  /* ── footer ───────────────────────────────────────────────── */
+  .modal-foot {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 16px; border-top: 1px solid var(--line);
+    color: var(--ink-faint); font-size: 11px;
+  }
+  .pager button {
+    padding: 4px 10px; border-radius: 4px; border: 1px solid var(--line-strong);
+    background: #fff; cursor: pointer; font: inherit; margin-left: 4px;
+  }
+
+  .preview-banner {
+    background: var(--warn-bg); border-bottom: 1px solid var(--warn-line);
+    padding: 6px 16px; font-size: 11px; color: #6a4d00;
+  }
+</style>
+</head>
+<body>
+
+<div class="preview-banner">
+  <strong>Mockup preview</strong> — canned data, no API calls. Click the
+  hamburger (☰) → "Recent queries" to see the proposed integration.
+  Press Esc to close.
+</div>
+
+<div class="stage">
+  <aside class="sidebar">
+    <h2>Threads</h2>
+    <ul>
+      <li class="active">FL Medicaid mental-health rates 2026</li>
+      <li>NPI lookup batch — Tampa</li>
+      <li>Telehealth modifier guidance</li>
+      <li>Roster onboard — Centerstone</li>
+    </ul>
+  </aside>
+  <main class="main">
+    <header class="main-head">
+      <h1>Mobius chat</h1>
+      <button class="hamburger" id="hamburger" aria-label="Config">&#9776;</button>
+    </header>
+    <section class="chat-body">
+      <p style="margin:0">↑ click ☰ to open the config drawer</p>
+    </section>
+  </main>
+</div>
+
+<!-- ── drawer ─────────────────────────────────────────────── -->
+<div class="drawer-overlay" id="drawerOverlay"></div>
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <button class="drawer-close" id="drawerClose" aria-label="Close">&times;</button>
+  <h2>Chat config</h2>
+
+  <div class="row">
+    <strong>Config version</strong>
+    <div class="hint"><code>cfg-7e2a91</code></div>
+  </div>
+
+  <div class="row">
+    <button class="launch">Model router &amp; quality report</button>
+    <div class="hint">Per-stage models, adjudicated scores, composite rank.</div>
+  </div>
+
+  <div class="row">
+    <button class="launch new" id="btnQueriesDump">Recent queries</button>
+    <div class="hint">Per-turn dump: latency, tokens, cost, RAG, feedback. Filter by user, date, errors.</div>
+  </div>
+
+  <div class="row">
+    <strong>Show LLM performance</strong>
+    <label style="display:flex;gap:6px;align-items:center;margin-top:4px;font-size:12px">
+      <input type="checkbox" /> Models, latency, cost, routing
+    </label>
+  </div>
+</aside>
+
+<!-- ── modal: queries dump ───────────────────────────────── -->
+<div class="modal-backdrop" id="modalBackdrop"></div>
+<div class="modal" id="queriesModal" role="dialog" aria-modal="true" aria-labelledby="queriesTitle">
+  <header class="modal-head">
+    <h3 id="queriesTitle">Recent queries</h3>
+    <span class="grow"></span>
+    <span style="font-size:11px;color:var(--ink-faint)" id="liveDot">● live (auto-refresh 30s)</span>
+    <button class="modal-close" id="modalClose" aria-label="Close">&times;</button>
+  </header>
+
+  <form class="filters" id="filters" onsubmit="return false">
+    <div class="field">
+      <label for="fSince">Since</label>
+      <select id="fSince">
+        <option>last 1h</option>
+        <option selected>last 24h</option>
+        <option>last 7d</option>
+        <option>last 30d</option>
+        <option>custom…</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="fUser">User</label>
+      <input id="fUser" placeholder="any" />
+    </div>
+    <div class="field">
+      <label for="fModel">Model</label>
+      <select id="fModel">
+        <option>any</option>
+        <option>claude-opus-4-7</option>
+        <option>claude-sonnet-4-6</option>
+        <option>gemini-2.5-pro</option>
+      </select>
+    </div>
+    <div class="toggle"><input type="checkbox" id="fErr" checked> errors only</div>
+    <div class="toggle"><input type="checkbox" id="fFb"> has feedback</div>
+    <div class="toggle"><input type="checkbox" id="fCache"> used cache</div>
+    <div class="field">
+      <label for="fLimit">Limit</label>
+      <select id="fLimit">
+        <option>50</option>
+        <option selected>100</option>
+        <option>250</option>
+        <option>1000</option>
+      </select>
+    </div>
+    <div class="actions">
+      <button type="button">Reset</button>
+      <button type="button" class="primary">Apply</button>
+      <button type="button" title="Download JSON">⤓ JSON</button>
+    </div>
+  </form>
+
+  <div class="summary">
+    <div class="stat"><span class="n">7</span><span class="label">turns</span></div>
+    <div class="stat"><span class="n">913 ms</span><span class="label">p50 latency</span></div>
+    <div class="stat"><span class="n">2.41 s</span><span class="label">p95 latency</span></div>
+    <div class="stat"><span class="n">$0.031</span><span class="label">total cost</span></div>
+    <div class="stat"><span class="n">14.2K</span><span class="label">total tokens</span></div>
+    <div class="stat"><span class="n">1</span><span class="label">errors</span></div>
+    <div class="stat"><span class="n">3 / 4</span><span class="label">feedback (↑/↓)</span></div>
+  </div>
+
+  <div class="table-wrap">
+    <table class="dump">
+      <thead>
+        <tr>
+          <th>time</th>
+          <th>user</th>
+          <th>thread</th>
+          <th>question</th>
+          <th class="num">ms</th>
+          <th class="num">llm</th>
+          <th class="num">in tok</th>
+          <th class="num">out tok</th>
+          <th class="num">$</th>
+          <th>models</th>
+          <th>errs</th>
+          <th class="num">rag</th>
+          <th>cache</th>
+          <th>fb</th>
+        </tr>
+      </thead>
+      <tbody id="rows">
+        <!-- rows injected by JS below -->
+      </tbody>
+    </table>
+  </div>
+
+  <footer class="modal-foot">
+    <span>showing 1–7 of ~7</span>
+    <div class="pager">
+      <button>« prev</button>
+      <button>next »</button>
+    </div>
+  </footer>
+</div>
+
+<script>
+  // canned rows — shape mirrors the JSON the real /chat/admin/queries returns
+  const ROWS = [
+    {
+      time: "12:41:08", user: "ananth", thread: "9f2a…",
+      q: "What's the FL Medicaid rate for H2017 in 2026? Compare against 2024.",
+      ms: 1842, llm: 4, in_tok: 3120, out_tok: 612, cost: 0.0094,
+      models: "opus-4-7, sonnet-4-6", errs: 0, rag: 12, cache: "active",
+      cache_pill: "cache-active", fb: "up",
+    },
+    {
+      time: "12:38:50", user: "ananth", thread: "9f2a…",
+      q: "Is H0031 covered for telehealth in 2026?",
+      ms: 612, llm: 2, in_tok: 1024, out_tok: 248, cost: 0.0021,
+      models: "sonnet-4-6", errs: 0, rag: 6, cache: "active",
+      cache_pill: "cache-active", fb: "up",
+    },
+    {
+      time: "12:35:11", user: "ananth", thread: "9f2a…",
+      q: "Show all org NPIs with H2017 billing in Hillsborough County.",
+      ms: 2410, llm: 5, in_tok: 4880, out_tok: 940, cost: 0.0142,
+      models: "opus-4-7", errs: 0, rag: 0, cache: "off",
+      cache_pill: "cache-off", fb: "down",
+    },
+    {
+      time: "12:30:47", user: "demo", thread: "a1c8…",
+      q: "Roster upload validation errors",
+      ms: 312, llm: 1, in_tok: 480, out_tok: 96, cost: 0.0004,
+      models: "haiku-4-5", errs: 0, rag: 2, cache: "shadow",
+      cache_pill: "cache-shadow", fb: "",
+    },
+    {
+      time: "12:21:03", user: "demo", thread: "a1c8…",
+      q: "Why was this NPI rejected from the roster?",
+      ms: 920, llm: 3, in_tok: 1820, out_tok: 410, cost: 0.0029,
+      models: "sonnet-4-6", errs: 0, rag: 8, cache: "active",
+      cache_pill: "cache-active", fb: "up",
+    },
+    {
+      time: "12:14:26", user: "demo", thread: "b6f1…",
+      q: "credentialing report for Centerstone — 50 NPIs",
+      ms: 5120, llm: 8, in_tok: 9200, out_tok: 2104, cost: 0.0188,
+      models: "opus-4-7, sonnet-4-6", errs: 1, err_type: "rate_limit", rag: 24, cache: "off",
+      cache_pill: "cache-off", fb: "",
+    },
+    {
+      time: "12:02:12", user: "ananth", thread: "c12e…",
+      q: "Vibe check the last DOGE refresh",
+      ms: 408, llm: 1, in_tok: 240, out_tok: 88, cost: 0.0003,
+      models: "haiku-4-5", errs: 0, rag: 0, cache: "none",
+      cache_pill: "cache-off", fb: "",
+    },
+  ];
+
+  function renderRows() {
+    const tbody = document.getElementById("rows");
+    tbody.innerHTML = ROWS.map(r => `
+      <tr>
+        <td class="dim">${r.time}</td>
+        <td>${r.user}</td>
+        <td class="dim">${r.thread}</td>
+        <td class="q">${r.q}</td>
+        <td class="num">${r.ms.toLocaleString()}</td>
+        <td class="num">${r.llm}</td>
+        <td class="num">${r.in_tok.toLocaleString()}</td>
+        <td class="num">${r.out_tok.toLocaleString()}</td>
+        <td class="num">${r.cost.toFixed(4)}</td>
+        <td class="dim">${r.models}</td>
+        <td class="${r.errs ? 'err' : 'dim'}">${r.errs ? r.errs + ' (' + (r.err_type || '?') + ')' : '0'}</td>
+        <td class="num dim">${r.rag}</td>
+        <td><span class="pill ${r.cache_pill}">${r.cache}</span></td>
+        <td>${r.fb === 'up' ? '<span class="pill up">↑</span>' : r.fb === 'down' ? '<span class="pill down">↓</span>' : ''}</td>
+      </tr>
+    `).join("");
+  }
+  renderRows();
+
+  // drawer wiring
+  const drawer = document.getElementById("drawer");
+  const drawerOverlay = document.getElementById("drawerOverlay");
+  document.getElementById("hamburger").onclick = () => { drawer.classList.add("open"); drawerOverlay.classList.add("open"); };
+  document.getElementById("drawerClose").onclick = closeDrawer;
+  drawerOverlay.onclick = closeDrawer;
+  function closeDrawer() { drawer.classList.remove("open"); drawerOverlay.classList.remove("open"); }
+
+  // modal wiring
+  const modal = document.getElementById("queriesModal");
+  const modalBackdrop = document.getElementById("modalBackdrop");
+  document.getElementById("btnQueriesDump").onclick = () => {
+    closeDrawer();
+    modal.classList.add("open"); modalBackdrop.classList.add("open");
+  };
+  document.getElementById("modalClose").onclick = closeModal;
+  modalBackdrop.onclick = closeModal;
+  function closeModal() { modal.classList.remove("open"); modalBackdrop.classList.remove("open"); }
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { closeModal(); closeDrawer(); }
+  });
+</script>
+</body>
+</html>

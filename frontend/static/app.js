@@ -1071,6 +1071,278 @@ function initSidebarRailIcons() {
   };
   updateRecentBadge();
 }
+var QD_AUTO_REFRESH_MS = 3e4;
+var QD_SINCE_DELTAS = {
+  "1h": 60 * 60 * 1e3,
+  "24h": 24 * 60 * 60 * 1e3,
+  "7d": 7 * 24 * 60 * 60 * 1e3,
+  "30d": 30 * 24 * 60 * 60 * 1e3,
+  "all": null
+};
+function setupQueriesDumpUI() {
+  const launch = document.getElementById("drawerQueriesDumpLaunch");
+  const btn = document.getElementById("btnQueriesDump");
+  const modal = document.getElementById("queriesDumpModal");
+  const body = document.getElementById("queriesDumpBody");
+  const closeBtn = document.getElementById("queriesDumpClose");
+  const backdrop = document.getElementById("queriesDumpBackdrop");
+  const summary = document.getElementById("queriesDumpSummary");
+  const status = document.getElementById("queriesDumpStatus");
+  const fSince = document.getElementById("qdSince");
+  const fUser = document.getElementById("qdUser");
+  const fErr = document.getElementById("qdHasError");
+  const fFb = document.getElementById("qdHasFeedback");
+  const fLimit = document.getElementById("qdLimit");
+  const btnApply = document.getElementById("qdApply");
+  const btnReset = document.getElementById("qdReset");
+  const btnPrev = document.getElementById("qdPrev");
+  const btnNext = document.getElementById("qdNext");
+  const jsonLink = document.getElementById("qdJson");
+  const autoRefresh = document.getElementById("queriesDumpAutoRefresh");
+  if (!launch || !btn || !modal || !body || !fSince || !fLimit)
+    return;
+  let offset = 0;
+  let lastCount = 0;
+  let refreshTimer = null;
+  const setOpen = (open) => {
+    modal.classList.toggle("llm-router-report-modal--open", open);
+    modal.setAttribute("aria-hidden", open ? "false" : "true");
+    if (!open && refreshTimer !== null) {
+      window.clearInterval(refreshTimer);
+      refreshTimer = null;
+    }
+    if (open)
+      scheduleAutoRefresh();
+  };
+  const buildParams = () => {
+    const p = new URLSearchParams();
+    const limit = Math.max(1, Math.min(1e3, parseInt(fLimit.value, 10) || 100));
+    p.set("limit", String(limit));
+    p.set("offset", String(offset));
+    const sinceKey = fSince.value;
+    const delta = QD_SINCE_DELTAS[sinceKey];
+    if (delta !== null && delta !== void 0) {
+      p.set("since", new Date(Date.now() - delta).toISOString());
+    }
+    const u = (fUser?.value || "").trim();
+    if (u)
+      p.set("user_id", u);
+    if (fErr?.checked)
+      p.set("has_error", "true");
+    if (fFb?.checked)
+      p.set("has_feedback", "true");
+    return p;
+  };
+  const updateJsonLink = () => {
+    if (!jsonLink)
+      return;
+    const p = buildParams();
+    p.set("format", "json");
+    jsonLink.href = API_BASE + "/chat/admin/queries?" + p.toString();
+  };
+  const load = () => {
+    body.innerHTML = '<p class="llm-router-report-loading" style="padding:1rem">Loading\u2026</p>';
+    if (status)
+      status.textContent = "loading\u2026";
+    updateJsonLink();
+    const p = buildParams();
+    fetch(API_BASE + "/chat/admin/queries?" + p.toString(), {
+      headers: { Accept: "application/json" }
+    }).then((r) => {
+      if (r.status === 404) {
+        throw new Error("Endpoint disabled (set MOBIUS_ADMIN_ENABLED=1).");
+      }
+      return r.json();
+    }).then((data) => {
+      renderQueriesDumpBody(body, summary, data);
+      lastCount = data.count;
+      if (status) {
+        const limit = parseInt(fLimit.value, 10) || 100;
+        status.textContent = `rows ${offset + 1}\u2013${offset + data.count} (limit ${limit})`;
+      }
+      if (btnPrev)
+        btnPrev.disabled = offset === 0;
+      if (btnNext)
+        btnNext.disabled = data.count < (parseInt(fLimit.value, 10) || 100);
+    }).catch((err) => {
+      body.innerHTML = '<p class="llm-router-report-error" style="padding:1rem">Could not load: ' + (err && err.message ? String(err.message) : "request failed") + "</p>";
+      if (status)
+        status.textContent = "error";
+    });
+  };
+  const scheduleAutoRefresh = () => {
+    if (refreshTimer !== null) {
+      window.clearInterval(refreshTimer);
+      refreshTimer = null;
+    }
+    if (autoRefresh?.checked && modal.classList.contains("llm-router-report-modal--open")) {
+      refreshTimer = window.setInterval(load, QD_AUTO_REFRESH_MS);
+    }
+  };
+  btn.addEventListener("click", () => {
+    offset = 0;
+    setOpen(true);
+    load();
+  });
+  closeBtn?.addEventListener("click", () => setOpen(false));
+  backdrop?.addEventListener("click", () => setOpen(false));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && modal.classList.contains("llm-router-report-modal--open"))
+      setOpen(false);
+  });
+  btnApply?.addEventListener("click", () => {
+    offset = 0;
+    load();
+  });
+  btnReset?.addEventListener("click", () => {
+    offset = 0;
+    fSince.value = "24h";
+    if (fUser)
+      fUser.value = "";
+    if (fErr)
+      fErr.checked = false;
+    if (fFb)
+      fFb.checked = false;
+    fLimit.value = "100";
+    load();
+  });
+  btnPrev?.addEventListener("click", () => {
+    const limit = parseInt(fLimit.value, 10) || 100;
+    offset = Math.max(0, offset - limit);
+    load();
+  });
+  btnNext?.addEventListener("click", () => {
+    const limit = parseInt(fLimit.value, 10) || 100;
+    if (lastCount < limit)
+      return;
+    offset = offset + limit;
+    load();
+  });
+  autoRefresh?.addEventListener("change", scheduleAutoRefresh);
+  fUser?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      offset = 0;
+      load();
+    }
+  });
+}
+function renderQueriesDumpBody(container, summaryEl, data) {
+  const rows = data.rows || [];
+  if (summaryEl) {
+    if (rows.length === 0) {
+      summaryEl.hidden = true;
+    } else {
+      const totalCost = rows.reduce((s, r) => s + (Number(r.cost_usd) || 0), 0);
+      const totalIn = rows.reduce((s, r) => s + (r.input_tokens || 0), 0);
+      const totalOut = rows.reduce((s, r) => s + (r.output_tokens || 0), 0);
+      const errCount = rows.reduce((s, r) => s + (r.llm_error_count > 0 ? 1 : 0), 0);
+      const fbUp = rows.filter((r) => r.feedback_rating === "up").length;
+      const fbDown = rows.filter((r) => r.feedback_rating === "down").length;
+      const lats = rows.map((r) => r.total_latency_ms || 0).filter((n) => n > 0).sort((a, b) => a - b);
+      const pct = (arr, p) => arr.length === 0 ? 0 : arr[Math.min(arr.length - 1, Math.floor(arr.length * p))] || 0;
+      const p50 = pct(lats, 0.5);
+      const p95 = pct(lats, 0.95);
+      summaryEl.innerHTML = [
+        `<div class="qd-stat"><span class="qd-n">${rows.length}</span><span class="qd-label">turns</span></div>`,
+        `<div class="qd-stat"><span class="qd-n">${formatMs(p50)}</span><span class="qd-label">p50 latency</span></div>`,
+        `<div class="qd-stat"><span class="qd-n">${formatMs(p95)}</span><span class="qd-label">p95 latency</span></div>`,
+        `<div class="qd-stat"><span class="qd-n">$${totalCost.toFixed(4)}</span><span class="qd-label">total cost</span></div>`,
+        `<div class="qd-stat"><span class="qd-n">${formatTok(totalIn + totalOut)}</span><span class="qd-label">total tokens</span></div>`,
+        `<div class="qd-stat"><span class="qd-n">${errCount}</span><span class="qd-label">errors</span></div>`,
+        `<div class="qd-stat"><span class="qd-n">${fbUp} / ${fbDown}</span><span class="qd-label">feedback \u2191/\u2193</span></div>`
+      ].join("");
+      summaryEl.hidden = false;
+    }
+  }
+  const cols = [
+    { key: "created_at", label: "time" },
+    { key: "user_id", label: "user" },
+    { key: "thread_id", label: "thread", cls: "qd-dim" },
+    { key: "question_preview", label: "question", cls: "qd-q" },
+    { key: "total_latency_ms", label: "ms", cls: "qd-num" },
+    { key: "llm_call_count", label: "llm", cls: "qd-num" },
+    { key: "input_tokens", label: "in tok", cls: "qd-num" },
+    { key: "output_tokens", label: "out tok", cls: "qd-num" },
+    { key: "cost_usd", label: "$", cls: "qd-num" },
+    { key: "models_used", label: "models", cls: "qd-dim" },
+    { key: "llm_error_count", label: "errs" },
+    { key: "retrieval_runs_count", label: "rag", cls: "qd-num" },
+    { key: "cache_mode", label: "cache" },
+    { key: "_fb", label: "fb" }
+  ];
+  const escapeHtml3 = (s) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  const fmtCell = (r, key) => {
+    if (key === "_fb") {
+      if (r.feedback_rating === "up")
+        return '<span class="qd-pill qd-pill-up">\u2191</span>';
+      if (r.feedback_rating === "down")
+        return '<span class="qd-pill qd-pill-down">\u2193</span>';
+      return "";
+    }
+    const v = r[key];
+    if (v === null || v === void 0 || v === "")
+      return "";
+    if (key === "created_at") {
+      try {
+        return escapeHtml3(new Date(String(v)).toLocaleString());
+      } catch {
+        return escapeHtml3(String(v));
+      }
+    }
+    if (key === "thread_id" && typeof v === "string")
+      return escapeHtml3(v.slice(0, 8) + "\u2026");
+    if (key === "cost_usd")
+      return Number(v).toFixed(4);
+    if (key === "input_tokens" || key === "output_tokens")
+      return Number(v).toLocaleString();
+    if (key === "llm_error_count") {
+      const n = Number(v);
+      if (!n)
+        return "0";
+      return `<span class="qd-err">${n}${r.last_error_type ? " (" + escapeHtml3(r.last_error_type) + ")" : ""}</span>`;
+    }
+    if (key === "cache_mode") {
+      const m = String(v);
+      const cls = "qd-pill-cache-" + m;
+      const sim = r.cache_top_similarity ? ` ${Number(r.cache_top_similarity).toFixed(2)}` : "";
+      return `<span class="qd-pill ${cls}">${escapeHtml3(m)}${sim}</span>`;
+    }
+    if (typeof v === "string")
+      return escapeHtml3(v);
+    return String(v);
+  };
+  if (rows.length === 0) {
+    container.innerHTML = data.warning ? `<p class="llm-router-report-error" style="padding:1rem">${escapeHtml3(data.warning)}</p>` : '<p class="llm-router-report-meta" style="padding:1rem">No turns match the current filters.</p>';
+    return;
+  }
+  const head = cols.map((c) => `<th>${c.label}</th>`).join("");
+  const tbody = rows.map((r) => {
+    const cells = cols.map((c) => `<td class="${c.cls ?? ""}">${fmtCell(r, c.key)}</td>`).join("");
+    return `<tr>${cells}</tr>`;
+  }).join("");
+  const warn = data.warning ? `<div class="llm-router-report-error" style="padding:0.5rem 1rem">DB warning: ${escapeHtml3(data.warning)}</div>` : "";
+  container.innerHTML = `${warn}<table class="queries-dump-table"><thead><tr>${head}</tr></thead><tbody>${tbody}</tbody></table>`;
+}
+function formatMs(ms) {
+  if (!ms)
+    return "\u2014";
+  if (ms < 1e3)
+    return `${ms} ms`;
+  return `${(ms / 1e3).toFixed(2)} s`;
+}
+function formatTok(n) {
+  if (n >= 1e6)
+    return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3)
+    return `${(n / 1e3).toFixed(1)}K`;
+  return String(n);
+}
+function syncQueriesDumpVisibility(profile) {
+  const launch = document.getElementById("drawerQueriesDumpLaunch");
+  if (!launch)
+    return;
+  launch.hidden = !getShowLlmPerformance(profile);
+}
 function setupLlmRouterReportUI() {
   const btn = document.getElementById("btnLlmRouterReport");
   const modal = document.getElementById("llmRouterReportModal");
@@ -5742,6 +6014,7 @@ function run() {
     if (!cb)
       return;
     cb.checked = getShowLlmPerformance(cachedProfile);
+    syncQueriesDumpVisibility(cachedProfile);
   }
   function mergeLlmPerformanceUsageFromPoll(turnWrap, d) {
     const rows = d.usage_breakdown;
@@ -5902,6 +6175,8 @@ function run() {
   if (btnConfig)
     btnConfig.addEventListener("click", openDrawer);
   setupLlmRouterReportUI();
+  setupQueriesDumpUI();
+  syncQueriesDumpVisibility(cachedProfile);
   function loadConfigHistory() {
     const section = document.getElementById("configHistorySection");
     const listEl = document.getElementById("configHistoryList");

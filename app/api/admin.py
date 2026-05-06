@@ -20,7 +20,8 @@ import os
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from app.secrets_loader import get_secret
@@ -248,3 +249,150 @@ def get_model_health() -> dict:
     except Exception as exc:
         out["local"] = {"error": f"{type(exc).__name__}: {exc}"}
     return out
+
+
+# ── Per-query dump dashboard (2026-05-05) ──────────────────────────────
+#
+# Flat dump of recent chat_turns joined with llm_calls aggregates,
+# retrieval_runs aggregates, and chat_feedback. Pre-users phase: a
+# simple "show me what's happening" view, no charts. JSON by default;
+# ``?format=html`` renders a server-side table for browser viewing.
+#
+# Same admin gate as the model-profile/health endpoints.
+
+
+def _parse_since(raw: str | None) -> datetime | None:
+    if not raw:
+        return None
+    s = raw.strip()
+    if not s:
+        return None
+    try:
+        # accept ISO-8601 with or without trailing Z
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"since must be ISO-8601 (got {raw!r})",
+        )
+
+
+@router.get("/chat/admin/queries")
+def get_queries_dump(
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    since: str | None = Query(None, description="ISO-8601 timestamp"),
+    user_id: str | None = Query(None),
+    has_feedback: bool | None = Query(None),
+    has_error: bool | None = Query(None),
+    format: str = Query("json", pattern="^(json|html)$"),
+):
+    """Per-turn dump for ad-hoc inspection.
+
+    Default JSON shape::
+
+        {"rows": [...], "count": N, "warning": str | None}
+
+    Browser-friendly HTML rendering: append ``?format=html``.
+    """
+    if not _admin_enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+
+    from app.storage.queries_dump import fetch_query_dump
+
+    result = fetch_query_dump(
+        limit=limit,
+        offset=offset,
+        since=_parse_since(since),
+        user_id=user_id,
+        has_feedback=has_feedback,
+        has_error=has_error,
+    )
+
+    if format == "html":
+        return HTMLResponse(_render_queries_html(result, limit, offset))
+    return result
+
+
+def _render_queries_html(result: dict, limit: int, offset: int) -> str:
+    """Minimal server-rendered table. No JS, no styling framework — just
+    a readable monospace dump good enough for the pre-users phase."""
+    import html as _html
+
+    rows = result.get("rows") or []
+    warning = result.get("warning")
+
+    cols = [
+        ("created_at",          "time"),
+        ("user_id",             "user"),
+        ("thread_id",           "thread"),
+        ("question_preview",    "question"),
+        ("total_latency_ms",    "ms"),
+        ("llm_call_count",      "llm calls"),
+        ("input_tokens",        "in tok"),
+        ("output_tokens",       "out tok"),
+        ("cost_usd",            "$"),
+        ("models_used",         "models"),
+        ("llm_error_count",     "errs"),
+        ("last_error_type",     "err type"),
+        ("retrieval_runs_count", "rag runs"),
+        ("chunks_assembled",    "chunks"),
+        ("cache_mode",          "cache"),
+        ("cache_top_similarity", "cache sim"),
+        ("feedback_rating",     "fb"),
+        ("feedback_comment",    "fb comment"),
+    ]
+
+    def _fmt(v):
+        if v is None:
+            return ""
+        if isinstance(v, float):
+            return f"{v:.4f}".rstrip("0").rstrip(".")
+        return _html.escape(str(v))
+
+    head = "".join(f"<th>{_html.escape(label)}</th>" for _, label in cols)
+    body_rows = []
+    for r in rows:
+        cells = "".join(f"<td>{_fmt(r.get(key))}</td>" for key, _ in cols)
+        body_rows.append(f"<tr>{cells}</tr>")
+    body = "\n".join(body_rows)
+
+    warn_html = ""
+    if warning:
+        warn_html = (
+            f'<div style="background:#fee;border:1px solid #c00;padding:8px;'
+            f'margin:8px 0;color:#900">DB warning: {_html.escape(warning)}</div>'
+        )
+
+    next_offset = offset + limit
+    prev_offset = max(0, offset - limit)
+    nav = (
+        f'<div style="margin:8px 0">'
+        f'showing rows {offset+1}–{offset+len(rows)} (limit={limit}) &nbsp;'
+        f'<a href="?limit={limit}&offset={prev_offset}&format=html">« prev</a> &nbsp;'
+        f'<a href="?limit={limit}&offset={next_offset}&format=html">next »</a>'
+        f'</div>'
+    )
+
+    return f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>chat queries dump</title>
+<style>
+  body {{ font-family: ui-monospace, Menlo, monospace; font-size: 12px; margin: 16px; }}
+  h1 {{ font-size: 14px; margin: 0 0 8px; }}
+  table {{ border-collapse: collapse; width: 100%; }}
+  th, td {{ border: 1px solid #ddd; padding: 4px 6px; text-align: left;
+            vertical-align: top; max-width: 360px; overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap; }}
+  th {{ background: #f4f4f4; position: sticky; top: 0; }}
+  tr:hover td {{ background: #fafafa; }}
+  td:hover {{ white-space: normal; word-break: break-word; max-width: 600px; }}
+</style></head>
+<body>
+<h1>/chat/admin/queries — {len(rows)} rows</h1>
+{warn_html}
+{nav}
+<table><thead><tr>{head}</tr></thead><tbody>
+{body}
+</tbody></table>
+{nav}
+</body></html>"""

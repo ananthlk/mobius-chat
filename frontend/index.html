@@ -362,6 +362,15 @@
       </p>
     </div>
 
+    <div class="drawer-llm-report-launch" id="drawerQueriesDumpLaunch" hidden>
+      <button type="button" id="btnQueriesDump" class="drawer-llm-report-btn">
+        Recent queries
+      </button>
+      <p class="drawer-pref-hint">
+        Per-turn dump: latency, tokens, cost, RAG retrieval, feedback. Filter by user, date, errors. Reads <code>chat_turns</code> + <code>llm_calls</code> + <code>retrieval_runs</code>.
+      </p>
+    </div>
+
     <div class="config-preferences-panel" id="configPreferencesPanel">
       <div class="config-summary-row" id="configSummaryRow" role="button" tabindex="0" aria-expanded="false" aria-label="Expand config">
         <span class="preference-item"><span class="pref-value" id="drawerSummaryLlm">Loading…</span></span>
@@ -559,6 +568,72 @@
       <div id="llmRouterReportBody" class="llm-router-report-modal__body">
         <p class="llm-router-report-loading">Loading…</p>
       </div>
+    </div>
+  </div>
+
+  <!--
+    Recent-queries dump modal. Reuses the .llm-router-report-modal__*
+    structural classes so backdrop/panel/close all look identical to
+    the router report. Filter bar, summary strip, and table are styled
+    by .queries-dump-* classes added in styles.css.
+  -->
+  <div id="queriesDumpModal" class="llm-router-report-modal" aria-hidden="true">
+    <div class="llm-router-report-modal__backdrop" id="queriesDumpBackdrop"></div>
+    <div class="llm-router-report-modal__panel queries-dump-panel" role="dialog" aria-modal="true" aria-labelledby="queriesDumpTitle">
+      <header class="llm-router-report-modal__head">
+        <h2 id="queriesDumpTitle">Recent queries</h2>
+        <span class="queries-dump-live" id="queriesDumpLive" title="Auto-refresh every 30s when checked">
+          <label><input type="checkbox" id="queriesDumpAutoRefresh" checked /> auto-refresh</label>
+        </span>
+        <button type="button" id="queriesDumpClose" class="llm-router-report-modal__close" aria-label="Close">&times;</button>
+      </header>
+
+      <form class="queries-dump-filters" id="queriesDumpFilters" onsubmit="return false">
+        <div class="queries-dump-field">
+          <label for="qdSince">Since</label>
+          <select id="qdSince">
+            <option value="1h">last 1h</option>
+            <option value="24h" selected>last 24h</option>
+            <option value="7d">last 7d</option>
+            <option value="30d">last 30d</option>
+            <option value="all">all</option>
+          </select>
+        </div>
+        <div class="queries-dump-field">
+          <label for="qdUser">User</label>
+          <input id="qdUser" placeholder="any" autocomplete="off" />
+        </div>
+        <label class="queries-dump-toggle"><input type="checkbox" id="qdHasError" /> errors only</label>
+        <label class="queries-dump-toggle"><input type="checkbox" id="qdHasFeedback" /> has feedback</label>
+        <div class="queries-dump-field">
+          <label for="qdLimit">Limit</label>
+          <select id="qdLimit">
+            <option>50</option>
+            <option selected>100</option>
+            <option>250</option>
+            <option>1000</option>
+          </select>
+        </div>
+        <div class="queries-dump-actions">
+          <button type="button" id="qdReset">Reset</button>
+          <button type="button" id="qdApply" class="queries-dump-primary">Apply</button>
+          <a href="#" id="qdJson" class="queries-dump-json" target="_blank" rel="noopener" title="Open JSON in new tab">⤓ JSON</a>
+        </div>
+      </form>
+
+      <div class="queries-dump-summary" id="queriesDumpSummary" hidden></div>
+
+      <div id="queriesDumpBody" class="llm-router-report-modal__body queries-dump-body">
+        <p class="llm-router-report-loading">Loading…</p>
+      </div>
+
+      <footer class="queries-dump-foot">
+        <span id="queriesDumpStatus">—</span>
+        <span class="queries-dump-pager">
+          <button type="button" id="qdPrev">« prev</button>
+          <button type="button" id="qdNext">next »</button>
+        </span>
+      </footer>
     </div>
   </div>
 

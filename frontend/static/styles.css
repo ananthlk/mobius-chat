@@ -7477,3 +7477,121 @@ body {
   border-radius: 999px;
   border: 1px solid currentColor;
 }
+
+/* ─────────────────────────────────────────────────────────────────
+   Recent queries dump (drawer → modal). Reuses the
+   .llm-router-report-modal__* structural shell; only adds filter
+   bar / summary strip / table styling here.
+   ───────────────────────────────────────────────────────────── */
+
+.queries-dump-panel { width: min(1400px, 100%); }
+
+.queries-dump-live {
+  display: inline-flex; gap: 0.25rem; align-items: center;
+  margin-left: auto; margin-right: 0.5rem;
+  font-size: var(--text-xs); color: var(--thinking-muted-hover);
+}
+.queries-dump-live label { display: inline-flex; gap: 0.3rem; align-items: center; cursor: pointer; }
+
+.queries-dump-filters {
+  display: flex; flex-wrap: wrap; align-items: end; gap: 0.6rem 0.75rem;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--assistant-border);
+  background: var(--thinking-bg);
+  font-size: var(--text-xs);
+}
+.queries-dump-field { display: flex; flex-direction: column; gap: 0.15rem; }
+.queries-dump-field label {
+  font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--thinking-muted-hover);
+}
+.queries-dump-field input,
+.queries-dump-field select {
+  font: inherit; padding: 0.2rem 0.4rem;
+  border: 1px solid var(--assistant-border); border-radius: 4px;
+  background: var(--assistant-bubble); color: inherit; min-width: 110px;
+}
+.queries-dump-toggle {
+  display: inline-flex; gap: 0.35rem; padding: 0.3rem 0.55rem;
+  border: 1px solid var(--assistant-border); border-radius: 4px;
+  background: var(--assistant-bubble); cursor: pointer;
+  font-size: var(--text-xs); align-items: center; align-self: end;
+}
+.queries-dump-toggle input { margin: 0; }
+.queries-dump-actions {
+  margin-left: auto; display: flex; gap: 0.4rem; align-items: center;
+}
+.queries-dump-actions button,
+.queries-dump-actions .queries-dump-json {
+  font: inherit; padding: 0.25rem 0.65rem; border-radius: 4px;
+  border: 1px solid var(--assistant-border); background: var(--assistant-bubble);
+  color: inherit; cursor: pointer; text-decoration: none;
+}
+.queries-dump-actions .queries-dump-primary {
+  background: var(--accent, #2b5fb3); color: #fff;
+  border-color: var(--accent, #2b5fb3);
+}
+.queries-dump-actions .queries-dump-json { color: var(--thinking-muted-hover); }
+.queries-dump-actions button:hover,
+.queries-dump-actions .queries-dump-json:hover { filter: brightness(0.96); }
+
+.queries-dump-summary {
+  display: flex; flex-wrap: wrap; gap: 1.25rem;
+  padding: 0.55rem 1rem;
+  border-bottom: 1px solid var(--assistant-border);
+  background: var(--assistant-bubble);
+  font-size: var(--text-xs);
+}
+.queries-dump-summary .qd-stat { display: flex; flex-direction: column; line-height: 1.15; }
+.queries-dump-summary .qd-stat .qd-n { font-size: var(--text-md); font-weight: 600; }
+.queries-dump-summary .qd-stat .qd-label {
+  font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--thinking-muted-hover);
+}
+
+.queries-dump-body { padding: 0; overflow: auto; flex: 1; }
+
+.queries-dump-table {
+  width: 100%; border-collapse: collapse;
+  font: var(--text-xs)/1.4 var(--mobius-font-mono, ui-monospace, Menlo, monospace);
+}
+.queries-dump-table th,
+.queries-dump-table td {
+  border-bottom: 1px solid var(--assistant-border);
+  padding: 0.3rem 0.5rem; vertical-align: top;
+  max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.queries-dump-table thead th {
+  position: sticky; top: 0; background: var(--thinking-bg); z-index: 1;
+  font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--thinking-muted-hover);
+}
+.queries-dump-table tr:hover td { background: var(--thinking-bg); }
+.queries-dump-table td.qd-q { white-space: normal; max-width: 380px; }
+.queries-dump-table td.qd-num { text-align: right; font-variant-numeric: tabular-nums; }
+.queries-dump-table td.qd-dim { color: var(--thinking-muted-hover); }
+.queries-dump-table td.qd-err { color: var(--error-text, #b22f2f); }
+
+.qd-pill {
+  display: inline-block; padding: 0.05rem 0.55rem; border-radius: 999px;
+  font-size: 0.6rem; font-weight: 600; letter-spacing: 0.04em;
+}
+.qd-pill-up    { background: #dff5e1; color: #2c7a3e; }
+.qd-pill-down  { background: #fde0e0; color: #b22f2f; }
+.qd-pill-cache-active { background: #e6efff; color: #2b5fb3; }
+.qd-pill-cache-shadow { background: #f0e6ff; color: #5e3aa8; }
+.qd-pill-cache-off,
+.qd-pill-cache-none   { background: #efefef; color: #666; }
+
+.queries-dump-foot {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 0.4rem 1rem;
+  border-top: 1px solid var(--assistant-border);
+  font-size: var(--text-xs); color: var(--thinking-muted-hover);
+}
+.queries-dump-pager button {
+  font: inherit; padding: 0.2rem 0.55rem; margin-left: 0.25rem;
+  border: 1px solid var(--assistant-border); border-radius: 4px;
+  background: var(--assistant-bubble); color: inherit; cursor: pointer;
+}
+.queries-dump-pager button:disabled { opacity: 0.4; cursor: not-allowed; }
