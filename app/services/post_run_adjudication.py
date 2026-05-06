@@ -150,6 +150,7 @@ async def _run_async(ctx: PipelineContext, payload: dict[str, Any]) -> None:
         correlation_id=ctx.correlation_id,
         thread_id=ctx.thread_id,
         config_sha=config_sha,
+        user_profile=getattr(ctx, "user_profile", None),
     )
 
     verdict = str(adj.get("verdict") or "FAIL")

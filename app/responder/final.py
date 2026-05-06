@@ -251,6 +251,7 @@ def format_response(
     llm_stage: str = "integrator",
     mode: str | None = None,
     previous_thread_summary: str | None = None,
+    user_profile: dict | None = None,
 ) -> tuple[str, LLMUsageDict | None]:
     """Turn plan + answers into one chat-friendly message via llm_manager (integrator or integrator_roster).
     On LLM failure, returns fallback and None usage."""
@@ -295,6 +296,14 @@ def format_response(
             prompt_system = cfg.prompts.integrator_canonical_system
         else:
             prompt_system = cfg.prompts.integrator_blended_system
+        # 2026-05-06: integrator/consolidator is the user-facing voice —
+        # tone + ai_experience_level matter most here. Splice user
+        # profile rendered_prompt into the system block.
+        try:
+            from app.pipeline.personalization import splice_user_profile
+            prompt_system = splice_user_profile(prompt_system, user_profile)
+        except Exception:
+            pass  # never let personalization break a real turn
         prompt_user = cfg.prompts.integrator_user_template.format(
             consolidator_input_json=consolidator_input_json,
         )

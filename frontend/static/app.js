@@ -6905,7 +6905,11 @@ function run() {
   document.head.appendChild(_authStyleEl);
   let modal = createAuthModal({ auth, showOAuth: false });
   document.body.appendChild(modal.el);
-  const prefsModal = createPreferencesModal(authApiBase, auth);
+  const prefsModal = createPreferencesModal(authApiBase, auth, {
+    onSave: () => {
+      void _fetchNestedUserProfile();
+    }
+  });
   window.onOpenPreferences = () => {
     void prefsModal.open();
   };
@@ -7000,18 +7004,40 @@ function run() {
     upB.classList.toggle("selected", lp.rating === "up");
     downB.classList.toggle("selected", lp.rating === "down");
   }
+  let cachedUserProfileNested = null;
+  async function _fetchNestedUserProfile() {
+    try {
+      const headers = auth.getAuthHeader?.();
+      if (!headers) {
+        cachedUserProfileNested = null;
+        return;
+      }
+      const r = await fetch(`${authApiBase}/auth/me`, { headers });
+      if (!r.ok) {
+        cachedUserProfileNested = null;
+        return;
+      }
+      const data = await r.json();
+      const p = data && data.user && data.user.profile || null;
+      cachedUserProfileNested = p && typeof p === "object" ? p : null;
+    } catch {
+      cachedUserProfileNested = null;
+    }
+  }
   auth.on(() => {
     void auth.getUserProfile().then((p) => {
       cachedProfile = p;
       updateSidebarUser(p);
       syncAnswerInsightsCheckbox();
     });
+    void _fetchNestedUserProfile();
   });
   void auth.getUserProfile().then((p) => {
     cachedProfile = p;
     updateSidebarUser(p);
     syncAnswerInsightsCheckbox();
   });
+  void _fetchNestedUserProfile();
   const prefShowAnswerInsights = document.getElementById(
     "prefShowAnswerInsights"
   );
@@ -7620,6 +7646,9 @@ ${message}`;
       const v = (sel && sel.value || "").trim();
       if (v)
         payload.model_profile = v;
+    }
+    if (cachedUserProfileNested) {
+      payload.profile = cachedUserProfileNested;
     }
     let activeCorrelationId = "";
     fetch(API_BASE + "/chat", {

@@ -32,6 +32,7 @@ async def adjudicate_full_async(
     correlation_id: str | None = None,
     thread_id: str | None = None,
     config_sha: str | None = None,
+    user_profile: dict | None = None,
 ) -> dict[str, Any]:
     """
     Comprehensive adjudication with full context.
@@ -55,7 +56,17 @@ async def adjudicate_full_async(
         stage_metadata=stage_metadata,
         usage_breakdown=usage_breakdown,
     )
-    full_prompt = f"{ADJUDICATION_SYSTEM_V2}\n\n{prompt}"
+    # 2026-05-06: adjudicator now reads user_profile too — grades the
+    # answer against the user's preference shape (tone, experience
+    # level) on top of grounding/quality so the score reflects "is
+    # this an appropriate response for THIS user" not just "is the
+    # answer factually correct".
+    try:
+        from app.pipeline.personalization import splice_user_profile
+        adjudicator_system = splice_user_profile(ADJUDICATION_SYSTEM_V2, user_profile)
+    except Exception:
+        adjudicator_system = ADJUDICATION_SYSTEM_V2
+    full_prompt = f"{adjudicator_system}\n\n{prompt}"
 
     raw_result: dict[str, Any] | None = None
     llm_ok = False

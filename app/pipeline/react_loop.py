@@ -505,75 +505,30 @@ def _execute_tool(
             make_query_understood, make_strategy_selected,
             make_retrieval_complete, make_fallback_triggered,
         )
-        _auto_mode, _auto_reason = _classify_query_strategy(query)
-
-        # ── 5-arm strategy bandit ─────────────────────────────────────────
-        # Full ordered strategy sequence for a turn (arm → description):
-        #   precision  — BM25 exact-token match (best for codes/names)
-        #   recall     — vector semantic match (best for concepts)
-        #   hybrid     — BM25 ⊕ vector (RRF fusion, the default)
-        #   google     — external web search (rule 1d escalation)
-        #   llm_direct — answer from model knowledge, no retrieval
-        #
-        # Arms are eliminated as they're tried. Once all 3 CORPUS arms
-        # (precision/recall/hybrid) are exhausted, search_corpus returns a
-        # sentinel instructing the planner to try the NEXT arm (google).
-        # The planner is responsible for calling google_search — that call
-        # eliminates the "google" arm (tracked in google_search handler).
-        # "llm_direct" is the implicit final arm: the planner sets
-        # is_complete=true with honest caveats when no tool arms remain.
-        _CORPUS_ARM_ORDER = ["precision", "recall", "hybrid"]
-        # Arm key "hybrid" maps to skill mode "corpus" (hybrid BM25+vec).
-        _ARM_TO_MODE = {"precision": "precision", "recall": "recall", "hybrid": "corpus"}
+        # ── Corpus-then-external cascade ─────────────────────────────────────
+        # corpus_search_agent owns all internal strategy selection: it cascades
+        # through b→c→d with up to 3 attempts per call. The chat layer passes
+        # mode="auto" on the first search_corpus call (letting the agent decide)
+        # and escalates to strategy d (external) only on a second call, after
+        # the agent has already exhausted its internal fallbacks.
         _arms_tried: set[str] = getattr(ctx, "_strategy_arms_tried", set())
-        _corpus_arms_exhausted = all(a in _arms_tried for a in _CORPUS_ARM_ORDER)
+        _corpus_exhausted = "corpus" in _arms_tried
 
-        if _corpus_arms_exhausted:
-            # All three corpus arms tried — return sentinel so the planner
-            # escalates to google_search (arm d) per rule 1d.
-            _remaining_arms = [a for a in ("google", "llm_direct") if a not in _arms_tried]
-            _next_arm_hint = (
-                f"Next available arm: {_remaining_arms[0]}. "
-                if _remaining_arms else "All arms exhausted. "
-            )
-            _escalation_msg = (
-                "[CORPUS_EXHAUSTED] Arms precision/BM25, recall/vector, and "
-                "hybrid (BM25+vector) have all been tried for this query and "
-                "returned 0 usable chunks. Do NOT call search_corpus again. "
-                + _next_arm_hint
-                + "Rule 1d: call google_search with a targeted query (e.g. "
-                "site:sunshinehealth.com OR 'sunshine health H0036 medical "
-                "necessity criteria'), OR answer from model knowledge with "
-                "appropriate caveats if web search is also unavailable."
-            )
+        if _corpus_exhausted:
+            # Agent's full cascade already ran — escalate to external.
             logger.info(
-                "search_corpus all corpus arms exhausted cid=%s remaining=%s",
+                "search_corpus corpus already tried — escalating to "
+                "strategy d (external) cid=%s",
                 str(getattr(ctx, "correlation_id", ""))[:8],
-                _remaining_arms,
             )
-            return {
-                "tool": "search_corpus",
-                "success": False,
-                "result": _escalation_msg,
-                "sources": [],
-                "signal": "no_sources",
-            }
-
-        # Pick the next untried corpus arm. First call: classifier
-        # picks the best arm for the query type; subsequent calls:
-        # rotate through the remaining untried arms.
-        if _auto_mode not in _arms_tried and _auto_mode in _CORPUS_ARM_ORDER:
-            _selected_arm = _auto_mode
+            _auto_mode = "d"
+            _auto_reason = None
+            _arms_tried = _arms_tried | {"google"}
         else:
-            _selected_arm = next(
-                (a for a in _CORPUS_ARM_ORDER if a not in _arms_tried),
-                "hybrid",  # safety fallback (exhaustion guard fires before this)
-            )
-            _arm_labels = {"precision": "exact-match", "recall": "broad semantic", "hybrid": "hybrid"}
-            _auto_reason = f"trying {_arm_labels.get(_selected_arm, _selected_arm)} search after earlier attempt"
+            _auto_mode = "auto"
+            _auto_reason = None
+            _arms_tried = _arms_tried | {"corpus"}
 
-        _auto_mode = _ARM_TO_MODE[_selected_arm]
-        _arms_tried = _arms_tried | {_selected_arm}
         ctx._strategy_arms_tried = _arms_tried  # type: ignore[attr-defined]
         # Back-compat alias for any code that still reads the old name.
         ctx._search_corpus_modes_used = list(_arms_tried)  # type: ignore[attr-defined]
@@ -1865,7 +1820,9 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             all_sources.extend(seed_sources)
     final_signal = RETRIEVAL_SIGNAL_NO_SOURCES
     last_tool: str | None = None
-    reasoning_system = _react_reasoning_system(max_it, mode_label)
+    # 2026-05-06: pass user_profile so splice_user_profile appends
+    # rendered_prompt to the planner/ReAct system prompt.
+    reasoning_system = _react_reasoning_system(max_it, mode_label, getattr(ctx, "user_profile", None))
 
     # Phase 0.7: smart-retry guard — tracks failed attempts so we don't repeat
     # the same (tool, inputs) when no new evidence has come in, and enables
@@ -2079,8 +2036,14 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     # 'react_critic' would have fallen through to the
                     # planner bucket via the stage.startswith('react_')
                     # branch — wrong pool for this workload.
+                    # 2026-05-06: critic also reads user_profile via
+                    # rendered_prompt — lets it grade the draft against
+                    # the user's preference shape (tone, experience
+                    # level, autonomy gating) on top of grounding.
+                    from app.pipeline.personalization import splice_user_profile as _splice_critic
+                    _critic_system = _splice_critic(CRITIC_SYSTEM_PROMPT, getattr(ctx, "user_profile", None))
                     critic_raw = _call_llm_json(
-                        CRITIC_SYSTEM_PROMPT,
+                        _critic_system,
                         build_critic_user_message(
                             question=ctx.effective_message or ctx.message or "",
                             draft_answer=answer,

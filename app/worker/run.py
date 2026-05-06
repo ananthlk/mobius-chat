@@ -98,6 +98,13 @@ def process_one(correlation_id: str, payload: dict) -> None:
         model_profile = None
     if isinstance(model_profile, str):
         model_profile = model_profile.strip().lower() or None
+    # 2026-05-06: user profile from mobius-user. Pipeline splices
+    # rendered_prompt into stage system prompts (Mobius-user/
+    # CONSUMER_RECIPE_PROFILE.md). Defensive: a malformed payload
+    # shape downgrades to None — un-onboarded path.
+    user_profile = payload.get("profile")
+    if user_profile is not None and not isinstance(user_profile, dict):
+        user_profile = None
 
     deadline_s = _turn_deadline_seconds()
     is_main_thread = threading.current_thread() is threading.main_thread()
@@ -153,6 +160,7 @@ def process_one(correlation_id: str, payload: dict) -> None:
                 user_id=user_id,
                 system_context=system_context,
                 cache_assist=cache_assist,
+                user_profile=user_profile,
             )
 
     if is_main_thread and hasattr(signal, "SIGALRM"):

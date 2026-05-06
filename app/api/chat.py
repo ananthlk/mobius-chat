@@ -119,6 +119,24 @@ class ChatRequest(BaseModel):
     etc.) that should be rendered, not re-derived via tools.
     """
 
+    profile: dict | None = None
+    """User profile from mobius-user (``user.profile`` of ``GET /me``).
+
+    Sent by the FE once per session-bootstrap and per preferences-update.
+    Worker stashes it on ``ctx.user_profile`` and the pipeline splices
+    ``rendered_prompt`` into per-stage system prompts (planner, ReAct,
+    critic, integrator, adjudicator). See
+    ``app.pipeline.personalization`` for the helpers and
+    ``Mobius-user/CONSUMER_RECIPE_PROFILE.md`` for the contract.
+
+    None when the user is un-onboarded (``is_onboarded=false`` on /me)
+    or when the FE hasn't loaded profile yet — pipeline degrades to
+    base prompts. Untrusted-content note: rendered_prompt is generated
+    server-side by mobius-user from the user's stored prefs; chat
+    splices it verbatim, so any escaping must happen on the
+    mobius-user side.
+    """
+
 
 class ChatResponse(BaseModel):
     correlation_id: str
@@ -205,6 +223,12 @@ def post_chat(
         mp = body.model_profile.strip().lower()
         if mp:
             payload["model_profile"] = mp
+    # 2026-05-06: per-turn user profile (Mobius-user/CONSUMER_RECIPE_PROFILE.md).
+    # FE caches this from /me at session boot + on preferences PUT, then
+    # passes it through here. Pipeline splices rendered_prompt into 5
+    # stage-system prompts and reads autonomy for tool gating.
+    if isinstance(body.profile, dict) and body.profile:
+        payload["profile"] = body.profile
     get_queue().publish_request(correlation_id, payload)
     return ChatResponse(correlation_id=correlation_id, thread_id=thread_id)
 

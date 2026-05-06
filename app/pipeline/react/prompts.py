@@ -218,8 +218,21 @@ def _react_guidance_instruction(iteration: int, max_it: int) -> str:
     )
 
 
-def _react_reasoning_system(max_iterations: int, chat_mode: str) -> str:
-    """Build reasoning system prompt; chat_mode is 'copilot', 'agentic', or 'quick'."""
+def _react_reasoning_system(
+    max_iterations: int,
+    chat_mode: str,
+    user_profile: dict | None = None,
+) -> str:
+    """Build reasoning system prompt; chat_mode is 'copilot', 'agentic', or 'quick'.
+
+    ``user_profile`` is the mobius-user profile dict (see
+    Mobius-user/CONSUMER_RECIPE_PROFILE.md). When present, its
+    ``rendered_prompt`` is appended to the system prompt so the
+    planner / ReAct reasoner picks tools and frames intermediate
+    thinking in the user's preferred voice + autonomy style. Default
+    None for the un-onboarded case + the worker-prewarm caller in
+    main.py (which doesn't have a real ctx).
+    """
     mode = (chat_mode or "copilot").strip().lower()
     if mode not in ("agentic", "quick"):
         mode = "copilot"
@@ -253,7 +266,7 @@ Quality bar for this mode:
 - Before **is_complete=true**, resolve avoidable ambiguity (e.g. another targeted tool call) when the user asked for definitive facts, numbers, policy detail, or roster/registry accuracy.
 - Use **confidence: "high"** only when tool evidence backs it; otherwise **medium** with explicit limits, or **low** with clear caveats — avoid vague reassurance.
 """
-    return f"""
+    _base_prompt_text = f"""
 You are Mobius — an AI assistant for CMHC billing coordinators in Florida.
 You do NOT answer questions directly. You decide which tool to use.
 {mode_block}
@@ -324,6 +337,12 @@ CRITICAL RULES:
 10. If a tool result shows success (e.g. "Report stored", "Step 11 done", "report generated", "You can ask any question about it") → set is_complete=true and answer MUST confirm that the report or output was generated successfully. Do NOT say "I cannot generate" when the tool already succeeded.
 11. When "Recent conversation" is present: treat the prior assistant reply as the current answer. If the user is asking for something that answer did NOT provide (e.g. a link, URL, specific page, more detail, a number), the answer is INSUFFICIENT — do NOT set is_complete=true. Call a tool (e.g. google_search or web_scrape for links/URLs, search_corpus for policy detail) and only set is_complete=true after you have tool results to fulfill the request.
 """
+    # 2026-05-06 — splice mobius-user profile (rendered_prompt) so the
+    # planner / ReAct picks tools and frames intermediate thinking in
+    # the user's preferred voice + autonomy style. No-op when profile
+    # is None (un-onboarded).
+    from app.pipeline.personalization import splice_user_profile
+    return splice_user_profile(_base_prompt_text, user_profile)
 
 
 # ── LLM call wrapper ──────────────────────────────────────────────────────

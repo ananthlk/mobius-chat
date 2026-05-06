@@ -447,6 +447,7 @@ def run_integrate(
         llm_stage=_integ_stage,
         mode=getattr(ctx, "chat_mode", None),
         previous_thread_summary=getattr(ctx, "previous_thread_summary", None),
+        user_profile=getattr(ctx, "user_profile", None),
     )
     ctx.final_message = final_message
 

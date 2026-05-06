@@ -108,6 +108,13 @@ Signal = Literal[
     "retrieval_complete",             # search round finished; N chunks returned
     "fallback_triggered",             # corpus missed; escalating to web / guidance
     "answer_quality",                 # adjudicator verdict (PASS/PARTIAL/FAIL)
+
+    # ── Personalization (2026-05-06) ──────────────────────────────────
+    # Acknowledges that the user's preferences from mobius-user are
+    # being applied at this turn. Visible in thinking_log so the user
+    # sees the system honoring their settings; ops gets a per-turn
+    # fingerprint of what was applied (or why it wasn't).
+    "personalization_applied",
 ]
 
 
@@ -250,10 +257,20 @@ def make_retrieval_trace(
         or 0
     )
     total_ms = int((t.get("total_ms") or timing_legacy.get("total_ms") or 0) + 0.5)
-    note = (
-        f"◌ corpus search: {returned} chunk{'s' if returned != 1 else ''} · "
-        f"{total_ms}ms · BM25={bm25} vec={vec}"
-    )
+    # Detect fail-fast: strategy e runs in <10ms and returns 0 chunks
+    assembler = t.get("assembler") or {}
+    strategy_used = assembler.get("strategy_used") or t.get("strategy_used") or ""
+    gate = t.get("gate") or {}
+    fail_fast_reason = gate.get("fail_fast_reason") or ""
+    if strategy_used == "e" or (total_ms < 15 and returned == 0 and fail_fast_reason):
+        note = f"⚡ Fail-fast ({fail_fast_reason or 'no_domain_match'}) — corpus search skipped"
+    elif returned == 0:
+        note = f"↺ BM25={bm25} vec={vec} — no matches after {total_ms}ms"
+    else:
+        note = (
+            f"◌ corpus search: {returned} chunk{'s' if returned != 1 else ''} · "
+            f"{total_ms}ms · BM25={bm25} vec={vec}"
+        )
     step_id = f"round_{round}.retrieval" if round is not None else "retrieval"
     return EmitEnvelope(
         signal="retrieval_trace",
@@ -529,6 +546,59 @@ def make_rate_limit_hit(
         report_to_task_manager=True,
         task_type="failure",
         task_severity="high",
+    )
+
+
+def make_personalization_applied(
+    correlation_id: str,
+    payload: dict,
+    *,
+    thread_id: str | None = None,
+    user_id: str | None = None,
+) -> EmitEnvelope:
+    """Acknowledge that the user's mobius-user profile is being applied
+    on this turn. Fires once per turn at preflight, before any LLM
+    stage runs.
+
+    The ``payload`` is the dict from
+    ``app.pipeline.personalization.personalization_emit_payload(profile)``
+    — compact summary of what was applied (preferred_name, tone,
+    autonomy modes, task_count) plus a ``rendered_prompt_chars``
+    fingerprint for ops correlation.
+
+    Two display tiers (consistent with thinking-chain pattern):
+      ``note``  → plain-English one-liner ("Personalizing for Sarah · …")
+      ``data``  → full structured payload for technical mode
+
+    When personalization is disabled or profile is missing the envelope
+    still fires with ``data.applied=False``, so the negative path is
+    visible too.
+    """
+    applied = bool(payload.get("applied"))
+    if applied:
+        name = payload.get("preferred_name") or "you"
+        tone = payload.get("tone") or "default"
+        auto_r = payload.get("autonomy_routine") or "—"
+        auto_s = payload.get("autonomy_sensitive") or "—"
+        note = (
+            f"↺ Personalizing for {name} · tone: {tone} · "
+            f"routine: {auto_r}, sensitive: {auto_s}"
+        )
+    else:
+        reason = payload.get("reason") or "unknown"
+        note = f"↺ Personalization not applied ({reason})"
+    return EmitEnvelope(
+        signal="personalization_applied",
+        correlation_id=correlation_id,
+        step_id="preflight.personalization",
+        round=0,
+        note=note,
+        data=payload,
+        thread_id=thread_id,
+        user_id=user_id,
+        # Not promoted to task-manager — this fires every turn; would
+        # be pure noise on the analytics surface. Chat-side only.
+        report_to_task_manager=False,
     )
 
 
@@ -870,11 +940,17 @@ def make_strategy_selected(
         "auto":      "Searching our authoritative materials",
         "corpus":    "Searching our authoritative materials",
         "precision": "Checking for exact policy text",
-        "recall":    "Doing a broad scan across our materials",
+        "recall":    "Doing a broad semantic scan",
         "fallback":  "Checking external sources",
+        "d":         "Corpus exhausted — searching external web sources",
+        "e":         "Checking query scope",
     }
     base = _mode_notes.get(mode, "Searching")
-    note = f"{base} {reason}…" if reason else f"{base}…"
+    # reason is shown as a parenthetical only when it adds user-visible context
+    if reason and mode not in ("auto", "corpus", "d", "e"):
+        note = f"{base} ({reason})…"
+    else:
+        note = f"{base}…"
     return EmitEnvelope(
         signal="strategy_selected",
         correlation_id=correlation_id,

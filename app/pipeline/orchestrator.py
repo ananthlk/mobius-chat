@@ -293,6 +293,7 @@ def run_pipeline(
     user_id: str | None = None,
     system_context: str | None = None,
     cache_assist: bool | None = None,
+    user_profile: dict | None = None,
 ) -> None:
     """Run the full pipeline: state_load -> classify -> plan -> clarify -> [resolve -> integrate] | early_exit.
 
@@ -325,6 +326,7 @@ def run_pipeline(
         user_id=(user_id or "").strip() or None,
         system_context=_sys_ctx,
         cache_assist_override=cache_assist,
+        user_profile=user_profile if isinstance(user_profile, dict) and user_profile else None,
     )
 
     def on_thinking(chunk) -> None:  # str | dict (EmitEnvelope.to_dict())
@@ -430,6 +432,24 @@ def run_pipeline(
         # other emit so it rides the SSE stream and lands in
         # thinking_log for replay.
         on_thinking("◌ Thinking…")
+
+        # 2026-05-06: emit a personalization_applied envelope very
+        # early so the user sees their mobius-user preferences are
+        # being honored on this turn — and ops gets a per-cid
+        # fingerprint of what was applied. Fires regardless of
+        # whether the profile is populated; the data.applied=False
+        # branch is observability for the negative case.
+        try:
+            from app.communication.emit_envelope import make_personalization_applied
+            from app.pipeline.personalization import personalization_emit_payload
+            on_thinking(make_personalization_applied(
+                correlation_id=correlation_id,
+                payload=personalization_emit_payload(ctx.user_profile),
+                thread_id=ctx.thread_id,
+                user_id=ctx.user_id,
+            ).to_dict())
+        except Exception as _pers_e:
+            logger.debug("personalization emit skipped (%s); pipeline continues", _pers_e)
 
         # Preflight timing (2026-04-29) — surface the silent gap between
         # request receipt and first LLM call. Earlier follow-up traces

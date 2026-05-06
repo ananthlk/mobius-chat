@@ -6910,7 +6910,16 @@ function run(): void {
   // manages its own DOM mount lazily when open() is first called.
   // Don't try to appendChild a (.el) here — that property doesn't
   // exist on this modal (vs. createAuthModal which DOES expose .el).
-  const prefsModal = createPreferencesModal(authApiBase, auth);
+  // 2026-05-06: register an onSave callback so the chat-side
+  // ``cachedUserProfileNested`` refreshes immediately after a
+  // preferences save. The PUT response on mobius-user includes the
+  // fresh profile (with re-rendered rendered_prompt) — re-fetch /me
+  // here so the next chat POST sends the updated shape.
+  const prefsModal = createPreferencesModal(authApiBase, auth, {
+    onSave: () => {
+      void _fetchNestedUserProfile();
+    },
+  });
   (window as unknown as { onOpenPreferences?: () => void }).onOpenPreferences = () => {
     void prefsModal.open();
   };
@@ -7009,18 +7018,49 @@ function run(): void {
     downB.classList.toggle("selected", lp.rating === "down");
   }
 
+  // 2026-05-06: cache the FULL nested user.profile from /me (the
+  // canonical mobius-user shape with rendered_prompt + communication +
+  // autonomy + tasks). The AuthService's getUserProfile() flattens
+  // these fields and drops rendered_prompt during normalizeUser, so
+  // we fetch /me ourselves to keep the spec-conformant nested object.
+  // Sent on every chat POST; backend pipeline splices into 5 stage
+  // system prompts (Mobius-user/CONSUMER_RECIPE_PROFILE.md).
+  let cachedUserProfileNested: Record<string, unknown> | null = null;
+
+  async function _fetchNestedUserProfile(): Promise<void> {
+    try {
+      const headers = auth.getAuthHeader?.();
+      if (!headers) {
+        cachedUserProfileNested = null;
+        return;
+      }
+      const r = await fetch(`${authApiBase}/auth/me`, { headers });
+      if (!r.ok) {
+        cachedUserProfileNested = null;
+        return;
+      }
+      const data = (await r.json()) as { ok?: boolean; user?: { profile?: Record<string, unknown> | null } };
+      const p = (data && data.user && data.user.profile) || null;
+      cachedUserProfileNested = (p && typeof p === "object") ? p : null;
+    } catch {
+      cachedUserProfileNested = null;
+    }
+  }
+
   auth.on(() => {
     void auth.getUserProfile().then((p: unknown) => {
       cachedProfile = p as MobiusChatUserProfile | null;
       updateSidebarUser(p as MobiusChatUserProfile | null);
       syncAnswerInsightsCheckbox();
     });
+    void _fetchNestedUserProfile();
   });
   void auth.getUserProfile().then((p: unknown) => {
     cachedProfile = p as MobiusChatUserProfile | null;
     updateSidebarUser(p as MobiusChatUserProfile | null);
     syncAnswerInsightsCheckbox();
   });
+  void _fetchNestedUserProfile();
 
   const prefShowAnswerInsights = document.getElementById(
     "prefShowAnswerInsights"
@@ -7781,6 +7821,14 @@ function run(): void {
       const sel = document.getElementById("modelProfileSelect") as HTMLSelectElement | null;
       const v = (sel && sel.value || "").trim();
       if (v) payload.model_profile = v;
+    }
+    // 2026-05-06: send the nested user.profile from mobius-user so the
+    // pipeline can splice rendered_prompt + read autonomy on every
+    // stage system prompt. Cached at session boot + auth-state-change;
+    // refreshed on PreferencesModal save (PUT /api/v1/auth/preferences
+    // returns the fresh profile so we just re-fetch /me afterwards).
+    if (cachedUserProfileNested) {
+      (payload as Record<string, unknown>).profile = cachedUserProfileNested;
     }
     let activeCorrelationId = "";
     fetch(API_BASE + "/chat", {

@@ -63,6 +63,21 @@ class PipelineContext:
     a JWT.
     """
 
+    user_profile: dict[str, Any] | None = None
+    """User profile from mobius-user (``GET /me``'s ``user.profile`` field).
+
+    Carries ``rendered_prompt`` (4-6 line tailored system block) plus
+    structured fields (``communication``, ``autonomy``, ``tasks``,
+    ``preferred_name``, ``timezone``). 2026-05-06 added so the pipeline
+    can splice the rendered_prompt into per-stage system prompts and
+    read autonomy for tool-execution gating.
+
+    None when the user is un-onboarded or the FE didn't send a profile
+    payload — handled by ``app.pipeline.personalization`` helpers as a
+    no-op (use base prompt only). Travels: FE ChatRequest.profile →
+    payload → worker → run_pipeline(user_profile=...) → here.
+    """
+
     # State (patch-based for now; will migrate to ThreadState in Phase 2)
     merged_state: dict[str, Any] = field(default_factory=dict)
     """Current thread state after load + apply patch."""
