@@ -6112,6 +6112,7 @@ function run() {
       localStorage.setItem(LLM_PERF_LS, prefShowAnswerInsights.checked ? "1" : "0");
     } catch {
     }
+    syncQueriesDumpVisibility(cachedProfile);
   });
   if (sidebarUser) {
     sidebarUser.addEventListener("click", () => {

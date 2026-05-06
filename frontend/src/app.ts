@@ -6976,6 +6976,7 @@ function run(): void {
     } catch {
       /* ignore */
     }
+    syncQueriesDumpVisibility(cachedProfile);
   });
 
   if (sidebarUser) {
