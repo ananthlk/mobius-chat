@@ -7161,6 +7161,11 @@ function run(): void {
       // Hide nudge immediately on sign-out; _fetchNestedUserProfile will
       // show it again if the signed-in user is un-onboarded.
       if (!p) _syncOnboardingNudge(true);
+      // Reload sidebar history whenever auth state settles — the initial
+      // loadSidebarHistory() at startup fires before the token resolves
+      // so headers are empty and the server returns []. Re-fetch now that
+      // we have (or lost) a valid token.
+      loadSidebarHistory();
     });
     void _fetchNestedUserProfile();
   });
@@ -7170,6 +7175,9 @@ function run(): void {
     syncAnswerInsightsCheckbox();
     // Resolve gate on initial page load.
     _setAuthGate(!p);
+    // Also reload sidebar on the initial resolution path (covers the case
+    // where auth.on fires synchronously before loadSidebarHistory runs).
+    if (p) loadSidebarHistory();
   });
   void _fetchNestedUserProfile();
 

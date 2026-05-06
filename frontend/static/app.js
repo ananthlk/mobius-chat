@@ -7097,6 +7097,7 @@ function run() {
       _setAuthGate(!p);
       if (!p)
         _syncOnboardingNudge(true);
+      loadSidebarHistory();
     });
     void _fetchNestedUserProfile();
   });
@@ -7105,6 +7106,8 @@ function run() {
     updateSidebarUser(p);
     syncAnswerInsightsCheckbox();
     _setAuthGate(!p);
+    if (p)
+      loadSidebarHistory();
   });
   void _fetchNestedUserProfile();
   const prefShowAnswerInsights = document.getElementById(
