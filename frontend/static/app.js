@@ -7660,13 +7660,17 @@ ${message}`;
     const learnMoreBtn = document.getElementById("suiteLearnMore");
     const SUITE_TILES = [
       {
+        // 2026-05-05: strategy agent (mobius-story-ui) is now deployed
+        // and reachable. Removed comingSoon so the sidebar tile + skills
+        // modal can open it in a new tab. Backend URL configurable via
+        // MOBIUS_STRATEGY_URL env (window-injected) — fallback points at
+        // the dev Cloud Run service.
         key: "strategy",
         label: "Strategy",
         tagline: "Benchmarking + KPIs",
         accent: "indigo",
         urlEnvKey: "MOBIUS_STRATEGY_URL",
-        fallbackUrl: "https://mobius-story-ui-ortabkknqa-uc.a.run.app",
-        comingSoon: true
+        fallbackUrl: "https://mobius-story-ui-ortabkknqa-uc.a.run.app"
       },
       {
         key: "roster",
