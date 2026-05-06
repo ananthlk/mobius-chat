@@ -6156,11 +6156,31 @@ function run(): void {
 
   const authApiBase = `${API_BASE.replace(/\/$/, "")}/api/v1`;
   const auth = createAuthService({ apiBase: authApiBase, storage: localStorageAdapter });
-  const modal = createAuthModal({ auth, showOAuth: true });
+
+  // Modal is created without googleClientId initially. We fetch /public-config in the
+  // background and rebuild the modal once if a client ID arrives — this avoids making
+  // run() async and keeps the rest of the boot path unchanged.
+  let modal = createAuthModal({ auth, showOAuth: true });
   document.body.appendChild(modal.el);
   const styleEl = document.createElement("style");
   styleEl.textContent = AUTH_STYLES;
   document.head.appendChild(styleEl);
+
+  void (async () => {
+    try {
+      const cfgRes = await fetch(`${authApiBase}/public-config`, { method: "GET" });
+      if (!cfgRes.ok) return;
+      const cfg = (await cfgRes.json()) as { google_client_id?: string | null };
+      const cid = typeof cfg?.google_client_id === "string" ? cfg.google_client_id : "";
+      if (!cid) return;
+      // Swap modal for one that knows the Google client ID.
+      modal.el.parentNode?.removeChild(modal.el);
+      modal = createAuthModal({ auth, showOAuth: true, googleClientId: cid });
+      document.body.appendChild(modal.el);
+    } catch {
+      /* ignore — Google sign-in just won't be available */
+    }
+  })();
 
   function updateSidebarUser(user: { greeting_name?: string } | null): void {
     if (sidebarUserName)

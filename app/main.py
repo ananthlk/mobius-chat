@@ -1436,9 +1436,22 @@ def get_skills_urls():
     }
 
 
+@app.get("/api/v1/public-config")
+def get_public_config():
+    """Public, unauthenticated config consumed by the frontend on boot.
+
+    Only safe-to-expose values: OAuth client IDs (designed to be public), feature flags.
+    Never put secrets here.
+    """
+    return {
+        "google_client_id": (os.getenv("GOOGLE_CLIENT_ID") or "").strip() or None,
+    }
+
+
 # Phase 1d: /chat/roster-reconcile/*, /chat/roster-truth/*, and
 # /chat/roster-org/* endpoints extracted to app.api.roster. Router
 # mounted near the top of this file.
+
 
 @app.get("/chat/llm-router-report")
 def get_llm_router_report(window_days: int = 30):
