@@ -72,7 +72,7 @@ body {
 .auth-gate {
   position: fixed;
   inset: 0;
-  z-index: 9000;
+  z-index: 500; /* below auth modal overlay (z-index: 1000) so modal renders on top */
   display: flex;
   align-items: center;
   justify-content: center;
