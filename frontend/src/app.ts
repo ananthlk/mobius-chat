@@ -2,6 +2,7 @@ import {
   createAuthService,
   localStorageAdapter,
   createAuthModal,
+  createPreferencesModal,
   AUTH_STYLES,
 } from "@mobius/auth";
 
@@ -6156,6 +6157,15 @@ function run(): void {
 
   const authApiBase = `${API_BASE.replace(/\/$/, "")}/api/v1`;
   const auth = createAuthService({ apiBase: authApiBase, storage: localStorageAdapter });
+
+  // Preferences modal — used by both the auth modal's "Preferences" link in the
+  // account view AND the post-signup welcome panel's "Get started" CTA. The
+  // auth modal calls window.onOpenPreferences so the host app controls when
+  // and how the prefs modal appears.
+  const prefsModal = createPreferencesModal(authApiBase, auth);
+  (window as unknown as { onOpenPreferences?: () => void }).onOpenPreferences = () => {
+    void prefsModal.open();
+  };
 
   // Modal is created without googleClientId initially. We fetch /public-config in the
   // background and rebuild the modal once if a client ID arrives — this avoids making
