@@ -114,12 +114,44 @@
       <!-- Alpha release banner — dismissible, stored in localStorage -->
       <div class="alpha-banner" id="alphaBanner" role="status">
         <div class="alpha-banner-inner">
-          <span class="alpha-banner-tag">🚀 Alpha</span>
+          <button type="button" class="alpha-banner-tag" id="alphaBannerTag" aria-label="View alpha release notes">🚀 Alpha</button>
           <span class="alpha-banner-text">
             <strong>Thank you for testing Mobius.</strong>
             Your conversations are now private to your account. New in alpha: personalized answers, Google sign-in, financial benchmarking, provider roster, instant document Q&amp;A, and more.
+            <button type="button" class="alpha-banner-link" id="alphaBannerTagLink">What's new ↗</button>
           </span>
           <button type="button" class="alpha-banner-dismiss" id="alphaBannerDismiss" aria-label="Dismiss alpha notice">✕</button>
+        </div>
+      </div>
+
+      <!-- Alpha release notes modal -->
+      <div class="alpha-modal-overlay" id="alphaModal" hidden role="dialog" aria-modal="true" aria-labelledby="alphaModalTitle">
+        <div class="alpha-modal-card">
+          <div class="alpha-modal-header">
+            <span class="release-tag-modal">🚀 Alpha — 2026-05-06</span>
+            <button type="button" class="alpha-modal-close" id="alphaModalClose" aria-label="Close">✕</button>
+          </div>
+          <h2 class="alpha-modal-title" id="alphaModalTitle">Thank you for testing Mobius</h2>
+          <p class="alpha-modal-sub">You're helping shape this at its most formative stage — your questions, feedback, and patience mean everything. This is a working system, not a demo. Please push it hard.</p>
+          <ul class="alpha-modal-features">
+            <li>Sign-in required — your history is yours alone</li>
+            <li>Google sign-in supported alongside email + password</li>
+            <li>Personalized answers based on your role, tone &amp; experience level</li>
+            <li>Sidebar shows your name and your conversations only</li>
+            <li>Financial benchmarking against FL Medicaid HCPCS peers</li>
+            <li>Provider roster upload, reconciliation &amp; org profiles</li>
+            <li>Instant document Q&amp;A — upload a file, ask questions</li>
+            <li>Org story — competitive intelligence for CMHCs</li>
+            <li>Appeals agent — Sunshine Health rule pack seeded</li>
+            <li>Admin query dashboard — latency, cost, feedback at a glance</li>
+            <li>Thread history — pick up a conversation where you left off</li>
+            <li>1,410 automated tests passing across all services</li>
+          </ul>
+          <div class="alpha-modal-known">
+            <strong>Known limitations:</strong> Legacy conversations (before sign-in was required) won't appear in your history.
+            Some skills may be slow on first invocation while models warm up.
+            Feedback (👍 👎) is collected but not yet shown back to you — coming in Beta.
+          </div>
         </div>
       </div>
       <header class="main-header">

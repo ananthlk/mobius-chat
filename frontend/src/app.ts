@@ -984,7 +984,7 @@ function _dropPromptIntoComposer(template: string): void {
 // to a section without expanding the whole panel manually. Click →
 // expand sidebar AND scroll to the section. Counts feed from the same
 // data source the expanded sections render from.
-function initSidebarRailIcons(): void {
+function initSidebarRailIcons(authService?: { getAuthHeader?: () => Record<string, string> }): void {
   const sidebar = document.getElementById("sidebar");
   if (!sidebar) return;
   const icons = Array.from(sidebar.querySelectorAll<HTMLButtonElement>(".sidebar-rail-icon"));
@@ -1023,7 +1023,7 @@ function initSidebarRailIcons(): void {
   const updateRecentBadge = (): void => {
     const badge = document.getElementById("railBadgeRecent");
     if (!badge) return;
-    fetch(API_BASE + "/chat/history/recent?limit=20", { headers: auth.getAuthHeader?.() ?? {} })
+    fetch(API_BASE + "/chat/history/recent?limit=20", { headers: authService?.getAuthHeader?.() ?? {} })
       .then((r) => (r.ok ? r.json() : []))
       .then((rows: unknown[]) => {
         const n = Array.isArray(rows) ? rows.length : 0;
@@ -6932,8 +6932,14 @@ function run(): void {
     modal.open("login");
   });
 
-  // Alpha release banner — dismiss permanently via localStorage.
+  // Alpha release banner + release notes modal.
   const alphaBanner = document.getElementById("alphaBanner");
+  const alphaModal  = document.getElementById("alphaModal");
+
+  const openAlphaModal  = (): void => { if (alphaModal) alphaModal.hidden = false; };
+  const closeAlphaModal = (): void => { if (alphaModal) alphaModal.hidden = true; };
+
+  // Dismiss banner permanently.
   if (alphaBanner) {
     if (localStorage.getItem("alpha_banner_dismissed") === "1") {
       alphaBanner.hidden = true;
@@ -6944,6 +6950,21 @@ function run(): void {
       });
     }
   }
+
+  // "🚀 Alpha" tag + "What's new ↗" link both open the modal.
+  document.getElementById("alphaBannerTag")?.addEventListener("click", openAlphaModal);
+  document.getElementById("alphaBannerTagLink")?.addEventListener("click", openAlphaModal);
+
+  // Close modal via ✕ button or clicking the backdrop.
+  document.getElementById("alphaModalClose")?.addEventListener("click", closeAlphaModal);
+  alphaModal?.addEventListener("click", (e) => {
+    if (e.target === alphaModal) closeAlphaModal();
+  });
+
+  // Escape key closes the modal.
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && alphaModal && !alphaModal.hidden) closeAlphaModal();
+  });
 
   // PreferencesModal — instant; doesn't depend on public-config.
   // Note: createPreferencesModal returns { open, close } only — it
@@ -7224,7 +7245,7 @@ function run(): void {
   }
   initSidebarCollapsibles();
   initModelProfilePicker();
-  initSidebarRailIcons();
+  initSidebarRailIcons(auth);
 
   hamburger.addEventListener("click", openDrawer);
   drawerClose.addEventListener("click", closeDrawer);

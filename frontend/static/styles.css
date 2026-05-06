@@ -847,15 +847,30 @@ body {
 }
 .alpha-banner-tag {
   background: linear-gradient(135deg, #7c3aed, #2563eb);
+  border: none;
   border-radius: 999px;
-  padding: 2px 10px;
+  padding: 3px 11px;
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.07em;
   text-transform: uppercase;
   color: #fff;
   flex-shrink: 0;
+  cursor: pointer;
+  transition: opacity 0.15s;
 }
+.alpha-banner-tag:hover { opacity: 0.85; }
+.alpha-banner-link {
+  background: none;
+  border: none;
+  color: #a78bfa;
+  cursor: pointer;
+  font-size: 0.83rem;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.alpha-banner-link:hover { color: #c4b5fd; }
 .alpha-banner-text {
   color: #c4b5fd;
   flex: 1;
@@ -873,6 +888,101 @@ body {
   line-height: 1;
 }
 .alpha-banner-dismiss:hover { color: rgba(255,255,255,0.7); background: rgba(255,255,255,0.07); }
+
+/* ── Alpha release notes modal ── */
+.alpha-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.7);
+  backdrop-filter: blur(4px);
+  z-index: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.alpha-modal-overlay[hidden] { display: none; }
+.alpha-modal-card {
+  background: #13131f;
+  border: 1px solid rgba(124,58,237,0.35);
+  border-radius: 18px;
+  padding: 36px 40px;
+  max-width: 580px;
+  width: 100%;
+  box-shadow: 0 0 60px rgba(124,58,237,0.2);
+  max-height: 90vh;
+  overflow-y: auto;
+}
+.alpha-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.release-tag-modal {
+  background: linear-gradient(135deg, #7c3aed, #2563eb);
+  border-radius: 999px;
+  padding: 4px 14px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #fff;
+}
+.alpha-modal-close {
+  background: none;
+  border: none;
+  color: rgba(255,255,255,0.4);
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+.alpha-modal-close:hover { color: #fff; background: rgba(255,255,255,0.08); }
+.alpha-modal-title {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: #e2e8f0;
+  margin: 0 0 10px;
+}
+.alpha-modal-sub {
+  font-size: 0.9rem;
+  color: #a78bfa;
+  line-height: 1.6;
+  margin-bottom: 24px;
+}
+.alpha-modal-features {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 20px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 16px;
+}
+@media (max-width: 480px) { .alpha-modal-features { grid-template-columns: 1fr; } }
+.alpha-modal-features li {
+  font-size: 0.85rem;
+  color: #cbd5e1;
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  line-height: 1.4;
+}
+.alpha-modal-features li::before {
+  content: "✦";
+  color: #7c3aed;
+  font-size: 0.65rem;
+  flex-shrink: 0;
+  margin-top: 3px;
+}
+.alpha-modal-known {
+  font-size: 0.8rem;
+  color: rgba(255,255,255,0.4);
+  border-top: 1px solid rgba(255,255,255,0.07);
+  padding-top: 16px;
+  line-height: 1.6;
+}
+.alpha-modal-known strong { color: #f59e0b; }
 
 .main-header {
   height: auto;
