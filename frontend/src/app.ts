@@ -6932,6 +6932,19 @@ function run(): void {
     modal.open("login");
   });
 
+  // Alpha release banner — dismiss permanently via localStorage.
+  const alphaBanner = document.getElementById("alphaBanner");
+  if (alphaBanner) {
+    if (localStorage.getItem("alpha_banner_dismissed") === "1") {
+      alphaBanner.hidden = true;
+    } else {
+      document.getElementById("alphaBannerDismiss")?.addEventListener("click", () => {
+        alphaBanner.hidden = true;
+        localStorage.setItem("alpha_banner_dismissed", "1");
+      });
+    }
+  }
+
   // PreferencesModal — instant; doesn't depend on public-config.
   // Note: createPreferencesModal returns { open, close } only — it
   // manages its own DOM mount lazily when open() is first called.

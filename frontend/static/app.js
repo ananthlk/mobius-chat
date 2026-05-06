@@ -6919,6 +6919,17 @@ function run() {
   document.getElementById("authGateBtn")?.addEventListener("click", () => {
     modal.open("login");
   });
+  const alphaBanner = document.getElementById("alphaBanner");
+  if (alphaBanner) {
+    if (localStorage.getItem("alpha_banner_dismissed") === "1") {
+      alphaBanner.hidden = true;
+    } else {
+      document.getElementById("alphaBannerDismiss")?.addEventListener("click", () => {
+        alphaBanner.hidden = true;
+        localStorage.setItem("alpha_banner_dismissed", "1");
+      });
+    }
+  }
   const prefsModal = createPreferencesModal(authApiBase, auth, {
     onSave: () => {
       void _fetchNestedUserProfile();

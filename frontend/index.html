@@ -111,6 +111,17 @@
     </aside>
 
     <main class="main">
+      <!-- Alpha release banner — dismissible, stored in localStorage -->
+      <div class="alpha-banner" id="alphaBanner" role="status">
+        <div class="alpha-banner-inner">
+          <span class="alpha-banner-tag">🚀 Alpha</span>
+          <span class="alpha-banner-text">
+            <strong>Thank you for testing Mobius.</strong>
+            Your conversations are now private to your account. New in alpha: personalized answers, Google sign-in, financial benchmarking, provider roster, instant document Q&amp;A, and more.
+          </span>
+          <button type="button" class="alpha-banner-dismiss" id="alphaBannerDismiss" aria-label="Dismiss alpha notice">✕</button>
+        </div>
+      </div>
       <header class="main-header">
         <!-- 2026-04-18 UX audit fix: main header had no Mobius identity.
              When the sidebar is collapsed the page looked brandless;
