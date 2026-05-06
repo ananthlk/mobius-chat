@@ -14,8 +14,9 @@ Phase 1 main-split refactor. The router is ``include_router``-mounted in
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from app.api.front_door import require_user
 from app.storage.turns import (
     get_most_helpful_documents,
     get_most_helpful_turns,
@@ -38,17 +39,24 @@ def _parse_limit(limit: int | None) -> int:
 
 
 @router.get("/recent")
-def get_chat_history_recent(limit: int | None = 10):
+def get_chat_history_recent(
+    limit: int | None = 10,
+    user_id: str | None = Depends(require_user),
+):
     """Recent chat turns for sidebar: ``[{correlation_id, question, created_at}]``.
 
     Legacy endpoint — returns every turn verbatim. Kept for back-compat with
     clients that haven't migrated to ``/chat/history/threads`` yet.
+    Filtered to the authenticated user.
     """
-    return get_recent_turns(_parse_limit(limit))
+    return get_recent_turns(_parse_limit(limit), user_id=user_id)
 
 
 @router.get("/threads")
-def get_chat_history_threads(limit: int | None = 10):
+def get_chat_history_threads(
+    limit: int | None = 10,
+    user_id: str | None = Depends(require_user),
+):
     """Phase 2.3: recent *threads* for the sidebar.
 
     Returns ``[{thread_id, title, updated_at, turn_count}]`` deduplicated at
@@ -56,14 +64,19 @@ def get_chat_history_threads(limit: int | None = 10):
     raw URLs and tool-invocation fragments as "helpful searches."
 
     Falls back to an empty list (not a 500) if migration 030 hasn't run yet.
+    Filtered to the authenticated user.
     """
     from app.storage.threads import get_recent_threads
 
-    return get_recent_threads(_parse_limit(limit))
+    return get_recent_threads(_parse_limit(limit), user_id=user_id)
 
 
 @router.get("/threads/{thread_id}/turns")
-def get_chat_history_thread_turns(thread_id: str, limit: int | None = 50):
+def get_chat_history_thread_turns(
+    thread_id: str,
+    limit: int | None = 50,
+    user_id: str | None = Depends(require_user),
+):
     """Phase 13.7 — rehydrate a thread's turns for sidebar click.
 
     When the user clicks a recent thread in the sidebar, the frontend
@@ -81,13 +94,14 @@ def get_chat_history_thread_turns(thread_id: str, limit: int | None = 50):
 
     Falls back to an empty list on a missing thread or DB error
     (matches /threads behavior — never 500 for sidebar reads).
+    Enforces user ownership — returns [] for threads the caller didn't create.
     """
     from app.storage.threads import get_thread_turns
 
     tid = (thread_id or "").strip()
     if not tid:
         raise HTTPException(status_code=400, detail="thread_id required")
-    turns = get_thread_turns(tid, _parse_limit(limit))
+    turns = get_thread_turns(tid, _parse_limit(limit), user_id=user_id)
     # BETA-sprint Move 3 — emit a structured metric so the sidebar-
     # rehydration adoption rate is observable. Fire-and-forget.
     try:
@@ -99,12 +113,18 @@ def get_chat_history_thread_turns(thread_id: str, limit: int | None = 50):
 
 
 @router.get("/most-helpful-searches")
-def get_chat_history_most_helpful_searches(limit: int | None = 10):
-    """Turns with positive feedback for sidebar."""
-    return get_most_helpful_turns(_parse_limit(limit))
+def get_chat_history_most_helpful_searches(
+    limit: int | None = 10,
+    user_id: str | None = Depends(require_user),
+):
+    """Turns with positive feedback for sidebar. Filtered to authenticated user."""
+    return get_most_helpful_turns(_parse_limit(limit), user_id=user_id)
 
 
 @router.get("/most-helpful-documents")
-def get_chat_history_most_helpful_documents(limit: int | None = 10):
-    """Documents most cited in liked answers."""
-    return get_most_helpful_documents(_parse_limit(limit))
+def get_chat_history_most_helpful_documents(
+    limit: int | None = 10,
+    user_id: str | None = Depends(require_user),
+):
+    """Documents most cited in liked answers. Filtered to authenticated user."""
+    return get_most_helpful_documents(_parse_limit(limit), user_id=user_id)

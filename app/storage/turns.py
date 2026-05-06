@@ -370,17 +370,24 @@ def get_last_turn_sources(thread_id: str, limit_turns: int = 2) -> list[dict[str
     return out
 
 
-def get_recent_turns(limit: int = 10) -> list[dict[str, Any]]:
-    """Return list of recent turns: { correlation_id, question, created_at }."""
+def get_recent_turns(limit: int = 10, user_id: str | None = None) -> list[dict[str, Any]]:
+    """Return list of recent turns: { correlation_id, question, created_at }.
+
+    Filtered to the requesting user when ``user_id`` is provided.
+    Returns an empty list for unauthenticated callers (user_id=None).
+    """
+    if user_id is None:
+        return []
     result = db_query(
         """
         SELECT correlation_id, question, created_at
         FROM chat_turns
+        WHERE user_id = :uid
         ORDER BY created_at DESC
         LIMIT :lim
         """,
         _DB,
-        params={"lim": max(1, min(limit, 100))},
+        params={"uid": user_id, "lim": max(1, min(limit, 100))},
     )
     if _err_code(result) is not None:
         logger.warning("Failed to get recent turns: %s", _err_message(result))
@@ -395,23 +402,29 @@ def get_recent_turns(limit: int = 10) -> list[dict[str, Any]]:
     ]
 
 
-def get_most_helpful_turns(limit: int = 10) -> list[dict[str, Any]]:
+def get_most_helpful_turns(limit: int = 10, user_id: str | None = None) -> list[dict[str, Any]]:
     """Return turns that have feedback rating = 'up', same shape as get_recent_turns.
 
     Includes ``thread_id`` so the sidebar can navigate back to the existing
     thread instead of re-running the question as a fresh turn (which burns
     LLM cost on already-answered work + breaks continuity). 2026-05-05.
+
+    Filtered to the requesting user when ``user_id`` is provided.
+    Returns an empty list for unauthenticated callers (user_id=None).
     """
+    if user_id is None:
+        return []
     result = db_query(
         """
         SELECT t.correlation_id, t.thread_id, t.question, t.created_at
         FROM chat_turns t
         INNER JOIN chat_feedback f ON f.correlation_id = t.correlation_id AND f.rating = 'up'
+        WHERE t.user_id = :uid
         ORDER BY t.created_at DESC
         LIMIT :lim
         """,
         _DB,
-        params={"lim": max(1, min(limit, 100))},
+        params={"uid": user_id, "lim": max(1, min(limit, 100))},
     )
     if _err_code(result) is not None:
         logger.warning("Failed to get most helpful turns: %s", _err_message(result))
@@ -427,8 +440,14 @@ def get_most_helpful_turns(limit: int = 10) -> list[dict[str, Any]]:
     ]
 
 
-def get_most_helpful_documents(limit: int = 10) -> list[dict[str, Any]]:
-    """From turns with feedback up, list documents by how many distinct liked turns featured them."""
+def get_most_helpful_documents(limit: int = 10, user_id: str | None = None) -> list[dict[str, Any]]:
+    """From turns with feedback up, list documents by how many distinct liked turns featured them.
+
+    Filtered to the requesting user when ``user_id`` is provided.
+    Returns an empty list for unauthenticated callers (user_id=None).
+    """
+    if user_id is None:
+        return []
     result = db_query(
         """
         WITH liked_docs AS (
@@ -436,7 +455,8 @@ def get_most_helpful_documents(limit: int = 10) -> list[dict[str, Any]]:
             FROM chat_turns t
             INNER JOIN chat_feedback f ON f.correlation_id = t.correlation_id AND f.rating = 'up'
             CROSS JOIN LATERAL jsonb_array_elements(COALESCE(t.sources, '[]'::jsonb)) AS elem
-            WHERE elem->>'document_name' IS NOT NULL AND (elem->>'document_name') != ''
+            WHERE t.user_id = :uid
+              AND elem->>'document_name' IS NOT NULL AND (elem->>'document_name') != ''
         )
         SELECT document_name, MAX(NULLIF(TRIM(document_id), '')) AS document_id, COUNT(*) AS cited_in_count
         FROM liked_docs
@@ -445,7 +465,7 @@ def get_most_helpful_documents(limit: int = 10) -> list[dict[str, Any]]:
         LIMIT :lim
         """,
         _DB,
-        params={"lim": max(1, min(limit, 100))},
+        params={"uid": user_id, "lim": max(1, min(limit, 100))},
     )
     if _err_code(result) is not None:
         logger.warning("Failed to get most helpful documents: %s", _err_message(result))

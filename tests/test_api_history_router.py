@@ -75,7 +75,7 @@ class TestDelegation:
         client = TestClient(_app())
         with patch("app.api.history.get_recent_turns", return_value=[]) as m:
             client.get("/chat/history/recent?limit=25")
-        m.assert_called_once_with(25)
+        m.assert_called_once_with(25, user_id=None)
 
     def test_threads_delegates_with_limit(self):
         client = TestClient(_app())
@@ -83,7 +83,7 @@ class TestDelegation:
             "app.storage.threads.get_recent_threads", return_value=[]
         ) as m:
             client.get("/chat/history/threads?limit=15")
-        m.assert_called_once_with(15)
+        m.assert_called_once_with(15, user_id=None)
 
     def test_most_helpful_turns_delegates_with_limit(self):
         client = TestClient(_app())
@@ -91,7 +91,7 @@ class TestDelegation:
             "app.api.history.get_most_helpful_turns", return_value=[]
         ) as m:
             client.get("/chat/history/most-helpful-searches?limit=3")
-        m.assert_called_once_with(3)
+        m.assert_called_once_with(3, user_id=None)
 
     def test_most_helpful_documents_delegates_with_limit(self):
         client = TestClient(_app())
@@ -99,7 +99,7 @@ class TestDelegation:
             "app.api.history.get_most_helpful_documents", return_value=[]
         ) as m:
             client.get("/chat/history/most-helpful-documents?limit=50")
-        m.assert_called_once_with(50)
+        m.assert_called_once_with(50, user_id=None)
 
 
 # ── _parse_limit behavior preserved ────────────────────────────────────────

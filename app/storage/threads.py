@@ -158,7 +158,7 @@ def set_thread_title_if_empty(thread_id: str, question: str) -> None:
     logger.warning("Failed to set thread title: %s", _err_message(result))
 
 
-def get_recent_threads(limit: int = 10) -> list[dict[str, Any]]:
+def get_recent_threads(limit: int = 10, user_id: str | None = None) -> list[dict[str, Any]]:
     """Return distinct threads for the sidebar:
     ``[{thread_id, title, summary, updated_at, turn_count}]``.
 
@@ -180,6 +180,8 @@ def get_recent_threads(limit: int = 10) -> list[dict[str, Any]]:
     Threads with zero persisted turns are still excluded — the sidebar
     should not surface empty shells created by an aborted request.
     """
+    if user_id is None:
+        return []
     result = db_query(
         """
         WITH first_turn AS (
@@ -187,6 +189,7 @@ def get_recent_threads(limit: int = 10) -> list[dict[str, Any]]:
                    thread_id, question
             FROM chat_turns
             WHERE thread_id IS NOT NULL
+              AND user_id = :uid
             ORDER BY thread_id, created_at ASC
         ),
         latest_summary AS (
@@ -197,6 +200,7 @@ def get_recent_threads(limit: int = 10) -> list[dict[str, Any]]:
                    thread_id, context_summary
             FROM chat_turns
             WHERE thread_id IS NOT NULL
+              AND user_id = :uid
               AND context_summary IS NOT NULL
               AND context_summary <> ''
             ORDER BY thread_id, created_at DESC
@@ -205,6 +209,7 @@ def get_recent_threads(limit: int = 10) -> list[dict[str, Any]]:
             SELECT thread_id, COUNT(*) AS n
             FROM chat_turns
             WHERE thread_id IS NOT NULL
+              AND user_id = :uid
             GROUP BY thread_id
         )
         SELECT t.thread_id,
@@ -221,7 +226,7 @@ def get_recent_threads(limit: int = 10) -> list[dict[str, Any]]:
         LIMIT :lim
         """,
         _DB,
-        params={"lim": max(1, min(limit, 100))},
+        params={"uid": user_id, "lim": max(1, min(limit, 100))},
     )
     code = _err_code(result)
     if code is not None:
@@ -251,7 +256,7 @@ def get_recent_threads(limit: int = 10) -> list[dict[str, Any]]:
     ]
 
 
-def get_thread_turns(thread_id: str, limit: int = 50) -> list[dict[str, Any]]:
+def get_thread_turns(thread_id: str, limit: int = 50, user_id: str | None = None) -> list[dict[str, Any]]:
     """Return turns for a thread in chronological order (oldest first).
 
     Phase 13.7 — feeds the sidebar-rehydration endpoint so clicking a
@@ -271,17 +276,20 @@ def get_thread_turns(thread_id: str, limit: int = 50) -> list[dict[str, Any]]:
     tid = (thread_id or "").strip()
     if not tid:
         return []
+    if user_id is None:
+        return []
     result = db_query(
         """
         SELECT correlation_id, question, final_message, sources,
                thinking_log, source_confidence_strip, created_at
         FROM chat_turns
         WHERE thread_id = :tid
+          AND user_id = :uid
         ORDER BY created_at ASC
         LIMIT :lim
         """,
         _DB,
-        params={"tid": tid, "lim": max(1, min(limit, 200))},
+        params={"tid": tid, "uid": user_id, "lim": max(1, min(limit, 200))},
     )
     if _err_code(result) is not None:
         logger.warning(
