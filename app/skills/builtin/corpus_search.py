@@ -64,10 +64,10 @@ from app.skills.registry import (
 logger = logging.getLogger(__name__)
 
 
-_VALID_MODES = ("corpus", "precision", "recall")
+_VALID_MODES = ("corpus", "precision", "recall", "auto", "d")
 _VALID_ASSEMBLY = ("score", "canonical_first", "balanced")
 _DEFAULT_K = 10
-_HTTP_TIMEOUT_S = 60.0
+_HTTP_TIMEOUT_S = 120.0
 # Endpoint shape per the rag-agent spec (2026-04-28, refined):
 #
 #   POST {RAG_API_URL}/api/skills/v1/corpus_search
@@ -129,6 +129,9 @@ def _post_skill(
         "query": query,
         "k": int(k),
         "filters": filters or {},
+        # Chat has its own LLM — skip the agent's internal synthesis to
+        # avoid paying for two LLM calls per search round (~20-30s saved).
+        "skip_synthesis": True,
     }
     # Pass mode as a strategy override when explicitly set (precision/recall).
     # The agent picks its own strategy when mode is "corpus" / unset —
@@ -446,12 +449,14 @@ def _run(call: SkillCall) -> SkillEnvelope:
     filters = _filters_from_active(call.active_context)
 
     if call.emitter:
-        if mode == "precision":
-            call.emitter("◌ Precision (BM25) search of our materials…")
-        elif mode == "recall":
-            call.emitter("◌ Broad (vector) recall of our materials…")
+        payer = filters.get("payer") or ""
+        state = filters.get("state") or ""
+        ctx_label = " · ".join(x for x in [payer, state] if x)
+        qshort = (query[:55] + "…") if len(query) > 55 else query
+        if ctx_label:
+            call.emitter(f"◌ Searching {ctx_label} materials for \"{qshort}\"…")
         else:
-            call.emitter("◌ Searching our materials…")
+            call.emitter(f"◌ Searching policy docs for \"{qshort}\"…")
 
     # X-Caller-Id = the chat turn correlation_id when present, else
     # a fresh uuid. Lets rag correlate a search_events row with the
@@ -503,26 +508,63 @@ def _run(call: SkillCall) -> SkillEnvelope:
     telemetry = resp.get("telemetry") or {}
     search_id = str(uuid.uuid4())
 
-    # Merge the agent's rich pipeline trace fields into telemetry so
-    # make_retrieval_trace spreads them into data.* and the chat UI
-    # can render Parser + Router sections matching the RAG Test tab.
-    _agent_trace: dict[str, Any] = {}
-    if resp.get("query_profile"):
-        _agent_trace["query_profile"] = resp["query_profile"]
-    if resp.get("routing"):
-        _agent_trace["routing"] = resp["routing"]
-    if resp.get("themes") is not None:
-        _agent_trace["themes"] = resp["themes"]
-    if resp.get("theme_diagnostic"):
-        _agent_trace["theme_diagnostic"] = resp["theme_diagnostic"]
-    if resp.get("candidate_pool"):
-        _agent_trace["candidate_pool"] = resp["candidate_pool"]
-    if resp.get("strategy_used"):
-        _agent_trace["strategy_used"] = resp["strategy_used"]
-    if resp.get("queries_per_strategy"):
-        _agent_trace["queries_per_strategy"] = resp["queries_per_strategy"]
-    if _agent_trace:
-        telemetry = {**telemetry, **_agent_trace}
+    # Build full pipeline_trace matching the canonical schematic:
+    # gate → parser → pool → bandit → retrieval → assembler.
+    # Merged into telemetry so make_retrieval_trace and the chat UI
+    # render the identical trace the RAG test tab shows.
+    strategies_tried = resp.get("strategies_tried") or []
+    _primary = strategies_tried[0] if strategies_tried else {}
+    _arms = _primary.get("arms") or {}
+    _timing = _arms.get("timing_ms") or {}
+
+    _pipeline_trace: dict[str, Any] = {
+        # [1] Gate
+        "gate": resp.get("gate") or {
+            "passed": resp.get("strategy_used") != "e",
+            "fail_fast_reason": (resp.get("fail_fast") or {}).get("reason"),
+        },
+        # [2] Parser
+        "parser": {
+            **(resp.get("query_profile") or {}),
+        },
+        # [3] Pool
+        "pool": resp.get("candidate_pool") or {},
+        # [4] Bandit / router decision
+        "bandit": {
+            "strategy_picked": resp.get("strategy_used"),
+            "forced": bool(mode),
+            "routing": resp.get("routing") or {},
+        },
+        # [5] Retrieval — per-arm breakdown from primary strategy
+        "retrieval": {
+            "strategies_tried": strategies_tried,
+            "arm_hits": {
+                "bm25": sum((s.get("arms") or {}).get("bm25_pool_hits", 0) or 0 for s in strategies_tried),
+                "vector": sum((s.get("arms") or {}).get("vector_pool_hits", 0) or 0 for s in strategies_tried),
+            },
+            "top_rerank": _primary.get("top_rerank"),
+            "timing_ms": _timing,
+        },
+        # [6] Assembler
+        "assembler": {
+            "n_chunks": len(chunks),
+            "confidence": resp.get("confidence"),
+            "strategy_used": resp.get("strategy_used"),
+            "total_ms": (resp.get("telemetry") or {}).get("total_ms"),
+        },
+        # Pass-through fields the UI already uses
+        "strategy_used": resp.get("strategy_used"),
+        "themes": resp.get("themes"),
+        "theme_diagnostic": resp.get("theme_diagnostic"),
+        "queries_per_strategy": resp.get("queries_per_strategy"),
+        # Legacy arm_hits keys for make_retrieval_trace compatibility
+        "arm_hits": {
+            "bm25": sum((s.get("arms") or {}).get("bm25_pool_hits", 0) or 0 for s in strategies_tried),
+            "vector": sum((s.get("arms") or {}).get("vector_pool_hits", 0) or 0 for s in strategies_tried),
+        },
+        "arms": {"returned": len(chunks)},
+    }
+    telemetry = {**telemetry, **_pipeline_trace}
 
     # Always emit the retrieval_trace envelope, even on zero hits — the
     # technical UI panel needs to show "BM25 0 vec 0" for failure
@@ -538,7 +580,18 @@ def _run(call: SkillCall) -> SkillEnvelope:
 
     if not chunks:
         if call.emitter:
-            call.emitter("↓ Not in our materials.")
+            strategy_used = resp.get("strategy_used") or ""
+            gate = resp.get("gate") or {}
+            if strategy_used == "e" or gate.get("fail_fast_reason"):
+                fail_reason = gate.get("fail_fast_reason") or "no_domain_match"
+                call.emitter(f"⚡ Query outside current coverage ({fail_reason}) — no corpus search run.")
+            else:
+                strats = resp.get("strategies_tried") or []
+                n_tried = len(strats)
+                if n_tried > 1:
+                    call.emitter(f"↓ Tried {n_tried} search strategies — nothing matched in our materials.")
+                else:
+                    call.emitter("↓ Nothing matched in our materials.")
         return SkillEnvelope(
             text="",
             sources=[],
@@ -603,17 +656,15 @@ def _run(call: SkillCall) -> SkillEnvelope:
     # ``arms.bm25_hits / .vec_hits`` — we read both keys so the emit
     # works against whichever rag rev is live without coordination.
     if call.emitter:
-        arm_hits = telemetry.get("arm_hits") or {}
-        arms_legacy = telemetry.get("arms") or {}
-        bm25 = int(arm_hits.get("bm25") or arms_legacy.get("bm25_hits") or 0)
-        vec = int(arm_hits.get("vector") or arms_legacy.get("vec_hits") or 0)
-        overlap = int(arms_legacy.get("overlap") or 0)
-        ret_n = int(arms_legacy.get("returned") or len(chunks))
+        ret_n = len(chunks)
+        # Unique source documents for "from N docs" label
+        unique_docs = len({c.get("document_name") or "" for c in chunks if c.get("document_name")})
+        doc_label = f" across {unique_docs} doc{'s' if unique_docs != 1 else ''}" if unique_docs > 1 else ""
+        # Top relevance score
+        top_score = max((c.get("rerank_score") or 0.0) for c in chunks) if chunks else 0.0
+        score_label = f" · top match {top_score:.0%}" if top_score > 0 else ""
         call.emitter(
-            f"  ✓ {ret_n} match{'es' if ret_n != 1 else ''} "
-            f"(BM25 {bm25} · pgvector {vec}"
-            + (f" · overlap {overlap}" if overlap else "")
-            + ")"
+            f"✓ Found {ret_n} relevant passage{'s' if ret_n != 1 else ''}{doc_label}{score_label}"
         )
 
     return SkillEnvelope(
