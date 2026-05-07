@@ -3000,6 +3000,24 @@ function renderAnswerCard(card, isError, opts) {
     followupWrap.appendChild(chips);
     bubble.appendChild(followupWrap);
   }
+  if (card.suggested_actions && card.suggested_actions.length > 0) {
+    const actionsWrap = document.createElement("div");
+    actionsWrap.className = "answer-card-actions";
+    card.suggested_actions.forEach((action) => {
+      if (action.type === "external_link" && action.url && action.label) {
+        const a = document.createElement("a");
+        a.href = action.url;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.className = "answer-card-action-chip";
+        a.textContent = (action.icon ? action.icon + " " : "") + action.label + " \u2197";
+        a.setAttribute("aria-label", action.label + " (opens in new tab)");
+        actionsWrap.appendChild(a);
+      }
+    });
+    if (actionsWrap.childNodes.length > 0)
+      bubble.appendChild(actionsWrap);
+  }
   if (opts?.qcAudit)
     bubble.appendChild(renderQcAuditBadge(opts.qcAudit));
   wrap.appendChild(bubble);

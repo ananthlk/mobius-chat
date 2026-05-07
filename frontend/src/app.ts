@@ -695,6 +695,8 @@ interface AnswerCard {
   confidence_note?: string;
   citations?: Array<{ id: string; doc_title: string; locator: string; snippet: string }>;
   followups?: Array<{ question: string; reason: string; field: string }>;
+  suggested_actions?: Array<{ type: string; label: string; url: string; icon?: string }>;
+  thread_summary?: string;
 }
 
 const API_BASE =
@@ -2296,6 +2298,25 @@ function renderAnswerCard(
     });
     followupWrap.appendChild(chips);
     bubble.appendChild(followupWrap);
+  }
+
+  // Suggested action chips — e.g. "Open Appeals Agent ↗" for denial/appeal queries.
+  if (card.suggested_actions && card.suggested_actions.length > 0) {
+    const actionsWrap = document.createElement("div");
+    actionsWrap.className = "answer-card-actions";
+    card.suggested_actions.forEach((action) => {
+      if (action.type === "external_link" && action.url && action.label) {
+        const a = document.createElement("a");
+        a.href = action.url;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.className = "answer-card-action-chip";
+        a.textContent = (action.icon ? action.icon + " " : "") + action.label + " ↗";
+        a.setAttribute("aria-label", action.label + " (opens in new tab)");
+        actionsWrap.appendChild(a);
+      }
+    });
+    if (actionsWrap.childNodes.length > 0) bubble.appendChild(actionsWrap);
   }
 
   if (opts?.qcAudit) bubble.appendChild(renderQcAuditBadge(opts.qcAudit));

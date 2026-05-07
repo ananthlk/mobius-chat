@@ -51,6 +51,8 @@ _ANSWER_CARD_ENVELOPE_KEYS = (
     # allowlist, the verify probe sees thread_summary: None on the
     # response even though the DB has it.
     "thread_summary",
+    # Layer 2 appeals integration — action chips rendered below the answer.
+    "suggested_actions",
 )
 
 

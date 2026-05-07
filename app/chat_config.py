@@ -222,7 +222,7 @@ class ChatPromptsConfig:
         '"required_variables":["string"],"confidence_note":"string",'
         '"citations":[{"id":"string","doc_title":"string","locator":"string","snippet":"string"}],'
         '"followups":[{"question":"string","reason":"string","field":"string"}],'
-        '"thread_summary":"string"}\n\n'
+        '"thread_summary":"string","suggested_actions":[{"type":"external_link","label":"string","url":"string","icon":"string"}]}\n\n'
         "Rules for FACTUAL mode:\n"
         "- direct_answer is required and must stand alone.\n"
         "- Each section MUST include either a non-empty bullets array or a non-empty body string so the Details panel has content.\n"
@@ -243,7 +243,12 @@ class ChatPromptsConfig:
         "sections may include a label \"What's missing\" with bullets. Do not guess.\n"
         "- thread_summary: a short topic label (max 60 chars) for the sidebar. "
         "Capture the subject matter — NOT the user's question, no 'User asked', no question marks. "
-        "Example: 'Claim dispute process — Sunshine Health' or 'Prior auth requirements for H0036'."
+        "Example: 'Claim dispute process — Sunshine Health' or 'Prior auth requirements for H0036'.\n"
+        "- suggested_actions: optional array of action chips shown below the answer. "
+        "Populate ONLY when the user's question is about a claim denial, appeal, reconsideration, CARC code, RARC code, or dispute process. "
+        "When populated, include exactly one entry: "
+        "{\"type\":\"external_link\",\"label\":\"Open Appeals Agent\",\"url\":\"https://mobius-appeals-prototype-ortabkknqa-uc.a.run.app\",\"icon\":\"⚖️\"}. "
+        "Leave as empty array [] for all other questions."
     )
     integrator_canonical_system: str = (
         "You are the CONSOLIDATOR for a retrieval-based system.\n\n"
@@ -253,7 +258,7 @@ class ChatPromptsConfig:
         '"required_variables":["string"],"confidence_note":"string",'
         '"citations":[{"id":"string","doc_title":"string","locator":"string","snippet":"string"}],'
         '"followups":[{"question":"string","reason":"string","field":"string"}],'
-        '"thread_summary":"string"}\n\n'
+        '"thread_summary":"string","suggested_actions":[{"type":"external_link","label":"string","url":"string","icon":"string"}]}\n\n'
         "Rules for CANONICAL mode:\n"
         "- direct_answer is required and must stand alone. Classify each section with exactly one intent: process, requirements, definitions, exceptions, or references. The UI will show direct_answer and all sections.\n"
         "- Use ONLY the information provided in the input.\n"
@@ -273,7 +278,12 @@ class ChatPromptsConfig:
         "If insufficient: direct_answer should state what is missing to give a canonical explanation.\n"
         "- thread_summary: a short topic label (max 60 chars) for the sidebar. "
         "Capture the subject matter — NOT the user's question, no 'User asked', no question marks. "
-        "Example: 'Provider enrollment with Sunshine Health' or 'H0036 definition and criteria'."
+        "Example: 'Provider enrollment with Sunshine Health' or 'H0036 definition and criteria'.\n"
+        "- suggested_actions: optional array of action chips shown below the answer. "
+        "Populate ONLY when the user's question is about a claim denial, appeal, reconsideration, CARC code, RARC code, or dispute process. "
+        "When populated, include exactly one entry: "
+        "{\"type\":\"external_link\",\"label\":\"Open Appeals Agent\",\"url\":\"https://mobius-appeals-prototype-ortabkknqa-uc.a.run.app\",\"icon\":\"⚖️\"}. "
+        "Leave as empty array [] for all other questions."
     )
     integrator_blended_system: str = (
         "You are the CONSOLIDATOR for a retrieval-based system.\n\n"
@@ -283,7 +293,7 @@ class ChatPromptsConfig:
         '"required_variables":["string"],"confidence_note":"string",'
         '"citations":[{"id":"string","doc_title":"string","locator":"string","snippet":"string"}],'
         '"followups":[{"question":"string","reason":"string","field":"string"}],'
-        '"thread_summary":"string"}\n\n'
+        '"thread_summary":"string","suggested_actions":[{"type":"external_link","label":"string","url":"string","icon":"string"}]}\n\n'
         "Rules for BLENDED mode:\n"
         "- direct_answer is required and must stand alone. Classify each section with exactly one intent: process, requirements, definitions, exceptions, or references. "
         "The UI will show direct_answer plus **requirements AND definitions** sections by default; process, exceptions, and references will be behind 'Show details'.\n"
@@ -307,7 +317,12 @@ class ChatPromptsConfig:
         "If insufficient: direct_answer should state what is missing; do not guess.\n"
         "- thread_summary: a short topic label (max 60 chars) for the sidebar. "
         "Capture the subject matter — NOT the user's question, no 'User asked', no question marks. "
-        "Example: 'Claim dispute process — Sunshine Health' or 'Prior auth for behavioral health'."
+        "Example: 'Claim dispute process — Sunshine Health' or 'Prior auth for behavioral health'.\n"
+        "- suggested_actions: optional array of action chips shown below the answer. "
+        "Populate ONLY when the user's question is about a claim denial, appeal, reconsideration, CARC code, RARC code, or dispute process. "
+        "When populated, include exactly one entry: "
+        "{\"type\":\"external_link\",\"label\":\"Open Appeals Agent\",\"url\":\"https://mobius-appeals-prototype-ortabkknqa-uc.a.run.app\",\"icon\":\"⚖️\"}. "
+        "Leave as empty array [] for all other questions."
     )
 
 
