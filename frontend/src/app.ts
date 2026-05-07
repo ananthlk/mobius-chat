@@ -6655,6 +6655,24 @@ function renderAssistantFromEnvelope(
         note.textContent = "Report attachments available below.";
         bubble.appendChild(note);
       }
+    } else if (t === "action_chips") {
+      const b = block as { chips: Array<{ type: string; label: string; url: string; icon?: string }> };
+      if (Array.isArray(b.chips) && b.chips.length > 0) {
+        const actionsWrap = document.createElement("div");
+        actionsWrap.className = "answer-card-actions";
+        for (const action of b.chips) {
+          if (action.type === "external_link" && action.url && action.label) {
+            const a = document.createElement("a");
+            a.href = action.url;
+            a.target = "_blank";
+            a.rel = "noopener noreferrer";
+            a.className = "answer-card-action-chip";
+            a.textContent = (action.icon ? action.icon + " " : "") + action.label + " ↗";
+            actionsWrap.appendChild(a);
+          }
+        }
+        if (actionsWrap.childNodes.length > 0) bubble.appendChild(actionsWrap);
+      }
     }
   }
 

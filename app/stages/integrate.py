@@ -596,6 +596,25 @@ def run_integrate(
             _ub = parsed.get("ui_blocks")
             if isinstance(_ub, list):
                 integrator_ui_blocks = _ub
+            # Layer 2 appeals integration — inject suggested_actions if LLM omitted it.
+            # The LLM is instructed to populate this for denial/appeal queries, but may
+            # silently drop optional fields. We detect the intent here as a reliable fallback.
+            if not parsed.get("suggested_actions"):
+                _denial_keywords = (
+                    "denial", "denied", "appeal", "reconsideration",
+                    "carc", "rarc", "dispute", "overturn", "adjustment reason",
+                    "claim adjustment", "remark code",
+                )
+                _user_msg_lower = (getattr(ctx, "message", "") or "").lower()
+                if any(kw in _user_msg_lower for kw in _denial_keywords):
+                    parsed["suggested_actions"] = [
+                        {
+                            "type": "external_link",
+                            "label": "Open Appeals Agent",
+                            "url": "https://mobius-appeals-prototype-ortabkknqa-uc.a.run.app",
+                            "icon": "⚖️",
+                        }
+                    ]
             # Extract display_message for frontend AnswerCard (avoids raw JSON in card)
             da = parsed.get("direct_answer")
             secs = parsed.get("sections")

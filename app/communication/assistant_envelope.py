@@ -368,6 +368,19 @@ def build_assistant_envelope_v1(
             combined_detail = "\n\n".join(detail_parts)
             blocks.append({"type": "detail", "markdown": combined_detail, "collapsed_default": True})
 
+        # Layer 2 appeals integration — pass action chips through the envelope.
+        _sa = answer_card.get("suggested_actions")
+        if isinstance(_sa, list) and _sa:
+            valid_chips = [
+                a for a in _sa
+                if isinstance(a, dict)
+                and a.get("type") == "external_link"
+                and isinstance(a.get("label"), str)
+                and isinstance(a.get("url"), str)
+            ]
+            if valid_chips:
+                blocks.append({"type": "action_chips", "chips": valid_chips})
+
     seen_types: set[str] = set()
     for raw in (ui_blocks_raw or [])[:MAX_UI_BLOCKS]:
         vb = _validate_ui_block(raw, max_source_index=max(0, len(response_sources)))
