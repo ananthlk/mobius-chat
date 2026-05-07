@@ -1245,6 +1245,22 @@ def _execute_tool(
 
         emit(f"◌ Task manager: {tool}…")
 
+        # Stub: task manager not yet deployed — return a friendly message
+        # instead of a DNS error so the user experience is clean.
+        if not _task_base or ".invalid" in _task_base or "not-yet-deployed" in _task_base:
+            _stub_msgs = {
+                "create_task": "Task noted! The task manager is coming soon — your manager will be notified through the usual channel in the meantime.",
+                "list_tasks": "The task manager is coming soon. Tasks will appear here once the service is live.",
+                "resolve_task": "The task manager is coming soon. Task resolution will be available once the service is live.",
+            }
+            return {
+                "tool": tool,
+                "success": True,
+                "result": _stub_msgs.get(tool, "The task manager is coming soon."),
+                "signal": "corpus_only",
+                "sources": [],
+            }
+
         try:
             if not _task_base:
                 raise ValueError("CHAT_SKILLS_TASK_MANAGER_URL not configured")
