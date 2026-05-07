@@ -8,6 +8,11 @@ import threading
 import time
 import urllib.error
 import urllib.request
+
+
+class VertexBlockedError(RuntimeError):
+    """Raised when Vertex AI returns a candidate with no content parts (safety block or empty response)."""
+    pass
 from typing import Any, AsyncIterator, Callable, Dict
 
 from app.services.usage import LLMUsageDict, zero_usage, usage_dict
@@ -486,7 +491,24 @@ def _vertex_generate_sync(
                 pass
         raise
     logger.info("[vertex] generate_content returned (elapsed=%.1fs)", _time.perf_counter() - t0)
-    text = response.text or ""
+    try:
+        text = response.text or ""
+    except ValueError as _ve:
+        # Vertex returns a candidate with zero content parts when the safety
+        # filter blocks the response. The SDK raises ValueError("Response
+        # candidate content has no parts (and thus no text).").
+        _finish = None
+        try:
+            _finish = str(response.candidates[0].finish_reason) if response.candidates else "unknown"
+        except Exception:
+            pass
+        logger.warning(
+            "[vertex] response blocked — no content parts (model=%s finish_reason=%s err=%s)",
+            model_name, _finish, _ve,
+        )
+        raise VertexBlockedError(
+            f"vertex response blocked (finish_reason={_finish}): {_ve}"
+        ) from _ve
     usage = zero_usage("vertex", model_name)
     if getattr(response, "usage_metadata", None) is not None:
         um = response.usage_metadata

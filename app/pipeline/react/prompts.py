@@ -363,32 +363,55 @@ def _call_llm_json(
     stage: str = "planner",
 ) -> str:
     """Call LLM and return raw string (expect JSON). When ctx is provided, uses llm_manager and appends usage to ctx.usages."""
+    from app.services.llm_provider import VertexBlockedError
+
     if (stage or "").startswith("react_"):
         # Reasoning rounds may return longer thoughts + final answer JSON; Flash sometimes truncated at 800.
         max_tokens = max(max_tokens, 1400)
     prompt = f"{system}\n\n{user}"
-    if ctx is not None:
-        from app.services.llm_manager import generate as llm_generate
-        raw, usage = asyncio.run(
-            llm_generate(
-                prompt,
-                stage=stage,
-                max_tokens=max_tokens,
-                config_sha=_get_config_sha(),
-                correlation_id=getattr(ctx, "correlation_id", None),
-                thread_id=getattr(ctx, "thread_id", None),
-                parser=False,
-                mode=getattr(ctx, "chat_mode", None),
+
+    def _run(p: str) -> tuple[str, object | None]:
+        if ctx is not None:
+            from app.services.llm_manager import generate as llm_generate
+            raw, usage = asyncio.run(
+                llm_generate(
+                    p,
+                    stage=stage,
+                    max_tokens=max_tokens,
+                    config_sha=_get_config_sha(),
+                    correlation_id=getattr(ctx, "correlation_id", None),
+                    thread_id=getattr(ctx, "thread_id", None),
+                    parser=False,
+                    mode=getattr(ctx, "chat_mode", None),
+                )
             )
+            return (raw or "").strip(), usage
+        from app.services.llm_manager import generate_sync
+        raw, usage = generate_sync(prompt, stage="planner", max_tokens=max_tokens, parser=False, mode=None)
+        return (raw or "").strip(), usage
+
+    try:
+        raw, usage = _run(prompt)
+    except VertexBlockedError:
+        # Vertex safety filter blocked the response (empty candidate). This
+        # commonly happens when tool results carry dense financial tables.
+        # Retry once with a condensed prompt: keep the system prompt intact
+        # but truncate the user section to 1 500 chars so the model can
+        # produce an answer without tripping the filter.
+        logger.warning(
+            "[react] vertex blocked on stage=%s — retrying with condensed prompt (cid=%s)",
+            stage,
+            getattr(ctx, "correlation_id", "?")[:8] if ctx else "?",
         )
+        condensed_user = user[:1500] + ("\n\n[Context condensed to avoid processing limits. Answer from what is available above.]" if len(user) > 1500 else "")
+        condensed_prompt = f"{system}\n\n{condensed_user}"
+        raw, usage = _run(condensed_prompt)
+
+    if ctx is not None and usage is not None:
         if not getattr(ctx, "usages", None):
             ctx.usages = []
         ctx.usages.append(usage)
-        return (raw or "").strip()
-    from app.services.llm_manager import generate_sync
-
-    raw, _ = generate_sync(prompt, stage="planner", max_tokens=max_tokens, parser=False, mode=None)
-    return (raw or "").strip()
+    return raw
 
 
 # ── Reasoning-context builder ─────────────────────────────────────────────
