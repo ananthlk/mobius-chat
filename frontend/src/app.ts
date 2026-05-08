@@ -7892,6 +7892,13 @@ function run(): void {
 
     if (chatEmpty) chatEmpty.classList.add("hidden");
 
+    // Auto-dismiss the alpha banner on first query — no need to keep
+    // it in the way once the user is actively working.
+    if (alphaBanner && !alphaBanner.hidden) {
+      alphaBanner.hidden = true;
+      localStorage.setItem("alpha_banner_dismissed", "1");
+    }
+
     // Read mode before rendering user message (badge depends on it)
     const modeSelect = document.getElementById("composerMode") as HTMLSelectElement | null;
     const selectedMode = (modeSelect?.value || localStorage.getItem("_mobiusChatMode") || "copilot") as "quick" | "copilot" | "agentic";
