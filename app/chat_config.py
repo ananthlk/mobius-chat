@@ -222,6 +222,7 @@ class ChatPromptsConfig:
         '"required_variables":["string"],"confidence_note":"string",'
         '"citations":[{"id":"string","doc_title":"string","locator":"string","snippet":"string"}],'
         '"followups":[{"question":"string","reason":"string","field":"string"}],'
+        '"next_questions_for_user":["string"],"next_steps":["string"],'
         '"thread_summary":"string","suggested_actions":[{"type":"external_link","label":"string","url":"string","icon":"string"}]}\n\n'
         "Rules for FACTUAL mode:\n"
         "- direct_answer is required and must stand alone.\n"
@@ -236,7 +237,12 @@ class ChatPromptsConfig:
         "FACTUAL hides sections behind \"Show details\" by default, so they MUST carry real detail for when the user clicks through.\n"
         "- If the answer depends on an unknown variable (service code, setting, plan subtype), put it in required_variables.\n"
         "- Only add followups if required_variables is non-empty and the user must provide something to be definitive.\n"
-        "- When retrieval included corpus/manual sources and required_variables is empty, do not use next_questions_for_user to ask the user to upload, attach, or share documents or links.\n"
+        "- next_questions_for_user: 2–4 follow-up questions the user is likely to ask next. "
+        "Write each as a natural question FROM the user's perspective — as if the user is typing it themselves. "
+        "Example: \"What is the timely filing deadline for corrected claims?\" not \"Do you need information on timely filing for corrected claims?\" "
+        "Each question 8–20 words, specific and actionable. Do not ask the user to upload, attach, or share documents or links.\n"
+        "- next_steps: 1–3 concrete actions the user should take next, written as short imperatives (e.g. \"Submit the appeal via the payer portal within 90 days.\"). "
+        "Only include steps clearly supported by the facts. Omit if no clear next action applies.\n"
         "- direct_answer must be one sentence, operational, and non-hedgy. "
         "FACTUAL direct_answer is the SHORTEST of the three modes — one line carries the operative fact; everything else belongs in the sections.\n"
         "If the facts are insufficient: direct_answer should say what is missing (one sentence). "
@@ -258,6 +264,7 @@ class ChatPromptsConfig:
         '"required_variables":["string"],"confidence_note":"string",'
         '"citations":[{"id":"string","doc_title":"string","locator":"string","snippet":"string"}],'
         '"followups":[{"question":"string","reason":"string","field":"string"}],'
+        '"next_questions_for_user":["string"],"next_steps":["string"],'
         '"thread_summary":"string","suggested_actions":[{"type":"external_link","label":"string","url":"string","icon":"string"}]}\n\n'
         "Rules for CANONICAL mode:\n"
         "- direct_answer is required and must stand alone. Classify each section with exactly one intent: process, requirements, definitions, exceptions, or references. The UI will show direct_answer and all sections.\n"
@@ -276,6 +283,12 @@ class ChatPromptsConfig:
         "Inline specifics (codes, numbers, named standards, page refs) when the input supplies them.\n"
         "- Do not include procedural \"how to submit\" steps unless the policy explicitly describes the process.\n"
         "If insufficient: direct_answer should state what is missing to give a canonical explanation.\n"
+        "- next_questions_for_user: 2–4 follow-up questions the user is likely to ask next. "
+        "Write each as a natural question FROM the user's perspective — as if the user is typing it themselves. "
+        "Example: \"What is the timely filing deadline for corrected claims?\" not \"Do you need information on timely filing for corrected claims?\" "
+        "Each question 8–20 words, specific and actionable. Do not ask the user to upload, attach, or share documents or links.\n"
+        "- next_steps: 1–3 concrete actions the user should take next, written as short imperatives (e.g. \"Submit the appeal via the payer portal within 90 days.\"). "
+        "Only include steps clearly supported by the facts. Omit if no clear next action applies.\n"
         "- thread_summary: a short topic label (max 60 chars) for the sidebar. "
         "Capture the subject matter — NOT the user's question, no 'User asked', no question marks. "
         "Example: 'Provider enrollment with Sunshine Health' or 'H0036 definition and criteria'.\n"
@@ -293,6 +306,7 @@ class ChatPromptsConfig:
         '"required_variables":["string"],"confidence_note":"string",'
         '"citations":[{"id":"string","doc_title":"string","locator":"string","snippet":"string"}],'
         '"followups":[{"question":"string","reason":"string","field":"string"}],'
+        '"next_questions_for_user":["string"],"next_steps":["string"],'
         '"thread_summary":"string","suggested_actions":[{"type":"external_link","label":"string","url":"string","icon":"string"}]}\n\n'
         "Rules for BLENDED mode:\n"
         "- direct_answer is required and must stand alone. Classify each section with exactly one intent: process, requirements, definitions, exceptions, or references. "
@@ -315,6 +329,12 @@ class ChatPromptsConfig:
         "- If the answer depends on an unknown variable, include it in required_variables and add at most one followup question.\n"
         "- Do not speculate or add hypotheticals.\n"
         "If insufficient: direct_answer should state what is missing; do not guess.\n"
+        "- next_questions_for_user: 2–4 follow-up questions the user is likely to ask next. "
+        "Write each as a natural question FROM the user's perspective — as if the user is typing it themselves. "
+        "Example: \"What is the timely filing deadline for corrected claims?\" not \"Do you need information on timely filing for corrected claims?\" "
+        "Each question 8–20 words, specific and actionable. Do not ask the user to upload, attach, or share documents or links.\n"
+        "- next_steps: 1–3 concrete actions the user should take next, written as short imperatives (e.g. \"Submit the appeal via the payer portal within 90 days.\"). "
+        "Only include steps clearly supported by the facts. Omit if no clear next action applies.\n"
         "- thread_summary: a short topic label (max 60 chars) for the sidebar. "
         "Capture the subject matter — NOT the user's question, no 'User asked', no question marks. "
         "Example: 'Claim dispute process — Sunshine Health' or 'Prior auth for behavioral health'.\n"

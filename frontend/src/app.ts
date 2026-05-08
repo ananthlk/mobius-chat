@@ -6570,7 +6570,7 @@ function renderAssistantFromEnvelope(
         w.className = "envelope-next-steps";
         const hint = document.createElement("div");
         hint.className = "envelope-next-steps-hint";
-        hint.textContent = followupListHintLines(items);
+        hint.textContent = "Suggested actions — not auto-sent.";
         w.appendChild(hint);
         for (const line of items.slice(0, 8)) {
           const text = line.text.trim();
