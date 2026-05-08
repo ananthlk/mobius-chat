@@ -120,7 +120,12 @@ def critic_enabled() -> bool:
 
 _FACTUAL_CLAIM_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r'\$[\d,]+(?:\.\d+)?'),           # dollar amounts: $45.00, $1,200
-    re.compile(r'\b\d+\s*(?:days?|months?|years?)\b', re.IGNORECASE),  # time windows
+    # Time windows — "14 days", "72 hours", "14 calendar days", "3 business days"
+    re.compile(
+        r'\b\d+\s*(?:calendar\s+|business\s+|working\s+|clock\s+)?'
+        r'(?:days?|hours?|months?|years?)\b',
+        re.IGNORECASE,
+    ),
     re.compile(r'\b\d+\s*%'),                    # percentages
     re.compile(r'\bH\d{4}\b'),                   # HCPCS codes: H0036, T1019
     re.compile(r'\bT\d{4}\b'),
