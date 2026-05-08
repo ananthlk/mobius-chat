@@ -70,6 +70,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -91,6 +92,82 @@ def critic_enabled() -> bool:
         "yes",
         "on",
     )
+
+
+# ── Deterministic invocation gate ────────────────────────────────────
+#
+# The critic adds an LLM round-trip (~2–5s) on every completion. Most
+# answers are canonical policy/process text where hallucination risk is
+# low and there are no specific verifiable facts for the critic to catch.
+# This gate makes the decision deterministic so the critic only fires
+# when it actually has something useful to do.
+#
+# Run critic when ANY of:
+#   • Answer contains specific numeric/code claims (dollar amounts, day
+#     counts, HCPCS/CPT/ICD codes, percentages) — prime hallucination
+#     surface; the critic can catch quote-level mismatches.
+#   • Final signal is web/Google (less reliable than corpus sources).
+#   • No sources at all but answer is long (LLM reasoning, no grounding).
+#
+# Skip critic when ALL of:
+#   • No numeric/code patterns in the answer text.
+#   • Retrieval was corpus-backed (not web-only).
+#   • Answer is not suspiciously long for a "no sources" turn.
+#
+# This is intentionally conservative — false negatives (skipping when
+# we should have run) are recoverable via the adjudicator; false
+# positives (running when not needed) are just latency waste.
+
+_FACTUAL_CLAIM_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r'\$[\d,]+(?:\.\d+)?'),           # dollar amounts: $45.00, $1,200
+    re.compile(r'\b\d+\s*(?:days?|months?|years?)\b', re.IGNORECASE),  # time windows
+    re.compile(r'\b\d+\s*%'),                    # percentages
+    re.compile(r'\bH\d{4}\b'),                   # HCPCS codes: H0036, T1019
+    re.compile(r'\bT\d{4}\b'),
+    re.compile(r'\b\d{5}(?:-\d{2})?\b'),         # CPT codes (5-digit, optional modifier)
+    re.compile(r'\b[A-Z]\d{2,3}(?:\.\d+)?\b'),  # ICD-10: F32.1, Z23
+    re.compile(r'\b\d{3}[-.\s]\d{3,4}\b'),      # phone fragments
+    re.compile(r'\bNPI\s*[#:]?\s*\d{10}\b', re.IGNORECASE),  # NPI numbers
+    re.compile(r'\brate\s+of\s+\$', re.IGNORECASE),           # rate of $X
+    re.compile(r'\bwithin\s+\d+\b', re.IGNORECASE),           # within N days/hours
+    re.compile(r'\bdeadline\b', re.IGNORECASE),               # any deadline mention
+]
+
+_GOOGLE_SIGNAL = "google_only"  # matches RETRIEVAL_SIGNAL_GOOGLE_ONLY value
+
+
+def should_run_critic(
+    answer: str,
+    all_sources: list[dict],
+    final_signal: str,
+    user_message: str = "",
+) -> tuple[bool, str]:
+    """Deterministic gate: returns (should_run, reason_string).
+
+    Called before every critic invocation. When this returns False the
+    critic LLM call is skipped entirely and the answer goes straight to
+    finalize. The reason string is emitted to the thinking log so the
+    skip is visible in analytics.
+    """
+    answer_text = (answer or "").strip()
+
+    # No sources → critic has nothing to compare claims against.
+    # The adjudicator (post-run) is a better fit for no-source answers.
+    if not all_sources and final_signal not in (_GOOGLE_SIGNAL,):
+        return False, "skip:no_corpus_sources"
+
+    # Web-sourced answers are less reliably quoted → always audit.
+    if _GOOGLE_SIGNAL in (final_signal or "").lower():
+        return True, "run:web_sourced_answer"
+
+    # Check for specific factual claim patterns in the draft.
+    for pattern in _FACTUAL_CLAIM_PATTERNS:
+        if pattern.search(answer_text):
+            return True, f"run:factual_claim_detected({pattern.pattern[:30]})"
+
+    # No numeric/code specifics found — answer is likely policy/process
+    # prose. Low hallucination risk; skip the critic.
+    return False, "skip:no_verifiable_claims_in_answer"
 
 
 # ── Result shape ─────────────────────────────────────────────────────

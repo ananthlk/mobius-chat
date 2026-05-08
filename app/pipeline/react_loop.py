@@ -2013,6 +2013,38 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     return
 
                 if critic_enabled():
+                    # ── Deterministic invocation gate ──────────────────
+                    # Skip the critic when the answer contains no specific
+                    # verifiable claims (numeric facts, codes, deadlines).
+                    # Process/policy prose has low hallucination risk and
+                    # the critic LLM call adds 2–5s of latency for nothing.
+                    from app.pipeline.react.critic import should_run_critic
+                    _critic_should_run, _critic_gate_reason = should_run_critic(
+                        answer=answer,
+                        all_sources=all_sources,
+                        final_signal=final_signal,
+                        user_message=getattr(ctx, "message", "") or "",
+                    )
+                    if not _critic_should_run:
+                        if emitter:
+                            from app.communication.emit_envelope import make_note
+                            emitter(make_note(
+                                correlation_id=ctx.correlation_id,
+                                note=f"✓ Critic skipped (gate): {_critic_gate_reason}",
+                                round=rn,
+                                thread_id=ctx.thread_id,
+                                user_id=getattr(ctx, "user_id", None),
+                            ).to_dict())
+                        logger.debug(
+                            "[critic-gate] skipping critic: %s (cid=%s)",
+                            _critic_gate_reason,
+                            (ctx.correlation_id or "")[:8],
+                        )
+                        _finalize_response(
+                            ctx, answer, all_sources, final_signal, last_tool, emitter,
+                        )
+                        return
+
                     rounds_remaining = (max_it - rn)  # not counting this round's decision
                     # 2026-04-19 (Sprint A.1 commit 1): critic emits
                     # now produce structured envelopes via the
