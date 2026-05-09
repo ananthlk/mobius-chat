@@ -717,6 +717,8 @@ SPEC = SkillSpec(
     follow_up_capable=True,
     source="builtin",
     visible_to_planner=True,
+    category="corpus",
+    display_name="Corpus Search",
 )
 
 

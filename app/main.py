@@ -1558,6 +1558,7 @@ from app.api.feedback import router as _feedback_router
 from app.api.history import router as _history_router
 from app.api.tasks import router as _tasks_router
 from app.api.uploads import router as _uploads_router
+from app.api.user_tools import router as _user_tools_router
 app.include_router(_chat_router)  # Phase 2b.2 — core chat lifecycle extracted from main.py
 app.include_router(_credentialing_router)  # credentialing-runs + NPI lookup (restored for pipeline UI)
 app.include_router(_history_router)
@@ -1568,6 +1569,7 @@ app.include_router(_doc_reader_router)  # Phase 2b.1 — doc-reader proxy extrac
 app.include_router(_email_thread_router)  # POST /chat/thread/{id}/email — proxy to mobius-skills/email
 app.include_router(_admin_router)  # Dev-token minter + future ops-only endpoints
 app.include_router(_auth_proxy_router)  # 2026-05-06 — /api/v1/auth/* + /api/v1/public-config → mobius-user
+app.include_router(_user_tools_router)  # GET/PUT/DELETE /user/tools — per-user tool policy settings
 
 # Provider skill runs as its own server (provider-roster-credentialing, :8011).
 # Chat calls it via CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL.
@@ -1616,6 +1618,10 @@ _SKILL_LLM_ALLOWED_STAGES = frozenset({
     # craft-mode sends. Goes through the bandit so we learn which model
     # produces emails users actually release vs. discard.
     "email_draft",
+    # mobius-skills/appeals-agent (2026-05-08): LLM root-cause analysis
+    # for denial investigations — edge-case reasoning (dual eligibility,
+    # COBRA, stale TPL, etc.) with likelihood scoring.
+    "appeals_investigation",
 })
 
 

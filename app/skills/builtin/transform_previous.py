@@ -262,5 +262,7 @@ register(
         requires_jurisdiction=False,
         follow_up_capable=True,
         visible_to_planner=True,
+        category="utility",
+        display_name="Transform Previous Answer",
     )
 )

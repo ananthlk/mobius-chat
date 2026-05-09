@@ -298,6 +298,8 @@ register(
         requires_jurisdiction=False,
         follow_up_capable=False,
         visible_to_planner=True,
+        category="documents",
+        display_name="Fetch Document",
     )
 )
 

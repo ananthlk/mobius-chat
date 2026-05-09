@@ -187,5 +187,7 @@ register(
         # + payer merged in via build_search_query.
         requires_jurisdiction=True,
         follow_up_capable=False,
+        category="web",
+        display_name="Google Search",
     )
 )

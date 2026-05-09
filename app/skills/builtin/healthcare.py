@@ -132,5 +132,7 @@ register(
         },
         requires_jurisdiction=False,
         follow_up_capable=False,
+        category="healthcare",
+        display_name="Healthcare Code Lookup",
     )
 )

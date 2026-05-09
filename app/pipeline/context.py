@@ -191,8 +191,14 @@ class PipelineContext:
     # signature doesn't TypeError on every turn).
     credentialing_options: dict[str, Any] | None = None
 
-    # UI chat mode (POST /chat chat_mode): copilot | agentic | quick
+    # UI chat mode (POST /chat chat_mode): copilot | agentic | quick | task
     chat_mode: str = "copilot"
+
+    # Tool policy: resolved in orchestrator from mode default + user subscriptions.
+    # None  = no filter (all tools visible to the planner).
+    # []    = no tools (task mode default, or user disabled everything).
+    # [..] = explicit allow-list passed to get_tool_manifest(allowed=...).
+    allowed_tools: list[str] | None = None
 
     # Set True when quick mode hits max rounds or produces a long answer — client shows "Full answer" link
     quick_truncated: bool = False

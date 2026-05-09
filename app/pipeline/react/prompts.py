@@ -42,6 +42,7 @@ REACT_MAX_ROUNDS_AGENTIC = 10  # 2026-04-24: bumped 6→10 for complex multi-hop
                                # in deploy/dev.env (was 180) so long agentic turns
                                # don't deadline-out mid-reasoning.
 REACT_MAX_ROUNDS_QUICK   = 2   # mini-container: fail-fast, brief answer
+REACT_MAX_ROUNDS_TASK    = 3   # task mode: same cap as copilot; skips integrator
 
 # Answers longer than this in quick mode signal that the user should
 # follow up in full chat.
@@ -49,22 +50,26 @@ QUICK_MODE_TRUNCATED_CHARS = 500
 
 
 def react_chat_mode_label(chat_mode: str | None) -> str:
-    """Normalized ReAct mode for prompts and UI: copilot (default), agentic, or quick."""
+    """Normalized ReAct mode for prompts and UI: copilot (default), agentic, quick, or task."""
     m = (chat_mode or "").strip().lower()
     if m == "agentic":
         return "agentic"
     if m == "quick":
         return "quick"
+    if m == "task":
+        return "task"
     return "copilot"
 
 
 def react_max_iterations_for_mode(chat_mode: str | None) -> int:
-    """Quick: 2 rounds (mini container). Copilot: 3. Agentic: 10."""
+    """Quick: 2 rounds (mini container). Copilot/Task: 3. Agentic: 10."""
     label = react_chat_mode_label(chat_mode)
     if label == "agentic":
         return REACT_MAX_ROUNDS_AGENTIC
     if label == "quick":
         return REACT_MAX_ROUNDS_QUICK
+    if label == "task":
+        return REACT_MAX_ROUNDS_TASK
     return REACT_MAX_ROUNDS_COPILOT
 
 
@@ -222,8 +227,9 @@ def _react_reasoning_system(
     max_iterations: int,
     chat_mode: str,
     user_profile: dict | None = None,
+    allowed_tools: list[str] | None = None,
 ) -> str:
-    """Build reasoning system prompt; chat_mode is 'copilot', 'agentic', or 'quick'.
+    """Build reasoning system prompt; chat_mode is 'copilot', 'agentic', 'quick', or 'task'.
 
     ``user_profile`` is the mobius-user profile dict (see
     Mobius-user/CONSUMER_RECIPE_PROFILE.md). When present, its
@@ -232,8 +238,37 @@ def _react_reasoning_system(
     thinking in the user's preferred voice + autonomy style. Default
     None for the un-onboarded case + the worker-prewarm caller in
     main.py (which doesn't have a real ctx).
+
+    ``allowed_tools`` is ``ctx.allowed_tools`` resolved by the orchestrator:
+        None  — no filter (all tools visible).
+        []    — no tools available; use context-only system prompt.
+        [..] — filtered manifest rendered from this list.
     """
     mode = (chat_mode or "copilot").strip().lower()
+
+    # No-tools path: either task mode OR ctx.allowed_tools == [].
+    # Unify here so the prompt is identical regardless of why tools are absent.
+    _no_tools = (mode == "task") or (allowed_tools is not None and len(allowed_tools) == 0)
+    if _no_tools:
+        return (
+            "You are a precise assistant. You have been given all the facts you need "
+            "in the SYSTEM CONTEXT block of the user message.\n\n"
+            "Rules:\n"
+            "1. Answer ONLY from the provided system context. Do NOT call any tools.\n"
+            "2. Return is_complete=true immediately with your full answer.\n"
+            "3. Be thorough — include every relevant detail from the context.\n\n"
+            "Output ONLY valid JSON:\n"
+            "{\n"
+            '  "thought": "<one sentence: what the context says>",\n'
+            '  "tool": null,\n'
+            '  "inputs": {},\n'
+            '  "is_complete": true,\n'
+            '  "answer": "<complete answer drawn from the system context>",\n'
+            '  "sources": [],\n'
+            '  "confidence": "high"\n'
+            "}"
+        )
+
     if mode not in ("agentic", "quick"):
         mode = "copilot"
     if mode == "quick":
@@ -270,7 +305,7 @@ Quality bar for this mode:
 You are Mobius — an AI assistant for CMHC billing coordinators in Florida.
 You do NOT answer questions directly. You decide which tool to use.
 {mode_block}
-{_tool_manifest_module.get_tool_manifest()}
+{_tool_manifest_module.get_tool_manifest(allowed=allowed_tools)}
 
 Output ONLY valid JSON. No preamble, no markdown, no explanation.
 
@@ -432,6 +467,31 @@ def build_reasoning_context(
     None silently skip the guidance pathway — identical to
     pre-guidance-mode behavior.
     """
+    # No-tools path: task mode OR ctx.allowed_tools == [].
+    # Skip all tool guidance (strategy arms, upload hints, jurisdiction, etc.)
+    # — they actively instruct the LLM to call tools, overriding the no-tools
+    # system prompt. Instead give only the system_context and the question.
+    _allowed_tools = getattr(ctx, "allowed_tools", None)
+    _is_no_tools = (
+        react_chat_mode_label(getattr(ctx, "chat_mode", None)) == "task"
+        or (_allowed_tools is not None and len(_allowed_tools) == 0)
+    )
+    if _is_no_tools:
+        sys_ctx = (getattr(ctx, "system_context", None) or "").strip()
+        question = (getattr(ctx, "effective_message", None) or ctx.message or "").strip()
+        parts = []
+        if sys_ctx:
+            parts.append(f"SYSTEM CONTEXT (use this as your only source):\n{sys_ctx}")
+        if tool_results:
+            # Include prior tool output on subsequent rounds (shouldn't normally
+            # happen in no-tools mode, but be safe rather than drop evidence).
+            for tr in tool_results:
+                res_text = (tr.get("result") or "").strip()
+                if res_text:
+                    parts.append(f"Context:\n{res_text}")
+        parts.append(f"User question: {question}")
+        return "\n\n".join(parts)
+
     parts = []
 
     # Guidance mode gets prepended so it's the first thing the planner

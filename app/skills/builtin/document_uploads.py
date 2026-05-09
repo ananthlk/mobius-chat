@@ -97,6 +97,8 @@ register(
         handler=_run_document_upload_skill,
         requires_jurisdiction=False,
         follow_up_capable=False,
+        category="documents",
+        display_name="Document Upload",
     )
 )
 
@@ -121,5 +123,7 @@ register(
         handler=_run_list_thread_document_uploads,
         requires_jurisdiction=False,
         follow_up_capable=True,
+        category="documents",
+        display_name="List Thread Uploads",
     )
 )

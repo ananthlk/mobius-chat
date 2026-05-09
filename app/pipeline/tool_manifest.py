@@ -60,7 +60,8 @@ Quick-pick guide (use the first match):
   │ Specific org profile (name given)              → get_org_profile    │
   │ How org X compares to peers                    → get_org_benchmark  │
   │ Market share over time (2019-2024)             → get_market_timeseries │
-  │ Rate benchmarks, HCPCS rates                   → get_rate_benchmarks │
+  │ Official FL Medicaid fee schedule (ceiling rate) → get_published_rates │
+  │ Rate benchmarks, actual paid P50/P75           → get_rate_benchmarks │
   │ Service line breakdown / mix                   → get_market_decomposition │
   │ Find an org by name / get its slug             → search_orgs        │
   │ All BHPF or FBHA member orgs                   → get_org_universe   │
@@ -283,7 +284,7 @@ incomplete, fix it on the MCP server side so this section stays useful to
 the planner."""
 
 
-def _auto_discovered_block() -> str:
+def _auto_discovered_block(allowed: frozenset[str] | None = None) -> str:
     """Render the MCP-sourced, planner-visible skills that aren't in the
     curated builtin ordering.
 
@@ -295,7 +296,8 @@ def _auto_discovered_block() -> str:
       - the name is NOT already rendered in the curated ``_REGISTRY_ORDER``
         block above (which would mean a builtin and an MCP tool share a
         name — "builtins win" collision policy already prevented the
-        register, so this is belt-and-suspenders).
+        register, so this is belt-and-suspenders), AND
+      - when ``allowed`` is provided, the name is in the allowed set.
 
     Returns an empty string when no MCP tools are registered so callers
     can skip the section header.
@@ -303,7 +305,11 @@ def _auto_discovered_block() -> str:
     mcp_names = registry.names_by_source("mcp")
     visible = registry.planner_visible_names()
     curated = frozenset(_REGISTRY_ORDER)
-    render = tuple(sorted(n for n in mcp_names if n in visible and n not in curated))
+    render = tuple(sorted(
+        n for n in mcp_names
+        if n in visible and n not in curated
+        and (allowed is None or n in allowed)
+    ))
     if not render:
         return ""
     body = registry.manifest_text(names=render)
@@ -312,60 +318,97 @@ def _auto_discovered_block() -> str:
     return f"{_AUTO_DISCOVERED_HEADER}\n\n{body}"
 
 
-def _compose_manifest() -> str:
+# Tools that are router-owned (not in the SkillSpec registry) but still
+# need to be filterable via ``allowed``.  Each maps to the prose block
+# variable that carries its manifest text.
+_ROUTER_OWNED_BLOCKS: dict[str, str] = {
+    "search_corpus": "_SEARCH_CORPUS_BLOCK",
+    "healthcare_npi_lookup": "_HEALTHCARE_NPI_LOOKUP_BLOCK",
+    "search_uploaded_document": "_SEARCH_UPLOADED_DOCUMENT_BLOCK",
+    "refuse": "_REFUSE_BLOCK",
+    # Curator tools aren't in the registry either
+    "lookup_authoritative_sources": "_LOOKUP_AUTHORITATIVE_SOURCES_BLOCK",
+    "ingest_url": "_INGEST_URL_BLOCK",
+}
+
+
+def _compose_manifest(allowed: frozenset[str] | None = None) -> str:
     """Splice router-owned prose with registry-rendered skill blocks.
 
     Block order (deliberate — planner reads top-down):
       1. Curated router-owned + builtin skills (stable, hand-tuned prose).
       2. Auto-discovered MCP skills (dynamic, rebuilt each call).
       3. Per-tool capabilities footer (structured JSON for parser use).
+
+    Args:
+        allowed: When provided, only tools whose names are in this set are
+            rendered into the manifest. ``None`` means "render everything"
+            (the normal path for all modes except task mode or when a user
+            has restricted their tool list).
     """
+    def _allow(name: str) -> bool:
+        return allowed is None or name in allowed
+
+    def _registry_block(name: str) -> str:
+        if not _allow(name):
+            return ""
+        return registry.manifest_text(names=(name,))
+
+    def _router_block(name: str, prose: str) -> str:
+        if not _allow(name):
+            return ""
+        return prose
+
     curated_blocks = [
         # FL Medicaid data routing gate — must come FIRST so the planner
         # sees the quick-pick guide before it reaches search_corpus.
         # Without this, the planner over-selects search_corpus for
         # quantitative market data questions (which aren't in the corpus).
-        _FL_MEDICAID_DATA_ROUTING_BLOCK,
+        _FL_MEDICAID_DATA_ROUTING_BLOCK if _allow("get_top_orgs") or allowed is None else "",
         # Methodology primer — the search tools below reference its
         # concepts (BM25 / vector / RRF). Without this the LLM has to
         # infer mechanism from per-tool symptom lists.
-        _RETRIEVAL_METHODOLOGY_PRIMER,
-        _SEARCH_CORPUS_BLOCK,
-        _RECALL_SEARCH_BLOCK,
-        _PRECISION_SEARCH_BLOCK,
+        _RETRIEVAL_METHODOLOGY_PRIMER if _allow("search_corpus") else "",
+        _router_block("search_corpus", _SEARCH_CORPUS_BLOCK),
+        _RECALL_SEARCH_BLOCK,   # retired prose — always empty
+        _PRECISION_SEARCH_BLOCK,  # retired prose — always empty
         # fetch_document — registered via SkillSpec; rendered by registry.
         # Distinct from search_corpus: returns a download URL, not an answer.
-        registry.manifest_text(names=("fetch_document",)),
-        registry.manifest_text(names=("healthcare_query",)),
-        _HEALTHCARE_NPI_LOOKUP_BLOCK,
-        registry.manifest_text(names=("document_upload_skill",)),
-        registry.manifest_text(names=("list_thread_document_uploads",)),
-        _SEARCH_UPLOADED_DOCUMENT_BLOCK,
-        registry.manifest_text(names=("google_search",)),
-        registry.manifest_text(names=("web_scrape",)),
+        _registry_block("fetch_document"),
+        _registry_block("healthcare_query"),
+        _router_block("healthcare_npi_lookup", _HEALTHCARE_NPI_LOOKUP_BLOCK),
+        _registry_block("document_upload_skill"),
+        _registry_block("list_thread_document_uploads"),
+        _router_block("search_uploaded_document", _SEARCH_UPLOADED_DOCUMENT_BLOCK),
+        _registry_block("google_search"),
+        _registry_block("web_scrape"),
         # vibe: short, work-adjacent vibe lines (toast/empathy/dry obs/etc.)
         # Registered but was missing from the planner manifest until 2026-04-25.
-        registry.manifest_text(names=("vibe",)),
+        _registry_block("vibe"),
         # Phase 13.6 — conversation-aware planner. Continuation/
         # transformation requests ("convert this to an appeal letter",
         # "make it shorter", "rewrite for X") MUST route here, NOT to
         # search_corpus / lookup_authoritative_sources. Placed before
         # the curator/google blocks so the planner sees it as a first-
         # class option for follow-up turns.
-        registry.manifest_text(names=("transform_previous_answer",)),
+        _registry_block("transform_previous_answer"),
         # Curator tools (Phase 13.5) — registry of URLs Mobius knows
         # about, including non-ingested ones. Ordered after the search
         # tools so the planner reaches for search_corpus first; only
         # falls through to lookup_authoritative_sources when corpus
         # comes up empty.
-        _LOOKUP_AUTHORITATIVE_SOURCES_BLOCK,
-        _INGEST_URL_BLOCK,
-        _REFUSE_BLOCK,
+        _router_block("lookup_authoritative_sources", _LOOKUP_AUTHORITATIVE_SOURCES_BLOCK),
+        _router_block("ingest_url", _INGEST_URL_BLOCK),
+        _router_block("refuse", _REFUSE_BLOCK),
     ]
-    auto_block = _auto_discovered_block()
+    auto_block = _auto_discovered_block(allowed=allowed)
     if auto_block:
         curated_blocks.append(auto_block)
     joined = "\n\n".join(b for b in curated_blocks if b.strip())
+    if not joined.strip():
+        # No tools rendered (allowed=[]) — return a minimal no-tools notice
+        # so the system prompt is valid but the planner doesn't hallucinate tools.
+        return "\nNo tools available for this request.\n"
     return f"""
 AVAILABLE TOOLS — match the question to the tool whose capabilities fit.
 If the first tool fails (e.g. returns no results), try the next-best tool.
@@ -385,8 +428,17 @@ PER-TOOL CAPABILITIES (explicit):
 """
 
 
-def get_tool_manifest() -> str:
+def get_tool_manifest(allowed: list[str] | None = None) -> str:
     """Fresh manifest, composed at call time.
+
+    Args:
+        allowed: Optional list of tool names to include. When None (the
+            normal path), the full manifest is rendered. When an empty
+            list, the manifest contains "No tools available." When a
+            non-empty list, only the named tools appear — this is the
+            tool-policy filter path used when a user has disabled some
+            tools or when the pipeline runs in task mode with a restricted
+            tool set.
 
     Lazy composition matters because ``register_mcp_skills()`` runs at
     FastAPI startup — AFTER modules that depend on the manifest may have
@@ -396,7 +448,10 @@ def get_tool_manifest() -> str:
     Re-rendering each call costs one registry scan (<1ms for <100 skills)
     which is negligible compared to the LLM call it feeds into.
     """
-    return _compose_manifest()
+    allowed_set: frozenset[str] | None = (
+        None if allowed is None else frozenset(allowed)
+    )
+    return _compose_manifest(allowed=allowed_set)
 
 
 # Back-compat: modules that still do ``from ... import TOOL_MANIFEST``

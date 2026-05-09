@@ -122,6 +122,15 @@ def _spec_from_mcp_tool(tool: dict[str, Any]) -> SkillSpec | None:
     if not isinstance(schema, dict):
         schema = {}
 
+    # Infer category from name conventions so MCP analytics tools
+    # (get_top_orgs, get_org_profile, get_rate_benchmarks, etc.) group
+    # correctly in the UI without manual tagging.
+    cat = "analytics"
+    if name.startswith(("lookup_", "search_", "ingest_")):
+        cat = "web"
+    elif name.startswith(("npi_", "healthcare_")):
+        cat = "healthcare"
+
     return SkillSpec(
         name=name,
         description=description,
@@ -140,6 +149,8 @@ def _spec_from_mcp_tool(tool: dict[str, Any]) -> SkillSpec | None:
         # ``app.pipeline.tool_manifest._compose_manifest`` for the
         # rendering contract.
         source="mcp",
+        category=cat,
+        display_name=name.replace("_", " ").title(),
     )
 
 

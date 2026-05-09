@@ -45,7 +45,60 @@ logger = logging.getLogger(__name__)
 
 
 def _normalize_chat_mode(raw: str | None) -> str:
-    return "agentic" if (raw or "").strip().lower() == "agentic" else "copilot"
+    m = (raw or "").strip().lower()
+    if m == "agentic":
+        return "agentic"
+    if m == "task":
+        return "task"
+    return "copilot"
+
+
+def _resolve_allowed_tools(
+    *,
+    mode: str,
+    user_id: str | None,
+    request_policy: list[str] | None = None,
+) -> list[str] | None:
+    """Compute the allowed-tool list for this turn.
+
+    Resolution order (last wins):
+      1. Mode default — task mode starts with [] (no tools); all other
+         modes start with None (unrestricted).
+      2. Per-user subscriptions from ``user_tool_subscriptions`` table —
+         a user can enable extra tools or block defaults.
+      3. Per-request override (``ChatRequest.tool_policy``, future field)
+         — an API caller can further narrow the list for a single turn.
+
+    Returns:
+        ``None``  — no filter; pipeline uses all mode-appropriate tools.
+        ``[]``    — all tools blocked.
+        ``[...]`` — explicit non-empty allow-list.
+    """
+    # Mode baseline
+    mode_defaults: list[str] | None = None
+    if mode == "task":
+        mode_defaults = []  # task mode: no tools by default
+
+    # User subscriptions (best-effort — DB hiccup → degrade to mode default)
+    try:
+        from app.storage.tool_policy import get_allowed_tools_for_user
+        allowed = get_allowed_tools_for_user(user_id, mode_defaults=mode_defaults)
+    except Exception as exc:
+        logger.debug("_resolve_allowed_tools: user-policy fetch failed (%s), using mode default", exc)
+        allowed = mode_defaults
+
+    # Per-request override (future hook — caller can pass e.g. ["search_corpus"])
+    if request_policy is not None:
+        # Intersect: only tools that are both in the user's list and the
+        # request override.  If the user list was None (unrestricted),
+        # the request policy becomes the new ceiling.
+        if allowed is None:
+            allowed = list(request_policy)
+        else:
+            req_set = frozenset(request_policy)
+            allowed = [t for t in allowed if t in req_set]
+
+    return allowed
 
 
 # Human-readable labels for model emit (thinking panel)
@@ -496,6 +549,14 @@ def run_pipeline(
             ctx.chat_mode = _normalize_chat_mode(prev_mode if isinstance(prev_mode, str) else None)
         ctx.merged_state = {**(ctx.merged_state or {}), "last_chat_mode": ctx.chat_mode}
 
+        # Resolve allowed tools: mode default ∩ user subscriptions ∩ request policy.
+        # ctx.allowed_tools is None (no filter) or list[str] (explicit allow-list).
+        # The ReAct loop and tool_manifest consume this to filter what the planner sees.
+        ctx.allowed_tools = _resolve_allowed_tools(
+            mode=ctx.chat_mode,
+            user_id=getattr(ctx, "user_id", None),
+        )
+
         obj_raw = (ctx.merged_state or {}).get("master_objective")
         has_active = bool(obj_raw and (obj_raw.get("status") or "active") == "active")
         if user_wants_to_end_pursuit(ctx.message or ""):
@@ -631,6 +692,19 @@ def run_pipeline(
             if ctx.classification not in ("slot_fill", "jurisdiction_change"):
                 update_answer_set_from_user_context(ctx)
             _debug_plan_state("PRE-INTEGRATOR", ctx)
+
+        # Task mode: skip the integrator/composer entirely.
+        # Return the ReAct loop's final answer as raw markdown.
+        # The appeals agent (and any other programmatic caller) reads
+        # raw_text directly from the completed SSE event and the poll
+        # endpoint — it does not need an AnswerCard envelope.
+        if ctx.chat_mode == "task":
+            ctx.response_payload = {
+                "raw_text": ctx.final_message or "",
+                "status": "completed",
+            }
+            _publish_completed(ctx, t0)
+            return
 
         trace_entered(f"pipeline.stage.{INTEGRATE}", correlation_id=correlation_id[:8])
         try:

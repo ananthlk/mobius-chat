@@ -289,6 +289,7 @@ class TestEntityAndFollowUpViews:
             "list_thread_document_uploads",
             "vibe",
             "transform_previous_answer",
+            "search_corpus",
         })
 
 

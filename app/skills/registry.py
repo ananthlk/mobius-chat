@@ -218,6 +218,27 @@ class SkillSpec:
     end-user-driven selection, or tools whose description is too weak
     to safely expose to the planner."""
 
+    category: str = "general"
+    """Human-facing category used for UI grouping and per-user tool policy.
+
+    The tool-settings UI groups skills by this label so users can
+    enable/disable whole themes (e.g. "web" = google_search + web_scrape).
+    Known values (add more as needed — there's no closed enum):
+
+      corpus     — curated corpus search + uploaded documents
+      healthcare — payer / billing / clinical coding queries (CPT, HCPCS)
+      npi        — NPPES provider registry lookups
+      web        — live web search + scraping + URL ingestion
+      analytics  — FL Medicaid BH market-data tools (get_top_orgs, etc.)
+      documents  — document upload / download / management
+      utility    — conversation helpers (vibe, transform_previous, cache)
+      general    — catch-all for skills that don't map to a theme
+    """
+
+    display_name: str = ""
+    """Optional user-friendly label for the tool settings UI.
+    Falls back to ``name`` when empty."""
+
 
 # ── Registry ──────────────────────────────────────────────────────────
 
@@ -304,6 +325,53 @@ def names_by_source(source: str) -> frozenset[str]:
     Used by ``tool_manifest.py`` to render the "auto-discovered" MCP
     section separately from the curated builtin section."""
     return frozenset(s.name for s in _REGISTRY.values() if s.source == source)
+
+
+def names_by_category(category: str) -> frozenset[str]:
+    """All registered skill names in a given category."""
+    return frozenset(s.name for s in _REGISTRY.values() if s.category == category)
+
+
+def skills_catalog() -> list[dict]:
+    """Return a list of skill metadata dicts for the UI tool-settings page.
+
+    Each dict has: name, display_name, description (first line only),
+    category, source, visible_to_planner. Sorted by category then name.
+    Router-owned skills not in the registry (search_corpus,
+    healthcare_npi_lookup, search_uploaded_document, refuse) are
+    appended as synthetic entries so the UI sees a complete picture.
+    """
+    rows: list[dict] = []
+    for spec in sorted(_REGISTRY.values(), key=lambda s: (s.category, s.name)):
+        rows.append({
+            "name": spec.name,
+            "display_name": spec.display_name or spec.name.replace("_", " ").title(),
+            "description": (spec.description or "").splitlines()[0].strip(),
+            "category": spec.category,
+            "source": spec.source,
+            "visible_to_planner": spec.visible_to_planner,
+        })
+    # Append router-owned synthetic entries — these can't be SkillSpecs
+    # because they dispatch directly in react_loop, not via answer_tool.
+    # They still need to appear in the UI and be blockable via tool policy.
+    _ROUTER_OWNED = [
+        ("search_corpus", "corpus", "Search curated policy/billing corpus (hybrid BM25+vector)."),
+        ("search_uploaded_document", "documents", "Search inside user-uploaded documents on this thread."),
+        ("healthcare_npi_lookup", "npi", "Look up a provider by NPI number from the NPPES registry."),
+        ("refuse", "utility", "Hard-stop tool used for PHI / clinical guardrails."),
+    ]
+    registered = {r["name"] for r in rows}
+    for tool_name, cat, desc in _ROUTER_OWNED:
+        if tool_name not in registered:
+            rows.append({
+                "name": tool_name,
+                "display_name": tool_name.replace("_", " ").title(),
+                "description": desc,
+                "category": cat,
+                "source": "builtin",
+                "visible_to_planner": True,
+            })
+    return rows
 
 
 def planner_visible_names() -> frozenset[str]:

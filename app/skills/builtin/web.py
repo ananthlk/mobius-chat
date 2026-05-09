@@ -99,5 +99,7 @@ register(
         },
         requires_jurisdiction=False,
         follow_up_capable=False,
+        category="web",
+        display_name="Web Scrape",
     )
 )

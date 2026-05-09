@@ -491,6 +491,8 @@ SPEC = SkillSpec(
     supports_modes=("copilot", "quick"),
     source="builtin",
     visible_to_planner=True,
+    category="utility",
+    display_name="Cached Answer Lookup",
 )
 
 
