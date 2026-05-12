@@ -9218,6 +9218,289 @@ ${message}`;
     _wireLegacySuiteButton("btnOpenSkillPipeline", "roster");
     _wireLegacySuiteButton("btnOpenFinancialStrategy", "strategy");
     _wireLegacySuiteButton("btnOpenRoster", "roster");
+
+    // ── Customize tab ────────────────────────────────────────────────
+    (function setupCustomizeTab() {
+      const tabOverview   = document.getElementById("skillsTabOverview");
+      const tabCustomize  = document.getElementById("skillsTabCustomize");
+      const panelOverview = document.getElementById("skillsTabPanelOverview");
+      const panelCustomize= document.getElementById("skillsTabPanelCustomize");
+      const czBody        = document.getElementById("skillsCustomizeBody");
+      if (!tabOverview || !tabCustomize || !czBody) return;
+
+      function _setActiveTab(tab) {
+        const isCustomize = (tab === "customize");
+        tabOverview.classList.toggle("skills-tab--active", !isCustomize);
+        tabOverview.setAttribute("aria-selected", String(!isCustomize));
+        tabCustomize.classList.toggle("skills-tab--active", isCustomize);
+        tabCustomize.setAttribute("aria-selected", String(isCustomize));
+        panelOverview.hidden  = isCustomize;
+        panelCustomize.hidden = !isCustomize;
+        if (isCustomize) _loadCustomize(); // always fetch fresh on tab open
+      }
+
+      tabOverview.addEventListener("click",  () => _setActiveTab("overview"));
+      tabCustomize.addEventListener("click", () => _setActiveTab("customize"));
+
+      // ── Fetch + render ──────────────────────────────────────────────
+
+      async function _loadCustomize() {
+        czBody.innerHTML = '<p class="skills-customize-loading">Loading…</p>';
+
+        // Auth header — `auth` is the AuthService instance created in run()
+        // getAuthHeader() is async so must be awaited.
+        const authHdr = (await auth?.getAuthHeader?.()) ?? {};
+        const isAuthed = Object.keys(authHdr).length > 0;
+
+        if (!isAuthed) {
+          czBody.innerHTML = '<p class="skills-customize-auth">Sign in to customize which tools Mobius uses for your conversations.</p>';
+          return;
+        }
+
+        let catalog;
+        try {
+          const resp = await fetch((window.API_BASE || "") + "/user/tools", {
+            headers: { ...authHdr, "Accept": "application/json" }
+          });
+          if (resp.status === 401) {
+            czBody.innerHTML = '<p class="skills-customize-auth">Sign in to customize which tools Mobius uses for your conversations.</p>';
+            return;
+          }
+          if (!resp.ok) throw new Error("HTTP " + resp.status);
+          catalog = await resp.json();
+        } catch (err) {
+          czBody.innerHTML = '<p class="skills-customize-empty">Could not load tool settings. Try again later.</p>';
+          console.warn("[customize-tools] fetch failed:", err);
+          return;
+        }
+
+        _renderCatalog(catalog, authHdr);
+      }
+
+      function _renderCatalog(catalog, authHdr) {
+        const { tools = [], categories = [] } = catalog;
+        if (!tools.length) {
+          czBody.innerHTML = '<p class="skills-customize-empty">No configurable tools available.</p>';
+          return;
+        }
+
+        // Group by category preserving server order
+        const grouped = {};
+        for (const cat of categories) grouped[cat] = [];
+        for (const t of tools) {
+          if (!grouped[t.category]) grouped[t.category] = [];
+          grouped[t.category].push(t);
+        }
+
+        const CAT_LABELS = {
+          corpus: "Knowledge Corpus",
+          healthcare: "Healthcare",
+          web: "Web & Search",
+          documents: "Documents",
+          analytics: "Analytics",
+          utility: "Utilities",
+          general: "General",
+        };
+
+        // ── PUT one tool ──────────────────────────────────────────────
+        async function _putTool(toolName, enabled) {
+          const r = await fetch(
+            (window.API_BASE || "") + "/user/tools/" + encodeURIComponent(toolName),
+            {
+              method: "PUT",
+              headers: { ...authHdr, "Content-Type": "application/json" },
+              body: JSON.stringify({ enabled })
+            }
+          );
+          if (!r.ok) throw new Error("HTTP " + r.status);
+        }
+
+        // ── Build one individual tool row (hidden by default) ─────────
+        function _makeToolRow(tool) {
+          const row = document.createElement("div");
+          row.className = "skills-cz-tool-row skills-cz-tool-row--sub";
+
+          const info = document.createElement("div");
+          info.className = "skills-cz-tool-info";
+          const nameEl = document.createElement("div");
+          nameEl.className = "skills-cz-tool-name";
+          nameEl.textContent = tool.display_name || tool.name;
+          info.appendChild(nameEl);
+          row.appendChild(info);
+
+          const label = document.createElement("label");
+          label.className = "skills-cz-toggle skills-cz-toggle--sm";
+          const cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.checked = tool.enabled !== false;
+          cb.dataset.toolName = tool.name;
+          const slider = document.createElement("span");
+          slider.className = "skills-cz-toggle-slider";
+          label.appendChild(cb);
+          label.appendChild(slider);
+          row.appendChild(label);
+
+          return { row, cb };
+        }
+
+        // ── Compute category state from child checkboxes ──────────────
+        function _catState(cbs) {
+          const total = cbs.length;
+          const on = cbs.filter(c => c.checked).length;
+          if (on === total) return "all";
+          if (on === 0)    return "none";
+          return "mixed";
+        }
+
+        // ── Update the category toggle to reflect child state ─────────
+        function _syncCatToggle(catCb, cbs) {
+          const state = _catState(cbs);
+          catCb.checked = state !== "none";
+          catCb.indeterminate = state === "mixed";
+        }
+
+        const wrap = document.createElement("div");
+        wrap.className = "skills-customize-categories";
+
+        for (const cat of categories) {
+          const rows = grouped[cat];
+          if (!rows || !rows.length) continue;
+
+          // ── Category header row ─────────────────────────────────────
+          const section = document.createElement("div");
+          section.className = "skills-cz-cat-section";
+
+          const catRow = document.createElement("div");
+          catRow.className = "skills-cz-cat-row";
+
+          // Expand toggle (arrow)
+          const arrow = document.createElement("button");
+          arrow.type = "button";
+          arrow.className = "skills-cz-cat-arrow";
+          arrow.setAttribute("aria-expanded", "false");
+          arrow.innerHTML = "&#8250;"; // ›
+          catRow.appendChild(arrow);
+
+          // Category label + count
+          const catInfo = document.createElement("div");
+          catInfo.className = "skills-cz-cat-info";
+          const catLabel = document.createElement("span");
+          catLabel.className = "skills-cz-cat-label";
+          catLabel.textContent = CAT_LABELS[cat] || cat.replace(/_/g, " ");
+          const catCount = document.createElement("span");
+          catCount.className = "skills-cz-cat-count";
+          catCount.textContent = rows.length + (rows.length === 1 ? " tool" : " tools");
+          catInfo.appendChild(catLabel);
+          catInfo.appendChild(catCount);
+          catRow.appendChild(catInfo);
+
+          // Category-level toggle
+          const catToggleLabel = document.createElement("label");
+          catToggleLabel.className = "skills-cz-toggle";
+          const catCb = document.createElement("input");
+          catCb.type = "checkbox";
+          const catSlider = document.createElement("span");
+          catSlider.className = "skills-cz-toggle-slider";
+          catToggleLabel.appendChild(catCb);
+          catToggleLabel.appendChild(catSlider);
+          catRow.appendChild(catToggleLabel);
+          section.appendChild(catRow);
+
+          // ── Drill-down panel (collapsed by default) ─────────────────
+          const drill = document.createElement("div");
+          drill.className = "skills-cz-drill";
+          drill.style.display = "none";
+
+          const childCbs = [];
+          for (const tool of rows) {
+            const { row, cb } = _makeToolRow(tool);
+            drill.appendChild(row);
+            childCbs.push(cb);
+
+            cb.addEventListener("change", async (e) => {
+              const enabled = e.target.checked;
+              cb.disabled = true;
+              try {
+                await _putTool(tool.name, enabled);
+                _syncCatToggle(catCb, childCbs);
+              } catch (err) {
+                console.warn("[customize-tools] PUT failed:", err);
+                cb.checked = !enabled;
+                _syncCatToggle(catCb, childCbs);
+              } finally {
+                cb.disabled = false;
+              }
+            });
+          }
+          section.appendChild(drill);
+
+          // Seed category toggle state from tool states
+          _syncCatToggle(catCb, childCbs);
+
+          // ── Category toggle: set ALL tools in group ──────────────────
+          catCb.addEventListener("change", async (e) => {
+            const enabled = e.target.checked;
+            catCb.disabled = true;
+            // Optimistically update children
+            for (const c of childCbs) c.checked = enabled;
+            try {
+              await Promise.all(
+                rows.map(t => _putTool(t.name, enabled))
+              );
+              catCb.indeterminate = false;
+            } catch (err) {
+              console.warn("[customize-tools] batch PUT failed:", err);
+              await _loadCustomize(); // re-fetch on failure
+            } finally {
+              catCb.disabled = false;
+            }
+          });
+
+          // ── Arrow: expand / collapse drill panel ─────────────────────
+          arrow.addEventListener("click", () => {
+            const open = drill.style.display !== "none";
+            drill.style.display = open ? "none" : "flex";
+            arrow.setAttribute("aria-expanded", String(!open));
+            arrow.classList.toggle("skills-cz-cat-arrow--open", !open);
+          });
+
+          // Clicking label text also toggles drill
+          catInfo.style.cursor = "pointer";
+          catInfo.addEventListener("click", () => arrow.click());
+
+          wrap.appendChild(section);
+        }
+
+        // ── Restore defaults footer ───────────────────────────────────
+        const footer = document.createElement("div");
+        footer.className = "skills-cz-footer";
+        const restoreBtn = document.createElement("button");
+        restoreBtn.type = "button";
+        restoreBtn.className = "skills-cz-restore-btn";
+        restoreBtn.textContent = "Restore defaults";
+        restoreBtn.addEventListener("click", async () => {
+          restoreBtn.disabled = true;
+          restoreBtn.textContent = "Restoring…";
+          try {
+            const r = await fetch(
+              (window.API_BASE || "") + "/user/tools/reset",
+              { method: "POST", headers: authHdr }
+            );
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            await _loadCustomize();
+          } catch (err) {
+            console.warn("[customize-tools] reset failed:", err);
+            restoreBtn.disabled = false;
+            restoreBtn.textContent = "Restore defaults";
+          }
+        });
+        footer.appendChild(restoreBtn);
+        wrap.appendChild(footer);
+
+        czBody.innerHTML = "";
+        czBody.appendChild(wrap);
+      }
+    })();
   })();
   _initLandingDashboard();
 }

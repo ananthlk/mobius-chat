@@ -824,15 +824,25 @@ CREDENTIALING_SKILL_STAGES: list[str] = [
     "credentialing_report_qa",
 ]
 
+# appeals-agent letter pipeline stages — need high output caps for full letter text.
+APPEALS_LETTER_STAGES: list[str] = [
+    "appeals_compose",      # Agent 1: formal letter draft         (up to 2000 tokens)
+    "appeals_policy",       # Agent 2: policy citation revision    (up to 2000 tokens)
+    "appeals_factcheck",    # Agent 3: factual accuracy flags      (up to 600 tokens)
+    "appeals_denial_sim",   # Agent 4: denial simulation findings  (up to 600 tokens)
+    "appeals_final",        # Agent 5: final authoritative letter  (up to 2500 tokens)
+    "appeals_packet",       # Metadata: docs + next steps          (up to 800 tokens)
+]
+
 # Chat integrator when Medicaid NPI / roster payloads are in the consolidator JSON (see integrator_llm_stage).
 INTEGRATOR_ROSTER_STAGE = "integrator_roster"
 
-REASONING_STAGES: list[str] = list(CORE_REASONING_STAGES) + list(CREDENTIALING_SKILL_STAGES)
+REASONING_STAGES: list[str] = list(CORE_REASONING_STAGES) + list(CREDENTIALING_SKILL_STAGES) + list(APPEALS_LETTER_STAGES)
 
 
 def vertex_roster_eligible_stages() -> list[str]:
-    """Stages for Gemini 2.5 Pro/Flash only: core chat + credentialing skill + heavy roster integrator."""
-    return list(CORE_REASONING_STAGES) + list(CREDENTIALING_SKILL_STAGES) + [INTEGRATOR_ROSTER_STAGE]
+    """Stages for Gemini 2.5 Pro/Flash only: core chat + credentialing skill + appeals letter pipeline + heavy roster integrator."""
+    return list(CORE_REASONING_STAGES) + list(CREDENTIALING_SKILL_STAGES) + list(APPEALS_LETTER_STAGES) + [INTEGRATOR_ROSTER_STAGE]
 
 
 def integrator_llm_stage(ctx: Any) -> str:

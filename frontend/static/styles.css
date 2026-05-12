@@ -7970,3 +7970,205 @@ body {
   background: var(--assistant-bubble); color: inherit; cursor: pointer;
 }
 .queries-dump-pager button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── Skills modal tabs ─────────────────────────────────────────────── */
+.skills-tabs {
+  display: flex;
+  gap: 0.25rem;
+  margin-bottom: 1.5rem;
+  border-bottom: 1px solid var(--mobius-border);
+  padding-bottom: 0;
+}
+.skills-tab {
+  background: none;
+  border: none;
+  padding: 0.45rem 1rem;
+  font-size: var(--mobius-text-sm);
+  font-weight: 600;
+  color: var(--mobius-text-muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  border-radius: 6px 6px 0 0;
+  transition: color 0.15s, border-color 0.15s;
+}
+.skills-tab:hover { color: var(--mobius-text-primary); }
+.skills-tab--active {
+  color: var(--mobius-accent);
+  border-bottom-color: var(--mobius-accent);
+}
+
+/* ── Tool customize panel ──────────────────────────────────────────── */
+.skills-customize-loading,
+.skills-customize-empty,
+.skills-customize-auth {
+  padding: 2rem 0;
+  text-align: center;
+  color: var(--mobius-text-muted);
+  font-size: var(--mobius-text-sm);
+}
+.skills-customize-auth a {
+  color: var(--mobius-accent);
+  text-decoration: none;
+  font-weight: 600;
+}
+.skills-customize-auth a:hover { text-decoration: underline; }
+
+.skills-customize-categories { display: flex; flex-direction: column; gap: 1.5rem; }
+
+/* Category row — the primary interaction level */
+.skills-cz-cat-section { display: flex; flex-direction: column; }
+
+.skills-cz-cat-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.65rem 0.75rem;
+  background: var(--mobius-bg-card);
+  border: 1px solid var(--mobius-border);
+  border-radius: 8px;
+  transition: border-color 0.15s;
+}
+.skills-cz-cat-row:hover { border-color: var(--mobius-accent); }
+
+.skills-cz-cat-arrow {
+  background: none;
+  border: none;
+  padding: 0;
+  width: 18px;
+  height: 18px;
+  font-size: 1rem;
+  line-height: 1;
+  color: var(--mobius-text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: transform 0.18s, color 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.skills-cz-cat-arrow--open { transform: rotate(90deg); color: var(--mobius-accent); }
+
+.skills-cz-cat-info {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex: 1;
+  min-width: 0;
+}
+.skills-cz-cat-label {
+  font-size: var(--mobius-text-sm);
+  font-weight: 600;
+  color: var(--mobius-text-primary);
+}
+.skills-cz-cat-count {
+  font-size: var(--mobius-text-xs);
+  color: var(--mobius-text-muted);
+}
+
+/* Drill-down panel */
+.skills-cz-drill {
+  margin-top: 0.25rem;
+  margin-left: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding-bottom: 0.25rem;
+}
+
+/* Individual tool rows inside drill-down */
+.skills-cz-tool-row--sub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.45rem 0.75rem;
+  background: var(--mobius-bg-secondary, #f8f9fb);
+  border: 1px solid var(--mobius-border-light);
+  border-radius: 7px;
+  gap: 1rem;
+}
+
+.skills-cz-tool-info { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+.skills-cz-tool-name {
+  font-size: var(--mobius-text-sm);
+  font-weight: 500;
+  color: var(--mobius-text-secondary);
+}
+
+/* Small toggle variant for drill-down rows */
+.skills-cz-toggle--sm {
+  width: 28px;
+  height: 16px;
+}
+.skills-cz-toggle--sm .skills-cz-toggle-slider:before {
+  width: 10px;
+  height: 10px;
+  left: 3px;
+  top: 3px;
+}
+.skills-cz-toggle--sm input:checked + .skills-cz-toggle-slider:before {
+  transform: translateX(12px);
+}
+
+/* Toggle switch */
+.skills-cz-toggle {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.skills-cz-toggle input { opacity: 0; width: 0; height: 0; }
+.skills-cz-toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: var(--mobius-border-medium);
+  border-radius: 999px;
+  transition: background 0.2s;
+  cursor: pointer;
+}
+.skills-cz-toggle-slider:before {
+  content: "";
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  left: 3px;
+  top: 3px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+}
+.skills-cz-toggle input:checked + .skills-cz-toggle-slider {
+  background: var(--mobius-accent);
+}
+.skills-cz-toggle input:checked + .skills-cz-toggle-slider:before {
+  transform: translateX(16px);
+}
+.skills-cz-toggle input:disabled + .skills-cz-toggle-slider {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Restore defaults footer */
+.skills-cz-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 1rem;
+  border-top: 1px solid var(--mobius-border);
+  margin-top: 0.5rem;
+}
+.skills-cz-restore-btn {
+  background: none;
+  border: 1px solid var(--mobius-border);
+  border-radius: 7px;
+  padding: 0.4rem 1rem;
+  font-size: var(--mobius-text-sm);
+  color: var(--mobius-text-muted);
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.skills-cz-restore-btn:hover {
+  border-color: var(--mobius-accent);
+  color: var(--mobius-accent);
+}

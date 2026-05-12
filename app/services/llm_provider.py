@@ -374,6 +374,7 @@ def _vertex_generate_sync(
     prompt: str,
     gen_config: dict,
     tools: list | None = None,
+    outer_timeout_s: float | None = None,
 ) -> tuple[str, LLMUsageDict]:
     import os as _os
     import time as _time
@@ -432,7 +433,10 @@ def _vertex_generate_sync(
     # into the synchronous SDK call. This wrapper does.
 
     import concurrent.futures as _futs
-    deadline = float(_os.environ.get("VERTEX_TOTAL_DEADLINE_SECONDS", "45") or 45)
+    _base_deadline = float(_os.environ.get("VERTEX_TOTAL_DEADLINE_SECONDS", "45") or 45)
+    # If the outer asyncio.wait_for timeout is larger than the base SDK deadline,
+    # honour it so long-output stages (appeals, credentialing) aren't killed early.
+    deadline = max(_base_deadline, outer_timeout_s) if outer_timeout_s else _base_deadline
     # A pool max-1 is fine — each Vertex call gets its own pool
     # instance; we never queue calls inside one pool. Daemon threads
     # so process exit isn't blocked by zombies.
@@ -609,7 +613,7 @@ class VertexAIProvider(LLMProvider):
         except (TypeError, ValueError):
             base = 60.0
         st = (stage or "").strip()
-        if st.startswith("credentialing_") or st == "integrator_roster":
+        if st.startswith("credentialing_") or st == "integrator_roster" or st.startswith("appeals_"):
             try:
                 cred = float(os.getenv("CREDENTIALING_LLM_TIMEOUT_SECONDS", "900") or 900)
             except (TypeError, ValueError):
@@ -681,7 +685,7 @@ class VertexAIProvider(LLMProvider):
         timeout_s = self._timeout_seconds(stage=stage_kw, max_tokens=max_kw)
         return await asyncio.wait_for(
             asyncio.to_thread(
-                _vertex_generate_sync, self.model_name, prompt, gen_config, tools
+                _vertex_generate_sync, self.model_name, prompt, gen_config, tools, timeout_s
             ),
             timeout=timeout_s,
         )

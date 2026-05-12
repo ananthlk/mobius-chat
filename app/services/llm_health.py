@@ -237,6 +237,11 @@ class LlmHealthState:
         for mid in transitioned_from:
             logger.info("llm-health: model=%s recovered (no longer in degraded set)", mid)
 
+    # Stages expected to produce long outputs — latency-ratio check would
+    # fire false positives because their 20-40s generation time is normal,
+    # not a sign of backend degradation. Only timeout/error-rate checks apply.
+    _LONG_OUTPUT_STAGE_PREFIXES: tuple[str, ...] = ("appeals_", "credentialing_", "integrator_roster")
+
     @staticmethod
     def _evaluate(row: _ModelHealthRow, ema_latency_ms: float) -> str | None:
         """Return a degradation reason string, or None if healthy."""
@@ -244,9 +249,13 @@ class LlmHealthState:
             return None
         if row.recent_timeouts >= _FAIL_THRESHOLD:
             return f"{row.recent_timeouts}/{row.recent_total} recent calls timed out"
-        # Latency-deviation trigger
+        # Latency-deviation trigger — skip for long-output stages where slow
+        # generation is expected (not a sign of backend degradation).
+        stage = (row.stage or "")
+        is_long_output = any(stage.startswith(p) for p in LLMHealthMonitor._LONG_OUTPUT_STAGE_PREFIXES)
         if (
-            ema_latency_ms > 0
+            not is_long_output
+            and ema_latency_ms > 0
             and row.recent_avg_latency_ms
             and row.recent_avg_latency_ms > _LATENCY_RATIO * ema_latency_ms
         ):

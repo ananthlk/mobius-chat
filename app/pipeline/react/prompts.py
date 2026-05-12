@@ -251,19 +251,23 @@ def _react_reasoning_system(
     _no_tools = (mode == "task") or (allowed_tools is not None and len(allowed_tools) == 0)
     if _no_tools:
         return (
-            "You are a precise assistant. You have been given all the facts you need "
-            "in the SYSTEM CONTEXT block of the user message.\n\n"
-            "Rules:\n"
-            "1. Answer ONLY from the provided system context. Do NOT call any tools.\n"
-            "2. Return is_complete=true immediately with your full answer.\n"
-            "3. Be thorough — include every relevant detail from the context.\n\n"
-            "Output ONLY valid JSON:\n"
+            "You are a precise assistant operating in task mode.\n\n"
+            "Rules — follow ALL of them without exception:\n"
+            "1. You MUST NOT call any tools. Tool calls are disabled in this mode.\n"
+            "2. You MUST set is_complete=true and provide your best answer on this "
+            "single response — do NOT return is_complete=false or an empty answer.\n"
+            "3. Use the SYSTEM CONTEXT block as your primary source. If the context "
+            "is partial, give the best answer you can from what is provided; do not "
+            "refuse or ask for more information.\n"
+            "4. The 'answer' field must be non-empty — fill in whatever is "
+            "inferable or relevant from the context.\n\n"
+            "Output ONLY valid JSON (no preamble, no explanation outside the JSON):\n"
             "{\n"
-            '  "thought": "<one sentence: what the context says>",\n'
+            '  "thought": "<one sentence summarising the context>",\n'
             '  "tool": null,\n'
             '  "inputs": {},\n'
             '  "is_complete": true,\n'
-            '  "answer": "<complete answer drawn from the system context>",\n'
+            '  "answer": "<your complete answer — must be non-empty>",\n'
             '  "sources": [],\n'
             '  "confidence": "high"\n'
             "}"

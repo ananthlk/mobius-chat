@@ -1622,6 +1622,15 @@ _SKILL_LLM_ALLOWED_STAGES = frozenset({
     # for denial investigations — edge-case reasoning (dual eligibility,
     # COBRA, stale TPL, etc.) with likelihood scoring.
     "appeals_investigation",
+    # mobius-skills/appeals-agent letter pipeline (2026-05-12):
+    # 5-agent pipeline — compose → policy/factcheck/denial-sim (parallel) → final.
+    # These stages need high output caps (2000–2500 tokens) for full letter text.
+    "appeals_compose",      # Agent 1: formal letter structure
+    "appeals_policy",       # Agent 2: regulatory citation injection
+    "appeals_factcheck",    # Agent 3: factual accuracy check (short output)
+    "appeals_denial_sim",   # Agent 4: payor denial simulation (short output)
+    "appeals_final",        # Agent 5: final synthesiser — authoritative letter
+    "appeals_packet",       # Metadata: docs checklist + next steps (short output)
 })
 
 

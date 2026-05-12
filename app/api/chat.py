@@ -77,10 +77,14 @@ class ChatRequest(BaseModel):
 
     message: str = ""
     thread_id: str | None = None  # When provided, load state for jurisdiction/context
+    correlation_id: str | None = None
+    """Client-supplied correlation ID. When provided and a valid UUID, used as-is so
+    callers can pre-generate a CID and use it immediately for SSE streaming and polling
+    without parsing the response body. When absent or invalid, the server generates one."""
     use_react: bool | None = None
     """Per-request override for MOBIUS_USE_REACT; when None, worker uses env."""
-    chat_mode: Literal["copilot", "agentic", "quick"] | None = None
-    """copilot: registry-first, 3 rounds. agentic: web escalation, 6 rounds. quick: mini-container, 2 rounds, brief answers."""
+    chat_mode: Literal["copilot", "agentic", "quick", "task"] | None = None
+    """copilot: registry-first, 3 rounds. agentic: web escalation, 6 rounds. quick: mini-container, 2 rounds, brief answers. task: skips integrator, returns raw_text."""
 
     model_profile: str | None = None
     """Per-turn override for the model-profile selection.
@@ -202,7 +206,14 @@ def post_chat(
     payload when non-None so older worker binaries that haven't picked
     up the new signature still work.
     """
-    correlation_id = str(uuid.uuid4())
+    # Use caller-supplied correlation_id when it's a valid UUID; otherwise generate.
+    # This lets callers (e.g. appeals agent) pre-generate a CID and open the SSE
+    # stream before the POST even returns — no response-body parsing required.
+    _client_cid = (body.correlation_id or "").strip()
+    try:
+        correlation_id = str(uuid.UUID(_client_cid)) if _client_cid else str(uuid.uuid4())
+    except ValueError:
+        correlation_id = str(uuid.uuid4())
     thread_id = ensure_thread((body.thread_id or "").strip() or None)
     payload: dict = {"message": body.message or "", "thread_id": thread_id}
     if body.use_react is not None:

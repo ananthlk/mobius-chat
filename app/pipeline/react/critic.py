@@ -156,19 +156,24 @@ def should_run_critic(
     """
     answer_text = (answer or "").strip()
 
-    # No sources → critic has nothing to compare claims against.
-    # The adjudicator (post-run) is a better fit for no-source answers.
-    if not all_sources and final_signal not in (_GOOGLE_SIGNAL,):
-        return False, "skip:no_corpus_sources"
-
     # Web-sourced answers are less reliably quoted → always audit.
     if _GOOGLE_SIGNAL in (final_signal or "").lower():
         return True, "run:web_sourced_answer"
 
-    # Check for specific factual claim patterns in the draft.
+    # Check for specific factual claim patterns BEFORE the no-sources
+    # guard: a phone number / code asserted with zero retrieved sources is
+    # MORE suspicious than one that at least has some corpus backing.
+    # The critic will flag every claim as unverifiable (nothing to compare
+    # against), which is the right outcome — honest "no evidence" signal.
     for pattern in _FACTUAL_CLAIM_PATTERNS:
         if pattern.search(answer_text):
             return True, f"run:factual_claim_detected({pattern.pattern[:30]})"
+
+    # No numeric/code specifics found AND no web sources → critic has
+    # nothing useful to compare against, and the answer is likely
+    # policy/process prose. Low hallucination risk; skip.
+    if not all_sources:
+        return False, "skip:no_corpus_sources"
 
     # No numeric/code specifics found — answer is likely policy/process
     # prose. Low hallucination risk; skip the critic.

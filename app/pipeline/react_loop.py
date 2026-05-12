@@ -52,6 +52,7 @@ from app.services.doc_assembly import (
     RETRIEVAL_SIGNAL_GOOGLE_ONLY,
     RETRIEVAL_SIGNAL_NO_SOURCES,
     RETRIEVAL_SIGNAL_ROSTER_COMPLETE,
+    RETRIEVAL_SIGNAL_SYSTEM_CONTEXT,
 )
 from app.services.non_patient_rag import answer_non_patient
 from app.services.reasoning_agent import answer_reasoning
@@ -1235,117 +1236,31 @@ def _execute_tool(
         return out_n
 
     # ── Task manager tools ────────────────────────────────────────────────────
+    # Routed through answer_tool → SkillSpec registry
+    # (app/skills/builtin/tasks.py). The skill handler writes the
+    # structured task_list payload to ctx.react_task_list_data; the
+    # text answer + signal flow back via the legacy 4-tuple.
     if tool in ("list_tasks", "create_task", "resolve_task"):
-        import os as _os
-        import httpx as _httpx
-
-        _task_base = (
-            _os.environ.get("CHAT_SKILLS_TASK_MANAGER_URL") or "http://localhost:8015"
-        ).rstrip("/")
-
-        emit(f"◌ Task manager: {tool}…")
-
-        # Stub: task manager not yet deployed — return a friendly message
-        # instead of a DNS error so the user experience is clean.
-        if not _task_base or ".invalid" in _task_base or "not-yet-deployed" in _task_base:
-            _stub_msgs = {
-                "create_task": "Task noted! The task manager is coming soon — your manager will be notified through the usual channel in the meantime.",
-                "list_tasks": "The task manager is coming soon. Tasks will appear here once the service is live.",
-                "resolve_task": "The task manager is coming soon. Task resolution will be available once the service is live.",
-            }
-            return {
-                "tool": tool,
-                "success": True,
-                "result": _stub_msgs.get(tool, "The task manager is coming soon."),
-                "signal": "corpus_only",
-                "sources": [],
-            }
-
-        try:
-            if not _task_base:
-                raise ValueError("CHAT_SKILLS_TASK_MANAGER_URL not configured")
-
-            with _httpx.Client(timeout=10.0) as _c:
-                if tool == "list_tasks":
-                    _params = {k: v for k, v in {
-                        "org_name": inputs.get("org") or inputs.get("org_name"),
-                        "module": inputs.get("module"),
-                        "status": inputs.get("status"),
-                        "assignee": inputs.get("assignee"),
-                        "npi": inputs.get("npi"),
-                        "run_id": inputs.get("run_id"),
-                        "limit": inputs.get("limit", 50),
-                    }.items() if v is not None}
-                    _r = _c.get(f"{_task_base}/tasks", params=_params)
-                    _r.raise_for_status()
-                    _data = _r.json()
-                    tasks = _data.get("tasks") or []
-                    count = _data.get("count", len(tasks))
-                    if tasks:
-                        lines = [f"**{count} task(s) found**\n"]
-                        for t in tasks[:20]:
-                            sev = (t.get("severity") or "").upper()
-                            st = t.get("status", "open")
-                            prov = t.get("provider_name") or t.get("npi") or ""
-                            prov_str = f" — {prov}" if prov else ""
-                            lines.append(f"- [{sev}] {t.get('text', '')} ({st}){prov_str} `{t.get('task_id','')[:8]}`")
-                        result_text = "\n".join(lines)
-                    else:
-                        result_text = "No tasks found matching the given filters."
-                    # Attach raw tasks to context for envelope rendering
-                    ctx.react_task_list_data = {"tasks": tasks, "filters": _params}
-                    return {
-                        "tool": "list_tasks",
-                        "success": True,
-                        "result": result_text,
-                        "signal": "corpus_only",
-                        "sources": [],
-                    }
-
-                elif tool == "create_task":
-                    _body = {
-                        "org_name": inputs.get("org") or inputs.get("org_name") or "",
-                        "text": inputs.get("text") or inputs.get("description") or "",
-                        "source_module": inputs.get("module") or "manual",
-                        "severity": inputs.get("severity") or "low",
-                        "provider_name": inputs.get("provider_name"),
-                        "npi": inputs.get("npi"),
-                    }
-                    _r = _c.post(f"{_task_base}/tasks", json=_body)
-                    _r.raise_for_status()
-                    created = _r.json()
-                    ctx.react_task_list_data = {"tasks": [created], "filters": {}, "allow_create": False}
-                    return {
-                        "tool": "create_task",
-                        "success": True,
-                        "result": f"Task created: **{created.get('text','')}** (ID: `{str(created.get('task_id',''))[:8]}`, severity: {created.get('severity','low')})",
-                        "signal": "corpus_only",
-                        "sources": [],
-                    }
-
-                elif tool == "resolve_task":
-                    _tid = inputs.get("task_id") or ""
-                    if not _tid:
-                        return {"tool": "resolve_task", "success": False, "result": "task_id is required", "signal": RETRIEVAL_SIGNAL_NO_SOURCES, "sources": []}
-                    _body = {"resolved_by": "chat", "note": inputs.get("note")}
-                    _r = _c.post(f"{_task_base}/tasks/{_tid}/resolve", json=_body)
-                    _r.raise_for_status()
-                    return {
-                        "tool": "resolve_task",
-                        "success": True,
-                        "result": f"Task `{_tid[:8]}` marked as resolved.",
-                        "signal": "corpus_only",
-                        "sources": [],
-                    }
-
-        except Exception as _te:
-            return {
-                "tool": tool,
-                "success": False,
-                "result": f"Task manager error: {_te}",
-                "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
-                "sources": [],
-            }
+        question = inputs.get("question") or (ctx.effective_message or ctx.message) or ""
+        answer, sources, usage, signal = answer_tool(
+            question,
+            emitter=emitter,
+            tool_hint_override=tool,
+            user_message=ctx.message,
+            active_context=active,
+            skill_search_mode=ctx.chat_mode,
+            pipeline_ctx=ctx,
+            tool_inputs=inputs,
+        )
+        success = bool(answer and "error" not in (answer or "").lower()[:20])
+        return {
+            "tool": tool,
+            "success": success,
+            "result": answer or "",
+            "signal": signal,
+            "sources": sources or [],
+            "usage": usage,
+        }
 
     # ── Skill registry fallback (MCP + builtin skills not handled above) ─────
     # Any tool registered via register_mcp_skills() or app.skills.builtin.*
@@ -1804,7 +1719,13 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
     # supplied pre-loaded ground truth (story layer, skill card), try to
     # answer from it directly before entering the tool loop. Returns True
     # when a complete answer was produced; caller returns immediately.
-    if _try_system_context_round0(ctx, emitter):
+    #
+    # Skip for task mode: task callers supply system_context as structured
+    # input for the ReAct loop to reason over, not as a short-circuit target.
+    # Round 0's 800-token cap truncates multi-rule responses; the main loop
+    # has no such cap and handles the full system_context correctly.
+    _is_task_mode = react_chat_mode_label(getattr(ctx, "chat_mode", None)) == "task"
+    if not _is_task_mode and _try_system_context_round0(ctx, emitter):
         _react_pf("preflight_round0_short_circuit_taken", _t_react_pf)
         return
     _t_react_pf = _react_pf("preflight_round0_check", _t_react_pf)
@@ -1838,7 +1759,12 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
     last_tool: str | None = None
     # 2026-05-06: pass user_profile so splice_user_profile appends
     # rendered_prompt to the planner/ReAct system prompt.
-    reasoning_system = _react_reasoning_system(max_it, mode_label, getattr(ctx, "user_profile", None))
+    reasoning_system = _react_reasoning_system(
+        max_it,
+        mode_label,
+        getattr(ctx, "user_profile", None),
+        allowed_tools=getattr(ctx, "allowed_tools", None),
+    )
 
     # Phase 0.7: smart-retry guard — tracks failed attempts so we don't repeat
     # the same (tool, inputs) when no new evidence has come in, and enables
@@ -1923,9 +1849,34 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             preview = (decision_raw or "")[:320].replace("\n", " ")
             logger.warning("ReAct parse failure (stage=%s): %s", f"react_{rn}", preview)
             emit("  Could not parse model decision — stopping.")
+            # Guidance-mode parse failure: the LLM produced prose instead of
+            # JSON (common with Gemini Flash at large context sizes in round 3).
+            # The prose IS a good answer — use it directly rather than falling
+            # back to raw search chunks.
+            from app.pipeline.react.prompts import is_guidance_round
+            raw_prose = (decision_raw or "").strip()
+            if raw_prose and len(raw_prose) >= 40 and is_guidance_round(iteration, max_it):
+                logger.info(
+                    "[parse-fallback] guidance round %d prose answer len=%d (cid=%s)",
+                    rn, len(raw_prose), getattr(ctx, "correlation_id", "?")[:8],
+                )
+                emit("  Using model's synthesized guidance as the answer.")
+                _finalize_response(
+                    ctx, raw_prose, all_sources,
+                    final_signal if final_signal != RETRIEVAL_SIGNAL_NO_SOURCES else RETRIEVAL_SIGNAL_SYSTEM_CONTEXT,
+                    last_tool, emitter,
+                )
+                return
             # Do not throw away a good tool result (common with Gemini after a large Step 2 payload).
+            # Prefer the most recent *successful* result — if round 2 was an
+            # empty external search and round 1 found good corpus chunks, we
+            # want round 1's result, not round 2's empty one.
             if tool_results:
-                last_tr = tool_results[-1]
+                best_tr = next(
+                    (tr for tr in reversed(tool_results) if tr.get("success")),
+                    tool_results[-1],  # fall back to last if nothing succeeded
+                )
+                last_tr = best_tr
                 last_res = (last_tr.get("result") or "").strip()
                 last_sum = (last_tr.get("result_summary") or "").strip()
                 usable = last_res if len(last_res) >= 40 else last_sum
@@ -1962,6 +1913,26 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         inputs = decision.get("inputs") or {}
         is_complete = decision.get("is_complete", False)
         thought = (decision.get("thought") or "").strip()
+
+        # Task mode: no tool calls ever. If the LLM tried to call a tool
+        # despite the task-mode system prompt, finalize immediately.
+        # We cannot rely on setting is_complete=True + tool=None because the
+        # "empty answer → fall through" path (line ~2217) lets the loop
+        # continue to round 2 where search_corpus fires. Instead, call
+        # _finalize_response directly and return so execution never reaches
+        # the tool dispatch block.
+        if tool and react_chat_mode_label(getattr(ctx, "chat_mode", None)) == "task":
+            _task_answer = (decision.get("answer") or thought or "").strip()
+            logger.debug(
+                "[task-mode] suppressing tool call '%s'; finalizing with answer len=%d (cid=%s)",
+                tool, len(_task_answer), getattr(ctx, "correlation_id", "?")[:8],
+            )
+            _finalize_response(
+                ctx, _task_answer, all_sources,
+                RETRIEVAL_SIGNAL_SYSTEM_CONTEXT if getattr(ctx, "system_context", None) else RETRIEVAL_SIGNAL_NO_SOURCES,
+                last_tool, emitter,
+            )
+            return
 
         if thought:
             emit(f"  → Round {rn}: {thought}")
@@ -2196,6 +2167,22 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 )
                 return
             # Empty answer but claimed complete — fall through to next iteration or exhaust
+            # Task mode: do NOT fall through to the tool dispatch block
+            # below.  When tool=None and answer="" we'd hit line ~2284
+            # which defaults ``tool or "search_corpus"`` and silently runs
+            # a corpus search — exactly what task mode forbids.  Finalize
+            # immediately with whatever we have (empty string is fine;
+            # caller sees a clean empty turn rather than a spurious search).
+            if react_chat_mode_label(getattr(ctx, "chat_mode", None)) == "task":
+                _finalize_response(
+                    ctx,
+                    ctx.final_message or "",
+                    all_sources,
+                    RETRIEVAL_SIGNAL_SYSTEM_CONTEXT if getattr(ctx, "system_context", None) else RETRIEVAL_SIGNAL_NO_SOURCES,
+                    last_tool,
+                    emitter,
+                )
+                return
 
         # Phase 0.7: block repeat call if (tool, inputs) already failed and
         # no new evidence has come in since.
@@ -2340,6 +2327,22 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             "Every attempt to answer this hit an error. Please try again or rephrase.",
         )
         _finalize_response(ctx, refusal, all_sources, RETRIEVAL_SIGNAL_NO_SOURCES, last_tool, emitter)
+        return
+
+    # Task mode: never emit the corpus-search escalation.  If the loop
+    # exhausted without a finalisation, return whatever partial answer we
+    # accumulated (may be empty) rather than a message containing
+    # "verified answer" / "searching the web" which would confuse callers
+    # and trip test-detection strings.
+    if react_chat_mode_label(getattr(ctx, "chat_mode", None)) == "task":
+        _finalize_response(
+            ctx,
+            ctx.final_message or "",
+            all_sources,
+            RETRIEVAL_SIGNAL_SYSTEM_CONTEXT if getattr(ctx, "system_context", None) else RETRIEVAL_SIGNAL_NO_SOURCES,
+            last_tool,
+            emitter,
+        )
         return
 
     emit("  No verified answer after checking materials and web — escalating honestly.")
