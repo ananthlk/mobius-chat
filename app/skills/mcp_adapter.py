@@ -157,20 +157,42 @@ def _spec_from_mcp_tool(tool: dict[str, Any]) -> SkillSpec | None:
 def _list_tools_from_url(url: str) -> list[dict[str, Any]]:
     """Fetch tool list from an arbitrary MCP endpoint URL.
 
-    Uses the same MCP client primitives as list_mcp_tools() but accepts
-    an explicit URL so we can poll multiple servers at startup.
+    Strategy (fastest first, graceful fallback):
+    1. Try GET <base>/tools — a plain REST shortcut that some Mobius
+       skill servers expose (appeals-agent, future skills). No session
+       handshake, works even on cold start.
+    2. Fall back to full MCP StreamableHTTP session handshake
+       (initialize → list_tools). Required for standard MCP servers
+       that don't expose the REST shortcut.
+
     Returns [] on any failure (never raises).
     """
     import asyncio
     import os
     from concurrent.futures import ThreadPoolExecutor
+    import httpx
 
     connect_timeout = float(os.environ.get("MCP_CONNECT_TIMEOUT", "10"))
     read_timeout    = float(os.environ.get("MCP_READ_TIMEOUT", "60"))
 
+    # ── Strategy 1: REST shortcut GET <base>/tools ─────────────────────
+    # url is the /mcp endpoint; strip to get the base.
+    base_url = url[:-4] if url.endswith("/mcp") else url
+    try:
+        with httpx.Client(timeout=httpx.Timeout(read_timeout, connect=connect_timeout)) as c:
+            r = c.get(f"{base_url}/mcp/tools")
+            if r.status_code == 200:
+                data = r.json()
+                tools = data.get("tools", data) if isinstance(data, dict) else data
+                if isinstance(tools, list) and tools:
+                    logger.debug("_list_tools_from_url(%s): REST shortcut returned %d tools", url, len(tools))
+                    return tools
+    except Exception as exc:
+        logger.debug("_list_tools_from_url(%s) REST shortcut failed: %s", url, exc)
+
+    # ── Strategy 2: Full MCP session handshake ─────────────────────────
     async def _async_fetch() -> list[dict[str, Any]]:
         try:
-            import httpx
             from mcp.client.session import ClientSession
             from mcp.client.streamable_http import streamable_http_client
             timeout = httpx.Timeout(read_timeout, connect=connect_timeout)
@@ -188,7 +210,7 @@ def _list_tools_from_url(url: str) -> list[dict[str, Any]]:
                             for t in (result.tools or [])
                         ]
         except Exception as exc:
-            logger.debug("_list_tools_from_url(%s) failed: %s", url, exc)
+            logger.debug("_list_tools_from_url(%s) MCP session failed: %s", url, exc)
             return []
 
     try:
