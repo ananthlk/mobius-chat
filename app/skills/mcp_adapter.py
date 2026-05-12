@@ -154,29 +154,112 @@ def _spec_from_mcp_tool(tool: dict[str, Any]) -> SkillSpec | None:
     )
 
 
+def _list_tools_from_url(url: str) -> list[dict[str, Any]]:
+    """Fetch tool list from an arbitrary MCP endpoint URL.
+
+    Uses the same MCP client primitives as list_mcp_tools() but accepts
+    an explicit URL so we can poll multiple servers at startup.
+    Returns [] on any failure (never raises).
+    """
+    import asyncio
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+
+    connect_timeout = float(os.environ.get("MCP_CONNECT_TIMEOUT", "10"))
+    read_timeout    = float(os.environ.get("MCP_READ_TIMEOUT", "60"))
+
+    async def _async_fetch() -> list[dict[str, Any]]:
+        try:
+            import httpx
+            from mcp.client.session import ClientSession
+            from mcp.client.streamable_http import streamable_http_client
+            timeout = httpx.Timeout(read_timeout, connect=connect_timeout)
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as http_client:
+                async with streamable_http_client(url, http_client=http_client) as (r, w, _):
+                    async with ClientSession(r, w) as session:
+                        await session.initialize()
+                        result = await session.list_tools()
+                        return [
+                            {
+                                "name":        t.name,
+                                "description": getattr(t, "description", ""),
+                                "inputSchema": getattr(t, "inputSchema", {}) or {},
+                            }
+                            for t in (result.tools or [])
+                        ]
+        except Exception as exc:
+            logger.debug("_list_tools_from_url(%s) failed: %s", url, exc)
+            return []
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop is not None:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, _async_fetch()).result()
+    return asyncio.run(_async_fetch())
+
+
+def _extra_mcp_urls() -> list[str]:
+    """Return additional MCP server URLs from EXTRA_MCP_URLS env var.
+
+    EXTRA_MCP_URLS is a comma-separated list of base URLs.  Each entry
+    has /mcp appended if it doesn't already end with /mcp.
+
+    Example:
+        EXTRA_MCP_URLS=https://mobius-appeals-prototype-xxx.run.app,https://other.run.app
+    """
+    import os
+    raw = (os.environ.get("EXTRA_MCP_URLS") or "").strip()
+    if not raw:
+        return []
+    urls = []
+    for entry in raw.split(","):
+        u = entry.strip().rstrip("/")
+        if u:
+            urls.append(u if u.endswith("/mcp") else u + "/mcp")
+    return urls
+
+
 def register_mcp_skills(
     *,
     tools: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     """Discover MCP tools and register each as a ``SkillSpec``.
 
+    Polls the primary MCP server (CHAT_SKILLS_MCP_URL) **plus** any
+    additional servers listed in EXTRA_MCP_URLS (comma-separated base
+    URLs).  Each server's tools are registered independently; name
+    collisions across servers follow the same "first registration wins"
+    rule as builtins.
+
     Args:
         tools: Optional pre-fetched tool list. When ``None`` (default),
-            we call ``list_mcp_tools()`` against the configured MCP
-            server. Tests inject this to avoid network.
+            we call ``list_mcp_tools()`` against the primary server.
+            Tests inject this to avoid network.
 
     Returns:
         The list of skill names actually registered (excludes skipped
-        builtins + malformed entries). Empty list when the MCP server
-        is unreachable or returns nothing.
+        builtins + malformed entries). Empty list when all servers are
+        unreachable or return nothing.
 
-    This function never raises. Failure modes:
-      - MCP server down → ``list_mcp_tools()`` returns []
-      - Malformed tool (no name) → skipped with debug log
-      - Name collides with existing registration → skipped with
-        WARNING log ("builtins win")
+    This function never raises.
     """
-    discovered = tools if tools is not None else list_mcp_tools()
+    if tools is not None:
+        discovered = tools
+    else:
+        discovered = list_mcp_tools()
+        # Poll extra servers and merge
+        for extra_url in _extra_mcp_urls():
+            extra_tools = _list_tools_from_url(extra_url)
+            if extra_tools:
+                logger.info("register_mcp_skills: %d tool(s) from extra MCP server %s", len(extra_tools), extra_url)
+                discovered = discovered + extra_tools
+            else:
+                logger.info("register_mcp_skills: no tools from extra MCP server %s (down or empty)", extra_url)
+
     if not discovered:
         logger.info("register_mcp_skills: no MCP tools discovered")
         return []
