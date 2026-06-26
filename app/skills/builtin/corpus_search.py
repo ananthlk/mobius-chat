@@ -557,10 +557,25 @@ def _run(call: SkillCall) -> SkillEnvelope:
         "themes": resp.get("themes"),
         "theme_diagnostic": resp.get("theme_diagnostic"),
         "queries_per_strategy": resp.get("queries_per_strategy"),
-        # Legacy arm_hits keys for make_retrieval_trace compatibility
+        # Raw RAG response fields, FLAT — the chat retrieval-trace UI
+        # (frontend/src/app.ts renderRetrievalTrace) reads these by the
+        # SAME names the rag agent's own frontend uses. Without the flat
+        # pass-through the Parser / Router / Cascade / Strategy sections
+        # read ``undefined`` and silently render nothing — which is why
+        # only themes + rewrite showed and the panel looked "simpler".
+        "query_profile": resp.get("query_profile"),
+        "routing": resp.get("routing"),
+        "candidate_pool": resp.get("candidate_pool"),
+        "term_partition": resp.get("term_partition"),
+        "strategies_tried": strategies_tried,
+        "confidence": resp.get("confidence"),
+        # arm_hits = FINAL returned arm split (from each chunk's
+        # ``retrieval_arms``), NOT pool-stage hits — so the badge shows
+        # e.g. "pgvector 10" to match the rag UI's "arm split: vector=10"
+        # instead of the misleading "0".
         "arm_hits": {
-            "bm25": sum((s.get("arms") or {}).get("bm25_pool_hits", 0) or 0 for s in strategies_tried),
-            "vector": sum((s.get("arms") or {}).get("vector_pool_hits", 0) or 0 for s in strategies_tried),
+            "bm25": sum(1 for c in chunks if "bm25" in (c.get("retrieval_arms") or [])),
+            "vector": sum(1 for c in chunks if "vector" in (c.get("retrieval_arms") or [])),
         },
         "arms": {"returned": len(chunks)},
     }

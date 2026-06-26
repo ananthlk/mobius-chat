@@ -5460,7 +5460,99 @@ function renderRetrievalTrace(
         rDiv.appendChild(poolRow);
       }
 
+      // ── Score breakdown table (accuracy/recall/speed/shape/total) ────
+      // Mirrors the rag UI's "Score breakdown — how each total was
+      // computed". Winner (routing.strategy) highlighted with ★.
+      const sb = routing.score_breakdown;
+      if (sb && typeof sb === "object" && Object.keys(sb).length > 0) {
+        const picked = String(routing.strategy ?? routing.executed_strategy ?? "");
+        const fmt = (x: any) => (typeof x === "number" ? x.toFixed(2) : (x ?? "·"));
+        const contrib = (c: any) => (c && typeof c === "object" ? fmt(c.contrib) : "·");
+        const tbl = document.createElement("table");
+        tbl.className = "rt-score-table rt-mono";
+        tbl.innerHTML =
+          "<thead><tr><th>strat</th><th>accuracy</th><th>recall</th><th>speed</th><th>shape</th><th>total</th></tr></thead>";
+        const tb = document.createElement("tbody");
+        for (const [strat, raw] of Object.entries(sb as Record<string, any>)) {
+          const b = raw || {};
+          const tr = document.createElement("tr");
+          if (strat === picked) tr.className = "rt-score-winner";
+          tr.innerHTML =
+            `<td>${strat === picked ? "★ " : ""}${rtEscapeAttr(strat)}${b.withdrawn ? " ⊘" : ""}</td>` +
+            `<td>${contrib(b.accuracy)}</td><td>${contrib(b.recall)}</td>` +
+            `<td>${contrib(b.speed)}</td><td>${contrib(b.shape)}</td>` +
+            `<td><b>${fmt(b.total)}</b></td>`;
+          tb.appendChild(tr);
+        }
+        tbl.appendChild(tb);
+        rDiv.appendChild(tbl);
+      }
+
+      // ── Self-assessment table (est_recall / static / Δ / reason) ─────
+      const saFull = routing.self_assessments;
+      if (saFull && typeof saFull === "object" && Object.keys(saFull).length > 0) {
+        const wdl: string[] = Array.isArray(routing.withdrawn) ? routing.withdrawn : [];
+        const tbl = document.createElement("table");
+        tbl.className = "rt-sa-table rt-mono";
+        tbl.innerHTML =
+          "<thead><tr><th>strat</th><th>est</th><th>static</th><th>Δ</th><th>reason</th></tr></thead>";
+        const tb = document.createElement("tbody");
+        for (const [strat, raw] of Object.entries(saFull as Record<string, any>)) {
+          const v: any = raw || {};
+          const est = typeof v.est_recall === "number" ? v.est_recall : (Array.isArray(v) && typeof v[0] === "number" ? v[0] : null);
+          const stat = typeof v.static_recall === "number" ? v.static_recall : (typeof v.static === "number" ? v.static : null);
+          const delta = (typeof est === "number" && typeof stat === "number") ? est - stat : null;
+          const reason = String(v.reason ?? "");
+          const tr = document.createElement("tr");
+          if (wdl.includes(strat)) tr.className = "rt-sa-withdrawn";
+          tr.innerHTML =
+            `<td>${rtEscapeAttr(strat)}</td>` +
+            `<td>${typeof est === "number" ? est.toFixed(2) : "·"}</td>` +
+            `<td>${typeof stat === "number" ? stat.toFixed(2) : "·"}</td>` +
+            `<td>${typeof delta === "number" ? (delta >= 0 ? "+" : "") + delta.toFixed(2) : "·"}</td>` +
+            `<td class="rt-sa-reason" title="${rtEscapeAttr(reason)}">${rtEscapeAttr(reason.length > 64 ? reason.slice(0, 64) + "…" : reason)}</td>`;
+          tb.appendChild(tr);
+        }
+        tbl.appendChild(tb);
+        rDiv.appendChild(tbl);
+      }
+
       sec.body.appendChild(rDiv);
+      round.appendChild(sec.el);
+    }
+
+    // ── Strategy execution (per-strategy arms / timing / result split) ─
+    // Mirrors the rag UI's "Strategy Execution" — what each tried
+    // strategy actually retrieved.
+    const stExec: any[] = Array.isArray(data.strategies_tried) ? data.strategies_tried : [];
+    if (stExec.length > 0) {
+      const sec = rtMakeSection("Strategy", `${stExec.length} tried`, /* collapsed= */ true);
+      const eDiv = document.createElement("div");
+      eDiv.className = "rt-strat-exec";
+      stExec.forEach((s: any) => {
+        const arms = s.arms || {};
+        const rb = arms.result_breakdown || {};
+        const tim = arms.timing_ms || {};
+        const ok = s.succeeded ? "✓" : "·";
+        const armStr =
+          `bm25_pool=${arms.bm25_pool_hits ?? 0} vec_pool=${arms.vector_pool_hits ?? 0}` +
+          (rb && Object.keys(rb).length ? ` · split b=${rb.bm25_only ?? 0}/v=${rb.vector_only ?? 0}/both=${rb.both ?? 0}` : "");
+        const timStr = Object.entries(tim)
+          .filter(([, m]: any) => typeof m === "number" && m > 0)
+          .map(([key, m]: any) => `${key} ${Math.round(m)}ms`)
+          .join(" ");
+        const row = document.createElement("div");
+        row.className = "rt-strat-row";
+        row.innerHTML =
+          `<div class="rt-strat-head">${ok} <b>${rtEscapeAttr(String(s.strategy ?? "?"))}</b> · ` +
+          `${s.n_chunks ?? 0} chunks · top ${typeof s.top_rerank === "number" ? s.top_rerank.toFixed(2) : "·"} · ` +
+          `${Math.round(s.elapsed_ms ?? 0)}ms</div>` +
+          `<div class="rt-strat-arms rt-mono">${rtEscapeAttr(armStr)}</div>` +
+          (timStr ? `<div class="rt-strat-tim rt-mono">${rtEscapeAttr(timStr)}</div>` : "") +
+          (s.note ? `<div class="rt-strat-note">${rtEscapeAttr(String(s.note))}</div>` : "");
+        eDiv.appendChild(row);
+      });
+      sec.body.appendChild(eDiv);
       round.appendChild(sec.el);
     }
 

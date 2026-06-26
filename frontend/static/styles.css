@@ -7773,6 +7773,18 @@ body {
 .rt-kv-v { font-size: 0.62rem; font-family: var(--mobius-font-mono, monospace); color: var(--mobius-text-primary); }
 .rt-mono { font-family: var(--mobius-font-mono, monospace); font-size: 0.60rem; }
 .rt-parser, .rt-router, .rt-themes { display: flex; flex-direction: column; gap: 0.35rem; padding: 0.25rem 0; }
+/* Retrieval-trace tables — score breakdown, self-assessment, strategy execution */
+.rt-score-table, .rt-sa-table { width: 100%; border-collapse: collapse; font-size: 0.58rem; margin: 0.25rem 0; }
+.rt-score-table th, .rt-sa-table th { text-align: left; color: var(--mobius-text-muted); font-weight: 500; padding: 0.15rem 0.3rem; border-bottom: 1px solid var(--mobius-border, rgba(255,255,255,0.08)); }
+.rt-score-table td, .rt-sa-table td { padding: 0.15rem 0.3rem; color: var(--mobius-text-primary); border-bottom: 1px solid rgba(255,255,255,0.04); }
+.rt-score-winner td { color: #10b981; font-weight: 600; }
+.rt-sa-withdrawn td { opacity: 0.45; }
+.rt-sa-reason { color: var(--mobius-text-muted); max-width: 14rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rt-strat-exec { display: flex; flex-direction: column; gap: 0.4rem; padding: 0.25rem 0; }
+.rt-strat-row { display: flex; flex-direction: column; gap: 0.12rem; padding: 0.2rem 0.3rem; border-left: 2px solid var(--mobius-border, rgba(255,255,255,0.1)); }
+.rt-strat-head { font-size: 0.62rem; color: var(--mobius-text-primary); }
+.rt-strat-arms, .rt-strat-tim { font-size: 0.56rem; color: var(--mobius-text-muted); }
+.rt-strat-note { font-size: 0.56rem; color: var(--mobius-text-muted); font-style: italic; }
 .rt-k { font-size: 0.60rem; color: var(--mobius-text-muted); }
 .rt-v { font-size: 0.62rem; font-family: var(--mobius-font-mono, monospace); color: var(--mobius-text-primary); }
 .rt-ratio-row {

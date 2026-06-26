@@ -5722,7 +5722,74 @@ function renderRetrievalTrace(thinkingLog) {
         poolRow.innerHTML = `<span class="rt-kv-k">pool</span><span class="rt-kv-v">${rtEscapeAttr(String(pool.cascade_level ?? "?"))} \xB7 ${pool.size ?? "?"} docs</span>`;
         rDiv.appendChild(poolRow);
       }
+      const sb = routing.score_breakdown;
+      if (sb && typeof sb === "object" && Object.keys(sb).length > 0) {
+        const picked = String(routing.strategy ?? routing.executed_strategy ?? "");
+        const fmt = (x) => typeof x === "number" ? x.toFixed(2) : x ?? "\xB7";
+        const contrib = (c) => c && typeof c === "object" ? fmt(c.contrib) : "\xB7";
+        const tbl = document.createElement("table");
+        tbl.className = "rt-score-table rt-mono";
+        tbl.innerHTML = "<thead><tr><th>strat</th><th>accuracy</th><th>recall</th><th>speed</th><th>shape</th><th>total</th></tr></thead>";
+        const tb = document.createElement("tbody");
+        for (const [strat2, raw] of Object.entries(sb)) {
+          const b = raw || {};
+          const tr = document.createElement("tr");
+          if (strat2 === picked)
+            tr.className = "rt-score-winner";
+          tr.innerHTML = `<td>${strat2 === picked ? "\u2605 " : ""}${rtEscapeAttr(strat2)}${b.withdrawn ? " \u2298" : ""}</td><td>${contrib(b.accuracy)}</td><td>${contrib(b.recall)}</td><td>${contrib(b.speed)}</td><td>${contrib(b.shape)}</td><td><b>${fmt(b.total)}</b></td>`;
+          tb.appendChild(tr);
+        }
+        tbl.appendChild(tb);
+        rDiv.appendChild(tbl);
+      }
+      const saFull = routing.self_assessments;
+      if (saFull && typeof saFull === "object" && Object.keys(saFull).length > 0) {
+        const wdl = Array.isArray(routing.withdrawn) ? routing.withdrawn : [];
+        const tbl = document.createElement("table");
+        tbl.className = "rt-sa-table rt-mono";
+        tbl.innerHTML = "<thead><tr><th>strat</th><th>est</th><th>static</th><th>\u0394</th><th>reason</th></tr></thead>";
+        const tb = document.createElement("tbody");
+        for (const [strat2, raw] of Object.entries(saFull)) {
+          const v = raw || {};
+          const est = typeof v.est_recall === "number" ? v.est_recall : Array.isArray(v) && typeof v[0] === "number" ? v[0] : null;
+          const stat = typeof v.static_recall === "number" ? v.static_recall : typeof v.static === "number" ? v.static : null;
+          const delta = typeof est === "number" && typeof stat === "number" ? est - stat : null;
+          const reason = String(v.reason ?? "");
+          const tr = document.createElement("tr");
+          if (wdl.includes(strat2))
+            tr.className = "rt-sa-withdrawn";
+          tr.innerHTML = `<td>${rtEscapeAttr(strat2)}</td><td>${typeof est === "number" ? est.toFixed(2) : "\xB7"}</td><td>${typeof stat === "number" ? stat.toFixed(2) : "\xB7"}</td><td>${typeof delta === "number" ? (delta >= 0 ? "+" : "") + delta.toFixed(2) : "\xB7"}</td><td class="rt-sa-reason" title="${rtEscapeAttr(reason)}">${rtEscapeAttr(reason.length > 64 ? reason.slice(0, 64) + "\u2026" : reason)}</td>`;
+          tb.appendChild(tr);
+        }
+        tbl.appendChild(tb);
+        rDiv.appendChild(tbl);
+      }
       sec.body.appendChild(rDiv);
+      round.appendChild(sec.el);
+    }
+    const stExec = Array.isArray(data.strategies_tried) ? data.strategies_tried : [];
+    if (stExec.length > 0) {
+      const sec = rtMakeSection(
+        "Strategy",
+        `${stExec.length} tried`,
+        /* collapsed= */
+        true
+      );
+      const eDiv = document.createElement("div");
+      eDiv.className = "rt-strat-exec";
+      stExec.forEach((s) => {
+        const arms2 = s.arms || {};
+        const rb = arms2.result_breakdown || {};
+        const tim2 = arms2.timing_ms || {};
+        const ok = s.succeeded ? "\u2713" : "\xB7";
+        const armStr = `bm25_pool=${arms2.bm25_pool_hits ?? 0} vec_pool=${arms2.vector_pool_hits ?? 0}` + (rb && Object.keys(rb).length ? ` \xB7 split b=${rb.bm25_only ?? 0}/v=${rb.vector_only ?? 0}/both=${rb.both ?? 0}` : "");
+        const timStr = Object.entries(tim2).filter(([, m]) => typeof m === "number" && m > 0).map(([key, m]) => `${key} ${Math.round(m)}ms`).join(" ");
+        const row = document.createElement("div");
+        row.className = "rt-strat-row";
+        row.innerHTML = `<div class="rt-strat-head">${ok} <b>${rtEscapeAttr(String(s.strategy ?? "?"))}</b> \xB7 ${s.n_chunks ?? 0} chunks \xB7 top ${typeof s.top_rerank === "number" ? s.top_rerank.toFixed(2) : "\xB7"} \xB7 ${Math.round(s.elapsed_ms ?? 0)}ms</div><div class="rt-strat-arms rt-mono">${rtEscapeAttr(armStr)}</div>` + (timStr ? `<div class="rt-strat-tim rt-mono">${rtEscapeAttr(timStr)}</div>` : "") + (s.note ? `<div class="rt-strat-note">${rtEscapeAttr(String(s.note))}</div>` : "");
+        eDiv.appendChild(row);
+      });
+      sec.body.appendChild(eDiv);
       round.appendChild(sec.el);
     }
     const themes = Array.isArray(data.themes) ? data.themes : [];
@@ -6628,7 +6695,7 @@ function renderAssistantFromEnvelope(envelope, opts) {
         w.className = "envelope-next-steps";
         const hint = document.createElement("div");
         hint.className = "envelope-next-steps-hint";
-        hint.textContent = followupListHintLines(items);
+        hint.textContent = "Suggested actions \u2014 not auto-sent.";
         w.appendChild(hint);
         for (const line of items.slice(0, 8)) {
           const text = line.text.trim();
@@ -6714,6 +6781,25 @@ function renderAssistantFromEnvelope(envelope, opts) {
         note.className = "envelope-attachments-note";
         note.textContent = "Report attachments available below.";
         bubble.appendChild(note);
+      }
+    } else if (t === "action_chips") {
+      const b = block;
+      if (Array.isArray(b.chips) && b.chips.length > 0) {
+        const actionsWrap = document.createElement("div");
+        actionsWrap.className = "answer-card-actions";
+        for (const action of b.chips) {
+          if (action.type === "external_link" && action.url && action.label) {
+            const a = document.createElement("a");
+            a.href = action.url;
+            a.target = "_blank";
+            a.rel = "noopener noreferrer";
+            a.className = "answer-card-action-chip";
+            a.textContent = (action.icon ? action.icon + " " : "") + action.label + " \u2197";
+            actionsWrap.appendChild(a);
+          }
+        }
+        if (actionsWrap.childNodes.length > 0)
+          bubble.appendChild(actionsWrap);
       }
     }
   }
@@ -7673,6 +7759,10 @@ ${message}`;
     }
     if (chatEmpty)
       chatEmpty.classList.add("hidden");
+    if (alphaBanner && !alphaBanner.hidden) {
+      alphaBanner.hidden = true;
+      localStorage.setItem("alpha_banner_dismissed", "1");
+    }
     const modeSelect = document.getElementById("composerMode");
     const selectedMode = modeSelect?.value || localStorage.getItem("_mobiusChatMode") || "copilot";
     messagesEl.querySelectorAll(".thinking-block").forEach((block) => {
@@ -9218,289 +9308,6 @@ ${message}`;
     _wireLegacySuiteButton("btnOpenSkillPipeline", "roster");
     _wireLegacySuiteButton("btnOpenFinancialStrategy", "strategy");
     _wireLegacySuiteButton("btnOpenRoster", "roster");
-
-    // ── Customize tab ────────────────────────────────────────────────
-    (function setupCustomizeTab() {
-      const tabOverview   = document.getElementById("skillsTabOverview");
-      const tabCustomize  = document.getElementById("skillsTabCustomize");
-      const panelOverview = document.getElementById("skillsTabPanelOverview");
-      const panelCustomize= document.getElementById("skillsTabPanelCustomize");
-      const czBody        = document.getElementById("skillsCustomizeBody");
-      if (!tabOverview || !tabCustomize || !czBody) return;
-
-      function _setActiveTab(tab) {
-        const isCustomize = (tab === "customize");
-        tabOverview.classList.toggle("skills-tab--active", !isCustomize);
-        tabOverview.setAttribute("aria-selected", String(!isCustomize));
-        tabCustomize.classList.toggle("skills-tab--active", isCustomize);
-        tabCustomize.setAttribute("aria-selected", String(isCustomize));
-        panelOverview.hidden  = isCustomize;
-        panelCustomize.hidden = !isCustomize;
-        if (isCustomize) _loadCustomize(); // always fetch fresh on tab open
-      }
-
-      tabOverview.addEventListener("click",  () => _setActiveTab("overview"));
-      tabCustomize.addEventListener("click", () => _setActiveTab("customize"));
-
-      // ── Fetch + render ──────────────────────────────────────────────
-
-      async function _loadCustomize() {
-        czBody.innerHTML = '<p class="skills-customize-loading">Loading…</p>';
-
-        // Auth header — `auth` is the AuthService instance created in run()
-        // getAuthHeader() is async so must be awaited.
-        const authHdr = (await auth?.getAuthHeader?.()) ?? {};
-        const isAuthed = Object.keys(authHdr).length > 0;
-
-        if (!isAuthed) {
-          czBody.innerHTML = '<p class="skills-customize-auth">Sign in to customize which tools Mobius uses for your conversations.</p>';
-          return;
-        }
-
-        let catalog;
-        try {
-          const resp = await fetch((window.API_BASE || "") + "/user/tools", {
-            headers: { ...authHdr, "Accept": "application/json" }
-          });
-          if (resp.status === 401) {
-            czBody.innerHTML = '<p class="skills-customize-auth">Sign in to customize which tools Mobius uses for your conversations.</p>';
-            return;
-          }
-          if (!resp.ok) throw new Error("HTTP " + resp.status);
-          catalog = await resp.json();
-        } catch (err) {
-          czBody.innerHTML = '<p class="skills-customize-empty">Could not load tool settings. Try again later.</p>';
-          console.warn("[customize-tools] fetch failed:", err);
-          return;
-        }
-
-        _renderCatalog(catalog, authHdr);
-      }
-
-      function _renderCatalog(catalog, authHdr) {
-        const { tools = [], categories = [] } = catalog;
-        if (!tools.length) {
-          czBody.innerHTML = '<p class="skills-customize-empty">No configurable tools available.</p>';
-          return;
-        }
-
-        // Group by category preserving server order
-        const grouped = {};
-        for (const cat of categories) grouped[cat] = [];
-        for (const t of tools) {
-          if (!grouped[t.category]) grouped[t.category] = [];
-          grouped[t.category].push(t);
-        }
-
-        const CAT_LABELS = {
-          corpus: "Knowledge Corpus",
-          healthcare: "Healthcare",
-          web: "Web & Search",
-          documents: "Documents",
-          analytics: "Analytics",
-          utility: "Utilities",
-          general: "General",
-        };
-
-        // ── PUT one tool ──────────────────────────────────────────────
-        async function _putTool(toolName, enabled) {
-          const r = await fetch(
-            (window.API_BASE || "") + "/user/tools/" + encodeURIComponent(toolName),
-            {
-              method: "PUT",
-              headers: { ...authHdr, "Content-Type": "application/json" },
-              body: JSON.stringify({ enabled })
-            }
-          );
-          if (!r.ok) throw new Error("HTTP " + r.status);
-        }
-
-        // ── Build one individual tool row (hidden by default) ─────────
-        function _makeToolRow(tool) {
-          const row = document.createElement("div");
-          row.className = "skills-cz-tool-row skills-cz-tool-row--sub";
-
-          const info = document.createElement("div");
-          info.className = "skills-cz-tool-info";
-          const nameEl = document.createElement("div");
-          nameEl.className = "skills-cz-tool-name";
-          nameEl.textContent = tool.display_name || tool.name;
-          info.appendChild(nameEl);
-          row.appendChild(info);
-
-          const label = document.createElement("label");
-          label.className = "skills-cz-toggle skills-cz-toggle--sm";
-          const cb = document.createElement("input");
-          cb.type = "checkbox";
-          cb.checked = tool.enabled !== false;
-          cb.dataset.toolName = tool.name;
-          const slider = document.createElement("span");
-          slider.className = "skills-cz-toggle-slider";
-          label.appendChild(cb);
-          label.appendChild(slider);
-          row.appendChild(label);
-
-          return { row, cb };
-        }
-
-        // ── Compute category state from child checkboxes ──────────────
-        function _catState(cbs) {
-          const total = cbs.length;
-          const on = cbs.filter(c => c.checked).length;
-          if (on === total) return "all";
-          if (on === 0)    return "none";
-          return "mixed";
-        }
-
-        // ── Update the category toggle to reflect child state ─────────
-        function _syncCatToggle(catCb, cbs) {
-          const state = _catState(cbs);
-          catCb.checked = state !== "none";
-          catCb.indeterminate = state === "mixed";
-        }
-
-        const wrap = document.createElement("div");
-        wrap.className = "skills-customize-categories";
-
-        for (const cat of categories) {
-          const rows = grouped[cat];
-          if (!rows || !rows.length) continue;
-
-          // ── Category header row ─────────────────────────────────────
-          const section = document.createElement("div");
-          section.className = "skills-cz-cat-section";
-
-          const catRow = document.createElement("div");
-          catRow.className = "skills-cz-cat-row";
-
-          // Expand toggle (arrow)
-          const arrow = document.createElement("button");
-          arrow.type = "button";
-          arrow.className = "skills-cz-cat-arrow";
-          arrow.setAttribute("aria-expanded", "false");
-          arrow.innerHTML = "&#8250;"; // ›
-          catRow.appendChild(arrow);
-
-          // Category label + count
-          const catInfo = document.createElement("div");
-          catInfo.className = "skills-cz-cat-info";
-          const catLabel = document.createElement("span");
-          catLabel.className = "skills-cz-cat-label";
-          catLabel.textContent = CAT_LABELS[cat] || cat.replace(/_/g, " ");
-          const catCount = document.createElement("span");
-          catCount.className = "skills-cz-cat-count";
-          catCount.textContent = rows.length + (rows.length === 1 ? " tool" : " tools");
-          catInfo.appendChild(catLabel);
-          catInfo.appendChild(catCount);
-          catRow.appendChild(catInfo);
-
-          // Category-level toggle
-          const catToggleLabel = document.createElement("label");
-          catToggleLabel.className = "skills-cz-toggle";
-          const catCb = document.createElement("input");
-          catCb.type = "checkbox";
-          const catSlider = document.createElement("span");
-          catSlider.className = "skills-cz-toggle-slider";
-          catToggleLabel.appendChild(catCb);
-          catToggleLabel.appendChild(catSlider);
-          catRow.appendChild(catToggleLabel);
-          section.appendChild(catRow);
-
-          // ── Drill-down panel (collapsed by default) ─────────────────
-          const drill = document.createElement("div");
-          drill.className = "skills-cz-drill";
-          drill.style.display = "none";
-
-          const childCbs = [];
-          for (const tool of rows) {
-            const { row, cb } = _makeToolRow(tool);
-            drill.appendChild(row);
-            childCbs.push(cb);
-
-            cb.addEventListener("change", async (e) => {
-              const enabled = e.target.checked;
-              cb.disabled = true;
-              try {
-                await _putTool(tool.name, enabled);
-                _syncCatToggle(catCb, childCbs);
-              } catch (err) {
-                console.warn("[customize-tools] PUT failed:", err);
-                cb.checked = !enabled;
-                _syncCatToggle(catCb, childCbs);
-              } finally {
-                cb.disabled = false;
-              }
-            });
-          }
-          section.appendChild(drill);
-
-          // Seed category toggle state from tool states
-          _syncCatToggle(catCb, childCbs);
-
-          // ── Category toggle: set ALL tools in group ──────────────────
-          catCb.addEventListener("change", async (e) => {
-            const enabled = e.target.checked;
-            catCb.disabled = true;
-            // Optimistically update children
-            for (const c of childCbs) c.checked = enabled;
-            try {
-              await Promise.all(
-                rows.map(t => _putTool(t.name, enabled))
-              );
-              catCb.indeterminate = false;
-            } catch (err) {
-              console.warn("[customize-tools] batch PUT failed:", err);
-              await _loadCustomize(); // re-fetch on failure
-            } finally {
-              catCb.disabled = false;
-            }
-          });
-
-          // ── Arrow: expand / collapse drill panel ─────────────────────
-          arrow.addEventListener("click", () => {
-            const open = drill.style.display !== "none";
-            drill.style.display = open ? "none" : "flex";
-            arrow.setAttribute("aria-expanded", String(!open));
-            arrow.classList.toggle("skills-cz-cat-arrow--open", !open);
-          });
-
-          // Clicking label text also toggles drill
-          catInfo.style.cursor = "pointer";
-          catInfo.addEventListener("click", () => arrow.click());
-
-          wrap.appendChild(section);
-        }
-
-        // ── Restore defaults footer ───────────────────────────────────
-        const footer = document.createElement("div");
-        footer.className = "skills-cz-footer";
-        const restoreBtn = document.createElement("button");
-        restoreBtn.type = "button";
-        restoreBtn.className = "skills-cz-restore-btn";
-        restoreBtn.textContent = "Restore defaults";
-        restoreBtn.addEventListener("click", async () => {
-          restoreBtn.disabled = true;
-          restoreBtn.textContent = "Restoring…";
-          try {
-            const r = await fetch(
-              (window.API_BASE || "") + "/user/tools/reset",
-              { method: "POST", headers: authHdr }
-            );
-            if (!r.ok) throw new Error("HTTP " + r.status);
-            await _loadCustomize();
-          } catch (err) {
-            console.warn("[customize-tools] reset failed:", err);
-            restoreBtn.disabled = false;
-            restoreBtn.textContent = "Restore defaults";
-          }
-        });
-        footer.appendChild(restoreBtn);
-        wrap.appendChild(footer);
-
-        czBody.innerHTML = "";
-        czBody.appendChild(wrap);
-      }
-    })();
   })();
   _initLandingDashboard();
 }
