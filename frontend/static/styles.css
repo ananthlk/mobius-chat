@@ -7774,9 +7774,11 @@ body {
 .rt-mono { font-family: var(--mobius-font-mono, monospace); font-size: 0.60rem; }
 .rt-parser, .rt-router, .rt-themes { display: flex; flex-direction: column; gap: 0.35rem; padding: 0.25rem 0; }
 /* Retrieval-trace tables — score breakdown, self-assessment, strategy execution */
-.rt-score-table, .rt-sa-table { width: 100%; border-collapse: collapse; font-size: 0.58rem; margin: 0.25rem 0; }
-.rt-score-table th, .rt-sa-table th { text-align: left; color: var(--mobius-text-muted); font-weight: 500; padding: 0.15rem 0.3rem; border-bottom: 1px solid var(--mobius-border, rgba(255,255,255,0.08)); }
-.rt-score-table td, .rt-sa-table td { padding: 0.15rem 0.3rem; color: var(--mobius-text-primary); border-bottom: 1px solid rgba(255,255,255,0.04); }
+.rt-score-table, .rt-sa-table, .rt-rerank-table { width: 100%; border-collapse: collapse; font-size: 0.58rem; margin: 0.25rem 0; }
+.rt-score-table th, .rt-sa-table th, .rt-rerank-table th { text-align: left; color: var(--mobius-text-muted); font-weight: 500; padding: 0.15rem 0.3rem; border-bottom: 1px solid var(--mobius-border, rgba(255,255,255,0.08)); }
+.rt-score-table td, .rt-sa-table td, .rt-rerank-table td { padding: 0.15rem 0.3rem; color: var(--mobius-text-primary); border-bottom: 1px solid rgba(255,255,255,0.04); }
+.rt-rr-auth { color: var(--mobius-text-muted); }
+.rt-rr-doc { max-width: 11rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rt-score-winner td { color: #10b981; font-weight: 600; }
 .rt-sa-withdrawn td { opacity: 0.45; }
 .rt-sa-reason { color: var(--mobius-text-muted); max-width: 14rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

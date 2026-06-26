@@ -5556,6 +5556,53 @@ function renderRetrievalTrace(
       round.appendChild(sec.el);
     }
 
+    // ── Reranking (per-chunk: arms / rerank / sim / authority / doc / p) ─
+    // Mirrors the rag UI's "Reranking" table. Reads the slim per-chunk
+    // projection forwarded by corpus_search (data.reranked_chunks).
+    const rrc: any[] = Array.isArray(data.reranked_chunks) ? data.reranked_chunks : [];
+    if (rrc.length > 0) {
+      const topR = rrc.reduce(
+        (m: number, c: any) => Math.max(m, typeof c.rerank_score === "number" ? c.rerank_score : 0),
+        0,
+      );
+      const armSplit: Record<string, number> = {};
+      rrc.forEach((c: any) => {
+        const a = (Array.isArray(c.retrieval_arms) ? c.retrieval_arms : []).join("+") || "—";
+        armSplit[a] = (armSplit[a] ?? 0) + 1;
+      });
+      const splitStr = Object.entries(armSplit).map(([k, v]) => `${k}=${v}`).join(" ");
+      const sec = rtMakeSection(
+        "Reranking",
+        `${rrc.length} chunks · top ${topR.toFixed(2)}${splitStr ? ` · ${splitStr}` : ""}`,
+        /* collapsed= */ true,
+      );
+      const tbl = document.createElement("table");
+      tbl.className = "rt-rerank-table rt-mono";
+      tbl.innerHTML =
+        "<thead><tr><th>#</th><th>arms</th><th>rerank</th><th>sim</th><th>auth</th><th>doc</th><th>p</th></tr></thead>";
+      const tb = document.createElement("tbody");
+      rrc.forEach((c: any) => {
+        const arms = Array.isArray(c.retrieval_arms) ? c.retrieval_arms.join("+") : "";
+        const rr = typeof c.rerank_score === "number" ? c.rerank_score.toFixed(3) : "·";
+        const sim = typeof c.similarity === "number" ? c.similarity.toFixed(3) : "·";
+        const auth = String(c.authority_level ?? "").replace(/_/g, " ");
+        const doc = String(c.document_name ?? "");
+        const docShort = doc.length > 24 ? doc.slice(0, 24) + "…" : doc;
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          `<td>${c.rank ?? ""}</td>` +
+          `<td>${rtEscapeAttr(arms)}</td>` +
+          `<td>${rr}</td><td>${sim}</td>` +
+          `<td class="rt-rr-auth">${rtEscapeAttr(auth)}</td>` +
+          `<td class="rt-rr-doc" title="${rtEscapeAttr(doc)}">${rtEscapeAttr(docShort)}</td>` +
+          `<td>${c.page_number ?? ""}</td>`;
+        tb.appendChild(tr);
+      });
+      tbl.appendChild(tb);
+      sec.body.appendChild(tbl);
+      round.appendChild(sec.el);
+    }
+
     // ── Themes (strategy b: Wide→Themes→Narrow) ───────────────────────
     const themes: any[] = Array.isArray(data.themes) ? data.themes : [];
     const themeDiag = data.theme_diagnostic;

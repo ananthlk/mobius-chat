@@ -569,6 +569,21 @@ def _run(call: SkillCall) -> SkillEnvelope:
         "term_partition": resp.get("term_partition"),
         "strategies_tried": strategies_tried,
         "confidence": resp.get("confidence"),
+        # Slim per-chunk projection for the UI "Reranking" table (§9) —
+        # metadata only (no text; the chunk bodies already render as
+        # citation sources). Mirrors the rag agent UI's rerank table.
+        "reranked_chunks": [
+            {
+                "rank": _i,
+                "document_name": _c.get("document_name"),
+                "page_number": _c.get("page_number"),
+                "retrieval_arms": _c.get("retrieval_arms") or [],
+                "rerank_score": _c.get("rerank_score"),
+                "similarity": _c.get("similarity"),
+                "authority_level": _c.get("authority_level"),
+            }
+            for _i, _c in enumerate(chunks, 1)
+        ],
         # arm_hits = FINAL returned arm split (from each chunk's
         # ``retrieval_arms``), NOT pool-stage hits — so the badge shows
         # e.g. "pgvector 10" to match the rag UI's "arm split: vector=10"

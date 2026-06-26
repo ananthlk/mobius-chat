@@ -5792,6 +5792,43 @@ function renderRetrievalTrace(thinkingLog) {
       sec.body.appendChild(eDiv);
       round.appendChild(sec.el);
     }
+    const rrc = Array.isArray(data.reranked_chunks) ? data.reranked_chunks : [];
+    if (rrc.length > 0) {
+      const topR = rrc.reduce(
+        (m, c) => Math.max(m, typeof c.rerank_score === "number" ? c.rerank_score : 0),
+        0
+      );
+      const armSplit = {};
+      rrc.forEach((c) => {
+        const a = (Array.isArray(c.retrieval_arms) ? c.retrieval_arms : []).join("+") || "\u2014";
+        armSplit[a] = (armSplit[a] ?? 0) + 1;
+      });
+      const splitStr = Object.entries(armSplit).map(([k2, v]) => `${k2}=${v}`).join(" ");
+      const sec = rtMakeSection(
+        "Reranking",
+        `${rrc.length} chunks \xB7 top ${topR.toFixed(2)}${splitStr ? ` \xB7 ${splitStr}` : ""}`,
+        /* collapsed= */
+        true
+      );
+      const tbl = document.createElement("table");
+      tbl.className = "rt-rerank-table rt-mono";
+      tbl.innerHTML = "<thead><tr><th>#</th><th>arms</th><th>rerank</th><th>sim</th><th>auth</th><th>doc</th><th>p</th></tr></thead>";
+      const tb = document.createElement("tbody");
+      rrc.forEach((c) => {
+        const arms2 = Array.isArray(c.retrieval_arms) ? c.retrieval_arms.join("+") : "";
+        const rr = typeof c.rerank_score === "number" ? c.rerank_score.toFixed(3) : "\xB7";
+        const sim = typeof c.similarity === "number" ? c.similarity.toFixed(3) : "\xB7";
+        const auth = String(c.authority_level ?? "").replace(/_/g, " ");
+        const doc = String(c.document_name ?? "");
+        const docShort = doc.length > 24 ? doc.slice(0, 24) + "\u2026" : doc;
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${c.rank ?? ""}</td><td>${rtEscapeAttr(arms2)}</td><td>${rr}</td><td>${sim}</td><td class="rt-rr-auth">${rtEscapeAttr(auth)}</td><td class="rt-rr-doc" title="${rtEscapeAttr(doc)}">${rtEscapeAttr(docShort)}</td><td>${c.page_number ?? ""}</td>`;
+        tb.appendChild(tr);
+      });
+      tbl.appendChild(tb);
+      sec.body.appendChild(tbl);
+      round.appendChild(sec.el);
+    }
     const themes = Array.isArray(data.themes) ? data.themes : [];
     const themeDiag = data.theme_diagnostic;
     if (themes.length > 0) {
