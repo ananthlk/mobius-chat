@@ -67,6 +67,9 @@ def test_state_load_picks_latest_non_empty_context_summary(monkeypatch):
     monkeypatch.setattr(sl, "get_state", lambda tid: {"active": {}})
     monkeypatch.setattr(sl, "save_state_full", lambda tid, st: None)
     monkeypatch.setattr(sl, "get_last_turn_sources", lambda tid: [])
+    # No canonical per-thread brief yet (legacy thread) -> falls back to
+    # the per-turn context_summary walk below.
+    monkeypatch.setattr(sl, "get_thread_rolling_summary", lambda tid: None)
     # Two turns: newest has empty summary, older has the real one. The
     # function should walk forward and pick the older non-empty.
     monkeypatch.setattr(sl, "get_last_turn_messages", lambda tid: [
@@ -89,6 +92,7 @@ def test_state_load_returns_none_when_no_summaries(monkeypatch):
     monkeypatch.setattr(sl, "get_state", lambda tid: {"active": {}})
     monkeypatch.setattr(sl, "save_state_full", lambda tid, st: None)
     monkeypatch.setattr(sl, "get_last_turn_sources", lambda tid: [])
+    monkeypatch.setattr(sl, "get_thread_rolling_summary", lambda tid: None)
     monkeypatch.setattr(sl, "get_last_turn_messages", lambda tid: [
         {"turn_id": "t-1", "user_content": "u", "assistant_content": "a"},
     ])
@@ -340,3 +344,154 @@ def test_history_thread_turns_endpoint_caps_limit():
         with TestClient(app) as client:
             client.get("/chat/history/threads/x/turns?limit=-5")
     assert mock_fn.call_args.args[1] == 1
+
+
+# ── 5. Two-tier rolling summary (migration 036) ───────────────────────
+
+
+def test_state_load_prefers_canonical_rolling_summary(monkeypatch):
+    """When chat_threads has a canonical summary_long, state_load uses it
+    directly and does NOT fall back to walking per-turn context_summary."""
+    from app.stages import state_load as sl
+
+    monkeypatch.setattr(sl, "get_state", lambda tid: {"active": {}})
+    monkeypatch.setattr(sl, "save_state_full", lambda tid, st: None)
+    monkeypatch.setattr(sl, "get_last_turn_sources", lambda tid: [])
+    # Canonical per-thread brief present -> wins over any per-turn value.
+    monkeypatch.setattr(sl, "get_thread_rolling_summary",
+                        lambda tid: "Provider enrollment — Sunshine Health (FL Medicaid). URL + form pending.")
+    monkeypatch.setattr(sl, "get_last_turn_messages", lambda tid: [
+        {"turn_id": "t", "user_content": "u", "assistant_content": "a",
+         "context_summary": "stale per-turn value that must NOT be used"},
+    ])
+
+    ctx = _make_ctx()
+    sl.run_state_load(ctx)
+    assert ctx.previous_thread_summary == (
+        "Provider enrollment — Sunshine Health (FL Medicaid). URL + form pending."
+    )
+
+
+def test_run_integrate_stamps_thread_state_onto_ctx(monkeypatch):
+    """The integrator's long ``thread_state`` field is parsed out and
+    stamped onto ctx.thread_state, independently of thread_summary."""
+    from app.stages import integrate as integ_mod
+
+    card = {
+        "mode": "BLENDED",
+        "direct_answer": "ans",
+        "sections": [{"intent": "references", "bullets": ["x"]}],
+        "thread_summary": "Provider enrollment — Sunshine Health (FL Medicaid)",
+        "thread_state": ("Provider enrollment — Sunshine Health (FL Medicaid). "
+                         "Enroll via sunshinehealth.com Practitioner Enrollment Requests; "
+                         "CAQH accepted. User wants the downloadable form + link."),
+    }
+    serialized = json.dumps(card)
+    monkeypatch.setattr(integ_mod, "format_response",
+                        lambda *a, **k: (serialized, {"prompt_tokens": 1, "completion_tokens": 1}))
+    monkeypatch.setattr("app.storage.phi_audit_log.audit_if_phi", lambda *a, **k: None)
+    monkeypatch.setattr("app.storage.progress.append_message_chunk", lambda *a, **k: None)
+
+    ctx = _make_integrate_ctx()
+    integ_mod.run_integrate(ctx)
+    assert ctx.thread_summary == "Provider enrollment — Sunshine Health (FL Medicaid)"
+    assert ctx.thread_state is not None
+    assert "sunshinehealth.com" in ctx.thread_state
+    assert "form" in ctx.thread_state.lower()
+
+
+# ── 6. Dedicated thread summarizer (Gemini-reliable, separate call) ───
+
+
+def test_summarizer_parse_extracts_short_and_long():
+    from app.responder.thread_summarizer import _parse
+
+    short, long_ = _parse('{"short": "Provider enrollment — Sunshine Health (FL Medicaid)", '
+                           '"long": "Enroll via sunshinehealth.com; CAQH accepted. User wants the form link."}')
+    assert short == "Provider enrollment — Sunshine Health (FL Medicaid)"
+    assert "sunshinehealth.com" in long_
+
+
+def test_summarizer_parse_tolerates_code_fence_and_prose():
+    from app.responder.thread_summarizer import _parse
+
+    raw = 'Here is the summary:\n```json\n{"short": "H0036 criteria", "long": "InterQual 2023 applies."}\n```'
+    short, long_ = _parse(raw)
+    assert short == "H0036 criteria"
+    assert long_ == "InterQual 2023 applies."
+
+
+def test_summarizer_parse_returns_none_on_garbage():
+    from app.responder.thread_summarizer import _parse
+
+    assert _parse("not json at all") == (None, None)
+    assert _parse("") == (None, None)
+
+
+def test_summarizer_returns_none_on_llm_failure(monkeypatch):
+    """A failing/empty LLM call must degrade to (None, None) so the caller
+    falls back to the integrator's thread_summary — never crash a turn."""
+    import app.responder.thread_summarizer as ts
+
+    def _boom(*a, **k):
+        raise RuntimeError("vertex down")
+
+    monkeypatch.setattr("app.services.llm_manager.generate_sync", _boom)
+    assert ts.summarize_thread(previous_long=None, user_message="q", answer_text="a") == (None, None)
+
+
+def test_format_quality_rewards_clean_over_narration():
+    """The bandit reward must rank a clean label+brief above narration."""
+    from app.responder.thread_summarizer import _format_quality
+    clean = _format_quality(
+        "Provider enrollment — Sunshine Health (FL Medicaid)",
+        "Provider enrollment — Sunshine Health (FL Medicaid). Enroll via sunshinehealth.com.",
+    )
+    narrated = _format_quality(
+        "The user is asking about provider enrollment for Sunshine Health.",
+        "The user asked how to enroll. The assistant could not find details.",
+    )
+    assert clean == 1.0
+    assert narrated < clean
+    assert _format_quality(None, None) == 0.0
+
+
+def test_derive_short_keeps_clean_label():
+    from app.responder.thread_summarizer import _derive_short
+    s = _derive_short("Provider enrollment — Sunshine Health (FL Medicaid)", "long ...")
+    assert s == "Provider enrollment — Sunshine Health (FL Medicaid)"
+
+
+def test_derive_short_strips_narration_from_short():
+    from app.responder.thread_summarizer import _derive_short
+    # Narration short, but the long brief leads with a clean topic.
+    s = _derive_short(
+        "The user is asking about provider enrollment for Sunshine Health.",
+        "Provider enrollment — Sunshine Health (FL Medicaid). Enroll via sunshinehealth.com.",
+    )
+    assert s == "Provider enrollment — Sunshine Health (FL Medicaid)"
+
+
+def test_derive_short_recovers_from_narration_long():
+    from app.responder.thread_summarizer import _derive_short
+    # Both fields narrate — still strip the leading 'User is seeking'.
+    s = _derive_short(
+        "User is seeking the provider enrollment form.",
+        "User is seeking the provider enrollment form for Sunshine Health. Not found yet.",
+    )
+    assert not s.lower().startswith("user is seeking")
+    assert "provider enrollment form" in s.lower()
+
+
+def test_summarizer_overrides_via_generate_sync(monkeypatch):
+    """Happy path: a well-formed model response yields (short, long)."""
+    import app.responder.thread_summarizer as ts
+
+    payload = '{"short": "Claim appeal — Sunshine Health", "long": "Days 36-90 denied as duplicate; appeal in progress."}'
+    monkeypatch.setattr("app.services.llm_manager.generate_sync",
+                        lambda *a, **k: (payload, {"total_tokens": 10}))
+    short, long_ = ts.summarize_thread(
+        previous_long="Claim — Sunshine Health", user_message="how do I appeal?",
+        answer_text="File within 90 days via portal.")
+    assert short == "Claim appeal — Sunshine Health"
+    assert "duplicate" in long_

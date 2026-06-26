@@ -169,7 +169,7 @@ def test_recent_threads_surfaces_summary_field(monkeypatch):
             "updated_at": None, "turn_count": 3,
         },
     ]))
-    out = t.get_recent_threads(limit=5)
+    out = t.get_recent_threads(limit=5, user_id="u")
     assert len(out) == 1
     assert out[0]["thread_id"] == "t1"
     assert out[0]["summary"] == "rolling summary 1"
@@ -189,7 +189,7 @@ def test_recent_threads_normalizes_empty_summary_to_none(monkeypatch):
             "updated_at": None, "turn_count": 1,
         },
     ]))
-    out = t.get_recent_threads(limit=5)
+    out = t.get_recent_threads(limit=5, user_id="u")
     assert out[0]["summary"] is None
     assert out[0]["title"] == "fallback title"
 

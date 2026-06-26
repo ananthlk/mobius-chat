@@ -88,15 +88,22 @@ class PipelineContext:
     context_pack: str = ""
     """Context string passed to parser (from route_context + build_context_pack)."""
     previous_thread_summary: str | None = None
-    """Phase 13.7 — rolling thread summary from the most recent prior turn.
-    Loaded by state_load from chat_turns.context_summary (latest non-null
-    row in last_turns). Threaded into the integrator so it can REFINE
-    the summary to integrate THIS turn rather than starting fresh."""
+    """Rolling rich thread context from the prior turn. Loaded by
+    state_load from chat_threads.summary_long (canonical, one row per
+    thread), falling back to the latest chat_turns.context_summary for
+    legacy threads. Threaded into the integrator so it can REFINE the
+    running brief to integrate THIS turn rather than starting fresh."""
     thread_summary: str | None = None
-    """Phase 13.7 — refined rolling summary produced by THIS turn's
-    integrator. Persisted to chat_turns.context_summary in
-    _atomic_save_turn_with_messages. Sidebar reads the latest non-null
-    value across a thread's turns."""
+    """SHORT rolling sidebar label produced by THIS turn's integrator
+    (≤60 chars). Persisted to chat_threads.summary_short (canonical) and
+    chat_turns.context_summary (per-turn snapshot). Drives the sidebar
+    label, which now refreshes every turn."""
+    thread_state: str | None = None
+    """LONG rolling brief produced by THIS turn's integrator (~50 words):
+    this thread's running memory — payer/jurisdiction, codes, URLs, form
+    names, answered-vs-still-wanted. Persisted to chat_threads.summary_long
+    and fed back as previous_thread_summary next turn. Not shown in the
+    sidebar."""
 
     # Classification
     classification: str = ""

@@ -14,6 +14,51 @@ from app.services.usage import LLMUsageDict
 logger = logging.getLogger(__name__)
 
 
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def _acquire_conn():
+    """Yield a connection for an analytics write.
+
+    Prefers the shared pool (created on the worker's main loop). When the
+    pool isn't usable in the *current* loop — e.g. ``generate_sync`` ran
+    ``generate()`` via ``asyncio.run`` in a throwaway thread/loop, so
+    ``pg_pool.get_pool()`` returns ``None`` for that foreign loop — fall back
+    to a single transient connection opened in THIS loop and closed right
+    after.
+
+    This is the keystone fix for the bandit telemetry gap: previously every
+    ``generate_sync``-from-async caller (integrator, react, planner,
+    thread_summary) silently dropped its ``llm_calls`` row because the foreign
+    loop got ``None`` and the writers no-op'd. A one-shot connection is
+    loop-local and asyncpg-safe (no cross-loop pool sharing, no pool churn —
+    it's a single connection, not a pool). Yields ``None`` only when no DSN is
+    configured; callers must skip on ``None``.
+    """
+    from app.services.pg_pool import get_pool
+
+    pool = await get_pool()
+    if pool is not None:
+        async with pool.acquire() as conn:
+            yield conn
+        return
+
+    from app.db_client import _get_fallback_url
+
+    url = _get_fallback_url("chat")
+    if not url:
+        yield None
+        return
+    import asyncpg
+
+    conn = await asyncpg.connect(url, command_timeout=10)
+    try:
+        yield conn
+    finally:
+        await conn.close()
+
+
 def _hash_prompt(prompt: str) -> str:
     """SHA-256 of prompt text (store hash only, not PII)."""
     return hashlib.sha256((prompt or "").encode("utf-8")).hexdigest()
@@ -93,13 +138,11 @@ def build_record(
 async def _write_async(record: dict[str, Any]) -> None:
     """Insert one row into llm_calls. No-op if pool unavailable."""
     try:
-        from app.services.pg_pool import get_pool
-        pool = await get_pool()
-        if not pool:
-            return
         ts = record["ts"]
         # asyncpg expects datetime; do not stringify
-        async with pool.acquire() as conn:
+        async with _acquire_conn() as conn:
+            if conn is None:
+                return
             await conn.execute(
                 """
                 INSERT INTO llm_calls (
@@ -191,15 +234,15 @@ async def update_quality_for_correlation_stages_async(
     """
     try:
         from app.services.adjudication.utils import get_stage_quality_score
-        from app.services.pg_pool import get_pool
 
-        pool = await get_pool()
-        if not pool or not correlation_id:
+        if not correlation_id:
             return
 
         stage_scores = stage_scores or {}
 
-        async with pool.acquire() as conn:
+        async with _acquire_conn() as conn:
+            if conn is None:
+                return
             rows = await conn.fetch(
                 """
                 SELECT DISTINCT ON (stage) call_id::text AS id, stage
@@ -228,12 +271,10 @@ async def update_quality_for_correlation_stages_async(
 async def update_quality_async(call_id: str | uuid.UUID, quality_score: float, quality_source: str) -> None:
     """Update llm_calls.quality_score/source and insert llm_quality_updates row."""
     try:
-        from app.services.pg_pool import get_pool
-        pool = await get_pool()
-        if not pool:
-            return
         cid = str(call_id) if isinstance(call_id, uuid.UUID) else call_id
-        async with pool.acquire() as conn:
+        async with _acquire_conn() as conn:
+            if conn is None:
+                return
             await conn.execute(
                 "UPDATE llm_calls SET quality_score = $1, quality_source = $2 WHERE call_id = $3::uuid",
                 round(quality_score, 3),

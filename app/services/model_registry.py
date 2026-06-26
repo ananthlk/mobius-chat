@@ -882,7 +882,10 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         display_name="Gemini 2.5 Pro",
         enabled=True,
         hipaa_eligible=True,
-        eligible_stages=vertex_roster_eligible_stages(),
+        # "thread_summary": rolling-summary stage. Pro is the stronger
+        # instruction-follower for the label/brief format; it shares the
+        # stage with flash so the bandit can compare (priors favor Pro).
+        eligible_stages=vertex_roster_eligible_stages() + ["thread_summary"],
         spec_tokens_per_sec=100.0,
         spec_context_k=1000,
         spec_input_per_1m_usd=1.25,
@@ -903,7 +906,7 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         # vertex candidate. Pre-fix, the router fell through to flash
         # via the hard "fallback_no_models" path; making it intentional
         # gives the bandit a real comparison vs. flash-lite + Haiku.
-        eligible_stages=vertex_roster_eligible_stages() + [ROSTER_CLEAN_STAGE, "vibe"],
+        eligible_stages=vertex_roster_eligible_stages() + [ROSTER_CLEAN_STAGE, "vibe", "thread_summary"],
         spec_tokens_per_sec=300.0,
         spec_context_k=1000,
         spec_input_per_1m_usd=0.075,
@@ -1873,13 +1876,27 @@ class ModelRouter:
             pass  # no running loop — will refresh next cycle
 
     async def _refresh_async(self) -> None:
-        """Load per-stage per-model stats from model_performance_by_stage view."""
+        """REFRESH + load per-stage per-model stats from the
+        model_performance_by_stage matview.
+
+        The matview is not refreshed anywhere else in the app, so we REFRESH
+        it here before reading — otherwise the router reads a frozen (usually
+        empty) view and never leaves benchmark priors (the bandit-not-learning
+        bug). Uses _acquire_conn so it works both from the worker's main loop
+        and from a generate_sync throwaway loop (one-shot connection)."""
         try:
-            from app.services.pg_pool import get_pool
-            pool = await get_pool()
-            if not pool:
-                return
-            async with pool.acquire() as conn:
+            from app.services.llm_analytics import _acquire_conn
+            async with _acquire_conn() as conn:
+                if conn is None:
+                    return
+                try:
+                    await conn.execute(
+                        "REFRESH MATERIALIZED VIEW model_performance_by_stage"
+                    )
+                except Exception as _re:
+                    logger.warning(
+                        "ModelRouter: matview REFRESH failed (reading stale): %s", _re
+                    )
                 rows = await conn.fetch("""
                     SELECT
                         stage, model,

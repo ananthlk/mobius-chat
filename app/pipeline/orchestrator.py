@@ -748,6 +748,43 @@ def run_pipeline(
             if closure_msg:
                 ctx.response_payload["closure_message"] = closure_msg
 
+        # Rolling thread summary via a dedicated, focused LLM call. The
+        # integrator's AnswerCard fields are unreliable on the production
+        # model (Gemini emits a minimal card, drops thread_state, ignores
+        # the label format); a narrow {short,long} task is reliable. Runs
+        # here — AFTER the answer has already streamed — so it adds nothing
+        # to the user-visible answer latency. Output overrides
+        # ctx.thread_summary/thread_state (integrator value kept as
+        # fallback when the call fails) and is persisted by
+        # _publish_completed → upsert_thread_summary.
+        if ctx.thread_id:
+            try:
+                import json as _json
+
+                from app.responder.thread_summarizer import summarize_thread
+
+                _ans = ""
+                try:
+                    _fm = _json.loads(ctx.final_message) if ctx.final_message else {}
+                    _ans = (_fm.get("direct_answer") or "") if isinstance(_fm, dict) else ""
+                except Exception:
+                    _ans = ctx.final_message or ""
+                _short, _long = summarize_thread(
+                    previous_long=getattr(ctx, "previous_thread_summary", None),
+                    user_message=ctx.refined_query or ctx.message,
+                    answer_text=_ans,
+                    jurisdiction_summary=getattr(ctx, "jurisdiction_summary", None),
+                    correlation_id=ctx.correlation_id,
+                    thread_id=ctx.thread_id,
+                    mode=getattr(ctx, "chat_mode", None),
+                )
+                if _short:
+                    ctx.thread_summary = _short
+                if _long:
+                    ctx.thread_state = _long
+            except Exception as _e:  # noqa: BLE001 — never break a turn
+                logger.warning("rolling summary generation failed (non-fatal): %s", _e)
+
         _publish_completed(ctx, t0)
 
     except Exception as e:
@@ -1127,6 +1164,18 @@ def _publish_completed(ctx: PipelineContext, t0_start: float) -> None:
                 # regex-based summary (insert_turn) or null.
                 context_summary=getattr(ctx, "thread_summary", None),
             )
+            # Canonical rolling summary: one row per thread, updated in
+            # place each turn. summary_short drives the sidebar label;
+            # summary_long is fed back as previous_thread_summary next turn.
+            try:
+                from app.storage.threads import upsert_thread_summary
+                upsert_thread_summary(
+                    ctx.thread_id,
+                    getattr(ctx, "thread_summary", None),
+                    getattr(ctx, "thread_state", None),
+                )
+            except Exception as _e:  # noqa: BLE001 — persistence is best-effort
+                logger.warning("Failed to upsert rolling thread summary: %s", _e)
         else:
             persistence.save_turn(
                 correlation_id=ctx.correlation_id,

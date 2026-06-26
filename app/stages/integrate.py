@@ -467,6 +467,13 @@ def run_integrate(
             _parsed = json.loads(final_message)
             if isinstance(_parsed, dict):
                 _ts_mode = _parsed.get("mode") if isinstance(_parsed.get("mode"), str) else None
+                # Long rolling brief (this thread's running memory). Extracted
+                # independently of the short label below; persisted to
+                # chat_threads.summary_long and fed back as
+                # previous_thread_summary next turn.
+                _tstate = _parsed.get("thread_state")
+                if isinstance(_tstate, str) and _tstate.strip():
+                    ctx.thread_state = _tstate.strip()[:600]
                 _ts = _parsed.get("thread_summary")
                 if isinstance(_ts, str) and _ts.strip():
                     # Cap at ~600 chars to match the legacy regex-built

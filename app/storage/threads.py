@@ -158,6 +158,74 @@ def set_thread_title_if_empty(thread_id: str, question: str) -> None:
     logger.warning("Failed to set thread title: %s", _err_message(result))
 
 
+def upsert_thread_summary(
+    thread_id: str,
+    summary_short: str | None,
+    summary_long: str | None,
+) -> None:
+    """Write the canonical rolling summary for a thread (one row, updated
+    in place each turn).
+
+    ``summary_short`` is the sidebar label (≤60 chars); ``summary_long`` is
+    the rich running brief fed back to the integrator next turn. Either may
+    be None on a turn the integrator didn't emit it — COALESCE keeps the
+    prior value rather than nulling it. Graceful no-op if the columns are
+    missing (migration 036 not yet applied) or the DB is unreachable.
+    """
+    tid = (thread_id or "").strip()
+    if not tid:
+        return
+    short = (summary_short or "").strip() or None
+    long_ = (summary_long or "").strip() or None
+    if short is None and long_ is None:
+        return
+    result = db_execute(
+        """
+        INSERT INTO chat_threads (thread_id, summary_short, summary_long, created_at, updated_at)
+        VALUES (:tid, :short, :long, now(), now())
+        ON CONFLICT (thread_id) DO UPDATE SET
+            summary_short = COALESCE(EXCLUDED.summary_short, chat_threads.summary_short),
+            summary_long  = COALESCE(EXCLUDED.summary_long,  chat_threads.summary_long),
+            updated_at = now()
+        """,
+        _DB,
+        params={"tid": tid, "short": short, "long": long_},
+    )
+    code = _err_code(result)
+    if code is None or code == "connection_error":
+        return
+    err = _err_message(result).lower()
+    if code == "column_missing" or "summary_short" in err or "summary_long" in err or "column" in err:
+        logger.debug(
+            "chat_threads.summary_short/summary_long missing (run migration 036); "
+            "skipping rolling-summary upsert"
+        )
+        return
+    logger.warning("Failed to upsert thread summary: %s", _err_message(result))
+
+
+def get_thread_rolling_summary(thread_id: str) -> str | None:
+    """Return the canonical long rolling brief (chat_threads.summary_long)
+    for a thread, or None. Used by state_load to seed
+    previous_thread_summary. Returns None on missing column / unreachable
+    DB so the caller can fall back to the per-turn chat_turns walk."""
+    tid = (thread_id or "").strip()
+    if not tid:
+        return None
+    result = db_query(
+        "SELECT summary_long FROM chat_threads WHERE thread_id = :tid",
+        _DB,
+        params={"tid": tid},
+    )
+    if _err_code(result) is not None:
+        return None
+    rows = _rows_as_dicts(result)
+    if not rows:
+        return None
+    val = (rows[0].get("summary_long") or "").strip()
+    return val or None
+
+
 def get_recent_threads(limit: int = 10, user_id: str | None = None) -> list[dict[str, Any]]:
     """Return distinct threads for the sidebar:
     ``[{thread_id, title, summary, updated_at, turn_count}]``.
@@ -214,7 +282,13 @@ def get_recent_threads(limit: int = 10, user_id: str | None = None) -> list[dict
         )
         SELECT t.thread_id,
                COALESCE(NULLIF(t.title, ''), ft.question, 'Untitled thread') AS title,
-               ls.context_summary AS summary,
+               -- Sidebar label: the frontend renders `summary` in preference
+               -- to `title`, so this is what users actually see. Use the
+               -- canonical rolling SHORT label (refreshes every turn), falling
+               -- back to the legacy per-turn context_summary for threads
+               -- predating migration 036. summary_long stays server-side only
+               -- (integrator memory) and is intentionally NOT exposed here.
+               COALESCE(NULLIF(t.summary_short, ''), ls.context_summary) AS summary,
                t.updated_at,
                COALESCE(NULLIF(t.turn_count, 0), tc.n, 0) AS turn_count
         FROM chat_threads t
@@ -236,10 +310,11 @@ def get_recent_threads(limit: int = 10, user_id: str | None = None) -> list[dict
             or "title" in err
             or "turn_count" in err
             or "context_summary" in err  # Phase 13.7 — column may be missing on legacy schemas
+            or "summary_short" in err or "summary_long" in err  # migration 036
             or "column" in err
         ):
             logger.debug(
-                "chat_threads.title/turn_count/context_summary missing (run migration 030); returning empty thread list"
+                "chat_threads summary columns missing (run migrations 030/036); returning empty thread list"
             )
             return []
         logger.warning("Failed to get recent threads: %s", _err_message(result))

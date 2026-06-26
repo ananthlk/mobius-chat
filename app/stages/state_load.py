@@ -8,7 +8,12 @@ from app.state.context_router import route_context
 from app.state.model import ThreadState
 from app.state.state_extractor import extract_state_delta
 from app.storage.results import clear_tool_results
-from app.storage.threads import get_last_turn_messages, get_state, save_state_full
+from app.storage.threads import (
+    get_last_turn_messages,
+    get_state,
+    get_thread_rolling_summary,
+    save_state_full,
+)
 from app.storage.turns import get_last_turn_sources
 
 logger = logging.getLogger(__name__)
@@ -56,19 +61,20 @@ def run_state_load(
     ctx.report_run_id = (merged.get("active") or {}).get("report_run_id")
     ctx.last_turns = get_last_turn_messages(ctx.thread_id)
     ctx.last_turn_sources = get_last_turn_sources(ctx.thread_id)
-    # Phase 13.7 — pull the rolling thread summary from the most-recent
-    # turn that has a non-null context_summary. Threaded into the
-    # integrator so it can REFINE rather than rebuild. Newest-first
-    # order in last_turns means we walk forward and stop on first
-    # non-empty value.
-    _prev_summary: str | None = None
-    for _turn in (ctx.last_turns or []):
-        if not isinstance(_turn, dict):
-            continue
-        cs = (_turn.get("context_summary") or "").strip()
-        if cs:
-            _prev_summary = cs
-            break
+    # Rolling rich context for the integrator. Prefer the canonical
+    # per-thread brief (chat_threads.summary_long), updated in place each
+    # turn; fall back to the latest non-null per-turn context_summary for
+    # legacy threads predating migration 036. Threaded into the integrator
+    # so it can REFINE rather than rebuild.
+    _prev_summary: str | None = get_thread_rolling_summary(ctx.thread_id)
+    if not _prev_summary:
+        for _turn in (ctx.last_turns or []):
+            if not isinstance(_turn, dict):
+                continue
+            cs = (_turn.get("context_summary") or "").strip()
+            if cs:
+                _prev_summary = cs
+                break
     ctx.previous_thread_summary = _prev_summary
     route = route_context(ctx.message, merged, ctx.last_turns, reset_reason=reset_reason)
 
