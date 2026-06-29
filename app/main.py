@@ -1604,13 +1604,15 @@ _SKILL_LLM_ALLOWED_STAGES = frozenset({
     "rag_strategy_d_external",  # Strategy (d) External First synthesis
     # mobius-qa/lexicon-maintenance stages (2026-04-23): curator UI's
     # LLM calls route through here. Same reason as rag — unified
-    # bandit + telemetry. Three stages cover the four endpoint needs:
-    #   * lexicon_triage : bulk candidate triage + health analysis
+    # bandit + telemetry. Stages cover the lexicon endpoints:
+    #   * lexicon_triage : bulk candidate triage (FAST/Flash — fits 60s)
     #   * lexicon_suggest: single-phrase tag placement + candidate revise
     #   * lexicon_from_doc: "suggest tags from this document" flow
+    #   * lexicon_analyze: whole-tree health analysis (Pro — big output)
     "lexicon_triage",
     "lexicon_suggest",
     "lexicon_from_doc",
+    "lexicon_analyze",
     # mobius-skills/vibe (2026-04-25): one-line vibe responses (toast,
     # empathy, dry observation). Cheap+fast tier via CHEAP_STAGES.
     "vibe",

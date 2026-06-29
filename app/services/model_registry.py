@@ -872,12 +872,17 @@ PHI_SAFE_STAGES = ["phi_detector"]
 ROSTER_CLEAN_STAGE = "roster_clean"
 FAST_ONLY_STAGES = list(CHEAP_STAGES) + [ROSTER_CLEAN_STAGE]
 
-# lexicon-maintenance → POST /internal/skill-llm (health analysis, candidate
-# triage, sub-tag suggestions). Needs real frontier models with large output
-# caps — the health report is big JSON over a 200+ tag tree. Assigned to the
-# Vertex Pro/Flash roster only (no hard fallback). Keep in sync with
-# mobius-qa/lexicon-maintenance/app/llm_manager_client.py LEXICON_STAGES.
-LEXICON_STAGES = ["lexicon_triage", "lexicon_suggest", "lexicon_from_doc"]
+# lexicon-maintenance → POST /internal/skill-llm. Two workloads with opposite
+# needs, so they get different models:
+#   * FAST: bulk candidate triage + interactive suggestions. Batches are sized
+#     to fit chat's ~60s skill-llm timeout assuming a FAST model; Pro is
+#     ~3-4x slower and trips that timeout on a 25-candidate batch. → Flash only.
+#   * ANALYZE: whole-tree health analysis — large JSON output that overflows
+#     Flash's 8192 cap (truncated reports). Not latency-sensitive. → Pro
+#     (Flash kept as a salvageable fallback).
+# Keep in sync with mobius-qa/lexicon-maintenance/app/llm_manager_client.py.
+LEXICON_FAST_STAGES = ["lexicon_triage", "lexicon_suggest", "lexicon_from_doc"]
+LEXICON_ANALYZE_STAGE = "lexicon_analyze"
 
 MODEL_ROSTER: dict[str, ModelSpec] = {
 
@@ -892,7 +897,7 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         # "thread_summary": rolling-summary stage. Pro is the stronger
         # instruction-follower for the label/brief format; it shares the
         # stage with flash so the bandit can compare (priors favor Pro).
-        eligible_stages=vertex_roster_eligible_stages() + ["thread_summary"] + LEXICON_STAGES,
+        eligible_stages=vertex_roster_eligible_stages() + ["thread_summary", LEXICON_ANALYZE_STAGE],
         spec_tokens_per_sec=100.0,
         spec_context_k=1000,
         spec_input_per_1m_usd=1.25,
@@ -913,7 +918,7 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         # vertex candidate. Pre-fix, the router fell through to flash
         # via the hard "fallback_no_models" path; making it intentional
         # gives the bandit a real comparison vs. flash-lite + Haiku.
-        eligible_stages=vertex_roster_eligible_stages() + [ROSTER_CLEAN_STAGE, "vibe", "thread_summary"] + LEXICON_STAGES,
+        eligible_stages=vertex_roster_eligible_stages() + [ROSTER_CLEAN_STAGE, "vibe", "thread_summary"] + LEXICON_FAST_STAGES + [LEXICON_ANALYZE_STAGE],
         spec_tokens_per_sec=300.0,
         spec_context_k=1000,
         spec_input_per_1m_usd=0.075,
