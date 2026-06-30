@@ -1,61 +1,36 @@
 """Instant-RAG lazy search (Phase B.1).
 
-Dedicated retrieval path for user-uploaded documents — the "lazy RAG"
-pattern the user described: *just match on vector ID and pass chunks*,
-no tag-matching, no confidence filters, no LLM synthesis.
+Dedicated retrieval path for user-uploaded documents.  Calls the RAG
+service's /api/query endpoint with a document_id filter so the search
+runs entirely in pgvector — no Chroma dependency.
 
-Why this module exists instead of reusing ``answer_non_patient``
-----------------------------------------------------------------
-The main RAG pipeline runs a layered filter chain designed for the
-curated corpus:
+Why pgvector instead of Chroma
+-------------------------------
+The RAG pipeline writes embeddings to ``chunk_embeddings`` (pgvector) and
+promotes them to ``rag_published_embeddings`` (also pgvector).  A shared
+Chroma server is no longer part of the production stack; it was removed
+after the 2026-04-27 pgvector migration.  Instant-rag chat uploads were
+never visible in Chroma anyway because ``VECTOR_STORE=pgvector`` gates off
+the Chroma upsert in ``publish_sync.py``.
 
-  J/P/D tagger → BM25 retrieval → tag-match rerank →
-  confidence_min filter → doc_assembly neighbor expansion → LLM synthesis
-
-User uploads don't have *any* of those upstream artifacts:
-
-  * ``document_tags`` row: does NOT exist (populated by dbt batch only).
-  * ``policy_line_tags`` rows: do NOT exist (populated by dbt batch only).
-  * ``confidence_label`` per chunk: absent.
-  * Curated payer / state / program metadata: empty unless the upload
-    promotion flow runs (Phase B.7).
-
-Running the chain against those empty fields produces two failure modes:
-(a) tag-match rerank silently down-ranks the upload, and (b) the
-confidence filter can drop everything if labels are missing. The user
-flagged exactly this when they said "it may not have all the tags... just
-match on vector ID and pass chunks — easier."
-
-So this module:
-
-  1. Embeds the query once.
-  2. Vector-searches Chroma filtered to ``document_id`` (+ ``instant_rag=true``
-     as a belt-and-suspenders check).
-  3. Returns chunks in the same tuple shape ``answer_non_patient`` uses so
-     the ReAct loop's dispatch branch downstream can treat the two tools
-     identically. **No LLM synthesis step** — the integrator at the end of
-     the turn handles synthesis, and skipping it here saves a whole round
-     trip per tool call.
-
-If the upload gets promoted (Phase B.7), those chunks graduate into the
-main corpus with real J/P/D tags and ``search_corpus`` finds them
-naturally; this path then becomes redundant for that doc_id but stays
-live for the other still-ephemeral uploads.
+The RAG /api/query endpoint now accepts an optional ``document_id`` query
+param that scopes the pgvector ANN search to a single document, making it
+the natural replacement for the old Chroma ``thread_corpus_search`` path.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import urllib.error
+import urllib.request
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
-
-# Signal strings match the RETRIEVAL_SIGNAL_* constants in doc_assembly.py.
-# Duplicated here to avoid importing doc_assembly (which pulls in the whole
-# main retrieval stack) just for two string constants.
 _SIGNAL_NO_SOURCES = "no_sources"
-_SIGNAL_CORPUS_ONLY = "corpus_only"  # reused: "we answered from retrieved chunks"
+_SIGNAL_CORPUS_ONLY = "corpus_only"
 
 
 def lazy_rag_search(
@@ -65,126 +40,64 @@ def lazy_rag_search(
     *,
     emitter: Callable[[str], None] | None = None,
 ) -> tuple[str, list[dict[str, Any]], dict | None, str]:
-    """Vector-search a single uploaded document and return its top-k chunks.
+    """Vector-search a single uploaded document via RAG /api/query.
 
-    Return tuple matches ``answer_non_patient(...)`` so callers can swap
-    between the two tools without shape changes:
-
-        (answer_text, sources, usage, signal)
-
-    skills-core refactor (Day 5, 2026-04-20):
-    Previously this function did embed + Chroma query + metadata
-    extraction inline. Now it's a thin adapter over
-    ``mobius_skills_core.skills.thread_corpus_search.run_thread_corpus_search``
-    — the shared skill is the single source of truth for this
-    retrieval pattern, shared with external MCP consumers.
-
-    The chat-specific pieces that stay here:
-      * config read (chat_config.get_chat_config())
-      * embedding provider (chat's get_query_embedding)
-      * legacy string emits for pre-envelope callers
-      * tuple return shape the ReAct loop expects
-
-    All the Chroma + filter + scoring logic now lives in the shared
-    package. Preserves the (answer, sources, usage, signal) tuple so
-    downstream (react_loop's tool dispatch) works unchanged.
+    Calls RAG with document_id scoped pgvector search — no Chroma.
+    Returns the same (answer_text, sources, usage, signal) tuple shape
+    as the old Chroma path so callers (react_loop fan-out) are unchanged.
     """
     if not document_id or not document_id.strip():
         return ("", [], None, _SIGNAL_NO_SOURCES)
     if not question or not question.strip():
         return ("", [], None, _SIGNAL_NO_SOURCES)
 
-    try:
-        import os as _os
-        from app.chat_config import get_chat_config
-        from app.services.embedding_provider import get_query_embedding
-        from mobius_skills_core.skills.corpus_search import ChromaConfig
-        from mobius_skills_core.skills.thread_corpus_search import (
-            run_thread_corpus_search,
-        )
-    except ImportError as e:
-        logger.warning("instant-rag: required deps missing: %s", e)
+    rag_url = (os.environ.get("MOBIUS_RAG_URL") or os.environ.get("RAG_API_URL") or "").rstrip("/")
+    if not rag_url:
+        logger.warning("instant-rag: MOBIUS_RAG_URL not configured")
         return ("", [], None, _SIGNAL_NO_SOURCES)
-
-    cfg = get_chat_config()
-    rag = cfg.rag
-    chroma_host = (_os.environ.get("CHROMA_HOST") or "").strip()
-    if not rag.chroma_persist_dir and not chroma_host:
-        logger.warning("instant-rag: neither CHROMA_PERSIST_DIR nor CHROMA_HOST is configured")
-        return ("", [], None, _SIGNAL_NO_SOURCES)
-
-    if chroma_host:
-        chroma_cfg = ChromaConfig(
-            persist_dir="",
-            collection=rag.chroma_collection or "published_rag",
-            host=chroma_host,
-            port=int((_os.environ.get("CHROMA_PORT") or "8000").strip()),
-            ssl=(_os.environ.get("CHROMA_SSL") or "").strip().lower() in {"1", "true", "yes"},
-            auth_token=(_os.environ.get("CHROMA_AUTH_TOKEN") or "").strip(),
-        )
-    else:
-        chroma_cfg = ChromaConfig(
-            persist_dir=rag.chroma_persist_dir,
-            collection=rag.chroma_collection or "published_rag",
-        )
 
     _emit(emitter, "Reading your attached document…")
 
-    result = run_thread_corpus_search(
-        document_id=document_id,
-        question=question,
-        embed_query=get_query_embedding,
-        chroma=chroma_cfg,
-        k=k,
-        # emitter deliberately None — legacy string emit above covers
-        # the pre-envelope UI surface; SkillEvent → EmitEnvelope
-        # translation comes in a follow-up.
-    )
+    try:
+        body = json.dumps({"query": question, "k": k, "document_id": document_id}).encode()
+        req = urllib.request.Request(
+            f"{rag_url}/api/query",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+    except Exception as exc:
+        logger.warning("instant-rag: RAG /api/query failed for doc=%s: %s", document_id[:8], exc)
+        return ("", [], None, _SIGNAL_NO_SOURCES)
 
-    if result.signal != "ok":
-        # Surface the diagnostic hint from the shared skill when
-        # present — the vector_count_hint tells operators whether the
-        # document's chunks are missing from Chroma (ingest gap) vs.
-        # present but the query embedding missed them (similarity).
-        hint = (result.extra or {}).get("vector_count_hint")
-        if hint is not None:
-            logger.warning(
-                "[instant-rag] empty Chroma result for document_id=%r. "
-                "vector_count_hint=%s (0 = nothing indexed for this doc — "
-                "ingest race condition; >0 = query embedding missed).",
-                document_id, hint,
-            )
-        # Pass the hint back via the usage slot so react_loop can emit
-        # the right user-facing message (ingest lag vs. content miss).
-        usage_out: dict | None = {"vector_count_hint": hint} if hint is not None else None
-        return ("", [], usage_out, _SIGNAL_NO_SOURCES)
+    chunks = data.get("chunks") or []
+    if not chunks:
+        logger.info("instant-rag: 0 chunks from RAG for doc=%s", document_id[:8])
+        return ("", [], None, _SIGNAL_NO_SOURCES)
 
-    # Convert SkillResult.chunks → legacy dict shape the chat integrator
-    # knows how to cite. Preserves the pre-refactor field names
-    # (rerank_score, instant_rag flag, etc.) so downstream integrator +
-    # retry-guard code works unchanged.
     sources: list[dict[str, Any]] = []
-    for idx, chunk in enumerate(result.chunks, 1):
-        md = chunk.metadata or {}
+    for chunk in chunks:
         sources.append({
-            "id": chunk.chunk_id,
-            "text": chunk.text,
-            "document_id": chunk.document_id or document_id,
-            "document_name": chunk.document_name,
-            "page_number": chunk.page_number,
-            "source_type": md.get("source_type") or "instant_rag",
-            "rerank_score": chunk.score,
-            # No confidence_label — _score_chunk_for_confidence_filter
-            # (Phase 0.18) falls through to rerank_score.
+            "id": chunk.get("source_id") or chunk.get("document_id"),
+            "text": chunk.get("text") or "",
+            "document_id": chunk.get("document_id") or document_id,
+            "document_name": chunk.get("document_name"),
+            "page_number": chunk.get("page_number"),
+            "source_type": "instant_rag",
+            "rerank_score": chunk.get("similarity"),
             "instant_rag": True,
         })
+
+    answer_text = "\n\n".join(s["text"] for s in sources if s["text"])
 
     _emit(
         emitter,
         f"  ✓ found {len(sources)} passage{'s' if len(sources) != 1 else ''} in your attached document.",
     )
 
-    return (result.text, sources, None, _SIGNAL_CORPUS_ONLY)
+    return (answer_text, sources, None, _SIGNAL_CORPUS_ONLY)
 
 
 def _emit(emitter: Callable[[str], None] | None, line: str) -> None:
@@ -192,5 +105,4 @@ def _emit(emitter: Callable[[str], None] | None, line: str) -> None:
         try:
             emitter(line.strip())
         except Exception:
-            # Don't let UI emit failures break retrieval.
             pass
