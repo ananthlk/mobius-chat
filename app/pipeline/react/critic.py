@@ -384,14 +384,21 @@ def parse_critic_response(raw: str) -> CritiqueResult:
     try:
         parsed = json.loads(body)
     except json.JSONDecodeError as e:
-        # json_repair would help but adds a dep; keep this module's
-        # footprint minimal. Parsing failures fall closed (grounded).
-        logger.warning(
-            "critic JSON parse failed: %s; first 200 chars: %r; treating as grounded",
-            e,
-            raw_text[:200],
-        )
-        return result
+        # Try json_repair before giving up — the critic often emits
+        # unescaped quotes inside claim strings that break stdlib json.
+        try:
+            import json_repair as _jr
+            parsed = _jr.loads(body)
+            if not isinstance(parsed, dict):
+                raise ValueError("not a dict")
+            logger.debug("critic JSON recovered via json_repair (original error: %s)", e)
+        except Exception:
+            logger.warning(
+                "critic JSON parse failed: %s; first 200 chars: %r; treating as grounded",
+                e,
+                raw_text[:200],
+            )
+            return result
 
     if not isinstance(parsed, dict):
         logger.warning("critic returned non-dict JSON; treating as grounded")

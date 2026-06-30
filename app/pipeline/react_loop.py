@@ -1042,19 +1042,57 @@ def _execute_tool(
             emitter=emitter,
         )
         success = bool(sources) and signal != RETRIEVAL_SIGNAL_NO_SOURCES
+        _hint = (usage or {}).get("vector_count_hint")  # 0=not indexed, >0=query miss, -1/None=probe failed
+        # Cross-check: if thread state says 0 chunks for this doc, treat same as hint=0.
+        # Handles the case where the Chroma probe fails (-1) but we know from the thread
+        # catalog that no chunks have been written yet (row_count=0).
+        _known_row_count = next(
+            (int(f.get("row_count") or 0) for f in _all_files
+             if str(f.get("document_id", "")).strip() == document_id),
+            -1,
+        )
+        _is_indexing = (_hint == 0) or (_known_row_count == 0 and (_hint is None or _hint <= 0))
         if not success:
-            emit("  ↓ Your uploaded doc didn't contain this — trying other tools.")
+            if _is_indexing:
+                # Ingest race condition — document registered but Chroma chunks
+                # haven't landed yet (async extract→embed→store pipeline).
+                # Tell the model explicitly so it can inform the user, not retry.
+                emit("  ⏳ Document still being indexed — not available for search yet.")
+                _fail_reason = (
+                    "The document was just uploaded and is still being indexed "
+                    "(0 chunks found in the vector store for this document_id). "
+                    "Do NOT retry search_uploaded_document — it will return the same result. "
+                    "Tell the user: 'Your document is still being processed. "
+                    "Please wait 10–20 seconds and ask again.'"
+                )
+            elif _hint is not None and _hint > 0:
+                # Document is indexed but the query didn't match semantically.
+                # Common cause: procedural query like "summarize this document".
+                emit(f"  ↓ No matching content found (doc has {_hint} indexed chunks — try a different query).")
+                _fail_reason = (
+                    f"The document IS indexed ({_hint} chunks in the vector store) "
+                    "but this query found no matching content. "
+                    "If the user asked to summarize, use a content-based query on the NEXT call "
+                    "(e.g. the document filename or apparent topic), not 'summarize this document'."
+                )
+            else:
+                emit("  ↓ Your uploaded doc didn't contain this.")
+                _fail_reason = "No content found in the uploaded document for this query."
+        else:
+            _fail_reason = ""
         return {
             "tool": "search_uploaded_document",
             "success": success,
             # Raw chunk text (no LLM synth in the tool). Integrator at
             # the end of the turn does the single synthesis pass.
-            "result": answer or "",
+            "result": answer or _fail_reason,
+            "result_summary": _fail_reason if not success else "",
             "signal": signal,
             "sources": sources or [],
             "usage": usage,
             # Expose the resolved document_id for downstream observability.
             "resolved_document_id": document_id,
+            "vector_count_hint": _hint,
         }
 
     if tool == "google_search":
@@ -1849,18 +1887,41 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             preview = (decision_raw or "")[:320].replace("\n", " ")
             logger.warning("ReAct parse failure (stage=%s): %s", f"react_{rn}", preview)
             emit("  Could not parse model decision — stopping.")
-            # Guidance-mode parse failure: the LLM produced prose instead of
-            # JSON (common with Gemini Flash at large context sizes in round 3).
-            # The prose IS a good answer — use it directly rather than falling
-            # back to raw search chunks.
+            # Parse-failure prose fallback: the LLM produced plain prose
+            # instead of JSON.  Two cases where this prose IS the answer:
+            #   (a) Guidance rounds (round >= 80% of max) — model synthesising
+            #       final answer is the primary case; first fixed 2026-05-11.
+            #   (b) Mid-hunt rounds (0-based iteration >= 2, i.e. round 3+)
+            #       where the model has enough context to write a direct answer
+            #       and the prose does NOT look like a tool-call request.
+            #       Without this, we fall back to raw retrieval chunks which
+            #       can confuse the integrator into "unable to find" even when
+            #       the sources clearly contain the answer — seen 2026-05-29.
             from app.pipeline.react.prompts import is_guidance_round
             raw_prose = (decision_raw or "").strip()
-            if raw_prose and len(raw_prose) >= 40 and is_guidance_round(iteration, max_it):
+            # Pattern: prose that starts with a known tool name is a
+            # misformatted tool-call request, not a synthesised answer.
+            _TOOL_CALL_RE = re.compile(
+                r'^\s*(?:search_corpus|lookup_npi|web_search|google_search)\b', re.I
+            )
+            _prose_looks_like_answer = (
+                raw_prose
+                and len(raw_prose) >= 40
+                and not _TOOL_CALL_RE.search(raw_prose)
+            )
+            if _prose_looks_like_answer and (
+                is_guidance_round(iteration, max_it) or iteration >= 2
+            ):
                 logger.info(
                     "[parse-fallback] guidance round %d prose answer len=%d (cid=%s)",
                     rn, len(raw_prose), getattr(ctx, "correlation_id", "?")[:8],
                 )
-                emit("  Using model's synthesized guidance as the answer.")
+                round_label = "guidance" if is_guidance_round(iteration, max_it) else f"round {rn}"
+                emit(f"  Using model's synthesised answer ({round_label}) as the response.")
+                logger.info(
+                    "[parse-fallback] %s prose answer len=%d (cid=%s)",
+                    round_label, len(raw_prose), getattr(ctx, "correlation_id", "?")[:8],
+                )
                 _finalize_response(
                     ctx, raw_prose, all_sources,
                     final_signal if final_signal != RETRIEVAL_SIGNAL_NO_SOURCES else RETRIEVAL_SIGNAL_SYSTEM_CONTEXT,

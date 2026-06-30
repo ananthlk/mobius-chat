@@ -890,6 +890,13 @@ def _spawn_background_publish_watcher(
                     )
                     return
                 if s.get("published_at"):
+                    _chunks = int(s.get("chunks_count") or 0)
+                    if _chunks > 0:
+                        try:
+                            from app.storage.threads import update_uploaded_file_chunk_count
+                            update_uploaded_file_chunk_count(thread_id, document_id, _chunks)
+                        except Exception as _ue:
+                            logger.warning("upload-watcher: chunk count update failed: %s", _ue)
                     _post_system_message_to_thread(
                         thread_id,
                         f"✓ {filename} is ready. You can ask me about it now.",

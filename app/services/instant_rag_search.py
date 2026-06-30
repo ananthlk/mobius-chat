@@ -136,12 +136,14 @@ def lazy_rag_search(
         if hint is not None:
             logger.warning(
                 "[instant-rag] empty Chroma result for document_id=%r. "
-                "vector_count_hint=%s (0 = nothing indexed for this doc; "
-                ">0 = query embedding missed).",
+                "vector_count_hint=%s (0 = nothing indexed for this doc — "
+                "ingest race condition; >0 = query embedding missed).",
                 document_id, hint,
             )
-        _emit(emitter, "  ↓ your attached document doesn't cover this.")
-        return ("", [], None, _SIGNAL_NO_SOURCES)
+        # Pass the hint back via the usage slot so react_loop can emit
+        # the right user-facing message (ingest lag vs. content miss).
+        usage_out: dict | None = {"vector_count_hint": hint} if hint is not None else None
+        return ("", [], usage_out, _SIGNAL_NO_SOURCES)
 
     # Convert SkillResult.chunks → legacy dict shape the chat integrator
     # knows how to cite. Preserves the pre-refactor field names

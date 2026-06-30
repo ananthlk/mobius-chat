@@ -251,8 +251,12 @@ class LlmHealthState:
             return f"{row.recent_timeouts}/{row.recent_total} recent calls timed out"
         # Latency-deviation trigger — skip for long-output stages where slow
         # generation is expected (not a sign of backend degradation).
+        # NOTE: reference the tuple directly (not via class name) to avoid a
+        # NameError in the background refresh thread when the module is still
+        # initialising under a circular import.
+        _long_output_prefixes = ("appeals_", "credentialing_", "integrator_roster")
         stage = (row.stage or "")
-        is_long_output = any(stage.startswith(p) for p in LLMHealthMonitor._LONG_OUTPUT_STAGE_PREFIXES)
+        is_long_output = any(stage.startswith(p) for p in _long_output_prefixes)
         if (
             not is_long_output
             and ema_latency_ms > 0

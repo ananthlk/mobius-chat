@@ -161,6 +161,20 @@ search_uploaded_document(upload_id optional, query)
     thread, the server auto-resolves. If multiple uploads exist, pick the
     one the user's question references (use list_thread_document_uploads
     to see filenames).
+  QUERY RULES — the query is a semantic vector search, not a command:
+    • For summarization ("summarize", "overview", "what is in this"):
+        Use a CONTENT query, not a procedural one. Good: the document's
+        filename or apparent topic (e.g. "provider billing manual overview"
+        or "behavioral health claims policy"). Bad: "summarize this document"
+        (that is a command — it matches nothing in the document's text).
+        Call this tool 2-3 times with different topic queries to build
+        broad coverage, then synthesize.
+    • For specific questions: use the exact terms the user asked about
+        (e.g. "timely filing deadline" or "prior authorization H0036").
+    • If this tool returns empty and the document was JUST uploaded:
+        The document may still be indexing. Tell the user: "Your document
+        is still being processed — please wait a few seconds and ask again."
+        Do NOT retry with the same query.
   This tool does NOT search the curated corpus — use search_corpus for that.
   Chunks returned are scoped to the one document, no tag filters. Use this
   tool BEFORE search_corpus when the user's question is self-referential

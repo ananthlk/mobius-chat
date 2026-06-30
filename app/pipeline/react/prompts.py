@@ -214,12 +214,33 @@ def _react_guidance_instruction(iteration: int, max_it: int) -> str:
         "\"this usually involves...\".\n"
         "  - Do NOT extrapolate from training-data knowledge. Only use "
         "what the retrieved sources show.\n"
+        "  - ATTRIBUTION: when a tool result contains a specific fact "
+        "(number, date, code, limit), read the SOURCE PAYER carefully "
+        "before using it. A 180-day limit found in a Sunshine Health "
+        "document is NOT the same as one found in an Aetna or Molina "
+        "document — only cite it for the payer it actually belongs to. "
+        "If the source payer matches the user's question payer, state "
+        "the fact directly; if it does NOT match, do not apply it.\n"
         "\n"
         "A useful hedged answer grounded in partial evidence is MUCH "
         "better than \"I couldn't confirm\". The user asked a question; "
         "if you have partial evidence, coach them on what to do with "
         "it. The critic will flag anything ungrounded and you can "
-        "revise on the next round if one remains."
+        "revise on the next round if one remains.\n"
+        "\n"
+        "OUTPUT FORMAT — THIS IS MANDATORY:\n"
+        "Return a JSON object with is_complete=true. Put the full answer "
+        "text inside the \"answer\" field. Do NOT write prose outside the "
+        "JSON. Your entire response must start with `{` and end with `}`.\n"
+        "Example:\n"
+        "{\n"
+        "  \"thought\": \"Synthesising from retrieved sources.\",\n"
+        "  \"tool\": null,\n"
+        "  \"inputs\": {},\n"
+        "  \"is_complete\": true,\n"
+        "  \"answer\": \"<your complete answer here>\",\n"
+        "  \"confidence\": \"medium\"\n"
+        "}"
     )
 
 
@@ -311,9 +332,10 @@ You do NOT answer questions directly. You decide which tool to use.
 {mode_block}
 {_tool_manifest_module.get_tool_manifest(allowed=allowed_tools)}
 
-Output ONLY valid JSON. No preamble, no markdown, no explanation.
+Your response each round MUST be a single JSON object — nothing before `{{`, nothing after `}}`.
+Two valid shapes:
 
-Format:
+Tool call (need more evidence):
 {{
   "thought": "<why you chose this tool — one sentence>",
   "tool": "<tool name from manifest>",
@@ -321,7 +343,7 @@ Format:
   "is_complete": false
 }}
 
-When you have a final answer ready (after seeing tool results):
+Final answer (have enough evidence to answer now):
 {{
   "thought": "<what you found>",
   "tool": null,
@@ -331,6 +353,9 @@ When you have a final answer ready (after seeing tool results):
   "sources": [],
   "confidence": "high"
 }}
+
+NEVER write prose. If you have the answer, put it in the "answer" field of the final-answer JSON above.
+Prose (even correct prose) breaks the pipeline — use JSON every time.
 
 CRITICAL RULES:
 1. search_corpus FIRST for any policy/process question.
@@ -344,8 +369,11 @@ CRITICAL RULES:
     Use **precision_search** (SHARPEN — query toward the literal thing) when:
     • THE TOPIC IS PRESENT BUT NOT ENOUGH OF IT — chunks across multiple docs touch the topic briefly, but no single chunk has enough detail to answer.
     • YOU KNOW THE DOCUMENT — prior chunks point to a specific authoritative doc (by filename, display name, or section heading) that seems to have what's needed; you want to pull MORE from that doc.
+    • The corpus returned a RELATED-BUT-WRONG section of a known document (e.g. you asked about timely filing but got access standards from the Sunshine Provider Manual — the doc HAS a timely filing section, you just hit the wrong page). Use precision_search to anchor on the document name + the exact section noun.
     • The user named a CODE / ID / FORM NUMBER / EXACT PHRASE that should appear verbatim.
-    Reformulation: use the document name as a BM25 anchor (e.g. "Sunshine Provider Manual behavioral health authorization"), pull the exact noun the user wants ("PA window days"), drop generic words ("rules", "information"). Goal: BM25 hits on the literal thing.
+    Reformulation: use the document name as a BM25 anchor (e.g. "Sunshine Provider Manual timely filing deadline claims"), pull the exact noun the user wants ("timely filing", "claims deadline", "180 days"), drop generic words ("rules", "information"). Goal: BM25 hits on the literal thing.
+
+    **DO NOT jump straight to google_search if you got ≤2 corpus chunks** — that is almost always the "wrong section of the right document" case. Use precision_search first.
 
     Calling search_corpus a second time with reordered or synonymized words is the loop-thrash failure mode — DON'T.
 
@@ -494,6 +522,12 @@ def build_reasoning_context(
                 if res_text:
                     parts.append(f"Context:\n{res_text}")
         parts.append(f"User question: {question}")
+        parts.append(
+            "---\n"
+            "RESPOND IN JSON: { \"thought\": \"...\", \"tool\": null, \"inputs\": {}, "
+            "\"is_complete\": true, \"answer\": \"your full answer here\", \"confidence\": \"high\" }\n"
+            "Do not write prose. The \"answer\" field must contain your complete response."
+        )
         return "\n\n".join(parts)
 
     parts = []
@@ -542,12 +576,21 @@ def build_reasoning_context(
             fname = str(u.get("filename") or "upload")
             uid = str(u.get("upload_id") or "")
             chunks = u.get("row_count") or u.get("chunks_count") or 0
-            chunks_s = f", {chunks} chunks" if chunks else ""
+            chunks_s = f", {chunks} chunks indexed" if chunks else " (indexing…)"
             upload_lines.append(f"  - {fname} (upload_id={uid}{chunks_s})")
         upload_lines.append(
             "When the user's question refers to an attached document ('this document', "
             "'the PDF', 'my upload', 'what does it say'), call search_uploaded_document "
-            "BEFORE search_corpus. search_corpus does not find these user uploads."
+            "BEFORE search_corpus. search_corpus does not find these user uploads.\n"
+            "QUERY GUIDANCE for uploaded documents:\n"
+            "  • Summarise / overview / 'what is in this': use the filename or apparent topic as the "
+            "query (e.g. 'provider billing timely filing policy overview'), NOT 'summarize this document' "
+            "— the query is a semantic search, not a command.\n"
+            "  • Specific question: use the exact terms from the question.\n"
+            "  • If search returns 0 chunks and the result says 'still being indexed': "
+            "tell the user to wait 10–20 seconds and try again. Do NOT retry immediately with the same query.\n"
+            "  • If search returns 0 chunks but the document IS indexed (result says 'N chunks indexed'): "
+            "retry with a different, broader query before escalating."
         )
         parts.append("\n".join(upload_lines))
 
@@ -709,4 +752,31 @@ def build_reasoning_context(
             )
 
     parts.append(f"\nUser question: {ctx.effective_message or ctx.message}")
+
+    # ── JSON enforcement footer ───────────────────────────────────────────
+    # Placed LAST so it is the final instruction the model reads before
+    # generating.  Gemini Flash in particular tends to slip into prose at
+    # mid-hunt rounds (3-5) when accumulated tool results fill the context
+    # and it "decides" to answer directly.  Without a closing reminder the
+    # JSON constraint from the system prompt gets overridden by that
+    # context-heavy prose impulse.
+    #
+    # Two valid formats (repeat from system prompt here for proximity):
+    #   • Tool call:    { "thought": "...", "tool": "...", "inputs": {...},   "is_complete": false }
+    #   • Final answer: { "thought": "...", "tool": null,  "inputs": {},      "is_complete": true,
+    #                     "answer": "...", "confidence": "high"|"medium"|"low" }
+    #
+    # If you have enough evidence to answer the user's question RIGHT NOW,
+    # use the final-answer format with is_complete=true — do NOT write prose.
+    # Prose responses (even well-reasoned ones) cannot be parsed.
+    parts.append(
+        "---\n"
+        "RESPOND IN JSON — your entire response must be a single JSON object "
+        "starting with `{` and ending with `}`. No text before `{`, no text after `}`.\n"
+        "  • Need another tool → set is_complete=false with the tool name and inputs.\n"
+        "  • Have the answer  → set is_complete=true, tool=null, and put the full "
+        "answer in the \"answer\" field.\n"
+        "Prose responses cannot be parsed and will be discarded."
+    )
+
     return "\n\n".join(parts)

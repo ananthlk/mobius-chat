@@ -670,6 +670,31 @@ def append_uploaded_file_record(thread_id: str, record: dict[str, Any]) -> bool:
     return True
 
 
+def update_uploaded_file_chunk_count(thread_id: str, document_id: str, chunks_count: int) -> None:
+    """Update row_count for an uploaded file once RAG finishes publishing.
+
+    Flips the `(indexing…)` label in per-round context to `(N chunks indexed)`
+    without requiring the user to refresh or re-upload.
+    """
+    current = get_state(thread_id)
+    if current is None:
+        return
+    active = {**(current.get("active") or {})}
+    files: list[dict[str, Any]] = [dict(x) for x in (active.get("uploaded_files") or []) if isinstance(x, dict)]
+    updated = False
+    for f in files:
+        if str(f.get("document_id", "")).strip() == str(document_id).strip():
+            f["row_count"] = chunks_count
+            updated = True
+    if updated:
+        active["uploaded_files"] = files
+        save_state(thread_id, {"active": active})
+        logger.debug(
+            "upload-watcher: updated row_count=%d for doc=%s thread=%s",
+            chunks_count, str(document_id)[:8], str(thread_id)[:8],
+        )
+
+
 def register_open_slots(thread_id: str, slots: list[str]) -> None:
     """Set state.open_slots to slots (replace), increment state_version, save."""
     from app.state.model import ThreadState
