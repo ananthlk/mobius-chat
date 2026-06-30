@@ -1091,10 +1091,16 @@ def _handle_instant_rag_upload(
             detail=f"mobius-rag /upload returned no document_id: {rag_result}",
         )
 
-    # ── ETA-based UX path selection ────────────────────────────────
-    # Rag's /upload now returns ``estimated_processing_seconds`` for the
-    # full pipeline (extract+chunk+embed+publish). Branch on that to
-    # avoid the 5-minute blocking poll that locked the chat conversation.
+    # ── UX path selection ──────────────────────────────────────────
+    # All new uploads use the background path. Blocking inline (eta<120s)
+    # was removed because it caused the Cloud Run LB to drop client
+    # connections after 60s idle (RAG inline fast-path + chat status poll
+    # combined to exceed the LB idle timeout). The background watcher
+    # already handles the full notification flow (system message + chunk
+    # count flip) — the UX is equivalent and avoids connection drops.
+    #
+    # REDIRECT path retained for very large files (eta≥600s) where we
+    # can't even guarantee the watcher will finish within a session.
     page_count = int(rag_result.get("page_count") or 1)
     eta_seconds = int(rag_result.get("estimated_processing_seconds") or 60)
     eta_minutes = max(1, eta_seconds // 60)
@@ -1103,18 +1109,8 @@ def _handle_instant_rag_upload(
     ux_path = "blocking"
     redirect_url: str | None = None
 
-    if eta_seconds < 120:
-        # BLOCKING — small file, wait inline (user expects ~1-2 min).
-        ux_path = "blocking"
-        wait_result = _wait_for_publish_inline(rag_url, document_id, eta_seconds)
-        if wait_result.get("_failed"):
-            raise HTTPException(
-                status_code=502,
-                detail=f"mobius-rag extraction failed for doc {document_id}",
-            )
-        final_status = wait_result
-    elif eta_seconds < 600:
-        # BACKGROUND — spawn watcher; return immediately with status=processing.
+    if eta_seconds < 600:
+        # BACKGROUND — return immediately; watcher posts system message when ready.
         ux_path = "background"
         _spawn_background_publish_watcher(
             rag_url=rag_url,
@@ -1124,12 +1120,10 @@ def _handle_instant_rag_upload(
             eta_seconds=eta_seconds,
         )
     else:
-        # REDIRECT — too large to chat-block; surface rag UI link.
+        # REDIRECT — too large; surface rag UI link.
         ux_path = "redirect"
         rag_ui_url = (os.environ.get("MOBIUS_RAG_UI_URL") or rag_url).rstrip("/")
         redirect_url = f"{rag_ui_url}/?prefill=true&filename={quote_plus(filename)}"
-        # Still spawn a watcher so the user gets a system message if
-        # they wait in chat instead of redirecting. Cheap insurance.
         _spawn_background_publish_watcher(
             rag_url=rag_url,
             document_id=str(document_id),
