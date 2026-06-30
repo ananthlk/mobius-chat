@@ -95,6 +95,7 @@ def lazy_rag_search(
         return ("", [], None, _SIGNAL_NO_SOURCES)
 
     try:
+        import os as _os
         from app.chat_config import get_chat_config
         from app.services.embedding_provider import get_query_embedding
         from mobius_skills_core.skills.corpus_search import ChromaConfig
@@ -107,9 +108,25 @@ def lazy_rag_search(
 
     cfg = get_chat_config()
     rag = cfg.rag
-    if not rag.chroma_persist_dir:
-        logger.warning("instant-rag: CHROMA_PERSIST_DIR not configured")
+    chroma_host = (_os.environ.get("CHROMA_HOST") or "").strip()
+    if not rag.chroma_persist_dir and not chroma_host:
+        logger.warning("instant-rag: neither CHROMA_PERSIST_DIR nor CHROMA_HOST is configured")
         return ("", [], None, _SIGNAL_NO_SOURCES)
+
+    if chroma_host:
+        chroma_cfg = ChromaConfig(
+            persist_dir="",
+            collection=rag.chroma_collection or "published_rag",
+            host=chroma_host,
+            port=int((_os.environ.get("CHROMA_PORT") or "8000").strip()),
+            ssl=(_os.environ.get("CHROMA_SSL") or "").strip().lower() in {"1", "true", "yes"},
+            auth_token=(_os.environ.get("CHROMA_AUTH_TOKEN") or "").strip(),
+        )
+    else:
+        chroma_cfg = ChromaConfig(
+            persist_dir=rag.chroma_persist_dir,
+            collection=rag.chroma_collection or "published_rag",
+        )
 
     _emit(emitter, "Reading your attached document…")
 
@@ -117,10 +134,7 @@ def lazy_rag_search(
         document_id=document_id,
         question=question,
         embed_query=get_query_embedding,
-        chroma=ChromaConfig(
-            persist_dir=rag.chroma_persist_dir,
-            collection=rag.chroma_collection or "published_rag",
-        ),
+        chroma=chroma_cfg,
         k=k,
         # emitter deliberately None — legacy string emit above covers
         # the pre-envelope UI surface; SkillEvent → EmitEnvelope
