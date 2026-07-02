@@ -1321,6 +1321,11 @@ def _execute_tool(
         )
         emit(f"◌ {tool.replace('_', ' ').title()}…")
         env = _skill_registry.dispatch(call)
+        # product_feedback returns an editable capture_card in extra; hand it to
+        # the client via ctx (orchestrator attaches it to response_payload).
+        _cc = (env.extra or {}).get("capture_card") if env.extra else None
+        if _cc:
+            ctx.capture_card = _cc
         return {
             "tool": tool,
             "success": bool(env.text and not env.text.startswith("Unknown skill")),
@@ -1823,6 +1828,17 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
     # headline; the envelope makes the event analytics-queryable.
     _guidance_mode_emitted = False
 
+    # Product-feedback cadence signal (docs/feedback-agent-spec.md §4B/§6):
+    # compute once per turn (not per round) and stash on ctx so
+    # build_reasoning_context can inject it. Fully guarded — any failure leaves
+    # ctx.feedback_signal None and the loop behaves exactly as before. Gated by
+    # FEEDBACK_PERIODIC_ENABLED (default on; the ceiling still lives in code).
+    try:
+        from app.pipeline.react.feedback_signal import maybe_set_feedback_signal
+        maybe_set_feedback_signal(ctx)
+    except Exception as _fb_e:  # never let feedback break the hot path
+        logger.debug("feedback signal skipped: %s", _fb_e)
+
     # Per-round tracing intentionally omitted: the ReAct iteration body
     # has many early-return paths (finalize_response, break,
     # rounds_exhausted) that make reliable span-close logic risky
@@ -2000,6 +2016,16 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
 
         if is_complete or not tool:
             answer = decision.get("answer", "")
+            # Product-feedback (docs/feedback-agent-spec.md §6): honor the
+            # planner's offer_feedback ONLY when a cadence signal was actually
+            # injected this turn — the eligibility ceiling lives in code, so the
+            # model can't fabricate an ask when it isn't due.
+            _of = decision.get("offer_feedback")
+            if isinstance(_of, dict) and ctx.feedback_signal:
+                ctx.offer_feedback = {
+                    "kind": str(_of.get("kind") or ctx.feedback_signal.get("kind") or "generic"),
+                    "trigger": "periodic",
+                }
             if answer:
                 # ── Critic gate (Phase groundedness-v1) ──────────────
                 # Before finalizing, audit the draft against collected

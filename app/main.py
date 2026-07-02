@@ -1557,6 +1557,7 @@ from app.api.doc_reader import router as _doc_reader_router
 from app.api.email_thread import router as _email_thread_router
 from app.api.feedback import router as _feedback_router
 from app.api.history import router as _history_router
+from app.api.product_feedback import router as _product_feedback_router
 from app.api.tasks import router as _tasks_router
 from app.api.uploads import router as _uploads_router
 from app.api.user_tools import router as _user_tools_router
@@ -1564,6 +1565,7 @@ app.include_router(_chat_router)  # Phase 2b.2 — core chat lifecycle extracted
 app.include_router(_credentialing_router)  # credentialing-runs + NPI lookup (restored for pipeline UI)
 app.include_router(_history_router)
 app.include_router(_feedback_router)
+app.include_router(_product_feedback_router)  # open product feedback + CSAT/NPS surveys
 app.include_router(_tasks_router)
 app.include_router(_uploads_router)  # Phase B.1c — cross-thread uploads catalog
 app.include_router(_doc_reader_router)  # Phase 2b.1 — doc-reader proxy extracted from main.py
@@ -1603,6 +1605,12 @@ _SKILL_LLM_ALLOWED_STAGES = frozenset({
     "rag_strategy_b_synth",     # Strategy (b) Wide-Themes-Narrow synthesis pass
     "rag_strategy_c_validate",  # Strategy (c) LLM→Validate citation generation
     "rag_strategy_d_external",  # Strategy (d) External First synthesis
+    # mobius-rag eval adjudicator (2026-06-30): the RAG eval harness's
+    # rubric/keyword LLM judge (eval/judge.py) routes through here. This
+    # stage was missing from the allowlist, so EVERY judge call returned
+    # HTTP 400 → fell back to ("unable_to_verify", 0.5) and the eval
+    # scores were meaningless (0 partial / 0 wrong, all errors-as-unable).
+    "rag_eval_adjudicate",      # RAG eval judge → verdict + score
     # mobius-qa/lexicon-maintenance stages (2026-04-23): curator UI's
     # LLM calls route through here. Same reason as rag — unified
     # bandit + telemetry. Stages cover the lexicon endpoints:
@@ -1617,6 +1625,9 @@ _SKILL_LLM_ALLOWED_STAGES = frozenset({
     # mobius-skills/vibe (2026-04-25): one-line vibe responses (toast,
     # empathy, dry observation). Cheap+fast tier via CHEAP_STAGES.
     "vibe",
+    # mobius-feedback (2026-07-02): classify open product feedback into
+    # {category, sentiment, severity, summary, tidied}. Cheap+fast tier.
+    "feedback_classify",
     # mobius-skills/email (2026-04-25): LLM-drafted subject/body for
     # craft-mode sends. Goes through the bandit so we learn which model
     # produces emails users actually release vs. discard.

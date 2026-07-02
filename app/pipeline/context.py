@@ -214,5 +214,16 @@ class PipelineContext:
     integrator_llm_call_id: str | None = None
     integrator_model_id: str | None = None
 
+    # Product-feedback skill (docs/feedback-agent-spec.md §6):
+    #   feedback_signal — cadence signal injected INTO the planner context this
+    #                     turn (periodic ask eligibility), or None.
+    #   offer_feedback  — the planner's decision to surface a nudge/survey chip,
+    #                     read off its finalize JSON and passed to the client.
+    feedback_signal: dict[str, Any] | None = None
+    offer_feedback: dict[str, Any] | None = None
+    #   capture_card — an editable confirmation card a product_feedback tool call
+    #                  returned in SkillEnvelope.extra, for the client to render.
+    capture_card: dict[str, Any] | None = None
+
     def has_thread(self) -> bool:
         return bool(self.thread_id and (self.thread_id or "").strip())

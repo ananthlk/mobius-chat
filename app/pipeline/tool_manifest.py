@@ -399,6 +399,11 @@ def _compose_manifest(allowed: frozenset[str] | None = None) -> str:
         # vibe: short, work-adjacent vibe lines (toast/empathy/dry obs/etc.)
         # Registered but was missing from the planner manifest until 2026-04-25.
         _registry_block("vibe"),
+        # product_feedback: capture open product feedback + CSAT/NPS surveys.
+        # Same lesson as vibe — registered + visible_to_planner but the manifest
+        # is an explicit list, so it must be named here or the planner never
+        # sees it (2026-07-02).
+        _registry_block("product_feedback"),
         # Phase 13.6 — conversation-aware planner. Continuation/
         # transformation requests ("convert this to an appeal letter",
         # "make it shorter", "rewrite for X") MUST route here, NOT to

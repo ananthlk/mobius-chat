@@ -343,6 +343,11 @@ def composite_stage_bucket(stage: str | None) -> str:
         return "planner"
     if s.startswith("credentialing_"):
         return "credentialing"
+    # RAG eval judge is an adjudication call — give it the adjudicator
+    # latency/cost caps (reasoning-heavy, higher latency budget) rather
+    # than the tight default bucket.
+    if s == "rag_eval_adjudicate":
+        return "adjudicator"
     if s in _COMPOSITE_LAT_CAP_MS_BY_BUCKET:
         return s
     return "default"
@@ -813,6 +818,11 @@ CORE_REASONING_STAGES: list[str] = [
     "badge",
     "classifier",
     "adjudicator",
+    # NOTE: rag_eval_adjudicate (the RAG eval/fact-checker "ruler") is
+    # deliberately NOT here — it is LOCKED to a single model (gemini-2.5-pro)
+    # in that model's eligible_stages below, so the adjudicator is deterministic
+    # across runs. A bandit-routed ruler would make score deltas between
+    # baseline and post-change runs reflect JUDGE variance, not real lift.
 ]
 
 # provider-roster-credentialing → POST /internal/skill-llm (draft/validate/critique/compose/report Q&A)
@@ -839,10 +849,28 @@ INTEGRATOR_ROSTER_STAGE = "integrator_roster"
 
 REASONING_STAGES: list[str] = list(CORE_REASONING_STAGES) + list(CREDENTIALING_SKILL_STAGES) + list(APPEALS_LETTER_STAGES)
 
+# mobius-rag stages routed through chat's /internal/skill-llm (2026-06-30).
+# corpus_search_agent per-strategy synthesis (a/b/c/d) + Path-A extraction +
+# critique. These were added to the allowlist (main.py _SKILL_LLM_ALLOWED_STAGES)
+# but never rostered, so every call returned HTTP 500 "No models available" —
+# the RAG agent silently lost its synthesis/extraction passes (degraded answers,
+# dropped connections in eval). Vertex Gemini only: extraction/synthesis prompts
+# carry multi-page chunks → need the 1M-context models, not the small-context
+# open pool. Keep in sync with mobius-rag llm_manager_client.RAG_STAGES.
+RAG_ROUTED_STAGES: list[str] = [
+    "rag_extraction",
+    "rag_critique",
+    "rag_lexicon_triage",
+    "rag_strategy_a_synth",
+    "rag_strategy_b_synth",
+    "rag_strategy_c_validate",
+    "rag_strategy_d_external",
+]
+
 
 def vertex_roster_eligible_stages() -> list[str]:
-    """Stages for Gemini 2.5 Pro/Flash only: core chat + credentialing skill + appeals letter pipeline + heavy roster integrator."""
-    return list(CORE_REASONING_STAGES) + list(CREDENTIALING_SKILL_STAGES) + list(APPEALS_LETTER_STAGES) + [INTEGRATOR_ROSTER_STAGE]
+    """Stages for Gemini 2.5 Pro/Flash only: core chat + credentialing skill + appeals letter pipeline + heavy roster integrator + mobius-rag routed stages."""
+    return list(CORE_REASONING_STAGES) + list(CREDENTIALING_SKILL_STAGES) + list(APPEALS_LETTER_STAGES) + [INTEGRATOR_ROSTER_STAGE] + list(RAG_ROUTED_STAGES)
 
 
 def integrator_llm_stage(ctx: Any) -> str:
@@ -897,7 +925,11 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         # "thread_summary": rolling-summary stage. Pro is the stronger
         # instruction-follower for the label/brief format; it shares the
         # stage with flash so the bandit can compare (priors favor Pro).
-        eligible_stages=vertex_roster_eligible_stages() + ["thread_summary", LEXICON_ANALYZE_STAGE],
+        # rag_eval_adjudicate is LOCKED to THIS model only (the eval/fact-checker
+        # "ruler") — it appears in no other model's eligible_stages, so the
+        # bandit always resolves it to gemini-2.5-pro → deterministic scoring
+        # across calibration runs (drift monitor + lift comparability).
+        eligible_stages=vertex_roster_eligible_stages() + ["thread_summary", LEXICON_ANALYZE_STAGE, "rag_eval_adjudicate"],
         spec_tokens_per_sec=100.0,
         spec_context_k=1000,
         spec_input_per_1m_usd=1.25,
@@ -918,7 +950,7 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         # vertex candidate. Pre-fix, the router fell through to flash
         # via the hard "fallback_no_models" path; making it intentional
         # gives the bandit a real comparison vs. flash-lite + Haiku.
-        eligible_stages=vertex_roster_eligible_stages() + [ROSTER_CLEAN_STAGE, "vibe", "thread_summary"] + LEXICON_FAST_STAGES + [LEXICON_ANALYZE_STAGE],
+        eligible_stages=vertex_roster_eligible_stages() + [ROSTER_CLEAN_STAGE, "vibe", "feedback_classify", "thread_summary"] + LEXICON_FAST_STAGES + [LEXICON_ANALYZE_STAGE],
         spec_tokens_per_sec=300.0,
         spec_context_k=1000,
         spec_input_per_1m_usd=0.075,
@@ -1115,7 +1147,7 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         # its eligible_stages. With Haiku in the pool the bandit can
         # actually compare quality across candidates instead of
         # silently degrading to gemini-2.5-flash on hard fallback.
-        eligible_stages=list(CORE_REASONING_STAGES) + [ROSTER_CLEAN_STAGE, "vibe"],
+        eligible_stages=list(CORE_REASONING_STAGES) + [ROSTER_CLEAN_STAGE, "vibe", "feedback_classify"],
         spec_tokens_per_sec=300.0,
         spec_context_k=200,
         spec_input_per_1m_usd=0.80,

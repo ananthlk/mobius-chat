@@ -721,6 +721,29 @@ def build_reasoning_context(
             "If google is also tried, answer from model knowledge (llm_direct = is_complete=true with caveats)."
         )
 
+    # ── feedback cadence signal (docs/feedback-agent-spec.md §4B/§6) ─────────
+    # Injected only when a periodic ask is *eligible* (the ceiling is computed
+    # in code). The planner decides whether the moment is right and, on its
+    # final step, may set offer_feedback — it must NOT let this delay or replace
+    # answering the user's actual question.
+    _fb = getattr(ctx, "feedback_signal", None)
+    if isinstance(_fb, dict):
+        _kind = _fb.get("kind") or "generic"
+        if _kind == "nps":
+            _how = 'ask how likely they are to recommend Mobius (0–10) via offer_feedback {"kind":"nps"}'
+        elif _kind == "csat":
+            _how = 'offer a quick 1–5 "how did that go?" via offer_feedback {"kind":"csat"}'
+        elif _kind == "targeted_miss":
+            _how = 'the last answer may have missed — you may ask what they expected via offer_feedback {"kind":"targeted_miss"}'
+        else:
+            _how = 'you may invite open feedback via offer_feedback {"kind":"generic"}'
+        parts.append(
+            f"FEEDBACK SIGNAL: a feedback ask is due ({_fb.get('reason', 'cadence')}). "
+            f"AFTER you have fully answered the user's request, if the moment is right "
+            f"(they are not mid-task or frustrated), {_how} on your final is_complete step. "
+            f"Skip it silently if the moment is wrong. Never let this change your answer."
+        )
+
     if tool_results:
         parts.append(f"\nIteration {iteration} — tools called this turn:")
         parts.append(

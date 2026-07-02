@@ -9159,7 +9159,15 @@ ${message}`;
     function tileUrl(t) {
       const winAny = window;
       const fromEnv = winAny[t.urlEnvKey] || "";
-      return fromEnv && fromEnv.trim() ? fromEnv.trim() : t.fallbackUrl;
+      let url = fromEnv && fromEnv.trim() ? fromEnv.trim() : t.fallbackUrl;
+      try {
+        const tok = localStorage.getItem("mobius.auth.accessToken");
+        if (tok && /(^|\/\/)([^/]*\.)?(run\.app|localhost|127\.0\.0\.1)/.test(url)) {
+          url += (url.includes("#") ? "&" : "#") + "t=" + encodeURIComponent(tok);
+        }
+      } catch {
+      }
+      return url;
     }
     const CHAT_THEMES = [
       {

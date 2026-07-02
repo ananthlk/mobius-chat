@@ -290,6 +290,8 @@ class TestEntityAndFollowUpViews:
             "vibe",
             "transform_previous_answer",
             "search_corpus",
+            "list_tasks",        # pre-existing registry drift, not previously reflected here
+            "product_feedback",  # 2026-07-02 — open feedback + CSAT/NPS surveys
         })
 
 

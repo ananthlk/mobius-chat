@@ -748,6 +748,16 @@ def run_pipeline(
             if closure_msg:
                 ctx.response_payload["closure_message"] = closure_msg
 
+        # Product feedback (docs/feedback-agent-spec.md §6): surface the
+        # planner's periodic nudge/survey decision, plus any capture_card a
+        # product_feedback tool call returned. Both are additive — the frontend
+        # ignores fields it doesn't render, so this is safe before the UI ships.
+        if ctx.response_payload:
+            if getattr(ctx, "offer_feedback", None):
+                ctx.response_payload["offer_feedback"] = ctx.offer_feedback
+            if getattr(ctx, "capture_card", None):
+                ctx.response_payload["capture_card"] = ctx.capture_card
+
         # Rolling thread summary via a dedicated, focused LLM call. The
         # integrator's AnswerCard fields are unreliable on the production
         # model (Gemini emits a minimal card, drops thread_state, ignores

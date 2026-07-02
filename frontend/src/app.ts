@@ -9820,7 +9820,20 @@ function run(): void {
     function tileUrl(t: SuiteTile): string {
       const winAny = window as Window & typeof globalThis & Record<string, unknown>;
       const fromEnv = (winAny[t.urlEnvKey] as string | undefined) || "";
-      return (fromEnv && fromEnv.trim()) ? fromEnv.trim() : t.fallbackUrl;
+      let url = (fromEnv && fromEnv.trim()) ? fromEnv.trim() : t.fallbackUrl;
+      // Forward the platform access token to Mobius-internal tools so they can
+      // authenticate the user without a second login (e.g. RAG/Library/Vault,
+      // and anything they hand off to such as Lexicon Maintenance). The token
+      // rides in the URL fragment (#t=…) which browsers never send to servers
+      // nor write to access logs; the receiving SPA reads it then strips it.
+      // Only Mobius-owned hosts get the token, never arbitrary external URLs.
+      try {
+        const tok = localStorage.getItem("mobius.auth.accessToken");
+        if (tok && /(^|\/\/)([^/]*\.)?(run\.app|localhost|127\.0\.0\.1)/.test(url)) {
+          url += (url.includes("#") ? "&" : "#") + "t=" + encodeURIComponent(tok);
+        }
+      } catch { /* localStorage unavailable — open without token */ }
+      return url;
     }
 
     type ChatTheme = {
