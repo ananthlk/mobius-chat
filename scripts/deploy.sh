@@ -196,7 +196,7 @@ SET_ENV_VARS=(
     "CHAT_SKILLS_FEEDBACK_URL=${CHAT_SKILLS_FEEDBACK_URL:-https://mobius-feedback-ortabkknqa-uc.a.run.app/classify}"
     "MOBIUS_RAG_URL=${MOBIUS_RAG_URL:-}"
     "CHAT_SKILLS_VIBE_URL=${CHAT_SKILLS_VIBE_URL:-}"
-    "CHAT_SKILLS_PRODUCT_HELP_SEARCH_URL=${CHAT_SKILLS_PRODUCT_HELP_SEARCH_URL:-}"
+    "CHAT_SKILLS_PRODUCT_HELP_SEARCH_URL=${CHAT_SKILLS_PRODUCT_HELP_SEARCH_URL:-https://mobius-product-awareness-ortabkknqa-uc.a.run.app/search}"
     "RAG_API_BASE=${RAG_API_BASE:-}"
     # RAG_API_URL — read by the curator tools (lookup_authoritative_sources
     # + ingest_url) and the legacy RAG-API retrieval path. See dev.env note.
