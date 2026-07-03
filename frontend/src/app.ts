@@ -355,9 +355,19 @@ interface ChatResponse {
     sentiment: string;
     tidied: string;
     editable: boolean;
+    mode?: string;        // "confirm" when skill pre-persisted; edits go to update_url
+    update_url?: string;  // "/chat/product-feedback/update" — PATCH the existing row
   };
   /** Planner-driven periodic survey chip (NPS / CSAT / open). */
-  offer_feedback?: { kind: string; trigger: string };
+  offer_feedback?: {
+    kind: string;
+    trigger: string;
+    survey_type?: string;                                    // "nps" | "csat"
+    prompt?: string;                                         // question text from server
+    scale?: { min: number; max: number; min_label: string; max_label: string };
+    post_to?: string;                                        // endpoint for score/submit
+    cta?: string;                                            // label for generic CTA button
+  };
 }
 
 /** One line in envelope next_steps / suggested_questions blocks */
@@ -3858,16 +3868,14 @@ function renderCaptureCard(
     updateBtn.addEventListener("click", () => {
       const txt = ta.value.trim();
       if (!txt) return;
-      fetch(API_BASE + "/chat/product-feedback", {
+      const url = card.update_url ?? "/chat/product-feedback/update";
+      fetch(API_BASE + url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          verbatim: txt,
+          feedback_id: card.feedback_id,
           category: catSel.value,
-          trigger: "on_demand",
-          parent_feedback_id: card.feedback_id,
-          thread_id: meta.threadId,
-          correlation_id: meta.correlationId,
+          tidied: txt,
         }),
       }).catch(() => {});
       wrap.remove();
@@ -3890,17 +3898,19 @@ function renderOfferFeedback(
   const wrap = document.createElement("div");
   wrap.className = "pf-offer-chip";
 
-  const QUESTIONS: Record<string, string> = {
-    nps:           "How likely are you to recommend Mobius? (0 = not at all · 10 = definitely)",
+  // Server-supplied prompt wins; fall back to sensible defaults.
+  const FALLBACK_PROMPTS: Record<string, string> = {
+    nps:           "How likely are you to recommend Mobius to a colleague?",
     csat:          "How satisfied are you with this answer?",
     targeted_miss: "What were you trying to find?",
     generic:       "Any feedback for us?",
   };
+  const promptText = offer.prompt ?? FALLBACK_PROMPTS[offer.kind] ?? "Any feedback?";
 
   const header = document.createElement("div");
   header.className = "pf-offer-chip__header";
   const q = document.createElement("span");
-  q.textContent = QUESTIONS[offer.kind] ?? "Any feedback?";
+  q.textContent = promptText;
   const xBtn = document.createElement("button");
   xBtn.type = "button";
   xBtn.className = "pf-offer-chip__x";
@@ -3935,63 +3945,126 @@ function renderOfferFeedback(
     setTimeout(() => wrap.remove(), 2500);
   }
 
-  if (offer.kind === "nps" || offer.kind === "csat") {
-    const isNps = offer.kind === "nps";
-    const min = isNps ? 0 : 1;
-    const max = isNps ? 10 : 5;
-    const scale = document.createElement("div");
-    scale.className = "pf-offer-chip__scale";
-    for (let i = min; i <= max; i++) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "pf-offer-chip__score-btn";
-      btn.textContent = String(i);
-      btn.addEventListener("click", () => {
-        fetch(API_BASE + "/chat/product-feedback/score", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            survey_type: offer.kind, score: i, trigger: offer.trigger,
-            thread_id: meta.threadId, correlation_id: meta.correlationId,
-          }),
-        }).then(showThanks).catch(() => {});
-        pfEvent("scored", i);
-      });
-      scale.appendChild(btn);
-    }
-    body.appendChild(scale);
-    if (isNps) {
-      const lbl = document.createElement("div");
-      lbl.className = "pf-offer-chip__scale-labels";
-      const lo = document.createElement("span"); lo.textContent = "Not likely";
-      const hi = document.createElement("span"); hi.textContent = "Very likely";
-      lbl.appendChild(lo); lbl.appendChild(hi);
-      body.appendChild(lbl);
-    }
-  } else {
+  /** After scoring, optionally show a reason box using followup_prompt from the score response. */
+  function showFollowup(followupPrompt: string, parentFeedbackId: string): void {
+    body.innerHTML = "";
     const ta = document.createElement("textarea");
     ta.className = "pf-offer-chip__text";
     ta.rows = 2;
-    ta.placeholder = "Your feedback…";
-    const submitBtn = document.createElement("button");
-    submitBtn.type = "button";
-    submitBtn.className = "pf-offer-chip__submit";
-    submitBtn.textContent = "Submit";
-    submitBtn.addEventListener("click", () => {
+    ta.placeholder = followupPrompt;
+    const row = document.createElement("div");
+    row.className = "pf-offer-chip__followup-row";
+    const skip = document.createElement("button");
+    skip.type = "button";
+    skip.className = "pf-offer-chip__skip";
+    skip.textContent = "Skip";
+    const submit = document.createElement("button");
+    submit.type = "button";
+    submit.className = "pf-offer-chip__submit";
+    submit.textContent = "Send";
+    row.appendChild(skip);
+    row.appendChild(submit);
+    body.appendChild(ta);
+    body.appendChild(row);
+    submit.addEventListener("click", () => {
       const txt = ta.value.trim();
-      if (!txt) return;
+      if (!txt) { showThanks(); return; }
       fetch(API_BASE + "/chat/product-feedback", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           verbatim: txt, category: "other", trigger: offer.trigger,
+          parent_feedback_id: parentFeedbackId,
           thread_id: meta.threadId, correlation_id: meta.correlationId,
         }),
-      }).then(showThanks).catch(() => {});
-      pfEvent("submitted");
+      }).catch(() => {});
+      showThanks();
     });
-    body.appendChild(ta);
-    body.appendChild(submitBtn);
+    skip.addEventListener("click", showThanks);
+  }
+
+  const isNumeric = offer.kind === "nps" || offer.kind === "csat";
+
+  if (isNumeric) {
+    // Data-driven scale — server supplies min/max/labels; fall back to convention.
+    const sc = offer.scale ?? (offer.kind === "nps"
+      ? { min: 0, max: 10, min_label: "Not likely", max_label: "Very likely" }
+      : { min: 1, max: 5, min_label: "Poor", max_label: "Great" });
+    const scaleEl = document.createElement("div");
+    scaleEl.className = "pf-offer-chip__scale";
+    for (let i = sc.min; i <= sc.max; i++) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "pf-offer-chip__score-btn";
+      btn.textContent = String(i);
+      btn.addEventListener("click", () => {
+        pfEvent("scored", i);
+        const postTo = offer.post_to ?? "/chat/product-feedback/score";
+        fetch(API_BASE + postTo, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            survey_type: offer.survey_type ?? offer.kind,
+            score: i, trigger: offer.trigger,
+            thread_id: meta.threadId, correlation_id: meta.correlationId,
+          }),
+        })
+          .then((r) => r.json())
+          .then((data: { feedback_id?: string; followup_prompt?: string }) => {
+            if (data.followup_prompt && data.feedback_id) {
+              showFollowup(data.followup_prompt, data.feedback_id);
+            } else {
+              showThanks();
+            }
+          })
+          .catch(showThanks);
+      });
+      scaleEl.appendChild(btn);
+    }
+    body.appendChild(scaleEl);
+    const lbl = document.createElement("div");
+    lbl.className = "pf-offer-chip__scale-labels";
+    const lo = document.createElement("span"); lo.textContent = sc.min_label;
+    const hi = document.createElement("span"); hi.textContent = sc.max_label;
+    lbl.appendChild(lo); lbl.appendChild(hi);
+    body.appendChild(lbl);
+  } else {
+    // generic / targeted_miss — CTA button expands to a textarea.
+    const ctaBtn = document.createElement("button");
+    ctaBtn.type = "button";
+    ctaBtn.className = "pf-offer-chip__cta";
+    ctaBtn.textContent = offer.cta ?? "Share feedback";
+    body.appendChild(ctaBtn);
+    ctaBtn.addEventListener("click", () => {
+      body.innerHTML = "";
+      pfEvent("opened");
+      const ta = document.createElement("textarea");
+      ta.className = "pf-offer-chip__text";
+      ta.rows = 2;
+      ta.placeholder = "Your feedback…";
+      const submitBtn = document.createElement("button");
+      submitBtn.type = "button";
+      submitBtn.className = "pf-offer-chip__submit";
+      submitBtn.textContent = "Submit";
+      submitBtn.addEventListener("click", () => {
+        const txt = ta.value.trim();
+        if (!txt) return;
+        const postTo = offer.post_to ?? "/chat/product-feedback";
+        fetch(API_BASE + postTo, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            verbatim: txt, category: "other", trigger: offer.trigger,
+            thread_id: meta.threadId, correlation_id: meta.correlationId,
+          }),
+        }).catch(() => {});
+        pfEvent("submitted");
+        showThanks();
+      });
+      body.appendChild(ta);
+      body.appendChild(submitBtn);
+      ta.focus();
+    });
   }
 
   xBtn.addEventListener("click", () => { pfEvent("dismissed"); wrap.remove(); });

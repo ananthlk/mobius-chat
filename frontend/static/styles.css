@@ -8358,3 +8358,31 @@ body {
   color: var(--thinking-muted);
   padding: 0.2rem 0;
 }
+
+/* offer_feedback: followup reason row + CTA button */
+.pf-offer-chip__followup-row {
+  display: flex;
+  gap: 0.4rem;
+  justify-content: flex-end;
+}
+.pf-offer-chip__skip {
+  font-size: 0.75rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--mobius-border);
+  background: none;
+  color: var(--thinking-muted);
+  cursor: pointer;
+}
+.pf-offer-chip__skip:hover { color: var(--main-text); }
+.pf-offer-chip__cta {
+  align-self: flex-start;
+  font-size: 0.78rem;
+  padding: 0.3rem 0.9rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent);
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+}
+.pf-offer-chip__cta:hover { background: var(--accent); color: #fff; }
