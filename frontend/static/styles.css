@@ -8186,3 +8186,175 @@ body {
   border-color: var(--mobius-accent);
   color: var(--mobius-accent);
 }
+
+/* ── Product-feedback capture card ──────────────────────────────────────────── */
+.pf-capture-card {
+  align-self: flex-start;
+  max-width: 85%;
+  margin: 0.5rem 0;
+  border: 1px solid var(--mobius-border);
+  border-radius: var(--radius-sm);
+  background: var(--thinking-bg);
+  font-size: 0.8rem;
+  color: var(--mobius-text-secondary, var(--main-text));
+}
+.pf-capture-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--mobius-border);
+  font-weight: 500;
+  color: var(--mobius-text-primary, var(--main-text));
+}
+.pf-capture-card__x {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--thinking-muted);
+  font-size: 0.75rem;
+  padding: 0.1rem 0.3rem;
+  border-radius: var(--radius-sm);
+}
+.pf-capture-card__x:hover { background: var(--mobius-border); }
+.pf-capture-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.65rem 0.75rem;
+}
+.pf-capture-card__row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.pf-capture-card__row label {
+  font-size: 0.75rem;
+  color: var(--thinking-muted);
+  flex-shrink: 0;
+}
+.pf-capture-card__select {
+  font-size: 0.78rem;
+  background: var(--thinking-bg);
+  border: 1px solid var(--mobius-border);
+  border-radius: var(--radius-sm);
+  color: var(--main-text);
+  padding: 0.15rem 0.4rem;
+}
+.pf-capture-card__text {
+  width: 100%;
+  font-size: 0.78rem;
+  border: 1px solid var(--mobius-border);
+  border-radius: var(--radius-sm);
+  background: var(--thinking-bg);
+  color: var(--main-text);
+  padding: 0.4rem 0.5rem;
+  resize: vertical;
+  box-sizing: border-box;
+}
+.pf-capture-card__btns {
+  display: flex;
+  gap: 0.4rem;
+  justify-content: flex-end;
+}
+.pf-capture-card__done,
+.pf-capture-card__update {
+  font-size: 0.75rem;
+  padding: 0.25rem 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--mobius-border);
+  cursor: pointer;
+  background: none;
+  color: var(--main-text);
+}
+.pf-capture-card__update { background: var(--accent); color: #fff; border-color: var(--accent); }
+.pf-capture-card__done:hover { background: var(--thinking-bg); }
+
+/* ── Product-feedback offer chip ─────────────────────────────────────────────── */
+.pf-offer-chip {
+  align-self: flex-start;
+  max-width: 85%;
+  margin: 0.5rem 0;
+  border: 1px solid var(--mobius-border);
+  border-radius: var(--radius-sm);
+  background: var(--thinking-bg);
+  font-size: 0.8rem;
+  color: var(--mobius-text-secondary, var(--main-text));
+}
+.pf-offer-chip__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0.75rem;
+  gap: 0.5rem;
+  font-weight: 500;
+  color: var(--mobius-text-primary, var(--main-text));
+}
+.pf-offer-chip__x {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--thinking-muted);
+  font-size: 0.75rem;
+  flex-shrink: 0;
+  padding: 0.1rem 0.3rem;
+  border-radius: var(--radius-sm);
+}
+.pf-offer-chip__x:hover { background: var(--mobius-border); }
+.pf-offer-chip__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem 0.65rem;
+}
+.pf-offer-chip__scale {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+.pf-offer-chip__score-btn {
+  min-width: 2rem;
+  padding: 0.25rem 0.4rem;
+  font-size: 0.78rem;
+  border: 1px solid var(--mobius-border);
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--main-text);
+  cursor: pointer;
+  text-align: center;
+}
+.pf-offer-chip__score-btn:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+.pf-offer-chip__scale-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.7rem;
+  color: var(--thinking-muted);
+  margin-top: -0.2rem;
+}
+.pf-offer-chip__text {
+  width: 100%;
+  font-size: 0.78rem;
+  border: 1px solid var(--mobius-border);
+  border-radius: var(--radius-sm);
+  background: var(--thinking-bg);
+  color: var(--main-text);
+  padding: 0.4rem 0.5rem;
+  resize: vertical;
+  box-sizing: border-box;
+}
+.pf-offer-chip__submit {
+  align-self: flex-end;
+  font-size: 0.75rem;
+  padding: 0.25rem 0.75rem;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+.pf-offer-chip__submit:hover { background: var(--accent-hover, var(--accent)); }
+.pf-offer-chip__thanks {
+  font-size: 0.78rem;
+  color: var(--thinking-muted);
+  padding: 0.2rem 0;
+}

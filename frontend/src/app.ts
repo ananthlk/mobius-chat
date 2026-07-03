@@ -347,6 +347,17 @@ interface ChatResponse {
   qc_audit?: QcAuditInfo;
   /** DB-backed routing + adjudicator thumbs (merged on poll for completed turns). */
   technical_feedback?: TechnicalFeedback;
+  /** product_feedback skill: editable confirmation card returned after inline capture. */
+  capture_card?: {
+    feedback_id: string;
+    category: string;
+    categories: string[];
+    sentiment: string;
+    tidied: string;
+    editable: boolean;
+  };
+  /** Planner-driven periodic survey chip (NPS / CSAT / open). */
+  offer_feedback?: { kind: string; trigger: string };
 }
 
 /** One line in envelope next_steps / suggested_questions blocks */
@@ -3747,6 +3758,249 @@ function renderFeedback(correlationId: string): HTMLElement {
   return bar;
 }
 
+
+// ─── Product-feedback UI components ──────────────────────────────────────────
+
+const _PF_CATEGORY_LABELS: Record<string, string> = {
+  accuracy_trust: "Accuracy",
+  coverage_gap: "Coverage gap",
+  bug: "Bug",
+  speed: "Speed",
+  usability: "Usability",
+  feature_request: "Feature request",
+  praise: "Praise",
+  other: "Other",
+  docs_gap: "Docs gap",
+  doc_stale: "Stale doc",
+};
+
+/** Confirmation card shown after the product_feedback skill captures inline feedback.
+ *  Lets the user optionally edit the tidied text / category before dismissing. */
+function renderCaptureCard(
+  card: NonNullable<ChatResponse["capture_card"]>,
+  meta: { threadId?: string; correlationId?: string }
+): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "pf-capture-card";
+
+  const header = document.createElement("div");
+  header.className = "pf-capture-card__header";
+  const title = document.createElement("span");
+  title.textContent = "✓ Feedback captured";
+  const xBtn = document.createElement("button");
+  xBtn.type = "button";
+  xBtn.className = "pf-capture-card__x";
+  xBtn.setAttribute("aria-label", "Dismiss");
+  xBtn.textContent = "✕";
+  header.appendChild(title);
+  header.appendChild(xBtn);
+  wrap.appendChild(header);
+
+  const body = document.createElement("div");
+  body.className = "pf-capture-card__body";
+
+  // Category row
+  const catRow = document.createElement("div");
+  catRow.className = "pf-capture-card__row";
+  const catLabel = document.createElement("label");
+  catLabel.textContent = "Category";
+  const catSel = document.createElement("select");
+  catSel.className = "pf-capture-card__select";
+  catSel.disabled = !card.editable;
+  for (const c of card.categories) {
+    const opt = document.createElement("option");
+    opt.value = c;
+    opt.textContent = _PF_CATEGORY_LABELS[c] ?? c;
+    if (c === card.category) opt.selected = true;
+    catSel.appendChild(opt);
+  }
+  catRow.appendChild(catLabel);
+  catRow.appendChild(catSel);
+  body.appendChild(catRow);
+
+  // Tidied text
+  const ta = document.createElement("textarea");
+  ta.className = "pf-capture-card__text";
+  ta.value = card.tidied;
+  ta.rows = 3;
+  ta.readOnly = !card.editable;
+  body.appendChild(ta);
+
+  // Buttons
+  const btnRow = document.createElement("div");
+  btnRow.className = "pf-capture-card__btns";
+  const doneBtn = document.createElement("button");
+  doneBtn.type = "button";
+  doneBtn.className = "pf-capture-card__done";
+  doneBtn.textContent = "Done";
+  btnRow.appendChild(doneBtn);
+  body.appendChild(btnRow);
+  wrap.appendChild(body);
+
+  function pfEvent(action: string): void {
+    fetch(API_BASE + "/chat/product-feedback/event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        trigger: "inline", action,
+        feedback_id: card.feedback_id,
+        thread_id: meta.threadId,
+      }),
+    }).catch(() => {});
+  }
+
+  if (card.editable) {
+    const updateBtn = document.createElement("button");
+    updateBtn.type = "button";
+    updateBtn.className = "pf-capture-card__update";
+    updateBtn.textContent = "Update";
+    btnRow.insertBefore(updateBtn, doneBtn);
+    updateBtn.addEventListener("click", () => {
+      const txt = ta.value.trim();
+      if (!txt) return;
+      fetch(API_BASE + "/chat/product-feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          verbatim: txt,
+          category: catSel.value,
+          trigger: "on_demand",
+          parent_feedback_id: card.feedback_id,
+          thread_id: meta.threadId,
+          correlation_id: meta.correlationId,
+        }),
+      }).catch(() => {});
+      wrap.remove();
+    });
+  }
+
+  function dismiss(): void { pfEvent("dismissed"); wrap.remove(); }
+  doneBtn.addEventListener("click", dismiss);
+  xBtn.addEventListener("click", dismiss);
+
+  pfEvent("shown");
+  return wrap;
+}
+
+/** Periodic survey chip surfaced by the planner (NPS 0-10, CSAT 1-5, or open text). */
+function renderOfferFeedback(
+  offer: NonNullable<ChatResponse["offer_feedback"]>,
+  meta: { threadId?: string; correlationId?: string }
+): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "pf-offer-chip";
+
+  const QUESTIONS: Record<string, string> = {
+    nps:           "How likely are you to recommend Mobius? (0 = not at all · 10 = definitely)",
+    csat:          "How satisfied are you with this answer?",
+    targeted_miss: "What were you trying to find?",
+    generic:       "Any feedback for us?",
+  };
+
+  const header = document.createElement("div");
+  header.className = "pf-offer-chip__header";
+  const q = document.createElement("span");
+  q.textContent = QUESTIONS[offer.kind] ?? "Any feedback?";
+  const xBtn = document.createElement("button");
+  xBtn.type = "button";
+  xBtn.className = "pf-offer-chip__x";
+  xBtn.setAttribute("aria-label", "No thanks");
+  xBtn.textContent = "✕";
+  header.appendChild(q);
+  header.appendChild(xBtn);
+  wrap.appendChild(header);
+
+  const body = document.createElement("div");
+  body.className = "pf-offer-chip__body";
+  wrap.appendChild(body);
+
+  function pfEvent(action: string, score?: number): void {
+    fetch(API_BASE + "/chat/product-feedback/event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        trigger: offer.trigger, action, kind: offer.kind,
+        score, thread_id: meta.threadId,
+      }),
+    }).catch(() => {});
+  }
+
+  function showThanks(): void {
+    body.innerHTML = "";
+    const t = document.createElement("span");
+    t.className = "pf-offer-chip__thanks";
+    t.textContent = "Thanks for your feedback!";
+    body.appendChild(t);
+    xBtn.remove();
+    setTimeout(() => wrap.remove(), 2500);
+  }
+
+  if (offer.kind === "nps" || offer.kind === "csat") {
+    const isNps = offer.kind === "nps";
+    const min = isNps ? 0 : 1;
+    const max = isNps ? 10 : 5;
+    const scale = document.createElement("div");
+    scale.className = "pf-offer-chip__scale";
+    for (let i = min; i <= max; i++) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "pf-offer-chip__score-btn";
+      btn.textContent = String(i);
+      btn.addEventListener("click", () => {
+        fetch(API_BASE + "/chat/product-feedback/score", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            survey_type: offer.kind, score: i, trigger: offer.trigger,
+            thread_id: meta.threadId, correlation_id: meta.correlationId,
+          }),
+        }).then(showThanks).catch(() => {});
+        pfEvent("scored", i);
+      });
+      scale.appendChild(btn);
+    }
+    body.appendChild(scale);
+    if (isNps) {
+      const lbl = document.createElement("div");
+      lbl.className = "pf-offer-chip__scale-labels";
+      const lo = document.createElement("span"); lo.textContent = "Not likely";
+      const hi = document.createElement("span"); hi.textContent = "Very likely";
+      lbl.appendChild(lo); lbl.appendChild(hi);
+      body.appendChild(lbl);
+    }
+  } else {
+    const ta = document.createElement("textarea");
+    ta.className = "pf-offer-chip__text";
+    ta.rows = 2;
+    ta.placeholder = "Your feedback…";
+    const submitBtn = document.createElement("button");
+    submitBtn.type = "button";
+    submitBtn.className = "pf-offer-chip__submit";
+    submitBtn.textContent = "Submit";
+    submitBtn.addEventListener("click", () => {
+      const txt = ta.value.trim();
+      if (!txt) return;
+      fetch(API_BASE + "/chat/product-feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          verbatim: txt, category: "other", trigger: offer.trigger,
+          thread_id: meta.threadId, correlation_id: meta.correlationId,
+        }),
+      }).then(showThanks).catch(() => {});
+      pfEvent("submitted");
+    });
+    body.appendChild(ta);
+    body.appendChild(submitBtn);
+  }
+
+  xBtn.addEventListener("click", () => { pfEvent("dismissed"); wrap.remove(); });
+
+  pfEvent("shown");
+  return wrap;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 /** Email-thread dialog: recipient + scope + mode → Preview → Send.
  *
@@ -8425,6 +8679,22 @@ function run(): void {
 
         // 9. Answer-quality feedback (separate from LLM routing thumbs in performance panel)
         turnWrap.appendChild(renderFeedback(data.correlation_id ?? activeCorrelationId));
+
+        // 10. product_feedback capture-card (inline skill fired this turn)
+        if (data.capture_card) {
+          turnWrap.appendChild(renderCaptureCard(data.capture_card, {
+            threadId: data.thread_id,
+            correlationId: data.correlation_id ?? activeCorrelationId,
+          }));
+        }
+
+        // 11. Planner-driven periodic survey chip (NPS / CSAT / open)
+        if (data.offer_feedback) {
+          turnWrap.appendChild(renderOfferFeedback(data.offer_feedback, {
+            threadId: data.thread_id,
+            correlationId: data.correlation_id ?? activeCorrelationId,
+          }));
+        }
 
         loadSidebarHistory();
         scrollToBottom(messagesEl);
