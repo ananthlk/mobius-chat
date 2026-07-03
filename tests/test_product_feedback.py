@@ -121,6 +121,36 @@ class TestStorageFailClosed:
         assert store.route_for("coverage_gap") == "corpus_backlog"
         assert store.route_for("praise") == "none"
 
+    def test_docs_gap_routes_to_docs_backlog(self):
+        # product-awareness integration: a doc-miss is filed as docs_gap and must
+        # route to docs_backlog (docs/product-awareness-feedback-contract.md).
+        assert store.route_for("docs_gap") == "docs_backlog"
+        assert "docs_gap" in store.ROUTING
+
+    def test_doc_stale_routes_to_docs_refresh(self):
+        # supply side of doc freshness: a builder ships a change → doc_stale →
+        # docs_refresh (drained by the weekly sweep).
+        assert store.route_for("doc_stale") == "docs_refresh"
+        assert "doc_stale" in store.ROUTING
+
+    def test_close_signals_dev_returns_zero_on_db_down(self, monkeypatch):
+        monkeypatch.setenv("CHAT_ENV", "dev")
+        monkeypatch.setattr(store, "db_execute",
+                            lambda *a, **k: {"error": {"code": "connection_error",
+                                                       "message": "down"}})
+        assert store.close_signals(category="doc_stale", module="chat") == 0
+
+    def test_close_signals_returns_rows_affected(self, monkeypatch):
+        monkeypatch.setattr(store, "db_execute", lambda *a, **k: {"rows_affected": 3})
+        assert store.close_signals(category="doc_stale") == 3
+
+    def test_module_slug_vocabulary_is_the_shared_set(self):
+        # area_tag == module; canonical conceptual slugs shared with product-awareness.
+        assert set(store.MODULE_SLUGS) == {
+            "chat", "rag", "lexicon", "skills", "strategy",
+            "os", "credentialing", "roster", "auth", "document-viewer", "infra",
+        }
+
 
 # ── skill handler ───────────────────────────────────────────────────────────
 

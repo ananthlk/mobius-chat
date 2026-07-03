@@ -38,6 +38,8 @@ _CATEGORY_LABEL = {
     "feature_request": "a feature request",
     "praise": "praise",
     "other": "feedback",
+    "docs_gap": "a documentation gap",
+    "doc_stale": "a stale doc",
 }
 
 

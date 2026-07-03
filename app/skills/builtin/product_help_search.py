@@ -109,11 +109,9 @@ def _run_product_help(call: SkillCall) -> SkillEnvelope:
     }
     resp = _search(payload)
     if resp is None:
-        # service unreachable — degrade gracefully; no gap write (we don't know if it's a gap).
-        return SkillEnvelope(
-            text="I couldn't reach the product-docs service just now.",
-            signal="no_sources",
-        )
+        # service unreachable — return empty so the integrator sees a clean miss,
+        # not an error string that it tries to format into an answer card.
+        return SkillEnvelope(text="", signal="no_sources")
 
     outcome = resp.get("outcome")
     answer = resp.get("text") or ""

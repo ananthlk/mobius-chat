@@ -64,7 +64,24 @@ ROUTING = {
     "feature_request": "product_backlog",
     "other": "product_backlog",
     "praise": "none",
+    # docs_gap: filed programmatically by the product-awareness skill when
+    # product_help_search misses (no doc above threshold). Routes to the docs
+    # curation backlog. See docs/product-awareness-feedback-contract.md.
+    "docs_gap": "docs_backlog",
+    # doc_stale: the supply side of doc freshness — a module agent (or git hook)
+    # ships a user-facing change and files "this doc is now behind." Drained by a
+    # weekly refresh sweep. Mirror of docs_gap. trigger="agent_signal".
+    "doc_stale": "docs_refresh",
 }
+
+# Canonical module slugs for area_tags — the shared vocabulary product-awareness
+# and feedback both use (area_tag == module). Slugs are conceptual (what the user
+# thinks in); the slug→doc-file map lives in the integration contract.
+MODULE_SLUGS = (
+    "chat", "rag", "lexicon", "skills", "strategy",      # in-scope corpus
+    "os", "credentialing", "roster", "auth",             # valid, corpus pending
+    "document-viewer", "infra",
+)
 
 
 def route_for(category: str) -> str:
@@ -215,6 +232,33 @@ def insert_survey_score(
         _handle_err(result, "survey score")
         return None
     return fid
+
+
+def close_signals(*, category: str, module: str | None = None, before: str | None = None) -> int:
+    """Mark matching open signals as closed — the drain for the weekly refresh
+    sweep (and any backlog-clearing). Encapsulates the status flip so callers
+    never UPDATE the table directly. Returns rows affected (0 on DB-down in dev).
+
+    e.g. after refreshing the chat doc:
+        close_signals(category="doc_stale", module="chat")
+    """
+    conds = ["category = :cat", "status <> 'closed'"]
+    params: dict[str, Any] = {"cat": category}
+    if module:
+        conds.append("area_tags ? :mod")
+        params["mod"] = module
+    if before:
+        conds.append("created_at <= :before")
+        params["before"] = before
+    result = db_execute(
+        f"UPDATE product_feedback SET status='closed', updated_at=now() WHERE {' AND '.join(conds)}",
+        _DB,
+        params=params,
+    )
+    if _err_code(result) is not None:
+        _handle_err(result, "close signals")
+        return 0
+    return int(result.get("rows_affected") or 0)
 
 
 def log_event(
