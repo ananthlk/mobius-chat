@@ -28,7 +28,9 @@ def test_answer_outcome_returns_sources(monkeypatch):
     env = ph._run_product_help(_call({"query": "how do I sign in"}))
     assert env.signal == "corpus_only"
     assert env.extra["outcome"] == "answer"
-    assert len(env.sources) == 1 and env.sources[0].document_id == "auth:capabilities:0"
+    assert len(env.sources) == 1
+    assert env.sources[0].document_id == "product-docs:auth"   # resolves in the doc-reader
+    assert env.sources[0].extra["chunk_id"] == "auth:capabilities:0"  # chunk_id kept for tracing
     assert env.extra["feedback_id"] is None
 
 

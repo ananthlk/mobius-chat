@@ -82,14 +82,23 @@ def _file_gap(gap: dict, *, query: str, user_id, thread_id, correlation_id,
 def _sources(items: list[dict] | None) -> list[SourceRef]:
     out: list[SourceRef] = []
     for i, s in enumerate(items or [], 1):
-        name = f"{s.get('module', '')} · {s.get('section', '')}".strip(" ·")
+        module = s.get("module") or ""
+        section = s.get("section") or ""
+        name = f"{module} · {section}".strip(" ·")
+        # document_id must RESOLVE when the user clicks "Open document":
+        # 'product-docs:<module>' is routed by chat's doc_reader proxy to the
+        # product-awareness /doc endpoint (keeping product docs out of rag.documents).
+        # The chunk_id is kept in extra for tracing.
+        doc_id = f"product-docs:{module}" if module else None
         out.append(SourceRef(
             document_name=name or "product docs",
             index=i,
+            text=section,                      # section heading — the highlight anchor
             source_type="document",
-            document_id=s.get("chunk_id"),
-            extra={"score": s.get("score"), "source_path": s.get("source_path"),
-                   "doc_type": s.get("doc_type")},
+            document_id=doc_id,
+            extra={"chunk_id": s.get("chunk_id"), "score": s.get("score"),
+                   "source_path": s.get("source_path"), "doc_type": s.get("doc_type"),
+                   "cite_text": section},
         ))
     return out
 

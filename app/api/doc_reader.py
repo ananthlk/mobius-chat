@@ -47,12 +47,22 @@ def _doc_reader_base_url() -> str:
     return (os.environ.get("CHAT_SKILLS_DOC_READER_URL") or _DEFAULT_DOC_READER_URL).rstrip("/")
 
 
+def _product_docs_base_url() -> str:
+    """Base URL of the standalone product-awareness service, derived from the
+    product_help_search URL (``…/search`` → ``…``). Product docs render from its
+    ``/doc`` endpoint, NOT the RAG doc-reader, so they stay out of rag.documents."""
+    url = (os.environ.get("CHAT_SKILLS_PRODUCT_HELP_SEARCH_URL")
+           or "http://localhost:8070/search").rstrip("/")
+    return url.rsplit("/search", 1)[0].rstrip("/") or url
+
+
 def _doc_reader_proxy(
     method: str,
     path: str,
     *,
     json_body: Any | None = None,
     timeout: float = 30.0,
+    base: str | None = None,
 ) -> dict[str, Any]:
     """Forward a request to the doc-reader skill and return its JSON.
 
@@ -65,7 +75,7 @@ def _doc_reader_proxy(
     """
     import httpx
 
-    base = _doc_reader_base_url()
+    base = (base or _doc_reader_base_url()).rstrip("/")
     try:
         with httpx.Client(timeout=timeout) as client:
             resp = client.request(method, f"{base}{path}", json=json_body)
@@ -88,7 +98,17 @@ def dr_read(
     body: dict = Body(...),
     _user_id: str | None = Depends(require_user),
 ) -> dict[str, Any]:
-    """Proxy: read/reassemble a published document."""
+    """Proxy: read/reassemble a published document.
+
+    Product-doc citations carry a ``product-docs:<module>`` document_id — those
+    render from the standalone product-awareness service's ``/doc`` endpoint
+    (same envelope shape), keeping product docs out of rag.documents. Everything
+    else goes to the RAG doc-reader skill as before.
+    """
+    doc_id = (body.get("document_id") or "") if isinstance(body, dict) else ""
+    if isinstance(doc_id, str) and doc_id.startswith("product-docs:"):
+        return _doc_reader_proxy("POST", "/doc", json_body=body,
+                                 base=_product_docs_base_url())
     return _doc_reader_proxy("POST", "/read", json_body=body)
 
 
