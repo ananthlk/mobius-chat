@@ -457,6 +457,7 @@ def _load_builtins() -> None:
     from app.skills.builtin import fetch_document  # noqa: F401
     from app.skills.builtin import healthcare  # noqa: F401
     from app.skills.builtin import product_feedback  # noqa: F401
+    from app.skills.builtin import product_help_search  # noqa: F401
     from app.skills.builtin import tasks  # noqa: F401
     from app.skills.builtin import transform_previous  # noqa: F401
     from app.skills.builtin import vibe  # noqa: F401

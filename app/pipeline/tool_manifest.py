@@ -404,6 +404,9 @@ def _compose_manifest(allowed: frozenset[str] | None = None) -> str:
         # is an explicit list, so it must be named here or the planner never
         # sees it (2026-07-02).
         _registry_block("product_feedback"),
+        # product_help_search: answer "how do I use Mobius?" from the product docs.
+        # Same explicit-list gotcha — must be named here or the planner never sees it.
+        _registry_block("product_help_search"),
         # Phase 13.6 — conversation-aware planner. Continuation/
         # transformation requests ("convert this to an appeal letter",
         # "make it shorter", "rewrite for X") MUST route here, NOT to
