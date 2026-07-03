@@ -78,8 +78,8 @@ ROUTING = {
 # and feedback both use (area_tag == module). Slugs are conceptual (what the user
 # thinks in); the slug→doc-file map lives in the integration contract.
 MODULE_SLUGS = (
-    "chat", "rag", "lexicon", "skills", "strategy",      # in-scope corpus
-    "os", "credentialing", "roster", "auth",             # valid, corpus pending
+    "chat", "rag", "lexicon", "skills", "strategy", "eval",   # in-scope corpus
+    "os", "credentialing", "roster", "auth",                  # valid, corpus pending
     "document-viewer", "infra",
 )
 
@@ -234,6 +234,83 @@ def insert_survey_score(
     return fid
 
 
+def update_open_feedback(
+    *,
+    feedback_id: str | None = None,
+    thread_id: str | None = None,
+    category: str | None = None,
+    add_detail: str | None = None,
+    tidied: str | None = None,
+    sentiment: str | None = None,
+    severity: str | None = None,
+) -> dict[str, Any] | None:
+    """Edit a just-captured open feedback item (the 'update' path behind the
+    playback envelope). Targets ``feedback_id`` if given, else the most recent
+    open item in the thread. Changing category re-routes. ``add_detail`` appends;
+    ``tidied`` replaces the text wholesale (a form edit). Returns the updated
+    {feedback_id, category, tidied, routed_to} for the receipt, or None."""
+    fid = feedback_id
+    if not fid:
+        if not thread_id:
+            return None
+        res = db_query(
+            "SELECT feedback_id FROM product_feedback "
+            "WHERE thread_id = :tid AND kind = 'open' ORDER BY created_at DESC LIMIT 1",
+            _DB, params={"tid": thread_id},
+        )
+        if _err_code(res) is not None:
+            return None
+        rows = res.get("rows") or []
+        if not rows:
+            return None
+        fid = rows[0][0]
+
+    sets = ["updated_at = now()"]
+    params: dict[str, Any] = {"fid": fid}
+    if category:
+        sets += ["category = :cat", "routed_to = :route"]
+        params["cat"] = category
+        params["route"] = route_for(category)
+    if tidied is not None:
+        sets.append("tidied = :tidied"); params["tidied"] = tidied.strip()[:4000]
+    elif add_detail:
+        sets += ["tidied = trim(COALESCE(tidied,'') || ' ' || :d)",
+                 "verbatim = trim(COALESCE(verbatim,'') || ' ' || :d)"]
+        params["d"] = add_detail.strip()
+    if sentiment:
+        sets.append("sentiment = :sent"); params["sent"] = sentiment
+    if severity:
+        sets.append("severity = :sev"); params["sev"] = severity
+
+    result = db_execute(
+        f"UPDATE product_feedback SET {', '.join(sets)} WHERE feedback_id = :fid",
+        _DB, params=params,
+    )
+    if _err_code(result) is not None:
+        _handle_err(result, "update feedback")
+        return None
+
+    back = db_query(
+        "SELECT category, tidied, routed_to FROM product_feedback WHERE feedback_id = :fid",
+        _DB, params={"fid": fid},
+    )
+    row = _row_to_dict(back) if _err_code(back) is None else None
+    if not row:
+        return {"feedback_id": fid, "category": category, "tidied": None, "routed_to": None}
+    return {"feedback_id": fid, "category": row["category"],
+            "tidied": row["tidied"], "routed_to": row["routed_to"]}
+
+
+def _row_to_dict(result: dict) -> dict | None:
+    if _err_code(result) is not None:
+        return None
+    rows = result.get("rows") or []
+    if not rows:
+        return None
+    cols = result.get("columns") or []
+    return dict(zip(cols, rows[0]))
+
+
 def close_signals(*, category: str, module: str | None = None, before: str | None = None) -> int:
     """Mark matching open signals as closed — the drain for the weekly refresh
     sweep (and any backlog-clearing). Encapsulates the status flip so callers
@@ -296,6 +373,22 @@ def log_event(
 
 
 # ── prompt state ────────────────────────────────────────────────────────────
+
+def get_thread_turn_count(thread_id: str | None) -> int:
+    """Completed-turn count for a thread (chat_threads.turn_count). Powers the
+    CSAT/NPS cadence gate — 0 when unknown so the survey paths stay conservative."""
+    if not thread_id:
+        return 0
+    res = db_query(
+        "SELECT turn_count FROM chat_threads WHERE thread_id = :tid",
+        _DB, params={"tid": thread_id},
+    )
+    row = _row_to_dict(res)
+    try:
+        return int(row["turn_count"]) if row and row.get("turn_count") is not None else 0
+    except (TypeError, ValueError, KeyError):
+        return 0
+
 
 def get_prompt_state(user_id: str) -> dict[str, Any]:
     """Return the cadence row for a user, or defaults if none/unavailable."""

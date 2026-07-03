@@ -730,9 +730,14 @@ def build_reasoning_context(
     if isinstance(_fb, dict):
         _kind = _fb.get("kind") or "generic"
         if _kind == "nps":
-            _how = 'ask how likely they are to recommend Mobius (0–10) via offer_feedback {"kind":"nps"}'
+            _how = ('ask IN YOUR REPLY, in one sentence, how likely they are to recommend Mobius '
+                    'to a colleague on a 0–10 scale (and set offer_feedback {"kind":"nps"}). '
+                    'When the user answers with a number, call product_feedback with kind=survey, '
+                    'survey_type=nps, score=<their number>')
         elif _kind == "csat":
-            _how = 'offer a quick 1–5 "how did that go?" via offer_feedback {"kind":"csat"}'
+            _how = ('ask IN YOUR REPLY a quick "how did that go? (1–5)" (and set offer_feedback '
+                    '{"kind":"csat"}). When the user answers with a number, call product_feedback '
+                    'with kind=survey, survey_type=csat, score=<their number>')
         elif _kind == "targeted_miss":
             _how = 'the last answer may have missed — you may ask what they expected via offer_feedback {"kind":"targeted_miss"}'
         else:

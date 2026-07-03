@@ -147,7 +147,7 @@ class TestStorageFailClosed:
     def test_module_slug_vocabulary_is_the_shared_set(self):
         # area_tag == module; canonical conceptual slugs shared with product-awareness.
         assert set(store.MODULE_SLUGS) == {
-            "chat", "rag", "lexicon", "skills", "strategy",
+            "chat", "rag", "lexicon", "skills", "strategy", "eval",
             "os", "credentialing", "roster", "auth", "document-viewer", "infra",
         }
 
@@ -187,6 +187,93 @@ class TestSkillHandler:
         env = _skill._run_product_feedback(self._call({"trigger": "on_demand"}))
         assert env.text == ""
 
+    def test_open_returns_playback_receipt(self, monkeypatch, _skill):
+        monkeypatch.setattr(_skill, "_classify", lambda **k: {
+            "classification": {"category": "usability", "sentiment": "negative",
+                               "severity": "medium", "summary": "s",
+                               "tidied": "The sidebar is confusing."},
+            "routed_to": "product_backlog"})
+        monkeypatch.setattr(_skill.store, "insert_open_feedback", lambda **k: "fid")
+        monkeypatch.setattr(_skill.store, "log_event", lambda **k: None)
+        monkeypatch.setattr(_skill.store, "mark_captured", lambda *a, **k: None)
+        env = _skill._run_product_feedback(self._call(
+            {"trigger": "on_demand", "verbatim": "the sidebar is confusing"}))
+        assert "thank you" in env.text.lower()
+        assert "Usability" in env.text
+        assert "update it" in env.text.lower()          # invites editing
+        assert env.extra["capture_card"]["editable"] is True
+
+    def test_update_path_edits_existing_item(self, monkeypatch, _skill):
+        seen = {}
+        monkeypatch.setattr(_skill.store, "update_open_feedback",
+                            lambda **k: seen.update(k) or {"feedback_id": "fid", "category": "bug",
+                                                            "tidied": "X. Happens on mobile.",
+                                                            "routed_to": "triage_queue"})
+        env = _skill._run_product_feedback(self._call(
+            {"update": True, "category": "bug", "add_detail": "Happens on mobile."}))
+        assert seen["category"] == "bug" and seen["add_detail"] == "Happens on mobile."
+        assert "updated" in env.text.lower()
+        assert "Bug" in env.text
+        assert env.extra["feedback_id"] == "fid"
+
+    def test_update_not_found_asks_to_restate(self, monkeypatch, _skill):
+        monkeypatch.setattr(_skill.store, "update_open_feedback", lambda **k: None)
+        env = _skill._run_product_feedback(self._call({"update": True, "category": "bug"}))
+        assert "couldn't find" in env.text.lower()
+
+    def test_survey_returns_receipt_with_thanks(self, monkeypatch, _skill):
+        monkeypatch.setattr(_skill.store, "insert_survey_score", lambda **k: "sfid")
+        monkeypatch.setattr(_skill.store, "log_event", lambda **k: None)
+        monkeypatch.setattr(_skill.store, "mark_captured", lambda *a, **k: None)
+        env = _skill._run_product_feedback(self._call(
+            {"trigger": "periodic", "kind": "survey", "survey_type": "nps", "score": 9}))
+        assert "9/10" in env.text and "thanks" in env.text.lower()
+
+    def test_promotion_policy(self, _skill):
+        f = _skill._promotion_severity
+        assert f("bug", "high") == "critical"
+        assert f("bug", "low") == "warning"
+        assert f("accuracy_trust", "medium") == "warning"
+        assert f("usability", "high") == "warning"
+        assert f("usability", "medium") is None   # mild non-bug → no page
+        assert f("speed", "low") is None
+        assert f("praise", "high") is None         # praise never pages
+
+    def test_page_worthy_feedback_promotes_a_task(self, monkeypatch, _skill):
+        monkeypatch.setattr(_skill, "_classify", lambda **k: {
+            "classification": {"category": "bug", "sentiment": "negative",
+                               "severity": "high", "summary": "export crashes",
+                               "tidied": "Exporting the roster crashes the app."},
+            "routed_to": "triage_queue"})
+        monkeypatch.setattr(_skill.store, "insert_open_feedback", lambda **k: "fid-bug")
+        monkeypatch.setattr(_skill.store, "log_event", lambda **k: None)
+        monkeypatch.setattr(_skill.store, "mark_captured", lambda *a, **k: None)
+        captured = {}
+        # promote is imported lazily inside _maybe_promote_task
+        import app.services.task_manager_promotion as tmp
+        monkeypatch.setattr(tmp, "promote", lambda env: captured.update(env))
+        _skill._run_product_feedback(self._call(
+            {"trigger": "on_demand", "verbatim": "exporting the roster crashes the app"}))
+        assert captured.get("report_to_task_manager") is True
+        assert captured.get("source_module") == "feedback"
+        assert captured.get("task_severity") == "critical"
+        assert captured["data"]["feedback_id"] == "fid-bug"
+
+    def test_mild_feedback_does_not_promote(self, monkeypatch, _skill):
+        monkeypatch.setattr(_skill, "_classify", lambda **k: {
+            "classification": {"category": "usability", "sentiment": "neutral",
+                               "severity": "low", "summary": "x", "tidied": "y"},
+            "routed_to": "product_backlog"})
+        monkeypatch.setattr(_skill.store, "insert_open_feedback", lambda **k: "fid-u")
+        monkeypatch.setattr(_skill.store, "log_event", lambda **k: None)
+        monkeypatch.setattr(_skill.store, "mark_captured", lambda *a, **k: None)
+        called = []
+        import app.services.task_manager_promotion as tmp
+        monkeypatch.setattr(tmp, "promote", lambda env: called.append(env))
+        _skill._run_product_feedback(self._call(
+            {"trigger": "on_demand", "verbatim": "the spacing feels a little tight"}))
+        assert called == []   # mild usability → no page
+
     def test_survey_path(self, monkeypatch, _skill):
         monkeypatch.setattr(_skill.store, "insert_survey_score", lambda **k: "sfid")
         monkeypatch.setattr(_skill.store, "log_event", lambda **k: None)
@@ -203,6 +290,64 @@ class TestSkillHandler:
         from app.pipeline import tool_manifest as tm
         manifest = tm.get_tool_manifest()
         assert "product_feedback(" in manifest
+
+    def test_agent_source_sets_user_and_skips_cadence(self, monkeypatch):
+        # external agent posts doc_stale via HTTP: source → user_id, no cadence pollution
+        import app.api.product_feedback as api
+        captured = {}
+        monkeypatch.setattr(api.store, "insert_open_feedback", lambda **k: captured.update(k) or "fid")
+        logged = []
+        monkeypatch.setattr(api.store, "log_event", lambda **k: logged.append(k))
+        marked = []
+        monkeypatch.setattr(api.store, "mark_captured", lambda uid: marked.append(uid))
+        body = api.OpenFeedbackBody(verbatim="renamed sidebar", category="doc_stale",
+                                    trigger="agent_signal", area_tags=["chat"], source="agent:chat")
+        r = api.post_product_feedback(body, user_id="real-user-123")
+        assert captured["user_id"] == "agent:chat"   # source wins for provenance
+        assert marked == []                            # user cadence NOT advanced
+        assert logged == []                            # not in the user funnel either
+        assert r["routed_to"] == "docs_refresh"
+
+    def test_update_endpoint_reroutes_and_returns_row(self, monkeypatch):
+        import app.api.product_feedback as api
+        seen = {}
+        monkeypatch.setattr(api.store, "update_open_feedback",
+                            lambda **k: seen.update(k) or {"feedback_id": "f", "category": "bug",
+                                                            "tidied": "X", "routed_to": "triage_queue"})
+        body = api.UpdateFeedbackBody(feedback_id="f", category="bug", tidied="X")
+        r = api.post_update_feedback(body, _user_id="u")
+        assert seen["category"] == "bug" and seen["tidied"] == "X"
+        assert r["routed_to"] == "triage_queue"
+
+    def test_update_endpoint_404_when_missing(self, monkeypatch):
+        import app.api.product_feedback as api
+        from fastapi import HTTPException
+        monkeypatch.setattr(api.store, "update_open_feedback", lambda **k: None)
+        try:
+            api.post_update_feedback(api.UpdateFeedbackBody(feedback_id="nope"), _user_id="u")
+            assert False, "expected 404"
+        except HTTPException as e:
+            assert e.status_code == 404
+
+    def test_enrich_offer_feedback_shapes(self):
+        from app.pipeline.react.feedback_signal import enrich_offer_feedback
+        nps = enrich_offer_feedback({"kind": "nps", "trigger": "periodic"})
+        assert nps["scale"] == {"min": 0, "max": 10, "min_label": "Not likely", "max_label": "Very likely"}
+        assert nps["post_to"] == "/chat/product-feedback/score"
+        csat = enrich_offer_feedback({"kind": "csat"})
+        assert csat["scale"]["max"] == 5
+        generic = enrich_offer_feedback({"kind": "generic"})
+        assert generic["cta"] == "Share feedback" and generic["post_to"] == "/chat/product-feedback"
+
+    def test_user_feedback_advances_cadence(self, monkeypatch):
+        import app.api.product_feedback as api
+        monkeypatch.setattr(api.store, "insert_open_feedback", lambda **k: "fid")
+        monkeypatch.setattr(api.store, "log_event", lambda **k: None)
+        marked = []
+        monkeypatch.setattr(api.store, "mark_captured", lambda uid: marked.append(uid))
+        body = api.OpenFeedbackBody(verbatim="the sidebar is confusing", category="usability")
+        api.post_product_feedback(body, user_id="real-user-123")
+        assert marked == ["real-user-123"]   # genuine user feedback → cadence advances
 
     def test_classify_service_down_still_persists(self, monkeypatch, _skill):
         # _classify's own fallback returns a best-effort dict; handler must still write

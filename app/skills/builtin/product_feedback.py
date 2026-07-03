@@ -42,6 +42,46 @@ _CATEGORY_LABEL = {
     "doc_stale": "a stale doc",
 }
 
+# Clean nouns for the playback receipt's "Category:" line.
+_CATEGORY_DISPLAY = {
+    "accuracy_trust": "Accuracy / trust",
+    "coverage_gap": "Coverage gap",
+    "bug": "Bug",
+    "speed": "Speed",
+    "usability": "Usability",
+    "feature_request": "Feature request",
+    "praise": "Praise",
+    "other": "Other",
+    "docs_gap": "Docs gap",
+    "doc_stale": "Doc stale",
+}
+
+
+def _open_receipt(category: str, tidied: str, tracked: bool, updated: bool = False) -> str:
+    """The standard playback envelope: thanks + what-we-captured + edit invitation.
+    Rendered as chat text today; the structured capture_card (in extra) lets a
+    future frontend show the same thing as an editable card."""
+    disp = _CATEGORY_DISPLAY.get(category, "Feedback")
+    head = "✓ **Updated — thanks.**" if updated else "✓ **Feedback logged — thank you.**"
+    lines = [head, "", f"- **Category:** {disp}",
+             f'- **What I captured:** "{(tidied or "").strip()}"']
+    if tracked:
+        lines.append("- **Status:** flagged for follow-up")
+    if not updated:
+        lines += ["",
+                  "Want to change anything? Just tell me — e.g. *“make it a bug”* or "
+                  "*“add that it happens on mobile”* — and I’ll update it."]
+    return "\n".join(lines)
+
+
+def _survey_receipt(survey_type: str, score: float) -> str:
+    s = int(score) if float(score).is_integer() else score
+    if survey_type == "nps":
+        return (f"✓ **Thanks — recorded your {s}/10.**\n\n"
+                "What’s the main reason for your score? (optional — one line is plenty.)")
+    return (f"✓ **Thanks — recorded {s}/5.**\n\n"
+            "Anything you’d change to make it better? (optional.)")
+
 
 def _classify(verbatim: str, context_excerpt: str, provisional: str | None, cid: str | None) -> dict:
     """Call the stateless classifier service; degrade to a best-effort local
@@ -79,6 +119,62 @@ def _ctx_field(call: SkillCall, name: str):
     return getattr(ctx, name, None) if ctx is not None else None
 
 
+# ── task promotion: page a human on page-worthy feedback ────────────────────
+# Policy (owned here — the skill has the classification): promote a *named
+# broken/wrong thing*, not any negative sentiment. bug/accuracy_trust always
+# page; anything high-severity pages. praise/mild never pages. Transport +
+# dedup + fire-and-forget live in app.services.task_manager_promotion.promote,
+# gated by MOBIUS_TASK_MANAGER_PROMOTION. See the task-manager contract.
+_PAGE_CATEGORIES = {"bug", "accuracy_trust"}
+
+
+_NEVER_PAGE = {"praise"}  # positive feedback never pages, whatever the severity
+
+
+def _promotion_severity(category: str, severity: str) -> str | None:
+    """Map (category, severity) → task-manager severity, or None = don't page."""
+    if category in _NEVER_PAGE:
+        return None
+    if category in _PAGE_CATEGORIES:
+        return "critical" if severity == "high" else "warning"
+    if severity == "high":
+        return "warning"
+    return None
+
+
+def _maybe_promote_task(*, feedback_id, category, sentiment, severity, verbatim,
+                        summary, correlation_id, thread_id, user_id, org_slug) -> None:
+    """Best-effort: promote page-worthy feedback to a task. Never blocks or
+    breaks the feedback write (promote() is itself daemon-threaded + flag-gated)."""
+    task_severity = _promotion_severity(category, severity)
+    if not task_severity or not feedback_id:
+        return
+    try:
+        from app.services.task_manager_promotion import promote
+        promote({
+            "signal": "product_feedback",
+            "correlation_id": correlation_id or "",
+            "step_id": "product_feedback",
+            "source_module": "feedback",
+            "report_to_task_manager": True,
+            "task_type": "blocker",
+            "task_severity": task_severity,
+            "note": (summary or verbatim or "")[:500],
+            "data": {
+                "feedback_id": feedback_id,
+                "category": category,
+                "sentiment": sentiment,
+                "severity": severity,
+                "org_slug": org_slug,
+                "verbatim": (verbatim or "")[:1000],
+            },
+            "thread_id": thread_id,
+            "user_id": user_id,
+        })
+    except Exception:
+        logger.warning("feedback task promotion failed — continuing", exc_info=True)
+
+
 def _run_product_feedback(call: SkillCall) -> SkillEnvelope:
     inputs = call.inputs or {}
     trigger = inputs.get("trigger") or "on_demand"
@@ -89,6 +185,28 @@ def _run_product_feedback(call: SkillCall) -> SkillEnvelope:
     correlation_id = _ctx_field(call, "correlation_id")
     org_slug = _ctx_field(call, "org_slug")
     config_sha = _ctx_field(call, "config_sha")
+
+    # ── update path: the user edited/corrected feedback they just gave ──────
+    if inputs.get("update"):
+        new_cat = inputs.get("category")
+        new_cat = new_cat if new_cat in _CATEGORY_LABEL else None
+        upd = store.update_open_feedback(
+            feedback_id=inputs.get("feedback_id"), thread_id=thread_id,
+            category=new_cat, add_detail=inputs.get("add_detail"),
+        )
+        if not upd:
+            return SkillEnvelope(text="I couldn't find that feedback to update — mind restating it?",
+                                 signal="no_sources")
+        cat = upd.get("category") or "other"
+        tracked = upd.get("routed_to") in ("triage_queue", "corpus_backlog")
+        return SkillEnvelope(
+            text=_open_receipt(cat, upd.get("tidied") or "", tracked, updated=True),
+            signal="no_sources",
+            extra={"feedback_id": upd.get("feedback_id"), "kind": "open", "category": cat,
+                   "capture_card": {"feedback_id": upd.get("feedback_id"), "category": cat,
+                                    "categories": list(_CATEGORY_LABEL.keys()),
+                                    "tidied": upd.get("tidied"), "editable": True}},
+        )
 
     # ── survey score path (uncommon via tool; usually posted from the chip) ──
     if kind == "survey":
@@ -106,10 +224,13 @@ def _run_product_feedback(call: SkillCall) -> SkillEnvelope:
                         thread_id=thread_id, kind=survey_type, score=score, feedback_id=fid)
         store.mark_captured(user_id) if user_id else None
         return SkillEnvelope(
-            text="Thanks — that's recorded.",
+            text=_survey_receipt(survey_type, score),
             signal="no_sources",
             extra={"feedback_id": fid, "kind": "survey", "survey_type": survey_type,
-                   "score": score},
+                   "score": score,
+                   "capture_card": {"feedback_id": fid, "kind": "survey",
+                                    "survey_type": survey_type, "score": score,
+                                    "followup_prompt": "What's the main reason for your score?"}},
         )
 
     # ── open feedback path ──────────────────────────────────────────────────
@@ -146,14 +267,20 @@ def _run_product_feedback(call: SkillCall) -> SkillEnvelope:
     if user_id:
         store.mark_captured(user_id)
 
-    label = _CATEGORY_LABEL.get(category, "feedback")
-    tracked = resp.get("routed_to") in ("triage_queue", "corpus_backlog")
-    ack = f"Logged — filed under {label}." + (" We'll track it." if tracked else " Thanks for flagging it.")
+    # Page a human when the feedback names a broken/wrong thing (best-effort).
+    _maybe_promote_task(
+        feedback_id=fid, category=category, sentiment=c.get("sentiment") or "neutral",
+        severity=c.get("severity") or "low", verbatim=verbatim,
+        summary=c.get("summary") or "", correlation_id=correlation_id,
+        thread_id=thread_id, user_id=user_id, org_slug=org_slug,
+    )
 
-    # capture_card lets the UI optionally show an editable confirmation; the ack
-    # text alone already delivers the skill without any frontend change.
+    tracked = resp.get("routed_to") in ("triage_queue", "corpus_backlog")
+
+    # Standard playback envelope (chat text today; capture_card in extra lets a
+    # future frontend render the same thing as an editable card).
     return SkillEnvelope(
-        text=ack,
+        text=_open_receipt(category, c.get("tidied") or verbatim, tracked),
         signal="no_sources",
         extra={
             "feedback_id": fid,
@@ -166,6 +293,8 @@ def _run_product_feedback(call: SkillCall) -> SkillEnvelope:
                 "sentiment": c.get("sentiment") or "neutral",
                 "tidied": c.get("tidied") or verbatim,
                 "editable": True,
+                "mode": "confirm",           # pre-filled playback of captured feedback
+                "update_url": "/chat/product-feedback/update",
             },
         },
     )
@@ -182,8 +311,12 @@ register(
             "sidebar is confusing', 'you never have Ohio Medicaid', 'this is great'; "
             "OR the user explicitly asks to give feedback.\n"
             "Do NOT use when: the user is asking a substantive question, needs data, or "
-            "wants documentation — that's not feedback. Never rate clinical content. "
-            "Returns a short acknowledgement; the feedback is persisted and routed."
+            "wants documentation — that's not feedback. Never rate clinical content.\n"
+            "After recording, the skill returns a playback receipt that invites edits. If the "
+            "user then corrects or adds to feedback they just gave ('actually it's a bug', "
+            "'also it happens on mobile'), call again with update=true (+ category and/or "
+            "add_detail) — it edits the same item, it does NOT create a new one.\n"
+            "For a satisfaction survey (kind=survey), record the user's number as score."
         ),
         inputs_schema={
             "type": "object",
@@ -222,6 +355,19 @@ register(
                 "score": {
                     "type": "number",
                     "description": "For kind=survey: the numeric score.",
+                },
+                "update": {
+                    "type": "boolean",
+                    "description": "Edit the feedback the user just gave (don't create a new item). "
+                                   "Pair with category and/or add_detail.",
+                },
+                "add_detail": {
+                    "type": "string",
+                    "description": "For update=true: extra detail to append to the existing item.",
+                },
+                "feedback_id": {
+                    "type": "string",
+                    "description": "For update=true: which item; defaults to the latest in this thread.",
                 },
             },
         },

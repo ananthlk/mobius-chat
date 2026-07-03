@@ -39,6 +39,11 @@ class OpenFeedbackBody(BaseModel):
     thread_id: str | None = None
     correlation_id: str | None = None
     parent_feedback_id: str | None = None
+    # For agent-filed signals (doc_stale etc.) posted by external agents that
+    # can't import app.storage: carries the SOURCE (agent name / git-hook id).
+    # When set, it becomes the row's user_id (provenance) and the write is
+    # treated as a non-user signal — user cadence is NOT advanced.
+    source: str | None = None
 
 
 class SurveyScoreBody(BaseModel):
@@ -59,6 +64,16 @@ class EventBody(BaseModel):
     thread_id: str | None = None
 
 
+class UpdateFeedbackBody(BaseModel):
+    feedback_id: str | None = None   # or edit the latest open item in the thread
+    thread_id: str | None = None
+    category: str | None = None      # re-routes when changed
+    tidied: str | None = None        # full-text replace (form edit)
+    add_detail: str | None = None    # append (conversational "also…")
+    sentiment: str | None = None
+    severity: str | None = None
+
+
 class OptOutBody(BaseModel):
     opted_out: bool = True
 
@@ -72,6 +87,9 @@ def post_product_feedback(
     if not (body.verbatim or "").strip():
         raise HTTPException(status_code=400, detail="verbatim is required")
     category = body.category if body.category in _CATEGORIES else "other"
+    # Agent-filed signal (external agent, no user session) vs. real user feedback.
+    is_agent_signal = bool(body.source) or body.trigger == "agent_signal"
+    row_user = body.source or user_id           # source wins for provenance
     fid = store.insert_open_feedback(
         trigger=body.trigger,
         category=category,
@@ -82,17 +100,39 @@ def post_product_feedback(
         severity=body.severity,
         area_tags=body.area_tags or [],
         routed_to=store.route_for(category),
-        user_id=user_id,
+        user_id=row_user,
         thread_id=body.thread_id,
         correlation_id=body.correlation_id,
         parent_feedback_id=body.parent_feedback_id,
     )
-    store.log_event(trigger=body.trigger, action="submitted", user_id=user_id,
-                    thread_id=body.thread_id, kind="open", category=category, feedback_id=fid)
-    if user_id:
-        store.mark_captured(user_id)
+    # The durable product_feedback row above is the record. The funnel event +
+    # cadence advance are USER-only — an agent_signal isn't part of the human
+    # prompt→capture funnel and must not touch a person's periodic-ask counters.
+    if not is_agent_signal:
+        store.log_event(trigger=body.trigger, action="submitted", user_id=user_id,
+                        thread_id=body.thread_id, kind="open", category=category, feedback_id=fid)
+        if user_id:
+            store.mark_captured(user_id)
     return {"status": "ok", "feedback_id": fid, "category": category,
             "routed_to": store.route_for(category)}
+
+
+@router.post("/chat/product-feedback/update")
+def post_update_feedback(
+    body: UpdateFeedbackBody,
+    _user_id: str | None = Depends(require_user),
+):
+    """Edit an existing feedback item from the capture-card form (change category,
+    rewrite text, or append). Re-routes when the category changes."""
+    cat = body.category if body.category in _CATEGORIES else None
+    upd = store.update_open_feedback(
+        feedback_id=body.feedback_id, thread_id=body.thread_id, category=cat,
+        tidied=body.tidied, add_detail=body.add_detail,
+        sentiment=body.sentiment, severity=body.severity,
+    )
+    if not upd:
+        raise HTTPException(status_code=404, detail="feedback item not found")
+    return {"status": "ok", **upd}
 
 
 @router.post("/chat/product-feedback/score")

@@ -754,7 +754,8 @@ def run_pipeline(
         # ignores fields it doesn't render, so this is safe before the UI ships.
         if ctx.response_payload:
             if getattr(ctx, "offer_feedback", None):
-                ctx.response_payload["offer_feedback"] = ctx.offer_feedback
+                from app.pipeline.react.feedback_signal import enrich_offer_feedback
+                ctx.response_payload["offer_feedback"] = enrich_offer_feedback(ctx.offer_feedback)
             if getattr(ctx, "capture_card", None):
                 ctx.response_payload["capture_card"] = ctx.capture_card
 

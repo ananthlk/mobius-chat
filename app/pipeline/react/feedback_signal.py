@@ -31,7 +31,13 @@ def maybe_set_feedback_signal(ctx: PipelineContext) -> None:
     from app.storage import product_feedback as _pf
 
     state = _pf.get_prompt_state(user_id)
-    thread_turns = int(getattr(ctx, "thread_turn_count", 0) or 0) or 1
+    # Real completed-turn count so the CSAT/NPS gates can actually fire (they
+    # require a substantive thread). Falls back to a ctx hint, then 1.
+    thread_turns = (
+        _pf.get_thread_turn_count(getattr(ctx, "thread_id", None))
+        or int(getattr(ctx, "thread_turn_count", 0) or 0)
+        or 1
+    )
     signal = _pf.evaluate_cadence(
         state,
         user_id=user_id,
@@ -45,3 +51,27 @@ def maybe_set_feedback_signal(ctx: PipelineContext) -> None:
     # Advance the open-periodic clock. The frontend resets it via the
     # /event "shown" → mark_prompted path once a chip is actually surfaced.
     _pf.bump_counters(user_id, turns=1)
+
+
+def enrich_offer_feedback(offer: dict) -> dict:
+    """Add the display text + score scale the frontend widget renders. Keeps
+    the planner's decision (just `kind`) minimal; display config lives here.
+    csat/nps → a score widget that POSTs /chat/product-feedback/score;
+    generic/targeted_miss → a chip that opens the capture form."""
+    kind = (offer or {}).get("kind") or "generic"
+    out = dict(offer or {})
+    if kind == "nps":
+        out.update(survey_type="nps", prompt="How likely are you to recommend Mobius to a colleague?",
+                   scale={"min": 0, "max": 10, "min_label": "Not likely", "max_label": "Very likely"},
+                   post_to="/chat/product-feedback/score")
+    elif kind == "csat":
+        out.update(survey_type="csat", prompt="How did that go?",
+                   scale={"min": 1, "max": 5, "min_label": "Poor", "max_label": "Great"},
+                   post_to="/chat/product-feedback/score")
+    elif kind == "targeted_miss":
+        out.update(prompt="That one missed — mind telling us what you expected?",
+                   cta="Tell us", post_to="/chat/product-feedback")
+    else:
+        out.update(prompt="Anything about Mobius you'd change?",
+                   cta="Share feedback", post_to="/chat/product-feedback")
+    return out
