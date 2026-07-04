@@ -581,6 +581,11 @@ def _run(call: SkillCall) -> SkillEnvelope:
                 "rerank_score": _c.get("rerank_score"),
                 "similarity": _c.get("similarity"),
                 "authority_level": _c.get("authority_level"),
+                # For the Assembly (§10) context-adequacy stats: length,
+                # confidence tier, and whether a section path was resolved.
+                "text_len": len(str(_c.get("text") or "")),
+                "confidence_label": _c.get("confidence_label"),
+                "section_path": _c.get("section_path"),
             }
             for _i, _c in enumerate(chunks, 1)
         ],
