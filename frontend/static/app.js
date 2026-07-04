@@ -4238,6 +4238,297 @@ function renderFeedback(correlationId) {
   bar.appendChild(actions);
   return bar;
 }
+var _PF_CATEGORY_LABELS = {
+  accuracy_trust: "Accuracy",
+  coverage_gap: "Coverage gap",
+  bug: "Bug",
+  speed: "Speed",
+  usability: "Usability",
+  feature_request: "Feature request",
+  praise: "Praise",
+  other: "Other",
+  docs_gap: "Docs gap",
+  doc_stale: "Stale doc"
+};
+function renderCaptureCard(card, meta) {
+  const wrap = document.createElement("div");
+  wrap.className = "pf-capture-card";
+  const header = document.createElement("div");
+  header.className = "pf-capture-card__header";
+  const title = document.createElement("span");
+  title.textContent = "\u2713 Feedback captured";
+  const xBtn = document.createElement("button");
+  xBtn.type = "button";
+  xBtn.className = "pf-capture-card__x";
+  xBtn.setAttribute("aria-label", "Dismiss");
+  xBtn.textContent = "\u2715";
+  header.appendChild(title);
+  header.appendChild(xBtn);
+  wrap.appendChild(header);
+  const body = document.createElement("div");
+  body.className = "pf-capture-card__body";
+  const catRow = document.createElement("div");
+  catRow.className = "pf-capture-card__row";
+  const catLabel = document.createElement("label");
+  catLabel.textContent = "Category";
+  const catSel = document.createElement("select");
+  catSel.className = "pf-capture-card__select";
+  catSel.disabled = !card.editable;
+  for (const c of card.categories) {
+    const opt = document.createElement("option");
+    opt.value = c;
+    opt.textContent = _PF_CATEGORY_LABELS[c] ?? c;
+    if (c === card.category)
+      opt.selected = true;
+    catSel.appendChild(opt);
+  }
+  catRow.appendChild(catLabel);
+  catRow.appendChild(catSel);
+  body.appendChild(catRow);
+  const ta = document.createElement("textarea");
+  ta.className = "pf-capture-card__text";
+  ta.value = card.tidied;
+  ta.rows = 3;
+  ta.readOnly = !card.editable;
+  body.appendChild(ta);
+  const btnRow = document.createElement("div");
+  btnRow.className = "pf-capture-card__btns";
+  const doneBtn = document.createElement("button");
+  doneBtn.type = "button";
+  doneBtn.className = "pf-capture-card__done";
+  doneBtn.textContent = "Done";
+  btnRow.appendChild(doneBtn);
+  body.appendChild(btnRow);
+  wrap.appendChild(body);
+  function pfEvent(action) {
+    fetch(API_BASE + "/chat/product-feedback/event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        trigger: "inline",
+        action,
+        feedback_id: card.feedback_id,
+        thread_id: meta.threadId
+      })
+    }).catch(() => {
+    });
+  }
+  if (card.editable) {
+    const updateBtn = document.createElement("button");
+    updateBtn.type = "button";
+    updateBtn.className = "pf-capture-card__update";
+    updateBtn.textContent = "Update";
+    btnRow.insertBefore(updateBtn, doneBtn);
+    updateBtn.addEventListener("click", () => {
+      const txt = ta.value.trim();
+      if (!txt)
+        return;
+      const url = card.update_url ?? "/chat/product-feedback/update";
+      fetch(API_BASE + url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          feedback_id: card.feedback_id,
+          category: catSel.value,
+          tidied: txt
+        })
+      }).catch(() => {
+      });
+      wrap.remove();
+    });
+  }
+  function dismiss() {
+    pfEvent("dismissed");
+    wrap.remove();
+  }
+  doneBtn.addEventListener("click", dismiss);
+  xBtn.addEventListener("click", dismiss);
+  pfEvent("shown");
+  return wrap;
+}
+function renderOfferFeedback(offer, meta) {
+  const wrap = document.createElement("div");
+  wrap.className = "pf-offer-chip";
+  const FALLBACK_PROMPTS = {
+    nps: "How likely are you to recommend Mobius to a colleague?",
+    csat: "How satisfied are you with this answer?",
+    targeted_miss: "What were you trying to find?",
+    generic: "Any feedback for us?"
+  };
+  const promptText = offer.prompt ?? FALLBACK_PROMPTS[offer.kind] ?? "Any feedback?";
+  const header = document.createElement("div");
+  header.className = "pf-offer-chip__header";
+  const q = document.createElement("span");
+  q.textContent = promptText;
+  const xBtn = document.createElement("button");
+  xBtn.type = "button";
+  xBtn.className = "pf-offer-chip__x";
+  xBtn.setAttribute("aria-label", "No thanks");
+  xBtn.textContent = "\u2715";
+  header.appendChild(q);
+  header.appendChild(xBtn);
+  wrap.appendChild(header);
+  const body = document.createElement("div");
+  body.className = "pf-offer-chip__body";
+  wrap.appendChild(body);
+  function pfEvent(action, score) {
+    fetch(API_BASE + "/chat/product-feedback/event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        trigger: offer.trigger,
+        action,
+        kind: offer.kind,
+        score,
+        thread_id: meta.threadId
+      })
+    }).catch(() => {
+    });
+  }
+  function showThanks() {
+    body.innerHTML = "";
+    const t = document.createElement("span");
+    t.className = "pf-offer-chip__thanks";
+    t.textContent = "Thanks for your feedback!";
+    body.appendChild(t);
+    xBtn.remove();
+    setTimeout(() => wrap.remove(), 2500);
+  }
+  function showFollowup(followupPrompt, parentFeedbackId) {
+    body.innerHTML = "";
+    const ta = document.createElement("textarea");
+    ta.className = "pf-offer-chip__text";
+    ta.rows = 2;
+    ta.placeholder = followupPrompt;
+    const row = document.createElement("div");
+    row.className = "pf-offer-chip__followup-row";
+    const skip = document.createElement("button");
+    skip.type = "button";
+    skip.className = "pf-offer-chip__skip";
+    skip.textContent = "Skip";
+    const submit = document.createElement("button");
+    submit.type = "button";
+    submit.className = "pf-offer-chip__submit";
+    submit.textContent = "Send";
+    row.appendChild(skip);
+    row.appendChild(submit);
+    body.appendChild(ta);
+    body.appendChild(row);
+    submit.addEventListener("click", () => {
+      const txt = ta.value.trim();
+      if (!txt) {
+        showThanks();
+        return;
+      }
+      fetch(API_BASE + "/chat/product-feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          verbatim: txt,
+          category: "other",
+          trigger: offer.trigger,
+          parent_feedback_id: parentFeedbackId,
+          thread_id: meta.threadId,
+          correlation_id: meta.correlationId
+        })
+      }).catch(() => {
+      });
+      showThanks();
+    });
+    skip.addEventListener("click", showThanks);
+  }
+  const isNumeric = offer.kind === "nps" || offer.kind === "csat";
+  if (isNumeric) {
+    const sc = offer.scale ?? (offer.kind === "nps" ? { min: 0, max: 10, min_label: "Not likely", max_label: "Very likely" } : { min: 1, max: 5, min_label: "Poor", max_label: "Great" });
+    const scaleEl = document.createElement("div");
+    scaleEl.className = "pf-offer-chip__scale";
+    for (let i = sc.min; i <= sc.max; i++) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "pf-offer-chip__score-btn";
+      btn.textContent = String(i);
+      btn.addEventListener("click", () => {
+        pfEvent("scored", i);
+        const postTo = offer.post_to ?? "/chat/product-feedback/score";
+        fetch(API_BASE + postTo, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            survey_type: offer.survey_type ?? offer.kind,
+            score: i,
+            trigger: offer.trigger,
+            thread_id: meta.threadId,
+            correlation_id: meta.correlationId
+          })
+        }).then((r) => r.json()).then((data) => {
+          if (data.followup_prompt && data.feedback_id) {
+            showFollowup(data.followup_prompt, data.feedback_id);
+          } else {
+            showThanks();
+          }
+        }).catch(showThanks);
+      });
+      scaleEl.appendChild(btn);
+    }
+    body.appendChild(scaleEl);
+    const lbl = document.createElement("div");
+    lbl.className = "pf-offer-chip__scale-labels";
+    const lo = document.createElement("span");
+    lo.textContent = sc.min_label;
+    const hi = document.createElement("span");
+    hi.textContent = sc.max_label;
+    lbl.appendChild(lo);
+    lbl.appendChild(hi);
+    body.appendChild(lbl);
+  } else {
+    const ctaBtn = document.createElement("button");
+    ctaBtn.type = "button";
+    ctaBtn.className = "pf-offer-chip__cta";
+    ctaBtn.textContent = offer.cta ?? "Share feedback";
+    body.appendChild(ctaBtn);
+    ctaBtn.addEventListener("click", () => {
+      body.innerHTML = "";
+      pfEvent("opened");
+      const ta = document.createElement("textarea");
+      ta.className = "pf-offer-chip__text";
+      ta.rows = 2;
+      ta.placeholder = "Your feedback\u2026";
+      const submitBtn = document.createElement("button");
+      submitBtn.type = "button";
+      submitBtn.className = "pf-offer-chip__submit";
+      submitBtn.textContent = "Submit";
+      submitBtn.addEventListener("click", () => {
+        const txt = ta.value.trim();
+        if (!txt)
+          return;
+        const postTo = offer.post_to ?? "/chat/product-feedback";
+        fetch(API_BASE + postTo, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            verbatim: txt,
+            category: "other",
+            trigger: offer.trigger,
+            thread_id: meta.threadId,
+            correlation_id: meta.correlationId
+          })
+        }).catch(() => {
+        });
+        pfEvent("submitted");
+        showThanks();
+      });
+      body.appendChild(ta);
+      body.appendChild(submitBtn);
+      ta.focus();
+    });
+  }
+  xBtn.addEventListener("click", () => {
+    pfEvent("dismissed");
+    wrap.remove();
+  });
+  pfEvent("shown");
+  return wrap;
+}
 function openEmailThreadDialog(threadId) {
   if (document.querySelector(".email-thread-dialog"))
     return;
@@ -8072,6 +8363,18 @@ ${message}`;
       mergeTechnicalPanels(turnWrap, data);
       mergeLlmPerformanceRoutingHydrate(turnWrap, data);
       turnWrap.appendChild(renderFeedback(data.correlation_id ?? activeCorrelationId));
+      if (data.capture_card) {
+        turnWrap.appendChild(renderCaptureCard(data.capture_card, {
+          threadId: data.thread_id,
+          correlationId: data.correlation_id ?? activeCorrelationId
+        }));
+      }
+      if (data.offer_feedback) {
+        turnWrap.appendChild(renderOfferFeedback(data.offer_feedback, {
+          threadId: data.thread_id,
+          correlationId: data.correlation_id ?? activeCorrelationId
+        }));
+      }
       loadSidebarHistory();
       scrollToBottom(messagesEl);
     }).catch((err) => {
