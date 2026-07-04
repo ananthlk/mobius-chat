@@ -386,6 +386,16 @@ def _compose_manifest(allowed: frozenset[str] | None = None) -> str:
         _router_block("search_corpus", _SEARCH_CORPUS_BLOCK),
         _RECALL_SEARCH_BLOCK,   # retired prose — always empty
         _PRECISION_SEARCH_BLOCK,  # retired prose — always empty
+        # payor_lookup / payor_readiness — the payor registry is the SOURCE OF
+        # TRUTH for operational payer facts (EDI payer ID, provider phone,
+        # appeals/claims fax, portal, addresses, timely filing) that search_corpus
+        # can't reliably ground. Same explicit-list gotcha as vibe/product_feedback:
+        # must be named here or the planner never sees it (was registered +
+        # visible_to_planner but absent from this list → planner used search_corpus
+        # for "Aetna FL EDI" and failed; the registry had 128FL). Placed right after
+        # search_corpus so the planner prefers it for contact/EDI questions.
+        _registry_block("payor_lookup"),
+        _registry_block("payor_readiness"),
         # fetch_document — registered via SkillSpec; rendered by registry.
         # Distinct from search_corpus: returns a download URL, not an answer.
         _registry_block("fetch_document"),
