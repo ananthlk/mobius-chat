@@ -19,7 +19,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from app.skills.registry import SkillCall, SkillEnvelope, SkillSpec, register
+from app.skills.registry import SkillCall, SkillEnvelope, SkillSpec, SourceRef, register
 
 logger = logging.getLogger(__name__)
 
@@ -63,12 +63,30 @@ def _lookup(call: SkillCall) -> SkillEnvelope:
     if not d.get("ok"):
         return SkillEnvelope(text="", sources=[], signal="no_sources",
                              extra={"error": d.get("error"), "payor": payor, "field": field})
-    text = (f"{payor} — {d.get('field')}: {d.get('value')}\n"
-            f"(authoritative from the payor registry · {d.get('source')} · verified {d.get('as_of','')[:10]})")
+    # Envelope (payor.v1) carries provenance → emit a CITED SourceRef so chat's
+    # integrator/critic treats the answer as authoritative + shows where it came from.
+    prov = d.get("provenance") or {}
+    citation = d.get("citation") or "Payor registry"
+    src = SourceRef(
+        document_name=f"Payor Registry — {payor}",
+        index=1,
+        text=f"{d.get('field')}: {d.get('value')}",
+        source_type="document",
+        authority="registry",
+        extra={
+            "citation": citation,
+            "verified_via": prov.get("verified_via"),
+            "confidence": prov.get("confidence"),
+            "source_url": prov.get("source_url"),
+            "as_of": prov.get("as_of"),
+            "serve": prov.get("serve"),
+        },
+    )
+    text = f"{payor} — {d.get('field')}: {d.get('value')}\n({citation})"
     if call.emitter:
         call.emitter(f"✓ Payor registry: {d.get('field')} = {d.get('value')}")
-    return SkillEnvelope(text=text, sources=[], signal="corpus_only",
-                         extra={"payor_fact": d, "serve": d.get("serve")})
+    return SkillEnvelope(text=text, sources=[src], signal="corpus_only",
+                         extra={"payor_fact": d, "serve": prov.get("serve")})
 
 
 def _readiness(call: SkillCall) -> SkillEnvelope:
