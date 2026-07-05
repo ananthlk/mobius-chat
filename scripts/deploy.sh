@@ -204,6 +204,11 @@ SET_ENV_VARS=(
     # OS_API_URL — mobius-os gateway. corpus_search skill posts to
     # {OS_API_URL}/api/v1/skills/corpus_search with X-Caller=chat header.
     "OS_API_URL=${OS_API_URL:-}"
+    # PAYOR_API_URL — mobius-payor Cloud Run service (independent from mobius-rag).
+    # Powers payor_lookup + payor_readiness builtins. When unset both skills
+    # degrade safely to no_sources (inert). Must be in this explicit list or
+    # Cloud Run will not see it even though it is in deploy/dev.env.
+    "PAYOR_API_URL=${PAYOR_API_URL:-}"
     "CHROMA_HOST=${CHROMA_HOST:-}"
     "CHROMA_PORT=${CHROMA_PORT:-}"
     "CHROMA_SSL=${CHROMA_SSL:-}"
