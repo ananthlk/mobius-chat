@@ -108,8 +108,11 @@ def _build_signal_body(envelope: dict[str, Any]) -> dict[str, Any]:
     if rnd is not None:
         data["round"] = rnd
 
+    # Prefer an EXPLICIT source_ref (e.g. "feedback:<id>") — it's the stable dedup
+    # key. Fall back to the per-turn correlation_id only when the caller didn't
+    # supply one (backward-compatible; other emit sites are unaffected).
     cid = envelope.get("correlation_id") or ""
-    source_ref = f"correlation_id:{cid}" if cid else None
+    source_ref = envelope.get("source_ref") or (f"correlation_id:{cid}" if cid else None)
 
     return {
         "signal": envelope.get("signal") or "note",
@@ -118,6 +121,11 @@ def _build_signal_body(envelope: dict[str, Any]) -> dict[str, Any]:
         "severity": envelope.get("task_severity") or "low",
         "source_module": envelope.get("source_module") or "chat",
         "source_ref": source_ref,
+        "org_name": envelope.get("org_name") or envelope.get("org") or "_shared_",
+        # Forward optional overrides when present (None = task-manager derives it,
+        # unchanged for callers that don't set them).
+        "title": envelope.get("title") or None,
+        "issue_code": envelope.get("issue_code") or None,
         "data": data,
         "note": envelope.get("note") or "",
         "workflow": "chat",
