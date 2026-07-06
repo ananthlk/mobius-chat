@@ -311,13 +311,18 @@ def _row_to_dict(result: dict) -> dict | None:
     return dict(zip(cols, rows[0]))
 
 
-def close_signals(*, category: str, module: str | None = None, before: str | None = None) -> int:
+def close_signals(*, category: str, module: str | None = None, before: str | None = None) -> list[str]:
     """Mark matching open signals as closed — the drain for the weekly refresh
     sweep (and any backlog-clearing). Encapsulates the status flip so callers
-    never UPDATE the table directly. Returns rows affected (0 on DB-down in dev).
+    never UPDATE the table directly. Returns the list of closed feedback_ids (an
+    audit trail for the sweep report); empty list on DB-down in dev.
+
+    Reads the matching ids first, then closes by the same predicate — race-free
+    when `before` is set (a concurrent insert has created_at > before, so it's in
+    neither set), which the weekly sweep always passes.
 
     e.g. after refreshing the chat doc:
-        close_signals(category="doc_stale", module="chat")
+        close_signals(category="doc_stale", module="chat", before=sweep_start)
     """
     conds = ["category = :cat", "status <> 'closed'"]
     params: dict[str, Any] = {"cat": category}
@@ -327,15 +332,24 @@ def close_signals(*, category: str, module: str | None = None, before: str | Non
     if before:
         conds.append("created_at <= :before")
         params["before"] = before
+    where = " AND ".join(conds)
+
+    sel = db_query(f"SELECT feedback_id FROM product_feedback WHERE {where}", _DB, params=params)
+    if _err_code(sel) is not None:
+        _handle_err(sel, "close signals")
+        return []
+    ids = [str(r[0]) for r in (sel.get("rows") or [])]
+    if not ids:
+        return []
+
     result = db_execute(
-        f"UPDATE product_feedback SET status='closed', updated_at=now() WHERE {' AND '.join(conds)}",
-        _DB,
-        params=params,
+        f"UPDATE product_feedback SET status='closed', updated_at=now() WHERE {where}",
+        _DB, params=params,
     )
     if _err_code(result) is not None:
         _handle_err(result, "close signals")
-        return 0
-    return int(result.get("rows_affected") or 0)
+        return []
+    return ids
 
 
 def log_event(

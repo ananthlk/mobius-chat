@@ -133,16 +133,26 @@ class TestStorageFailClosed:
         assert store.route_for("doc_stale") == "docs_refresh"
         assert "doc_stale" in store.ROUTING
 
-    def test_close_signals_dev_returns_zero_on_db_down(self, monkeypatch):
+    def test_close_signals_dev_returns_empty_on_db_down(self, monkeypatch):
         monkeypatch.setenv("CHAT_ENV", "dev")
-        monkeypatch.setattr(store, "db_execute",
+        monkeypatch.setattr(store, "db_query",
                             lambda *a, **k: {"error": {"code": "connection_error",
                                                        "message": "down"}})
-        assert store.close_signals(category="doc_stale", module="chat") == 0
+        assert store.close_signals(category="doc_stale", module="chat") == []
 
-    def test_close_signals_returns_rows_affected(self, monkeypatch):
+    def test_close_signals_returns_closed_ids(self, monkeypatch):
+        # SELECT the matching ids, then UPDATE — returns the drained ids (audit trail)
+        monkeypatch.setattr(store, "db_query",
+                            lambda *a, **k: {"rows": [["id-1"], ["id-2"], ["id-3"]]})
         monkeypatch.setattr(store, "db_execute", lambda *a, **k: {"rows_affected": 3})
-        assert store.close_signals(category="doc_stale") == 3
+        assert store.close_signals(category="doc_stale", module="chat") == ["id-1", "id-2", "id-3"]
+
+    def test_close_signals_empty_when_nothing_matches(self, monkeypatch):
+        monkeypatch.setattr(store, "db_query", lambda *a, **k: {"rows": []})
+        # db_execute must not even be called when there's nothing to close
+        monkeypatch.setattr(store, "db_execute",
+                            lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not UPDATE")))
+        assert store.close_signals(category="doc_stale", module="chat") == []
 
     def test_module_slug_vocabulary_is_the_shared_set(self):
         # area_tag == module; canonical conceptual slugs shared with product-awareness.
@@ -354,12 +364,13 @@ class TestSkillHandler:
         import app.api.product_feedback as api
         seen = {}
         monkeypatch.setattr(api.store, "close_signals",
-                            lambda **k: seen.update(k) or 3)
+                            lambda **k: seen.update(k) or ["id-a", "id-b", "id-c"])
         r = api.post_close_signals(
             api.CloseSignalsBody(category="doc_stale", module="chat",
                                  before="2026-07-06T00:00:00Z"), _user_id="agent")
-        assert r["drained"] == 3 and seen["category"] == "doc_stale"
-        assert seen["module"] == "chat" and seen["before"] == "2026-07-06T00:00:00Z"
+        assert r["drained"] == 3 and r["feedback_ids"] == ["id-a", "id-b", "id-c"]
+        assert seen["category"] == "doc_stale" and seen["module"] == "chat"
+        assert seen["before"] == "2026-07-06T00:00:00Z"
 
     def test_close_signals_rejects_user_feedback_categories(self):
         import app.api.product_feedback as api

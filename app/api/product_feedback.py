@@ -185,10 +185,10 @@ def post_close_signals(
                             detail=f"category must be one of {sorted(_SWEEPABLE)}")
     if not (body.module or "").strip():
         raise HTTPException(status_code=400, detail="module is required")
-    drained = store.close_signals(category=body.category, module=body.module.strip(),
-                                  before=body.before)
-    return {"status": "ok", "drained": drained, "category": body.category,
-            "module": body.module.strip()}
+    ids = store.close_signals(category=body.category, module=body.module.strip(),
+                              before=body.before)
+    return {"status": "ok", "drained": len(ids), "feedback_ids": ids,
+            "category": body.category, "module": body.module.strip()}
 
 
 @router.post("/chat/product-feedback/event")
