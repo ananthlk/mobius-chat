@@ -818,6 +818,7 @@ CORE_REASONING_STAGES: list[str] = [
     "badge",
     "classifier",
     "adjudicator",
+    "email_draft",
     # NOTE: rag_eval_adjudicate (the RAG eval/fact-checker "ruler") is
     # deliberately NOT here — it is LOCKED to a single model (gemini-2.5-pro)
     # in that model's eligible_stages below, so the adjudicator is deterministic

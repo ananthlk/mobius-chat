@@ -145,7 +145,7 @@ async def _draft_summary(
         text, _usage = await llm_manager.generate(
             full_prompt,
             stage="email_draft",
-            max_tokens=1200,
+            max_tokens=3000,
             correlation_id=correlation_id,
             thread_id=thread_id,
         )
