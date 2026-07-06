@@ -26,6 +26,10 @@ _CATEGORIES = set(store.ROUTING.keys())
 _SURVEY_TYPES = set(store.SCORE_SCALES.keys())
 _FOLLOWUP_PROMPT = "What's the main reason for your score?"
 
+# Only the auto-harvested doc-freshness signals may be closed over HTTP — never
+# user feedback (bug/usability/…). Keeps the unauth drain endpoint narrow.
+_SWEEPABLE = {"docs_gap", "doc_stale"}
+
 
 class OpenFeedbackBody(BaseModel):
     verbatim: str
@@ -72,6 +76,13 @@ class UpdateFeedbackBody(BaseModel):
     add_detail: str | None = None    # append (conversational "also…")
     sentiment: str | None = None
     severity: str | None = None
+
+
+class CloseSignalsBody(BaseModel):
+    category: str            # must be a sweepable signal (docs_gap | doc_stale)
+    module: str              # required — a sweep only closes what it processed
+    before: str | None = None  # ISO ts: only close signals it has actually seen
+    source: str | None = None  # optional, for audit/attribution
 
 
 class OptOutBody(BaseModel):
@@ -157,6 +168,27 @@ def post_survey_score(
     if user_id:
         store.mark_captured(user_id)
     return {"status": "ok", "feedback_id": fid, "followup_prompt": _FOLLOWUP_PROMPT}
+
+
+@router.post("/chat/product-feedback/close-signals")
+def post_close_signals(
+    body: CloseSignalsBody,
+    _user_id: str | None = Depends(require_user),
+):
+    """Drain covered doc-freshness signals after a sweep refreshes + re-embeds a
+    doc — the HTTP counterpart to store.close_signals for external sessions (the
+    weekly sweep) that can't import app.storage. Narrow by design: only sweepable
+    signal categories, module required, optional `before` so a sweep closes only
+    what it actually saw."""
+    if body.category not in _SWEEPABLE:
+        raise HTTPException(status_code=400,
+                            detail=f"category must be one of {sorted(_SWEEPABLE)}")
+    if not (body.module or "").strip():
+        raise HTTPException(status_code=400, detail="module is required")
+    drained = store.close_signals(category=body.category, module=body.module.strip(),
+                                  before=body.before)
+    return {"status": "ok", "drained": drained, "category": body.category,
+            "module": body.module.strip()}
 
 
 @router.post("/chat/product-feedback/event")

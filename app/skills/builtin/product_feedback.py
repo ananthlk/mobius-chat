@@ -151,15 +151,23 @@ def _maybe_promote_task(*, feedback_id, category, sentiment, severity, verbatim,
         return
     try:
         from app.services.task_manager_promotion import promote
+        _headline = (summary or verbatim or "").strip()
         promote({
             "signal": "product_feedback",
             "correlation_id": correlation_id or "",
+            # Stable per-item dedup key — one task row per feedback item, and
+            # idempotent replays overwrite cleanly (fixes the all-collapse-to-one
+            # bug where a missing correlation_id left source_ref NULL).
+            "source_ref": f"feedback:{feedback_id}",
             "step_id": "product_feedback",
             "source_module": "feedback",
             "report_to_task_manager": True,
             "task_type": "blocker",
             "task_severity": task_severity,
-            "note": (summary or verbatim or "")[:500],
+            "issue_code": category,                       # bug | accuracy_trust | …
+            "org_name": org_slug or "_shared_",           # sentinel when feedback has no org
+            "title": f"Feedback ({category}): {_headline}"[:160],   # readable in a queue
+            "note": (verbatim or summary or "")[:500],    # the user's own words
             "data": {
                 "feedback_id": feedback_id,
                 "category": category,

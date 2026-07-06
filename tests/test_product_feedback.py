@@ -258,6 +258,27 @@ class TestSkillHandler:
         assert captured.get("source_module") == "feedback"
         assert captured.get("task_severity") == "critical"
         assert captured["data"]["feedback_id"] == "fid-bug"
+        # dedup fix: stable per-item source_ref, not a NULL-collapsing correlation_id
+        assert captured.get("source_ref") == "feedback:fid-bug"
+        # readable title (not the bare category string) + categorized issue_code
+        assert "export crashes" in captured.get("title", "")
+        assert captured.get("issue_code") == "bug"
+        assert captured.get("org_name") == "_shared_"    # sentinel: no org on this feedback
+
+    def test_build_signal_body_prefers_explicit_source_ref_and_forwards_title(self):
+        from app.services.task_manager_promotion import _build_signal_body
+        body = _build_signal_body({
+            "signal": "product_feedback", "correlation_id": "cid-123",
+            "source_ref": "feedback:abc", "title": "Feedback (bug): x",
+            "issue_code": "bug", "task_type": "blocker", "task_severity": "warning",
+        })
+        assert body["source_ref"] == "feedback:abc"      # explicit wins over correlation_id
+        assert body["title"] == "Feedback (bug): x"
+        assert body["issue_code"] == "bug"
+        # backward-compat: no explicit source_ref → still derives from correlation_id
+        legacy = _build_signal_body({"correlation_id": "cid-9", "task_type": "blocker"})
+        assert legacy["source_ref"] == "correlation_id:cid-9"
+        assert legacy["title"] is None
 
     def test_mild_feedback_does_not_promote(self, monkeypatch, _skill):
         monkeypatch.setattr(_skill, "_classify", lambda **k: {
@@ -328,6 +349,39 @@ class TestSkillHandler:
             assert False, "expected 404"
         except HTTPException as e:
             assert e.status_code == 404
+
+    def test_close_signals_endpoint_drains(self, monkeypatch):
+        import app.api.product_feedback as api
+        seen = {}
+        monkeypatch.setattr(api.store, "close_signals",
+                            lambda **k: seen.update(k) or 3)
+        r = api.post_close_signals(
+            api.CloseSignalsBody(category="doc_stale", module="chat",
+                                 before="2026-07-06T00:00:00Z"), _user_id="agent")
+        assert r["drained"] == 3 and seen["category"] == "doc_stale"
+        assert seen["module"] == "chat" and seen["before"] == "2026-07-06T00:00:00Z"
+
+    def test_close_signals_rejects_user_feedback_categories(self):
+        import app.api.product_feedback as api
+        from fastapi import HTTPException
+        # closing user feedback (bug/usability) via the sweep endpoint is refused
+        for cat in ("bug", "usability", "praise"):
+            try:
+                api.post_close_signals(api.CloseSignalsBody(category=cat, module="chat"),
+                                       _user_id="agent")
+                assert False, f"{cat} should be rejected"
+            except HTTPException as e:
+                assert e.status_code == 400
+
+    def test_close_signals_requires_module(self):
+        import app.api.product_feedback as api
+        from fastapi import HTTPException
+        try:
+            api.post_close_signals(api.CloseSignalsBody(category="doc_stale", module="  "),
+                                   _user_id="agent")
+            assert False, "empty module should be rejected"
+        except HTTPException as e:
+            assert e.status_code == 400
 
     def test_enrich_offer_feedback_shapes(self):
         from app.pipeline.react.feedback_signal import enrich_offer_feedback
