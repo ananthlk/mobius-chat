@@ -101,17 +101,22 @@ _STOPWORDS = frozenset({
 
 
 def _tokenize(s: str) -> list[str]:
-    """Lowercase, alphanumeric tokens, drop stopwords."""
-    out: list[str] = []
+    """Lowercase, alphanumeric tokens, drop stopwords.
+
+    Dotted tokens are kept whole ("FL.UM.87" must match a policy-ID
+    query exactly) AND emitted as their dot-parts — otherwise a
+    filename like ``Provider_Manual.pdf`` tokenizes to ``manual.pdf``
+    and never matches the query word "manual"."""
+    out: dict[str, None] = {}  # ordered de-dupe
     for tok in re.findall(r"[A-Za-z0-9.]+", (s or "").lower()):
-        # Keep policy-ID-style dotted tokens whole ("FL.UM.87"), but
-        # also split bare alphanum tokens normally.
-        if tok in _STOPWORDS:
-            continue
-        if len(tok) <= 1:
-            continue
-        out.append(tok)
-    return out
+        tok = tok.strip(".")
+        candidates = [tok]
+        if "." in tok:
+            candidates.extend(tok.split("."))
+        for c in candidates:
+            if c and c not in _STOPWORDS and len(c) > 1:
+                out[c] = None
+    return list(out)
 
 
 def _score_doc(
