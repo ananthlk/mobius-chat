@@ -88,6 +88,29 @@ def test_corpus_search_fallback_when_name_match_fails(monkeypatch):
     assert doc["state"] == "FL"
 
 
+def test_payer_column_counts_toward_match(monkeypatch):
+    # Regression: "Sunshine provider manual" must beat a doc whose NAME
+    # contains sunshine+health when the manual's payer column carries it.
+    rows = list(_ROWS) + [{
+        "document_id": "33333333-3333-3333-3333-333333333333",
+        "document_display_name": "",
+        "document_filename": "Provider_Manual.pdf",
+        "document_payer": "Sunshine Health",
+        "document_state": "FL",
+        "document_program": "Medicaid",
+        "document_authority_level": "payer_manual",
+        "updated_at": "2026-03-01T00:00:00Z",
+    }]
+    monkeypatch.setattr(fd, "_fetch_candidates", lambda q: rows)
+    ctx = SimpleNamespace()
+
+    env = fd._run_fetch_document(_call("send me the Sunshine Health provider manual", ctx))
+
+    assert env.signal == "ok"
+    top = ctx.react_document_download_data["documents"][0]
+    assert top["document_id"] == "33333333-3333-3333-3333-333333333333"
+
+
 def test_no_match_when_fallback_also_empty(monkeypatch):
     monkeypatch.setattr(fd, "_fetch_candidates", lambda q: list(_ROWS))
     monkeypatch.setattr(fd, "_corpus_search_resolve", lambda q, limit=3: [])

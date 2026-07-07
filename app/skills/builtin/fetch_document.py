@@ -114,17 +114,24 @@ def _tokenize(s: str) -> list[str]:
     return out
 
 
-def _score_doc(query_tokens: list[str], display_name: str, filename: str) -> tuple[int, int]:
+def _score_doc(
+    query_tokens: list[str], display_name: str, filename: str, payer: str = ""
+) -> tuple[int, int]:
     """Return (rank_overlap, len_penalty) for sorting (desc, asc).
 
-    rank_overlap   — count of query tokens found in display_name OR filename
+    rank_overlap   — count of query tokens found in display_name,
+                     filename, OR payer. Payer matters: the corpus is
+                     full of docs named just "Provider_Manual.pdf"
+                     whose payer column carries the "Sunshine Health"
+                     the user actually said.
     len_penalty    — len(display_name) when matched (shorter = better tie-break)
     """
     if not query_tokens:
         return (0, 0)
     name_tokens = set(_tokenize(display_name))
     file_tokens = set(_tokenize(filename))
-    target = name_tokens | file_tokens
+    payer_tokens = set(_tokenize(payer))
+    target = name_tokens | file_tokens | payer_tokens
     overlap = sum(1 for t in query_tokens if t in target)
     return (overlap, len(display_name or "") + len(filename or ""))
 
@@ -135,13 +142,28 @@ def _score_doc(query_tokens: list[str], display_name: str, filename: str) -> tup
 def _fetch_candidates(query: str, *, limit: int = 30) -> list[dict[str, Any]]:
     """Pull document candidates from Postgres metadata.
 
-    We deliberately fetch a wider set than ``limit`` of distinct docs
-    and rank in Python — Postgres trigram / full-text isn't worth the
-    schema dependency for a small skill.
+    The coarse token filter MUST live in SQL: the table holds ~9k
+    distinct docs and ``db_query`` caps at 1000 rows, so an unfiltered
+    scan silently ranks an arbitrary UUID-ordered subset (this is how
+    "Sunshine provider manual" missed Sunshine's Provider_Manual.pdf).
+    Any-token ILIKE over name/filename/payer keeps recall high; the
+    Python ranking above stays the precision layer.
     """
     from app.db_client import db_query
 
-    sql = """
+    # Tokens are alphanumeric+dots only (see _tokenize), so no LIKE
+    # metacharacter escaping is needed.
+    patterns = [f"%{t}%" for t in _tokenize(query)[:8]]
+    where = "document_id IS NOT NULL"
+    params: dict[str, Any] = {}
+    if patterns:
+        where += (
+            " AND (document_display_name ILIKE ANY(%(patterns)s)"
+            " OR document_filename ILIKE ANY(%(patterns)s)"
+            " OR document_payer ILIKE ANY(%(patterns)s))"
+        )
+        params["patterns"] = patterns
+    sql = f"""
         SELECT DISTINCT ON (document_id)
             document_id::text AS document_id,
             document_display_name,
@@ -152,10 +174,10 @@ def _fetch_candidates(query: str, *, limit: int = 30) -> list[dict[str, Any]]:
             document_authority_level,
             updated_at
         FROM published_rag_metadata
-        WHERE document_id IS NOT NULL
+        WHERE {where}
         ORDER BY document_id, updated_at DESC
     """
-    result = db_query(sql, "chat", params={})
+    result = db_query(sql, "chat", params=params)
     if isinstance(result, dict) and result.get("error"):
         logger.warning("fetch_document: db_query error %s", result.get("error"))
         return []
@@ -187,6 +209,7 @@ def _rank_matches(query: str, candidates: list[dict[str, Any]]) -> list[dict[str
             qtokens,
             c.get("document_display_name") or "",
             c.get("document_filename") or "",
+            c.get("document_payer") or "",
         )
         if score[0] >= 2 or (score[0] >= 1 and len(qtokens) <= 2):
             # Single-token queries (e.g. "FL.UM.87") get a relaxed floor
