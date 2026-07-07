@@ -6396,6 +6396,69 @@ body {
   background: var(--thinking-bg);
 }
 
+.doc-download-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0.65rem 0;
+}
+
+.doc-download-card {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.85rem;
+  border: 1px solid var(--assistant-border);
+  border-radius: var(--radius-sm);
+  background: var(--thinking-bg);
+}
+
+.doc-download-icon {
+  flex: 0 0 auto;
+  display: flex;
+  color: var(--accent);
+}
+
+.doc-download-info {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.doc-download-title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--main-text);
+  overflow-wrap: anywhere;
+}
+
+.doc-download-meta {
+  font-size: 0.75rem;
+  color: var(--thinking-muted);
+  margin-top: 0.15rem;
+  overflow-wrap: anywhere;
+}
+
+.doc-download-btn {
+  flex: 0 0 auto;
+  padding: 0.35rem 0.85rem;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--mobius-text-on-accent, #fff);
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.doc-download-btn:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.doc-download-btn:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
 .envelope-callout {
   padding: 0.5rem 0.65rem;
   border-radius: var(--radius-sm);

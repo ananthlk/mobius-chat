@@ -37,6 +37,7 @@ TOOL_ATTRIBUTION: dict[str, tuple[str, str]] = {
     "list_tasks": ("task", "Task manager"),
     "create_task": ("task", "Task manager"),
     "resolve_task": ("task", "Task manager"),
+    "fetch_document": ("doc", "Document fetch"),
 }
 
 
@@ -290,6 +291,38 @@ def _validate_ui_block(block: Any, *, max_source_index: int) -> dict[str, Any] |
         if not isinstance(md, str) or not md.strip():
             return None
         return {"type": "detail", "markdown": md.strip()[:80000], "collapsed_default": bool(block.get("collapsed_default", True))}
+    if btype == "document_download":
+        docs = block.get("documents")
+        if not isinstance(docs, list):
+            return None
+        safe_docs: list[dict[str, Any]] = []
+        for d in docs[:5]:
+            if not isinstance(d, dict):
+                continue
+            doc_id = str(d.get("document_id") or "").strip()
+            dl_url = str(d.get("download_url") or "").strip()
+            if not doc_id or not dl_url:
+                continue
+            entry: dict[str, Any] = {
+                "document_id": doc_id[:100],
+                "download_url": dl_url[:2000],
+                "title": str(d.get("title") or d.get("filename") or "Document").strip()[:500],
+            }
+            fb = d.get("fallback_download_url")
+            if isinstance(fb, str) and fb.strip():
+                entry["fallback_download_url"] = fb.strip()[:2000]
+            for key in ("filename", "payer", "state", "program", "authority_level", "resolved_via"):
+                v = d.get(key)
+                if isinstance(v, str) and v.strip():
+                    entry[key] = v.strip()[:200]
+            safe_docs.append(entry)
+        if not safe_docs:
+            return None
+        out = {"type": "document_download", "documents": safe_docs}
+        q = block.get("query")
+        if isinstance(q, str) and q.strip():
+            out["query"] = q.strip()[:500]
+        return out
     if btype == "task_list":
         tasks = block.get("tasks")
         if not isinstance(tasks, list):

@@ -477,6 +477,7 @@ type EnvelopeBlock =
   | { type: "suggested_questions"; items: FollowupEnvelopeItem[]; collapsed_default?: boolean }
   | { type: "markdown_report"; markdown: string }
   | { type: "attachments"; has_pdf?: boolean }
+  | { type: "document_download"; documents: DocumentDownloadEntry[]; query?: string }
   | { type: "pipeline_human_gate"; version?: number; gate: CredentialingCopilotPayload & { plan_kind?: string; thread_id?: string | null } };
 
 /** Single RAG source (when backend provides sources array) */
@@ -6605,6 +6606,123 @@ function renderSourceCiter(
   return wrap;
 }
 
+/** One resolved document inside a document_download envelope block. */
+interface DocumentDownloadEntry {
+  document_id: string;
+  title: string;
+  download_url: string;
+  fallback_download_url?: string;
+  filename?: string;
+  payer?: string;
+  state?: string;
+  program?: string;
+  authority_level?: string;
+  resolved_via?: string;
+}
+
+/** Fetch the document bytes and save them via a blob anchor.
+ * Tries the original-file endpoint first; a 404 there means the doc is
+ * scraped/text-only, so retry the reconstructed-PDF fallback. If fetch
+ * itself is blocked (dev CORS), fall back to a plain new-tab open —
+ * navigation downloads are CORS-exempt. */
+async function downloadDocumentFile(d: DocumentDownloadEntry, btn: HTMLButtonElement): Promise<void> {
+  const idleLabel = btn.textContent || "Download";
+  btn.disabled = true;
+  btn.textContent = "Downloading…";
+  // blocked=true means fetch itself threw (CORS / network) — a plain
+  // navigation may still succeed, and retrying the fallback URL via
+  // fetch would just be blocked the same way.
+  const tryFetch = async (url: string): Promise<{ blob: Blob | null; blocked: boolean }> => {
+    try {
+      const r = await fetch(url);
+      if (!r.ok) return { blob: null, blocked: false };
+      return { blob: await r.blob(), blocked: false };
+    } catch {
+      return { blob: null, blocked: true };
+    }
+  };
+  let name = (d.filename || d.title || "document").trim() || "document";
+  const first = await tryFetch(d.download_url);
+  let blob = first.blob;
+  if (!blob && !first.blocked && d.fallback_download_url) {
+    // Original 404'd (scraped/text-only doc) — reconstructed PDF instead.
+    blob = (await tryFetch(d.fallback_download_url)).blob;
+    if (blob && !/\.pdf$/i.test(name)) name = name.replace(/\.[A-Za-z0-9]+$/, "") + ".pdf";
+  }
+  if (blob) {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 30_000);
+    btn.textContent = "Downloaded ✓";
+    setTimeout(() => {
+      btn.textContent = idleLabel;
+      btn.disabled = false;
+    }, 4000);
+  } else {
+    // CORS-blocked → original URL (navigation is CORS-exempt);
+    // otherwise the original 404'd/failed, so the fallback is the best bet.
+    const openUrl = first.blocked ? d.download_url : d.fallback_download_url || d.download_url;
+    window.open(openUrl, "_blank", "noopener");
+    btn.textContent = idleLabel;
+    btn.disabled = false;
+  }
+}
+
+/** Render the document_download envelope block: one card per resolved
+ * document with title, metadata chips, and a Download action. */
+function renderDocumentDownloadBlock(entries: DocumentDownloadEntry[]): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "doc-download-block";
+  for (const d of entries || []) {
+    if (!d || !d.download_url || !d.title) continue;
+    const card = document.createElement("div");
+    card.className = "doc-download-card";
+
+    const icon = document.createElement("div");
+    icon.className = "doc-download-icon";
+    icon.innerHTML =
+      '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>' +
+      '<polyline points="14 2 14 8 20 8"></polyline>' +
+      '<line x1="12" y1="12" x2="12" y2="18"></line>' +
+      '<polyline points="9 15 12 18 15 15"></polyline></svg>';
+
+    const info = document.createElement("div");
+    info.className = "doc-download-info";
+    const title = document.createElement("div");
+    title.className = "doc-download-title";
+    title.textContent = d.title;
+    info.appendChild(title);
+    const metaParts = [d.filename, d.payer, d.state, d.program, d.authority_level].filter(
+      (x): x is string => typeof x === "string" && x.trim() !== "" && x !== d.title
+    );
+    if (metaParts.length) {
+      const meta = document.createElement("div");
+      meta.className = "doc-download-meta";
+      meta.textContent = metaParts.join(" · ");
+      info.appendChild(meta);
+    }
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "doc-download-btn";
+    btn.textContent = "Download";
+    btn.addEventListener("click", () => {
+      void downloadDocumentFile(d, btn);
+    });
+
+    card.appendChild(icon);
+    card.appendChild(info);
+    card.appendChild(btn);
+    wrap.appendChild(card);
+  }
+  return wrap;
+}
+
 /** Render a completed turn from server assistant_envelope v1. */
 function renderAssistantFromEnvelope(
   envelope: AssistantEnvelope,
@@ -6716,6 +6834,11 @@ function renderAssistantFromEnvelope(
       }
       table.appendChild(tbody);
       bubble.appendChild(table);
+    } else if (t === "document_download") {
+      const b = block as { documents?: DocumentDownloadEntry[] };
+      if (Array.isArray(b.documents) && b.documents.length) {
+        bubble.appendChild(renderDocumentDownloadBlock(b.documents));
+      }
     } else if (t === "task_list") {
       const b = block as {
         tasks: Array<{

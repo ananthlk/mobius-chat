@@ -17,29 +17,35 @@ Resolution order (against ``published_rag_metadata``):
   2. Match on ``document_filename`` (handles "FL.UM.87" / ".pdf" / etc.)
   3. Tie-break: prefer most-recent ``updated_at`` on equal-rank matches
   4. Threshold: lowest-scoring tied result must have ≥ 2 query-token
-     overlaps to count as a match. Below the threshold → "no match"
-     with optional suggestions.
+     overlaps to count as a match. Below the threshold → semantic
+     fallback via mobius-rag ``corpus_search`` (covers "the policy
+     about telehealth visits" where the title never says telehealth).
 
 Returns a SkillEnvelope with:
 - ``text``: short confirmation line for the integrator to render
-- ``sources``: one SourceRef per matched doc with:
-    * document_id, document_name, source_type='document'
-    * extra.download_url (mobius-rag /documents/{id}/download/pdf)
-    * extra.fetch_intent=True so the frontend renders Download CTA
-      instead of the usual citation snippet UI
+- ``sources``: one SourceRef per matched doc (citation panel keeps
+  working for MCP callers and older frontends)
+- a structured payload attached to
+  ``pipeline_ctx.react_document_download_data``; ``integrate.py``
+  turns it into a ``document_download`` envelope block the frontend
+  renders as download cards.
 
-The frontend reads ``download_url`` from each source's extras and
-renders a 📥 Download button. ``RAG_API_BASE`` is needed in
-``window`` for the URL to resolve at click time (set in index.html).
+Download URLs point at the ORIGINAL file bytes
+(``/documents/{id}/file``, streamed from GCS) with the
+text-reconstructed ``/documents/{id}/download/pdf`` as
+``fallback_download_url`` for scraped / text-only docs that have no
+binary original. The frontend tries them in that order.
 
 PHI / safety: this skill returns metadata + a link only. It does NOT
 fetch or re-stream the file. Auth/audit live on the mobius-rag side.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
+import urllib.request
 from typing import Any
 
 from app.skills.registry import (
@@ -71,6 +77,12 @@ def _rag_api_base() -> str:
 
 
 def _download_url(document_id: str) -> str:
+    """Original file bytes streamed from GCS (404s for text-only docs)."""
+    return f"{_rag_api_base()}/documents/{document_id}/file"
+
+
+def _fallback_download_url(document_id: str) -> str:
+    """PDF reconstructed from extracted page text — always available."""
     return f"{_rag_api_base()}/documents/{document_id}/download/pdf"
 
 
@@ -184,7 +196,81 @@ def _rank_matches(query: str, candidates: list[dict[str, Any]]) -> list[dict[str
     return [c for _, c in scored]
 
 
+# ── Semantic fallback via corpus_search ─────────────────────────────
+
+
+def _corpus_search_resolve(query: str, *, limit: int = 3) -> list[dict[str, Any]]:
+    """Resolve doc candidates semantically when name matching fails.
+
+    "The policy about telehealth visits" won't token-overlap a title
+    like "FL.UM.87 Utilization Management"; corpus_search finds the
+    chunks and we dedupe their document_ids. Same RAG_API_URL knob the
+    search_corpus skill uses (RAG_API_BASE fallback keeps single-env
+    dev setups working)."""
+    base = (
+        os.environ.get("RAG_API_URL") or os.environ.get("RAG_API_BASE") or ""
+    ).strip().rstrip("/")
+    if not base:
+        return []
+    req = urllib.request.Request(
+        f"{base}/api/skills/v1/corpus_search",
+        data=json.dumps({"query": query, "k": 10}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    seen: set[str] = set()
+    docs: list[dict[str, Any]] = []
+    for chunk in payload.get("chunks") or []:
+        if not isinstance(chunk, dict):
+            continue
+        doc_id = str(chunk.get("document_id") or "").strip()
+        if not doc_id or doc_id in seen:
+            continue
+        seen.add(doc_id)
+        docs.append({
+            "document_id": doc_id,
+            "document_display_name": chunk.get("document_name") or "",
+            "document_filename": chunk.get("document_filename") or "",
+        })
+        if len(docs) >= limit:
+            break
+    return docs
+
+
+def _merge_metadata(
+    resolved: list[dict[str, Any]], candidates: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Fill payer/state/program/authority on corpus-resolved docs from
+    the metadata rows we already pulled (chunks don't carry them)."""
+    by_id = {c.get("document_id"): c for c in candidates if c.get("document_id")}
+    out: list[dict[str, Any]] = []
+    for doc in resolved:
+        meta = by_id.get(doc.get("document_id")) or {}
+        merged = {**meta, **{k: v for k, v in doc.items() if v}}
+        out.append(merged)
+    return out
+
+
 # ── Handler ─────────────────────────────────────────────────────────
+
+
+def _attach_download_payload(
+    call: SkillCall, documents: list[dict[str, Any]], query: str
+) -> None:
+    """Write the structured payload to
+    ``pipeline_ctx.react_document_download_data``; ``integrate.py``
+    injects it as a ``document_download`` envelope block (same path
+    task skills use for ``react_task_list_data``). No-op when the
+    dispatcher didn't pass a pipeline context (MCP standalone call)."""
+    ctx = call.pipeline_ctx
+    if ctx is None:
+        return
+    try:
+        ctx.react_document_download_data = {"documents": documents, "query": query}
+    except Exception as e:  # pragma: no cover — context is loose-typed
+        logger.debug("attach react_document_download_data failed (non-fatal): %s", e)
 
 
 def _run_fetch_document(call: SkillCall) -> SkillEnvelope:
@@ -206,6 +292,14 @@ def _run_fetch_document(call: SkillCall) -> SkillEnvelope:
         )
 
     matches = _rank_matches(query, candidates)
+    resolved_via = "name_match"
+    if not matches:
+        try:
+            matches = _merge_metadata(_corpus_search_resolve(query), candidates)
+            resolved_via = "corpus_search"
+        except Exception as exc:
+            logger.warning("fetch_document: corpus_search fallback failed: %s", exc)
+            matches = []
     if not matches:
         return SkillEnvelope(
             text=(
@@ -216,15 +310,25 @@ def _run_fetch_document(call: SkillCall) -> SkillEnvelope:
         )
 
     # Top 3 — usually 1, but if the user said "Sunshine" we may have
-    # both Provider Manual and Member Handbook. Let the integrator
-    # choose how to render multi-result.
+    # both Provider Manual and Member Handbook. Multi-match renders as
+    # a pick-list of download cards.
     top = matches[:3]
     sources: list[SourceRef] = []
+    download_docs: list[dict[str, Any]] = []
     for m in top:
         doc_id = m.get("document_id") or ""
         if not doc_id:
             continue
         display = m.get("document_display_name") or m.get("document_filename") or "document"
+        common = {
+            "download_url": _download_url(doc_id),
+            "fallback_download_url": _fallback_download_url(doc_id),
+            "filename": m.get("document_filename") or "",
+            "payer": m.get("document_payer") or "",
+            "state": m.get("document_state") or "",
+            "program": m.get("document_program") or "",
+            "authority_level": m.get("document_authority_level") or "",
+        }
         sources.append(SourceRef(
             document_name=display,
             document_id=doc_id,
@@ -233,31 +337,36 @@ def _run_fetch_document(call: SkillCall) -> SkillEnvelope:
             index=len(sources) + 1,
             text=(m.get("document_filename") or "") or display,
             authority="corpus",
-            extra={
-                "download_url": _download_url(doc_id),
-                "fetch_intent": True,
-                "filename": m.get("document_filename") or "",
-                "payer": m.get("document_payer") or "",
-                "state": m.get("document_state") or "",
-                "program": m.get("document_program") or "",
-                "authority_level": m.get("document_authority_level") or "",
-            },
+            extra={"fetch_intent": True, **common},
         ))
+        download_docs.append({
+            "document_id": doc_id,
+            "title": display,
+            "resolved_via": resolved_via,
+            **common,
+        })
+
+    _attach_download_payload(call, download_docs, query)
 
     if len(sources) == 1:
-        text = f"Found **{sources[0].document_name}**. Click Download to get the PDF."
+        text = f"Found **{sources[0].document_name}**. Use the card below to download it."
     else:
         names = ", ".join(s.document_name for s in sources[:3])
         text = (
-            f"Found {len(sources)} matching documents: {names}. "
-            "Pick the one you want and click Download."
+            f"Found {len(sources)} possible matches: {names}. "
+            "Pick the one you want from the cards below."
         )
 
     return SkillEnvelope(
         text=text,
         signal="ok",
         sources=sources,
-        extra={"fetch_intent": True, "match_count": len(sources)},
+        extra={
+            "fetch_intent": True,
+            "match_count": len(sources),
+            "resolved_via": resolved_via,
+            "document_download_payload": {"documents": download_docs, "query": query},
+        },
     )
 
 

@@ -971,6 +971,17 @@ def run_integrate(
             }
         ] + integrator_ui_blocks
 
+    # Inject document_download block when fetch_document attached matches
+    _dl_data = getattr(ctx, "react_document_download_data", None)
+    if isinstance(_dl_data, dict) and isinstance(_dl_data.get("documents"), list) and _dl_data["documents"]:
+        integrator_ui_blocks = [
+            {
+                "type": "document_download",
+                "documents": _dl_data["documents"],
+                "query": _dl_data.get("query") or "",
+            }
+        ] + integrator_ui_blocks
+
     payload["assistant_envelope"] = build_assistant_envelope_v1(
         answer_card=answer_card_dict,
         ui_blocks_raw=integrator_ui_blocks,
