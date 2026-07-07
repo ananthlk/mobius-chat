@@ -6613,6 +6613,7 @@ interface DocumentDownloadEntry {
   download_url: string;
   fallback_download_url?: string;
   filename?: string;
+  host?: string;
   payer?: string;
   state?: string;
   program?: string;
@@ -6697,7 +6698,7 @@ function renderDocumentDownloadBlock(entries: DocumentDownloadEntry[]): HTMLElem
     title.className = "doc-download-title";
     title.textContent = d.title;
     info.appendChild(title);
-    const metaParts = [d.filename, d.payer, d.state, d.program, d.authority_level].filter(
+    const metaParts = [d.filename, d.host, d.payer, d.state, d.program, d.authority_level].filter(
       (x): x is string => typeof x === "string" && x.trim() !== "" && x !== d.title
     );
     if (metaParts.length) {

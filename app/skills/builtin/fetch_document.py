@@ -45,6 +45,7 @@ import json
 import logging
 import os
 import re
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -281,6 +282,151 @@ def _merge_metadata(
     return out
 
 
+# ── Tier-3 fallback: curator web-source registry ────────────────────
+
+
+_DOC_EXTENSIONS = (".pdf", ".doc", ".docx", ".xls", ".xlsx")
+
+
+def _rag_service_base() -> str:
+    return (
+        os.environ.get("RAG_API_URL") or os.environ.get("RAG_API_BASE") or ""
+    ).strip().rstrip("/")
+
+
+def _web_registry_resolve(query: str, *, limit: int = 3) -> list[dict[str, Any]]:
+    """Resolve against the curator's sitemap-fed URL registry
+    (``discovered_sources`` via RAG ``GET /sources/search``).
+
+    Covers documents Mobius knows exist on payer/agency sites but
+    hasn't ingested — the same registry behind the planner's
+    ``lookup_authoritative_sources`` tool, but returning download
+    cards instead of prose. Rows are ts_rank-ordered on the RAG side;
+    we keep only document-shaped URLs (pdf/office extensions or
+    content type)."""
+    base = _rag_service_base()
+    if not base:
+        return []
+    params = urllib.parse.urlencode(
+        {"q": query, "only_reachable": "true", "limit": 15}
+    )
+    req = urllib.request.Request(f"{base}/sources/search?{params}")
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        rows = json.loads(resp.read().decode("utf-8")) or []
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        url = (r.get("url") or "").strip()
+        if not url:
+            continue
+        parsed = urllib.parse.urlparse(url)
+        # Registry rows include internal gs:// paths (already-ingested
+        # bucket objects — tiers 1/2 own those). Only http(s) URLs are
+        # browser-downloadable.
+        if parsed.scheme not in ("http", "https"):
+            continue
+        basename = urllib.parse.unquote(parsed.path.rsplit("/", 1)[-1]).strip()
+        content_type = (r.get("content_type") or "").lower()
+        looks_like_doc = basename.lower().endswith(_DOC_EXTENSIONS) or any(
+            marker in content_type
+            for marker in ("pdf", "msword", "officedocument")
+        )
+        if not looks_like_doc:
+            continue
+        title = (
+            re.sub(r"[-_]+", " ", basename.rsplit(".", 1)[0]).strip().title()
+            or basename
+            or url
+        )
+        out.append({
+            "web_url": url,
+            "host": parsed.netloc,
+            "filename": basename,
+            "title": title,
+            "payer": r.get("payer") or "",
+            "state": r.get("state") or "",
+            "authority_level": r.get("effective_authority_level") or "",
+            "ingested": bool(r.get("ingested")),
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _web_registry_envelope(
+    call: SkillCall, query: str, web_docs: list[dict[str, Any]]
+) -> SkillEnvelope:
+    """Build the envelope + download cards for registry-resolved web docs.
+
+    Cards link straight to the source site (no proxy). The frontend's
+    fetch will typically CORS-fail on foreign hosts and fall back to a
+    new-tab navigation download — which is the intended v1 behavior."""
+    sources: list[SourceRef] = []
+    download_docs: list[dict[str, Any]] = []
+    for w in web_docs:
+        sources.append(SourceRef(
+            document_name=w["title"],
+            document_id=None,
+            source_type="web",
+            page_number=None,
+            index=len(sources) + 1,
+            text=w["web_url"],
+            url=w["web_url"],
+            authority="web_registry",
+            extra={
+                "fetch_intent": True,
+                "download_url": w["web_url"],
+                "filename": w["filename"],
+                "host": w["host"],
+                "payer": w["payer"],
+                "state": w["state"],
+                "authority_level": w["authority_level"],
+            },
+        ))
+        download_docs.append({
+            "document_id": f"web:{w['web_url']}",
+            "title": w["title"],
+            "download_url": w["web_url"],
+            "filename": w["filename"],
+            "host": w["host"],
+            "payer": w["payer"],
+            "state": w["state"],
+            "authority_level": w["authority_level"],
+            "resolved_via": "web_registry",
+        })
+
+    _attach_download_payload(call, download_docs, query)
+
+    hosts = ", ".join(sorted({w["host"] for w in web_docs}))
+    if len(web_docs) == 1:
+        text = (
+            f"That document isn't in our corpus yet, but Mobius's source "
+            f"registry knows it — **{web_docs[0]['title']}** on {hosts}. "
+            "The download comes straight from the source site."
+        )
+    else:
+        text = (
+            f"Not in our corpus yet, but Mobius's source registry found "
+            f"{len(web_docs)} matching documents on {hosts}. "
+            "Downloads come straight from the source site."
+        )
+    return SkillEnvelope(
+        text=text,
+        signal="ok",
+        sources=sources,
+        extra={
+            "fetch_intent": True,
+            "match_count": len(download_docs),
+            "resolved_via": "web_registry",
+            "document_download_payload": {
+                "documents": download_docs,
+                "query": query,
+            },
+        },
+    )
+
+
 # ── Handler ─────────────────────────────────────────────────────────
 
 
@@ -329,10 +475,21 @@ def _run_fetch_document(call: SkillCall) -> SkillEnvelope:
             logger.warning("fetch_document: corpus_search fallback failed: %s", exc)
             matches = []
     if not matches:
+        # Tier 3: the sitemap-fed web-source registry — docs Mobius
+        # knows exist on payer/agency sites but hasn't ingested.
+        try:
+            web_docs = _web_registry_resolve(query)
+        except Exception as exc:
+            logger.warning("fetch_document: web registry fallback failed: %s", exc)
+            web_docs = []
+        if web_docs:
+            return _web_registry_envelope(call, query, web_docs)
+    if not matches:
         return SkillEnvelope(
             text=(
-                "I don't see a document matching that in our materials. "
-                "If you have a copy, you can attach it to this thread."
+                "I don't see a document matching that in our materials or "
+                "our source registry. If you have a copy, you can attach "
+                "it to this thread."
             ),
             signal="no_sources",
         )
@@ -405,9 +562,12 @@ register(
     SkillSpec(
         name="fetch_document",
         description=(
-            "Resolve a corpus document by name / filename / policy ID and "
-            "return a download link. Use this when the user wants the FILE "
-            "itself, not the answer in it.\n"
+            "Resolve a document by name / filename / policy ID and return a "
+            "download link. Use this when the user wants the FILE itself, "
+            "not the answer in it. Resolution: corpus metadata → semantic "
+            "corpus search → the curated web-source registry (sitemap-"
+            "discovered payer/agency URLs), so it also finds documents "
+            "Mobius knows exist on the web but hasn't ingested.\n"
             "Use when: phrases like 'send me', 'give me', 'download', 'fetch', "
             "'I need the …' followed by a document reference (display name, "
             "filename, policy code).\n"

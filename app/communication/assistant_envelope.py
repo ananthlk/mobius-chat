@@ -311,7 +311,7 @@ def _validate_ui_block(block: Any, *, max_source_index: int) -> dict[str, Any] |
             fb = d.get("fallback_download_url")
             if isinstance(fb, str) and fb.strip():
                 entry["fallback_download_url"] = fb.strip()[:2000]
-            for key in ("filename", "payer", "state", "program", "authority_level", "resolved_via"):
+            for key in ("filename", "host", "payer", "state", "program", "authority_level", "resolved_via"):
                 v = d.get(key)
                 if isinstance(v, str) and v.strip():
                     entry[key] = v.strip()[:200]

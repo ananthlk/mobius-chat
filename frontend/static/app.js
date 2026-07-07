@@ -6729,7 +6729,7 @@ function renderDocumentDownloadBlock(entries) {
     title.className = "doc-download-title";
     title.textContent = d.title;
     info.appendChild(title);
-    const metaParts = [d.filename, d.payer, d.state, d.program, d.authority_level].filter(
+    const metaParts = [d.filename, d.host, d.payer, d.state, d.program, d.authority_level].filter(
       (x) => typeof x === "string" && x.trim() !== "" && x !== d.title
     );
     if (metaParts.length) {

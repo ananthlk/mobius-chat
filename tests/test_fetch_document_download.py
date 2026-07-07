@@ -111,9 +111,40 @@ def test_payer_column_counts_toward_match(monkeypatch):
     assert top["document_id"] == "33333333-3333-3333-3333-333333333333"
 
 
+def test_web_registry_tier3_when_corpus_misses(monkeypatch):
+    monkeypatch.setattr(fd, "_fetch_candidates", lambda q: list(_ROWS))
+    monkeypatch.setattr(fd, "_corpus_search_resolve", lambda q, limit=3: [])
+    monkeypatch.setattr(
+        fd,
+        "_web_registry_resolve",
+        lambda q, limit=3: [{
+            "web_url": "https://www.sunshinehealth.com/content/dam/plan-forms/appeal-form.pdf",
+            "host": "www.sunshinehealth.com",
+            "filename": "appeal-form.pdf",
+            "title": "Appeal Form",
+            "payer": "Sunshine Health",
+            "state": "FL",
+            "authority_level": "payer_form",
+            "ingested": False,
+        }],
+    )
+    ctx = SimpleNamespace()
+
+    env = fd._run_fetch_document(_call("download the sunshine appeal form", ctx))
+
+    assert env.signal == "ok"
+    assert env.extra["resolved_via"] == "web_registry"
+    doc = ctx.react_document_download_data["documents"][0]
+    assert doc["download_url"].startswith("https://www.sunshinehealth.com/")
+    assert "fallback_download_url" not in doc
+    assert doc["host"] == "www.sunshinehealth.com"
+    assert env.sources[0].source_type == "web"
+
+
 def test_no_match_when_fallback_also_empty(monkeypatch):
     monkeypatch.setattr(fd, "_fetch_candidates", lambda q: list(_ROWS))
     monkeypatch.setattr(fd, "_corpus_search_resolve", lambda q, limit=3: [])
+    monkeypatch.setattr(fd, "_web_registry_resolve", lambda q, limit=3: [])
 
     env = fd._run_fetch_document(_call("zzz qqq nonexistent"))
 
