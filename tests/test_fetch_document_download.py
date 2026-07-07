@@ -111,6 +111,61 @@ def test_payer_column_counts_toward_match(monkeypatch):
     assert top["document_id"] == "33333333-3333-3333-3333-333333333333"
 
 
+def _call_with_uploads(query: str, ctx, files):
+    return SkillCall(
+        name="fetch_document",
+        inputs={"query": query},
+        question=query,
+        active_context={"uploaded_files": files},
+        pipeline_ctx=ctx,
+    )
+
+
+_UPLOADS = [
+    {"document_id": "aaaa-1", "upload_id": "u1", "filename": "sunshine_claims_export.pdf"},
+    {"document_id": "aaaa-2", "upload_id": "u2", "filename": "roster_march.xlsx"},
+]
+
+
+def test_tier0_returns_thread_upload_on_filename_match(monkeypatch):
+    monkeypatch.setattr(fd, "_fetch_candidates", lambda q: list(_ROWS))
+    ctx = SimpleNamespace()
+
+    env = fd._run_fetch_document(
+        _call_with_uploads("download the roster march spreadsheet", ctx, list(_UPLOADS))
+    )
+
+    assert env.extra["resolved_via"] == "thread_upload"
+    doc = ctx.react_document_download_data["documents"][0]
+    assert doc["document_id"] == "aaaa-2"
+    assert doc["download_url"] == "/chat/uploads/aaaa-2/download"
+
+
+def test_tier0_single_stray_token_does_not_hijack_corpus_ask(monkeypatch):
+    # "Sunshine provider manual" overlaps sunshine_claims_export.pdf on
+    # one token — must fall through to corpus resolution, not tier 0.
+    monkeypatch.setattr(fd, "_fetch_candidates", lambda q: list(_ROWS))
+    ctx = SimpleNamespace()
+
+    env = fd._run_fetch_document(
+        _call_with_uploads("send me the Sunshine Health provider manual", ctx, list(_UPLOADS))
+    )
+
+    assert env.extra["resolved_via"] == "name_match"
+
+
+def test_tier0_upload_intent_words_with_single_upload(monkeypatch):
+    monkeypatch.setattr(fd, "_fetch_candidates", lambda q: list(_ROWS))
+    ctx = SimpleNamespace()
+
+    env = fd._run_fetch_document(
+        _call_with_uploads("send me back the file I uploaded", ctx, [_UPLOADS[0]])
+    )
+
+    assert env.extra["resolved_via"] == "thread_upload"
+    assert ctx.react_document_download_data["documents"][0]["document_id"] == "aaaa-1"
+
+
 def test_web_registry_tier3_when_corpus_misses(monkeypatch):
     monkeypatch.setattr(fd, "_fetch_candidates", lambda q: list(_ROWS))
     monkeypatch.setattr(fd, "_corpus_search_resolve", lambda q, limit=3: [])
@@ -135,8 +190,9 @@ def test_web_registry_tier3_when_corpus_misses(monkeypatch):
     assert env.signal == "ok"
     assert env.extra["resolved_via"] == "web_registry"
     doc = ctx.react_document_download_data["documents"][0]
-    assert doc["download_url"].startswith("https://www.sunshinehealth.com/")
-    assert "fallback_download_url" not in doc
+    # Primary = same-origin proxy; fallback = the direct source URL.
+    assert doc["download_url"].startswith("/chat/download-proxy?url=https%3A%2F%2Fwww.sunshinehealth.com")
+    assert doc["fallback_download_url"].startswith("https://www.sunshinehealth.com/")
     assert doc["host"] == "www.sunshinehealth.com"
     assert env.sources[0].source_type == "web"
 

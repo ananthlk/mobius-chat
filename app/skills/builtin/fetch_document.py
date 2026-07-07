@@ -282,6 +282,98 @@ def _merge_metadata(
     return out
 
 
+# ── Tier-0: this thread's uploaded files ────────────────────────────
+
+
+_UPLOAD_INTENT_WORDS = ("upload", "uploaded", "attached", "attachment", "my file", "i sent")
+
+
+def _thread_upload_matches(call: SkillCall, query: str) -> list[dict[str, Any]]:
+    """Match the query against files uploaded on this thread.
+
+    Reads ``active.uploaded_files[]`` (same records the ReAct upload
+    fast-path uses). Uploads outrank the corpus ONLY when the ask is
+    clearly about them: either the filename match is dominant (≥2
+    tokens covering at least half the query) or the user said
+    upload-ish words. A single stray token ("sunshine" matching an
+    uploaded sunshine_claims.pdf) must NOT hijack a corpus ask like
+    "Sunshine provider manual"."""
+    active = call.active_context if isinstance(call.active_context, dict) else {}
+    files = [
+        f for f in (active.get("uploaded_files") or [])
+        if isinstance(f, dict) and str(f.get("document_id") or "").strip()
+    ]
+    if not files:
+        return []
+    q = (query or "").lower()
+    intent = any(w in q for w in _UPLOAD_INTENT_WORDS)
+    qtokens = _tokenize(query)
+    scored: list[tuple[int, dict[str, Any]]] = []
+    for f in files:
+        ftokens = set(_tokenize(str(f.get("filename") or "")))
+        overlap = sum(1 for t in qtokens if t in ftokens)
+        scored.append((overlap, f))
+    scored.sort(key=lambda x: -x[0])
+
+    strong = [f for o, f in scored if o >= 2 and o * 2 >= len(qtokens)]
+    if strong:
+        return strong[:3]
+    if intent:
+        named = [f for o, f in scored if o >= 1]
+        if named:
+            return named[:3]
+        if len(files) == 1:
+            return [files[0]]
+    return []
+
+
+def _upload_envelope(
+    call: SkillCall, query: str, uploads: list[dict[str, Any]]
+) -> SkillEnvelope:
+    """Download cards for this thread's uploads — served by chat's own
+    ownership-checked ``/chat/uploads/{id}/download`` (relative URL so
+    it resolves against the chat origin)."""
+    sources: list[SourceRef] = []
+    download_docs: list[dict[str, Any]] = []
+    for u in uploads:
+        doc_id = str(u.get("document_id") or "").strip()
+        fname = str(u.get("filename") or "upload")
+        dl = f"/chat/uploads/{urllib.parse.quote(doc_id)}/download"
+        sources.append(SourceRef(
+            document_name=fname,
+            document_id=doc_id,
+            source_type="document",
+            page_number=None,
+            index=len(sources) + 1,
+            text=fname,
+            authority="thread_upload",
+            extra={"fetch_intent": True, "download_url": dl, "filename": fname},
+        ))
+        download_docs.append({
+            "document_id": doc_id,
+            "title": fname,
+            "download_url": dl,
+            "filename": fname,
+            "resolved_via": "thread_upload",
+        })
+    _attach_download_payload(call, download_docs, query)
+    if len(download_docs) == 1:
+        text = f"Here's your uploaded file **{download_docs[0]['title']}** — use the card below."
+    else:
+        text = f"Found {len(download_docs)} uploads on this thread matching that — pick one below."
+    return SkillEnvelope(
+        text=text,
+        signal="ok",
+        sources=sources,
+        extra={
+            "fetch_intent": True,
+            "match_count": len(download_docs),
+            "resolved_via": "thread_upload",
+            "document_download_payload": {"documents": download_docs, "query": query},
+        },
+    )
+
+
 # ── Tier-3 fallback: curator web-source registry ────────────────────
 
 
@@ -365,6 +457,10 @@ def _web_registry_envelope(
     sources: list[SourceRef] = []
     download_docs: list[dict[str, Any]] = []
     for w in web_docs:
+        # Primary: chat's same-origin download proxy (clean blob save,
+        # real filename, audit-logged). Fallback: the direct source URL
+        # for when the proxy declines (size cap, registry blip).
+        proxy_url = "/chat/download-proxy?url=" + urllib.parse.quote(w["web_url"], safe="")
         sources.append(SourceRef(
             document_name=w["title"],
             document_id=None,
@@ -376,7 +472,8 @@ def _web_registry_envelope(
             authority="web_registry",
             extra={
                 "fetch_intent": True,
-                "download_url": w["web_url"],
+                "download_url": proxy_url,
+                "fallback_download_url": w["web_url"],
                 "filename": w["filename"],
                 "host": w["host"],
                 "payer": w["payer"],
@@ -387,7 +484,8 @@ def _web_registry_envelope(
         download_docs.append({
             "document_id": f"web:{w['web_url']}",
             "title": w["title"],
-            "download_url": w["web_url"],
+            "download_url": proxy_url,
+            "fallback_download_url": w["web_url"],
             "filename": w["filename"],
             "host": w["host"],
             "payer": w["payer"],
@@ -455,6 +553,17 @@ def _run_fetch_document(call: SkillCall) -> SkillEnvelope:
             text="No document query provided.",
             signal="no_sources",
         )
+
+    # Tier 0: files uploaded on this thread ("send me back the file I
+    # uploaded", "download my roster"). Checked first because thread
+    # uploads are the most specific context we have.
+    try:
+        uploads = _thread_upload_matches(call, query)
+    except Exception as exc:
+        logger.warning("fetch_document: thread-upload match failed: %s", exc)
+        uploads = []
+    if uploads:
+        return _upload_envelope(call, query, uploads)
 
     try:
         candidates = _fetch_candidates(query)

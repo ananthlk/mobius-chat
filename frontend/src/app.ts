@@ -6633,9 +6633,22 @@ async function downloadDocumentFile(d: DocumentDownloadEntry, btn: HTMLButtonEle
   // blocked=true means fetch itself threw (CORS / network) — a plain
   // navigation may still succeed, and retrying the fallback URL via
   // fetch would just be blocked the same way.
+  // Attach the platform token ONLY on same-origin (relative) URLs —
+  // chat's own /chat/uploads/…/download and /chat/download-proxy need
+  // it under required-auth; sending it to RAG or source sites would
+  // leak the token cross-origin.
+  const sameOriginAuthHeaders = (url: string): Record<string, string> => {
+    if (!url.startsWith("/")) return {};
+    try {
+      const tok = localStorage.getItem("mobius.auth.accessToken");
+      return tok ? { Authorization: "Bearer " + tok } : {};
+    } catch {
+      return {};
+    }
+  };
   const tryFetch = async (url: string): Promise<{ blob: Blob | null; blocked: boolean }> => {
     try {
-      const r = await fetch(url);
+      const r = await fetch(url, { headers: sameOriginAuthHeaders(url) });
       if (!r.ok) return { blob: null, blocked: false };
       return { blob: await r.blob(), blocked: false };
     } catch {

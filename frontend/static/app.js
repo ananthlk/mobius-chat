@@ -6674,9 +6674,19 @@ async function downloadDocumentFile(d, btn) {
   const idleLabel = btn.textContent || "Download";
   btn.disabled = true;
   btn.textContent = "Downloading\u2026";
+  const sameOriginAuthHeaders = (url) => {
+    if (!url.startsWith("/"))
+      return {};
+    try {
+      const tok = localStorage.getItem("mobius.auth.accessToken");
+      return tok ? { Authorization: "Bearer " + tok } : {};
+    } catch {
+      return {};
+    }
+  };
   const tryFetch = async (url) => {
     try {
-      const r = await fetch(url);
+      const r = await fetch(url, { headers: sameOriginAuthHeaders(url) });
       if (!r.ok)
         return { blob: null, blocked: false };
       return { blob: await r.blob(), blocked: false };
