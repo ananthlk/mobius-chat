@@ -908,7 +908,17 @@ def _answer_tool_impl(
                 pipeline_ctx=pipeline_ctx,
                 extra_out=extra_out,
             )
-            return _skill_registry.dispatch(call).to_legacy_tuple()
+            env = _skill_registry.dispatch(call)
+            # to_legacy_tuple() drops env.extra; lift demo + capture_card to
+            # pipeline_ctx so orchestrator.py picks them up on both dispatch
+            # paths (react_loop already lifts these on the ReAct path).
+            _extra = env.extra or {}
+            if pipeline_ctx is not None:
+                if _extra.get("demo") and not getattr(pipeline_ctx, "demo", None):
+                    pipeline_ctx.demo = _extra["demo"]
+                if _extra.get("capture_card") and not getattr(pipeline_ctx, "capture_card", None):
+                    pipeline_ctx.capture_card = _extra["capture_card"]
+            return env.to_legacy_tuple()
         # Unknown hint → fall through to keyword dispatch below.
 
     # ── Keyword-based dispatch (non-ReAct fallback) ──────────────────────
