@@ -8863,6 +8863,15 @@ ${message}`;
     }
     let messageWrapEl = null;
     let draftStreamCancel = null;
+    let composerReleased = false;
+    function releaseComposer() {
+      if (composerReleased)
+        return;
+      composerReleased = true;
+      sendBtn.disabled = false;
+      inputEl.disabled = false;
+      updateSendState();
+    }
     function streamingDisplayText(text) {
       const t = (text ?? "").trim();
       if (t.startsWith("{"))
@@ -8899,6 +8908,7 @@ ${message}`;
       wrap.appendChild(bubble);
       messageWrapEl = wrap;
       turnWrap.appendChild(messageWrapEl);
+      releaseComposer();
       const words = text.split(" ");
       let wi = 0;
       let cancelled = false;
@@ -9205,9 +9215,7 @@ ${message}`;
       );
       scrollToBottom(messagesEl);
     }).finally(() => {
-      sendBtn.disabled = false;
-      inputEl.disabled = false;
-      updateSendState();
+      releaseComposer();
     });
   }
   function updateSendState() {

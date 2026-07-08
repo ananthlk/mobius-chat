@@ -9223,6 +9223,14 @@ function run(): void {
 
     let messageWrapEl: HTMLElement | null = null;
     let draftStreamCancel: (() => void) | null = null;
+    let composerReleased = false;
+    function releaseComposer() {
+      if (composerReleased) return;
+      composerReleased = true;
+      sendBtn.disabled = false;
+      inputEl.disabled = false;
+      updateSendState();
+    }
     /** During stream, do not show raw JSON; show placeholder until final render (AnswerCard or prose). */
     function streamingDisplayText(text: string): string {
       const t = (text ?? "").trim();
@@ -9257,6 +9265,7 @@ function run(): void {
       wrap.appendChild(bubble);
       messageWrapEl = wrap;
       turnWrap.appendChild(messageWrapEl);
+      releaseComposer(); // answer has started — user can type next message now
       // Stream the ReAct answer in word-by-word (5 words per 18ms ≈ natural LLM pace)
       const words = text.split(" ");
       let wi = 0;
@@ -9683,9 +9692,7 @@ function run(): void {
         scrollToBottom(messagesEl);
       })
       .finally(() => {
-        sendBtn.disabled = false;
-        inputEl.disabled = false;
-        updateSendState();
+        releaseComposer(); // no-op if draft already released; handles polling fallback + clarifications
       });
   }
 
