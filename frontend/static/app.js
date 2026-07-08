@@ -4143,11 +4143,13 @@ function renderFeedback(correlationId) {
   up.type = "button";
   up.className = "feedback-thumb";
   up.setAttribute("aria-label", "Good response");
+  up.dataset.tourId = "msg-thumbs-up";
   up.appendChild(createThumbIcon("up"));
   const down = document.createElement("button");
   down.type = "button";
   down.className = "feedback-thumb";
   down.setAttribute("aria-label", "Bad response");
+  down.dataset.tourId = "msg-thumbs-down";
   down.appendChild(createThumbIcon("down"));
   const commentArea = document.createElement("div");
   commentArea.className = "feedback-comment-area";
@@ -4220,6 +4222,7 @@ function renderFeedback(correlationId) {
   const emailBtn = document.createElement("button");
   emailBtn.type = "button";
   emailBtn.setAttribute("aria-label", "Email this conversation");
+  emailBtn.dataset.tourId = "msg-email";
   emailBtn.textContent = "Email";
   emailBtn.addEventListener("click", () => {
     const tid = window.__mobiusChatThreadId || null;
@@ -4263,6 +4266,7 @@ var _PF_CATEGORY_LABELS = {
 function renderCaptureCard(card, meta) {
   const wrap = document.createElement("div");
   wrap.className = "pf-capture-card";
+  wrap.dataset.tourId = "msg-capture-card";
   const header = document.createElement("div");
   header.className = "pf-capture-card__header";
   const title = document.createElement("span");
@@ -10261,6 +10265,7 @@ ${message}`;
         const baseCls = `suite-tile suite-tile--${t.accent}`;
         btn.className = t.comingSoon ? `${baseCls} suite-tile--coming-soon` : baseCls;
         btn.setAttribute("aria-label", t.comingSoon ? `${t.label} (coming soon)` : `Open ${t.label}`);
+        btn.dataset.tourId = `sidebar-suite-${t.key}`;
         if (t.comingSoon) {
           btn.disabled = true;
           btn.setAttribute("aria-disabled", "true");
