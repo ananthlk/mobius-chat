@@ -9018,6 +9018,34 @@ ${message}`;
         messageWrapEl.classList.remove("is-draft");
         messageWrapEl.setAttribute("data-draft-upgraded", "1");
         messageWrapEl.querySelector(".draft-refining-badge")?.remove();
+        const messageBubble = messageWrapEl.querySelector(".message-bubble");
+        const fullCard = tryParseAnswerCard(fullMessage);
+        if (fullCard && messageBubble) {
+          const renderedCard = renderAnswerCard(fullCard, false, {
+            onFollowupClick: (q) => sendMessage(q),
+            sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || void 0,
+            showConfidenceBadge: data.status !== "clarification" && data.status !== "refinement_ask",
+            suppressFollowups: nextQuestions.length > 0,
+            nextQuestions,
+            qcAudit: qcFromPayload,
+            suppressConfidenceForAdminQcFail: suppressConf
+          });
+          const innerBubble = renderedCard.querySelector(".answer-card-bubble");
+          if (innerBubble) {
+            Array.from(innerBubble.children).forEach((child) => {
+              if (!child.classList.contains("answer-card-direct")) {
+                child.classList.add("answer-card-upgrade-in");
+                messageBubble.appendChild(child);
+              }
+            });
+          }
+          messageWrapEl.classList.add("answer-card", `answer-card--${fullCard.mode.toLowerCase()}`);
+          messageBubble.classList.add("answer-card-bubble");
+        } else if (messageBubble && data.status !== "clarification" && !suppressConf) {
+          const badgeEl = renderConfidenceBadge((data.source_confidence_strip ?? "").trim() || "informational_only");
+          badgeEl.classList.add("answer-card-upgrade-in");
+          messageBubble.insertBefore(badgeEl, messageBubble.firstChild);
+        }
         turnWrap.classList.add("turn-meta-revealing");
         window.setTimeout(() => turnWrap.classList.remove("turn-meta-revealing"), 1200);
       } else {

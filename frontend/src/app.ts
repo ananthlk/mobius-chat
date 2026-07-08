@@ -9421,11 +9421,43 @@ function run(): void {
           envBlocks.some((b) => (b as { type?: string }).type === "pipeline_human_gate");
 
         if (isDraftBubble && messageWrapEl) {
-          // Preserve the streamed draft content — strip the refining chrome and
-          // let subsequent metadata elements fade in beneath it via CSS animation.
+          // Preserve streamed draft text; inject AnswerCard structure around it.
           messageWrapEl.classList.remove("is-draft");
           messageWrapEl.setAttribute("data-draft-upgraded", "1");
           messageWrapEl.querySelector(".draft-refining-badge")?.remove();
+          const messageBubble = messageWrapEl.querySelector(".message-bubble") as HTMLElement | null;
+          // Parse the full integrator AnswerCard (fullMessage is the raw JSON string)
+          const fullCard = tryParseAnswerCard(fullMessage);
+          if (fullCard && messageBubble) {
+            // Get a fully rendered card, then transplant every child EXCEPT
+            // direct_answer (already shown as draft) into the existing bubble.
+            const renderedCard = renderAnswerCard(fullCard, false, {
+              onFollowupClick: (q) => sendMessage(q),
+              sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || undefined,
+              showConfidenceBadge: data.status !== "clarification" && data.status !== "refinement_ask",
+              suppressFollowups: nextQuestions.length > 0,
+              nextQuestions,
+              qcAudit: qcFromPayload,
+              suppressConfidenceForAdminQcFail: suppressConf,
+            });
+            const innerBubble = renderedCard.querySelector(".answer-card-bubble");
+            if (innerBubble) {
+              Array.from(innerBubble.children).forEach((child) => {
+                if (!child.classList.contains("answer-card-direct")) {
+                  (child as HTMLElement).classList.add("answer-card-upgrade-in");
+                  messageBubble.appendChild(child);
+                }
+              });
+            }
+            // Apply AnswerCard CSS classes so sections/chips style correctly
+            messageWrapEl.classList.add("answer-card", `answer-card--${fullCard.mode.toLowerCase()}`);
+            messageBubble.classList.add("answer-card-bubble");
+          } else if (messageBubble && data.status !== "clarification" && !suppressConf) {
+            // No AnswerCard — just drop in the confidence badge
+            const badgeEl = renderConfidenceBadge((data.source_confidence_strip ?? "").trim() || "informational_only");
+            (badgeEl as HTMLElement).classList.add("answer-card-upgrade-in");
+            messageBubble.insertBefore(badgeEl, messageBubble.firstChild);
+          }
           turnWrap.classList.add("turn-meta-revealing");
           window.setTimeout(() => turnWrap.classList.remove("turn-meta-revealing"), 1200);
         } else {

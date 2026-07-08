@@ -2226,6 +2226,11 @@ body {
   100% { opacity: 0.4; transform: scaleX(0.3); transform-origin: left; }
 }
 
+/* AnswerCard elements transplanted into the draft bubble on upgrade */
+.answer-card-upgrade-in {
+  animation: answer-meta-in 0.35s ease both;
+}
+
 /* Two-phase completion: all metadata appended while this class is on the turn
    wrapper fades+slides in. Class is removed after 1.2s so later DOM appends
    (QC refetch, etc.) are not animated. [data-draft-upgraded] marks the preserved
