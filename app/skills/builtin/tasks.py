@@ -133,11 +133,29 @@ def _run_list_tasks(call: SkillCall) -> SkillEnvelope:
 
     _emit(call, "◌ Task manager: list_tasks…")
     inputs = call.inputs or {}
+
+    # "tasks assigned to ME" — resolve the authenticated chat identity to
+    # the canonical assignee_ref (user:<uuid>) via mobius-user. Unknown
+    # identity → fall back to unscoped (never guess), with a note.
+    me_note = ""
+    assignee = inputs.get("assignee")
+    if inputs.get("assigned_to_me") and not assignee:
+        from app.services.user_identity import resolve_self
+        subject = getattr(call.pipeline_ctx, "user_id", None) if call.pipeline_ctx else None
+        me = resolve_self(subject)
+        if me:
+            assignee = me["assignee_ref"]
+        else:
+            me_note = (
+                "\n\n_Couldn't resolve your user identity — showing all user tasks "
+                "instead of just yours._"
+            )
+
     params = {
         "org_name": inputs.get("org") or inputs.get("org_name"),
         "module": inputs.get("module"),
         "status": inputs.get("status"),
-        "assignee": inputs.get("assignee"),
+        "assignee": assignee,
         "npi": inputs.get("npi"),
         "run_id": inputs.get("run_id"),
         "severity": inputs.get("severity"),
@@ -175,9 +193,9 @@ def _run_list_tasks(call: SkillCall) -> SkillEnvelope:
             lines.append(
                 f"- [{sev}] {t.text} ({t.status}){prov_str} `{t.task_id[:8]}`"
             )
-        summary = "\n".join(lines)
+        summary = "\n".join(lines) + me_note
     else:
-        summary = "No tasks found matching the given filters."
+        summary = "No tasks found matching the given filters." + me_note
 
     # filters carries only the non-empty params the user actually asked
     # for — the UI uses this for the "Showing tasks for: …" header.
@@ -374,18 +392,32 @@ def _run_assign_task(call: SkillCall) -> SkillEnvelope:
             signal="no_sources",
         )
 
-    _emit(call, f"◌ Task manager: assign_task {task_id[:8]} → {assignee}…")
+    # Resolve the natural-language assignee to a canonical identity via
+    # mobius-user ("Sam" → user:<uuid> + display name). Convention:
+    # assigned_to carries the canonical ref (exact matching for "my
+    # tasks"), assignee carries the display name (cards stay readable).
+    # No candidate → both get the literal string (legacy behavior).
+    from app.services.user_identity import resolve_assignee
+    active = call.active_context or {}
+    cand = resolve_assignee(assignee, org=active.get("org_name") or active.get("payer"))
+    canonical = cand["assignee_ref"] if cand else assignee
+    display = (cand.get("display_name") if cand else None) or assignee
+
+    _emit(call, f"◌ Task manager: assign_task {task_id[:8]} → {display}…")
     try:
         patched = _http_request("PATCH", f"{base}/tasks/{task_id}",
-                                body={"assigned_to": assignee, "assignee": assignee})
+                                body={"assigned_to": canonical, "assignee": display})
         _http_request("POST", f"{base}/tasks/{task_id}/interact",
-                      body={"actor": "chat", "action": "assigned", "note": f"assigned to {assignee}"})
+                      body={"actor": "chat", "action": "assigned",
+                            "note": f"assigned to {display}" + (f" ({canonical})" if canonical != display else "")})
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as e:
         logger.warning("assign_task: task-manager unreachable: %s", e)
         return SkillEnvelope(text=f"Task manager error: {e}", signal="no_sources")
 
     row = TaskRow.from_api(patched) if isinstance(patched, dict) else None
-    summary = f"Task `{task_id[:8]}` assigned to **{assignee}**."
+    summary = f"Task `{task_id[:8]}` assigned to **{display}**."
+    if not cand:
+        summary += " _(no matching user profile — stored as plain text; enroll them in mobius-user for exact 'my tasks' matching)_"
     envelope = _confirmation_envelope("assign", row, summary)
     _attach_to_ctx(call, envelope)
     return SkillEnvelope(text=summary, signal="corpus_only", extra=envelope.to_extra())
@@ -430,8 +462,11 @@ register(
             "  'my reminders'.\n"
             "Shows USER tasks by default — system/developer telemetry is excluded unless\n"
             "  the user explicitly asks for system tasks (set audience='developer' or 'all').\n"
-            "Filters (all optional): org_name, module, status, assignee, npi, run_id,\n"
-            "  severity, type, workflow, kind (work_item|reminder|signal), audience, limit.\n"
+            "When the user says MY tasks / assigned to ME / my reminders, set\n"
+            "  assigned_to_me=true (resolves their identity; do NOT guess an assignee name).\n"
+            "Filters (all optional): assigned_to_me, org_name, module, status, assignee,\n"
+            "  npi, run_id, severity, type, workflow, kind (work_item|reminder|signal),\n"
+            "  audience, limit.\n"
             "Returns: Markdown summary + structured task_list UI block."
         ),
         inputs_schema={
@@ -446,6 +481,7 @@ register(
                 "severity": {"type": "string", "description": "low | medium | high."},
                 "type": {"type": "string", "description": "info | blocker | decision | …"},
                 "workflow": {"type": "string"},
+                "assigned_to_me": {"type": "boolean", "description": "True when the user asks for THEIR tasks/reminders ('my tasks', 'assigned to me')."},
                 "audience": {"type": "string", "description": "user (default) | developer (system telemetry) | all."},
                 "kind": {"type": "string", "description": "work_item | reminder | signal."},
                 "limit": {"type": "integer", "description": "Default 50, max 1000."},

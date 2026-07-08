@@ -288,6 +288,10 @@ SET_SECRETS=(
     # as a fallback for older callers). Same secret mobius-rag mints
     # for its own admin endpoints.
     "MOBIUS_RAG_ADMIN_KEY=rag-admin-api-key:latest"
+    # Service-to-service auth for mobius-user identity reads
+    # (by-identity / resolve) — powers "tasks assigned to me" scoping
+    # + natural-language assignee resolution (2026-07-08).
+    "MOBIUS_USER_INTERNAL_KEY=mobius-user-internal-key:latest"
 )
 
 # ── Deploy ──────────────────────────────────────────────────────────
