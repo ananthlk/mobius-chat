@@ -12,13 +12,13 @@
 </head>
 <body>
   <div class="app-layout">
-    <aside class="sidebar" id="sidebar" data-tour-id="sidebar">
+    <aside class="sidebar" id="sidebar">
       <div class="sidebar-inner">
         <div class="sidebar-header">
           <img class="sidebar-logo" src="static/logo.svg" alt="Mobius" />
           <span class="sidebar-logo-text">Mobius Chat</span>
         </div>
-        <button type="button" class="btn-new-chat" id="btnNewChat" data-tour-id="sidebar-new-chat">
+        <button type="button" class="btn-new-chat" id="btnNewChat">
           <span>+</span> New chat
         </button>
         <div class="sidebar-recent">
@@ -120,7 +120,7 @@
           <button type="button" id="hamburger" aria-label="Config">&#9776;</button>
         </div>
       </header>
-      <div class="chat-thread" id="messages" data-tour-id="chat-thread">
+      <div class="chat-thread" id="messages">
         <div class="chat-empty" id="chatEmpty">
           <div class="ld-shell" role="region" aria-label="Workspace overview">
 
@@ -281,9 +281,9 @@
           </details>
         </div>
       </div>
-      <div class="composer-wrap" data-tour-id="composer-wrap">
+      <div class="composer-wrap">
         <div class="composer">
-          <select id="composerMode" class="composer-mode-select" data-tour-id="composer-mode"
+          <select id="composerMode" class="composer-mode-select"
             title="Response mode&#10;⚡ Fast — 2 rounds, brief answer&#10;◉ Normal — registry-first, practical&#10;✦ Thinking — deep research, high confidence"
             onchange="localStorage.setItem('_mobiusChatMode',this.value)">
             <option value="quick">⚡ Fast</option>
@@ -293,13 +293,13 @@
           <script>
             (function(){const m=localStorage.getItem('_mobiusChatMode');const s=document.getElementById('composerMode');if(s&&m&&['quick','copilot','agentic'].includes(m))s.value=m;})();
           </script>
-          <input type="text" id="input" placeholder="Message Mobius Chat…" autocomplete="off" data-tour-id="composer-input" />
-          <button type="button" class="btn-composer-options" id="composerOptions" aria-label="More options" aria-haspopup="true" aria-expanded="false" title="More options" data-tour-id="composer-options">⋯</button>
+          <input type="text" id="input" placeholder="Message Mobius Chat…" autocomplete="off" />
+          <button type="button" class="btn-composer-options" id="composerOptions" aria-label="More options" aria-haspopup="true" aria-expanded="false" title="More options">⋯</button>
           <div class="composer-options-menu" id="composerOptionsMenu" hidden role="menu">
-            <button type="button" class="composer-option-item" id="composerOptionUploadFile" role="menuitem" data-tour-id="composer-option-upload">Upload file</button>
+            <button type="button" class="composer-option-item" id="composerOptionUploadFile" role="menuitem">Upload file</button>
             <button type="button" class="composer-option-item composer-option-item--disabled" id="composerOptionAddLink" role="menuitem" disabled aria-disabled="true" title="Coming soon">Add link</button>
           </div>
-          <button type="button" class="btn-send" id="send" aria-label="Send" data-tour-id="composer-send">
+          <button type="button" class="btn-send" id="send" aria-label="Send">
             <svg class="send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>
           </button>
         </div>
@@ -308,7 +308,7 @@
   </div>
 
   <div class="upload-overlay upload-overlay--sheet" id="uploadOverlay"></div>
-  <div class="upload-modal upload-modal--sheet" id="uploadModal" role="dialog" aria-labelledby="uploadModalTitle" aria-modal="true" hidden data-tour-id="upload-modal">
+  <div class="upload-modal upload-modal--sheet" id="uploadModal" role="dialog" aria-labelledby="uploadModalTitle" aria-modal="true" hidden>
     <h2 id="uploadModalTitle">Upload file</h2>
     <p class="upload-modal-desc">Document upload skill — attach a file to <strong>this chat</strong> (you can upload more files anytime). What is this file for?</p>
     <div class="roster-thread-signal roster-thread-signal--muted" id="uploadRosterThreadSignal" hidden>
@@ -329,10 +329,10 @@
           Send reconciliation request right after upload
         </label>
       </div>
-      <label>File <input type="file" id="uploadFile" accept=".csv,.xlsx,.xls" required data-tour-id="upload-file-input" /></label>
+      <label>File <input type="file" id="uploadFile" accept=".csv,.xlsx,.xls" required /></label>
       <div class="upload-modal-actions">
         <button type="button" id="uploadCancel">Cancel</button>
-        <button type="submit" id="uploadSubmit" disabled data-tour-id="upload-submit">Upload</button>
+        <button type="submit" id="uploadSubmit" disabled>Upload</button>
       </div>
     </form>
     <div class="upload-modal-progress-wrap" id="uploadProgressWrap" hidden>
@@ -702,6 +702,5 @@
     window.RAG_API_BASE = "https://mobius-rag-ortabkknqa-uc.a.run.app";
   </script>
   <script type="module" src="static/app.js?v=30"></script>
-  <script src="https://mobius-interact-ortabkknqa-uc.a.run.app/runner.js" defer></script>
 </body>
 </html>
