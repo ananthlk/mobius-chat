@@ -9089,7 +9089,7 @@ ${message}`;
         turnWrap.appendChild(renderRosterReportDownload(pdfBase64, reportMarkdown, attachmentsKind));
       }
       const isCard = !!tryParseAnswerCard(body || "");
-      if (nextQuestions.length > 0 && !isCard && !useEnvelope) {
+      if (nextQuestions.length > 0 && !isCard && (!useEnvelope || isDraftBubble)) {
         turnWrap.appendChild(
           renderNextQuestions(nextQuestions, (q) => sendMessage(q))
         );
@@ -9122,7 +9122,7 @@ ${message}`;
         confidence: null
       })) : [];
       const cited = data.cited_source_indices ?? [];
-      if (sourceList.length > 0 && !envelopeHasSources) {
+      if (sourceList.length > 0 && (!envelopeHasSources || isDraftBubble)) {
         turnWrap.appendChild(
           renderSourceCiter(sourceList, cited, data.correlation_id ?? activeCorrelationId)
         );
