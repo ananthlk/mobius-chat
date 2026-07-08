@@ -95,7 +95,7 @@ register(
             "First-class **document upload skill**: how to attach files to this chat thread for downstream tools.\n"
             "Use when: user asks how to upload, attach a roster, send a file, supported formats, API/MCP integration,\n"
             "  or what the upload flow does. Multiple documents may be uploaded over time on the same thread.\n"
-            "Does NOT transfer bytes — returns instructions (UI: ⋯ → Upload file; HTTP: POST /chat/roster-upload).\n"
+            "Does NOT transfer bytes — returns instructions (UI: paperclip 📎 in the composer; HTTP: POST /chat/roster-upload).\n"
             "Returns: Markdown with purposes, endpoints, and relation to roster reconciliation."
         ),
         handler=_run_document_upload_skill,
