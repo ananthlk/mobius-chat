@@ -34,6 +34,15 @@ def test_answer_outcome_returns_sources(monkeypatch):
     assert env.extra["feedback_id"] is None
 
 
+def test_demo_ref_passthrough(monkeypatch):
+    monkeypatch.setattr(ph, "_search", lambda payload: {
+        "outcome": "answer", "text": "Use the paperclip.", "module": "chat", "s_top": 0.7,
+        "sources": [], "gap": None,
+        "demo": {"script_id": "chat:upload-a-document", "title": "Show me: upload a document"}})
+    env = ph._run_product_help(_call({"query": "how do I upload"}))
+    assert env.extra["demo"]["script_id"] == "chat:upload-a-document"
+
+
 def test_docs_gap_files_feedback(monkeypatch):
     recorded = {}
     monkeypatch.setattr(store, "insert_open_feedback", lambda **k: (recorded.update(k) or "fid-gap"))

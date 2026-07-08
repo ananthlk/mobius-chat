@@ -148,6 +148,10 @@ def _run_product_help(call: SkillCall) -> SkillEnvelope:
             "module": resp.get("module"),
             "s_top": resp.get("s_top"),
             "feedback_id": feedback_id,
+            # mobius-interact "▶ Show me" ref ({script_id, title}) — frontend renders
+            # a chip that fetches the script from the interact registry and runs it
+            # in guide mode. None when the matched section has no demo.
+            "demo": resp.get("demo"),
         },
     )
 
