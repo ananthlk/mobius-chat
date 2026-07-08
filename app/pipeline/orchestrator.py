@@ -758,6 +758,8 @@ def run_pipeline(
                 ctx.response_payload["offer_feedback"] = enrich_offer_feedback(ctx.offer_feedback)
             if getattr(ctx, "capture_card", None):
                 ctx.response_payload["capture_card"] = ctx.capture_card
+            if getattr(ctx, "demo", None):
+                ctx.response_payload["demo"] = ctx.demo
 
         # Rolling thread summary via a dedicated, focused LLM call. The
         # integrator's AnswerCard fields are unreliable on the production

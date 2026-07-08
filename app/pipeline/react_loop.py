@@ -1326,6 +1326,9 @@ def _execute_tool(
         _cc = (env.extra or {}).get("capture_card") if env.extra else None
         if _cc:
             ctx.capture_card = _cc
+        _demo = (env.extra or {}).get("demo") if env.extra else None
+        if _demo:
+            ctx.demo = _demo
         return {
             "tool": tool,
             "success": bool(env.text and not env.text.startswith("Unknown skill")),

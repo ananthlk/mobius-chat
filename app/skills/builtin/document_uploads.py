@@ -30,7 +30,11 @@ def _run_document_upload_skill(call: SkillCall) -> SkillEnvelope:
 
     emitter = _make_emitter(call)
     result = run_document_upload_info(emitter=emitter)
-    return SkillEnvelope(text=result.text, signal="no_sources")
+    return SkillEnvelope(
+        text=result.text,
+        signal="no_sources",
+        extra={"demo": {"script_id": "chat:upload-a-document", "title": "Upload a document"}},
+    )
 
 
 def _run_list_thread_document_uploads(call: SkillCall) -> SkillEnvelope:

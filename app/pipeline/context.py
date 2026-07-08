@@ -224,6 +224,9 @@ class PipelineContext:
     #   capture_card — an editable confirmation card a product_feedback tool call
     #                  returned in SkillEnvelope.extra, for the client to render.
     capture_card: dict[str, Any] | None = None
+    #   demo — interactive tour ref from a skill's extra.demo; rendered as
+    #           "▶ Show me" chip by the frontend (renderDemoChip).
+    demo: dict[str, Any] | None = None
 
     def has_thread(self) -> bool:
         return bool(self.thread_id and (self.thread_id or "").strip())
