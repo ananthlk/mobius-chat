@@ -4903,6 +4903,13 @@ function openTasksModal(prefill?: TasksModalPrefill): void {
       <input type="text" class="tasks-modal-input" data-f="assignee" placeholder="Assignee (optional)">
     </div>
     <div class="tasks-modal-create-row">
+      <select class="tasks-modal-input" data-f="kind">
+        <option value="work_item" selected>Task</option>
+        <option value="reminder">Reminder</option>
+      </select>
+      <input type="date" class="tasks-modal-input" data-f="deadline" title="Due date (required for reminders)">
+    </div>
+    <div class="tasks-modal-create-row">
       <button type="button" class="tm-env-btn tm-env-btn--resolve" data-f="submit">Create</button>
       <button type="button" class="tm-env-btn" data-f="cancel">Cancel</button>
       <span class="tasks-modal-create-err" data-f="err"></span>
@@ -4926,7 +4933,11 @@ function openTasksModal(prefill?: TasksModalPrefill): void {
       title: cf("title").value.trim() || text.slice(0, 60),
       severity: (cf("severity") as unknown as HTMLSelectElement).value,
       source_module: prefill?.sourceModule || "manual",
+      kind: (cf("kind") as unknown as HTMLSelectElement).value || "work_item",
+      audience: "user",
     };
+    const deadline = cf("deadline").value;
+    if (deadline) body.deadline = deadline;
     const assignee = cf("assignee").value.trim();
     if (assignee) body.assignee = assignee;
     if (prefill?.sourceRef) body.source_ref = prefill.sourceRef;
@@ -4959,6 +4970,17 @@ function openTasksModal(prefill?: TasksModalPrefill): void {
       <option value="dismissed">Dismissed</option>
       <option value="">All</option>
     </select>
+    <select class="tasks-modal-input" data-f="audience" title="System tasks (telemetry, pipeline signals) are hidden by default">
+      <option value="user" selected>My tasks</option>
+      <option value="developer">System (dev)</option>
+      <option value="all">All audiences</option>
+    </select>
+    <select class="tasks-modal-input" data-f="kind">
+      <option value="" selected>Any kind</option>
+      <option value="work_item">Work items</option>
+      <option value="reminder">Reminders</option>
+      <option value="signal">Signals</option>
+    </select>
     <input type="text" class="tasks-modal-input" data-f="org" placeholder="Org filter">
     <input type="text" class="tasks-modal-input" data-f="assignee" placeholder="Assignee filter">
     <button type="button" class="tm-env-btn" data-f="apply">Apply</button>`;
@@ -4974,6 +4996,8 @@ function openTasksModal(prefill?: TasksModalPrefill): void {
     const ff = (k: string) => (filters.querySelector(`[data-f="${k}"]`) as HTMLInputElement).value.trim();
     const params = new URLSearchParams({ limit: "100" });
     if (ff("status")) params.set("status", ff("status"));
+    params.set("audience", ff("audience") || "user"); // proxy treats "all" as no filter
+    if (ff("kind")) params.set("kind", ff("kind"));
     if (ff("org")) params.set("org_name", ff("org"));
     if (ff("assignee")) params.set("assignee", ff("assignee"));
     try {
@@ -5006,11 +5030,13 @@ function _taskModalRow(t: any, reload: () => Promise<void>): HTMLElement {
   const title = t.title || t.text || "(no title)";
   const head = document.createElement("div");
   head.className = "tasks-modal-row-head";
+  const due = t.kind === "reminder" && (t.deadline || t.due_at)
+    ? ` ⏰ ${String(t.deadline || t.due_at).slice(0, 10)}` : "";
   head.innerHTML = `
     <span class="tm-env-badge tm-env-badge--${sev}">${sev}</span>
     <span class="tasks-modal-row-title"></span>
     <span class="tm-env-mod-tag">${(t.source_module || "").replace(/_/g, " ")}</span>
-    <span class="tasks-modal-row-status">${status}${t.assignee ? " → " + t.assignee : ""}</span>`;
+    <span class="tasks-modal-row-status">${status}${t.assignee ? " → " + t.assignee : ""}${due}</span>`;
   (head.querySelector(".tasks-modal-row-title") as HTMLElement).textContent = title;
   row.appendChild(head);
 

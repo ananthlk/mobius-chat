@@ -143,8 +143,15 @@ def _run_list_tasks(call: SkillCall) -> SkillEnvelope:
         "severity": inputs.get("severity"),
         "type": inputs.get("type"),
         "workflow": inputs.get("workflow"),
+        # Default to USER-audience tasks — system telemetry (chat turn
+        # events, pipeline step signals) never pollutes a user's queue
+        # unless they explicitly ask (audience="developer" or "all").
+        "audience": (inputs.get("audience") or "user"),
+        "kind": inputs.get("kind"),
         "limit": inputs.get("limit", 50),
     }
+    if params["audience"] == "all":
+        params["audience"] = None
 
     try:
         data = _http_get("/tasks", params)
@@ -210,7 +217,14 @@ def _run_create_task(call: SkillCall) -> SkillEnvelope:
         "provider_name": inputs.get("provider_name"),
         "npi": inputs.get("npi"),
         "assignee": inputs.get("assignee"),
+        # Reminders: kind="reminder" + deadline. "Remind me to check X
+        # tomorrow" → the planner sets both; surfacing-by-due-date is the
+        # contextual-surfacing service's job (v2 backlog item 2).
+        "kind": inputs.get("kind"),
+        "deadline": inputs.get("deadline"),
+        "audience": "user",
     }
+    body = {k: v for k, v in body.items() if v is not None}
 
     try:
         created = _http_request("POST", f"{base}/tasks", body=body)
@@ -410,11 +424,14 @@ register(
     SkillSpec(
         name="list_tasks",
         description=(
-            "List tasks from the unified task manager (open follow-ups, blockers, info cards).\n"
+            "List tasks from the unified task manager (open follow-ups, blockers, reminders).\n"
             "Use when: user asks 'what tasks are open', 'show me follow-ups for <org>',\n"
-            "  'what's pending on this credentialing run', 'tasks assigned to <person>'.\n"
+            "  'what's pending on this credentialing run', 'tasks assigned to <person>',\n"
+            "  'my reminders'.\n"
+            "Shows USER tasks by default — system/developer telemetry is excluded unless\n"
+            "  the user explicitly asks for system tasks (set audience='developer' or 'all').\n"
             "Filters (all optional): org_name, module, status, assignee, npi, run_id,\n"
-            "  severity, type, workflow, limit.\n"
+            "  severity, type, workflow, kind (work_item|reminder|signal), audience, limit.\n"
             "Returns: Markdown summary + structured task_list UI block."
         ),
         inputs_schema={
@@ -429,6 +446,8 @@ register(
                 "severity": {"type": "string", "description": "low | medium | high."},
                 "type": {"type": "string", "description": "info | blocker | decision | …"},
                 "workflow": {"type": "string"},
+                "audience": {"type": "string", "description": "user (default) | developer (system telemetry) | all."},
+                "kind": {"type": "string", "description": "work_item | reminder | signal."},
                 "limit": {"type": "integer", "description": "Default 50, max 1000."},
             },
         },
@@ -444,11 +463,12 @@ register(
     SkillSpec(
         name="create_task",
         description=(
-            "Create a new task in the unified task manager.\n"
+            "Create a new task or reminder in the unified task manager.\n"
             "Use when: user asks to 'create a task', 'log a follow-up', 'add an action item',\n"
-            "  or to track something the assistant should remind them about later.\n"
+            "  or 'remind me to <X> tomorrow/on <date>' (then set kind='reminder' + deadline).\n"
             "Required: org_name (alias: org) and text (alias: description).\n"
-            "Optional: severity (low|medium|high), module, provider_name, npi, assignee.\n"
+            "Optional: severity (critical|warning|info|low), module, provider_name, npi,\n"
+            "  assignee, kind ('reminder' for time-anchored nudges), deadline (YYYY-MM-DD).\n"
             "Returns: confirmation + the created task as a single-row task_list block."
         ),
         inputs_schema={
@@ -461,6 +481,8 @@ register(
                 "provider_name": {"type": "string"},
                 "npi": {"type": "string"},
                 "assignee": {"type": "string"},
+                "kind": {"type": "string", "description": "'reminder' for time-anchored nudges; default work_item."},
+                "deadline": {"type": "string", "description": "YYYY-MM-DD; required for reminders."},
             },
             "required": ["org_name", "text"],
         },

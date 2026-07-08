@@ -53,14 +53,26 @@ def chat_tasks_list(
     npi: str | None = None,
     run_id: str | None = None,
     severity: str | None = None,
+    audience: str | None = "user",
+    kind: str | None = None,
     limit: int = 200,
     offset: int = 0,
 ) -> dict[str, Any]:
-    """Proxy: list tasks from task-manager skill. Injects run_status when run_id provided."""
+    """Proxy: list tasks from task-manager skill.
+
+    Defaults to audience=user — this is the USER-facing surface (Tasks
+    modal, task_list blocks); system telemetry stays out unless the
+    caller passes audience=developer or audience=all. Run-scoped reads
+    (run_id set) drop the audience filter so pipeline views still see
+    their step/signal cards.
+    """
+    if run_id or audience == "all":
+        audience = None
     params = {k: v for k, v in {
         "org_name": org_name, "module": module, "status": status,
         "assignee": assignee, "npi": npi, "run_id": run_id,
-        "severity": severity, "limit": limit, "offset": offset,
+        "severity": severity, "audience": audience, "kind": kind,
+        "limit": limit, "offset": offset,
     }.items() if v is not None}
     result = task_proxy("GET", "/tasks", params=params).json()
 
