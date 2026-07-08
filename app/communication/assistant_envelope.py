@@ -37,6 +37,9 @@ TOOL_ATTRIBUTION: dict[str, tuple[str, str]] = {
     "list_tasks": ("task", "Task manager"),
     "create_task": ("task", "Task manager"),
     "resolve_task": ("task", "Task manager"),
+    "patch_task": ("task", "Task manager"),
+    "assign_task": ("task", "Task manager"),
+    "dismiss_task": ("task", "Task manager"),
     "fetch_document": ("doc", "Document fetch"),
 }
 

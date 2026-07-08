@@ -278,20 +278,129 @@ def _run_resolve_task(call: SkillCall) -> SkillEnvelope:
     row = TaskRow.from_api(resolved) if isinstance(resolved, dict) else None
     summary = f"Task `{task_id[:8]}` marked as resolved."
 
-    envelope = TaskEnvelope(
-        operation="resolve",
-        tasks=[row] if row else [],
-        filters={},
-        allow_create=False,
-        allow_resolve=False,
-        summary_text=summary,
-    )
+    envelope = _confirmation_envelope("resolve", row, summary)
     _attach_to_ctx(call, envelope)
     return SkillEnvelope(
         text=summary,
         signal="corpus_only",
         extra=envelope.to_extra(),
     )
+
+
+def _confirmation_envelope(operation: str, row: TaskRow | None, summary: str) -> TaskEnvelope:
+    """Single-row confirmation card with all action buttons disabled —
+    a rendered confirmation must never double-fire an action."""
+    return TaskEnvelope(
+        operation=operation,
+        tasks=[row] if row else [],
+        filters={},
+        allow_create=False,
+        allow_resolve=False,
+        allow_edit=False,
+        allow_assign=False,
+        allow_dismiss=False,
+        summary_text=summary,
+    )
+
+
+def _run_patch_task(call: SkillCall) -> SkillEnvelope:
+    """Edit task fields via PATCH /tasks/{id}.
+
+    Accepts any subset of: title, text, body, severity, deadline/due_at,
+    status, note (note is appended as a comment interaction by the
+    task-manager rather than stored as a column).
+    """
+    base = _task_base()
+    if _is_stub_url(base):
+        return _stub_envelope("list")
+
+    inputs = call.inputs or {}
+    task_id = (inputs.get("task_id") or "").strip()
+    if not task_id:
+        return SkillEnvelope(text="`task_id` is required to edit a task.", signal="no_sources")
+
+    updates = {k: inputs[k] for k in
+               ("title", "text", "body", "severity", "deadline", "due_at", "status", "note")
+               if inputs.get(k) not in (None, "")}
+    if not updates:
+        return SkillEnvelope(
+            text="Nothing to update — provide at least one of: title, text, body, severity, deadline, status, note.",
+            signal="no_sources",
+        )
+
+    _emit(call, f"◌ Task manager: patch_task {task_id[:8]}…")
+    try:
+        patched = _http_request("PATCH", f"{base}/tasks/{task_id}", body=updates)
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as e:
+        logger.warning("patch_task: task-manager unreachable: %s", e)
+        return SkillEnvelope(text=f"Task manager error: {e}", signal="no_sources")
+
+    row = TaskRow.from_api(patched) if isinstance(patched, dict) else None
+    changed = ", ".join(sorted(k for k in updates if k != "note"))
+    summary = f"Task `{task_id[:8]}` updated ({changed})." if changed else f"Note added to task `{task_id[:8]}`."
+    envelope = _confirmation_envelope("patch", row, summary)
+    _attach_to_ctx(call, envelope)
+    return SkillEnvelope(text=summary, signal="corpus_only", extra=envelope.to_extra())
+
+
+def _run_assign_task(call: SkillCall) -> SkillEnvelope:
+    """Assign / reassign a task. Thin wrapper over PATCH — sets both
+    ``assigned_to`` and the legacy ``assignee`` mirror, and records an
+    'assigned' interaction so the audit trail shows the handoff."""
+    base = _task_base()
+    if _is_stub_url(base):
+        return _stub_envelope("list")
+
+    inputs = call.inputs or {}
+    task_id = (inputs.get("task_id") or "").strip()
+    assignee = (inputs.get("assignee") or inputs.get("assigned_to") or "").strip()
+    if not task_id or not assignee:
+        return SkillEnvelope(
+            text="Both `task_id` and `assignee` are required to assign a task.",
+            signal="no_sources",
+        )
+
+    _emit(call, f"◌ Task manager: assign_task {task_id[:8]} → {assignee}…")
+    try:
+        patched = _http_request("PATCH", f"{base}/tasks/{task_id}",
+                                body={"assigned_to": assignee, "assignee": assignee})
+        _http_request("POST", f"{base}/tasks/{task_id}/interact",
+                      body={"actor": "chat", "action": "assigned", "note": f"assigned to {assignee}"})
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as e:
+        logger.warning("assign_task: task-manager unreachable: %s", e)
+        return SkillEnvelope(text=f"Task manager error: {e}", signal="no_sources")
+
+    row = TaskRow.from_api(patched) if isinstance(patched, dict) else None
+    summary = f"Task `{task_id[:8]}` assigned to **{assignee}**."
+    envelope = _confirmation_envelope("assign", row, summary)
+    _attach_to_ctx(call, envelope)
+    return SkillEnvelope(text=summary, signal="corpus_only", extra=envelope.to_extra())
+
+
+def _run_dismiss_task(call: SkillCall) -> SkillEnvelope:
+    """Dismiss a task (won't-do / not-relevant) via POST /tasks/{id}/dismiss."""
+    base = _task_base()
+    if _is_stub_url(base):
+        return _stub_envelope("list")
+
+    inputs = call.inputs or {}
+    task_id = (inputs.get("task_id") or "").strip()
+    if not task_id:
+        return SkillEnvelope(text="`task_id` is required to dismiss a task.", signal="no_sources")
+
+    _emit(call, f"◌ Task manager: dismiss_task {task_id[:8]}…")
+    try:
+        dismissed = _http_request("POST", f"{base}/tasks/{task_id}/dismiss",
+                                  body={"dismissed_by": inputs.get("dismissed_by") or "chat"})
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as e:
+        logger.warning("dismiss_task: task-manager unreachable: %s", e)
+        return SkillEnvelope(text=f"Task manager error: {e}", signal="no_sources")
+
+    row = TaskRow.from_api(dismissed) if isinstance(dismissed, dict) else None
+    summary = f"Task `{task_id[:8]}` dismissed."
+    envelope = _confirmation_envelope("dismiss", row, summary)
+    _attach_to_ctx(call, envelope)
+    return SkillEnvelope(text=summary, signal="corpus_only", extra=envelope.to_extra())
 
 
 # ── Registrations ────────────────────────────────────────────────────
@@ -388,5 +497,90 @@ register(
         follow_up_capable=False,
         category="tasks",
         display_name="Resolve Task",
+    )
+)
+
+register(
+    SkillSpec(
+        name="patch_task",
+        description=(
+            "Edit an existing task's fields in the unified task manager.\n"
+            "Use when: user asks to 'change the severity', 'update the title', 'push the deadline',\n"
+            "  'add a note to task X', or otherwise modify a task without resolving it.\n"
+            "Required: task_id (full UUID or 8-char short form from a prior list).\n"
+            "Optional: title, text, body, severity (critical|warning|info|low|none),\n"
+            "  deadline (YYYY-MM-DD), status (open|in_progress), note (appended as comment).\n"
+            "Returns: confirmation + the updated row."
+        ),
+        inputs_schema={
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Full UUID or 8-char short id."},
+                "title": {"type": "string"},
+                "text": {"type": "string"},
+                "body": {"type": "string"},
+                "severity": {"type": "string", "description": "critical | warning | info | low | none."},
+                "deadline": {"type": "string", "description": "YYYY-MM-DD."},
+                "status": {"type": "string", "description": "open | in_progress."},
+                "note": {"type": "string", "description": "Appended to the task's comment trail."},
+            },
+            "required": ["task_id"],
+        },
+        handler=_run_patch_task,
+        requires_jurisdiction=False,
+        follow_up_capable=True,
+        category="tasks",
+        display_name="Edit Task",
+    )
+)
+
+register(
+    SkillSpec(
+        name="assign_task",
+        description=(
+            "Assign or reassign a task to a person (or agent) in the unified task manager.\n"
+            "Use when: user says 'assign task X to Sam', 'reassign this to the credentialing team',\n"
+            "  'give that follow-up to me'.\n"
+            "Required: task_id AND assignee (name, email, or agent:<name>).\n"
+            "Returns: confirmation + the updated row; the handoff is recorded in the audit trail."
+        ),
+        inputs_schema={
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Full UUID or 8-char short id."},
+                "assignee": {"type": "string", "description": "Person/team/agent to assign to."},
+            },
+            "required": ["task_id", "assignee"],
+        },
+        handler=_run_assign_task,
+        requires_jurisdiction=False,
+        follow_up_capable=True,
+        category="tasks",
+        display_name="Assign Task",
+    )
+)
+
+register(
+    SkillSpec(
+        name="dismiss_task",
+        description=(
+            "Dismiss a task (won't-do / not relevant) in the unified task manager.\n"
+            "Use when: user says 'dismiss that task', 'we don't need this one', 'not relevant, close it'.\n"
+            "Different from resolve_task: resolve = done, dismiss = won't do.\n"
+            "Required: task_id (full UUID or 8-char short form).\n"
+            "Returns: confirmation."
+        ),
+        inputs_schema={
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Full UUID or 8-char short id."},
+            },
+            "required": ["task_id"],
+        },
+        handler=_run_dismiss_task,
+        requires_jurisdiction=False,
+        follow_up_capable=False,
+        category="tasks",
+        display_name="Dismiss Task",
     )
 )

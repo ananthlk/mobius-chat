@@ -124,6 +124,29 @@ TOOL_CAPABILITIES: dict[str, dict[str, Any]] = {
         "requires": "CHAT_SKILLS_TASK_MANAGER_URL; task_id required",
         "cannot_answer": "Batch resolution of multiple tasks in one call",
     },
+    "patch_task": {
+        "can_answer": [
+            "Edit a task's title, severity, deadline, or status",
+            "Add a note/comment to a task",
+        ],
+        "requires": "CHAT_SKILLS_TASK_MANAGER_URL; task_id required",
+        "cannot_answer": "Batch edits across multiple tasks in one call",
+    },
+    "assign_task": {
+        "can_answer": [
+            "Assign or reassign a task to a person or team",
+            "Hand off a follow-up item",
+        ],
+        "requires": "CHAT_SKILLS_TASK_MANAGER_URL; task_id and assignee required",
+        "cannot_answer": "Assignee directory lookup — caller must name the assignee",
+    },
+    "dismiss_task": {
+        "can_answer": [
+            "Dismiss a task as won't-do / not relevant (distinct from resolve = done)",
+        ],
+        "requires": "CHAT_SKILLS_TASK_MANAGER_URL; task_id required",
+        "cannot_answer": "Batch dismissal of multiple tasks in one call",
+    },
 }
 
 # Map: path (rag | patient | clinical | tool | reasoning) -> list of capability descriptions
@@ -155,7 +178,7 @@ PATH_CAPABILITIES = {
         "Roster reconciliation report (upload vs outside-in)",
         "Document upload skill (attach files to thread; API + UI)",
         "List thread document uploads (what files are already attached)",
-        "Task management: list, create, resolve tasks (list_tasks, create_task, resolve_task)",
+        "Task management: list, create, edit, assign, resolve, dismiss tasks (list_tasks, create_task, patch_task, assign_task, resolve_task, dismiss_task)",
     ],
     "reasoning": [
         "conceptual explanation",
@@ -213,7 +236,10 @@ def available_capabilities_json() -> dict[str, Any]:
             "list_thread_document_uploads",
             "list_tasks",
             "create_task",
+            "patch_task",
+            "assign_task",
             "resolve_task",
+            "dismiss_task",
         ],
         "web_allowed": True,
         "reasoning_allowed": True,

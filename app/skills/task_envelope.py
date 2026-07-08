@@ -135,11 +135,18 @@ class TaskEnvelope:
     user can't double-fire from a confirmation card.
     """
 
-    operation: str  # "list" | "create" | "resolve" | "get" | "patch" | "dismiss"
+    operation: str  # "list" | "create" | "resolve" | "get" | "patch" | "assign" | "dismiss"
     tasks: list[TaskRow] = field(default_factory=list)
     filters: dict[str, Any] = field(default_factory=dict)
     allow_create: bool = True
     allow_resolve: bool = True
+    # v2 (2026-07-07): full action set for the task_list block — the
+    # frontend renders Edit / Assign / Dismiss alongside Resolve when
+    # these are true. Confirmation cards (create/resolve/patch/assign/
+    # dismiss results) turn them off so a rendered card can't double-fire.
+    allow_edit: bool = True
+    allow_assign: bool = True
+    allow_dismiss: bool = True
     summary_text: str = ""
 
     def to_react_payload(self) -> dict[str, Any]:
@@ -151,8 +158,12 @@ class TaskEnvelope:
         return {
             "tasks": [t.to_dict() for t in self.tasks],
             "filters": dict(self.filters),
+            "operation": self.operation,
             "allow_create": self.allow_create,
             "allow_resolve": self.allow_resolve,
+            "allow_edit": self.allow_edit,
+            "allow_assign": self.allow_assign,
+            "allow_dismiss": self.allow_dismiss,
         }
 
     def to_extra(self) -> dict[str, Any]:

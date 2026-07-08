@@ -3759,11 +3759,24 @@ function renderFeedback(correlationId: string): HTMLElement {
     openEmailThreadDialog(tid);
   });
 
+  // Task button — opens the Tasks modal prefilled from this message so a
+  // follow-up can be logged without leaving the thread.
+  const taskActionBtn = document.createElement("button");
+  taskActionBtn.type = "button";
+  taskActionBtn.setAttribute("aria-label", "Create or review tasks");
+  taskActionBtn.textContent = "Task";
+  taskActionBtn.addEventListener("click", () => {
+    const msg = bar.closest(".chat-turn")?.querySelector(".message--assistant .message-bubble");
+    const excerpt = (msg?.textContent || "").trim().slice(0, 400);
+    openTasksModal(excerpt ? { createOpen: true, text: excerpt, title: excerpt.slice(0, 60) } : undefined);
+  });
+
   left.appendChild(up);
   left.appendChild(down);
   left.appendChild(commentArea);
   actions.appendChild(copy);
   actions.appendChild(emailBtn);
+  actions.appendChild(taskActionBtn);
   bar.appendChild(left);
   bar.appendChild(actions);
   return bar;
@@ -4673,6 +4686,7 @@ function _svgIcon(name: string): string {
     copy: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25z"/></svg>',
     bookmark: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M3 2.75C3 1.784 3.784 1 4.75 1h6.5c.966 0 1.75.784 1.75 1.75v11.5a.75.75 0 01-1.227.579L8 11.722l-3.773 3.107A.75.75 0 013 14.25zm1.75-.25a.25.25 0 00-.25.25v9.91l3.023-2.489a.75.75 0 01.954 0l3.023 2.49V2.75a.25.25 0 00-.25-.25z"/></svg>',
     cite: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.75 2h12.5c.966 0 1.75.784 1.75 1.75v8.5A1.75 1.75 0 0114.25 14H1.75A1.75 1.75 0 010 12.25v-8.5C0 2.784.784 2 1.75 2zm0 1.5a.25.25 0 00-.25.25v8.5c0 .138.112.25.25.25h12.5a.25.25 0 00.25-.25v-8.5a.25.25 0 00-.25-.25zM3.5 6.25a.75.75 0 01.75-.75h7.5a.75.75 0 010 1.5h-7.5a.75.75 0 01-.75-.75zm.75 2.25a.75.75 0 000 1.5h4a.75.75 0 000-1.5z"/></svg>',
+    task: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M2.5 1.75a.25.25 0 01.25-.25h8.5a.25.25 0 01.25.25v.5h1.5v-.5A1.75 1.75 0 0011.25 0h-8.5A1.75 1.75 0 001 1.75v12.5c0 .966.784 1.75 1.75 1.75h4.5a.75.75 0 000-1.5h-4.5a.25.25 0 01-.25-.25zM4.75 4a.75.75 0 000 1.5h4.5a.75.75 0 000-1.5zm0 3a.75.75 0 000 1.5h2.5a.75.75 0 000-1.5zm10.28 2.72a.75.75 0 00-1.06-1.06L10.5 12.13l-1.47-1.47a.75.75 0 10-1.06 1.06l2 2a.75.75 0 001.06 0z"/></svg>',
   };
   return icons[name] || "";
 }
@@ -4721,8 +4735,11 @@ function initTextSelectionToolbar(): void {
       if (!container) return;
       // 2026-04-25: also match the inline doc-reader content so the
       // toolbar (copy/bookmark/cite) works inside the restored panel.
+      // 2026-07-07: also match chat message bubbles so "Create task"
+      // (and copy/bookmark/cite) work on any assistant/user text.
       if (!container.closest(".envelope-detail-body") &&
-          !container.closest("#doc-reader-panel .doc-reader-content")) return;
+          !container.closest("#doc-reader-panel .doc-reader-content") &&
+          !container.closest(".message-bubble")) return;
 
       const range = sel!.getRangeAt(0);
       const rect = range.getBoundingClientRect();
@@ -4772,6 +4789,27 @@ function initTextSelectionToolbar(): void {
       });
       toolbar.appendChild(citeBtn);
 
+      const d3 = document.createElement("span"); d3.className = "tst-divider"; toolbar.appendChild(d3);
+
+      const taskBtn = document.createElement("button");
+      taskBtn.innerHTML = _svgIcon("task") + " Create task";
+      taskBtn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const tid = (window as any).__mobiusChatThreadId || "";
+        // Cheap stable hash of the selection for the dedup-safe source_ref.
+        let h = 0;
+        for (let i = 0; i < text.length; i++) { h = ((h << 5) - h + text.charCodeAt(i)) | 0; }
+        openTasksModal({
+          createOpen: true,
+          text: text.slice(0, 600),
+          title: text.slice(0, 60),
+          sourceModule: "chat_highlight",
+          sourceRef: `highlight:${tid || "nothread"}:${(h >>> 0).toString(16)}`,
+        });
+        _removeToolbar();
+      });
+      toolbar.appendChild(taskBtn);
+
       document.body.appendChild(toolbar);
       _activeToolbar = toolbar;
     }, 10);
@@ -4784,6 +4822,281 @@ function initTextSelectionToolbar(): void {
 if (typeof document !== "undefined") {
   if (document.readyState === "loading") { document.addEventListener("DOMContentLoaded", initTextSelectionToolbar); }
   else { initTextSelectionToolbar(); }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Tasks Modal — create / review / edit / assign tasks
+   Opened from: hamburger drawer, per-message task icon, selection toolbar
+   ("Create task"), and task_list block Edit buttons. Talks to the
+   /chat/tasks proxy (app/api/tasks.py → task-manager skill).
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+let _tasksModalEl: HTMLElement | null = null;
+
+interface TasksModalPrefill {
+  createOpen?: boolean;
+  title?: string;
+  text?: string;
+  sourceModule?: string;
+  sourceRef?: string;
+}
+
+const _TASK_SEVERITIES = ["critical", "warning", "info", "low", "none"];
+
+function closeTasksModal(): void {
+  if (_tasksModalEl) { _tasksModalEl.remove(); _tasksModalEl = null; }
+}
+
+function openTasksModal(prefill?: TasksModalPrefill): void {
+  closeTasksModal();
+
+  const overlay = document.createElement("div");
+  overlay.className = "tasks-modal-overlay";
+  overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) closeTasksModal(); });
+  const escHandler = (e: KeyboardEvent) => {
+    if (e.key === "Escape") { closeTasksModal(); document.removeEventListener("keydown", escHandler); }
+  };
+  document.addEventListener("keydown", escHandler);
+
+  const panel = document.createElement("div");
+  panel.className = "tasks-modal";
+
+  // ── Header ──
+  const header = document.createElement("div");
+  header.className = "tasks-modal-header";
+  header.innerHTML = `<span class="tasks-modal-title">${_svgIcon("task")} Tasks</span>`;
+  const headerBtns = document.createElement("div");
+  headerBtns.className = "tasks-modal-header-btns";
+  const newBtn = document.createElement("button");
+  newBtn.type = "button";
+  newBtn.className = "tm-env-btn tm-env-btn--resolve";
+  newBtn.textContent = "+ New task";
+  const closeBtn = document.createElement("button");
+  closeBtn.type = "button";
+  closeBtn.className = "tasks-modal-close";
+  closeBtn.innerHTML = "&times;";
+  closeBtn.addEventListener("click", closeTasksModal);
+  headerBtns.appendChild(newBtn);
+  headerBtns.appendChild(closeBtn);
+  header.appendChild(headerBtns);
+  panel.appendChild(header);
+
+  // ── Create form (collapsed unless prefilled) ──
+  const createForm = document.createElement("div");
+  createForm.className = "tasks-modal-create";
+  createForm.style.display = prefill?.createOpen ? "" : "none";
+  createForm.innerHTML = `
+    <input type="text" class="tasks-modal-input" data-f="title" placeholder="Title" maxlength="160">
+    <textarea class="tasks-modal-input" data-f="text" placeholder="What needs to be done? (required)" rows="3"></textarea>
+    <div class="tasks-modal-create-row">
+      <input type="text" class="tasks-modal-input" data-f="org" placeholder="Org (required)">
+      <select class="tasks-modal-input" data-f="severity">
+        ${_TASK_SEVERITIES.map((s) => `<option value="${s}" ${s === "low" ? "selected" : ""}>${s}</option>`).join("")}
+      </select>
+      <input type="text" class="tasks-modal-input" data-f="assignee" placeholder="Assignee (optional)">
+    </div>
+    <div class="tasks-modal-create-row">
+      <button type="button" class="tm-env-btn tm-env-btn--resolve" data-f="submit">Create</button>
+      <button type="button" class="tm-env-btn" data-f="cancel">Cancel</button>
+      <span class="tasks-modal-create-err" data-f="err"></span>
+    </div>`;
+  const cf = (k: string) => createForm.querySelector(`[data-f="${k}"]`) as HTMLInputElement;
+  if (prefill?.title) cf("title").value = prefill.title;
+  if (prefill?.text) (cf("text") as unknown as HTMLTextAreaElement).value = prefill.text;
+  newBtn.addEventListener("click", () => { createForm.style.display = ""; cf("title").focus(); });
+  (createForm.querySelector('[data-f="cancel"]') as HTMLButtonElement).addEventListener("click", () => {
+    createForm.style.display = "none";
+  });
+  (createForm.querySelector('[data-f="submit"]') as HTMLButtonElement).addEventListener("click", async () => {
+    const err = createForm.querySelector('[data-f="err"]') as HTMLElement;
+    const text = (cf("text") as unknown as HTMLTextAreaElement).value.trim();
+    const org = cf("org").value.trim();
+    if (!text || !org) { err.textContent = "Org and description are required."; return; }
+    err.textContent = "";
+    const body: Record<string, unknown> = {
+      org_name: org,
+      text,
+      title: cf("title").value.trim() || text.slice(0, 60),
+      severity: (cf("severity") as unknown as HTMLSelectElement).value,
+      source_module: prefill?.sourceModule || "manual",
+    };
+    const assignee = cf("assignee").value.trim();
+    if (assignee) body.assignee = assignee;
+    if (prefill?.sourceRef) body.source_ref = prefill.sourceRef;
+    const tid = (window as any).__mobiusChatThreadId;
+    if (tid) body.extra = { origin: { thread_id: tid } };
+    try {
+      const r = await fetch(`${API_BASE}/chat/tasks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) { err.textContent = `Create failed (${r.status}).`; return; }
+      createForm.style.display = "none";
+      (cf("text") as unknown as HTMLTextAreaElement).value = "";
+      cf("title").value = "";
+      _showToast("Task created");
+      void loadList();
+    } catch { err.textContent = "Create failed — network error."; }
+  });
+  panel.appendChild(createForm);
+
+  // ── Filter row ──
+  const filters = document.createElement("div");
+  filters.className = "tasks-modal-filters";
+  filters.innerHTML = `
+    <select class="tasks-modal-input" data-f="status">
+      <option value="open" selected>Open</option>
+      <option value="in_progress">In progress</option>
+      <option value="resolved">Resolved</option>
+      <option value="dismissed">Dismissed</option>
+      <option value="">All</option>
+    </select>
+    <input type="text" class="tasks-modal-input" data-f="org" placeholder="Org filter">
+    <input type="text" class="tasks-modal-input" data-f="assignee" placeholder="Assignee filter">
+    <button type="button" class="tm-env-btn" data-f="apply">Apply</button>`;
+  panel.appendChild(filters);
+
+  // ── List ──
+  const listWrap = document.createElement("div");
+  listWrap.className = "tasks-modal-list";
+  panel.appendChild(listWrap);
+
+  async function loadList(): Promise<void> {
+    listWrap.innerHTML = `<div class="tasks-modal-loading">Loading…</div>`;
+    const ff = (k: string) => (filters.querySelector(`[data-f="${k}"]`) as HTMLInputElement).value.trim();
+    const params = new URLSearchParams({ limit: "100" });
+    if (ff("status")) params.set("status", ff("status"));
+    if (ff("org")) params.set("org_name", ff("org"));
+    if (ff("assignee")) params.set("assignee", ff("assignee"));
+    try {
+      const r = await fetch(`${API_BASE}/chat/tasks?${params.toString()}`);
+      const data = await r.json();
+      const tasks: any[] = data.tasks || [];
+      listWrap.innerHTML = "";
+      if (!tasks.length) {
+        listWrap.innerHTML = `<div class="tasks-modal-loading">No tasks match the current filters.</div>`;
+        return;
+      }
+      for (const t of tasks) listWrap.appendChild(_taskModalRow(t, loadList));
+    } catch {
+      listWrap.innerHTML = `<div class="tasks-modal-loading">Failed to load tasks.</div>`;
+    }
+  }
+  (filters.querySelector('[data-f="apply"]') as HTMLButtonElement).addEventListener("click", () => void loadList());
+
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+  _tasksModalEl = overlay;
+  void loadList();
+}
+
+function _taskModalRow(t: any, reload: () => Promise<void>): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "tasks-modal-row";
+  const sev = (t.severity || "low").toLowerCase();
+  const status = (t.status || "open").toLowerCase();
+  const title = t.title || t.text || "(no title)";
+  const head = document.createElement("div");
+  head.className = "tasks-modal-row-head";
+  head.innerHTML = `
+    <span class="tm-env-badge tm-env-badge--${sev}">${sev}</span>
+    <span class="tasks-modal-row-title"></span>
+    <span class="tm-env-mod-tag">${(t.source_module || "").replace(/_/g, " ")}</span>
+    <span class="tasks-modal-row-status">${status}${t.assignee ? " → " + t.assignee : ""}</span>`;
+  (head.querySelector(".tasks-modal-row-title") as HTMLElement).textContent = title;
+  row.appendChild(head);
+
+  const actions = document.createElement("div");
+  actions.className = "tasks-modal-row-actions";
+  row.appendChild(actions);
+
+  const mkBtn = (label: string, cls: string, fn: () => void) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = `tm-env-btn ${cls}`;
+    b.textContent = label;
+    b.addEventListener("click", fn);
+    actions.appendChild(b);
+    return b;
+  };
+
+  const isOpen = status === "open" || status === "in_progress";
+  if (isOpen) {
+    mkBtn("Resolve", "tm-env-btn--resolve", async () => {
+      await fetch(`${API_BASE}/chat/tasks/${t.task_id}/resolve`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resolved_by: "chat" }),
+      }).catch(() => null);
+      void reload();
+    });
+    mkBtn("Dismiss", "tm-env-btn--dismiss", async () => {
+      await fetch(`${API_BASE}/chat/tasks/${t.task_id}/dismiss`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dismissed_by: "chat" }),
+      }).catch(() => null);
+      void reload();
+    });
+    mkBtn("Assign", "tm-env-btn--assign", () => {
+      if (actions.querySelector(".tasks-modal-assign-input")) return;
+      const inp = document.createElement("input");
+      inp.type = "text";
+      inp.className = "tasks-modal-input tasks-modal-assign-input";
+      inp.placeholder = "assignee — Enter to save";
+      inp.value = t.assignee || "";
+      inp.addEventListener("keydown", async (e) => {
+        if (e.key === "Escape") { inp.remove(); return; }
+        if (e.key !== "Enter") return;
+        const who = inp.value.trim();
+        if (!who) return;
+        await fetch(`${API_BASE}/chat/tasks/${t.task_id}`, {
+          method: "PATCH", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ assigned_to: who, assignee: who }),
+        }).catch(() => null);
+        void reload();
+      });
+      actions.appendChild(inp);
+      inp.focus();
+    });
+    mkBtn("Edit", "", () => {
+      if (row.querySelector(".tasks-modal-editor")) return;
+      const ed = document.createElement("div");
+      ed.className = "tasks-modal-editor";
+      ed.innerHTML = `
+        <input type="text" class="tasks-modal-input" data-e="title" placeholder="Title">
+        <div class="tasks-modal-create-row">
+          <select class="tasks-modal-input" data-e="severity">
+            ${_TASK_SEVERITIES.map((s) => `<option value="${s}" ${s === sev ? "selected" : ""}>${s}</option>`).join("")}
+          </select>
+          <input type="date" class="tasks-modal-input" data-e="deadline">
+          <input type="text" class="tasks-modal-input" data-e="note" placeholder="Add note (optional)">
+        </div>
+        <div class="tasks-modal-create-row">
+          <button type="button" class="tm-env-btn tm-env-btn--resolve" data-e="save">Save</button>
+          <button type="button" class="tm-env-btn" data-e="cancel">Cancel</button>
+        </div>`;
+      (ed.querySelector('[data-e="title"]') as HTMLInputElement).value = title;
+      (ed.querySelector('[data-e="cancel"]') as HTMLButtonElement).addEventListener("click", () => ed.remove());
+      (ed.querySelector('[data-e="save"]') as HTMLButtonElement).addEventListener("click", async () => {
+        const val = (k: string) => (ed.querySelector(`[data-e="${k}"]`) as HTMLInputElement).value.trim();
+        const body: Record<string, unknown> = {};
+        if (val("title") && val("title") !== title) { body.title = val("title"); body.text = val("title"); }
+        if (val("severity") !== sev) body.severity = val("severity");
+        if (val("deadline")) body.deadline = val("deadline");
+        if (val("note")) body.note = val("note");
+        if (Object.keys(body).length) {
+          await fetch(`${API_BASE}/chat/tasks/${t.task_id}`, {
+            method: "PATCH", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          }).catch(() => null);
+        }
+        ed.remove();
+        void reload();
+      });
+      row.appendChild(ed);
+    });
+  }
+  return row;
 }
 
 /** localStorage "1"/"0" overrides profile; unset → use profile activities (admin-style flags). */
@@ -6862,8 +7175,12 @@ function renderAssistantFromEnvelope(
           created_at?: string; org_name?: string; dim?: string; type?: string;
         }>;
         filters?: Record<string, string>;
+        operation?: string;
         allow_create?: boolean;
         allow_resolve?: boolean;
+        allow_edit?: boolean;
+        allow_assign?: boolean;
+        allow_dismiss?: boolean;
       };
 
       // ── helpers ────────────────────────────────────────────────────────────
@@ -7075,36 +7392,118 @@ function renderAssistantFromEnvelope(
 
           card.appendChild(inner);
 
-          // ── Resolve button ────────────────────────────────────────────────
-          if ((b.allow_resolve !== false) && (status === "open" || status === "in_progress")) {
+          // ── Action buttons (Resolve / Dismiss / Assign / Edit) ────────────
+          // Gated per-envelope by allow_* flags; only open-ish tasks act.
+          if (status === "open" || status === "in_progress") {
             const actions = document.createElement("div");
             actions.className = "tm-env-card-actions";
-            const statusIcon = document.createElement("span"); // keep ref for post-resolve update
-            const resolveBtn = document.createElement("button");
-            resolveBtn.type = "button";
-            resolveBtn.className = "tm-env-btn tm-env-btn--resolve";
-            resolveBtn.textContent = "Resolve";
-            resolveBtn.addEventListener("click", async (e) => {
-              e.stopPropagation();
-              resolveBtn.disabled = true;
-              resolveBtn.textContent = "…";
-              try {
-                await fetch(`/chat/tasks/${task.task_id}/resolve`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ resolved_by: "chat" }),
+
+            const settle = (newStatus: string) => {
+              card.classList.remove("tm-env-status-open", "tm-env-status-in_progress");
+              card.classList.add(`tm-env-status-${newStatus}`);
+              statusDot.className = `tm-env-status-dot tm-env-status-dot--${newStatus}`;
+              actions.remove();
+            };
+
+            if (b.allow_resolve !== false) {
+              const resolveBtn = document.createElement("button");
+              resolveBtn.type = "button";
+              resolveBtn.className = "tm-env-btn tm-env-btn--resolve";
+              resolveBtn.textContent = "Resolve";
+              resolveBtn.addEventListener("click", async (e) => {
+                e.stopPropagation();
+                resolveBtn.disabled = true;
+                resolveBtn.textContent = "…";
+                try {
+                  await fetch(`/chat/tasks/${task.task_id}/resolve`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ resolved_by: "chat" }),
+                  });
+                  settle("resolved");
+                } catch {
+                  resolveBtn.disabled = false;
+                  resolveBtn.textContent = "Resolve";
+                }
+              });
+              actions.appendChild(resolveBtn);
+            }
+
+            if (b.allow_dismiss !== false) {
+              const dismissBtn = document.createElement("button");
+              dismissBtn.type = "button";
+              dismissBtn.className = "tm-env-btn tm-env-btn--dismiss";
+              dismissBtn.textContent = "Dismiss";
+              dismissBtn.addEventListener("click", async (e) => {
+                e.stopPropagation();
+                dismissBtn.disabled = true;
+                dismissBtn.textContent = "…";
+                try {
+                  await fetch(`/chat/tasks/${task.task_id}/dismiss`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ dismissed_by: "chat" }),
+                  });
+                  settle("dismissed");
+                } catch {
+                  dismissBtn.disabled = false;
+                  dismissBtn.textContent = "Dismiss";
+                }
+              });
+              actions.appendChild(dismissBtn);
+            }
+
+            if (b.allow_assign !== false) {
+              const assignBtn = document.createElement("button");
+              assignBtn.type = "button";
+              assignBtn.className = "tm-env-btn tm-env-btn--assign";
+              assignBtn.textContent = "Assign";
+              assignBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                if (actions.querySelector(".tm-env-assign-input")) return;
+                const inp = document.createElement("input");
+                inp.type = "text";
+                inp.className = "tm-env-assign-input";
+                inp.placeholder = "assignee — Enter to save";
+                inp.addEventListener("click", (ev) => ev.stopPropagation());
+                inp.addEventListener("keydown", async (ev) => {
+                  if (ev.key === "Escape") { inp.remove(); return; }
+                  if (ev.key !== "Enter") return;
+                  const who = inp.value.trim();
+                  if (!who) return;
+                  inp.disabled = true;
+                  try {
+                    await fetch(`/chat/tasks/${task.task_id}`, {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ assigned_to: who, assignee: who }),
+                    });
+                    inp.remove();
+                    assignBtn.textContent = `→ ${who}`;
+                    assignBtn.disabled = true;
+                  } catch {
+                    inp.disabled = false;
+                  }
                 });
-                card.classList.remove("tm-env-status-open", "tm-env-status-in_progress");
-                card.classList.add("tm-env-status-resolved");
-                statusDot.className = "tm-env-status-dot tm-env-status-dot--resolved";
-                resolveBtn.remove();
-              } catch {
-                resolveBtn.disabled = false;
-                resolveBtn.textContent = "Resolve";
-              }
-            });
-            actions.appendChild(resolveBtn);
-            card.appendChild(actions);
+                actions.appendChild(inp);
+                inp.focus();
+              });
+              actions.appendChild(assignBtn);
+            }
+
+            if (b.allow_edit !== false) {
+              const editBtn = document.createElement("button");
+              editBtn.type = "button";
+              editBtn.className = "tm-env-btn";
+              editBtn.textContent = "Edit";
+              editBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                openTasksModal(); // full editor lives in the Tasks modal
+              });
+              actions.appendChild(editBtn);
+            }
+
+            if (actions.childElementCount) card.appendChild(actions);
           }
 
           list.appendChild(card);
@@ -7904,6 +8303,12 @@ function run(): void {
   initSidebarRailIcons(auth);
 
   hamburger.addEventListener("click", openDrawer);
+  // Tasks modal launcher (drawer entry) — closes the drawer so the modal
+  // isn't stacked under the overlay.
+  document.getElementById("btnTasksModal")?.addEventListener("click", () => {
+    closeDrawer();
+    openTasksModal();
+  });
   drawerClose.addEventListener("click", closeDrawer);
   drawerOverlay.addEventListener("click", closeDrawer);
   const configHistoryViewClose = document.getElementById("configHistoryViewClose");

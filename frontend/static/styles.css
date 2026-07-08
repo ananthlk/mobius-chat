@@ -6893,6 +6893,120 @@ body {
 }
 .tm-env-view-all:hover { color: var(--mobius-accent); }
 
+/* ── task_list card action variants (v2: dismiss / assign / edit) ── */
+.tm-env-btn--dismiss {
+  background: var(--mobius-bg-tertiary);
+  color: var(--mobius-text-muted);
+  border: 1px solid var(--mobius-border);
+}
+.tm-env-btn--dismiss:hover { color: var(--error-text); border-color: var(--error-text); }
+.tm-env-btn--assign {
+  background: var(--mobius-bg-secondary);
+  color: var(--main-text);
+  border: 1px solid var(--mobius-border);
+}
+.tm-env-assign-input {
+  font-size: var(--mobius-text-xs);
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--mobius-border);
+  border-radius: var(--mobius-radius-base);
+  background: var(--main-bg);
+  color: var(--main-text);
+  min-width: 180px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Tasks Modal — create / review / edit / assign (drawer, message row,
+   selection toolbar). Reuses tm-env-* chips/badges/buttons.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.tasks-modal-overlay {
+  position: fixed; inset: 0; z-index: 10010;
+  background: rgba(15, 18, 25, 0.45);
+  display: flex; align-items: center; justify-content: center;
+}
+.tasks-modal {
+  width: min(720px, 94vw);
+  max-height: 84vh;
+  display: flex; flex-direction: column;
+  background: var(--main-bg);
+  color: var(--main-text);
+  border: 1px solid var(--mobius-border);
+  border-radius: var(--mobius-radius-lg);
+  box-shadow: var(--mobius-shadow-lg);
+  overflow: hidden;
+}
+.tasks-modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0.75rem 1rem;
+  background: var(--mobius-bg-secondary);
+  border-bottom: 1px solid var(--mobius-border-light);
+}
+.tasks-modal-title {
+  display: inline-flex; align-items: center; gap: 0.5rem;
+  font-weight: 600; font-size: var(--mobius-text-md);
+}
+.tasks-modal-title svg { width: 16px; height: 16px; }
+.tasks-modal-header-btns { display: flex; align-items: center; gap: 0.5rem; }
+.tasks-modal-close {
+  border: none; background: transparent; cursor: pointer;
+  font-size: 1.4rem; line-height: 1; color: var(--mobius-text-muted);
+  padding: 0 0.25rem;
+}
+.tasks-modal-close:hover { color: var(--main-text); }
+.tasks-modal-filters {
+  display: flex; gap: 0.5rem; align-items: center;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--mobius-border-light);
+  flex-wrap: wrap;
+}
+.tasks-modal-input {
+  font-size: var(--mobius-text-sm);
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--mobius-border);
+  border-radius: var(--mobius-radius-base);
+  background: var(--main-bg);
+  color: var(--main-text);
+}
+.tasks-modal-create {
+  display: flex; flex-direction: column; gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: var(--mobius-bg-tertiary);
+  border-bottom: 1px solid var(--mobius-border-light);
+}
+.tasks-modal-create textarea { resize: vertical; font-family: inherit; }
+.tasks-modal-create-row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+.tasks-modal-create-err { font-size: var(--mobius-text-xs); color: var(--error-text); }
+.tasks-modal-list { overflow-y: auto; flex: 1; }
+.tasks-modal-loading {
+  padding: 1.25rem; text-align: center;
+  color: var(--mobius-text-muted); font-size: var(--mobius-text-sm);
+}
+.tasks-modal-row {
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--mobius-border-light);
+}
+.tasks-modal-row:hover { background: var(--mobius-bg-secondary); }
+.tasks-modal-row-head {
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+}
+.tasks-modal-row-title {
+  font-size: var(--mobius-text-sm); font-weight: 500;
+  flex: 1; min-width: 200px;
+}
+.tasks-modal-row-status {
+  font-size: var(--mobius-text-xs); color: var(--mobius-text-muted);
+}
+.tasks-modal-row-actions {
+  display: flex; gap: 0.4rem; align-items: center;
+  margin-top: 0.45rem; flex-wrap: wrap;
+}
+.tasks-modal-editor {
+  display: flex; flex-direction: column; gap: 0.5rem;
+  margin-top: 0.5rem; padding: 0.6rem;
+  background: var(--mobius-bg-tertiary);
+  border-radius: var(--mobius-radius-base);
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    Doc Reader Panel — inline document viewer slide-in
    ═══════════════════════════════════════════════════════════════════════════ */
