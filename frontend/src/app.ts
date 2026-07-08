@@ -9222,6 +9222,7 @@ function run(): void {
     }
 
     let messageWrapEl: HTMLElement | null = null;
+    let draftStreamCancel: (() => void) | null = null;
     /** During stream, do not show raw JSON; show placeholder until final render (AnswerCard or prose). */
     function streamingDisplayText(text: string): string {
       const t = (text ?? "").trim();
@@ -9241,7 +9242,7 @@ function run(): void {
       scrollToBottom(messagesEl);
     }
     function onDraftReady(text: string): void {
-      if (messageWrapEl) return; // already rendered
+      if (messageWrapEl) return;
       const wrap = document.createElement("div");
       wrap.className = "message message--assistant is-draft";
       const bubble = document.createElement("div");
@@ -9252,12 +9253,28 @@ function run(): void {
       bubble.appendChild(badge);
       const textEl = document.createElement("div");
       textEl.className = "message-bubble-text";
-      textEl.innerHTML = simpleMarkdownToHtml(sanitizeDisplayMessage(text));
       bubble.appendChild(textEl);
       wrap.appendChild(bubble);
       messageWrapEl = wrap;
       turnWrap.appendChild(messageWrapEl);
-      scrollToBottom(messagesEl);
+      // Stream the ReAct answer in word-by-word (5 words per 18ms ≈ natural LLM pace)
+      const words = text.split(" ");
+      let wi = 0;
+      let cancelled = false;
+      draftStreamCancel = () => {
+        cancelled = true;
+        textEl.innerHTML = simpleMarkdownToHtml(sanitizeDisplayMessage(text));
+        scrollToBottom(messagesEl);
+      };
+      function streamStep() {
+        if (cancelled) return;
+        wi = Math.min(wi + 5, words.length);
+        textEl.innerHTML = simpleMarkdownToHtml(words.slice(0, wi).join(" "));
+        scrollToBottom(messagesEl);
+        if (wi < words.length) window.setTimeout(streamStep, 18);
+        else draftStreamCancel = null;
+      }
+      streamStep();
     }
 
     const payload: {
@@ -9350,6 +9367,10 @@ function run(): void {
 
         thinkingDone(thinkingLines.length);
 
+        // Finish any in-progress word-stream and detect draft-upgrade path
+        if (draftStreamCancel) { draftStreamCancel(); draftStreamCancel = null; }
+        const isDraftBubble = !!messageWrapEl?.classList.contains("is-draft");
+
         if (data.thread_id) currentThreadId = data.thread_id; window.__mobiusChatThreadId = currentThreadId;
         const cidForTurn = (data.correlation_id || activeCorrelationId || "").trim();
         if (cidForTurn) turnWrap.setAttribute("data-correlation-id", cidForTurn);
@@ -9373,9 +9394,6 @@ function run(): void {
         }
 
         // 4. Assistant message: use roster_report_final_md when present (full report with charts)
-        if (messageWrapEl) {
-          messageWrapEl.remove();
-        }
         const reportMd = data.roster_report_final_md && typeof data.roster_report_final_md === "string" ? data.roster_report_final_md.trim() : "";
         const contentToShow = reportMd.length > 0 ? reportMd : (body || "(No response)");
         const qcFromPayload =
@@ -9402,31 +9420,42 @@ function run(): void {
           useEnvelope &&
           envBlocks.some((b) => (b as { type?: string }).type === "pipeline_human_gate");
 
-        if (useEnvelope) {
-          turnWrap.appendChild(
-            renderAssistantFromEnvelope(envCandidate as AssistantEnvelope, {
-              onFollowupClick: (q) => sendMessage(q),
-              sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || undefined,
-              showConfidenceBadge: data.status !== "clarification" && data.status !== "refinement_ask",
-              qcAudit: qcFromPayload,
-              correlationId: cidForTurn || null,
-              suppressConfidenceForAdminQcFail: suppressConf,
-              threadId: data.thread_id ?? currentThreadId ?? null,
-            })
-          );
+        if (isDraftBubble && messageWrapEl) {
+          // Preserve the streamed draft content — strip the refining chrome and
+          // let subsequent metadata elements fade in beneath it via CSS animation.
+          messageWrapEl.classList.remove("is-draft");
+          messageWrapEl.setAttribute("data-draft-upgraded", "1");
+          messageWrapEl.querySelector(".draft-refining-badge")?.remove();
+          turnWrap.classList.add("turn-meta-revealing");
+          window.setTimeout(() => turnWrap.classList.remove("turn-meta-revealing"), 1200);
         } else {
-          turnWrap.appendChild(
-            renderAssistantContent(contentToShow, !!data.llm_error, {
-              onFollowupClick: (q) => sendMessage(q),
-              sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || undefined,
-              showConfidenceBadge: data.status !== "clarification" && data.status !== "refinement_ask",
-              suppressFollowups: nextQuestions.length > 0,
-              nextQuestions,
-              renderAsMarkdown: reportMd.length > 0 || !!(data.roster_report_final_md && (body || "").trim().length > 50),
-              qcAudit: qcFromPayload,
-              suppressConfidenceForAdminQcFail: suppressConf,
-            })
-          );
+          if (messageWrapEl) messageWrapEl.remove();
+          if (useEnvelope) {
+            turnWrap.appendChild(
+              renderAssistantFromEnvelope(envCandidate as AssistantEnvelope, {
+                onFollowupClick: (q) => sendMessage(q),
+                sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || undefined,
+                showConfidenceBadge: data.status !== "clarification" && data.status !== "refinement_ask",
+                qcAudit: qcFromPayload,
+                correlationId: cidForTurn || null,
+                suppressConfidenceForAdminQcFail: suppressConf,
+                threadId: data.thread_id ?? currentThreadId ?? null,
+              })
+            );
+          } else {
+            turnWrap.appendChild(
+              renderAssistantContent(contentToShow, !!data.llm_error, {
+                onFollowupClick: (q) => sendMessage(q),
+                sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || undefined,
+                showConfidenceBadge: data.status !== "clarification" && data.status !== "refinement_ask",
+                suppressFollowups: nextQuestions.length > 0,
+                nextQuestions,
+                renderAsMarkdown: reportMd.length > 0 || !!(data.roster_report_final_md && (body || "").trim().length > 50),
+                qcAudit: qcFromPayload,
+                suppressConfidenceForAdminQcFail: suppressConf,
+              })
+            );
+          }
         }
 
         const mergeQc = (d: ChatResponse): void => {

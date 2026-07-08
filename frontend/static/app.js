@@ -8862,6 +8862,7 @@ ${message}`;
       scrollToBottom(messagesEl);
     }
     let messageWrapEl = null;
+    let draftStreamCancel = null;
     function streamingDisplayText(text) {
       const t = (text ?? "").trim();
       if (t.startsWith("{"))
@@ -8894,12 +8895,30 @@ ${message}`;
       bubble.appendChild(badge);
       const textEl = document.createElement("div");
       textEl.className = "message-bubble-text";
-      textEl.innerHTML = simpleMarkdownToHtml(sanitizeDisplayMessage(text));
       bubble.appendChild(textEl);
       wrap.appendChild(bubble);
       messageWrapEl = wrap;
       turnWrap.appendChild(messageWrapEl);
-      scrollToBottom(messagesEl);
+      const words = text.split(" ");
+      let wi = 0;
+      let cancelled = false;
+      draftStreamCancel = () => {
+        cancelled = true;
+        textEl.innerHTML = simpleMarkdownToHtml(sanitizeDisplayMessage(text));
+        scrollToBottom(messagesEl);
+      };
+      function streamStep() {
+        if (cancelled)
+          return;
+        wi = Math.min(wi + 5, words.length);
+        textEl.innerHTML = simpleMarkdownToHtml(words.slice(0, wi).join(" "));
+        scrollToBottom(messagesEl);
+        if (wi < words.length)
+          window.setTimeout(streamStep, 18);
+        else
+          draftStreamCancel = null;
+      }
+      streamStep();
     }
     const payload = { message };
     if (currentThreadId)
@@ -8961,6 +8980,11 @@ ${message}`;
         addThinkingLineAndScroll("LLM failed (stub used): " + data.llm_error);
       }
       thinkingDone(thinkingLines.length);
+      if (draftStreamCancel) {
+        draftStreamCancel();
+        draftStreamCancel = null;
+      }
+      const isDraftBubble = !!messageWrapEl?.classList.contains("is-draft");
       if (data.thread_id)
         currentThreadId = data.thread_id;
       window.__mobiusChatThreadId = currentThreadId;
@@ -8980,9 +9004,6 @@ ${message}`;
           nextQuestions = card.followups.map((f) => (f.question || f.reason || f.field || "").trim()).filter(Boolean).map((text) => ({ text, clickable: true }));
         }
       }
-      if (messageWrapEl) {
-        messageWrapEl.remove();
-      }
       const reportMd = data.roster_report_final_md && typeof data.roster_report_final_md === "string" ? data.roster_report_final_md.trim() : "";
       const contentToShow = reportMd.length > 0 ? reportMd : body || "(No response)";
       const qcFromPayload = data.qc_audit && typeof data.qc_audit === "object" && typeof data.qc_audit.passed === "boolean" ? data.qc_audit : void 0;
@@ -8993,31 +9014,41 @@ ${message}`;
       const envSourcesBlock = envBlocks.find((b) => b.type === "sources");
       const envelopeHasSources = useEnvelope && Array.isArray(envSourcesBlock?.refs) && envSourcesBlock.refs.length > 0;
       const envelopeHasPipelineGate = useEnvelope && envBlocks.some((b) => b.type === "pipeline_human_gate");
-      if (useEnvelope) {
-        turnWrap.appendChild(
-          renderAssistantFromEnvelope(envCandidate, {
-            onFollowupClick: (q) => sendMessage(q),
-            sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || void 0,
-            showConfidenceBadge: data.status !== "clarification" && data.status !== "refinement_ask",
-            qcAudit: qcFromPayload,
-            correlationId: cidForTurn || null,
-            suppressConfidenceForAdminQcFail: suppressConf,
-            threadId: data.thread_id ?? currentThreadId ?? null
-          })
-        );
+      if (isDraftBubble && messageWrapEl) {
+        messageWrapEl.classList.remove("is-draft");
+        messageWrapEl.setAttribute("data-draft-upgraded", "1");
+        messageWrapEl.querySelector(".draft-refining-badge")?.remove();
+        turnWrap.classList.add("turn-meta-revealing");
+        window.setTimeout(() => turnWrap.classList.remove("turn-meta-revealing"), 1200);
       } else {
-        turnWrap.appendChild(
-          renderAssistantContent(contentToShow, !!data.llm_error, {
-            onFollowupClick: (q) => sendMessage(q),
-            sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || void 0,
-            showConfidenceBadge: data.status !== "clarification" && data.status !== "refinement_ask",
-            suppressFollowups: nextQuestions.length > 0,
-            nextQuestions,
-            renderAsMarkdown: reportMd.length > 0 || !!(data.roster_report_final_md && (body || "").trim().length > 50),
-            qcAudit: qcFromPayload,
-            suppressConfidenceForAdminQcFail: suppressConf
-          })
-        );
+        if (messageWrapEl)
+          messageWrapEl.remove();
+        if (useEnvelope) {
+          turnWrap.appendChild(
+            renderAssistantFromEnvelope(envCandidate, {
+              onFollowupClick: (q) => sendMessage(q),
+              sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || void 0,
+              showConfidenceBadge: data.status !== "clarification" && data.status !== "refinement_ask",
+              qcAudit: qcFromPayload,
+              correlationId: cidForTurn || null,
+              suppressConfidenceForAdminQcFail: suppressConf,
+              threadId: data.thread_id ?? currentThreadId ?? null
+            })
+          );
+        } else {
+          turnWrap.appendChild(
+            renderAssistantContent(contentToShow, !!data.llm_error, {
+              onFollowupClick: (q) => sendMessage(q),
+              sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || void 0,
+              showConfidenceBadge: data.status !== "clarification" && data.status !== "refinement_ask",
+              suppressFollowups: nextQuestions.length > 0,
+              nextQuestions,
+              renderAsMarkdown: reportMd.length > 0 || !!(data.roster_report_final_md && (body || "").trim().length > 50),
+              qcAudit: qcFromPayload,
+              suppressConfidenceForAdminQcFail: suppressConf
+            })
+          );
+        }
       }
       const mergeQc = (d) => {
         const q = d.qc_audit && typeof d.qc_audit === "object" && typeof d.qc_audit.passed === "boolean" ? d.qc_audit : void 0;

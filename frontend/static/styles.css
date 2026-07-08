@@ -2226,6 +2226,18 @@ body {
   100% { opacity: 0.4; transform: scaleX(0.3); transform-origin: left; }
 }
 
+/* Two-phase completion: all metadata appended while this class is on the turn
+   wrapper fades+slides in. Class is removed after 1.2s so later DOM appends
+   (QC refetch, etc.) are not animated. [data-draft-upgraded] marks the preserved
+   draft bubble so it keeps its position without re-animating. */
+.turn-meta-revealing > *:not([data-draft-upgraded]) {
+  animation: answer-meta-in 0.35s ease both;
+}
+@keyframes answer-meta-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
 /* Collapsible details block: hidden by default, shown when expanded */
 .answer-card-details {
   display: none;
