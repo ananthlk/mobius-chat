@@ -760,6 +760,18 @@ def run_pipeline(
                 ctx.response_payload["capture_card"] = ctx.capture_card
             if getattr(ctx, "demo", None):
                 ctx.response_payload["demo"] = ctx.demo
+            elif not getattr(ctx, "demo", None):
+                # Planner may answer directly from a skill's canned content
+                # (response_source=plan) without invoking the skill as a tool,
+                # so react_loop never runs and ctx.demo stays None. Cover that
+                # path by keying off tool_fired at response assembly time.
+                from app.communication.assistant_envelope import resolve_tool_fired
+                _tf = resolve_tool_fired(ctx)
+                if _tf == "document_upload_skill":
+                    ctx.response_payload["demo"] = {
+                        "script_id": "chat:upload-a-document",
+                        "title": "Upload a document",
+                    }
 
         # Rolling thread summary via a dedicated, focused LLM call. The
         # integrator's AnswerCard fields are unreliable on the production
