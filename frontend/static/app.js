@@ -4356,6 +4356,43 @@ function renderCaptureCard(card, meta) {
   pfEvent("shown");
   return wrap;
 }
+function renderDemoChip(demo) {
+  const wrap = document.createElement("div");
+  wrap.className = "demo-chip";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "demo-chip__btn";
+  btn.textContent = "\u25B6 Show me \u2014 " + demo.title;
+  wrap.appendChild(btn);
+  const INTERACT_BASE = "https://mobius-interact-ortabkknqa-uc.a.run.app";
+  btn.addEventListener("click", () => {
+    btn.disabled = true;
+    btn.textContent = "Loading\u2026";
+    fetch(INTERACT_BASE + "/scripts/" + encodeURIComponent(demo.script_id)).then((r) => {
+      if (!r.ok)
+        throw new Error("script fetch " + r.status);
+      return r.json();
+    }).then((script) => {
+      const MI = window["MobiusInteract"];
+      if (!MI)
+        throw new Error("MobiusInteract runner not loaded");
+      btn.textContent = "\u25B6 Show me \u2014 " + demo.title;
+      btn.disabled = false;
+      MI.run(script, {
+        onAbort: () => {
+          btn.disabled = false;
+        },
+        onDone: () => {
+          btn.disabled = false;
+        }
+      });
+    }).catch(() => {
+      btn.textContent = "\u25B6 Show me \u2014 " + demo.title;
+      btn.disabled = false;
+    });
+  });
+  return wrap;
+}
 function renderOfferFeedback(offer, meta) {
   const wrap = document.createElement("div");
   wrap.className = "pf-offer-chip";
@@ -9062,6 +9099,9 @@ ${message}`;
           threadId: data.thread_id,
           correlationId: data.correlation_id ?? activeCorrelationId
         }));
+      }
+      if (data.demo) {
+        turnWrap.appendChild(renderDemoChip(data.demo));
       }
       loadSidebarHistory();
       scrollToBottom(messagesEl);

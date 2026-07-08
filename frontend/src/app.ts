@@ -368,6 +368,11 @@ interface ChatResponse {
     post_to?: string;                                        // endpoint for score/submit
     cta?: string;                                            // label for generic CTA button
   };
+  /** Product Awareness: interactive demo tour from the Interact engine. */
+  demo?: {
+    script_id: string;
+    title: string;
+  };
 }
 
 /** One line in envelope next_steps / suggested_questions blocks */
@@ -3901,6 +3906,50 @@ function renderCaptureCard(
   xBtn.addEventListener("click", dismiss);
 
   pfEvent("shown");
+  return wrap;
+}
+
+/** "▶ Show me" demo chip from the Product Awareness / Interact engine. */
+function renderDemoChip(
+  demo: NonNullable<ChatResponse["demo"]>
+): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "demo-chip";
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "demo-chip__btn";
+  btn.textContent = "▶ Show me — " + demo.title;
+  wrap.appendChild(btn);
+
+  const INTERACT_BASE = "https://mobius-interact-ortabkknqa-uc.a.run.app";
+
+  btn.addEventListener("click", () => {
+    btn.disabled = true;
+    btn.textContent = "Loading…";
+    fetch(INTERACT_BASE + "/scripts/" + encodeURIComponent(demo.script_id))
+      .then((r) => {
+        if (!r.ok) throw new Error("script fetch " + r.status);
+        return r.json();
+      })
+      .then((script) => {
+        const MI = (window as unknown as Record<string, unknown>)["MobiusInteract"] as {
+          run: (script: unknown, opts: { onAbort?: () => void; onDone?: () => void }) => void
+        } | undefined;
+        if (!MI) throw new Error("MobiusInteract runner not loaded");
+        btn.textContent = "▶ Show me — " + demo.title;
+        btn.disabled = false;
+        MI.run(script, {
+          onAbort: () => { btn.disabled = false; },
+          onDone:  () => { btn.disabled = false; },
+        });
+      })
+      .catch(() => {
+        btn.textContent = "▶ Show me — " + demo.title;
+        btn.disabled = false;
+      });
+  });
+
   return wrap;
 }
 
@@ -9517,6 +9566,11 @@ function run(): void {
             threadId: data.thread_id,
             correlationId: data.correlation_id ?? activeCorrelationId,
           }));
+        }
+
+        // 12. Product Awareness interactive demo chip
+        if (data.demo) {
+          turnWrap.appendChild(renderDemoChip(data.demo));
         }
 
         loadSidebarHistory();
