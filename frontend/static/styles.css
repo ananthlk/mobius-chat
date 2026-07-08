@@ -2196,6 +2196,36 @@ body {
   transform: translateY(-1px);
 }
 
+/* Two-phase streaming: draft bubble shown before integrator finishes */
+.is-draft {
+  position: relative;
+}
+.draft-refining-badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--mobius-violet, #7c3aed);
+  opacity: 0.7;
+  margin-bottom: 0.4rem;
+}
+.is-draft .message-bubble::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  border-radius: 0 0 8px 8px;
+  background: linear-gradient(90deg, var(--mobius-violet, #7c3aed) 0%, transparent 100%);
+  animation: draft-scan 1.6s ease-in-out infinite;
+}
+@keyframes draft-scan {
+  0% { opacity: 0.4; transform: scaleX(0.3); transform-origin: left; }
+  50% { opacity: 1; transform: scaleX(1); transform-origin: left; }
+  100% { opacity: 0.4; transform: scaleX(0.3); transform-origin: left; }
+}
+
 /* Collapsible details block: hidden by default, shown when expanded */
 .answer-card-details {
   display: none;

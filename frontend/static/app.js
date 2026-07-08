@@ -8499,7 +8499,7 @@ function run() {
       poll();
     });
   }
-  function streamResponse(correlationId, onThinking, onStreamingMessage) {
+  function streamResponse(correlationId, onThinking, onStreamingMessage, onDraftReady) {
     if (typeof EventSource === "undefined") {
       return pollResponse(correlationId, onThinking, onStreamingMessage);
     }
@@ -8507,6 +8507,7 @@ function run() {
     return new Promise((resolve, reject) => {
       let messageSoFar = "";
       let resolved = false;
+      let draftEmitted = false;
       const STALL_MS = 9e4;
       let lastEventMs = Date.now();
       const es = new EventSource(streamUrl);
@@ -8532,7 +8533,11 @@ function run() {
             onThinking(String(data.line));
           } else if (ev === "quality_audit" && data.line != null && onThinking) {
             onThinking(String(data.line));
-          } else if (ev === "message" && data.chunk != null && onStreamingMessage) {
+          } else if (ev === "draft_ready" && data.text != null) {
+            draftEmitted = true;
+            if (onDraftReady)
+              onDraftReady(String(data.text));
+          } else if (ev === "message" && data.chunk != null && !draftEmitted && onStreamingMessage) {
             messageSoFar += String(data.chunk);
             onStreamingMessage(messageSoFar);
           } else if (ev === "completed" && data) {
@@ -8876,6 +8881,26 @@ ${message}`;
       }
       scrollToBottom(messagesEl);
     }
+    function onDraftReady(text) {
+      if (messageWrapEl)
+        return;
+      const wrap = document.createElement("div");
+      wrap.className = "message message--assistant is-draft";
+      const bubble = document.createElement("div");
+      bubble.className = "message-bubble";
+      const badge = document.createElement("span");
+      badge.className = "draft-refining-badge";
+      badge.textContent = "refining\u2026";
+      bubble.appendChild(badge);
+      const textEl = document.createElement("div");
+      textEl.className = "message-bubble-text";
+      textEl.innerHTML = simpleMarkdownToHtml(sanitizeDisplayMessage(text));
+      bubble.appendChild(textEl);
+      wrap.appendChild(bubble);
+      messageWrapEl = wrap;
+      turnWrap.appendChild(messageWrapEl);
+      scrollToBottom(messagesEl);
+    }
     const payload = { message };
     if (currentThreadId)
       payload.thread_id = currentThreadId;
@@ -8910,7 +8935,7 @@ ${message}`;
         onRequestCorrelationId();
       }
       addThinkingLineAndScroll("Request sent. Waiting for worker\u2026");
-      return streamResponse(data.correlation_id, addThinkingLineAndScroll, onStreamingMessage);
+      return streamResponse(data.correlation_id, addThinkingLineAndScroll, onStreamingMessage, onDraftReady);
     }).then(
       (data) => (
         // Refresh profile before admin-gated UI. Otherwise the first reply can render while

@@ -621,6 +621,11 @@ def run_pipeline(
                 _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e)
                 return
             _emit_model_summary(ctx, time.perf_counter() - t_react_start, on_thinking)
+            # Two-phase latency: emit ReAct answer immediately so the frontend renders
+            # before the integrator's LLM call starts. The completed event replaces it.
+            if getattr(ctx, "final_message", None):
+                from app.storage.progress import append_draft_answer
+                append_draft_answer(ctx.correlation_id, ctx.final_message)
             updates = {}
             if getattr(ctx, "failed_query", None):
                 updates["last_failed_query"] = ctx.failed_query

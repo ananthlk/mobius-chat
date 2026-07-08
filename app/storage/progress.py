@@ -208,6 +208,16 @@ def append_message_chunk(correlation_id: str, chunk: str) -> None:
         _publish_progress_event(correlation_id, ev_to_publish)
 
 
+def append_draft_answer(correlation_id: str, text: str) -> None:
+    """Emit the raw ReAct answer before the integrator runs so the frontend can render it immediately.
+    Fires a draft_ready SSE event; the completed event later swaps it with the full AnswerCard."""
+    ev: dict[str, Any] = {"event": "draft_ready", "data": {"text": text}}
+    with _lock:
+        if correlation_id in _progress:
+            _progress[correlation_id]["events"].append(ev)
+    _publish_progress_event(correlation_id, ev)
+
+
 def get_progress(correlation_id: str) -> tuple[bool, list[str], str]:
     """Return (in_progress, thinking_log_copy, message_so_far). Call from API when polling."""
     with _lock:

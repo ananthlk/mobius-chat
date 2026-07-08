@@ -8780,7 +8780,8 @@ function run(): void {
   function streamResponse(
     correlationId: string,
     onThinking: ((line: string) => void) | null,
-    onStreamingMessage: ((text: string) => void) | null
+    onStreamingMessage: ((text: string) => void) | null,
+    onDraftReady?: ((text: string) => void) | null
   ): Promise<ChatResponse> {
     if (typeof EventSource === "undefined") {
       return pollResponse(correlationId, onThinking, onStreamingMessage);
@@ -8789,6 +8790,7 @@ function run(): void {
     return new Promise((resolve, reject) => {
       let messageSoFar = "";
       let resolved = false;
+      let draftEmitted = false;
       // Stall bailout (mirrors pollResponse): if SSE delivers no events for STALL_MS,
       // treat as orphaned turn. Protects against the backend losing the job silently.
       const STALL_MS = 90_000;
@@ -8817,7 +8819,10 @@ function run(): void {
             onThinking(String(data.line));
           } else if (ev === "quality_audit" && data.line != null && onThinking) {
             onThinking(String(data.line));
-          } else if (ev === "message" && data.chunk != null && onStreamingMessage) {
+          } else if (ev === "draft_ready" && data.text != null) {
+            draftEmitted = true;
+            if (onDraftReady) onDraftReady(String(data.text));
+          } else if (ev === "message" && data.chunk != null && !draftEmitted && onStreamingMessage) {
             messageSoFar += String(data.chunk);
             onStreamingMessage(messageSoFar);
           } else if (ev === "completed" && data) {
@@ -9235,6 +9240,25 @@ function run(): void {
       }
       scrollToBottom(messagesEl);
     }
+    function onDraftReady(text: string): void {
+      if (messageWrapEl) return; // already rendered
+      const wrap = document.createElement("div");
+      wrap.className = "message message--assistant is-draft";
+      const bubble = document.createElement("div");
+      bubble.className = "message-bubble";
+      const badge = document.createElement("span");
+      badge.className = "draft-refining-badge";
+      badge.textContent = "refining…";
+      bubble.appendChild(badge);
+      const textEl = document.createElement("div");
+      textEl.className = "message-bubble-text";
+      textEl.innerHTML = simpleMarkdownToHtml(sanitizeDisplayMessage(text));
+      bubble.appendChild(textEl);
+      wrap.appendChild(bubble);
+      messageWrapEl = wrap;
+      turnWrap.appendChild(messageWrapEl);
+      scrollToBottom(messagesEl);
+    }
 
     const payload: {
       message: string;
@@ -9293,7 +9317,7 @@ function run(): void {
           onRequestCorrelationId();
         }
         addThinkingLineAndScroll("Request sent. Waiting for worker…");
-        return streamResponse(data.correlation_id, addThinkingLineAndScroll, onStreamingMessage);
+        return streamResponse(data.correlation_id, addThinkingLineAndScroll, onStreamingMessage, onDraftReady);
       })
       .then((data) =>
         // Refresh profile before admin-gated UI. Otherwise the first reply can render while
