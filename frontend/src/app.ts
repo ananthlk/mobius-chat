@@ -4846,7 +4846,8 @@ interface TasksModalPrefill {
   text?: string;
   sourceModule?: string;
   sourceRef?: string;
-  filterKind?: string;   // pre-select the kind filter (e.g. "reminder" from the nudge)
+  filterKind?: string;      // pre-select the kind filter (e.g. "reminder" from the nudge)
+  filterAssignee?: string;  // pre-fill the assignee filter (e.g. my assignee_ref from the banner)
 }
 
 const _TASK_SEVERITIES = ["critical", "warning", "info", "low", "none"];
@@ -5019,6 +5020,9 @@ function openTasksModal(prefill?: TasksModalPrefill): void {
   if (prefill?.filterKind) {
     (filters.querySelector('[data-f="kind"]') as HTMLSelectElement).value = prefill.filterKind;
   }
+  if (prefill?.filterAssignee) {
+    (filters.querySelector('[data-f="assignee"]') as HTMLInputElement).value = prefill.filterAssignee;
+  }
 
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
@@ -5038,6 +5042,25 @@ const _NUDGE_MIN_GAP_MS = 4 * 60 * 60 * 1000;   // 4h between nudges
 const _NUDGE_SNOOZE_MS = 24 * 60 * 60 * 1000;   // 24h after dismiss
 let _nudgeInFlight = false;
 
+// Who am I, as the task system sees me. Resolved once per page load via
+// /chat/whoami (server-side mobius-user lookup); null = unknown identity
+// → all per-user surfacing falls back to unscoped.
+let _whoami: { user_id: string; display_name: string; assignee_ref: string } | null = null;
+let _whoamiFetched = false;
+
+async function _getWhoami(): Promise<typeof _whoami> {
+  if (_whoamiFetched) return _whoami;
+  _whoamiFetched = true;
+  try {
+    const r = await fetch(`${API_BASE}/chat/whoami`);
+    if (r.ok) {
+      const d = await r.json();
+      if (d.ok && d.user?.assignee_ref) _whoami = d.user;
+    }
+  } catch { /* unknown identity — unscoped fallback */ }
+  return _whoami;
+}
+
 async function _maybeShowReminderNudge(): Promise<void> {
   if (_nudgeInFlight || document.querySelector(".reminder-nudge")) return;
   const now = Date.now();
@@ -5047,7 +5070,10 @@ async function _maybeShowReminderNudge(): Promise<void> {
 
   _nudgeInFlight = true;
   try {
-    const r = await fetch(`${API_BASE}/chat/tasks?kind=reminder&status=open&limit=20`);
+    // Scope to MY reminders when identity resolves; unscoped otherwise.
+    const me = await _getWhoami();
+    const scope = me ? `&assignee=${encodeURIComponent(me.assignee_ref)}` : "";
+    const r = await fetch(`${API_BASE}/chat/tasks?kind=reminder&status=open&limit=20${scope}`);
     if (!r.ok) return;
     const tasks: any[] = (await r.json()).tasks || [];
     const today = new Date().toISOString().slice(0, 10);
@@ -5098,9 +5124,67 @@ async function _maybeShowReminderNudge(): Promise<void> {
   }
 }
 
+/* ── Assignment banner ─────────────────────────────────────────────────
+   "N open tasks assigned to you" on load — disjoint from the reminder
+   nudge (work items only; reminders have their own chip). Same
+   non-intrusive contract: throttled, dismissible, auto-fades. */
+
+const _BANNER_LAST_KEY = "mobius_assigned_banner_last";
+const _BANNER_SNOOZE_KEY = "mobius_assigned_banner_snooze";
+
+async function _maybeShowAssignedBanner(): Promise<void> {
+  if (document.querySelector(".reminder-nudge--assigned")) return;
+  const now = Date.now();
+  if (now - Number(localStorage.getItem(_BANNER_LAST_KEY) || 0) < _NUDGE_MIN_GAP_MS) return;
+  if (now < Number(localStorage.getItem(_BANNER_SNOOZE_KEY) || 0)) return;
+
+  const me = await _getWhoami();
+  if (!me) return; // banner is per-user by definition — no identity, no banner
+  try {
+    const r = await fetch(`${API_BASE}/chat/tasks?status=open&kind=work_item&assignee=${encodeURIComponent(me.assignee_ref)}&limit=50`);
+    if (!r.ok) return;
+    const tasks: any[] = (await r.json()).tasks || [];
+    if (!tasks.length) return;
+    const anchor = document.querySelector(".composer-wrap");
+    if (!anchor || !anchor.parentElement) return;
+
+    localStorage.setItem(_BANNER_LAST_KEY, String(now));
+
+    const chip = document.createElement("div");
+    chip.className = "reminder-nudge reminder-nudge--assigned";
+    const label = document.createElement("span");
+    label.className = "reminder-nudge-label";
+    label.innerHTML = `${_svgIcon("task")} <strong>${tasks.length}</strong> open task${tasks.length > 1 ? "s" : ""} assigned to you`;
+    const viewBtn = document.createElement("button");
+    viewBtn.type = "button";
+    viewBtn.className = "reminder-nudge-view";
+    viewBtn.textContent = "View";
+    viewBtn.addEventListener("click", () => {
+      chip.remove();
+      openTasksModal({ filterAssignee: me.assignee_ref });
+    });
+    const dismissBtn = document.createElement("button");
+    dismissBtn.type = "button";
+    dismissBtn.className = "reminder-nudge-dismiss";
+    dismissBtn.setAttribute("aria-label", "Dismiss for a day");
+    dismissBtn.innerHTML = "&times;";
+    dismissBtn.addEventListener("click", () => {
+      localStorage.setItem(_BANNER_SNOOZE_KEY, String(Date.now() + _NUDGE_SNOOZE_MS));
+      chip.remove();
+    });
+    chip.appendChild(label);
+    chip.appendChild(viewBtn);
+    chip.appendChild(dismissBtn);
+    anchor.parentElement.insertBefore(chip, anchor);
+    setTimeout(() => chip.remove(), 30000);
+  } catch { /* best-effort */ }
+}
+
 function _initReminderNudge(): void {
-  // Once shortly after load…
+  // Once shortly after load… (banner slightly later so the two chips
+  // don't stack in the same instant; nudge wins the tie)
   setTimeout(() => void _maybeShowReminderNudge(), 2500);
+  setTimeout(() => void _maybeShowAssignedBanner(), 4000);
   // …and when the user starts a query (throttle makes repeats free).
   document.getElementById("send")?.addEventListener("click", () => void _maybeShowReminderNudge());
   document.getElementById("input")?.addEventListener("keydown", (e) => {

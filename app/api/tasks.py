@@ -99,12 +99,41 @@ def chat_tasks_list(
     return result
 
 
+@router.get("/chat/whoami")
+def chat_whoami(user_id: str | None = Depends(require_user)) -> dict[str, Any]:
+    """Frontend identity echo: authenticated chat user → canonical
+    assignee identity via mobius-user (server-side client; the internal
+    key never reaches the browser). Powers per-user reminder-nudge
+    scoping + the assignment banner. Unknown identity → {ok: false} —
+    callers fall back to unscoped behavior."""
+    from app.services.user_identity import resolve_self
+    me = resolve_self(user_id)
+    if not me:
+        return {"ok": False}
+    return {"ok": True, "user": {
+        "user_id": me.get("user_id"),
+        "display_name": me.get("display_name"),
+        "assignee_ref": me.get("assignee_ref"),
+    }}
+
+
 @router.post("/chat/tasks")
 def chat_tasks_create(
     body: dict = Body(...),
-    _user_id: str | None = Depends(require_user),
+    user_id: str | None = Depends(require_user),
 ) -> dict[str, Any]:
-    """Proxy: create a manual task."""
+    """Proxy: create a manual task.
+
+    Reminders auto-assign to their creator when no assignee is given —
+    "remind me to X" must land in the creator's own queue or per-user
+    nudge scoping would hide it."""
+    if (body.get("kind") == "reminder"
+            and not body.get("assigned_to") and not body.get("assignee")):
+        from app.services.user_identity import resolve_self
+        me = resolve_self(user_id)
+        if me:
+            body["assigned_to"] = me["assignee_ref"]
+            body["assignee"] = me.get("display_name") or me["assignee_ref"]
     return task_proxy("POST", "/tasks", json_body=body).json()
 
 

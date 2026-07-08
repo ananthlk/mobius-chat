@@ -5386,6 +5386,9 @@ function openTasksModal(prefill) {
   if (prefill?.filterKind) {
     filters.querySelector('[data-f="kind"]').value = prefill.filterKind;
   }
+  if (prefill?.filterAssignee) {
+    filters.querySelector('[data-f="assignee"]').value = prefill.filterAssignee;
+  }
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
   _tasksModalEl = overlay;
@@ -5396,6 +5399,23 @@ var _NUDGE_SNOOZE_KEY = "mobius_reminder_nudge_snooze";
 var _NUDGE_MIN_GAP_MS = 4 * 60 * 60 * 1e3;
 var _NUDGE_SNOOZE_MS = 24 * 60 * 60 * 1e3;
 var _nudgeInFlight = false;
+var _whoami = null;
+var _whoamiFetched = false;
+async function _getWhoami() {
+  if (_whoamiFetched)
+    return _whoami;
+  _whoamiFetched = true;
+  try {
+    const r = await fetch(`${API_BASE}/chat/whoami`);
+    if (r.ok) {
+      const d = await r.json();
+      if (d.ok && d.user?.assignee_ref)
+        _whoami = d.user;
+    }
+  } catch {
+  }
+  return _whoami;
+}
 async function _maybeShowReminderNudge() {
   if (_nudgeInFlight || document.querySelector(".reminder-nudge"))
     return;
@@ -5406,7 +5426,9 @@ async function _maybeShowReminderNudge() {
     return;
   _nudgeInFlight = true;
   try {
-    const r = await fetch(`${API_BASE}/chat/tasks?kind=reminder&status=open&limit=20`);
+    const me = await _getWhoami();
+    const scope = me ? `&assignee=${encodeURIComponent(me.assignee_ref)}` : "";
+    const r = await fetch(`${API_BASE}/chat/tasks?kind=reminder&status=open&limit=20${scope}`);
     if (!r.ok)
       return;
     const tasks = (await r.json()).tasks || [];
@@ -5453,8 +5475,63 @@ async function _maybeShowReminderNudge() {
     _nudgeInFlight = false;
   }
 }
+var _BANNER_LAST_KEY = "mobius_assigned_banner_last";
+var _BANNER_SNOOZE_KEY = "mobius_assigned_banner_snooze";
+async function _maybeShowAssignedBanner() {
+  if (document.querySelector(".reminder-nudge--assigned"))
+    return;
+  const now = Date.now();
+  if (now - Number(localStorage.getItem(_BANNER_LAST_KEY) || 0) < _NUDGE_MIN_GAP_MS)
+    return;
+  if (now < Number(localStorage.getItem(_BANNER_SNOOZE_KEY) || 0))
+    return;
+  const me = await _getWhoami();
+  if (!me)
+    return;
+  try {
+    const r = await fetch(`${API_BASE}/chat/tasks?status=open&kind=work_item&assignee=${encodeURIComponent(me.assignee_ref)}&limit=50`);
+    if (!r.ok)
+      return;
+    const tasks = (await r.json()).tasks || [];
+    if (!tasks.length)
+      return;
+    const anchor = document.querySelector(".composer-wrap");
+    if (!anchor || !anchor.parentElement)
+      return;
+    localStorage.setItem(_BANNER_LAST_KEY, String(now));
+    const chip = document.createElement("div");
+    chip.className = "reminder-nudge reminder-nudge--assigned";
+    const label = document.createElement("span");
+    label.className = "reminder-nudge-label";
+    label.innerHTML = `${_svgIcon("task")} <strong>${tasks.length}</strong> open task${tasks.length > 1 ? "s" : ""} assigned to you`;
+    const viewBtn = document.createElement("button");
+    viewBtn.type = "button";
+    viewBtn.className = "reminder-nudge-view";
+    viewBtn.textContent = "View";
+    viewBtn.addEventListener("click", () => {
+      chip.remove();
+      openTasksModal({ filterAssignee: me.assignee_ref });
+    });
+    const dismissBtn = document.createElement("button");
+    dismissBtn.type = "button";
+    dismissBtn.className = "reminder-nudge-dismiss";
+    dismissBtn.setAttribute("aria-label", "Dismiss for a day");
+    dismissBtn.innerHTML = "&times;";
+    dismissBtn.addEventListener("click", () => {
+      localStorage.setItem(_BANNER_SNOOZE_KEY, String(Date.now() + _NUDGE_SNOOZE_MS));
+      chip.remove();
+    });
+    chip.appendChild(label);
+    chip.appendChild(viewBtn);
+    chip.appendChild(dismissBtn);
+    anchor.parentElement.insertBefore(chip, anchor);
+    setTimeout(() => chip.remove(), 3e4);
+  } catch {
+  }
+}
 function _initReminderNudge() {
   setTimeout(() => void _maybeShowReminderNudge(), 2500);
+  setTimeout(() => void _maybeShowAssignedBanner(), 4e3);
   document.getElementById("send")?.addEventListener("click", () => void _maybeShowReminderNudge());
   document.getElementById("input")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter")

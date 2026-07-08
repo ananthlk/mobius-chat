@@ -244,6 +244,18 @@ def _run_create_task(call: SkillCall) -> SkillEnvelope:
     }
     body = {k: v for k, v in body.items() if v is not None}
 
+    # Reminders auto-assign to their creator — "remind ME" must land in
+    # the asking user's own queue, or per-user nudge scoping (assignee=me)
+    # would hide it. Explicit assignee wins; unknown identity → unassigned
+    # (legacy behavior, still visible in the unscoped fallback).
+    if body.get("kind") == "reminder" and not body.get("assignee"):
+        from app.services.user_identity import resolve_self
+        subject = getattr(call.pipeline_ctx, "user_id", None) if call.pipeline_ctx else None
+        me = resolve_self(subject)
+        if me:
+            body["assigned_to"] = me["assignee_ref"]
+            body["assignee"] = me.get("display_name") or me["assignee_ref"]
+
     try:
         created = _http_request("POST", f"{base}/tasks", body=body)
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as e:
@@ -397,9 +409,14 @@ def _run_assign_task(call: SkillCall) -> SkillEnvelope:
     # assigned_to carries the canonical ref (exact matching for "my
     # tasks"), assignee carries the display name (cards stay readable).
     # No candidate → both get the literal string (legacy behavior).
-    from app.services.user_identity import resolve_assignee
+    # "me"/"myself" resolves the ASKING user's identity, not a name search.
+    from app.services.user_identity import resolve_assignee, resolve_self
     active = call.active_context or {}
-    cand = resolve_assignee(assignee, org=active.get("org_name") or active.get("payer"))
+    if assignee.lower() in ("me", "myself"):
+        subject = getattr(call.pipeline_ctx, "user_id", None) if call.pipeline_ctx else None
+        cand = resolve_self(subject)
+    else:
+        cand = resolve_assignee(assignee, org=active.get("org_name") or active.get("payer"))
     canonical = cand["assignee_ref"] if cand else assignee
     display = (cand.get("display_name") if cand else None) or assignee
 
