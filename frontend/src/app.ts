@@ -3920,7 +3920,8 @@ function renderDemoChip(
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "demo-chip__btn";
-  btn.textContent = "▶ Show me — " + demo.title;
+  btn.textContent = "▶ Show me";
+  btn.title = demo.title;
   wrap.appendChild(btn);
 
   const INTERACT_BASE = "https://mobius-interact-ortabkknqa-uc.a.run.app";
@@ -3942,7 +3943,7 @@ function renderDemoChip(
           }) => void
         } | undefined;
         if (!MI) throw new Error("MobiusInteract runner not loaded");
-        btn.textContent = "▶ Show me — " + demo.title;
+        btn.textContent = "▶ Show me";
         btn.disabled = false;
         MI.run(script, {
           correlationId: meta.correlationId,
@@ -3951,7 +3952,7 @@ function renderDemoChip(
         });
       })
       .catch(() => {
-        btn.textContent = "▶ Show me — " + demo.title;
+        btn.textContent = "▶ Show me";
         btn.disabled = false;
       });
   });

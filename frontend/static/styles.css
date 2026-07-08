@@ -2169,6 +2169,33 @@ body {
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(99,102,241,0.4);
 }
+/* ── Interact demo chip ("▶ Show me") ────────────────────────────────
+   Sits below the answer, above follow-up chips. Outlined violet pill —
+   between the passive followup-chip and the strong action-chip. */
+.demo-chip {
+  margin-top: 0.75rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+.demo-chip__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.35rem 0.85rem;
+  border-radius: 9999px;
+  border: 1.5px solid var(--mobius-violet, #7c3aed);
+  background: rgba(124, 58, 237, 0.06);
+  color: var(--mobius-violet, #7c3aed);
+  font-size: var(--text-sm, 0.8125rem);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+.demo-chip__btn:hover {
+  background: rgba(124, 58, 237, 0.12);
+  transform: translateY(-1px);
+}
+
 /* Collapsible details block: hidden by default, shown when expanded */
 .answer-card-details {
   display: none;

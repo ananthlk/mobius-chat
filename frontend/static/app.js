@@ -4362,7 +4362,8 @@ function renderDemoChip(demo, meta) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "demo-chip__btn";
-  btn.textContent = "\u25B6 Show me \u2014 " + demo.title;
+  btn.textContent = "\u25B6 Show me";
+  btn.title = demo.title;
   wrap.appendChild(btn);
   const INTERACT_BASE = "https://mobius-interact-ortabkknqa-uc.a.run.app";
   btn.addEventListener("click", () => {
@@ -4376,7 +4377,7 @@ function renderDemoChip(demo, meta) {
       const MI = window["MobiusInteract"];
       if (!MI)
         throw new Error("MobiusInteract runner not loaded");
-      btn.textContent = "\u25B6 Show me \u2014 " + demo.title;
+      btn.textContent = "\u25B6 Show me";
       btn.disabled = false;
       MI.run(script, {
         correlationId: meta.correlationId,
@@ -4388,7 +4389,7 @@ function renderDemoChip(demo, meta) {
         }
       });
     }).catch(() => {
-      btn.textContent = "\u25B6 Show me \u2014 " + demo.title;
+      btn.textContent = "\u25B6 Show me";
       btn.disabled = false;
     });
   });
