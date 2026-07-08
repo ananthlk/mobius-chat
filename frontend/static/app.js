@@ -5108,6 +5108,8 @@ function initTextSelectionToolbar() {
       const container = anchor.nodeType === 3 ? anchor.parentElement : anchor;
       if (!container)
         return;
+      if (container.closest(".pf-capture-card") || container.closest(".pf-offer-chip") || container.closest(".pf-survey") || container.closest(".feedback"))
+        return;
       if (!container.closest(".envelope-detail-body") && !container.closest("#doc-reader-panel .doc-reader-content") && !container.closest(".message-bubble"))
         return;
       const range = sel.getRangeAt(0);

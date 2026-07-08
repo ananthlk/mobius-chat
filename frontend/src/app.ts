@@ -4736,7 +4736,14 @@ function initTextSelectionToolbar(): void {
       // 2026-04-25: also match the inline doc-reader content so the
       // toolbar (copy/bookmark/cite) works inside the restored panel.
       // 2026-07-07: also match chat message bubbles so "Create task"
-      // (and copy/bookmark/cite) work on any assistant/user text.
+      // (and copy/bookmark/cite) work on any assistant/user text —
+      // EXCEPT inside interactive widgets that render within bubbles
+      // (feedback capture cards, offer chips, survey widgets), where a
+      // floating toolbar is noise over the widget's own controls.
+      if (container.closest(".pf-capture-card") ||
+          container.closest(".pf-offer-chip") ||
+          container.closest(".pf-survey") ||
+          container.closest(".feedback")) return;
       if (!container.closest(".envelope-detail-body") &&
           !container.closest("#doc-reader-panel .doc-reader-content") &&
           !container.closest(".message-bubble")) return;
