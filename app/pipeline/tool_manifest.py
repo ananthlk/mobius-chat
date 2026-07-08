@@ -107,8 +107,11 @@ search_corpus(query)
     parameter — the agent selects and cascades through strategies
     internally. See the methodology primer above.
   Use for: Questions about policy, PA rules, appeals, credentialing
-    process, timely filing, covered services, claims procedures —
+    POLICIES/RULES, timely filing, covered services, claims procedures —
     anything answered from authoritative payer documents or manuals.
+  Do NOT use for: Credentialing STATUS for a specific provider or org
+    (NPI enrollment status, compliance flags, NPPES/PML/TML data errors,
+    panel readiness). Use check_provider_credentialing for that.
   Do NOT use for: FL Medicaid BH market data questions (org rankings,
     market share, new entrants, benchmarks, rate data, utilization).
     Those are quantitative BigQuery data — use the get_* analytics
