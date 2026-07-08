@@ -3911,7 +3911,8 @@ function renderCaptureCard(
 
 /** "▶ Show me" demo chip from the Product Awareness / Interact engine. */
 function renderDemoChip(
-  demo: NonNullable<ChatResponse["demo"]>
+  demo: NonNullable<ChatResponse["demo"]>,
+  meta: { correlationId?: string }
 ): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "demo-chip";
@@ -3934,12 +3935,17 @@ function renderDemoChip(
       })
       .then((script) => {
         const MI = (window as unknown as Record<string, unknown>)["MobiusInteract"] as {
-          run: (script: unknown, opts: { onAbort?: () => void; onDone?: () => void }) => void
+          run: (script: unknown, opts: {
+            onAbort?: () => void;
+            onDone?: () => void;
+            correlationId?: string;
+          }) => void
         } | undefined;
         if (!MI) throw new Error("MobiusInteract runner not loaded");
         btn.textContent = "▶ Show me — " + demo.title;
         btn.disabled = false;
         MI.run(script, {
+          correlationId: meta.correlationId,
           onAbort: () => { btn.disabled = false; },
           onDone:  () => { btn.disabled = false; },
         });
@@ -9570,7 +9576,9 @@ function run(): void {
 
         // 12. Product Awareness interactive demo chip
         if (data.demo) {
-          turnWrap.appendChild(renderDemoChip(data.demo));
+          turnWrap.appendChild(renderDemoChip(data.demo, {
+            correlationId: data.correlation_id ?? activeCorrelationId,
+          }));
         }
 
         loadSidebarHistory();

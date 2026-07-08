@@ -4356,7 +4356,7 @@ function renderCaptureCard(card, meta) {
   pfEvent("shown");
   return wrap;
 }
-function renderDemoChip(demo) {
+function renderDemoChip(demo, meta) {
   const wrap = document.createElement("div");
   wrap.className = "demo-chip";
   const btn = document.createElement("button");
@@ -4379,6 +4379,7 @@ function renderDemoChip(demo) {
       btn.textContent = "\u25B6 Show me \u2014 " + demo.title;
       btn.disabled = false;
       MI.run(script, {
+        correlationId: meta.correlationId,
         onAbort: () => {
           btn.disabled = false;
         },
@@ -9101,7 +9102,9 @@ ${message}`;
         }));
       }
       if (data.demo) {
-        turnWrap.appendChild(renderDemoChip(data.demo));
+        turnWrap.appendChild(renderDemoChip(data.demo, {
+          correlationId: data.correlation_id ?? activeCorrelationId
+        }));
       }
       loadSidebarHistory();
       scrollToBottom(messagesEl);
