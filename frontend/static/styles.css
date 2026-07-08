@@ -7007,6 +7007,39 @@ body {
   border-radius: var(--mobius-radius-base);
 }
 
+/* ── Reminder nudge (above the composer, dismissible, auto-fades) ── */
+.reminder-nudge {
+  display: flex; align-items: center; gap: 0.6rem;
+  margin: 0 auto 0.4rem; padding: 0.4rem 0.75rem;
+  max-width: 640px;
+  background: var(--mobius-bg-secondary);
+  border: 1px solid var(--mobius-border);
+  border-radius: var(--mobius-radius-full);
+  box-shadow: var(--mobius-shadow-sm);
+  font-size: var(--mobius-text-sm);
+  color: var(--main-text);
+  animation: reminder-nudge-in 0.25s ease-out;
+}
+@keyframes reminder-nudge-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.reminder-nudge-label { display: inline-flex; align-items: center; gap: 0.4rem; flex: 1; min-width: 0; }
+.reminder-nudge-label svg { width: 14px; height: 14px; flex: none; color: var(--mobius-accent); }
+.reminder-nudge-view {
+  border: none; cursor: pointer;
+  background: var(--mobius-accent); color: #fff;
+  padding: 0.2rem 0.7rem; border-radius: var(--mobius-radius-full);
+  font-size: var(--mobius-text-xs); font-weight: 600;
+}
+.reminder-nudge-view:hover { background: var(--mobius-accent-hover); }
+.reminder-nudge-dismiss {
+  border: none; background: transparent; cursor: pointer;
+  color: var(--mobius-text-muted); font-size: 1.1rem; line-height: 1;
+  padding: 0 0.2rem;
+}
+.reminder-nudge-dismiss:hover { color: var(--main-text); }
+
 /* ═══════════════════════════════════════════════════════════════════════════
    Doc Reader Panel — inline document viewer slide-in
    ═══════════════════════════════════════════════════════════════════════════ */

@@ -4846,6 +4846,7 @@ interface TasksModalPrefill {
   text?: string;
   sourceModule?: string;
   sourceRef?: string;
+  filterKind?: string;   // pre-select the kind filter (e.g. "reminder" from the nudge)
 }
 
 const _TASK_SEVERITIES = ["critical", "warning", "info", "low", "none"];
@@ -5015,11 +5016,101 @@ function openTasksModal(prefill?: TasksModalPrefill): void {
     }
   }
   (filters.querySelector('[data-f="apply"]') as HTMLButtonElement).addEventListener("click", () => void loadList());
+  if (prefill?.filterKind) {
+    (filters.querySelector('[data-f="kind"]') as HTMLSelectElement).value = prefill.filterKind;
+  }
 
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
   _tasksModalEl = overlay;
   void loadList();
+}
+
+/* ── Reminder nudge ────────────────────────────────────────────────────
+   Non-intrusive chip above the composer: "⏰ N reminder(s) due" with
+   View / dismiss. Shown when the user starts a query (and once on
+   load), throttled so it appears at most once per 4h; dismissing
+   snoozes it for 24h. Pure frontend — no pipeline latency. */
+
+const _NUDGE_LAST_KEY = "mobius_reminder_nudge_last";
+const _NUDGE_SNOOZE_KEY = "mobius_reminder_nudge_snooze";
+const _NUDGE_MIN_GAP_MS = 4 * 60 * 60 * 1000;   // 4h between nudges
+const _NUDGE_SNOOZE_MS = 24 * 60 * 60 * 1000;   // 24h after dismiss
+let _nudgeInFlight = false;
+
+async function _maybeShowReminderNudge(): Promise<void> {
+  if (_nudgeInFlight || document.querySelector(".reminder-nudge")) return;
+  const now = Date.now();
+  const last = Number(localStorage.getItem(_NUDGE_LAST_KEY) || 0);
+  const snooze = Number(localStorage.getItem(_NUDGE_SNOOZE_KEY) || 0);
+  if (now - last < _NUDGE_MIN_GAP_MS || now < snooze) return;
+
+  _nudgeInFlight = true;
+  try {
+    const r = await fetch(`${API_BASE}/chat/tasks?kind=reminder&status=open&limit=20`);
+    if (!r.ok) return;
+    const tasks: any[] = (await r.json()).tasks || [];
+    const today = new Date().toISOString().slice(0, 10);
+    const due = tasks.filter((t) => {
+      const d = String(t.deadline || t.due_at || "").slice(0, 10);
+      return d && d <= today;
+    });
+    if (!due.length) return;
+
+    const anchor = document.querySelector(".composer-wrap");
+    if (!anchor || !anchor.parentElement) return;
+
+    localStorage.setItem(_NUDGE_LAST_KEY, String(now));
+
+    const chip = document.createElement("div");
+    chip.className = "reminder-nudge";
+    const label = document.createElement("span");
+    label.className = "reminder-nudge-label";
+    label.innerHTML = `${_svgIcon("task")} <strong>${due.length}</strong> reminder${due.length > 1 ? "s" : ""} due — ${
+      (due[0].title || due[0].text || "").slice(0, 60)}${due.length > 1 ? ", …" : ""}`;
+    const viewBtn = document.createElement("button");
+    viewBtn.type = "button";
+    viewBtn.className = "reminder-nudge-view";
+    viewBtn.textContent = "View";
+    viewBtn.addEventListener("click", () => {
+      chip.remove();
+      openTasksModal({ filterKind: "reminder" });
+    });
+    const dismissBtn = document.createElement("button");
+    dismissBtn.type = "button";
+    dismissBtn.className = "reminder-nudge-dismiss";
+    dismissBtn.setAttribute("aria-label", "Dismiss for a day");
+    dismissBtn.innerHTML = "&times;";
+    dismissBtn.addEventListener("click", () => {
+      localStorage.setItem(_NUDGE_SNOOZE_KEY, String(Date.now() + _NUDGE_SNOOZE_MS));
+      chip.remove();
+    });
+    chip.appendChild(label);
+    chip.appendChild(viewBtn);
+    chip.appendChild(dismissBtn);
+    anchor.parentElement.insertBefore(chip, anchor);
+    // Auto-fade after 30s if untouched — it's a nudge, not a blocker.
+    setTimeout(() => chip.remove(), 30000);
+  } catch {
+    /* nudge is best-effort — never surface errors */
+  } finally {
+    _nudgeInFlight = false;
+  }
+}
+
+function _initReminderNudge(): void {
+  // Once shortly after load…
+  setTimeout(() => void _maybeShowReminderNudge(), 2500);
+  // …and when the user starts a query (throttle makes repeats free).
+  document.getElementById("send")?.addEventListener("click", () => void _maybeShowReminderNudge());
+  document.getElementById("input")?.addEventListener("keydown", (e) => {
+    if ((e as KeyboardEvent).key === "Enter") void _maybeShowReminderNudge();
+  });
+}
+
+if (typeof document !== "undefined") {
+  if (document.readyState === "loading") { document.addEventListener("DOMContentLoaded", _initReminderNudge); }
+  else { _initReminderNudge(); }
 }
 
 function _taskModalRow(t: any, reload: () => Promise<void>): HTMLElement {
