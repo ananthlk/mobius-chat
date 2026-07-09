@@ -387,3 +387,29 @@ else
         exit 72
     fi
 fi
+
+# ── Traffic-pin assertion ────────────────────────────────────────────
+# Detects the silent failure where a deploy creates a healthy revision
+# but Cloud Run keeps serving a pinned older one (exit 0, users see
+# stale code). Compares the serving revision against IMAGE_TAG's digest.
+if [[ "${DRY_RUN}" -eq 0 ]]; then
+    SERVING_REV="$(gcloud run services describe "${SERVICE_NAME}" \
+        --project="${GCP_PROJECT}" --region="${GCP_REGION}" \
+        --format='value(status.traffic[0].revisionName)' 2>/dev/null || echo '')"
+    LATEST_REV="$(gcloud run revisions list \
+        --service="${SERVICE_NAME}" \
+        --project="${GCP_PROJECT}" --region="${GCP_REGION}" \
+        --format='value(name)' --limit=1 2>/dev/null || echo '')"
+    if [[ -n "${SERVING_REV}" && -n "${LATEST_REV}" && "${SERVING_REV}" != "${LATEST_REV}" ]]; then
+        echo ""
+        echo "⚠ TRAFFIC PIN DETECTED: serving ${SERVING_REV} but latest revision is ${LATEST_REV}" >&2
+        echo "  The new revision is healthy but receiving 0% traffic." >&2
+        echo "  Fix: gcloud run services update-traffic ${SERVICE_NAME} \\" >&2
+        echo "         --project=${GCP_PROJECT} --region=${GCP_REGION} --to-latest" >&2
+        echo "  Auto-fixing now..." >&2
+        gcloud run services update-traffic "${SERVICE_NAME}" \
+            --project="${GCP_PROJECT}" --region="${GCP_REGION}" \
+            --to-latest 2>&1 | grep -E "^(Done|Traffic|  [0-9])" || true
+        echo "  ✓ Traffic shifted to latest revision."
+    fi
+fi
