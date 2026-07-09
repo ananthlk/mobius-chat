@@ -10218,7 +10218,7 @@ ${message}`;
       proceedInstant.focus();
     });
   }
-  const FOREGROUND_CUTOFF_S = 15;
+  const FOREGROUND_CUTOFF_S = 12;
   let _composerUploadEs = null;
   let _composerUploadCutoffTimer = null;
   function _closeInlineUploadProgress() {

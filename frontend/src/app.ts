@@ -10467,7 +10467,7 @@ function run(): void {
   // progression the user already sees in ⋯ → Upload file, but routed
   // through the chat status banner instead of the modal's status field.
   // §4 foreground progress constants + state.
-  const FOREGROUND_CUTOFF_S = 15;
+  const FOREGROUND_CUTOFF_S = 12; // UX-finalized value (§4)
   let _composerUploadEs: EventSource | null = null;
   let _composerUploadCutoffTimer: ReturnType<typeof setTimeout> | null = null;
 
