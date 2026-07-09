@@ -2553,17 +2553,19 @@ function simpleMarkdownToHtml(text) {
     links.push(html);
     return `\uE010${i}\uE011`;
   };
-  const URL_RE = /https:\/\/[^\s"'<>()[\]]+[^\s"'<>()[\].,!?;:]/g;
+  const MOBIUS_URL_RE = /https:\/\/mobius-[a-z0-9\-]+\.(?:a\.run\.app|us-central1\.run\.app)[^\s"'<>()[\]]*[^\s"'<>()[\].,!?;:]/g;
   const EMAIL_RE = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
   const PHONE_RE = /(?:\+?1[\s.\-]?)?\(?[2-9]\d{2}\)?[\s.\-]\d{3}[\s.\-]\d{4}/g;
-  out = out.replace(
-    /\[([^\]]+)\]\((https:\/\/[^)]+)\)/g,
-    (_m, linkText, url) => stashLink(`<a href="${url}" class="chat-link chat-link--url" target="_blank" rel="noopener noreferrer" title="${url}">${linkText} \u2197</a>`)
-  );
-  out = out.replace(URL_RE, (url) => {
+  out = out.replace(/\[([^\]]+)\]\((https:\/\/[^)]+)\)/g, (_m, linkText, url) => {
+    if (/^https:\/\/mobius-/.test(url)) {
+      return stashLink(`<a href="${url}" class="chat-link chat-link--url" target="_blank" rel="noopener noreferrer" title="${url}">${linkText} \u2197</a>`);
+    }
+    return linkText;
+  });
+  out = out.replace(MOBIUS_URL_RE, (url) => {
     let display = url;
     try {
-      display = new URL(url).hostname;
+      display = new URL(url).hostname.replace(/\.(?:a\.run|us-central1\.run)\.app$/, "").replace(/^mobius-/, "").replace(/-[a-z0-9]+-uc$/, "");
     } catch {
       display = url.length > 40 ? url.slice(0, 39) + "\u2026" : url;
     }

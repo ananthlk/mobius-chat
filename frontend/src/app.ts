@@ -1757,17 +1757,27 @@ function simpleMarkdownToHtml(text: string): string {
     links.push(html);
     return `\uE010${i}\uE011`;
   };
-  const URL_RE = /https:\/\/[^\s"'<>()[\]]+[^\s"'<>()[\].,!?;:]/g;
+  // Only Mobius agent URLs (mobius-*.run.app) become purple pill buttons.
+  // All other URLs remain plain text — no linkification.
+  const MOBIUS_URL_RE = /https:\/\/mobius-[a-z0-9\-]+\.(?:a\.run\.app|us-central1\.run\.app)[^\s"'<>()[\]]*[^\s"'<>()[\].,!?;:]/g;
   const EMAIL_RE = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
   const PHONE_RE = /(?:\+?1[\s.\-]?)?\(?[2-9]\d{2}\)?[\s.\-]\d{3}[\s.\-]\d{4}/g;
-  // Markdown links first so bare-URL regex doesn't re-match inside [text](url)
-  out = out.replace(/\[([^\]]+)\]\((https:\/\/[^)]+)\)/g, (_m, linkText: string, url: string) =>
-    stashLink(`<a href="${url}" class="chat-link chat-link--url" target="_blank" rel="noopener noreferrer" title="${url}">${linkText} ↗</a>`)
-  );
-  out = out.replace(URL_RE, (url: string) => {
+  // Markdown [text](url): agent URLs → pill button; external URLs → just the link text
+  out = out.replace(/\[([^\]]+)\]\((https:\/\/[^)]+)\)/g, (_m, linkText: string, url: string) => {
+    if (/^https:\/\/mobius-/.test(url)) {
+      return stashLink(`<a href="${url}" class="chat-link chat-link--url" target="_blank" rel="noopener noreferrer" title="${url}">${linkText} ↗</a>`);
+    }
+    return linkText;
+  });
+  out = out.replace(MOBIUS_URL_RE, (url: string) => {
     let display = url;
-    try { display = new URL(url).hostname; } catch { display = url.length > 40 ? url.slice(0, 39) + "\u2026" : url; }
-    return stashLink(`<a href="${url}" class="chat-link chat-link--url" target="_blank" rel="noopener noreferrer" title="${url}">${display} \u2197</a>`);
+    try {
+      display = new URL(url).hostname
+        .replace(/\.(?:a\.run|us-central1\.run)\.app$/, "")
+        .replace(/^mobius-/, "")
+        .replace(/-[a-z0-9]+-uc$/, "");
+    } catch { display = url.length > 40 ? url.slice(0, 39) + "…" : url; }
+    return stashLink(`<a href="${url}" class="chat-link chat-link--url" target="_blank" rel="noopener noreferrer" title="${url}">${display} ↗</a>`);
   });
   out = out.replace(EMAIL_RE, (email: string) =>
     stashLink(`<a href="mailto:${email}" class="chat-link chat-link--email">${email}</a>`)
