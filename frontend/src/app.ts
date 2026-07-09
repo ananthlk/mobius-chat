@@ -5095,7 +5095,7 @@ function openCreateTaskDialog(opts?: CreateTaskDialogOpts): void {
     const tid = (window as any).__mobiusChatThreadId;
     if (tid) body2.extra = { origin: { thread_id: tid } };
     try {
-      const r = await fetch(`${API_BASE}/chat/tasks`, {
+      const r = await apiFetch(`${API_BASE}/chat/tasks`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body2),
@@ -5207,7 +5207,7 @@ function openTasksModal(prefill?: TasksModalPrefill): void {
     const tid = (window as any).__mobiusChatThreadId;
     if (tid) body.extra = { origin: { thread_id: tid } };
     try {
-      const r = await fetch(`${API_BASE}/chat/tasks`, {
+      const r = await apiFetch(`${API_BASE}/chat/tasks`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -5264,7 +5264,7 @@ function openTasksModal(prefill?: TasksModalPrefill): void {
     if (ff("org")) params.set("org_name", ff("org"));
     if (ff("assignee")) params.set("assignee", ff("assignee"));
     try {
-      const r = await fetch(`${API_BASE}/chat/tasks?${params.toString()}`);
+      const r = await apiFetch(`${API_BASE}/chat/tasks?${params.toString()}`);
       const data = await r.json();
       const tasks: any[] = data.tasks || [];
       listWrap.innerHTML = "";
@@ -5303,6 +5303,21 @@ const _NUDGE_MIN_GAP_MS = 4 * 60 * 60 * 1000;   // 4h between nudges
 const _NUDGE_SNOOZE_MS = 24 * 60 * 60 * 1000;   // 24h after dismiss
 let _nudgeInFlight = false;
 
+// Thin reference to the auth service set once initApp creates it.
+// Allows _getWhoami / apiFetch (defined before auth is created) to
+// attach Bearer tokens without closing over the initApp scope.
+let _authRef: { getAuthHeader?: () => Promise<Record<string, string> | null> | Record<string, string> | null } | null = null;
+
+/** fetch() with the platform Bearer token merged into headers. */
+async function apiFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const authHdrs = _authRef?.getAuthHeader ? await _authRef.getAuthHeader() : null;
+  const merged: RequestInit = {
+    ...init,
+    headers: { ...(authHdrs ?? {}), ...(init.headers as Record<string, string> | undefined ?? {}) },
+  };
+  return fetch(url, merged);
+}
+
 // Who am I, as the task system sees me. Resolved once per page load via
 // /chat/whoami (server-side mobius-user lookup); null = unknown identity
 // → all per-user surfacing falls back to unscoped.
@@ -5312,18 +5327,23 @@ let _whoami: {
   assignee_ref: string;
   greeting?: { name: string; enabled: boolean };
 } | null = null;
-let _whoamiFetched = false;
+// false = never fetched; true = fetch in-flight or succeeded; "miss" = got
+// a clean {ok:false} (no identity) — retried once on next call in case the
+// token loaded late.
+let _whoamiFetched: boolean | "miss" = false;
 
 async function _getWhoami(): Promise<typeof _whoami> {
-  if (_whoamiFetched) return _whoami;
+  if (_whoamiFetched === true) return _whoami;
   _whoamiFetched = true;
   try {
-    const r = await fetch(`${API_BASE}/chat/whoami`);
+    const r = await apiFetch(`${API_BASE}/chat/whoami`);
     if (r.ok) {
       const d = await r.json();
-      if (d.ok && d.user?.assignee_ref) _whoami = d.user;
+      if (d.ok && d.user?.assignee_ref) { _whoami = d.user; return _whoami; }
     }
   } catch { /* unknown identity — unscoped fallback */ }
+  // Got a clean miss — allow one retry in case token loads late
+  _whoamiFetched = "miss";
   return _whoami;
 }
 
@@ -5339,7 +5359,7 @@ async function _maybeShowReminderNudge(): Promise<void> {
     // Scope to MY reminders when identity resolves; unscoped otherwise.
     const me = await _getWhoami();
     const scope = me ? `&assignee=${encodeURIComponent(me.assignee_ref)}` : "";
-    const r = await fetch(`${API_BASE}/chat/tasks?kind=reminder&status=open&limit=20${scope}`);
+    const r = await apiFetch(`${API_BASE}/chat/tasks?kind=reminder&status=open&limit=20${scope}`);
     if (!r.ok) return;
     const tasks: any[] = (await r.json()).tasks || [];
     const today = new Date().toISOString().slice(0, 10);
@@ -5407,7 +5427,7 @@ async function _maybeShowAssignedBanner(): Promise<void> {
   const me = await _getWhoami();
   if (!me) return; // banner is per-user by definition — no identity, no banner
   try {
-    const r = await fetch(`${API_BASE}/chat/tasks?status=open&kind=work_item&assignee=${encodeURIComponent(me.assignee_ref)}&limit=50`);
+    const r = await apiFetch(`${API_BASE}/chat/tasks?status=open&kind=work_item&assignee=${encodeURIComponent(me.assignee_ref)}&limit=50`);
     if (!r.ok) return;
     const tasks: any[] = (await r.json()).tasks || [];
     if (!tasks.length) return;
@@ -5475,10 +5495,9 @@ async function _maybeShowGreeting(): Promise<void> {
   el.classList.add("chat-greeting");
 }
 
-if (typeof document !== "undefined") {
-  if (document.readyState === "loading") { document.addEventListener("DOMContentLoaded", () => void _maybeShowGreeting()); }
-  else { void _maybeShowGreeting(); }
-}
+// _maybeShowGreeting() is called from initApp() after _authRef is set so
+// the whoami fetch carries the Bearer token. Module-scope early-fire was
+// removed because auth is not ready at DOMContentLoaded.
 
 function _taskModalRow(t: any, reload: () => Promise<void>): HTMLElement {
   const row = document.createElement("div");
@@ -5515,7 +5534,7 @@ function _taskModalRow(t: any, reload: () => Promise<void>): HTMLElement {
   const isOpen = status === "open" || status === "in_progress";
   if (isOpen) {
     const resolveBtn = mkBtn("Resolve", "tm-env-btn--resolve", async () => {
-      await fetch(`${API_BASE}/chat/tasks/${t.task_id}/resolve`, {
+      await apiFetch(`${API_BASE}/chat/tasks/${t.task_id}/resolve`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ resolved_by: "chat" }),
       }).catch(() => null);
@@ -5523,7 +5542,7 @@ function _taskModalRow(t: any, reload: () => Promise<void>): HTMLElement {
     });
     resolveBtn.dataset.tourId = "task-resolve";
     mkBtn("Dismiss", "tm-env-btn--dismiss", async () => {
-      await fetch(`${API_BASE}/chat/tasks/${t.task_id}/dismiss`, {
+      await apiFetch(`${API_BASE}/chat/tasks/${t.task_id}/dismiss`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ dismissed_by: "chat" }),
       }).catch(() => null);
@@ -5541,7 +5560,7 @@ function _taskModalRow(t: any, reload: () => Promise<void>): HTMLElement {
         if (e.key !== "Enter") return;
         const who = inp.value.trim();
         if (!who) return;
-        await fetch(`${API_BASE}/chat/tasks/${t.task_id}`, {
+        await apiFetch(`${API_BASE}/chat/tasks/${t.task_id}`, {
           method: "PATCH", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ assigned_to: who, assignee: who }),
         }).catch(() => null);
@@ -5577,7 +5596,7 @@ function _taskModalRow(t: any, reload: () => Promise<void>): HTMLElement {
         if (val("deadline")) body.deadline = val("deadline");
         if (val("note")) body.note = val("note");
         if (Object.keys(body).length) {
-          await fetch(`${API_BASE}/chat/tasks/${t.task_id}`, {
+          await apiFetch(`${API_BASE}/chat/tasks/${t.task_id}`, {
             method: "PATCH", headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),
           }).catch(() => null);
@@ -7953,7 +7972,7 @@ function renderAssistantFromEnvelope(
                 resolveBtn.disabled = true;
                 resolveBtn.textContent = "…";
                 try {
-                  await fetch(`/chat/tasks/${task.task_id}/resolve`, {
+                  await apiFetch(`${API_BASE}/chat/tasks/${task.task_id}/resolve`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ resolved_by: "chat" }),
@@ -7977,7 +7996,7 @@ function renderAssistantFromEnvelope(
                 dismissBtn.disabled = true;
                 dismissBtn.textContent = "…";
                 try {
-                  await fetch(`/chat/tasks/${task.task_id}/dismiss`, {
+                  await apiFetch(`${API_BASE}/chat/tasks/${task.task_id}/dismiss`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ dismissed_by: "chat" }),
@@ -8011,7 +8030,7 @@ function renderAssistantFromEnvelope(
                   if (!who) return;
                   inp.disabled = true;
                   try {
-                    await fetch(`/chat/tasks/${task.task_id}`, {
+                    await apiFetch(`${API_BASE}/chat/tasks/${task.task_id}`, {
                       method: "PATCH",
                       headers: { "Content-Type": "application/json" },
                       body: JSON.stringify({ assigned_to: who, assignee: who }),
@@ -8448,6 +8467,8 @@ function run(): void {
   // reach the wrong modal.
   const authApiBase = `${API_BASE.replace(/\/$/, "")}/api/v1`;
   const auth = createAuthService({ apiBase: authApiBase, storage: localStorageAdapter });
+  _authRef = auth; // expose to apiFetch / _getWhoami (defined at module scope)
+  void _maybeShowGreeting(); // auth is ready — fetch identity with token
 
   // Auth gate — blocks the UI until sign-in is confirmed.
   // The gate element starts visible (class auth-gate--visible) in HTML
@@ -11478,8 +11499,7 @@ function run(): void {
         if (!t.comingSoon) {
           btn.addEventListener("click", () => {
             const url = tileUrl(t);
-            if (t.key === "roster") { openRosterPanel(url); }
-            else { window.open(url, "_blank", "noopener"); }
+            window.open(url, "_blank", "noopener");
           });
         }
         sidebarTilesContainer.appendChild(btn);
@@ -11605,8 +11625,7 @@ function run(): void {
           if (!tile) return;
           closeSkillsModal();
           const url = tileUrl(tile);
-          if (tile.key === "roster") { openRosterPanel(url); }
-          else { window.open(url, "_blank", "noopener"); }
+          window.open(url, "_blank", "noopener");
         });
       });
     }
@@ -11665,8 +11684,7 @@ function run(): void {
         if (!t) return;
         closeSkillsModal();
         const url = tileUrl(t);
-        if (t.key === "roster") { openRosterPanel(url); }
-        else { window.open(url, "_blank", "noopener"); }
+        window.open(url, "_blank", "noopener");
       });
     }
     // 2026-04-29: btnOpenSkillPipeline removed from sidebar HTML

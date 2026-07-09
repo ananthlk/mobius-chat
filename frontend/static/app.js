@@ -5480,7 +5480,7 @@ function openCreateTaskDialog(opts) {
     if (tid)
       body2.extra = { origin: { thread_id: tid } };
     try {
-      const r = await fetch(`${API_BASE}/chat/tasks`, {
+      const r = await apiFetch(`${API_BASE}/chat/tasks`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body2)
@@ -5614,7 +5614,7 @@ function openTasksModal(prefill) {
     if (tid)
       body.extra = { origin: { thread_id: tid } };
     try {
-      const r = await fetch(`${API_BASE}/chat/tasks`, {
+      const r = await apiFetch(`${API_BASE}/chat/tasks`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body)
@@ -5675,7 +5675,7 @@ function openTasksModal(prefill) {
     if (ff("assignee"))
       params.set("assignee", ff("assignee"));
     try {
-      const r = await fetch(`${API_BASE}/chat/tasks?${params.toString()}`);
+      const r = await apiFetch(`${API_BASE}/chat/tasks?${params.toString()}`);
       const data = await r.json();
       const tasks = data.tasks || [];
       listWrap.innerHTML = "";
@@ -5706,21 +5706,33 @@ var _NUDGE_SNOOZE_KEY = "mobius_reminder_nudge_snooze";
 var _NUDGE_MIN_GAP_MS = 4 * 60 * 60 * 1e3;
 var _NUDGE_SNOOZE_MS = 24 * 60 * 60 * 1e3;
 var _nudgeInFlight = false;
+var _authRef = null;
+async function apiFetch(url, init = {}) {
+  const authHdrs = _authRef?.getAuthHeader ? await _authRef.getAuthHeader() : null;
+  const merged = {
+    ...init,
+    headers: { ...authHdrs ?? {}, ...init.headers ?? {} }
+  };
+  return fetch(url, merged);
+}
 var _whoami = null;
 var _whoamiFetched = false;
 async function _getWhoami() {
-  if (_whoamiFetched)
+  if (_whoamiFetched === true)
     return _whoami;
   _whoamiFetched = true;
   try {
-    const r = await fetch(`${API_BASE}/chat/whoami`);
+    const r = await apiFetch(`${API_BASE}/chat/whoami`);
     if (r.ok) {
       const d = await r.json();
-      if (d.ok && d.user?.assignee_ref)
+      if (d.ok && d.user?.assignee_ref) {
         _whoami = d.user;
+        return _whoami;
+      }
     }
   } catch {
   }
+  _whoamiFetched = "miss";
   return _whoami;
 }
 async function _maybeShowReminderNudge() {
@@ -5735,7 +5747,7 @@ async function _maybeShowReminderNudge() {
   try {
     const me = await _getWhoami();
     const scope = me ? `&assignee=${encodeURIComponent(me.assignee_ref)}` : "";
-    const r = await fetch(`${API_BASE}/chat/tasks?kind=reminder&status=open&limit=20${scope}`);
+    const r = await apiFetch(`${API_BASE}/chat/tasks?kind=reminder&status=open&limit=20${scope}`);
     if (!r.ok)
       return;
     const tasks = (await r.json()).tasks || [];
@@ -5796,7 +5808,7 @@ async function _maybeShowAssignedBanner() {
   if (!me)
     return;
   try {
-    const r = await fetch(`${API_BASE}/chat/tasks?status=open&kind=work_item&assignee=${encodeURIComponent(me.assignee_ref)}&limit=50`);
+    const r = await apiFetch(`${API_BASE}/chat/tasks?status=open&kind=work_item&assignee=${encodeURIComponent(me.assignee_ref)}&limit=50`);
     if (!r.ok)
       return;
     const tasks = (await r.json()).tasks || [];
@@ -5864,13 +5876,6 @@ async function _maybeShowGreeting() {
   el2.textContent = `${salutation}, ${me.greeting.name}.`;
   el2.classList.add("chat-greeting");
 }
-if (typeof document !== "undefined") {
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", () => void _maybeShowGreeting());
-  } else {
-    void _maybeShowGreeting();
-  }
-}
 function _taskModalRow(t, reload) {
   const row = document.createElement("div");
   row.className = "tasks-modal-row";
@@ -5902,7 +5907,7 @@ function _taskModalRow(t, reload) {
   const isOpen = status === "open" || status === "in_progress";
   if (isOpen) {
     const resolveBtn = mkBtn("Resolve", "tm-env-btn--resolve", async () => {
-      await fetch(`${API_BASE}/chat/tasks/${t.task_id}/resolve`, {
+      await apiFetch(`${API_BASE}/chat/tasks/${t.task_id}/resolve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ resolved_by: "chat" })
@@ -5911,7 +5916,7 @@ function _taskModalRow(t, reload) {
     });
     resolveBtn.dataset.tourId = "task-resolve";
     mkBtn("Dismiss", "tm-env-btn--dismiss", async () => {
-      await fetch(`${API_BASE}/chat/tasks/${t.task_id}/dismiss`, {
+      await apiFetch(`${API_BASE}/chat/tasks/${t.task_id}/dismiss`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ dismissed_by: "chat" })
@@ -5936,7 +5941,7 @@ function _taskModalRow(t, reload) {
         const who = inp.value.trim();
         if (!who)
           return;
-        await fetch(`${API_BASE}/chat/tasks/${t.task_id}`, {
+        await apiFetch(`${API_BASE}/chat/tasks/${t.task_id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ assigned_to: who, assignee: who })
@@ -5980,7 +5985,7 @@ function _taskModalRow(t, reload) {
         if (val("note"))
           body.note = val("note");
         if (Object.keys(body).length) {
-          await fetch(`${API_BASE}/chat/tasks/${t.task_id}`, {
+          await apiFetch(`${API_BASE}/chat/tasks/${t.task_id}`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body)
@@ -7933,7 +7938,7 @@ function renderAssistantFromEnvelope(envelope, opts) {
                 resolveBtn.disabled = true;
                 resolveBtn.textContent = "\u2026";
                 try {
-                  await fetch(`/chat/tasks/${task.task_id}/resolve`, {
+                  await apiFetch(`${API_BASE}/chat/tasks/${task.task_id}/resolve`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ resolved_by: "chat" })
@@ -7956,7 +7961,7 @@ function renderAssistantFromEnvelope(envelope, opts) {
                 dismissBtn.disabled = true;
                 dismissBtn.textContent = "\u2026";
                 try {
-                  await fetch(`/chat/tasks/${task.task_id}/dismiss`, {
+                  await apiFetch(`${API_BASE}/chat/tasks/${task.task_id}/dismiss`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ dismissed_by: "chat" })
@@ -7995,7 +8000,7 @@ function renderAssistantFromEnvelope(envelope, opts) {
                     return;
                   inp.disabled = true;
                   try {
-                    await fetch(`/chat/tasks/${task.task_id}`, {
+                    await apiFetch(`${API_BASE}/chat/tasks/${task.task_id}`, {
                       method: "PATCH",
                       headers: { "Content-Type": "application/json" },
                       body: JSON.stringify({ assigned_to: who, assignee: who })
@@ -8356,6 +8361,8 @@ function run() {
   const sidebarUserName = document.getElementById("sidebarUserName");
   const authApiBase = `${API_BASE.replace(/\/$/, "")}/api/v1`;
   const auth = createAuthService({ apiBase: authApiBase, storage: localStorageAdapter });
+  _authRef = auth;
+  void _maybeShowGreeting();
   const authGateEl = document.getElementById("authGate");
   const appLayoutEl = document.querySelector(".app-layout");
   function _setAuthGate(visible) {
@@ -10718,11 +10725,7 @@ ${message}`;
         if (!t.comingSoon) {
           btn.addEventListener("click", () => {
             const url = tileUrl(t);
-            if (t.key === "roster") {
-              openRosterPanel(url);
-            } else {
-              window.open(url, "_blank", "noopener");
-            }
+            window.open(url, "_blank", "noopener");
           });
         }
         sidebarTilesContainer.appendChild(btn);
@@ -10792,11 +10795,7 @@ ${message}`;
             return;
           closeSkillsModal();
           const url = tileUrl(tile);
-          if (tile.key === "roster") {
-            openRosterPanel(url);
-          } else {
-            window.open(url, "_blank", "noopener");
-          }
+          window.open(url, "_blank", "noopener");
         });
       });
     }
@@ -10840,11 +10839,7 @@ ${message}`;
           return;
         closeSkillsModal();
         const url = tileUrl(t);
-        if (t.key === "roster") {
-          openRosterPanel(url);
-        } else {
-          window.open(url, "_blank", "noopener");
-        }
+        window.open(url, "_blank", "noopener");
       });
     }
     _wireLegacySuiteButton("btnOpenSkillPipeline", "roster");
