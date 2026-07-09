@@ -489,6 +489,7 @@ function createAuthModal(options) {
   const overlay = document.createElement("div");
   overlay.className = "mobius-auth-overlay";
   overlay.setAttribute("aria-hidden", "true");
+  overlay.dataset.tourId = "modal-auth";
   const panel = document.createElement("div");
   panel.className = "mobius-auth-panel";
   panel.setAttribute("role", "dialog");
@@ -543,6 +544,14 @@ function createAuthModal(options) {
         <input type="password" class="mobius-auth-password" placeholder="Password (min 8 chars)" autocomplete="new-password" />
         <button type="button" class="mobius-auth-btn mobius-auth-signup-btn">Create account</button>
         <div class="mobius-auth-error" style="display:none"></div>
+        ${hasOAuth ? `
+          <div class="mobius-auth-divider"><span>or continue with</span></div>
+          <div class="mobius-auth-oauth">
+            <button type="button" class="mobius-auth-oauth-btn" data-provider="google">Google</button>
+            <button type="button" class="mobius-auth-oauth-btn" data-provider="microsoft">Microsoft</button>
+            <button type="button" class="mobius-auth-sso-btn">Enterprise SSO</button>
+          </div>
+        ` : ""}
         <p class="mobius-auth-switch">Already have an account? <button type="button" class="mobius-auth-switch-btn" data-to="login">Sign in</button></p>
       </div>
     `;
@@ -569,12 +578,11 @@ function createAuthModal(options) {
       <div class="mobius-auth-form mobius-auth-welcome" data-mode="welcome">
         <div class="mobius-auth-welcome-emoji" aria-hidden="true">\u{1F44B}</div>
         <p class="mobius-auth-welcome-body">
-          Thanks for signing up. We sent a welcome email to confirm.
-          Take a minute to set up how you'd like to work \u2014 or jump in
-          right away.
+          Thanks for signing up. Take a minute to set your preferences so
+          Mobius can tailor itself to how you work \u2014 or skip and do it later.
         </p>
-        <button type="button" class="mobius-auth-btn mobius-auth-welcome-prefs-btn">Set up preferences</button>
-        <button type="button" class="mobius-auth-btn mobius-auth-btn-secondary mobius-auth-welcome-btn">Skip for now</button>
+        <button type="button" class="mobius-auth-btn mobius-auth-welcome-btn">Set up preferences</button>
+        <button type="button" class="mobius-auth-btn mobius-auth-btn-secondary mobius-auth-welcome-skip-btn">Skip for now</button>
       </div>
     `;
     panel.innerHTML = mode === "login" ? loginHtml : mode === "signup" ? signupHtml : mode === "welcome" ? welcomeHtml : accountHtml;
@@ -740,17 +748,31 @@ function createAuthModal(options) {
         if (e.key === "Enter")
           void doSignup();
       });
+      panel.querySelectorAll(".mobius-auth-oauth-btn, .mobius-auth-sso-btn").forEach((btn) => {
+        const provider = btn.getAttribute("data-provider") || "";
+        btn.addEventListener("click", () => {
+          if (provider === "google" && googleClientId) {
+            void doGoogleSignIn(btn, errorEl);
+            return;
+          }
+          showToast("Coming soon", "info");
+        });
+      });
     }
     if (mode === "welcome") {
-      panel.querySelector(".mobius-auth-welcome-prefs-btn")?.addEventListener("click", () => {
+      panel.querySelector(".mobius-auth-welcome-btn")?.addEventListener("click", () => {
         pendingWelcomeName = null;
         close();
-        const fn = window.onOpenPreferences;
-        if (typeof fn === "function") {
-          fn();
+        const open2 = window.onOpenPreferences;
+        if (typeof open2 === "function") {
+          try {
+            open2();
+          } catch (e) {
+            console.error("[AuthModal] onOpenPreferences threw:", e);
+          }
         }
       });
-      panel.querySelector(".mobius-auth-welcome-btn")?.addEventListener("click", () => {
+      panel.querySelector(".mobius-auth-welcome-skip-btn")?.addEventListener("click", () => {
         pendingWelcomeName = null;
         close();
       });
@@ -857,6 +879,7 @@ function createPreferencesModal(apiBase, auth, options) {
     const selectedActivities = [...prefs.activities ?? []];
     const modal = document.createElement("div");
     modal.className = "mobius-prefs-modal";
+    modal.dataset.tourId = "modal-preferences";
     let activeTab = "profile";
     function render() {
       modal.innerHTML = `
@@ -1492,15 +1515,10 @@ var AUTH_STYLES = `
 }
 .mobius-auth-confirm-actions { display: flex; gap: 8px; }
 .mobius-auth-confirm-actions .mobius-auth-btn { margin: 0; flex: 1; }
-/* Generic secondary-button style \u2014 quiet alternate when a primary CTA
- * sits next to it (welcome panel "Skip for now", confirm "Cancel"). */
-.mobius-auth-btn-secondary {
+.mobius-auth-confirm-actions .mobius-auth-btn-secondary {
   background: white;
   color: var(--mobius-text-primary, #1a1d21);
   border: 1px solid var(--mobius-border, #e2e8f0);
-}
-.mobius-auth-btn-secondary:hover {
-  background: var(--mobius-bg-muted, #f8fafc);
 }
 .mobius-auth-confirm-actions .mobius-auth-btn-danger {
   background: var(--mobius-error, #dc2626);
@@ -5791,7 +5809,7 @@ function _taskModalRow(t, reload) {
   };
   const isOpen = status === "open" || status === "in_progress";
   if (isOpen) {
-    mkBtn("Resolve", "tm-env-btn--resolve", async () => {
+    const resolveBtn = mkBtn("Resolve", "tm-env-btn--resolve", async () => {
       await fetch(`${API_BASE}/chat/tasks/${t.task_id}/resolve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -5799,6 +5817,7 @@ function _taskModalRow(t, reload) {
       }).catch(() => null);
       void reload();
     });
+    resolveBtn.dataset.tourId = "task-resolve";
     mkBtn("Dismiss", "tm-env-btn--dismiss", async () => {
       await fetch(`${API_BASE}/chat/tasks/${t.task_id}/dismiss`, {
         method: "POST",

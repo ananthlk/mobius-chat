@@ -5450,13 +5450,14 @@ function _taskModalRow(t: any, reload: () => Promise<void>): HTMLElement {
 
   const isOpen = status === "open" || status === "in_progress";
   if (isOpen) {
-    mkBtn("Resolve", "tm-env-btn--resolve", async () => {
+    const resolveBtn = mkBtn("Resolve", "tm-env-btn--resolve", async () => {
       await fetch(`${API_BASE}/chat/tasks/${t.task_id}/resolve`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ resolved_by: "chat" }),
       }).catch(() => null);
       void reload();
     });
+    resolveBtn.dataset.tourId = "task-resolve";
     mkBtn("Dismiss", "tm-env-btn--dismiss", async () => {
       await fetch(`${API_BASE}/chat/tasks/${t.task_id}/dismiss`, {
         method: "POST", headers: { "Content-Type": "application/json" },
