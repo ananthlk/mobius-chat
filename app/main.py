@@ -923,6 +923,7 @@ def _spawn_background_publish_watcher(
 def _handle_instant_rag_upload(
     content: bytes, filename: str, org_name: str,
     thread_id: str | None, file_purpose: str,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     """Forward chat document uploads to mobius-rag's canonical /upload pipeline.
 
@@ -1195,7 +1196,7 @@ def _handle_instant_rag_upload(
             upload_id=upload_id,
             thread_id=real_tid,
             filename=filename,
-            user_id=None,  # Phase 1h: user_id is None in auth=off (dev); wire when auth=required
+            user_id=user_id,
             content_type=None,
             byte_size=len(content) if content else None,
             chunks_count=chunks_count,
@@ -1261,11 +1262,61 @@ def _handle_instant_rag_upload(
         "page_count": page_count,
         "eta_minutes": eta_minutes,
         "eta_seconds": eta_seconds,
+        "estimated_seconds": eta_seconds,
         "rag_status": rag_result_status,
+        # SSE progress channel (Part 2 bridge). Client subscribes while
+        # foreground_cutoff hasn't elapsed; URI is stable once document_id
+        # is known so the FE can open it immediately after this response.
+        "progress_channel": f"/chat/uploads/{document_id}/events",
     }
     if redirect_url:
         response["redirect_url"] = redirect_url
     return response
+
+
+@app.post("/chat/upload")
+def post_chat_upload(
+    file: UploadFile = File(...),
+    thread_id: str | None = Form(None),
+    org_name: str | None = Form(None),
+    user_id: str | None = Depends(require_user),
+) -> dict[str, Any]:
+    """Unified document-upload entry point (P0 unify, 2026-07-09).
+
+    Canonical replacement for ``POST /chat/roster-upload`` for instant-RAG
+    uploads. Roster/credentialing traffic continues to use
+    ``/chat/roster-upload`` directly (unchanged; kept as permanent alias
+    for appeals-agent + credentialing agent back-compat).
+
+    Cap: 100 MB (server-hard). Client should warn >25 MB but not block.
+    Returns document_id + progress_channel for the SSE bridge (Part 2).
+    """
+    _MAX_UPLOAD_BYTES = 100 * 1024 * 1024
+    buf = bytearray()
+    while True:
+        chunk = file.file.read(1024 * 1024)
+        if not chunk:
+            break
+        if len(buf) + len(chunk) > _MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Upload exceeds {_MAX_UPLOAD_BYTES // (1024*1024)} MB limit.",
+            )
+        buf.extend(chunk)
+    content = bytes(buf)
+    filename = file.filename or "upload"
+    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    _BLOCKED_EXTS = {"exe", "bat", "sh", "dll", "so", "dylib", "com", "msi", "scr"}
+    if ext in _BLOCKED_EXTS:
+        raise HTTPException(status_code=400, detail=f"File type '.{ext}' is not allowed")
+    return _handle_instant_rag_upload(
+        content=content,
+        filename=filename,
+        org_name=(org_name or "").strip() or "instant-rag",
+        thread_id=thread_id,
+        file_purpose="instant_rag",
+        user_id=user_id,
+    )
 
 
 @app.post("/chat/roster-upload")
@@ -1275,13 +1326,13 @@ def post_chat_roster_upload(
     thread_id: str | None = Form(None),
     run_id: str | None = Form(None),
     file_purpose: str | None = Form("roster_reconciliation"),
-    _user_id: str | None = Depends(require_user),
+    user_id: str | None = Depends(require_user),
 ) -> dict[str, Any]:
-    """
-    Upload a file for credentialing/reconciliation or instant RAG ingestion.
-    Proxies to provider-roster-credentialing (roster) or instant-rag skill (documents).
-    file_purpose: roster_reconciliation | instant_rag | other.
-    Returns { upload_id, org_id, org_name, row_count, thread_id }.
+    """Back-compat alias for instant_rag + roster_reconciliation uploads.
+
+    New code should use POST /chat/upload (instant_rag only).
+    Roster/credentialing agents call this directly with
+    file_purpose=roster_reconciliation and that path is unchanged.
     """
     # Size cap (2026-04-20 hardening). Enforce before reading the whole
     # body into memory so a malicious client can't exhaust disk / RSS.
@@ -1325,7 +1376,7 @@ def post_chat_roster_upload(
         # back-compat alias so the frontend doesn't change.
         return _handle_instant_rag_upload(
             content=content, filename=filename, org_name=org_name,
-            thread_id=thread_id, file_purpose=purpose,
+            thread_id=thread_id, file_purpose=purpose, user_id=user_id,
         )
 
     # ── Roster reconciliation path ────────────────────────────────────────

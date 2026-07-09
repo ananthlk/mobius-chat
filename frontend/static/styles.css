@@ -9207,3 +9207,18 @@ body {
 .at-mention-email { font-size: var(--text-xs, 0.75rem); color: var(--text-muted); }
 .at-mention-badge { font-size: 0.65rem; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase; padding: 0.1rem 0.35rem; border-radius: 3px; background: var(--mobius-violet, #7c3aed); color: #fff; line-height: 1.4; }
 .at-mention-empty { padding: 0.5rem 0.75rem; font-size: var(--text-sm, 0.875rem); color: var(--text-muted); }
+
+/* Instant-RAG upload — CSV roster detection hint */
+.upload-modal-roster-hint {
+  font-size: var(--text-xs, 0.75rem);
+  color: var(--mobius-violet, #7c3aed);
+  margin: 0.25rem 0 0;
+  line-height: 1.4;
+}
+.composer-attach-roster-hint {
+  display: block;
+  font-size: var(--text-xs, 0.75rem);
+  color: var(--mobius-violet, #7c3aed);
+  margin-top: 2px;
+  line-height: 1.3;
+}

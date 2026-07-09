@@ -127,13 +127,12 @@ class TestComposerAttachJSWiring:
             "staged file is silently dropped on Send."
         )
 
-    def test_upload_targets_roster_upload_with_instant_rag_purpose(self, js_text: str):
-        # The helper POSTs to /chat/roster-upload (current entry point)
-        # with file_purpose=instant_rag. If either drifts, the upload
-        # goes somewhere else silently.
-        assert '"/chat/roster-upload"' in js_text
-        assert '"instant_rag"' in js_text
-        assert "file_purpose" in js_text
+    def test_upload_targets_chat_upload(self, js_text: str):
+        # P0 unify (2026-07-09): composer now POSTs to /chat/upload
+        # (canonical instant-rag entry point). /chat/roster-upload is kept
+        # as a server-side alias for credentialing agents but the frontend
+        # no longer calls it — only /chat/upload appears in app.ts.
+        assert '"/chat/upload"' in js_text
 
     def test_wrapper_uses_stop_immediate_propagation(self, js_text: str):
         """The attachment-aware click/keydown handlers MUST call
@@ -576,11 +575,12 @@ class TestComposerAttachBuildSync:
             f"the bundle: {missing}"
         )
 
-    def test_built_bundle_posts_to_roster_upload(self, js_built: str):
-        """Bundle must POST to /chat/roster-upload. If esbuild tree-shook
-        the code away (dead-code elimination when all refs go through an
-        unreachable branch), this catches it."""
-        assert "/chat/roster-upload" in js_built
+    def test_built_bundle_posts_to_chat_upload(self, js_built: str):
+        """Bundle must POST to /chat/upload (P0 canonical entry point).
+        /chat/roster-upload is a server-only alias; it must NOT appear
+        in the client bundle."""
+        assert "/chat/upload" in js_built
+        assert "/chat/roster-upload" not in js_built
 
 
 class TestServedHTML:

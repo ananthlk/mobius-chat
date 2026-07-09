@@ -10305,23 +10305,54 @@ function run(): void {
     composerAttachmentInput?.click();
   });
 
+  // Peek the first line of a CSV to detect roster-like column headers.
+  function _looksLikeRosterCsv(firstLine: string): boolean {
+    const ROSTER_COLS = ["npi", "provider_name", "license_type", "license_number", "specialty", "taxonomy"];
+    const lower = firstLine.toLowerCase();
+    return ROSTER_COLS.filter((c) => lower.includes(c)).length >= 2;
+  }
+
   composerAttachmentInput?.addEventListener("change", (e) => {
     const f = (e.target as HTMLInputElement).files?.[0];
     if (!f) {
       clearComposerAttachment();
       return;
     }
-    // Size guard — chat's /chat/roster-upload → instant-rag skill runs
-    // extraction + ingest within a 120s urlopen; files over ~25MB
-    // routinely time out to an opaque 502. Fail loud here instead.
-    const maxBytes = 25 * 1024 * 1024;
-    if (f.size > maxBytes) {
-      alert(
-        `File too large (${Math.round(f.size / 1024 / 1024)} MB). ` +
-        `Limit is 25 MB for inline attach. Use the ⋯ → Upload file modal for larger files.`,
-      );
+    // Server hard cap is 100 MB. Soft-warn at 25 MB — processing may be
+    // slow (>15s) and will fall to background notify, not foreground bar.
+    const WARN_BYTES = 25 * 1024 * 1024;
+    const MAX_BYTES = 100 * 1024 * 1024;
+    if (f.size > MAX_BYTES) {
+      alert(`File too large (${Math.round(f.size / 1024 / 1024)} MB). Maximum is 100 MB.`);
       clearComposerAttachment();
       return;
+    }
+    if (f.size > WARN_BYTES) {
+      const ok = window.confirm(
+        `This file is ${Math.round(f.size / 1024 / 1024)} MB — processing will take ~${Math.round(f.size / (1024*1024*2))} min in the background. Continue?`,
+      );
+      if (!ok) { clearComposerAttachment(); return; }
+    }
+    // CSV roster detection — read first line to check for known roster cols.
+    const isCsv = f.name.toLowerCase().endsWith(".csv") || f.type === "text/csv";
+    if (isCsv) {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const firstLine = ((ev.target?.result as string) || "").split(/\r?\n/)[0] || "";
+        if (_looksLikeRosterCsv(firstLine)) {
+          const chip = document.getElementById("composerAttachmentChip");
+          if (chip) {
+            let hint = chip.querySelector<HTMLElement>(".composer-attach-roster-hint");
+            if (!hint) {
+              hint = document.createElement("span");
+              hint.className = "composer-attach-roster-hint";
+              chip.appendChild(hint);
+            }
+            hint.textContent = "Looks like a roster — use Credentialing to reconcile.";
+          }
+        }
+      };
+      reader.readAsText(f.slice(0, 512));
     }
     showComposerAttachment(f);
     inputEl?.focus();
@@ -10477,13 +10508,8 @@ function run(): void {
     try {
       const formData = new FormData();
       formData.append("file", composerStagedFile);
-      // "instant-rag" sentinel — chat-side _handle_instant_rag_upload
-      // collapses this to an empty payer tag (payer auto-classification
-      // lands in Phase B.2).
-      formData.append("org_name", "instant-rag");
-      formData.append("file_purpose", "instant_rag");
       if (currentThreadId) formData.append("thread_id", currentThreadId);
-      const resp = await fetch(API_BASE + "/chat/roster-upload", {
+      const resp = await apiFetch(API_BASE + "/chat/upload", {
         method: "POST",
         body: formData,
       });
@@ -11075,7 +11101,27 @@ function run(): void {
       if (uploadSubmit) uploadSubmit.disabled = !(hasFile && (hasOrg || !isRoster));
     }
     uploadOrgName?.addEventListener("input", updateSubmitState);
-    uploadFile?.addEventListener("change", updateSubmitState);
+    uploadFile?.addEventListener("change", () => {
+      updateSubmitState();
+      const f = uploadFile?.files?.[0];
+      const rosterHint = document.getElementById("uploadRosterHint");
+      if (!rosterHint) return;
+      if (!f) { rosterHint.hidden = true; rosterHint.textContent = ""; return; }
+      const isCsv = f.name.toLowerCase().endsWith(".csv") || f.type === "text/csv";
+      if (!isCsv) { rosterHint.hidden = true; rosterHint.textContent = ""; return; }
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const firstLine = ((ev.target?.result as string) || "").split(/\r?\n/)[0] || "";
+        if (_looksLikeRosterCsv(firstLine)) {
+          rosterHint.textContent = "This looks like a roster file. To reconcile providers, use the Credentialing module instead.";
+          rosterHint.hidden = false;
+        } else {
+          rosterHint.hidden = true;
+          rosterHint.textContent = "";
+        }
+      };
+      reader.readAsText(f.slice(0, 512));
+    });
 
     uploadForm?.addEventListener("submit", (e) => {
       e.preventDefault();
@@ -11091,12 +11137,10 @@ function run(): void {
       startUploadPhaseEmits(purpose);
       const formData = new FormData();
       formData.append("file", file);
-      formData.append("org_name", orgName || "instant-rag");
-      formData.append("file_purpose", purpose);
       if (currentThreadId) formData.append("thread_id", currentThreadId);
       uploadAbort = new AbortController();
       const signal = uploadAbort.signal;
-      fetch(API_BASE + "/chat/roster-upload", { method: "POST", body: formData, signal })
+      apiFetch(API_BASE + "/chat/upload", { method: "POST", body: formData, signal })
         .then((r) => {
           if (!r.ok) return r.json().then((d) => Promise.reject(d?.detail ?? r.statusText));
           return r.json();
