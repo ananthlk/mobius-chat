@@ -1390,6 +1390,60 @@ def post_chat_roster_upload(
         ),
     )
 
+@app.get("/chat/uploads/{document_id}/events")
+def chat_upload_events(document_id: str):
+    """SSE bridge — proxies RAG's per-document progress stream to the client.
+
+    Endpoint from §2 of instant-rag-progress-contract.md. Client subscribes
+    here; chat transparently forwards each §2 event from RAG's
+    GET /api/uploads/{document_id}/progress.  Auto-closes when RAG sends
+    terminal=true.
+    """
+    import json as _json
+    import urllib.request
+    from fastapi.responses import StreamingResponse
+
+    rag_url = (os.environ.get("MOBIUS_RAG_URL") or "http://localhost:8001").rstrip("/")
+    rag_stream_url = f"{rag_url}/api/uploads/{document_id}/progress"
+
+    def _proxy():
+        try:
+            req = urllib.request.Request(
+                rag_stream_url,
+                headers={"Accept": "text/event-stream"},
+            )
+            with urllib.request.urlopen(req, timeout=660) as resp:
+                for raw_line in resp:
+                    line = raw_line.decode("utf-8", errors="replace")
+                    yield line
+                    if line.startswith("data:"):
+                        try:
+                            payload = _json.loads(line[5:].strip())
+                            if payload.get("terminal"):
+                                return
+                        except Exception:
+                            pass
+        except Exception as exc:
+            err_event = _json.dumps({
+                "document_id": document_id,
+                "stage": "failed",
+                "pct": 0,
+                "terminal": True,
+                "error": str(exc)[:200],
+            })
+            yield f"data: {err_event}\n\n"
+
+    return StreamingResponse(
+        _proxy(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.get("/chat/thread/{thread_id}/uploads")
 def get_thread_uploads(thread_id: str) -> dict[str, Any]:
     """
