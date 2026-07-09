@@ -2558,11 +2558,16 @@ function simpleMarkdownToHtml(text) {
   const PHONE_RE = /(?:\+?1[\s.\-]?)?\(?[2-9]\d{2}\)?[\s.\-]\d{3}[\s.\-]\d{4}/g;
   out = out.replace(
     /\[([^\]]+)\]\((https:\/\/[^)]+)\)/g,
-    (_m, linkText, url) => stashLink(`<a href="${url}" class="chat-link chat-link--url" target="_blank" rel="noopener noreferrer" title="${url}">${linkText}</a>`)
+    (_m, linkText, url) => stashLink(`<a href="${url}" class="chat-link chat-link--url" target="_blank" rel="noopener noreferrer" title="${url}">${linkText} \u2197</a>`)
   );
   out = out.replace(URL_RE, (url) => {
-    const display = url.length > 60 ? url.slice(0, 59) + "\u2026" : url;
-    return stashLink(`<a href="${url}" class="chat-link chat-link--url" target="_blank" rel="noopener noreferrer" title="${url}">${display}</a>`);
+    let display = url;
+    try {
+      display = new URL(url).hostname;
+    } catch {
+      display = url.length > 40 ? url.slice(0, 39) + "\u2026" : url;
+    }
+    return stashLink(`<a href="${url}" class="chat-link chat-link--url" target="_blank" rel="noopener noreferrer" title="${url}">${display} \u2197</a>`);
   });
   out = out.replace(
     EMAIL_RE,

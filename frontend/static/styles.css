@@ -2018,12 +2018,31 @@ body {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
-.chat-link--url::after {
-  content: "\2197";
-  font-size: 0.7em;
-  vertical-align: super;
-  margin-left: 1px;
-  opacity: 0.65;
+/* URLs render as purple action buttons — same style as answer-card-action-chip */
+.chat-link--url {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.4rem 0.9rem;
+  border-radius: 9999px;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: #fff;
+  font-size: var(--text-sm, 0.875rem);
+  font-weight: 600;
+  text-decoration: none;
+  vertical-align: middle;
+  box-shadow: 0 2px 6px rgba(99,102,241,0.3);
+  transition: opacity 0.15s, transform 0.1s;
+  margin: 0.15rem 0;
+}
+.chat-link--url:hover {
+  text-decoration: none;
+  opacity: 0.9;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(99,102,241,0.4);
+}
+.chat-link--email {
+  color: var(--mobius-accent);
 }
 .chat-link--tel {
   color: var(--mobius-teal);
