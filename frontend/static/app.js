@@ -2547,9 +2547,37 @@ function simpleMarkdownToHtml(text) {
     imgs.push(`<img src="${url}" alt="${escapedAlt}" class="report-chart" loading="lazy" />`);
     return `\uE000${i}\uE001`;
   });
+  const links = [];
+  const stashLink = (html) => {
+    const i = links.length;
+    links.push(html);
+    return `\uE010${i}\uE011`;
+  };
+  const URL_RE = /https:\/\/[^\s"'<>()[\]]+[^\s"'<>()[\].,!?;:]/g;
+  const EMAIL_RE = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
+  const PHONE_RE = /(?:\+?1[\s.\-]?)?\(?[2-9]\d{2}\)?[\s.\-]\d{3}[\s.\-]\d{4}/g;
+  out = out.replace(
+    /\[([^\]]+)\]\((https:\/\/[^)]+)\)/g,
+    (_m, linkText, url) => stashLink(`<a href="${url}" class="chat-link chat-link--url" target="_blank" rel="noopener noreferrer" title="${url}">${linkText}</a>`)
+  );
+  out = out.replace(URL_RE, (url) => {
+    const display = url.length > 60 ? url.slice(0, 59) + "\u2026" : url;
+    return stashLink(`<a href="${url}" class="chat-link chat-link--url" target="_blank" rel="noopener noreferrer" title="${url}">${display}</a>`);
+  });
+  out = out.replace(
+    EMAIL_RE,
+    (email) => stashLink(`<a href="mailto:${email}" class="chat-link chat-link--email">${email}</a>`)
+  );
+  out = out.replace(PHONE_RE, (raw) => {
+    const digits = raw.replace(/[^\d+]/g, "");
+    return stashLink(`<a href="tel:${digits}" class="chat-link chat-link--tel">${raw}</a>`);
+  });
   out = escape(out);
   imgs.forEach((img, i) => {
     out = out.replace(`\uE000${i}\uE001`, img);
+  });
+  links.forEach((html, i) => {
+    out = out.replace(`\uE010${i}\uE011`, html);
   });
   out = out.replace(/^#### (.+)$/gm, "<h4>$1</h4>");
   out = out.replace(/^### (.+)$/gm, "<h3>$1</h3>");
@@ -2903,7 +2931,7 @@ function renderAnswerCard(card, isError, opts) {
   bubble.className = "message-bubble answer-card-bubble";
   const direct = document.createElement("div");
   direct.className = "answer-card-direct";
-  direct.textContent = card.direct_answer;
+  direct.innerHTML = simpleMarkdownToHtml(card.direct_answer);
   bubble.appendChild(direct);
   if (opts?.showConfidenceBadge !== false && !opts?.suppressConfidenceForAdminQcFail) {
     bubble.appendChild(
