@@ -72,11 +72,15 @@ class TestTaskListProxy:
         assert resp.status_code == 200
         assert captured["method"] == "GET"
         assert captured["url"].endswith("/tasks")
-        # None values must be stripped before forwarding.
+        # None values must be stripped before forwarding. audience=user
+        # is the proxy's default (migration 004 task classes, 2026-07-08):
+        # this is the user-facing surface, so system telemetry stays out
+        # unless the caller opts in with audience=developer|all.
         assert captured["params"] == {
             "org_name": "ACME",
             "module": "credentialing",
             "status": "open",
+            "audience": "user",
             "limit": 50,
             "offset": 0,
         }
