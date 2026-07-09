@@ -451,6 +451,21 @@ def run_integrate(
                 if isinstance(g, dict) and (g.get("slot") or "").strip()
             ],
         }
+    # Build a compact task_context summary for the integrator so it can
+    # generate task-relevant next_questions_for_user and next_steps.
+    _task_ctx: dict | None = None
+    _task_raw = getattr(ctx, "react_task_list_data", None)
+    if isinstance(_task_raw, dict) and isinstance(_task_raw.get("tasks"), list):
+        _tasks = _task_raw["tasks"]
+        _task_ctx = {
+            "total": len(_tasks),
+            "filters": _task_raw.get("filters") or {},
+            "tasks": [
+                {k: t.get(k) for k in ("task_id", "title", "kind", "status", "severity", "deadline", "assignee") if t.get(k)}
+                for t in _tasks[:10]
+            ],
+        }
+
     final_message, integrator_usage = format_response(
         plan,
         answers,
@@ -472,6 +487,7 @@ def run_integrate(
         user_profile=getattr(ctx, "user_profile", None),
         react_draft=getattr(ctx, "react_draft", None),
         source_texts=source_texts or None,
+        task_context=_task_ctx,
     )
     ctx.final_message = final_message
 
