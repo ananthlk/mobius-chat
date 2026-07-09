@@ -3532,6 +3532,10 @@ function renderCredentialingCopilotPanel(cc, threadId) {
   followTa.value = workflowFollowUpsDraftToLines(cc.draft_output?.workflow_follow_ups);
   followTa.setAttribute("aria-label", "Workflow follow-up lines for this step");
   wrap.appendChild(followTa);
+  const inlineErr = document.createElement("div");
+  inlineErr.className = "credentialing-copilot-error credentialing-copilot-inline-err";
+  inlineErr.style.display = "none";
+  wrap.appendChild(inlineErr);
   const btnRow = document.createElement("div");
   btnRow.className = "credentialing-copilot-actions";
   const acceptBtn = document.createElement("button");
@@ -3551,9 +3555,11 @@ function renderCredentialingCopilotPanel(cc, threadId) {
     try {
       validated = JSON.parse(ta.value);
     } catch {
-      alert("Invalid JSON \u2014 fix the textarea or use Accept draft as-is.");
+      inlineErr.textContent = "Invalid JSON \u2014 fix the textarea or use Accept draft as-is.";
+      inlineErr.style.display = "";
       return;
     }
+    inlineErr.style.display = "none";
     const fuLines = parseFollowUpLines(followTa.value);
     if (fuLines.length)
       validated.workflow_follow_ups = fuLines;
@@ -3589,7 +3595,8 @@ function renderCredentialingCopilotPanel(cc, threadId) {
       const replacement = renderCredentialingCopilotPanel(next, threadId);
       parent?.replaceChild(replacement, wrap);
     } catch (e) {
-      alert("Validation failed: " + (e instanceof Error ? e.message : String(e)));
+      inlineErr.textContent = "Submission failed \u2014 please try again or accept the draft as-is.";
+      inlineErr.style.display = "";
       submitBtn.disabled = false;
       acceptBtn.disabled = false;
     }
@@ -4572,9 +4579,12 @@ function openEmailThreadDialog(threadId) {
   });
   const dialog = document.createElement("div");
   dialog.className = "email-thread-dialog";
+  dialog.setAttribute("role", "dialog");
+  dialog.setAttribute("aria-modal", "true");
+  dialog.setAttribute("aria-label", "Email this conversation");
   Object.assign(dialog.style, {
-    background: "var(--background, #fff)",
-    color: "var(--foreground, #111)",
+    background: "var(--main-bg, #fff)",
+    color: "var(--main-text, #111)",
     borderRadius: "8px",
     padding: "20px",
     width: "min(560px, 92vw)",
@@ -4593,7 +4603,7 @@ function openEmailThreadDialog(threadId) {
     display: "block",
     fontSize: "0.85rem",
     marginBottom: "4px",
-    color: "var(--muted, #555)"
+    color: "var(--sidebar-text-muted, #555)"
   });
   const toInput = document.createElement("input");
   toInput.type = "email";
@@ -4613,7 +4623,7 @@ function openEmailThreadDialog(threadId) {
   Object.assign(scopeLabel.style, {
     fontSize: "0.85rem",
     marginBottom: "4px",
-    color: "var(--muted, #555)"
+    color: "var(--sidebar-text-muted, #555)"
   });
   const scopeWrap = document.createElement("div");
   Object.assign(scopeWrap.style, { display: "flex", gap: "16px", marginBottom: "14px" });
@@ -4626,7 +4636,7 @@ function openEmailThreadDialog(threadId) {
   Object.assign(modeLabel.style, {
     fontSize: "0.85rem",
     marginBottom: "4px",
-    color: "var(--muted, #555)"
+    color: "var(--sidebar-text-muted, #555)"
   });
   const modeWrap = document.createElement("div");
   Object.assign(modeWrap.style, { display: "flex", gap: "16px", marginBottom: "14px" });
@@ -4642,7 +4652,7 @@ function openEmailThreadDialog(threadId) {
     borderRadius: "4px",
     padding: "10px 12px",
     marginBottom: "12px",
-    background: "var(--surface, #fafafa)",
+    background: "var(--thinking-bg, #fafafa)",
     maxHeight: "260px",
     overflowY: "auto",
     whiteSpace: "pre-wrap",
@@ -4652,7 +4662,7 @@ function openEmailThreadDialog(threadId) {
   Object.assign(status.style, {
     fontSize: "0.85rem",
     marginBottom: "10px",
-    color: "var(--muted, #666)",
+    color: "var(--sidebar-text-muted, #666)",
     minHeight: "18px"
   });
   const btnRow = document.createElement("div");
@@ -4710,7 +4720,7 @@ function openEmailThreadDialog(threadId) {
     const scope = scopeThread.input.checked ? "thread" : "last";
     const mode = modeSummary.input.checked ? "summary" : "full";
     status.textContent = "Drafting\u2026";
-    status.style.color = "var(--muted, #666)";
+    status.style.color = "var(--sidebar-text-muted, #666)";
     setBusy(true);
     try {
       const res = await fetch(`${API_BASE}/chat/thread/${encodeURIComponent(threadId)}/email`, {
@@ -4732,7 +4742,7 @@ Subject: ${draft.subject || ""}
 
 ${draft.body || ""}`;
       status.textContent = "Review the draft, then click Send.";
-      status.style.color = "var(--muted, #666)";
+      status.style.color = "var(--sidebar-text-muted, #666)";
       sendBtn.style.display = "";
       previewBtn.textContent = "Re-draft";
       lockedPayload = { to: [to], scope, mode };
@@ -4748,7 +4758,7 @@ ${draft.body || ""}`;
       return;
     setBusy(true);
     status.textContent = "Sending\u2026";
-    status.style.color = "var(--muted, #666)";
+    status.style.color = "var(--sidebar-text-muted, #666)";
     try {
       const res = await fetch(`${API_BASE}/chat/thread/${encodeURIComponent(threadId)}/email`, {
         method: "POST",
@@ -5214,12 +5224,18 @@ if (typeof document !== "undefined") {
   }
 }
 var _tasksModalEl = null;
+var _tasksEscHandler = null;
 var _TASK_SEVERITIES = ["critical", "warning", "info", "low", "none"];
 var _ctdOverlayEl = null;
+var _ctdEscHandler = null;
 function closeCreateTaskDialog() {
   if (_ctdOverlayEl) {
     _ctdOverlayEl.remove();
     _ctdOverlayEl = null;
+  }
+  if (_ctdEscHandler) {
+    document.removeEventListener("keydown", _ctdEscHandler);
+    _ctdEscHandler = null;
   }
 }
 function openCreateTaskDialog(opts) {
@@ -5230,13 +5246,11 @@ function openCreateTaskDialog(opts) {
     if (e.target === overlay)
       closeCreateTaskDialog();
   });
-  const escHandler = (e) => {
-    if (e.key === "Escape") {
+  _ctdEscHandler = (e) => {
+    if (e.key === "Escape")
       closeCreateTaskDialog();
-      document.removeEventListener("keydown", escHandler);
-    }
   };
-  document.addEventListener("keydown", escHandler);
+  document.addEventListener("keydown", _ctdEscHandler);
   const dialog = document.createElement("div");
   dialog.className = "ctd-dialog";
   dialog.setAttribute("role", "dialog");
@@ -5375,6 +5389,10 @@ function closeTasksModal() {
     _tasksModalEl.remove();
     _tasksModalEl = null;
   }
+  if (_tasksEscHandler) {
+    document.removeEventListener("keydown", _tasksEscHandler);
+    _tasksEscHandler = null;
+  }
 }
 function openTasksModal(prefill) {
   closeTasksModal();
@@ -5384,13 +5402,11 @@ function openTasksModal(prefill) {
     if (e.target === overlay)
       closeTasksModal();
   });
-  const escHandler = (e) => {
-    if (e.key === "Escape") {
+  _tasksEscHandler = (e) => {
+    if (e.key === "Escape")
       closeTasksModal();
-      document.removeEventListener("keydown", escHandler);
-    }
   };
-  document.addEventListener("keydown", escHandler);
+  document.addEventListener("keydown", _tasksEscHandler);
   const panel = document.createElement("div");
   panel.className = "tasks-modal";
   const header = document.createElement("div");
@@ -7892,7 +7908,7 @@ function renderAssistantFromEnvelope(envelope, opts) {
       const b = block;
       const c = document.createElement("div");
       c.className = "envelope-callout envelope-callout--" + (b.variant || "info");
-      c.textContent = (b.body || "").replace(/\*\*([^*]+)\*\*/g, "$1");
+      c.innerHTML = simpleMarkdownToHtml(b.body || "");
       bubble.appendChild(c);
     } else if (t === "sources") {
       const b = block;

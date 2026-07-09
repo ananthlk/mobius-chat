@@ -943,71 +943,6 @@ function initModelProfilePicker(): void {
 //      so the user can edit + send. Pulls from a small curated list
 //      keyed to registered skills.
 //
-// Why curated and not "every skill in the manifest"? Most skills are
-// internal stages (phi_detector, adjudicator, planner) — they shouldn't
-// appear as user-facing chips. This list is the discoverable subset.
-// "See all skills →" opens a modal listing every visible skill from
-// the registry for power users.
-interface ChatSkillChip {
-  id: string;            // canonical skill name (matches registry)
-  icon: string;
-  label: string;
-  prompt: string;        // template dropped into the composer
-  example: string;       // shown as tooltip / sub-label
-}
-
-const _CHAT_SKILL_CHIPS: ChatSkillChip[] = [
-  { id: "fetch_document",    icon: "📄", label: "Find a document",     prompt: "Send me the ",                  example: "send me the Sunshine Provider Manual" },
-  { id: "search_corpus",     icon: "🔍", label: "Search materials",    prompt: "What does our corpus say about ", example: "what does the corpus say about prior auth" },
-  { id: "healthcare_query",  icon: "💡", label: "Look up code / NPI",  prompt: "Look up ",                       example: "look up HCPCS H0036" },
-  { id: "google_search",     icon: "🌐", label: "Search the web",      prompt: "Search the web for ",            example: "search the web for FL Medicaid timely filing" },
-  { id: "vibe",              icon: "🥂", label: "Light moment",        prompt: "Give me something light",        example: "tell me a quick toast" },
-];
-
-function initChatSkillsChips(): void {
-  const list = document.getElementById("chatSkillsList") as HTMLUListElement | null;
-  const seeAllBtn = document.getElementById("btnSeeAllSkills") as HTMLButtonElement | null;
-  if (!list) return;
-
-  // Render chips
-  list.innerHTML = "";
-  _CHAT_SKILL_CHIPS.forEach((chip) => {
-    const li = document.createElement("li");
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "skill-sidebar-item skill-sidebar-item--chip";
-    btn.title = chip.example;
-    btn.dataset.skillId = chip.id;
-    btn.innerHTML =
-      '<span class="skill-sidebar-icon" aria-hidden="true">' + chip.icon + '</span>' +
-      '<span class="skill-sidebar-label">' + chip.label + '</span>' +
-      '<span class="skill-sidebar-arrow" aria-hidden="true">›</span>';
-    btn.addEventListener("click", () => _dropPromptIntoComposer(chip.prompt));
-    li.appendChild(btn);
-    list.appendChild(li);
-  });
-
-  if (seeAllBtn) {
-    seeAllBtn.addEventListener("click", () => _openSeeAllSkillsModal());
-  }
-}
-
-function _dropPromptIntoComposer(template: string): void {
-  // Composer is the same input the chat uses — drop the template,
-  // focus, position cursor at end so the user can finish the prompt.
-  const input = document.getElementById("messageInput") as HTMLTextAreaElement | HTMLInputElement | null;
-  if (!input) return;
-  input.value = template;
-  input.focus();
-  // Put cursor at end (works for both textarea and input)
-  if (typeof (input as any).setSelectionRange === "function") {
-    const n = template.length;
-    (input as any).setSelectionRange(n, n);
-  }
-  // Trigger any input listeners (auto-resize, send-button enable)
-  input.dispatchEvent(new Event("input", { bubbles: true }));
-}
-
 // Collapsed-state rail icons (Sprint 2 #0.5, 2026-04-25). The sidebar
 // has a narrow rail visible when collapsed; rail icons let users jump
 // to a section without expanding the whole panel manually. Click →
@@ -2947,6 +2882,11 @@ function renderCredentialingCopilotPanel(
   followTa.setAttribute("aria-label", "Workflow follow-up lines for this step");
   wrap.appendChild(followTa);
 
+  const inlineErr = document.createElement("div");
+  inlineErr.className = "credentialing-copilot-error credentialing-copilot-inline-err";
+  inlineErr.style.display = "none";
+  wrap.appendChild(inlineErr);
+
   const btnRow = document.createElement("div");
   btnRow.className = "credentialing-copilot-actions";
 
@@ -2968,9 +2908,11 @@ function renderCredentialingCopilotPanel(
     try {
       validated = JSON.parse(ta.value) as Record<string, unknown>;
     } catch {
-      alert("Invalid JSON — fix the textarea or use Accept draft as-is.");
+      inlineErr.textContent = "Invalid JSON — fix the textarea or use Accept draft as-is.";
+      inlineErr.style.display = "";
       return;
     }
+    inlineErr.style.display = "none";
     const fuLines = parseFollowUpLines(followTa.value);
     if (fuLines.length) validated.workflow_follow_ups = fuLines;
     submitBtn.disabled = true;
@@ -3021,7 +2963,8 @@ function renderCredentialingCopilotPanel(
       const replacement = renderCredentialingCopilotPanel(next, threadId);
       parent?.replaceChild(replacement, wrap);
     } catch (e) {
-      alert("Validation failed: " + (e instanceof Error ? e.message : String(e)));
+      inlineErr.textContent = "Submission failed — please try again or accept the draft as-is.";
+      inlineErr.style.display = "";
       submitBtn.disabled = false;
       acceptBtn.disabled = false;
     }
@@ -4184,9 +4127,12 @@ function openEmailThreadDialog(threadId: string): void {
 
   const dialog = document.createElement("div");
   dialog.className = "email-thread-dialog";
+  dialog.setAttribute("role", "dialog");
+  dialog.setAttribute("aria-modal", "true");
+  dialog.setAttribute("aria-label", "Email this conversation");
   Object.assign(dialog.style, {
-    background: "var(--background, #fff)",
-    color: "var(--foreground, #111)",
+    background: "var(--main-bg, #fff)",
+    color: "var(--main-text, #111)",
     borderRadius: "8px",
     padding: "20px",
     width: "min(560px, 92vw)",
@@ -4205,7 +4151,7 @@ function openEmailThreadDialog(threadId: string): void {
   const toLabel = document.createElement("label");
   toLabel.textContent = "Send to";
   Object.assign(toLabel.style, { display: "block", fontSize: "0.85rem",
-                                  marginBottom: "4px", color: "var(--muted, #555)" });
+                                  marginBottom: "4px", color: "var(--sidebar-text-muted, #555)" });
   const toInput = document.createElement("input");
   toInput.type = "email";
   toInput.placeholder = "name@example.com";
@@ -4220,7 +4166,7 @@ function openEmailThreadDialog(threadId: string): void {
   const scopeLabel = document.createElement("div");
   scopeLabel.textContent = "What to include";
   Object.assign(scopeLabel.style, { fontSize: "0.85rem", marginBottom: "4px",
-                                     color: "var(--muted, #555)" });
+                                     color: "var(--sidebar-text-muted, #555)" });
   const scopeWrap = document.createElement("div");
   Object.assign(scopeWrap.style, { display: "flex", gap: "16px", marginBottom: "14px" });
   const scopeThread = _radio("scope", "thread", "Whole thread", true);
@@ -4232,7 +4178,7 @@ function openEmailThreadDialog(threadId: string): void {
   const modeLabel = document.createElement("div");
   modeLabel.textContent = "How to format";
   Object.assign(modeLabel.style, { fontSize: "0.85rem", marginBottom: "4px",
-                                    color: "var(--muted, #555)" });
+                                    color: "var(--sidebar-text-muted, #555)" });
   const modeWrap = document.createElement("div");
   Object.assign(modeWrap.style, { display: "flex", gap: "16px", marginBottom: "14px" });
   const modeSummary = _radio("mode", "summary", "Summarize (LLM)", true);
@@ -4245,7 +4191,7 @@ function openEmailThreadDialog(threadId: string): void {
   preview.className = "email-thread-preview";
   Object.assign(preview.style, {
     display: "none", border: "1px solid var(--border, #ccc)", borderRadius: "4px",
-    padding: "10px 12px", marginBottom: "12px", background: "var(--surface, #fafafa)",
+    padding: "10px 12px", marginBottom: "12px", background: "var(--thinking-bg, #fafafa)",
     maxHeight: "260px", overflowY: "auto", whiteSpace: "pre-wrap",
     fontSize: "0.85rem",
   });
@@ -4253,7 +4199,7 @@ function openEmailThreadDialog(threadId: string): void {
   // Status line
   const status = document.createElement("div");
   Object.assign(status.style, { fontSize: "0.85rem", marginBottom: "10px",
-                                 color: "var(--muted, #666)", minHeight: "18px" });
+                                 color: "var(--sidebar-text-muted, #666)", minHeight: "18px" });
 
   // Buttons
   const btnRow = document.createElement("div");
@@ -4317,7 +4263,7 @@ function openEmailThreadDialog(threadId: string): void {
     const scope = scopeThread.input.checked ? "thread" : "last";
     const mode = modeSummary.input.checked ? "summary" : "full";
     status.textContent = "Drafting…";
-    status.style.color = "var(--muted, #666)";
+    status.style.color = "var(--sidebar-text-muted, #666)";
     setBusy(true);
     try {
       const res = await fetch(`${API_BASE}/chat/thread/${encodeURIComponent(threadId)}/email`, {
@@ -4339,7 +4285,7 @@ function openEmailThreadDialog(threadId: string): void {
         `Subject: ${draft.subject || ""}\n\n` +
         `${draft.body || ""}`;
       status.textContent = "Review the draft, then click Send.";
-      status.style.color = "var(--muted, #666)";
+      status.style.color = "var(--sidebar-text-muted, #666)";
       sendBtn.style.display = "";
       previewBtn.textContent = "Re-draft";
       lockedPayload = { to: [to], scope, mode };
@@ -4355,7 +4301,7 @@ function openEmailThreadDialog(threadId: string): void {
     if (!lockedPayload) return;
     setBusy(true);
     status.textContent = "Sending…";
-    status.style.color = "var(--muted, #666)";
+    status.style.color = "var(--sidebar-text-muted, #666)";
     try {
       const res = await fetch(`${API_BASE}/chat/thread/${encodeURIComponent(threadId)}/email`, {
         method: "POST",
@@ -4911,6 +4857,7 @@ if (typeof document !== "undefined") {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 let _tasksModalEl: HTMLElement | null = null;
+let _tasksEscHandler: ((e: KeyboardEvent) => void) | null = null;
 
 interface TasksModalPrefill {
   createOpen?: boolean;
@@ -4934,9 +4881,11 @@ interface CreateTaskDialogOpts {
 }
 
 let _ctdOverlayEl: HTMLElement | null = null;
+let _ctdEscHandler: ((e: KeyboardEvent) => void) | null = null;
 
 function closeCreateTaskDialog(): void {
   if (_ctdOverlayEl) { _ctdOverlayEl.remove(); _ctdOverlayEl = null; }
+  if (_ctdEscHandler) { document.removeEventListener("keydown", _ctdEscHandler); _ctdEscHandler = null; }
 }
 
 function openCreateTaskDialog(opts?: CreateTaskDialogOpts): void {
@@ -4945,10 +4894,8 @@ function openCreateTaskDialog(opts?: CreateTaskDialogOpts): void {
   const overlay = document.createElement("div");
   overlay.className = "ctd-overlay";
   overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) closeCreateTaskDialog(); });
-  const escHandler = (e: KeyboardEvent) => {
-    if (e.key === "Escape") { closeCreateTaskDialog(); document.removeEventListener("keydown", escHandler); }
-  };
-  document.addEventListener("keydown", escHandler);
+  _ctdEscHandler = (e: KeyboardEvent) => { if (e.key === "Escape") closeCreateTaskDialog(); };
+  document.addEventListener("keydown", _ctdEscHandler);
 
   const dialog = document.createElement("div");
   dialog.className = "ctd-dialog";
@@ -5082,6 +5029,7 @@ function openCreateTaskDialog(opts?: CreateTaskDialogOpts): void {
 
 function closeTasksModal(): void {
   if (_tasksModalEl) { _tasksModalEl.remove(); _tasksModalEl = null; }
+  if (_tasksEscHandler) { document.removeEventListener("keydown", _tasksEscHandler); _tasksEscHandler = null; }
 }
 
 function openTasksModal(prefill?: TasksModalPrefill): void {
@@ -5090,10 +5038,8 @@ function openTasksModal(prefill?: TasksModalPrefill): void {
   const overlay = document.createElement("div");
   overlay.className = "tasks-modal-overlay";
   overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) closeTasksModal(); });
-  const escHandler = (e: KeyboardEvent) => {
-    if (e.key === "Escape") { closeTasksModal(); document.removeEventListener("keydown", escHandler); }
-  };
-  document.addEventListener("keydown", escHandler);
+  _tasksEscHandler = (e: KeyboardEvent) => { if (e.key === "Escape") closeTasksModal(); };
+  document.addEventListener("keydown", _tasksEscHandler);
 
   const panel = document.createElement("div");
   panel.className = "tasks-modal";
@@ -8013,7 +7959,7 @@ function renderAssistantFromEnvelope(
       const b = block as { body: string; variant?: string };
       const c = document.createElement("div");
       c.className = "envelope-callout envelope-callout--" + (b.variant || "info");
-      c.textContent = (b.body || "").replace(/\*\*([^*]+)\*\*/g, "$1");
+      c.innerHTML = simpleMarkdownToHtml(b.body || "");
       bubble.appendChild(c);
     } else if (t === "sources") {
       const b = block as {
