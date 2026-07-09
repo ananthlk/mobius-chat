@@ -18,8 +18,12 @@ function normalizeUser(data) {
     activities: activities.map((a) => a.activity_code || "").filter(Boolean),
     tone: pref.tone || "professional",
     greeting_enabled: pref.greeting_enabled !== false,
+    ai_experience_level: pref.ai_experience_level || "beginner",
+    // Defaults must mirror the backend column defaults (confirm_first) or
+    // the modal shows — and then saves — a preference the user never chose.
     autonomy_routine_tasks: pref.autonomy_routine_tasks || "confirm_first",
-    autonomy_sensitive_tasks: pref.autonomy_sensitive_tasks || "manual"
+    autonomy_sensitive_tasks: pref.autonomy_sensitive_tasks || "confirm_first",
+    org_memberships: u.org_memberships || []
   };
 }
 var STORAGE_KEYS = {
@@ -828,6 +832,7 @@ function escapeHtml2(text) {
 }
 function prefsFromProfile(profile) {
   return {
+    organization: profile.org_memberships?.[0]?.display_name ?? "",
     preferred_name: profile.preferred_name ?? "",
     timezone: profile.timezone ?? "America/New_York",
     activities: profile.activities ?? [],
@@ -936,6 +941,13 @@ function createPreferencesModal(apiBase, auth, options) {
             <input type="text" class="mobius-prefs-input" id="pref-name"
                    value="${escapeHtml2(prefs.preferred_name ?? "")}"
                    placeholder="How should we greet you?" />
+          </div>
+          <div class="mobius-prefs-section">
+            <label class="mobius-prefs-label">Organization</label>
+            <input type="text" class="mobius-prefs-input" id="pref-organization"
+                   value="${escapeHtml2(prefs.organization ?? "")}"
+                   placeholder="Your organization's name" />
+            <p class="mobius-prefs-desc">Matched against the Mobius org registry when you save.</p>
           </div>
           <div class="mobius-prefs-section">
             <label class="mobius-prefs-label">Timezone</label>
@@ -1081,6 +1093,7 @@ function createPreferencesModal(apiBase, auth, options) {
               "Content-Type": "application/json"
             },
             body: JSON.stringify({
+              organization: prefs.organization,
               preferred_name: prefs.preferred_name,
               timezone: prefs.timezone,
               activities: selectedActivities,
@@ -1118,6 +1131,9 @@ function createPreferencesModal(apiBase, auth, options) {
           activeTab = tab.dataset.tab ?? "profile";
           render();
         });
+      });
+      modal.querySelector("#pref-organization")?.addEventListener("input", (e) => {
+        prefs.organization = e.target.value;
       });
       modal.querySelector("#pref-name")?.addEventListener("input", (e) => {
         prefs.preferred_name = e.target.value;
