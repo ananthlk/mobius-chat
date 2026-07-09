@@ -10543,7 +10543,7 @@ function run(): void {
 
     // Reset
     if (bar)   { bar.style.width = "0%"; bar.className = "rag-progress-strip__bar"; }
-    if (name)  name.textContent = filename;
+    if (name)  name.textContent = `📄 ${filename}`;
     if (stage) stage.textContent = "Queued…";
     if (action) { action.setAttribute("hidden", ""); action.onclick = null; }
     strip.classList.remove("rag-progress-strip--collapsed");

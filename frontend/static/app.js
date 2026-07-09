@@ -10297,7 +10297,7 @@ ${message}`;
       bar.className = "rag-progress-strip__bar";
     }
     if (name)
-      name.textContent = filename;
+      name.textContent = `\u{1F4C4} ${filename}`;
     if (stage)
       stage.textContent = "Queued\u2026";
     if (action) {
