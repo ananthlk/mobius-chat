@@ -5463,6 +5463,23 @@ if (typeof document !== "undefined") {
   else { _initReminderNudge(); }
 }
 
+async function _maybeShowGreeting(): Promise<void> {
+  const el = document.getElementById("mainHeaderTitle");
+  if (!el) return;
+  const me = await _getWhoami();
+  // Hard requirements: no greeting for unknown identity or disabled preference.
+  if (!me || !me.greeting?.enabled || !me.greeting?.name) return;
+  const h = new Date().getHours();
+  const salutation = h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
+  el.textContent = `${salutation}, ${me.greeting.name}.`;
+  el.classList.add("chat-greeting");
+}
+
+if (typeof document !== "undefined") {
+  if (document.readyState === "loading") { document.addEventListener("DOMContentLoaded", () => void _maybeShowGreeting()); }
+  else { void _maybeShowGreeting(); }
+}
+
 function _taskModalRow(t: any, reload: () => Promise<void>): HTMLElement {
   const row = document.createElement("div");
   row.className = "tasks-modal-row";

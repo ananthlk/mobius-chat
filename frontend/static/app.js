@@ -5814,6 +5814,25 @@ if (typeof document !== "undefined") {
     _initReminderNudge();
   }
 }
+async function _maybeShowGreeting() {
+  const el2 = document.getElementById("mainHeaderTitle");
+  if (!el2)
+    return;
+  const me = await _getWhoami();
+  if (!me || !me.greeting?.enabled || !me.greeting?.name)
+    return;
+  const h = (/* @__PURE__ */ new Date()).getHours();
+  const salutation = h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
+  el2.textContent = `${salutation}, ${me.greeting.name}.`;
+  el2.classList.add("chat-greeting");
+}
+if (typeof document !== "undefined") {
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => void _maybeShowGreeting());
+  } else {
+    void _maybeShowGreeting();
+  }
+}
 function _taskModalRow(t, reload) {
   const row = document.createElement("div");
   row.className = "tasks-modal-row";

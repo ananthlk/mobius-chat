@@ -38,7 +38,7 @@
         <button type="button" class="btn-new-chat" id="btnNewChat" data-tour-id="sidebar-new-chat">
           <span>+</span> New chat
         </button>
-        <div class="sidebar-recent">
+        <div class="sidebar-recent" data-tour-id="sidebar-recent">
           <h3 class="sidebar-section-title sidebar-section-toggle" role="button" tabindex="0" aria-expanded="true" aria-controls="recentListWrap">
             <span>Recent searches</span>
             <span class="sidebar-section-arrow" aria-hidden="true">▾</span>
@@ -47,7 +47,7 @@
             <ul class="recent-list" id="recentList"></ul>
           </div>
         </div>
-        <div class="sidebar-helpful">
+        <div class="sidebar-helpful" data-tour-id="sidebar-helpful">
           <h3 class="sidebar-section-title sidebar-section-toggle" role="button" tabindex="0" aria-expanded="true" aria-controls="helpfulListWrap">
             <span>Most helpful searches</span>
             <span class="sidebar-section-arrow" aria-hidden="true">▾</span>
@@ -82,7 +82,7 @@
           </div>
         </div>
 
-        <div class="sidebar-user sidebar-user--clickable" id="sidebarUser" role="button" tabindex="0" title="Click to sign in or manage account">
+        <div class="sidebar-user sidebar-user--clickable" id="sidebarUser" data-tour-id="sidebar-user" role="button" tabindex="0" title="Click to sign in or manage account">
           <span class="sidebar-user-label">Signed in as</span>
           <span class="sidebar-user-name" id="sidebarUserName">Guest</span>
         </div>
@@ -170,7 +170,7 @@
              recognition. -->
         <img class="main-header-logo" src="static/logo.svg" alt="" aria-hidden="true" />
         <div class="main-header-titles">
-          <h1 class="main-header-title">Welcome</h1>
+          <h1 class="main-header-title" id="mainHeaderTitle">Welcome</h1>
           <p class="main-header-subtitle" id="welcomeRotator">Some questions should take seconds, not three phone calls.</p>
         </div>
         <div class="main-header-actions">
