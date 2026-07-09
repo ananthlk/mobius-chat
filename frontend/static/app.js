@@ -10505,9 +10505,8 @@ ${message}`;
         label: "Roster",
         tagline: "Provider directory + credentialing",
         accent: "emerald",
-        urlEnvKey: "MOBIUS_ROSTER_URL",
-        fallbackUrl: "https://mobius-provider-roster-credentialing-ortabkknqa-uc.a.run.app/roster",
-        comingSoon: true
+        urlEnvKey: "MOBIUS_CREDENTIALING_URL",
+        fallbackUrl: "https://mobius-provider-roster-credentialing-ortabkknqa-uc.a.run.app/index.html"
       },
       {
         key: "library",
@@ -10607,7 +10606,12 @@ ${message}`;
         btn.innerHTML = `<span class="suite-tile-label">${escapeHtml4(t.label)}</span><span class="suite-tile-tagline">${escapeHtml4(t.tagline)}</span>` + arrowOrBadge;
         if (!t.comingSoon) {
           btn.addEventListener("click", () => {
-            window.open(tileUrl(t), "_blank", "noopener");
+            const url = tileUrl(t);
+            if (t.key === "roster") {
+              openRosterPanel(url);
+            } else {
+              window.open(url, "_blank", "noopener");
+            }
           });
         }
         sidebarTilesContainer.appendChild(btn);
@@ -10676,7 +10680,12 @@ ${message}`;
           if (!tile)
             return;
           closeSkillsModal();
-          window.open(tileUrl(tile), "_blank", "noopener");
+          const url = tileUrl(tile);
+          if (tile.key === "roster") {
+            openRosterPanel(url);
+          } else {
+            window.open(url, "_blank", "noopener");
+          }
         });
       });
     }
@@ -10716,9 +10725,14 @@ ${message}`;
         return;
       }
       el2.addEventListener("click", () => {
-        if (t) {
-          closeSkillsModal();
-          window.open(tileUrl(t), "_blank", "noopener");
+        if (!t)
+          return;
+        closeSkillsModal();
+        const url = tileUrl(t);
+        if (t.key === "roster") {
+          openRosterPanel(url);
+        } else {
+          window.open(url, "_blank", "noopener");
         }
       });
     }

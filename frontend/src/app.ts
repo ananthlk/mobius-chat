@@ -11282,9 +11282,8 @@ function run(): void {
         label: "Roster",
         tagline: "Provider directory + credentialing",
         accent: "emerald",
-        urlEnvKey: "MOBIUS_ROSTER_URL",
-        fallbackUrl: "https://mobius-provider-roster-credentialing-ortabkknqa-uc.a.run.app/roster",
-        comingSoon: true,
+        urlEnvKey: "MOBIUS_CREDENTIALING_URL",
+        fallbackUrl: "https://mobius-provider-roster-credentialing-ortabkknqa-uc.a.run.app/index.html",
       },
       {
         key: "library",
@@ -11413,7 +11412,9 @@ function run(): void {
           arrowOrBadge;
         if (!t.comingSoon) {
           btn.addEventListener("click", () => {
-            window.open(tileUrl(t), "_blank", "noopener");
+            const url = tileUrl(t);
+            if (t.key === "roster") { openRosterPanel(url); }
+            else { window.open(url, "_blank", "noopener"); }
           });
         }
         sidebarTilesContainer.appendChild(btn);
@@ -11538,7 +11539,9 @@ function run(): void {
           const tile = SUITE_TILES.find((t) => t.key === key);
           if (!tile) return;
           closeSkillsModal();
-          window.open(tileUrl(tile), "_blank", "noopener");
+          const url = tileUrl(tile);
+          if (tile.key === "roster") { openRosterPanel(url); }
+          else { window.open(url, "_blank", "noopener"); }
         });
       });
     }
@@ -11594,7 +11597,11 @@ function run(): void {
         return;
       }
       el.addEventListener("click", () => {
-        if (t) { closeSkillsModal(); window.open(tileUrl(t), "_blank", "noopener"); }
+        if (!t) return;
+        closeSkillsModal();
+        const url = tileUrl(t);
+        if (t.key === "roster") { openRosterPanel(url); }
+        else { window.open(url, "_blank", "noopener"); }
       });
     }
     // 2026-04-29: btnOpenSkillPipeline removed from sidebar HTML
