@@ -839,12 +839,77 @@ _BACKGROUND_WATCHERS: dict[str, threading.Thread] = {}
 _SSE_TERMINAL_SENT: set[str] = set()
 
 
+def _post_instant_rag_ready_task(
+    document_id: str,
+    filename: str,
+    thread_id: str,
+    upload_id: str,
+    user_id: str | None,
+    org_name: str,
+) -> None:
+    """§3.2 — POST a doc_ready notification task to the task manager.
+
+    Fires on ready terminal from the watcher. Idempotent via source_ref
+    dedup (the task manager does ON CONFLICT UPDATE, never re-notifies).
+    Best-effort: failures are logged and swallowed.
+    """
+    if not user_id:
+        logger.debug("§3.2 task signal skipped — no user_id for doc=%s", document_id[:8])
+        return
+    import json as _json_mod
+    import urllib.request as _urllib_req
+    try:
+        from app.api._common import task_manager_base_url
+        tm_url = (task_manager_base_url() or "").rstrip("/")
+    except Exception as _e:
+        logger.warning("§3.2 task signal: cannot resolve task_manager_base_url: %s", _e)
+        return
+    if not tm_url:
+        logger.debug("§3.2 task signal skipped — CHAT_SKILLS_TASK_MANAGER_URL unset")
+        return
+    payload = {
+        "org_name": org_name or "_shared_",
+        "source_module": "instant_rag",
+        "type": "doc_ready",
+        "kind": "notification",
+        "audience": "user",
+        "severity": "info",
+        "workflow": "instant_rag",
+        "source_ref": f"doc_ready:{document_id}",
+        "title": f"✓ {filename} is ready",
+        "text": f"{filename} finished processing and is ready to query.",
+        "assigned_to": f"user:{user_id}",
+        "assignee": f"user:{user_id}",
+        "detail_payload": {
+            "document_id": document_id,
+            "filename": filename,
+            "upload_id": upload_id,
+            "thread_id": thread_id,
+        },
+    }
+    body = _json_mod.dumps(payload).encode()
+    try:
+        req = _urllib_req.Request(
+            f"{tm_url}/tasks",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with _urllib_req.urlopen(req, timeout=10) as resp:
+            logger.info("§3.2 task signal posted for doc=%s user=%s: %s", document_id[:8], user_id[:8], resp.status)
+    except Exception as _e:
+        logger.warning("§3.2 task signal POST failed for doc=%s: %s", document_id[:8], _e)
+
+
 def _spawn_background_publish_watcher(
     rag_url: str,
     document_id: str,
     thread_id: str,
     filename: str,
     eta_seconds: int,
+    user_id: str | None = None,
+    org_name: str = "",
+    upload_id: str = "",
 ) -> None:
     """Detached thread that polls rag status and posts a system message
     to the originating chat thread once the doc is published.
@@ -913,6 +978,15 @@ def _spawn_background_publish_watcher(
                         )
                     else:
                         logger.info("upload-watcher: SSE already notified client for doc=%s; skipping system msg", document_id[:8])
+                    # §3.2 — task signal (cross-surface badge). Independent of SSE.
+                    _post_instant_rag_ready_task(
+                        document_id=document_id,
+                        filename=filename,
+                        thread_id=thread_id,
+                        upload_id=upload_id,
+                        user_id=user_id,
+                        org_name=org_name,
+                    )
                     return
             # Timed out
             _post_system_message_to_thread(
@@ -1121,6 +1195,9 @@ def _handle_instant_rag_upload(
             thread_id=(thread_id or ""),
             filename=filename,
             eta_seconds=eta_seconds,
+            user_id=user_id,
+            org_name=(org_name or ""),
+            upload_id=upload_id,
         )
     else:
         # REDIRECT — too large; surface rag UI link.
@@ -1133,6 +1210,9 @@ def _handle_instant_rag_upload(
             thread_id=(thread_id or ""),
             filename=filename,
             eta_seconds=eta_seconds,
+            user_id=user_id,
+            org_name=(org_name or ""),
+            upload_id=upload_id,
         )
 
     rag_result_status = (final_status.get("status") or rag_result.get("status") or "uploaded")

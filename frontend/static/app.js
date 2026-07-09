@@ -6127,9 +6127,71 @@ async function _maybeShowAssignedBanner() {
   } catch {
   }
 }
+async function _maybeShowDocReadyNudge() {
+  if (document.querySelector(".rag-doc-ready-nudge"))
+    return;
+  const me = await _getWhoami();
+  if (!me)
+    return;
+  try {
+    const r = await apiFetch(`${API_BASE}/chat/tasks?kind=notification&status=open&limit=10`);
+    if (!r.ok)
+      return;
+    const tasks = (await r.json()).tasks || [];
+    const docReadyTasks = tasks.filter((t) => t.type === "doc_ready");
+    if (!docReadyTasks.length)
+      return;
+    const anchor = document.querySelector(".composer-wrap");
+    if (!anchor || !anchor.parentElement)
+      return;
+    for (const task of docReadyTasks.slice(0, 3)) {
+      const detail = task.detail_payload || {};
+      const fname = detail.filename || task.title || "Document";
+      const docId = detail.document_id || "";
+      const tid = detail.thread_id || "";
+      const chip = document.createElement("div");
+      chip.className = "reminder-nudge rag-doc-ready-nudge";
+      const label = document.createElement("span");
+      label.className = "reminder-nudge-label";
+      label.textContent = `\u{1F4C4} "${fname}" is ready`;
+      const askBtn = document.createElement("button");
+      askBtn.type = "button";
+      askBtn.className = "reminder-nudge-view";
+      askBtn.textContent = "Ask now";
+      askBtn.addEventListener("click", () => {
+        chip.remove();
+        apiFetch(`${API_BASE}/chat/tasks/${task.id}/dismiss`, { method: "POST" }).catch(() => {
+        });
+        const inputEl = document.getElementById("input");
+        if (inputEl && !inputEl.value.trim()) {
+          inputEl.value = `Tell me about "${fname}"`;
+          inputEl.dispatchEvent(new Event("input"));
+          inputEl.focus();
+        }
+      });
+      const dismissBtn = document.createElement("button");
+      dismissBtn.type = "button";
+      dismissBtn.className = "reminder-nudge-dismiss";
+      dismissBtn.setAttribute("aria-label", "Dismiss");
+      dismissBtn.innerHTML = "&times;";
+      dismissBtn.addEventListener("click", () => {
+        chip.remove();
+        apiFetch(`${API_BASE}/chat/tasks/${task.id}/dismiss`, { method: "POST" }).catch(() => {
+        });
+      });
+      chip.appendChild(label);
+      chip.appendChild(askBtn);
+      chip.appendChild(dismissBtn);
+      anchor.parentElement.insertBefore(chip, anchor);
+      setTimeout(() => chip.remove(), 3e4);
+    }
+  } catch {
+  }
+}
 function _initReminderNudge() {
   setTimeout(() => void _maybeShowReminderNudge(), 2500);
   setTimeout(() => void _maybeShowAssignedBanner(), 4e3);
+  setTimeout(() => void _maybeShowDocReadyNudge(), 5e3);
   document.getElementById("send")?.addEventListener("click", () => void _maybeShowReminderNudge());
   document.getElementById("input")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter")
