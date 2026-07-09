@@ -338,6 +338,15 @@ def _validate_ui_block(block: Any, *, max_source_index: int) -> dict[str, Any] |
             out["filters"] = filters
         out["allow_create"] = bool(block.get("allow_create", False))
         out["allow_resolve"] = bool(block.get("allow_resolve", True))
+        # v2 action flags (2026-07-07 TaskEnvelope) — pass through so the
+        # frontend's per-card Dismiss/Assign/Edit gating is explicit
+        # rather than relying on missing-key defaults.
+        out["allow_edit"] = bool(block.get("allow_edit", True))
+        out["allow_assign"] = bool(block.get("allow_assign", True))
+        out["allow_dismiss"] = bool(block.get("allow_dismiss", True))
+        op = block.get("operation")
+        if isinstance(op, str) and op:
+            out["operation"] = op
         return out
     # ignore unknown / unsupported types
     return None

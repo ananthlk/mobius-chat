@@ -134,6 +134,22 @@ def _run_list_tasks(call: SkillCall) -> SkillEnvelope:
     _emit(call, "◌ Task manager: list_tasks…")
     inputs = call.inputs or {}
 
+    # Server-side hardening (2026-07-09): the planner intermittently drops
+    # the schema hints — a live "show me my open tasks" turn arrived with
+    # neither status nor assigned_to_me set, returning 49 closed rows and
+    # zero identity scoping. Don't depend on the prompt for the two
+    # defaults users always mean:
+    #   1. status defaults to "open" (pass status="all" to disable);
+    #   2. "my …" phrasing implies assigned_to_me.
+    if not inputs.get("status"):
+        inputs = {**inputs, "status": "open"}
+    elif inputs.get("status") == "all":
+        inputs = {**inputs, "status": None}
+    _q = f" {(call.question or call.user_message or '').lower()} "
+    if (not inputs.get("assigned_to_me") and not inputs.get("assignee")
+            and (" my " in _q or " mine " in _q or "assigned to me" in _q)):
+        inputs = {**inputs, "assigned_to_me": True}
+
     # "tasks assigned to ME" — resolve the authenticated chat identity to
     # the canonical assignee_ref (user:<uuid>) via mobius-user. Unknown
     # identity → fall back to unscoped (never guess), with a note.
@@ -491,7 +507,7 @@ register(
             "properties": {
                 "org_name": {"type": "string", "description": "Org filter; alias: org."},
                 "module": {"type": "string", "description": "Source module (credentialing, roster, manual, …)."},
-                "status": {"type": "string", "description": "open | resolved | dismissed | running."},
+                "status": {"type": "string", "description": "Defaults to 'open'. open | resolved | dismissed | running | all (no filter)."},
                 "assignee": {"type": "string"},
                 "npi": {"type": "string", "description": "10-digit NPI of the provider."},
                 "run_id": {"type": "string"},
