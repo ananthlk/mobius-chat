@@ -9550,36 +9550,45 @@ function run(): void {
 
   function _openAtDropdown(
     anchor: HTMLElement,
-    coworkers: Array<{ display_name: string; email?: string; assignee_ref: string }>,
+    coworkers: Array<{ display_name: string; email?: string; assignee_ref: string; is_agent?: boolean }>,
     atStart: number,
     atEnd: number,
+    query: string,
   ): void {
     _closeAtDropdown();
-    if (!coworkers.length) return;
+    if (!coworkers.length && !query.trim()) return;
     const dd = document.createElement("div");
     dd.className = "at-mention-dropdown";
     dd.setAttribute("role", "listbox");
     const rect = anchor.getBoundingClientRect();
     dd.style.cssText = `position:fixed;bottom:${window.innerHeight - rect.top + 4}px;left:${rect.left}px;min-width:220px;max-width:320px;z-index:9999;`;
-    coworkers.forEach((c, i) => {
-      const item = document.createElement("button");
-      item.type = "button";
-      item.className = "at-mention-item";
-      item.setAttribute("role", "option");
-      item.innerHTML = `<span class="at-mention-name">${escapeHtml(c.display_name)}</span>${c.email ? `<span class="at-mention-email">${escapeHtml(c.email)}</span>` : ""}`;
-      item.addEventListener("mousedown", (e) => {
-        e.preventDefault();
-        const val = inputEl.value;
-        const inserted = `@${c.display_name} `;
-        inputEl.value = val.slice(0, atStart) + inserted + val.slice(atEnd);
-        inputEl.selectionStart = inputEl.selectionEnd = atStart + inserted.length;
-        _pendingMentions.push({ display_name: c.display_name, assignee_ref: c.assignee_ref });
-        _closeAtDropdown();
-        inputEl.focus();
+    if (!coworkers.length) {
+      const empty = document.createElement("div");
+      empty.className = "at-mention-empty";
+      empty.textContent = "No matches";
+      dd.appendChild(empty);
+    } else {
+      coworkers.forEach((c, i) => {
+        const item = document.createElement("button");
+        item.type = "button";
+        item.className = "at-mention-item";
+        item.setAttribute("role", "option");
+        const agentBadge = c.is_agent ? `<span class="at-mention-badge">agent</span>` : "";
+        item.innerHTML = `<span class="at-mention-name">${escapeHtml(c.display_name)}${agentBadge}</span>${c.email ? `<span class="at-mention-email">${escapeHtml(c.email)}</span>` : ""}`;
+        item.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          const val = inputEl.value;
+          const inserted = `@${c.display_name} `;
+          inputEl.value = val.slice(0, atStart) + inserted + val.slice(atEnd);
+          inputEl.selectionStart = inputEl.selectionEnd = atStart + inserted.length;
+          _pendingMentions.push({ display_name: c.display_name, assignee_ref: c.assignee_ref });
+          _closeAtDropdown();
+          inputEl.focus();
+        });
+        if (i === 0) item.classList.add("at-mention-item--focused");
+        dd.appendChild(item);
       });
-      if (i === 0) item.classList.add("at-mention-item--focused");
-      dd.appendChild(item);
-    });
+    }
     document.body.appendChild(dd);
     _coworkerDropdown = dd;
   }
@@ -9595,7 +9604,7 @@ function run(): void {
     if (_coworkerFetchTimer) clearTimeout(_coworkerFetchTimer);
     _coworkerFetchTimer = setTimeout(async () => {
       const results = await _fetchCoworkers(q);
-      _openAtDropdown(inputEl, results, atStart, pos);
+      _openAtDropdown(inputEl, results, atStart, pos, q);
     }, 120);
   });
 
