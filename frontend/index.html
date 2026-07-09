@@ -301,11 +301,15 @@
              then runs the normal chat turn. Fresh document_id lands in
              thread state before the next turn, so search_uploaded_document
              auto-resolves on the first retrieval round. -->
-        <!-- §4 inline progress bar: shown while processing a fast doc (estimated_seconds ≤ FOREGROUND_CUTOFF_S). -->
-        <div class="composer-upload-progress" id="composerUploadProgress" hidden aria-live="polite">
-          <div class="cup-track"><div class="cup-fill" id="composerUploadFill" style="width:0%"></div></div>
-          <span class="cup-label" id="composerUploadLabel">Processing…</span>
-          <button type="button" class="cup-retry" id="composerUploadRetry" hidden aria-label="Retry upload">Retry</button>
+        <!-- §4 foreground progress strip — slim band driven by SSE pct events. -->
+        <div class="rag-progress-strip rag-progress-strip--collapsed" id="ragProgressStrip" aria-live="polite" aria-label="Document processing progress">
+          <span class="rag-progress-strip__name" id="ragProgressName"></span>
+          <div class="rag-progress-strip__bar-wrap">
+            <div class="rag-progress-strip__bar" id="ragProgressBar" style="width:0%"></div>
+          </div>
+          <span class="rag-progress-strip__stage" id="ragProgressStage">Queued…</span>
+          <button type="button" class="rag-progress-strip__action" id="ragProgressAction" hidden></button>
+          <button type="button" class="rag-progress-strip__close" id="ragProgressClose" aria-label="Dismiss and continue in background">×</button>
         </div>
         <div class="composer-attachment-chip" id="composerAttachmentChip" hidden data-tour-id="composer-attachment-chip">
           <span class="composer-attachment-chip__icon" aria-hidden="true">📎</span>
