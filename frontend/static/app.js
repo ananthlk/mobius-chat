@@ -1433,6 +1433,229 @@ var PREFERENCES_MODAL_STYLES = `
   background: #2563eb;
 }
 `;
+function escapeHtml3(text) {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+function getDropdownPosition(anchorRect, dropdownWidth, dropdownHeight, options = {}) {
+  const { preferAbove = false, gap = 8 } = options;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  let top;
+  let left;
+  let transformOrigin = "top left";
+  const spaceAbove = anchorRect.top;
+  const spaceBelow = vh - anchorRect.bottom;
+  if (preferAbove && spaceAbove >= dropdownHeight + gap) {
+    top = anchorRect.top - dropdownHeight - gap;
+    transformOrigin = "bottom left";
+  } else if (spaceBelow >= dropdownHeight + gap) {
+    top = anchorRect.bottom + gap;
+    transformOrigin = "top left";
+  } else if (spaceAbove > spaceBelow) {
+    top = Math.max(gap, anchorRect.top - dropdownHeight - gap);
+    transformOrigin = "bottom left";
+  } else {
+    top = anchorRect.bottom + gap;
+    transformOrigin = "top left";
+  }
+  const spaceRight = vw - anchorRect.left;
+  const spaceLeft = anchorRect.right;
+  if (spaceRight >= dropdownWidth) {
+    left = anchorRect.left;
+  } else if (spaceLeft >= dropdownWidth) {
+    left = anchorRect.right - dropdownWidth;
+    transformOrigin = transformOrigin.replace("left", "right");
+  } else {
+    left = Math.max(gap, Math.min(anchorRect.left, vw - dropdownWidth - gap));
+  }
+  return { top, left, transformOrigin };
+}
+function createUserMenu(options) {
+  const { auth, onOpenPreferences, onSignOut, onSwitchAccount } = options;
+  let menuEl = null;
+  let closeListener = null;
+  let stylesInjected = false;
+  function ensureStyles() {
+    if (stylesInjected || document.getElementById("mobius-user-menu-styles")) {
+      stylesInjected = true;
+      return;
+    }
+    const style = document.createElement("style");
+    style.id = "mobius-user-menu-styles";
+    style.textContent = USER_MENU_STYLES;
+    document.head.appendChild(style);
+    stylesInjected = true;
+  }
+  function hide() {
+    if (closeListener) {
+      document.removeEventListener("click", closeListener);
+      closeListener = null;
+    }
+    if (menuEl?.parentNode) {
+      menuEl.parentNode.removeChild(menuEl);
+      menuEl = null;
+    }
+  }
+  async function show(anchor) {
+    hide();
+    ensureStyles();
+    const user = await auth.getUserProfile();
+    if (!user)
+      return;
+    const displayName = user.preferred_name || user.first_name || user.display_name || user.email || "User";
+    const email = user.email || "";
+    const initial = (displayName || "?")[0].toUpperCase();
+    const dropdownWidth = Math.max(anchor.getBoundingClientRect().width, 220);
+    const dropdownHeight = 200;
+    const rect = anchor.getBoundingClientRect();
+    const pos = getDropdownPosition(rect, dropdownWidth, dropdownHeight, {
+      preferAbove: false,
+      gap: 4
+    });
+    menuEl = document.createElement("div");
+    menuEl.className = "mobius-user-menu";
+    menuEl.setAttribute("role", "menu");
+    menuEl.style.cssText = `
+      position: fixed;
+      top: ${pos.top}px;
+      left: ${pos.left}px;
+      width: ${dropdownWidth}px;
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+      z-index: 10001;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      transform-origin: ${pos.transformOrigin};
+    `;
+    menuEl.innerHTML = `
+      <div class="mobius-user-menu-header">
+        <div class="mobius-user-menu-avatar">${escapeHtml3(initial)}</div>
+        <div class="mobius-user-menu-info">
+          <div class="mobius-user-menu-name">${escapeHtml3(displayName)}</div>
+          ${email ? `<div class="mobius-user-menu-email">${escapeHtml3(email)}</div>` : ""}
+        </div>
+      </div>
+      <div class="mobius-user-menu-divider"></div>
+      <button type="button" class="mobius-user-menu-item" data-action="preferences" data-tour-id="menu-preferences">
+        <svg viewBox="0 0 24 24" width="14" height="14" class="mobius-user-menu-icon"><path fill="currentColor" d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+        <span>My Preferences</span>
+      </button>
+      <button type="button" class="mobius-user-menu-item" data-action="switch">
+        <svg viewBox="0 0 24 24" width="14" height="14" class="mobius-user-menu-icon"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+        <span>Not you? Sign in differently</span>
+      </button>
+      <div class="mobius-user-menu-divider"></div>
+      <button type="button" class="mobius-user-menu-item mobius-user-menu-item--danger" data-action="signout">
+        <svg viewBox="0 0 24 24" width="14" height="14" class="mobius-user-menu-icon"><path fill="currentColor" d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/></svg>
+        <span>Sign out</span>
+      </button>
+    `;
+    menuEl.querySelectorAll(".mobius-user-menu-item").forEach((btn) => {
+      btn.addEventListener("mouseenter", () => {
+        btn.style.background = "#f8fafc";
+      });
+      btn.addEventListener("mouseleave", () => {
+        btn.style.background = "transparent";
+      });
+      btn.addEventListener("click", async (e) => {
+        e.preventDefault();
+        const action = btn.dataset.action;
+        hide();
+        if (action === "preferences") {
+          onOpenPreferences?.();
+        } else if (action === "signout") {
+          await auth.logout();
+          onSignOut?.();
+        } else if (action === "switch") {
+          await auth.logout();
+          (onSwitchAccount ?? onSignOut)?.();
+        }
+      });
+    });
+    document.body.appendChild(menuEl);
+    const listener = (e) => {
+      if (menuEl && !menuEl.contains(e.target) && !anchor.contains(e.target)) {
+        hide();
+      }
+    };
+    closeListener = listener;
+    setTimeout(() => document.addEventListener("click", listener), 0);
+  }
+  return { show, hide };
+}
+var USER_MENU_STYLES = `
+.mobius-user-menu-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  background: #f8fafc;
+}
+.mobius-user-menu-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: #3b82f6;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.mobius-user-menu-info {
+  flex: 1;
+  min-width: 0;
+}
+.mobius-user-menu-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: #0b1220;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mobius-user-menu-email {
+  font-size: 9px;
+  color: #64748b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mobius-user-menu-divider {
+  height: 1px;
+  background: #e2e8f0;
+}
+.mobius-user-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 10px;
+  color: #374151;
+  text-align: left;
+  font-family: inherit;
+}
+.mobius-user-menu-item:hover {
+  background: #f8fafc;
+}
+.mobius-user-menu-icon {
+  color: #64748b;
+  flex-shrink: 0;
+}
+.mobius-user-menu-item--danger .mobius-user-menu-icon,
+.mobius-user-menu-item--danger {
+  color: #dc2626;
+}
+`;
 var AUTH_STYLES = `
 .mobius-auth-overlay {
   display: none;
@@ -1843,7 +2066,7 @@ function renderLlmRouterReportCompositeSpec(parent, spec) {
     for (const name of Object.keys(caps).sort()) {
       const c = caps[name];
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${escapeHtml3(name)}</td><td>${c?.latency_cap_ms ?? "\u2014"}</td><td>${c?.cost_cap_usd ?? "\u2014"}</td>`;
+      tr.innerHTML = `<td>${escapeHtml4(name)}</td><td>${c?.latency_cap_ms ?? "\u2014"}</td><td>${c?.cost_cap_usd ?? "\u2014"}</td>`;
       tb.appendChild(tr);
     }
     tw.appendChild(tbl);
@@ -2206,7 +2429,7 @@ function renderQueriesDumpBody(container, summaryEl, data) {
       summaryEl.hidden = false;
     }
   }
-  const escapeHtml4 = (s) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  const escapeHtml5 = (s) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   const fbPill = (rating) => {
     if (rating === "up")
       return '<span class="qd-pill qd-pill-up">\u2191</span>';
@@ -2222,25 +2445,25 @@ function renderQueriesDumpBody(container, summaryEl, data) {
     }
   };
   if (rows.length === 0) {
-    container.innerHTML = data.warning ? `<p class="llm-router-report-error" style="padding:1rem">${escapeHtml4(data.warning)}</p>` : '<p class="llm-router-report-meta" style="padding:1rem">No turns match the current filters.</p>';
+    container.innerHTML = data.warning ? `<p class="llm-router-report-error" style="padding:1rem">${escapeHtml5(data.warning)}</p>` : '<p class="llm-router-report-meta" style="padding:1rem">No turns match the current filters.</p>';
     return;
   }
   const renderRow = (r) => {
     const ms = r.total_latency_ms || 0;
     const slowCls = ms >= 2e3 ? " qd-slow" : "";
-    const errDot = r.llm_error_count > 0 ? `<span class="qd-err-dot" title="${escapeHtml4(r.last_error_type || "error")}"></span>` : "";
+    const errDot = r.llm_error_count > 0 ? `<span class="qd-err-dot" title="${escapeHtml5(r.last_error_type || "error")}"></span>` : "";
     const cost = Number(r.cost_usd || 0).toFixed(4);
     const userLabel = r.user_id || "\u2014";
     const question = r.question_preview || "(no question)";
     const fb = fbPill(r.feedback_rating);
     const detailRows = [
-      `<dt>question</dt><dd class="qd-full-q">${escapeHtml4(question)}</dd>`
+      `<dt>question</dt><dd class="qd-full-q">${escapeHtml5(question)}</dd>`
     ];
     if (r.thread_id) {
-      detailRows.push(`<dt>thread</dt><dd><span class="qd-mono-dim">${escapeHtml4(String(r.thread_id))}</span></dd>`);
+      detailRows.push(`<dt>thread</dt><dd><span class="qd-mono-dim">${escapeHtml5(String(r.thread_id))}</span></dd>`);
     }
     if (r.models_used) {
-      detailRows.push(`<dt>models</dt><dd>${escapeHtml4(r.models_used)}</dd>`);
+      detailRows.push(`<dt>models</dt><dd>${escapeHtml5(r.models_used)}</dd>`);
     }
     detailRows.push(`<dt>llm calls</dt><dd>${r.llm_call_count}</dd>`);
     detailRows.push(
@@ -2252,28 +2475,28 @@ function renderQueriesDumpBody(container, summaryEl, data) {
     if (r.cache_mode) {
       const sim = r.cache_top_similarity != null ? ` <span class="qd-mono-dim">sim ${Number(r.cache_top_similarity).toFixed(2)}</span>` : "";
       detailRows.push(
-        `<dt>cache</dt><dd><span class="qd-pill qd-pill-cache-${escapeHtml4(r.cache_mode)}">${escapeHtml4(r.cache_mode)}</span>${sim}</dd>`
+        `<dt>cache</dt><dd><span class="qd-pill qd-pill-cache-${escapeHtml5(r.cache_mode)}">${escapeHtml5(r.cache_mode)}</span>${sim}</dd>`
       );
     }
     if (r.llm_error_count > 0) {
       detailRows.push(
-        `<dt>errors</dt><dd class="qd-err-line">${r.llm_error_count}${r.last_error_type ? " (" + escapeHtml4(r.last_error_type) + ")" : ""}</dd>`
+        `<dt>errors</dt><dd class="qd-err-line">${r.llm_error_count}${r.last_error_type ? " (" + escapeHtml5(r.last_error_type) + ")" : ""}</dd>`
       );
     }
     if (r.feedback_comment) {
       detailRows.push(
-        `<dt>feedback</dt><dd>${fb} ${escapeHtml4(r.feedback_comment)}</dd>`
+        `<dt>feedback</dt><dd>${fb} ${escapeHtml5(r.feedback_comment)}</dd>`
       );
     }
     detailRows.push(
-      `<dt>correlation</dt><dd><span class="qd-mono-dim">${escapeHtml4(r.correlation_id)}</span></dd>`
+      `<dt>correlation</dt><dd><span class="qd-mono-dim">${escapeHtml5(r.correlation_id)}</span></dd>`
     );
     return `
       <details class="qd-row">
         <summary>
-          <span class="qd-col-time">${escapeHtml4(formatTime(r.created_at))}</span>
-          <span class="qd-col-user">${escapeHtml4(userLabel)}</span>
-          <span class="qd-col-q">${errDot}${escapeHtml4(question)}</span>
+          <span class="qd-col-time">${escapeHtml5(formatTime(r.created_at))}</span>
+          <span class="qd-col-user">${escapeHtml5(userLabel)}</span>
+          <span class="qd-col-q">${errDot}${escapeHtml5(question)}</span>
           <span class="qd-col-ms${slowCls}">${formatMs(ms)}</span>
           <span class="qd-col-cost">$${cost}</span>
           <span class="qd-col-fb">${fb}</span>
@@ -2282,7 +2505,7 @@ function renderQueriesDumpBody(container, summaryEl, data) {
         <dl class="qd-row-detail">${detailRows.join("")}</dl>
       </details>`;
   };
-  const warn = data.warning ? `<div class="llm-router-report-error" style="padding:0.5rem 1rem">DB warning: ${escapeHtml4(data.warning)}</div>` : "";
+  const warn = data.warning ? `<div class="llm-router-report-error" style="padding:0.5rem 1rem">DB warning: ${escapeHtml5(data.warning)}</div>` : "";
   container.innerHTML = warn + rows.map(renderRow).join("");
 }
 function formatMs(ms) {
@@ -6105,7 +6328,7 @@ function formatRouterNote(meta, rows) {
   t += " Stage table \u201CComposite PG / call\u201D: batch score at router pick vs same formula on this call (latency, cost, QA, error). Thompson blends priors with the batch composite (not QA alone).";
   return t;
 }
-function escapeHtml3(s) {
+function escapeHtml4(s) {
   return (s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 function parseScoreValue(v) {
@@ -6299,27 +6522,27 @@ function fillLlmPerformanceTbody(tbody, rows) {
       whyLine += `PG samples=${qSamples}${qAvg != null && Number.isFinite(qAvg) ? ` \xB7 avgQ\u2248${Number(qAvg).toFixed(2)}` : ""} \xB7 `;
     whyLine += whyFull || "\u2014";
     const whyShort = whyLine.length > 140 ? whyLine.slice(0, 137) + "\u2026" : whyLine;
-    const whyTitle = escapeHtml3(whyLine.length > 200 ? whyLine.slice(0, 2e3) : whyLine);
+    const whyTitle = escapeHtml4(whyLine.length > 200 ? whyLine.slice(0, 2e3) : whyLine);
     const qRaw = r.quality_score;
     const qNum = qRaw != null && Number.isFinite(Number(qRaw)) ? Number(qRaw) : null;
     const qDisp = qNum !== null ? qNum.toFixed(2) : "\u2014";
     const qSrc = (r.quality_source || "").trim();
-    const qTitle = escapeHtml3(qSrc ? qSrc.slice(0, 500) : "");
+    const qTitle = escapeHtml4(qSrc ? qSrc.slice(0, 500) : "");
     const pgN = r.router_composite_at_pick != null && Number.isFinite(Number(r.router_composite_at_pick)) ? Number(r.router_composite_at_pick) : null;
     const pcN = r.per_call_composite != null && Number.isFinite(Number(r.per_call_composite)) ? Number(r.per_call_composite) : null;
     const pgBrk = r.router_composite_breakdown;
     const pcBrk = r.per_call_composite_breakdown;
-    const compTitle = escapeHtml3(
+    const compTitle = escapeHtml4(
       formatCompositeTooltip(pgN, pgBrk, pcN, pcBrk).slice(0, 3500)
     );
     const compShort = (pgN !== null ? pgN.toFixed(2) : "\u2014") + " / " + (pcN !== null ? pcN.toFixed(2) : "\u2014");
-    tr.innerHTML = `<td>${escapeHtml3(stageName)}</td><td class="llm-performance-mono">${escapeHtml3(
+    tr.innerHTML = `<td>${escapeHtml4(stageName)}</td><td class="llm-performance-mono">${escapeHtml4(
       (r.model || "\u2014").trim()
-    )}</td><td class="llm-performance-why" title="${whyTitle}">${escapeHtml3(whyShort)}</td><td class="llm-performance-lat-cell"><span class="llm-performance-lat-bar-wrap"><span class="llm-performance-lat-bar" style="width:${pct}%"></span></span><span class="llm-performance-lat-num">${latSec}${latSec !== "\u2014" ? "s" : ""}</span></td><td class="llm-performance-mono">$${rowCost}</td><td class="llm-performance-composite-cell" title="${compTitle}">${escapeHtml3(
+    )}</td><td class="llm-performance-why" title="${whyTitle}">${escapeHtml4(whyShort)}</td><td class="llm-performance-lat-cell"><span class="llm-performance-lat-bar-wrap"><span class="llm-performance-lat-bar" style="width:${pct}%"></span></span><span class="llm-performance-lat-num">${latSec}${latSec !== "\u2014" ? "s" : ""}</span></td><td class="llm-performance-mono">$${rowCost}</td><td class="llm-performance-composite-cell" title="${compTitle}">${escapeHtml4(
       compShort
-    )}</td><td class="llm-performance-qa-cell" title="${qTitle}">${escapeHtml3(
+    )}</td><td class="llm-performance-qa-cell" title="${qTitle}">${escapeHtml4(
       qDisp
-    )}</td><td class="llm-performance-status-cell"><span class="${stClass}">${escapeHtml3(
+    )}</td><td class="llm-performance-status-cell"><span class="${stClass}">${escapeHtml4(
       stLabel
     )}</span></td>`;
     tbody.appendChild(tr);
@@ -6377,7 +6600,7 @@ function renderAdjudicatorScorecard(qc, correlationId, technicalFeedback) {
   body.appendChild(buildAdjudicatorDetailWrap(qc));
   const reasonBox = document.createElement("div");
   reasonBox.className = "adjudicator-scorecard-reason";
-  reasonBox.innerHTML = `<strong>Rationale</strong><pre class="adjudicator-scorecard-pre">${escapeHtml3(
+  reasonBox.innerHTML = `<strong>Rationale</strong><pre class="adjudicator-scorecard-pre">${escapeHtml4(
     (qc.reason || "\u2014").toString().slice(0, 4e3)
   )}</pre>`;
   body.appendChild(reasonBox);
@@ -7295,7 +7518,7 @@ function renderLlmPerformance(rows, meta, opts) {
   footer.className = "llm-performance-footer";
   const metaCol = document.createElement("div");
   metaCol.className = "llm-performance-footer-meta";
-  metaCol.innerHTML = `${escapeHtml3(jurisLine)}<br/>Config: ${escapeHtml3(cfgShort)} \xB7 ${escapeHtml3(corpusBit)}`;
+  metaCol.innerHTML = `${escapeHtml4(jurisLine)}<br/>Config: ${escapeHtml4(cfgShort)} \xB7 ${escapeHtml4(corpusBit)}`;
   footer.appendChild(metaCol);
   const routeFb = document.createElement("div");
   routeFb.className = "llm-performance-routing-feedback";
@@ -8600,9 +8823,22 @@ function run() {
     syncQueriesDumpVisibility(cachedProfile);
   });
   if (sidebarUser) {
+    const userMenu = createUserMenu({
+      auth,
+      onOpenPreferences: () => {
+        prefsModal.open();
+      },
+      onSignOut: () => {
+        modal.open("login");
+      }
+    });
     sidebarUser.addEventListener("click", () => {
       void auth.getUserProfile().then((user) => {
-        modal.open(user ? "account" : "login");
+        if (user) {
+          void userMenu.show(sidebarUser);
+        } else {
+          modal.open("login");
+        }
       });
     });
   }
@@ -10717,7 +10953,7 @@ ${message}`;
         description: `Intake the denial, retrieve the contract and regulatory rules that apply, construct the argument, run a counterpoint check ("what's the payer's likely rebuttal?"), and assemble the submission packet \u2014 letter, form, supporting documents, timeline.`
       }
     ];
-    function escapeHtml4(s) {
+    function escapeHtml5(s) {
       return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
     }
     function renderSidebarSuiteTiles() {
@@ -10737,7 +10973,7 @@ ${message}`;
           btn.title = "Coming soon";
         }
         const arrowOrBadge = t.comingSoon ? `<span class="suite-tile-coming-soon" aria-hidden="true">Coming soon</span>` : `<span class="suite-tile-arrow" aria-hidden="true">\u2197</span>`;
-        btn.innerHTML = `<span class="suite-tile-label">${escapeHtml4(t.label)}</span><span class="suite-tile-tagline">${escapeHtml4(t.tagline)}</span>` + arrowOrBadge;
+        btn.innerHTML = `<span class="suite-tile-label">${escapeHtml5(t.label)}</span><span class="suite-tile-tagline">${escapeHtml5(t.tagline)}</span>` + arrowOrBadge;
         if (!t.comingSoon) {
           btn.addEventListener("click", () => {
             const url = tileUrl(t);
@@ -10765,7 +11001,7 @@ ${message}`;
         "</div>",
         '<div class="skills-themes-grid">',
         ...CHAT_THEMES.map(
-          (t) => `<article class="skills-theme"><header class="skills-theme-head"><h3 class="skills-theme-title">${escapeHtml4(t.title)}</h3><p class="skills-theme-tagline">${escapeHtml4(t.tagline)}</p></header><p class="skills-theme-desc">${escapeHtml4(t.description)}</p><p class="skills-theme-example"><span class="skills-theme-example-label">Try:</span> \u201C${escapeHtml4(t.examplePrompt)}\u201D</p></article>`
+          (t) => `<article class="skills-theme"><header class="skills-theme-head"><h3 class="skills-theme-title">${escapeHtml5(t.title)}</h3><p class="skills-theme-tagline">${escapeHtml5(t.tagline)}</p></header><p class="skills-theme-desc">${escapeHtml5(t.description)}</p><p class="skills-theme-example"><span class="skills-theme-example-label">Try:</span> \u201C${escapeHtml5(t.examplePrompt)}\u201D</p></article>`
         ),
         "</div>",
         "</div>",
@@ -10777,7 +11013,7 @@ ${message}`;
         "</div>",
         '<div class="skills-standalone-grid">',
         ...SUITE_TILES.map(
-          (t) => `<article class="skills-standalone skills-standalone--${t.accent}${t.comingSoon ? " skills-standalone--coming-soon" : ""}"><h3 class="skills-standalone-title">${escapeHtml4(t.label)}</h3><p class="skills-standalone-tagline">${escapeHtml4(t.tagline)}</p>` + (SUITE_LONG_DESC[t.key] ? `<p class="skills-standalone-desc">${escapeHtml4(SUITE_LONG_DESC[t.key])}</p>` : "") + (t.comingSoon ? '<span class="skills-standalone-badge">Coming soon</span>' : `<button type="button" class="skills-standalone-open" data-suite-key="${escapeHtml4(t.key)}">Open ${escapeHtml4(t.label)} \u2197</button>`) + "</article>"
+          (t) => `<article class="skills-standalone skills-standalone--${t.accent}${t.comingSoon ? " skills-standalone--coming-soon" : ""}"><h3 class="skills-standalone-title">${escapeHtml5(t.label)}</h3><p class="skills-standalone-tagline">${escapeHtml5(t.tagline)}</p>` + (SUITE_LONG_DESC[t.key] ? `<p class="skills-standalone-desc">${escapeHtml5(SUITE_LONG_DESC[t.key])}</p>` : "") + (t.comingSoon ? '<span class="skills-standalone-badge">Coming soon</span>' : `<button type="button" class="skills-standalone-open" data-suite-key="${escapeHtml5(t.key)}">Open ${escapeHtml5(t.label)} \u2197</button>`) + "</article>"
         ),
         "</div>",
         "</div>",
@@ -10788,7 +11024,7 @@ ${message}`;
         "</div>",
         '<div class="skills-coming-grid">',
         ...COMING_SOON.map(
-          (c) => `<article class="skills-coming"><h3 class="skills-coming-title">${escapeHtml4(c.title)}</h3><p class="skills-coming-tagline">${escapeHtml4(c.tagline)}</p><p class="skills-coming-desc">${escapeHtml4(c.description)}</p></article>`
+          (c) => `<article class="skills-coming"><h3 class="skills-coming-title">${escapeHtml5(c.title)}</h3><p class="skills-coming-tagline">${escapeHtml5(c.tagline)}</p><p class="skills-coming-desc">${escapeHtml5(c.description)}</p></article>`
         ),
         "</div>",
         "</div>",

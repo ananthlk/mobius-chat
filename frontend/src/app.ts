@@ -3,6 +3,7 @@ import {
   localStorageAdapter,
   createAuthModal,
   createPreferencesModal,
+  createUserMenu,
   AUTH_STYLES,
   PREFERENCES_MODAL_STYLES,
 } from "@mobius/auth";
@@ -8766,9 +8767,15 @@ function run(): void {
   });
 
   if (sidebarUser) {
+    const userMenu = createUserMenu({
+      auth,
+      onOpenPreferences: () => { prefsModal.open(); },
+      onSignOut: () => { modal.open("login"); },
+    });
     sidebarUser.addEventListener("click", () => {
       void auth.getUserProfile().then((user: unknown) => {
-        modal.open(user ? "account" : "login");
+        if (user) { void userMenu.show(sidebarUser); }
+        else { modal.open("login"); }
       });
     });
   }
