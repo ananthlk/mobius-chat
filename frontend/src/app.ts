@@ -5306,7 +5306,12 @@ let _nudgeInFlight = false;
 // Who am I, as the task system sees me. Resolved once per page load via
 // /chat/whoami (server-side mobius-user lookup); null = unknown identity
 // → all per-user surfacing falls back to unscoped.
-let _whoami: { user_id: string; display_name: string; assignee_ref: string } | null = null;
+let _whoami: {
+  user_id: string;
+  display_name: string;
+  assignee_ref: string;
+  greeting?: { name: string; enabled: boolean };
+} | null = null;
 let _whoamiFetched = false;
 
 async function _getWhoami(): Promise<typeof _whoami> {
