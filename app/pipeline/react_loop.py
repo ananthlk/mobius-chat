@@ -178,30 +178,33 @@ from app.pipeline.react.prompts import (  # noqa: F401 — re-exported for back-
 _CORPUS_CONFIDENCE_MIN_DEFAULT = 0.3
 
 
-def _corpus_confidence_min() -> float:
+def _corpus_confidence_min(chat_mode: str | None = None) -> float:
     """Resolve the confidence_min used by react_loop's search_corpus call.
 
     Reads MOBIUS_REACT_CORPUS_CONFIDENCE_MIN at call time (not module
     load) so tests can monkeypatch the env var and production changes
     don't need a worker restart. Invalid values fall back to the
     default silently — this is a tuning knob, not an invariant.
+
+    Fast/quick mode uses a lower threshold (0.1 default, overridable via
+    MOBIUS_REACT_CORPUS_CONFIDENCE_MIN_QUICK) so it accepts more chunks
+    on the first retrieval pass rather than returning empty-handed.
     """
     import math
 
-    raw = (os.environ.get("MOBIUS_REACT_CORPUS_CONFIDENCE_MIN") or "").strip()
+    is_quick = react_chat_mode_label(chat_mode) == "quick"
+    env_key = "MOBIUS_REACT_CORPUS_CONFIDENCE_MIN_QUICK" if is_quick else "MOBIUS_REACT_CORPUS_CONFIDENCE_MIN"
+    default = 0.1 if is_quick else _CORPUS_CONFIDENCE_MIN_DEFAULT
+
+    raw = (os.environ.get(env_key) or "").strip()
     if not raw:
-        return _CORPUS_CONFIDENCE_MIN_DEFAULT
+        return default
     try:
         v = float(raw)
     except ValueError:
-        return _CORPUS_CONFIDENCE_MIN_DEFAULT
-    # NaN / inf slip through float() but aren't valid thresholds.
-    # float('nan') comparisons are all False, so without this guard
-    # _corpus_confidence_min() returns 1.0 for NaN input (via the
-    # max/min clamping), silently locking the threshold at "admit
-    # nothing". Fall back to default instead.
+        return default
     if not math.isfinite(v):
-        return _CORPUS_CONFIDENCE_MIN_DEFAULT
+        return default
     return max(0.0, min(1.0, v))
 
 
@@ -641,7 +644,7 @@ def _execute_tool(
                 return answer_non_patient(
                     question=query,
                     k=10,
-                    confidence_min=_corpus_confidence_min(),
+                    confidence_min=_corpus_confidence_min(getattr(ctx, "chat_mode", None)),
                     emitter=emitter,
                     correlation_id=ctx.correlation_id,
                     subquestion_id="react_1",
@@ -1556,6 +1559,7 @@ def _execute_tool_with_retry(
     round_num: int,
     emit_fn,
     tool_emitter,
+    skip_retry: bool = False,
 ) -> dict:
     """Run ``_execute_tool`` with a single auto-retry on recoverable errors.
 
@@ -1571,6 +1575,9 @@ def _execute_tool_with_retry(
             lines that belong to the ReAct loop, not the tool.
         tool_emitter: unprefixed emitter passed through to ``_execute_tool``
             so the tool's own emits look the same as before this phase.
+        skip_retry: when True, return the first result without sleeping or
+            retrying. Used by fast/quick mode to avoid adding latency on
+            transient errors.
 
     Rules:
     - Max 1 retry per call (no spirals).
@@ -1590,6 +1597,9 @@ def _execute_tool_with_retry(
             return r
 
     result = _run_once()
+
+    if skip_retry:
+        return result
 
     err = result.get("error") if isinstance(result, dict) else None
     if not (isinstance(err, dict) and err.get("schema_name") == "error_envelope"):
@@ -2326,7 +2336,8 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         # call keeps the blast radius small; if it still fails, the retry
         # guard + fail-fast machinery take over.
         result = _execute_tool_with_retry(
-            tool or "search_corpus", inputs, ctx, rn, emit, emitter
+            tool or "search_corpus", inputs, ctx, rn, emit, emitter,
+            skip_retry=(mode_label == "quick"),
         )
         last_tool = result.get("tool")
         _append_tool_llm_usage(ctx, str(last_tool or tool or ""), result)
@@ -2359,6 +2370,26 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             all_sources.extend(result["sources"])
         if result.get("signal") and result["signal"] != RETRIEVAL_SIGNAL_NO_SOURCES:
             final_signal = result["signal"]
+
+        # Fast mode early exit: if round 1 returns a usable result, skip the
+        # second LLM reasoning pass. Round 2 is still available as fallback when
+        # round 1 fails or returns nothing (complex / multi-hop questions).
+        if (
+            mode_label == "quick"
+            and rn == 1
+            and result.get("success")
+            and len((result.get("result") or "").strip()) >= 30
+        ):
+            emit("  ⚡ Fast mode: using first corpus answer.")
+            _finalize_response(
+                ctx,
+                (result.get("result") or "").strip(),
+                all_sources,
+                final_signal,
+                last_tool,
+                emitter,
+            )
+            return
 
         # 2026-04-18 disconnect: the roster-report early-exit (which
         # fired when a credentialing tool returned

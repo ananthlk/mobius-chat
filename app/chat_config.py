@@ -117,6 +117,59 @@ class ChatParserConfig:
     parser_vertex_model: str = "gemini-2.5-pro"
 
 
+_ENRICHER_PREAMBLE = (
+    "You are the ENRICHER for a retrieval-based Q&A system.\n\n"
+    "The user has ALREADY seen react_draft (provided in the input JSON). "
+    "Your job is NOT to restate or rephrase it. Your job is to:\n"
+    "  1. Correct any factual error in the draft (if sources contradict it)\n"
+    "  2. Pull verbatim evidence from source_texts to back up key claims\n"
+    "  3. Distill what matters into takeaways\n"
+    "  4. Specify concrete next actions\n"
+    "  5. Flag what the sources did not cover\n\n"
+    "Return ONLY valid JSON. No markdown, no commentary, no extra text.\n\n"
+    "AnswerCard schema:\n"
+    '{"mode":"FACTUAL|CANONICAL|BLENDED",'
+    '"direct_answer":"string (one-sentence backup — shown if draft unavailable)",'
+    '"correction":null,'
+    '"takeaways":["string"],'
+    '"sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string","bullets":["string"]}],'
+    '"citations":[{"claim":"string","doc_title":"string","locator":"string","snippet":"string"}],'
+    '"next_steps":["string"],'
+    '"gaps":["string"],'
+    '"next_questions_for_user":["string"],'
+    '"thread_summary":"string",'
+    '"suggested_actions":[{"type":"external_link","label":"string","url":"string","icon":"string"}]}\n\n'
+    "OR when there IS a correction:\n"
+    '"correction":{"original":"the specific wrong claim from react_draft","corrected":"accurate statement per source_texts"}\n\n'
+    "Field rules (apply to ALL modes):\n"
+    "- direct_answer: one sentence max. Backup only — do not repeat react_draft verbatim. "
+    "Used when the draft is unavailable; keep it to the single operative fact.\n"
+    "- correction: null unless a specific, verifiable claim in react_draft is directly contradicted "
+    "by source_texts. Only correct clear factual errors (wrong numbers, wrong codes, wrong deadlines) — "
+    "not tone, phrasing, or level of detail. When in doubt, null.\n"
+    "- takeaways: 2–3 short bullets — what the user should remember or act on. "
+    "Distillation, not repetition. Each bullet 10–20 words. Omit if nothing concrete emerged.\n"
+    "- citations: for each key claim in react_draft that source_texts supports, produce one entry. "
+    "snippet MUST be a verbatim excerpt (≤200 chars) copied directly from the source_texts text field — "
+    "do not paraphrase. locator = section heading or page reference if visible in the text. "
+    "Omit entries where no verbatim match exists in source_texts.\n"
+    "- next_steps: 1–3 short imperative actions grounded in retrieved facts. "
+    "E.g. 'Submit appeal within 90 days via the payer portal.' Omit if no clear action applies.\n"
+    "- gaps: 1–2 things the sources did not cover. Omit (empty array []) if sources were thorough.\n"
+    "- next_questions_for_user: 2–4 follow-up questions written FROM the user's perspective. "
+    "E.g. 'What is the timely filing deadline for corrected claims?' — not 'Would you like more info?' "
+    "8–20 words each. Do not ask the user to share documents.\n"
+    "- thread_summary: topic label ≤60 chars. No question marks, no 'User asked'. "
+    "E.g. 'Claim dispute process — Sunshine Health'.\n"
+    "- suggested_actions: populate ONLY for claim denial, appeal, reconsideration, CARC/RARC code, "
+    "or dispute questions. One entry: "
+    '{"type":"external_link","label":"Open Appeals Agent",'
+    '"url":"https://mobius-appeals-prototype-ortabkknqa-uc.a.run.app","icon":"⚖️"}. '
+    "Empty array [] otherwise.\n"
+    "- Use ONLY facts from the input. Do not add new facts not present in answers or source_texts.\n"
+)
+
+
 @dataclass
 class ChatPromptsConfig:
     """Prompt templates used by the chat worker (first-gen LLM, planner decomposition, etc.)."""
@@ -213,136 +266,36 @@ class ChatPromptsConfig:
         "Use the same content as before; do not add new facts."
     )
 
-    # Dynamic consolidator: three system prompts (JSON AnswerCard output)
+    # Dynamic consolidator: three system prompts (JSON AnswerCard output).
+    # All three use module-level _ENRICHER_PREAMBLE + mode-specific section rules.
     integrator_factual_system: str = (
-        "You are the CONSOLIDATOR for a retrieval-based system.\n\n"
-        "Return ONLY valid JSON matching the AnswerCard schema below. Do not include markdown, explanations, or extra text.\n\n"
-        "AnswerCard schema:\n"
-        '{"mode":"FACTUAL","direct_answer":"string","sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string","bullets":["string"]}],'
-        '"required_variables":["string"],"confidence_note":"string",'
-        '"citations":[{"id":"string","doc_title":"string","locator":"string","snippet":"string"}],'
-        '"followups":[{"question":"string","reason":"string","field":"string"}],'
-        '"next_questions_for_user":["string"],"next_steps":["string"],'
-        '"thread_summary":"string","suggested_actions":[{"type":"external_link","label":"string","url":"string","icon":"string"}]}\n\n'
-        "Rules for FACTUAL mode:\n"
-        "- direct_answer is required and must stand alone.\n"
-        "- Each section MUST include either a non-empty bullets array or a non-empty body string so the Details panel has content.\n"
-        "- Classify each section with exactly one intent: process, requirements, definitions, exceptions, or references. You do not control visibility; the UI will show only the direct answer and hide sections behind 'Show details'.\n"
-        "- Use ONLY the facts provided in the input. Do not add new facts.\n"
-        "- Do not include policy intent or justification language.\n"
-        "- Prefer short bullets; do not write paragraphs.\n"
-        "- Include 2–3 sections, each with 3–6 substantive bullets. "
-        "Each bullet is a complete, specific statement (8–25 words typical). "
-        "No single-word or stub bullets (\"required\", \"see manual\", \"applicable\") — if a bullet would be a stub, drop it. "
-        "FACTUAL hides sections behind \"Show details\" by default, so they MUST carry real detail for when the user clicks through.\n"
-        "- If the answer depends on an unknown variable (service code, setting, plan subtype), put it in required_variables.\n"
-        "- Only add followups if required_variables is non-empty and the user must provide something to be definitive.\n"
-        "- next_questions_for_user: 2–4 follow-up questions the user is likely to ask next. "
-        "Write each as a natural question FROM the user's perspective — as if the user is typing it themselves. "
-        "Example: \"What is the timely filing deadline for corrected claims?\" not \"Do you need information on timely filing for corrected claims?\" "
-        "Each question 8–20 words, specific and actionable. Do not ask the user to upload, attach, or share documents or links.\n"
-        "- next_steps: 1–3 concrete actions the user should take next, written as short imperatives (e.g. \"Submit the appeal via the payer portal within 90 days.\"). "
-        "Only include steps clearly supported by the facts. Omit if no clear next action applies.\n"
-        "- direct_answer must be one sentence, operational, and non-hedgy. "
-        "FACTUAL direct_answer is the SHORTEST of the three modes — one line carries the operative fact; everything else belongs in the sections.\n"
-        "If the facts are insufficient: direct_answer should say what is missing (one sentence). "
-        "sections may include a label \"What's missing\" with bullets. Do not guess.\n"
-        "- thread_summary: a short topic label (max 60 chars) for the sidebar. "
-        "Capture the subject matter — NOT the user's question, no 'User asked', no question marks. "
-        "Example: 'Claim dispute process — Sunshine Health' or 'Prior auth requirements for H0036'.\n"
-        "- suggested_actions: optional array of action chips shown below the answer. "
-        "Populate ONLY when the user's question is about a claim denial, appeal, reconsideration, CARC code, RARC code, or dispute process. "
-        "When populated, include exactly one entry: "
-        "{\"type\":\"external_link\",\"label\":\"Open Appeals Agent\",\"url\":\"https://mobius-appeals-prototype-ortabkknqa-uc.a.run.app\",\"icon\":\"⚖️\"}. "
-        "Leave as empty array [] for all other questions."
+        _ENRICHER_PREAMBLE
+        + "Mode-specific rules for FACTUAL:\n"
+        "- Set mode = 'FACTUAL'.\n"
+        "- sections: 2–3 sections, each with 3–6 substantive bullets (8–25 words each). "
+        "Intent must be one of: process, requirements, definitions, exceptions, references. "
+        "No stub bullets. FACTUAL hides sections behind 'Show details' — they must carry real detail.\n"
+        "- direct_answer is ONE sentence — the single operative fact.\n"
+        "- required_variables: if the answer depends on an unknown (service code, plan subtype), list it. "
+        "Add one followup question only if the user must clarify to get a definitive answer.\n"
     )
     integrator_canonical_system: str = (
-        "You are the CONSOLIDATOR for a retrieval-based system.\n\n"
-        "Return ONLY valid JSON matching the AnswerCard schema below. Do not include markdown, explanations, or extra text.\n\n"
-        "AnswerCard schema:\n"
-        '{"mode":"CANONICAL","direct_answer":"string","sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string","bullets":["string"]}],'
-        '"required_variables":["string"],"confidence_note":"string",'
-        '"citations":[{"id":"string","doc_title":"string","locator":"string","snippet":"string"}],'
-        '"followups":[{"question":"string","reason":"string","field":"string"}],'
-        '"next_questions_for_user":["string"],"next_steps":["string"],'
-        '"thread_summary":"string","suggested_actions":[{"type":"external_link","label":"string","url":"string","icon":"string"}]}\n\n'
-        "Rules for CANONICAL mode:\n"
-        "- direct_answer is required and must stand alone. Classify each section with exactly one intent: process, requirements, definitions, exceptions, or references. The UI will show direct_answer and all sections.\n"
-        "- Use ONLY the information provided in the input.\n"
-        "- Explain the standard definition/rule/scope in a stable, reusable way.\n"
-        "- Avoid edge cases unless explicitly included in the facts.\n"
-        "- Prefer bullets in sections; keep scannable for non-technical users.\n"
-        "- Include 2–4 sections, each with 3–6 substantive bullets.\n"
-        "- Each bullet is a complete, actionable sentence (8–25 words typical). "
-        "No single-word or stub bullets (\"required\", \"see manual\", \"applicable\"). "
-        "If a bullet would be a stub, drop it.\n"
-        "- required_variables should usually be empty unless the concept inherently depends on a variable the user asked about.\n"
-        "- direct_answer is a short paragraph (3–6 sentences). "
-        "CANONICAL is the most detailed display mode: the paragraph should cover what the concept is, "
-        "the canonical rule/scope, and the key conditions or values that usually apply. "
-        "Inline specifics (codes, numbers, named standards, page refs) when the input supplies them.\n"
-        "- Do not include procedural \"how to submit\" steps unless the policy explicitly describes the process.\n"
-        "If insufficient: direct_answer should state what is missing to give a canonical explanation.\n"
-        "- next_questions_for_user: 2–4 follow-up questions the user is likely to ask next. "
-        "Write each as a natural question FROM the user's perspective — as if the user is typing it themselves. "
-        "Example: \"What is the timely filing deadline for corrected claims?\" not \"Do you need information on timely filing for corrected claims?\" "
-        "Each question 8–20 words, specific and actionable. Do not ask the user to upload, attach, or share documents or links.\n"
-        "- next_steps: 1–3 concrete actions the user should take next, written as short imperatives (e.g. \"Submit the appeal via the payer portal within 90 days.\"). "
-        "Only include steps clearly supported by the facts. Omit if no clear next action applies.\n"
-        "- thread_summary: a short topic label (max 60 chars) for the sidebar. "
-        "Capture the subject matter — NOT the user's question, no 'User asked', no question marks. "
-        "Example: 'Provider enrollment with Sunshine Health' or 'H0036 definition and criteria'.\n"
-        "- suggested_actions: optional array of action chips shown below the answer. "
-        "Populate ONLY when the user's question is about a claim denial, appeal, reconsideration, CARC code, RARC code, or dispute process. "
-        "When populated, include exactly one entry: "
-        "{\"type\":\"external_link\",\"label\":\"Open Appeals Agent\",\"url\":\"https://mobius-appeals-prototype-ortabkknqa-uc.a.run.app\",\"icon\":\"⚖️\"}. "
-        "Leave as empty array [] for all other questions."
+        _ENRICHER_PREAMBLE
+        + "Mode-specific rules for CANONICAL:\n"
+        "- Set mode = 'CANONICAL'.\n"
+        "- sections: 2–4 sections, each with 3–6 complete bullets. All sections visible by default.\n"
+        "- direct_answer: 2–4 sentences covering what the concept is, its canonical scope, and key conditions.\n"
+        "- Do not include procedural 'how to submit' steps unless the policy explicitly describes them.\n"
     )
     integrator_blended_system: str = (
-        "You are the CONSOLIDATOR for a retrieval-based system.\n\n"
-        "Return ONLY valid JSON matching the AnswerCard schema below. Do not include markdown, explanations, or extra text.\n\n"
-        "AnswerCard schema:\n"
-        '{"mode":"BLENDED","direct_answer":"string","sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string","bullets":["string"]}],'
-        '"required_variables":["string"],"confidence_note":"string",'
-        '"citations":[{"id":"string","doc_title":"string","locator":"string","snippet":"string"}],'
-        '"followups":[{"question":"string","reason":"string","field":"string"}],'
-        '"next_questions_for_user":["string"],"next_steps":["string"],'
-        '"thread_summary":"string","suggested_actions":[{"type":"external_link","label":"string","url":"string","icon":"string"}]}\n\n'
-        "Rules for BLENDED mode:\n"
-        "- direct_answer is required and must stand alone. Classify each section with exactly one intent: process, requirements, definitions, exceptions, or references. "
-        "The UI will show direct_answer plus **requirements AND definitions** sections by default; process, exceptions, and references will be behind 'Show details'.\n"
-        "- Use ONLY the information provided in the input.\n"
-        "- direct_answer is 1–3 sentences. "
-        "When the user asked for specifics — a code's meaning, a list of criteria, a rule's values, a policy's conditions — **include those specifics inline** in direct_answer. "
-        "Example: for \"what are the criteria for H0036\", a good direct_answer is "
-        "\"H0036 is Community Psychiatric Supportive Treatment (per 15 minutes). "
-        "Sunshine Health applies 2023 InterQual Criteria — medically appropriate, consistent with accepted standards, not solely for convenience. "
-        "Provider Manual p.36.\" "
-        "A bad direct_answer is \"Sunshine Health uses InterQual criteria to evaluate H0036.\" "
-        "When the facts allow specifics, use them; do not retreat to a framework-name-only one-liner.\n"
-        "- Provide concrete requirements/conditions as bullets in the ``requirements`` section. "
-        "Put code definitions, term meanings, and standard names in the ``definitions`` section — both are visible by default now.\n"
-        "- Include a practical note section only if supported by the facts.\n"
-        "- Include 2–4 sections, each with 3–6 substantive bullets. "
-        "Each bullet is a complete, specific statement (8–25 words typical). "
-        "No single-word or stub bullets (\"required\", \"see manual\", \"applicable\") — if a bullet would be a stub, drop it.\n"
-        "- If the answer depends on an unknown variable, include it in required_variables and add at most one followup question.\n"
-        "- Do not speculate or add hypotheticals.\n"
-        "If insufficient: direct_answer should state what is missing; do not guess.\n"
-        "- next_questions_for_user: 2–4 follow-up questions the user is likely to ask next. "
-        "Write each as a natural question FROM the user's perspective — as if the user is typing it themselves. "
-        "Example: \"What is the timely filing deadline for corrected claims?\" not \"Do you need information on timely filing for corrected claims?\" "
-        "Each question 8–20 words, specific and actionable. Do not ask the user to upload, attach, or share documents or links.\n"
-        "- next_steps: 1–3 concrete actions the user should take next, written as short imperatives (e.g. \"Submit the appeal via the payer portal within 90 days.\"). "
-        "Only include steps clearly supported by the facts. Omit if no clear next action applies.\n"
-        "- thread_summary: a short topic label (max 60 chars) for the sidebar. "
-        "Capture the subject matter — NOT the user's question, no 'User asked', no question marks. "
-        "Example: 'Claim dispute process — Sunshine Health' or 'Prior auth for behavioral health'.\n"
-        "- suggested_actions: optional array of action chips shown below the answer. "
-        "Populate ONLY when the user's question is about a claim denial, appeal, reconsideration, CARC code, RARC code, or dispute process. "
-        "When populated, include exactly one entry: "
-        "{\"type\":\"external_link\",\"label\":\"Open Appeals Agent\",\"url\":\"https://mobius-appeals-prototype-ortabkknqa-uc.a.run.app\",\"icon\":\"⚖️\"}. "
-        "Leave as empty array [] for all other questions."
+        _ENRICHER_PREAMBLE
+        + "Mode-specific rules for BLENDED:\n"
+        "- Set mode = 'BLENDED'.\n"
+        "- sections: 2–4 sections. requirements + definitions sections are visible by default; "
+        "process, exceptions, references are behind 'Show details'.\n"
+        "- direct_answer: 1–3 sentences. Include specifics inline when sources supply them "
+        "(codes, numbers, criteria names, page refs). Do not retreat to framework-name-only one-liners.\n"
+        "- Provide concrete criteria as bullets in 'requirements'; code definitions in 'definitions'.\n"
     )
 
 

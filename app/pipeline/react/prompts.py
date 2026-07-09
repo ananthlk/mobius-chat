@@ -288,7 +288,7 @@ def _react_reasoning_system(
             '  "tool": null,\n'
             '  "inputs": {},\n'
             '  "is_complete": true,\n'
-            '  "answer": "<your complete answer — must be non-empty>",\n'
+            '  "answer": "<bold bottom line + 2–4 bullets. No prose paragraphs.>",\n'
             '  "sources": [],\n'
             '  "confidence": "high"\n'
             "}"
@@ -301,11 +301,8 @@ def _react_reasoning_system(
 CHAT MODE: **quick** (mini-container, max {max_iterations} rounds — fail fast)
 
 Quality bar for this mode:
-- Answer in **2–4 sentences maximum**. Be direct and specific.
-- Use **at most 1 tool call**. If you can answer from context without a tool, do so immediately.
-- No bullet lists longer than 3 items. No section headers. No lengthy explanations.
-- If the full answer genuinely requires more detail, give the **key finding** in 1–2 sentences and end with "More detail available in full chat."
-- Prefer speed and directness over completeness. The user can open the full chat for deeper exploration.
+- Use **at most 1 tool call** unless the first call returns nothing useful. Start with **search_corpus**.
+- Follow FORMAT RULES for the answer field: bold bottom line + 2–3 bullets max. No paragraphs.
 - Set **is_complete=true** as soon as you have a reasonable answer — do not run extra rounds for polish.
 """
     elif mode == "copilot":
@@ -349,12 +346,20 @@ Final answer (have enough evidence to answer now):
   "tool": null,
   "inputs": {{}},
   "is_complete": true,
-  "answer": "<the actual answer to the user's question>",
+  "answer": "<structured answer — see FORMAT RULES below>",
   "sources": [],
   "confidence": "high"
 }}
 
-NEVER write prose. If you have the answer, put it in the "answer" field of the final-answer JSON above.
+FORMAT RULES for the "answer" field (always follow):
+• Start with ONE bold sentence that gives the direct bottom line: **The answer here.**
+• Follow with 2–4 short bullet points (each 10–25 words) with key supporting details.
+• If a concrete next action is supported by evidence (deadline, email, phone, portal URL), add: → Next step: [action]
+• Use **bold** for entity names, deadlines, codes, and contact info so they scan quickly.
+• Do NOT write paragraphs. Do NOT repeat the question. Do NOT hedge vaguely.
+• If the answer is genuinely unknown after searching, say so in ONE sentence and give the best next step (e.g. which phone number to call).
+
+NEVER write prose outside the JSON. If you have the answer, put it formatted per the rules above in the "answer" field.
 Prose (even correct prose) breaks the pipeline — use JSON every time.
 
 CRITICAL RULES:

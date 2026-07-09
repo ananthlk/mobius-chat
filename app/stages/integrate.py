@@ -53,6 +53,10 @@ _ANSWER_CARD_ENVELOPE_KEYS = (
     "thread_summary",
     # Layer 2 appeals integration — action chips rendered below the answer.
     "suggested_actions",
+    # Enricher fields (two-phase streaming): correction, takeaways, gaps.
+    "correction",
+    "takeaways",
+    "gaps",
 )
 
 
@@ -404,6 +408,22 @@ def run_integrate(
         {"index": s.get("index", i + 1), "document_name": s.get("document_name") or "document", "confidence_label": s.get("confidence_label")}
         for i, s in enumerate(all_sources)
     ]
+    # Top sources with text for the enricher to cite verbatim.
+    # Sort by match_score descending; cap count + char limit by mode to control
+    # integrator prompt size (10×1500 = 15K chars was the main latency driver).
+    _is_quick = getattr(ctx, "chat_mode", None) == "quick"
+    _src_cap = 4 if _is_quick else 7
+    _src_chars = 600 if _is_quick else 1000
+    _sorted_sources = sorted(all_sources, key=lambda x: -(float(x.get("match_score") or 0)))
+    source_texts = [
+        {
+            "index": s.get("index", i + 1),
+            "title": (s.get("document_name") or "document")[:200],
+            "text": (s.get("text") or "")[:_src_chars],
+        }
+        for i, s in enumerate(_sorted_sources[:_src_cap])
+        if (s.get("text") or "").strip()
+    ]
 
     # Stream only the direct-answer plain text (see format_response); never raw partial JSON.
     from app.storage.progress import append_message_chunk
@@ -450,6 +470,8 @@ def run_integrate(
         mode=getattr(ctx, "chat_mode", None),
         previous_thread_summary=getattr(ctx, "previous_thread_summary", None),
         user_profile=getattr(ctx, "user_profile", None),
+        react_draft=getattr(ctx, "react_draft", None),
+        source_texts=source_texts or None,
     )
     ctx.final_message = final_message
 

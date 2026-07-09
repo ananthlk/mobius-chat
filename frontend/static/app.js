@@ -1632,17 +1632,6 @@ function normalizeFollowupLineList(raw, defaultClickable) {
   }
   return out;
 }
-function followupListHintLines(items) {
-  if (!items.length)
-    return "";
-  const anyClick = items.some((i) => i.clickable);
-  const allStatic = !anyClick;
-  if (allStatic)
-    return "Reference only\u2014not sent as a message unless you copy or type below.";
-  if (items.every((i) => i.clickable))
-    return "Tap a line to send it as your next message, or type below.";
-  return "Tap lines marked as actions to send; others are for reference only.";
-}
 var CREDENTIALING_ROSTER_TRIGGERS = [
   "provider roster",
   "credentialing report",
@@ -2706,7 +2695,7 @@ function splitSectionsByVisibility(sections, mode) {
     return { visible: [], hidden: all };
   if (mode === "CANONICAL")
     return { visible: all, hidden: [] };
-  const visibleIntents = /* @__PURE__ */ new Set(["requirements", "definitions"]);
+  const visibleIntents = /* @__PURE__ */ new Set(["definitions"]);
   const visible = all.filter((s) => visibleIntents.has(s.intent ?? "process"));
   const hidden = all.filter((s) => !visibleIntents.has(s.intent ?? "process"));
   return { visible, hidden };
@@ -2965,40 +2954,6 @@ function renderAnswerCard(card, isError, opts) {
     note.className = "answer-card-confidence";
     note.textContent = card.confidence_note;
     bubble.appendChild(note);
-  }
-  const followupQuestions = opts?.nextQuestions ?? [];
-  if (followupQuestions.length > 0) {
-    const followupWrap = document.createElement("div");
-    followupWrap.className = "answer-card-followups";
-    const label = document.createElement("div");
-    label.className = "answer-card-followups-label";
-    label.textContent = "Follow-up questions";
-    followupWrap.appendChild(label);
-    const hint = document.createElement("div");
-    hint.className = "answer-card-followups-hint";
-    hint.textContent = followupListHintLines(followupQuestions);
-    followupWrap.appendChild(hint);
-    const chips = document.createElement("div");
-    chips.className = "answer-card-followups-chips answer-card-followups-chips--stacked";
-    followupQuestions.slice(0, 6).forEach((line) => {
-      const text = line.text.trim() || "Ask this";
-      if (line.clickable && opts?.onFollowupClick) {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "answer-card-followup-chip answer-card-followup-chip--row";
-        btn.textContent = text;
-        btn.setAttribute("aria-label", "Send: " + text);
-        btn.addEventListener("click", () => opts.onFollowupClick(text));
-        chips.appendChild(btn);
-      } else {
-        const row = document.createElement("div");
-        row.className = "answer-card-followup-line answer-card-followup-line--static";
-        row.textContent = text;
-        chips.appendChild(row);
-      }
-    });
-    followupWrap.appendChild(chips);
-    bubble.appendChild(followupWrap);
   }
   if (card.suggested_actions && card.suggested_actions.length > 0) {
     const actionsWrap = document.createElement("div");
@@ -3917,40 +3872,50 @@ function renderThinkingBlock(initialLines, opts) {
     }
   };
 }
-function renderNextQuestions(questions, onSelect) {
-  if (!questions.length)
-    return document.createElement("div");
-  const wrap = document.createElement("div");
-  wrap.className = "next-questions";
-  const label = document.createElement("div");
-  label.className = "next-questions-label";
-  label.textContent = "Follow-up questions";
-  wrap.appendChild(label);
-  const hint = document.createElement("div");
-  hint.className = "next-questions-hint";
-  hint.textContent = followupListHintLines(questions);
-  wrap.appendChild(hint);
+function followupChipToQuery(text) {
+  const t = text.trim().replace(/\?$/, "");
+  let m;
+  m = t.match(/^Would you like (?:me )?to (.+)$/i);
+  if (m)
+    return "Please " + m[1].charAt(0).toLowerCase() + m[1].slice(1) + ".";
+  m = t.match(/^Do you want (?:me )?to (.+)$/i);
+  if (m)
+    return "Please " + m[1].charAt(0).toLowerCase() + m[1].slice(1) + ".";
+  m = t.match(/^Shall I (?:show|walk) you (.+)$/i);
+  if (m)
+    return "Please show me " + m[1] + ".";
+  m = t.match(/^(?:Can|Shall) I help you with (.+)$/i);
+  if (m)
+    return "Help me with " + m[1] + ".";
+  return text.trim();
+}
+function updateChatSuggestions(questions, onSelect) {
+  const slot = document.getElementById("chat-suggestions");
+  if (!slot)
+    return;
+  slot.innerHTML = "";
+  const clickable = questions.filter((q) => q.clickable && q.text.trim());
+  if (!clickable.length) {
+    slot.hidden = true;
+    return;
+  }
   const chips = document.createElement("div");
-  chips.className = "next-questions-chips next-questions-chips--stacked";
-  questions.slice(0, 6).forEach((line) => {
-    const text = line.text.trim() || "Ask this";
-    if (line.clickable) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "next-questions-chip next-questions-chip--row";
-      btn.textContent = text;
-      btn.setAttribute("aria-label", "Send: " + text);
-      btn.addEventListener("click", () => onSelect(text));
-      chips.appendChild(btn);
-    } else {
-      const row = document.createElement("div");
-      row.className = "next-questions-line next-questions-line--static";
-      row.textContent = text;
-      chips.appendChild(row);
-    }
-  });
-  wrap.appendChild(chips);
-  return wrap;
+  chips.className = "chat-suggestions-chips";
+  for (const q of clickable.slice(0, 4)) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "chat-suggestions-chip";
+    btn.textContent = q.text.trim();
+    btn.setAttribute("aria-label", "Ask: " + q.text.trim());
+    btn.addEventListener("click", () => {
+      slot.innerHTML = "";
+      slot.hidden = true;
+      onSelect(followupChipToQuery(q.text));
+    });
+    chips.appendChild(btn);
+  }
+  slot.appendChild(chips);
+  slot.hidden = false;
 }
 function clarificationSelectionIsMultiple(opt) {
   const m = (opt.selection_mode || "single").toLowerCase();
@@ -4239,7 +4204,7 @@ function renderFeedback(correlationId) {
   taskActionBtn.addEventListener("click", () => {
     const msg = bar.closest(".chat-turn")?.querySelector(".message--assistant .message-bubble");
     const excerpt = (msg?.textContent || "").trim().slice(0, 400);
-    openTasksModal(excerpt ? { createOpen: true, text: excerpt, title: excerpt.slice(0, 60) } : void 0);
+    openCreateTaskDialog(excerpt ? { excerpt, title: excerpt.slice(0, 60), sourceModule: "chat_action" } : void 0);
   });
   left.appendChild(up);
   left.appendChild(down);
@@ -4270,7 +4235,7 @@ function renderCaptureCard(card, meta) {
   const header = document.createElement("div");
   header.className = "pf-capture-card__header";
   const title = document.createElement("span");
-  title.textContent = "\u2713 Feedback captured";
+  title.innerHTML = '<span class="pf-capture-card__check">\u2713</span> Feedback captured';
   const xBtn = document.createElement("button");
   xBtn.type = "button";
   xBtn.className = "pf-capture-card__x";
@@ -4281,24 +4246,25 @@ function renderCaptureCard(card, meta) {
   wrap.appendChild(header);
   const body = document.createElement("div");
   body.className = "pf-capture-card__body";
-  const catRow = document.createElement("div");
-  catRow.className = "pf-capture-card__row";
-  const catLabel = document.createElement("label");
-  catLabel.textContent = "Category";
-  const catSel = document.createElement("select");
-  catSel.className = "pf-capture-card__select";
-  catSel.disabled = !card.editable;
+  const catChips = document.createElement("div");
+  catChips.className = "pf-capture-card__cat-chips";
+  let selectedCat = card.category;
   for (const c of card.categories) {
-    const opt = document.createElement("option");
-    opt.value = c;
-    opt.textContent = _PF_CATEGORY_LABELS[c] ?? c;
-    if (c === card.category)
-      opt.selected = true;
-    catSel.appendChild(opt);
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "pf-cat-chip" + (c === selectedCat ? " pf-cat-chip--active" : "");
+    chip.textContent = _PF_CATEGORY_LABELS[c] ?? c;
+    chip.dataset.cat = c;
+    if (!card.editable)
+      chip.disabled = true;
+    chip.addEventListener("click", () => {
+      selectedCat = c;
+      catChips.querySelectorAll(".pf-cat-chip").forEach((b) => b.classList.remove("pf-cat-chip--active"));
+      chip.classList.add("pf-cat-chip--active");
+    });
+    catChips.appendChild(chip);
   }
-  catRow.appendChild(catLabel);
-  catRow.appendChild(catSel);
-  body.appendChild(catRow);
+  body.appendChild(catChips);
   const ta = document.createElement("textarea");
   ta.className = "pf-capture-card__text";
   ta.value = card.tidied;
@@ -4314,6 +4280,10 @@ function renderCaptureCard(card, meta) {
   btnRow.appendChild(doneBtn);
   body.appendChild(btnRow);
   wrap.appendChild(body);
+  let _isDirty = false;
+  ta.addEventListener("input", () => {
+    _isDirty = true;
+  });
   function pfEvent(action) {
     fetch(API_BASE + "/chat/product-feedback/event", {
       method: "POST",
@@ -4332,7 +4302,11 @@ function renderCaptureCard(card, meta) {
     updateBtn.type = "button";
     updateBtn.className = "pf-capture-card__update";
     updateBtn.textContent = "Update";
+    updateBtn.style.display = "none";
     btnRow.insertBefore(updateBtn, doneBtn);
+    ta.addEventListener("input", () => {
+      updateBtn.style.display = "";
+    });
     updateBtn.addEventListener("click", () => {
       const txt = ta.value.trim();
       if (!txt)
@@ -4343,7 +4317,7 @@ function renderCaptureCard(card, meta) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           feedback_id: card.feedback_id,
-          category: catSel.value,
+          category: selectedCat,
           tidied: txt
         })
       }).catch(() => {
@@ -5214,9 +5188,8 @@ function initTextSelectionToolbar() {
         for (let i = 0; i < text.length; i++) {
           h = (h << 5) - h + text.charCodeAt(i) | 0;
         }
-        openTasksModal({
-          createOpen: true,
-          text: text.slice(0, 600),
+        openCreateTaskDialog({
+          excerpt: text.slice(0, 600),
           title: text.slice(0, 60),
           sourceModule: "chat_highlight",
           sourceRef: `highlight:${tid || "nothread"}:${(h >>> 0).toString(16)}`
@@ -5242,6 +5215,161 @@ if (typeof document !== "undefined") {
 }
 var _tasksModalEl = null;
 var _TASK_SEVERITIES = ["critical", "warning", "info", "low", "none"];
+var _ctdOverlayEl = null;
+function closeCreateTaskDialog() {
+  if (_ctdOverlayEl) {
+    _ctdOverlayEl.remove();
+    _ctdOverlayEl = null;
+  }
+}
+function openCreateTaskDialog(opts) {
+  closeCreateTaskDialog();
+  const overlay = document.createElement("div");
+  overlay.className = "ctd-overlay";
+  overlay.addEventListener("mousedown", (e) => {
+    if (e.target === overlay)
+      closeCreateTaskDialog();
+  });
+  const escHandler = (e) => {
+    if (e.key === "Escape") {
+      closeCreateTaskDialog();
+      document.removeEventListener("keydown", escHandler);
+    }
+  };
+  document.addEventListener("keydown", escHandler);
+  const dialog = document.createElement("div");
+  dialog.className = "ctd-dialog";
+  dialog.setAttribute("role", "dialog");
+  dialog.setAttribute("aria-modal", "true");
+  dialog.setAttribute("aria-label", "Create task");
+  const header = document.createElement("div");
+  header.className = "ctd-header";
+  const titleEl = document.createElement("span");
+  titleEl.className = "ctd-title";
+  titleEl.textContent = "Create task";
+  const closeBtn = document.createElement("button");
+  closeBtn.type = "button";
+  closeBtn.className = "ctd-close";
+  closeBtn.setAttribute("aria-label", "Close");
+  closeBtn.innerHTML = "&times;";
+  closeBtn.addEventListener("click", closeCreateTaskDialog);
+  header.appendChild(titleEl);
+  header.appendChild(closeBtn);
+  dialog.appendChild(header);
+  const excerptEl = document.createElement("div");
+  excerptEl.className = "ctd-excerpt";
+  if (opts?.excerpt) {
+    const bar = document.createElement("div");
+    bar.className = "ctd-excerpt__bar";
+    const txt = document.createElement("div");
+    txt.className = "ctd-excerpt__text";
+    txt.textContent = opts.excerpt;
+    excerptEl.appendChild(bar);
+    excerptEl.appendChild(txt);
+  } else {
+    excerptEl.hidden = true;
+  }
+  dialog.appendChild(excerptEl);
+  const body = document.createElement("div");
+  body.className = "ctd-body";
+  body.innerHTML = `
+    <input type="text" class="ctd-input" data-f="title" placeholder="Task title" maxlength="160">
+    <textarea class="ctd-input ctd-textarea" data-f="text" placeholder="What needs to be done?" rows="3"></textarea>
+    <input type="text" class="ctd-input" data-f="org" placeholder="Organization (required)">
+    <details class="ctd-advanced">
+      <summary class="ctd-advanced__trigger">Advanced</summary>
+      <div class="ctd-advanced__body">
+        <div class="ctd-row">
+          <select class="ctd-input" data-f="severity">
+            ${_TASK_SEVERITIES.map((s) => `<option value="${s}" ${s === "low" ? "selected" : ""}>${s}</option>`).join("")}
+          </select>
+          <input type="text" class="ctd-input" data-f="assignee" placeholder="Assignee (optional)">
+        </div>
+        <div class="ctd-row">
+          <select class="ctd-input" data-f="kind">
+            <option value="work_item" selected>Task</option>
+            <option value="reminder">Reminder</option>
+          </select>
+          <input type="date" class="ctd-input" data-f="deadline">
+        </div>
+      </div>
+    </details>`;
+  const cf = (k) => body.querySelector(`[data-f="${k}"]`);
+  cf("title").value = opts?.title || (opts?.excerpt || "").slice(0, 60);
+  cf("text").value = opts?.excerpt || "";
+  cf("org").value = localStorage.getItem("lastOrg") || "";
+  dialog.appendChild(body);
+  const footer = document.createElement("div");
+  footer.className = "ctd-footer";
+  const errEl = document.createElement("span");
+  errEl.className = "ctd-err";
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.className = "ctd-btn ctd-btn--cancel";
+  cancelBtn.textContent = "Cancel";
+  cancelBtn.addEventListener("click", closeCreateTaskDialog);
+  const submitBtn = document.createElement("button");
+  submitBtn.type = "button";
+  submitBtn.className = "ctd-btn ctd-btn--create";
+  submitBtn.textContent = "Create task";
+  footer.appendChild(errEl);
+  footer.appendChild(cancelBtn);
+  footer.appendChild(submitBtn);
+  dialog.appendChild(footer);
+  submitBtn.addEventListener("click", async () => {
+    const text = cf("text").value.trim();
+    const org = cf("org").value.trim();
+    if (!text || !org) {
+      errEl.textContent = "Organization and description are required.";
+      return;
+    }
+    errEl.textContent = "";
+    submitBtn.disabled = true;
+    const body2 = {
+      org_name: org,
+      text,
+      title: cf("title").value.trim() || text.slice(0, 60),
+      severity: cf("severity").value,
+      source_module: opts?.sourceModule || "manual",
+      kind: cf("kind").value || "work_item",
+      audience: "user"
+    };
+    const deadline = cf("deadline").value;
+    if (deadline)
+      body2.deadline = deadline;
+    const assignee = cf("assignee").value.trim();
+    if (assignee)
+      body2.assignee = assignee;
+    if (opts?.sourceRef)
+      body2.source_ref = opts.sourceRef;
+    const tid = window.__mobiusChatThreadId;
+    if (tid)
+      body2.extra = { origin: { thread_id: tid } };
+    try {
+      const r = await fetch(`${API_BASE}/chat/tasks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body2)
+      });
+      if (!r.ok) {
+        errEl.textContent = `Create failed (${r.status}).`;
+        submitBtn.disabled = false;
+        return;
+      }
+      localStorage.setItem("lastOrg", org);
+      submitBtn.classList.add("ctd-btn--success");
+      submitBtn.textContent = "Created \u2713";
+      setTimeout(closeCreateTaskDialog, 900);
+    } catch {
+      errEl.textContent = "Create failed \u2014 network error.";
+      submitBtn.disabled = false;
+    }
+  });
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+  _ctdOverlayEl = overlay;
+  setTimeout(() => cf("title").focus(), 50);
+}
 function closeTasksModal() {
   if (_tasksModalEl) {
     _tasksModalEl.remove();
@@ -7320,7 +7448,52 @@ function renderAssistantFromEnvelope(envelope, opts) {
     if (!block || typeof block !== "object")
       continue;
     const t = block.type;
-    if (t === "tool_attribution") {
+    if (t === "correction") {
+      const b = block;
+      const orig = (b.original || "").trim();
+      const fixed = (b.corrected || "").trim();
+      if (orig && fixed) {
+        const line = document.createElement("div");
+        line.className = "envelope-correction-inline";
+        const icon = document.createElement("span");
+        icon.className = "envelope-correction-inline-icon";
+        icon.textContent = "\u26A0";
+        const origSpan = document.createElement("span");
+        origSpan.className = "envelope-correction-inline-orig";
+        origSpan.textContent = orig;
+        const arrow = document.createElement("span");
+        arrow.className = "envelope-correction-inline-arrow";
+        arrow.textContent = " \u2192 ";
+        const fixedSpan = document.createElement("span");
+        fixedSpan.className = "envelope-correction-inline-fixed";
+        fixedSpan.textContent = fixed;
+        line.appendChild(icon);
+        line.appendChild(document.createTextNode(" "));
+        line.appendChild(origSpan);
+        line.appendChild(arrow);
+        line.appendChild(fixedSpan);
+        bubble.appendChild(line);
+      }
+    } else if (t === "takeaways") {
+      const b = block;
+      if (Array.isArray(b.items) && b.items.length > 0) {
+        const wrap = document.createElement("div");
+        wrap.className = "envelope-takeaways";
+        const hdr = document.createElement("div");
+        hdr.className = "envelope-takeaways-header";
+        hdr.textContent = "Key takeaways";
+        wrap.appendChild(hdr);
+        const ul = document.createElement("ul");
+        ul.className = "envelope-takeaways-list";
+        for (const item of b.items) {
+          const li = document.createElement("li");
+          li.textContent = item;
+          ul.appendChild(li);
+        }
+        wrap.appendChild(ul);
+        bubble.appendChild(wrap);
+      }
+    } else if (t === "tool_attribution") {
       const b = block;
       const chip = document.createElement("div");
       chip.className = "envelope-tool-chip";
@@ -7719,7 +7892,7 @@ function renderAssistantFromEnvelope(envelope, opts) {
       const b = block;
       const c = document.createElement("div");
       c.className = "envelope-callout envelope-callout--" + (b.variant || "info");
-      c.textContent = b.body || "";
+      c.textContent = (b.body || "").replace(/\*\*([^*]+)\*\*/g, "$1");
       bubble.appendChild(c);
     } else if (t === "sources") {
       const b = block;
@@ -7738,13 +7911,12 @@ function renderAssistantFromEnvelope(envelope, opts) {
       const b = block;
       const items = normalizeFollowupLineList(b.items || [], false);
       if (items.length) {
-        const expanded = b.collapsed_default === false;
         const disclosure = document.createElement("details");
         disclosure.className = "envelope-followups-disclosure";
-        disclosure.open = expanded;
+        disclosure.open = false;
         const sum = document.createElement("summary");
         sum.className = "envelope-followups-summary envelope-followups-summary--next-steps";
-        sum.textContent = expanded ? "Next steps" : "Next steps (tap to expand)";
+        sum.textContent = "Next steps (tap to expand)";
         disclosure.appendChild(sum);
         const w = document.createElement("div");
         w.className = "envelope-next-steps";
@@ -7776,45 +7948,9 @@ function renderAssistantFromEnvelope(envelope, opts) {
     } else if (t === "suggested_questions") {
       const b = block;
       const items = normalizeFollowupLineList(b.items || [], true);
-      if (items.length) {
-        const expanded = b.collapsed_default === false;
-        const disclosure = document.createElement("details");
-        disclosure.className = "envelope-followups-disclosure";
-        disclosure.open = expanded;
-        const sum = document.createElement("summary");
-        sum.className = "envelope-followups-summary envelope-followups-summary--suggested";
-        sum.textContent = expanded ? "Follow-up questions" : "Follow-up questions (tap to expand)";
-        disclosure.appendChild(sum);
-        const w = document.createElement("div");
-        w.className = "envelope-suggested";
-        const hint = document.createElement("div");
-        hint.className = "envelope-suggested-hint";
-        hint.textContent = followupListHintLines(items);
-        w.appendChild(hint);
-        const chips = document.createElement("div");
-        chips.className = "envelope-suggested-chips";
-        for (const line of items.slice(0, 6)) {
-          const text = line.text.trim();
-          if (!text)
-            continue;
-          if (line.clickable && opts.onFollowupClick) {
-            const btn = document.createElement("button");
-            btn.type = "button";
-            btn.className = "envelope-suggested-chip";
-            btn.textContent = text;
-            btn.setAttribute("aria-label", "Send: " + text);
-            btn.addEventListener("click", () => opts.onFollowupClick(text));
-            chips.appendChild(btn);
-          } else {
-            const row = document.createElement("div");
-            row.className = "envelope-suggested-line envelope-suggested-line--static";
-            row.textContent = text;
-            chips.appendChild(row);
-          }
-        }
-        w.appendChild(chips);
-        disclosure.appendChild(w);
-        bubble.appendChild(disclosure);
+      if (items.length && opts.onFollowupClick) {
+        const onSelect = opts.onFollowupClick;
+        updateChatSuggestions(items, onSelect);
       }
     } else if (t === "pipeline_human_gate") {
       const b = block;
@@ -8905,6 +9041,9 @@ ${message}`;
       const textEl = document.createElement("div");
       textEl.className = "message-bubble-text";
       bubble.appendChild(textEl);
+      const phaseBar = document.createElement("div");
+      phaseBar.className = "answer-phase-bar";
+      bubble.appendChild(phaseBar);
       wrap.appendChild(bubble);
       messageWrapEl = wrap;
       turnWrap.appendChild(messageWrapEl);
@@ -9028,6 +9167,20 @@ ${message}`;
         messageWrapEl.classList.remove("is-draft");
         messageWrapEl.setAttribute("data-draft-upgraded", "1");
         messageWrapEl.querySelector(".draft-refining-badge")?.remove();
+        messageWrapEl.querySelector(".answer-phase-bar")?.remove();
+        const draftBodyEl = messageWrapEl.querySelector(".message-bubble-text");
+        if (draftBodyEl && (draftBodyEl.textContent || "").length > 240) {
+          draftBodyEl.classList.add("draft-clamped");
+          const readMore = document.createElement("button");
+          readMore.type = "button";
+          readMore.className = "draft-read-more";
+          readMore.textContent = "Read more \u2193";
+          readMore.addEventListener("click", () => {
+            draftBodyEl.classList.remove("draft-clamped");
+            readMore.remove();
+          });
+          draftBodyEl.insertAdjacentElement("afterend", readMore);
+        }
         const messageBubble = messageWrapEl.querySelector(".message-bubble");
         const fullCard = tryParseAnswerCard(fullMessage);
         if (fullCard && messageBubble) {
@@ -9077,13 +9230,19 @@ ${message}`;
             });
             const innerBubble = toolRendered.querySelector(".message-bubble");
             if (innerBubble) {
+              const draftTextEl = messageBubble.querySelector(".message-bubble-text");
               Array.from(innerBubble.children).forEach((child) => {
                 child.classList.add("answer-card-upgrade-in");
-                messageBubble.appendChild(child);
+                if (child.classList.contains("envelope-correction-inline") && draftTextEl) {
+                  messageBubble.insertBefore(child, draftTextEl);
+                } else {
+                  messageBubble.appendChild(child);
+                }
               });
             }
           }
         }
+        messageWrapEl.querySelectorAll(".envelope-takeaways").forEach((el2) => el2.remove());
         turnWrap.classList.add("turn-meta-revealing");
         window.setTimeout(() => turnWrap.classList.remove("turn-meta-revealing"), 1200);
       } else {
@@ -9155,10 +9314,8 @@ ${message}`;
         turnWrap.appendChild(renderRosterReportDownload(pdfBase64, reportMarkdown, attachmentsKind));
       }
       const isCard = !!tryParseAnswerCard(body || "");
-      if (nextQuestions.length > 0 && !isCard && (!useEnvelope || isDraftBubble)) {
-        turnWrap.appendChild(
-          renderNextQuestions(nextQuestions, (q) => sendMessage(q))
-        );
+      if (nextQuestions.length > 0) {
+        updateChatSuggestions(nextQuestions, (q) => sendMessage(q));
       }
       if (data.clarification_options && data.clarification_options.length > 0) {
         turnWrap.appendChild(renderClarificationOptions(data.clarification_options));

@@ -1973,12 +1973,9 @@ function splitSectionsByVisibility(
   const all = sections.slice(0, MAX_SECTIONS);
   if (mode === "FACTUAL") return { visible: [], hidden: all };
   if (mode === "CANONICAL") return { visible: all, hidden: [] };
-  // Phase 0.14: BLENDED now surfaces both "requirements" AND "definitions"
-  // by default. Definitions contain things like "H0036 = Community
-  // Psychiatric Supportive Treatment" — content the user asked about
-  // directly, not supplementary background. Hiding them behind a click
-  // was the primary cause of the "thin one-liner" complaint.
-  const visibleIntents = new Set(["requirements", "definitions"]);
+  // Phase 0.14: only "definitions" surface immediately; "requirements" collapses
+  // behind Show details to reduce bubble height.
+  const visibleIntents = new Set(["definitions"]);
   const visible = all.filter((s) => visibleIntents.has(s.intent ?? "process"));
   const hidden = all.filter((s) => !visibleIntents.has(s.intent ?? "process"));
   return { visible, hidden };
@@ -2289,42 +2286,6 @@ function renderAnswerCard(
     note.className = "answer-card-confidence";
     note.textContent = card.confidence_note;
     bubble.appendChild(note);
-  }
-
-  // Suggested follow-ups inside the card (unified with next_questions_for_user)
-  const followupQuestions = opts?.nextQuestions ?? [];
-  if (followupQuestions.length > 0) {
-    const followupWrap = document.createElement("div");
-    followupWrap.className = "answer-card-followups";
-    const label = document.createElement("div");
-    label.className = "answer-card-followups-label";
-    label.textContent = "Follow-up questions";
-    followupWrap.appendChild(label);
-    const hint = document.createElement("div");
-    hint.className = "answer-card-followups-hint";
-    hint.textContent = followupListHintLines(followupQuestions);
-    followupWrap.appendChild(hint);
-    const chips = document.createElement("div");
-    chips.className = "answer-card-followups-chips answer-card-followups-chips--stacked";
-    followupQuestions.slice(0, 6).forEach((line) => {
-      const text = line.text.trim() || "Ask this";
-      if (line.clickable && opts?.onFollowupClick) {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "answer-card-followup-chip answer-card-followup-chip--row";
-        btn.textContent = text;
-        btn.setAttribute("aria-label", "Send: " + text);
-        btn.addEventListener("click", () => opts!.onFollowupClick!(text));
-        chips.appendChild(btn);
-      } else {
-        const row = document.createElement("div");
-        row.className = "answer-card-followup-line answer-card-followup-line--static";
-        row.textContent = text;
-        chips.appendChild(row);
-      }
-    });
-    followupWrap.appendChild(chips);
-    bubble.appendChild(followupWrap);
   }
 
   // Suggested action chips — e.g. "Open Appeals Agent ↗" for denial/appeal queries.
@@ -3404,6 +3365,52 @@ function renderThinkingBlock(
   };
 }
 
+/** Replace the #chat-suggestions slot with chips for the latest answer's follow-ups. */
+function followupChipToQuery(text: string): string {
+  const t = text.trim().replace(/\?$/, "");
+  let m: RegExpMatchArray | null;
+  m = t.match(/^Would you like (?:me )?to (.+)$/i);
+  if (m) return "Please " + m[1].charAt(0).toLowerCase() + m[1].slice(1) + ".";
+  m = t.match(/^Do you want (?:me )?to (.+)$/i);
+  if (m) return "Please " + m[1].charAt(0).toLowerCase() + m[1].slice(1) + ".";
+  m = t.match(/^Shall I (?:show|walk) you (.+)$/i);
+  if (m) return "Please show me " + m[1] + ".";
+  m = t.match(/^(?:Can|Shall) I help you with (.+)$/i);
+  if (m) return "Help me with " + m[1] + ".";
+  return text.trim();
+}
+
+function updateChatSuggestions(
+  questions: FollowupLineNormalized[],
+  onSelect: (q: string) => void
+): void {
+  const slot = document.getElementById("chat-suggestions") as HTMLElement | null;
+  if (!slot) return;
+  slot.innerHTML = "";
+  const clickable = questions.filter((q) => q.clickable && q.text.trim());
+  if (!clickable.length) {
+    slot.hidden = true;
+    return;
+  }
+  const chips = document.createElement("div");
+  chips.className = "chat-suggestions-chips";
+  for (const q of clickable.slice(0, 4)) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "chat-suggestions-chip";
+    btn.textContent = q.text.trim();
+    btn.setAttribute("aria-label", "Ask: " + q.text.trim());
+    btn.addEventListener("click", () => {
+      slot.innerHTML = "";
+      slot.hidden = true;
+      onSelect(followupChipToQuery(q.text));
+    });
+    chips.appendChild(btn);
+  }
+  slot.appendChild(chips);
+  slot.hidden = false;
+}
+
 /** Reusable: next questions / follow-ups (clickable per item — legacy non-envelope turns). */
 function renderNextQuestions(
   questions: FollowupLineNormalized[],
@@ -3776,7 +3783,7 @@ function renderFeedback(correlationId: string): HTMLElement {
   taskActionBtn.addEventListener("click", () => {
     const msg = bar.closest(".chat-turn")?.querySelector(".message--assistant .message-bubble");
     const excerpt = (msg?.textContent || "").trim().slice(0, 400);
-    openTasksModal(excerpt ? { createOpen: true, text: excerpt, title: excerpt.slice(0, 60) } : undefined);
+    openCreateTaskDialog(excerpt ? { excerpt, title: excerpt.slice(0, 60), sourceModule: "chat_action" } : undefined);
   });
 
   left.appendChild(up);
@@ -3819,7 +3826,7 @@ function renderCaptureCard(
   const header = document.createElement("div");
   header.className = "pf-capture-card__header";
   const title = document.createElement("span");
-  title.textContent = "✓ Feedback captured";
+  title.innerHTML = '<span class="pf-capture-card__check">✓</span> Feedback captured';
   const xBtn = document.createElement("button");
   xBtn.type = "button";
   xBtn.className = "pf-capture-card__x";
@@ -3832,24 +3839,25 @@ function renderCaptureCard(
   const body = document.createElement("div");
   body.className = "pf-capture-card__body";
 
-  // Category row
-  const catRow = document.createElement("div");
-  catRow.className = "pf-capture-card__row";
-  const catLabel = document.createElement("label");
-  catLabel.textContent = "Category";
-  const catSel = document.createElement("select");
-  catSel.className = "pf-capture-card__select";
-  catSel.disabled = !card.editable;
+  // Category pill chips
+  const catChips = document.createElement("div");
+  catChips.className = "pf-capture-card__cat-chips";
+  let selectedCat = card.category;
   for (const c of card.categories) {
-    const opt = document.createElement("option");
-    opt.value = c;
-    opt.textContent = _PF_CATEGORY_LABELS[c] ?? c;
-    if (c === card.category) opt.selected = true;
-    catSel.appendChild(opt);
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "pf-cat-chip" + (c === selectedCat ? " pf-cat-chip--active" : "");
+    chip.textContent = _PF_CATEGORY_LABELS[c] ?? c;
+    chip.dataset.cat = c;
+    if (!card.editable) chip.disabled = true;
+    chip.addEventListener("click", () => {
+      selectedCat = c;
+      catChips.querySelectorAll(".pf-cat-chip").forEach((b) => b.classList.remove("pf-cat-chip--active"));
+      chip.classList.add("pf-cat-chip--active");
+    });
+    catChips.appendChild(chip);
   }
-  catRow.appendChild(catLabel);
-  catRow.appendChild(catSel);
-  body.appendChild(catRow);
+  body.appendChild(catChips);
 
   // Tidied text
   const ta = document.createElement("textarea");
@@ -3870,6 +3878,9 @@ function renderCaptureCard(
   body.appendChild(btnRow);
   wrap.appendChild(body);
 
+  let _isDirty = false;
+  ta.addEventListener("input", () => { _isDirty = true; });
+
   function pfEvent(action: string): void {
     fetch(API_BASE + "/chat/product-feedback/event", {
       method: "POST",
@@ -3887,7 +3898,9 @@ function renderCaptureCard(
     updateBtn.type = "button";
     updateBtn.className = "pf-capture-card__update";
     updateBtn.textContent = "Update";
+    updateBtn.style.display = "none";
     btnRow.insertBefore(updateBtn, doneBtn);
+    ta.addEventListener("input", () => { updateBtn.style.display = ""; });
     updateBtn.addEventListener("click", () => {
       const txt = ta.value.trim();
       if (!txt) return;
@@ -3897,7 +3910,7 @@ function renderCaptureCard(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           feedback_id: card.feedback_id,
-          category: catSel.value,
+          category: selectedCat,
           tidied: txt,
         }),
       }).catch(() => {});
@@ -4866,9 +4879,8 @@ function initTextSelectionToolbar(): void {
         // Cheap stable hash of the selection for the dedup-safe source_ref.
         let h = 0;
         for (let i = 0; i < text.length; i++) { h = ((h << 5) - h + text.charCodeAt(i)) | 0; }
-        openTasksModal({
-          createOpen: true,
-          text: text.slice(0, 600),
+        openCreateTaskDialog({
+          excerpt: text.slice(0, 600),
           title: text.slice(0, 60),
           sourceModule: "chat_highlight",
           sourceRef: `highlight:${tid || "nothread"}:${(h >>> 0).toString(16)}`,
@@ -4911,6 +4923,162 @@ interface TasksModalPrefill {
 }
 
 const _TASK_SEVERITIES = ["critical", "warning", "info", "low", "none"];
+
+// ── Create Task Dialog (focused quick-create, no task list) ──────────────────
+
+interface CreateTaskDialogOpts {
+  excerpt?: string;
+  title?: string;
+  sourceModule?: string;
+  sourceRef?: string;
+}
+
+let _ctdOverlayEl: HTMLElement | null = null;
+
+function closeCreateTaskDialog(): void {
+  if (_ctdOverlayEl) { _ctdOverlayEl.remove(); _ctdOverlayEl = null; }
+}
+
+function openCreateTaskDialog(opts?: CreateTaskDialogOpts): void {
+  closeCreateTaskDialog();
+
+  const overlay = document.createElement("div");
+  overlay.className = "ctd-overlay";
+  overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) closeCreateTaskDialog(); });
+  const escHandler = (e: KeyboardEvent) => {
+    if (e.key === "Escape") { closeCreateTaskDialog(); document.removeEventListener("keydown", escHandler); }
+  };
+  document.addEventListener("keydown", escHandler);
+
+  const dialog = document.createElement("div");
+  dialog.className = "ctd-dialog";
+  dialog.setAttribute("role", "dialog");
+  dialog.setAttribute("aria-modal", "true");
+  dialog.setAttribute("aria-label", "Create task");
+
+  // Header
+  const header = document.createElement("div");
+  header.className = "ctd-header";
+  const titleEl = document.createElement("span");
+  titleEl.className = "ctd-title";
+  titleEl.textContent = "Create task";
+  const closeBtn = document.createElement("button");
+  closeBtn.type = "button";
+  closeBtn.className = "ctd-close";
+  closeBtn.setAttribute("aria-label", "Close");
+  closeBtn.innerHTML = "&times;";
+  closeBtn.addEventListener("click", closeCreateTaskDialog);
+  header.appendChild(titleEl);
+  header.appendChild(closeBtn);
+  dialog.appendChild(header);
+
+  // Excerpt callout (only when triggered from text selection)
+  const excerptEl = document.createElement("div");
+  excerptEl.className = "ctd-excerpt";
+  if (opts?.excerpt) {
+    const bar = document.createElement("div");
+    bar.className = "ctd-excerpt__bar";
+    const txt = document.createElement("div");
+    txt.className = "ctd-excerpt__text";
+    txt.textContent = opts.excerpt;
+    excerptEl.appendChild(bar);
+    excerptEl.appendChild(txt);
+  } else {
+    excerptEl.hidden = true;
+  }
+  dialog.appendChild(excerptEl);
+
+  // Body
+  const body = document.createElement("div");
+  body.className = "ctd-body";
+  body.innerHTML = `
+    <input type="text" class="ctd-input" data-f="title" placeholder="Task title" maxlength="160">
+    <textarea class="ctd-input ctd-textarea" data-f="text" placeholder="What needs to be done?" rows="3"></textarea>
+    <input type="text" class="ctd-input" data-f="org" placeholder="Organization (required)">
+    <details class="ctd-advanced">
+      <summary class="ctd-advanced__trigger">Advanced</summary>
+      <div class="ctd-advanced__body">
+        <div class="ctd-row">
+          <select class="ctd-input" data-f="severity">
+            ${_TASK_SEVERITIES.map((s) => `<option value="${s}" ${s === "low" ? "selected" : ""}>${s}</option>`).join("")}
+          </select>
+          <input type="text" class="ctd-input" data-f="assignee" placeholder="Assignee (optional)">
+        </div>
+        <div class="ctd-row">
+          <select class="ctd-input" data-f="kind">
+            <option value="work_item" selected>Task</option>
+            <option value="reminder">Reminder</option>
+          </select>
+          <input type="date" class="ctd-input" data-f="deadline">
+        </div>
+      </div>
+    </details>`;
+  const cf = (k: string) => body.querySelector(`[data-f="${k}"]`) as HTMLInputElement;
+  cf("title").value = opts?.title || (opts?.excerpt || "").slice(0, 60);
+  (cf("text") as unknown as HTMLTextAreaElement).value = opts?.excerpt || "";
+  cf("org").value = localStorage.getItem("lastOrg") || "";
+  dialog.appendChild(body);
+
+  // Footer
+  const footer = document.createElement("div");
+  footer.className = "ctd-footer";
+  const errEl = document.createElement("span");
+  errEl.className = "ctd-err";
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.className = "ctd-btn ctd-btn--cancel";
+  cancelBtn.textContent = "Cancel";
+  cancelBtn.addEventListener("click", closeCreateTaskDialog);
+  const submitBtn = document.createElement("button");
+  submitBtn.type = "button";
+  submitBtn.className = "ctd-btn ctd-btn--create";
+  submitBtn.textContent = "Create task";
+  footer.appendChild(errEl);
+  footer.appendChild(cancelBtn);
+  footer.appendChild(submitBtn);
+  dialog.appendChild(footer);
+
+  submitBtn.addEventListener("click", async () => {
+    const text = (cf("text") as unknown as HTMLTextAreaElement).value.trim();
+    const org = cf("org").value.trim();
+    if (!text || !org) { errEl.textContent = "Organization and description are required."; return; }
+    errEl.textContent = "";
+    submitBtn.disabled = true;
+    const body2: Record<string, unknown> = {
+      org_name: org,
+      text,
+      title: cf("title").value.trim() || text.slice(0, 60),
+      severity: (cf("severity") as unknown as HTMLSelectElement).value,
+      source_module: opts?.sourceModule || "manual",
+      kind: (cf("kind") as unknown as HTMLSelectElement).value || "work_item",
+      audience: "user",
+    };
+    const deadline = cf("deadline").value;
+    if (deadline) body2.deadline = deadline;
+    const assignee = cf("assignee").value.trim();
+    if (assignee) body2.assignee = assignee;
+    if (opts?.sourceRef) body2.source_ref = opts.sourceRef;
+    const tid = (window as any).__mobiusChatThreadId;
+    if (tid) body2.extra = { origin: { thread_id: tid } };
+    try {
+      const r = await fetch(`${API_BASE}/chat/tasks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body2),
+      });
+      if (!r.ok) { errEl.textContent = `Create failed (${r.status}).`; submitBtn.disabled = false; return; }
+      localStorage.setItem("lastOrg", org);
+      submitBtn.classList.add("ctd-btn--success");
+      submitBtn.textContent = "Created ✓";
+      setTimeout(closeCreateTaskDialog, 900);
+    } catch { errEl.textContent = "Create failed — network error."; submitBtn.disabled = false; }
+  });
+
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+  _ctdOverlayEl = overlay;
+  setTimeout(() => cf("title").focus(), 50);
+}
 
 function closeTasksModal(): void {
   if (_tasksModalEl) { _tasksModalEl.remove(); _tasksModalEl = null; }
@@ -7342,7 +7510,52 @@ function renderAssistantFromEnvelope(
   for (const block of envelope.blocks || []) {
     if (!block || typeof block !== "object") continue;
     const t = (block as EnvelopeBlock).type;
-    if (t === "tool_attribution") {
+    if (t === "correction") {
+      const b = block as { original: string; corrected: string };
+      const orig = (b.original || "").trim();
+      const fixed = (b.corrected || "").trim();
+      if (orig && fixed) {
+        const line = document.createElement("div");
+        line.className = "envelope-correction-inline";
+        const icon = document.createElement("span");
+        icon.className = "envelope-correction-inline-icon";
+        icon.textContent = "⚠";
+        const origSpan = document.createElement("span");
+        origSpan.className = "envelope-correction-inline-orig";
+        origSpan.textContent = orig;
+        const arrow = document.createElement("span");
+        arrow.className = "envelope-correction-inline-arrow";
+        arrow.textContent = " → ";
+        const fixedSpan = document.createElement("span");
+        fixedSpan.className = "envelope-correction-inline-fixed";
+        fixedSpan.textContent = fixed;
+        line.appendChild(icon);
+        line.appendChild(document.createTextNode(" "));
+        line.appendChild(origSpan);
+        line.appendChild(arrow);
+        line.appendChild(fixedSpan);
+        bubble.appendChild(line);
+      }
+    } else if (t === "takeaways") {
+      const b = block as { items: string[] };
+      if (Array.isArray(b.items) && b.items.length > 0) {
+        const wrap = document.createElement("div");
+        wrap.className = "envelope-takeaways";
+        const hdr = document.createElement("div");
+        hdr.className = "envelope-takeaways-header";
+        hdr.textContent = "Key takeaways";
+        wrap.appendChild(hdr);
+        const ul = document.createElement("ul");
+        ul.className = "envelope-takeaways-list";
+        for (const item of b.items) {
+          const li = document.createElement("li");
+          li.textContent = item;
+          ul.appendChild(li);
+        }
+        wrap.appendChild(ul);
+        bubble.appendChild(wrap);
+      }
+    } else if (t === "tool_attribution") {
       const b = block as { label: string; icon: string };
       const chip = document.createElement("div");
       chip.className = "envelope-tool-chip";
@@ -7800,7 +8013,7 @@ function renderAssistantFromEnvelope(
       const b = block as { body: string; variant?: string };
       const c = document.createElement("div");
       c.className = "envelope-callout envelope-callout--" + (b.variant || "info");
-      c.textContent = b.body || "";
+      c.textContent = (b.body || "").replace(/\*\*([^*]+)\*\*/g, "$1");
       bubble.appendChild(c);
     } else if (t === "sources") {
       const b = block as {
@@ -7828,13 +8041,12 @@ function renderAssistantFromEnvelope(
       const b = block as { items: unknown[]; collapsed_default?: boolean };
       const items = normalizeFollowupLineList(b.items || [], false);
       if (items.length) {
-        const expanded = b.collapsed_default === false;
         const disclosure = document.createElement("details");
         disclosure.className = "envelope-followups-disclosure";
-        disclosure.open = expanded;
+        disclosure.open = false;
         const sum = document.createElement("summary");
         sum.className = "envelope-followups-summary envelope-followups-summary--next-steps";
-        sum.textContent = expanded ? "Next steps" : "Next steps (tap to expand)";
+        sum.textContent = "Next steps (tap to expand)";
         disclosure.appendChild(sum);
         const w = document.createElement("div");
         w.className = "envelope-next-steps";
@@ -7863,46 +8075,12 @@ function renderAssistantFromEnvelope(
         bubble.appendChild(disclosure);
       }
     } else if (t === "suggested_questions") {
+      // Suggestions go to #chat-suggestions above composer; don't render inline in bubble
       const b = block as { items: unknown[]; collapsed_default?: boolean };
       const items = normalizeFollowupLineList(b.items || [], true);
-      if (items.length) {
-        const expanded = b.collapsed_default === false;
-        const disclosure = document.createElement("details");
-        disclosure.className = "envelope-followups-disclosure";
-        disclosure.open = expanded;
-        const sum = document.createElement("summary");
-        sum.className = "envelope-followups-summary envelope-followups-summary--suggested";
-        sum.textContent = expanded ? "Follow-up questions" : "Follow-up questions (tap to expand)";
-        disclosure.appendChild(sum);
-        const w = document.createElement("div");
-        w.className = "envelope-suggested";
-        const hint = document.createElement("div");
-        hint.className = "envelope-suggested-hint";
-        hint.textContent = followupListHintLines(items);
-        w.appendChild(hint);
-        const chips = document.createElement("div");
-        chips.className = "envelope-suggested-chips";
-        for (const line of items.slice(0, 6)) {
-          const text = line.text.trim();
-          if (!text) continue;
-          if (line.clickable && opts.onFollowupClick) {
-            const btn = document.createElement("button");
-            btn.type = "button";
-            btn.className = "envelope-suggested-chip";
-            btn.textContent = text;
-            btn.setAttribute("aria-label", "Send: " + text);
-            btn.addEventListener("click", () => opts.onFollowupClick!(text));
-            chips.appendChild(btn);
-          } else {
-            const row = document.createElement("div");
-            row.className = "envelope-suggested-line envelope-suggested-line--static";
-            row.textContent = text;
-            chips.appendChild(row);
-          }
-        }
-        w.appendChild(chips);
-        disclosure.appendChild(w);
-        bubble.appendChild(disclosure);
+      if (items.length && opts.onFollowupClick) {
+        const onSelect = opts.onFollowupClick;
+        updateChatSuggestions(items, onSelect);
       }
     } else if (t === "pipeline_human_gate") {
       const b = block as { gate?: CredentialingCopilotPayload & { thread_id?: string | null } };
@@ -9262,6 +9440,9 @@ function run(): void {
       const textEl = document.createElement("div");
       textEl.className = "message-bubble-text";
       bubble.appendChild(textEl);
+      const phaseBar = document.createElement("div");
+      phaseBar.className = "answer-phase-bar";
+      bubble.appendChild(phaseBar);
       wrap.appendChild(bubble);
       messageWrapEl = wrap;
       turnWrap.appendChild(messageWrapEl);
@@ -9434,6 +9615,22 @@ function run(): void {
           messageWrapEl.classList.remove("is-draft");
           messageWrapEl.setAttribute("data-draft-upgraded", "1");
           messageWrapEl.querySelector(".draft-refining-badge")?.remove();
+          // Remove phase-1 progress bar
+          messageWrapEl.querySelector(".answer-phase-bar")?.remove();
+          // Clamp draft text to 4 lines; add "Read more" if long enough
+          const draftBodyEl = messageWrapEl.querySelector(".message-bubble-text") as HTMLElement | null;
+          if (draftBodyEl && (draftBodyEl.textContent || "").length > 240) {
+            draftBodyEl.classList.add("draft-clamped");
+            const readMore = document.createElement("button");
+            readMore.type = "button";
+            readMore.className = "draft-read-more";
+            readMore.textContent = "Read more ↓";
+            readMore.addEventListener("click", () => {
+              draftBodyEl.classList.remove("draft-clamped");
+              readMore.remove();
+            });
+            draftBodyEl.insertAdjacentElement("afterend", readMore);
+          }
           const messageBubble = messageWrapEl.querySelector(".message-bubble") as HTMLElement | null;
           // Parse the full integrator AnswerCard (fullMessage is the raw JSON string)
           const fullCard = tryParseAnswerCard(fullMessage);
@@ -9490,13 +9687,21 @@ function run(): void {
               });
               const innerBubble = toolRendered.querySelector(".message-bubble");
               if (innerBubble) {
+                const draftTextEl = messageBubble!.querySelector(".message-bubble-text");
                 Array.from(innerBubble.children).forEach((child) => {
                   (child as HTMLElement).classList.add("answer-card-upgrade-in");
-                  messageBubble!.appendChild(child);
+                  // Correction goes before the draft text so the fix is seen first.
+                  if ((child as HTMLElement).classList.contains("envelope-correction-inline") && draftTextEl) {
+                    messageBubble!.insertBefore(child, draftTextEl);
+                  } else {
+                    messageBubble!.appendChild(child);
+                  }
                 });
               }
             }
           }
+          // Takeaways are redundant with the formatted draft — remove standalone block
+          messageWrapEl.querySelectorAll(".envelope-takeaways").forEach((el) => el.remove());
           turnWrap.classList.add("turn-meta-revealing");
           window.setTimeout(() => turnWrap.classList.remove("turn-meta-revealing"), 1200);
         } else {
@@ -9589,12 +9794,10 @@ function run(): void {
           turnWrap.appendChild(renderRosterReportDownload(pdfBase64, reportMarkdown, attachmentsKind));
         }
 
-        // 6. Next questions block (only when NOT an AnswerCard – card renders them inside; envelope has its own chips)
+        // 6. Follow-up suggestions: always go to #chat-suggestions above composer (never inline)
         const isCard = !!tryParseAnswerCard(body || "");
-        if (nextQuestions.length > 0 && !isCard && (!useEnvelope || isDraftBubble)) {
-          turnWrap.appendChild(
-            renderNextQuestions(nextQuestions, (q) => sendMessage(q))
-          );
+        if (nextQuestions.length > 0) {
+          updateChatSuggestions(nextQuestions, (q) => sendMessage(q));
         }
 
         // 7. Clarification options (clickable buttons for slot fill)

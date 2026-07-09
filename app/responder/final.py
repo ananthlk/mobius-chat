@@ -67,6 +67,8 @@ def _build_consolidator_input_json(
     user_provided_context: str | None = None,
     workflow_selection_ui: dict[str, Any] | None = None,
     previous_thread_summary: str | None = None,
+    react_draft: str | None = None,
+    source_texts: list[dict] | None = None,
 ) -> str:
     """Build JSON payload for consolidator: user_message, subquestions, answers, retrieval_metadata, sources_summary, jurisdiction_summary, user_provided_context, previous_thread_summary."""
     _subs = getattr(plan, "subquestions", None) or []
@@ -97,6 +99,13 @@ def _build_consolidator_input_json(
     # the AnswerCard JSON. ≤60 words. See prompt instructions.
     if previous_thread_summary and previous_thread_summary.strip():
         payload["previous_thread_summary"] = previous_thread_summary.strip()
+    # Two-phase enricher: react_draft is what the user already saw; the
+    # integrator enriches rather than restates. source_texts provides
+    # verbatim chunks for accurate citation snippets.
+    if react_draft and react_draft.strip():
+        payload["react_draft"] = react_draft.strip()[:6000]
+    if source_texts:
+        payload["source_texts"] = source_texts
     return json.dumps(payload, indent=2)
 
 
@@ -252,6 +261,8 @@ def format_response(
     mode: str | None = None,
     previous_thread_summary: str | None = None,
     user_profile: dict | None = None,
+    react_draft: str | None = None,
+    source_texts: list[dict] | None = None,
 ) -> tuple[str, LLMUsageDict | None]:
     """Turn plan + answers into one chat-friendly message via llm_manager (integrator or integrator_roster).
     On LLM failure, returns fallback and None usage."""
@@ -276,6 +287,8 @@ def format_response(
             user_provided_context=user_provided_context,
             workflow_selection_ui=workflow_selection_ui,
             previous_thread_summary=previous_thread_summary,
+            react_draft=react_draft,
+            source_texts=source_texts,
         )
         canonical_score = blended_canonical_score(plan)
         consolidator_type = choose_consolidator_type(
@@ -313,7 +326,7 @@ def format_response(
         text, usage = generate_sync(
             prompt,
             stage=llm_stage,
-            max_tokens=8192,
+            max_tokens=2500,
             config_sha=config_sha,
             correlation_id=correlation_id,
             thread_id=thread_id,

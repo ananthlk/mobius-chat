@@ -624,6 +624,7 @@ def run_pipeline(
             # Two-phase latency: emit ReAct answer immediately so the frontend renders
             # before the integrator's LLM call starts. The completed event replaces it.
             if getattr(ctx, "final_message", None):
+                ctx.react_draft = ctx.final_message  # saved before integrator overwrites
                 from app.storage.progress import append_draft_answer
                 append_draft_answer(ctx.correlation_id, ctx.final_message)
             updates = {}

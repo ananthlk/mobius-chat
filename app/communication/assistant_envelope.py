@@ -389,10 +389,35 @@ def build_assistant_envelope_v1(
             }
         )
 
+    if answer_card:
+        # Correction block — shown before the draft text so the user sees the fix prominently.
+        _corr = answer_card.get("correction")
+        if isinstance(_corr, dict):
+            _orig = (_corr.get("original") or "").strip()
+            _fixed = (_corr.get("corrected") or "").strip()
+            if _orig and _fixed:
+                blocks.append({"type": "correction", "original": _orig[:2000], "corrected": _fixed[:2000]})
+
     if answer_card and isinstance(answer_card.get("direct_answer"), str):
         da = answer_card["direct_answer"].strip()
         if da:
             blocks.append({"type": "direct_answer", "markdown": da[:50000]})
+
+        # Takeaways block — distilled bullets, shown after the draft answer.
+        _tw = answer_card.get("takeaways")
+        if isinstance(_tw, list):
+            _tw_items = [str(t).strip() for t in _tw if t and str(t).strip()][:5]
+            if _tw_items:
+                blocks.append({"type": "takeaways", "items": _tw_items})
+
+        # Gaps block — folded into the detail section as a callout when present.
+        _gaps = answer_card.get("gaps")
+        if isinstance(_gaps, list):
+            _gap_lines = [str(g).strip() for g in _gaps if g and str(g).strip()][:4]
+            if _gap_lines:
+                blocks.append({"type": "callout", "variant": "info",
+                                "body": "**Sources did not cover:**\n\n" + "\n".join(f"- {g}" for g in _gap_lines)})
+
         secs = answer_card.get("sections")
         section_md = ""
         if isinstance(secs, list) and secs:
