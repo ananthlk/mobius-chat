@@ -98,9 +98,14 @@ class TestRagApiShape:
         c = {"confidence_label": "random_new_label_we_never_saw"}
         assert _score_chunk_for_confidence_filter(c) == 0.0
 
-    def test_empty_label_returns_zero(self):
+    def test_empty_label_pass_through(self):
+        # Empty string = no signal — treated like a missing label and
+        # passed through at 1.0 so rag's own k-cutoff isn't overridden.
+        # (Pre-2026-04-27 behaviour returned 0.0 which silently nuked all
+        # chunks from the /api/query path; this test was updated when the
+        # pass-through logic landed.)
         c = {"confidence_label": ""}
-        assert _score_chunk_for_confidence_filter(c) == 0.0
+        assert _score_chunk_for_confidence_filter(c) == 1.0
 
     def test_label_is_case_insensitive(self):
         c1 = {"confidence_label": "PROCESS_CONFIDENT"}

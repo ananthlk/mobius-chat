@@ -149,46 +149,38 @@ def _fake_cfg(chroma_persist_dir: str = "/tmp/chroma-test", collection: str = "t
 class TestLazyRagSearchChromaQuery:
     """Mocks Chroma to assert the query shape + return contract."""
 
-    def test_where_clause_scopes_to_document_id_and_instant_rag(self, monkeypatch):
+    def test_request_scopes_to_document_id(self, monkeypatch):
+        """RAG /api/query request body must include document_id so pgvector
+        search is scoped to the uploaded document — not the whole corpus."""
+        import io
+        import json
+        import urllib.request
         from app.services import instant_rag_search as m
 
         captured: dict = {}
 
-        class FakeColl:
-            def query(self, *, query_embeddings, n_results, where, include):
-                captured["n_results"] = n_results
-                captured["where"] = where
-                captured["include"] = include
-                return {
-                    "ids":       [["c1"]],
-                    "documents": [["the chunk text"]],
-                    "metadatas": [[{"document_id": "doc-abc", "page_number": 1}]],
-                    "distances": [[0.3]],
-                }
+        def fake_urlopen(req, timeout=None):
+            captured["url"] = req.full_url
+            captured["body"] = json.loads(req.data)
+            payload = json.dumps({
+                "chunks": [
+                    {
+                        "source_id": "c1",
+                        "text": "the chunk text",
+                        "document_id": "doc-abc",
+                        "page_number": 1,
+                        "similarity": 0.85,
+                    }
+                ]
+            }).encode()
+            resp = MagicMock()
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            resp.read = lambda: payload
+            return resp
 
-        class FakeClient:
-            def __init__(self, path):
-                self.path = path
-
-            def get_or_create_collection(self, name, metadata=None):
-                return FakeColl()
-
-        fake_chromadb = MagicMock()
-        fake_chromadb.PersistentClient = FakeClient
-
-        monkeypatch.setitem(
-            __import__("sys").modules, "chromadb", fake_chromadb,
-        )
-        monkeypatch.setattr(
-            "app.chat_config.get_chat_config",
-            lambda: _fake_cfg(),
-            raising=True,
-        )
-        monkeypatch.setattr(
-            "app.services.embedding_provider.get_query_embedding",
-            lambda q: [0.1] * 8,
-            raising=True,
-        )
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setenv("MOBIUS_RAG_URL", "http://rag-test")
 
         answer, sources, usage, signal = m.lazy_rag_search(
             document_id="doc-abc",
@@ -196,20 +188,13 @@ class TestLazyRagSearchChromaQuery:
             k=5,
         )
 
-        # Where clause must AND document_id + instant_rag=true.
-        assert captured["where"] == {
-            "$and": [
-                {"document_id": "doc-abc"},
-                {"instant_rag": "true"},
-            ]
-        }, (
-            "Lazy RAG must scope strictly to (document_id AND instant_rag=true) "
-            "so it can't accidentally surface corpus chunks. The tool is a "
-            "dedicated path for uploaded docs only."
+        assert captured["body"]["document_id"] == "doc-abc", (
+            "Lazy RAG must send document_id in the request body so pgvector "
+            "scopes the search to just the uploaded document."
         )
-        assert captured["n_results"] == 5
-        # Cosine distance 0.3 → similarity ≈ 0.85.
-        assert sources[0]["rerank_score"] == pytest.approx(1.0 - 0.3 / 2.0)
+        assert captured["body"]["k"] == 5
+        assert captured["url"].endswith("/api/query")
+        assert sources[0]["rerank_score"] == pytest.approx(0.85)
         assert sources[0]["text"] == "the chunk text"
         assert signal == "corpus_only"
         assert answer == "the chunk text"
@@ -307,32 +292,31 @@ class TestLazyRagSearchChromaQuery:
         assert usage is None
 
     def test_multiple_chunks_joined_with_separator(self, monkeypatch):
+        import json
+        import urllib.request
         from app.services import instant_rag_search as m
 
-        class FakeColl:
-            def query(self, **kw):
-                return {
-                    "ids":       [["c1", "c2", "c3"]],
-                    "documents": [["alpha", "beta", "gamma"]],
-                    "metadatas": [[{}, {}, {}]],
-                    "distances": [[0.1, 0.2, 0.3]],
-                }
+        def fake_urlopen(req, timeout=None):
+            payload = json.dumps({
+                "chunks": [
+                    {"source_id": "c1", "text": "alpha", "document_id": "doc-abc"},
+                    {"source_id": "c2", "text": "beta",  "document_id": "doc-abc"},
+                    {"source_id": "c3", "text": "gamma", "document_id": "doc-abc"},
+                ]
+            }).encode()
+            resp = MagicMock()
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            resp.read = lambda: payload
+            return resp
 
-        class FakeClient:
-            def __init__(self, path): pass
-            def get_or_create_collection(self, name, metadata=None): return FakeColl()
-
-        monkeypatch.setitem(__import__("sys").modules, "chromadb", MagicMock(PersistentClient=FakeClient))
-        monkeypatch.setattr("app.chat_config.get_chat_config", lambda: _fake_cfg(), raising=True)
-        monkeypatch.setattr(
-            "app.services.embedding_provider.get_query_embedding",
-            lambda q: [0.0] * 8, raising=True,
-        )
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setenv("MOBIUS_RAG_URL", "http://rag-test")
 
         answer, sources, _, _ = m.lazy_rag_search(document_id="doc-abc", question="q")
         assert len(sources) == 3
-        assert answer == "alpha\n\n---\n\nbeta\n\n---\n\ngamma", (
-            "Chunks must be joined with a clear separator so the integrator "
+        assert answer == "alpha\n\nbeta\n\ngamma", (
+            "Chunks must be joined with double newline so the integrator "
             "can see boundaries."
         )
 

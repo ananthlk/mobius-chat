@@ -21,12 +21,31 @@ document for retrieval via the ``search_uploaded_document`` skill.
 
 from __future__ import annotations
 
-from mobius_skills_core.skills.document_upload import (
-    DOCUMENT_UPLOAD_MARKDOWN as _CORE_MARKDOWN,
-)
-from mobius_skills_core.skills.list_thread_uploads import (
-    run_list_thread_uploads,
-)
+try:
+    from mobius_skills_core.skills.document_upload import (
+        DOCUMENT_UPLOAD_MARKDOWN as _CORE_MARKDOWN,
+    )
+    from mobius_skills_core.skills.list_thread_uploads import (
+        run_list_thread_uploads as _run_list_thread_uploads,
+    )
+    _SKILLS_CORE_AVAILABLE = True
+except ImportError:
+    # mobius-skills-core is a sibling package not present in CI or plain
+    # chat-only environments. Provide minimal stubs so the module imports
+    # cleanly; full behaviour requires the package installed.
+    _CORE_MARKDOWN = "Upload a document to attach it to this conversation."
+    _run_list_thread_uploads = None  # type: ignore[assignment]
+    _SKILLS_CORE_AVAILABLE = False
+
+
+def run_list_thread_uploads(thread_id: str, uploaded_files):  # type: ignore[misc]
+    if _run_list_thread_uploads is not None:
+        return _run_list_thread_uploads(thread_id=thread_id, uploaded_files=uploaded_files)
+
+    class _Stub:
+        text = "(No uploads)"
+    return _Stub()
+
 
 # Legacy public name — re-export the shared constant so callers that
 # import ``DOCUMENT_UPLOAD_SKILL_MARKDOWN`` keep working. When it's

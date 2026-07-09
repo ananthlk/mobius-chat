@@ -227,8 +227,9 @@ class TestUploadProgressEmits:
         anchor = "uploadStagedAttachmentForInstantRag"
         idx = js_text.find(anchor)
         assert idx >= 0, "uploadStagedAttachmentForInstantRag helper missing"
-        # Look at the next ~3KB — covers the full function body.
-        region = js_text[idx:idx + 3000]
+        # Look at the next ~6KB — the function grew with multi-path UX
+        # (background/redirect/duplicate/blocking) so 3KB was too short.
+        region = js_text[idx:idx + 6000]
         # Plain-language user feedback.
         assert "is ready" in region, (
             "Success banner should say the doc is ready — any phrasing "
