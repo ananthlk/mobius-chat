@@ -5007,6 +5007,35 @@ function closeDocReaderPanel() {
   if (overlay)
     overlay.classList.remove("open");
 }
+function openRosterPanel(url) {
+  let overlay = document.getElementById("roster-panel-overlay");
+  let panel = document.getElementById("roster-panel");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.id = "roster-panel-overlay";
+    overlay.addEventListener("click", closeRosterPanel);
+    document.body.appendChild(overlay);
+  }
+  if (!panel) {
+    panel = document.createElement("div");
+    panel.id = "roster-panel";
+    panel.innerHTML = '<div class="roster-panel-header"><span class="roster-panel-title">Roster</span><div class="roster-panel-header-actions"><a class="roster-panel-external" href="#" target="_blank" rel="noopener noreferrer" title="Open in new tab">&#8599;</a><button class="roster-panel-close" title="Close">&times;</button></div></div><iframe class="roster-panel-frame" src="" allow="same-origin" sandbox="allow-same-origin allow-scripts allow-forms allow-popups"></iframe>';
+    panel.querySelector(".roster-panel-close").addEventListener("click", closeRosterPanel);
+    document.body.appendChild(panel);
+  }
+  const frame = panel.querySelector(".roster-panel-frame");
+  const extLink = panel.querySelector(".roster-panel-external");
+  frame.src = url;
+  extLink.href = url;
+  requestAnimationFrame(() => {
+    overlay.classList.add("open");
+    panel.classList.add("open");
+  });
+}
+function closeRosterPanel() {
+  document.getElementById("roster-panel-overlay")?.classList.remove("open");
+  document.getElementById("roster-panel")?.classList.remove("open");
+}
 function _getPageFromElement(el2) {
   const card = el2.closest(".doc-reader-section");
   if (card && card.dataset.pageStart)
@@ -10708,7 +10737,8 @@ function _initLandingDashboard() {
   function _openRoster() {
     const base = window.API_BASE || window.location.origin;
     const lastOrg = localStorage.getItem("lastOrg") || "";
-    window.open(base + "/roster" + (lastOrg ? "?org=" + encodeURIComponent(lastOrg) : ""), "_blank", "noopener");
+    const rosterUrl = base + "/roster" + (lastOrg ? "?org=" + encodeURIComponent(lastOrg) : "");
+    openRosterPanel(rosterUrl);
   }
   document.getElementById("ldNewRunBtn")?.addEventListener("click", _openPipeline);
   document.getElementById("ldStartRunBtn")?.addEventListener("click", _openPipeline);

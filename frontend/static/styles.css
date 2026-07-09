@@ -7284,6 +7284,45 @@ body {
 }
 #doc-reader-panel.open { transform: translateX(0); }
 
+/* ── Roster Side Panel ─────────────────────────────────────────────────── */
+#roster-panel-overlay {
+  position: fixed; inset: 0; z-index: 9998;
+  background: rgba(0,0,0,0.35); opacity: 0;
+  transition: opacity 0.2s ease; pointer-events: none;
+}
+#roster-panel-overlay.open { opacity: 1; pointer-events: auto; }
+
+#roster-panel {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 9999;
+  width: min(72vw, 1100px); background: var(--main-bg, #fff);
+  border-left: 1px solid var(--mobius-border-light, #e5e7eb);
+  display: flex; flex-direction: column;
+  transform: translateX(100%); transition: transform 0.25s ease;
+  box-shadow: -4px 0 24px rgba(0,0,0,0.18);
+}
+#roster-panel.open { transform: translateX(0); }
+
+.roster-panel-header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px; border-bottom: 1px solid var(--mobius-border-light, #e5e7eb);
+  background: var(--sidebar-bg, #f8f9fa); flex-shrink: 0;
+}
+.roster-panel-title { flex: 1; font-weight: 600; font-size: 14px; }
+.roster-panel-header-actions { display: flex; align-items: center; gap: 8px; }
+.roster-panel-external {
+  font-size: 16px; color: var(--sidebar-text-muted, #666);
+  text-decoration: none; line-height: 1;
+}
+.roster-panel-external:hover { color: var(--mobius-violet, #7c3aed); }
+.roster-panel-close {
+  background: none; border: none; cursor: pointer;
+  font-size: 20px; line-height: 1; color: var(--sidebar-text-muted, #666); padding: 0 2px;
+}
+.roster-panel-close:hover { color: var(--main-text, #111); }
+.roster-panel-frame {
+  flex: 1; width: 100%; border: none;
+}
+
 .doc-reader-header {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 16px; border-bottom: 1px solid var(--mobius-border-light, #30363d);

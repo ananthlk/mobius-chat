@@ -4625,6 +4625,51 @@ function closeDocReaderPanel(): void {
   if (overlay) overlay.classList.remove("open");
 }
 
+/* ── Roster Side Panel ─────────────────────────────────────────────────── */
+
+function openRosterPanel(url: string): void {
+  let overlay = document.getElementById("roster-panel-overlay");
+  let panel = document.getElementById("roster-panel");
+
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.id = "roster-panel-overlay";
+    overlay.addEventListener("click", closeRosterPanel);
+    document.body.appendChild(overlay);
+  }
+
+  if (!panel) {
+    panel = document.createElement("div");
+    panel.id = "roster-panel";
+    panel.innerHTML =
+      '<div class="roster-panel-header">' +
+        '<span class="roster-panel-title">Roster</span>' +
+        '<div class="roster-panel-header-actions">' +
+          '<a class="roster-panel-external" href="#" target="_blank" rel="noopener noreferrer" title="Open in new tab">&#8599;</a>' +
+          '<button class="roster-panel-close" title="Close">&times;</button>' +
+        '</div>' +
+      '</div>' +
+      '<iframe class="roster-panel-frame" src="" allow="same-origin" sandbox="allow-same-origin allow-scripts allow-forms allow-popups"></iframe>';
+    panel.querySelector(".roster-panel-close")!.addEventListener("click", closeRosterPanel);
+    document.body.appendChild(panel);
+  }
+
+  const frame = panel.querySelector(".roster-panel-frame") as HTMLIFrameElement;
+  const extLink = panel.querySelector(".roster-panel-external") as HTMLAnchorElement;
+  frame.src = url;
+  extLink.href = url;
+
+  requestAnimationFrame(() => {
+    overlay!.classList.add("open");
+    panel!.classList.add("open");
+  });
+}
+
+function closeRosterPanel(): void {
+  document.getElementById("roster-panel-overlay")?.classList.remove("open");
+  document.getElementById("roster-panel")?.classList.remove("open");
+}
+
 function _getPageFromElement(el: HTMLElement): number | string | null {
   const card = el.closest(".doc-reader-section") as HTMLElement | null;
   if (card && card.dataset.pageStart) return card.dataset.pageStart;
@@ -11580,7 +11625,8 @@ function _initLandingDashboard(): void {
   function _openRoster(): void {
     const base = (window as any).API_BASE || window.location.origin;
     const lastOrg = localStorage.getItem("lastOrg") || "";
-    window.open(base + "/roster" + (lastOrg ? "?org=" + encodeURIComponent(lastOrg) : ""), "_blank", "noopener");
+    const rosterUrl = base + "/roster" + (lastOrg ? "?org=" + encodeURIComponent(lastOrg) : "");
+    openRosterPanel(rosterUrl);
   }
   document.getElementById("ldNewRunBtn")?.addEventListener("click", _openPipeline);
   document.getElementById("ldStartRunBtn")?.addEventListener("click", _openPipeline);
