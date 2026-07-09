@@ -10526,7 +10526,8 @@ function run(): void {
   // progression the user already sees in ⋯ → Upload file, but routed
   // through the chat status banner instead of the modal's status field.
   // §4 foreground progress strip — UX-authored design, wired to live SSE bridge.
-  const FOREGROUND_CUTOFF_S = 12; // UX-finalized value
+  const FOREGROUND_CUTOFF_S = 12;       // UX-finalized value
+  const FOREGROUND_SIZE_BYTES = 1_000_000; // <1MB → foreground regardless of RAG's estimated_seconds
   let _ragProgressEs: EventSource | null = null;
   let _ragProgressCutoffTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -10763,8 +10764,10 @@ function run(): void {
           `<a href="${redirectUrl}" target="_blank" rel="noopener">${redirectUrl}</a>`,
           20000,
         );
-      } else if (progressChannel && etaSecs > 0 && etaSecs < FOREGROUND_CUTOFF_S) {
-        // Fast doc — stop phase spinners and open the foreground strip.
+      } else if (progressChannel && (file.size < FOREGROUND_SIZE_BYTES || (etaSecs > 0 && etaSecs < FOREGROUND_CUTOFF_S))) {
+        // Small file (<1MB) or fast doc (ETA<12s) — open foreground strip.
+        // Byte-size gate fires unconditionally so normal small docs always show the strip
+        // even when RAG returns a flat estimated_seconds (currently 30s for all types).
         stopComposerUploadPhaseEmits();
         _openRagProgressStrip(filename, progressChannel, uploadedDocId, uploadedThreadId);
       } else {
