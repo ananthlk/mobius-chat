@@ -9056,6 +9056,34 @@ ${message}`;
           badgeEl.classList.add("answer-card-upgrade-in");
           messageBubble.insertBefore(badgeEl, messageBubble.firstChild);
         }
+        if (useEnvelope && messageBubble) {
+          const toolBlocks = envCandidate.blocks.filter((b) => {
+            const bt = b.type;
+            return bt !== "direct_answer" && bt !== "sources";
+          });
+          if (toolBlocks.length > 0) {
+            const toolEnv = {
+              ...envCandidate,
+              blocks: toolBlocks
+            };
+            const toolRendered = renderAssistantFromEnvelope(toolEnv, {
+              onFollowupClick: (q) => sendMessage(q),
+              sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || void 0,
+              showConfidenceBadge: false,
+              qcAudit: qcFromPayload,
+              correlationId: cidForTurn || null,
+              suppressConfidenceForAdminQcFail: suppressConf,
+              threadId: data.thread_id ?? currentThreadId ?? null
+            });
+            const innerBubble = toolRendered.querySelector(".message-bubble");
+            if (innerBubble) {
+              Array.from(innerBubble.children).forEach((child) => {
+                child.classList.add("answer-card-upgrade-in");
+                messageBubble.appendChild(child);
+              });
+            }
+          }
+        }
         turnWrap.classList.add("turn-meta-revealing");
         window.setTimeout(() => turnWrap.classList.remove("turn-meta-revealing"), 1200);
       } else {

@@ -9467,6 +9467,36 @@ function run(): void {
             (badgeEl as HTMLElement).classList.add("answer-card-upgrade-in");
             messageBubble.insertBefore(badgeEl, messageBubble.firstChild);
           }
+          // Render non-text envelope blocks (task_list, document_download, action_chips, etc.)
+          // direct_answer is already shown as streamed draft; sources are rendered separately below.
+          if (useEnvelope && messageBubble) {
+            const toolBlocks = (envCandidate as AssistantEnvelope).blocks.filter((b) => {
+              const bt = (b as EnvelopeBlock).type;
+              return bt !== "direct_answer" && bt !== "sources";
+            });
+            if (toolBlocks.length > 0) {
+              const toolEnv: AssistantEnvelope = {
+                ...(envCandidate as AssistantEnvelope),
+                blocks: toolBlocks,
+              };
+              const toolRendered = renderAssistantFromEnvelope(toolEnv, {
+                onFollowupClick: (q) => sendMessage(q),
+                sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || undefined,
+                showConfidenceBadge: false,
+                qcAudit: qcFromPayload,
+                correlationId: cidForTurn || null,
+                suppressConfidenceForAdminQcFail: suppressConf,
+                threadId: data.thread_id ?? currentThreadId ?? null,
+              });
+              const innerBubble = toolRendered.querySelector(".message-bubble");
+              if (innerBubble) {
+                Array.from(innerBubble.children).forEach((child) => {
+                  (child as HTMLElement).classList.add("answer-card-upgrade-in");
+                  messageBubble!.appendChild(child);
+                });
+              }
+            }
+          }
           turnWrap.classList.add("turn-meta-revealing");
           window.setTimeout(() => turnWrap.classList.remove("turn-meta-revealing"), 1200);
         } else {
