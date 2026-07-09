@@ -118,6 +118,37 @@ def chat_whoami(user_id: str | None = Depends(require_user)) -> dict[str, Any]:
     }}
 
 
+@router.get("/chat/coworkers")
+def chat_coworkers(
+    q: str | None = None,
+    limit: int = 20,
+    user_id: str | None = Depends(require_user),
+) -> dict[str, Any]:
+    """Org-scoped coworker directory for @-mention autocomplete.
+
+    Derives org_slug from the caller's own identity — the browser never
+    passes an org, so callers cannot enumerate other orgs' rosters.
+    Excludes the caller from the result list."""
+    from app.services.user_identity import resolve_self, directory_search
+    me = resolve_self(user_id)
+    if not me:
+        return {"ok": False, "coworkers": []}
+    memberships = me.get("org_memberships") or []
+    org_slug = memberships[0].get("org_slug") if memberships else None
+    if not org_slug:
+        return {"ok": True, "coworkers": []}
+    members = directory_search(
+        org_slug=org_slug,
+        q=q or None,
+        limit=min(limit, 30),
+        exclude_user_id=me.get("user_id"),
+    )
+    return {"ok": True, "coworkers": [
+        {k: m.get(k) for k in ("user_id", "display_name", "email", "assignee_ref", "is_agent", "roles") if m.get(k) is not None}
+        for m in members
+    ]}
+
+
 @router.post("/chat/tasks")
 def chat_tasks_create(
     body: dict = Body(...),

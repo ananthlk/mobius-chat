@@ -101,3 +101,44 @@ def resolve_assignee(query: str, org: str | None = None) -> dict[str, Any] | Non
     cands = (data or {}).get("candidates") or []
     top = cands[0] if cands and isinstance(cands[0], dict) else None
     return top if top and top.get("assignee_ref") else None
+
+
+def directory_search(
+    org_slug: str,
+    q: str | None = None,
+    limit: int = 20,
+    exclude_user_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Org-scoped coworker lookup for @-mention autocomplete.
+
+    org_slug is a HARD filter — results never cross org boundaries.
+    Returns [{user_id, display_name, email, assignee_ref, is_agent, roles}].
+    Excludes the calling user when exclude_user_id is provided.
+    """
+    params: dict[str, str] = {"org_slug": org_slug, "limit": str(limit)}
+    if q and q.strip():
+        params["q"] = q.strip()
+    # Directory lives under /api/v1/users/directory — bypass _get's /users prefix
+    base = _base()
+    key = _key()
+    if not base or not key:
+        return []
+    url = f"{base}/api/v1/users/directory?{urllib.parse.urlencode(params)}"
+    cached = _cache.get(url)
+    now = time.monotonic()
+    _DIRECTORY_TTL = 120  # 2 min — roster changes are rare
+    if cached and now - cached[0] < _DIRECTORY_TTL:
+        members = cached[1]
+    else:
+        try:
+            req = urllib.request.Request(url, headers={"X-Internal-Key": key})
+            with urllib.request.urlopen(req, timeout=_TIMEOUT_S) as resp:
+                data = json.loads(resp.read())
+            members = (data or {}).get("members") or []
+            _cache[url] = (now, members)
+        except Exception as e:
+            logger.debug("directory_search failed: %s", e)
+            return []
+    if exclude_user_id:
+        members = [m for m in members if m.get("user_id") != exclude_user_id]
+    return members

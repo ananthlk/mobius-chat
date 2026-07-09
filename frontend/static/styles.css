@@ -9180,3 +9180,28 @@ body {
 .ctd-btn--create:hover { opacity: 0.88; }
 .ctd-btn--create:disabled { opacity: 0.5; cursor: default; }
 .ctd-btn--create.ctd-btn--success { background: var(--mobius-success, #16a34a); pointer-events: none; }
+
+/* ── @-mention coworker autocomplete dropdown ───────────────────────── */
+.at-mention-dropdown {
+  background: var(--sidebar-bg, #fff);
+  border: 1px solid var(--mobius-border);
+  border-radius: var(--radius-md, 8px);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  overflow: hidden;
+  font-family: inherit;
+}
+@media (prefers-color-scheme: dark) {
+  .at-mention-dropdown { background: var(--sidebar-bg, #1e2433); }
+}
+.at-mention-item {
+  display: flex; flex-direction: column; gap: 1px;
+  width: 100%; padding: 0.5rem 0.75rem;
+  background: none; border: none; cursor: pointer;
+  text-align: left; font-family: inherit;
+  color: var(--main-text);
+}
+.at-mention-item:hover, .at-mention-item--focused {
+  background: var(--thinking-bg, rgba(99,102,241,0.06));
+}
+.at-mention-name { font-size: var(--text-sm, 0.875rem); font-weight: 500; }
+.at-mention-email { font-size: var(--text-xs, 0.75rem); color: var(--text-muted); }

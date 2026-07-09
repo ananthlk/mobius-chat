@@ -5615,19 +5615,55 @@ function _taskModalRow(t: any, reload: () => Promise<void>): HTMLElement {
       const inp = document.createElement("input");
       inp.type = "text";
       inp.className = "tasks-modal-input tasks-modal-assign-input";
-      inp.placeholder = "name or team";
+      inp.placeholder = "Type a name…";
       inp.value = t.assignee || "";
+      let _assignRef: string | null = null;
+      let _assignDd: HTMLElement | null = null;
+      const _closeAssignDd = () => { _assignDd?.remove(); _assignDd = null; };
+      inp.addEventListener("input", () => {
+        _assignRef = null;
+        const q = inp.value.trim();
+        if (!q) { _closeAssignDd(); return; }
+        void apiFetch(`${API_BASE}/chat/coworkers?q=${encodeURIComponent(q)}&limit=6`).then(async (r) => {
+          if (!r.ok) return;
+          const d = await r.json();
+          const list: Array<{display_name: string; assignee_ref: string}> = d.coworkers || [];
+          _closeAssignDd();
+          if (!list.length) return;
+          const dd = document.createElement("div");
+          dd.className = "at-mention-dropdown";
+          const rect = inp.getBoundingClientRect();
+          dd.style.cssText = `position:fixed;top:${rect.bottom + 2}px;left:${rect.left}px;min-width:${rect.width}px;z-index:9999;`;
+          list.forEach((c) => {
+            const item = document.createElement("button");
+            item.type = "button";
+            item.className = "at-mention-item";
+            item.textContent = c.display_name;
+            item.addEventListener("mousedown", (e) => {
+              e.preventDefault();
+              inp.value = c.display_name;
+              _assignRef = c.assignee_ref;
+              _closeAssignDd();
+            });
+            dd.appendChild(item);
+          });
+          document.body.appendChild(dd);
+          _assignDd = dd;
+        });
+      });
+      inp.addEventListener("blur", () => setTimeout(_closeAssignDd, 150));
       const save = async () => {
         const who = inp.value.trim();
         if (!who) return;
+        _closeAssignDd();
         await apiFetch(`${API_BASE}/chat/tasks/${t.task_id}`, {
           method: "PATCH", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ assigned_to: who, assignee: who }),
+          body: JSON.stringify({ assigned_to: _assignRef || who, assignee: who }),
         }).catch(() => null);
         void reload();
       };
       inp.addEventListener("keydown", (e) => {
-        if (e.key === "Escape") { inp.remove(); okBtn.remove(); return; }
+        if (e.key === "Escape") { _closeAssignDd(); inp.remove(); okBtn.remove(); return; }
         if (e.key === "Enter") void save();
       });
       const okBtn = document.createElement("button");
@@ -9487,6 +9523,107 @@ function run(): void {
     orgEl.focus();
   }
 
+  // ── @-mention coworker autocomplete ─────────────────────────────────
+  // Triggered by "@" in the composer. Fetches /chat/coworkers (org-scoped,
+  // server-derives org from the caller's identity — no org in the URL).
+  // Picked mentions are carried in the chat payload as `mentions` so the
+  // planner can use exact assignee_refs instead of re-resolving free text.
+
+  let _pendingMentions: Array<{ display_name: string; assignee_ref: string }> = [];
+  let _coworkerFetchTimer: ReturnType<typeof setTimeout> | null = null;
+  let _coworkerDropdown: HTMLElement | null = null;
+
+  async function _fetchCoworkers(q: string): Promise<Array<{ display_name: string; email?: string; assignee_ref: string }>> {
+    try {
+      const params = q.trim() ? `?q=${encodeURIComponent(q.trim())}&limit=8` : "?limit=8";
+      const r = await apiFetch(`${API_BASE}/chat/coworkers${params}`);
+      if (!r.ok) return [];
+      const d = await r.json();
+      return Array.isArray(d.coworkers) ? d.coworkers : [];
+    } catch { return []; }
+  }
+
+  function _closeAtDropdown(): void {
+    _coworkerDropdown?.remove();
+    _coworkerDropdown = null;
+  }
+
+  function _openAtDropdown(
+    anchor: HTMLElement,
+    coworkers: Array<{ display_name: string; email?: string; assignee_ref: string }>,
+    atStart: number,
+    atEnd: number,
+  ): void {
+    _closeAtDropdown();
+    if (!coworkers.length) return;
+    const dd = document.createElement("div");
+    dd.className = "at-mention-dropdown";
+    dd.setAttribute("role", "listbox");
+    const rect = anchor.getBoundingClientRect();
+    dd.style.cssText = `position:fixed;bottom:${window.innerHeight - rect.top + 4}px;left:${rect.left}px;min-width:220px;max-width:320px;z-index:9999;`;
+    coworkers.forEach((c, i) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "at-mention-item";
+      item.setAttribute("role", "option");
+      item.innerHTML = `<span class="at-mention-name">${escapeHtml(c.display_name)}</span>${c.email ? `<span class="at-mention-email">${escapeHtml(c.email)}</span>` : ""}`;
+      item.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        const val = inputEl.value;
+        const inserted = `@${c.display_name} `;
+        inputEl.value = val.slice(0, atStart) + inserted + val.slice(atEnd);
+        inputEl.selectionStart = inputEl.selectionEnd = atStart + inserted.length;
+        _pendingMentions.push({ display_name: c.display_name, assignee_ref: c.assignee_ref });
+        _closeAtDropdown();
+        inputEl.focus();
+      });
+      if (i === 0) item.classList.add("at-mention-item--focused");
+      dd.appendChild(item);
+    });
+    document.body.appendChild(dd);
+    _coworkerDropdown = dd;
+  }
+
+  inputEl.addEventListener("input", () => {
+    const val = inputEl.value;
+    const pos = inputEl.selectionStart ?? val.length;
+    const before = val.slice(0, pos);
+    const atMatch = before.match(/@(\w*)$/);
+    if (!atMatch) { _closeAtDropdown(); return; }
+    const q = atMatch[1];
+    const atStart = pos - atMatch[0].length;
+    if (_coworkerFetchTimer) clearTimeout(_coworkerFetchTimer);
+    _coworkerFetchTimer = setTimeout(async () => {
+      const results = await _fetchCoworkers(q);
+      _openAtDropdown(inputEl, results, atStart, pos);
+    }, 120);
+  });
+
+  inputEl.addEventListener("keydown", (e) => {
+    if (!_coworkerDropdown) return;
+    const items = Array.from(_coworkerDropdown.querySelectorAll<HTMLButtonElement>(".at-mention-item"));
+    const focused = _coworkerDropdown.querySelector<HTMLButtonElement>(".at-mention-item--focused");
+    const idx = focused ? items.indexOf(focused) : -1;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      focused?.classList.remove("at-mention-item--focused");
+      items[Math.min(idx + 1, items.length - 1)]?.classList.add("at-mention-item--focused");
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      focused?.classList.remove("at-mention-item--focused");
+      items[Math.max(idx - 1, 0)]?.classList.add("at-mention-item--focused");
+    } else if (e.key === "Enter" && focused) {
+      e.preventDefault();
+      focused.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    } else if (e.key === "Escape") {
+      _closeAtDropdown();
+    }
+  });
+
+  document.addEventListener("click", (e) => {
+    if (_coworkerDropdown && !_coworkerDropdown.contains(e.target as Node)) _closeAtDropdown();
+  });
+
   function sendMessage(overrideMessage?: string, opts?: SendMessageOpts): void { void _sendMessageAsync(overrideMessage, opts); }
   async function _sendMessageAsync(overrideMessage?: string, opts?: SendMessageOpts): Promise<void> {
     let message = (overrideMessage ?? (inputEl.value ?? "").trim()).trim();
@@ -9672,6 +9809,10 @@ function run(): void {
     // returns the fresh profile so we just re-fetch /me afterwards).
     if (cachedUserProfileNested) {
       (payload as Record<string, unknown>).profile = cachedUserProfileNested;
+    }
+    if (_pendingMentions.length) {
+      (payload as Record<string, unknown>).mentions = _pendingMentions.slice();
+      _pendingMentions = [];
     }
     let activeCorrelationId = "";
     const _chatAuthHeaders = await auth.getAuthHeader?.() ?? {};
