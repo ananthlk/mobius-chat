@@ -2971,7 +2971,7 @@ function renderAnswerCard(card, isError, opts) {
       }
     });
     if (actionsWrap.childNodes.length > 0)
-      bubble.appendChild(actionsWrap);
+      wrap.appendChild(actionsWrap);
   }
   if (opts?.qcAudit)
     bubble.appendChild(renderQcAuditBadge(opts.qcAudit));
@@ -7460,6 +7460,7 @@ function renderAssistantFromEnvelope(envelope, opts) {
   const bubble = document.createElement("div");
   bubble.className = "message-bubble answer-card-bubble";
   let confidenceInjectedAfterDirectAnswer = false;
+  const pendingActionChips = [];
   for (const block of envelope.blocks || []) {
     if (!block || typeof block !== "object")
       continue;
@@ -8006,7 +8007,7 @@ function renderAssistantFromEnvelope(envelope, opts) {
           }
         }
         if (actionsWrap.childNodes.length > 0)
-          bubble.appendChild(actionsWrap);
+          pendingActionChips.push(actionsWrap);
       }
     }
   }
@@ -8020,6 +8021,7 @@ function renderAssistantFromEnvelope(envelope, opts) {
   const msg = document.createElement("div");
   msg.className = "message message--assistant answer-card";
   msg.appendChild(bubble);
+  pendingActionChips.forEach((el2) => msg.appendChild(el2));
   outer.appendChild(msg);
   return outer;
 }
@@ -9220,6 +9222,11 @@ ${message}`;
           }
           messageWrapEl.classList.add("answer-card", `answer-card--${fullCard.mode.toLowerCase()}`);
           messageBubble.classList.add("answer-card-bubble");
+          const actionsEl = renderedCard.querySelector(".answer-card-actions");
+          if (actionsEl) {
+            actionsEl.classList.add("answer-card-upgrade-in");
+            turnWrap.appendChild(actionsEl);
+          }
         } else if (messageBubble && data.status !== "clarification" && !suppressConf) {
           const badgeEl = renderConfidenceBadge((data.source_confidence_strip ?? "").trim() || "informational_only");
           badgeEl.classList.add("answer-card-upgrade-in");
@@ -9338,6 +9345,9 @@ ${message}`;
       } else {
         activeClarificationDraft = null;
       }
+      const hoistAct = turnWrap.querySelector(".answer-card-actions");
+      if (hoistAct)
+        turnWrap.appendChild(hoistAct);
       const sourceList = data.sources && data.sources.length > 0 ? data.sources.map((s) => ({
         index: s.index ?? 0,
         document_name: s.document_name ?? "document",

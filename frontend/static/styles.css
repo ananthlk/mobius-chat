@@ -2148,9 +2148,9 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
-  margin-top: 1rem;
-  padding-top: 0.75rem;
-  border-top: 1px solid var(--border, #e5e7eb);
+  margin-top: 0.5rem;
+  padding-top: 0;
+  border-top: none;
 }
 .answer-card-action-chip {
   display: inline-flex;

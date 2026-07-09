@@ -2239,7 +2239,7 @@ function renderAnswerCard(
         actionsWrap.appendChild(a);
       }
     });
-    if (actionsWrap.childNodes.length > 0) bubble.appendChild(actionsWrap);
+    if (actionsWrap.childNodes.length > 0) wrap.appendChild(actionsWrap);
   }
 
   if (opts?.qcAudit) bubble.appendChild(renderQcAuditBadge(opts.qcAudit));
@@ -7452,6 +7452,7 @@ function renderAssistantFromEnvelope(
   bubble.className = "message-bubble answer-card-bubble";
 
   let confidenceInjectedAfterDirectAnswer = false;
+  const pendingActionChips: HTMLElement[] = [];
 
   for (const block of envelope.blocks || []) {
     if (!block || typeof block !== "object") continue;
@@ -8065,7 +8066,7 @@ function renderAssistantFromEnvelope(
             actionsWrap.appendChild(a);
           }
         }
-        if (actionsWrap.childNodes.length > 0) bubble.appendChild(actionsWrap);
+        if (actionsWrap.childNodes.length > 0) pendingActionChips.push(actionsWrap);
       }
     }
   }
@@ -8084,6 +8085,7 @@ function renderAssistantFromEnvelope(
   const msg = document.createElement("div");
   msg.className = "message message--assistant answer-card";
   msg.appendChild(bubble);
+  pendingActionChips.forEach((el) => msg.appendChild(el));
   outer.appendChild(msg);
   return outer;
 }
@@ -9604,6 +9606,12 @@ function run(): void {
             // Apply AnswerCard CSS classes so sections/chips style correctly
             messageWrapEl.classList.add("answer-card", `answer-card--${fullCard.mode.toLowerCase()}`);
             messageBubble.classList.add("answer-card-bubble");
+            // Hoist answer-card-actions to turn level (outside bubble, before sources row)
+            const actionsEl = renderedCard.querySelector(".answer-card-actions");
+            if (actionsEl) {
+              (actionsEl as HTMLElement).classList.add("answer-card-upgrade-in");
+              turnWrap.appendChild(actionsEl);
+            }
           } else if (messageBubble && data.status !== "clarification" && !suppressConf) {
             // No AnswerCard — just drop in the confidence badge
             const badgeEl = renderConfidenceBadge((data.source_confidence_strip ?? "").trim() || "informational_only");
@@ -9752,6 +9760,10 @@ function run(): void {
         } else {
           activeClarificationDraft = null;
         }
+
+        // Hoist answer-card-actions to turn level (outside bubble, before sources row)
+        const hoistAct = turnWrap.querySelector(".answer-card-actions");
+        if (hoistAct) turnWrap.appendChild(hoistAct);
 
         // 8. Sources: prefer API response.sources (from RAG) so source cards show even when integrator drops them
         const sourceList: ParsedSource[] =
