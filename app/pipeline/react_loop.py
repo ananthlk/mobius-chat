@@ -416,6 +416,15 @@ def _normalize_tool_name(tool: str) -> str:
     return _TOOL_ALIASES.get(key, tool)
 
 
+# Tools that write/mutate state. In "manual" autonomy mode the user
+# wants to be guided, not have the assistant act on their behalf.
+_SENSITIVE_TOOLS: frozenset[str] = frozenset({
+    "create_task",
+    "resolve_task",
+    "patch_task",
+})
+
+
 def _execute_tool(
     tool: str,
     inputs: dict,
@@ -426,6 +435,29 @@ def _execute_tool(
     # Normalize alias → canonical before any dispatch logic runs.
     tool = _normalize_tool_name(tool)
     active = (ctx.merged_state or {}).get("active") or {}
+
+    # Pattern B — autonomy gate. "manual" means guide-only: the user
+    # opted out of the assistant executing write operations on their behalf.
+    # "confirm_first" and "automatic" proceed; confirm_first relies on the
+    # LLM soft-ask injected via rendered_prompt (true confirmation round-
+    # trip requires a UI change; wired as a future enhancement).
+    if tool in _SENSITIVE_TOOLS:
+        from app.pipeline.personalization import autonomy_for
+        mode = autonomy_for(getattr(ctx, "user_profile", None), sensitive=True)
+        if mode == "manual":
+            result_text = (
+                f"Your preferences are set to guide-only for actions like '{tool}'. "
+                "I won't take this action for you — here's what to do instead: "
+                "open the Tasks panel and make the change yourself, or update your "
+                "autonomy preference if you'd like me to handle this automatically."
+            )
+            return {
+                "tool": tool,
+                "success": False,
+                "result": result_text,
+                "signal": "autonomy_blocked",
+                "sources": [],
+            }
 
     def emit(msg: str) -> None:
         if emitter and msg:
