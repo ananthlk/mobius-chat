@@ -179,6 +179,21 @@ def record_upload(
     return inserted
 
 
+def update_chunks_count(document_id: str, chunks_count: int) -> bool:
+    """Update chunks_count on a catalog row once the watcher learns the real value."""
+    if not document_id or chunks_count < 0:
+        return False
+    result = db_execute(
+        "UPDATE instant_rag_uploads SET chunks_count=:cc WHERE document_id=:did",
+        _DB,
+        params={"cc": chunks_count, "did": document_id},
+    )
+    if "error" in result:
+        logger.warning("[catalog] update_chunks_count failed: %s", _err_message(result))
+        return False
+    return int(result.get("rows_affected") or 0) > 0
+
+
 def mark_status(document_id: str, status: str) -> bool:
     """Transition a row to one of the terminal statuses."""
     if status not in _VALID_STATUSES:

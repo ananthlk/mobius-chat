@@ -192,7 +192,6 @@ SET_ENV_VARS=(
     "WEB_SCRAPER_URL=${WEB_SCRAPER_URL:-}"
     "GOOGLE_SEARCH_URL=${GOOGLE_SEARCH_URL:-}"
     "CHAT_SKILLS_HEALTHCARE_URL=${CHAT_SKILLS_HEALTHCARE_URL:-}"
-    "CHAT_SKILLS_INSTANT_RAG_URL=${CHAT_SKILLS_INSTANT_RAG_URL:-}"
     "CHAT_SKILLS_EMAIL_URL=${CHAT_SKILLS_EMAIL_URL:-}"
     "MOBIUS_USER_URL=${MOBIUS_USER_URL:-}"
     "CHAT_SKILLS_FEEDBACK_URL=${CHAT_SKILLS_FEEDBACK_URL:-https://mobius-feedback-ortabkknqa-uc.a.run.app/classify}"
@@ -358,7 +357,7 @@ echo
 # Runs a handful of critical-path probes against the just-deployed
 # revision and fails the deploy when any of them comes back wrong.
 # Catches the class of bug that sneaks past unit tests:
-#   * Env-var name drift (INSTANT_RAG_URL vs CHAT_SKILLS_INSTANT_RAG_URL)
+#   * Env-var name drift (MOBIUS_RAG_URL missing or wrong service URL)
 #   * Missing transitive deps (python-multipart)
 #   * Downstream service URL misconfig
 #   * Startup-ordering regressions

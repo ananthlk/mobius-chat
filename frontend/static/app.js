@@ -10218,6 +10218,86 @@ ${message}`;
       proceedInstant.focus();
     });
   }
+  const FOREGROUND_CUTOFF_S = 15;
+  let _composerUploadEs = null;
+  let _composerUploadCutoffTimer = null;
+  function _closeInlineUploadProgress() {
+    if (_composerUploadEs) {
+      _composerUploadEs.close();
+      _composerUploadEs = null;
+    }
+    if (_composerUploadCutoffTimer !== null) {
+      clearTimeout(_composerUploadCutoffTimer);
+      _composerUploadCutoffTimer = null;
+    }
+    document.getElementById("composerUploadProgress")?.setAttribute("hidden", "");
+  }
+  function _openInlineUploadProgress(filename, progressChannel) {
+    const wrap = document.getElementById("composerUploadProgress");
+    const fill = document.getElementById("composerUploadFill");
+    const label = document.getElementById("composerUploadLabel");
+    const retryBtn = document.getElementById("composerUploadRetry");
+    if (!wrap)
+      return;
+    if (fill)
+      fill.style.width = "0%";
+    if (label)
+      label.textContent = "Processing\u2026";
+    retryBtn?.setAttribute("hidden", "");
+    wrap.removeAttribute("hidden");
+    const es = new EventSource(API_BASE + progressChannel);
+    _composerUploadEs = es;
+    es.onmessage = (evt) => {
+      try {
+        const p = JSON.parse(evt.data);
+        const pct = typeof p.pct === "number" ? Math.min(100, Math.max(0, p.pct)) : null;
+        if (fill && pct !== null)
+          fill.style.width = `${pct}%`;
+        if (label && p.message)
+          label.textContent = p.message;
+        if (!p.terminal)
+          return;
+        _composerUploadEs = null;
+        es.close();
+        if (_composerUploadCutoffTimer !== null) {
+          clearTimeout(_composerUploadCutoffTimer);
+          _composerUploadCutoffTimer = null;
+        }
+        if (p.stage === "ready") {
+          if (fill)
+            fill.style.width = "100%";
+          if (label)
+            label.textContent = `\u2713 "${filename}" is ready`;
+          window.setTimeout(() => {
+            wrap.setAttribute("hidden", "");
+            const inputEl2 = document.getElementById("input");
+            if (inputEl2 && !inputEl2.value.trim()) {
+              inputEl2.value = `Tell me about "${filename}"`;
+              inputEl2.dispatchEvent(new Event("input"));
+              inputEl2.focus();
+            }
+          }, 2e3);
+        } else {
+          if (fill)
+            fill.style.width = "0%";
+          if (label)
+            label.textContent = `\u26A0 ${p.error || "Processing failed"} \u2014 re-attach file to retry`;
+          if (retryBtn && p.retryable)
+            retryBtn.removeAttribute("hidden");
+          window.setTimeout(() => wrap.setAttribute("hidden", ""), 8e3);
+        }
+      } catch (_e) {
+      }
+    };
+    es.onerror = () => {
+      _closeInlineUploadProgress();
+      showChatStatusBanner(`\u25CC "${filename}" processing \u2014 I'll let you know when ready.`, 8e3);
+    };
+    _composerUploadCutoffTimer = window.setTimeout(() => {
+      _closeInlineUploadProgress();
+      showChatStatusBanner(`\u25CC "${filename}" is processing in the background \u2014 I'll let you know when ready.`, 1e4);
+    }, FOREGROUND_CUTOFF_S * 1e3);
+  }
   let composerUploadPhaseTimers = [];
   function stopComposerUploadPhaseEmits() {
     composerUploadPhaseTimers.forEach((id) => window.clearTimeout(id));
@@ -10264,36 +10344,32 @@ ${message}`;
       if (chunks > 0) {
         console.debug(`[composer-attach] "${filename}" ingested as ${chunks} chunk${chunks === 1 ? "" : "s"}`);
       }
-      const uxPath = String(data.ux_path || "blocking");
+      const etaSecs = Number(data.estimated_seconds) || 0;
       const etaMin = Number(data.eta_minutes) || 0;
       const pageCount = Number(data.page_count) || 0;
       const redirectUrl = String(data.redirect_url || "");
-      if (uxPath === "background") {
-        const sub = pageCount ? ` (${pageCount} pages, ~${etaMin} min)` : ` (~${etaMin} min)`;
+      const progressChannel = String(data.progress_channel || "");
+      const uxPath = String(data.ux_path || "blocking");
+      if (uxPath === "duplicate") {
         showChatStatusBanner(
-          `\u25CC Uploading "${filename}"${sub}. I'll let you know when it's ready.`,
-          12e3
-        );
-      } else if (uxPath === "redirect") {
-        const sub = pageCount ? `${pageCount}-page document \u2014 ~${etaMin} min` : `~${etaMin} min`;
-        if (redirectUrl) {
-          showChatStatusBanner(
-            `"${filename}" is large (${sub}). Open Mobius RAG \u2192 <a href="${redirectUrl}" target="_blank" rel="noopener">${redirectUrl}</a>`,
-            2e4
-          );
-        } else {
-          showChatStatusBanner(
-            `"${filename}" is large (${sub}). Processing in background \u2014 you can keep chatting; a system message will confirm when it's ready.`,
-            12e3
-          );
-        }
-      } else if (uxPath === "duplicate") {
-        showChatStatusBanner(
-          `\u2713 "${filename}" was already in our corpus \u2014 using the existing copy.`,
+          `\u2713 "${filename}" is ready \u2014 already in our corpus.`,
           5e3
         );
+      } else if (redirectUrl) {
+        const sub = pageCount ? `${pageCount}-page document \u2014 ~${etaMin} min` : `~${etaMin} min`;
+        showChatStatusBanner(
+          `"${filename}" is large (${sub}). Open Mobius RAG \u2192 <a href="${redirectUrl}" target="_blank" rel="noopener">${redirectUrl}</a>`,
+          2e4
+        );
+      } else if (progressChannel && etaSecs > 0 && etaSecs <= FOREGROUND_CUTOFF_S) {
+        stopComposerUploadPhaseEmits();
+        _openInlineUploadProgress(filename, progressChannel);
       } else {
-        showChatStatusBanner(`\u2713 "${filename}" is ready \u2014 searching now\u2026`, 4e3);
+        const sub = pageCount ? ` (${pageCount} pages, ~${etaMin} min)` : etaMin > 0 ? ` (~${etaMin} min)` : "";
+        showChatStatusBanner(
+          `\u25CC "${filename}"${sub} is processing in the background \u2014 I'll let you know when it's ready.`,
+          12e3
+        );
       }
       return data;
     } finally {

@@ -10466,6 +10466,85 @@ function run(): void {
   // Phase-emit timers for the composer upload. Parallels the upload-modal
   // progression the user already sees in ⋯ → Upload file, but routed
   // through the chat status banner instead of the modal's status field.
+  // §4 foreground progress constants + state.
+  const FOREGROUND_CUTOFF_S = 15;
+  let _composerUploadEs: EventSource | null = null;
+  let _composerUploadCutoffTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function _closeInlineUploadProgress(): void {
+    if (_composerUploadEs) { _composerUploadEs.close(); _composerUploadEs = null; }
+    if (_composerUploadCutoffTimer !== null) {
+      clearTimeout(_composerUploadCutoffTimer);
+      _composerUploadCutoffTimer = null;
+    }
+    document.getElementById("composerUploadProgress")?.setAttribute("hidden", "");
+  }
+
+  function _openInlineUploadProgress(filename: string, progressChannel: string): void {
+    const wrap = document.getElementById("composerUploadProgress");
+    const fill = document.getElementById("composerUploadFill") as HTMLElement | null;
+    const label = document.getElementById("composerUploadLabel");
+    const retryBtn = document.getElementById("composerUploadRetry");
+    if (!wrap) return;
+
+    if (fill) fill.style.width = "0%";
+    if (label) label.textContent = "Processing…";
+    retryBtn?.setAttribute("hidden", "");
+    wrap.removeAttribute("hidden");
+
+    const es = new EventSource(API_BASE + progressChannel);
+    _composerUploadEs = es;
+
+    es.onmessage = (evt: MessageEvent) => {
+      try {
+        const p = JSON.parse(evt.data) as {
+          stage?: string; pct?: number; message?: string; chunks_count?: number;
+          error?: string; retryable?: boolean; terminal?: boolean;
+        };
+        const pct = typeof p.pct === "number" ? Math.min(100, Math.max(0, p.pct)) : null;
+        if (fill && pct !== null) fill.style.width = `${pct}%`;
+        if (label && p.message) label.textContent = p.message;
+        if (!p.terminal) return;
+
+        _composerUploadEs = null;
+        es.close();
+        if (_composerUploadCutoffTimer !== null) { clearTimeout(_composerUploadCutoffTimer); _composerUploadCutoffTimer = null; }
+
+        if (p.stage === "ready") {
+          if (fill) fill.style.width = "100%";
+          if (label) label.textContent = `✓ "${filename}" is ready`;
+          // Auto-fill composer with suggested question, hide bar after 2s.
+          window.setTimeout(() => {
+            wrap.setAttribute("hidden", "");
+            const inputEl = document.getElementById("input") as HTMLInputElement | null;
+            if (inputEl && !inputEl.value.trim()) {
+              inputEl.value = `Tell me about "${filename}"`;
+              inputEl.dispatchEvent(new Event("input"));
+              inputEl.focus();
+            }
+          }, 2000);
+        } else {
+          // failed
+          if (fill) fill.style.width = "0%";
+          if (label) label.textContent = `⚠ ${p.error || "Processing failed"} — re-attach file to retry`;
+          if (retryBtn && p.retryable) retryBtn.removeAttribute("hidden");
+          window.setTimeout(() => wrap.setAttribute("hidden", ""), 8000);
+        }
+      } catch (_e) { /* ignore parse errors */ }
+    };
+
+    es.onerror = () => {
+      _closeInlineUploadProgress();
+      showChatStatusBanner(`◌ "${filename}" processing — I'll let you know when ready.`, 8000);
+    };
+
+    // Drop to background after FOREGROUND_CUTOFF_S.
+    _composerUploadCutoffTimer = window.setTimeout(() => {
+      _closeInlineUploadProgress();
+      showChatStatusBanner(`◌ "${filename}" is processing in the background — I'll let you know when ready.`, 10000);
+    }, FOREGROUND_CUTOFF_S * 1000);
+  }
+
   // Without these, the user sees only a pulsing chip and can't tell
   // whether the 30-60s pause is progress or a hang.
   let composerUploadPhaseTimers: ReturnType<typeof setTimeout>[] = [];
@@ -10528,47 +10607,39 @@ function run(): void {
       if (chunks > 0) {
         console.debug(`[composer-attach] "${filename}" ingested as ${chunks} chunk${chunks === 1 ? "" : "s"}`);
       }
-      // 2026-04-29: ux_path-aware banner. Backend now returns one of
-      // four UX paths depending on the file's full-pipeline ETA:
-      //   blocking   → ready inline  (small files, <2 min)
-      //   background → still processing; system message will follow
-      //   redirect   → too large; surface rag-UI link
-      //   duplicate  → existing copy used; ready immediately
-      const uxPath = String((data as any).ux_path || "blocking");
+      // §4 foreground vs background. Contract: client decides the feel
+      // based on estimated_seconds vs FOREGROUND_CUTOFF_S (not server ux_path).
+      const etaSecs = Number((data as any).estimated_seconds) || 0;
       const etaMin = Number((data as any).eta_minutes) || 0;
       const pageCount = Number((data as any).page_count) || 0;
       const redirectUrl = String((data as any).redirect_url || "");
-      if (uxPath === "background") {
-        const sub = pageCount ? ` (${pageCount} pages, ~${etaMin} min)` : ` (~${etaMin} min)`;
+      const progressChannel = String((data as any).progress_channel || "");
+      const uxPath = String((data as any).ux_path || "blocking");
+
+      if (uxPath === "duplicate") {
         showChatStatusBanner(
-          `◌ Uploading "${filename}"${sub}. I'll let you know when it's ready.`,
-          12000,
-        );
-      } else if (uxPath === "redirect") {
-        // Banner with a clickable link to the rag UI. Falls back to
-        // text-only when redirectUrl is missing for any reason.
-        const sub = pageCount ? `${pageCount}-page document — ~${etaMin} min` : `~${etaMin} min`;
-        if (redirectUrl) {
-          showChatStatusBanner(
-            `"${filename}" is large (${sub}). Open Mobius RAG → ` +
-            `<a href="${redirectUrl}" target="_blank" rel="noopener">${redirectUrl}</a>`,
-            20000,
-          );
-        } else {
-          showChatStatusBanner(
-            `"${filename}" is large (${sub}). Processing in background — you can ` +
-            `keep chatting; a system message will confirm when it's ready.`,
-            12000,
-          );
-        }
-      } else if (uxPath === "duplicate") {
-        showChatStatusBanner(
-          `✓ "${filename}" was already in our corpus — using the existing copy.`,
+          `✓ "${filename}" is ready — already in our corpus.`,
           5000,
         );
+      } else if (redirectUrl) {
+        // Very large file — redirect to RAG UI.
+        const sub = pageCount ? `${pageCount}-page document — ~${etaMin} min` : `~${etaMin} min`;
+        showChatStatusBanner(
+          `"${filename}" is large (${sub}). Open Mobius RAG → ` +
+          `<a href="${redirectUrl}" target="_blank" rel="noopener">${redirectUrl}</a>`,
+          20000,
+        );
+      } else if (progressChannel && etaSecs > 0 && etaSecs <= FOREGROUND_CUTOFF_S) {
+        // Fast doc + SSE contract available: show inline foreground bar.
+        stopComposerUploadPhaseEmits();
+        _openInlineUploadProgress(filename, progressChannel);
       } else {
-        // blocking (or legacy)
-        showChatStatusBanner(`✓ "${filename}" is ready — searching now…`, 4000);
+        // Slow doc (or no progress_channel yet): background path.
+        const sub = pageCount ? ` (${pageCount} pages, ~${etaMin} min)` : etaMin > 0 ? ` (~${etaMin} min)` : "";
+        showChatStatusBanner(
+          `◌ "${filename}"${sub} is processing in the background — I'll let you know when it's ready.`,
+          12000,
+        );
       }
       return data;
     } finally {

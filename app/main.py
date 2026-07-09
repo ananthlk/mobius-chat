@@ -834,6 +834,9 @@ def _wait_for_publish_inline(
 
 
 _BACKGROUND_WATCHERS: dict[str, threading.Thread] = {}
+# document_ids where the SSE bridge sent a terminal ready to a live client.
+# Watcher checks this to skip the system message when the FE already surfaced it.
+_SSE_TERMINAL_SENT: set[str] = set()
 
 
 def _spawn_background_publish_watcher(
@@ -897,10 +900,19 @@ def _spawn_background_publish_watcher(
                             update_uploaded_file_chunk_count(thread_id, document_id, _chunks)
                         except Exception as _ue:
                             logger.warning("upload-watcher: chunk count update failed: %s", _ue)
-                    _post_system_message_to_thread(
-                        thread_id,
-                        f"✓ {filename} is ready. You can ask me about it now.",
-                    )
+                        try:
+                            from app.storage.instant_rag_catalog import update_chunks_count as _cat_cc
+                            _cat_cc(document_id, _chunks)
+                        except Exception as _ue:
+                            logger.warning("upload-watcher: catalog chunk count update failed: %s", _ue)
+                    # §3 idempotency: skip system msg if SSE already surfaced ready to the FE.
+                    if document_id not in _SSE_TERMINAL_SENT:
+                        _post_system_message_to_thread(
+                            thread_id,
+                            f"✓ {filename} is ready. You can ask me about it now.",
+                        )
+                    else:
+                        logger.info("upload-watcher: SSE already notified client for doc=%s; skipping system msg", document_id[:8])
                     return
             # Timed out
             _post_system_message_to_thread(
@@ -1398,6 +1410,11 @@ def chat_upload_events(document_id: str):
     here; chat transparently forwards each §2 event from RAG's
     GET /api/uploads/{document_id}/progress.  Auto-closes when RAG sends
     terminal=true.
+
+    Late-subscribe replay (§2): if the catalog already shows chunks_count > 0
+    (doc is ready), emit terminal ready immediately and close without opening
+    the RAG stream — avoids the poll-timeout race when the client is slow to
+    subscribe or reconnects after navigation.
     """
     import json as _json
     import urllib.request
@@ -1405,6 +1422,31 @@ def chat_upload_events(document_id: str):
 
     rag_url = (os.environ.get("MOBIUS_RAG_URL") or "http://localhost:8001").rstrip("/")
     rag_stream_url = f"{rag_url}/api/uploads/{document_id}/progress"
+
+    # Late-subscribe replay: check catalog terminal state before opening stream.
+    try:
+        from app.storage.instant_rag_catalog import get_by_document_id as _cat_get
+        _cat_row = _cat_get(document_id)
+    except Exception:
+        _cat_row = None
+
+    if _cat_row and int(_cat_row.get("chunks_count") or 0) > 0:
+        _ready_event = _json.dumps({
+            "document_id": document_id,
+            "upload_id": _cat_row.get("upload_id") or document_id,
+            "stage": "ready",
+            "pct": 100,
+            "chunks_count": int(_cat_row.get("chunks_count") or 0),
+            "tier": "private",
+            "terminal": True,
+        })
+        def _replay():
+            yield f"data: {_ready_event}\n\n"
+        return StreamingResponse(
+            _replay(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     def _proxy():
         try:
@@ -1420,6 +1462,8 @@ def chat_upload_events(document_id: str):
                         try:
                             payload = _json.loads(line[5:].strip())
                             if payload.get("terminal"):
+                                if payload.get("stage") == "ready":
+                                    _SSE_TERMINAL_SENT.add(document_id)
                                 return
                         except Exception:
                             pass
@@ -1430,6 +1474,7 @@ def chat_upload_events(document_id: str):
                 "pct": 0,
                 "terminal": True,
                 "error": str(exc)[:200],
+                "retryable": True,
             })
             yield f"data: {err_event}\n\n"
 
