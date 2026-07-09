@@ -5732,6 +5732,10 @@ function openCreateTaskDialog(opts) {
       localStorage.setItem("lastOrg", org);
       submitBtn.classList.add("ctd-btn--success");
       submitBtn.textContent = "Created \u2713";
+      try {
+        opts?.onCreated?.();
+      } catch {
+      }
       setTimeout(closeCreateTaskDialog, 900);
     } catch {
       errEl.textContent = "Create failed \u2014 network error.";
@@ -5775,7 +5779,7 @@ function openTasksModal(prefill) {
   headerBtns.className = "tasks-modal-header-btns";
   const newBtn = document.createElement("button");
   newBtn.type = "button";
-  newBtn.className = "tm-env-btn tm-env-btn--resolve";
+  newBtn.className = "tm-env-btn tm-env-btn--create-action";
   newBtn.textContent = "+ New task";
   const closeBtn = document.createElement("button");
   closeBtn.type = "button";
@@ -5786,92 +5790,38 @@ function openTasksModal(prefill) {
   headerBtns.appendChild(closeBtn);
   header.appendChild(headerBtns);
   panel.appendChild(header);
-  const createForm = document.createElement("div");
-  createForm.className = "tasks-modal-create";
-  createForm.style.display = prefill?.createOpen ? "" : "none";
-  createForm.innerHTML = `
-    <input type="text" class="tasks-modal-input" data-f="title" placeholder="Title" maxlength="160">
-    <textarea class="tasks-modal-input" data-f="text" placeholder="What needs to be done? (required)" rows="3"></textarea>
-    <div class="tasks-modal-create-row">
-      <input type="text" class="tasks-modal-input" data-f="org" placeholder="Org (required)">
-      <select class="tasks-modal-input" data-f="severity">
-        ${_TASK_SEVERITIES.map((s) => `<option value="${s}" ${s === "low" ? "selected" : ""}>${s}</option>`).join("")}
-      </select>
-      <input type="text" class="tasks-modal-input" data-f="assignee" placeholder="Assignee (optional)">
-    </div>
-    <div class="tasks-modal-create-row">
-      <select class="tasks-modal-input" data-f="kind">
-        <option value="work_item" selected>Task</option>
-        <option value="reminder">Reminder</option>
-      </select>
-      <input type="date" class="tasks-modal-input" data-f="deadline" title="Due date (required for reminders)">
-    </div>
-    <div class="tasks-modal-create-row">
-      <button type="button" class="tm-env-btn tm-env-btn--resolve" data-f="submit">Create</button>
-      <button type="button" class="tm-env-btn" data-f="cancel">Cancel</button>
-      <span class="tasks-modal-create-err" data-f="err"></span>
-    </div>`;
-  const cf = (k) => createForm.querySelector(`[data-f="${k}"]`);
-  if (prefill?.title)
-    cf("title").value = prefill.title;
-  if (prefill?.text)
-    cf("text").value = prefill.text;
-  newBtn.addEventListener("click", () => {
-    createForm.style.display = "";
-    cf("title").focus();
+  const openCreate = () => openCreateTaskDialog({
+    title: prefill?.title,
+    excerpt: prefill?.text,
+    sourceModule: prefill?.sourceModule,
+    sourceRef: prefill?.sourceRef,
+    onCreated: () => void loadList()
   });
-  createForm.querySelector('[data-f="cancel"]').addEventListener("click", () => {
-    createForm.style.display = "none";
-  });
-  createForm.querySelector('[data-f="submit"]').addEventListener("click", async () => {
-    const err = createForm.querySelector('[data-f="err"]');
-    const text = cf("text").value.trim();
-    const org = cf("org").value.trim();
-    if (!text || !org) {
-      err.textContent = "Org and description are required.";
-      return;
-    }
-    err.textContent = "";
-    const body = {
-      org_name: org,
-      text,
-      title: cf("title").value.trim() || text.slice(0, 60),
-      severity: cf("severity").value,
-      source_module: prefill?.sourceModule || "manual",
-      kind: cf("kind").value || "work_item",
-      audience: "user"
-    };
-    const deadline = cf("deadline").value;
-    if (deadline)
-      body.deadline = deadline;
-    const assignee = cf("assignee").value.trim();
-    if (assignee)
-      body.assignee = assignee;
-    if (prefill?.sourceRef)
-      body.source_ref = prefill.sourceRef;
-    const tid = window.__mobiusChatThreadId;
-    if (tid)
-      body.extra = { origin: { thread_id: tid } };
-    try {
-      const r = await apiFetch(`${API_BASE}/chat/tasks`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
-      });
-      if (!r.ok) {
-        err.textContent = `Create failed (${r.status}).`;
-        return;
-      }
-      createForm.style.display = "none";
-      cf("text").value = "";
-      cf("title").value = "";
-      _showToast("Task created");
-      void loadList();
-    } catch {
-      err.textContent = "Create failed \u2014 network error.";
-    }
-  });
-  panel.appendChild(createForm);
+  newBtn.addEventListener("click", openCreate);
+  const presets = document.createElement("div");
+  presets.className = "tasks-modal-presets";
+  const PRESET_DEFS = [
+    { key: "mine", label: "My open tasks" },
+    { key: "due", label: "Due soon" },
+    { key: "all", label: "All" }
+  ];
+  let activePreset = "mine";
+  const presetBtns = {};
+  for (const p of PRESET_DEFS) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "tasks-modal-preset";
+    b.textContent = p.label;
+    b.addEventListener("click", () => {
+      void applyPreset(p.key);
+    });
+    presets.appendChild(b);
+    presetBtns[p.key] = b;
+  }
+  panel.appendChild(presets);
+  const moreFilters = document.createElement("details");
+  moreFilters.className = "tasks-modal-more-filters";
+  moreFilters.innerHTML = `<summary>More filters</summary>`;
   const filters = document.createElement("div");
   filters.className = "tasks-modal-filters";
   filters.innerHTML = `
@@ -5896,13 +5846,53 @@ function openTasksModal(prefill) {
     <input type="text" class="tasks-modal-input" data-f="org" placeholder="Org filter">
     <input type="text" class="tasks-modal-input" data-f="assignee" placeholder="Assignee filter">
     <button type="button" class="tm-env-btn" data-f="apply">Apply</button>`;
-  panel.appendChild(filters);
+  moreFilters.appendChild(filters);
+  panel.appendChild(moreFilters);
+  const fEl = (k) => filters.querySelector(`[data-f="${k}"]`);
+  const setSelect = (k, v) => {
+    fEl(k).value = v;
+  };
+  function markPreset(key) {
+    activePreset = key || "";
+    for (const [k, b] of Object.entries(presetBtns)) {
+      b.classList.toggle("tasks-modal-preset--active", k === key);
+    }
+  }
+  async function applyPreset(key) {
+    markPreset(key);
+    if (key === "mine") {
+      setSelect("status", "open");
+      setSelect("audience", "user");
+      setSelect("kind", "");
+      fEl("org").value = "";
+      const me = await _getWhoami();
+      fEl("assignee").value = me ? me.assignee_ref : "";
+    } else if (key === "due") {
+      setSelect("status", "open");
+      setSelect("audience", "all");
+      setSelect("kind", "reminder");
+      fEl("org").value = "";
+      fEl("assignee").value = "";
+    } else {
+      setSelect("status", "");
+      setSelect("audience", "all");
+      setSelect("kind", "");
+      fEl("org").value = "";
+      fEl("assignee").value = "";
+    }
+    void loadList();
+  }
   const listWrap = document.createElement("div");
   listWrap.className = "tasks-modal-list";
   panel.appendChild(listWrap);
+  const SEV_BUCKETS = [
+    { label: "critical", sevs: ["critical"] },
+    { label: "warning", sevs: ["warning"] },
+    { label: "info", sevs: ["info", "low", "none"] }
+  ];
   async function loadList() {
-    listWrap.innerHTML = `<div class="tasks-modal-loading">Loading\u2026</div>`;
-    const ff = (k) => filters.querySelector(`[data-f="${k}"]`).value.trim();
+    listWrap.innerHTML = `<div class="tasks-modal-skeleton-row"></div><div class="tasks-modal-skeleton-row"></div><div class="tasks-modal-skeleton-row"></div>`;
+    const ff = (k) => fEl(k).value.trim();
     const params = new URLSearchParams({ limit: "100" });
     if (ff("status"))
       params.set("status", ff("status"));
@@ -5916,29 +5906,79 @@ function openTasksModal(prefill) {
     try {
       const r = await apiFetch(`${API_BASE}/chat/tasks?${params.toString()}`);
       const data = await r.json();
-      const tasks = data.tasks || [];
+      let tasks = data.tasks || [];
+      if (activePreset === "due") {
+        const horizon = new Date(Date.now() + 7 * 24 * 60 * 60 * 1e3).toISOString().slice(0, 10);
+        tasks = tasks.filter((t) => {
+          const d = String(t.deadline || t.due_at || "").slice(0, 10);
+          return d && d <= horizon;
+        });
+      }
       listWrap.innerHTML = "";
       if (!tasks.length) {
-        listWrap.innerHTML = `<div class="tasks-modal-loading">No tasks match the current filters.</div>`;
+        listWrap.innerHTML = `
+          <div class="tasks-modal-empty">
+            <svg class="tasks-modal-empty-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>
+            <p class="tasks-modal-empty-headline">All clear</p>
+            <p class="tasks-modal-empty-sub">No tasks match \xB7 try another view or create one</p>
+          </div>`;
         return;
       }
-      for (const t of tasks)
-        listWrap.appendChild(_taskModalRow(t, loadList));
+      const open = tasks.filter((t) => t.status === "open" || t.status === "in_progress" || t.status === "running");
+      const closed = tasks.filter((t) => !open.includes(t));
+      for (const bucket of SEV_BUCKETS) {
+        const rows = open.filter((t) => bucket.sevs.includes((t.severity || "low").toLowerCase()));
+        if (!rows.length)
+          continue;
+        const gh = document.createElement("div");
+        gh.className = "tasks-modal-group-header";
+        gh.innerHTML = `<span class="tm-env-badge tm-env-badge--${bucket.label}">${bucket.label}</span><span class="tasks-modal-group-count">${rows.length}</span>`;
+        listWrap.appendChild(gh);
+        for (const t of rows)
+          listWrap.appendChild(_taskModalRow(t, loadList));
+      }
+      if (closed.length) {
+        const det = document.createElement("details");
+        det.className = "tasks-modal-closed";
+        det.innerHTML = `<summary>Closed \u2014 ${closed.length} item${closed.length > 1 ? "s" : ""}</summary>`;
+        for (const t of closed)
+          det.appendChild(_taskModalRow(t, loadList));
+        listWrap.appendChild(det);
+      }
     } catch {
       listWrap.innerHTML = `<div class="tasks-modal-loading">Failed to load tasks.</div>`;
     }
   }
-  filters.querySelector('[data-f="apply"]').addEventListener("click", () => void loadList());
-  if (prefill?.filterKind) {
-    filters.querySelector('[data-f="kind"]').value = prefill.filterKind;
-  }
-  if (prefill?.filterAssignee) {
-    filters.querySelector('[data-f="assignee"]').value = prefill.filterAssignee;
-  }
+  filters.querySelector('[data-f="apply"]').addEventListener("click", () => {
+    markPreset(null);
+    void loadList();
+  });
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
   _tasksModalEl = overlay;
-  void loadList();
+  if (prefill?.createOpen) {
+    openCreate();
+  }
+  if (prefill?.filterKind === "reminder" && !prefill?.filterAssignee) {
+    void applyPreset("due");
+  } else if (prefill?.filterAssignee && !prefill?.filterKind) {
+    markPreset("mine");
+    setSelect("status", "open");
+    setSelect("audience", "user");
+    setSelect("kind", "");
+    fEl("assignee").value = prefill.filterAssignee;
+    void loadList();
+  } else if (prefill?.filterKind || prefill?.filterAssignee) {
+    markPreset(null);
+    moreFilters.open = true;
+    if (prefill.filterKind)
+      setSelect("kind", prefill.filterKind);
+    if (prefill.filterAssignee)
+      fEl("assignee").value = prefill.filterAssignee;
+    void loadList();
+  } else {
+    void applyPreset("mine");
+  }
 }
 var _NUDGE_LAST_KEY = "mobius_reminder_nudge_last";
 var _NUDGE_SNOOZE_KEY = "mobius_reminder_nudge_snooze";
@@ -6162,21 +6202,15 @@ function _taskModalRow(t, reload) {
       }).catch(() => null);
       void reload();
     });
-    mkBtn("Assign", "tm-env-btn--assign", () => {
+    mkBtn("Assign to\u2026", "tm-env-btn--assign", () => {
       if (actions.querySelector(".tasks-modal-assign-input"))
         return;
       const inp = document.createElement("input");
       inp.type = "text";
       inp.className = "tasks-modal-input tasks-modal-assign-input";
-      inp.placeholder = "assignee \u2014 Enter to save";
+      inp.placeholder = "name or team";
       inp.value = t.assignee || "";
-      inp.addEventListener("keydown", async (e) => {
-        if (e.key === "Escape") {
-          inp.remove();
-          return;
-        }
-        if (e.key !== "Enter")
-          return;
+      const save = async () => {
         const who = inp.value.trim();
         if (!who)
           return;
@@ -6186,8 +6220,24 @@ function _taskModalRow(t, reload) {
           body: JSON.stringify({ assigned_to: who, assignee: who })
         }).catch(() => null);
         void reload();
+      };
+      inp.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") {
+          inp.remove();
+          okBtn.remove();
+          return;
+        }
+        if (e.key === "Enter")
+          void save();
       });
+      const okBtn = document.createElement("button");
+      okBtn.type = "button";
+      okBtn.className = "tm-env-btn";
+      okBtn.title = "Save assignment";
+      okBtn.textContent = "\u2713";
+      okBtn.addEventListener("click", () => void save());
       actions.appendChild(inp);
+      actions.appendChild(okBtn);
       inp.focus();
     });
     mkBtn("Edit", "", () => {
@@ -6196,20 +6246,26 @@ function _taskModalRow(t, reload) {
       const ed = document.createElement("div");
       ed.className = "tasks-modal-editor";
       ed.innerHTML = `
-        <input type="text" class="tasks-modal-input" data-e="title" placeholder="Title">
-        <div class="tasks-modal-create-row">
-          <select class="tasks-modal-input" data-e="severity">
-            ${_TASK_SEVERITIES.map((s) => `<option value="${s}" ${s === sev ? "selected" : ""}>${s}</option>`).join("")}
-          </select>
-          <input type="date" class="tasks-modal-input" data-e="deadline">
-          <input type="text" class="tasks-modal-input" data-e="note" placeholder="Add note (optional)">
+        <div class="tasks-modal-editor-fields">
+          <input type="text" class="tasks-modal-input" data-e="title" placeholder="Title">
+          <div class="tasks-modal-create-row">
+            <select class="tasks-modal-input" data-e="severity">
+              ${_TASK_SEVERITIES.map((s) => `<option value="${s}" ${s === sev ? "selected" : ""}>${s}</option>`).join("")}
+            </select>
+            <input type="date" class="tasks-modal-input" data-e="deadline">
+            <input type="text" class="tasks-modal-input" data-e="note" placeholder="Add note (optional)">
+          </div>
         </div>
-        <div class="tasks-modal-create-row">
-          <button type="button" class="tm-env-btn tm-env-btn--resolve" data-e="save">Save</button>
+        <div class="tasks-modal-editor-actions">
+          <button type="button" class="tm-env-btn tm-env-btn--create-action" data-e="save">Save</button>
           <button type="button" class="tm-env-btn" data-e="cancel">Cancel</button>
         </div>`;
       ed.querySelector('[data-e="title"]').value = title;
-      ed.querySelector('[data-e="cancel"]').addEventListener("click", () => ed.remove());
+      const closeEditor = () => {
+        ed.remove();
+        row.classList.remove("tasks-modal-row--editing");
+      };
+      ed.querySelector('[data-e="cancel"]').addEventListener("click", closeEditor);
       ed.querySelector('[data-e="save"]').addEventListener("click", async () => {
         const val = (k) => ed.querySelector(`[data-e="${k}"]`).value.trim();
         const body = {};
@@ -6230,10 +6286,12 @@ function _taskModalRow(t, reload) {
             body: JSON.stringify(body)
           }).catch(() => null);
         }
-        ed.remove();
+        closeEditor();
         void reload();
       });
       row.appendChild(ed);
+      row.classList.add("tasks-modal-row--editing");
+      ed.querySelector('[data-e="title"]').focus();
     });
   }
   return row;

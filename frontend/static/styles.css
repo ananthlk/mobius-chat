@@ -7289,6 +7289,138 @@ body {
   border-radius: var(--mobius-radius-base);
 }
 
+/* ── Tasks modal UX pass (2026-07-09, per UX-agent review) ─────────── */
+
+/* P1.3 — create actions read as "creation" (violet), not "completion" (green) */
+.tm-env-btn--create-action {
+  border: 1px solid color-mix(in srgb, var(--mobius-violet, #7c3aed) 40%, transparent);
+  background: transparent;
+  color: var(--mobius-violet, #7c3aed);
+  font-weight: 600;
+}
+.tm-env-btn--create-action:hover {
+  background: color-mix(in srgb, var(--mobius-violet, #7c3aed) 8%, transparent);
+  border-color: var(--mobius-violet, #7c3aed);
+}
+
+/* P1.1 — preset filter tabs (segmented pills, .pf-cat-chip pattern) */
+.tasks-modal-presets {
+  display: flex; gap: 0.4rem; align-items: center;
+  padding: 0.6rem 1rem 0.35rem;
+}
+.tasks-modal-preset {
+  font-size: 0.78rem; font-weight: 500;
+  padding: 0.25rem 0.75rem;
+  border-radius: var(--mobius-radius-full, 9999px);
+  border: 1px solid var(--mobius-border);
+  background: var(--mobius-bg-tertiary);
+  color: var(--mobius-text-muted);
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
+  font-family: inherit;
+}
+.tasks-modal-preset:hover {
+  border-color: var(--mobius-violet, #7c3aed);
+  color: var(--mobius-violet, #7c3aed);
+}
+.tasks-modal-preset--active {
+  background: rgba(124, 58, 237, 0.08);
+  border-color: var(--mobius-violet, #7c3aed);
+  color: var(--mobius-violet, #7c3aed);
+  font-weight: 600;
+}
+.tasks-modal-more-filters {
+  padding: 0 1rem 0.5rem;
+}
+.tasks-modal-more-filters > summary {
+  font-size: var(--mobius-text-xs);
+  color: var(--mobius-text-muted);
+  cursor: pointer;
+  user-select: none;
+  padding: 0.15rem 0;
+}
+.tasks-modal-more-filters > summary:hover { color: var(--main-text); }
+.tasks-modal-more-filters[open] > summary { margin-bottom: 0.4rem; }
+
+/* P1.2 — severity group headers + collapsed closed bucket */
+.tasks-modal-group-header {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.5rem 1rem 0.25rem;
+  position: sticky; top: 0;
+  background: var(--main-bg);
+  z-index: 1;
+}
+.tasks-modal-group-count {
+  font-size: var(--mobius-text-xs);
+  color: var(--mobius-text-muted);
+}
+.tasks-modal-closed {
+  border-top: 1px solid var(--mobius-border-light);
+  margin-top: 0.5rem;
+}
+.tasks-modal-closed > summary {
+  padding: 0.55rem 1rem;
+  font-size: var(--mobius-text-sm);
+  color: var(--mobius-text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+.tasks-modal-closed > summary:hover { color: var(--main-text); }
+.tasks-modal-closed .tasks-modal-row { opacity: 0.65; }
+
+/* P2.5 — distinct empty state (not the loading style) */
+.tasks-modal-empty {
+  padding: 3rem 1rem;
+  text-align: center;
+}
+.tasks-modal-empty-icon {
+  width: 28px; height: 28px;
+  color: var(--mobius-text-muted);
+  margin-bottom: 0.5rem;
+}
+.tasks-modal-empty-headline {
+  font-size: var(--mobius-text-md);
+  font-weight: 500;
+  margin: 0 0 0.25rem;
+}
+.tasks-modal-empty-sub {
+  font-size: var(--mobius-text-sm);
+  color: var(--mobius-text-muted);
+  margin: 0;
+}
+
+/* P2.6 — full-row edit state: editor replaces head+actions, not nested */
+.tasks-modal-row--editing .tasks-modal-row-head { display: none; }
+.tasks-modal-row--editing .tasks-modal-row-actions { display: none; }
+.tasks-modal-row--editing .tasks-modal-editor {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.5rem;
+  margin-top: 0;
+  padding: 0.75rem;
+}
+.tasks-modal-editor .tasks-modal-editor-fields {
+  display: flex; flex-direction: column; gap: 0.5rem;
+}
+.tasks-modal-editor .tasks-modal-editor-actions {
+  display: flex; flex-direction: column; gap: 0.4rem; justify-content: flex-start;
+}
+
+/* P3.8 — loading skeleton (3 pulsing rows) */
+.tasks-modal-skeleton-row {
+  height: 2.4rem;
+  margin: 0.5rem 1rem;
+  border-radius: var(--mobius-radius-base);
+  background: var(--mobius-bg-tertiary);
+  animation: tasks-skeleton-pulse 1.2s ease-in-out infinite;
+}
+.tasks-modal-skeleton-row:nth-child(2) { animation-delay: 0.15s; }
+.tasks-modal-skeleton-row:nth-child(3) { animation-delay: 0.3s; }
+@keyframes tasks-skeleton-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+
 /* ── Reminder nudge (above the composer, dismissible, auto-fades) ── */
 .reminder-nudge {
   display: flex; align-items: center; gap: 0.6rem;
