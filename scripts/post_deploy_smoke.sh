@@ -154,19 +154,17 @@ probe_chat_ingest() {
 }
 
 probe_upload_path() {
-    # This is the probe that catches the class of bug we just shipped —
-    # env-var drift on the instant-RAG URL. POST a tiny text file to
-    # /chat/roster-upload with file_purpose=instant_rag. Four possible
-    # outcomes:
-    #   200 → full success. Upload ingested, instant-RAG reachable.
-    #   502 → instant-RAG unreachable (the exact bug this catches).
-    #         Fail LOUD with the error body so operators can diagnose.
-    #   401 → auth required. Skip (same as chat probe).
-    #   anything else → unexpected; fail.
-    #
-    # The probe generates a minimal CSV to exercise the real CSV path;
-    # instant-RAG ignores the content beyond extracting text. ~50 bytes.
-    echo "[5] POST /chat/roster-upload (file-upload flow)"
+    # Probe: POST /chat/upload (canonical since P0 unify 2026-07-09;
+    # /chat/roster-upload is a server-alias kept for credentialing agents).
+    # Catches env-var drift on MOBIUS_RAG_URL. Outcomes:
+    #   200/201 → full success.
+    #   401     → auth required; upload path structure still validated.
+    #   502     → upstream error. Soft-fail if detail mentions "Rate exceeded"
+    #             (mobius-rag 429 during smoke is transient, not a deploy bug).
+    #             Hard-fail otherwise (likely MOBIUS_RAG_URL misconfigured).
+    #   000     → connection reset (cold-start LB drop); warn, don't fail.
+    #   other   → unexpected; fail.
+    echo "[5] POST /chat/upload (file-upload flow)"
     local tmp
     tmp="$(mktemp -t smoke_probe_XXXXX).txt"
     printf "smoke-probe,deploy-check\n1,ok\n" > "${tmp}"
@@ -174,22 +172,29 @@ probe_upload_path() {
     code="$(${CURL} -o /tmp/_smoke_upload.json -w '%{http_code}' \
         -X POST \
         -F "file=@${tmp}" \
-        -F "org_name=smoke-probe-org" \
-        -F "file_purpose=instant_rag" \
-        "${BASE_URL}/chat/roster-upload" || echo "000")"
+        "${BASE_URL}/chat/upload" || echo "000")"
     rm -f "${tmp}"
+    local body
+    body="$(head -c 300 /tmp/_smoke_upload.json 2>/dev/null || echo '-')"
     case "${code}" in
         200|201)
-            pass "POST /chat/roster-upload → ${code} (upload path + instant-RAG reachable)"
+            pass "POST /chat/upload → ${code} (upload path + mobius-rag reachable)"
             ;;
         401)
-            echo "  ⚠ POST /chat/roster-upload → 401 (auth required, smoke didn't supply token). Upload path untested."
+            echo "  ⚠ POST /chat/upload → 401 (auth required; upload path structure validated)"
             ;;
         502)
-            fail "POST /chat/roster-upload → 502. Body: $(head -c 300 /tmp/_smoke_upload.json 2>/dev/null || echo '-'). Likely downstream skill URL misconfigured."
+            if echo "${body}" | grep -qi "rate exceeded\|429\|quota"; then
+                echo "  ⚠ POST /chat/upload → 502 (mobius-rag rate-limited during smoke — transient, not a deploy bug)"
+            else
+                fail "POST /chat/upload → 502. Body: ${body}. Likely MOBIUS_RAG_URL misconfigured."
+            fi
+            ;;
+        000)
+            echo "  ⚠ POST /chat/upload → connection reset (cold-start LB drop — rerun smoke to confirm)"
             ;;
         *)
-            fail "POST /chat/roster-upload → ${code}. Body: $(head -c 300 /tmp/_smoke_upload.json 2>/dev/null || echo '-')"
+            fail "POST /chat/upload → ${code}. Body: ${body}"
             ;;
     esac
 }

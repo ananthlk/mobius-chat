@@ -952,24 +952,14 @@ def _handle_instant_rag_upload(
     # Resolution order:
     #   1. MOBIUS_RAG_URL              (new canonical name — points
     #      at the mobius-rag API service)
-    #   2. CHAT_SKILLS_INSTANT_RAG_URL (legacy fallback per the
-    #      2026-04-27 dispatch — keeps a misconfigured deploy from
-    #      hard 503-ing while the env is rotated. We log a warning
-    #      when this path is taken so ops sees the misconfig.)
-    #   3. http://localhost:8001       (local-dev fallback; rag dev
-    #      server defaults to :8001)
-    rag_url_env = os.environ.get("MOBIUS_RAG_URL")
-    if not rag_url_env:
-        rag_url_env = os.environ.get("CHAT_SKILLS_INSTANT_RAG_URL")
-        if rag_url_env:
-            logger.warning(
-                "MOBIUS_RAG_URL unset — falling back to "
-                "CHAT_SKILLS_INSTANT_RAG_URL=%s. This is a deploy "
-                "misconfig: chat upload now targets mobius-rag's "
-                "/upload, not the instant-rag skill.",
-                rag_url_env,
-            )
-    rag_url = (rag_url_env or "http://localhost:8001").rstrip("/")
+    #   2. http://localhost:8001  (local-dev fallback; rag dev server
+    #      defaults to :8001)
+    # CHAT_SKILLS_INSTANT_RAG_URL removed 2026-07-09: the standalone
+    # mobius-instant-rag service is deprecated (zero ingest traffic in
+    # 30 days; see mobius-skills/instant-rag/DEPRECATED.md) and is
+    # being torn down in P3. Keeping the fallback risked silently
+    # routing to a dead service — MOBIUS_RAG_URL is the only valid path.
+    rag_url = (os.environ.get("MOBIUS_RAG_URL") or "http://localhost:8001").rstrip("/")
 
     # ── Build a multipart/form-data body around the raw bytes. We use
     #    urllib (zero new deps) rather than requests/httpx because the
