@@ -10764,14 +10764,16 @@ function run(): void {
           `<a href="${redirectUrl}" target="_blank" rel="noopener">${redirectUrl}</a>`,
           20000,
         );
-      } else if (progressChannel && (file.size < FOREGROUND_SIZE_BYTES || (etaSecs > 0 && etaSecs < FOREGROUND_CUTOFF_S))) {
-        // Small file (<1MB) or fast doc (ETA<12s) — open foreground strip.
-        // Byte-size gate fires unconditionally so normal small docs always show the strip
-        // even when RAG returns a flat estimated_seconds (currently 30s for all types).
+      } else if (progressChannel) {
+        // Always open the SSE strip — every upload deserves visible progress.
+        // Foreground (small/fast) vs background (large/slow) only governs whether
+        // the strip is prominent (blocks composer) or compact (non-blocking).
+        // The 12s cutoff timer inside _openRagProgressStrip escapes to background
+        // automatically for slow docs — no separate toast path needed.
         stopComposerUploadPhaseEmits();
         _openRagProgressStrip(filename, progressChannel, uploadedDocId, uploadedThreadId);
       } else {
-        // Slow doc (estimated_seconds >= cutoff) — pre-commit toast + background path.
+        // No progress channel — legacy path, just show a toast.
         _showToast(`"${filename}" is processing — I'll let you know when it's ready`);
       }
       return data;

@@ -10117,10 +10117,10 @@ ${message}`;
   const composerAttachmentChip = document.getElementById("composerAttachmentChip");
   const composerAttachmentChipName = document.getElementById("composerAttachmentChipName");
   const composerAttachmentChipRemove = document.getElementById("composerAttachmentChipRemove");
-  function showComposerAttachment(file2) {
-    composerStagedFile = file2;
+  function showComposerAttachment(file) {
+    composerStagedFile = file;
     if (composerAttachmentChipName)
-      composerAttachmentChipName.textContent = file2.name;
+      composerAttachmentChipName.textContent = file.name;
     if (composerAttachmentChip)
       composerAttachmentChip.hidden = false;
     if (composerAttachBtn)
@@ -10222,11 +10222,11 @@ ${message}`;
     });
   }
   const LARGE_FILE_THRESHOLD_BYTES = 500 * 1024;
-  function estimatePageCount(file2) {
+  function estimatePageCount(file) {
     const bytesPerPage = 4 * 1024;
-    return Math.max(1, Math.round(file2.size / bytesPerPage));
+    return Math.max(1, Math.round(file.size / bytesPerPage));
   }
-  function showLargeUploadConfirm(file2) {
+  function showLargeUploadConfirm(file) {
     return new Promise((resolve) => {
       const overlay = document.getElementById("largeUploadOverlay");
       const modal2 = document.getElementById("largeUploadModal");
@@ -10238,10 +10238,10 @@ ${message}`;
         resolve("instant");
         return;
       }
-      const sizeMb = (file2.size / (1024 * 1024)).toFixed(1);
-      const pages = estimatePageCount(file2);
+      const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+      const pages = estimatePageCount(file);
       if (bodyEl) {
-        bodyEl.innerHTML = `"<strong>${file2.name}</strong>" is <strong>${sizeMb} MB</strong> (roughly <strong>${pages} pages</strong>). "Upload now" gets it ready to search in this chat \u2014 typically <strong>30 to 60 seconds</strong> for a document this size.<br><br>"Queue for batch processing" adds the doc to your permanent library so it's searchable from any chat. Coming soon.`;
+        bodyEl.innerHTML = `"<strong>${file.name}</strong>" is <strong>${sizeMb} MB</strong> (roughly <strong>${pages} pages</strong>). "Upload now" gets it ready to search in this chat \u2014 typically <strong>30 to 60 seconds</strong> for a document this size.<br><br>"Queue for batch processing" adds the doc to your permanent library so it's searchable from any chat. Coming soon.`;
       }
       const cleanup = () => {
         modal2.setAttribute("hidden", "");
@@ -10507,7 +10507,7 @@ ${message}`;
           `"${filename}" is large (${sub}). Open Mobius RAG \u2192 <a href="${redirectUrl}" target="_blank" rel="noopener">${redirectUrl}</a>`,
           2e4
         );
-      } else if (progressChannel && (file.size < FOREGROUND_SIZE_BYTES || etaSecs > 0 && etaSecs < FOREGROUND_CUTOFF_S)) {
+      } else if (progressChannel) {
         stopComposerUploadPhaseEmits();
         _openRagProgressStrip(filename, progressChannel, uploadedDocId, uploadedThreadId);
       } else {
@@ -10976,10 +10976,10 @@ ${message}`;
     uploadForm?.addEventListener("submit", (e) => {
       e.preventDefault();
       const orgName = uploadOrgName?.value?.trim() || "";
-      const file2 = uploadFile?.files?.[0];
+      const file = uploadFile?.files?.[0];
       const purpose = (uploadFilePurpose?.value || "roster_reconciliation").trim();
       const isRoster = purpose === "roster_reconciliation";
-      if (!file2 || isRoster && !orgName)
+      if (!file || isRoster && !orgName)
         return;
       uploadSubmit?.setAttribute("disabled", "");
       uploadModal?.classList.add("upload-modal--busy");
@@ -10987,7 +10987,7 @@ ${message}`;
       uploadProgressWrap?.removeAttribute("hidden");
       startUploadPhaseEmits(purpose);
       const formData = new FormData();
-      formData.append("file", file2);
+      formData.append("file", file);
       if (currentThreadId)
         formData.append("thread_id", currentThreadId);
       uploadAbort = new AbortController();
@@ -11012,7 +11012,7 @@ ${message}`;
           uploadForm?.reset();
           updateSubmitState();
           if (uploadPurpose === "instant_rag") {
-            const fname = data.filename ?? file2?.name ?? "document";
+            const fname = data.filename ?? file?.name ?? "document";
             inputEl.value = `I just uploaded "${fname}" \u2014 what does it say about eligibility and coverage?`;
           } else {
             inputEl.value = `Run reconciliation report for ${org}`;

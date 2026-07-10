@@ -1064,6 +1064,34 @@ def _execute_tool(
             }
 
         emit(f"◌ Reading your attached document: {(query or '')[:60]}…")
+        # §5b wait-or-defer: if the catalog shows 0 chunks (doc still indexing),
+        # poll up to INDEXING_POLL_MAX_S before running the search — short-circuits
+        # the "ask again" UX for docs that finish within the turn window.
+        _INDEXING_POLL_MAX_S = 15
+        _INDEXING_POLL_INTERVAL_S = 2
+        _pre_poll_known_row_count = next(
+            (int(f.get("row_count") or 0) for f in _all_files
+             if str(f.get("document_id", "")).strip() == document_id),
+            -1,
+        )
+        if _pre_poll_known_row_count == 0:
+            import time as _time_mod
+            try:
+                from app.storage.instant_rag_catalog import get_by_document_id as _cat_get_rl
+            except Exception:
+                _cat_get_rl = None
+            _waited = 0
+            while _cat_get_rl and _waited < _INDEXING_POLL_MAX_S:
+                _time_mod.sleep(_INDEXING_POLL_INTERVAL_S)
+                _waited += _INDEXING_POLL_INTERVAL_S
+                try:
+                    _cat = _cat_get_rl(document_id)
+                    if _cat and int(_cat.get("chunks_count") or 0) > 0:
+                        emit(f"  ✓ Document indexed after {_waited}s — searching now…")
+                        break
+                except Exception:
+                    break
+
         # Phase B.1 — lazy RAG. Skips J/P/D tagger + confidence filter +
         # rerank entirely (all three assume a corpus doc with document_tags
         # / policy_line_tags rows, which user uploads don't have until
@@ -1091,14 +1119,17 @@ def _execute_tool(
             if _is_indexing:
                 # Ingest race condition — document registered but Chroma chunks
                 # haven't landed yet (async extract→embed→store pipeline).
-                # Tell the model explicitly so it can inform the user, not retry.
+                # The §5b poll above already waited up to 15s; if we're still here
+                # the doc is taking longer. Tell the model to inform the user without
+                # asking them to manually re-ask — the progress strip will notify them.
                 emit("  ⏳ Document still being indexed — not available for search yet.")
                 _fail_reason = (
                     "The document was just uploaded and is still being indexed "
                     "(0 chunks found in the vector store for this document_id). "
                     "Do NOT retry search_uploaded_document — it will return the same result. "
-                    "Tell the user: 'Your document is still being processed. "
-                    "Please wait 10–20 seconds and ask again.'"
+                    "Tell the user: 'Your document is still being indexed. "
+                    "I'll answer your question automatically as soon as it's ready — "
+                    "no need to ask again.'"
                 )
             elif _hint is not None and _hint > 0:
                 # Document is indexed but the query didn't match semantically.

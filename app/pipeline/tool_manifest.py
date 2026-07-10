@@ -176,7 +176,8 @@ search_uploaded_document(upload_id optional, query)
         (e.g. "timely filing deadline" or "prior authorization H0036").
     • If this tool returns empty and the document was JUST uploaded:
         The document may still be indexing. Tell the user: "Your document
-        is still being processed — please wait a few seconds and ask again."
+        is still being indexed — I'll answer your question automatically
+        as soon as it's ready, no need to ask again."
         Do NOT retry with the same query.
   This tool does NOT search the curated corpus — use search_corpus for that.
   Chunks returned are scoped to the one document, no tag filters. Use this
