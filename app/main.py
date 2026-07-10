@@ -1118,6 +1118,44 @@ def _handle_instant_rag_upload(
             existing_doc_id = (detail.get("document_id") or "").strip()
             if existing_doc_id:
                 tid_dup = (thread_id or "").strip() or str(_uuid_mod.uuid4())
+                # Attach the duplicate to the current thread so the ReAct loop
+                # can resolve it — without this the doc shows "already in corpus"
+                # but _resolve_upload_document_id finds nothing and errors.
+                _dup_record: dict[str, Any] = {
+                    "upload_id": existing_doc_id,
+                    "org_id": "",
+                    "org_name": org_name,
+                    "purpose": file_purpose,
+                    "filename": filename,
+                    "row_count": int(detail.get("chunks_count") or 0),
+                    "uploaded_at": datetime.now(timezone.utc).isoformat(),
+                    "envelope_id": existing_doc_id,
+                    "document_id": existing_doc_id,
+                }
+                try:
+                    _real_tid_dup = ensure_thread(tid_dup) or tid_dup
+                except Exception as _e:
+                    logger.warning("ensure_thread failed (dup path) tid=%s: %s", tid_dup, _e)
+                    _real_tid_dup = tid_dup
+                try:
+                    append_uploaded_file_record(_real_tid_dup, _dup_record)
+                except Exception as _e:
+                    logger.warning("Thread state save (dup) failed thread=%s: %s", _real_tid_dup, _e)
+                try:
+                    from app.storage.instant_rag_catalog import record_upload as _dup_catalog
+                    _dup_catalog(
+                        document_id=existing_doc_id,
+                        envelope_id=existing_doc_id,
+                        upload_id=existing_doc_id,
+                        thread_id=_real_tid_dup,
+                        filename=filename,
+                        user_id=user_id,
+                        content_type=None,
+                        byte_size=None,
+                        chunks_count=int(detail.get("chunks_count") or 0),
+                    )
+                except Exception as _e:
+                    logger.warning("[catalog] dup dual-write failed thread=%s: %s", _real_tid_dup, _e)
                 return {
                     "upload_id": existing_doc_id,
                     "org_id": "",

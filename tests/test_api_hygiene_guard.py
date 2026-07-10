@@ -225,7 +225,7 @@ class TestMainPySizeRatchet:
     # Alpha bump (2026-05-06): main.py grew 1490→1807 during alpha sprint —
     # auth-proxy routes, personalization wiring, model-profile endpoints.
     # Beta work item: extract these into app/api/ routers and tighten back.
-    MAX_MAIN_PY_LOC = 2150  # 2026-07-09: +50 for §3.2 task signal (_post_instant_rag_ready_task + watcher args)
+    MAX_MAIN_PY_LOC = 2200  # 2026-07-09: +50 for duplicate-path thread-attach (ensure_thread + catalog write)
     MAX_MAIN_PY_ENDPOINTS = 30
 
     def test_main_py_loc_under_ceiling(self):
