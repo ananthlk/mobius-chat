@@ -712,6 +712,18 @@ def run_pipeline(
             _publish_completed(ctx, t0)
             return
 
+        # Status-only bypass: when the ReAct loop sets react_bypass_integrate=True
+        # (e.g. still-indexing defer message), emit the final_message as plain
+        # markdown without an LLM integrator round-trip or answer-card chrome
+        # (confidence badge, sources block, etc.).
+        if getattr(ctx, "react_bypass_integrate", False):
+            ctx.response_payload = {
+                "raw_text": ctx.final_message or "",
+                "status": "completed",
+            }
+            _publish_completed(ctx, t0)
+            return
+
         trace_entered(f"pipeline.stage.{INTEGRATE}", correlation_id=correlation_id[:8])
         try:
             on_thinking("Composing answer…")

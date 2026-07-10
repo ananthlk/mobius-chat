@@ -1118,19 +1118,34 @@ def _execute_tool(
         if not success:
             if _is_indexing:
                 # Ingest race condition — document registered but Chroma chunks
-                # haven't landed yet (async extract→embed→store pipeline).
-                # The §5b poll above already waited up to 15s; if we're still here
-                # the doc is taking longer. Tell the model to inform the user without
-                # asking them to manually re-ask — the progress strip will notify them.
-                emit("  ⏳ Document still being indexed — not available for search yet.")
-                _fail_reason = (
-                    "The document was just uploaded and is still being indexed "
-                    "(0 chunks found in the vector store for this document_id). "
-                    "Do NOT retry search_uploaded_document — it will return the same result. "
-                    "Tell the user: 'Your document is still being indexed. "
-                    "I'll answer your question automatically as soon as it's ready — "
-                    "no need to ask again.'"
+                # haven't landed yet. The §5b poll above already waited up to 15s;
+                # still not ready → bypass the integrator entirely so no LLM round-trip
+                # fires and no answer-card chrome (confidence badge, sources block) is
+                # added to a plain status message.
+                _doc_filename = next(
+                    (f.get("filename") for f in _all_files
+                     if str(f.get("document_id", "")).strip() == document_id),
+                    None,
+                ) or upload_id or "your document"
+                _status_msg = (
+                    f"**{_doc_filename}** is still being indexed. "
+                    "I'll answer your question as soon as it's ready — "
+                    "no need to ask again."
                 )
+                emit("  ⏳ Document still being indexed — bypassing integrator for status reply.")
+                ctx.react_bypass_integrate = True
+                ctx.final_message = _status_msg
+                ctx.plan = _make_react_plan(ctx)
+                ctx.sources = []
+                ctx.retrieval_signals = []
+                ctx.answer_set = {}
+                return {
+                    "tool": "search_uploaded_document",
+                    "success": False,
+                    "result": _status_msg,
+                    "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
+                    "sources": [],
+                }
             elif _hint is not None and _hint > 0:
                 # Document is indexed but the query didn't match semantically.
                 # Common cause: procedural query like "summarize this document".
