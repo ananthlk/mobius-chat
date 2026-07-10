@@ -1167,6 +1167,7 @@ def _handle_instant_rag_upload(
             status_code=502,
             detail=f"mobius-rag /upload returned no document_id: {rag_result}",
         )
+    upload_id = str(document_id)
 
     # ── UX path selection ──────────────────────────────────────────
     # All new uploads use the background path. Blocking inline (eta<120s)
@@ -1224,7 +1225,6 @@ def _handle_instant_rag_upload(
     # downstream consumers (catalog + thread state) keep the same
     # key shape and the frontend doesn't have to special-case.
     tid = (thread_id or "").strip() or str(_uuid_mod.uuid4())
-    upload_id = str(document_id)
     envelope_id = str(document_id)
     record: dict[str, Any] = {
         "upload_id": upload_id,
