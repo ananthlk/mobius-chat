@@ -921,6 +921,12 @@ def _answer_tool_impl(
                 _rec = _extra.get("recital")
                 if isinstance(_rec, dict) and _rec.get("verbatim") and not getattr(pipeline_ctx, "recital", None):
                     pipeline_ctx.recital = {**_rec, "text": env.text or ""}  # type: ignore[attr-defined]
+                    import logging as _logging
+                    _logging.getLogger(__name__).info(
+                        "[recital] tool_agent lifted recital to pipeline_ctx — skill=%s text_len=%d",
+                        call.name,
+                        len(env.text or ""),
+                    )
             return env.to_legacy_tuple()
         # Unknown hint → fall through to keyword dispatch below.
 

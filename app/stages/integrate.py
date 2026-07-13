@@ -481,35 +481,60 @@ def run_integrate(
         }
 
     # Recital context: product_help_search flagged the answer as verbatim text
-    # (e.g. a founding essay). Signal the integrator to quote rather than summarize.
+    # (e.g. a founding essay). Bypass the integrator entirely — mode-specific
+    # system prompts hardcode "Set mode = 'BLENDED'" which overrides any
+    # recital instruction. Build the RECITAL card directly from the captured text.
     _recital_ctx: dict | None = getattr(ctx, "recital", None) if getattr(ctx, "recital", None) else None
-
-    final_message, integrator_usage = format_response(
-        plan,
-        answers,
-        user_message=ctx.message,
-        emitter=emitter,
-        message_chunk_callback=_stream_answer_chunk,
-        retrieval_metadata=retrieval_metadata,
-        sources_summary=sources_summary,
-        jurisdiction_summary=jurisdiction_summary,
-        user_provided_context=getattr(ctx, "user_provided_context", None),
-        workflow_selection_ui=_workflow_selection_ui,
-        correlation_id=ctx.correlation_id,
-        thread_id=ctx.thread_id,
-        config_sha=_cfg_sha,
-        phi_detected=False,
-        llm_stage=_integ_stage,
-        mode=getattr(ctx, "chat_mode", None),
-        previous_thread_summary=getattr(ctx, "previous_thread_summary", None),
-        user_profile=getattr(ctx, "user_profile", None),
-        react_draft=getattr(ctx, "react_draft", None),
-        source_texts=source_texts or None,
-        task_context=_task_ctx,
-        instant_rag_context=_instant_rag_ctx,
-        recital_context=_recital_ctx,
+    logger.info(
+        "[recital] integrate entry — ctx.recital=%r has_verbatim=%s has_text=%s",
+        type(_recital_ctx).__name__,
+        bool(_recital_ctx and _recital_ctx.get("verbatim")),
+        bool(_recital_ctx and _recital_ctx.get("text")),
     )
-    ctx.final_message = final_message
+    if _recital_ctx and _recital_ctx.get("verbatim") and _recital_ctx.get("text"):
+        _direct = f"From the {_recital_ctx.get('section') or 'Mobius founding essay'}:"
+        _recital_card: dict = {
+            "mode": "RECITAL",
+            "direct_answer": _direct,
+            "recital": {
+                "verbatim": _recital_ctx["text"],
+            },
+        }
+        if _recital_ctx.get("document_id"):
+            _recital_card["recital"]["document_id"] = _recital_ctx["document_id"]
+        if _recital_ctx.get("section"):
+            _recital_card["recital"]["section"] = _recital_ctx["section"]
+        final_message = json.dumps(_recital_card)
+        ctx.final_message = final_message
+        integrator_usage = None
+        logger.info("[recital] bypass integrator — ctx.recital verbatim set, RECITAL card built directly")
+    else:
+        final_message, integrator_usage = format_response(
+            plan,
+            answers,
+            user_message=ctx.message,
+            emitter=emitter,
+            message_chunk_callback=_stream_answer_chunk,
+            retrieval_metadata=retrieval_metadata,
+            sources_summary=sources_summary,
+            jurisdiction_summary=jurisdiction_summary,
+            user_provided_context=getattr(ctx, "user_provided_context", None),
+            workflow_selection_ui=_workflow_selection_ui,
+            correlation_id=ctx.correlation_id,
+            thread_id=ctx.thread_id,
+            config_sha=_cfg_sha,
+            phi_detected=False,
+            llm_stage=_integ_stage,
+            mode=getattr(ctx, "chat_mode", None),
+            previous_thread_summary=getattr(ctx, "previous_thread_summary", None),
+            user_profile=getattr(ctx, "user_profile", None),
+            react_draft=getattr(ctx, "react_draft", None),
+            source_texts=source_texts or None,
+            task_context=_task_ctx,
+            instant_rag_context=_instant_rag_ctx,
+            recital_context=_recital_ctx,
+        )
+        ctx.final_message = final_message
 
     # Phase 13.7 — extract the integrator's rolling thread summary out
     # of the AnswerCard JSON so the persistence layer can stamp it into

@@ -155,6 +155,8 @@ def _run_product_help(call: SkillCall) -> SkillEnvelope:
     _recital = resp.get("recital")
     if isinstance(_recital, dict) and _recital.get("verbatim"):
         _extra["recital"] = _recital
+        import logging as _logging
+        _logging.getLogger(__name__).info("[recital] product_help_search forwarding recital in envelope — section=%s", _recital.get("section"))
 
     return SkillEnvelope(
         text=answer,
