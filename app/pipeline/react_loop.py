@@ -1065,27 +1065,29 @@ def _execute_tool(
 
         emit(f"◌ Reading your attached document: {(query or '')[:60]}…")
         # §5b wait-or-defer: pgvector probe poll.
-        # Gate readiness via rag_published_embeddings (pgvector, ready ~10s) —
-        # NOT via instant_rag_uploads.chunks_count or published_rag_metadata
-        # (both reflect the slow chat_pg sync, ~130s). Probing lazy_rag_search
-        # directly IS the pgvector readiness check: if RAG's /api/query returns
-        # chunks, the doc is queryable; if not, it's still indexing.
-        _INDEXING_POLL_MAX_S = 15
+        # Gate readiness via rag_published_embeddings (pgvector, ready ~9s warm /
+        # ~17s cold measured). Do NOT use instant_rag_uploads.chunks_count or
+        # published_rag_metadata — both reflect the slow chat_pg sync (~130s).
+        # Strategy: initial probe first (no sleep). If empty, poll for up to
+        # _INDEXING_POLL_MAX_S regardless of any catalog hint — the catalog
+        # field (_known_row_count) is unreliable on fresh uploads because the
+        # background watcher hasn't synced yet (defaults to -1, not 0).
+        _INDEXING_POLL_MAX_S = 18   # covers ~17s cold-start measured by Ananth
         _INDEXING_POLL_INTERVAL_S = 2
-        _known_row_count = next(
-            (int(f.get("row_count") or 0) for f in _all_files
-             if str(f.get("document_id", "")).strip() == document_id),
-            -1,
-        )
+        import time as _time_mod
         from app.services.instant_rag_search import lazy_rag_search
+
+        # Initial probe (no sleep) — if doc already queryable, skip the wait.
+        answer, sources, usage, signal = lazy_rag_search(
+            document_id=document_id, question=query, k=10, emitter=None
+        )
+
         _poll_ran = False
         _poll_timed_out = False
-        answer, sources, usage, signal = "", [], None, RETRIEVAL_SIGNAL_NO_SOURCES
-        if _known_row_count == 0:
-            # Thread state says 0 chunks — doc is likely still indexing.
-            # Poll pgvector directly (2s intervals, 15s max) so the user
-            # gets an answer in-turn when the doc lands quickly.
-            import time as _time_mod
+        if not sources:
+            # Nothing yet — poll pgvector directly so the user gets an in-turn
+            # answer when the doc lands quickly. Most uploads are ready within
+            # the window; the bypass path fires only on cold-start stragglers.
             _poll_ran = True
             _waited = 0
             while _waited < _INDEXING_POLL_MAX_S:
@@ -1100,8 +1102,10 @@ def _execute_tool(
             else:
                 _poll_timed_out = True
 
-        # Run full search (with emitter) if the poll didn't already find results.
-        if not sources:
+        # Run the final search with the emitter (for user-visible logging) only
+        # if sources weren't found yet and the poll didn't already exhaust its
+        # window (after a timeout another call won't help).
+        if not sources and not _poll_timed_out:
             answer, sources, usage, signal = lazy_rag_search(
                 document_id=document_id,
                 question=query,
@@ -1110,47 +1114,71 @@ def _execute_tool(
             )
 
         success = bool(sources) and signal != RETRIEVAL_SIGNAL_NO_SOURCES
-        _hint = (usage or {}).get("vector_count_hint")  # 0=not indexed, >0=query miss, -1/None=probe failed
-        # _is_indexing: true if pgvector returned nothing AND we have reason to
-        # believe the doc is still being indexed (thread row_count=0, or the
-        # pgvector poll ran 15s and still got nothing).
-        _is_indexing = (
-            not success and (
-                _poll_timed_out  # pgvector poll ran 15s with no results
-                or (_known_row_count == 0 and (_hint is None or _hint <= 0))
-                or _hint == 0
-            )
-        )
-        if not success:
-            if _is_indexing:
-                # The §5b poll above already waited up to 15s probing pgvector.
-                # Bypass the integrator entirely — no LLM round-trip, no
-                # answer-card chrome — just emit the plain status message.
-                _doc_filename = next(
-                    (f.get("filename") for f in _all_files
-                     if str(f.get("document_id", "")).strip() == document_id),
-                    None,
-                ) or upload_id or "your document"
-                _status_msg = (
-                    f"**{_doc_filename}** is still being indexed. "
-                    "I'll answer your question as soon as it's ready — "
-                    "no need to ask again."
+        _hint = (usage or {}).get("vector_count_hint")  # >0=indexed/query-miss, 0/None=not indexed
+        # _is_indexing: initial 18s poll exhausted with no pgvector results.
+        _is_indexing = not success and _poll_timed_out
+
+        if _is_indexing:
+            # §5b deferred auto-deliver: keep the turn alive rather than closing
+            # with a false promise. Emit a holding note (keeps SSE open + indicator
+            # pulsing), then continue polling in-band. When the doc lands the real
+            # query runs through the integrator and the answer streams back —
+            # the user never re-asks. Only the hard-cap path actually bypasses.
+            _doc_filename = next(
+                (f.get("filename") for f in _all_files
+                 if str(f.get("document_id", "")).strip() == document_id),
+                None,
+            ) or upload_id or "your document"
+            emit(f"  ⏳ {_doc_filename} is still indexing — I'll answer as soon as it's ready…")
+            _DEFERRED_MAX_S = 4 * 60   # 4 min hard cap (Cloud Run max-request ≫ this)
+            _DEFERRED_INTERVAL_S = 3
+            _deferred_waited = 0
+            _keepalive_every = 12      # emit a progress note every ~12s
+            while _deferred_waited < _DEFERRED_MAX_S:
+                _time_mod.sleep(_DEFERRED_INTERVAL_S)
+                _deferred_waited += _DEFERRED_INTERVAL_S
+                answer, sources, usage, signal = lazy_rag_search(
+                    document_id=document_id, question=query, k=10, emitter=None
                 )
-                emit("  ⏳ Document still being indexed — bypassing integrator for status reply.")
-                ctx.react_bypass_integrate = True
-                ctx.final_message = _status_msg
-                ctx.plan = _make_react_plan(ctx)
-                ctx.sources = []
-                ctx.retrieval_signals = []
-                ctx.answer_set = {}
-                return {
-                    "tool": "search_uploaded_document",
-                    "success": False,
-                    "result": _status_msg,
-                    "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
-                    "sources": [],
-                }
-            elif _hint is not None and _hint > 0:
+                if sources:
+                    _total_wait = _INDEXING_POLL_MAX_S + _deferred_waited
+                    emit(f"  ✓ Document ready after {_total_wait}s — answering now…")
+                    success = True
+                    _is_indexing = False
+                    break
+                if _deferred_waited % _keepalive_every == 0:
+                    emit(f"  ⏳ Still indexing ({_INDEXING_POLL_MAX_S + _deferred_waited}s)…")
+            # _is_indexing still True only if the hard cap fired — genuinely give up.
+
+        if _is_indexing:
+            # Hard timeout (>~4 min with no pgvector result). Bypass integrator
+            # so the message is deterministic, not LLM-generated.
+            _doc_filename = next(
+                (f.get("filename") for f in _all_files
+                 if str(f.get("document_id", "")).strip() == document_id),
+                None,
+            ) or upload_id or "your document"
+            _status_msg = (
+                f"**{_doc_filename}** is taking longer than expected to process. "
+                "I'll answer your question as soon as it's ready — no need to ask again."
+            )
+            emit("  ⏳ Hard cap reached — deferring to background watcher.")
+            ctx.react_bypass_integrate = True
+            ctx.final_message = _status_msg
+            ctx.plan = _make_react_plan(ctx)
+            ctx.sources = []
+            ctx.retrieval_signals = []
+            ctx.answer_set = {}
+            return {
+                "tool": "search_uploaded_document",
+                "success": False,
+                "result": _status_msg,
+                "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
+                "sources": [],
+            }
+
+        if not success:
+            if _hint is not None and _hint > 0:
                 # Document is indexed but the query didn't match semantically.
                 # Common cause: procedural query like "summarize this document".
                 emit(f"  ↓ No matching content found (doc has {_hint} indexed chunks — try a different query).")

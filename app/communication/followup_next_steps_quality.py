@@ -92,6 +92,17 @@ def answer_card_needs_user_documents(answer_card: dict[str, Any] | None) -> bool
     return any(isinstance(x, str) and x.strip() for x in rv)
 
 
+def _all_instant_rag(sources: list[dict[str, Any]]) -> bool:
+    """True when every source came from the instant-RAG single-doc path."""
+    if not sources:
+        return False
+    return all(
+        bool(s.get("instant_rag") or s.get("source_type") == "instant_rag")
+        for s in sources
+        if isinstance(s, dict)
+    )
+
+
 def filter_next_steps_and_questions(
     next_steps: list[dict[str, Any]],
     next_questions_for_user: list[dict[str, Any]],
@@ -106,6 +117,12 @@ def filter_next_steps_and_questions(
     Each list element is ``{"text": str, "clickable": bool}`` (from
     :func:`normalize_followup_line_list`).
     """
+    # Instant-RAG single-doc answers: the user asked "what does this doc say?"
+    # and received a clean summary. LLM-generated follow-up suggestions vary
+    # run-to-run (sporadic) and add no value — suppress them entirely.
+    if _all_instant_rag(response_sources):
+        return [], []
+
     corpus = has_corpus_sources(response_sources)
     need_docs = answer_card_needs_user_documents(answer_card)
     strip_doc_asks = corpus and not need_docs

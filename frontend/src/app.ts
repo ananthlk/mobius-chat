@@ -10656,11 +10656,24 @@ function run(): void {
             action.removeAttribute("hidden");
             if (p.retryable !== false) {
               action.textContent = "Retry";
-              action.onclick = () => {
-                _closeRagProgressStrip();
-                // Re-trigger processing on existing document_id — endpoint TBD from RAG.
-                // For now surface a toast so user knows retry was requested.
-                _showToast(`Retry queued for "${filename}"`);
+              action.onclick = async () => {
+                action.setAttribute("hidden", "");
+                if (stage) stage.textContent = "Retrying…";
+                try {
+                  const retryResp = await apiFetch(`${API_BASE}/documents/${documentId}/retry`, { method: "POST" });
+                  if (!retryResp.ok) throw new Error(`${retryResp.status}`);
+                  const retryData = await retryResp.json();
+                  const retryChannel = String((retryData as any).progress_channel || "");
+                  if (retryChannel) {
+                    _openRagProgressStrip(filename, retryChannel, documentId, threadId);
+                  } else {
+                    _showToast(`Retry queued for "${filename}" — I'll let you know when it's ready`);
+                    _closeRagProgressStrip();
+                  }
+                } catch (_e) {
+                  if (stage) stage.textContent = "Retry failed — try again";
+                  action.removeAttribute("hidden");
+                }
               };
             } else {
               action.textContent = "Remove";
@@ -10688,6 +10701,7 @@ function run(): void {
   function stopComposerUploadPhaseEmits(): void {
     composerUploadPhaseTimers.forEach((id) => window.clearTimeout(id));
     composerUploadPhaseTimers = [];
+    hideChatStatusBanner();
   }
   function startComposerUploadPhaseEmits(filename: string): void {
     stopComposerUploadPhaseEmits();
