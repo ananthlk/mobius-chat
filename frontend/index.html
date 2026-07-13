@@ -38,24 +38,35 @@
         <button type="button" class="btn-new-chat" id="btnNewChat" data-tour-id="sidebar-new-chat">
           <span>+</span> New chat
         </button>
-        <div class="sidebar-recent" data-tour-id="sidebar-recent">
-          <h3 class="sidebar-section-title sidebar-section-toggle" role="button" tabindex="0" aria-expanded="true" aria-controls="recentListWrap">
-            <span>Recent searches</span>
-            <span class="sidebar-section-arrow" aria-hidden="true">▾</span>
-          </h3>
-          <div class="sidebar-section-body" id="recentListWrap">
-            <ul class="recent-list" id="recentList"></ul>
+        <!-- My Vault block — segmented tabs replace old Recent/Helpful sections -->
+        <div class="sidebar-vault" id="sidebarVaultBlock" data-tour-id="sidebar-vault">
+          <div class="vault-block-header">
+            <span class="vault-block-title">🗄 My Vault <span class="vault-block-tag">· private</span></span>
+            <button type="button" class="vault-block-open-btn" id="vaultOpenBtn" aria-label="Open My Vault panel">⤢ Open</button>
+          </div>
+          <div class="vault-block-tabs" role="tablist" aria-label="My Vault sections">
+            <button role="tab" class="vault-tab vault-tab--active" data-vault-tab="recent" aria-selected="true" aria-controls="vaultTabPanel">
+              Recent<span class="vault-tab-count" id="vaultCountRecent"></span>
+            </button>
+            <button role="tab" class="vault-tab" data-vault-tab="liked" aria-selected="false" aria-controls="vaultTabPanel">
+              Liked<span class="vault-tab-count" id="vaultCountLiked"></span>
+            </button>
+            <button role="tab" class="vault-tab" data-vault-tab="tasks" aria-selected="false" aria-controls="vaultTabPanel">
+              Tasks<span class="vault-tab-count" id="vaultCountTasks"></span>
+            </button>
+            <button role="tab" class="vault-tab" data-vault-tab="uploads" aria-selected="false" aria-controls="vaultTabPanel">
+              Uploads<span class="vault-tab-count" id="vaultCountUploads"></span>
+            </button>
+          </div>
+          <div class="vault-block-content" id="vaultTabPanel" role="tabpanel">
+            <ul class="vault-item-list" id="vaultItemList"></ul>
+          </div>
+          <div class="vault-block-footer">
+            <button type="button" class="vault-manage-btn" id="vaultManageBtn">Manage in Vault ↗</button>
           </div>
         </div>
-        <div class="sidebar-helpful" data-tour-id="sidebar-helpful">
-          <h3 class="sidebar-section-title sidebar-section-toggle" role="button" tabindex="0" aria-expanded="true" aria-controls="helpfulListWrap">
-            <span>Most helpful searches</span>
-            <span class="sidebar-section-arrow" aria-hidden="true">▾</span>
-          </h3>
-          <div class="sidebar-section-body" id="helpfulListWrap">
-            <ul class="helpful-list" id="helpfulList"></ul>
-          </div>
-        </div>
+        <!-- Panel mount point — Vault agent injects slide-in panel here -->
+        <div id="vaultPanelMount"></div>
 
         <div class="sidebar-skills">
           <h3 class="sidebar-section-title sidebar-section-toggle" role="button" tabindex="0" aria-expanded="true" aria-controls="skillsListWrap">
@@ -102,12 +113,9 @@
       </div>
       <div class="sidebar-rail" aria-hidden="true">
         <img class="sidebar-rail-logo" src="static/logo.svg" alt="" />
-        <button type="button" class="sidebar-rail-icon" data-target="recentListWrap" title="Recent searches" aria-label="Recent searches">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="5"/><path d="M11 11l3 3"/></svg>
-          <span class="rail-icon-badge" id="railBadgeRecent" hidden>0</span>
-        </button>
-        <button type="button" class="sidebar-rail-icon" data-target="helpfulListWrap" title="Most helpful searches" aria-label="Most helpful searches">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.5l1.7 4 4.3.4-3.3 2.8 1 4.3L8 10.6l-3.7 2.4 1-4.3L2 5.9l4.3-.4z"/></svg>
+        <button type="button" class="sidebar-rail-icon" id="vaultRailBtn" title="My Vault" aria-label="My Vault">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M2 6h12"/><path d="M6 9h4"/></svg>
+          <span class="rail-icon-badge" id="railBadgeVault" hidden>0</span>
         </button>
         <button type="button" class="sidebar-rail-icon" data-target="skillsListWrap" title="Skills" aria-label="Skills">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 6l4-4 4 4-4 4z"/><path d="M9 9l5 5"/></svg>

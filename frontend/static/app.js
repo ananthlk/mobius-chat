@@ -11193,7 +11193,157 @@ ${message}`;
     } catch {
     }
   }
+  window.mobiusOpenVaultPanel = window.mobiusOpenVaultPanel || function(_tab) {
+    window.open("/vault", "_blank", "noopener");
+  };
+  function openVaultPanel(tab) {
+    const w = window;
+    if (typeof w.mobiusOpenVaultPanel === "function")
+      w.mobiusOpenVaultPanel(tab);
+  }
+  let _vaultActiveTab = "recent";
+  function initVaultBlock() {
+    const vaultBlock = document.getElementById("sidebarVaultBlock");
+    if (!vaultBlock)
+      return;
+    document.getElementById("vaultOpenBtn")?.addEventListener("click", () => openVaultPanel(_vaultActiveTab));
+    document.getElementById("vaultManageBtn")?.addEventListener("click", () => openVaultPanel("recent"));
+    document.getElementById("vaultRailBtn")?.addEventListener("click", () => {
+      const sidebar2 = document.getElementById("sidebar");
+      if (sidebar2?.classList.contains("sidebar--collapsed")) {
+        document.getElementById("sidebarChevron")?.click();
+      }
+      vaultBlock.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+    vaultBlock.querySelectorAll(".vault-tab").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const tab = btn.dataset.vaultTab || "recent";
+        vaultBlock.querySelectorAll(".vault-tab").forEach((t) => {
+          t.classList.toggle("vault-tab--active", t === btn);
+          t.setAttribute("aria-selected", t === btn ? "true" : "false");
+        });
+        _vaultActiveTab = tab;
+        void loadVaultTab(tab);
+      });
+    });
+    void loadVaultCounts();
+    void loadVaultTab("recent");
+  }
+  async function loadVaultCounts() {
+    const _authHeaders = await auth.getAuthHeader?.() ?? {};
+    const [threads, liked, tasksResp, uploadsResp] = await Promise.allSettled([
+      fetch(API_BASE + "/chat/history/threads?limit=1", { headers: _authHeaders }).then((r) => r.json()),
+      fetch(API_BASE + "/chat/history/most-helpful-searches?limit=1", { headers: _authHeaders }).then((r) => r.json()),
+      fetch(API_BASE + "/chat/tasks?limit=1&assigned_to=user:me", { headers: _authHeaders }).then((r) => r.json()),
+      fetch(API_BASE + "/chat/uploads?limit=1", { headers: _authHeaders }).then((r) => r.json())
+    ]);
+  }
+  async function loadVaultTab(tab) {
+    const list = document.getElementById("vaultItemList");
+    if (!list)
+      return;
+    const _authHeaders = await auth.getAuthHeader?.() ?? {};
+    const snippet = (s, max = 72) => (s ?? "").trim().slice(0, max) + ((s ?? "").length > max ? "\u2026" : "");
+    const setCount = (id, n) => {
+      const el2 = document.getElementById(id);
+      if (el2)
+        el2.textContent = n != null ? ` ${n}` : "";
+    };
+    list.innerHTML = `<li class="vault-item vault-item--muted">Loading\u2026</li>`;
+    try {
+      if (tab === "recent") {
+        const threads = await fetch(API_BASE + "/chat/history/threads?limit=20", { headers: _authHeaders }).then((r) => r.json());
+        setCount("vaultCountRecent", threads.length);
+        list.innerHTML = "";
+        if (!threads.length) {
+          list.innerHTML = `<li class="vault-item vault-item--muted">No recent chats yet</li>`;
+          return;
+        }
+        for (const th of threads) {
+          const li = document.createElement("li");
+          li.className = "vault-item";
+          li.textContent = snippet(th.summary && th.summary.trim() || th.title || "Untitled chat");
+          li.title = th.summary || th.title || "";
+          li.setAttribute("role", "button");
+          li.setAttribute("tabindex", "0");
+          li.addEventListener("click", () => void loadAndRenderThread(th.thread_id));
+          li.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              void loadAndRenderThread(th.thread_id);
+            }
+          });
+          list.appendChild(li);
+        }
+      } else if (tab === "liked") {
+        const liked = await fetch(API_BASE + "/chat/history/most-helpful-searches?limit=20", { headers: _authHeaders }).then((r) => r.json());
+        setCount("vaultCountLiked", liked.length);
+        list.innerHTML = "";
+        if (!liked.length) {
+          list.innerHTML = `<li class="vault-item vault-item--muted">No liked answers yet \u2014 thumb up a helpful response</li>`;
+          return;
+        }
+        for (const t of liked) {
+          const li = document.createElement("li");
+          li.className = "vault-item";
+          li.textContent = snippet(t.question || "(empty)");
+          li.title = t.question || "";
+          li.setAttribute("role", "button");
+          li.setAttribute("tabindex", "0");
+          const tid = (t.thread_id || "").trim();
+          li.addEventListener("click", () => {
+            if (tid)
+              void loadAndRenderThread(tid);
+            else {
+              inputEl.value = t.question ?? "";
+              updateSendState();
+              sendMessage();
+            }
+          });
+          list.appendChild(li);
+        }
+      } else if (tab === "tasks") {
+        const data = await fetch(API_BASE + "/chat/tasks?limit=20", { headers: _authHeaders }).then((r) => r.json());
+        const tasks = data.tasks || [];
+        const open = tasks.filter((t) => t.status !== "completed" && t.status !== "closed");
+        setCount("vaultCountTasks", open.length || null);
+        list.innerHTML = "";
+        if (!open.length) {
+          list.innerHTML = `<li class="vault-item vault-item--muted">No open tasks</li>`;
+          return;
+        }
+        for (const t of open) {
+          const li = document.createElement("li");
+          li.className = "vault-item";
+          li.textContent = snippet(t.title || t.kind || "Task");
+          li.title = t.title || "";
+          list.appendChild(li);
+        }
+      } else if (tab === "uploads") {
+        const data = await fetch(API_BASE + "/chat/uploads?limit=20", { headers: _authHeaders }).then((r) => r.json());
+        const uploads = data.uploads || [];
+        setCount("vaultCountUploads", uploads.length || null);
+        list.innerHTML = "";
+        if (!uploads.length) {
+          list.innerHTML = `<li class="vault-item vault-item--muted">No uploads yet</li>`;
+          return;
+        }
+        for (const u of uploads) {
+          const li = document.createElement("li");
+          li.className = "vault-item";
+          li.textContent = snippet(u.filename || u.document_id);
+          li.title = u.filename || u.document_id;
+          list.appendChild(li);
+        }
+      }
+    } catch {
+      list.innerHTML = `<li class="vault-item vault-item--muted">Failed to load \u2014 try again</li>`;
+    }
+  }
   function loadSidebarHistory() {
+    void loadVaultTab(_vaultActiveTab);
+  }
+  function _loadSidebarHistoryFull() {
     const recentList = document.getElementById("recentList");
     const helpfulList = document.getElementById("helpfulList");
     const documentsList = document.getElementById("documentsList");
@@ -11351,8 +11501,16 @@ ${message}`;
     }
   } catch {
   }
-  loadSidebarHistory();
-  window.addEventListener("mobiusFeedbackUp", () => loadSidebarHistory());
+  initVaultBlock();
+  window.addEventListener("mobiusFeedbackUp", () => {
+    if (_vaultActiveTab === "liked")
+      void loadVaultTab("liked");
+    void (async () => {
+      const el2 = document.getElementById("vaultCountRecent");
+      if (el2) {
+      }
+    })();
+  });
   updateSendState();
   (function setupSkillsModal() {
     const overlay = document.getElementById("skillsOverlay");
@@ -11389,15 +11547,8 @@ ${message}`;
         accent: "accent",
         urlEnvKey: "MOBIUS_LIBRARY_URL",
         fallbackUrl: "https://mobius-rag-ortabkknqa-uc.a.run.app"
-      },
-      {
-        key: "vault",
-        label: "My Vault",
-        tagline: "Your uploads, tasks, and saved searches \u2014 personal workspace",
-        accent: "violet",
-        urlEnvKey: "MOBIUS_VAULT_URL",
-        fallbackUrl: "/vault"
       }
+      // Vault is now the sidebar block above this section; not a tile.
     ];
     function tileUrl(t) {
       const winAny = window;
@@ -11490,7 +11641,7 @@ ${message}`;
       strategy: "Benchmarks your organization against peer CMHCs on revenue, denials, panel mix, and credentialing throughput. Pulls from our public payer + DOGE rate datasets and overlays your roster to show where you sit on each KPI. Useful when board / leadership asks 'how do we compare?'.",
       roster: "Single source of truth for your provider directory + the credentialing pipeline. Tracks who's enrolled with which payer, what's pending, what's expired, and surfaces re-credentialing windows before they lapse. Roster reconciliation, NPI verification, and run-by-run credentialing reports all live here.",
       library: "The shared corpus \u2014 payer manuals, state Medicaid handbooks, federal regs, public CMS guidance. Anything anyone uploads as a public source becomes searchable across every chat (with source citation). Mobius retrieves from this library automatically when you ask a payer / policy / regulatory question.",
-      vault: "Your personal workspace \u2014 recent chats, liked answers, open tasks, and uploaded documents. Private to you; your org's public library lives in the Library tile. Click \u2197 to open My Vault in a new tab."
+      vault: "Your private workspace \u2014 recent chats, liked answers, open tasks, and uploaded documents. Use the My Vault block in the sidebar to browse, or click '\u2922 Open' to launch the full Vault panel."
     };
     function renderSkillsModal() {
       if (!modalBody)

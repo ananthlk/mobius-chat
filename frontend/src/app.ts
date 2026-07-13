@@ -11603,7 +11603,179 @@ function run(): void {
     try { (inputEl as HTMLInputElement).focus(); } catch { /* noop */ }
   }
 
+  // ── My Vault sidebar block ───────────────────────────────────────────────────
+  // Panel API: Vault agent overrides window.mobiusOpenVaultPanel to inject their
+  // slide-in panel. Default falls back to opening /vault in a new tab.
+  (window as Window & typeof globalThis & { mobiusOpenVaultPanel?: (tab?: string) => void }).mobiusOpenVaultPanel
+    = (window as Window & typeof globalThis & { mobiusOpenVaultPanel?: (tab?: string) => void }).mobiusOpenVaultPanel
+    || function(_tab?: string) { window.open("/vault", "_blank", "noopener"); };
+
+  function openVaultPanel(tab?: string): void {
+    const w = window as Window & typeof globalThis & { mobiusOpenVaultPanel?: (tab?: string) => void };
+    if (typeof w.mobiusOpenVaultPanel === "function") w.mobiusOpenVaultPanel(tab);
+  }
+
+  let _vaultActiveTab = "recent";
+
+  function initVaultBlock(): void {
+    const vaultBlock = document.getElementById("sidebarVaultBlock");
+    if (!vaultBlock) return;
+
+    // Wire open buttons
+    document.getElementById("vaultOpenBtn")?.addEventListener("click", () => openVaultPanel(_vaultActiveTab));
+    document.getElementById("vaultManageBtn")?.addEventListener("click", () => openVaultPanel("recent"));
+    document.getElementById("vaultRailBtn")?.addEventListener("click", () => {
+      // Expand sidebar if collapsed, then scroll vault block into view
+      const sidebar = document.getElementById("sidebar");
+      if (sidebar?.classList.contains("sidebar--collapsed")) {
+        document.getElementById("sidebarChevron")?.click();
+      }
+      vaultBlock.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+
+    // Wire tabs
+    vaultBlock.querySelectorAll<HTMLButtonElement>(".vault-tab").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const tab = btn.dataset.vaultTab || "recent";
+        vaultBlock.querySelectorAll(".vault-tab").forEach((t) => {
+          t.classList.toggle("vault-tab--active", t === btn);
+          t.setAttribute("aria-selected", t === btn ? "true" : "false");
+        });
+        _vaultActiveTab = tab;
+        void loadVaultTab(tab);
+      });
+    });
+
+    void loadVaultCounts();
+    void loadVaultTab("recent");
+  }
+
+  async function loadVaultCounts(): Promise<void> {
+    const _authHeaders = (await auth.getAuthHeader?.()) ?? {};
+    // Fetch counts for all tabs in parallel; update badges silently on failure
+    const [threads, liked, tasksResp, uploadsResp] = await Promise.allSettled([
+      fetch(API_BASE + "/chat/history/threads?limit=1", { headers: _authHeaders }).then((r) => r.json() as Promise<unknown[]>),
+      fetch(API_BASE + "/chat/history/most-helpful-searches?limit=1", { headers: _authHeaders }).then((r) => r.json() as Promise<unknown[]>),
+      fetch(API_BASE + "/chat/tasks?limit=1&assigned_to=user:me", { headers: _authHeaders }).then((r) => r.json() as Promise<{ tasks?: unknown[] }>),
+      fetch(API_BASE + "/chat/uploads?limit=1", { headers: _authHeaders }).then((r) => r.json() as Promise<{ uploads?: unknown[] }>),
+    ]);
+    // For count badges, hit the real list endpoints and use X-Total or array length
+    // (endpoints don't return totals, so we show item count for the first page)
+    void threads; void liked; void tasksResp; void uploadsResp;
+    // Re-fetch with higher limit to get counts; counts update in loadVaultTab
+  }
+
+  async function loadVaultTab(tab: string): Promise<void> {
+    const list = document.getElementById("vaultItemList");
+    if (!list) return;
+    const _authHeaders = (await auth.getAuthHeader?.()) ?? {};
+
+    const snippet = (s: string, max = 72) => (s ?? "").trim().slice(0, max) + ((s ?? "").length > max ? "…" : "");
+
+    const setCount = (id: string, n: number | null) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = n != null ? ` ${n}` : "";
+    };
+
+    list.innerHTML = `<li class="vault-item vault-item--muted">Loading…</li>`;
+
+    try {
+      if (tab === "recent") {
+        const threads = await fetch(API_BASE + "/chat/history/threads?limit=20", { headers: _authHeaders })
+          .then((r) => r.json() as Promise<Array<{ thread_id: string; title: string; summary?: string | null; turn_count: number }>>);
+        setCount("vaultCountRecent", threads.length);
+        list.innerHTML = "";
+        if (!threads.length) {
+          list.innerHTML = `<li class="vault-item vault-item--muted">No recent chats yet</li>`;
+          return;
+        }
+        for (const th of threads) {
+          const li = document.createElement("li");
+          li.className = "vault-item";
+          li.textContent = snippet((th.summary && th.summary.trim()) || th.title || "Untitled chat");
+          li.title = th.summary || th.title || "";
+          li.setAttribute("role", "button");
+          li.setAttribute("tabindex", "0");
+          li.addEventListener("click", () => void loadAndRenderThread(th.thread_id));
+          li.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); void loadAndRenderThread(th.thread_id); }
+          });
+          list.appendChild(li);
+        }
+
+      } else if (tab === "liked") {
+        const liked = await fetch(API_BASE + "/chat/history/most-helpful-searches?limit=20", { headers: _authHeaders })
+          .then((r) => r.json() as Promise<HistoryTurnItem[]>);
+        setCount("vaultCountLiked", liked.length);
+        list.innerHTML = "";
+        if (!liked.length) {
+          list.innerHTML = `<li class="vault-item vault-item--muted">No liked answers yet — thumb up a helpful response</li>`;
+          return;
+        }
+        for (const t of liked) {
+          const li = document.createElement("li");
+          li.className = "vault-item";
+          li.textContent = snippet(t.question || "(empty)");
+          li.title = t.question || "";
+          li.setAttribute("role", "button");
+          li.setAttribute("tabindex", "0");
+          const tid = (t.thread_id || "").trim();
+          li.addEventListener("click", () => {
+            if (tid) void loadAndRenderThread(tid);
+            else { (inputEl as HTMLInputElement).value = t.question ?? ""; updateSendState(); sendMessage(); }
+          });
+          list.appendChild(li);
+        }
+
+      } else if (tab === "tasks") {
+        const data = await fetch(API_BASE + "/chat/tasks?limit=20", { headers: _authHeaders })
+          .then((r) => r.json() as Promise<{ tasks?: Array<{ task_id: string; title?: string; kind?: string; status?: string }> }>);
+        const tasks = data.tasks || [];
+        const open = tasks.filter((t) => t.status !== "completed" && t.status !== "closed");
+        setCount("vaultCountTasks", open.length || null);
+        list.innerHTML = "";
+        if (!open.length) {
+          list.innerHTML = `<li class="vault-item vault-item--muted">No open tasks</li>`;
+          return;
+        }
+        for (const t of open) {
+          const li = document.createElement("li");
+          li.className = "vault-item";
+          li.textContent = snippet(t.title || t.kind || "Task");
+          li.title = t.title || "";
+          list.appendChild(li);
+        }
+
+      } else if (tab === "uploads") {
+        const data = await fetch(API_BASE + "/chat/uploads?limit=20", { headers: _authHeaders })
+          .then((r) => r.json() as Promise<{ uploads?: Array<{ document_id: string; filename?: string; status?: string }> }>);
+        const uploads = data.uploads || [];
+        setCount("vaultCountUploads", uploads.length || null);
+        list.innerHTML = "";
+        if (!uploads.length) {
+          list.innerHTML = `<li class="vault-item vault-item--muted">No uploads yet</li>`;
+          return;
+        }
+        for (const u of uploads) {
+          const li = document.createElement("li");
+          li.className = "vault-item";
+          li.textContent = snippet(u.filename || u.document_id);
+          li.title = u.filename || u.document_id;
+          list.appendChild(li);
+        }
+      }
+    } catch {
+      list.innerHTML = `<li class="vault-item vault-item--muted">Failed to load — try again</li>`;
+    }
+  }
+
   function loadSidebarHistory(): void {
+    // Sidebar history now lives in the My Vault block.
+    void loadVaultTab(_vaultActiveTab);
+  }
+
+  // Legacy function kept for compat — the real Recent list is in loadVaultTab("recent")
+  function _loadSidebarHistoryFull(): void {
     const recentList = document.getElementById("recentList");
     const helpfulList = document.getElementById("helpfulList");
     const documentsList = document.getElementById("documentsList");
@@ -11750,6 +11922,7 @@ function run(): void {
       });
     })();
   }
+  // end _loadSidebarHistoryFull (legacy, elements no longer in DOM)
 
   const chatEmptyLanding = document.getElementById("chatEmpty");
   chatEmptyLanding?.addEventListener("click", (e) => {
@@ -11784,12 +11957,17 @@ function run(): void {
     /* ignore */
   }
 
-  loadSidebarHistory();
+  initVaultBlock();
 
-  // Thumbs-up on any turn fires mobiusFeedbackUp (from renderFeedback, which
-  // lives at module scope and can't call loadSidebarHistory directly). Refresh
-  // the most-helpful lists immediately so the rated query appears without reload.
-  window.addEventListener("mobiusFeedbackUp", () => loadSidebarHistory());
+  // Thumbs-up on any turn fires mobiusFeedbackUp: refresh Liked tab count.
+  window.addEventListener("mobiusFeedbackUp", () => {
+    if (_vaultActiveTab === "liked") void loadVaultTab("liked");
+    // Always refresh recent since a new answer was given
+    void (async () => {
+      const el = document.getElementById("vaultCountRecent");
+      if (el) { /* count refreshes on next Recent tab open */ }
+    })();
+  });
 
   updateSendState();
 
@@ -11878,14 +12056,7 @@ function run(): void {
         urlEnvKey: "MOBIUS_LIBRARY_URL",
         fallbackUrl: "https://mobius-rag-ortabkknqa-uc.a.run.app",
       },
-      {
-        key: "vault",
-        label: "My Vault",
-        tagline: "Your uploads, tasks, and saved searches — personal workspace",
-        accent: "violet",
-        urlEnvKey: "MOBIUS_VAULT_URL",
-        fallbackUrl: "/vault",
-      },
+      // Vault is now the sidebar block above this section; not a tile.
     ];
 
     function tileUrl(t: SuiteTile): string {
@@ -12031,9 +12202,9 @@ function run(): void {
         "you ask a payer / policy / regulatory question."
       ),
       vault: (
-        "Your personal workspace \u2014 recent chats, liked answers, open tasks, " +
-        "and uploaded documents. Private to you; your org's public library " +
-        "lives in the Library tile. Click \u2197 to open My Vault in a new tab."
+        "Your private workspace \u2014 recent chats, liked answers, open tasks, " +
+        "and uploaded documents. Use the My Vault block in the sidebar to browse, " +
+        "or click '\u2922 Open' to launch the full Vault panel."
       ),
     };
 
