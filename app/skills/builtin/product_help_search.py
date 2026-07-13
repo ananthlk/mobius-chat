@@ -139,20 +139,28 @@ def _run_product_help(call: SkillCall) -> SkillEnvelope:
             config_sha=_ctx_field(call, "config_sha"),
         )
 
+    _extra: dict = {
+        "outcome": outcome,
+        "module": resp.get("module"),
+        "s_top": resp.get("s_top"),
+        "feedback_id": feedback_id,
+        # mobius-interact "▶ Show me" ref ({script_id, title}) — frontend renders
+        # a chip that fetches the script from the interact registry and runs it
+        # in guide mode. None when the matched section has no demo.
+        "demo": resp.get("demo"),
+    }
+    # Forward recital signal from the product-awareness service when present.
+    # When the service returns {"recital": {"verbatim": true, ...}}, the react
+    # loop captures it as ctx.recital and the integrator emits mode=RECITAL.
+    _recital = resp.get("recital")
+    if isinstance(_recital, dict) and _recital.get("verbatim"):
+        _extra["recital"] = _recital
+
     return SkillEnvelope(
         text=answer,
         sources=_sources(resp.get("sources")) if outcome == "answer" else [],
         signal="corpus_only" if outcome == "answer" else "no_sources",
-        extra={
-            "outcome": outcome,
-            "module": resp.get("module"),
-            "s_top": resp.get("s_top"),
-            "feedback_id": feedback_id,
-            # mobius-interact "▶ Show me" ref ({script_id, title}) — frontend renders
-            # a chip that fetches the script from the interact registry and runs it
-            # in guide mode. None when the matched section has no demo.
-            "demo": resp.get("demo"),
-        },
+        extra=_extra,
     )
 
 
