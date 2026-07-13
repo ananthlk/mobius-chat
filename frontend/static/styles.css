@@ -2163,7 +2163,7 @@ body {
 .answer-card--blended .answer-card-bubble {
   padding: 0.5rem 0.85rem 0.6rem;
   border-radius: var(--radius-sm);
-  border-left: 3px solid var(--accent);
+  border-left: 3px solid var(--mobius-violet, #7c3aed);
   background: rgba(0, 0, 0, 0.02);
   max-height: 65vh;
   overflow-y: auto;
@@ -2538,7 +2538,7 @@ body {
 }
 
 /* RECITAL mode — editorial prose from founding document */
-.answer-card-bubble--recital {
+.answer-card--recital .answer-card-bubble {
   border-left: 3px solid var(--mobius-violet, #7c3aed);
   border-radius: 0 8px 8px 0;
 }
@@ -2590,8 +2590,7 @@ body {
 
 /* Source confidence badge: right after top-line answer, labelled, with icon. */
 .confidence-badge-wrap {
-  margin-top: 0.5rem;
-  margin-bottom: 0.25rem;
+  display: none;
 }
 .confidence-badge {
   display: inline-flex;
