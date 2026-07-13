@@ -1064,64 +1064,68 @@ def _execute_tool(
             }
 
         emit(f"◌ Reading your attached document: {(query or '')[:60]}…")
-        # §5b wait-or-defer: if the catalog shows 0 chunks (doc still indexing),
-        # poll up to INDEXING_POLL_MAX_S before running the search — short-circuits
-        # the "ask again" UX for docs that finish within the turn window.
+        # §5b wait-or-defer: pgvector probe poll.
+        # Gate readiness via rag_published_embeddings (pgvector, ready ~10s) —
+        # NOT via instant_rag_uploads.chunks_count or published_rag_metadata
+        # (both reflect the slow chat_pg sync, ~130s). Probing lazy_rag_search
+        # directly IS the pgvector readiness check: if RAG's /api/query returns
+        # chunks, the doc is queryable; if not, it's still indexing.
         _INDEXING_POLL_MAX_S = 15
         _INDEXING_POLL_INTERVAL_S = 2
-        _pre_poll_known_row_count = next(
-            (int(f.get("row_count") or 0) for f in _all_files
-             if str(f.get("document_id", "")).strip() == document_id),
-            -1,
-        )
-        if _pre_poll_known_row_count == 0:
-            import time as _time_mod
-            try:
-                from app.storage.instant_rag_catalog import get_by_document_id as _cat_get_rl
-            except Exception:
-                _cat_get_rl = None
-            _waited = 0
-            while _cat_get_rl and _waited < _INDEXING_POLL_MAX_S:
-                _time_mod.sleep(_INDEXING_POLL_INTERVAL_S)
-                _waited += _INDEXING_POLL_INTERVAL_S
-                try:
-                    _cat = _cat_get_rl(document_id)
-                    if _cat and int(_cat.get("chunks_count") or 0) > 0:
-                        emit(f"  ✓ Document indexed after {_waited}s — searching now…")
-                        break
-                except Exception:
-                    break
-
-        # Phase B.1 — lazy RAG. Skips J/P/D tagger + confidence filter +
-        # rerank entirely (all three assume a corpus doc with document_tags
-        # / policy_line_tags rows, which user uploads don't have until
-        # promotion — see Phase B.7). Direct Chroma vector search scoped
-        # to document_id; chunks flow into the integrator unchanged.
-        from app.services.instant_rag_search import lazy_rag_search
-        answer, sources, usage, signal = lazy_rag_search(
-            document_id=document_id,
-            question=query,
-            k=10,
-            emitter=emitter,
-        )
-        success = bool(sources) and signal != RETRIEVAL_SIGNAL_NO_SOURCES
-        _hint = (usage or {}).get("vector_count_hint")  # 0=not indexed, >0=query miss, -1/None=probe failed
-        # Cross-check: if thread state says 0 chunks for this doc, treat same as hint=0.
-        # Handles the case where the Chroma probe fails (-1) but we know from the thread
-        # catalog that no chunks have been written yet (row_count=0).
         _known_row_count = next(
             (int(f.get("row_count") or 0) for f in _all_files
              if str(f.get("document_id", "")).strip() == document_id),
             -1,
         )
-        _is_indexing = (_hint == 0) or (_known_row_count == 0 and (_hint is None or _hint <= 0))
+        from app.services.instant_rag_search import lazy_rag_search
+        _poll_ran = False
+        _poll_timed_out = False
+        answer, sources, usage, signal = "", [], None, RETRIEVAL_SIGNAL_NO_SOURCES
+        if _known_row_count == 0:
+            # Thread state says 0 chunks — doc is likely still indexing.
+            # Poll pgvector directly (2s intervals, 15s max) so the user
+            # gets an answer in-turn when the doc lands quickly.
+            import time as _time_mod
+            _poll_ran = True
+            _waited = 0
+            while _waited < _INDEXING_POLL_MAX_S:
+                _time_mod.sleep(_INDEXING_POLL_INTERVAL_S)
+                _waited += _INDEXING_POLL_INTERVAL_S
+                answer, sources, usage, signal = lazy_rag_search(
+                    document_id=document_id, question=query, k=10, emitter=None
+                )
+                if sources:
+                    emit(f"  ✓ Document ready after {_waited}s — searching now…")
+                    break
+            else:
+                _poll_timed_out = True
+
+        # Run full search (with emitter) if the poll didn't already find results.
+        if not sources:
+            answer, sources, usage, signal = lazy_rag_search(
+                document_id=document_id,
+                question=query,
+                k=10,
+                emitter=emitter,
+            )
+
+        success = bool(sources) and signal != RETRIEVAL_SIGNAL_NO_SOURCES
+        _hint = (usage or {}).get("vector_count_hint")  # 0=not indexed, >0=query miss, -1/None=probe failed
+        # _is_indexing: true if pgvector returned nothing AND we have reason to
+        # believe the doc is still being indexed (thread row_count=0, or the
+        # pgvector poll ran 15s and still got nothing).
+        _is_indexing = (
+            not success and (
+                _poll_timed_out  # pgvector poll ran 15s with no results
+                or (_known_row_count == 0 and (_hint is None or _hint <= 0))
+                or _hint == 0
+            )
+        )
         if not success:
             if _is_indexing:
-                # Ingest race condition — document registered but Chroma chunks
-                # haven't landed yet. The §5b poll above already waited up to 15s;
-                # still not ready → bypass the integrator entirely so no LLM round-trip
-                # fires and no answer-card chrome (confidence badge, sources block) is
-                # added to a plain status message.
+                # The §5b poll above already waited up to 15s probing pgvector.
+                # Bypass the integrator entirely — no LLM round-trip, no
+                # answer-card chrome — just emit the plain status message.
                 _doc_filename = next(
                     (f.get("filename") for f in _all_files
                      if str(f.get("document_id", "")).strip() == document_id),
@@ -2436,6 +2440,12 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         if rsum_t:
             tr_entry["result_summary"] = rsum_t
         tool_results.append(tr_entry)
+
+        # §5b bypass: if the tool marked ctx.react_bypass_integrate, exit the
+        # ReAct loop immediately without calling the LLM for another round.
+        # ctx.final_message was already set by the tool (plain status message).
+        if getattr(ctx, "react_bypass_integrate", False):
+            return
 
         # Phase 0.8: do NOT emit sources from failed tool runs. When an LLM
         # step inside a retrieval tool fails (e.g. corpus search's LLM call
