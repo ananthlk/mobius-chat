@@ -2165,3 +2165,12 @@ if _frontend.exists():
         r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return r
 
+    # My Vault — the user's personal workspace page (Vault agent). Standalone
+    # same-origin SPA; reuses the platform token from localStorage to hit the
+    # existing /chat/* read endpoints. Target of the MOBIUS_VAULT_URL suite tile.
+    @app.get("/vault")
+    def vault():
+        r = FileResponse(_frontend / "vault.html")
+        r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return r
+

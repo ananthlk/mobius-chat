@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>My Vault — Mobius</title>
+<link rel="icon" type="image/svg+xml" href="/static/logo.svg" />
+<link rel="stylesheet" href="/static/mobius-tokens.css" />
+<style>
+  /* ─────────────────────────────────────────────────────────────
+     My Vault — the user's personal workspace (expanded page).
+     Owned by the Vault agent. Layout per UX spec 2026-07-13:
+     summary strip + 200px left rail + full-width content.
+     Tokens from the canonical /static/mobius-tokens.css
+     (--mobius-violet #7C3AED). ───────────────────────────────── */
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    background: var(--mobius-bg-primary);
+    color: var(--mobius-text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    font-size: 14px; line-height: 1.45;
+  }
+  a { color: inherit; }
+  button { font-family: inherit; }
+
+  /* top bar */
+  .vault-topbar {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 20px; border-bottom: 1px solid var(--mobius-border);
+    background: var(--mobius-bg-secondary);
+  }
+  .vault-brand { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 15px; }
+  .vault-brand .lock { font-size: 11px; color: var(--mobius-text-muted); font-weight: 400; }
+  .vault-topbar-spacer { flex: 1; }
+  .vault-search {
+    padding: 6px 10px; border: 1px solid var(--mobius-border-medium);
+    border-radius: var(--mobius-radius-base); background: var(--mobius-bg-primary);
+    color: var(--mobius-text-primary); font-size: 13px; width: 220px;
+  }
+  .vault-search:focus { outline: none; border-color: var(--mobius-violet); }
+  .vault-backlink {
+    text-decoration: none; color: var(--mobius-text-secondary); font-size: 13px;
+    padding: 6px 10px; border-radius: var(--mobius-radius-base); border: 1px solid transparent;
+  }
+  .vault-backlink:hover { border-color: var(--mobius-border-medium); }
+
+  /* preview banner (standalone / unauthenticated) */
+  .vault-preview-banner {
+    display: none; padding: 6px 20px; font-size: 12px;
+    background: color-mix(in srgb, var(--mobius-warning) 14%, transparent);
+    color: color-mix(in srgb, var(--mobius-warning) 90%, var(--mobius-text-primary));
+    border-bottom: 1px solid color-mix(in srgb, var(--mobius-warning) 30%, transparent);
+  }
+  body.is-preview .vault-preview-banner { display: block; }
+
+  /* conditional urgency strip (UX spec C) — present only when actionable */
+  .vault-urgency { display: none; padding: 12px 20px 2px; }
+  .vault-urgency.show { display: block; }
+  .urgency-line { display: inline-flex; align-items: center; gap: 10px; font-size: 13px; }
+  .urgency-ico { color: var(--mobius-warning); }
+  .urgency-seg {
+    background: none; border: none; padding: 0; cursor: pointer;
+    color: var(--mobius-warning); font-size: 13px; font-weight: 600; font-family: inherit;
+  }
+  .urgency-seg:hover { text-decoration: underline; }
+  .urgency-sep { color: var(--mobius-text-muted); }
+  /* active filter chip (set by an urgency shortcut) */
+  .active-filter {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+    padding: 4px 10px; border-radius: var(--mobius-radius-full);
+    border: 1px solid var(--mobius-violet); color: var(--mobius-violet);
+    background: color-mix(in srgb, var(--mobius-violet) 8%, transparent); cursor: pointer; font-family: inherit;
+  }
+  .active-filter:hover { background: color-mix(in srgb, var(--mobius-violet) 16%, transparent); }
+
+  /* main split: rail + content */
+  .vault-body { display: grid; grid-template-columns: 200px 1fr; gap: 0; align-items: start; }
+  .vault-rail {
+    padding: 12px 8px; border-right: 1px solid var(--mobius-border);
+    background: var(--mobius-bg-secondary); min-height: calc(100vh - 150px);
+  }
+  .rail-item {
+    display: flex; align-items: center; gap: 10px; width: 100%;
+    padding: 9px 12px; margin-bottom: 2px; border: none; background: none;
+    border-left: 3px solid transparent; border-radius: 0 var(--mobius-radius-base) var(--mobius-radius-base) 0;
+    color: var(--mobius-text-secondary); cursor: pointer; font-size: 13.5px; text-align: left;
+  }
+  .rail-item:hover { background: var(--mobius-bg-tertiary); }
+  .rail-item.active { border-left-color: var(--mobius-violet); color: var(--mobius-violet); background: var(--mobius-bg-tertiary); font-weight: 600; }
+  .rail-item .rail-ico { width: 18px; text-align: center; }
+  .rail-item .rail-label { flex: 1; }
+  .rail-item .rail-count {
+    font-size: 11px; padding: 1px 8px; border-radius: var(--mobius-radius-full);
+    background: var(--mobius-bg-primary); color: var(--mobius-text-muted); border: 1px solid var(--mobius-border);
+  }
+  .rail-item.active .rail-count { color: var(--mobius-violet); border-color: var(--mobius-violet); }
+  .rail-sep { margin: 12px 12px 6px; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--mobius-text-muted); }
+  .rail-item.is-soon { color: var(--mobius-text-muted); cursor: default; }
+  .rail-item.is-soon:hover { background: none; }
+  .rail-item.is-soon .rail-count { background: none; border: none; }
+
+  /* content */
+  .vault-content { padding: 16px 20px 40px; overflow-x: auto; }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+  .panel-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .panel-head h2 { margin: 0; font-size: 16px; }
+  .panel-head .panel-sub { color: var(--mobius-text-muted); font-size: 12px; }
+  .panel-toolbar { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+
+  /* generic list rows (recent / liked) */
+  .row-list { list-style: none; margin: 0; padding: 0; }
+  .row-item {
+    display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px;
+    border: 1px solid var(--mobius-border-light); border-radius: var(--mobius-radius-base);
+    margin-bottom: 6px; cursor: pointer; background: var(--mobius-bg-secondary);
+  }
+  .row-item:hover { border-color: var(--mobius-violet); }
+  .row-ico { flex: 0 0 auto; color: var(--mobius-text-muted); }
+  .row-main { flex: 1; min-width: 0; }
+  .row-title { color: var(--mobius-text-primary); }
+  .row-meta { font-size: 12px; color: var(--mobius-text-muted); margin-top: 2px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+  /* uploads table */
+  .uploads-table { width: 100%; min-width: 680px; border-collapse: collapse; font-size: 13px; }
+  .uploads-table th {
+    text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--mobius-border);
+    color: var(--mobius-text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; font-weight: 600;
+    cursor: pointer; white-space: nowrap; user-select: none;
+  }
+  .uploads-table th.sortable:hover { color: var(--mobius-text-primary); }
+  .uploads-table th .sort-arrow { opacity: .5; font-size: 10px; }
+  .uploads-table td { padding: 9px 10px; border-bottom: 1px solid var(--mobius-border-light); vertical-align: middle; }
+  .uploads-table tr:hover td { background: var(--mobius-bg-secondary); }
+  .u-name { color: var(--mobius-text-primary); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .u-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .u-dot.active, .u-dot.ready { background: var(--mobius-success); }
+  .u-dot.processing { background: var(--mobius-warning); }
+  .u-dot.failed { background: var(--mobius-error); }
+  .u-dot.expired, .u-dot.discarded { background: var(--mobius-text-muted); }
+  .u-ttl.soon { color: var(--mobius-warning); font-weight: 600; }
+  .u-ttl.gone { color: var(--mobius-error); }
+  .u-vis { font-size: 11px; padding: 1px 8px; border-radius: var(--mobius-radius-full); border: 1px solid var(--mobius-border); color: var(--mobius-text-secondary); }
+  tr.is-expired .u-name { text-decoration: line-through; color: var(--mobius-text-muted); }
+
+  .u-actions { display: flex; gap: 2px; white-space: nowrap; }
+  .icon-btn {
+    border: none; background: none; cursor: pointer; padding: 4px 6px; border-radius: var(--mobius-radius-base);
+    color: var(--mobius-text-muted); font-size: 14px; line-height: 1;
+  }
+  .icon-btn:hover { background: var(--mobius-bg-tertiary); color: var(--mobius-text-primary); }
+  .icon-btn:disabled { opacity: .35; cursor: not-allowed; }
+  .icon-btn.danger:hover { color: var(--mobius-error); }
+
+  /* task groups */
+  .task-group { margin-bottom: 20px; }
+  .task-group-title { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--mobius-text-muted); margin: 0 0 8px; }
+  .task-group.notifications .row-item { background: var(--mobius-bg-tertiary); border-style: dashed; }
+  .sev-badge { font-size: 10px; padding: 1px 6px; border-radius: var(--mobius-radius-full); border: 1px solid var(--mobius-border-medium); color: var(--mobius-text-secondary); }
+  .sev-badge.blocker, .sev-badge.critical { color: var(--mobius-error); border-color: var(--mobius-error); }
+  .sev-badge.high { color: var(--mobius-warning); border-color: var(--mobius-warning); }
+
+  /* chips + toggles */
+  .chip-toggle {
+    font-size: 12px; padding: 4px 10px; border-radius: var(--mobius-radius-full);
+    border: 1px solid var(--mobius-border-medium); background: var(--mobius-bg-secondary);
+    color: var(--mobius-text-muted); cursor: pointer;
+  }
+  .chip-toggle.on { color: var(--mobius-violet); border-color: var(--mobius-violet); }
+
+  /* empty state */
+  .empty-state { text-align: center; padding: 48px 20px; color: var(--mobius-text-muted); }
+  .empty-state .empty-copy { margin-bottom: 12px; }
+  .empty-chip {
+    display: inline-block; text-decoration: none; padding: 6px 14px; border-radius: var(--mobius-radius-base);
+    border: 1px solid var(--mobius-violet); color: var(--mobius-violet); font-size: 13px;
+  }
+  .empty-chip:hover { background: color-mix(in srgb, var(--mobius-violet) 10%, transparent); }
+
+  /* toast */
+  .vault-toast {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: var(--mobius-text-primary); color: var(--mobius-bg-primary);
+    padding: 10px 18px; border-radius: var(--mobius-radius-base); font-size: 13px;
+    opacity: 0; pointer-events: none; transition: opacity .25s ease; z-index: 50; max-width: 80vw;
+  }
+  .vault-toast.show { opacity: 1; }
+
+  .loading { color: var(--mobius-text-muted); padding: 20px 4px; }
+  .tag-pill { font-size: 11px; padding: 1px 7px; border-radius: var(--mobius-radius-full); background: var(--mobius-bg-tertiary); color: var(--mobius-text-secondary); }
+</style>
+</head>
+<body>
+  <div class="vault-topbar">
+    <span class="vault-brand">🗄 My Vault <span class="lock">· private</span></span>
+    <div class="vault-topbar-spacer"></div>
+    <input type="search" class="vault-search" id="vaultSearch" placeholder="Search your vault…" aria-label="Search vault" />
+    <a class="vault-backlink" href="/" id="backToChat">← Back to chat</a>
+  </div>
+  <div class="vault-preview-banner" id="previewBanner">
+    Preview mode — not signed in, showing sample data. Open this from Mobius Chat to see your own workspace.
+  </div>
+
+  <div class="vault-urgency" id="summaryStrip"><!-- conditional urgency strip injected --></div>
+
+  <div class="vault-body">
+    <nav class="vault-rail" id="vaultRail"><!-- rail items injected --></nav>
+    <main class="vault-content" id="vaultContent">
+      <section class="tab-panel active" data-panel="recent"><div class="loading">Loading…</div></section>
+      <section class="tab-panel" data-panel="liked"></section>
+      <section class="tab-panel" data-panel="tasks"></section>
+      <section class="tab-panel" data-panel="uploads"></section>
+    </main>
+  </div>
+
+  <div class="vault-toast" id="vaultToast" role="status" aria-live="polite"></div>
+
+  <script type="module" src="/static/vault.js"></script>
+</body>
+</html>
