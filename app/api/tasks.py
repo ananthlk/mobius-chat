@@ -115,6 +115,7 @@ def chat_whoami(user_id: str | None = Depends(require_user)) -> dict[str, Any]:
         "display_name": me.get("display_name"),
         "assignee_ref": me.get("assignee_ref"),
         "greeting": me.get("greeting"),
+        "org_memberships": me.get("org_memberships") or [],
     }}
 
 

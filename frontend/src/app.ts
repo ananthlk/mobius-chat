@@ -11766,6 +11766,7 @@ function run(): void {
   try {
     const u = new URL(window.location.href);
     const pq = u.searchParams.get("q")?.trim();
+    const pThread = u.searchParams.get("thread")?.trim();
     if (pq) {
       u.searchParams.delete("q");
       const next = u.pathname + (u.search ? u.search : "") + u.hash;
@@ -11773,6 +11774,11 @@ function run(): void {
       inputEl.value = pq;
       updateSendState();
       sendMessage();
+    } else if (pThread) {
+      u.searchParams.delete("thread");
+      const next = u.pathname + (u.search ? u.search : "") + u.hash;
+      window.history.replaceState({}, "", next);
+      void loadAndRenderThread(pThread);
     }
   } catch {
     /* ignore */
@@ -11874,12 +11880,11 @@ function run(): void {
       },
       {
         key: "vault",
-        label: "Vault",
-        tagline: "Your org, personal & patient documents (private namespaces)",
+        label: "My Vault",
+        tagline: "Your uploads, tasks, and saved searches — personal workspace",
         accent: "violet",
         urlEnvKey: "MOBIUS_VAULT_URL",
-        fallbackUrl: "https://mobius-rag-ortabkknqa-uc.a.run.app",
-        comingSoon: true,
+        fallbackUrl: "/vault",
       },
     ];
 
@@ -12026,12 +12031,9 @@ function run(): void {
         "you ask a payer / policy / regulatory question."
       ),
       vault: (
-        "Private namespace for documents that should NOT be public \u2014 your " +
-        "org's contracts, internal SOPs, individual user notes, and " +
-        "(future) per-patient material under HIPAA. Each namespace gets a " +
-        "dedicated agent + isolation boundary; cross-namespace retrieval " +
-        "only happens with explicit consent. Lands as a separate workspace " +
-        "in the next sprint."
+        "Your personal workspace \u2014 recent chats, liked answers, open tasks, " +
+        "and uploaded documents. Private to you; your org's public library " +
+        "lives in the Library tile. Click \u2197 to open My Vault in a new tab."
       ),
     };
 

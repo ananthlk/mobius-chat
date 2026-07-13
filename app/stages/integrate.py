@@ -480,6 +480,10 @@ def run_integrate(
             "user_org": _up.get("org_name") or "",
         }
 
+    # Recital context: product_help_search flagged the answer as verbatim text
+    # (e.g. a founding essay). Signal the integrator to quote rather than summarize.
+    _recital_ctx: dict | None = getattr(ctx, "recital", None) if getattr(ctx, "recital", None) else None
+
     final_message, integrator_usage = format_response(
         plan,
         answers,
@@ -503,6 +507,7 @@ def run_integrate(
         source_texts=source_texts or None,
         task_context=_task_ctx,
         instant_rag_context=_instant_rag_ctx,
+        recital_context=_recital_ctx,
     )
     ctx.final_message = final_message
 

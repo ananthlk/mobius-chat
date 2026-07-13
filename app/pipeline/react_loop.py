@@ -1442,6 +1442,9 @@ def _execute_tool(
         _demo = (env.extra or {}).get("demo") if env.extra else None
         if _demo:
             ctx.demo = _demo
+        _recital = (env.extra or {}).get("recital") if env.extra else None
+        if isinstance(_recital, dict) and _recital.get("verbatim"):
+            ctx.recital = _recital  # type: ignore[attr-defined]
         return {
             "tool": tool,
             "success": bool(env.text and not env.text.startswith("Unknown skill")),

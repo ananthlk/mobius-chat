@@ -11335,6 +11335,7 @@ ${message}`;
   try {
     const u = new URL(window.location.href);
     const pq = u.searchParams.get("q")?.trim();
+    const pThread = u.searchParams.get("thread")?.trim();
     if (pq) {
       u.searchParams.delete("q");
       const next = u.pathname + (u.search ? u.search : "") + u.hash;
@@ -11342,6 +11343,11 @@ ${message}`;
       inputEl.value = pq;
       updateSendState();
       sendMessage();
+    } else if (pThread) {
+      u.searchParams.delete("thread");
+      const next = u.pathname + (u.search ? u.search : "") + u.hash;
+      window.history.replaceState({}, "", next);
+      void loadAndRenderThread(pThread);
     }
   } catch {
   }
@@ -11386,12 +11392,11 @@ ${message}`;
       },
       {
         key: "vault",
-        label: "Vault",
-        tagline: "Your org, personal & patient documents (private namespaces)",
+        label: "My Vault",
+        tagline: "Your uploads, tasks, and saved searches \u2014 personal workspace",
         accent: "violet",
         urlEnvKey: "MOBIUS_VAULT_URL",
-        fallbackUrl: "https://mobius-rag-ortabkknqa-uc.a.run.app",
-        comingSoon: true
+        fallbackUrl: "/vault"
       }
     ];
     function tileUrl(t) {
@@ -11485,7 +11490,7 @@ ${message}`;
       strategy: "Benchmarks your organization against peer CMHCs on revenue, denials, panel mix, and credentialing throughput. Pulls from our public payer + DOGE rate datasets and overlays your roster to show where you sit on each KPI. Useful when board / leadership asks 'how do we compare?'.",
       roster: "Single source of truth for your provider directory + the credentialing pipeline. Tracks who's enrolled with which payer, what's pending, what's expired, and surfaces re-credentialing windows before they lapse. Roster reconciliation, NPI verification, and run-by-run credentialing reports all live here.",
       library: "The shared corpus \u2014 payer manuals, state Medicaid handbooks, federal regs, public CMS guidance. Anything anyone uploads as a public source becomes searchable across every chat (with source citation). Mobius retrieves from this library automatically when you ask a payer / policy / regulatory question.",
-      vault: "Private namespace for documents that should NOT be public \u2014 your org's contracts, internal SOPs, individual user notes, and (future) per-patient material under HIPAA. Each namespace gets a dedicated agent + isolation boundary; cross-namespace retrieval only happens with explicit consent. Lands as a separate workspace in the next sprint."
+      vault: "Your personal workspace \u2014 recent chats, liked answers, open tasks, and uploaded documents. Private to you; your org's public library lives in the Library tile. Click \u2197 to open My Vault in a new tab."
     };
     function renderSkillsModal() {
       if (!modalBody)
