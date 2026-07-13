@@ -918,6 +918,9 @@ def _answer_tool_impl(
                     pipeline_ctx.demo = _extra["demo"]
                 if _extra.get("capture_card") and not getattr(pipeline_ctx, "capture_card", None):
                     pipeline_ctx.capture_card = _extra["capture_card"]
+                _rec = _extra.get("recital")
+                if isinstance(_rec, dict) and _rec.get("verbatim") and not getattr(pipeline_ctx, "recital", None):
+                    pipeline_ctx.recital = {**_rec, "text": env.text or ""}  # type: ignore[attr-defined]
             return env.to_legacy_tuple()
         # Unknown hint → fall through to keyword dispatch below.
 
