@@ -70,6 +70,7 @@ def _build_consolidator_input_json(
     react_draft: str | None = None,
     source_texts: list[dict] | None = None,
     task_context: dict | None = None,
+    instant_rag_context: dict | None = None,
 ) -> str:
     """Build JSON payload for consolidator: user_message, subquestions, answers, retrieval_metadata, sources_summary, jurisdiction_summary, user_provided_context, previous_thread_summary."""
     _subs = getattr(plan, "subquestions", None) or []
@@ -109,6 +110,8 @@ def _build_consolidator_input_json(
         payload["source_texts"] = source_texts
     if task_context:
         payload["task_context"] = task_context
+    if instant_rag_context:
+        payload["instant_rag_context"] = instant_rag_context
     return json.dumps(payload, indent=2)
 
 
@@ -267,6 +270,7 @@ def format_response(
     react_draft: str | None = None,
     source_texts: list[dict] | None = None,
     task_context: dict | None = None,
+    instant_rag_context: dict | None = None,
 ) -> tuple[str, LLMUsageDict | None]:
     """Turn plan + answers into one chat-friendly message via llm_manager (integrator or integrator_roster).
     On LLM failure, returns fallback and None usage."""
@@ -294,6 +298,7 @@ def format_response(
             react_draft=react_draft,
             source_texts=source_texts,
             task_context=task_context,
+            instant_rag_context=instant_rag_context,
         )
         canonical_score = blended_canonical_score(plan)
         consolidator_type = choose_consolidator_type(

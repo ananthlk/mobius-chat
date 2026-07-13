@@ -466,6 +466,20 @@ def run_integrate(
             ],
         }
 
+    # Instant-RAG context: when every source came from a user-uploaded doc,
+    # signal the integrator to always generate profile-aware follow-up questions.
+    _instant_rag_ctx: dict | None = None
+    if all_sources and all(
+        bool(s.get("instant_rag") or s.get("source_type") == "instant_rag")
+        for s in all_sources if isinstance(s, dict)
+    ):
+        _up = getattr(ctx, "user_profile", None) or {}
+        _instant_rag_ctx = {
+            "is_uploaded_document": True,
+            "user_role": _up.get("role") or _up.get("job_title") or "",
+            "user_org": _up.get("org_name") or "",
+        }
+
     final_message, integrator_usage = format_response(
         plan,
         answers,
@@ -488,6 +502,7 @@ def run_integrate(
         react_draft=getattr(ctx, "react_draft", None),
         source_texts=source_texts or None,
         task_context=_task_ctx,
+        instant_rag_context=_instant_rag_ctx,
     )
     ctx.final_message = final_message
 
