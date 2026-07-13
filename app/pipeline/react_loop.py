@@ -1404,6 +1404,14 @@ def _execute_tool(
             tool_inputs=inputs,
         )
         success = bool(answer and "error" not in (answer or "").lower()[:20])
+        # golden: this arm produced an authoritative answer; finalize without
+        # further retrieval. Inferred when the skill returned content + a valid
+        # signal (non-empty, non-NO_SOURCES). Skill can also opt-in explicitly.
+        _answer_golden = (
+            success
+            and bool((answer or "").strip())
+            and (signal or "") not in ("", RETRIEVAL_SIGNAL_NO_SOURCES)
+        )
         return {
             "tool": tool,
             "success": success,
@@ -1411,6 +1419,7 @@ def _execute_tool(
             "signal": signal,
             "sources": sources or [],
             "usage": usage,
+            "golden": _answer_golden,
         }
 
     # ── Skill registry fallback (MCP + builtin skills not handled above) ─────
@@ -1445,12 +1454,26 @@ def _execute_tool(
         _recital = (env.extra or {}).get("recital") if env.extra else None
         if isinstance(_recital, dict) and _recital.get("verbatim"):
             ctx.recital = _recital  # type: ignore[attr-defined]
+        _skill_success = bool(env.text and not env.text.startswith("Unknown skill"))
+        # golden: explicit opt-in via env.extra["golden"], or inferred when
+        # the skill returned content + sources + a non-empty signal.
+        # Operational skills (create_task, list_uploads, etc.) return no sources
+        # and RETRIEVAL_SIGNAL_NO_SOURCES, so they never trip this gate.
+        _skill_golden = bool(
+            (env.extra or {}).get("golden")
+            or (
+                _skill_success
+                and env.sources
+                and (env.signal or "") not in ("", RETRIEVAL_SIGNAL_NO_SOURCES)
+            )
+        )
         return {
             "tool": tool,
-            "success": bool(env.text and not env.text.startswith("Unknown skill")),
+            "success": _skill_success,
             "result": env.text or f"{tool} returned no content.",
             "signal": env.signal,
             "sources": [s.to_dict() for s in env.sources],
+            "golden": _skill_golden,
         }
 
     return {
@@ -2490,18 +2513,24 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         if result.get("signal") and result["signal"] != RETRIEVAL_SIGNAL_NO_SOURCES:
             final_signal = result["signal"]
 
-        # Specific-knowledge early exit: skills that are authoritative by
-        # definition (product_help_search has the canonical answer for
-        # identity/about/feature questions). When one returns success + content,
-        # treat it as golden and finalize immediately — do NOT give the 5-arm
-        # bandit a chance to escalate to google_search, which would anchor
-        # composition on web content and discard the skill's answer entirely.
+        # Golden-answer early exit: any specific-knowledge skill (registered
+        # via the skill registry OR answer_tool) that sets result["golden"]=True
+        # is declaring itself authoritative. Finalize immediately — do NOT let
+        # the 5-arm bandit (which only tracks corpus+google arms) escalate to
+        # google_search or further retrieval, which would anchor composition on
+        # web content and discard the skill's answer.
+        #
+        # golden is set by the dispatch return blocks above. Skills opt-in via:
+        #   (a) env.extra["golden"] = True  — explicit skill-level opt-in
+        #   (b) heuristic: success + sources + non-empty signal (inferred)
+        # Operational skills (create_task, list_uploads, etc.) produce no sources
+        # and RETRIEVAL_SIGNAL_NO_SOURCES so they never match.
         if (
-            last_tool in ("product_help_search",)
+            result.get("golden")
             and result.get("success")
             and len((result.get("result") or "").strip()) >= 30
         ):
-            emit("  ✓ Authoritative product knowledge found — finalizing.")
+            emit(f"  ✓ {last_tool}: authoritative answer — finalizing.")
             _finalize_response(
                 ctx,
                 (result.get("result") or "").strip(),
