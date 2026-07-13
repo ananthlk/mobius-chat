@@ -11193,13 +11193,13 @@ ${message}`;
     } catch {
     }
   }
-  window.mobiusOpenVaultPanel = window.mobiusOpenVaultPanel || function(_tab) {
-    window.open("/vault", "_blank", "noopener");
-  };
   function openVaultPanel(tab) {
     const w = window;
-    if (typeof w.mobiusOpenVaultPanel === "function")
-      w.mobiusOpenVaultPanel(tab);
+    if (typeof w.MobiusVault?.open === "function") {
+      w.MobiusVault.open(tab ? { tab } : void 0);
+    } else {
+      window.open("/vault", "_blank", "noopener");
+    }
   }
   let _vaultActiveTab = "recent";
   function initVaultBlock() {

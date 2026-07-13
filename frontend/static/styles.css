@@ -409,10 +409,21 @@ body {
 }
 
 .vault-block-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   font-size: var(--text-xs);
   font-weight: 600;
   color: var(--mobius-violet, #7c3aed);
   letter-spacing: 0.02em;
+}
+
+.vault-block-icon {
+  flex-shrink: 0;
+  color: var(--mobius-violet, #7c3aed);
+  opacity: 0.85;
+  position: relative;
+  top: -0.5px;
 }
 
 .vault-block-tag {

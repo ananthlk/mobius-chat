@@ -11604,15 +11604,17 @@ function run(): void {
   }
 
   // ── My Vault sidebar block ───────────────────────────────────────────────────
-  // Panel API: Vault agent overrides window.mobiusOpenVaultPanel to inject their
-  // slide-in panel. Default falls back to opening /vault in a new tab.
-  (window as Window & typeof globalThis & { mobiusOpenVaultPanel?: (tab?: string) => void }).mobiusOpenVaultPanel
-    = (window as Window & typeof globalThis & { mobiusOpenVaultPanel?: (tab?: string) => void }).mobiusOpenVaultPanel
-    || function(_tab?: string) { window.open("/vault", "_blank", "noopener"); };
-
+  // Panel API: vault-panel.js (vendored at /static/vault-panel.js) exposes
+  // window.MobiusVault = { open(opts?), close(), toggle() }.
+  // opts: { tab: "recent"|"liked"|"tasks"|"uploads" }
+  // Fallback: if the component isn't loaded yet, opens /vault in a new tab.
   function openVaultPanel(tab?: string): void {
-    const w = window as Window & typeof globalThis & { mobiusOpenVaultPanel?: (tab?: string) => void };
-    if (typeof w.mobiusOpenVaultPanel === "function") w.mobiusOpenVaultPanel(tab);
+    const w = window as Window & typeof globalThis & { MobiusVault?: { open: (opts?: { tab?: string }) => void } };
+    if (typeof w.MobiusVault?.open === "function") {
+      w.MobiusVault.open(tab ? { tab } : undefined);
+    } else {
+      window.open("/vault", "_blank", "noopener");
+    }
   }
 
   let _vaultActiveTab = "recent";
