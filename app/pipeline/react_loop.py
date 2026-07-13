@@ -2490,6 +2490,28 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         if result.get("signal") and result["signal"] != RETRIEVAL_SIGNAL_NO_SOURCES:
             final_signal = result["signal"]
 
+        # Specific-knowledge early exit: skills that are authoritative by
+        # definition (product_help_search has the canonical answer for
+        # identity/about/feature questions). When one returns success + content,
+        # treat it as golden and finalize immediately — do NOT give the 5-arm
+        # bandit a chance to escalate to google_search, which would anchor
+        # composition on web content and discard the skill's answer entirely.
+        if (
+            last_tool in ("product_help_search",)
+            and result.get("success")
+            and len((result.get("result") or "").strip()) >= 30
+        ):
+            emit("  ✓ Authoritative product knowledge found — finalizing.")
+            _finalize_response(
+                ctx,
+                (result.get("result") or "").strip(),
+                all_sources,
+                final_signal,
+                last_tool,
+                emitter,
+            )
+            return
+
         # Fast mode early exit: if round 1 returns a usable result, skip the
         # second LLM reasoning pass. Round 2 is still available as fallback when
         # round 1 fails or returns nothing (complex / multi-hop questions).
