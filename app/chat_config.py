@@ -128,11 +128,12 @@ _ENRICHER_PREAMBLE = (
     "  5. Flag what the sources did not cover\n\n"
     "Return ONLY valid JSON. No markdown, no commentary, no extra text.\n\n"
     "AnswerCard schema:\n"
-    '{"mode":"FACTUAL|CANONICAL|BLENDED",'
+    '{"mode":"FACTUAL|CANONICAL|BLENDED|RECITAL",'
     '"direct_answer":"string (one-sentence backup — shown if draft unavailable)",'
     '"correction":null,'
     '"takeaways":["string"],'
     '"sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string","bullets":["string"]}],'
+    '"recital":{"verbatim":"string","document_id":"string","section":"string"},'
     '"citations":[{"claim":"string","doc_title":"string","locator":"string","snippet":"string"}],'
     '"next_steps":["string"],'
     '"gaps":["string"],'
