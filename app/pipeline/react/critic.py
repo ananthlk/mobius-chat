@@ -156,6 +156,17 @@ def should_run_critic(
     """
     answer_text = (answer or "").strip()
 
+    # Instant-RAG single-doc path: the pgvector passages returned by
+    # search_uploaded_document ARE the ground truth.  The critic LLM cannot
+    # reliably tell whether a claim is supported by those same passages — it
+    # false-positives and tells the user "the source doesn't contain this"
+    # even when the passages were literally retrieved from that document.
+    # Gate: corpus_only signal + all sources tagged instant_rag → skip.
+    if (final_signal or "").lower() == "corpus_only" and all_sources:
+        _instant_sources = [s for s in all_sources if s.get("instant_rag") or s.get("source_type") == "instant_rag"]
+        if _instant_sources and len(_instant_sources) == len(all_sources):
+            return False, "skip:instant_rag_single_doc_retrieval_is_ground_truth"
+
     # Web-sourced answers are less reliably quoted → always audit.
     if _GOOGLE_SIGNAL in (final_signal or "").lower():
         return True, "run:web_sourced_answer"
