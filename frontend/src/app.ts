@@ -709,16 +709,21 @@ function isSectionIntent(s: unknown): s is SectionIntent {
   return typeof s === "string" && SECTION_INTENTS.includes(s as SectionIntent);
 }
 
-/** AnswerCard JSON from consolidator (FACTUAL / CANONICAL / BLENDED) */
+/** AnswerCard JSON from consolidator (FACTUAL / CANONICAL / BLENDED / RECITAL) */
 interface AnswerCardSection {
   intent?: SectionIntent;
   label: string;
   bullets: string[];
 }
 interface AnswerCard {
-  mode: "FACTUAL" | "CANONICAL" | "BLENDED";
+  mode: "FACTUAL" | "CANONICAL" | "BLENDED" | "RECITAL";
   direct_answer: string;
   sections: AnswerCardSection[];
+  recital?: {
+    verbatim: string;
+    document_id?: string;
+    section?: string;
+  };
   required_variables?: string[];
   confidence_note?: string;
   citations?: Array<{ id: string; doc_title: string; locator: string; snippet: string }>;
@@ -1838,8 +1843,23 @@ function tryParseAnswerCard(message: string): AnswerCard | null {
   const parseOne = (str: string): AnswerCard | null => {
     try {
       const data = JSON.parse(str) as Record<string, unknown>;
-      if (data.mode !== "FACTUAL" && data.mode !== "CANONICAL" && data.mode !== "BLENDED") return null;
+      if (data.mode !== "FACTUAL" && data.mode !== "CANONICAL" && data.mode !== "BLENDED" && data.mode !== "RECITAL") return null;
       if (typeof data.direct_answer !== "string") return null;
+      // RECITAL mode: sections optional, recital.verbatim required
+      if (data.mode === "RECITAL") {
+        const rec = data.recital as Record<string, unknown> | undefined;
+        if (!rec || typeof rec.verbatim !== "string" || !rec.verbatim.trim()) return null;
+        return {
+          mode: "RECITAL",
+          direct_answer: data.direct_answer as string,
+          sections: [],
+          recital: {
+            verbatim: rec.verbatim as string,
+            document_id: typeof rec.document_id === "string" ? rec.document_id : undefined,
+            section: typeof rec.section === "string" ? rec.section : undefined,
+          },
+        };
+      }
       if (!Array.isArray(data.sections)) return null;
       const rawSections = (data.sections as Array<{ intent?: unknown; label?: string; bullets?: string[] }>).slice(0, MAX_SECTIONS);
       const sections: AnswerCardSection[] = rawSections.map((sec) => ({
@@ -1874,7 +1894,7 @@ function tryParseAnswerCard(message: string): AnswerCard | null {
       if (card3) return card3;
     }
   }
-  const modeRe = /["']mode["']\s*:\s*["'](FACTUAL|CANONICAL|BLENDED)["']/;
+  const modeRe = /["']mode["']\s*:\s*["'](FACTUAL|CANONICAL|BLENDED|RECITAL)["']/;
   const m = raw.match(modeRe);
   if (m) {
     const idx = raw.indexOf(m[0]);
@@ -2133,6 +2153,41 @@ function renderAnswerCard(
 
   const bubble = document.createElement("div");
   bubble.className = "message-bubble answer-card-bubble";
+
+  // ── RECITAL mode: editorial prose with serif rendering ──
+  if (card.mode === "RECITAL" && card.recital?.verbatim) {
+    bubble.classList.add("answer-card-bubble--recital");
+
+    const attr = document.createElement("div");
+    attr.className = "recital-attr";
+    attr.textContent = card.direct_answer || "From the Mobius founding essay:";
+    bubble.appendChild(attr);
+
+    const prose = document.createElement("div");
+    prose.className = "recital-prose";
+    prose.innerHTML = simpleMarkdownToHtml(card.recital.verbatim);
+    bubble.appendChild(prose);
+
+    if (card.recital.document_id) {
+      const readMore = document.createElement("button");
+      readMore.type = "button";
+      readMore.className = "recital-read-more";
+      readMore.textContent = "Read the full essay ↗";
+      readMore.addEventListener("click", () => {
+        const w = window as Window & typeof globalThis & { openDocReaderPanel?: (id: string) => void };
+        if (typeof w.openDocReaderPanel === "function") {
+          w.openDocReaderPanel(card.recital!.document_id!);
+        }
+      });
+      bubble.appendChild(readMore);
+    }
+
+    if (opts?.showConfidenceBadge !== false && !opts?.suppressConfidenceForAdminQcFail) {
+      bubble.appendChild(renderConfidenceBadge("approved_authoritative"));
+    }
+    wrap.appendChild(bubble);
+    return wrap;
+  }
 
   const direct = document.createElement("div");
   direct.className = "answer-card-direct";

@@ -813,11 +813,10 @@ def run_integrate(
         )
         _recital_text = (_recital_ctx or {}).get("text") if _recital_ctx else None
         if _recital_text:
-            _bullets = [l.strip() for l in _recital_text.split("\n") if l.strip()]
             display_message = json.dumps({
-                "mode": "CANONICAL",
+                "mode": "RECITAL",
                 "direct_answer": "From the Mobius founding essay:",
-                "sections": [{"heading": "", "bullets": _bullets}],
+                "recital": {"verbatim": _recital_text},
             })
         else:
             display_message = json.dumps({
@@ -830,13 +829,14 @@ def run_integrate(
     def _recital_fallback_card() -> str:
         _rt = (_recital_ctx or {}).get("text") if _recital_ctx else None
         if _rt:
-            _b = [l.strip() for l in _rt.split("\n") if l.strip()]
-            return json.dumps({"mode": "CANONICAL", "direct_answer": "From the Mobius founding essay:", "sections": [{"heading": "", "bullets": _b}]})
+            return json.dumps({"mode": "RECITAL", "direct_answer": "From the Mobius founding essay:", "recital": {"verbatim": _rt}})
         return json.dumps({"mode": "FACTUAL", "direct_answer": FALLBACK_TRY_AGAIN, "sections": []})
 
     try:
         check = json.loads(display_message) if display_message else {}
-        if not isinstance(check, dict) or check.get("mode") not in ("FACTUAL", "CANONICAL", "BLENDED") or "direct_answer" not in check or not isinstance(check.get("sections"), list):
+        _mode = check.get("mode") if isinstance(check, dict) else None
+        _recital_valid = _mode == "RECITAL" and isinstance((check.get("recital") or {}).get("verbatim"), str) and (check.get("recital") or {}).get("verbatim", "").strip()
+        if not isinstance(check, dict) or _mode not in ("FACTUAL", "CANONICAL", "BLENDED", "RECITAL") or "direct_answer" not in check or (not _recital_valid and not isinstance(check.get("sections"), list)):
             _msg_truncated = (display_message or "")[:2000] + ("..." if len(display_message or "") > 2000 else "")
             logger.warning(
                 "Integrate: display_message not valid AnswerCard; sending try-again stub. message (truncated): %s",
