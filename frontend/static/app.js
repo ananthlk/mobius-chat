@@ -9447,7 +9447,7 @@ function run() {
       }
       if (classification === "no_files") {
         titleEl.textContent = "No roster file on this chat";
-        hintEl.textContent = "We will run the outside-in Medicaid NPI pipeline. Upload a roster below if you want reconciliation (your file vs external data), or use \u22EF \u2192 Upload file.";
+        hintEl.textContent = "We will run the outside-in Medicaid NPI pipeline. Upload a roster below if you want reconciliation (your file vs external data), or use the \u{1F4CE} paperclip to attach a file.";
       } else if (classification === "matched") {
         titleEl.textContent = "Roster files linked to this chat";
         hintEl.textContent = "Matching rows are highlighted. Default run is roster reconciliation unless you check \u201COutside-in Medicaid NPI only\u201D below.";
@@ -10281,7 +10281,6 @@ ${message}`;
     });
   }
   const FOREGROUND_CUTOFF_S = 12;
-  const FOREGROUND_SIZE_BYTES = 1e6;
   let _ragProgressEs = null;
   let _ragProgressCutoffTimer = null;
   const _STAGE_MICROCOPY = {
@@ -10769,7 +10768,6 @@ ${message}`;
   function setupComposerOptionsMenu() {
     const optionsBtn = document.getElementById("composerOptions");
     const optionsMenu = document.getElementById("composerOptionsMenu");
-    const uploadItem = document.getElementById("composerOptionUploadFile");
     function hideOptionsMenu() {
       optionsMenu?.setAttribute("hidden", "");
       optionsBtn?.setAttribute("aria-expanded", "false");
@@ -10783,10 +10781,6 @@ ${message}`;
         optionsMenu?.removeAttribute("hidden");
         optionsBtn?.setAttribute("aria-expanded", "true");
       }
-    });
-    uploadItem?.addEventListener("click", () => {
-      hideOptionsMenu();
-      openUploadModal();
     });
     document.addEventListener("click", () => hideOptionsMenu());
   }

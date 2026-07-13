@@ -4847,6 +4847,9 @@ body {
 .composer-options-menu .composer-option-item--disabled:hover {
   background: none;
 }
+.composer-options-menu .composer-option-item[hidden] {
+  display: none;
+}
 
 .composer-agentic-label {
   flex-shrink: 0;

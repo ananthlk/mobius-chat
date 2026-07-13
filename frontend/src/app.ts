@@ -9514,7 +9514,7 @@ function run(): void {
         if (classification === "no_files") {
           titleEl.textContent = "No roster file on this chat";
           hintEl.textContent =
-            "We will run the outside-in Medicaid NPI pipeline. Upload a roster below if you want reconciliation (your file vs external data), or use ⋯ → Upload file.";
+            "We will run the outside-in Medicaid NPI pipeline. Upload a roster below if you want reconciliation (your file vs external data), or use the 📎 paperclip to attach a file.";
         } else if (classification === "matched") {
           titleEl.textContent = "Roster files linked to this chat";
           hintEl.textContent =
@@ -10527,7 +10527,6 @@ function run(): void {
   // through the chat status banner instead of the modal's status field.
   // §4 foreground progress strip — UX-authored design, wired to live SSE bridge.
   const FOREGROUND_CUTOFF_S = 12;       // UX-finalized value
-  const FOREGROUND_SIZE_BYTES = 1_000_000; // <1MB → foreground regardless of RAG's estimated_seconds
   let _ragProgressEs: EventSource | null = null;
   let _ragProgressCutoffTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -11133,7 +11132,6 @@ function run(): void {
   function setupComposerOptionsMenu(): void {
     const optionsBtn = document.getElementById("composerOptions");
     const optionsMenu = document.getElementById("composerOptionsMenu");
-    const uploadItem = document.getElementById("composerOptionUploadFile");
     function hideOptionsMenu(): void {
       optionsMenu?.setAttribute("hidden", "");
       optionsBtn?.setAttribute("aria-expanded", "false");
@@ -11147,10 +11145,6 @@ function run(): void {
         optionsMenu?.removeAttribute("hidden");
         optionsBtn?.setAttribute("aria-expanded", "true");
       }
-    });
-    uploadItem?.addEventListener("click", () => {
-      hideOptionsMenu();
-      openUploadModal();
     });
     document.addEventListener("click", () => hideOptionsMenu());
   }
