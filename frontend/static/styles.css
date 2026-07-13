@@ -2194,13 +2194,13 @@ body {
   gap: 0.3rem;
   padding: 0.4rem 0.9rem;
   border-radius: 9999px;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  background: var(--mobius-violet, #7c3aed);
   color: #fff;
   font-size: var(--text-sm, 0.875rem);
   font-weight: 600;
   text-decoration: none;
   vertical-align: middle;
-  box-shadow: 0 2px 6px rgba(99,102,241,0.3);
+  box-shadow: 0 2px 6px rgba(124,58,237,0.3);
   transition: opacity 0.15s, transform 0.1s;
   margin: 0.15rem 0;
 }
@@ -2208,7 +2208,7 @@ body {
   text-decoration: none;
   opacity: 0.9;
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(99,102,241,0.4);
+  box-shadow: 0 4px 12px rgba(124,58,237,0.4);
 }
 .chat-link--email {
   color: var(--mobius-accent);
@@ -2251,7 +2251,7 @@ body {
   padding: 0.1rem 0.35rem;
   margin: 0;
   border-radius: var(--radius-full);
-  border: 1px solid rgba(0, 0, 0, 0.06);
+  border: 1px solid var(--mobius-border, rgba(0, 0, 0, 0.1));
   background: transparent;
   color: var(--sidebar-text-muted);
   cursor: pointer;
@@ -2374,18 +2374,18 @@ body {
   gap: 0.35rem;
   padding: 0.45rem 1rem;
   border-radius: 9999px;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  background: var(--mobius-violet, #7c3aed);
   color: #fff;
   font-size: var(--text-sm, 0.875rem);
   font-weight: 600;
   text-decoration: none;
   transition: opacity 0.15s, transform 0.1s;
-  box-shadow: 0 2px 6px rgba(99,102,241,0.3);
+  box-shadow: 0 2px 6px rgba(124,58,237,0.3);
 }
 .answer-card-action-chip:hover {
   opacity: 0.9;
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(99,102,241,0.4);
+  box-shadow: 0 4px 12px rgba(124,58,237,0.4);
 }
 /* ── Interact demo chip ("▶ Show me") ────────────────────────────────
    Sits below the answer, above follow-up chips. Outlined violet pill —
@@ -8017,14 +8017,14 @@ body {
   border-radius: 8px;
   text-decoration: none;
   color: var(--mobius-text, #1f2937);
-  background: linear-gradient(135deg, rgba(99,102,241,0.08), rgba(139,92,246,0.08));
-  border: 1px solid rgba(99,102,241,0.2);
+  background: rgba(124,58,237,0.06);
+  border: 1px solid rgba(124,58,237,0.2);
   font-size: var(--text-sm, 0.875rem);
   transition: background 0.15s, border-color 0.15s, transform 0.1s;
 }
 .suite-demo-tile:hover {
-  background: linear-gradient(135deg, rgba(99,102,241,0.15), rgba(139,92,246,0.15));
-  border-color: rgba(99,102,241,0.4);
+  background: rgba(124,58,237,0.12);
+  border-color: rgba(124,58,237,0.4);
   transform: translateY(-1px);
 }
 .suite-demo-tile-icon { font-size: 1rem; flex-shrink: 0; }
@@ -8033,14 +8033,14 @@ body {
   font-size: 0.6rem;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  background: rgba(99,102,241,0.15);
-  color: #6366f1;
+  background: rgba(124,58,237,0.12);
+  color: var(--mobius-violet, #7c3aed);
   border-radius: 999px;
   padding: 0.1rem 0.4rem;
   margin-left: 0.3rem;
   vertical-align: middle;
 }
-.suite-demo-tile-arrow { color: #6366f1; font-size: 0.85rem; flex-shrink: 0; }
+.suite-demo-tile-arrow { color: var(--mobius-violet, #7c3aed); font-size: 0.85rem; flex-shrink: 0; }
 
 /* Sidebar Roster/Credentialing legacy buttons get the same treatment. */
 .skill-sidebar-item--coming-soon {

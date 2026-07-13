@@ -1005,60 +1005,6 @@ function initSidebarRailIcons(authService?: { getAuthHeader?: () => Promise<Reco
   updateRecentBadge();
 }
 
-function _openSeeAllSkillsModal(): void {
-  // Tiny lightweight modal listing every chat skill. Reads the
-  // canonical list from /chat/config (which exposes the skill
-  // registry) so it stays in sync with what the planner sees.
-  let modal = document.getElementById("seeAllSkillsModal");
-  if (!modal) {
-    modal = document.createElement("div");
-    modal.id = "seeAllSkillsModal";
-    modal.className = "see-all-skills-modal";
-    modal.innerHTML =
-      '<div class="see-all-skills-backdrop"></div>' +
-      '<div class="see-all-skills-panel">' +
-        '<header class="see-all-skills-head">' +
-          '<span class="see-all-skills-title">All chat skills</span>' +
-          '<button type="button" class="see-all-skills-close" aria-label="Close">×</button>' +
-        '</header>' +
-        '<div class="see-all-skills-body">Loading…</div>' +
-      '</div>';
-    document.body.appendChild(modal);
-    const close = (): void => modal!.classList.remove("open");
-    modal.querySelector(".see-all-skills-close")!.addEventListener("click", close);
-    modal.querySelector(".see-all-skills-backdrop")!.addEventListener("click", close);
-    document.addEventListener("keydown", (e: KeyboardEvent) => {
-      if (e.key === "Escape" && modal!.classList.contains("open")) close();
-    });
-  }
-  modal.classList.add("open");
-  const body = modal.querySelector(".see-all-skills-body") as HTMLElement;
-  body.innerHTML = '<p class="see-all-skills-loading">Loading…</p>';
-  fetch(API_BASE + "/chat/skills-manifest")
-    .then((r) => (r.ok ? r.text() : Promise.reject(new Error(String(r.status)))))
-    .then((manifest) => {
-      // Manifest is a plain-text block formatted for the planner. Render
-      // as <pre> so the spacing reads correctly. Also surface the
-      // chip-list as a quick reference at the top.
-      const intro =
-        '<div class="see-all-skills-intro">' +
-        '<p>The planner picks these tools automatically when your question matches their use cases. Click a chip in the sidebar to drop a templated prompt.</p>' +
-        '</div>';
-      body.innerHTML = intro + '<pre class="see-all-skills-manifest">' +
-        manifest.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") +
-        '</pre>';
-    })
-    .catch((err: Error) => {
-      // Fall back to just the chip list if the manifest endpoint isn't
-      // available (older revs, or local dev without auth).
-      const chips = _CHAT_SKILL_CHIPS.map((c) =>
-        '<li><strong>' + c.label + '</strong> — ' + c.example + '</li>',
-      ).join("");
-      body.innerHTML =
-        '<p class="see-all-skills-error">Couldn\'t load full manifest (' + err.message + '). Showing curated list:</p>' +
-        '<ul class="see-all-skills-list">' + chips + '</ul>';
-    });
-}
 
 /* ── Queries-dump UI (drawer entry → modal). 2026-05-05.
    Reads GET /chat/admin/queries — see app/storage/queries_dump.py.
