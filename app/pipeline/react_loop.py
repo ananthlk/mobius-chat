@@ -1453,7 +1453,7 @@ def _execute_tool(
             ctx.demo = _demo
         _recital = (env.extra or {}).get("recital") if env.extra else None
         if isinstance(_recital, dict) and _recital.get("verbatim"):
-            ctx.recital = _recital  # type: ignore[attr-defined]
+            ctx.recital = {**_recital, "text": env.text or ""}  # type: ignore[attr-defined]
         _skill_success = bool(env.text and not env.text.startswith("Unknown skill"))
         # golden: explicit opt-in via env.extra["golden"], or inferred when
         # the skill returned content + sources + a non-empty signal.
