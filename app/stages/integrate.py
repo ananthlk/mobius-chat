@@ -57,6 +57,10 @@ _ANSWER_CARD_ENVELOPE_KEYS = (
     "correction",
     "takeaways",
     "gaps",
+    # Recital mode — verbatim text block with optional document_id + section.
+    "recital",
+    # next_questions_for_user — suggested follow-up prompts for the user.
+    "next_questions_for_user",
 )
 
 
@@ -480,10 +484,6 @@ def run_integrate(
             "user_org": _up.get("org_name") or "",
         }
 
-    # Recital context: product_help_search flagged the answer as verbatim text
-    # (e.g. a founding essay). Bypass the integrator entirely — mode-specific
-    # system prompts hardcode "Set mode = 'BLENDED'" which overrides any
-    # recital instruction. Build the RECITAL card directly from the captured text.
     _recital_ctx: dict | None = getattr(ctx, "recital", None) if getattr(ctx, "recital", None) else None
     logger.info(
         "[recital] integrate entry — ctx.recital=%r has_verbatim=%s has_text=%s",
@@ -491,50 +491,55 @@ def run_integrate(
         bool(_recital_ctx and _recital_ctx.get("verbatim")),
         bool(_recital_ctx and _recital_ctx.get("text")),
     )
+    final_message, integrator_usage = format_response(
+        plan,
+        answers,
+        user_message=ctx.message,
+        emitter=emitter,
+        message_chunk_callback=_stream_answer_chunk,
+        retrieval_metadata=retrieval_metadata,
+        sources_summary=sources_summary,
+        jurisdiction_summary=jurisdiction_summary,
+        user_provided_context=getattr(ctx, "user_provided_context", None),
+        workflow_selection_ui=_workflow_selection_ui,
+        correlation_id=ctx.correlation_id,
+        thread_id=ctx.thread_id,
+        config_sha=_cfg_sha,
+        phi_detected=False,
+        llm_stage=_integ_stage,
+        mode=getattr(ctx, "chat_mode", None),
+        previous_thread_summary=getattr(ctx, "previous_thread_summary", None),
+        user_profile=getattr(ctx, "user_profile", None),
+        react_draft=getattr(ctx, "react_draft", None),
+        source_texts=source_texts or None,
+        task_context=_task_ctx,
+        instant_rag_context=_instant_rag_ctx,
+        recital_context=_recital_ctx,
+    )
+
+    # Post-process: when ctx.recital.verbatim is set, upgrade the integrator's
+    # card to mode=RECITAL and inject the verbatim text. The integrator still
+    # runs so sources, next_questions, thread_summary, etc. are all preserved —
+    # RECITAL is a rendering mode, not a reason to skip the full answer card.
+    # (The mode-specific BLENDED prompt hardcodes "Set mode = 'BLENDED'" which
+    # wins over the conditional recital rule; we correct it here post-hoc.)
     if _recital_ctx and _recital_ctx.get("verbatim") and _recital_ctx.get("text"):
-        _direct = f"From the {_recital_ctx.get('section') or 'Mobius founding essay'}:"
-        _recital_card: dict = {
-            "mode": "RECITAL",
-            "direct_answer": _direct,
-            "recital": {
-                "verbatim": _recital_ctx["text"],
-            },
-        }
-        if _recital_ctx.get("document_id"):
-            _recital_card["recital"]["document_id"] = _recital_ctx["document_id"]
-        if _recital_ctx.get("section"):
-            _recital_card["recital"]["section"] = _recital_ctx["section"]
-        final_message = json.dumps(_recital_card)
-        ctx.final_message = final_message
-        integrator_usage = None
-        logger.info("[recital] bypass integrator — ctx.recital verbatim set, RECITAL card built directly")
-    else:
-        final_message, integrator_usage = format_response(
-            plan,
-            answers,
-            user_message=ctx.message,
-            emitter=emitter,
-            message_chunk_callback=_stream_answer_chunk,
-            retrieval_metadata=retrieval_metadata,
-            sources_summary=sources_summary,
-            jurisdiction_summary=jurisdiction_summary,
-            user_provided_context=getattr(ctx, "user_provided_context", None),
-            workflow_selection_ui=_workflow_selection_ui,
-            correlation_id=ctx.correlation_id,
-            thread_id=ctx.thread_id,
-            config_sha=_cfg_sha,
-            phi_detected=False,
-            llm_stage=_integ_stage,
-            mode=getattr(ctx, "chat_mode", None),
-            previous_thread_summary=getattr(ctx, "previous_thread_summary", None),
-            user_profile=getattr(ctx, "user_profile", None),
-            react_draft=getattr(ctx, "react_draft", None),
-            source_texts=source_texts or None,
-            task_context=_task_ctx,
-            instant_rag_context=_instant_rag_ctx,
-            recital_context=_recital_ctx,
-        )
-        ctx.final_message = final_message
+        try:
+            _fm_parsed = json.loads(final_message) if final_message else {}
+            if isinstance(_fm_parsed, dict):
+                _fm_parsed["mode"] = "RECITAL"
+                _rec_field: dict = {"verbatim": _recital_ctx["text"]}
+                if _recital_ctx.get("document_id"):
+                    _rec_field["document_id"] = _recital_ctx["document_id"]
+                if _recital_ctx.get("section"):
+                    _rec_field["section"] = _recital_ctx["section"]
+                _fm_parsed["recital"] = _rec_field
+                final_message = json.dumps(_fm_parsed)
+                logger.info("[recital] post-process upgrade → mode=RECITAL injected into integrator card")
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("[recital] post-process failed to parse integrator JSON — mode left as-is")
+
+    ctx.final_message = final_message
 
     # Phase 13.7 — extract the integrator's rolling thread summary out
     # of the AnswerCard JSON so the persistence layer can stamp it into
@@ -729,7 +734,7 @@ def run_integrate(
                         if isinstance(inner_da, str) and isinstance(inner_secs, list) and not (
                             inner_da.strip().startswith("{") or inner_da.strip().startswith("```")
                         ):
-                            mode = inner_parsed.get("mode") if inner_parsed.get("mode") in ("FACTUAL", "CANONICAL", "BLENDED") else "FACTUAL"
+                            mode = inner_parsed.get("mode") if inner_parsed.get("mode") in ("FACTUAL", "CANONICAL", "BLENDED", "RECITAL") else "FACTUAL"
                             sections_out = []
                             for s in (inner_secs or []):
                                 sec = dict(s) if isinstance(s, dict) else {}
@@ -746,7 +751,7 @@ def run_integrate(
                                 first = res_list[0]
                                 res = first.get("resolution") if isinstance(first.get("resolution"), dict) else first
                                 if isinstance(res, dict) and isinstance(res.get("direct_answer"), str) and isinstance(res.get("sections"), list):
-                                    mode = res.get("mode") if res.get("mode") in ("FACTUAL", "CANONICAL", "BLENDED") else "FACTUAL"
+                                    mode = res.get("mode") if res.get("mode") in ("FACTUAL", "CANONICAL", "BLENDED", "RECITAL") else "FACTUAL"
                                     sections_out = []
                                     for s in (res.get("sections") or []):
                                         sec = dict(s) if isinstance(s, dict) else {}
@@ -761,7 +766,7 @@ def run_integrate(
                                     )
                                 elif isinstance(first.get("resolution"), str):
                                     # resolution is plain text (schema: "answer text")
-                                    mode = inner_parsed.get("mode") if inner_parsed.get("mode") in ("FACTUAL", "CANONICAL", "BLENDED") else "FACTUAL"
+                                    mode = inner_parsed.get("mode") if inner_parsed.get("mode") in ("FACTUAL", "CANONICAL", "BLENDED", "RECITAL") else "FACTUAL"
                                     display_message = _answer_card_json_for_client(
                                         mode, first["resolution"], [], extra_from=inner_parsed
                                     )
@@ -769,7 +774,7 @@ def run_integrate(
                         pass
                 else:
                     # Normal AnswerCard
-                    mode = parsed.get("mode") if parsed.get("mode") in ("FACTUAL", "CANONICAL", "BLENDED") else "FACTUAL"
+                    mode = parsed.get("mode") if parsed.get("mode") in ("FACTUAL", "CANONICAL", "BLENDED", "RECITAL") else "FACTUAL"
                     sections_out = []
                     for s in (secs or []):
                         sec = dict(s) if isinstance(s, dict) else {}
@@ -785,7 +790,7 @@ def run_integrate(
                     if isinstance(first, dict):
                         res = first.get("resolution") if isinstance(first.get("resolution"), dict) else first
                         if isinstance(res.get("direct_answer"), str) and isinstance(res.get("sections"), list):
-                            mode = res.get("mode") if res.get("mode") in ("FACTUAL", "CANONICAL", "BLENDED") else "FACTUAL"
+                            mode = res.get("mode") if res.get("mode") in ("FACTUAL", "CANONICAL", "BLENDED", "RECITAL") else "FACTUAL"
                             sections_out = []
                             for s in (res.get("sections") or []):
                                 sec = dict(s) if isinstance(s, dict) else {}
