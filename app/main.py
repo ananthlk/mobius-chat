@@ -360,7 +360,7 @@ app.middleware("http")(request_context_middleware)
 # megabytes of document content.
 
 _DEFAULT_MAX_REQUEST_BYTES = 1 * 1024 * 1024  # 1 MB
-_LARGE_BODY_PREFIXES = ("/upload", "/chat/roster-upload")
+_LARGE_BODY_PREFIXES = ("/upload", "/chat/upload", "/chat/roster-upload")
 
 
 def _max_request_bytes() -> int:
