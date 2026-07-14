@@ -2668,6 +2668,243 @@ body {
   color: var(--mobius-error);
 }
 
+/* ─── Answer card tab bar ──────────────────────────────────────────────────── */
+.ac-tab-bar {
+  display: flex;
+  border-bottom: 1px solid rgba(0,0,0,0.08);
+  margin-bottom: 0.75rem;
+  gap: 0;
+}
+.ac-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 0.3rem 0.75rem;
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--sidebar-text-muted);
+  cursor: pointer;
+  letter-spacing: 0.02em;
+  transition: color 0.12s, border-color 0.12s;
+  margin-bottom: -1px;
+  line-height: 1.6;
+}
+.ac-tab:hover { color: var(--sidebar-text); }
+.ac-tab--active {
+  color: var(--mobius-violet, #7c3aed);
+  border-bottom-color: var(--mobius-violet, #7c3aed);
+  font-weight: 600;
+}
+.ac-tab-panel[hidden] { display: none; }
+
+/* ─── Envelope: stats tiles ─────────────────────────────────────────────────── */
+.ac-fmt-stats {
+  display: flex;
+  gap: 0.625rem;
+  flex-wrap: wrap;
+  margin: 0.25rem 0 0.5rem;
+}
+.ac-fmt-stat-tile {
+  flex: 1 1 0;
+  min-width: 90px;
+  border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 6px;
+  padding: 0.55rem 0.75rem 0.5rem;
+  background: rgba(0,0,0,0.015);
+}
+.ac-fmt-stat-value {
+  font-size: 1.35rem;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--sidebar-text);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+.ac-fmt-stat-label {
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: var(--sidebar-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-top: 0.25rem;
+}
+.ac-fmt-stat-note {
+  font-size: 0.62rem;
+  color: var(--sidebar-text-muted);
+  opacity: 0.7;
+  margin-top: 0.1rem;
+  line-height: 1.3;
+}
+
+/* ─── Envelope: bars ────────────────────────────────────────────────────────── */
+.ac-fmt-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  margin: 0.25rem 0 0.5rem;
+}
+.ac-fmt-bar-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 2fr;
+  align-items: center;
+  gap: 0.625rem;
+}
+.ac-fmt-bar-label {
+  font-size: 0.75rem;
+  color: var(--sidebar-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ac-fmt-bar-track {
+  height: 5px;
+  border-radius: 99px;
+  background: rgba(0,0,0,0.07);
+  overflow: hidden;
+}
+.ac-fmt-bar-fill {
+  height: 100%;
+  border-radius: 99px;
+  background: var(--mobius-violet, #7c3aed);
+  opacity: 0.6;
+}
+
+/* ─── Envelope: steps ───────────────────────────────────────────────────────── */
+.ac-fmt-steps {
+  list-style: none;
+  counter-reset: ac-step;
+  margin: 0.25rem 0 0.5rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.ac-fmt-step {
+  counter-increment: ac-step;
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-start;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--sidebar-text);
+}
+.ac-fmt-step::before {
+  content: counter(ac-step);
+  flex-shrink: 0;
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--mobius-violet, #7c3aed) 12%, transparent);
+  color: var(--mobius-violet, #7c3aed);
+  font-size: 0.65rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 0.1rem;
+}
+
+/* ─── Envelope: table ───────────────────────────────────────────────────────── */
+.ac-fmt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+  margin: 0.25rem 0 0.5rem;
+}
+.ac-fmt-table th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--sidebar-text-muted);
+  padding: 0.3rem 0.625rem;
+  border-bottom: 1.5px solid rgba(0,0,0,0.1);
+}
+.ac-fmt-table td {
+  padding: 0.35rem 0.625rem;
+  border-bottom: 1px solid rgba(0,0,0,0.05);
+  color: var(--sidebar-text);
+  vertical-align: top;
+  font-variant-numeric: tabular-nums;
+}
+.ac-fmt-table tbody tr:last-child td { border-bottom: none; }
+.ac-fmt-table tbody tr:hover td { background: rgba(0,0,0,0.02); }
+
+/* ─── Envelope: conditions (if/then) ───────────────────────────────────────── */
+.ac-fmt-conditions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin: 0.25rem 0 0.5rem;
+}
+.ac-fmt-condition-row {
+  display: grid;
+  grid-template-columns: 2rem 1fr;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  padding: 0.4rem 0.625rem 0.4rem 0.5rem;
+  border-radius: 4px;
+  background: rgba(0,0,0,0.018);
+  border-left: 2px solid rgba(0,0,0,0.09);
+}
+.ac-fmt-condition-if {
+  font-size: 0.6rem;
+  font-weight: 700;
+  color: var(--sidebar-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding-top: 0.2rem;
+  align-self: start;
+}
+.ac-fmt-condition-then {
+  color: var(--sidebar-text);
+}
+
+/* ─── Citations (Details tab) ───────────────────────────────────────────────── */
+.ac-citations-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+}
+.ac-citation-row {
+  padding: 0.55rem 0.25rem;
+  border-bottom: 1px solid rgba(0,0,0,0.06);
+}
+.ac-citation-row:last-child { border-bottom: none; }
+.ac-citation-title {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--sidebar-text);
+  margin-bottom: 0.2rem;
+  line-height: 1.3;
+}
+.ac-citation-meta {
+  display: flex;
+  gap: 0.375rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.25rem;
+}
+.ac-citation-meta > span {
+  font-size: 0.63rem;
+  color: var(--sidebar-text-muted);
+  background: rgba(0,0,0,0.05);
+  border-radius: 3px;
+  padding: 0.05rem 0.35rem;
+  font-variant-numeric: tabular-nums;
+}
+.ac-citation-snippet {
+  font-size: 0.72rem;
+  color: var(--sidebar-text-muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 /* QC sample marker — quiet metadata line; no pass/fail (scores in admin QA panel) */
 .qc-audit-badge-wrap {
   margin: 0 0 0.3rem 0;
