@@ -927,13 +927,15 @@ def _run_phi_classification_async(document_id: str, rag_url: str) -> None:
         from app.storage import instant_rag_catalog as _cat
         from app.db_client import db_execute as _dbe
 
-        # Step 1: fetch extracted text from RAG.
+        # Step 1: fetch extracted text from RAG via /pages (concatenate all page text).
         try:
             with _urllib_req.urlopen(
-                f"{rag_url}/documents/{document_id}/text", timeout=30
+                f"{rag_url}/documents/{document_id}/pages", timeout=30
             ) as _r:
-                text_payload = _json_mod.loads(_r.read())
-            doc_text = text_payload.get("text") or ""
+                pages_payload = _json_mod.loads(_r.read())
+            doc_text = "\n".join(
+                (p.get("text") or "") for p in (pages_payload.get("pages") or [])
+            ).strip()
         except Exception as _e:
             logger.warning("§3.3 PHI: text fetch failed for doc=%s: %s", document_id[:8], _e)
             doc_text = ""
