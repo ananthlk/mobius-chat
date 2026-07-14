@@ -8738,16 +8738,19 @@ function renderAssistantFromEnvelope(
       const b = block as {
         npi?: string; provider_name?: string; org?: string; status?: string;
         flags?: Array<{ text: string; severity?: string }>;
-        action_url?: string;
+        action_url?: string; org_summary?: boolean;
       };
       const card = document.createElement("div");
-      card.className = "cred-card";
+      card.className = "cred-card" + (b.org_summary ? " cred-card--org-summary" : "");
 
       const header = document.createElement("div");
       header.className = "cred-card-header";
       const nameEl = document.createElement("div");
       nameEl.className = "cred-card-name";
-      nameEl.textContent = b.provider_name ?? "Provider";
+      const displayName = b.org_summary
+        ? (b.provider_name || (b.org ?? "").replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase()) || "Organization")
+        : (b.provider_name ?? "Provider");
+      nameEl.textContent = displayName;
       const statusKey = (b.status ?? "unknown").toLowerCase();
       const statusLabel: Record<string, string> = {
         enrolled: "Enrolled", pending: "Pending", flagged: "Flagged",
@@ -11278,6 +11281,119 @@ function run(): void {
     document.getElementById("ragProgressStrip")?.classList.add("rag-progress-strip--collapsed");
   }
 
+  function _showPhiRecommendationCard(filename: string, documentId: string): void {
+    if (document.querySelector(".phi-rec-card")) return;
+    const anchor = document.querySelector(".composer-wrap");
+    if (!anchor?.parentElement) return;
+
+    const card = document.createElement("div");
+    card.className = "phi-rec-card phi-rec-card--checking";
+
+    const label = document.createElement("span");
+    label.className = "phi-rec-card__label";
+    label.textContent = "Checking document sensitivity…";
+
+    const actions = document.createElement("span");
+    actions.className = "phi-rec-card__actions";
+
+    const dismissBtn = document.createElement("button");
+    dismissBtn.type = "button";
+    dismissBtn.className = "reminder-nudge-dismiss";
+    dismissBtn.setAttribute("aria-label", "Dismiss");
+    dismissBtn.innerHTML = "&times;";
+    dismissBtn.addEventListener("click", () => card.remove());
+
+    card.appendChild(label);
+    card.appendChild(actions);
+    card.appendChild(dismissBtn);
+    anchor.parentElement.insertBefore(card, anchor);
+
+    function _render(row: Record<string, unknown>): void {
+      const phiFlag = Boolean(row["phi_flag"]);
+      const vis = String(row["suggested_visibility"] || "private");
+      const evidence = (row["phi_evidence"] as Array<{category: string}> | null) || [];
+
+      card.className = "phi-rec-card";
+
+      if (phiFlag || vis === "private") {
+        card.classList.add("phi-rec-card--phi");
+        label.textContent = "⚠ Contains patient information — kept private.";
+        if (evidence.length > 0) {
+          const chips = document.createElement("span");
+          chips.className = "phi-rec-card__chips";
+          const seen = new Set<string>();
+          for (const ev of evidence.slice(0, 6)) {
+            const cat = String((ev as {category: string}).category || "").replace(/_/g, " ");
+            if (!cat || seen.has(cat)) continue;
+            seen.add(cat);
+            const chip = document.createElement("span");
+            chip.className = "phi-rec-card__chip";
+            chip.textContent = cat;
+            chips.appendChild(chip);
+          }
+          card.insertBefore(chips, actions);
+        }
+        const keepBtn = document.createElement("button");
+        keepBtn.type = "button";
+        keepBtn.className = "phi-rec-card__action phi-rec-card__action--primary";
+        keepBtn.textContent = "Keep private";
+        keepBtn.addEventListener("click", () => card.remove());
+        actions.appendChild(keepBtn);
+
+      } else if (vis === "org") {
+        card.classList.add("phi-rec-card--org");
+        label.textContent = "🏢 Shareable with your org.";
+        const keepBtn = document.createElement("button");
+        keepBtn.type = "button";
+        keepBtn.className = "phi-rec-card__action phi-rec-card__action--secondary";
+        keepBtn.textContent = "Keep private";
+        keepBtn.addEventListener("click", () => card.remove());
+        const shareBtn = document.createElement("button");
+        shareBtn.type = "button";
+        shareBtn.className = "phi-rec-card__action phi-rec-card__action--primary";
+        shareBtn.textContent = "Share with org";
+        shareBtn.setAttribute("disabled", "");
+        shareBtn.title = "Coming soon";
+        actions.appendChild(shareBtn);
+        actions.appendChild(keepBtn);
+
+      } else {
+        card.classList.add("phi-rec-card--clean");
+        label.textContent = "✓ No sensitive info found — safe to share.";
+        const shareBtn = document.createElement("button");
+        shareBtn.type = "button";
+        shareBtn.className = "phi-rec-card__action phi-rec-card__action--primary";
+        shareBtn.textContent = "Make public";
+        shareBtn.setAttribute("disabled", "");
+        shareBtn.title = "Coming soon — promote actions in P2";
+        const keepBtn = document.createElement("button");
+        keepBtn.type = "button";
+        keepBtn.className = "phi-rec-card__action phi-rec-card__action--secondary";
+        keepBtn.textContent = "Keep private";
+        keepBtn.addEventListener("click", () => card.remove());
+        actions.appendChild(shareBtn);
+        actions.appendChild(keepBtn);
+      }
+
+      setTimeout(() => card.remove(), 60_000);
+    }
+
+    let attempts = 0;
+    async function _poll(): Promise<void> {
+      attempts++;
+      try {
+        const resp = await apiFetch(`${API_BASE}/chat/uploads/${documentId}`);
+        if (resp.ok) {
+          const row = await resp.json() as Record<string, unknown>;
+          if (row["classified_at"]) { _render(row); return; }
+        }
+      } catch (_e) { /* ignore */ }
+      if (attempts >= 10) { card.remove(); return; }
+      setTimeout(() => { void _poll(); }, 3000);
+    }
+    setTimeout(() => { void _poll(); }, 3000);
+  }
+
   function _showReadyNudge(filename: string, documentId: string, threadId: string): void {
     if (document.querySelector(".rag-ready-nudge")) return; // already showing
     const anchor = document.querySelector(".composer-wrap");
@@ -11373,6 +11489,8 @@ function run(): void {
               inputEl.dispatchEvent(new Event("input"));
               inputEl.focus();
             }
+            // §3.3 PHI recommendation card: poll classified_at then render verdict.
+            _showPhiRecommendationCard(filename, documentId);
           }, 700);
         } else {
           // failed

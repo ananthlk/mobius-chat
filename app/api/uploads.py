@@ -44,7 +44,7 @@ router = APIRouter()
 def _to_payload(row: dict[str, Any]) -> dict[str, Any]:
     """Normalize a catalog row for JSON: stringify datetimes."""
     out = dict(row)
-    for k in ("created_at", "expires_at", "last_queried_at"):
+    for k in ("created_at", "expires_at", "last_queried_at", "classified_at"):
         v = out.get(k)
         if isinstance(v, datetime):
             out[k] = v.isoformat()

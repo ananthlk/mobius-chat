@@ -92,6 +92,16 @@ _SELECT_COLUMNS: tuple[str, ...] = (
     "created_at",
     "expires_at",
     "last_queried_at",
+    # migration 041 — PHI classification verdict
+    "suggested_visibility",
+    "confirmed_visibility",
+    "phi_flag",
+    "phi_evidence",
+    "identifiers_found",
+    "classifier_confidence",
+    "classifier_version",
+    "layers_run",
+    "classified_at",
 )
 _SELECT_SQL = "SELECT " + ", ".join(_SELECT_COLUMNS) + " FROM instant_rag_uploads"
 
