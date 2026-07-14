@@ -1028,11 +1028,9 @@ def _spawn_background_publish_watcher(
     if document_id in _BACKGROUND_WATCHERS:
         logger.info("upload-watcher: doc=%s already being watched; skipping spawn", document_id[:8])
         return
-    if not (thread_id or "").strip():
-        logger.warning("upload-watcher: empty thread_id for doc=%s; cannot post system message", document_id[:8])
-        # Still fire PHI classification even without a thread — Vault uploads may have no thread.
-        _run_phi_classification_async(document_id=document_id, rag_url=rag_url)
-        return
+    _has_thread = bool((thread_id or "").strip())
+    if not _has_thread:
+        logger.warning("upload-watcher: empty thread_id for doc=%s; system message disabled, PHI classify will fire on published_at", document_id[:8])
 
     def _watch() -> None:
         import json as _json
@@ -1075,13 +1073,15 @@ def _spawn_background_publish_watcher(
                         except Exception as _ue:
                             logger.warning("upload-watcher: catalog chunk count update failed: %s", _ue)
                     # §3 idempotency: skip system msg if SSE already surfaced ready to the FE.
-                    if document_id not in _SSE_TERMINAL_SENT:
-                        _post_system_message_to_thread(
-                            thread_id,
-                            f"✓ {filename} is ready. You can ask me about it now.",
-                        )
-                    else:
-                        logger.info("upload-watcher: SSE already notified client for doc=%s; skipping system msg", document_id[:8])
+                    # Also skip when there's no thread (Vault direct uploads).
+                    if _has_thread:
+                        if document_id not in _SSE_TERMINAL_SENT:
+                            _post_system_message_to_thread(
+                                thread_id,
+                                f"✓ {filename} is ready. You can ask me about it now.",
+                            )
+                        else:
+                            logger.info("upload-watcher: SSE already notified client for doc=%s; skipping system msg", document_id[:8])
                     # §3.2 — task signal (cross-surface badge). Independent of SSE.
                     _post_instant_rag_ready_task(
                         document_id=document_id,
@@ -1097,10 +1097,11 @@ def _spawn_background_publish_watcher(
                     _run_phi_classification_async(document_id=document_id, rag_url=rag_url)
                     return
             # Timed out
-            _post_system_message_to_thread(
-                thread_id,
-                f"⚠ {filename} is still processing — taking longer than expected. "
-                f"Check Mobius RAG for status, or try asking in a few minutes.",
+            if _has_thread:
+                _post_system_message_to_thread(
+                    thread_id,
+                    f"⚠ {filename} is still processing — taking longer than expected. "
+                    f"Check Mobius RAG for status, or try asking in a few minutes.",
             )
         finally:
             _BACKGROUND_WATCHERS.pop(document_id, None)
