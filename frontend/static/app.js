@@ -3367,7 +3367,8 @@ function renderAnswerCard(card, isError, opts) {
         expanded = !expanded;
         prose.innerHTML = simpleMarkdownToHtml(expanded ? fullText : proseText);
         readMore.textContent = expanded ? "Collapse \u2191" : "Read the full essay \u2197";
-        wrap.classList.toggle("recital-expanded", expanded);
+        const container = readMore.closest(".answer-card--recital") ?? wrap;
+        container.classList.toggle("recital-expanded", expanded);
       });
       bubble.appendChild(readMore);
     }

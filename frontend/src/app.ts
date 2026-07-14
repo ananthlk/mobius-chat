@@ -2315,7 +2315,10 @@ function renderAnswerCard(
         expanded = !expanded;
         prose.innerHTML = simpleMarkdownToHtml(expanded ? fullText : proseText);
         readMore.textContent = expanded ? "Collapse ↑" : "Read the full essay ↗";
-        wrap.classList.toggle("recital-expanded", expanded);
+        // After transplant, children are moved into messageWrapEl — `wrap` is detached.
+        // Traverse up from the live button to find the actual container.
+        const container = readMore.closest('.answer-card--recital') ?? wrap;
+        container.classList.toggle("recital-expanded", expanded);
       });
       bubble.appendChild(readMore);
     }
