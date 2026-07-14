@@ -132,7 +132,11 @@ _ENRICHER_PREAMBLE = (
     '"direct_answer":"string (one-sentence backup — shown if draft unavailable)",'
     '"correction":null,'
     '"takeaways":["string"],'
-    '"sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string","bullets":["string"]}],'
+    '"sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string",'
+    '"format":"bullets|table|steps|stats|bars|conditions",'
+    '"bullets":["string"],'
+    '"data":{"headers":["string"],"rows":[["string"]],'
+    '"items":[{"label":"string","value":"string","note":"string","weight":0.0,"condition":"string","result":"string"}]}}],'
     '"recital":{"verbatim":"string","document_id":"string","section":"string"},'
     '"citations":[{"claim":"string","doc_title":"string","locator":"string","snippet":"string"}],'
     '"next_steps":["string"],'
@@ -168,6 +172,19 @@ _ENRICHER_PREAMBLE = (
     "(coverage rules, eligibility criteria, authorization steps, appeal deadlines, contact details, etc.). "
     "Tailor to user_role/user_org in instant_rag_context when available. "
     "8–20 words each. Do not ask the user to share documents.\n"
+    "- sections[].format: choose the layout that best fits the content type. "
+    "\"bullets\" (default) — prose/policy list. "
+    "\"table\" — structured comparison or rate data; include data.headers (string[]) + data.rows (string[][]). "
+    "\"steps\" — numbered sequential process; include data.items (string[] — each step as a full sentence). "
+    "\"stats\" — 2–4 key numbers; include data.items ([{label, value, note?}]). "
+    "\"bars\" — ranked items with relative weight 0–1; include data.items ([{label, weight, note?}]). "
+    "\"conditions\" — if/then policy logic; include data.items ([{condition, result}]). "
+    "When format is not \"bullets\", omit bullets[] and use data instead. "
+    "Use \"table\" for rate/fee schedules, benefit comparisons. "
+    "Use \"steps\" for prior auth workflows, enrollment steps, appeal process. "
+    "Use \"stats\" for timely filing windows, denial rates, numeric thresholds. "
+    "Use \"bars\" for top denial reasons, frequency distributions. "
+    "Use \"conditions\" for coverage criteria, modifier rules, eligibility logic.\n"
     "- recital: when recital_context is present and recital_context.verbatim is true, output mode \"RECITAL\" "
     "(not FACTUAL/CANONICAL/BLENDED). Schema: "
     "{\"mode\":\"RECITAL\",\"direct_answer\":\"From the [document name]:\","

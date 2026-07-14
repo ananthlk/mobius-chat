@@ -710,10 +710,26 @@ function isSectionIntent(s: unknown): s is SectionIntent {
 }
 
 /** AnswerCard JSON from consolidator (FACTUAL / CANONICAL / BLENDED / RECITAL) */
+type SectionFormat = "bullets" | "table" | "steps" | "stats" | "bars" | "conditions";
+interface SectionDataItem {
+  label?: string;
+  value?: string;
+  note?: string;
+  weight?: number;
+  condition?: string;
+  result?: string;
+}
+interface SectionData {
+  headers?: string[];
+  rows?: string[][];
+  items?: SectionDataItem[];
+}
 interface AnswerCardSection {
   intent?: SectionIntent;
   label: string;
+  format?: SectionFormat;
   bullets: string[];
+  data?: SectionData;
 }
 interface AnswerCard {
   mode: "FACTUAL" | "CANONICAL" | "BLENDED" | "RECITAL";
@@ -1862,10 +1878,13 @@ function tryParseAnswerCard(message: string): AnswerCard | null {
       }
       if (!Array.isArray(data.sections)) return null;
       const rawSections = (data.sections as Array<{ intent?: unknown; label?: string; bullets?: string[] }>).slice(0, MAX_SECTIONS);
-      const sections: AnswerCardSection[] = rawSections.map((sec) => ({
-        intent: isSectionIntent(sec.intent) ? sec.intent : "process",
+      const VALID_FORMATS: SectionFormat[] = ["bullets", "table", "steps", "stats", "bars", "conditions"];
+      const sections: AnswerCardSection[] = (rawSections as Array<Record<string, unknown>>).map((sec) => ({
+        intent: isSectionIntent(sec.intent) ? sec.intent as SectionIntent : "process",
         label: typeof sec.label === "string" ? sec.label : "",
-        bullets: Array.isArray(sec.bullets) ? sec.bullets : [],
+        format: VALID_FORMATS.includes(sec.format as SectionFormat) ? sec.format as SectionFormat : "bullets",
+        bullets: Array.isArray(sec.bullets) ? sec.bullets as string[] : [],
+        data: sec.data && typeof sec.data === "object" ? sec.data as SectionData : undefined,
       }));
       return {
         mode: data.mode as AnswerCard["mode"],
@@ -1925,27 +1944,139 @@ function splitSectionsByVisibility(
   return { visible, hidden };
 }
 
-function renderOneSection(sec: AnswerCardSection): HTMLElement {
-  const sectionEl = document.createElement("div");
-  sectionEl.className = "answer-card-section";
-  const labelEl = document.createElement("div");
-  labelEl.className = "answer-card-section-label";
-  labelEl.textContent = sec.label || "";
-  sectionEl.appendChild(labelEl);
+function _renderSectionBody(sec: AnswerCardSection, body: HTMLElement): void {
+  const fmt = sec.format ?? "bullets";
+  const data = sec.data;
+
+  if (fmt === "table" && data?.headers && data?.rows) {
+    const tbl = document.createElement("table");
+    tbl.className = "ac-fmt-table";
+    const thead = tbl.createTHead();
+    const hRow = thead.insertRow();
+    data.headers.forEach((h) => { const th = document.createElement("th"); th.textContent = h; hRow.appendChild(th); });
+    const tbody = tbl.createTBody();
+    data.rows.forEach((row) => {
+      const tr = tbody.insertRow();
+      row.forEach((cell) => { const td = tr.insertCell(); td.textContent = cell; });
+    });
+    body.appendChild(tbl);
+    return;
+  }
+
+  if (fmt === "steps" && data?.items) {
+    const ol = document.createElement("ol");
+    ol.className = "ac-fmt-steps";
+    data.items.forEach((item) => {
+      const li = document.createElement("li");
+      li.className = "ac-fmt-step";
+      li.textContent = typeof item === "string" ? item : (item.label ?? "");
+      ol.appendChild(li);
+    });
+    body.appendChild(ol);
+    return;
+  }
+
+  if (fmt === "stats" && data?.items) {
+    const grid = document.createElement("div");
+    grid.className = "ac-fmt-stats";
+    data.items.slice(0, 4).forEach((item) => {
+      const tile = document.createElement("div");
+      tile.className = "ac-fmt-stat-tile";
+      const val = document.createElement("div");
+      val.className = "ac-fmt-stat-value";
+      val.textContent = item.value ?? "";
+      const lbl = document.createElement("div");
+      lbl.className = "ac-fmt-stat-label";
+      lbl.textContent = item.label ?? "";
+      tile.appendChild(val);
+      tile.appendChild(lbl);
+      if (item.note) {
+        const note = document.createElement("div");
+        note.className = "ac-fmt-stat-note";
+        note.textContent = item.note;
+        tile.appendChild(note);
+      }
+      grid.appendChild(tile);
+    });
+    body.appendChild(grid);
+    return;
+  }
+
+  if (fmt === "bars" && data?.items) {
+    const list = document.createElement("div");
+    list.className = "ac-fmt-bars";
+    data.items.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "ac-fmt-bar-row";
+      const lbl = document.createElement("div");
+      lbl.className = "ac-fmt-bar-label";
+      lbl.textContent = item.label ?? "";
+      const track = document.createElement("div");
+      track.className = "ac-fmt-bar-track";
+      const fill = document.createElement("div");
+      fill.className = "ac-fmt-bar-fill";
+      const pct = Math.round(Math.min(1, Math.max(0, item.weight ?? 0)) * 100);
+      fill.style.width = `${pct}%`;
+      track.appendChild(fill);
+      row.appendChild(lbl);
+      row.appendChild(track);
+      if (item.note) {
+        const note = document.createElement("div");
+        note.className = "ac-fmt-bar-note";
+        note.textContent = item.note;
+        row.appendChild(note);
+      }
+      list.appendChild(row);
+    });
+    body.appendChild(list);
+    return;
+  }
+
+  if (fmt === "conditions" && data?.items) {
+    const list = document.createElement("div");
+    list.className = "ac-fmt-conditions";
+    data.items.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "ac-fmt-condition-row";
+      const cond = document.createElement("div");
+      cond.className = "ac-fmt-condition-if";
+      cond.textContent = item.condition ?? "";
+      const result = document.createElement("div");
+      result.className = "ac-fmt-condition-then";
+      result.textContent = item.result ?? "";
+      row.appendChild(cond);
+      row.appendChild(result);
+      list.appendChild(row);
+    });
+    body.appendChild(list);
+    return;
+  }
+
+  // Default: bullets
   const bullets = (sec.bullets ?? []).slice(0, MAX_BULLETS_PER_SECTION);
   bullets.forEach((b) => {
     const li = document.createElement("div");
     li.className = "answer-card-bullet";
     li.textContent = b;
-    sectionEl.appendChild(li);
+    body.appendChild(li);
   });
   if (bullets.length < (sec.bullets?.length ?? 0)) {
     const more = document.createElement("div");
     more.className = "answer-card-more";
     more.textContent = "Show more";
     more.setAttribute("aria-label", "Show more bullets");
-    sectionEl.appendChild(more);
+    body.appendChild(more);
   }
+}
+
+function renderOneSection(sec: AnswerCardSection): HTMLElement {
+  const sectionEl = document.createElement("div");
+  sectionEl.className = `answer-card-section answer-card-section--${sec.format ?? "bullets"}`;
+  const labelEl = document.createElement("div");
+  labelEl.className = "answer-card-section-label";
+  labelEl.textContent = sec.label || "";
+  sectionEl.appendChild(labelEl);
+  _renderSectionBody(sec, sectionEl);
   return sectionEl;
 }
 
@@ -2236,17 +2367,22 @@ function renderAnswerCard(
       metaRow.appendChild(chip);
     });
   }
-  if (metaRow.childNodes.length > 0) bubble.appendChild(metaRow);
+
+  // Build the Answer panel content (sections + meta + confidence note)
+  const answerPanel = document.createElement("div");
+  answerPanel.className = "ac-tab-panel ac-tab-panel--answer ac-tab-panel--active";
+  answerPanel.setAttribute("role", "tabpanel");
+  if (metaRow.childNodes.length > 0) answerPanel.appendChild(metaRow);
 
   const { visible, hidden } = splitSectionsByVisibility(card.sections ?? [], card.mode);
-  visible.forEach((sec) => bubble.appendChild(renderOneSection(sec)));
+  visible.forEach((sec) => answerPanel.appendChild(renderOneSection(sec)));
 
   if (hidden.length > 0) {
     const detailsBlock = document.createElement("div");
     detailsBlock.className = "answer-card-details";
     detailsBlock.setAttribute("aria-hidden", "true");
     hidden.forEach((sec) => detailsBlock.appendChild(renderOneSection(sec)));
-    bubble.appendChild(detailsBlock);
+    answerPanel.appendChild(detailsBlock);
 
     const toggleBtn = document.createElement("button");
     toggleBtn.type = "button";
@@ -2261,15 +2397,80 @@ function renderAnswerCard(
       toggleBtn.textContent = expanded ? "Hide details" : "Show details";
       toggleBtn.setAttribute("aria-label", expanded ? "Hide details" : "Show details");
     });
-    bubble.appendChild(toggleBtn);
+    answerPanel.appendChild(toggleBtn);
   }
 
   if (card.confidence_note && card.confidence_note.trim()) {
     const note = document.createElement("div");
     note.className = "answer-card-confidence";
     note.textContent = card.confidence_note;
-    bubble.appendChild(note);
+    answerPanel.appendChild(note);
   }
+
+  // Details tab panel — citations breakdown (only built when citations exist)
+  const hasCitations = Array.isArray(card.citations) && card.citations.length > 0;
+  const detailsPanel = document.createElement("div");
+  detailsPanel.className = "ac-tab-panel ac-tab-panel--details";
+  detailsPanel.setAttribute("role", "tabpanel");
+  detailsPanel.setAttribute("hidden", "");
+  if (hasCitations) {
+    const citList = document.createElement("div");
+    citList.className = "ac-citations-list";
+    (card.citations ?? []).forEach((cit) => {
+      const row = document.createElement("div");
+      row.className = "ac-citation-row";
+      const title = document.createElement("div");
+      title.className = "ac-citation-title";
+      title.textContent = cit.doc_title || "";
+      const meta = document.createElement("div");
+      meta.className = "ac-citation-meta";
+      if (cit.locator) meta.textContent = cit.locator;
+      const snippet = document.createElement("div");
+      snippet.className = "ac-citation-snippet";
+      snippet.textContent = (cit as Record<string, string>).snippet || "";
+      row.appendChild(title);
+      if (cit.locator) row.appendChild(meta);
+      if ((cit as Record<string, string>).snippet) row.appendChild(snippet);
+      citList.appendChild(row);
+    });
+    detailsPanel.appendChild(citList);
+  }
+
+  // Tab bar — only rendered when citations exist
+  if (hasCitations) {
+    const tabBar = document.createElement("div");
+    tabBar.className = "ac-tab-bar";
+    tabBar.setAttribute("role", "tablist");
+    const mkTab = (label: string, panel: HTMLElement, active: boolean) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "ac-tab" + (active ? " ac-tab--active" : "");
+      btn.setAttribute("role", "tab");
+      btn.setAttribute("aria-selected", String(active));
+      btn.textContent = label;
+      btn.addEventListener("click", () => {
+        tabBar.querySelectorAll(".ac-tab").forEach((t) => {
+          t.classList.remove("ac-tab--active");
+          t.setAttribute("aria-selected", "false");
+        });
+        bubble.querySelectorAll(".ac-tab-panel").forEach((p) => {
+          (p as HTMLElement).hidden = true;
+          p.classList.remove("ac-tab-panel--active");
+        });
+        btn.classList.add("ac-tab--active");
+        btn.setAttribute("aria-selected", "true");
+        panel.hidden = false;
+        panel.classList.add("ac-tab-panel--active");
+      });
+      return btn;
+    };
+    tabBar.appendChild(mkTab("Answer", answerPanel, true));
+    tabBar.appendChild(mkTab("Details", detailsPanel, false));
+    bubble.appendChild(tabBar);
+  }
+
+  bubble.appendChild(answerPanel);
+  bubble.appendChild(detailsPanel);
 
   // Suggested action chips — e.g. "Open Appeals Agent ↗" for denial/appeal queries.
   if (card.suggested_actions && card.suggested_actions.length > 0) {
