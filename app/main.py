@@ -7,6 +7,7 @@ still living here: /health, /chat/org-name-candidates,
 /chat/config/*, /chat/skills/urls, /chat/llm-router-report, the static
 mount, and /internal/skill-llm.
 """
+import asyncio
 import os
 import logging
 import threading
