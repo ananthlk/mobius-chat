@@ -9749,6 +9749,11 @@ function run(): void {
     messagesEl.appendChild(turnWrap);
     scrollToBottom(messagesEl);
 
+    // Clear bottom suggestion chips immediately so prior-turn chips don't
+    // linger during the new query's loading state.
+    const _sugSlot = document.getElementById("chat-suggestions");
+    if (_sugSlot) { _sugSlot.innerHTML = ""; _sugSlot.hidden = true; }
+
     if (!overrideMessage) inputEl.value = "";
     updateSendState();
     sendBtn.disabled = true;

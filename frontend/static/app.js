@@ -9707,6 +9707,11 @@ ${message}`;
     turnWrap.appendChild(renderUserMessage(message, selectedMode));
     messagesEl.appendChild(turnWrap);
     scrollToBottom(messagesEl);
+    const _sugSlot = document.getElementById("chat-suggestions");
+    if (_sugSlot) {
+      _sugSlot.innerHTML = "";
+      _sugSlot.hidden = true;
+    }
     if (!overrideMessage)
       inputEl.value = "";
     updateSendState();
