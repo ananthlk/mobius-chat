@@ -2486,6 +2486,30 @@ body {
   50%       { opacity: 0; }
 }
 
+/* Pulsing left-border glow on the card bubble while streaming */
+@keyframes ac-card-glow {
+  0%, 100% { box-shadow: -2px 0 5px rgba(124, 58, 237, 0.08); }
+  50%       { box-shadow: -2px 0 14px rgba(124, 58, 237, 0.32); }
+}
+.is-streaming .answer-card-bubble {
+  animation: ac-card-glow 2s ease-in-out infinite;
+}
+
+/* Cycling status line — "Searching sources…" → "Refining…" → "Checking accuracy…" */
+.ac-streaming-status {
+  display: block;
+  margin-top: 0.6rem;
+  font-size: 0.68rem;
+  letter-spacing: 0.02em;
+  color: var(--mobius-violet, #7c3aed);
+  opacity: 0.55;
+  font-style: italic;
+  transition: opacity 0.4s ease;
+}
+.ac-streaming-status.ac-status-fade {
+  opacity: 0;
+}
+
 .draft-refining-badge {
   display: inline-block;
   font-size: 0.7rem;
@@ -2827,6 +2851,47 @@ body {
   color: #92400e;
 }
 
+/* ─── Diagnostics tab — admin/staff only, muted gray treatment ───────────── */
+.ac-tab[data-panel="diagnostics"] {
+  color: var(--sidebar-text-muted);
+  opacity: 0.65;
+  font-size: 0.63rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.ac-tab[data-panel="diagnostics"]:hover { opacity: 1; }
+.ac-tab[data-panel="diagnostics"].ac-tab--active {
+  color: var(--sidebar-text);
+  border-bottom-color: var(--sidebar-text-muted);
+  opacity: 1;
+  font-weight: 500;
+}
+/* Diagnostics panel: compact, scrollable, slightly muted background */
+.ac-tab-panel--diagnostics {
+  padding: 0.25rem 0;
+  max-height: 55vh;
+  overflow-y: auto;
+}
+/* Remove outer chrome from nested LLM performance and retrieval trace panels
+   when they live inside the Diagnostics tab — they already have their own headers */
+.ac-tab-panel--diagnostics .llm-performance,
+.ac-tab-panel--diagnostics .retrieval-trace-wrap {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+  border-top: 1px solid var(--sidebar-border, rgba(0,0,0,0.06));
+}
+.ac-tab-panel--diagnostics .llm-performance:first-child,
+.ac-tab-panel--diagnostics .retrieval-trace-wrap:first-child {
+  border-top: none;
+}
+.ac-tab-panel--diagnostics .adjudicator-scorecard {
+  margin: 0;
+  border-top: 1px solid var(--sidebar-border, rgba(0,0,0,0.06));
+}
+
 /* ─── Corrections panel ───────────────────────────────────────────────────── */
 .ac-correction-row {
   padding: 0.45rem 0.625rem;
@@ -2924,6 +2989,89 @@ body {
   background: var(--mobius-violet, #7c3aed); color: #fff;
 }
 
+/* ─── Credentialing card envelope block ──────────────────────────────────────── */
+.cred-card {
+  margin: 0.5rem 0 0.25rem;
+  padding: 0.6rem 0.75rem 0.65rem;
+  border: 1px solid var(--border-subtle, rgba(0,0,0,0.1));
+  border-left: 3px solid var(--mobius-violet, #7c3aed);
+  border-radius: 0 6px 6px 0;
+  background: var(--sidebar-bg, #f8f8f8);
+  font-size: var(--text-sm);
+}
+.cred-card-header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 0.5rem; margin-bottom: 0.2rem;
+}
+.cred-card-name {
+  font-weight: 600; color: var(--sidebar-text);
+  font-size: 0.825rem;
+}
+.cred-card-status {
+  font-size: 0.68rem; font-weight: 600; letter-spacing: 0.04em;
+  padding: 0.1rem 0.45rem; border-radius: 999px;
+  white-space: nowrap;
+}
+.cred-card-status--enrolled   { background: #dcfce7; color: #15803d; }
+.cred-card-status--pending    { background: #fef3c7; color: #b45309; }
+.cred-card-status--flagged    { background: #fee2e2; color: #b91c1c; }
+.cred-card-status--not_enrolled { background: #f3f4f6; color: #6b7280; }
+.cred-card-status--unknown    { background: #f3f4f6; color: #6b7280; }
+
+.cred-card-meta {
+  display: flex; gap: 0.6rem; margin-bottom: 0.45rem;
+  font-size: 0.7rem; color: var(--sidebar-text-muted);
+}
+.cred-card-npi::before { content: "NPI "; font-weight: 500; }
+.cred-card-npi { font-family: monospace; font-size: 0.7rem; }
+
+.cred-card-flags {
+  list-style: none; margin: 0 0 0.4rem; padding: 0;
+  display: flex; flex-direction: column; gap: 0.22rem;
+}
+.cred-card-flag {
+  display: flex; align-items: baseline; gap: 0.4rem;
+  font-size: 0.72rem; color: var(--sidebar-text);
+}
+.cred-flag-dot {
+  flex-shrink: 0; width: 6px; height: 6px; border-radius: 50%;
+  margin-top: 0.2rem;
+}
+.cred-card-flag--info    .cred-flag-dot { background: #2563eb; }
+.cred-card-flag--warning .cred-flag-dot { background: #d97706; }
+.cred-card-flag--error   .cred-flag-dot { background: #dc2626; }
+.cred-card-flag--info    { color: var(--sidebar-text); }
+.cred-card-flag--warning { color: #92400e; }
+.cred-card-flag--error   { color: #991b1b; }
+
+.cred-card-action {
+  display: inline-block; margin-top: 0.3rem;
+  font-size: 0.7rem; font-weight: 500;
+  color: var(--mobius-violet, #7c3aed);
+  text-decoration: none;
+}
+.cred-card-action:hover { text-decoration: underline; }
+
+@media (prefers-color-scheme: dark) {
+  .cred-card { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.1); }
+  .cred-card-status--enrolled   { background: rgba(22,163,74,0.18); color: #4ade80; }
+  .cred-card-status--pending    { background: rgba(217,119,6,0.18); color: #fbbf24; }
+  .cred-card-status--flagged    { background: rgba(220,38,38,0.18); color: #f87171; }
+  .cred-card-status--not_enrolled,
+  .cred-card-status--unknown    { background: rgba(107,114,128,0.18); color: #9ca3af; }
+  .cred-card-flag--warning { color: #fbbf24; }
+  .cred-card-flag--error   { color: #f87171; }
+}
+:root[data-theme="dark"] .cred-card { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.1); }
+:root[data-theme="dark"] .cred-card-status--enrolled   { background: rgba(22,163,74,0.18); color: #4ade80; }
+:root[data-theme="dark"] .cred-card-status--pending    { background: rgba(217,119,6,0.18); color: #fbbf24; }
+:root[data-theme="dark"] .cred-card-status--flagged    { background: rgba(220,38,38,0.18); color: #f87171; }
+:root[data-theme="dark"] .cred-card-status--not_enrolled,
+:root[data-theme="dark"] .cred-card-status--unknown    { background: rgba(107,114,128,0.18); color: #9ca3af; }
+:root[data-theme="dark"] .cred-card-flag--warning { color: #fbbf24; }
+:root[data-theme="dark"] .cred-card-flag--error   { color: #f87171; }
+:root[data-theme="light"] .cred-card { background: var(--sidebar-bg, #f8f8f8); }
+
 /* When a tab bar is present, suppress old envelope chrome that predates tabs */
 .ac-tab-bar ~ .envelope-tool-chip,
 .ac-tab-bar ~ .envelope-detail,
@@ -2931,7 +3079,8 @@ body {
 .ac-tab-bar ~ .draft-read-more { display: none; }
 /* Orphaned draft text above the tab bar — hide when tabs are present */
 .answer-card-bubble:has(.ac-tab-bar) .message-bubble-text,
-.answer-card-bubble:has(.ac-tab-bar) .draft-read-more { display: none; }
+.answer-card-bubble:has(.ac-tab-bar) .draft-read-more,
+.answer-card-bubble:has(.ac-tab-bar) .answer-card-show-details { display: none; }
 
 /* ─── Envelope: stats tiles ─────────────────────────────────────────────────── */
 .ac-fmt-stats {

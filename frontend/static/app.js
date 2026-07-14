@@ -9315,10 +9315,13 @@ function run() {
     const existing = turnWrap.querySelector(".adjudicator-scorecard");
     if (!existing) {
       const el2 = renderAdjudicatorScorecard(qc, correlationId, technicalFeedback ?? null);
+      const diagPanel = turnWrap.querySelector(".ac-tab-panel--diagnostics");
       const perf = turnWrap.querySelector(".llm-performance");
       const fb = turnWrap.querySelector(".feedback");
       if (perf)
         perf.insertAdjacentElement("afterend", el2);
+      else if (diagPanel)
+        diagPanel.appendChild(el2);
       else if (fb)
         fb.insertAdjacentElement("beforebegin", el2);
       else
@@ -9329,6 +9332,62 @@ function run() {
     const badges = existing.querySelector(".adjudicator-scorecard-badges");
     if (oneline && badges)
       syncAdjudicatorScorecardDom(existing, qc, oneline, badges);
+  }
+  function _injectDiagnosticsTab(bubble, opts) {
+    if (bubble.querySelector(".ac-tab-panel--diagnostics"))
+      return;
+    const diagPanel = document.createElement("div");
+    diagPanel.className = "ac-tab-panel ac-tab-panel--diagnostics";
+    diagPanel.setAttribute("role", "tabpanel");
+    diagPanel.setAttribute("hidden", "");
+    if (opts.insightRows.length > 0) {
+      const perfEl = renderLlmPerformance(
+        opts.insightRows,
+        opts.perfMeta,
+        {
+          qc: opts.qc ?? void 0,
+          sourceConfidenceStrip: opts.sourceConfidenceStrip,
+          correlationId: opts.correlationId,
+          totalCostFallback: opts.totalCostFallback,
+          inputTokens: opts.inputTokens,
+          outputTokens: opts.outputTokens,
+          routingFeedback: opts.routingFeedback
+        }
+      );
+      diagPanel.appendChild(perfEl);
+    }
+    const traceEl = renderRetrievalTrace(
+      opts.thinkingLog
+    );
+    if (traceEl)
+      diagPanel.appendChild(traceEl);
+    const tabBar = bubble.querySelector(".ac-tab-bar");
+    if (tabBar) {
+      const diagBtn = document.createElement("button");
+      diagBtn.type = "button";
+      diagBtn.className = "ac-tab ac-tab--diagnostics";
+      diagBtn.setAttribute("role", "tab");
+      diagBtn.setAttribute("aria-selected", "false");
+      diagBtn.setAttribute("data-panel", "diagnostics");
+      diagBtn.textContent = "Diagnostics";
+      diagBtn.addEventListener("click", () => {
+        const liveBubble = diagBtn.closest(".answer-card-bubble") ?? bubble;
+        tabBar.querySelectorAll(".ac-tab").forEach((t) => {
+          t.classList.remove("ac-tab--active");
+          t.setAttribute("aria-selected", "false");
+        });
+        liveBubble.querySelectorAll(".ac-tab-panel").forEach((p) => {
+          p.hidden = true;
+          p.classList.remove("ac-tab-panel--active");
+        });
+        diagBtn.classList.add("ac-tab--active");
+        diagBtn.setAttribute("aria-selected", "true");
+        diagPanel.hidden = false;
+        diagPanel.classList.add("ac-tab-panel--active");
+      });
+      tabBar.appendChild(diagBtn);
+    }
+    bubble.appendChild(diagPanel);
   }
   function mergeTechnicalPanels(turnWrap, d) {
     const qc = d.qc_audit;
@@ -10663,11 +10722,15 @@ ${message}`;
       }
       const insightRows = data.usage_breakdown;
       const perfMeta = data.llm_performance;
-      if (getShowLlmPerformance(cachedProfile) && Array.isArray(insightRows) && insightRows.length > 0 && data.status === "completed") {
+      if (getShowLlmPerformance(cachedProfile) && data.status === "completed") {
         const tin = Number(data.tokens_used?.input_tokens) || 0;
         const tout = Number(data.tokens_used?.output_tokens) || 0;
-        turnWrap.appendChild(
-          renderLlmPerformance(insightRows, perfMeta, {
+        const cardBubble = messageWrapEl?.querySelector(".answer-card-bubble");
+        if (isStreamingCard && cardBubble) {
+          _injectDiagnosticsTab(cardBubble, {
+            insightRows: Array.isArray(insightRows) ? insightRows : [],
+            perfMeta,
+            thinkingLog: data.thinking_log,
             qc: qcFromPayload,
             sourceConfidenceStrip: data.source_confidence_strip ?? null,
             correlationId: data.correlation_id ?? activeCorrelationId,
@@ -10675,11 +10738,23 @@ ${message}`;
             inputTokens: tin,
             outputTokens: tout,
             routingFeedback: data.technical_feedback?.llm_performance ?? null
-          })
-        );
-        const retrievalPanel = renderRetrievalTrace(data.thinking_log);
-        if (retrievalPanel)
-          turnWrap.appendChild(retrievalPanel);
+          });
+        } else if (Array.isArray(insightRows) && insightRows.length > 0) {
+          turnWrap.appendChild(
+            renderLlmPerformance(insightRows, perfMeta, {
+              qc: qcFromPayload,
+              sourceConfidenceStrip: data.source_confidence_strip ?? null,
+              correlationId: data.correlation_id ?? activeCorrelationId,
+              totalCostFallback: data.cost_usd,
+              inputTokens: tin,
+              outputTokens: tout,
+              routingFeedback: data.technical_feedback?.llm_performance ?? null
+            })
+          );
+          const retrievalPanel = renderRetrievalTrace(data.thinking_log);
+          if (retrievalPanel)
+            turnWrap.appendChild(retrievalPanel);
+        }
       }
       mergeTechnicalPanels(turnWrap, data);
       mergeLlmPerformanceRoutingHydrate(turnWrap, data);

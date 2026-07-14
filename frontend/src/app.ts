@@ -2424,8 +2424,9 @@ function renderAnswerCard(
 
   const hasCitations = Array.isArray(card.citations) && card.citations.length > 0;
   const hasCorrections = _corrections.length > 0;
-  const hasNextSteps = _nextStepQuestions.length > 0 || _nextStepTasks.length > 0;
-  const showTabBar = hasCitations || hasCorrections || hasNextSteps;
+  const hasNextSteps = _nextStepQuestions.length > 0;
+  const hasTasks = _nextStepTasks.length > 0;
+  const showTabBar = hasCitations || hasCorrections || hasNextSteps || hasTasks;
 
   // Citations panel
   const citationsPanel = document.createElement("div");
@@ -2510,65 +2511,64 @@ function renderAnswerCard(
     answerPanel.appendChild(corrCallout);
   }
 
-  // Next Steps panel — follow-up questions + one-click task creation
+  // Follow-up panel — suggested questions the user can ask next
   const nextStepsPanel = document.createElement("div");
   nextStepsPanel.className = "ac-tab-panel ac-tab-panel--next-steps";
   nextStepsPanel.setAttribute("role", "tabpanel");
   nextStepsPanel.setAttribute("hidden", "");
-  if (hasNextSteps) {
+  if (_nextStepQuestions.length > 0) {
     const nsWrap = document.createElement("div");
     nsWrap.className = "ac-next-steps";
-    if (_nextStepQuestions.length > 0) {
-      const qlabel = document.createElement("div");
-      qlabel.className = "ac-next-steps-label";
-      qlabel.textContent = "Follow-up questions";
-      nsWrap.appendChild(qlabel);
-      _nextStepQuestions.forEach((q) => {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "ac-next-step-question";
-        btn.textContent = q.text;
-        if (opts?.onFollowupClick && q.text) {
-          btn.addEventListener("click", () => opts!.onFollowupClick!(q.text));
-        }
-        nsWrap.appendChild(btn);
-      });
-    }
-    if (_nextStepTasks.length > 0) {
-      const tlabel = document.createElement("div");
-      tlabel.className = "ac-next-steps-label";
-      tlabel.textContent = "Suggested tasks";
-      nsWrap.appendChild(tlabel);
-      _nextStepTasks.forEach(({ text, taskType }) => {
-        const row = document.createElement("div");
-        row.className = "ac-next-step-task-row";
-        const taskText = document.createElement("span");
-        taskText.className = "ac-next-step-task-text";
-        taskText.textContent = text;
-        const createBtn = document.createElement("button");
-        createBtn.type = "button";
-        createBtn.className = "ac-next-step-create-btn";
-        createBtn.setAttribute("data-task-type", taskType || "general");
-        createBtn.setAttribute("data-task-text", text);
-        createBtn.textContent = "+ Task";
-        createBtn.addEventListener("click", () => {
-          openCreateTaskDialog({
-            title: text.slice(0, 60),
-            excerpt: text,
-            sourceModule: "next_steps",
-            onCreated: () => {
-              createBtn.textContent = "Task created ✓";
-              createBtn.disabled = true;
-              createBtn.classList.add("ac-next-step-create-btn--done");
-            },
-          });
-        });
-        row.appendChild(taskText);
-        row.appendChild(createBtn);
-        nsWrap.appendChild(row);
-      });
-    }
+    _nextStepQuestions.forEach((q) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "ac-next-step-question";
+      btn.textContent = q.text;
+      if (opts?.onFollowupClick && q.text) {
+        btn.addEventListener("click", () => opts!.onFollowupClick!(q.text));
+      }
+      nsWrap.appendChild(btn);
+    });
     nextStepsPanel.appendChild(nsWrap);
+  }
+
+  // Tasks panel — actionable items the user can assign to themselves
+  const tasksPanel = document.createElement("div");
+  tasksPanel.className = "ac-tab-panel ac-tab-panel--tasks";
+  tasksPanel.setAttribute("role", "tabpanel");
+  tasksPanel.setAttribute("hidden", "");
+  if (_nextStepTasks.length > 0) {
+    const tWrap = document.createElement("div");
+    tWrap.className = "ac-tasks-list";
+    _nextStepTasks.forEach(({ text, taskType }) => {
+      const row = document.createElement("div");
+      row.className = "ac-next-step-task-row";
+      const taskText = document.createElement("span");
+      taskText.className = "ac-next-step-task-text";
+      taskText.textContent = text;
+      const createBtn = document.createElement("button");
+      createBtn.type = "button";
+      createBtn.className = "ac-next-step-create-btn";
+      createBtn.setAttribute("data-task-type", taskType || "general");
+      createBtn.setAttribute("data-task-text", text);
+      createBtn.textContent = "+ Add to my tasks";
+      createBtn.addEventListener("click", () => {
+        openCreateTaskDialog({
+          title: text.slice(0, 60),
+          excerpt: text,
+          sourceModule: "next_steps",
+          onCreated: () => {
+            createBtn.textContent = "Added ✓";
+            createBtn.disabled = true;
+            createBtn.classList.add("ac-next-step-create-btn--done");
+          },
+        });
+      });
+      row.appendChild(taskText);
+      row.appendChild(createBtn);
+      tWrap.appendChild(row);
+    });
+    tasksPanel.appendChild(tWrap);
   }
 
   // Tab bar — rendered when any of the non-Answer tabs has content
@@ -2579,15 +2579,18 @@ function renderAnswerCard(
     // count=undefined → Answer tab (no badge, always visible)
     // count=0 → data-empty="1" (CSS hides it)
     // count>0 → count badge shown
-    const mkTab = (label: string, panel: HTMLElement, count: number | undefined, active: boolean) => {
+    // panelKey = CSS suffix for .ac-tab-panel--{panelKey}; querySelector so tab buttons
+    // survive panel replaceChild in the completed handler (closure reference would break).
+    const mkTab = (label: string, panelKey: string, count: number | undefined, active: boolean) => {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "ac-tab" + (active ? " ac-tab--active" : "");
       btn.setAttribute("role", "tab");
       btn.setAttribute("aria-selected", String(active));
+      btn.setAttribute("data-panel", panelKey);
       if (count !== undefined && count === 0) btn.setAttribute("data-empty", "1");
       if (count !== undefined && count > 0) {
-        btn.appendChild(document.createTextNode(label + " "));
+        btn.appendChild(document.createTextNode(label + " "));
         const badge = document.createElement("span");
         badge.className = "ac-tab-count";
         badge.textContent = String(count);
@@ -2596,7 +2599,6 @@ function renderAnswerCard(
         btn.textContent = label;
       }
       btn.addEventListener("click", () => {
-        // Use live DOM traversal — bubble may be detached after transplant
         const liveBubble = btn.closest(".answer-card-bubble") ?? bubble;
         tabBar.querySelectorAll(".ac-tab").forEach((t) => {
           t.classList.remove("ac-tab--active");
@@ -2608,23 +2610,16 @@ function renderAnswerCard(
         });
         btn.classList.add("ac-tab--active");
         btn.setAttribute("aria-selected", "true");
-        panel.hidden = false;
-        panel.classList.add("ac-tab-panel--active");
+        const targetPanel = liveBubble.querySelector(`.ac-tab-panel--${panelKey}`) as HTMLElement | null;
+        if (targetPanel) { targetPanel.hidden = false; targetPanel.classList.add("ac-tab-panel--active"); }
       });
       return btn;
     };
-    const _answerBtn = mkTab("Summary", answerPanel, undefined, true);
-    _answerBtn.setAttribute("data-panel", "summary");
-    const _citBtn = mkTab("Citations", citationsPanel, (card.citations ?? []).length, false);
-    _citBtn.setAttribute("data-panel", "citations");
-    const _corrBtn = mkTab("Corrections", correctionsPanel, _corrections.length, false);
-    _corrBtn.setAttribute("data-panel", "corrections");
-    const _nsBtn = mkTab("Next Steps", nextStepsPanel, _nextStepQuestions.length + _nextStepTasks.length, false);
-    _nsBtn.setAttribute("data-panel", "next-steps");
-    tabBar.appendChild(_answerBtn);
-    tabBar.appendChild(_citBtn);
-    tabBar.appendChild(_corrBtn);
-    tabBar.appendChild(_nsBtn);
+    tabBar.appendChild(mkTab("Summary", "summary", undefined, true));
+    tabBar.appendChild(mkTab("Citations", "citations", (card.citations ?? []).length, false));
+    tabBar.appendChild(mkTab("Corrections", "corrections", _corrections.length, false));
+    tabBar.appendChild(mkTab("Follow-up", "next-steps", _nextStepQuestions.length, false));
+    tabBar.appendChild(mkTab("Tasks", "tasks", _nextStepTasks.length, false));
     bubble.appendChild(tabBar);
   }
 
@@ -2632,6 +2627,7 @@ function renderAnswerCard(
   bubble.appendChild(citationsPanel);
   bubble.appendChild(correctionsPanel);
   bubble.appendChild(nextStepsPanel);
+  bubble.appendChild(tasksPanel);
 
   // Suggested action chips — e.g. "Open Appeals Agent ↗" for denial/appeal queries.
   if (card.suggested_actions && card.suggested_actions.length > 0) {
@@ -8738,6 +8734,77 @@ function renderAssistantFromEnvelope(
         }
         if (actionsWrap.childNodes.length > 0) pendingActionChips.push(actionsWrap);
       }
+    } else if (t === "credentialing_card") {
+      const b = block as {
+        npi?: string; provider_name?: string; org?: string; status?: string;
+        flags?: Array<{ text: string; severity?: string }>;
+        action_url?: string;
+      };
+      const card = document.createElement("div");
+      card.className = "cred-card";
+
+      const header = document.createElement("div");
+      header.className = "cred-card-header";
+      const nameEl = document.createElement("div");
+      nameEl.className = "cred-card-name";
+      nameEl.textContent = b.provider_name ?? "Provider";
+      const statusKey = (b.status ?? "unknown").toLowerCase();
+      const statusLabel: Record<string, string> = {
+        enrolled: "Enrolled", pending: "Pending", flagged: "Flagged",
+        not_enrolled: "Not Enrolled", unknown: "Unknown",
+      };
+      const statusEl = document.createElement("span");
+      statusEl.className = `cred-card-status cred-card-status--${statusKey}`;
+      statusEl.textContent = statusLabel[statusKey] ?? b.status ?? "Unknown";
+      header.appendChild(nameEl);
+      header.appendChild(statusEl);
+      card.appendChild(header);
+
+      if (b.npi || b.org) {
+        const meta = document.createElement("div");
+        meta.className = "cred-card-meta";
+        if (b.npi) {
+          const npiEl = document.createElement("span");
+          npiEl.className = "cred-card-npi";
+          npiEl.textContent = "NPI " + b.npi;
+          meta.appendChild(npiEl);
+        }
+        if (b.org) {
+          const orgEl = document.createElement("span");
+          orgEl.className = "cred-card-org";
+          orgEl.textContent = b.org;
+          meta.appendChild(orgEl);
+        }
+        card.appendChild(meta);
+      }
+
+      if (Array.isArray(b.flags) && b.flags.length > 0) {
+        const flagList = document.createElement("ul");
+        flagList.className = "cred-card-flags";
+        b.flags.forEach((f) => {
+          const li = document.createElement("li");
+          li.className = `cred-card-flag cred-card-flag--${f.severity ?? "info"}`;
+          const dot = document.createElement("span");
+          dot.className = "cred-flag-dot";
+          dot.setAttribute("aria-hidden", "true");
+          li.appendChild(dot);
+          li.appendChild(document.createTextNode(f.text));
+          flagList.appendChild(li);
+        });
+        card.appendChild(flagList);
+      }
+
+      if (b.action_url) {
+        const link = document.createElement("a");
+        link.href = b.action_url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.className = "cred-card-action";
+        link.textContent = "View full report ↗";
+        card.appendChild(link);
+      }
+
+      bubble.appendChild(card);
     }
   }
 
@@ -9174,9 +9241,12 @@ function run(): void {
     const existing = turnWrap.querySelector(".adjudicator-scorecard") as HTMLElement | null;
     if (!existing) {
       const el = renderAdjudicatorScorecard(qc, correlationId, technicalFeedback ?? null);
+      // Prefer inserting into the Diagnostics tab panel if present
+      const diagPanel = turnWrap.querySelector(".ac-tab-panel--diagnostics") as HTMLElement | null;
       const perf = turnWrap.querySelector(".llm-performance");
       const fb = turnWrap.querySelector(".feedback");
       if (perf) perf.insertAdjacentElement("afterend", el);
+      else if (diagPanel) diagPanel.appendChild(el);
       else if (fb) fb.insertAdjacentElement("beforebegin", el);
       else turnWrap.appendChild(el);
       return;
@@ -9184,6 +9254,84 @@ function run(): void {
     const oneline = existing.querySelector(".adjudicator-scorecard-oneline") as HTMLElement | null;
     const badges = existing.querySelector(".adjudicator-scorecard-badges") as HTMLElement | null;
     if (oneline && badges) syncAdjudicatorScorecardDom(existing, qc, oneline, badges);
+  }
+
+  function _injectDiagnosticsTab(
+    bubble: HTMLElement,
+    opts: {
+      insightRows: unknown[];
+      perfMeta: unknown;
+      thinkingLog: unknown;
+      qc: QcAuditInfo | null | undefined;
+      sourceConfidenceStrip: string | null;
+      correlationId: string;
+      totalCostFallback: unknown;
+      inputTokens: number;
+      outputTokens: number;
+      routingFeedback: unknown;
+    }
+  ): void {
+    if (bubble.querySelector(".ac-tab-panel--diagnostics")) return; // idempotent
+
+    // Build the panel
+    const diagPanel = document.createElement("div");
+    diagPanel.className = "ac-tab-panel ac-tab-panel--diagnostics";
+    diagPanel.setAttribute("role", "tabpanel");
+    diagPanel.setAttribute("hidden", "");
+
+    // Section 1: LLM performance breakdown
+    if (opts.insightRows.length > 0) {
+      const perfEl = renderLlmPerformance(
+        opts.insightRows as AnswerInsightRow[],
+        opts.perfMeta as LlmPerformanceMeta | null | undefined,
+        {
+          qc: opts.qc ?? undefined,
+          sourceConfidenceStrip: opts.sourceConfidenceStrip,
+          correlationId: opts.correlationId,
+          totalCostFallback: opts.totalCostFallback as number | null | undefined,
+          inputTokens: opts.inputTokens,
+          outputTokens: opts.outputTokens,
+          routingFeedback: opts.routingFeedback as { rating: string; comment?: string | null } | null,
+        }
+      );
+      diagPanel.appendChild(perfEl);
+    }
+
+    // Section 2: RAG retrieval trace
+    const traceEl = renderRetrievalTrace(
+      opts.thinkingLog as ReadonlyArray<unknown> | null | undefined
+    );
+    if (traceEl) diagPanel.appendChild(traceEl);
+
+    // Wire tab button into the tab bar
+    const tabBar = bubble.querySelector(".ac-tab-bar") as HTMLElement | null;
+    if (tabBar) {
+      const diagBtn = document.createElement("button");
+      diagBtn.type = "button";
+      diagBtn.className = "ac-tab ac-tab--diagnostics";
+      diagBtn.setAttribute("role", "tab");
+      diagBtn.setAttribute("aria-selected", "false");
+      diagBtn.setAttribute("data-panel", "diagnostics");
+      diagBtn.textContent = "Diagnostics";
+      diagBtn.addEventListener("click", () => {
+        const liveBubble = diagBtn.closest(".answer-card-bubble") ?? bubble;
+        tabBar.querySelectorAll(".ac-tab").forEach((t) => {
+          t.classList.remove("ac-tab--active");
+          t.setAttribute("aria-selected", "false");
+        });
+        liveBubble.querySelectorAll(".ac-tab-panel").forEach((p) => {
+          (p as HTMLElement).hidden = true;
+          p.classList.remove("ac-tab-panel--active");
+        });
+        diagBtn.classList.add("ac-tab--active");
+        diagBtn.setAttribute("aria-selected", "true");
+        diagPanel.hidden = false;
+        diagPanel.classList.add("ac-tab-panel--active");
+      });
+      tabBar.appendChild(diagBtn);
+    }
+
+    bubble.appendChild(diagPanel);
   }
 
   function mergeTechnicalPanels(turnWrap: HTMLElement, d: ChatResponse): void {
@@ -10247,7 +10395,8 @@ function run(): void {
       streamTabBar.appendChild(_mkStreamBtn("Summary", "summary", true));
       streamTabBar.appendChild(_mkStreamBtn("Citations", "citations", false));
       streamTabBar.appendChild(_mkStreamBtn("Corrections", "corrections", false));
-      streamTabBar.appendChild(_mkStreamBtn("Next Steps", "next-steps", false));
+      streamTabBar.appendChild(_mkStreamBtn("Follow-up", "next-steps", false));
+      streamTabBar.appendChild(_mkStreamBtn("Tasks", "tasks", false));
       bubble.appendChild(streamTabBar);
 
       // Summary panel — prose streams in here; cursor follows
@@ -10261,10 +10410,28 @@ function run(): void {
       cursor.setAttribute("aria-hidden", "true");
       summaryPanel.appendChild(prose);
       summaryPanel.appendChild(cursor);
+
+      // Cycling status line while streaming
+      const statusEl = document.createElement("span");
+      statusEl.className = "ac-streaming-status";
+      const _statusPhrases = ["Searching sources…", "Refining answer…", "Checking accuracy…", "Summarizing…"];
+      let _statusIdx = 0;
+      statusEl.textContent = _statusPhrases[0];
+      summaryPanel.appendChild(statusEl);
+      const _statusInterval = window.setInterval(() => {
+        statusEl.classList.add("ac-status-fade");
+        window.setTimeout(() => {
+          _statusIdx = (_statusIdx + 1) % _statusPhrases.length;
+          statusEl.textContent = _statusPhrases[_statusIdx];
+          statusEl.classList.remove("ac-status-fade");
+        }, 400);
+      }, 3000);
+      bubble.dataset.statusInterval = String(_statusInterval);
+
       bubble.appendChild(summaryPanel);
 
       // Empty placeholder panels — filled in-place on completed
-      (["citations", "corrections", "next-steps"] as const).forEach((p) => {
+      (["citations", "corrections", "next-steps", "tasks"] as const).forEach((p) => {
         const panel = document.createElement("div");
         panel.className = `ac-tab-panel ac-tab-panel--${p}`;
         panel.setAttribute("role", "tabpanel");
@@ -10450,6 +10617,12 @@ function run(): void {
           messageWrapEl.classList.remove("is-streaming");
           const existingBubble = messageWrapEl.querySelector(".answer-card-bubble") as HTMLElement | null;
 
+          // Clear cycling status interval and remove the element
+          if (existingBubble?.dataset.statusInterval) {
+            window.clearInterval(Number(existingBubble.dataset.statusInterval));
+            existingBubble.querySelector(".ac-streaming-status")?.remove();
+          }
+
           // Extract corrections and next-step tasks from envelope blocks
           const _extractedCorrections: Array<{ label: string; text: string }> = [];
           const _extractedNextStepTasks: Array<{ text: string; taskType: string }> = [];
@@ -10532,7 +10705,8 @@ function run(): void {
                   existingBubble.replaceChild(renderedTabBar, streamingTabBar);
                 }
 
-                // Summary panel: keep streaming prose, append sections/meta/confidence
+                // Summary panel: keep streaming prose, append sections/meta/confidence from rendered card.
+                // mkTab now uses querySelector (not closure ref), so existingSummaryPanel can stay in place.
                 const existingSummaryPanel = existingBubble.querySelector(".ac-tab-panel--summary") as HTMLElement | null;
                 const renderedSummaryPanel = renderedBubble.querySelector(".ac-tab-panel--summary") as HTMLElement | null;
                 if (existingSummaryPanel && renderedSummaryPanel) {
@@ -10541,18 +10715,31 @@ function run(): void {
                   });
                 }
 
-                // Swap Citations, Corrections, Next Steps panels in-place
-                (["citations", "corrections", "next-steps"] as const).forEach((panelName) => {
+                // Swap Citations, Corrections, Follow-up, Tasks panels in-place
+                (["citations", "corrections", "next-steps", "tasks"] as const).forEach((panelName) => {
                   const existing = existingBubble.querySelector(`.ac-tab-panel--${panelName}`) as HTMLElement | null;
                   const rendered = renderedBubble.querySelector(`.ac-tab-panel--${panelName}`) as HTMLElement | null;
                   if (existing && rendered) existingBubble.replaceChild(rendered, existing);
                 });
+
+                // Hoist answer-card-actions to turn level
+                const actionsEl = renderedCard.querySelector(".answer-card-actions");
+                if (actionsEl) turnWrap.appendChild(actionsEl);
+
+                // Hoist any inline action chips that ended up inside the bubble
+                // (e.g. from direct_answer text or sections, not from suggested_actions)
+                const inlineChips = Array.from(existingBubble.querySelectorAll(".answer-card-action-chip"));
+                if (inlineChips.length > 0) {
+                  let hoistWrap = turnWrap.querySelector(".answer-card-actions") as HTMLElement | null;
+                  if (!hoistWrap) {
+                    hoistWrap = document.createElement("div");
+                    hoistWrap.className = "answer-card-actions";
+                    turnWrap.appendChild(hoistWrap);
+                  }
+                  inlineChips.forEach((chip) => hoistWrap!.appendChild(chip));
+                }
               }
             }
-
-            // Hoist answer-card-actions to turn level
-            const actionsEl = renderedCard.querySelector(".answer-card-actions");
-            if (actionsEl) turnWrap.appendChild(actionsEl);
 
           } else if (existingBubble) {
             // No AnswerCard (error, clarify, stub) — demote card shell to plain bubble.
@@ -10768,14 +10955,18 @@ function run(): void {
         const perfMeta = data.llm_performance;
         if (
           getShowLlmPerformance(cachedProfile) &&
-          Array.isArray(insightRows) &&
-          insightRows.length > 0 &&
           data.status === "completed"
         ) {
           const tin = Number(data.tokens_used?.input_tokens) || 0;
           const tout = Number(data.tokens_used?.output_tokens) || 0;
-          turnWrap.appendChild(
-            renderLlmPerformance(insightRows, perfMeta, {
+          const cardBubble = messageWrapEl?.querySelector(".answer-card-bubble") as HTMLElement | null;
+
+          if (isStreamingCard && cardBubble) {
+            // Admin path A: inject Diagnostics tab into the answer card
+            _injectDiagnosticsTab(cardBubble, {
+              insightRows: Array.isArray(insightRows) ? insightRows : [],
+              perfMeta,
+              thinkingLog: data.thinking_log,
               qc: qcFromPayload,
               sourceConfidenceStrip: data.source_confidence_strip ?? null,
               correlationId: data.correlation_id ?? activeCorrelationId,
@@ -10783,16 +10974,23 @@ function run(): void {
               inputTokens: tin,
               outputTokens: tout,
               routingFeedback: data.technical_feedback?.llm_performance ?? null,
-            })
-          );
-
-          // Retrieval trace panel — companion to LLM performance,
-          // gated on the same admin flag so non-technical users don't
-          // see it. Renders only if a retrieval_trace envelope is in
-          // thinking_log (rag emits one per corpus_search call from
-          // the chat-side skill consumer).
-          const retrievalPanel = renderRetrievalTrace(data.thinking_log);
-          if (retrievalPanel) turnWrap.appendChild(retrievalPanel);
+            });
+          } else if (Array.isArray(insightRows) && insightRows.length > 0) {
+            // Admin path B: non-card turn — keep panels below the bubble as before
+            turnWrap.appendChild(
+              renderLlmPerformance(insightRows, perfMeta, {
+                qc: qcFromPayload,
+                sourceConfidenceStrip: data.source_confidence_strip ?? null,
+                correlationId: data.correlation_id ?? activeCorrelationId,
+                totalCostFallback: data.cost_usd,
+                inputTokens: tin,
+                outputTokens: tout,
+                routingFeedback: data.technical_feedback?.llm_performance ?? null,
+              })
+            );
+            const retrievalPanel = renderRetrievalTrace(data.thinking_log);
+            if (retrievalPanel) turnWrap.appendChild(retrievalPanel);
+          }
         }
 
         mergeTechnicalPanels(turnWrap, data);
