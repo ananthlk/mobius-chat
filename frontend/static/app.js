@@ -3348,24 +3348,26 @@ function renderAnswerCard(card, isError, opts) {
     attr.textContent = "From the Mobius founding essay:";
     bubble.appendChild(attr);
     const RECITAL_PARA_LIMIT = 3;
-    const allParas = card.recital.verbatim.split(/\n\n+/);
+    const stripSeparators = (t) => t.replace(/^[ \t]*[-*_]{3,}[ \t]*$/gm, "").trim();
+    const fullText = stripSeparators(card.recital.verbatim);
+    const allParas = fullText.split(/\n\n+/);
     const clipped = allParas.length > RECITAL_PARA_LIMIT;
-    const proseText = clipped ? allParas.slice(0, RECITAL_PARA_LIMIT).join("\n\n") : card.recital.verbatim;
+    const proseText = clipped ? allParas.slice(0, RECITAL_PARA_LIMIT).join("\n\n") : fullText;
     const prose = document.createElement("div");
     prose.className = "recital-prose";
-    const cleanProse = proseText.replace(/^[ \t]*[-*_]{3,}[ \t]*$/gm, "").trim();
-    prose.innerHTML = simpleMarkdownToHtml(cleanProse);
+    prose.innerHTML = simpleMarkdownToHtml(proseText);
     bubble.appendChild(prose);
-    if (clipped && card.recital.document_id) {
+    if (clipped) {
       const readMore = document.createElement("button");
       readMore.type = "button";
       readMore.className = "recital-read-more";
       readMore.textContent = "Read the full essay \u2197";
+      let expanded = false;
       readMore.addEventListener("click", () => {
-        const w = window;
-        if (typeof w.openDocReaderPanel === "function") {
-          w.openDocReaderPanel(card.recital.document_id);
-        }
+        expanded = !expanded;
+        prose.innerHTML = simpleMarkdownToHtml(expanded ? fullText : proseText);
+        readMore.textContent = expanded ? "Collapse \u2191" : "Read the full essay \u2197";
+        wrap.classList.toggle("recital-expanded", expanded);
       });
       bubble.appendChild(readMore);
     }

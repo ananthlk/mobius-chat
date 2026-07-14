@@ -2292,29 +2292,30 @@ function renderAnswerCard(
     attr.textContent = "From the Mobius founding essay:";
     bubble.appendChild(attr);
 
-    // Clip to first 3 paragraphs; show CTA only when clipped.
+    // Clip to first 3 paragraphs; CTA expands inline on click.
     const RECITAL_PARA_LIMIT = 3;
-    const allParas = card.recital.verbatim.split(/\n\n+/);
+    const stripSeparators = (t: string) => t.replace(/^[ \t]*[-*_]{3,}[ \t]*$/gm, "").trim();
+    const fullText = stripSeparators(card.recital.verbatim);
+    const allParas = fullText.split(/\n\n+/);
     const clipped = allParas.length > RECITAL_PARA_LIMIT;
-    const proseText = clipped ? allParas.slice(0, RECITAL_PARA_LIMIT).join("\n\n") : card.recital.verbatim;
+    const proseText = clipped ? allParas.slice(0, RECITAL_PARA_LIMIT).join("\n\n") : fullText;
 
     const prose = document.createElement("div");
     prose.className = "recital-prose";
-    // Strip document-section separators (---, ***, ___) before rendering
-    const cleanProse = proseText.replace(/^[ \t]*[-*_]{3,}[ \t]*$/gm, "").trim();
-    prose.innerHTML = simpleMarkdownToHtml(cleanProse);
+    prose.innerHTML = simpleMarkdownToHtml(proseText);
     bubble.appendChild(prose);
 
-    if (clipped && card.recital.document_id) {
+    if (clipped) {
       const readMore = document.createElement("button");
       readMore.type = "button";
       readMore.className = "recital-read-more";
       readMore.textContent = "Read the full essay ↗";
+      let expanded = false;
       readMore.addEventListener("click", () => {
-        const w = window as Window & typeof globalThis & { openDocReaderPanel?: (id: string) => void };
-        if (typeof w.openDocReaderPanel === "function") {
-          w.openDocReaderPanel(card.recital!.document_id!);
-        }
+        expanded = !expanded;
+        prose.innerHTML = simpleMarkdownToHtml(expanded ? fullText : proseText);
+        readMore.textContent = expanded ? "Collapse ↑" : "Read the full essay ↗";
+        wrap.classList.toggle("recital-expanded", expanded);
       });
       bubble.appendChild(readMore);
     }
