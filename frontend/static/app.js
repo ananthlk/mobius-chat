@@ -3229,16 +3229,19 @@ function renderAnswerCard(card, isError, opts) {
   const bubble = document.createElement("div");
   bubble.className = "message-bubble answer-card-bubble";
   if (card.mode === "RECITAL" && card.recital?.verbatim) {
-    bubble.classList.add("answer-card-bubble--recital");
     const attr = document.createElement("div");
     attr.className = "recital-attr";
-    attr.textContent = card.direct_answer || "From the Mobius founding essay:";
+    attr.textContent = "From the Mobius founding essay:";
     bubble.appendChild(attr);
+    const RECITAL_PARA_LIMIT = 3;
+    const allParas = card.recital.verbatim.split(/\n\n+/);
+    const clipped = allParas.length > RECITAL_PARA_LIMIT;
+    const proseText = clipped ? allParas.slice(0, RECITAL_PARA_LIMIT).join("\n\n") : card.recital.verbatim;
     const prose = document.createElement("div");
     prose.className = "recital-prose";
-    prose.innerHTML = simpleMarkdownToHtml(card.recital.verbatim);
+    prose.innerHTML = simpleMarkdownToHtml(proseText);
     bubble.appendChild(prose);
-    if (card.recital.document_id) {
+    if (clipped && card.recital.document_id) {
       const readMore = document.createElement("button");
       readMore.type = "button";
       readMore.className = "recital-read-more";
@@ -9927,6 +9930,10 @@ ${message}`;
           });
           const innerBubble = renderedCard.querySelector(".answer-card-bubble");
           if (innerBubble) {
+            if (fullCard.mode === "RECITAL") {
+              messageBubble.querySelector(".message-bubble-text")?.remove();
+              messageBubble.querySelector(".draft-read-more")?.remove();
+            }
             Array.from(innerBubble.children).forEach((child) => {
               if (!child.classList.contains("answer-card-direct")) {
                 child.classList.add("answer-card-upgrade-in");
