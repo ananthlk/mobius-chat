@@ -2731,10 +2731,37 @@ body {
 .ac-tab-panel[hidden],
 .ac-tab-panel:not(.ac-tab-panel--active) { display: none; }
 
+/* Progressive tab reveal — fade in when renderer removes data-empty */
+@keyframes ac-tab-reveal {
+  from { opacity: 0; transform: translateY(3px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.ac-tab:not([data-empty="1"]) {
+  animation: ac-tab-reveal 0.22s ease-out;
+}
+
+/* ─── Corrections tab — amber (attention) not violet (info) ──────────────── */
+.ac-tab[data-panel="corrections"]:not([data-empty="1"]),
+.ac-tab[data-panel="corrections"]:not([data-empty="1"]):hover {
+  color: #b45309;
+}
+.ac-tab[data-panel="corrections"].ac-tab--active {
+  color: #92400e;
+  border-bottom-color: #d97706;
+}
+.ac-tab[data-panel="corrections"]:not([data-empty="1"]) .ac-tab-count {
+  background: rgba(217,119,6,0.1);
+  color: #d97706;
+}
+.ac-tab[data-panel="corrections"].ac-tab--active .ac-tab-count {
+  background: rgba(217,119,6,0.18);
+  color: #92400e;
+}
+
 /* ─── Corrections panel ───────────────────────────────────────────────────── */
 .ac-correction-row {
   padding: 0.45rem 0.625rem;
-  border-left: 2px solid rgba(0,0,0,0.1);
+  border-left: 2px solid rgba(217,119,6,0.35);
   font-size: 0.78rem; line-height: 1.45;
   color: var(--sidebar-text);
 }
@@ -2742,8 +2769,39 @@ body {
 .ac-correction-label {
   font-size: 0.6rem; font-weight: 700;
   text-transform: uppercase; letter-spacing: 0.06em;
-  color: var(--sidebar-text-muted);
+  color: #b45309;
   margin-bottom: 2px;
+}
+
+/* Inline correction callout inside the Answer panel — visible without tab switch */
+.ac-answer-correction-callout {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  margin-top: 0.75rem;
+  padding: 0.5rem 0.625rem;
+  background: rgba(217,119,6,0.055);
+  border: 1px solid rgba(217,119,6,0.18);
+  border-left: 3px solid #d97706;
+  border-radius: 0 6px 6px 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+.ac-answer-correction-icon {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  color: #d97706;
+  margin-top: 1px;
+}
+.ac-answer-correction-callout-label {
+  font-size: 0.58rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  color: #b45309;
+  margin-bottom: 2px;
+}
+.ac-answer-correction-callout-text {
+  margin: 0;
+  color: var(--sidebar-text);
 }
 
 /* ─── Next Steps panel ────────────────────────────────────────────────────── */
