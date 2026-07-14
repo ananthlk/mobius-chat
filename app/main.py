@@ -1905,6 +1905,13 @@ _SKILL_LLM_ALLOWED_STAGES = frozenset({
     "appeals_denial_sim",   # Agent 4: payor denial simulation (short output)
     "appeals_final",        # Agent 5: final synthesiser — authoritative letter
     "appeals_packet",       # Metadata: docs checklist + next steps (short output)
+    # mobius-skills/phi-classifier (2026-07-14): contextual PHI detection —
+    # regex + NER catch explicit identifiers, LLM layer catches quasi-identifiers
+    # ("34-yo veteran from Tampa"). Input is raw document text → verdict JSON.
+    # HIPAA-LOCKED: only HIPAA-eligible Vertex models declare this stage in
+    # eligible_stages, so non-BAA models are structurally excluded regardless
+    # of phi_detected flag. Never route PHI text to a non-BAA provider.
+    "phi_classify",
 })
 
 

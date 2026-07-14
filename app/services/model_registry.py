@@ -951,7 +951,7 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         # vertex candidate. Pre-fix, the router fell through to flash
         # via the hard "fallback_no_models" path; making it intentional
         # gives the bandit a real comparison vs. flash-lite + Haiku.
-        eligible_stages=vertex_roster_eligible_stages() + [ROSTER_CLEAN_STAGE, "vibe", "feedback_classify", "thread_summary"] + LEXICON_FAST_STAGES + [LEXICON_ANALYZE_STAGE],
+        eligible_stages=vertex_roster_eligible_stages() + [ROSTER_CLEAN_STAGE, "vibe", "feedback_classify", "thread_summary", "phi_classify"] + LEXICON_FAST_STAGES + [LEXICON_ANALYZE_STAGE],
         spec_tokens_per_sec=300.0,
         spec_context_k=1000,
         spec_input_per_1m_usd=0.075,
@@ -968,7 +968,7 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         display_name="Gemini 2.0 Flash Lite",
         enabled=True,
         hipaa_eligible=True,
-        eligible_stages=FAST_ONLY_STAGES,
+        eligible_stages=FAST_ONLY_STAGES + ["phi_classify"],
         spec_tokens_per_sec=500.0,
         spec_context_k=32,
         spec_input_per_1m_usd=0.018,
