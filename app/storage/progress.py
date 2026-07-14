@@ -208,10 +208,13 @@ def append_message_chunk(correlation_id: str, chunk: str) -> None:
         _publish_progress_event(correlation_id, ev_to_publish)
 
 
-def append_draft_answer(correlation_id: str, text: str) -> None:
+def append_draft_answer(correlation_id: str, text: str, mode_hint: str | None = None) -> None:
     """Emit the raw ReAct answer before the integrator runs so the frontend can render it immediately.
-    Fires a draft_ready SSE event; the completed event later swaps it with the full AnswerCard."""
+    Fires a draft_ready SSE event; the completed event fills in remaining panels in-place.
+    mode_hint (e.g. "RECITAL") lets the renderer create the right shell without waiting for completed."""
     ev: dict[str, Any] = {"event": "draft_ready", "data": {"text": text}}
+    if mode_hint:
+        ev["data"]["mode_hint"] = mode_hint
     with _lock:
         if correlation_id in _progress:
             _progress[correlation_id]["events"].append(ev)

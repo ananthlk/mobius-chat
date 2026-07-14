@@ -626,7 +626,8 @@ def run_pipeline(
             if getattr(ctx, "final_message", None):
                 ctx.react_draft = ctx.final_message  # saved before integrator overwrites
                 from app.storage.progress import append_draft_answer
-                append_draft_answer(ctx.correlation_id, ctx.final_message)
+                _mode_hint = "RECITAL" if getattr(ctx, "recital", None) else None
+                append_draft_answer(ctx.correlation_id, ctx.final_message, mode_hint=_mode_hint)
             updates = {}
             if getattr(ctx, "failed_query", None):
                 updates["last_failed_query"] = ctx.failed_query
