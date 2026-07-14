@@ -116,7 +116,9 @@ def _run_product_help(call: SkillCall) -> SkillEnvelope:
     # verb "recite" — which the service needs to route to the full verbatim text
     # (RECITE_TARGETS). Recall intent is the user's, not the planner's: if the raw
     # message asks to recite and the rewritten query lost it, search with the raw.
-    raw = (call.user_message or "").strip()
+    # NB: the registry-fallback dispatch fills call.user_message from
+    # merged_state["message"] (also a rewrite) — ctx.message is the true raw.
+    raw = (_ctx_field(call, "message") or call.user_message or "").strip()
     if raw and _RECITE_RE.search(raw) and not _RECITE_RE.search(query):
         logger.info("[recital] planner paraphrase dropped recite intent — using raw user message as query")
         query = raw
