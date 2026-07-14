@@ -10494,9 +10494,24 @@ function run(): void {
             const actionsEl = renderedCard.querySelector(".answer-card-actions");
             if (actionsEl) turnWrap.appendChild(actionsEl);
 
-          } else if (existingBubble && data.status !== "clarification" && !suppressConf) {
-            const badgeEl = renderConfidenceBadge((data.source_confidence_strip ?? "").trim() || "informational_only");
-            existingBubble.insertBefore(badgeEl, existingBubble.firstChild);
+          } else if (existingBubble) {
+            // No AnswerCard (error, clarify, stub) — demote card shell to plain bubble.
+            // Strip card classes so it renders like a normal assistant message.
+            messageWrapEl.classList.remove("answer-card");
+            Array.from(messageWrapEl.classList)
+              .filter((c) => c.startsWith("answer-card--"))
+              .forEach((c) => messageWrapEl!.classList.remove(c));
+            existingBubble.classList.remove("answer-card-bubble");
+            existingBubble.querySelector(".ac-tab-bar")?.remove();
+            // If prose shows placeholder "Formatting answer…" text, replace with actual content
+            const prose = existingBubble.querySelector(".ac-summary-prose") as HTMLElement | null;
+            if (prose && contentToShow && contentToShow !== "Formatting answer…") {
+              prose.innerHTML = simpleMarkdownToHtml(sanitizeDisplayMessage(contentToShow));
+            }
+            if (data.status !== "clarification" && !suppressConf) {
+              const badgeEl = renderConfidenceBadge((data.source_confidence_strip ?? "").trim() || "informational_only");
+              existingBubble.insertBefore(badgeEl, existingBubble.firstChild);
+            }
           }
 
           // Envelope blocks — functional blocks (task_list, document_download, etc.)

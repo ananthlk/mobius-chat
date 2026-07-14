@@ -10353,9 +10353,19 @@ ${message}`;
           const actionsEl = renderedCard.querySelector(".answer-card-actions");
           if (actionsEl)
             turnWrap.appendChild(actionsEl);
-        } else if (existingBubble && data.status !== "clarification" && !suppressConf) {
-          const badgeEl = renderConfidenceBadge((data.source_confidence_strip ?? "").trim() || "informational_only");
-          existingBubble.insertBefore(badgeEl, existingBubble.firstChild);
+        } else if (existingBubble) {
+          messageWrapEl.classList.remove("answer-card");
+          Array.from(messageWrapEl.classList).filter((c) => c.startsWith("answer-card--")).forEach((c) => messageWrapEl.classList.remove(c));
+          existingBubble.classList.remove("answer-card-bubble");
+          existingBubble.querySelector(".ac-tab-bar")?.remove();
+          const prose = existingBubble.querySelector(".ac-summary-prose");
+          if (prose && contentToShow && contentToShow !== "Formatting answer\u2026") {
+            prose.innerHTML = simpleMarkdownToHtml(sanitizeDisplayMessage(contentToShow));
+          }
+          if (data.status !== "clarification" && !suppressConf) {
+            const badgeEl = renderConfidenceBadge((data.source_confidence_strip ?? "").trim() || "informational_only");
+            existingBubble.insertBefore(badgeEl, existingBubble.firstChild);
+          }
         }
         if (useEnvelope && existingBubble) {
           const _hasTabs = !!(fullCard && (fullCard.citations && fullCard.citations.length > 0 || _extractedCorrections.length > 0 || _extractedNextStepTasks.length > 0 || nextQuestions.length > 0));
