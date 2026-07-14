@@ -279,17 +279,27 @@ def _parse_since(raw: str | None) -> datetime | None:
 
 @router.post("/chat/admin/backfill-phi-classify")
 def backfill_phi_classify(
-    limit: int = Query(50, ge=1, le=500, description="Max rows to process"),
+    limit: int = Query(20, ge=1, le=200, description="Max rows to process per call"),
     dry_run: bool = Query(False, description="List candidates without firing classify"),
+    reclassify_errors: bool = Query(False, description="Re-classify rows with layers_run=[\"error\"] instead of unclassified"),
+    delay_ms: int = Query(800, ge=0, le=5000, description="Delay between sequential calls (ms)"),
 ):
-    """Fire §3.3 PHI classify for instant_rag_uploads rows where classified_at IS NULL.
+    """Fire §3.3 PHI classify for instant_rag_uploads rows, SEQUENTIALLY with retry+backoff.
 
-    Safe to call multiple times — classify only fires when the row is genuinely unclassified.
-    Returns the document_ids queued (or candidates in dry_run mode).
+    Default mode: rows where classified_at IS NULL.
+    reclassify_errors=true: rows where layers_run contains 'error' (transient-503 damage repair).
+
+    Processes one doc at a time with delay_ms between calls — never floods the classifier.
+    Retries 5xx responses up to 3× with exponential backoff before giving up on a row.
+    Only stores the conservative 'private' fallback after all retries exhaust (not on first 5xx).
+    Runs in a single background thread so the HTTP response returns immediately.
     """
     import os as _os
     import threading as _threading
     import json as _json
+    import time as _time
+    import urllib.request as _urlreq
+    import urllib.error as _urlerr
     from app.db_client import db_query as _dbq, db_execute as _dbe
 
     rag_url = (_os.environ.get("MOBIUS_RAG_URL") or "").rstrip("/")
@@ -299,65 +309,101 @@ def backfill_phi_classify(
     if not phi_url:
         raise HTTPException(status_code=503, detail="PHI_CLASSIFIER_URL not set — classify is a no-op")
 
-    result = _dbq(
-        "SELECT document_id FROM instant_rag_uploads WHERE classified_at IS NULL AND document_id IS NOT NULL LIMIT :lim",
-        "chat",
-        params={"lim": limit},
-    )
+    if reclassify_errors:
+        sql = (
+            "SELECT document_id FROM instant_rag_uploads "
+            "WHERE classified_at IS NOT NULL AND layers_run::text LIKE '%error%' "
+            "AND document_id IS NOT NULL LIMIT :lim"
+        )
+    else:
+        sql = (
+            "SELECT document_id FROM instant_rag_uploads "
+            "WHERE classified_at IS NULL AND document_id IS NOT NULL LIMIT :lim"
+        )
+    result = _dbq(sql, "chat", params={"lim": limit})
     cols = result.get("columns") or []
-    raw_rows = result.get("rows") or []
     doc_ids = [
         row_dict["document_id"]
-        for row_dict in (dict(zip(cols, r)) for r in raw_rows)
+        for row_dict in (dict(zip(cols, r)) for r in (result.get("rows") or []))
         if row_dict.get("document_id")
     ]
     if dry_run:
         return {"dry_run": True, "candidates": len(doc_ids), "document_ids": doc_ids}
 
-    def _classify_one(did: str) -> None:
-        import urllib.request as _urlreq
-        try:
-            with _urlreq.urlopen(f"{rag_url}/documents/{did}/pages", timeout=30) as _r:
-                pages = _json.loads(_r.read()).get("pages") or []
-            text = "\n".join((p.get("text") or "") for p in pages).strip()
-        except Exception:
-            text = ""
-        verdict: dict = {}
-        try:
-            _req = _urlreq.Request(
-                f"{phi_url}/classify",
-                data=_json.dumps({"text": text, "document_id": did}).encode(),
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with _urlreq.urlopen(_req, timeout=30) as _r:
-                verdict = _json.loads(_r.read())
-        except Exception:
-            verdict = {}
-        ceiling = verdict.get("recommended_ceiling") or "private"
-        if ceiling not in ("private", "org", "public"):
-            ceiling = "private"
-        _dbe(
-            """UPDATE instant_rag_uploads SET
-                suggested_visibility=:c, phi_flag=:pf, phi_evidence=:pe::jsonb,
-                identifiers_found=:ids::jsonb, classifier_confidence=:conf,
-                classifier_version=:ver, layers_run=:lr::jsonb, classified_at=now()
-               WHERE document_id=:did""",
-            "chat",
-            params={
-                "c": ceiling, "pf": bool(verdict.get("phi_flag", True)),
-                "pe": _json.dumps(verdict.get("phi_evidence") or []),
-                "ids": _json.dumps(verdict.get("identifiers_found") or []),
-                "conf": verdict.get("confidence"),
-                "ver": verdict.get("classifier_version") or "",
-                "lr": _json.dumps(verdict.get("layers_run") or []),
-                "did": did,
-            },
-        )
+    def _classify_sequential() -> None:
+        for did in doc_ids:
+            # Fetch text from RAG.
+            try:
+                with _urlreq.urlopen(f"{rag_url}/documents/{did}/pages", timeout=30) as _r:
+                    pages = _json.loads(_r.read()).get("pages") or []
+                text = "\n".join((p.get("text") or "") for p in pages).strip()
+            except Exception:
+                text = ""
 
-    for did in doc_ids:
-        _threading.Thread(target=_classify_one, args=(did,), daemon=True).start()
-    return {"queued": len(doc_ids), "document_ids": doc_ids}
+            # Call classifier with up to 3 retries + exponential backoff on 5xx/network.
+            verdict: dict = {}
+            for attempt in range(3):
+                try:
+                    _req = _urlreq.Request(
+                        f"{phi_url}/classify",
+                        data=_json.dumps({"text": text, "document_id": did}).encode(),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    with _urlreq.urlopen(_req, timeout=45) as _r:
+                        verdict = _json.loads(_r.read())
+                    break  # success
+                except _urlerr.HTTPError as _he:
+                    if _he.code in (500, 502, 503, 504) and attempt < 2:
+                        _time.sleep(2 ** attempt * 3)  # 3s, 6s
+                        continue
+                    logger.warning("backfill-phi: classify %s failed after %d tries: %s", did[:8], attempt + 1, _he)
+                    verdict = {}
+                    break
+                except Exception as _e:
+                    if attempt < 2:
+                        _time.sleep(2 ** attempt * 3)
+                        continue
+                    logger.warning("backfill-phi: classify %s failed: %s", did[:8], _e)
+                    verdict = {}
+                    break
+
+            # Only write the conservative fallback if retries exhausted AND verdict empty.
+            # If verdict is populated, write the real result.
+            if not verdict:
+                logger.warning("backfill-phi: skipping store for %s — all retries failed, leaving row for next pass", did[:8])
+                _time.sleep(delay_ms / 1000.0)
+                continue
+
+            ceiling = verdict.get("recommended_ceiling") or "private"
+            if ceiling not in ("private", "org", "public"):
+                ceiling = "private"
+            try:
+                _dbe(
+                    """UPDATE instant_rag_uploads SET
+                        suggested_visibility=:c, phi_flag=:pf, phi_evidence=:pe::jsonb,
+                        identifiers_found=:ids::jsonb, classifier_confidence=:conf,
+                        classifier_version=:ver, layers_run=:lr::jsonb, classified_at=now()
+                       WHERE document_id=:did""",
+                    "chat",
+                    params={
+                        "c": ceiling, "pf": bool(verdict.get("phi_flag", True)),
+                        "pe": _json.dumps(verdict.get("phi_evidence") or []),
+                        "ids": _json.dumps(verdict.get("identifiers_found") or []),
+                        "conf": verdict.get("confidence"),
+                        "ver": verdict.get("classifier_version") or "",
+                        "lr": _json.dumps(verdict.get("layers_run") or []),
+                        "did": did,
+                    },
+                )
+                logger.info("backfill-phi: stored for %s phi=%s ceiling=%s", did[:8], verdict.get("phi_flag"), ceiling)
+            except Exception as _e:
+                logger.warning("backfill-phi: store failed for %s: %s", did[:8], _e)
+
+            _time.sleep(delay_ms / 1000.0)
+
+    _threading.Thread(target=_classify_sequential, name="backfill-phi-sequential", daemon=True).start()
+    return {"queued": len(doc_ids), "mode": "reclassify_errors" if reclassify_errors else "unclassified", "delay_ms": delay_ms, "document_ids": doc_ids}
 
 
 @router.get("/chat/admin/queries")
