@@ -567,6 +567,11 @@ def _run(call: SkillCall) -> SkillEnvelope:
         "routing": resp.get("routing"),
         "candidate_pool": resp.get("candidate_pool"),
         "term_partition": resp.get("term_partition"),
+        # RAG-provided reframe hint (populated when fast_exit=true or all
+        # strategies missed). Chat surfaces this to the ReAct LLM so it
+        # can reframe from learned signal rather than paraphrasing blindly.
+        "improvement_hint": resp.get("improvement_hint"),
+        "fast_exit": resp.get("fast_exit", False),
         "strategies_tried": strategies_tried,
         "confidence": resp.get("confidence"),
         # Slim per-chunk projection for the UI "Reranking" table (§9) —

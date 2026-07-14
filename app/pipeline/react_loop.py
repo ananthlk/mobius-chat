@@ -810,6 +810,30 @@ def _execute_tool(
                 thread_id=ctx.thread_id,
             ))
 
+        # Surface RAG's reframe signal so the LLM can make a materially
+        # different requery rather than paraphrasing.  Appended to result
+        # text only on weak/miss results so it doesn't pollute good hits.
+        _extra = (env.extra or {}) if "env" in dir() else {}
+        _improvement_hint: str = (_extra.get("improvement_hint") or "").strip()
+        _fast_exit: bool = bool(_extra.get("fast_exit"))
+        _term_partition: dict = _extra.get("term_partition") or {}
+        _dropped_terms: list = _term_partition.get("dropped") or []
+        _query_profile: dict = _extra.get("query_profile") or {}
+        _untagged: list = _query_profile.get("untagged_meaningful_tokens") or []
+
+        if not success:
+            _reframe_lines: list[str] = []
+            if _improvement_hint:
+                _reframe_lines.append(f"RAG improvement hint: {_improvement_hint}")
+            if _dropped_terms:
+                _reframe_lines.append(f"Terms RAG dropped (low selectivity): {', '.join(str(t) for t in _dropped_terms[:6])}")
+            if _untagged:
+                _reframe_lines.append(f"Tokens not mapped to any tag: {', '.join(str(t) for t in _untagged[:6])} — drop these from the reframe")
+            if _fast_exit:
+                _reframe_lines.append("RAG signaled fast_exit — all materially-different strategies exhausted; do NOT re-ask with a paraphrase")
+            if _reframe_lines:
+                merged_result = (merged_result or "") + "\n\n[Retrieval signal for reframe]\n" + "\n".join(_reframe_lines)
+
         return {
             "tool": "search_corpus",  # keep tool name stable for retry-guard + observability
             "success": success,
@@ -817,6 +841,8 @@ def _execute_tool(
             "signal": merged_signal,
             "sources": merged_sources,
             "usage": corpus_usage,  # upload side makes no LLM calls (Phase B.1 design)
+            "improvement_hint": _improvement_hint or None,
+            "fast_exit": _fast_exit,
             # Phase B.4 observability — downstream code can inspect this to
             # know whether fan-out happened, and the logs name the upload_ids.
             "fanned_out_to": fanned_out_to,

@@ -364,7 +364,12 @@ Prose (even correct prose) breaks the pipeline — use JSON every time.
 
 CRITICAL RULES:
 1. **rag FIRST** for any policy/process/overview question. rag is the ONLY retrieval tool — it handles corpus, payor registry facts (EDI, phone, portal, timely filing), and web sources internally. Do NOT call separate search tools.
-1b. After rag returns results, synthesize what you have. If the first result is weak, call rag ONCE more with a BETTER QUERY (sharper noun, different phrasing). Do NOT call rag a third time with a paraphrased version of the same query — rephrasing is paraphrase-invariant. Surface the gap honestly instead.
+1b. **Learned-signal reframe ONLY — no blind paraphrases.** If the first rag result is weak, you MAY call rag ONE more time, but ONLY with a MATERIALLY DIFFERENT query based on what RAG learned:
+    - If the tool result includes "RAG improvement hint: …" → use that hint verbatim as the reframe basis.
+    - Else lean on the "Terms RAG dropped" and "Tokens not mapped" lines in the result: drop the deadweight tokens, sharpen toward the high-selectivity terms that DID match.
+    - If the result says "RAG signaled fast_exit" → do NOT re-ask. Present best-so-far + the improvement hint as a suggested reframing to the user ("Try asking: …").
+    - **Materiality gate**: before re-asking, ask yourself — does my new query change the set of matched tags / key terms? If it's a cosmetic reword of the same phrase, it is paraphrase-invariant (same BM25/vector hits, same result, wasted latency). In that case, do NOT re-fire; go directly to SHAPE 2 (labeled full-miss floor, rule 1c) or surface the hint to the user.
+    - Never call rag a THIRD time on the same conceptual question.
 1c. **CITE IT, OR LABEL IT — never blank, never bluff.** Three and only three valid response shapes:
 
     SHAPE 1 — GROUNDED (rag returned usable content, even partial):
