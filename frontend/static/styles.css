@@ -2714,6 +2714,15 @@ body {
 .ac-tab-panel[hidden],
 .ac-tab-panel:not(.ac-tab-panel--active) { display: none; }
 
+/* When a tab bar is present, suppress old envelope chrome that predates tabs */
+.ac-tab-bar ~ .envelope-tool-chip,
+.ac-tab-bar ~ .envelope-detail,
+.ac-tab-bar ~ .envelope-followups-disclosure,
+.ac-tab-bar ~ .draft-read-more { display: none; }
+/* Orphaned draft text above the tab bar — hide when tabs are present */
+.answer-card-bubble:has(.ac-tab-bar) .message-bubble-text,
+.answer-card-bubble:has(.ac-tab-bar) .draft-read-more { display: none; }
+
 /* ─── Envelope: stats tiles ─────────────────────────────────────────────────── */
 .ac-fmt-stats {
   display: flex;
