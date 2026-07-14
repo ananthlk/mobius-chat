@@ -2439,6 +2439,53 @@ body {
   white-space: normal;
 }
 
+/* ─── Card-as-stream-container (target architecture) ─────────────────────────
+   Answer card shell created on draft_ready; prose streams word-by-word into
+   .ac-summary-prose inside the Summary tab panel. No upgrade step.
+   Chat Agent adds .is-streaming on the card wrapper during streaming,
+   removes it on completed. Other tabs fill in-place as envelope resolves.   */
+
+/* Pulsing violet underline on the active Summary tab while streaming */
+.is-streaming .ac-tab--active::after {
+  content: "";
+  position: absolute;
+  bottom: -1px; left: 0; right: 0;
+  height: 2px;
+  background: var(--mobius-violet, #7c3aed);
+  animation: stream-tab-pulse 1.4s ease-in-out infinite;
+  pointer-events: none;
+}
+.ac-tab { position: relative; }   /* anchor for ::after */
+@keyframes stream-tab-pulse {
+  0%, 100% { opacity: 0.35; }
+  50%       { opacity: 1; }
+}
+
+/* Prose container for streaming text in the Summary tab panel */
+.ac-summary-prose {
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  color: var(--sidebar-text);
+  white-space: normal;
+  word-wrap: break-word;
+}
+
+/* Blinking cursor appended after streaming text; renderer removes on completion */
+.ac-streaming-cursor { display: none; }
+.is-streaming .ac-streaming-cursor {
+  display: inline-block;
+  width: 2px; height: 0.85em;
+  background: var(--mobius-violet, #7c3aed);
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  border-radius: 1px;
+  animation: ac-cursor-blink 0.7s step-end infinite;
+}
+@keyframes ac-cursor-blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+
 .draft-refining-badge {
   display: inline-block;
   font-size: 0.7rem;
