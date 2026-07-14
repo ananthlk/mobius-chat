@@ -299,12 +299,18 @@ def backfill_phi_classify(
     if not phi_url:
         raise HTTPException(status_code=503, detail="PHI_CLASSIFIER_URL not set — classify is a no-op")
 
-    rows = _dbq(
+    result = _dbq(
         "SELECT document_id FROM instant_rag_uploads WHERE classified_at IS NULL AND document_id IS NOT NULL LIMIT :lim",
         "chat",
         params={"lim": limit},
     )
-    doc_ids = [r["document_id"] for r in (rows or []) if r.get("document_id")]
+    cols = result.get("columns") or []
+    raw_rows = result.get("rows") or []
+    doc_ids = [
+        row_dict["document_id"]
+        for row_dict in (dict(zip(cols, r)) for r in raw_rows)
+        if row_dict.get("document_id")
+    ]
     if dry_run:
         return {"dry_run": True, "candidates": len(doc_ids), "document_ids": doc_ids}
 
