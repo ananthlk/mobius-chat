@@ -3420,7 +3420,7 @@ function renderAnswerCard(card, isError, opts) {
     });
   }
   const answerPanel = document.createElement("div");
-  answerPanel.className = "ac-tab-panel ac-tab-panel--answer ac-tab-panel--active";
+  answerPanel.className = "ac-tab-panel ac-tab-panel--summary ac-tab-panel--active";
   answerPanel.setAttribute("role", "tabpanel");
   if (metaRow.childNodes.length > 0)
     answerPanel.appendChild(metaRow);
@@ -3635,8 +3635,8 @@ function renderAnswerCard(card, isError, opts) {
       });
       return btn;
     };
-    const _answerBtn = mkTab("Answer", answerPanel, void 0, true);
-    _answerBtn.setAttribute("data-panel", "answer");
+    const _answerBtn = mkTab("Summary", answerPanel, void 0, true);
+    _answerBtn.setAttribute("data-panel", "summary");
     const _citBtn = mkTab("Citations", citationsPanel, (card.citations ?? []).length, false);
     _citBtn.setAttribute("data-panel", "citations");
     const _corrBtn = mkTab("Corrections", correctionsPanel, _corrections.length, false);
@@ -10085,22 +10085,70 @@ ${message}`;
       scrollToBottom(messagesEl);
     }
     function onDraftReady(text) {
-      if (messageWrapEl)
-        return;
+      if (messageWrapEl) {
+        messageWrapEl.remove();
+        messageWrapEl = null;
+      }
       const wrap = document.createElement("div");
-      wrap.className = "message message--assistant is-draft";
+      wrap.className = "message message--assistant answer-card answer-card--blended is-streaming";
       const bubble = document.createElement("div");
-      bubble.className = "message-bubble";
-      const badge = document.createElement("span");
-      badge.className = "draft-refining-badge";
-      badge.textContent = "refining\u2026";
-      bubble.appendChild(badge);
-      const textEl = document.createElement("div");
-      textEl.className = "message-bubble-text";
-      bubble.appendChild(textEl);
-      const phaseBar = document.createElement("div");
-      phaseBar.className = "answer-phase-bar";
-      bubble.appendChild(phaseBar);
+      bubble.className = "message-bubble answer-card-bubble";
+      const streamTabBar = document.createElement("div");
+      streamTabBar.className = "ac-tab-bar";
+      streamTabBar.setAttribute("role", "tablist");
+      const _mkStreamBtn = (label, panel, active) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "ac-tab" + (active ? " ac-tab--active" : "");
+        btn.setAttribute("role", "tab");
+        btn.setAttribute("aria-selected", String(active));
+        btn.setAttribute("data-panel", panel);
+        if (!active)
+          btn.setAttribute("data-empty", "1");
+        btn.textContent = label;
+        btn.addEventListener("click", () => {
+          const lb = btn.closest(".answer-card-bubble") ?? bubble;
+          streamTabBar.querySelectorAll(".ac-tab").forEach((t) => {
+            t.classList.remove("ac-tab--active");
+            t.setAttribute("aria-selected", "false");
+          });
+          lb.querySelectorAll(".ac-tab-panel").forEach((p) => {
+            p.hidden = true;
+            p.classList.remove("ac-tab-panel--active");
+          });
+          btn.classList.add("ac-tab--active");
+          btn.setAttribute("aria-selected", "true");
+          const tp = lb.querySelector(`.ac-tab-panel--${panel}`);
+          if (tp) {
+            tp.hidden = false;
+            tp.classList.add("ac-tab-panel--active");
+          }
+        });
+        return btn;
+      };
+      streamTabBar.appendChild(_mkStreamBtn("Summary", "summary", true));
+      streamTabBar.appendChild(_mkStreamBtn("Citations", "citations", false));
+      streamTabBar.appendChild(_mkStreamBtn("Corrections", "corrections", false));
+      streamTabBar.appendChild(_mkStreamBtn("Next Steps", "next-steps", false));
+      bubble.appendChild(streamTabBar);
+      const summaryPanel = document.createElement("div");
+      summaryPanel.className = "ac-tab-panel ac-tab-panel--summary ac-tab-panel--active";
+      summaryPanel.setAttribute("role", "tabpanel");
+      const prose = document.createElement("div");
+      prose.className = "ac-summary-prose";
+      const cursor = document.createElement("span");
+      cursor.className = "ac-streaming-cursor";
+      cursor.setAttribute("aria-hidden", "true");
+      summaryPanel.appendChild(prose);
+      summaryPanel.appendChild(cursor);
+      bubble.appendChild(summaryPanel);
+      ["citations", "corrections", "next-steps"].forEach((p) => {
+        const panel = document.createElement("div");
+        panel.className = `ac-tab-panel ac-tab-panel--${p}`;
+        panel.setAttribute("role", "tabpanel");
+        panel.setAttribute("hidden", "");
+        bubble.appendChild(panel);
+      });
       wrap.appendChild(bubble);
       messageWrapEl = wrap;
       turnWrap.appendChild(messageWrapEl);
@@ -10110,19 +10158,22 @@ ${message}`;
       let cancelled = false;
       draftStreamCancel = () => {
         cancelled = true;
-        textEl.innerHTML = simpleMarkdownToHtml(sanitizeDisplayMessage(text));
+        prose.innerHTML = simpleMarkdownToHtml(sanitizeDisplayMessage(text));
+        cursor.remove();
         scrollToBottom(messagesEl);
       };
       function streamStep() {
         if (cancelled)
           return;
         wi = Math.min(wi + 5, words.length);
-        textEl.innerHTML = simpleMarkdownToHtml(words.slice(0, wi).join(" "));
+        prose.innerHTML = simpleMarkdownToHtml(words.slice(0, wi).join(" "));
         scrollToBottom(messagesEl);
         if (wi < words.length)
           window.setTimeout(streamStep, 18);
-        else
+        else {
           draftStreamCancel = null;
+          cursor.remove();
+        }
       }
       streamStep();
     }
@@ -10194,7 +10245,7 @@ ${message}`;
         draftStreamCancel();
         draftStreamCancel = null;
       }
-      const isDraftBubble = !!messageWrapEl?.classList.contains("is-draft");
+      const isStreamingCard = !!messageWrapEl?.classList.contains("is-streaming");
       if (data.thread_id)
         currentThreadId = data.thread_id;
       window.__mobiusChatThreadId = currentThreadId;
@@ -10224,25 +10275,9 @@ ${message}`;
       const envSourcesBlock = envBlocks.find((b) => b.type === "sources");
       const envelopeHasSources = useEnvelope && Array.isArray(envSourcesBlock?.refs) && envSourcesBlock.refs.length > 0;
       const envelopeHasPipelineGate = useEnvelope && envBlocks.some((b) => b.type === "pipeline_human_gate");
-      if (isDraftBubble && messageWrapEl) {
-        messageWrapEl.classList.remove("is-draft");
-        messageWrapEl.setAttribute("data-draft-upgraded", "1");
-        messageWrapEl.querySelector(".draft-refining-badge")?.remove();
-        messageWrapEl.querySelector(".answer-phase-bar")?.remove();
-        const draftBodyEl = messageWrapEl.querySelector(".message-bubble-text");
-        if (draftBodyEl && (draftBodyEl.textContent || "").length > 240) {
-          draftBodyEl.classList.add("draft-clamped");
-          const readMore = document.createElement("button");
-          readMore.type = "button";
-          readMore.className = "draft-read-more";
-          readMore.textContent = "Read more \u2193";
-          readMore.addEventListener("click", () => {
-            draftBodyEl.classList.remove("draft-clamped");
-            readMore.remove();
-          });
-          draftBodyEl.insertAdjacentElement("afterend", readMore);
-        }
-        const messageBubble = messageWrapEl.querySelector(".message-bubble");
+      if (isStreamingCard && messageWrapEl) {
+        messageWrapEl.classList.remove("is-streaming");
+        const existingBubble = messageWrapEl.querySelector(".answer-card-bubble");
         const _extractedCorrections = [];
         const _extractedNextStepTasks = [];
         if (useEnvelope) {
@@ -10272,7 +10307,9 @@ ${message}`;
           }
         }
         const fullCard = tryParseAnswerCard(fullMessage);
-        if (fullCard && messageBubble) {
+        if (fullCard && existingBubble) {
+          messageWrapEl.classList.remove("answer-card--blended");
+          messageWrapEl.classList.add(`answer-card--${fullCard.mode.toLowerCase()}`);
           const renderedCard = renderAnswerCard(fullCard, false, {
             onFollowupClick: (q) => sendMessage(q),
             sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || void 0,
@@ -10284,46 +10321,53 @@ ${message}`;
             corrections: _extractedCorrections,
             nextStepTasks: _extractedNextStepTasks
           });
-          const innerBubble = renderedCard.querySelector(".answer-card-bubble");
-          if (innerBubble) {
-            const _hasTabBar = !!(fullCard.citations && fullCard.citations.length > 0 || _extractedCorrections.length > 0 || _extractedNextStepTasks.length > 0 || nextQuestions.length > 0);
-            if (fullCard.mode === "RECITAL" || _hasTabBar) {
-              messageBubble.querySelector(".message-bubble-text")?.remove();
-              messageBubble.querySelector(".draft-read-more")?.remove();
+          const renderedBubble = renderedCard.querySelector(".answer-card-bubble");
+          if (renderedBubble) {
+            const streamingTabBar = existingBubble.querySelector(".ac-tab-bar");
+            const renderedTabBar = renderedBubble.querySelector(".ac-tab-bar");
+            if (streamingTabBar && renderedTabBar) {
+              existingBubble.replaceChild(renderedTabBar, streamingTabBar);
             }
-            Array.from(innerBubble.children).forEach((child) => {
-              if (!child.classList.contains("answer-card-direct")) {
-                child.classList.add("answer-card-upgrade-in");
-                messageBubble.appendChild(child);
+            const existingSummaryPanel = existingBubble.querySelector(".ac-tab-panel--summary");
+            const renderedSummaryPanel = renderedBubble.querySelector(".ac-tab-panel--summary");
+            if (existingSummaryPanel && renderedSummaryPanel) {
+              if (fullCard.mode === "RECITAL" && fullCard.recital?.verbatim) {
+                const prose = existingSummaryPanel.querySelector(".ac-summary-prose");
+                if (prose) {
+                  prose.classList.add("recital-prose");
+                  const stripped = fullCard.recital.verbatim.replace(/^[ \t]*[-*_]{3,}[ \t]*$/gm, "").trim();
+                  prose.innerHTML = simpleMarkdownToHtml(stripped);
+                }
               }
+              Array.from(renderedSummaryPanel.children).forEach((child) => {
+                existingSummaryPanel.appendChild(child);
+              });
+            }
+            ["citations", "corrections", "next-steps"].forEach((panelName) => {
+              const existing = existingBubble.querySelector(`.ac-tab-panel--${panelName}`);
+              const rendered = renderedBubble.querySelector(`.ac-tab-panel--${panelName}`);
+              if (existing && rendered)
+                existingBubble.replaceChild(rendered, existing);
             });
           }
-          messageWrapEl.classList.add("answer-card", `answer-card--${fullCard.mode.toLowerCase()}`);
-          messageBubble.classList.add("answer-card-bubble");
           const actionsEl = renderedCard.querySelector(".answer-card-actions");
-          if (actionsEl) {
-            actionsEl.classList.add("answer-card-upgrade-in");
+          if (actionsEl)
             turnWrap.appendChild(actionsEl);
-          }
-        } else if (messageBubble && data.status !== "clarification" && !suppressConf) {
+        } else if (existingBubble && data.status !== "clarification" && !suppressConf) {
           const badgeEl = renderConfidenceBadge((data.source_confidence_strip ?? "").trim() || "informational_only");
-          badgeEl.classList.add("answer-card-upgrade-in");
-          messageBubble.insertBefore(badgeEl, messageBubble.firstChild);
+          existingBubble.insertBefore(badgeEl, existingBubble.firstChild);
         }
-        if (useEnvelope && messageBubble) {
-          const _tabBarActive = !!(fullCard && fullCard.citations && fullCard.citations.length > 0);
+        if (useEnvelope && existingBubble) {
+          const _hasTabs = !!(fullCard && (fullCard.citations && fullCard.citations.length > 0 || _extractedCorrections.length > 0 || _extractedNextStepTasks.length > 0 || nextQuestions.length > 0));
           const _suppressedChrome = new Set(
-            _tabBarActive ? ["tool_attribution", "detail", "callout", "correction", "next_steps"] : []
+            _hasTabs ? ["tool_attribution", "detail", "callout", "correction", "next_steps"] : []
           );
           const toolBlocks = envCandidate.blocks.filter((b) => {
             const bt = b.type;
             return bt !== "direct_answer" && bt !== "sources" && !_suppressedChrome.has(bt);
           });
           if (toolBlocks.length > 0) {
-            const toolEnv = {
-              ...envCandidate,
-              blocks: toolBlocks
-            };
+            const toolEnv = { ...envCandidate, blocks: toolBlocks };
             const toolRendered = renderAssistantFromEnvelope(toolEnv, {
               onFollowupClick: (q) => sendMessage(q),
               sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || void 0,
@@ -10335,15 +10379,7 @@ ${message}`;
             });
             const innerBubble = toolRendered.querySelector(".message-bubble");
             if (innerBubble) {
-              const draftTextEl = messageBubble.querySelector(".message-bubble-text");
-              Array.from(innerBubble.children).forEach((child) => {
-                child.classList.add("answer-card-upgrade-in");
-                if (child.classList.contains("envelope-correction-inline") && draftTextEl) {
-                  messageBubble.insertBefore(child, draftTextEl);
-                } else {
-                  messageBubble.appendChild(child);
-                }
-              });
+              Array.from(innerBubble.children).forEach((child) => existingBubble.appendChild(child));
             }
           }
         }
@@ -10453,7 +10489,7 @@ ${message}`;
         confidence: null
       })) : [];
       const cited = data.cited_source_indices ?? [];
-      if (sourceList.length > 0 && (!envelopeHasSources || isDraftBubble)) {
+      if (sourceList.length > 0 && (!envelopeHasSources || isStreamingCard)) {
         turnWrap.appendChild(
           renderSourceCiter(sourceList, cited, data.correlation_id ?? activeCorrelationId)
         );

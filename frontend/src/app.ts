@@ -2378,9 +2378,9 @@ function renderAnswerCard(
     });
   }
 
-  // Build the Answer panel content (sections + meta + confidence note)
+  // Build the Summary panel content (sections + meta + confidence note)
   const answerPanel = document.createElement("div");
-  answerPanel.className = "ac-tab-panel ac-tab-panel--answer ac-tab-panel--active";
+  answerPanel.className = "ac-tab-panel ac-tab-panel--summary ac-tab-panel--active";
   answerPanel.setAttribute("role", "tabpanel");
   if (metaRow.childNodes.length > 0) answerPanel.appendChild(metaRow);
 
@@ -2613,8 +2613,8 @@ function renderAnswerCard(
       });
       return btn;
     };
-    const _answerBtn = mkTab("Answer", answerPanel, undefined, true);
-    _answerBtn.setAttribute("data-panel", "answer");
+    const _answerBtn = mkTab("Summary", answerPanel, undefined, true);
+    _answerBtn.setAttribute("data-panel", "summary");
     const _citBtn = mkTab("Citations", citationsPanel, (card.citations ?? []).length, false);
     _citBtn.setAttribute("data-panel", "citations");
     const _corrBtn = mkTab("Corrections", correctionsPanel, _corrections.length, false);
@@ -10169,41 +10169,89 @@ function run(): void {
       scrollToBottom(messagesEl);
     }
     function onDraftReady(text: string): void {
-      if (messageWrapEl) return;
+      // Replace any interim plain bubble (thinking text) with the card shell
+      if (messageWrapEl) { messageWrapEl.remove(); messageWrapEl = null; }
+
       const wrap = document.createElement("div");
-      wrap.className = "message message--assistant is-draft";
+      wrap.className = "message message--assistant answer-card answer-card--blended is-streaming";
+
       const bubble = document.createElement("div");
-      bubble.className = "message-bubble";
-      const badge = document.createElement("span");
-      badge.className = "draft-refining-badge";
-      badge.textContent = "refining…";
-      bubble.appendChild(badge);
-      const textEl = document.createElement("div");
-      textEl.className = "message-bubble-text";
-      bubble.appendChild(textEl);
-      const phaseBar = document.createElement("div");
-      phaseBar.className = "answer-phase-bar";
-      bubble.appendChild(phaseBar);
+      bubble.className = "message-bubble answer-card-bubble";
+
+      // Tab bar — Summary active; other tabs hidden until data arrives on completed
+      const streamTabBar = document.createElement("div");
+      streamTabBar.className = "ac-tab-bar";
+      streamTabBar.setAttribute("role", "tablist");
+      const _mkStreamBtn = (label: string, panel: string, active: boolean) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "ac-tab" + (active ? " ac-tab--active" : "");
+        btn.setAttribute("role", "tab");
+        btn.setAttribute("aria-selected", String(active));
+        btn.setAttribute("data-panel", panel);
+        if (!active) btn.setAttribute("data-empty", "1");
+        btn.textContent = label;
+        btn.addEventListener("click", () => {
+          const lb = btn.closest(".answer-card-bubble") ?? bubble;
+          streamTabBar.querySelectorAll(".ac-tab").forEach((t) => { t.classList.remove("ac-tab--active"); t.setAttribute("aria-selected", "false"); });
+          lb.querySelectorAll(".ac-tab-panel").forEach((p) => { (p as HTMLElement).hidden = true; p.classList.remove("ac-tab-panel--active"); });
+          btn.classList.add("ac-tab--active");
+          btn.setAttribute("aria-selected", "true");
+          const tp = lb.querySelector(`.ac-tab-panel--${panel}`) as HTMLElement | null;
+          if (tp) { tp.hidden = false; tp.classList.add("ac-tab-panel--active"); }
+        });
+        return btn;
+      };
+      streamTabBar.appendChild(_mkStreamBtn("Summary", "summary", true));
+      streamTabBar.appendChild(_mkStreamBtn("Citations", "citations", false));
+      streamTabBar.appendChild(_mkStreamBtn("Corrections", "corrections", false));
+      streamTabBar.appendChild(_mkStreamBtn("Next Steps", "next-steps", false));
+      bubble.appendChild(streamTabBar);
+
+      // Summary panel — prose streams in here; cursor follows
+      const summaryPanel = document.createElement("div");
+      summaryPanel.className = "ac-tab-panel ac-tab-panel--summary ac-tab-panel--active";
+      summaryPanel.setAttribute("role", "tabpanel");
+      const prose = document.createElement("div");
+      prose.className = "ac-summary-prose";
+      const cursor = document.createElement("span");
+      cursor.className = "ac-streaming-cursor";
+      cursor.setAttribute("aria-hidden", "true");
+      summaryPanel.appendChild(prose);
+      summaryPanel.appendChild(cursor);
+      bubble.appendChild(summaryPanel);
+
+      // Empty placeholder panels — filled in-place on completed
+      (["citations", "corrections", "next-steps"] as const).forEach((p) => {
+        const panel = document.createElement("div");
+        panel.className = `ac-tab-panel ac-tab-panel--${p}`;
+        panel.setAttribute("role", "tabpanel");
+        panel.setAttribute("hidden", "");
+        bubble.appendChild(panel);
+      });
+
       wrap.appendChild(bubble);
       messageWrapEl = wrap;
       turnWrap.appendChild(messageWrapEl);
-      releaseComposer(); // answer has started — user can type next message now
-      // Stream the ReAct answer in word-by-word (5 words per 18ms ≈ natural LLM pace)
+      releaseComposer();
+
+      // Word-stream into prose
       const words = text.split(" ");
       let wi = 0;
       let cancelled = false;
       draftStreamCancel = () => {
         cancelled = true;
-        textEl.innerHTML = simpleMarkdownToHtml(sanitizeDisplayMessage(text));
+        prose.innerHTML = simpleMarkdownToHtml(sanitizeDisplayMessage(text));
+        cursor.remove();
         scrollToBottom(messagesEl);
       };
       function streamStep() {
         if (cancelled) return;
         wi = Math.min(wi + 5, words.length);
-        textEl.innerHTML = simpleMarkdownToHtml(words.slice(0, wi).join(" "));
+        prose.innerHTML = simpleMarkdownToHtml(words.slice(0, wi).join(" "));
         scrollToBottom(messagesEl);
         if (wi < words.length) window.setTimeout(streamStep, 18);
-        else draftStreamCancel = null;
+        else { draftStreamCancel = null; cursor.remove(); }
       }
       streamStep();
     }
@@ -10302,9 +10350,9 @@ function run(): void {
 
         thinkingDone(thinkingLines.length);
 
-        // Finish any in-progress word-stream and detect draft-upgrade path
+        // Finish any in-progress word-stream; detect streaming-card path
         if (draftStreamCancel) { draftStreamCancel(); draftStreamCancel = null; }
-        const isDraftBubble = !!messageWrapEl?.classList.contains("is-draft");
+        const isStreamingCard = !!messageWrapEl?.classList.contains("is-streaming");
 
         if (data.thread_id) currentThreadId = data.thread_id; window.__mobiusChatThreadId = currentThreadId;
         const cidForTurn = (data.correlation_id || activeCorrelationId || "").trim();
@@ -10355,29 +10403,12 @@ function run(): void {
           useEnvelope &&
           envBlocks.some((b) => (b as { type?: string }).type === "pipeline_human_gate");
 
-        if (isDraftBubble && messageWrapEl) {
-          // Preserve streamed draft text; inject AnswerCard structure around it.
-          messageWrapEl.classList.remove("is-draft");
-          messageWrapEl.setAttribute("data-draft-upgraded", "1");
-          messageWrapEl.querySelector(".draft-refining-badge")?.remove();
-          // Remove phase-1 progress bar
-          messageWrapEl.querySelector(".answer-phase-bar")?.remove();
-          // Clamp draft text to 4 lines; add "Read more" if long enough
-          const draftBodyEl = messageWrapEl.querySelector(".message-bubble-text") as HTMLElement | null;
-          if (draftBodyEl && (draftBodyEl.textContent || "").length > 240) {
-            draftBodyEl.classList.add("draft-clamped");
-            const readMore = document.createElement("button");
-            readMore.type = "button";
-            readMore.className = "draft-read-more";
-            readMore.textContent = "Read more ↓";
-            readMore.addEventListener("click", () => {
-              draftBodyEl.classList.remove("draft-clamped");
-              readMore.remove();
-            });
-            draftBodyEl.insertAdjacentElement("afterend", readMore);
-          }
-          const messageBubble = messageWrapEl.querySelector(".message-bubble") as HTMLElement | null;
-          // Extract corrections and next-step tasks from envelope blocks for tab panels
+        if (isStreamingCard && messageWrapEl) {
+          // In-place fill: streaming card shell already in DOM — no transplant needed.
+          messageWrapEl.classList.remove("is-streaming");
+          const existingBubble = messageWrapEl.querySelector(".answer-card-bubble") as HTMLElement | null;
+
+          // Extract corrections and next-step tasks from envelope blocks
           const _extractedCorrections: Array<{ label: string; text: string }> = [];
           const _extractedNextStepTasks: Array<{ text: string; taskType: string }> = [];
           if (useEnvelope) {
@@ -10403,11 +10434,14 @@ function run(): void {
               }
             }
           }
-          // Parse the full integrator AnswerCard (fullMessage is the raw JSON string)
+
           const fullCard = tryParseAnswerCard(fullMessage);
-          if (fullCard && messageBubble) {
-            // Get a fully rendered card, then transplant every child EXCEPT
-            // direct_answer (already shown as draft) into the existing bubble.
+          if (fullCard && existingBubble) {
+            // Update the mode class (was placeholder --blended; set correct mode)
+            messageWrapEl.classList.remove("answer-card--blended");
+            messageWrapEl.classList.add(`answer-card--${fullCard.mode.toLowerCase()}`);
+
+            // Render the full card off-DOM to get all panel content
             const renderedCard = renderAnswerCard(fullCard, false, {
               onFollowupClick: (q) => sendMessage(q),
               sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || undefined,
@@ -10419,60 +10453,70 @@ function run(): void {
               corrections: _extractedCorrections,
               nextStepTasks: _extractedNextStepTasks,
             });
-            const innerBubble = renderedCard.querySelector(".answer-card-bubble");
-            if (innerBubble) {
-              // RECITAL mode or tab-bar mode: the draft streaming text conflicts
-              // with the card structure — clear it before transplanting.
-              const _hasTabBar = !!(
-                (fullCard.citations && fullCard.citations.length > 0) ||
-                _extractedCorrections.length > 0 ||
-                _extractedNextStepTasks.length > 0 ||
-                nextQuestions.length > 0
-              );
-              if (fullCard.mode === "RECITAL" || _hasTabBar) {
-                messageBubble.querySelector(".message-bubble-text")?.remove();
-                messageBubble.querySelector(".draft-read-more")?.remove();
+            const renderedBubble = renderedCard.querySelector(".answer-card-bubble");
+
+            if (renderedBubble) {
+              // Swap the streaming tab bar with the fully-built one (count badges, correct empty state)
+              const streamingTabBar = existingBubble.querySelector(".ac-tab-bar");
+              const renderedTabBar = renderedBubble.querySelector(".ac-tab-bar");
+              if (streamingTabBar && renderedTabBar) {
+                existingBubble.replaceChild(renderedTabBar, streamingTabBar);
               }
-              Array.from(innerBubble.children).forEach((child) => {
-                if (!child.classList.contains("answer-card-direct")) {
-                  (child as HTMLElement).classList.add("answer-card-upgrade-in");
-                  messageBubble.appendChild(child);
+
+              // Summary panel: keep streaming prose, append sections/meta/confidence from rendered card
+              const existingSummaryPanel = existingBubble.querySelector(".ac-tab-panel--summary") as HTMLElement | null;
+              const renderedSummaryPanel = renderedBubble.querySelector(".ac-tab-panel--summary") as HTMLElement | null;
+              if (existingSummaryPanel && renderedSummaryPanel) {
+                if (fullCard.mode === "RECITAL" && fullCard.recital?.verbatim) {
+                  // RECITAL: replace prose content with full recital rendering
+                  const prose = existingSummaryPanel.querySelector(".ac-summary-prose");
+                  if (prose) {
+                    prose.classList.add("recital-prose");
+                    const stripped = (fullCard.recital.verbatim).replace(/^[ \t]*[-*_]{3,}[ \t]*$/gm, "").trim();
+                    prose.innerHTML = simpleMarkdownToHtml(stripped);
+                  }
                 }
+                // Append sections/meta/confidence from rendered panel (after existing prose+cursor)
+                Array.from(renderedSummaryPanel.children).forEach((child) => {
+                  existingSummaryPanel.appendChild(child);
+                });
+              }
+
+              // Swap Citations, Corrections, Next Steps panels in-place
+              (["citations", "corrections", "next-steps"] as const).forEach((panelName) => {
+                const existing = existingBubble.querySelector(`.ac-tab-panel--${panelName}`) as HTMLElement | null;
+                const rendered = renderedBubble.querySelector(`.ac-tab-panel--${panelName}`) as HTMLElement | null;
+                if (existing && rendered) existingBubble.replaceChild(rendered, existing);
               });
             }
-            // Apply AnswerCard CSS classes so sections/chips style correctly
-            messageWrapEl.classList.add("answer-card", `answer-card--${fullCard.mode.toLowerCase()}`);
-            messageBubble.classList.add("answer-card-bubble");
-            // Hoist answer-card-actions to turn level (outside bubble, before sources row)
+
+            // Hoist answer-card-actions to turn level
             const actionsEl = renderedCard.querySelector(".answer-card-actions");
-            if (actionsEl) {
-              (actionsEl as HTMLElement).classList.add("answer-card-upgrade-in");
-              turnWrap.appendChild(actionsEl);
-            }
-          } else if (messageBubble && data.status !== "clarification" && !suppressConf) {
-            // No AnswerCard — just drop in the confidence badge
+            if (actionsEl) turnWrap.appendChild(actionsEl);
+
+          } else if (existingBubble && data.status !== "clarification" && !suppressConf) {
             const badgeEl = renderConfidenceBadge((data.source_confidence_strip ?? "").trim() || "informational_only");
-            (badgeEl as HTMLElement).classList.add("answer-card-upgrade-in");
-            messageBubble.insertBefore(badgeEl, messageBubble.firstChild);
+            existingBubble.insertBefore(badgeEl, existingBubble.firstChild);
           }
-          // Render non-text envelope blocks (task_list, document_download, action_chips, etc.)
-          // direct_answer is already shown as streamed draft; sources are rendered separately below.
-          if (useEnvelope && messageBubble) {
-            // When the tab bar is present, suppress pre-tab chrome block types —
-            // they duplicate or conflict with the tab structure.
-            const _tabBarActive = !!(fullCard && fullCard.citations && fullCard.citations.length > 0);
+
+          // Envelope blocks — functional blocks (task_list, document_download, etc.)
+          // Tab-chrome blocks already captured above; suppress them here
+          if (useEnvelope && existingBubble) {
+            const _hasTabs = !!(fullCard && (
+              (fullCard.citations && fullCard.citations.length > 0) ||
+              _extractedCorrections.length > 0 ||
+              _extractedNextStepTasks.length > 0 ||
+              nextQuestions.length > 0
+            ));
             const _suppressedChrome = new Set(
-              _tabBarActive ? ["tool_attribution", "detail", "callout", "correction", "next_steps"] : []
+              _hasTabs ? ["tool_attribution", "detail", "callout", "correction", "next_steps"] : []
             );
             const toolBlocks = (envCandidate as AssistantEnvelope).blocks.filter((b) => {
               const bt = (b as EnvelopeBlock).type;
               return bt !== "direct_answer" && bt !== "sources" && !_suppressedChrome.has(bt);
             });
             if (toolBlocks.length > 0) {
-              const toolEnv: AssistantEnvelope = {
-                ...(envCandidate as AssistantEnvelope),
-                blocks: toolBlocks,
-              };
+              const toolEnv: AssistantEnvelope = { ...(envCandidate as AssistantEnvelope), blocks: toolBlocks };
               const toolRendered = renderAssistantFromEnvelope(toolEnv, {
                 onFollowupClick: (q) => sendMessage(q),
                 sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || undefined,
@@ -10484,20 +10528,11 @@ function run(): void {
               });
               const innerBubble = toolRendered.querySelector(".message-bubble");
               if (innerBubble) {
-                const draftTextEl = messageBubble!.querySelector(".message-bubble-text");
-                Array.from(innerBubble.children).forEach((child) => {
-                  (child as HTMLElement).classList.add("answer-card-upgrade-in");
-                  // Correction goes before the draft text so the fix is seen first.
-                  if ((child as HTMLElement).classList.contains("envelope-correction-inline") && draftTextEl) {
-                    messageBubble!.insertBefore(child, draftTextEl);
-                  } else {
-                    messageBubble!.appendChild(child);
-                  }
-                });
+                Array.from(innerBubble.children).forEach((child) => existingBubble.appendChild(child));
               }
             }
           }
-          // Takeaways are redundant with the formatted draft — remove standalone block
+
           messageWrapEl.querySelectorAll(".envelope-takeaways").forEach((el) => el.remove());
           turnWrap.classList.add("turn-meta-revealing");
           window.setTimeout(() => turnWrap.classList.remove("turn-meta-revealing"), 1200);
@@ -10648,7 +10683,7 @@ function run(): void {
                 }))
               : [];
         const cited = data.cited_source_indices ?? [];
-        if (sourceList.length > 0 && (!envelopeHasSources || isDraftBubble)) {
+        if (sourceList.length > 0 && (!envelopeHasSources || isStreamingCard)) {
           turnWrap.appendChild(
             renderSourceCiter(sourceList, cited, data.correlation_id ?? activeCorrelationId)
           );
