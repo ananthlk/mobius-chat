@@ -3495,11 +3495,12 @@ function renderAnswerCard(card, isError, opts) {
       btn.setAttribute("aria-selected", String(active));
       btn.textContent = label;
       btn.addEventListener("click", () => {
+        const liveBubble = btn.closest(".answer-card-bubble") ?? bubble;
         tabBar.querySelectorAll(".ac-tab").forEach((t) => {
           t.classList.remove("ac-tab--active");
           t.setAttribute("aria-selected", "false");
         });
-        bubble.querySelectorAll(".ac-tab-panel").forEach((p) => {
+        liveBubble.querySelectorAll(".ac-tab-panel").forEach((p) => {
           p.hidden = true;
           p.classList.remove("ac-tab-panel--active");
         });
@@ -10119,7 +10120,8 @@ ${message}`;
           });
           const innerBubble = renderedCard.querySelector(".answer-card-bubble");
           if (innerBubble) {
-            if (fullCard.mode === "RECITAL") {
+            const _hasTabBar = !!(fullCard.citations && fullCard.citations.length > 0);
+            if (fullCard.mode === "RECITAL" || _hasTabBar) {
               messageBubble.querySelector(".message-bubble-text")?.remove();
               messageBubble.querySelector(".draft-read-more")?.remove();
             }
@@ -10143,9 +10145,13 @@ ${message}`;
           messageBubble.insertBefore(badgeEl, messageBubble.firstChild);
         }
         if (useEnvelope && messageBubble) {
+          const _tabBarActive = !!(fullCard && fullCard.citations && fullCard.citations.length > 0);
+          const _suppressedChrome = new Set(
+            _tabBarActive ? ["tool_attribution", "detail", "callout", "next_steps"] : []
+          );
           const toolBlocks = envCandidate.blocks.filter((b) => {
             const bt = b.type;
-            return bt !== "direct_answer" && bt !== "sources";
+            return bt !== "direct_answer" && bt !== "sources" && !_suppressedChrome.has(bt);
           });
           if (toolBlocks.length > 0) {
             const toolEnv = {

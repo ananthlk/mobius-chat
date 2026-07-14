@@ -2455,11 +2455,13 @@ function renderAnswerCard(
       btn.setAttribute("aria-selected", String(active));
       btn.textContent = label;
       btn.addEventListener("click", () => {
+        // Use live DOM traversal — bubble may be detached after transplant
+        const liveBubble = btn.closest(".answer-card-bubble") ?? bubble;
         tabBar.querySelectorAll(".ac-tab").forEach((t) => {
           t.classList.remove("ac-tab--active");
           t.setAttribute("aria-selected", "false");
         });
-        bubble.querySelectorAll(".ac-tab-panel").forEach((p) => {
+        liveBubble.querySelectorAll(".ac-tab-panel").forEach((p) => {
           (p as HTMLElement).hidden = true;
           p.classList.remove("ac-tab-panel--active");
         });
@@ -10238,9 +10240,10 @@ function run(): void {
             });
             const innerBubble = renderedCard.querySelector(".answer-card-bubble");
             if (innerBubble) {
-              // RECITAL mode: the draft streaming text is redundant — clear it
-              // before transplanting so the essay prose doesn't appear twice.
-              if (fullCard.mode === "RECITAL") {
+              // RECITAL mode or tab-bar mode: the draft streaming text conflicts
+              // with the card structure — clear it before transplanting.
+              const _hasTabBar = !!(fullCard.citations && fullCard.citations.length > 0);
+              if (fullCard.mode === "RECITAL" || _hasTabBar) {
                 messageBubble.querySelector(".message-bubble-text")?.remove();
                 messageBubble.querySelector(".draft-read-more")?.remove();
               }
@@ -10269,9 +10272,15 @@ function run(): void {
           // Render non-text envelope blocks (task_list, document_download, action_chips, etc.)
           // direct_answer is already shown as streamed draft; sources are rendered separately below.
           if (useEnvelope && messageBubble) {
+            // When the tab bar is present, suppress pre-tab chrome block types —
+            // they duplicate or conflict with the tab structure.
+            const _tabBarActive = !!(fullCard && fullCard.citations && fullCard.citations.length > 0);
+            const _suppressedChrome = new Set(
+              _tabBarActive ? ["tool_attribution", "detail", "callout", "next_steps"] : []
+            );
             const toolBlocks = (envCandidate as AssistantEnvelope).blocks.filter((b) => {
               const bt = (b as EnvelopeBlock).type;
-              return bt !== "direct_answer" && bt !== "sources";
+              return bt !== "direct_answer" && bt !== "sources" && !_suppressedChrome.has(bt);
             });
             if (toolBlocks.length > 0) {
               const toolEnv: AssistantEnvelope = {
