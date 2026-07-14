@@ -277,6 +277,40 @@ def _parse_since(raw: str | None) -> datetime | None:
         )
 
 
+@router.post("/chat/admin/backfill-phi-classify")
+def backfill_phi_classify(
+    limit: int = Query(50, ge=1, le=500, description="Max rows to process"),
+    dry_run: bool = Query(False, description="List candidates without firing classify"),
+):
+    """Fire §3.3 PHI classify for instant_rag_uploads rows where classified_at IS NULL.
+
+    Safe to call multiple times — classify only fires when the row is genuinely unclassified.
+    Returns the document_ids queued (or candidates in dry_run mode).
+    """
+    from app.db_client import db_query as _dbq
+    from app.main import _run_phi_classification_async as _phi_classify
+    import os as _os
+
+    rag_url = (_os.environ.get("MOBIUS_RAG_URL") or "").rstrip("/")
+    if not rag_url:
+        raise HTTPException(status_code=503, detail="MOBIUS_RAG_URL not set")
+    phi_url = (_os.environ.get("PHI_CLASSIFIER_URL") or "").rstrip("/")
+    if not phi_url:
+        raise HTTPException(status_code=503, detail="PHI_CLASSIFIER_URL not set — classify is a no-op")
+
+    rows = _dbq(
+        "SELECT document_id FROM instant_rag_uploads WHERE classified_at IS NULL AND document_id IS NOT NULL LIMIT :lim",
+        "chat",
+        params={"lim": limit},
+    )
+    doc_ids = [r["document_id"] for r in (rows or []) if r.get("document_id")]
+    if dry_run:
+        return {"dry_run": True, "candidates": len(doc_ids), "document_ids": doc_ids}
+    for did in doc_ids:
+        _phi_classify(document_id=did, rag_url=rag_url)
+    return {"queued": len(doc_ids), "document_ids": doc_ids}
+
+
 @router.get("/chat/admin/queries")
 def get_queries_dump(
     limit: int = Query(100, ge=1, le=1000),

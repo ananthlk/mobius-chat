@@ -1268,6 +1268,17 @@ def _handle_instant_rag_upload(
                     )
                 except Exception as _e:
                     logger.warning("[catalog] dup dual-write failed thread=%s: %s", _real_tid_dup, _e)
+                # §3.3 dedup-classify: if the existing row has no PHI verdict yet
+                # (pre-feature or previously skipped), fire classify now so the
+                # recommendation card can render. Safe to re-run: idempotent UPDATE.
+                try:
+                    from app.storage.instant_rag_catalog import get_by_document_id as _dup_get
+                    _dup_row = _dup_get(existing_doc_id)
+                    if _dup_row and _dup_row.get("classified_at") is None:
+                        logger.info("§3.3 dedup-classify: doc=%s unclassified — firing classify", existing_doc_id[:8])
+                        _run_phi_classification_async(document_id=existing_doc_id, rag_url=rag_url)
+                except Exception as _phi_e:
+                    logger.warning("§3.3 dedup-classify check failed for doc=%s: %s", existing_doc_id[:8], _phi_e)
                 return {
                     "upload_id": existing_doc_id,
                     "org_id": "",
