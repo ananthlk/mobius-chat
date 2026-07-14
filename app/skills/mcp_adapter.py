@@ -40,6 +40,7 @@ The default behavior (``tools=None``) calls ``list_mcp_tools()``.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -79,9 +80,33 @@ def _make_mcp_handler(tool_name: str):
         # planner can forward it explicitly via tool_inputs.
         text, success = call_mcp_tool(tool_name, call.inputs or {})
 
+        # Structured response: {"text": "...", "extra": {...}}
+        # MCP tools can optionally return this JSON shape to pass out-of-band
+        # data (e.g. credentialing_card) without embedding it in the markdown.
+        # Non-JSON and plain-text responses pass through unchanged.
+        parsed_extra: dict[str, Any] | None = None
+        if success and text and text.strip().startswith("{"):
+            try:
+                _parsed = json.loads(text)
+                if isinstance(_parsed, dict) and isinstance(_parsed.get("text"), str):
+                    text = _parsed["text"]
+                    _e = _parsed.get("extra")
+                    parsed_extra = _e if isinstance(_e, dict) else None
+            except (json.JSONDecodeError, ValueError):
+                pass  # plain-text response — use as-is
+
+        # Propagate extra to pipeline context so _sync_extra_out_to_context
+        # can pick up credentialing_card and similar out-of-band fields.
+        if parsed_extra:
+            _pctx = getattr(call, "pipeline_ctx", None)
+            if _pctx is not None:
+                _current = getattr(_pctx, "extra_out", None) or {}
+                setattr(_pctx, "extra_out", {**_current, **parsed_extra})
+
         if success and text:
             return SkillEnvelope(
                 text=text,
+                extra=parsed_extra or None,
                 sources=[
                     SourceRef(
                         document_name=f"MCP: {tool_name}",
