@@ -48,7 +48,7 @@ TOOL_CAPABILITIES: dict[str, dict[str, Any]] = {
         "can_answer": [
             "Org / billing NPI disambiguation by name (NPPES + PML); MCP search_org_names with search_mode copilot vs agentic",
         ],
-        "cannot_answer": "10-digit NPI registry row only (use healthcare_query); PML enrollment from report (use ask_credentialing_npi)",
+        "cannot_answer": "10-digit NPI registry row only (use healthcare_query); PML enrollment / credentialing (use check_provider_credentialing)",
     },
     # 2026-04-18 disconnect — removed:
     #   run_credentialing_report / validate_credentialing_step /
@@ -170,12 +170,10 @@ PATH_CAPABILITIES = {
         "Google search",
         "web scrape",
         "NPI lookup by org name (what is the NPI of X)",
-        "ask_credentialing_npi: NPI + PML status from credentialing report (requires report in context)",
+        "check_provider_credentialing: provider credentialing profile (NPPES, FL Medicaid PML enrollment, compliance flags, readiness verdict)",
         "healthcare_query: ICD-10, CMS coverage, code lookups; NPI-by-number via registry",
         "healthcare_npi_lookup: NPPES by 10-digit NPI only (fallback label; prefer healthcare_query for codes/coverage)",
         "Provider Roster / Credentialing report",
-        "Providers at each practice site (operational roster; Step 4)",
-        "Roster reconciliation report (upload vs outside-in)",
         "Document upload skill (attach files to thread; API + UI)",
         "List thread document uploads (what files are already attached)",
         "Task management: list, create, edit, assign, resolve, dismiss tasks (list_tasks, create_task, patch_task, assign_task, resolve_task, dismiss_task)",

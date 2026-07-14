@@ -24,9 +24,15 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+import os
+
+from fastapi import Body
+
 from app.api.front_door import auth_mode, require_user
 from app.storage.instant_rag_catalog import (
     STATUS_ACTIVE,
+    discard,
+    extend,
     get_by_document_id,
     list_for_thread,
     list_for_user,
@@ -251,3 +257,92 @@ def link_upload_to_thread(
         "origin_thread_id": row.get("thread_id"),
         "filename": row.get("filename"),
     }
+
+
+@router.delete("/chat/uploads/{document_id}")
+def delete_upload(
+    document_id: str,
+    user_id: str | None = Depends(require_user),
+) -> dict[str, Any]:
+    """Soft-delete: set status='discarded'. Idempotent.
+
+    Ownership: in auth=required mode the caller must own the upload.
+    Already-discarded rows return 200 (idempotent, no re-work).
+    Discarded rows are excluded from default list responses
+    (include_inactive=false).
+    """
+    row = get_by_document_id(document_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Upload not found.")
+
+    if auth_mode() == "required":
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Authentication required.")
+        if row.get("user_id") and row.get("user_id") != user_id:
+            raise HTTPException(status_code=403, detail="This upload belongs to another user.")
+
+    ok = discard(document_id, user_id)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to discard upload.")
+    return {"document_id": document_id, "status": "discarded"}
+
+
+@router.post("/chat/uploads/{document_id}/extend")
+def extend_upload(
+    document_id: str,
+    body: dict[str, Any] = Body(default={}),
+    user_id: str | None = Depends(require_user),
+) -> dict[str, Any]:
+    """Extend the upload's TTL by N days from now.
+
+    Updates BOTH the catalog (instant_rag_uploads.expires_at) AND
+    RAG's document record (documents.expires_at) — the cleanup cron
+    reads RAG's value, so both must be updated or the doc gets swept
+    despite the catalog extension.
+
+    Body: {"days": N}  — N optional, defaults to INSTANT_RAG_TTL_DAYS (7).
+    Returns: {"document_id": ..., "expires_at": "<ISO>"}
+    """
+    row = get_by_document_id(document_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Upload not found.")
+
+    if auth_mode() == "required":
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Authentication required.")
+        if row.get("user_id") and row.get("user_id") != user_id:
+            raise HTTPException(status_code=403, detail="This upload belongs to another user.")
+
+    default_days = int(os.environ.get("INSTANT_RAG_TTL_DAYS") or "7")
+    days = int(body.get("days") or default_days)
+    if days < 1:
+        raise HTTPException(status_code=400, detail="days must be ≥ 1.")
+
+    new_expires = extend(document_id, user_id, days)
+    if not new_expires:
+        raise HTTPException(status_code=500, detail="Failed to extend upload TTL.")
+
+    # Also extend in RAG so the cleanup cron reads the updated expiry.
+    rag_url = (os.environ.get("MOBIUS_RAG_URL") or "http://localhost:8001").rstrip("/")
+    try:
+        import httpx
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.post(
+                f"{rag_url}/documents/{document_id}/extend",
+                json={"days": days},
+            )
+            if resp.status_code >= 400:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "[uploads] RAG extend returned %s for %s: %s",
+                    resp.status_code, document_id, resp.text[:200],
+                )
+                # Non-fatal: catalog is extended; RAG extend is best-effort until
+                # RAG deploys the endpoint. Vault page gets correct expires_at.
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "[uploads] RAG extend call failed for %s: %s", document_id, exc
+        )
+
+    return {"document_id": document_id, "expires_at": new_expires.isoformat()}

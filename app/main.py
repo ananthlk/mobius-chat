@@ -901,6 +901,108 @@ def _post_instant_rag_ready_task(
         logger.warning("§3.2 task signal POST failed for doc=%s: %s", document_id[:8], _e)
 
 
+def _run_phi_classification_async(document_id: str, rag_url: str) -> None:
+    """§3.3 — Fire PHI classification in a daemon thread after index-complete.
+
+    Flow:
+      1. GET {rag_url}/documents/{document_id}/text  → extracted text
+      2. POST {PHI_CLASSIFIER_URL}/classify {text, document_id}
+         → {phi_flag, recommended_ceiling, confidence, identifiers_found,
+            phi_evidence, classifier_version, layers_run}
+      3. Store verdict on instant_rag_uploads (migration 041 columns).
+
+    Conservative failure handling: any error → suggested_visibility='private'.
+    Does NOT block the ready signal; runs entirely after it returns.
+    Env-gated by PHI_CLASSIFIER_URL (no-op if unset).
+    """
+    phi_url = (os.environ.get("PHI_CLASSIFIER_URL") or "").rstrip("/")
+    if not phi_url:
+        logger.debug("§3.3 PHI classify skipped — PHI_CLASSIFIER_URL unset for doc=%s", document_id[:8])
+        return
+
+    def _classify() -> None:
+        import json as _json_mod
+        import urllib.request as _urllib_req
+        from app.storage import instant_rag_catalog as _cat
+        from app.db_client import db_execute as _dbe
+
+        # Step 1: fetch extracted text from RAG.
+        try:
+            with _urllib_req.urlopen(
+                f"{rag_url}/documents/{document_id}/text", timeout=30
+            ) as _r:
+                text_payload = _json_mod.loads(_r.read())
+            doc_text = text_payload.get("text") or ""
+        except Exception as _e:
+            logger.warning("§3.3 PHI: text fetch failed for doc=%s: %s", document_id[:8], _e)
+            doc_text = ""
+
+        # Step 2: call PHI classifier.
+        verdict: dict = {}
+        try:
+            _body = _json_mod.dumps({"text": doc_text, "document_id": document_id}).encode()
+            _req = _urllib_req.Request(
+                f"{phi_url}/classify",
+                data=_body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with _urllib_req.urlopen(_req, timeout=30) as _r:
+                verdict = _json_mod.loads(_r.read())
+        except Exception as _e:
+            logger.warning("§3.3 PHI: classify call failed for doc=%s: %s", document_id[:8], _e)
+            verdict = {"error": str(_e)}
+
+        # Step 3: persist verdict (conservative on any failure / degraded run).
+        _phi_flag = bool(verdict.get("phi_flag", True))
+        _ceiling = verdict.get("recommended_ceiling") or "private"
+        if _ceiling not in ("private", "org", "public"):
+            _ceiling = "private"
+        _confidence = verdict.get("confidence")
+        _layers = verdict.get("layers_run") or (["error"] if "error" in verdict else [])
+        _identifiers = verdict.get("identifiers_found") or []
+        _evidence = verdict.get("phi_evidence") or []
+        _version = verdict.get("classifier_version") or ""
+
+        try:
+            _dbe(
+                """
+                UPDATE instant_rag_uploads SET
+                    suggested_visibility   = :ceiling,
+                    phi_flag               = :phi_flag,
+                    phi_evidence           = :phi_evidence::jsonb,
+                    identifiers_found      = :identifiers::jsonb,
+                    classifier_confidence  = :confidence,
+                    classifier_version     = :version,
+                    layers_run             = :layers::jsonb,
+                    classified_at          = now()
+                WHERE document_id = :did
+                """,
+                "chat",
+                params={
+                    "ceiling": _ceiling,
+                    "phi_flag": _phi_flag,
+                    "phi_evidence": _json_mod.dumps(_evidence),
+                    "identifiers": _json_mod.dumps(_identifiers),
+                    "confidence": float(_confidence) if _confidence is not None else None,
+                    "version": _version,
+                    "layers": _json_mod.dumps(_layers),
+                    "did": document_id,
+                },
+            )
+            logger.info(
+                "§3.3 PHI classify stored for doc=%s phi=%s ceiling=%s layers=%s",
+                document_id[:8], _phi_flag, _ceiling, _layers,
+            )
+        except Exception as _e:
+            logger.warning("§3.3 PHI: verdict store failed for doc=%s: %s", document_id[:8], _e)
+
+    import threading as _threading
+    t = _threading.Thread(target=_classify, name=f"phi-classify-{document_id[:8]}", daemon=True)
+    t.start()
+    logger.debug("§3.3 PHI classify thread spawned for doc=%s", document_id[:8])
+
+
 def _spawn_background_publish_watcher(
     rag_url: str,
     document_id: str,
@@ -987,6 +1089,10 @@ def _spawn_background_publish_watcher(
                         user_id=user_id,
                         org_name=org_name,
                     )
+                    # §3.3 — async PHI classification (must NOT block the ready signal).
+                    # Runs in a daemon thread; stores verdict on instant_rag_uploads
+                    # (migration 041 columns). Conservative default: any error → private.
+                    _run_phi_classification_async(document_id=document_id, rag_url=rag_url)
                     return
             # Timed out
             _post_system_message_to_thread(

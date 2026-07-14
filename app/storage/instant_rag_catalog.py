@@ -215,6 +215,41 @@ def mark_status(document_id: str, status: str) -> bool:
     return changed
 
 
+def discard(document_id: str, user_id: str | None) -> bool:
+    """Soft-delete: set status='discarded'. Idempotent (already-discarded → True)."""
+    if not document_id:
+        return False
+    row = get_by_document_id(document_id)
+    if not row:
+        return False
+    if row.get("status") == STATUS_DISCARDED:
+        return True  # idempotent
+    if user_id and row.get("user_id") and row.get("user_id") != user_id:
+        return False  # ownership mismatch — caller must 403
+    return mark_status(document_id, STATUS_DISCARDED)
+
+
+def extend(document_id: str, user_id: str | None, days: int) -> datetime | None:
+    """Extend expires_at by N days from now. Returns new expires_at or None on failure."""
+    if not document_id or days < 1:
+        return None
+    row = get_by_document_id(document_id)
+    if not row:
+        return None
+    if user_id and row.get("user_id") and row.get("user_id") != user_id:
+        return None  # ownership mismatch
+    new_expires = datetime.now(timezone.utc) + timedelta(days=days)
+    result = db_execute(
+        "UPDATE instant_rag_uploads SET expires_at=:exp WHERE document_id=:did",
+        _DB,
+        params={"exp": new_expires.isoformat(), "did": document_id},
+    )
+    if "error" in result:
+        logger.warning("[catalog] extend failed: %s", _err_message(result))
+        return None
+    return new_expires
+
+
 def touch_last_queried(document_id: str) -> None:
     """Update last_queried_at to now. Best-effort; swallows errors."""
     if not document_id:
