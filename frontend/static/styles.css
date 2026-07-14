@@ -394,9 +394,9 @@ body {
   display: flex;
   flex-direction: column;
   margin: 0.5rem 0.75rem;
-  border: 1.5px solid color-mix(in srgb, var(--mobius-violet, #7c3aed) 35%, transparent);
+  border: 1px solid var(--sidebar-border, rgba(0,0,0,0.08));
   border-radius: 8px;
-  background: color-mix(in srgb, var(--mobius-violet, #7c3aed) 5%, transparent);
+  background: transparent;
   overflow: hidden;
 }
 
@@ -414,13 +414,13 @@ body {
   gap: 4px;
   font-size: var(--text-xs);
   font-weight: 600;
-  color: var(--mobius-violet, #7c3aed);
+  color: var(--sidebar-text);
   letter-spacing: 0.02em;
 }
 
 .vault-block-icon {
   flex-shrink: 0;
-  color: var(--mobius-violet, #7c3aed);
+  color: var(--sidebar-text-muted);
   opacity: 0.85;
   position: relative;
   top: -0.5px;
@@ -434,35 +434,36 @@ body {
 
 .vault-block-open-btn {
   background: none;
-  border: 1px solid color-mix(in srgb, var(--mobius-violet, #7c3aed) 40%, transparent);
+  border: 1px solid var(--sidebar-border, rgba(0,0,0,0.12));
   border-radius: 4px;
-  color: var(--mobius-violet, #7c3aed);
+  color: var(--sidebar-text-muted);
   font-size: 0.68rem;
   font-weight: 500;
   padding: 0.15rem 0.4rem;
   cursor: pointer;
   line-height: 1.4;
-  transition: background 0.12s, border-color 0.12s;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
   white-space: nowrap;
   flex-shrink: 0;
 }
 
 .vault-block-open-btn:hover {
-  background: color-mix(in srgb, var(--mobius-violet, #7c3aed) 10%, transparent);
-  border-color: var(--mobius-violet, #7c3aed);
+  background: rgba(0,0,0,0.04);
+  border-color: var(--sidebar-text-muted);
+  color: var(--sidebar-text);
 }
 
 .vault-block-tabs {
   display: flex;
-  border-top: 1px solid color-mix(in srgb, var(--mobius-violet, #7c3aed) 20%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--mobius-violet, #7c3aed) 20%, transparent);
+  border-top: 1px solid var(--sidebar-border, rgba(0,0,0,0.08));
+  border-bottom: 1px solid var(--sidebar-border, rgba(0,0,0,0.08));
 }
 
 .vault-tab {
   flex: 1;
   background: none;
   border: none;
-  border-right: 1px solid color-mix(in srgb, var(--mobius-violet, #7c3aed) 15%, transparent);
+  border-right: 1px solid var(--sidebar-border, rgba(0,0,0,0.08));
   font-size: 0.65rem;
   font-weight: 500;
   color: var(--sidebar-text-muted);
@@ -476,13 +477,13 @@ body {
 .vault-tab:last-child { border-right: none; }
 
 .vault-tab:hover {
-  background: color-mix(in srgb, var(--mobius-violet, #7c3aed) 8%, transparent);
-  color: var(--mobius-violet, #7c3aed);
+  background: rgba(0,0,0,0.04);
+  color: var(--sidebar-text);
 }
 
 .vault-tab--active {
-  background: color-mix(in srgb, var(--mobius-violet, #7c3aed) 12%, transparent);
-  color: var(--mobius-violet, #7c3aed);
+  background: rgba(0,0,0,0.05);
+  color: var(--sidebar-text);
   font-weight: 600;
 }
 
@@ -520,13 +521,13 @@ body {
   margin: 0 0.25rem 0.0625rem;
 }
 
-.vault-item:hover { background: color-mix(in srgb, var(--mobius-violet, #7c3aed) 8%, transparent); }
+.vault-item:hover { background: rgba(0,0,0,0.04); }
 
 .vault-item--muted { color: var(--sidebar-text-muted); font-style: italic; cursor: default; }
 .vault-item--muted:hover { background: none; }
 
 .vault-block-footer {
-  border-top: 1px solid color-mix(in srgb, var(--mobius-violet, #7c3aed) 18%, transparent);
+  border-top: 1px solid var(--sidebar-border, rgba(0,0,0,0.08));
   padding: 0.3rem 0.625rem;
 }
 
