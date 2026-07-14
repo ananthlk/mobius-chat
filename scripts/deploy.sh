@@ -210,6 +210,9 @@ SET_ENV_VARS=(
     # degrade safely to no_sources (inert). Must be in this explicit list or
     # Cloud Run will not see it even though it is in deploy/dev.env.
     "PAYOR_API_URL=${PAYOR_API_URL:-}"
+    # PHI_CLASSIFIER_URL — mobius-phi-classifier Cloud Run service.
+    # §3.3 async PHI classification post-index. When unset, classify is skipped (no-op).
+    "PHI_CLASSIFIER_URL=${PHI_CLASSIFIER_URL:-}"
     "CHROMA_HOST=${CHROMA_HOST:-}"
     "CHROMA_PORT=${CHROMA_PORT:-}"
     "CHROMA_SSL=${CHROMA_SSL:-}"
