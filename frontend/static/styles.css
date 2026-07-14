@@ -2711,7 +2711,8 @@ body {
   border-bottom-color: var(--mobius-violet, #7c3aed);
   font-weight: 600;
 }
-.ac-tab-panel[hidden] { display: none; }
+.ac-tab-panel[hidden],
+.ac-tab-panel:not(.ac-tab-panel--active) { display: none; }
 
 /* ─── Envelope: stats tiles ─────────────────────────────────────────────────── */
 .ac-fmt-stats {
