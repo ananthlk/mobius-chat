@@ -287,9 +287,10 @@ def backfill_phi_classify(
     Safe to call multiple times — classify only fires when the row is genuinely unclassified.
     Returns the document_ids queued (or candidates in dry_run mode).
     """
-    from app.db_client import db_query as _dbq
-    from app.main import _run_phi_classification_async as _phi_classify
     import os as _os
+    import threading as _threading
+    import json as _json
+    from app.db_client import db_query as _dbq, db_execute as _dbe
 
     rag_url = (_os.environ.get("MOBIUS_RAG_URL") or "").rstrip("/")
     if not rag_url:
@@ -306,8 +307,50 @@ def backfill_phi_classify(
     doc_ids = [r["document_id"] for r in (rows or []) if r.get("document_id")]
     if dry_run:
         return {"dry_run": True, "candidates": len(doc_ids), "document_ids": doc_ids}
+
+    def _classify_one(did: str) -> None:
+        import urllib.request as _urlreq
+        try:
+            with _urlreq.urlopen(f"{rag_url}/documents/{did}/pages", timeout=30) as _r:
+                pages = _json.loads(_r.read()).get("pages") or []
+            text = "\n".join((p.get("text") or "") for p in pages).strip()
+        except Exception:
+            text = ""
+        verdict: dict = {}
+        try:
+            _req = _urlreq.Request(
+                f"{phi_url}/classify",
+                data=_json.dumps({"text": text, "document_id": did}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with _urlreq.urlopen(_req, timeout=30) as _r:
+                verdict = _json.loads(_r.read())
+        except Exception:
+            verdict = {}
+        ceiling = verdict.get("recommended_ceiling") or "private"
+        if ceiling not in ("private", "org", "public"):
+            ceiling = "private"
+        _dbe(
+            """UPDATE instant_rag_uploads SET
+                suggested_visibility=:c, phi_flag=:pf, phi_evidence=:pe::jsonb,
+                identifiers_found=:ids::jsonb, classifier_confidence=:conf,
+                classifier_version=:ver, layers_run=:lr::jsonb, classified_at=now()
+               WHERE document_id=:did""",
+            "chat",
+            params={
+                "c": ceiling, "pf": bool(verdict.get("phi_flag", True)),
+                "pe": _json.dumps(verdict.get("phi_evidence") or []),
+                "ids": _json.dumps(verdict.get("identifiers_found") or []),
+                "conf": verdict.get("confidence"),
+                "ver": verdict.get("classifier_version") or "",
+                "lr": _json.dumps(verdict.get("layers_run") or []),
+                "did": did,
+            },
+        )
+
     for did in doc_ids:
-        _phi_classify(document_id=did, rag_url=rag_url)
+        _threading.Thread(target=_classify_one, args=(did,), daemon=True).start()
     return {"queued": len(doc_ids), "document_ids": doc_ids}
 
 
