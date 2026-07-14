@@ -2469,14 +2469,45 @@ function renderAnswerCard(
       const lbl = document.createElement("div");
       lbl.className = "ac-correction-label";
       lbl.textContent = label;
-      const body = document.createElement("div");
-      body.className = "ac-correction-body";
-      body.textContent = text;
       row.appendChild(lbl);
-      row.appendChild(body);
+      row.appendChild(document.createTextNode(text));
       corrList.appendChild(row);
     });
     correctionsPanel.appendChild(corrList);
+    // Inline callout in the Answer panel — one-sentence summary pointing to the tab
+    const corrCallout = document.createElement("div");
+    corrCallout.className = "ac-answer-correction-callout";
+    const corrIcon = document.createElement("span");
+    corrIcon.className = "ac-answer-correction-icon";
+    corrIcon.textContent = "⚠";
+    corrIcon.setAttribute("aria-hidden", "true");
+    const corrBody = document.createElement("div");
+    const corrLbl = document.createElement("div");
+    corrLbl.className = "ac-answer-correction-callout-label";
+    corrLbl.textContent = _corrections[0].label;
+    const corrP = document.createElement("p");
+    corrP.className = "ac-answer-correction-callout-text";
+    corrP.appendChild(document.createTextNode(
+      _corrections.length === 1
+        ? _corrections[0].text.slice(0, 120) + (_corrections[0].text.length > 120 ? "…" : "") + " — "
+        : `${_corrections.length} corrections noted — `
+    ));
+    const corrTabLink = document.createElement("button");
+    corrTabLink.type = "button";
+    corrTabLink.className = "ac-correction-tab-link";
+    corrTabLink.textContent = "see Corrections tab";
+    corrTabLink.addEventListener("click", () => {
+      // Traverse live DOM — bubble may be the transplant target
+      const liveBubble = corrTabLink.closest(".answer-card-bubble") ?? bubble;
+      (liveBubble.querySelector('[data-panel="corrections"]') as HTMLElement | null)?.click();
+    });
+    corrP.appendChild(corrTabLink);
+    corrP.appendChild(document.createTextNode(" for details."));
+    corrBody.appendChild(corrLbl);
+    corrBody.appendChild(corrP);
+    corrCallout.appendChild(corrIcon);
+    corrCallout.appendChild(corrBody);
+    answerPanel.appendChild(corrCallout);
   }
 
   // Next Steps panel — follow-up questions + one-click task creation
