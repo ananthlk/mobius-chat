@@ -304,6 +304,31 @@ def _vertex_stream_producer(
 # Ops knob: ``VERTEX_HTTP_TIMEOUT_SECONDS`` (default 30). Bump for large
 # credentialing-style generations; the per-call async wrapper at
 # ``generate_with_usage`` applies its own ``_timeout_seconds`` on top.
+
+
+def _vertex_phi_safety_settings() -> list:
+    """Return BLOCK_NONE safety settings for PHI-classifier stages.
+
+    PHI content (clinical text, diagnoses, patient details) reliably trips
+    Vertex's default HARM_CATEGORY_* filters, causing ~80% 500 errors.
+    The phi_classify stage MUST read sensitive clinical text — it cannot
+    function with safety filtering. BLOCK_NONE is safe here because:
+      1. This stage is structurally locked to HIPAA-eligible Vertex models only.
+      2. The classifier reads, never generates, PHI — output is JSON verdict.
+      3. Evidence stored is MASKED (redacted_span only, never raw PHI).
+    """
+    try:
+        from vertexai.generative_models import HarmCategory, HarmBlockThreshold
+        return [
+            {"category": HarmCategory.HARM_CATEGORY_HATE_SPEECH,       "threshold": HarmBlockThreshold.BLOCK_NONE},
+            {"category": HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,  "threshold": HarmBlockThreshold.BLOCK_NONE},
+            {"category": HarmCategory.HARM_CATEGORY_HARASSMENT,         "threshold": HarmBlockThreshold.BLOCK_NONE},
+            {"category": HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,  "threshold": HarmBlockThreshold.BLOCK_NONE},
+        ]
+    except Exception:
+        return []
+
+
 def _vertex_request_options():
     """Build ``generate_content`` kwargs that cap both per-attempt wall
     time AND the SDK's internal retry loop.
@@ -375,6 +400,7 @@ def _vertex_generate_sync(
     gen_config: dict,
     tools: list | None = None,
     outer_timeout_s: float | None = None,
+    safety_settings: list | None = None,
 ) -> tuple[str, LLMUsageDict]:
     import os as _os
     import time as _time
@@ -443,23 +469,28 @@ def _vertex_generate_sync(
     _pool = _futs.ThreadPoolExecutor(max_workers=1, thread_name_prefix="vertex-call")
 
     def _call_sdk():
+        _safety = safety_settings or []
         if tools:
             try:
                 return model.generate_content(
-                    prompt, generation_config=gen_config, tools=tools, **req_opts
+                    prompt, generation_config=gen_config, tools=tools,
+                    safety_settings=_safety, **req_opts
                 )
             except TypeError:
                 return model.generate_content(
-                    prompt, generation_config=gen_config, tools=tools
+                    prompt, generation_config=gen_config, tools=tools,
+                    safety_settings=_safety,
                 )
         else:
             try:
                 return model.generate_content(
-                    prompt, generation_config=gen_config, **req_opts
+                    prompt, generation_config=gen_config,
+                    safety_settings=_safety, **req_opts
                 )
             except TypeError:
                 return model.generate_content(
-                    prompt, generation_config=gen_config
+                    prompt, generation_config=gen_config,
+                    safety_settings=_safety,
                 )
 
     _future = _pool.submit(_call_sdk)
@@ -683,9 +714,11 @@ class VertexAIProvider(LLMProvider):
         gen_config = self._generation_config(**kw)
         tools = self._tools_for_vertex_search(stage_kw)
         timeout_s = self._timeout_seconds(stage=stage_kw, max_tokens=max_kw)
+        safety = _vertex_phi_safety_settings() if stage_kw == "phi_classify" else None
         return await asyncio.wait_for(
             asyncio.to_thread(
-                _vertex_generate_sync, self.model_name, prompt, gen_config, tools, timeout_s
+                _vertex_generate_sync, self.model_name, prompt, gen_config, tools,
+                timeout_s, safety,
             ),
             timeout=timeout_s,
         )
