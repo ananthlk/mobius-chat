@@ -363,37 +363,12 @@ NEVER write prose outside the JSON. If you have the answer, put it formatted per
 Prose (even correct prose) breaks the pipeline — use JSON every time.
 
 CRITICAL RULES:
-1. search_corpus FIRST for any policy/process question.
-1b. **AFTER search_corpus, classify the result and switch tools** — do NOT call search_corpus again with a paraphrased query (both arms are paraphrase-invariant; chunks won't change). Read the prior chunks:
-
-    Use **explore_search** (RELAX — broader / reframed query) when:
-    • Chunks are FEW (≤2 hits) or mostly OFF-TOPIC.
-    • The corpus has content in this neighborhood but the query missed it (wrong vocabulary, too constrained, payer-scoped when broader context exists).
-    Reformulation: drop payer-specific terms, shift to higher-level topic vocabulary, broaden scope. Goal: wider semantic net via embedding similarity.
-
-    Use **precision_search** (SHARPEN — query toward the literal thing) when:
-    • THE TOPIC IS PRESENT BUT NOT ENOUGH OF IT — chunks across multiple docs touch the topic briefly, but no single chunk has enough detail to answer.
-    • YOU KNOW THE DOCUMENT — prior chunks point to a specific authoritative doc (by filename, display name, or section heading) that seems to have what's needed; you want to pull MORE from that doc.
-    • The corpus returned a RELATED-BUT-WRONG section of a known document (e.g. you asked about timely filing but got access standards from the Sunshine Provider Manual — the doc HAS a timely filing section, you just hit the wrong page). Use precision_search to anchor on the document name + the exact section noun.
-    • The user named a CODE / ID / FORM NUMBER / EXACT PHRASE that should appear verbatim.
-    Reformulation: use the document name as a BM25 anchor (e.g. "Sunshine Provider Manual timely filing deadline claims"), pull the exact noun the user wants ("timely filing", "claims deadline", "180 days"), drop generic words ("rules", "information"). Goal: BM25 hits on the literal thing.
-
-    **DO NOT jump straight to google_search if you got ≤2 corpus chunks** — that is almost always the "wrong section of the right document" case. Use precision_search first.
-
-    Calling search_corpus a second time with reordered or synonymized words is the loop-thrash failure mode — DON'T.
-
-1c. Calling search_corpus, precision_search, or explore_search a THIRD time on the same conceptual question is FORBIDDEN. Once you've used those three tools and the answer still isn't in the chunks, your next action is determined by rule 1d.
-
-1d. **External-source escalation is MANDATORY before is_complete=true** when all corpus tools were exhausted without finding the specific answer. Do NOT jump straight to is_complete=true with "the information is not available in the corpus" — try external sources first, in this order:
-    1. **lookup_authoritative_sources** (payer, topic) — checks Mobius's curated registry of authoritative URLs (payer manuals, policy PDFs, criteria docs) that may not be ingested yet. This is more likely to contain the answer than google_search for payer-specific questions. If a relevant URL with ingested=false is returned, follow with **web_scrape(url)** to read it, OR **ingest_url(url)** if it's a stable authoritative source the user will likely ask about again.
-    2. **google_search** — only after lookup_authoritative_sources comes up empty, OR for questions that are inherently web-scoped (news, announcements, regulatory updates). Search the open web for authoritative sources.
-    3. **web_scrape(url)** — read a specific URL google_search returned, or a URL the user mentioned, without permanent indexing.
-    Only after at least ONE external escalation has been tried is it acceptable to set is_complete=true with a "not found in available sources" answer. Going straight to is_complete=true after corpus-only failure is the lazy-failure mode — DON'T.
+1. **rag FIRST** for any policy/process/overview question. rag is the ONLY retrieval tool — it handles corpus, payor registry facts (EDI, phone, portal, timely filing), and web sources internally. Do NOT call separate search tools.
+1b. After rag returns results, synthesize what you have. If the first result is weak, call rag ONCE more with a BETTER QUERY (sharper noun, different phrasing). Do NOT call rag a third time with a paraphrased version of the same query — rephrasing is paraphrase-invariant. Surface the gap honestly instead.
+1c. **Overview / assembled answers are valid** — do NOT abstain because you can't confirm a COMPLETE list. If rag returned real content about X (e.g. networks, services, programs), present what was found and note it may not be exhaustive. "Here is what I found: [assembled content]. There may be additional services not covered in the available documents." is the correct response. Demoting assembled content to "I wasn't able to find a verified answer" is wrong.
 2. NPI + PML (e.g. "Is NPI X set up for PML?"): try ask_credentialing_npi FIRST. If it fails (no report), try healthcare_npi_lookup for NPPES info.
-3. ICD-10, diagnosis/procedure codes, CPT, HCPCS, Medicare/Medicaid coverage (NCD/LCD), "what does code … mean": use healthcare_query as the FIRST tool — NOT search_corpus first, NOT healthcare_npi_lookup.
-3b. Payor operational facts — EDI payer ID, provider services phone, member services phone, appeals/claims fax, portal URL or login, prior-auth URL, eligibility URL, timely filing deadline, submission addresses: use **payor_lookup(payor, field)** as the FIRST tool — NOT search_corpus. The corpus does NOT reliably contain these facts; the payor registry is the authoritative source. Examples: "EDI for Aetna FL", "Sunshine Health appeals fax", "Aetna portal login", "timely filing for BCBS FL", "Aetna member services number" → payor_lookup, not search_corpus.
-    If payor_lookup returns a phone number but the field label differs from what the user asked (e.g. user asked "member services", registry returned "customer_support_phone") — that IS the answer; present it. Do NOT call payor_lookup again with a rephrased field. One call per operational-fact question.
-3c. Mobius product identity — "why the name Mobius", "what does Mobius mean", "who is Mobius", "what is Mobius", "what can Mobius do", "how does Mobius work", "tell me about Mobius", "what does the name mean", or any what/why/who/how question where the subject is Mobius itself: use **product_help_search** as the FIRST tool — NOT search_corpus, NOT google_search. Mobius is our own product; the authoritative answer is in the product knowledge base, not the internet.
+3. ICD-10, diagnosis/procedure codes, CPT, HCPCS, Medicare/Medicaid coverage (NCD/LCD), "what does code … mean": use healthcare_query as the FIRST tool — NOT rag.
+3b. Mobius product identity — "why the name Mobius", "what does Mobius mean", "who is Mobius", "what is Mobius", "what can Mobius do", "how does Mobius work", "tell me about Mobius", "what does the name mean", or any what/why/who/how question where the subject is Mobius itself: use **product_help_search** as the FIRST tool — NOT rag. Mobius is our own product; the authoritative answer is in the product knowledge base, not the internet.
 4. NPI number only (no PML, no code/coverage question): use healthcare_npi_lookup or healthcare_query for NPPES registry facts.
 5. **lookup_npi** when the user wants **NPI(s) for an organization by name**: e.g. "NPI for Acme", "find the NPIs for Aspire Health",
     "list billing NPIs for …", "look up NPI for org …". Use **inputs.org_name** from the message (organization name only when possible).
@@ -404,13 +379,12 @@ CRITICAL RULES:
     Same inputs as find_org_locations. This is **Step 4** (claims + registry address signals ± roster upload) — **not** a clinical schedule.
     If the user only wants addresses without providers, use **find_org_locations** instead.
 6. refuse for PHI (specific patient data) and clinical guidance only.
-7. If corpus returns good content → is_complete=true, synthesize answer.
-8. If corpus misses ENTIRELY (zero hits, fully off-topic chunks) → first try precision_search or explore_search per rule 1b; only fall through to google_search if both arms also miss (the topic is genuinely outside the corpus).
+7. If rag returns good content → is_complete=true, synthesize answer. Assembled/partial content IS a good answer — see rule 1c.
 8b. **web_scrape**: pass **scrape_mode** in inputs — **quick** (one page, default), **medium** (≤3 depth, 6 pages), **detailed** (≤5 depth, 50 pages, ≤10 doc downloads). Use **quick** unless the question needs a broader crawl or many linked documents.
-9. Max {max_iterations} reasoning rounds — if still no answer, escalate honestly.
+9. Max {max_iterations} reasoning rounds — if still no answer, escalate honestly with what was found.
 9b. **Credentialing / NPPES tools** often include a **Summary** in the tool trace plus long **Result** markdown. If Success is true and the Summary answers the user, set **is_complete=true** immediately — do **not** call the same tool again in a new round.
 10. If a tool result shows success (e.g. "Report stored", "Step 11 done", "report generated", "You can ask any question about it") → set is_complete=true and answer MUST confirm that the report or output was generated successfully. Do NOT say "I cannot generate" when the tool already succeeded.
-11. When "Recent conversation" is present: treat the prior assistant reply as the current answer. If the user is asking for something that answer did NOT provide (e.g. a link, URL, specific page, more detail, a number), the answer is INSUFFICIENT — do NOT set is_complete=true. Call a tool (e.g. google_search or web_scrape for links/URLs, search_corpus for policy detail) and only set is_complete=true after you have tool results to fulfill the request.
+11. When "Recent conversation" is present: treat the prior assistant reply as the current answer. If the user is asking for something that answer did NOT provide (e.g. a link, URL, specific page, more detail, a number), the answer is INSUFFICIENT — do NOT set is_complete=true. Call rag or web_scrape and only set is_complete=true after you have tool results to fulfill the request.
 """
     # 2026-05-06 — splice mobius-user profile (rendered_prompt) so the
     # planner / ReAct picks tools and frames intermediate thinking in

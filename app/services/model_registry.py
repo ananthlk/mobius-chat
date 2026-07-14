@@ -894,7 +894,7 @@ def integrator_llm_stage(ctx: Any) -> str:
 
 
 CHEAP_STAGES = ["badge", "classifier", "critique", "adjudicator", "vibe"]
-PHI_SAFE_STAGES = ["phi_detector"]
+PHI_SAFE_STAGES = ["phi_detector", "phi_classify"]
 
 # roster_clean: lightweight batch classification (junk-row detection).
 # Fast/flash models only — no frontier reasoning models needed here.
@@ -1749,8 +1749,13 @@ class ModelRouter:
             if phi_detected and not m.hipaa_eligible:
                 continue
             es = m.eligible_stages
-            if stage == "phi_detector":
-                if "phi_detector" not in es:
+            if stage in PHI_SAFE_STAGES:
+                # PHI-safe stages require HIPAA-eligible models regardless of phi_detected flag.
+                # This is a structural lock: non-BAA models cannot serve PHI classifier stages
+                # even if they listed the stage in eligible_stages by mistake.
+                if not m.hipaa_eligible:
+                    continue
+                if stage not in es:
                     continue
             elif set(es) == {"phi_detector"}:
                 # Prompt-guard specialist — not a candidate for planner/RAG/etc.

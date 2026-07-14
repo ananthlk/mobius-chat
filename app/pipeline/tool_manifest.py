@@ -73,71 +73,42 @@ optional filter params (org_type, period_year, service_line, etc.)."""
 
 
 _RETRIEVAL_METHODOLOGY_PRIMER = """\
-RETRIEVAL — one tool, one index, three modes.
+RETRIEVAL — one tool: rag(query).
 
-search_corpus is the single entry point for all corpus retrieval.
-The ``mode`` parameter selects the scoring arm:
-
-  auto (default) — BM25 + pgvector hybrid via Reciprocal Rank Fusion.
-    Best for most questions. Balances keyword precision and semantic
-    recall in one call. Always use this (omit mode entirely or pass
-    mode="auto"). The corpus search agent selects the optimal internal
-    strategy and cascades through fallbacks automatically.
-
-  precision / recall — available but NOT for planner use. The agent's
-    internal router already applies these arms when appropriate. Passing
-    an explicit mode overrides the agent's cascade and prevents it from
-    trying other strategies on your behalf. Do not pass mode="precision"
-    or mode="recall" — leave mode unset on every call.
+rag is the single retrieval entry point. It handles corpus search, payor
+registry facts (EDI, phone, portal, timely filing), and web sources internally.
+You never choose the strategy — rag's router does.
 
 RETRY GUIDANCE:
-  • When the first search returns weak results, retry with a BETTER
-    QUERY (sharper noun, different phrasing, drop payer-specific terms)
-    but NO mode override. The agent handles arm selection internally.
-  • After at most two query reformulations, surface the gap honestly —
-    rephrasing the same query without new information won't help further."""
+  • When the first call returns weak results, retry with a BETTER QUERY
+    (sharper noun, different phrasing). Never pass a mode override.
+  • After at most TWO reformulations, surface the gap honestly.
+  • Rephrasing the same query without new information won't help — stop."""
 
 
-# ── Router-owned prose (search_corpus, healthcare_npi_lookup, etc.) ──
+# ── Router-owned prose (rag, healthcare_npi_lookup, etc.) ──
 
-_SEARCH_CORPUS_BLOCK = """\
-search_corpus(query)
-  Corpus search — hybrid BM25 + pgvector by default. Single entry
-    point for all curated-corpus retrieval. Always omit the mode
-    parameter — the agent selects and cascades through strategies
-    internally. See the methodology primer above.
-  Use for: Questions about policy, PA rules, appeals, credentialing
-    POLICIES/RULES, timely filing, covered services, claims procedures —
-    anything answered from authoritative payer documents or manuals.
+_RAG_BLOCK = """\
+rag(query, mode?)
+  Single retrieval entry point — corpus, payor registry, and web.
+  RAG's router picks the optimal strategy internally (BM25 + pgvector
+    hybrid, payor fact lookup, external web). You pick the query; the
+    router handles strategy, cascades, and escalation.
+  mode (optional): "fast" for copilot / low-latency situations. Omit
+    for standard retrieval — the router picks the best effort level.
+  Use for: ANY retrieval question — policy, PA, appeals, credentialing
+    policies/rules, timely filing, covered services, claims procedures,
+    payor operational facts (EDI payer ID, phone, portal, addresses),
+    overview questions ("tell me about X"), web-sourced questions.
   Do NOT use for: Credentialing STATUS for a specific provider or org
     (NPI enrollment status, compliance flags, NPPES/PML/TML data errors,
-    panel readiness). Use check_provider_credentialing for that.
-  Do NOT use for: FL Medicaid BH market data questions (org rankings,
-    market share, new entrants, benchmarks, rate data, utilization).
-    Those are quantitative BigQuery data — use the get_* analytics
-    tools listed in the FL MEDICAID BH MARKET DATA section above.
-  Aliases: corpus, default_search, hybrid_search, precision_search,
-    explore_search, recall_search (all route here).
-  Returns: numbered passages [1]…[N] with page citations, per-arm
-    provenance (retrieval_arms), and confidence label.
+    panel readiness) — use check_provider_credentialing for that.
+  Do NOT use for: FL Medicaid BH market data (org rankings, market
+    share, benchmarks, rate data) — use the get_* analytics tools above.
+  Returns: numbered passages [1]…[N] with page citations and confidence."""
 
-  FAILURE MODES:
-    F1. PRECISION DEFICIT — chunks on-topic but missing the specific
-        code / day count / dollar amount / form name.
-        Action: retry with a SHARPER QUERY (pull the exact noun from
-          prior chunks as the anchor; drop generic words like "rules"
-          or "information"). Do NOT pass mode="precision".
-
-    F2. RECALL DEFICIT — hits dominated by one doc/payer when user
-        wanted breadth ("tell me about X across payers").
-        Action: retry with a MORE CONCEPTUAL QUERY (drop payer-specific
-          phrasing, raise abstraction level). Do NOT pass mode="recall".
-
-    F3. ZERO HITS — retry once with a reformulated query. If still
-        zero, surface the coverage gap honestly.
-
-    F4. NO ANSWER AFTER ONE ESCALATION — surface the gap. Do not
-        keep searching; both arms are paraphrase-invariant."""
+# Kept for back-compat dispatch; no longer rendered in the planner manifest.
+_SEARCH_CORPUS_BLOCK = ""  # retired UI name — backend routes to rag
 
 
 _RECALL_SEARCH_BLOCK = ""  # retired — merged into search_corpus(mode="recall")
@@ -340,7 +311,8 @@ def _auto_discovered_block(allowed: frozenset[str] | None = None) -> str:
 # need to be filterable via ``allowed``.  Each maps to the prose block
 # variable that carries its manifest text.
 _ROUTER_OWNED_BLOCKS: dict[str, str] = {
-    "search_corpus": "_SEARCH_CORPUS_BLOCK",
+    "rag": "_RAG_BLOCK",
+    "search_corpus": "_SEARCH_CORPUS_BLOCK",  # back-compat alias, empty block
     "healthcare_npi_lookup": "_HEALTHCARE_NPI_LOOKUP_BLOCK",
     "search_uploaded_document": "_SEARCH_UPLOADED_DOCUMENT_BLOCK",
     "refuse": "_REFUSE_BLOCK",
@@ -379,61 +351,32 @@ def _compose_manifest(allowed: frozenset[str] | None = None) -> str:
 
     curated_blocks = [
         # FL Medicaid data routing gate — must come FIRST so the planner
-        # sees the quick-pick guide before it reaches search_corpus.
-        # Without this, the planner over-selects search_corpus for
-        # quantitative market data questions (which aren't in the corpus).
+        # sees the quick-pick guide before it reaches rag.
         _FL_MEDICAID_DATA_ROUTING_BLOCK if _allow("get_top_orgs") or allowed is None else "",
-        # Methodology primer — the search tools below reference its
-        # concepts (BM25 / vector / RRF). Without this the LLM has to
-        # infer mechanism from per-tool symptom lists.
-        _RETRIEVAL_METHODOLOGY_PRIMER if _allow("search_corpus") else "",
-        _router_block("search_corpus", _SEARCH_CORPUS_BLOCK),
-        _RECALL_SEARCH_BLOCK,   # retired prose — always empty
-        _PRECISION_SEARCH_BLOCK,  # retired prose — always empty
-        # payor_lookup / payor_readiness — the payor registry is the SOURCE OF
-        # TRUTH for operational payer facts (EDI payer ID, provider phone,
-        # appeals/claims fax, portal, addresses, timely filing) that search_corpus
-        # can't reliably ground. Same explicit-list gotcha as vibe/product_feedback:
-        # must be named here or the planner never sees it (was registered +
-        # visible_to_planner but absent from this list → planner used search_corpus
-        # for "Aetna FL EDI" and failed; the registry had 128FL). Placed right after
-        # search_corpus so the planner prefers it for contact/EDI questions.
-        _registry_block("payor_lookup"),
+        # Retrieval methodology primer — describes the single rag() entry point.
+        _RETRIEVAL_METHODOLOGY_PRIMER if _allow("rag") else "",
+        # rag: the ONE retrieval tool. Replaces search_corpus + payor_lookup +
+        # lookup_authoritative_sources + google_search. RAG's router picks
+        # strategy internally; callers pass query only.
+        _router_block("rag", _RAG_BLOCK),
+        # payor_readiness — payer registry status (authority parent, AHCA state).
+        # Not a search tool; kept as a direct registry accessor.
         _registry_block("payor_readiness"),
-        # fetch_document — registered via SkillSpec; rendered by registry.
-        # Distinct from search_corpus: returns a download URL, not an answer.
+        # fetch_document — returns a download URL; distinct from rag retrieval.
         _registry_block("fetch_document"),
         _registry_block("healthcare_query"),
         _router_block("healthcare_npi_lookup", _HEALTHCARE_NPI_LOOKUP_BLOCK),
         _registry_block("document_upload_skill"),
         _registry_block("list_thread_document_uploads"),
         _router_block("search_uploaded_document", _SEARCH_UPLOADED_DOCUMENT_BLOCK),
-        _registry_block("google_search"),
+        # web_scrape — reads a specific URL the user or rag surfaced; not a search.
         _registry_block("web_scrape"),
-        # vibe: short, work-adjacent vibe lines (toast/empathy/dry obs/etc.)
-        # Registered but was missing from the planner manifest until 2026-04-25.
         _registry_block("vibe"),
-        # product_feedback: capture open product feedback + CSAT/NPS surveys.
-        # Same lesson as vibe — registered + visible_to_planner but the manifest
-        # is an explicit list, so it must be named here or the planner never
-        # sees it (2026-07-02).
         _registry_block("product_feedback"),
-        # product_help_search: answer "how do I use Mobius?" from the product docs.
-        # Same explicit-list gotcha — must be named here or the planner never sees it.
         _registry_block("product_help_search"),
-        # Phase 13.6 — conversation-aware planner. Continuation/
-        # transformation requests ("convert this to an appeal letter",
-        # "make it shorter", "rewrite for X") MUST route here, NOT to
-        # search_corpus / lookup_authoritative_sources. Placed before
-        # the curator/google blocks so the planner sees it as a first-
-        # class option for follow-up turns.
+        # transform_previous_answer — continuation/transformation requests.
         _registry_block("transform_previous_answer"),
-        # Curator tools (Phase 13.5) — registry of URLs Mobius knows
-        # about, including non-ingested ones. Ordered after the search
-        # tools so the planner reaches for search_corpus first; only
-        # falls through to lookup_authoritative_sources when corpus
-        # comes up empty.
-        _router_block("lookup_authoritative_sources", _LOOKUP_AUTHORITATIVE_SOURCES_BLOCK),
+        # ingest_url — adds a specific URL to the corpus permanently.
         _router_block("ingest_url", _INGEST_URL_BLOCK),
         _router_block("refuse", _REFUSE_BLOCK),
     ]

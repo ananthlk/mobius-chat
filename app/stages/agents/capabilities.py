@@ -42,7 +42,7 @@ TOOL_CAPABILITIES: dict[str, dict[str, Any]] = {
             "Organization NPI lookup by name via MCP org_npi_lookup (credentialing API + optional web variant discovery)",
         ],
         "requires": "MCP server; chat passes search_mode from composer (copilot=registry-only path, agentic=full web enrichment)",
-        "cannot_answer": "PML status from credentialing report without report context (use ask_credentialing_npi)",
+        "cannot_answer": "PML status / FL Medicaid enrollment (use check_provider_credentialing with org_slug + npi)",
     },
     "search_org_names": {
         "can_answer": [

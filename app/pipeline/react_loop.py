@@ -285,6 +285,7 @@ def _classify_query_strategy(query: str) -> tuple[str, str]:
 # find_org_locations, find_associated_providers_at_locations) because the
 # underlying tool branches are gone.
 _TOOL_STAGE_FOR_USAGE: dict[str, str] = {
+    "rag": "rag",              # promoted planner-facing name (2026-07-14)
     "search_corpus": "rag",
     # Day 6 (2026-04-20): lazy_corpus_search shares the ``rag`` stage for
     # analytics so it appears alongside the heavy corpus_search in
@@ -533,7 +534,9 @@ def _execute_tool(
             "sources": [],
         }
 
-    if tool == "search_corpus":
+    if tool in ("rag", "search_corpus"):
+        # "rag" is the new planner-facing name; "search_corpus" is the back-compat alias.
+        # Both dispatch to the same corpus-then-external cascade.
         query = inputs.get("query") or (ctx.effective_message or ctx.message)
         rag_overrides = rag_filters_from_active(active) or {}
 
