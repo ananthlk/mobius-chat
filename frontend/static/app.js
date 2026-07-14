@@ -12002,7 +12002,12 @@ ${message}`;
   function openVaultPanel(tab) {
     const w = window;
     if (typeof w.MobiusVault?.open === "function") {
-      w.MobiusVault.open(tab ? { tab } : void 0);
+      const opts = {};
+      if (tab)
+        opts.tab = tab;
+      if (currentThreadId)
+        opts.currentThreadId = currentThreadId;
+      w.MobiusVault.open(Object.keys(opts).length ? opts : void 0);
     } else {
       window.open("/vault", "_blank", "noopener");
     }

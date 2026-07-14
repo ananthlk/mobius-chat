@@ -12453,9 +12453,12 @@ function run(): void {
   // opts: { tab: "recent"|"liked"|"tasks"|"uploads" }
   // Fallback: if the component isn't loaded yet, opens /vault in a new tab.
   function openVaultPanel(tab?: string): void {
-    const w = window as Window & typeof globalThis & { MobiusVault?: { open: (opts?: { tab?: string }) => void } };
+    const w = window as Window & typeof globalThis & { MobiusVault?: { open: (opts?: { tab?: string; currentThreadId?: string }) => void } };
     if (typeof w.MobiusVault?.open === "function") {
-      w.MobiusVault.open(tab ? { tab } : undefined);
+      const opts: { tab?: string; currentThreadId?: string } = {};
+      if (tab) opts.tab = tab;
+      if (currentThreadId) opts.currentThreadId = currentThreadId;
+      w.MobiusVault.open(Object.keys(opts).length ? opts : undefined);
     } else {
       window.open("/vault", "_blank", "noopener");
     }

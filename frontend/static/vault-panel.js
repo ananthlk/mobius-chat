@@ -59,6 +59,9 @@
     recent: [], liked: [], tasksWork: [], tasksNotif: [], tasksOrg: [], uploads: [],
     uSort: { key: "ttl", dir: "asc" }, showExpired: false, search: "",
     uFilter: null, tFilter: null, loaded: false, docked: false,
+    selTasks: new Set(), selUploads: new Set(), // bulk-select
+    coworkers: null,                             // cached /chat/coworkers
+    currentThreadId: null,                       // active chat thread (for "use in chat")
   };
   const EXPIRING_DAYS = 3;
   function clearFilters() { state.uFilter = null; state.tFilter = null; }
@@ -201,6 +204,35 @@
   }
   const matchesSearch = (text) => !state.search || esc(text).toLowerCase().includes(state.search.toLowerCase());
 
+  // Bulk-action bar (shown when a tab has a selection). Returns el or null.
+  function bulkBar(tab) {
+    const s = selSet(tab); if (!s.size) return null;
+    const bar = el("div", "mv-bulk");
+    bar.appendChild(el("span", "mv-bulk-count", s.size + " selected"));
+    const acts = el("div", "mv-bulk-acts");
+    const ids = [...s];
+    if (tab === "tasks") {
+      acts.appendChild(chipBtn("Resolve", () => bulk(ids, id => taskAction(findTask(id), "resolve", true), (ok, n) => `Resolved ${ok}/${n}.`)));
+      acts.appendChild(chipBtn("Dismiss", () => bulk(ids, id => taskAction(findTask(id), "dismiss", true), (ok, n) => `Dismissed ${ok}/${n}.`)));
+    } else {
+      acts.appendChild(chipBtn("Extend", () => bulk(ids.map(findUpload).filter(Boolean), u => extendUpload(u, true), (ok, n) => `Extended ${ok}/${n}.`)));
+      acts.appendChild(chipBtn("Delete", () => bulkDeleteUploads(ids), "danger"));
+    }
+    const clear = el("button", "mv-bulk-clear", "Clear"); clear.addEventListener("click", () => { s.clear(); renderAll(); });
+    acts.appendChild(clear); bar.appendChild(acts); return bar;
+  }
+  function chipBtn(label, fn, extra) { const b = el("button", "mv-chip" + (extra ? " " + extra : ""), label); b.addEventListener("click", fn); return b; }
+  async function bulkDeleteUploads(ids) {
+    if (!(await confirmDialog("Remove " + ids.length + " document" + (ids.length > 1 ? "s" : "") + " from your Vault?"))) return;
+    await bulk(ids.map(findUpload).filter(Boolean), u => deleteUpload(u, true), (ok, n) => `Removed ${ok}/${n}.`);
+  }
+  function selCheckbox(tab, id) {
+    const cb = el("input"); cb.type = "checkbox"; cb.className = "mv-check"; cb.checked = selSet(tab).has(id);
+    cb.addEventListener("click", (e) => e.stopPropagation());
+    cb.addEventListener("change", () => toggleSel(tab, id, cb.checked));
+    return cb;
+  }
+
   function renderRecent() {
     const p = q('[data-panel="recent"]'); if (!p) return; p.innerHTML = "";
     const rows = state.recent.filter(t => matchesSearch(t.summary || t.title));
@@ -233,10 +265,11 @@
   }
   function renderTasks() {
     const p = q('[data-panel="tasks"]'); if (!p) return; p.innerHTML = "";
-    if (state.tFilter === "dueSoon") {
-      const bar = el("div", "mv-toolbar"); const chip = el("button", "mv-active-filter", "Due soon ✕");
-      chip.addEventListener("click", () => { state.tFilter = null; renderAll(); }); bar.appendChild(chip); p.appendChild(bar);
-    }
+    const bar = el("div", "mv-toolbar");
+    if (state.tFilter === "dueSoon") { const chip = el("button", "mv-active-filter", "Due soon ✕"); chip.addEventListener("click", () => { state.tFilter = null; renderAll(); }); bar.appendChild(chip); }
+    const newBtn = el("button", "mv-chip", "＋ New task"); newBtn.addEventListener("click", () => openCreateTask(newBtn)); bar.appendChild(newBtn);
+    p.appendChild(bar);
+    const bb = bulkBar("tasks"); if (bb) p.appendChild(bb);
     const total = state.tasksWork.length + state.tasksOrg.length + state.tasksNotif.length;
     if (!total) { p.appendChild(emptyState("All clear — no open tasks.")); return; }
     const dueIds = state.tFilter === "dueSoon" ? new Set(dueTodayList().map(t => t.task_id || t.id)) : null;
@@ -253,23 +286,32 @@
     group("Notifications", state.tasksNotif, "notifications");
   }
   function taskRow(t, isNotif) {
-    const li = el("li", "mv-row"); li.appendChild(el("span", "mv-row-ico", isNotif ? "🔔" : "✓"));
+    const id = t.task_id || t.id;
+    const li = el("li", "mv-row");
+    li.appendChild(selCheckbox("tasks", id));
+    li.appendChild(el("span", "mv-row-ico", isNotif ? "🔔" : "✓"));
     const main = el("div", "mv-row-main"); main.appendChild(el("div", "mv-row-title", snippet(t.title || t.body || "(untitled task)")));
     const meta = el("div", "mv-row-meta");
     if (t.severity) meta.appendChild(el("span", "mv-sev " + esc(t.severity).toLowerCase(), t.severity));
     if (t.type) meta.appendChild(el("span", null, t.type));
     const due = t.deadline || t.due_at; if (due) meta.appendChild(el("span", null, "due " + fmtDate(due)));
     if (t.org_name) meta.appendChild(el("span", null, t.org_name));
+    if (t.assignee) meta.appendChild(el("span", null, "→ " + t.assignee));
     main.appendChild(meta); li.appendChild(main);
     const threadId = (t.extra && t.extra.origin && t.extra.origin.thread_id) || (t.detail_payload && t.detail_payload.thread_id) || null;
-    if (threadId) { li.style.cursor = "pointer"; li.addEventListener("click", (e) => { if (!e.target.closest(".mv-actions")) openThread(threadId); }); }
+    if (threadId) { li.style.cursor = "pointer"; li.addEventListener("click", (e) => { if (!e.target.closest(".mv-actions") && !e.target.closest(".mv-check")) openThread(threadId); }); }
     const actions = el("div", "mv-actions");
-    if (isNotif) actions.appendChild(iconBtn("✕", "Dismiss", () => taskAction(t, "dismiss")));
-    else actions.appendChild(iconBtn("✓", "Resolve", () => taskAction(t, "resolve")));
+    if (isNotif) { actions.appendChild(iconBtn("✕", "Dismiss", () => taskAction(t, "dismiss"))); }
+    else {
+      actions.appendChild(iconBtn("📅", "Reschedule", (e) => openReschedule(e ? e.currentTarget : actions, t)));
+      actions.appendChild(iconBtn("👤", "Reassign", (e) => openReassign(e ? e.currentTarget : actions, t)));
+      actions.appendChild(iconBtn("✓", "Resolve", () => taskAction(t, "resolve")));
+    }
     li.appendChild(actions); return li;
   }
-  async function taskAction(t, action) {
-    const id = t.task_id || t.id; if (!id) return;
+  async function taskAction(t, action, silent) {
+    if (!t) return false;
+    const id = t.task_id || t.id; if (!id) return false;
     const who = "vault:" + (state.me && state.me.user_id || "unknown");
     const bodyKey = action === "resolve" ? "resolved_by" : "dismissed_by";
     try {
@@ -278,9 +320,12 @@
         state.tasksWork = state.tasksWork.filter(x => (x.task_id || x.id) !== id);
         state.tasksOrg = state.tasksOrg.filter(x => (x.task_id || x.id) !== id);
         state.tasksNotif = state.tasksNotif.filter(x => (x.task_id || x.id) !== id);
-        renderAll(); toast(action === "resolve" ? "Task resolved." : "Dismissed.");
-      } else toast("Couldn't " + action + " — try again.");
-    } catch { toast("Couldn't " + action + " — network error."); }
+        state.selTasks.delete(id);
+        if (!silent) { renderAll(); toast(action === "resolve" ? "Task resolved." : "Dismissed."); }
+        return true;
+      }
+      if (!silent) toast("Couldn't " + action + " — try again."); return false;
+    } catch { if (!silent) toast("Couldn't " + action + " — network error."); return false; }
   }
 
   function renderUploads() {
@@ -290,6 +335,7 @@
     const toggle = el("button", "mv-chip" + (state.showExpired ? " on" : ""), (state.showExpired ? "✓ " : "") + "Show expired");
     toggle.addEventListener("click", () => { state.showExpired = !state.showExpired; renderUploads(); });
     bar.appendChild(toggle); p.appendChild(bar);
+    const bb = bulkBar("uploads"); if (bb) p.appendChild(bb);
 
     let rows = state.uploads.filter(u => u.status !== "discarded" && matchesSearch(u.filename));
     if (state.uFilter === "expiring") rows = rows.filter(u => !isExpired(u) && daysLeft(u) <= EXPIRING_DAYS);
@@ -297,7 +343,7 @@
     if (!live.length && !expired.length) { p.appendChild(emptyState("No documents yet — upload a file in chat to add it to your Vault. Documents stay for 7 days.", "Start a chat →")); return; }
     sortUploads(live);
     const table = el("table", "mv-table"); const thead = el("thead"); const htr = el("tr");
-    const cols = [{ k: "", l: "Status" }, { k: "filename", l: "Filename" }, { k: "created_at", l: "Uploaded", s: true }, { k: "last_queried_at", l: "Last used", s: true }, { k: "ttl", l: "TTL", s: true }, { k: "vis", l: "Visibility" }, { k: "", l: "" }];
+    const cols = [{ k: "check", l: "" }, { k: "", l: "Status" }, { k: "filename", l: "Filename" }, { k: "created_at", l: "Uploaded", s: true }, { k: "last_queried_at", l: "Last used", s: true }, { k: "ttl", l: "TTL", s: true }, { k: "vis", l: "Visibility" }, { k: "", l: "" }];
     for (const c of cols) {
       const th = el("th", c.s ? "sortable" : null, c.l);
       if (c.s) { if (state.uSort.key === c.k) th.appendChild(el("span", "mv-sort", state.uSort.dir === "asc" ? " ▲" : " ▼")); th.addEventListener("click", () => { if (state.uSort.key === c.k) state.uSort.dir = state.uSort.dir === "asc" ? "desc" : "asc"; else state.uSort = { key: c.k, dir: "asc" }; renderUploads(); }); }
@@ -332,6 +378,7 @@
     const failed = !expired && String(u.status || "").toLowerCase() === "failed";
     const statusClass = expired ? "expired" : failed ? "failed" : indexing ? "processing" : "ready";
     const statusLabel = expired ? "Expired" : failed ? "Failed" : indexing ? "Indexing" : "Ready";
+    const tdChk = el("td"); tdChk.appendChild(selCheckbox("uploads", u.document_id)); tr.appendChild(tdChk);
     // Status chip (UX P1): replaces the bare dot with a readable colored chip.
     const tdStatus = el("td"); tdStatus.appendChild(el("span", "mv-status " + statusClass, statusLabel)); tr.appendChild(tdStatus);
     const tdName = el("td");
@@ -350,6 +397,7 @@
     const tdAct = el("td"); const acts = el("div", "mv-actions");
     if (!expired) {
       if (u.thread_id) acts.appendChild(iconBtn("↗", "Open conversation", () => openThread(u.thread_id), "", indexing));
+      acts.appendChild(iconBtn("↪", "Use in this chat", () => useInChat(u), "", indexing || failed));
       acts.appendChild(iconBtn("⤓", "Download original", () => downloadUpload(u), "", indexing || failed));
       acts.appendChild(iconBtn("＋", "Extend 7 days", () => extendUpload(u), "", indexing));
       acts.appendChild(iconBtn("🗑", "Delete", () => deleteUpload(u), "danger"));
@@ -359,7 +407,7 @@
   }
   function iconBtn(glyph, tip, fn, extra, disabled) {
     const b = el("button", "mv-icon" + (extra ? " " + extra : ""), glyph); b.title = tip; b.setAttribute("aria-label", tip);
-    if (disabled) b.disabled = true; else b.addEventListener("click", (e) => { e.stopPropagation(); fn(); });
+    if (disabled) b.disabled = true; else b.addEventListener("click", (e) => { e.stopPropagation(); fn(e); });
     return b;
   }
   async function downloadUpload(u) {
@@ -371,24 +419,136 @@
       a.download = u.filename || "document"; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
     } catch { toast("Download failed — network error."); }
   }
-  async function extendUpload(u) {
-    const id = u.document_id; if (!id) return;
+  async function extendUpload(u, silent) {
+    const id = u.document_id; if (!id) return false;
     try {
       const r = await authFetch("/chat/uploads/" + encodeURIComponent(id) + "/extend", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ days: 7 }) });
-      if (r.ok) { const d = await r.json().catch(() => ({})); u.expires_at = d.expires_at || new Date(Date.now() + 7 * 864e5).toISOString(); renderAll(); toast("Extended 7 days."); }
-      else if (r.status === 404 || r.status === 405 || r.status === 501) toast("Extend isn't live yet — Instant RAG is deploying it.");
-      else toast("Couldn't extend (" + r.status + ").");
-    } catch { toast("Couldn't extend — network error."); }
+      if (r.ok) { const d = await r.json().catch(() => ({})); u.expires_at = d.expires_at || new Date(Date.now() + 7 * 864e5).toISOString(); if (!silent) { renderAll(); toast("Extended 7 days."); } return true; }
+      if (!silent) { if (r.status === 404 || r.status === 405 || r.status === 501) toast("Extend isn't live yet — Instant RAG is deploying it."); else toast("Couldn't extend (" + r.status + ")."); }
+      return false;
+    } catch { if (!silent) toast("Couldn't extend — network error."); return false; }
   }
-  async function deleteUpload(u) {
-    const id = u.document_id; if (!id) return;
-    if (!(await confirmDialog('Remove "' + (u.filename || "this document") + '" from your Vault?'))) return;
+  async function deleteUpload(u, silent) {
+    const id = u.document_id; if (!id) return false;
+    if (!silent && !(await confirmDialog('Remove "' + (u.filename || "this document") + '" from your Vault?'))) return false;
     try {
       const r = await authFetch("/chat/uploads/" + encodeURIComponent(id), { method: "DELETE" });
-      if (r.ok) { state.uploads = state.uploads.filter(x => x.document_id !== id); renderAll(); toast("Removed."); }
-      else if (r.status === 404 || r.status === 405 || r.status === 501) toast("Delete isn't live yet — Instant RAG is deploying it.");
-      else toast("Couldn't delete (" + r.status + ").");
-    } catch { toast("Couldn't delete — network error."); }
+      if (r.ok) { state.uploads = state.uploads.filter(x => x.document_id !== id); state.selUploads.delete(id); if (!silent) { renderAll(); toast("Removed."); } return true; }
+      if (!silent) { if (r.status === 404 || r.status === 405 || r.status === 501) toast("Delete isn't live yet — Instant RAG is deploying it."); else toast("Couldn't delete (" + r.status + ")."); }
+      return false;
+    } catch { if (!silent) toast("Couldn't delete — network error."); return false; }
+  }
+
+  // ── popover (anchored floating box inside the panel) ─────────────
+  let _pop = null;
+  function popover(anchor, build) {
+    closePopover();
+    const box = el("div", "mv-pop");
+    build(box, closePopover);
+    root.appendChild(box);
+    const a = anchor.getBoundingClientRect(); const r = root.getBoundingClientRect();
+    box.style.top = (a.bottom - r.top + 4) + "px";
+    // keep within the panel's right edge
+    const left = Math.min(a.left - r.left, r.width - box.offsetWidth - 12);
+    box.style.left = Math.max(8, left) + "px";
+    _pop = box;
+    setTimeout(() => document.addEventListener("mousedown", onDocDown, true), 0);
+  }
+  function onDocDown(e) { if (_pop && !_pop.contains(e.target)) closePopover(); }
+  function closePopover() { if (_pop) { _pop.remove(); _pop = null; document.removeEventListener("mousedown", onDocDown, true); } }
+
+  async function getCoworkers() {
+    if (state.coworkers) return state.coworkers;
+    try { const r = await authFetch("/chat/coworkers?limit=30"); const d = r.ok ? await r.json() : {}; state.coworkers = d.coworkers || []; }
+    catch { state.coworkers = []; }
+    return state.coworkers;
+  }
+
+  // ── bulk actions (loop existing single-item endpoints) ───────────
+  function selSet(tab) { return tab === "uploads" ? state.selUploads : state.selTasks; }
+  function toggleSel(tab, id, on) { const s = selSet(tab); if (on) s.add(id); else s.delete(id); renderAll(); }
+  async function bulk(ids, fn, doneMsg) {
+    if (!ids.length) return;
+    const results = await Promise.allSettled(ids.map(fn));
+    const ok = results.filter(r => r.status === "fulfilled" && r.value !== false).length;
+    toast(doneMsg(ok, ids.length));
+    renderAll();
+  }
+  const findUpload = (id) => state.uploads.find(u => u.document_id === id);
+  const findTask = (id) => [...state.tasksWork, ...state.tasksOrg, ...state.tasksNotif].find(t => (t.task_id || t.id) === id);
+
+  // ── task lifecycle: reschedule / reassign / create ──────────────
+  async function patchTask(id, body) {
+    const r = await authFetch("/chat/tasks/" + encodeURIComponent(id), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    return r.ok;
+  }
+  function isoDay(offsetDays) { const d = new Date(); d.setHours(17, 0, 0, 0); d.setDate(d.getDate() + offsetDays); return d.toISOString(); }
+  function openReschedule(anchor, t) {
+    const id = t.task_id || t.id;
+    popover(anchor, (box, close) => {
+      box.appendChild(el("div", "mv-pop-title", "Reschedule"));
+      const quick = el("div", "mv-pop-row");
+      [["+1 day", 1], ["+3 days", 3], ["+1 week", 7]].forEach(([lbl, n]) => {
+        const b = el("button", "mv-chip", lbl); b.addEventListener("click", async () => { close(); if (await patchTask(id, { deadline: isoDay(n) })) { t.deadline = isoDay(n); renderAll(); toast("Rescheduled."); } else toast("Couldn't reschedule."); }); quick.appendChild(b);
+      });
+      box.appendChild(quick);
+      const dateRow = el("div", "mv-pop-row");
+      const inp = el("input"); inp.type = "date"; inp.className = "mv-date";
+      const save = el("button", "mv-btn mv-btn-primary", "Set date");
+      save.addEventListener("click", async () => { if (!inp.value) return; const iso = new Date(inp.value + "T17:00:00").toISOString(); close(); if (await patchTask(id, { deadline: iso })) { t.deadline = iso; renderAll(); toast("Rescheduled."); } else toast("Couldn't reschedule."); });
+      dateRow.appendChild(inp); dateRow.appendChild(save); box.appendChild(dateRow);
+    });
+  }
+  async function openReassign(anchor, t) {
+    const id = t.task_id || t.id;
+    const people = await getCoworkers();
+    popover(anchor, (box, close) => {
+      box.appendChild(el("div", "mv-pop-title", "Reassign to"));
+      if (!people.length) { box.appendChild(el("div", "mv-pop-empty", "No coworkers found.")); return; }
+      const list = el("div", "mv-pop-list");
+      for (const p of people) {
+        const b = el("button", "mv-pop-item", p.display_name + (p.is_agent ? " (agent)" : ""));
+        b.addEventListener("click", async () => { close(); if (await patchTask(id, { assignee: p.display_name, assigned_to: p.assignee_ref })) { t.assignee = p.display_name; renderAll(); toast("Reassigned to " + p.display_name + "."); } else toast("Couldn't reassign."); });
+        list.appendChild(b);
+      }
+      box.appendChild(list);
+    });
+  }
+  function openCreateTask(anchor) {
+    popover(anchor, (box, close) => {
+      box.appendChild(el("div", "mv-pop-title", "New task"));
+      const inp = el("input"); inp.type = "text"; inp.className = "mv-text"; inp.placeholder = "What needs doing?";
+      box.appendChild(inp);
+      const dateRow = el("div", "mv-pop-row");
+      const date = el("input"); date.type = "date"; date.className = "mv-date";
+      const create = el("button", "mv-btn mv-btn-primary", "Create");
+      create.addEventListener("click", async () => {
+        const title = inp.value.trim(); if (!title) { inp.focus(); return; }
+        const body = { title, kind: "work_item" };
+        if (state.me) { body.assigned_to = state.me.assignee_ref; body.assignee = state.me.display_name || state.me.assignee_ref; }
+        if (date.value) body.deadline = new Date(date.value + "T17:00:00").toISOString();
+        close();
+        try {
+          const r = await authFetch("/chat/tasks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+          if (r.ok) { const d = await r.json().catch(() => ({})); const created = d.task || d; if (created && (created.task_id || created.id)) state.tasksWork.unshift(created); renderAll(); toast("Task created."); }
+          else toast("Couldn't create task (" + r.status + ").");
+        } catch { toast("Couldn't create task — network error."); }
+      });
+      dateRow.appendChild(date); dateRow.appendChild(create); box.appendChild(dateRow);
+      setTimeout(() => inp.focus(), 0);
+    });
+  }
+
+  // ── use an uploaded doc in the current conversation ──────────────
+  async function useInChat(u) {
+    const tid = state.currentThreadId;
+    if (!tid) { toast("Open a conversation first, then attach the document to it."); return; }
+    try {
+      const r = await authFetch("/chat/uploads/" + encodeURIComponent(u.document_id) + "/link-to-thread", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ thread_id: tid }) });
+      if (r.ok) { toast('"' + (u.filename || "Document") + '" attached — ask about it in this chat.'); close(); }
+      else if (r.status === 409) toast("Can't attach — the document isn't ready yet.");
+      else toast("Couldn't attach (" + r.status + ").");
+    } catch { toast("Couldn't attach — network error."); }
   }
 
   function renderAll() {
@@ -476,6 +636,10 @@
     if (opts.apiBase != null) cfg.apiBase = opts.apiBase;
     if (opts.token != null) cfg.token = opts.token;
     if (opts.tab) state.tab = opts.tab;
+    // Active chat thread for "Use in current chat" — host passes it (or sets
+    // window.mobiusCurrentThreadId); null disables that action gracefully.
+    state.currentThreadId = opts.currentThreadId || window.mobiusCurrentThreadId || null;
+    state.selTasks.clear(); state.selUploads.clear();
     build();
     state.open = true;
     void root.offsetWidth;            // force reflow so the slide-in transition plays
@@ -592,6 +756,23 @@ tr.is-expired .mv-name{text-decoration:line-through;color:var(--mobius-text-mute
 .mv-btn{padding:6px 14px;border-radius:8px;font-size:13px;cursor:pointer;font-family:inherit;border:1px solid var(--mobius-border-medium,#d1d5db);background:var(--mobius-bg-secondary,#f8fafc);color:inherit;}
 .mv-btn-ghost:hover{background:var(--mobius-bg-tertiary,#f1f5f9);}
 .mv-btn-danger{border-color:var(--mobius-error,#dc2626);color:#fff;background:var(--mobius-error,#dc2626);}
+.mv-check{width:15px;height:15px;cursor:pointer;accent-color:var(--mobius-violet,#7C3AED);margin-right:4px;flex:0 0 auto;}
+.mv-bulk{display:flex;align-items:center;gap:12px;padding:8px 12px;margin-bottom:10px;border-radius:8px;background:color-mix(in srgb,var(--mobius-violet,#7C3AED) 8%,transparent);border:1px solid var(--mobius-violet,#7C3AED);}
+.mv-bulk-count{font-size:12px;font-weight:600;color:var(--mobius-violet,#7C3AED);}
+.mv-bulk-acts{display:flex;gap:6px;margin-left:auto;align-items:center;}
+.mv-bulk-clear{border:none;background:none;color:var(--mobius-text-muted,#64748b);font-size:12px;cursor:pointer;font-family:inherit;}
+.mv-bulk-clear:hover{color:var(--mobius-text-primary,#1a1d21);}
+.mv-chip.danger{color:var(--mobius-error,#dc2626);border-color:var(--mobius-error,#dc2626);}
+.mv-pop{position:absolute;z-index:20;min-width:200px;max-width:280px;background:var(--mobius-bg-primary,#fff);border:1px solid var(--mobius-border-medium,#d1d5db);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.16);padding:12px;pointer-events:auto;}
+.mv-pop-title{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--mobius-text-muted,#64748b);margin-bottom:8px;}
+.mv-pop-row{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px;}
+.mv-pop-list{display:flex;flex-direction:column;gap:2px;max-height:220px;overflow:auto;}
+.mv-pop-item{text-align:left;border:none;background:none;padding:6px 8px;border-radius:6px;cursor:pointer;font-size:13px;color:var(--mobius-text-primary,#1a1d21);font-family:inherit;}
+.mv-pop-item:hover{background:var(--mobius-bg-tertiary,#f1f5f9);}
+.mv-pop-empty{font-size:12px;color:var(--mobius-text-muted,#64748b);}
+.mv-date,.mv-text{padding:6px 8px;border:1px solid var(--mobius-border-medium,#d1d5db);border-radius:6px;font-size:13px;font-family:inherit;color:inherit;background:var(--mobius-bg-primary,#fff);}
+.mv-text{width:100%;}
+.mv-btn-primary{border-color:var(--mobius-violet,#7C3AED);background:var(--mobius-violet,#7C3AED);color:#fff;}
 @media (max-width:640px){.mv-panel-body{grid-template-columns:56px 1fr;}.mv-rail-label,.mv-rail-sep{display:none;}.mv-search{width:120px;}}
 `;
 
