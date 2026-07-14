@@ -2300,7 +2300,9 @@ function renderAnswerCard(
 
     const prose = document.createElement("div");
     prose.className = "recital-prose";
-    prose.innerHTML = simpleMarkdownToHtml(proseText);
+    // Strip document-section separators (---, ***, ___) before rendering
+    const cleanProse = proseText.replace(/^[ \t]*[-*_]{3,}[ \t]*$/gm, "").trim();
+    prose.innerHTML = simpleMarkdownToHtml(cleanProse);
     bubble.appendChild(prose);
 
     if (clipped && card.recital.document_id) {

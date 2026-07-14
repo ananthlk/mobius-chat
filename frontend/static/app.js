@@ -3353,7 +3353,8 @@ function renderAnswerCard(card, isError, opts) {
     const proseText = clipped ? allParas.slice(0, RECITAL_PARA_LIMIT).join("\n\n") : card.recital.verbatim;
     const prose = document.createElement("div");
     prose.className = "recital-prose";
-    prose.innerHTML = simpleMarkdownToHtml(proseText);
+    const cleanProse = proseText.replace(/^[ \t]*[-*_]{3,}[ \t]*$/gm, "").trim();
+    prose.innerHTML = simpleMarkdownToHtml(cleanProse);
     bubble.appendChild(prose);
     if (clipped && card.recital.document_id) {
       const readMore = document.createElement("button");
