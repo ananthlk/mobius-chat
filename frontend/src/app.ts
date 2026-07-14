@@ -2274,6 +2274,10 @@ function renderAnswerCard(
     qcAudit?: QcAuditInfo;
     /** When true (admin + QA fail), omit source confidence badge */
     suppressConfidenceForAdminQcFail?: boolean;
+    /** Corrections rows — from envelope callout/correction blocks */
+    corrections?: Array<{ label: string; text: string }>;
+    /** Suggested task items for the Next Steps tab */
+    nextStepTasks?: Array<{ text: string; taskType: string }>;
   }
 ): HTMLElement {
   const wrap = document.createElement("div");
@@ -2413,12 +2417,21 @@ function renderAnswerCard(
     answerPanel.appendChild(note);
   }
 
-  // Details tab panel — citations breakdown (only built when citations exist)
+  // Tab data — pull from opts
+  const _corrections = opts?.corrections ?? [];
+  const _nextStepQuestions = opts?.nextQuestions ?? [];
+  const _nextStepTasks = opts?.nextStepTasks ?? [];
+
   const hasCitations = Array.isArray(card.citations) && card.citations.length > 0;
-  const detailsPanel = document.createElement("div");
-  detailsPanel.className = "ac-tab-panel ac-tab-panel--details";
-  detailsPanel.setAttribute("role", "tabpanel");
-  detailsPanel.setAttribute("hidden", "");
+  const hasCorrections = _corrections.length > 0;
+  const hasNextSteps = _nextStepQuestions.length > 0 || _nextStepTasks.length > 0;
+  const showTabBar = hasCitations || hasCorrections || hasNextSteps;
+
+  // Citations panel
+  const citationsPanel = document.createElement("div");
+  citationsPanel.className = "ac-tab-panel ac-tab-panel--citations";
+  citationsPanel.setAttribute("role", "tabpanel");
+  citationsPanel.setAttribute("hidden", "");
   if (hasCitations) {
     const citList = document.createElement("div");
     citList.className = "ac-citations-list";
@@ -2439,21 +2452,118 @@ function renderAnswerCard(
       if ((cit as Record<string, string>).snippet) row.appendChild(snippet);
       citList.appendChild(row);
     });
-    detailsPanel.appendChild(citList);
+    citationsPanel.appendChild(citList);
   }
 
-  // Tab bar — only rendered when citations exist
-  if (hasCitations) {
+  // Corrections panel
+  const correctionsPanel = document.createElement("div");
+  correctionsPanel.className = "ac-tab-panel ac-tab-panel--corrections";
+  correctionsPanel.setAttribute("role", "tabpanel");
+  correctionsPanel.setAttribute("hidden", "");
+  if (hasCorrections) {
+    const corrList = document.createElement("div");
+    corrList.className = "ac-correction-list";
+    _corrections.forEach(({ label, text }) => {
+      const row = document.createElement("div");
+      row.className = "ac-correction-row";
+      const lbl = document.createElement("div");
+      lbl.className = "ac-correction-label";
+      lbl.textContent = label;
+      const body = document.createElement("div");
+      body.className = "ac-correction-body";
+      body.textContent = text;
+      row.appendChild(lbl);
+      row.appendChild(body);
+      corrList.appendChild(row);
+    });
+    correctionsPanel.appendChild(corrList);
+  }
+
+  // Next Steps panel — follow-up questions + one-click task creation
+  const nextStepsPanel = document.createElement("div");
+  nextStepsPanel.className = "ac-tab-panel ac-tab-panel--next-steps";
+  nextStepsPanel.setAttribute("role", "tabpanel");
+  nextStepsPanel.setAttribute("hidden", "");
+  if (hasNextSteps) {
+    const nsWrap = document.createElement("div");
+    nsWrap.className = "ac-next-steps";
+    if (_nextStepQuestions.length > 0) {
+      const qlabel = document.createElement("div");
+      qlabel.className = "ac-next-steps-label";
+      qlabel.textContent = "Follow-up questions";
+      nsWrap.appendChild(qlabel);
+      _nextStepQuestions.forEach((q) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "ac-next-step-question";
+        btn.textContent = q.text;
+        if (opts?.onFollowupClick && q.text) {
+          btn.addEventListener("click", () => opts!.onFollowupClick!(q.text));
+        }
+        nsWrap.appendChild(btn);
+      });
+    }
+    if (_nextStepTasks.length > 0) {
+      const tlabel = document.createElement("div");
+      tlabel.className = "ac-next-steps-label";
+      tlabel.textContent = "Suggested tasks";
+      nsWrap.appendChild(tlabel);
+      _nextStepTasks.forEach(({ text, taskType }) => {
+        const row = document.createElement("div");
+        row.className = "ac-next-step-task-row";
+        const taskText = document.createElement("span");
+        taskText.className = "ac-next-step-task-text";
+        taskText.textContent = text;
+        const createBtn = document.createElement("button");
+        createBtn.type = "button";
+        createBtn.className = "ac-next-step-create-btn";
+        createBtn.setAttribute("data-task-type", taskType || "general");
+        createBtn.setAttribute("data-task-text", text);
+        createBtn.textContent = "+ Task";
+        createBtn.addEventListener("click", () => {
+          openCreateTaskDialog({
+            title: text.slice(0, 60),
+            excerpt: text,
+            sourceModule: "next_steps",
+            onCreated: () => {
+              createBtn.textContent = "Task created ✓";
+              createBtn.disabled = true;
+              createBtn.classList.add("ac-next-step-create-btn--done");
+            },
+          });
+        });
+        row.appendChild(taskText);
+        row.appendChild(createBtn);
+        nsWrap.appendChild(row);
+      });
+    }
+    nextStepsPanel.appendChild(nsWrap);
+  }
+
+  // Tab bar — rendered when any of the non-Answer tabs has content
+  if (showTabBar) {
     const tabBar = document.createElement("div");
     tabBar.className = "ac-tab-bar";
     tabBar.setAttribute("role", "tablist");
-    const mkTab = (label: string, panel: HTMLElement, active: boolean) => {
+    // count=undefined → Answer tab (no badge, always visible)
+    // count=0 → data-empty="1" (CSS hides it)
+    // count>0 → count badge shown
+    const mkTab = (label: string, panel: HTMLElement, count: number | undefined, active: boolean) => {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "ac-tab" + (active ? " ac-tab--active" : "");
       btn.setAttribute("role", "tab");
       btn.setAttribute("aria-selected", String(active));
-      btn.textContent = label;
+      if (count !== undefined && count === 0) btn.setAttribute("data-empty", "1");
+      if (count !== undefined && count > 0) {
+        btn.appendChild(document.createTextNode(label + " "));
+        const badge = document.createElement("span");
+        badge.className = "ac-tab-count";
+        badge.textContent = String(count);
+        btn.appendChild(badge);
+      } else {
+        btn.textContent = label;
+      }
       btn.addEventListener("click", () => {
         // Use live DOM traversal — bubble may be detached after transplant
         const liveBubble = btn.closest(".answer-card-bubble") ?? bubble;
@@ -2472,13 +2582,25 @@ function renderAnswerCard(
       });
       return btn;
     };
-    tabBar.appendChild(mkTab("Answer", answerPanel, true));
-    tabBar.appendChild(mkTab("Details", detailsPanel, false));
+    const _answerBtn = mkTab("Answer", answerPanel, undefined, true);
+    _answerBtn.setAttribute("data-panel", "answer");
+    const _citBtn = mkTab("Citations", citationsPanel, (card.citations ?? []).length, false);
+    _citBtn.setAttribute("data-panel", "citations");
+    const _corrBtn = mkTab("Corrections", correctionsPanel, _corrections.length, false);
+    _corrBtn.setAttribute("data-panel", "corrections");
+    const _nsBtn = mkTab("Next Steps", nextStepsPanel, _nextStepQuestions.length + _nextStepTasks.length, false);
+    _nsBtn.setAttribute("data-panel", "next-steps");
+    tabBar.appendChild(_answerBtn);
+    tabBar.appendChild(_citBtn);
+    tabBar.appendChild(_corrBtn);
+    tabBar.appendChild(_nsBtn);
     bubble.appendChild(tabBar);
   }
 
   bubble.appendChild(answerPanel);
-  bubble.appendChild(detailsPanel);
+  bubble.appendChild(citationsPanel);
+  bubble.appendChild(correctionsPanel);
+  bubble.appendChild(nextStepsPanel);
 
   // Suggested action chips — e.g. "Open Appeals Agent ↗" for denial/appeal queries.
   if (card.suggested_actions && card.suggested_actions.length > 0) {
@@ -10224,6 +10346,32 @@ function run(): void {
             draftBodyEl.insertAdjacentElement("afterend", readMore);
           }
           const messageBubble = messageWrapEl.querySelector(".message-bubble") as HTMLElement | null;
+          // Extract corrections and next-step tasks from envelope blocks for tab panels
+          const _extractedCorrections: Array<{ label: string; text: string }> = [];
+          const _extractedNextStepTasks: Array<{ text: string; taskType: string }> = [];
+          if (useEnvelope) {
+            for (const _eb of (envCandidate as AssistantEnvelope).blocks || []) {
+              const _ebt = (_eb as EnvelopeBlock).type;
+              if (_ebt === "callout") {
+                const _cb = _eb as { body: string; variant?: string };
+                const _cbText = (_cb.body || "").trim();
+                if (_cbText) _extractedCorrections.push({
+                  label: _cb.variant === "warning" ? "Warning" : _cb.variant === "error" ? "Error" : "Note",
+                  text: _cbText,
+                });
+              } else if (_ebt === "correction") {
+                const _cb = _eb as { original: string; corrected: string };
+                const _orig = (_cb.original || "").trim();
+                const _fixed = (_cb.corrected || "").trim();
+                if (_orig && _fixed) _extractedCorrections.push({ label: "Correction", text: _orig + " → " + _fixed });
+              } else if (_ebt === "next_steps") {
+                const _cb = _eb as { items: unknown[] };
+                normalizeFollowupLineList(_cb.items || [], false).forEach((item) => {
+                  if (item.text) _extractedNextStepTasks.push({ text: item.text, taskType: "follow_up" });
+                });
+              }
+            }
+          }
           // Parse the full integrator AnswerCard (fullMessage is the raw JSON string)
           const fullCard = tryParseAnswerCard(fullMessage);
           if (fullCard && messageBubble) {
@@ -10237,12 +10385,19 @@ function run(): void {
               nextQuestions,
               qcAudit: qcFromPayload,
               suppressConfidenceForAdminQcFail: suppressConf,
+              corrections: _extractedCorrections,
+              nextStepTasks: _extractedNextStepTasks,
             });
             const innerBubble = renderedCard.querySelector(".answer-card-bubble");
             if (innerBubble) {
               // RECITAL mode or tab-bar mode: the draft streaming text conflicts
               // with the card structure — clear it before transplanting.
-              const _hasTabBar = !!(fullCard.citations && fullCard.citations.length > 0);
+              const _hasTabBar = !!(
+                (fullCard.citations && fullCard.citations.length > 0) ||
+                _extractedCorrections.length > 0 ||
+                _extractedNextStepTasks.length > 0 ||
+                nextQuestions.length > 0
+              );
               if (fullCard.mode === "RECITAL" || _hasTabBar) {
                 messageBubble.querySelector(".message-bubble-text")?.remove();
                 messageBubble.querySelector(".draft-read-more")?.remove();
@@ -10276,7 +10431,7 @@ function run(): void {
             // they duplicate or conflict with the tab structure.
             const _tabBarActive = !!(fullCard && fullCard.citations && fullCard.citations.length > 0);
             const _suppressedChrome = new Set(
-              _tabBarActive ? ["tool_attribution", "detail", "callout", "next_steps"] : []
+              _tabBarActive ? ["tool_attribution", "detail", "callout", "correction", "next_steps"] : []
             );
             const toolBlocks = (envCandidate as AssistantEnvelope).blocks.filter((b) => {
               const bt = (b as EnvelopeBlock).type;

@@ -3453,11 +3453,17 @@ function renderAnswerCard(card, isError, opts) {
     note.textContent = card.confidence_note;
     answerPanel.appendChild(note);
   }
+  const _corrections = opts?.corrections ?? [];
+  const _nextStepQuestions = opts?.nextQuestions ?? [];
+  const _nextStepTasks = opts?.nextStepTasks ?? [];
   const hasCitations = Array.isArray(card.citations) && card.citations.length > 0;
-  const detailsPanel = document.createElement("div");
-  detailsPanel.className = "ac-tab-panel ac-tab-panel--details";
-  detailsPanel.setAttribute("role", "tabpanel");
-  detailsPanel.setAttribute("hidden", "");
+  const hasCorrections = _corrections.length > 0;
+  const hasNextSteps = _nextStepQuestions.length > 0 || _nextStepTasks.length > 0;
+  const showTabBar = hasCitations || hasCorrections || hasNextSteps;
+  const citationsPanel = document.createElement("div");
+  citationsPanel.className = "ac-tab-panel ac-tab-panel--citations";
+  citationsPanel.setAttribute("role", "tabpanel");
+  citationsPanel.setAttribute("hidden", "");
   if (hasCitations) {
     const citList = document.createElement("div");
     citList.className = "ac-citations-list";
@@ -3481,19 +3487,110 @@ function renderAnswerCard(card, isError, opts) {
         row.appendChild(snippet);
       citList.appendChild(row);
     });
-    detailsPanel.appendChild(citList);
+    citationsPanel.appendChild(citList);
   }
-  if (hasCitations) {
+  const correctionsPanel = document.createElement("div");
+  correctionsPanel.className = "ac-tab-panel ac-tab-panel--corrections";
+  correctionsPanel.setAttribute("role", "tabpanel");
+  correctionsPanel.setAttribute("hidden", "");
+  if (hasCorrections) {
+    const corrList = document.createElement("div");
+    corrList.className = "ac-correction-list";
+    _corrections.forEach(({ label, text }) => {
+      const row = document.createElement("div");
+      row.className = "ac-correction-row";
+      const lbl = document.createElement("div");
+      lbl.className = "ac-correction-label";
+      lbl.textContent = label;
+      const body = document.createElement("div");
+      body.className = "ac-correction-body";
+      body.textContent = text;
+      row.appendChild(lbl);
+      row.appendChild(body);
+      corrList.appendChild(row);
+    });
+    correctionsPanel.appendChild(corrList);
+  }
+  const nextStepsPanel = document.createElement("div");
+  nextStepsPanel.className = "ac-tab-panel ac-tab-panel--next-steps";
+  nextStepsPanel.setAttribute("role", "tabpanel");
+  nextStepsPanel.setAttribute("hidden", "");
+  if (hasNextSteps) {
+    const nsWrap = document.createElement("div");
+    nsWrap.className = "ac-next-steps";
+    if (_nextStepQuestions.length > 0) {
+      const qlabel = document.createElement("div");
+      qlabel.className = "ac-next-steps-label";
+      qlabel.textContent = "Follow-up questions";
+      nsWrap.appendChild(qlabel);
+      _nextStepQuestions.forEach((q) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "ac-next-step-question";
+        btn.textContent = q.text;
+        if (opts?.onFollowupClick && q.text) {
+          btn.addEventListener("click", () => opts.onFollowupClick(q.text));
+        }
+        nsWrap.appendChild(btn);
+      });
+    }
+    if (_nextStepTasks.length > 0) {
+      const tlabel = document.createElement("div");
+      tlabel.className = "ac-next-steps-label";
+      tlabel.textContent = "Suggested tasks";
+      nsWrap.appendChild(tlabel);
+      _nextStepTasks.forEach(({ text, taskType }) => {
+        const row = document.createElement("div");
+        row.className = "ac-next-step-task-row";
+        const taskText = document.createElement("span");
+        taskText.className = "ac-next-step-task-text";
+        taskText.textContent = text;
+        const createBtn = document.createElement("button");
+        createBtn.type = "button";
+        createBtn.className = "ac-next-step-create-btn";
+        createBtn.setAttribute("data-task-type", taskType || "general");
+        createBtn.setAttribute("data-task-text", text);
+        createBtn.textContent = "+ Task";
+        createBtn.addEventListener("click", () => {
+          openCreateTaskDialog({
+            title: text.slice(0, 60),
+            excerpt: text,
+            sourceModule: "next_steps",
+            onCreated: () => {
+              createBtn.textContent = "Task created \u2713";
+              createBtn.disabled = true;
+              createBtn.classList.add("ac-next-step-create-btn--done");
+            }
+          });
+        });
+        row.appendChild(taskText);
+        row.appendChild(createBtn);
+        nsWrap.appendChild(row);
+      });
+    }
+    nextStepsPanel.appendChild(nsWrap);
+  }
+  if (showTabBar) {
     const tabBar = document.createElement("div");
     tabBar.className = "ac-tab-bar";
     tabBar.setAttribute("role", "tablist");
-    const mkTab = (label, panel, active) => {
+    const mkTab = (label, panel, count, active) => {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "ac-tab" + (active ? " ac-tab--active" : "");
       btn.setAttribute("role", "tab");
       btn.setAttribute("aria-selected", String(active));
-      btn.textContent = label;
+      if (count !== void 0 && count === 0)
+        btn.setAttribute("data-empty", "1");
+      if (count !== void 0 && count > 0) {
+        btn.appendChild(document.createTextNode(label + "\xA0"));
+        const badge = document.createElement("span");
+        badge.className = "ac-tab-count";
+        badge.textContent = String(count);
+        btn.appendChild(badge);
+      } else {
+        btn.textContent = label;
+      }
       btn.addEventListener("click", () => {
         const liveBubble = btn.closest(".answer-card-bubble") ?? bubble;
         tabBar.querySelectorAll(".ac-tab").forEach((t) => {
@@ -3511,12 +3608,24 @@ function renderAnswerCard(card, isError, opts) {
       });
       return btn;
     };
-    tabBar.appendChild(mkTab("Answer", answerPanel, true));
-    tabBar.appendChild(mkTab("Details", detailsPanel, false));
+    const _answerBtn = mkTab("Answer", answerPanel, void 0, true);
+    _answerBtn.setAttribute("data-panel", "answer");
+    const _citBtn = mkTab("Citations", citationsPanel, (card.citations ?? []).length, false);
+    _citBtn.setAttribute("data-panel", "citations");
+    const _corrBtn = mkTab("Corrections", correctionsPanel, _corrections.length, false);
+    _corrBtn.setAttribute("data-panel", "corrections");
+    const _nsBtn = mkTab("Next Steps", nextStepsPanel, _nextStepQuestions.length + _nextStepTasks.length, false);
+    _nsBtn.setAttribute("data-panel", "next-steps");
+    tabBar.appendChild(_answerBtn);
+    tabBar.appendChild(_citBtn);
+    tabBar.appendChild(_corrBtn);
+    tabBar.appendChild(_nsBtn);
     bubble.appendChild(tabBar);
   }
   bubble.appendChild(answerPanel);
-  bubble.appendChild(detailsPanel);
+  bubble.appendChild(citationsPanel);
+  bubble.appendChild(correctionsPanel);
+  bubble.appendChild(nextStepsPanel);
   if (card.suggested_actions && card.suggested_actions.length > 0) {
     const actionsWrap = document.createElement("div");
     actionsWrap.className = "answer-card-actions";
@@ -10107,6 +10216,34 @@ ${message}`;
           draftBodyEl.insertAdjacentElement("afterend", readMore);
         }
         const messageBubble = messageWrapEl.querySelector(".message-bubble");
+        const _extractedCorrections = [];
+        const _extractedNextStepTasks = [];
+        if (useEnvelope) {
+          for (const _eb of envCandidate.blocks || []) {
+            const _ebt = _eb.type;
+            if (_ebt === "callout") {
+              const _cb = _eb;
+              const _cbText = (_cb.body || "").trim();
+              if (_cbText)
+                _extractedCorrections.push({
+                  label: _cb.variant === "warning" ? "Warning" : _cb.variant === "error" ? "Error" : "Note",
+                  text: _cbText
+                });
+            } else if (_ebt === "correction") {
+              const _cb = _eb;
+              const _orig = (_cb.original || "").trim();
+              const _fixed = (_cb.corrected || "").trim();
+              if (_orig && _fixed)
+                _extractedCorrections.push({ label: "Correction", text: _orig + " \u2192 " + _fixed });
+            } else if (_ebt === "next_steps") {
+              const _cb = _eb;
+              normalizeFollowupLineList(_cb.items || [], false).forEach((item) => {
+                if (item.text)
+                  _extractedNextStepTasks.push({ text: item.text, taskType: "follow_up" });
+              });
+            }
+          }
+        }
         const fullCard = tryParseAnswerCard(fullMessage);
         if (fullCard && messageBubble) {
           const renderedCard = renderAnswerCard(fullCard, false, {
@@ -10116,11 +10253,13 @@ ${message}`;
             suppressFollowups: nextQuestions.length > 0,
             nextQuestions,
             qcAudit: qcFromPayload,
-            suppressConfidenceForAdminQcFail: suppressConf
+            suppressConfidenceForAdminQcFail: suppressConf,
+            corrections: _extractedCorrections,
+            nextStepTasks: _extractedNextStepTasks
           });
           const innerBubble = renderedCard.querySelector(".answer-card-bubble");
           if (innerBubble) {
-            const _hasTabBar = !!(fullCard.citations && fullCard.citations.length > 0);
+            const _hasTabBar = !!(fullCard.citations && fullCard.citations.length > 0 || _extractedCorrections.length > 0 || _extractedNextStepTasks.length > 0 || nextQuestions.length > 0);
             if (fullCard.mode === "RECITAL" || _hasTabBar) {
               messageBubble.querySelector(".message-bubble-text")?.remove();
               messageBubble.querySelector(".draft-read-more")?.remove();
@@ -10147,7 +10286,7 @@ ${message}`;
         if (useEnvelope && messageBubble) {
           const _tabBarActive = !!(fullCard && fullCard.citations && fullCard.citations.length > 0);
           const _suppressedChrome = new Set(
-            _tabBarActive ? ["tool_attribution", "detail", "callout", "next_steps"] : []
+            _tabBarActive ? ["tool_attribution", "detail", "callout", "correction", "next_steps"] : []
           );
           const toolBlocks = envCandidate.blocks.filter((b) => {
             const bt = b.type;
