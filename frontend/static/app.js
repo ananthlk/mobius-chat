@@ -3458,8 +3458,9 @@ function renderAnswerCard(card, isError, opts) {
   const _nextStepTasks = opts?.nextStepTasks ?? [];
   const hasCitations = Array.isArray(card.citations) && card.citations.length > 0;
   const hasCorrections = _corrections.length > 0;
-  const hasNextSteps = _nextStepQuestions.length > 0 || _nextStepTasks.length > 0;
-  const showTabBar = hasCitations || hasCorrections || hasNextSteps;
+  const hasNextSteps = _nextStepQuestions.length > 0;
+  const hasTasks = _nextStepTasks.length > 0;
+  const showTabBar = hasCitations || hasCorrections || hasNextSteps || hasTasks;
   const citationsPanel = document.createElement("div");
   citationsPanel.className = "ac-tab-panel ac-tab-panel--citations";
   citationsPanel.setAttribute("role", "tabpanel");
@@ -3542,75 +3543,73 @@ function renderAnswerCard(card, isError, opts) {
   nextStepsPanel.className = "ac-tab-panel ac-tab-panel--next-steps";
   nextStepsPanel.setAttribute("role", "tabpanel");
   nextStepsPanel.setAttribute("hidden", "");
-  if (hasNextSteps) {
+  if (_nextStepQuestions.length > 0) {
     const nsWrap = document.createElement("div");
     nsWrap.className = "ac-next-steps";
-    if (_nextStepQuestions.length > 0) {
-      const qlabel = document.createElement("div");
-      qlabel.className = "ac-next-steps-label";
-      qlabel.textContent = "Follow-up questions";
-      nsWrap.appendChild(qlabel);
-      _nextStepQuestions.forEach((q) => {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "ac-next-step-question";
-        btn.textContent = q.text;
-        if (opts?.onFollowupClick && q.text) {
-          btn.addEventListener("click", () => opts.onFollowupClick(q.text));
-        }
-        nsWrap.appendChild(btn);
-      });
-    }
-    if (_nextStepTasks.length > 0) {
-      const tlabel = document.createElement("div");
-      tlabel.className = "ac-next-steps-label";
-      tlabel.textContent = "Suggested tasks";
-      nsWrap.appendChild(tlabel);
-      _nextStepTasks.forEach(({ text, taskType }) => {
-        const row = document.createElement("div");
-        row.className = "ac-next-step-task-row";
-        const taskText = document.createElement("span");
-        taskText.className = "ac-next-step-task-text";
-        taskText.textContent = text;
-        const createBtn = document.createElement("button");
-        createBtn.type = "button";
-        createBtn.className = "ac-next-step-create-btn";
-        createBtn.setAttribute("data-task-type", taskType || "general");
-        createBtn.setAttribute("data-task-text", text);
-        createBtn.textContent = "+ Task";
-        createBtn.addEventListener("click", () => {
-          openCreateTaskDialog({
-            title: text.slice(0, 60),
-            excerpt: text,
-            sourceModule: "next_steps",
-            onCreated: () => {
-              createBtn.textContent = "Task created \u2713";
-              createBtn.disabled = true;
-              createBtn.classList.add("ac-next-step-create-btn--done");
-            }
-          });
-        });
-        row.appendChild(taskText);
-        row.appendChild(createBtn);
-        nsWrap.appendChild(row);
-      });
-    }
+    _nextStepQuestions.forEach((q) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "ac-next-step-question";
+      btn.textContent = q.text;
+      if (opts?.onFollowupClick && q.text) {
+        btn.addEventListener("click", () => opts.onFollowupClick(q.text));
+      }
+      nsWrap.appendChild(btn);
+    });
     nextStepsPanel.appendChild(nsWrap);
+  }
+  const tasksPanel = document.createElement("div");
+  tasksPanel.className = "ac-tab-panel ac-tab-panel--tasks";
+  tasksPanel.setAttribute("role", "tabpanel");
+  tasksPanel.setAttribute("hidden", "");
+  if (_nextStepTasks.length > 0) {
+    const tWrap = document.createElement("div");
+    tWrap.className = "ac-tasks-list";
+    _nextStepTasks.forEach(({ text, taskType }) => {
+      const row = document.createElement("div");
+      row.className = "ac-next-step-task-row";
+      const taskText = document.createElement("span");
+      taskText.className = "ac-next-step-task-text";
+      taskText.textContent = text;
+      const createBtn = document.createElement("button");
+      createBtn.type = "button";
+      createBtn.className = "ac-next-step-create-btn";
+      createBtn.setAttribute("data-task-type", taskType || "general");
+      createBtn.setAttribute("data-task-text", text);
+      createBtn.textContent = "+ Add to my tasks";
+      createBtn.addEventListener("click", () => {
+        openCreateTaskDialog({
+          title: text.slice(0, 60),
+          excerpt: text,
+          sourceModule: "next_steps",
+          onCreated: () => {
+            createBtn.textContent = "Added \u2713";
+            createBtn.disabled = true;
+            createBtn.classList.add("ac-next-step-create-btn--done");
+          }
+        });
+      });
+      row.appendChild(taskText);
+      row.appendChild(createBtn);
+      tWrap.appendChild(row);
+    });
+    tasksPanel.appendChild(tWrap);
   }
   if (showTabBar) {
     const tabBar = document.createElement("div");
     tabBar.className = "ac-tab-bar";
     tabBar.setAttribute("role", "tablist");
-    const mkTab = (label, panel, count, active) => {
+    const mkTab = (label, panelKey, count, active) => {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "ac-tab" + (active ? " ac-tab--active" : "");
       btn.setAttribute("role", "tab");
       btn.setAttribute("aria-selected", String(active));
+      btn.setAttribute("data-panel", panelKey);
       if (count !== void 0 && count === 0)
         btn.setAttribute("data-empty", "1");
       if (count !== void 0 && count > 0) {
-        btn.appendChild(document.createTextNode(label + "\xA0"));
+        btn.appendChild(document.createTextNode(label + " "));
         const badge = document.createElement("span");
         badge.className = "ac-tab-count";
         badge.textContent = String(count);
@@ -3630,29 +3629,26 @@ function renderAnswerCard(card, isError, opts) {
         });
         btn.classList.add("ac-tab--active");
         btn.setAttribute("aria-selected", "true");
-        panel.hidden = false;
-        panel.classList.add("ac-tab-panel--active");
+        const targetPanel = liveBubble.querySelector(`.ac-tab-panel--${panelKey}`);
+        if (targetPanel) {
+          targetPanel.hidden = false;
+          targetPanel.classList.add("ac-tab-panel--active");
+        }
       });
       return btn;
     };
-    const _answerBtn = mkTab("Summary", answerPanel, void 0, true);
-    _answerBtn.setAttribute("data-panel", "summary");
-    const _citBtn = mkTab("Citations", citationsPanel, (card.citations ?? []).length, false);
-    _citBtn.setAttribute("data-panel", "citations");
-    const _corrBtn = mkTab("Corrections", correctionsPanel, _corrections.length, false);
-    _corrBtn.setAttribute("data-panel", "corrections");
-    const _nsBtn = mkTab("Next Steps", nextStepsPanel, _nextStepQuestions.length + _nextStepTasks.length, false);
-    _nsBtn.setAttribute("data-panel", "next-steps");
-    tabBar.appendChild(_answerBtn);
-    tabBar.appendChild(_citBtn);
-    tabBar.appendChild(_corrBtn);
-    tabBar.appendChild(_nsBtn);
+    tabBar.appendChild(mkTab("Summary", "summary", void 0, true));
+    tabBar.appendChild(mkTab("Citations", "citations", (card.citations ?? []).length, false));
+    tabBar.appendChild(mkTab("Corrections", "corrections", _corrections.length, false));
+    tabBar.appendChild(mkTab("Follow-up", "next-steps", _nextStepQuestions.length, false));
+    tabBar.appendChild(mkTab("Tasks", "tasks", _nextStepTasks.length, false));
     bubble.appendChild(tabBar);
   }
   bubble.appendChild(answerPanel);
   bubble.appendChild(citationsPanel);
   bubble.appendChild(correctionsPanel);
   bubble.appendChild(nextStepsPanel);
+  bubble.appendChild(tasksPanel);
   if (card.suggested_actions && card.suggested_actions.length > 0) {
     const actionsWrap = document.createElement("div");
     actionsWrap.className = "answer-card-actions";
@@ -8926,6 +8922,71 @@ function renderAssistantFromEnvelope(envelope, opts) {
         if (actionsWrap.childNodes.length > 0)
           pendingActionChips.push(actionsWrap);
       }
+    } else if (t === "credentialing_card") {
+      const b = block;
+      const card = document.createElement("div");
+      card.className = "cred-card";
+      const header = document.createElement("div");
+      header.className = "cred-card-header";
+      const nameEl = document.createElement("div");
+      nameEl.className = "cred-card-name";
+      nameEl.textContent = b.provider_name ?? "Provider";
+      const statusKey = (b.status ?? "unknown").toLowerCase();
+      const statusLabel = {
+        enrolled: "Enrolled",
+        pending: "Pending",
+        flagged: "Flagged",
+        not_enrolled: "Not Enrolled",
+        unknown: "Unknown"
+      };
+      const statusEl = document.createElement("span");
+      statusEl.className = `cred-card-status cred-card-status--${statusKey}`;
+      statusEl.textContent = statusLabel[statusKey] ?? b.status ?? "Unknown";
+      header.appendChild(nameEl);
+      header.appendChild(statusEl);
+      card.appendChild(header);
+      if (b.npi || b.org) {
+        const meta = document.createElement("div");
+        meta.className = "cred-card-meta";
+        if (b.npi) {
+          const npiEl = document.createElement("span");
+          npiEl.className = "cred-card-npi";
+          npiEl.textContent = "NPI " + b.npi;
+          meta.appendChild(npiEl);
+        }
+        if (b.org) {
+          const orgEl = document.createElement("span");
+          orgEl.className = "cred-card-org";
+          orgEl.textContent = b.org;
+          meta.appendChild(orgEl);
+        }
+        card.appendChild(meta);
+      }
+      if (Array.isArray(b.flags) && b.flags.length > 0) {
+        const flagList = document.createElement("ul");
+        flagList.className = "cred-card-flags";
+        b.flags.forEach((f) => {
+          const li = document.createElement("li");
+          li.className = `cred-card-flag cred-card-flag--${f.severity ?? "info"}`;
+          const dot = document.createElement("span");
+          dot.className = "cred-flag-dot";
+          dot.setAttribute("aria-hidden", "true");
+          li.appendChild(dot);
+          li.appendChild(document.createTextNode(f.text));
+          flagList.appendChild(li);
+        });
+        card.appendChild(flagList);
+      }
+      if (b.action_url) {
+        const link = document.createElement("a");
+        link.href = b.action_url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.className = "cred-card-action";
+        link.textContent = "View full report \u2197";
+        card.appendChild(link);
+      }
+      bubble.appendChild(card);
     }
   }
   if (!confidenceInjectedAfterDirectAnswer && opts.showConfidenceBadge !== false && !opts.suppressConfidenceForAdminQcFail) {
@@ -10175,7 +10236,8 @@ ${message}`;
       streamTabBar.appendChild(_mkStreamBtn("Summary", "summary", true));
       streamTabBar.appendChild(_mkStreamBtn("Citations", "citations", false));
       streamTabBar.appendChild(_mkStreamBtn("Corrections", "corrections", false));
-      streamTabBar.appendChild(_mkStreamBtn("Next Steps", "next-steps", false));
+      streamTabBar.appendChild(_mkStreamBtn("Follow-up", "next-steps", false));
+      streamTabBar.appendChild(_mkStreamBtn("Tasks", "tasks", false));
       bubble.appendChild(streamTabBar);
       const summaryPanel = document.createElement("div");
       summaryPanel.className = "ac-tab-panel ac-tab-panel--summary ac-tab-panel--active";
@@ -10187,8 +10249,23 @@ ${message}`;
       cursor.setAttribute("aria-hidden", "true");
       summaryPanel.appendChild(prose);
       summaryPanel.appendChild(cursor);
+      const statusEl = document.createElement("span");
+      statusEl.className = "ac-streaming-status";
+      const _statusPhrases = ["Searching sources\u2026", "Refining answer\u2026", "Checking accuracy\u2026", "Summarizing\u2026"];
+      let _statusIdx = 0;
+      statusEl.textContent = _statusPhrases[0];
+      summaryPanel.appendChild(statusEl);
+      const _statusInterval = window.setInterval(() => {
+        statusEl.classList.add("ac-status-fade");
+        window.setTimeout(() => {
+          _statusIdx = (_statusIdx + 1) % _statusPhrases.length;
+          statusEl.textContent = _statusPhrases[_statusIdx];
+          statusEl.classList.remove("ac-status-fade");
+        }, 400);
+      }, 3e3);
+      bubble.dataset.statusInterval = String(_statusInterval);
       bubble.appendChild(summaryPanel);
-      ["citations", "corrections", "next-steps"].forEach((p) => {
+      ["citations", "corrections", "next-steps", "tasks"].forEach((p) => {
         const panel = document.createElement("div");
         panel.className = `ac-tab-panel ac-tab-panel--${p}`;
         panel.setAttribute("role", "tabpanel");
@@ -10324,6 +10401,10 @@ ${message}`;
       if (isStreamingCard && messageWrapEl) {
         messageWrapEl.classList.remove("is-streaming");
         const existingBubble = messageWrapEl.querySelector(".answer-card-bubble");
+        if (existingBubble?.dataset.statusInterval) {
+          window.clearInterval(Number(existingBubble.dataset.statusInterval));
+          existingBubble.querySelector(".ac-streaming-status")?.remove();
+        }
         const _extractedCorrections = [];
         const _extractedNextStepTasks = [];
         if (useEnvelope) {
@@ -10383,7 +10464,7 @@ ${message}`;
               }
             }
           } else {
-            const renderedCard2 = renderAnswerCard(fullCard, false, {
+            const renderedCard = renderAnswerCard(fullCard, false, {
               onFollowupClick: (q) => sendMessage(q),
               sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || void 0,
               showConfidenceBadge: data.status !== "clarification" && data.status !== "refinement_ask",
@@ -10394,7 +10475,7 @@ ${message}`;
               corrections: _extractedCorrections,
               nextStepTasks: _extractedNextStepTasks
             });
-            const renderedBubble = renderedCard2.querySelector(".answer-card-bubble");
+            const renderedBubble = renderedCard.querySelector(".answer-card-bubble");
             if (renderedBubble) {
               const streamingTabBar = existingBubble.querySelector(".ac-tab-bar");
               const renderedTabBar = renderedBubble.querySelector(".ac-tab-bar");
@@ -10408,17 +10489,27 @@ ${message}`;
                   existingSummaryPanel.appendChild(child);
                 });
               }
-              ["citations", "corrections", "next-steps"].forEach((panelName) => {
+              ["citations", "corrections", "next-steps", "tasks"].forEach((panelName) => {
                 const existing = existingBubble.querySelector(`.ac-tab-panel--${panelName}`);
                 const rendered = renderedBubble.querySelector(`.ac-tab-panel--${panelName}`);
                 if (existing && rendered)
                   existingBubble.replaceChild(rendered, existing);
               });
+              const actionsEl = renderedCard.querySelector(".answer-card-actions");
+              if (actionsEl)
+                turnWrap.appendChild(actionsEl);
+              const inlineChips = Array.from(existingBubble.querySelectorAll(".answer-card-action-chip"));
+              if (inlineChips.length > 0) {
+                let hoistWrap = turnWrap.querySelector(".answer-card-actions");
+                if (!hoistWrap) {
+                  hoistWrap = document.createElement("div");
+                  hoistWrap.className = "answer-card-actions";
+                  turnWrap.appendChild(hoistWrap);
+                }
+                inlineChips.forEach((chip) => hoistWrap.appendChild(chip));
+              }
             }
           }
-          const actionsEl = renderedCard.querySelector(".answer-card-actions");
-          if (actionsEl)
-            turnWrap.appendChild(actionsEl);
         } else if (existingBubble) {
           messageWrapEl.classList.remove("answer-card");
           Array.from(messageWrapEl.classList).filter((c) => c.startsWith("answer-card--")).forEach((c) => messageWrapEl.classList.remove(c));
