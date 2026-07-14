@@ -694,13 +694,13 @@ def run_integrate(
             # Layer 2 appeals integration — inject suggested_actions if LLM omitted it.
             # The LLM is instructed to populate this for denial/appeal queries, but may
             # silently drop optional fields. We detect the intent here as a reliable fallback.
+            _user_msg_lower = (getattr(ctx, "message", "") or "").lower()
             if not parsed.get("suggested_actions"):
                 _denial_keywords = (
                     "denial", "denied", "appeal", "reconsideration",
                     "carc", "rarc", "dispute", "overturn", "adjustment reason",
                     "claim adjustment", "remark code",
                 )
-                _user_msg_lower = (getattr(ctx, "message", "") or "").lower()
                 if any(kw in _user_msg_lower for kw in _denial_keywords):
                     parsed["suggested_actions"] = [
                         {
@@ -708,6 +708,25 @@ def run_integrate(
                             "label": "Open Appeals Agent",
                             "url": "https://mobius-appeals-prototype-ortabkknqa-uc.a.run.app",
                             "icon": "⚖️",
+                        }
+                    ]
+            # Credentialing: move roster link to suggested_actions (replaces inline
+            # direct_answer chip references until credentialing_card block is wired).
+            if not parsed.get("suggested_actions"):
+                _cred_base_url = (
+                    os.environ.get("CHAT_SKILLS_PROVIDER_ROSTER_CREDENTIALING_URL") or ""
+                ).strip().rstrip("/").split("/report")[0]
+                _cred_keywords = (
+                    "credentialing", "pml status", "medicaid enrollment",
+                    "roster reconciliation", "provider enrollment",
+                )
+                if _cred_base_url and any(kw in _user_msg_lower for kw in _cred_keywords):
+                    parsed["suggested_actions"] = [
+                        {
+                            "type": "external_link",
+                            "label": "Open Credentialing Report",
+                            "url": _cred_base_url,
+                            "icon": "📋",
                         }
                     ]
             # Extract display_message for frontend AnswerCard (avoids raw JSON in card)
@@ -1078,6 +1097,8 @@ def run_integrate(
             }
         ] + integrator_ui_blocks
 
+    _cred_card_data = getattr(ctx, "react_credentialing_card_data", None)
+
     payload["assistant_envelope"] = build_assistant_envelope_v1(
         answer_card=answer_card_dict,
         ui_blocks_raw=integrator_ui_blocks,
@@ -1090,6 +1111,7 @@ def run_integrate(
         resolutions=resolutions,
         source_confidence_strip=source_confidence_strip,
         pipeline_human_gate=_pipeline_gate,
+        credentialing_card_data=_cred_card_data,
     )
 
     pws = getattr(ctx, "pending_workflow_selection", None)

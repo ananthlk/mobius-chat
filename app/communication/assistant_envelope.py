@@ -371,6 +371,36 @@ def _followup_items_for_envelope(items: list[Any], *, fallback_clickable: bool) 
     return out
 
 
+def _build_credentialing_card_block(data: dict[str, Any]) -> dict[str, Any] | None:
+    """Validate and build credentialing_card block from provider data dict.
+
+    Expected shape: {provider_name, npi, org, status, flags: [{text, severity}], action_url}
+    """
+    npi = (data.get("npi") or "").strip()
+    if not npi:
+        return None
+    flags: list[dict[str, str]] = []
+    for f in (data.get("flags") or [])[:20]:
+        if not isinstance(f, dict):
+            continue
+        text = (f.get("text") or "").strip()
+        severity = (f.get("severity") or "info").strip().lower()
+        if text and severity in ("info", "warning", "error"):
+            flags.append({"text": text[:200], "severity": severity})
+    block: dict[str, Any] = {
+        "type": "credentialing_card",
+        "npi": npi[:10],
+        "provider_name": (data.get("provider_name") or "").strip()[:200],
+        "org": (data.get("org") or "").strip()[:200],
+        "status": (data.get("status") or "unknown").strip()[:50],
+        "flags": flags,
+    }
+    action_url = (data.get("action_url") or "").strip()
+    if action_url:
+        block["action_url"] = action_url[:2000]
+    return block
+
+
 def build_assistant_envelope_v1(
     *,
     answer_card: dict[str, Any] | None,
@@ -384,6 +414,7 @@ def build_assistant_envelope_v1(
     resolutions: list[Any] | None = None,
     source_confidence_strip: str = "",
     pipeline_human_gate: dict[str, Any] | None = None,
+    credentialing_card_data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Merge authoritative data with validated LLM ui_blocks."""
     blocks: list[dict[str, Any]] = []
@@ -397,6 +428,11 @@ def build_assistant_envelope_v1(
                 "gate": pipeline_human_gate,
             }
         )
+
+    if isinstance(credentialing_card_data, dict):
+        _cc = _build_credentialing_card_block(credentialing_card_data)
+        if _cc:
+            blocks.append(_cc)
 
     if answer_card:
         # Correction block — shown before the draft text so the user sees the fix prominently.

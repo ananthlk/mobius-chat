@@ -1565,6 +1565,9 @@ def _sync_extra_out_to_context(ctx: PipelineContext, emitter=None) -> None:
         ctx.credentialing_copilot = cred
     elif extra.get("credentialing_copilot_clear"):
         ctx.credentialing_copilot = None
+    _cred_card = extra.get("credentialing_card")
+    if isinstance(_cred_card, dict) and _cred_card.get("npi"):
+        ctx.react_credentialing_card_data = _cred_card
     # Persist report_run_id / last_report_org / credentialing co-pilot pointers
     if ctx.thread_id and (ctx.thread_id or "").strip():
         try:
