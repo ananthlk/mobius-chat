@@ -2746,6 +2746,57 @@ body {
   margin-bottom: 2px;
 }
 
+/* ─── Next Steps panel ────────────────────────────────────────────────────── */
+.ac-next-steps { display: flex; flex-direction: column; gap: 0.3rem; }
+.ac-next-steps-label {
+  font-size: 0.6rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--sidebar-text-muted);
+  margin: 0.5rem 0 0.2rem;
+}
+.ac-next-steps-label:first-child { margin-top: 0; }
+/* Follow-up question chips — full-width, left-aligned, clickable */
+.ac-next-step-question {
+  display: block; width: 100%; text-align: left;
+  background: rgba(0,0,0,0.025);
+  border: 1px solid rgba(0,0,0,0.07);
+  border-radius: 6px;
+  padding: 0.4rem 0.625rem;
+  font-size: 0.78rem; line-height: 1.4;
+  color: var(--sidebar-text); cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.ac-next-step-question:hover {
+  background: color-mix(in srgb, var(--mobius-violet, #7c3aed) 6%, transparent);
+  border-color: color-mix(in srgb, var(--mobius-violet, #7c3aed) 30%, transparent);
+  color: var(--mobius-violet, #7c3aed);
+}
+/* Task suggestion rows */
+.ac-next-step-task-row {
+  display: flex; align-items: center; gap: 0.5rem;
+  background: rgba(0,0,0,0.018);
+  border: 1px solid rgba(0,0,0,0.07);
+  border-left: 2px solid color-mix(in srgb, var(--mobius-violet, #7c3aed) 35%, transparent);
+  border-radius: 0 6px 6px 0;
+  padding: 0.4rem 0.5rem 0.4rem 0.625rem;
+}
+.ac-next-step-task-text {
+  flex: 1; font-size: 0.78rem; line-height: 1.4; color: var(--sidebar-text);
+}
+.ac-next-step-create-btn {
+  flex-shrink: 0;
+  background: none;
+  border: 1px solid color-mix(in srgb, var(--mobius-violet, #7c3aed) 40%, transparent);
+  border-radius: 99px;
+  color: var(--mobius-violet, #7c3aed);
+  font-size: 0.65rem; font-weight: 600;
+  padding: 0.2rem 0.6rem; cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.ac-next-step-create-btn:hover {
+  background: var(--mobius-violet, #7c3aed); color: #fff;
+}
+
 /* When a tab bar is present, suppress old envelope chrome that predates tabs */
 .ac-tab-bar ~ .envelope-tool-chip,
 .ac-tab-bar ~ .envelope-detail,
