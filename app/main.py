@@ -1030,6 +1030,8 @@ def _spawn_background_publish_watcher(
         return
     if not (thread_id or "").strip():
         logger.warning("upload-watcher: empty thread_id for doc=%s; cannot post system message", document_id[:8])
+        # Still fire PHI classification even without a thread — Vault uploads may have no thread.
+        _run_phi_classification_async(document_id=document_id, rag_url=rag_url)
         return
 
     def _watch() -> None:
