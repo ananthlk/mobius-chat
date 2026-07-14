@@ -1388,7 +1388,7 @@ def _execute_tool(
         return out_h
 
     if tool == "healthcare_npi_lookup":
-        # NPPES lookup by NPI number (no PML). Fallback when ask_credentialing_npi fails.
+        # NPPES lookup by NPI number (no PML).
         question = inputs.get("question") or (ctx.effective_message or ctx.message)
         emit("◌ Looking up NPI in NPPES registry…")
         answer, sources, usage, signal = answer_tool(
@@ -1595,7 +1595,7 @@ def _sync_extra_out_to_context(ctx: PipelineContext, emitter=None) -> None:
     elif extra.get("credentialing_copilot_clear"):
         ctx.credentialing_copilot = None
     _cred_card = extra.get("credentialing_card")
-    if isinstance(_cred_card, dict) and _cred_card.get("npi"):
+    if isinstance(_cred_card, dict) and (_cred_card.get("npi") or _cred_card.get("org")):
         ctx.react_credentialing_card_data = _cred_card
     # Persist report_run_id / last_report_org / credentialing co-pilot pointers
     if ctx.thread_id and (ctx.thread_id or "").strip():
