@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import urllib.request
 
 from app.skills.registry import SkillCall, SkillEnvelope, SkillSpec, SourceRef, register
@@ -103,9 +104,22 @@ def _sources(items: list[dict] | None) -> list[SourceRef]:
     return out
 
 
+# Verbatim-recall intent ("recite …") — must match the service's recite-intent
+# rule in product-awareness search.py; keep the two patterns in sync.
+_RECITE_RE = re.compile(r"\brecite\b|\brecital of\b", re.IGNORECASE)
+
+
 def _run_product_help(call: SkillCall) -> SkillEnvelope:
     inputs = call.inputs or {}
     query = (inputs.get("query") or call.question or call.user_message or "").strip()
+    # The planner paraphrases the user message into inputs.query and can drop the
+    # verb "recite" — which the service needs to route to the full verbatim text
+    # (RECITE_TARGETS). Recall intent is the user's, not the planner's: if the raw
+    # message asks to recite and the rewritten query lost it, search with the raw.
+    raw = (call.user_message or "").strip()
+    if raw and _RECITE_RE.search(raw) and not _RECITE_RE.search(query):
+        logger.info("[recital] planner paraphrase dropped recite intent — using raw user message as query")
+        query = raw
     if not query:
         return SkillEnvelope(text="", signal="no_sources")
 
