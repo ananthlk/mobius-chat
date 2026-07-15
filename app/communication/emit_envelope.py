@@ -35,7 +35,7 @@ payload round-trips cleanly without per-signal adapter logic.
       # Promotion metadata — consumed by Sprint A.2's writer.
       report_to_task_manager: bool
       task_type:     str | None   -- "failure" | "insight" | "blocker" | "info"
-      task_severity: str | None   -- "low" | "med" | "high"
+      task_severity: str | None   -- "critical" | "warning" | "info" | "low" | "none"
 
 **Persistence.** Envelopes are serialized via ``to_dict()`` and stored
 as JSON objects inside ``chat_turns.thinking_log`` (still a JSONB
@@ -121,7 +121,7 @@ Signal = Literal[
 # Task-manager types we route promoted events to. Matches the existing
 # task_type enum in mobius-skills/task-manager.
 TaskType = Literal["failure", "insight", "blocker", "info", "decision"]
-TaskSeverity = Literal["low", "med", "high"]
+TaskSeverity = Literal["critical", "warning", "info", "low", "none"]
 
 
 # ── Envelope ─────────────────────────────────────────────────────────
@@ -353,7 +353,7 @@ def make_critic_flagged(
         user_id=user_id,
         report_to_task_manager=True,
         task_type="insight",
-        task_severity="med",
+        task_severity="info",
     )
 
 
@@ -440,7 +440,7 @@ def make_rounds_exhausted_with_warning(
         user_id=user_id,
         report_to_task_manager=True,
         task_type="blocker",
-        task_severity="high",
+        task_severity="warning",
     )
 
 
@@ -471,7 +471,7 @@ def make_tool_exhausted(
         user_id=user_id,
         report_to_task_manager=True,
         task_type="insight",
-        task_severity="med",
+        task_severity="info",
     )
 
 
@@ -510,7 +510,7 @@ def make_tool_failed(
         # tool_exhausted.
         report_to_task_manager=not retryable,
         task_type="failure" if not retryable else None,
-        task_severity="med" if not retryable else None,
+        task_severity="info" if not retryable else None,
     )
 
 
@@ -545,7 +545,7 @@ def make_rate_limit_hit(
         user_id=user_id,
         report_to_task_manager=True,
         task_type="failure",
-        task_severity="high",
+        task_severity="warning",
     )
 
 
@@ -757,7 +757,7 @@ def make_turn_failed(
         user_id=user_id,
         report_to_task_manager=True,
         task_type="failure",
-        task_severity="high",
+        task_severity="warning",
     )
 
 
@@ -1082,5 +1082,5 @@ def make_answer_quality(
         user_id=user_id,
         report_to_task_manager=True,
         task_type="insight",
-        task_severity="med",
+        task_severity="info",
     )
