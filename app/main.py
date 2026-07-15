@@ -1989,6 +1989,9 @@ _SKILL_LLM_ALLOWED_STAGES = frozenset({
     "rag_strategy_c_validate",  # Strategy (c) LLM→Validate citation generation
     "rag_strategy_d_external",  # Strategy (d) External First synthesis
     "rag_multi_invoke_synth",   # Multi-invoke union synthesis (v2 router, 2026-07-15)
+    "rag_fact_check",           # Two-grade QA critic: retrieval_grade(chunks) +
+                                # synthesis_grade(answer). EVAL agent owns the rubric
+                                # + FACT_CHECKER_VERSION; consumers log it as-is.
     # mobius-rag eval adjudicator (2026-06-30): the RAG eval harness's
     # rubric/keyword LLM judge (eval/judge.py) routes through here. This
     # stage was missing from the allowlist, so EVERY judge call returned
