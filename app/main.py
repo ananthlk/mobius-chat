@@ -2306,6 +2306,13 @@ if _frontend.exists():
         return r
 
 
+    # Admin: employee management console (org-agent backed).
+    @app.get("/admin/employees")
+    def employees_page():
+        r = FileResponse(_frontend / "employees.html")
+        r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return r
+
     # Platform schematic — thin wrapper iframing the PA Agent schematic.
     # URL sourced from MOBIUS_PLATFORM_SCHEMATIC_URL via /chat/config.
     @app.get("/platform")

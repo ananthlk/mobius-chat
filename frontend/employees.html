@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Team — Mobius</title>
+  <link rel="icon" href="static/logo.svg" type="image/svg+xml"/>
+  <style>
+    :root {
+      --violet:#7c3aed; --violet-hover:#6d28d9; --violet-wash:rgba(124,58,237,.08);
+      --emerald:#059669; --emerald-wash:rgba(5,150,105,.10);
+      --amber:#b45309;  --amber-wash:rgba(180,83,9,.10);
+      --red:#dc2626;    --red-wash:rgba(220,38,38,.10);
+      --text-1:#111827; --text-2:#374151; --text-3:#6b7280;
+      --bg:#f9fafb; --surface:#ffffff; --border:rgba(0,0,0,.09);
+      --border-strong:rgba(0,0,0,.14); --radius:10px;
+      --font:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+      --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    }
+    @media (prefers-color-scheme:dark) {
+      :root {
+        --violet:#a78bfa; --violet-hover:#c4b5fd; --violet-wash:rgba(167,139,250,.13);
+        --emerald:#34d399; --emerald-wash:rgba(52,211,153,.12);
+        --amber:#fbbf24;  --amber-wash:rgba(251,191,36,.12);
+        --red:#f87171;    --red-wash:rgba(248,113,113,.12);
+        --text-1:#f1f0ee; --text-2:#cbd5e1; --text-3:#8b949e;
+        --bg:#0f1117; --surface:#161b22; --border:rgba(255,255,255,.09);
+        --border-strong:rgba(255,255,255,.14);
+      }
+    }
+    :root[data-theme="dark"] {
+      --violet:#a78bfa; --violet-hover:#c4b5fd; --violet-wash:rgba(167,139,250,.13);
+      --emerald:#34d399; --emerald-wash:rgba(52,211,153,.12);
+      --amber:#fbbf24;  --amber-wash:rgba(251,191,36,.12);
+      --red:#f87171;    --red-wash:rgba(248,113,113,.12);
+      --text-1:#f1f0ee; --text-2:#cbd5e1; --text-3:#8b949e;
+      --bg:#0f1117; --surface:#161b22; --border:rgba(255,255,255,.09);
+      --border-strong:rgba(255,255,255,.14);
+    }
+    :root[data-theme="light"] {
+      --violet:#7c3aed; --violet-hover:#6d28d9; --violet-wash:rgba(124,58,237,.08);
+      --emerald:#059669; --emerald-wash:rgba(5,150,105,.10);
+      --amber:#b45309;  --amber-wash:rgba(180,83,9,.10);
+      --red:#dc2626;    --red-wash:rgba(220,38,38,.10);
+      --text-1:#111827; --text-2:#374151; --text-3:#6b7280;
+      --bg:#f9fafb; --surface:#ffffff; --border:rgba(0,0,0,.09);
+      --border-strong:rgba(0,0,0,.14);
+    }
+
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    html{font-size:16px}
+    body{font-family:var(--font);background:var(--bg);color:var(--text-1);min-height:100vh;-webkit-font-smoothing:antialiased}
+
+    /* ── top bar ── */
+    .topbar{height:48px;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 1.25rem;gap:.75rem;position:sticky;top:0;z-index:10}
+    .topbar-back{display:flex;align-items:center;gap:6px;font-size:.8125rem;color:var(--text-3);text-decoration:none;border:none;background:none;cursor:pointer;padding:4px 0;transition:color .15s}
+    .topbar-back:hover{color:var(--text-2)}
+    .topbar-div{width:1px;height:1rem;background:var(--border-strong)}
+    .topbar-title{font-size:.875rem;font-weight:500;color:var(--text-2)}
+
+    /* ── page layout ── */
+    .page{max-width:860px;margin:0 auto;padding:2rem 1.25rem 4rem}
+
+    /* ── summary bar ── */
+    .summary-bar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem;margin-bottom:1.5rem}
+    .summary-left h1{font-size:1.1875rem;font-weight:600;letter-spacing:-.01em}
+    .summary-left p{font-size:.8125rem;color:var(--text-3);margin-top:2px}
+    .summary-stats{display:flex;gap:.5rem}
+    .stat-pill{font-size:.75rem;font-weight:500;padding:4px 10px;border-radius:99px;border:1px solid var(--border)}
+    .stat-pill.total{background:var(--surface);color:var(--text-2)}
+    .stat-pill.invited{background:var(--violet-wash);color:var(--violet);border-color:var(--violet)}
+    .stat-pill.active{background:var(--emerald-wash);color:var(--emerald);border-color:var(--emerald)}
+
+    /* ── invite panel ── */
+    .invite-section{margin-bottom:1.5rem}
+    .btn-add{display:inline-flex;align-items:center;gap:6px;font-size:.875rem;font-weight:500;padding:8px 14px;border-radius:8px;border:1px solid var(--violet);color:var(--violet);background:var(--violet-wash);cursor:pointer;transition:background .15s;font-family:var(--font)}
+    .btn-add:hover{background:rgba(124,58,237,.14)}
+    .invite-form{margin-top:.875rem;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1.125rem 1.25rem;display:none}
+    .invite-form.open{display:block}
+
+    .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:.75rem}
+    @media(max-width:560px){.form-grid{grid-template-columns:1fr}}
+
+    .field label{display:block;font-size:.6875rem;letter-spacing:.04em;text-transform:uppercase;color:var(--text-3);margin-bottom:5px}
+    .field input[type="text"],.field input[type="email"]{width:100%;background:var(--bg);border:1px solid var(--border-strong);border-radius:6px;padding:8px 10px;font-size:.875rem;color:var(--text-1);font-family:var(--font);outline:none;transition:border-color .15s}
+    .field input:focus{border-color:var(--violet)}
+
+    .roles-label{font-size:.6875rem;letter-spacing:.04em;text-transform:uppercase;color:var(--text-3);margin-bottom:6px;display:block}
+    .roles-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:4px;margin-bottom:.875rem}
+    .role-chip{display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);cursor:pointer;font-size:.8125rem;color:var(--text-2);transition:border-color .1s,background .1s}
+    .role-chip:has(input:checked){border-color:var(--violet);background:var(--violet-wash);color:var(--text-1)}
+    .role-chip input[type="checkbox"]{width:14px;height:14px;accent-color:var(--violet);flex-shrink:0;cursor:pointer}
+
+    .invite-rows{margin-bottom:.875rem}
+    .invite-row{display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:.5rem;align-items:end}
+    @media(max-width:560px){.invite-row{grid-template-columns:1fr}}
+    .btn-add-row{font-size:.8125rem;color:var(--violet);background:none;border:none;cursor:pointer;padding:0;text-decoration:underline;text-underline-offset:2px;font-family:var(--font)}
+
+    .form-actions{display:flex;align-items:center;gap:.75rem;padding-top:.875rem;border-top:1px solid var(--border)}
+    .btn-submit{font-size:.875rem;font-weight:500;padding:8px 16px;border-radius:8px;background:var(--violet);color:#fff;border:none;cursor:pointer;font-family:var(--font);transition:background .15s}
+    .btn-submit:hover:not(:disabled){background:var(--violet-hover)}
+    .btn-submit:disabled{opacity:.5;cursor:not-allowed}
+    @media(prefers-color-scheme:dark){.btn-submit{color:#0f1117}}
+    :root[data-theme="dark"] .btn-submit{color:#0f1117}
+    .btn-cancel{font-size:.875rem;color:var(--text-3);background:none;border:none;cursor:pointer;padding:8px;font-family:var(--font)}
+    .btn-cancel:hover{color:var(--text-2)}
+
+    .invite-feedback{font-size:.8125rem;margin-left:auto}
+    .invite-feedback.ok{color:var(--emerald)}
+    .invite-feedback.err{color:var(--red)}
+
+    /* ── employee table ── */
+    .table-wrap{overflow-x:auto;border-radius:var(--radius);border:1px solid var(--border)}
+    table{width:100%;border-collapse:collapse;font-size:.875rem;background:var(--surface);table-layout:fixed}
+    thead th{padding:.625rem 1rem;text-align:left;font-size:.6875rem;letter-spacing:.04em;text-transform:uppercase;color:var(--text-3);font-weight:500;border-bottom:1px solid var(--border);background:var(--bg)}
+    th:nth-child(1){width:22%}
+    th:nth-child(2){width:26%}
+    th:nth-child(3){width:28%}
+    th:nth-child(4){width:14%}
+    th:nth-child(5){width:10%}
+    tbody tr{border-bottom:1px solid var(--border)}
+    tbody tr:last-child{border-bottom:none}
+    tbody tr:hover{background:var(--bg)}
+    td{padding:.625rem 1rem;vertical-align:middle;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+    .badge{display:inline-block;font-size:.6875rem;font-weight:500;padding:2px 8px;border-radius:99px;white-space:nowrap}
+    .badge.active{background:var(--emerald-wash);color:var(--emerald);border:1px solid var(--emerald)}
+    .badge.invited{background:var(--violet-wash);color:var(--violet);border:1px solid var(--violet)}
+    .badge.email-failed{background:var(--amber-wash);color:var(--amber);border:1px solid var(--amber)}
+    .badge.role-fix{background:var(--red-wash);color:var(--red);border:1px solid var(--red)}
+
+    .roles-cell{display:flex;flex-wrap:wrap;gap:3px}
+    .role-tag{font-size:.6875rem;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:1px 5px;color:var(--text-2);white-space:nowrap}
+
+    .btn-reinvite{font-size:.75rem;padding:4px 8px;border-radius:6px;border:1px solid var(--border-strong);background:none;color:var(--text-2);cursor:pointer;font-family:var(--font);transition:border-color .12s,color .12s;white-space:nowrap}
+    .btn-reinvite:hover{border-color:var(--violet);color:var(--violet)}
+    .btn-reinvite:disabled{opacity:.5;cursor:not-allowed}
+
+    /* ── empty/loading states ── */
+    .state-row td{text-align:center;padding:2.5rem;color:var(--text-3);font-size:.875rem}
+    .spinner{display:inline-block;width:16px;height:16px;border:2px solid var(--border-strong);border-top-color:var(--violet);border-radius:50%;animation:spin .6s linear infinite;vertical-align:-3px;margin-right:6px}
+    @keyframes spin{to{transform:rotate(360deg)}}
+
+    /* ── page-level error banner ── */
+    .page-error{background:var(--red-wash);border:1px solid var(--red);color:var(--red);border-radius:8px;padding:.75rem 1rem;font-size:.8125rem;margin-bottom:1.25rem;display:none}
+    .page-error.visible{display:block}
+  </style>
+</head>
+<body>
+
+<nav class="topbar">
+  <a href="/" class="topbar-back">← Back</a>
+  <div class="topbar-div"></div>
+  <span class="topbar-title">Team</span>
+</nav>
+
+<main class="page" role="main">
+  <div class="page-error" id="pageError" role="alert"></div>
+
+  <div class="summary-bar">
+    <div class="summary-left">
+      <h1 id="orgName">Loading…</h1>
+      <p id="orgSlugLabel"></p>
+    </div>
+    <div class="summary-stats" id="summaryStats" aria-live="polite"></div>
+  </div>
+
+  <section class="invite-section" aria-label="Invite employees">
+    <button class="btn-add" id="btnAdd" type="button">+ Add employees</button>
+    <div class="invite-form" id="inviteForm" role="form" aria-label="Invite form">
+      <span class="roles-label">Roles (select all that apply)</span>
+      <div class="roles-grid" id="rolesGrid" aria-label="Role selection">
+        <div class="role-chip"><input type="checkbox" disabled/><span>Loading roles…</span></div>
+      </div>
+      <div class="invite-rows" id="inviteRows"></div>
+      <button class="btn-add-row" type="button" id="btnAddRow">+ Add another person</button>
+      <div class="form-actions">
+        <button class="btn-submit" type="button" id="btnSubmit" disabled>Send invites</button>
+        <button class="btn-cancel" type="button" id="btnCancel">Cancel</button>
+        <span class="invite-feedback" id="inviteFeedback" aria-live="polite"></span>
+      </div>
+    </div>
+  </section>
+
+  <div class="table-wrap">
+    <table aria-label="Employee roster">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Email</th>
+          <th>Roles</th>
+          <th>Status</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="employeeBody">
+        <tr class="state-row"><td colspan="5"><span class="spinner" aria-hidden="true"></span>Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+(function () {
+  'use strict';
+
+  var ORG_BASE = '';
+  var orgSlug = '';
+  var allRoles = [];
+
+  function esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function showPageError(msg) {
+    var el = document.getElementById('pageError');
+    el.textContent = msg;
+    el.classList.add('visible');
+  }
+
+  function statusBadge(emp) {
+    if (!emp.email_sent) return '<span class="badge email-failed">Email failed</span>';
+    if (!emp.membership_applied) return '<span class="badge role-fix">Role not applied</span>';
+    if (emp.active) return '<span class="badge active">Active</span>';
+    return '<span class="badge invited">Invited</span>';
+  }
+
+  function renderSummary(stats) {
+    var el = document.getElementById('summaryStats');
+    if (!stats) { el.innerHTML = ''; return; }
+    el.innerHTML =
+      '<span class="stat-pill total">' + (stats.total || 0) + ' total</span>' +
+      (stats.invited != null ? '<span class="stat-pill invited">' + stats.invited + ' invited</span>' : '') +
+      (stats.active  != null ? '<span class="stat-pill active">'  + stats.active  + ' active</span>'  : '');
+  }
+
+  function renderEmployees(list) {
+    var tbody = document.getElementById('employeeBody');
+    if (!list || list.length === 0) {
+      tbody.innerHTML = '<tr class="state-row"><td colspan="5">No employees yet — invite someone above.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = list.map(function (emp) {
+      var roleTags = (emp.roles || []).map(function (r) {
+        var meta = allRoles.find(function(x){ return x.slug === r; });
+        return '<span class="role-tag">' + esc(meta ? meta.label : r) + '</span>';
+      }).join('');
+      var needsReinvite = !emp.email_sent;
+      var actionsCell = needsReinvite
+        ? '<button class="btn-reinvite" data-email="' + esc(emp.email) + '" type="button">Re-invite</button>'
+        : '—';
+      return '<tr>' +
+        '<td title="' + esc(emp.display_name || '') + '">' + esc(emp.display_name || emp.first_name || '—') + '</td>' +
+        '<td title="' + esc(emp.email) + '">' + esc(emp.email) + '</td>' +
+        '<td><div class="roles-cell">' + (roleTags || '<span class="role-tag">member</span>') + '</div></td>' +
+        '<td>' + statusBadge(emp) + '</td>' +
+        '<td>' + actionsCell + '</td>' +
+        '</tr>';
+    }).join('');
+
+    tbody.querySelectorAll('.btn-reinvite').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        btn.disabled = true;
+        btn.textContent = '…';
+        fetch(ORG_BASE + '/org/' + encodeURIComponent(orgSlug) + '/employees/reinvite', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: btn.dataset.email }),
+        })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (d.ok) {
+            btn.textContent = 'Sent';
+            btn.style.color = 'var(--emerald)';
+            btn.style.borderColor = 'var(--emerald)';
+            setTimeout(function () { loadEmployees(); }, 1500);
+          } else {
+            btn.disabled = false;
+            btn.textContent = d.error === 'already_active' ? 'Already active' : 'Failed';
+            btn.style.color = 'var(--red)';
+          }
+        })
+        .catch(function () { btn.disabled = false; btn.textContent = 'Error'; });
+      });
+    });
+  }
+
+  function loadEmployees() {
+    if (!ORG_BASE || !orgSlug) return;
+    var tbody = document.getElementById('employeeBody');
+    tbody.innerHTML = '<tr class="state-row"><td colspan="5"><span class="spinner" aria-hidden="true"></span>Loading…</td></tr>';
+    fetch(ORG_BASE + '/org/' + encodeURIComponent(orgSlug) + '/employees')
+      .then(function (r) { return r.json(); })
+      .then(function (data) { renderEmployees(data.employees || data); })
+      .catch(function (e) { tbody.innerHTML = '<tr class="state-row"><td colspan="5">Could not load employees — ' + esc(String(e)) + '</td></tr>'; });
+  }
+
+  function loadOrgSummary() {
+    if (!ORG_BASE || !orgSlug) return;
+    fetch(ORG_BASE + '/org/' + encodeURIComponent(orgSlug))
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var name = (d.identity && d.identity.org_name) ? d.identity.org_name : orgSlug;
+        document.getElementById('orgName').textContent = name;
+        document.title = name + ' — Team — Mobius';
+        if (d.employees && d.employees.reachable !== false) {
+          renderSummary(d.employees);
+        }
+      })
+      .catch(function () {
+        document.getElementById('orgName').textContent = orgSlug;
+      });
+  }
+
+  function loadRoles() {
+    if (!ORG_BASE) return;
+    fetch(ORG_BASE + '/roles')
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        allRoles = d.roles || [];
+        var grid = document.getElementById('rolesGrid');
+        grid.innerHTML = allRoles.map(function (role) {
+          return '<label class="role-chip">' +
+            '<input type="checkbox" name="role" value="' + esc(role.slug) + '" title="' + esc(role.description || '') + '"/>' +
+            '<span>' + esc(role.label) + '</span>' +
+            '</label>';
+        }).join('');
+      })
+      .catch(function () {
+        document.getElementById('rolesGrid').innerHTML =
+          '<label class="role-chip"><input type="checkbox" value="member" checked/><span>Member</span></label>';
+      });
+  }
+
+  function makeInviteRow() {
+    var row = document.createElement('div');
+    row.className = 'invite-row';
+    row.innerHTML =
+      '<div class="field"><label>First name</label><input type="text" placeholder="Jordan" autocomplete="off"/></div>' +
+      '<div class="field"><label>Email</label><input type="email" placeholder="jordan@org.com" autocomplete="off"/></div>';
+    return row;
+  }
+
+  function getSelectedRoles() {
+    return Array.from(document.querySelectorAll('#rolesGrid input[type="checkbox"]:checked'))
+      .map(function (cb) { return cb.value; });
+  }
+
+  function validateInviteForm() {
+    var rows = document.querySelectorAll('#inviteRows .invite-row');
+    var valid = Array.from(rows).some(function (row) {
+      var email = row.querySelectorAll('input')[1];
+      return email && email.value.trim() && email.validity.valid;
+    });
+    document.getElementById('btnSubmit').disabled = !valid;
+  }
+
+  // ── invite form open/close ──
+  document.getElementById('btnAdd').addEventListener('click', function () {
+    var form = document.getElementById('inviteForm');
+    form.classList.add('open');
+    this.style.display = 'none';
+    if (document.getElementById('inviteRows').children.length === 0) {
+      var row = makeInviteRow();
+      row.addEventListener('input', validateInviteForm);
+      document.getElementById('inviteRows').appendChild(row);
+    }
+  });
+
+  document.getElementById('btnCancel').addEventListener('click', function () {
+    document.getElementById('inviteForm').classList.remove('open');
+    document.getElementById('btnAdd').style.display = '';
+    document.getElementById('inviteRows').innerHTML = '';
+    document.getElementById('inviteFeedback').textContent = '';
+    document.getElementById('btnSubmit').disabled = true;
+  });
+
+  document.getElementById('btnAddRow').addEventListener('click', function () {
+    var row = makeInviteRow();
+    row.addEventListener('input', validateInviteForm);
+    document.getElementById('inviteRows').appendChild(row);
+  });
+
+  document.getElementById('btnSubmit').addEventListener('click', function () {
+    var btn = this;
+    var roles = getSelectedRoles();
+    var employees = [];
+    document.querySelectorAll('#inviteRows .invite-row').forEach(function (row) {
+      var inputs = row.querySelectorAll('input');
+      var firstName = inputs[0].value.trim();
+      var email = inputs[1].value.trim();
+      if (email && inputs[1].validity.valid) {
+        employees.push({ email: email, first_name: firstName || undefined,
+          display_name: firstName || undefined, roles: roles });
+      }
+    });
+    if (!employees.length) return;
+    btn.disabled = true;
+    btn.textContent = 'Sending…';
+    var fb = document.getElementById('inviteFeedback');
+    fb.textContent = '';
+    fb.className = 'invite-feedback';
+
+    var whoami = JSON.parse(localStorage.getItem('mobius.user') || 'null');
+    var invitedBy = (whoami && whoami.email) ? whoami.email : undefined;
+
+    fetch(ORG_BASE + '/org/' + encodeURIComponent(orgSlug) + '/employees/invite', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ employees: employees, invited_by: invitedBy }),
+    })
+    .then(function (r) { return r.json().then(function(d){ return {status:r.status,data:d}; }); })
+    .then(function (res) {
+      var results = res.data.results || [];
+      var sent = results.filter(function(r){ return r.email_sent; }).length;
+      var failed = results.filter(function(r){ return !r.email_sent; }).length;
+      fb.textContent = sent + ' invited' + (failed ? ', ' + failed + ' email failed' : '');
+      fb.className = 'invite-feedback ' + (failed ? 'err' : 'ok');
+      btn.textContent = 'Send invites';
+      setTimeout(function () {
+        document.getElementById('btnCancel').click();
+        loadOrgSummary();
+        loadEmployees();
+      }, 2000);
+    })
+    .catch(function () {
+      fb.textContent = 'Network error — try again';
+      fb.className = 'invite-feedback err';
+      btn.disabled = false;
+      btn.textContent = 'Send invites';
+    });
+  });
+
+  // ── bootstrap: get org slug from whoami, then load everything ──
+  fetch('/api/v1/users/me')
+    .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+    .then(function (profile) {
+      orgSlug = (profile.org_slug || profile.default_org_slug || '');
+      document.getElementById('orgSlugLabel').textContent = orgSlug ? '/' + orgSlug : '';
+      if (!orgSlug) {
+        showPageError('No org found for your account. You may not have admin access.');
+        document.getElementById('orgName').textContent = 'Team';
+        document.getElementById('employeeBody').innerHTML =
+          '<tr class="state-row"><td colspan="5">No org context available.</td></tr>';
+        return;
+      }
+      return fetch('/chat/config')
+        .then(function (r) { return r.json(); })
+        .then(function (cfg) {
+          ORG_BASE = (cfg['org_agent_url'] || window.MOBIUS_ORG_URL || '').replace(/\/$/, '');
+          if (!ORG_BASE) {
+            showPageError('Org agent URL not configured (MOBIUS_ORG_URL). Showing read-only view once deployed.');
+            document.getElementById('orgName').textContent = orgSlug;
+            document.getElementById('employeeBody').innerHTML =
+              '<tr class="state-row"><td colspan="5">Org agent not yet deployed.</td></tr>';
+            return;
+          }
+          document.getElementById('btnAdd').removeAttribute('disabled');
+          loadRoles();
+          loadOrgSummary();
+          loadEmployees();
+        });
+    })
+    .catch(function () {
+      showPageError('Could not load your profile. Are you signed in?');
+      document.getElementById('orgName').textContent = 'Team';
+      document.getElementById('employeeBody').innerHTML =
+        '<tr class="state-row"><td colspan="5">Sign in to view your team.</td></tr>';
+    });
+
+})();
+</script>
+</body>
+</html>
