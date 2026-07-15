@@ -2304,6 +2304,7 @@ if _frontend.exists():
         r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return r
 
+
     # Set / reset password — public pre-auth page; no session required.
     # Both invite and reset emails link here (?token=…). The page calls
     # /api/v1/auth/token-info to determine purpose (invite vs reset) and
