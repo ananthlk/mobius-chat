@@ -11337,7 +11337,10 @@ ${message}`;
         stopComposerUploadPhaseEmits();
         _openRagProgressStrip(filename, progressChannel, uploadedDocId, uploadedThreadId);
       } else {
-        _showToast(`"${filename}" is processing \u2014 I'll let you know when it's ready`);
+        if (uploadedDocId)
+          _showPhiRecommendationCard(filename, uploadedDocId);
+        else
+          _showToast(`"${filename}" is processing \u2014 I'll let you know when it's ready`);
       }
       return data;
     } finally {

@@ -11632,8 +11632,9 @@ function run(): void {
         stopComposerUploadPhaseEmits();
         _openRagProgressStrip(filename, progressChannel, uploadedDocId, uploadedThreadId);
       } else {
-        // No progress channel — legacy path, just show a toast.
-        _showToast(`"${filename}" is processing — I'll let you know when it's ready`);
+        // No progress channel — small doc indexed inline. Show toast then poll for PHI verdict.
+        if (uploadedDocId) _showPhiRecommendationCard(filename, uploadedDocId);
+        else _showToast(`"${filename}" is processing — I'll let you know when it's ready`);
       }
       return data;
     } finally {
