@@ -473,10 +473,16 @@ def _execute_tool(
     if tool == "refuse":
         reason = inputs.get("reason", "PHI or clinical guidance")
         emit(f"⊘ {reason}")
+        ctx.react_bypass_integrate = True
+        ctx.final_message = reason
+        ctx.plan = _make_react_plan(ctx)
+        ctx.sources = []
+        ctx.retrieval_signals = [RETRIEVAL_SIGNAL_NO_SOURCES]
+        ctx.answer_set = {}
         return {
             "tool": "refuse",
             "success": False,
-            "result": "",
+            "result": reason,
             "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
             "sources": [],
             "is_terminal": True,

@@ -84,6 +84,25 @@ def test_execute_tool_refuse_returns_terminal():
     assert r.get("success") is False
 
 
+def test_execute_tool_refuse_sets_bypass_integrate():
+    """refuse sets react_bypass_integrate so the integrator LLM is skipped."""
+    ctx = PipelineContext(correlation_id="c", thread_id=None, message="Is member 12345 eligible?")
+    ctx.effective_message = ctx.message
+    reason = "Questions about a specific patient involve PHI"
+    _execute_tool("refuse", {"reason": reason}, ctx, None)
+    assert getattr(ctx, "react_bypass_integrate", False) is True
+    assert ctx.final_message == reason
+    assert ctx.sources == []
+
+
+def test_execute_tool_refuse_result_carries_reason():
+    """refuse result['result'] carries the reason so _finalize_response propagates it."""
+    ctx = PipelineContext(correlation_id="c", thread_id=None, message="Is member 12345 eligible?")
+    ctx.effective_message = ctx.message
+    r = _execute_tool("refuse", {"reason": "PHI or clinical guidance"}, ctx, None)
+    assert r["result"] == "PHI or clinical guidance"
+
+
 def test_finalize_response_sets_plan_answers_and_answer_set():
     """_finalize_response sets ctx.plan, ctx.answers, ctx.answer_set for integrate."""
     ctx = PipelineContext(correlation_id="c", thread_id=None, message="What is PA?")
