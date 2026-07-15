@@ -596,5 +596,4 @@ def chat_config_for_api() -> dict:
         },
     }
     out["platform_schematic_url"] = (os.getenv("MOBIUS_PLATFORM_SCHEMATIC_URL") or "").strip() or None
-    out["org_agent_url"] = (os.getenv("MOBIUS_ORG_URL") or "").strip() or None
     return out

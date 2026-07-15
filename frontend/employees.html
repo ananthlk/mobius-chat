@@ -204,9 +204,9 @@
 (function () {
   'use strict';
 
-  var ORG_BASE = '';
   var orgSlug = '';
   var allRoles = [];
+  var API = '/api/v1/org';
 
   function esc(s) {
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -262,7 +262,7 @@
       btn.addEventListener('click', function () {
         btn.disabled = true;
         btn.textContent = '…';
-        fetch(ORG_BASE + '/org/' + encodeURIComponent(orgSlug) + '/employees/reinvite', {
+        fetch(API + '/' + encodeURIComponent(orgSlug) + '/employees/reinvite', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email: btn.dataset.email }),
@@ -286,18 +286,18 @@
   }
 
   function loadEmployees() {
-    if (!ORG_BASE || !orgSlug) return;
+    if (!orgSlug) return;
     var tbody = document.getElementById('employeeBody');
     tbody.innerHTML = '<tr class="state-row"><td colspan="5"><span class="spinner" aria-hidden="true"></span>Loading…</td></tr>';
-    fetch(ORG_BASE + '/org/' + encodeURIComponent(orgSlug) + '/employees')
+    fetch(API + '/' + encodeURIComponent(orgSlug) + '/employees')
       .then(function (r) { return r.json(); })
       .then(function (data) { renderEmployees(data.employees || data); })
       .catch(function (e) { tbody.innerHTML = '<tr class="state-row"><td colspan="5">Could not load employees — ' + esc(String(e)) + '</td></tr>'; });
   }
 
   function loadOrgSummary() {
-    if (!ORG_BASE || !orgSlug) return;
-    fetch(ORG_BASE + '/org/' + encodeURIComponent(orgSlug))
+    if (!orgSlug) return;
+    fetch(API + '/' + encodeURIComponent(orgSlug))
       .then(function (r) { return r.json(); })
       .then(function (d) {
         var name = (d.identity && d.identity.org_name) ? d.identity.org_name : orgSlug;
@@ -313,8 +313,7 @@
   }
 
   function loadRoles() {
-    if (!ORG_BASE) return;
-    fetch(ORG_BASE + '/roles')
+    fetch(API + '/roles')
       .then(function (r) { return r.json(); })
       .then(function (d) {
         allRoles = d.roles || [];
@@ -404,7 +403,7 @@
     var whoami = JSON.parse(localStorage.getItem('mobius.user') || 'null');
     var invitedBy = (whoami && whoami.email) ? whoami.email : undefined;
 
-    fetch(ORG_BASE + '/org/' + encodeURIComponent(orgSlug) + '/employees/invite', {
+    fetch(API + '/' + encodeURIComponent(orgSlug) + '/employees/invite', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ employees: employees, invited_by: invitedBy }),
@@ -444,22 +443,9 @@
           '<tr class="state-row"><td colspan="5">No org context available.</td></tr>';
         return;
       }
-      return fetch('/chat/config')
-        .then(function (r) { return r.json(); })
-        .then(function (cfg) {
-          ORG_BASE = (cfg['org_agent_url'] || window.MOBIUS_ORG_URL || '').replace(/\/$/, '');
-          if (!ORG_BASE) {
-            showPageError('Org agent URL not configured (MOBIUS_ORG_URL). Showing read-only view once deployed.');
-            document.getElementById('orgName').textContent = orgSlug;
-            document.getElementById('employeeBody').innerHTML =
-              '<tr class="state-row"><td colspan="5">Org agent not yet deployed.</td></tr>';
-            return;
-          }
-          document.getElementById('btnAdd').removeAttribute('disabled');
-          loadRoles();
-          loadOrgSummary();
-          loadEmployees();
-        });
+      loadRoles();
+      loadOrgSummary();
+      loadEmployees();
     })
     .catch(function () {
       showPageError('Could not load your profile. Are you signed in?');
