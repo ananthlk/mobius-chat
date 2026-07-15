@@ -11215,7 +11215,6 @@ ${message}`;
               inputEl2.dispatchEvent(new Event("input"));
               inputEl2.focus();
             }
-            _showPhiRecommendationCard(filename, documentId);
           }, 700);
         } else {
           if (bar)
@@ -11323,10 +11322,10 @@ ${message}`;
       const uploadedDocId = String(data.document_id || "");
       const uploadedThreadId = String(data.thread_id || currentThreadId || "");
       const uxPath = String(data.ux_path || "blocking");
+      if (uploadedDocId && !redirectUrl)
+        _showPhiRecommendationCard(filename, uploadedDocId);
       if (uxPath === "duplicate") {
         showChatStatusBanner(`\u2713 "${filename}" is ready \u2014 already in our corpus.`, 5e3);
-        if (uploadedDocId)
-          _showPhiRecommendationCard(filename, uploadedDocId);
       } else if (redirectUrl) {
         const sub = pageCount ? `${pageCount}-page document \u2014 ~${etaMin} min` : `~${etaMin} min`;
         showChatStatusBanner(
@@ -11336,11 +11335,8 @@ ${message}`;
       } else if (progressChannel) {
         stopComposerUploadPhaseEmits();
         _openRagProgressStrip(filename, progressChannel, uploadedDocId, uploadedThreadId);
-      } else {
-        if (uploadedDocId)
-          _showPhiRecommendationCard(filename, uploadedDocId);
-        else
-          _showToast(`"${filename}" is processing \u2014 I'll let you know when it's ready`);
+      } else if (!uploadedDocId) {
+        _showToast(`"${filename}" is processing \u2014 I'll let you know when it's ready`);
       }
       return data;
     } finally {

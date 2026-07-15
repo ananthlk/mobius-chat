@@ -11489,8 +11489,6 @@ function run(): void {
               inputEl.dispatchEvent(new Event("input"));
               inputEl.focus();
             }
-            // §3.3 PHI recommendation card: poll classified_at then render verdict.
-            _showPhiRecommendationCard(filename, documentId);
           }, 700);
         } else {
           // failed
@@ -11612,10 +11610,15 @@ function run(): void {
       const uploadedThreadId = String((data as any).thread_id || currentThreadId || "");
       const uxPath = String((data as any).ux_path || "blocking");
 
+      // §3.3 PHI card: fire unconditionally on any successful upload with a document_id
+      // (except large-doc redirect which hands off to an external RAG UI). The card's
+      // own 30s poll handles the async classify verdict on every path — inline-ready,
+      // SSE-ready, >12s escape-to-background, and duplicate. Single source of truth;
+      // the dedup guard inside _showPhiRecommendationCard prevents duplicate cards.
+      if (uploadedDocId && !redirectUrl) _showPhiRecommendationCard(filename, uploadedDocId);
+
       if (uxPath === "duplicate") {
         showChatStatusBanner(`✓ "${filename}" is ready — already in our corpus.`, 5000);
-        // §3.3 dedup PHI card: existing doc may already have a verdict; poll and surface it.
-        if (uploadedDocId) _showPhiRecommendationCard(filename, uploadedDocId);
       } else if (redirectUrl) {
         const sub = pageCount ? `${pageCount}-page document — ~${etaMin} min` : `~${etaMin} min`;
         showChatStatusBanner(
@@ -11631,10 +11634,8 @@ function run(): void {
         // automatically for slow docs — no separate toast path needed.
         stopComposerUploadPhaseEmits();
         _openRagProgressStrip(filename, progressChannel, uploadedDocId, uploadedThreadId);
-      } else {
-        // No progress channel — small doc indexed inline. Show toast then poll for PHI verdict.
-        if (uploadedDocId) _showPhiRecommendationCard(filename, uploadedDocId);
-        else _showToast(`"${filename}" is processing — I'll let you know when it's ready`);
+      } else if (!uploadedDocId) {
+        _showToast(`"${filename}" is processing — I'll let you know when it's ready`);
       }
       return data;
     } finally {
