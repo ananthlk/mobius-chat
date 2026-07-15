@@ -374,10 +374,14 @@ def _followup_items_for_envelope(items: list[Any], *, fallback_clickable: bool) 
 def _build_credentialing_card_block(data: dict[str, Any]) -> dict[str, Any] | None:
     """Validate and build credentialing_card block from provider data dict.
 
-    Expected shape: {provider_name, npi, org, status, flags: [{text, severity}], action_url}
+    Expected shapes:
+    - Provider-level: {npi, provider_name, org, status, flags, action_url}
+    - Org-level summary: {org, provider_name, status, flags, action_url, org_summary: true}
+    At least one of npi or org must be present.
     """
     npi = (data.get("npi") or "").strip()
-    if not npi:
+    org = (data.get("org") or "").strip()
+    if not npi and not org:
         return None
     flags: list[dict[str, str]] = []
     for f in (data.get("flags") or [])[:20]:
@@ -389,12 +393,15 @@ def _build_credentialing_card_block(data: dict[str, Any]) -> dict[str, Any] | No
             flags.append({"text": text[:200], "severity": severity})
     block: dict[str, Any] = {
         "type": "credentialing_card",
-        "npi": npi[:10],
         "provider_name": (data.get("provider_name") or "").strip()[:200],
-        "org": (data.get("org") or "").strip()[:200],
+        "org": org[:200],
         "status": (data.get("status") or "unknown").strip()[:50],
         "flags": flags,
     }
+    if npi:
+        block["npi"] = npi[:10]
+    if data.get("org_summary"):
+        block["org_summary"] = True
     action_url = (data.get("action_url") or "").strip()
     if action_url:
         block["action_url"] = action_url[:2000]
