@@ -16,6 +16,17 @@ the Chroma upsert in ``publish_sync.py``.
 The RAG /api/query endpoint now accepts an optional ``document_id`` query
 param that scopes the pgvector ANN search to a single document, making it
 the natural replacement for the old Chroma ``thread_corpus_search`` path.
+
+Deterministic fallback
+-----------------------
+ANN search can return 0 results even when the document is indexed — e.g.
+when the query is too generic ("what does this file say?") relative to a
+tiny private doc, or when the embedding distance exceeds the vector store's
+effective threshold.  When ANN returns nothing, we fall back to
+``/documents/{id}/pages`` which fetches raw page text directly from the
+extraction store — no similarity scoring, always deterministic.  A user who
+explicitly uploaded a doc and is asking about it must receive that doc's
+content regardless of phrasing.
 """
 
 from __future__ import annotations
@@ -42,7 +53,10 @@ def lazy_rag_search(
 ) -> tuple[str, list[dict[str, Any]], dict | None, str]:
     """Vector-search a single uploaded document via RAG /api/query.
 
-    Calls RAG with document_id scoped pgvector search — no Chroma.
+    Primary: scoped pgvector ANN search (document_id filter).
+    Fallback: deterministic page-text fetch via /documents/{id}/pages when
+    ANN returns 0 results — covers generic queries against tiny private docs.
+
     Returns the same (answer_text, sources, usage, signal) tuple shape
     as the old Chroma path so callers (react_loop fan-out) are unchanged.
     """
@@ -58,6 +72,8 @@ def lazy_rag_search(
 
     _emit(emitter, "Reading your attached document…")
 
+    # ── Primary: ANN search scoped to this document_id ──────────────────
+    sources: list[dict[str, Any]] = []
     try:
         body = json.dumps({"query": question, "k": k, "document_id": document_id}).encode()
         req = urllib.request.Request(
@@ -68,27 +84,33 @@ def lazy_rag_search(
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read())
+        for chunk in (data.get("chunks") or []):
+            sources.append({
+                "id": chunk.get("source_id") or chunk.get("document_id"),
+                "text": chunk.get("text") or "",
+                "document_id": chunk.get("document_id") or document_id,
+                "document_name": chunk.get("document_name"),
+                "page_number": chunk.get("page_number"),
+                "source_type": "instant_rag",
+                "rerank_score": chunk.get("similarity"),
+                "instant_rag": True,
+            })
+        if sources:
+            logger.debug("instant-rag: ANN returned %d chunks for doc=%s", len(sources), document_id[:8])
     except Exception as exc:
         logger.warning("instant-rag: RAG /api/query failed for doc=%s: %s", document_id[:8], exc)
-        return ("", [], None, _SIGNAL_NO_SOURCES)
 
-    chunks = data.get("chunks") or []
-    if not chunks:
-        logger.info("instant-rag: 0 chunks from RAG for doc=%s", document_id[:8])
-        return ("", [], None, _SIGNAL_NO_SOURCES)
+    # ── Deterministic fallback: fetch page text when ANN returns nothing ──
+    if not sources:
+        logger.info(
+            "instant-rag: ANN 0 results for doc=%s — falling back to page-text fetch",
+            document_id[:8],
+        )
+        sources = _fetch_pages_as_sources(rag_url, document_id)
 
-    sources: list[dict[str, Any]] = []
-    for chunk in chunks:
-        sources.append({
-            "id": chunk.get("source_id") or chunk.get("document_id"),
-            "text": chunk.get("text") or "",
-            "document_id": chunk.get("document_id") or document_id,
-            "document_name": chunk.get("document_name"),
-            "page_number": chunk.get("page_number"),
-            "source_type": "instant_rag",
-            "rerank_score": chunk.get("similarity"),
-            "instant_rag": True,
-        })
+    if not sources:
+        logger.info("instant-rag: no content found for doc=%s (ANN + page-text both empty)", document_id[:8])
+        return ("", [], None, _SIGNAL_NO_SOURCES)
 
     answer_text = "\n\n".join(s["text"] for s in sources if s["text"])
 
@@ -98,6 +120,43 @@ def lazy_rag_search(
     )
 
     return (answer_text, sources, None, _SIGNAL_CORPUS_ONLY)
+
+
+def _fetch_pages_as_sources(rag_url: str, document_id: str) -> list[dict[str, Any]]:
+    """Deterministic fallback: fetch raw page text from /documents/{id}/pages.
+
+    Returns a sources list in the same shape as the ANN path.  Page text is
+    truncated to 4000 chars per page so a large multi-page doc doesn't flood
+    the integrator's context window.
+    """
+    try:
+        req = urllib.request.Request(
+            f"{rag_url}/documents/{document_id}/pages",
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read())
+    except Exception as exc:
+        logger.warning("instant-rag: /pages fallback failed for doc=%s: %s", document_id[:8], exc)
+        return []
+
+    pages = data.get("pages") or []
+    sources: list[dict[str, Any]] = []
+    for page in pages:
+        text = (page.get("text") or "").strip()[:4000]
+        if not text:
+            continue
+        sources.append({
+            "id": document_id,
+            "text": text,
+            "document_id": document_id,
+            "document_name": data.get("filename") or data.get("document_name"),
+            "page_number": page.get("page_number"),
+            "source_type": "instant_rag",
+            "rerank_score": None,
+            "instant_rag": True,
+        })
+    return sources
 
 
 def _emit(emitter: Callable[[str], None] | None, line: str) -> None:
