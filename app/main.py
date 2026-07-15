@@ -2304,3 +2304,15 @@ if _frontend.exists():
         r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return r
 
+    # Set / reset password — public pre-auth page; no session required.
+    # Both invite and reset emails link here (?token=…). The page calls
+    # /api/v1/auth/token-info to determine purpose (invite vs reset) and
+    # renders the appropriate heading. On 200 from /api/v1/auth/set-password
+    # the server sets the session cookie and the page redirects to /.
+    # MOBIUS_SET_PASSWORD_URL_BASE must point to {this host}/auth/set-password.
+    @app.get("/auth/set-password")
+    def set_password_page():
+        r = FileResponse(_frontend / "set-password.html")
+        r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return r
+
