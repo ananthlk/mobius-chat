@@ -11614,6 +11614,8 @@ function run(): void {
 
       if (uxPath === "duplicate") {
         showChatStatusBanner(`✓ "${filename}" is ready — already in our corpus.`, 5000);
+        // §3.3 dedup PHI card: existing doc may already have a verdict; poll and surface it.
+        if (uploadedDocId) _showPhiRecommendationCard(filename, uploadedDocId);
       } else if (redirectUrl) {
         const sub = pageCount ? `${pageCount}-page document — ~${etaMin} min` : `~${etaMin} min`;
         showChatStatusBanner(

@@ -11325,6 +11325,8 @@ ${message}`;
       const uxPath = String(data.ux_path || "blocking");
       if (uxPath === "duplicate") {
         showChatStatusBanner(`\u2713 "${filename}" is ready \u2014 already in our corpus.`, 5e3);
+        if (uploadedDocId)
+          _showPhiRecommendationCard(filename, uploadedDocId);
       } else if (redirectUrl) {
         const sub = pageCount ? `${pageCount}-page document \u2014 ~${etaMin} min` : `~${etaMin} min`;
         showChatStatusBanner(
