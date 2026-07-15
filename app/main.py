@@ -2306,6 +2306,14 @@ if _frontend.exists():
         return r
 
 
+    # Platform schematic — thin wrapper iframing the PA Agent schematic.
+    # URL sourced from MOBIUS_PLATFORM_SCHEMATIC_URL via /chat/config.
+    @app.get("/platform")
+    def platform_page():
+        r = FileResponse(_frontend / "platform.html")
+        r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return r
+
     # Set / reset password — public pre-auth page; no session required.
     # Both invite and reset emails link here (?token=…). The page calls
     # /api/v1/auth/token-info to determine purpose (invite vs reset) and

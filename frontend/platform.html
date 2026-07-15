@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Platform — Mobius</title>
+  <link rel="icon" href="static/logo.svg" type="image/svg+xml" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f0f11;
+      color: #f1f0ee;
+      display: flex;
+      flex-direction: column;
+    }
+    .topbar {
+      height: 44px;
+      border-bottom: 0.5px solid rgba(255,255,255,0.09);
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      gap: 12px;
+      flex-shrink: 0;
+      background: #141416;
+    }
+    .topbar-back {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      color: rgba(255,255,255,0.45);
+      text-decoration: none;
+      border: none;
+      background: none;
+      cursor: pointer;
+      padding: 4px 0;
+      border-radius: 4px;
+      transition: color .15s;
+    }
+    .topbar-back:hover { color: rgba(255,255,255,0.75); }
+    .topbar-back svg { width: 14px; height: 14px; }
+    .topbar-divider { width: 0.5px; height: 16px; background: rgba(255,255,255,0.12); }
+    .topbar-wordmark {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 13px;
+      font-weight: 500;
+      color: rgba(255,255,255,0.7);
+    }
+    .topbar-wordmark img { width: 18px; height: 18px; opacity: 0.8; }
+    .frame-wrap {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+    #schematic-frame {
+      width: 100%;
+      height: 100%;
+      border: none;
+      display: block;
+    }
+    #loading {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      background: #0f0f11;
+      pointer-events: none;
+    }
+    #loading.hidden { display: none; }
+    .spinner {
+      width: 28px;
+      height: 28px;
+      border: 2px solid rgba(255,255,255,0.1);
+      border-top-color: #7c3aed;
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-label { font-size: 12px; color: rgba(255,255,255,0.3); }
+    #not-configured {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      gap: 10px;
+      color: rgba(255,255,255,0.3);
+      font-size: 14px;
+    }
+    #not-configured.visible { display: flex; }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <a href="/" class="topbar-back" aria-label="Back to chat">
+      <svg viewBox="0 0 14 14" fill="none" aria-hidden="true">
+        <path d="M9 2L4 7l5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      Back
+    </a>
+    <div class="topbar-divider"></div>
+    <div class="topbar-wordmark">
+      <img src="static/logo.svg" alt="" aria-hidden="true" />
+      Platform
+    </div>
+  </div>
+
+  <div class="frame-wrap">
+    <div id="loading">
+      <div class="spinner"></div>
+      <span class="loading-label">Loading schematic…</span>
+    </div>
+    <iframe
+      id="schematic-frame"
+      sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
+      title="Mobius platform schematic"
+    ></iframe>
+    <div id="not-configured">
+      <span>Platform schematic not configured</span>
+      <span style="font-size:12px">Set MOBIUS_PLATFORM_SCHEMATIC_URL on the chat service</span>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var frame = document.getElementById('schematic-frame');
+      var loading = document.getElementById('loading');
+      var notConfigured = document.getElementById('not-configured');
+
+      function buildSrc(base) {
+        var suffix = location.hash || location.search || '';
+        if (!suffix) return base;
+        if (base.includes('#')) return base + suffix.replace(/^[#?]/, '&');
+        return base + suffix;
+      }
+
+      fetch('/chat/config')
+        .then(function (r) { return r.json(); })
+        .then(function (cfg) {
+          var url = (cfg['platform_schematic_url'] || '').trim();
+          if (!url) {
+            loading.classList.add('hidden');
+            notConfigured.classList.add('visible');
+            return;
+          }
+          frame.src = buildSrc(url);
+          frame.addEventListener('load', function () {
+            loading.classList.add('hidden');
+          });
+        })
+        .catch(function () {
+          loading.classList.add('hidden');
+          notConfigured.classList.add('visible');
+        });
+    })();
+  </script>
+</body>
+</html>

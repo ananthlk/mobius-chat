@@ -12359,6 +12359,14 @@ ${message}`;
         accent: "accent",
         urlEnvKey: "MOBIUS_LIBRARY_URL",
         fallbackUrl: "https://mobius-rag-ortabkknqa-uc.a.run.app"
+      },
+      {
+        key: "platform",
+        label: "Platform",
+        tagline: "Architecture schematic",
+        accent: "violet",
+        urlEnvKey: "MOBIUS_PLATFORM_URL",
+        fallbackUrl: "/platform"
       }
       // Vault is now the sidebar block above this section; not a tile.
     ];

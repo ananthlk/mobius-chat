@@ -595,4 +595,5 @@ def chat_config_for_api() -> dict:
             "integrator_blended_system": c.prompts.integrator_blended_system,
         },
     }
+    out["platform_schematic_url"] = (os.getenv("MOBIUS_PLATFORM_SCHEMATIC_URL") or "").strip() or None
     return out
