@@ -198,6 +198,8 @@ SET_ENV_VARS=(
     "MOBIUS_RAG_URL=${MOBIUS_RAG_URL:-}"
     "CHAT_SKILLS_VIBE_URL=${CHAT_SKILLS_VIBE_URL:-}"
     "CHAT_SKILLS_PRODUCT_HELP_SEARCH_URL=${CHAT_SKILLS_PRODUCT_HELP_SEARCH_URL:-https://mobius-product-awareness-ortabkknqa-uc.a.run.app/search}"
+    # 2026-07-15 — platform schematic served by product-awareness; /platform iframe reads it via /chat/config
+    "MOBIUS_PLATFORM_SCHEMATIC_URL=${MOBIUS_PLATFORM_SCHEMATIC_URL:-https://mobius-product-awareness-ortabkknqa-uc.a.run.app/schematic}"
     "RAG_API_BASE=${RAG_API_BASE:-}"
     # RAG_API_URL — read by the curator tools (lookup_authoritative_sources
     # + ingest_url) and the legacy RAG-API retrieval path. See dev.env note.
