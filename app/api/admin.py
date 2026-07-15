@@ -282,12 +282,14 @@ def backfill_phi_classify(
     limit: int = Query(20, ge=1, le=200, description="Max rows to process per call"),
     dry_run: bool = Query(False, description="List candidates without firing classify"),
     reclassify_errors: bool = Query(False, description="Re-classify rows with layers_run=[\"error\"] instead of unclassified"),
+    reclassify_conservative: bool = Query(False, description="Re-classify rows with phi_flag=true AND layers_run=[] (burst-storm conservative-failure repair)"),
     delay_ms: int = Query(800, ge=0, le=5000, description="Delay between sequential calls (ms)"),
 ):
     """Fire §3.3 PHI classify for instant_rag_uploads rows, SEQUENTIALLY with retry+backoff.
 
     Default mode: rows where classified_at IS NULL.
     reclassify_errors=true: rows where layers_run contains 'error' (transient-503 damage repair).
+    reclassify_conservative=true: rows with phi_flag=true AND layers_run=[] (burst-storm conservative-failure repair).
 
     Processes one doc at a time with delay_ms between calls — never floods the classifier.
     Retries 5xx responses up to 3× with exponential backoff before giving up on a row.
@@ -309,7 +311,14 @@ def backfill_phi_classify(
     if not phi_url:
         raise HTTPException(status_code=503, detail="PHI_CLASSIFIER_URL not set — classify is a no-op")
 
-    if reclassify_errors:
+    if reclassify_conservative:
+        # Target burst-storm conservative failures: phi=true stamped without any layers running
+        sql = (
+            "SELECT document_id FROM instant_rag_uploads "
+            "WHERE phi_flag = true AND layers_run = '[]'::jsonb "
+            "AND document_id IS NOT NULL LIMIT :lim"
+        )
+    elif reclassify_errors:
         sql = (
             "SELECT document_id FROM instant_rag_uploads "
             "WHERE classified_at IS NOT NULL AND layers_run::text LIKE '%error%' "
@@ -403,7 +412,8 @@ def backfill_phi_classify(
             _time.sleep(delay_ms / 1000.0)
 
     _threading.Thread(target=_classify_sequential, name="backfill-phi-sequential", daemon=True).start()
-    return {"queued": len(doc_ids), "mode": "reclassify_errors" if reclassify_errors else "unclassified", "delay_ms": delay_ms, "document_ids": doc_ids}
+    mode = "reclassify_conservative" if reclassify_conservative else ("reclassify_errors" if reclassify_errors else "unclassified")
+    return {"queued": len(doc_ids), "mode": mode, "delay_ms": delay_ms, "document_ids": doc_ids}
 
 
 @router.get("/chat/admin/queries")
