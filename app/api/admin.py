@@ -345,7 +345,9 @@ def backfill_phi_classify(
             try:
                 with _urlreq.urlopen(f"{rag_url}/documents/{did}/pages", timeout=30) as _r:
                     pages = _json.loads(_r.read()).get("pages") or []
-                text = "\n".join((p.get("text") or "") for p in pages).strip()
+                # Truncate to 8000 chars — classifier only needs enough to detect PHI,
+                # and very large docs (100+ pages) cause LLM-layer timeouts.
+                text = "\n".join((p.get("text") or "") for p in pages).strip()[:8000]
             except Exception:
                 text = ""
 
