@@ -2313,6 +2313,12 @@ if _frontend.exists():
         r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return r
 
+    @app.get("/admin/clients")
+    def clients_page():
+        r = FileResponse(_frontend / "clients.html")
+        r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return r
+
     # Platform schematic — thin wrapper iframing the PA Agent schematic.
     # URL sourced from MOBIUS_PLATFORM_SCHEMATIC_URL via /chat/config.
     @app.get("/platform")

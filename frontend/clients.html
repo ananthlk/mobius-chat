@@ -1,0 +1,886 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Clients — Mobius Admin</title>
+  <link rel="icon" href="static/logo.svg" type="image/svg+xml"/>
+  <style>
+    :root {
+      --violet:#7c3aed; --violet-hover:#6d28d9; --violet-wash:rgba(124,58,237,.08);
+      --emerald:#059669; --emerald-wash:rgba(5,150,105,.10);
+      --amber:#b45309;  --amber-wash:rgba(180,83,9,.10);
+      --red:#dc2626;    --red-wash:rgba(220,38,38,.10);
+      --blue:#2563eb;   --blue-wash:rgba(37,99,235,.09);
+      --text-1:#111827; --text-2:#374151; --text-3:#6b7280;
+      --bg:#f3f4f6; --surface:#ffffff; --border:rgba(0,0,0,.09);
+      --border-strong:rgba(0,0,0,.14); --radius:10px;
+      --font:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+      --topbar-h:44px; --sidebar-w:260px;
+    }
+    @media (prefers-color-scheme:dark){
+      :root{
+        --violet:#a78bfa; --violet-hover:#c4b5fd; --violet-wash:rgba(167,139,250,.13);
+        --emerald:#34d399; --emerald-wash:rgba(52,211,153,.12);
+        --amber:#fbbf24;  --amber-wash:rgba(251,191,36,.12);
+        --red:#f87171;    --red-wash:rgba(248,113,113,.12);
+        --blue:#60a5fa;   --blue-wash:rgba(96,165,250,.12);
+        --text-1:#f1f0ee; --text-2:#cbd5e1; --text-3:#8b949e;
+        --bg:#0f1117; --surface:#161b22; --border:rgba(255,255,255,.09);
+        --border-strong:rgba(255,255,255,.14);
+      }
+    }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    html,body{height:100%;font-family:var(--font);background:var(--bg);color:var(--text-1);font-size:14px;line-height:1.5}
+
+    /* ── Topbar ── */
+    .topbar{
+      position:fixed;top:0;left:0;right:0;height:var(--topbar-h);
+      background:var(--surface);border-bottom:1px solid var(--border);
+      display:flex;align-items:center;padding:0 16px;gap:12px;z-index:100;
+    }
+    .topbar-back{color:var(--text-3);text-decoration:none;font-size:13px;display:flex;align-items:center;gap:4px}
+    .topbar-back:hover{color:var(--text-1)}
+    .topbar-back svg{width:14px;height:14px}
+    .topbar-divider{width:1px;height:18px;background:var(--border)}
+    .topbar-wordmark{font-size:15px;font-weight:700;letter-spacing:-.3px;color:var(--text-1)}
+    .topbar-section{color:var(--text-3);font-size:13px}
+
+    /* ── Layout ── */
+    .layout{display:flex;height:100%;padding-top:var(--topbar-h)}
+
+    /* ── Sidebar ── */
+    .sidebar{
+      width:var(--sidebar-w);flex-shrink:0;
+      background:var(--surface);border-right:1px solid var(--border);
+      display:flex;flex-direction:column;overflow:hidden;
+    }
+    .sidebar-header{
+      padding:14px 14px 10px;border-bottom:1px solid var(--border);
+      display:flex;align-items:center;justify-content:space-between;
+    }
+    .sidebar-title{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3)}
+    .btn-new{
+      display:flex;align-items:center;gap:4px;
+      background:var(--violet);color:#fff;border:none;border-radius:6px;
+      padding:5px 10px;font-size:12px;font-weight:600;cursor:pointer;
+    }
+    .btn-new:hover{background:var(--violet-hover)}
+    .btn-new svg{width:12px;height:12px}
+
+    /* Create panel */
+    .create-panel{
+      border-bottom:1px solid var(--border);padding:12px 14px;
+      background:var(--violet-wash);display:none;
+    }
+    .create-panel.open{display:block}
+    .create-panel label{display:block;font-size:11px;font-weight:600;color:var(--text-3);margin-bottom:3px}
+    .create-panel input,.create-panel select{
+      width:100%;padding:6px 8px;border:1px solid var(--border-strong);border-radius:6px;
+      background:var(--surface);color:var(--text-1);font-size:13px;font-family:var(--font);
+      margin-bottom:8px;
+    }
+    .create-panel input:focus,.create-panel select:focus{outline:2px solid var(--violet);outline-offset:-1px}
+    .create-actions{display:flex;gap:6px}
+    .btn-create{
+      flex:1;background:var(--violet);color:#fff;border:none;border-radius:6px;
+      padding:7px;font-size:13px;font-weight:600;cursor:pointer;
+    }
+    .btn-create:hover{background:var(--violet-hover)}
+    .btn-create:disabled{opacity:.5;cursor:not-allowed}
+    .btn-cancel-create{
+      background:transparent;border:1px solid var(--border-strong);color:var(--text-2);
+      border-radius:6px;padding:7px 10px;font-size:13px;cursor:pointer;
+    }
+    .btn-cancel-create:hover{background:var(--bg)}
+
+    .create-error{color:var(--red);font-size:12px;margin-top:4px;display:none}
+    .create-error.visible{display:block}
+
+    /* Client list */
+    .client-list{flex:1;overflow-y:auto;padding:6px 8px}
+    .client-item{
+      display:flex;align-items:center;gap:8px;
+      padding:8px 8px;border-radius:7px;cursor:pointer;
+      border:1px solid transparent;margin-bottom:2px;
+    }
+    .client-item:hover{background:var(--violet-wash)}
+    .client-item.active{background:var(--violet-wash);border-color:rgba(124,58,237,.18)}
+    .client-avatar{
+      width:30px;height:30px;border-radius:7px;background:var(--violet);
+      color:#fff;display:flex;align-items:center;justify-content:center;
+      font-size:12px;font-weight:700;flex-shrink:0;
+    }
+    .client-info{min-width:0}
+    .client-name{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .client-slug{font-size:11px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .client-empty{padding:24px 12px;text-align:center;color:var(--text-3);font-size:13px}
+
+    /* ── Main ── */
+    .main{flex:1;overflow-y:auto;padding:24px}
+    .main-empty{
+      display:flex;flex-direction:column;align-items:center;justify-content:center;
+      min-height:300px;text-align:center;color:var(--text-3);gap:12px;
+    }
+    .main-empty svg{width:40px;height:40px;opacity:.3}
+    .main-empty p{font-size:14px}
+
+    /* ── Page error banner ── */
+    .page-error{
+      background:var(--red-wash);border:1px solid var(--red);color:var(--red);
+      border-radius:8px;padding:10px 14px;font-size:13px;margin-bottom:16px;display:none;
+    }
+    .page-error.visible{display:block}
+
+    /* ── Dashboard ── */
+    .dash-header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:20px;gap:12px;flex-wrap:wrap}
+    .dash-title{font-size:22px;font-weight:700;letter-spacing:-.3px}
+    .dash-meta{font-size:13px;color:var(--text-3);margin-top:2px}
+    .btn-profile{
+      display:inline-flex;align-items:center;gap:5px;
+      color:var(--violet);border:1px solid rgba(124,58,237,.25);background:var(--violet-wash);
+      border-radius:6px;padding:6px 11px;font-size:12px;font-weight:600;cursor:pointer;
+      text-decoration:none;white-space:nowrap;
+    }
+    .btn-profile:hover{background:rgba(124,58,237,.14)}
+    .btn-profile svg{width:12px;height:12px}
+
+    /* Progress tracker */
+    .progress-track{
+      display:flex;gap:8px;margin-bottom:22px;flex-wrap:wrap;
+    }
+    .progress-pill{
+      display:flex;align-items:center;gap:6px;
+      border-radius:20px;padding:5px 12px;font-size:12px;font-weight:600;border:1px solid transparent;
+    }
+    .progress-pill.done{background:var(--emerald-wash);color:var(--emerald);border-color:rgba(5,150,105,.2)}
+    .progress-pill.pending{background:var(--amber-wash);color:var(--amber);border-color:rgba(180,83,9,.18)}
+    .progress-pill.loading{background:var(--bg);color:var(--text-3);border-color:var(--border)}
+    .progress-pill.error{background:var(--red-wash);color:var(--red);border-color:rgba(220,38,38,.2)}
+    .pill-dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex-shrink:0}
+    .pill-dot.spin{animation:spin .9s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+
+    /* Cards */
+    .card{
+      background:var(--surface);border:1px solid var(--border);border-radius:12px;
+      padding:20px;margin-bottom:16px;
+    }
+    .card-title{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-3);margin-bottom:14px}
+    .card-row{display:flex;flex-wrap:wrap;gap:16px 32px}
+    .card-field{}
+    .field-label{font-size:11px;color:var(--text-3);margin-bottom:2px}
+    .field-value{font-size:14px;font-weight:500}
+    .tag-list{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px}
+    .tag{
+      background:var(--violet-wash);color:var(--violet);border:1px solid rgba(124,58,237,.18);
+      border-radius:4px;padding:2px 7px;font-size:11px;font-weight:600;
+    }
+    .tag.grey{background:var(--bg);color:var(--text-3);border-color:var(--border)}
+    .status-badge{
+      display:inline-flex;align-items:center;gap:5px;
+      border-radius:6px;padding:3px 9px;font-size:12px;font-weight:600;
+    }
+    .status-badge.ready{background:var(--emerald-wash);color:var(--emerald)}
+    .status-badge.provisioning{background:var(--amber-wash);color:var(--amber)}
+    .status-badge.failed{background:var(--red-wash);color:var(--red)}
+    .status-badge.not-provisioned{background:var(--bg);color:var(--text-3);border:1px solid var(--border)}
+
+    /* Stat pills in team card */
+    .stat-row{display:flex;gap:10px;margin-bottom:18px;flex-wrap:wrap}
+    .stat-pill{
+      background:var(--bg);border:1px solid var(--border);border-radius:8px;
+      padding:8px 14px;text-align:center;
+    }
+    .stat-num{font-size:20px;font-weight:700;line-height:1}
+    .stat-label{font-size:11px;color:var(--text-3);margin-top:2px}
+
+    /* Team table */
+    .table-wrap{overflow-x:auto;border-radius:8px;border:1px solid var(--border)}
+    table{width:100%;border-collapse:collapse;font-size:13px}
+    thead th{
+      background:var(--bg);padding:9px 12px;text-align:left;
+      font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);
+      border-bottom:1px solid var(--border);white-space:nowrap;
+    }
+    tbody tr{border-bottom:1px solid var(--border)}
+    tbody tr:last-child{border-bottom:none}
+    tbody td{padding:10px 12px;vertical-align:middle}
+    tbody tr:hover{background:var(--bg)}
+    .state-row td{text-align:center;color:var(--text-3);padding:20px}
+    .role-tags{display:flex;flex-wrap:wrap;gap:4px}
+    .role-tag{
+      background:var(--violet-wash);color:var(--violet);
+      border-radius:4px;padding:2px 6px;font-size:11px;font-weight:600;
+    }
+    .emp-status{
+      display:inline-flex;align-items:center;gap:4px;
+      border-radius:12px;padding:2px 8px;font-size:11px;font-weight:600;
+    }
+    .emp-status.active{background:var(--emerald-wash);color:var(--emerald)}
+    .emp-status.invited{background:var(--amber-wash);color:var(--amber)}
+    .emp-status.pending{background:var(--bg);color:var(--text-3);border:1px solid var(--border)}
+    .btn-reinvite{
+      background:transparent;border:1px solid var(--border-strong);color:var(--text-2);
+      border-radius:6px;padding:3px 8px;font-size:11px;cursor:pointer;
+    }
+    .btn-reinvite:hover{background:var(--bg)}
+    .btn-reinvite:disabled{opacity:.4;cursor:not-allowed}
+
+    /* Invite form */
+    .invite-toggle{margin-top:14px}
+    .btn-add{
+      background:var(--violet);color:#fff;border:none;border-radius:7px;
+      padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;
+    }
+    .btn-add:hover{background:var(--violet-hover)}
+    .invite-form{
+      margin-top:14px;background:var(--bg);border:1px solid var(--border);
+      border-radius:8px;padding:14px;display:none;
+    }
+    .invite-form.open{display:block}
+    .invite-row{
+      display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:start;margin-bottom:8px;
+    }
+    .invite-row input{
+      padding:7px 9px;border:1px solid var(--border-strong);border-radius:6px;
+      background:var(--surface);color:var(--text-1);font-size:13px;font-family:var(--font);width:100%;
+    }
+    .invite-row input:focus{outline:2px solid var(--violet);outline-offset:-1px}
+    .btn-rm-row{
+      background:transparent;border:1px solid var(--border-strong);color:var(--text-3);
+      border-radius:6px;padding:7px 9px;font-size:13px;cursor:pointer;line-height:1;
+    }
+    .btn-rm-row:hover{color:var(--red);border-color:var(--red)}
+    .roles-section{margin-bottom:10px}
+    .roles-label{font-size:11px;font-weight:600;color:var(--text-3);margin-bottom:6px}
+    .roles-checks{display:flex;flex-wrap:wrap;gap:6px}
+    .role-chip{
+      display:flex;align-items:center;gap:5px;
+      background:var(--surface);border:1px solid var(--border);border-radius:6px;
+      padding:4px 9px;font-size:12px;cursor:pointer;user-select:none;
+    }
+    .role-chip input{accent-color:var(--violet)}
+    .invite-actions{display:flex;gap:8px;margin-top:8px;align-items:center}
+    .btn-add-row{
+      background:transparent;border:1px solid var(--border);color:var(--text-2);
+      border-radius:6px;padding:6px 11px;font-size:12px;cursor:pointer;
+    }
+    .btn-add-row:hover{background:var(--surface)}
+    .btn-submit{
+      background:var(--violet);color:#fff;border:none;border-radius:6px;
+      padding:7px 14px;font-size:13px;font-weight:600;cursor:pointer;
+    }
+    .btn-submit:hover:not(:disabled){background:var(--violet-hover)}
+    .btn-submit:disabled{opacity:.5;cursor:not-allowed}
+    .btn-close-form{
+      background:transparent;border:none;color:var(--text-3);font-size:13px;cursor:pointer;margin-left:auto;
+    }
+    .btn-close-form:hover{color:var(--text-1)}
+    .invite-result{font-size:12px;margin-top:8px}
+    .invite-result.success{color:var(--emerald)}
+    .invite-result.error{color:var(--red)}
+
+    /* Spinner */
+    .spinner{
+      display:inline-block;width:14px;height:14px;border:2px solid var(--border);
+      border-top-color:var(--violet);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px;
+    }
+    .skeleton{
+      background:linear-gradient(90deg,var(--border) 25%,var(--bg) 50%,var(--border) 75%);
+      background-size:200% 100%;animation:shimmer 1.2s infinite;border-radius:4px;display:inline-block;
+    }
+    @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+  </style>
+</head>
+<body>
+
+<!-- Topbar -->
+<header class="topbar">
+  <a class="topbar-back" href="/">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 3L5 8l5 5"/></svg>
+    Chat
+  </a>
+  <div class="topbar-divider"></div>
+  <span class="topbar-wordmark">Mobius</span>
+  <span class="topbar-section">/ Admin / Clients</span>
+</header>
+
+<div class="layout">
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <span class="sidebar-title">Clients</span>
+      <button class="btn-new" id="btnToggleCreate">
+        <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 1v10M1 6h10"/></svg>
+        New
+      </button>
+    </div>
+
+    <!-- Create panel -->
+    <div class="create-panel" id="createPanel">
+      <label for="inputOrgName">Client name</label>
+      <input type="text" id="inputOrgName" placeholder="Acme Behavioral Health" autocomplete="off"/>
+      <label for="inputState">State</label>
+      <select id="inputState">
+        <option value="">— select state —</option>
+        <option>AL</option><option>AK</option><option>AZ</option><option>AR</option>
+        <option>CA</option><option>CO</option><option>CT</option><option>DE</option>
+        <option>FL</option><option>GA</option><option>HI</option><option>ID</option>
+        <option>IL</option><option>IN</option><option>IA</option><option>KS</option>
+        <option>KY</option><option>LA</option><option>ME</option><option>MD</option>
+        <option>MA</option><option>MI</option><option>MN</option><option>MS</option>
+        <option>MO</option><option>MT</option><option>NE</option><option>NV</option>
+        <option>NH</option><option>NJ</option><option>NM</option><option>NY</option>
+        <option>NC</option><option>ND</option><option>OH</option><option>OK</option>
+        <option>OR</option><option>PA</option><option>RI</option><option>SC</option>
+        <option>SD</option><option>TN</option><option>TX</option><option>UT</option>
+        <option>VT</option><option>VA</option><option>WA</option><option>WV</option>
+        <option>WI</option><option>WY</option><option>DC</option>
+      </select>
+      <div class="create-actions">
+        <button class="btn-create" id="btnCreate" disabled>Set up client</button>
+        <button class="btn-cancel-create" id="btnCancelCreate">Cancel</button>
+      </div>
+      <div class="create-error" id="createError"></div>
+    </div>
+
+    <div class="client-list" id="clientList">
+      <div class="client-empty" id="clientEmpty">No clients yet</div>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main" id="main">
+    <div class="main-empty" id="mainEmpty">
+      <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="1.5">
+        <rect x="4" y="8" width="32" height="24" rx="4"/>
+        <path d="M13 20h14M13 25h8"/>
+      </svg>
+      <p>Select a client to view their setup dashboard,<br>or add a new client to get started.</p>
+    </div>
+    <div id="dashContent" style="display:none">
+      <div class="page-error" id="pageError"></div>
+      <div class="dash-header">
+        <div>
+          <div class="dash-title" id="dashTitle">—</div>
+          <div class="dash-meta" id="dashMeta"></div>
+        </div>
+        <a class="btn-profile" id="btnProfile" href="#" target="_blank">
+          <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 6h8M6 2l4 4-4 4"/></svg>
+          Full profile
+        </a>
+      </div>
+      <div class="progress-track" id="progressTrack">
+        <div class="progress-pill loading"><span class="pill-dot"></span>Loading…</div>
+      </div>
+      <!-- Identity card -->
+      <div class="card" id="cardIdentity">
+        <div class="card-title">Organization</div>
+        <div class="card-row" id="identityRow">
+          <div class="card-field"><div class="field-label">Name</div><div class="field-value skeleton" style="width:140px;height:18px">&nbsp;</div></div>
+          <div class="card-field"><div class="field-label">State</div><div class="field-value skeleton" style="width:40px;height:18px">&nbsp;</div></div>
+          <div class="card-field"><div class="field-label">NPIs</div><div class="field-value skeleton" style="width:30px;height:18px">&nbsp;</div></div>
+          <div class="card-field"><div class="field-label">Locations</div><div class="field-value skeleton" style="width:30px;height:18px">&nbsp;</div></div>
+        </div>
+      </div>
+      <!-- Knowledge base card -->
+      <div class="card" id="cardDatastore">
+        <div class="card-title">Knowledge Base</div>
+        <div class="card-row" id="datastoreRow">
+          <div class="card-field"><div class="field-label">Status</div><div class="field-value skeleton" style="width:80px;height:20px">&nbsp;</div></div>
+          <div class="card-field"><div class="field-label">Documents</div><div class="field-value skeleton" style="width:40px;height:18px">&nbsp;</div></div>
+        </div>
+      </div>
+      <!-- Team card -->
+      <div class="card" id="cardTeam">
+        <div class="card-title">Team</div>
+        <div class="stat-row" id="statRow">
+          <div class="stat-pill"><div class="stat-num skeleton" style="width:28px;height:26px">&nbsp;</div><div class="stat-label">Total</div></div>
+          <div class="stat-pill"><div class="stat-num skeleton" style="width:28px;height:26px">&nbsp;</div><div class="stat-label">Invited</div></div>
+          <div class="stat-pill"><div class="stat-num skeleton" style="width:28px;height:26px">&nbsp;</div><div class="stat-label">Active</div></div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Name</th><th>Email</th><th>Roles</th><th>Status</th><th></th></tr></thead>
+            <tbody id="employeeBody"><tr class="state-row"><td colspan="5"><span class="spinner"></span>Loading…</td></tr></tbody>
+          </table>
+        </div>
+        <div class="invite-toggle">
+          <button class="btn-add" id="btnAdd">+ Invite people</button>
+        </div>
+        <div class="invite-form" id="inviteForm">
+          <div id="inviteRows"></div>
+          <button class="btn-add-row" id="btnAddRow">+ Add another person</button>
+          <div class="roles-section" style="margin-top:12px">
+            <div class="roles-label">Roles for this batch</div>
+            <div class="roles-checks" id="rolesChecks">
+              <div class="role-chip"><input type="checkbox" disabled/><span>Loading…</span></div>
+            </div>
+          </div>
+          <div class="invite-actions">
+            <button class="btn-submit" id="btnSubmit" disabled>Send invites</button>
+            <button class="btn-add-row" id="btnCloseForm">Cancel</button>
+            <div class="invite-result" id="inviteResult"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var STORAGE_KEY = 'mobius.admin.clients';
+  var API = '/api/v1/org';
+  var currentSlug = '';
+  var allRoles = [];
+  var clients = []; // [{slug, name}]
+
+  /* ── Utilities ── */
+  function esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  function initials(name) {
+    return (name || '?').split(/\s+/).slice(0,2).map(function(w){return w[0]||'';}).join('').toUpperCase() || '?';
+  }
+
+  /* ── Client list (localStorage) ── */
+  function loadStoredClients() {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); } catch(e) { return []; }
+  }
+  function saveClients() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(clients));
+  }
+  function upsertClient(slug, name) {
+    var existing = clients.find(function(c){ return c.slug === slug; });
+    if (existing) { existing.name = name || existing.name; }
+    else { clients.unshift({slug: slug, name: name || slug}); }
+    saveClients();
+    renderClientList();
+  }
+
+  function renderClientList() {
+    var list = document.getElementById('clientList');
+    var empty = document.getElementById('clientEmpty');
+    if (!clients.length) {
+      empty.style.display = 'block';
+      list.querySelectorAll('.client-item').forEach(function(el){el.remove();});
+      return;
+    }
+    empty.style.display = 'none';
+    var existing = {};
+    list.querySelectorAll('.client-item').forEach(function(el){ existing[el.dataset.slug] = el; });
+    clients.forEach(function(c, i) {
+      var el = existing[c.slug];
+      if (!el) {
+        el = document.createElement('div');
+        el.className = 'client-item';
+        el.dataset.slug = c.slug;
+        el.innerHTML =
+          '<div class="client-avatar">' + esc(initials(c.name)) + '</div>' +
+          '<div class="client-info">' +
+            '<div class="client-name">' + esc(c.name || c.slug) + '</div>' +
+            '<div class="client-slug">' + esc(c.slug) + '</div>' +
+          '</div>';
+        el.addEventListener('click', function() { selectClient(c.slug); });
+        list.insertBefore(el, list.children[i] || null);
+      } else {
+        el.querySelector('.client-name').textContent = c.name || c.slug;
+        el.querySelector('.client-slug').textContent = c.slug;
+      }
+      el.classList.toggle('active', c.slug === currentSlug);
+    });
+  }
+
+  /* ── Create flow ── */
+  var createOpen = false;
+  document.getElementById('btnToggleCreate').addEventListener('click', function() {
+    createOpen = !createOpen;
+    document.getElementById('createPanel').classList.toggle('open', createOpen);
+    if (createOpen) document.getElementById('inputOrgName').focus();
+  });
+  document.getElementById('btnCancelCreate').addEventListener('click', function() {
+    closeCreatePanel();
+  });
+  function closeCreatePanel() {
+    createOpen = false;
+    document.getElementById('createPanel').classList.remove('open');
+    document.getElementById('inputOrgName').value = '';
+    document.getElementById('inputState').value = '';
+    document.getElementById('btnCreate').disabled = true;
+    document.getElementById('createError').classList.remove('visible');
+    document.getElementById('createError').textContent = '';
+  }
+
+  function validateCreate() {
+    var name = document.getElementById('inputOrgName').value.trim();
+    var state = document.getElementById('inputState').value;
+    document.getElementById('btnCreate').disabled = !(name && state);
+  }
+  document.getElementById('inputOrgName').addEventListener('input', validateCreate);
+  document.getElementById('inputState').addEventListener('change', validateCreate);
+
+  document.getElementById('btnCreate').addEventListener('click', function() {
+    var name = document.getElementById('inputOrgName').value.trim();
+    var state = document.getElementById('inputState').value;
+    var btn = document.getElementById('btnCreate');
+    var errEl = document.getElementById('createError');
+    btn.disabled = true;
+    btn.textContent = '…';
+    errEl.classList.remove('visible');
+    fetch(API + '/setup', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({org_name: name, state: state})
+    })
+    .then(function(r) {
+      if (!r.ok) return r.json().then(function(e){ throw new Error(e.detail || r.status); });
+      return r.json();
+    })
+    .then(function(data) {
+      var slug = data.org_slug;
+      upsertClient(slug, name);
+      closeCreatePanel();
+      selectClient(slug);
+    })
+    .catch(function(e) {
+      errEl.textContent = String(e.message || e);
+      errEl.classList.add('visible');
+      btn.textContent = 'Set up client';
+      btn.disabled = false;
+    });
+  });
+
+  /* ── Select & load dashboard ── */
+  function selectClient(slug) {
+    currentSlug = slug;
+    renderClientList();
+    window.location.hash = slug;
+    document.getElementById('mainEmpty').style.display = 'none';
+    document.getElementById('dashContent').style.display = 'block';
+    showSkeletons();
+    loadDashboard(slug);
+    loadEmployees(slug);
+  }
+
+  function showSkeletons() {
+    document.getElementById('dashTitle').textContent = '—';
+    document.getElementById('dashMeta').textContent = '';
+    document.getElementById('progressTrack').innerHTML =
+      '<div class="progress-pill loading"><span class="pill-dot"></span>Loading…</div>';
+    document.getElementById('identityRow').innerHTML =
+      '<div class="card-field"><div class="field-label">Name</div><div class="field-value skeleton" style="width:140px;height:18px">&nbsp;</div></div>' +
+      '<div class="card-field"><div class="field-label">State</div><div class="field-value skeleton" style="width:40px;height:18px">&nbsp;</div></div>' +
+      '<div class="card-field"><div class="field-label">NPIs</div><div class="field-value skeleton" style="width:30px;height:18px">&nbsp;</div></div>' +
+      '<div class="card-field"><div class="field-label">Locations</div><div class="field-value skeleton" style="width:30px;height:18px">&nbsp;</div></div>';
+    document.getElementById('datastoreRow').innerHTML =
+      '<div class="card-field"><div class="field-label">Status</div><div class="field-value skeleton" style="width:80px;height:20px">&nbsp;</div></div>' +
+      '<div class="card-field"><div class="field-label">Documents</div><div class="field-value skeleton" style="width:40px;height:18px">&nbsp;</div></div>';
+    document.getElementById('statRow').innerHTML =
+      ['Total','Invited','Active'].map(function(l){
+        return '<div class="stat-pill"><div class="stat-num skeleton" style="width:28px;height:26px">&nbsp;</div><div class="stat-label">'+l+'</div></div>';
+      }).join('');
+    document.getElementById('pageError').classList.remove('visible');
+  }
+
+  function loadDashboard(slug) {
+    fetch(API + '/' + encodeURIComponent(slug))
+    .then(function(r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(d) { renderDashboard(d); })
+    .catch(function(e) {
+      showPageError('Could not load org dashboard — ' + String(e.message || e));
+      renderDashboard(null);
+    });
+  }
+
+  function renderDashboard(d) {
+    if (!d) {
+      document.getElementById('progressTrack').innerHTML =
+        '<div class="progress-pill error"><span class="pill-dot"></span>Load error</div>';
+      return;
+    }
+    var id = d.identity || {};
+    var ds = d.datastore || {};
+    var emp = d.employees || {};
+    var disc = d.discovery_summary || {};
+
+    /* Header */
+    var orgName = id.org_name || d.org_slug || currentSlug;
+    document.getElementById('dashTitle').textContent = orgName;
+    var metaParts = [];
+    if (id.state) metaParts.push(id.state);
+    if (d.org_slug) metaParts.push(d.org_slug);
+    document.getElementById('dashMeta').textContent = metaParts.join(' · ');
+
+    /* Update sidebar name */
+    upsertClient(d.org_slug || currentSlug, orgName);
+
+    /* Progress track — identity + datastore only for setup_complete */
+    var identityDone = !!(id.org_name);
+    var dsDone = ds.status === 'ready';
+    var dsProvisioning = ds.status === 'provisioning';
+    var setupComplete = identityDone && dsDone;
+
+    var pills = [
+      { label: 'Identity', done: identityDone, provisioning: false },
+      { label: 'Knowledge base', done: dsDone, provisioning: dsProvisioning },
+    ];
+    document.getElementById('progressTrack').innerHTML = pills.map(function(p) {
+      var cls = p.done ? 'done' : (p.provisioning ? 'pending' : 'loading');
+      var dotCls = p.provisioning ? 'pill-dot spin' : 'pill-dot';
+      var icon = p.done ? '✓ ' : (p.provisioning ? '⟳ ' : '○ ');
+      return '<div class="progress-pill ' + cls + '"><span class="' + dotCls + '"></span>' + esc(icon + p.label) + '</div>';
+    }).join('') +
+    '<div class="progress-pill ' + (emp.total > 0 ? 'done' : 'loading') + '">' +
+      '<span class="pill-dot"></span>' + (emp.total || 0) + ' employee' + (emp.total !== 1 ? 's' : '') +
+    '</div>';
+
+    /* Identity card */
+    var specialties = (disc.specialties || []);
+    document.getElementById('identityRow').innerHTML =
+      '<div class="card-field"><div class="field-label">Name</div><div class="field-value">' + esc(id.org_name || '—') + '</div></div>' +
+      '<div class="card-field"><div class="field-label">State</div><div class="field-value">' + esc(id.state || disc.state || '—') + '</div></div>' +
+      '<div class="card-field"><div class="field-label">NPIs</div><div class="field-value">' + esc(disc.npi_count != null ? String(disc.npi_count) : '—') + '</div></div>' +
+      '<div class="card-field"><div class="field-label">Locations</div><div class="field-value">' + esc(disc.location_count != null ? String(disc.location_count) : '—') + '</div></div>' +
+      (specialties.length ? '<div class="card-field" style="flex-basis:100%"><div class="field-label">Specialties</div><div class="tag-list">' +
+        specialties.map(function(s){ return '<span class="tag">' + esc(s) + '</span>'; }).join('') +
+      '</div></div>' : '');
+
+    /* Datastore card */
+    var dsStatusMap = {ready:'ready',provisioning:'provisioning',failed:'failed',not_provisioned:'not-provisioned'};
+    var dsLabel = {ready:'Ready',provisioning:'Setting up…',failed:'Failed',not_provisioned:'Not provisioned'}[ds.status] || (ds.status || 'Unknown');
+    var dsCls = dsStatusMap[ds.status] || 'not-provisioned';
+    document.getElementById('datastoreRow').innerHTML =
+      '<div class="card-field"><div class="field-label">Status</div><div class="field-value"><span class="status-badge ' + dsCls + '">' + esc(dsLabel) + '</span></div></div>' +
+      '<div class="card-field"><div class="field-label">Documents</div><div class="field-value">' + (ds.doc_count != null ? esc(String(ds.doc_count)) : '—') + '</div></div>';
+
+    /* Stat row */
+    var stats = [
+      {num: emp.total != null ? emp.total : '—', label: 'Total'},
+      {num: emp.invited != null ? emp.invited : '—', label: 'Invited'},
+      {num: emp.active != null ? emp.active : '—', label: 'Active'},
+    ];
+    document.getElementById('statRow').innerHTML = stats.map(function(s){
+      return '<div class="stat-pill"><div class="stat-num">' + esc(String(s.num)) + '</div><div class="stat-label">' + esc(s.label) + '</div></div>';
+    }).join('');
+  }
+
+  /* ── Employees ── */
+  function loadEmployees(slug) {
+    var tbody = document.getElementById('employeeBody');
+    tbody.innerHTML = '<tr class="state-row"><td colspan="5"><span class="spinner"></span>Loading…</td></tr>';
+    fetch(API + '/' + encodeURIComponent(slug) + '/employees')
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function(data) { renderEmployees(data.employees || data); })
+    .catch(function(e) {
+      tbody.innerHTML = '<tr class="state-row"><td colspan="5">Could not load employees — ' + esc(String(e)) + '</td></tr>';
+    });
+  }
+
+  function renderEmployees(list) {
+    var tbody = document.getElementById('employeeBody');
+    if (!list || !list.length) {
+      tbody.innerHTML = '<tr class="state-row"><td colspan="5">No employees yet — invite someone below.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = list.map(function(e) {
+      var name = [e.first_name, e.last_name].filter(Boolean).join(' ') || '—';
+      var roles = (e.roles || []).map(function(r){ return '<span class="role-tag">' + esc(r) + '</span>'; }).join('');
+      var statusVal = (e.status || 'pending').toLowerCase();
+      var statusLabel = statusVal.charAt(0).toUpperCase() + statusVal.slice(1);
+      var reinviteBtn = (statusVal === 'invited' || statusVal === 'pending')
+        ? '<button class="btn-reinvite" data-email="' + esc(e.email) + '">Resend</button>' : '';
+      return '<tr>' +
+        '<td>' + esc(name) + '</td>' +
+        '<td>' + esc(e.email || '—') + '</td>' +
+        '<td><div class="role-tags">' + (roles || '<span style="color:var(--text-3)">—</span>') + '</div></td>' +
+        '<td><span class="emp-status ' + esc(statusVal) + '">' + esc(statusLabel) + '</span></td>' +
+        '<td>' + reinviteBtn + '</td>' +
+      '</tr>';
+    }).join('');
+    tbody.querySelectorAll('.btn-reinvite').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        btn.disabled = true; btn.textContent = '…';
+        fetch(API + '/' + encodeURIComponent(currentSlug) + '/employees/reinvite', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({email: btn.dataset.email})
+        })
+        .then(function(r) { btn.textContent = r.ok ? 'Sent ✓' : 'Error'; })
+        .catch(function() { btn.disabled = false; btn.textContent = 'Error'; });
+      });
+    });
+  }
+
+  /* ── Roles ── */
+  function loadRoles() {
+    fetch(API + '/roles')
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      allRoles = d.roles || [];
+      renderRolesChecks();
+    })
+    .catch(function() { allRoles = []; renderRolesChecks(); });
+  }
+
+  function renderRolesChecks() {
+    var container = document.getElementById('rolesChecks');
+    if (!allRoles.length) {
+      container.innerHTML = '<span style="color:var(--text-3);font-size:12px">No roles configured</span>';
+      return;
+    }
+    container.innerHTML = allRoles.map(function(r) {
+      return '<label class="role-chip"><input type="checkbox" value="' + esc(r.key || r) + '"/><span>' + esc(r.label || r.key || r) + '</span></label>';
+    }).join('');
+  }
+
+  /* ── Invite form ── */
+  function makeInviteRow(removable) {
+    var row = document.createElement('div');
+    row.className = 'invite-row';
+    row.innerHTML =
+      '<input type="text" placeholder="First name" class="f-first"/>' +
+      '<input type="email" placeholder="email@org.com" class="f-email"/>' +
+      (removable ? '<button class="btn-rm-row" title="Remove">×</button>' : '<div></div>');
+    if (removable) {
+      row.querySelector('.btn-rm-row').addEventListener('click', function() {
+        row.remove(); validateSubmit();
+      });
+    }
+    row.querySelectorAll('input').forEach(function(i){ i.addEventListener('input', validateSubmit); });
+    return row;
+  }
+
+  function validateSubmit() {
+    var rows = document.getElementById('inviteRows').querySelectorAll('.invite-row');
+    var valid = false;
+    rows.forEach(function(row) {
+      var email = row.querySelector('.f-email').value.trim();
+      if (email && email.includes('@')) valid = true;
+    });
+    document.getElementById('btnSubmit').disabled = !valid;
+  }
+
+  document.getElementById('btnAdd').addEventListener('click', function() {
+    var form = document.getElementById('inviteForm');
+    form.classList.toggle('open');
+    if (form.classList.contains('open')) {
+      var rows = document.getElementById('inviteRows');
+      if (!rows.children.length) rows.appendChild(makeInviteRow(false));
+    }
+  });
+
+  document.getElementById('btnAddRow').addEventListener('click', function() {
+    document.getElementById('inviteRows').appendChild(makeInviteRow(true));
+  });
+
+  document.getElementById('btnCloseForm').addEventListener('click', function() {
+    document.getElementById('inviteForm').classList.remove('open');
+    document.getElementById('inviteRows').innerHTML = '';
+    document.getElementById('inviteResult').textContent = '';
+    document.getElementById('inviteResult').className = 'invite-result';
+    document.getElementById('btnSubmit').disabled = true;
+  });
+
+  document.getElementById('btnSubmit').addEventListener('click', function() {
+    var rows = Array.from(document.getElementById('inviteRows').querySelectorAll('.invite-row'));
+    var employees = rows.map(function(row) {
+      return {
+        first_name: row.querySelector('.f-first').value.trim() || undefined,
+        email: row.querySelector('.f-email').value.trim()
+      };
+    }).filter(function(e){ return e.email && e.email.includes('@'); });
+
+    var checkedRoles = Array.from(document.querySelectorAll('#rolesChecks input:checked')).map(function(i){return i.value;});
+    if (checkedRoles.length) employees = employees.map(function(e){ return Object.assign({}, e, {roles: checkedRoles}); });
+
+    var whoami = JSON.parse(localStorage.getItem('mobius.user') || 'null');
+    var invitedBy = (whoami && whoami.email) ? whoami.email : undefined;
+
+    var btn = document.getElementById('btnSubmit');
+    var result = document.getElementById('inviteResult');
+    btn.disabled = true; btn.textContent = 'Sending…'; result.textContent = '';
+
+    fetch(API + '/' + encodeURIComponent(currentSlug) + '/employees/invite', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({employees: employees, invited_by: invitedBy})
+    })
+    .then(function(r) {
+      if (!r.ok) return r.json().then(function(e){ throw new Error(e.detail || r.status); });
+      return r.json();
+    })
+    .then(function(data) {
+      var n = (data.invited || employees).length;
+      result.className = 'invite-result success';
+      result.textContent = n + ' invitation' + (n !== 1 ? 's' : '') + ' sent.';
+      btn.textContent = 'Send invites';
+      document.getElementById('inviteRows').innerHTML = '';
+      validateSubmit();
+      loadEmployees(currentSlug);
+      loadDashboard(currentSlug);
+    })
+    .catch(function(e) {
+      result.className = 'invite-result error';
+      result.textContent = String(e.message || e);
+      btn.disabled = false;
+      btn.textContent = 'Send invites';
+    });
+  });
+
+  function showPageError(msg) {
+    var el = document.getElementById('pageError');
+    el.textContent = msg;
+    el.classList.add('visible');
+  }
+
+  /* ── Bootstrap ── */
+  clients = loadStoredClients();
+
+  // Seed with user's home org
+  fetch('/api/v1/users/me')
+  .then(function(r) { return r.ok ? r.json() : Promise.reject(r.status); })
+  .then(function(profile) {
+    var slug = profile.org_slug || profile.default_org_slug || '';
+    if (slug && !clients.find(function(c){ return c.slug === slug; })) {
+      clients.push({slug: slug, name: slug});
+      saveClients();
+    }
+    renderClientList();
+    loadRoles();
+    // Auto-select from hash, then first client
+    var hashSlug = window.location.hash.replace('#','').trim();
+    var target = (hashSlug && clients.find(function(c){ return c.slug === hashSlug; }))
+      ? hashSlug
+      : (clients.length ? clients[0].slug : null);
+    if (target) selectClient(target);
+  })
+  .catch(function() {
+    renderClientList();
+    loadRoles();
+    var hashSlug = window.location.hash.replace('#','').trim();
+    if (hashSlug) { clients.push({slug: hashSlug, name: hashSlug}); renderClientList(); selectClient(hashSlug); }
+    else if (clients.length) selectClient(clients[0].slug);
+  });
+
+  window.addEventListener('hashchange', function() {
+    var slug = window.location.hash.replace('#','').trim();
+    if (slug && slug !== currentSlug) {
+      if (!clients.find(function(c){ return c.slug === slug; })) {
+        clients.unshift({slug: slug, name: slug}); saveClients();
+      }
+      selectClient(slug);
+    }
+  });
+
+})();
+</script>
+</body>
+</html>
