@@ -351,13 +351,17 @@ Final answer (have enough evidence to answer now):
   "confidence": "high"
 }}
 
-FORMAT RULES for the "answer" field (always follow):
+FORMAT RULES for the "answer" field (defaults — USER PREFERENCES below override):
 • Start with ONE bold sentence that gives the direct bottom line: **The answer here.**
 • Follow with 2–4 short bullet points (each 10–25 words) with key supporting details.
 • If a concrete next action is supported by evidence (deadline, email, phone, portal URL), add: → Next step: [action]
 • Use **bold** for entity names, deadlines, codes, and contact info so they scan quickly.
 • Do NOT write paragraphs. Do NOT repeat the question. Do NOT hedge vaguely.
 • If the answer is genuinely unknown after searching, say so in ONE sentence and give the best next step (e.g. which phone number to call).
+• USER PREFERENCES (appended below, if any) specify voice, tone, and structure. When they conflict
+  with these defaults — e.g. "terse/pager" means verdict-only fragments without bullets, "friendly"
+  means a warm human opener before the bold line — the USER PREFERENCES win. Adapt the answer
+  field's structure and voice to honor them exactly.
 
 NEVER write prose outside the JSON. If you have the answer, put it formatted per the rules above in the "answer" field.
 Prose (even correct prose) breaks the pipeline — use JSON every time.
