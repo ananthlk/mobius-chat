@@ -264,6 +264,9 @@ SET_ENV_VARS=(
     "MOBIUS_REACT_CRITIC=${MOBIUS_REACT_CRITIC:-}"
     "MOBIUS_REACT_CORPUS_CONFIDENCE_MIN=${MOBIUS_REACT_CORPUS_CONFIDENCE_MIN:-}"
     "CHAT_HIPAA_MODE=${CHAT_HIPAA_MODE}"
+    # Dev-only: gate injection for HIPAA Cases 3/4 testing (__gate_phi__ / __gate_indeterminate).
+    # Set to "1" in dev .env; leave unset or "0" in prod. Persisted here so redeploys don't drop it.
+    "HIPAA_GATE_OVERRIDE_ENABLED=${HIPAA_GATE_OVERRIDE_ENABLED:-0}"
     # Secret Manager loader needs this to know which project to fetch
     # secrets from. Cloud Run sets GOOGLE_CLOUD_PROJECT automatically,
     # but CHAT_GCP_PROJECT wins if set — useful during debugging.
