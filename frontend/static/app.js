@@ -9283,6 +9283,358 @@ function run() {
     if (nudge)
       nudge.hidden = isOnboarded;
   }
+  let _tmShownThisSession = false;
+  function _showTrainingMode(name, arrival, force = false) {
+    const wrap = document.getElementById("trainingMode");
+    if (!wrap)
+      return;
+    if (!force) {
+      if (_tmShownThisSession)
+        return;
+      if (sessionStorage.getItem("_tm_skip") === "1")
+        return;
+    }
+    _tmShownThisSession = true;
+    const esc = (s) => String(s).replace(
+      /[&<>"']/g,
+      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
+    );
+    const SCENARIOS = [
+      {
+        k: "transport",
+        label: "\u{1F68C} A patient can't get to appointments",
+        act: "patient_outreach",
+        q: "Does Medicaid cover rides to behavioral-health appointments?",
+        tones: [
+          ["professional", "Yes. Florida Medicaid covers non-emergency medical transportation to behavioral-health appointments. Rides are arranged through the plan's contracted transportation broker, and most plans require one to three days' advance notice. I can retrieve this patient's plan and its booking procedure."],
+          ["friendly", "Yes, and this one's easy \u2014 Medicaid rides are free for covered visits \u{1F68C} You just book through the plan's ride line a couple of days ahead. Want me to grab the booking number for this patient's plan?"],
+          ["concise", "Covered (NEMT). Plan broker, 1\u20133d notice. Number?"]
+        ],
+        depths: [
+          ["beginner", "Yes, covered \u2705 Every FL Medicaid plan includes free rides to covered appointments \u2014 it's called NEMT. To set one up, call the plan's ride line ideally 3 days ahead. Want me to pull this patient's plan, get the booking number, and walk you through it?"],
+          ["regular", "Yes \u2014 NEMT is covered \u2705 Book through the plan's broker ~1\u20133 days ahead. Want the plan-specific booking line?"],
+          ["expert", "Covered \u2705 NEMT via plan broker; 1\u20133d notice; standing-order option for recurring visits. Pull member plan \u2192 broker line?"]
+        ]
+      },
+      {
+        k: "pcp",
+        label: "\u{1FA7A} A patient needs a PCP assigned or switched",
+        act: "check_in_patients",
+        q: "How does a member change their PCP?",
+        tones: [
+          ["professional", "Members may change their primary care provider through the plan's member portal or by calling member services. Changes take effect on the first of the following month; urgent assignments for unassigned members can be expedited."],
+          ["friendly", "Happens all the time \u2014 quick fix! The member calls member services or uses the portal, picks the new PCP, and it kicks in on the 1st of next month. No PCP at all? The plan can rush it."],
+          ["concise", "Portal or member services. Effective 1st next month. Expedite if unassigned. [src]"]
+        ],
+        depths: [
+          ["beginner", "Here's the whole path \u2705 The member calls the plan's member-services line (or uses the portal) and requests the change; it usually takes effect the 1st of the following month. If urgent \u2014 like no PCP at all \u2014 plans can expedite. Want me to look up the plan's number?"],
+          ["regular", "Plan portal or member services; effective 1st of next month; expedite path for unassigned \u2705 Want the plan's number?"],
+          ["expert", "Portal/MS line; eff. 1st next mo.; expedite path for unassigned members. Registry has the MS number. Pull it?"]
+        ]
+      },
+      {
+        k: "denial",
+        label: "\u274C A claim came back denied \u2014 now what?",
+        act: "rework_denials",
+        q: "Why was this claim denied and how do I fix it?",
+        tones: [
+          ["professional", "This claim was denied with CARC 197: prior authorization not on file. The denial is typically recoverable through a retroactive authorization request, where the payer permits it, or a formal appeal supported by medical-necessity documentation. I can prepare the appeal letter."],
+          ["friendly", "Okay, decoded it \u2014 the payer says nobody got prior auth first (code 197). Don't worry, this one's usually saveable: retro-auth or appeal. I can draft the letter with you \u{1F4AA}"],
+          ["concise", "CARC 197 \u2014 no PA. Retro-auth or appeal. Draft?"]
+        ],
+        depths: [
+          ["beginner", "The code (CARC 197) means the payer didn't find a prior authorization \u2705 Two ways forward \u2014 ask for a retroactive auth (some payers allow it) or appeal with documentation. I can check this payer's exact rules and draft the appeal with you. Start there?"],
+          ["regular", "CARC 197 \u2014 missing prior auth \u2705 This payer allows retro-auth requests; otherwise appeal. Draft the letter?"],
+          ["expert", "197 \xB7 no PA on file. Retro window per payer playbook; else appeal w/ med-nec. appeals_assemble_letter ready."]
+        ]
+      },
+      {
+        k: "newprov",
+        label: "\u{1FAAA} A new clinician needs to start billing",
+        act: "credentialing",
+        q: "Is our new clinician enrolled with Medicaid yet?",
+        tones: [
+          ["professional", "The clinician does not yet appear on the state's Provider Master List; enrollment remains pending. Claims submitted before the effective date will be denied. I will monitor the roster and notify you when the status changes."],
+          ["friendly", "Checked \u2014 they're not on the state roster quite yet, so hold their claims for now (billing early = automatic denials). I'll keep an eye on it and ping you the day they flip to payable!"],
+          ["concise", "Not on PML. Hold claims. Watching; will notify on flip."]
+        ],
+        depths: [
+          ["beginner", "Not enrolled yet \u2705 Until the state lists them (the PML), any claim under their NPI will deny. Hold their claims \u2014 I'll watch the roster and tell you the day they're payable. Want me to show you their full credentialing card?"],
+          ["regular", "Pending \u2014 not on PML yet \u2705 Hold claims; I'll notify on the flip. Want the credentialing card?"],
+          ["expert", "PML: absent. NPPES: active. Hold claims; watcher set on status flip. check_provider_credentialing for full panel view."]
+        ]
+      },
+      {
+        k: "coverage",
+        label: "\u{1F4C4} Not sure what a payer actually covers",
+        act: "submit_claims",
+        q: "Does this payer cover this service via telehealth?",
+        tones: [
+          ["professional", "Yes. This payer covers the service when delivered via telehealth, subject to the telehealth modifier requirement, and reimburses at parity with in-person delivery. Source: payer telehealth policy, page 12."],
+          ["friendly", "Good news \u2014 covered over telehealth! One gotcha: the claim needs the telehealth modifier or it'll bounce. Want me to pin the policy page so your team has the receipt?"],
+          ["concise", "Covered via telehealth. Modifier req'd. Parity. [src p.12]"]
+        ],
+        depths: [
+          ["beginner", "Yes, it's covered via telehealth \u2705 One thing to get right: the claim needs a telehealth modifier or it may deny. Here's the policy page as your receipt. Want me to note which of your common services have telehealth quirks?"],
+          ["regular", "Covered via telehealth, modifier required \u2705 Policy page attached. Want the full telehealth rules for this payer?"],
+          ["expert", "Covered; parity; GT/95 modifier req. Source pinned. Cross-payer telehealth matrix available on ask."]
+        ]
+      },
+      {
+        k: "rates",
+        label: "\u{1F4C8} Are we getting paid fairly?",
+        act: "strategy",
+        q: "What's the market rate for this service code?",
+        tones: [
+          ["professional", "Your realized rate for this code is at the 34th percentile of comparable providers. Closing the gap to the market median would represent a material per-unit increase. I can quantify the annualized difference and identify the peer group used for comparison."],
+          ["friendly", "Honest answer? You're leaving money on the table here \u2014 34th percentile for this code. The median would mean real dollars per visit. Want the yearly number? It tends to get people's attention \u{1F609}"],
+          ["concise", "P34 vs peer P50. Gap material. Annualized number?"]
+        ],
+        depths: [
+          ["beginner", "You're being paid below market on this code \u2705 Comparable providers get more per unit \u2014 you're at the 34th percentile, from real claims data. Want me to show the annual dollar gap and which peer group I used?"],
+          ["regular", "P34 vs peers on this code \u2705 Median would mean more per unit. Annualized gap + peer group on request."],
+          ["expert", "P34 realized vs peer P50; claims-level basis; get_org_rate_gap for annualized + get_rate_trends for trajectory."]
+        ]
+      }
+    ];
+    const AUTONOMY = [
+      { k: "automatic", b: "Just handle it", s: "I'll act on routine things and tell you after." },
+      { k: "confirm_first", b: "Show me before you act", s: "I'll line it up, you press go." },
+      { k: "manual", b: "Walk me through it", s: "We do it together, step by step." }
+    ];
+    const HESITATIONS = [
+      { k: "wrong", b: "It'll get things wrong", emo: "\u{1F62C}", fearQ: "\u201CWhat if it\u2019s wrong \u2014 it\u2019s my name on this.\u201D", fearA: "No source, no claim. Every answer shows receipts \u2014 click any citation. Unsure? I say so out loud." },
+      { k: "phi", b: "Patient data safety", emo: "\u{1F512}", fearQ: "\u201CIs patient information safe in here?\u201D", fearA: "Uploads get scanned for PHI automatically and stay private by default. Nothing shares itself." },
+      { k: "complex", b: "Too complicated for me", emo: "\u{1F92F}", fearQ: "\u201CThis looks complicated\u2026\u201D", fearA: "You just did the hardest part \u2014 clicking buttons. Say \u201Cshow me\u201D anytime and I\u2019ll walk you through it." },
+      { k: "none", b: "Honestly? Nothing \u{1F60E}", emo: "\u{1F60E}", fearQ: "\u201CImpress me.\u201D", fearA: "Open the platform schematic \u2014 30 modules, honest live/planned status on every one. Then ask me anything on it." }
+    ];
+    const PERSONAS = {
+      patient_outreach: { hook: "Ask freely. The compliance worrying is my job.", tryits: ["Upload this document and tell me what\u2019s in it", "What\u2019s the prior auth rule for outpatient?", "Who can see my uploads?"] },
+      check_in_patients: { hook: "The coworker who always knows \u2014 and never sighs.", tryits: ["What does code H0019 mean?", "Show me how to change my answer style", "Where did my last conversation go?"] },
+      rework_denials: { hook: "Denials, codes, timely filing \u2014 answered with receipts.", tryits: ["What\u2019s the timely filing rule for Sunshine?", "Is Dr. Chen enrolled with Medicaid?", "Remind me to rework that H0019 denial"] },
+      credentialing: { hook: "\u201CIs this provider payable?\u201D \u2014 one question, whole answer.", tryits: ["How is our panel doing?", "NPPES errors for Acme Health?", "Show me the credentialing report"] },
+      submit_claims: { hook: "Denials, codes, timely filing \u2014 answered with receipts.", tryits: ["Does this payer cover telehealth?", "What\u2019s the timely filing rule here?", "Draft an appeal for CARC 197"] },
+      strategy: { hook: "Real claims data. Real benchmarks. Zero slideware.", tryits: ["How big is the FL Medicaid BH market?", "Benchmark my organization", "Where are we underpaid?"] },
+      default: { hook: "Ask me anything about payers, policies, or your documents.", tryits: ["What can Mobius do for me?", "What does code H0019 mean?", "Show me around"] }
+    };
+    let step = 0;
+    let acts = [];
+    let toneKey = null;
+    let autoKey = null;
+    let expLevel = null;
+    let hesList = [];
+    function _writePrefs(body) {
+      void apiFetch(`${authApiBase}/auth/preferences`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...body, source: "training_mode" })
+      }).catch(() => {
+      });
+    }
+    function _finishOnboarding() {
+      void apiFetch(`${authApiBase}/auth/onboarding`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({})
+      }).catch(() => {
+      });
+      _syncOnboardingNudge(true);
+    }
+    function _dismiss(permanent) {
+      wrap.hidden = true;
+      wrap.innerHTML = "";
+      if (permanent) {
+        _finishOnboarding();
+      } else {
+        sessionStorage.setItem("_tm_skip", "1");
+      }
+    }
+    function prog(n) {
+      return `<div class="tm-prog">${[0, 1, 2, 3, 4].map(
+        (i) => `<span class="tm-prog__dot${i < n ? " tm-prog__dot--on" : ""}"></span>`
+      ).join("")}</div>`;
+    }
+    function mainScenario() {
+      return SCENARIOS.find((s) => s.k === acts[0]) ?? SCENARIOS[2];
+    }
+    function _bindX() {
+      wrap.querySelector(".tm-x")?.addEventListener("click", () => _dismiss(true));
+    }
+    function _render() {
+      if (step === 0) {
+        wrap.innerHTML = `<div class="tm-card">
+          <button class="tm-x" aria-label="Don't show again">&times;</button>
+          ${prog(0)}
+          <h2 class="tm-h2">Hey ${esc(name)} \u{1F44B} I'm Mobius.</h2>
+          <p class="tm-sub">${arrival === "invited" ? "Your org set you up \u2014 zero forms." : "Welcome in."} Give me <strong>90 seconds</strong>: you click, I learn how you like to work. Retrain me anytime.</p>
+          <div class="tm-row">
+            <button class="tm-primary" data-go>Let\u2019s go \u2192</button>
+            <button class="tm-ghost" data-skip>skip \u2014 I\u2019ll explore on my own</button>
+          </div></div>`;
+        _bindX();
+        wrap.querySelector("[data-go]")?.addEventListener("click", () => {
+          step = 1;
+          _render();
+        });
+        wrap.querySelector("[data-skip]")?.addEventListener("click", () => _dismiss(false));
+      } else if (step === 1) {
+        wrap.innerHTML = `<div class="tm-card">
+          <button class="tm-x" aria-label="Don't show again">&times;</button>
+          ${prog(1)}
+          <h2 class="tm-h2">What walked through your door this week?</h2>
+          <p class="tm-sub">Pick the situations you actually deal with \u2014 first pick becomes the thread we use to tune everything.</p>
+          <div class="tm-grid">${SCENARIOS.map((a) => `<button class="tm-act${acts.includes(a.k) ? " tm-act--on" : ""}" data-k="${esc(a.k)}">${esc(a.label)}${acts[0] === a.k ? '<span class="tm-act__star">\u2605 your main thing</span>' : ""}</button>`).join("")}</div>
+          <div class="tm-row"><button class="tm-primary" data-next${acts.length ? "" : " disabled"}>That\u2019s me \u2192</button></div></div>`;
+        _bindX();
+        wrap.querySelectorAll(".tm-act").forEach((b) => b.addEventListener("click", () => {
+          const k = b.dataset.k;
+          acts = acts.includes(k) ? acts.filter((x) => x !== k) : [...acts, k];
+          _render();
+        }));
+        wrap.querySelector("[data-next]")?.addEventListener("click", () => {
+          if (!acts.length)
+            return;
+          _writePrefs({ activities: acts.map((k) => SCENARIOS.find((s) => s.k === k)?.act ?? k) });
+          step = 2;
+          _render();
+        });
+      } else if (step === 2) {
+        const sc = mainScenario();
+        wrap.innerHTML = `<div class="tm-card">
+          <button class="tm-x" aria-label="Don't show again">&times;</button>
+          ${prog(2)}
+          <h2 class="tm-h2">Your situation. Three ways to answer it.</h2>
+          <p class="tm-sub">You asked: <strong>\u201C${esc(sc.q)}\u201D</strong> \u2014 no labels, no right answer. Tap the reply you\u2019d rather read:</p>
+          ${sc.tones.map((t) => `<button class="tm-tone" data-k="${esc(t[0])}"><p>${esc(t[1])}</p></button>`).join("")}</div>`;
+        _bindX();
+        wrap.querySelectorAll(".tm-tone").forEach((b) => b.addEventListener("click", () => {
+          toneKey = b.dataset.k;
+          _writePrefs({ tone: toneKey });
+          step = 3;
+          _render();
+        }));
+      } else if (step === 3 && !autoKey) {
+        wrap.innerHTML = `<div class="tm-card">
+          <button class="tm-x" aria-label="Don't show again">&times;</button>
+          ${prog(3)}
+          <h2 class="tm-h2">A denial needs reworking.</h2>
+          <p class="tm-sub">Real scenario \u2014 this is <strong>sensitive</strong> territory (billing). I found the fix. What should I do?</p>
+          ${AUTONOMY.map((a) => `<button class="tm-bigchip" data-k="${esc(a.k)}"><strong>${esc(a.b)}</strong><span>${esc(a.s)}</span></button>`).join("")}</div>`;
+        _bindX();
+        wrap.querySelectorAll(".tm-bigchip").forEach((b) => b.addEventListener("click", () => {
+          autoKey = b.dataset.k;
+          _writePrefs({ autonomy_sensitive: autoKey });
+          _render();
+        }));
+      } else if (step === 3 && autoKey) {
+        const sc = mainScenario();
+        const autoLabel = AUTONOMY.find((a) => a.k === autoKey)?.b ?? "show me first";
+        wrap.innerHTML = `<div class="tm-card">
+          <button class="tm-x" aria-label="Don't show again">&times;</button>
+          ${prog(3)}
+          <h2 class="tm-h2">Deal: \u201C${esc(autoLabel)}\u201D for sensitive work.</h2>
+          <p class="tm-sub">One more \u2014 <strong>how much should I explain?</strong> Same question, three depths. Tap what you\u2019d actually want:</p>
+          ${sc.depths.map((d) => `<button class="tm-tone" data-k="${esc(d[0])}"><p>${esc(d[1])}</p></button>`).join("")}</div>`;
+        _bindX();
+        wrap.querySelectorAll(".tm-tone").forEach((b) => b.addEventListener("click", () => {
+          expLevel = b.dataset.k;
+          _writePrefs({ experience_level: expLevel });
+          step = 4;
+          _render();
+        }));
+      } else if (step === 4) {
+        wrap.innerHTML = `<div class="tm-card">
+          <button class="tm-x" aria-label="Don't show again">&times;</button>
+          ${prog(4)}
+          <h2 class="tm-h2">Last one. Anything make you hesitant?</h2>
+          <p class="tm-sub">Pick all that apply \u2014 honest answers get honest features. (Optional.)</p>
+          ${HESITATIONS.map((h) => `<button class="tm-bigchip${hesList.includes(h.k) ? " tm-bigchip--on" : ""}" data-k="${esc(h.k)}"><strong>${esc(h.b)}${hesList.includes(h.k) ? " \u2713" : ""}</strong></button>`).join("")}
+          <div class="tm-row">
+            <button class="tm-primary" data-done>${hesList.length ? "That\u2019s them \u2192" : "Nothing, honestly \u2192"}</button>
+            <button class="tm-ghost" data-skiph>skip this one</button>
+          </div></div>`;
+        _bindX();
+        wrap.querySelectorAll(".tm-bigchip").forEach((b) => b.addEventListener("click", () => {
+          const k = b.dataset.k;
+          hesList = hesList.includes(k) ? hesList.filter((x) => x !== k) : [...hesList, k];
+          _render();
+        }));
+        const advance = () => {
+          if (hesList.length)
+            _writePrefs({ hesitations: hesList });
+          _finishOnboarding();
+          step = 5;
+          _render();
+        };
+        wrap.querySelector("[data-done]")?.addEventListener("click", advance);
+        wrap.querySelector("[data-skiph]")?.addEventListener("click", advance);
+      } else {
+        _renderGraduation();
+      }
+    }
+    function _renderGraduation() {
+      const sc = mainScenario();
+      const actKey = SCENARIOS.find((s) => s.k === acts[0])?.act ?? "default";
+      const pa = PERSONAS[actKey] ?? PERSONAS["default"];
+      const hes = HESITATIONS.find((h) => h.k === hesList[0]) ?? HESITATIONS[0];
+      const autoLabel = AUTONOMY.find((a) => a.k === autoKey)?.b;
+      const learned = [
+        acts.length ? `\u2605 ${esc(acts[0])}${acts.length > 1 ? ` +${acts.length - 1}` : ""}` : "explorer",
+        toneKey ? `\u{1F5E3} ${esc(toneKey)}` : "\u{1F5E3} professional",
+        autoLabel ? `\u{1F39A} ${esc(autoLabel)}` : "\u{1F39A} show me first",
+        expLevel ? `\u{1F9E0} ${esc(expLevel)}` : null,
+        hesList.length ? `\u{1F62C} ${esc(HESITATIONS.find((h) => h.k === hesList[0])?.b ?? hesList[0])}${hesList.length > 1 ? ` +${hesList.length - 1}` : ""}` : null
+      ].filter((x) => x !== null);
+      const tryIts = acts.length ? acts.slice(0, 3).map((k) => SCENARIOS.find((s) => s.k === k)?.q ?? "").filter(Boolean) : pa.tryits.slice(0, 3);
+      wrap.innerHTML = `<div class="tm-card tm-card--graduation">
+        <button class="tm-x" aria-label="Close">&times;</button>
+        ${prog(5)}
+        <h2 class="tm-h2">Trained. Here\u2019s your Mobius, ${esc(name)} \u{1F393}</h2>
+        <div class="tm-learned">${learned.map((t) => `<span>${t}</span>`).join("")}</div>
+        <p class="tm-edit-note">Edit any of it in Preferences, or retrain by sending <code>/training</code>.</p>
+        <p class="tm-hook">${esc(pa.hook)}</p>
+        <div class="tm-flip" data-flipped="false">
+          <div class="tm-flip-inner">
+            <div class="tm-face tm-face--q">${esc(hes.emo)} ${esc(hes.fearQ)}<span class="tm-tap">tap to flip</span></div>
+            <div class="tm-face tm-face--a">\u2705 ${esc(hes.fearA)}</div>
+          </div>
+        </div>
+        <div class="tm-tryits">${tryIts.map((q) => `<button class="tm-try" data-q="${esc(q)}">${esc(q)}</button>`).join("")}</div>
+        <div class="tm-composer">
+          <input id="tmInput" class="tm-composer-input" placeholder="ask what you came for \u2014 or tap a starter above">
+          <button class="tm-composer-send" id="tmSend">\u27A4</button>
+        </div></div>`;
+      wrap.querySelector(".tm-x")?.addEventListener("click", () => {
+        wrap.hidden = true;
+        wrap.innerHTML = "";
+      });
+      wrap.querySelector(".tm-flip")?.addEventListener("click", (e) => {
+        const f = e.currentTarget;
+        f.dataset.flipped = f.dataset.flipped === "true" ? "false" : "true";
+      });
+      wrap.querySelectorAll(".tm-try").forEach((b) => b.addEventListener("click", () => {
+        const ci = document.getElementById("tmInput");
+        if (ci)
+          ci.value = b.dataset.q;
+      }));
+      const fire = () => {
+        const ci = document.getElementById("tmInput");
+        const v = (ci?.value ?? "").trim();
+        if (!v)
+          return;
+        wrap.hidden = true;
+        wrap.innerHTML = "";
+        sendMessage(v);
+      };
+      document.getElementById("tmSend")?.addEventListener("click", fire);
+      document.getElementById("tmInput")?.addEventListener("keydown", (e) => {
+        if (e.key === "Enter")
+          fire();
+      });
+    }
+    wrap.hidden = false;
+    _render();
+  }
   let cachedProfile = null;
   function syncAnswerInsightsCheckbox() {
     const cb = document.getElementById("prefShowAnswerInsights");
@@ -9434,10 +9786,16 @@ function run() {
       const p = user && user.profile || null;
       cachedUserProfileNested = p && typeof p === "object" ? p : null;
       if (user) {
+        const nameFromMe = user.preferred_name || user.first_name || user.display_name || (user.email ? user.email.split("@")[0] : null);
         if (sidebarUserName && (!sidebarUserName.textContent || sidebarUserName.textContent === "Guest")) {
-          const nameFromMe = user.preferred_name || user.first_name || user.display_name || (user.email ? user.email.split("@")[0] : null);
           if (nameFromMe)
             sidebarUserName.textContent = nameFromMe;
+        }
+        const tmName = nameFromMe ?? "there";
+        if (user.is_onboarded === false) {
+          _showTrainingMode(tmName, "invited");
+        } else if (new URL(location.href).searchParams.get("welcome") === "1") {
+          _showTrainingMode(tmName, "invited", true);
         }
         _syncOnboardingNudge(user.is_onboarded !== false);
       }
@@ -10123,6 +10481,12 @@ ${message}`;
     }
     if (!message)
       return;
+    if (message === "/training" || message === "/welcome") {
+      inputEl.value = "";
+      const tmName = cachedProfile?.["preferred_name"] || cachedProfile?.["first_name"] || (sidebarUserName?.textContent ?? "there");
+      _showTrainingMode(tmName.trim() || "there", "invited", true);
+      return;
+    }
     if (sendBtn.disabled)
       return;
     activeClarificationDraft = null;
