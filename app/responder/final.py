@@ -326,10 +326,26 @@ def format_response(
             prompt_system = cfg.prompts.integrator_blended_system
         # 2026-05-06: integrator/consolidator is the user-facing voice —
         # tone + ai_experience_level matter most here. Splice user
-        # profile rendered_prompt into the system block.
+        # profile rendered_prompt into the system block with an explicit
+        # VOICE DIRECTIVE header so it wins over section-count defaults.
+        # Without the header the model reads rendered_prompt as a
+        # postscript and the structural JSON schema overrides it
+        # (e.g. "no bullet scaffolding" loses to "2-3 sections required").
         try:
-            from app.pipeline.personalization import splice_user_profile
-            prompt_system = splice_user_profile(prompt_system, user_profile)
+            _rp = (user_profile or {}).get("rendered_prompt", "") if isinstance(user_profile, dict) else ""
+            if _rp and _rp.strip():
+                prompt_system = (
+                    f"{prompt_system}\n\n"
+                    "VOICE DIRECTIVE (overrides section-count defaults above):\n"
+                    f"{_rp.strip()}\n"
+                    "For tone=concise: reduce sections to 0–1 with 1–2 bullets max; "
+                    "direct_answer carries the full verdict.\n"
+                    "For tone=friendly: sections allowed; use conversational bullets and direct_answer warmth.\n"
+                    "For tone=professional: follow mode-specific section counts; formal precise language."
+                )
+            elif user_profile:
+                from app.pipeline.personalization import splice_user_profile
+                prompt_system = splice_user_profile(prompt_system, user_profile)
         except Exception:
             pass  # never let personalization break a real turn
         prompt_user = cfg.prompts.integrator_user_template.format(
