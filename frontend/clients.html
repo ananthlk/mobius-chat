@@ -581,7 +581,7 @@
       '<div class="card-field"><div class="field-label">Status</div><div class="field-value skeleton" style="width:80px;height:20px">&nbsp;</div></div>' +
       '<div class="card-field"><div class="field-label">Documents</div><div class="field-value skeleton" style="width:40px;height:18px">&nbsp;</div></div>';
     document.getElementById('statRow').innerHTML =
-      ['Total','Invited','Active'].map(function(l){
+      ['Total','Active'].map(function(l){
         return '<div class="stat-pill"><div class="stat-num skeleton" style="width:28px;height:26px">&nbsp;</div><div class="stat-label">'+l+'</div></div>';
       }).join('');
     document.getElementById('pageError').classList.remove('visible');
@@ -664,7 +664,6 @@
     /* Stat row */
     var stats = [
       {num: emp.total != null ? emp.total : '—', label: 'Total'},
-      {num: emp.invited != null ? emp.invited : '—', label: 'Invited'},
       {num: emp.active != null ? emp.active : '—', label: 'Active'},
     ];
     document.getElementById('statRow').innerHTML = stats.map(function(s){
