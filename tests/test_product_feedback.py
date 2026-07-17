@@ -414,6 +414,22 @@ class TestSkillHandler:
         api.post_product_feedback(body, user_id="real-user-123")
         assert marked == ["real-user-123"]   # genuine user feedback → cadence advances
 
+    def test_graduation_trigger_is_harvested_skips_funnel_and_cadence(self, monkeypatch):
+        # training-mode graduation intent: user-AUTHORED verbatim but system-filed
+        # (product-awareness, chat rev 00495). Harvested → persists + routes, but
+        # must NOT log a funnel event or reset the new user's feedback cadence.
+        import app.api.product_feedback as api
+        monkeypatch.setattr(api.store, "insert_open_feedback", lambda **k: "fid")
+        logged, marked = [], []
+        monkeypatch.setattr(api.store, "log_event", lambda **k: logged.append(k))
+        monkeypatch.setattr(api.store, "mark_captured", lambda uid: marked.append(uid))
+        body = api.OpenFeedbackBody(verbatim="can I bulk-check credentialing for 40 providers?",
+                                    category="feature_request", trigger="graduation")
+        r = api.post_product_feedback(body, user_id="new-user-999")
+        assert r["routed_to"] == "product_backlog"   # feature_request → capability_demand
+        assert logged == []                            # not in the user funnel
+        assert marked == []                            # cadence NOT reset for a new user
+
     def test_classify_service_down_still_persists(self, monkeypatch, _skill):
         # _classify's own fallback returns a best-effort dict; handler must still write
         monkeypatch.setattr(_skill.store, "insert_open_feedback", lambda **k: "fid-x")

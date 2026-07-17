@@ -26,6 +26,14 @@ _CATEGORIES = set(store.ROUTING.keys())
 _SURVEY_TYPES = set(store.SCORE_SCALES.keys())
 _FOLLOWUP_PROMPT = "What's the main reason for your score?"
 
+# Provenance tiers (docs/product-awareness-feedback-contract.md). Only genuinely
+# user-VOICED triggers count in the human prompt→capture funnel and advance a
+# user's periodic-ask cadence. Everything else is HARVESTED — the content may be
+# user-authored (e.g. "graduation" = a new user's first typed question, or
+# "auto_harvest" = a product_help miss) but the FILING is system-driven, so it
+# must NOT log a funnel event or reset the user's feedback-nudge counters.
+_USER_VOICED_TRIGGERS = {"inline", "on_demand", "periodic"}
+
 # Only the auto-harvested doc-freshness signals may be closed over HTTP — never
 # user feedback (bug/usability/…). Keeps the unauth drain endpoint narrow.
 _SWEEPABLE = {"docs_gap", "doc_stale"}
@@ -98,8 +106,11 @@ def post_product_feedback(
     if not (body.verbatim or "").strip():
         raise HTTPException(status_code=400, detail="verbatim is required")
     category = body.category if body.category in _CATEGORIES else "other"
-    # Agent-filed signal (external agent, no user session) vs. real user feedback.
-    is_agent_signal = bool(body.source) or body.trigger == "agent_signal"
+    # Harvested (system-filed) vs. genuinely user-voiced feedback. Harvested =
+    # a `source` is set OR the trigger isn't one of the user-voiced ones
+    # (agent_signal, auto_harvest, graduation, …). Harvested writes skip the
+    # user funnel + cadence; only user-voiced ones count.
+    is_harvested = bool(body.source) or body.trigger not in _USER_VOICED_TRIGGERS
     row_user = body.source or user_id           # source wins for provenance
     fid = store.insert_open_feedback(
         trigger=body.trigger,
@@ -117,9 +128,10 @@ def post_product_feedback(
         parent_feedback_id=body.parent_feedback_id,
     )
     # The durable product_feedback row above is the record. The funnel event +
-    # cadence advance are USER-only — an agent_signal isn't part of the human
-    # prompt→capture funnel and must not touch a person's periodic-ask counters.
-    if not is_agent_signal:
+    # cadence advance are USER-only — harvested signals (agent_signal,
+    # auto_harvest, graduation) aren't part of the human prompt→capture funnel
+    # and must not touch a person's periodic-ask counters.
+    if not is_harvested:
         store.log_event(trigger=body.trigger, action="submitted", user_id=user_id,
                         thread_id=body.thread_id, kind="open", category=category, feedback_id=fid)
         if user_id:
