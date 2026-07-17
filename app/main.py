@@ -1306,22 +1306,29 @@ def _run_hipaa_gate_sync(
             document_id[:8], action_taken, str(_pub_resp)[:80],
         )
     else:
-        # Block: delete the extract-only doc (no embeddings yet → clean purge)
+        # Block: mark the doc phi_blocked (not embedded, TTL will purge it).
+        # We PATCH rather than DELETE so the file_hash stays in the documents
+        # table — next upload of the same file hits the dedup path and gets
+        # the cached HIPAA verdict instead of running the full pipeline again.
         try:
-            _del_req = _urllib_req.Request(
+            _patch_body = _json_mod.dumps({"status": "phi_blocked"}).encode()
+            _patch_req = _urllib_req.Request(
                 f"{rag_url}/documents/{document_id}",
-                method="DELETE",
+                data=_patch_body,
+                headers={"Content-Type": "application/json"},
+                method="PATCH",
             )
-            with _urllib_req.urlopen(_del_req, timeout=30) as _r:
+            with _urllib_req.urlopen(_patch_req, timeout=30) as _r:
                 pass
             logger.info(
-                "[hipaa-gate] deleted blocked doc=%s action=%s",
+                "[hipaa-gate] marked phi_blocked doc=%s action=%s",
                 document_id[:8], action_taken,
             )
         except Exception as _de:
-            # Non-fatal: TTL will purge extract-only docs eventually.
+            # Non-fatal: TTL will purge extract-only docs eventually, and the
+            # doc stays unembedded so it can't pollute retrieval.
             logger.warning(
-                "[hipaa-gate] DELETE failed for doc=%s (will expire by TTL): %s",
+                "[hipaa-gate] PATCH phi_blocked failed for doc=%s (non-fatal): %s",
                 document_id[:8], _de,
             )
 
@@ -1544,6 +1551,7 @@ def _handle_instant_rag_upload(
                             _run_phi_classification_async(document_id=existing_doc_id, rag_url=rag_url)
                     except Exception as _phi_e:
                         logger.warning("§3.3 dedup-classify check failed for doc=%s: %s", existing_doc_id[:8], _phi_e)
+                _is_phi_blocked = bool(detail.get("phi_blocked"))
                 _dup_resp: dict = {
                     "upload_id": existing_doc_id,
                     "org_id": "",
@@ -1555,11 +1563,15 @@ def _handle_instant_rag_upload(
                     "envelope_id": existing_doc_id,
                     "document_id": existing_doc_id,
                     "verification_tier": "rag",
-                    "status": "ready",
+                    "status": "phi_blocked" if _is_phi_blocked else "ready",
                     "chunks_count": int(detail.get("chunks_count") or 0),
-                    "message": "This file was already uploaded — using the existing copy.",
+                    "message": (
+                        "This file was previously blocked by the HIPAA gate."
+                        if _is_phi_blocked
+                        else "This file was already uploaded — using the existing copy."
+                    ),
                     "published_at": detail.get("published_at"),
-                    "ux_path": "duplicate",
+                    "ux_path": "phi_blocked" if _is_phi_blocked else "duplicate",
                     "page_count": int(detail.get("page_count") or 1),
                     "eta_minutes": 0,
                     "eta_seconds": 0,
