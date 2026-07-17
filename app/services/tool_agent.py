@@ -820,7 +820,9 @@ def _run_google_search(
             f"Cite sources by number [1], [2], etc.\n\nResults:\n{snippets}\n\n"
             f"Question: {query}\n\nAnswer:"
         )
-        raw, usage = asyncio.run(provider.generate_with_usage(prompt))
+        # max_tokens cap prevents the synthesis from returning raw snippet
+        # dumps when the model decides to quote everything verbatim.
+        raw, usage = asyncio.run(provider.generate_with_usage(prompt, max_tokens=400))
         answer = (raw or "").strip()
         sources = [{
             "index": 1,
@@ -831,8 +833,10 @@ def _run_google_search(
         return (answer, sources, usage, RETRIEVAL_SIGNAL_GOOGLE_ONLY)
     except Exception as e:
         logger.warning("LLM summarization failed, using raw results: %s", e)
+        # Truncate raw snippets so the ReAct model doesn't receive a
+        # multi-thousand-word observation and echo it verbatim.
         return (
-            snippets,
+            snippets[:800],
             [{"document_name": "Web search", "source_type": "external"}],
             None,
             RETRIEVAL_SIGNAL_GOOGLE_ONLY,
