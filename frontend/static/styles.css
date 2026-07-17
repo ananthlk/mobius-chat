@@ -1270,6 +1270,7 @@ body {
   flex-direction: column;
   gap: 18px;
 }
+.landing-card[hidden] { display: none; }
 
 .landing-brand {
   display: flex;
