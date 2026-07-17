@@ -70,6 +70,7 @@ _ENV_TO_SECRET: dict[str, str] = {
     "OPENAI_API_KEY": "openai-api-key",
     "JWT_SECRET": "jwt-secret",              # shared with mobius-os
     "CHAT_DB_PASSWORD": "db-password-mobius-chat",
+    "MOBIUS_ORG_AGENT_INTERNAL_KEY": "org-agent-internal-key",
 }
 
 
