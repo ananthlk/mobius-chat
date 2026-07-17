@@ -9368,6 +9368,11 @@ function run(): void {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
+      }).then(() => {
+        // Refresh the profile cache so the graduation question goes out with
+        // the freshly-rendered_prompt from the onboarding PUT above — not the
+        // stale profile from session boot.
+        void _fetchNestedUserProfile();
       }).catch(() => {});
       _syncOnboardingNudge(true);
     }
@@ -9556,10 +9561,14 @@ function run(): void {
         _sendTrainingEvent("graduation_question_fired", src, v);
         if (src === "typed") {
           // Typed first-question is fresh intent — route to PA's gap writer.
+          const _gradAreaTags: Record<string, string> = {
+            rework_denials: "appeals", credentialing: "credentialing",
+          };
+          const _gradTag = _gradAreaTags[actKey] ?? "rag";
           void apiFetch(`${API_BASE}/chat/product-feedback`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ verbatim: v, category: "feature_request", trigger: "graduation" }),
+            body: JSON.stringify({ verbatim: v, category: "feature_request", trigger: "graduation", area_tags: [_gradTag] }),
           }).catch(() => {});
         }
         sendMessage(v);

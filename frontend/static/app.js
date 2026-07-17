@@ -9445,6 +9445,8 @@ function run() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({})
+      }).then(() => {
+        void _fetchNestedUserProfile();
       }).catch(() => {
       });
       _syncOnboardingNudge(true);
@@ -9645,10 +9647,15 @@ function run() {
         wrap.innerHTML = "";
         _sendTrainingEvent("graduation_question_fired", src, v);
         if (src === "typed") {
+          const _gradAreaTags = {
+            rework_denials: "appeals",
+            credentialing: "credentialing"
+          };
+          const _gradTag = _gradAreaTags[actKey] ?? "rag";
           void apiFetch(`${API_BASE}/chat/product-feedback`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ verbatim: v, category: "feature_request", trigger: "graduation" })
+            body: JSON.stringify({ verbatim: v, category: "feature_request", trigger: "graduation", area_tags: [_gradTag] })
           }).catch(() => {
           });
         }
