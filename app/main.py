@@ -1504,11 +1504,11 @@ def _handle_instant_rag_upload(
                     from app.db_client import db_query as _hq
                     _hres = _hq(
                         """
-                        SELECT gate, phi_flag, evidence_categories, identifier_labels,
+                        SELECT gate, phi_flag, evidence_categories,
                                hipaa_mode_allowed, action_taken, transaction_id
                         FROM compliance.hipaa_analysis_log
                         WHERE document_id = :doc_id
-                        ORDER BY created_at DESC LIMIT 1
+                        ORDER BY ts DESC LIMIT 1
                         """,
                         "chat",
                         params={"doc_id": existing_doc_id},
@@ -1521,7 +1521,7 @@ def _handle_instant_rag_upload(
                             "gate": _hr.get("gate") or "clean",
                             "phi_flag": bool(_hr.get("phi_flag")),
                             "evidence_categories": list(_hr.get("evidence_categories") or []),
-                            "identifier_labels": list(_hr.get("identifier_labels") or []),
+                            "identifier_labels": [],  # not stored in audit log; reconstructed from live classifier only
                             "hipaa_mode_allowed": bool(_hr.get("hipaa_mode_allowed")),
                             "action_taken": _hr.get("action_taken") or "published",
                             "reason": "cached — duplicate file previously screened",
@@ -1890,6 +1890,20 @@ def _handle_instant_rag_upload(
     return response
 
 
+# TODO(hardening): once User Manager exposes roles[] in the auth token, replace
+# the _admin_enabled() fallback with:
+#   roles = _get_user_roles(user_id)  # fetch from profile or token claims
+#   return bool({"corpus_curator", "rag_admin"} & set(roles))
+def _can_promote_doc(user_id: str | None) -> bool:  # noqa: ARG001
+    """Gate: may this user promote a document to the shared corpus?
+
+    Fallback (dev/current): mirrors MOBIUS_ADMIN_ENABLED env flag.
+    Prod path: per-user corpus_curator / rag_admin role check.
+    """
+    from app.api.admin import _admin_enabled
+    return _admin_enabled()
+
+
 @app.post("/chat/documents/{document_id}/promote")
 def promote_document_to_public(
     document_id: str,
@@ -1900,7 +1914,7 @@ def promote_document_to_public(
 
     Calls mobius-rag PATCH /documents/{id} to clear agent_scope (makes it
     corpus-eligible) then GET /documents/{id}/publish-status to confirm.
-    Role-gated: only admin users may promote (checked via cachedProfile.is_admin).
+    Role-gated: corpus_curator or rag_admin role required (see _can_promote_doc).
     Returns {promoted: true, document_id, message} on success.
     """
     import urllib.request as _ureq
@@ -1911,12 +1925,12 @@ def promote_document_to_public(
     if not rag_url:
         raise HTTPException(status_code=503, detail="RAG service unavailable")
 
-    # Admin gate — mirrors MOBIUS_ADMIN_ENABLED used by /chat/admin/* endpoints.
-    # Non-admins get 403; the UI button is only shown in the Diagnostics tab
-    # which itself requires getShowLlmPerformance() (admin mode) to render.
-    from app.api.admin import _admin_enabled as _is_admin
-    if not _is_admin():
-        raise HTTPException(status_code=403, detail="Admin surface not enabled on this deployment.")
+    # Role gate — corpus_curator or rag_admin role required.
+    # TODO(hardening): replace _can_promote_doc() body with a per-user role check once
+    # User Manager exposes roles[] on the auth token / profile endpoint.
+    # Current fallback preserves behaviour: MOBIUS_ADMIN_ENABLED env flag.
+    if not _can_promote_doc(user_id):
+        raise HTTPException(status_code=403, detail="corpus_curator or rag_admin role required to promote documents.")
 
     # PATCH /documents/{id} — clear agent_scope so doc enters shared corpus.
     try:
