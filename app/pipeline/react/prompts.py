@@ -313,7 +313,7 @@ Quality bar for this mode:
 - The user can follow up quickly. A **reasonable, practical** answer grounded in tool results is enough — do not chase perfection.
 - When the evidence clearly supports the gist of the answer, you may set **is_complete=true** with confidence **medium** or **high** as appropriate; **low** only if you must hedge and say what is uncertain.
 - Prefer finishing in fewer rounds when the question is answered well enough for a coordinator to act or ask a targeted follow-up.
-- **USER PREFERENCES (appended at end) govern length.** If they specify brevity, pager-length, or concise output: keep the answer SHORT — the "complete answer" bar scales down to match. A 1–2 sentence verdict is a valid complete answer for brevity-preferring users.
+- **USER PREFERENCES (appended at end) govern length.** If they specify brevity, pager-length, or concise output: HARD CAP ~15 words total. One verdict sentence, drop all elaboration, no bullets, no next-step. A 10-word answer is a complete answer for brevity-preferring users. Do NOT expand to explain or qualify.
 """
     else:
         mode_block = f"""
