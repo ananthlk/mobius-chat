@@ -16,6 +16,9 @@ interface MobiusChatUserProfile {
   preferred_name?: string;
   email?: string;
   activities?: string[];
+  // TODO(hardening): User Manager will add roles[] once the field shape is settled.
+  // Roles that gate corpus promotion: "corpus_curator" | "rag_admin"
+  roles?: string[];
 }
 
 /** Clarification option: server-authored choices (jurisdiction, NPI pick, future workflows) */
@@ -6169,6 +6172,18 @@ function getShowLlmPerformance(profile: MobiusChatUserProfile | null): boolean {
   return LLM_PERF_ACTIVITY_ALIASES.some((a) => acts.includes(a));
 }
 
+// TODO(hardening): once User Manager exposes roles[] on the profile, replace the
+// getShowLlmPerformance fallback below with a real role check and remove the fallback.
+// Roles that grant promote rights: "corpus_curator" | "rag_admin"
+const PROMOTE_ROLES = ["corpus_curator", "rag_admin"] as const;
+
+function canPromoteToPublic(profile: MobiusChatUserProfile | null): boolean {
+  const roles = profile?.roles ?? [];
+  if (roles.some((r) => (PROMOTE_ROLES as readonly string[]).includes(r))) return true;
+  // Fallback: until roles field is populated, mirror the diagnostics-tab visibility gate.
+  return getShowLlmPerformance(profile);
+}
+
 /** Admin + failed QA: hide source confidence (QA panel carries the verdict). */
 function adminShouldSuppressConfidenceForQc(
   profile: MobiusChatUserProfile | null,
@@ -9734,10 +9749,10 @@ function run(): void {
       body.appendChild(table);
 
       // "Make public" action zone — gated on ceiling=public-eligible AND phi_flag===false
-      // AND canPromote from auth context (cachedProfile admin flag, NOT the diagnostics payload).
+      // AND canPromote from auth context (cachedProfile roles, NOT the diagnostics payload).
       // Keeping authz out of hipaa_diagnostics matters: that payload is re-read from the
       // audit row on the dedup-cached-verdict path and must be auth-free.
-      const canPromote = getShowLlmPerformance(cachedProfile);
+      const canPromote = canPromoteToPublic(cachedProfile);
       if (isPublicEligible && !hd.phi_flag && canPromote) {
         const docIdForPromote = (hd as any).document_id || "";
         const promoteRow = document.createElement("div");
@@ -12248,6 +12263,11 @@ function run(): void {
       // PHI card: skip when gate already ran (hipaa_diagnostics present) —
       // we have the synchronous verdict; no need to poll. Fall back to the
       // polling card for duplicate/legacy paths that don't run the gate.
+      // When hipaaD is present, evict any lingering phi-rec-card from a
+      // prior upload so we don't show two promote affordances in one session.
+      if (hipaaD) {
+        document.querySelector(".phi-rec-card")?.remove();
+      }
       if (uploadedDocId && !redirectUrl && !hipaaD) {
         _showPhiRecommendationCard(filename, uploadedDocId);
       } else if (hipaaD && hipaaD.action_taken === "published_private") {

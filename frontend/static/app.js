@@ -6786,6 +6786,13 @@ function getShowLlmPerformance(profile) {
     return true;
   return LLM_PERF_ACTIVITY_ALIASES.some((a) => acts.includes(a));
 }
+var PROMOTE_ROLES = ["corpus_curator", "rag_admin"];
+function canPromoteToPublic(profile) {
+  const roles = profile?.roles ?? [];
+  if (roles.some((r) => PROMOTE_ROLES.includes(r)))
+    return true;
+  return getShowLlmPerformance(profile);
+}
 function adminShouldSuppressConfidenceForQc(profile, qc) {
   if (!getShowLlmPerformance(profile))
     return false;
@@ -9789,7 +9796,7 @@ function run() {
         ${hd.identifier_labels.length ? `<tr><td class="diag-hipaa-key">Identifiers</td><td class="diag-hipaa-val">${hd.identifier_labels.map((l) => `<span class="diag-hipaa-pill">${escapeHtml4(l)}</span>`).join(" ")}</td></tr>` : ""}
         <tr><td class="diag-hipaa-key">Transaction</td><td class="diag-hipaa-val diag-hipaa-mono">${escapeHtml4(hd.transaction_id || "\u2014")}</td></tr>`;
       body.appendChild(table);
-      const canPromote = getShowLlmPerformance(cachedProfile);
+      const canPromote = canPromoteToPublic(cachedProfile);
       if (isPublicEligible && !hd.phi_flag && canPromote) {
         const docIdForPromote = hd.document_id || "";
         const promoteRow = document.createElement("div");
@@ -11910,6 +11917,9 @@ ${message}`;
           document_name: filename
         });
         return data;
+      }
+      if (hipaaD) {
+        document.querySelector(".phi-rec-card")?.remove();
       }
       if (uploadedDocId && !redirectUrl && !hipaaD) {
         _showPhiRecommendationCard(filename, uploadedDocId);
