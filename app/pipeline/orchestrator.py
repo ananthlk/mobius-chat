@@ -1284,7 +1284,50 @@ def _publish_completed(ctx: PipelineContext, t0_start: float) -> None:
             _write_cache_shadow_log(ctx, payload)
     except Exception as e:
         logger.debug("cache shadow log write failed: %s", e)
+    # Fire post-synthesis grading callbacks for RAG OBSERVE rows.
+    # corpus_search registers these when skip_synthesis=True (chat handles LLM);
+    # we PATCH back with the final answer so synthesis_grade + ledger populate.
+    _fire_rag_grade_callbacks(ctx)
     logger.info("Response published for %s", ctx.correlation_id[:8])
+
+
+def _fire_rag_grade_callbacks(ctx: PipelineContext) -> None:
+    """PATCH each pending RAG OBSERVE row with the final answer for grading.
+
+    chat callers pass skip_synthesis=True to the RAG service, so synthesis_grade
+    is NULL on prod rows. This fires after the chat LLM produces final_message,
+    calling PATCH /observe/decisions/{rag_agent_id}/grade on each pending entry.
+    Fire-and-forget threads; grading failures are logged but never block the turn.
+    """
+    pending = getattr(ctx, "pending_rag_grade_calls", None) or []
+    if not pending:
+        return
+    final_answer = ctx.final_message or ""
+    if not final_answer:
+        return
+    import json as _json
+    import threading
+    import urllib.request
+
+    def _call(entry: dict) -> None:
+        try:
+            base_url = entry["base_url"].rstrip("/")
+            rag_agent_id = entry["rag_agent_id"]
+            url = f"{base_url}/api/observe/decisions/{rag_agent_id}/grade"
+            body = _json.dumps({
+                "answer": final_answer,
+                "query": entry.get("query") or "",
+                "chunks": entry.get("chunks") or [],
+            }).encode()
+            req = urllib.request.Request(url, data=body, method="PATCH",
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                r.read()
+        except Exception as exc:
+            logger.debug("rag grade callback failed for %s: %s", entry.get("rag_agent_id"), exc)
+
+    for entry in pending:
+        threading.Thread(target=_call, args=(entry,), daemon=True).start()
 
 
 def _write_cache_shadow_log(ctx, payload: dict) -> None:

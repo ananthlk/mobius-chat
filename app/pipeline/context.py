@@ -228,5 +228,11 @@ class PipelineContext:
     #           "▶ Show me" chip by the frontend (renderDemoChip).
     demo: dict[str, Any] | None = None
 
+    # Pending post-synthesis grading callbacks for RAG OBSERVE rows.
+    # Populated by corpus_search skill; fired in _publish_completed with the
+    # final answer so synthesis_grade + per_claim_ledger populate on prod rows.
+    # Each entry: {"base_url": str, "rag_agent_id": str, "query": str, "chunks": list}
+    pending_rag_grade_calls: list = field(default_factory=list)
+
     def has_thread(self) -> bool:
         return bool(self.thread_id and (self.thread_id or "").strip())

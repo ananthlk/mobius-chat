@@ -680,6 +680,22 @@ def _run(call: SkillCall) -> SkillEnvelope:
             )
         )
 
+    # ── Register post-synthesis grading callback ─────────────────────
+    # _observe_async on the RAG side is called before chat synthesis
+    # (skip_synthesis=True), so synthesis_grade is NULL on prod rows.
+    # After the chat LLM generates the final answer, _publish_completed
+    # fires these callbacks to PATCH the row with grounding grades.
+    _rag_agent_id = telemetry.get("agent_id") or ""
+    if _rag_agent_id and base_url and chunks:
+        _pending = getattr(call.pipeline_ctx, "pending_rag_grade_calls", None)
+        if _pending is not None:
+            _pending.append({
+                "base_url": base_url,
+                "rag_agent_id": _rag_agent_id,
+                "query": query,
+                "chunks": chunks,
+            })
+
     # ── Persist to retrieval_runs (best-effort) ──────────────────────
     correlation_id = getattr(call.pipeline_ctx, "correlation_id", "") or ""
     _persist_retrieval_run(
