@@ -1656,6 +1656,7 @@ def _handle_instant_rag_upload(
                 "reason": gate_result.get("reason", ""),
                 "transaction_id": gate_result.get("transaction_id", ""),
                 "document_name": filename,
+                "document_id": str(document_id),
             }
             if _action == "blocked_phi":
                 _msg = (
@@ -1884,8 +1885,66 @@ def _handle_instant_rag_upload(
             "reason": gate_result.get("reason", ""),
             "transaction_id": gate_result.get("transaction_id", ""),
             "document_name": filename,
+            "document_id": str(document_id),
         }
     return response
+
+
+@app.post("/chat/documents/{document_id}/promote")
+def promote_document_to_public(
+    document_id: str,
+    body: dict = Body(default={}),
+    user_id: str | None = Depends(require_user),
+) -> dict[str, Any]:
+    """Promote an instant-RAG document from agent_scope=chat to the shared corpus.
+
+    Calls mobius-rag PATCH /documents/{id} to clear agent_scope (makes it
+    corpus-eligible) then GET /documents/{id}/publish-status to confirm.
+    Role-gated: only admin users may promote (checked via cachedProfile.is_admin).
+    Returns {promoted: true, document_id, message} on success.
+    """
+    import urllib.request as _ureq
+    import urllib.error as _uerr
+    import json as _j
+
+    rag_url = (os.environ.get("MOBIUS_RAG_URL") or "").rstrip("/")
+    if not rag_url:
+        raise HTTPException(status_code=503, detail="RAG service unavailable")
+
+    # Admin gate — mirrors MOBIUS_ADMIN_ENABLED used by /chat/admin/* endpoints.
+    # Non-admins get 403; the UI button is only shown in the Diagnostics tab
+    # which itself requires getShowLlmPerformance() (admin mode) to render.
+    from app.api.admin import _admin_enabled as _is_admin
+    if not _is_admin():
+        raise HTTPException(status_code=403, detail="Admin surface not enabled on this deployment.")
+
+    # PATCH /documents/{id} — clear agent_scope so doc enters shared corpus.
+    try:
+        patch_body = _j.dumps({"source_metadata": {"agent_scope": None}}).encode()
+        patch_req = _ureq.Request(
+            f"{rag_url}/documents/{document_id}",
+            data=patch_body,
+            headers={"Content-Type": "application/json"},
+            method="PATCH",
+        )
+        with _ureq.urlopen(patch_req, timeout=15) as _r:
+            _r.read()
+    except _uerr.HTTPError as _he:
+        body_err = ""
+        try:
+            body_err = _he.read().decode("utf-8", errors="replace")[:200]
+        except Exception:
+            pass
+        raise HTTPException(status_code=_he.code, detail=f"RAG promote failed: {body_err or str(_he)}")
+    except Exception as _e:
+        raise HTTPException(status_code=502, detail=f"RAG promote error: {str(_e)[:200]}")
+
+    logger.info("[promote] doc=%s promoted to public by user=%s", document_id[:8], user_id)
+    return {
+        "promoted": True,
+        "document_id": document_id,
+        "message": "Document promoted to shared corpus. It will appear in search results on the next index cycle.",
+    }
 
 
 @app.post("/chat/upload")

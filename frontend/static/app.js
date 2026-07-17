@@ -9752,9 +9752,10 @@ function run() {
     if (opts.hipaaDiagnostics) {
       const hd = opts.hipaaDiagnostics;
       const hipaaSection = document.createElement("div");
-      hipaaSection.className = "diag-hipaa-section";
+      hipaaSection.className = "diag-hipaa-section collapsed";
       const gateLabel = hd.gate === "clean" ? "clean" : hd.gate === "indeterminate" ? "indeterminate" : "phi";
       const gateColor = hd.gate === "clean" ? "#22c55e" : hd.gate === "indeterminate" ? "#f59e0b" : "#ef4444";
+      const isPublicEligible = hd.action_taken === "published";
       let ceilingLabel = "\u2014";
       if (hd.action_taken === "published")
         ceilingLabel = "public-eligible";
@@ -9764,19 +9765,73 @@ function run() {
         ceilingLabel = "blocked";
       else if (hd.action_taken === "blocked_indeterminate")
         ceilingLabel = "blocked (indeterminate)";
-      hipaaSection.innerHTML = `
-        <div class="diag-hipaa-header">
-          <span class="diag-hipaa-title">HIPAA Screening</span>
-          <span class="diag-hipaa-gate" style="color:${gateColor}; font-weight:600;">${gateLabel.toUpperCase()}</span>
-        </div>
-        <table class="diag-hipaa-table">
-          <tr><td class="diag-hipaa-key">Document</td><td class="diag-hipaa-val">${escapeHtml4(hd.document_name)}</td></tr>
-          <tr><td class="diag-hipaa-key">PHI detected</td><td class="diag-hipaa-val">${hd.phi_flag ? "Yes" : "No"}</td></tr>
-          <tr><td class="diag-hipaa-key">Classification ceiling</td><td class="diag-hipaa-val">${escapeHtml4(ceilingLabel)}</td></tr>
-          <tr><td class="diag-hipaa-key">HIPAA mode</td><td class="diag-hipaa-val">${hd.hipaa_mode_allowed ? "ON" : "OFF"}</td></tr>
-          ${hd.identifier_labels.length ? `<tr><td class="diag-hipaa-key">Identifiers</td><td class="diag-hipaa-val">${hd.identifier_labels.map((l) => `<span class="diag-hipaa-pill">${escapeHtml4(l)}</span>`).join(" ")}</td></tr>` : ""}
-          <tr><td class="diag-hipaa-key">Transaction</td><td class="diag-hipaa-val diag-hipaa-mono">${escapeHtml4(hd.transaction_id || "\u2014")}</td></tr>
-        </table>`;
+      const header = document.createElement("button");
+      header.type = "button";
+      header.className = "diag-hipaa-toggle";
+      header.innerHTML = `
+        <span class="diag-hipaa-chevron">\u25B6</span>
+        <span class="diag-hipaa-title">HIPAA Screening</span>
+        <span class="diag-hipaa-gate" style="color:${gateColor};">${gateLabel.toUpperCase()}</span>
+        <span class="diag-hipaa-summary-pill">${escapeHtml4(ceilingLabel)}</span>`;
+      header.addEventListener("click", () => {
+        const collapsed = hipaaSection.classList.toggle("collapsed");
+        header.querySelector(".diag-hipaa-chevron").textContent = collapsed ? "\u25B6" : "\u25BC";
+      });
+      const body = document.createElement("div");
+      body.className = "diag-hipaa-body";
+      const table = document.createElement("table");
+      table.className = "diag-hipaa-table";
+      table.innerHTML = `
+        <tr><td class="diag-hipaa-key">Document</td><td class="diag-hipaa-val">${escapeHtml4(hd.document_name)}</td></tr>
+        <tr><td class="diag-hipaa-key">PHI detected</td><td class="diag-hipaa-val">${hd.phi_flag ? "Yes" : "No"}</td></tr>
+        <tr><td class="diag-hipaa-key">Classification ceiling</td><td class="diag-hipaa-val">${escapeHtml4(ceilingLabel)}</td></tr>
+        <tr><td class="diag-hipaa-key">HIPAA mode</td><td class="diag-hipaa-val">${hd.hipaa_mode_allowed ? "ON" : "OFF"}</td></tr>
+        ${hd.identifier_labels.length ? `<tr><td class="diag-hipaa-key">Identifiers</td><td class="diag-hipaa-val">${hd.identifier_labels.map((l) => `<span class="diag-hipaa-pill">${escapeHtml4(l)}</span>`).join(" ")}</td></tr>` : ""}
+        <tr><td class="diag-hipaa-key">Transaction</td><td class="diag-hipaa-val diag-hipaa-mono">${escapeHtml4(hd.transaction_id || "\u2014")}</td></tr>`;
+      body.appendChild(table);
+      if (isPublicEligible && hd.transaction_id) {
+        const docIdForPromote = hd.document_id || "";
+        const promoteRow = document.createElement("div");
+        promoteRow.className = "diag-hipaa-promote-row";
+        const promoteBtn = document.createElement("button");
+        promoteBtn.type = "button";
+        promoteBtn.className = "diag-hipaa-promote-btn";
+        promoteBtn.textContent = "Make public";
+        promoteBtn.title = "Promote this document to the shared corpus (admin only)";
+        promoteBtn.addEventListener("click", async () => {
+          if (!docIdForPromote) {
+            showChatStatusBanner("Cannot promote \u2014 document ID unknown.", 4e3);
+            return;
+          }
+          promoteBtn.disabled = true;
+          promoteBtn.textContent = "Promoting\u2026";
+          try {
+            const token = window.__mobiusAuthToken || "";
+            const res = await fetch(`/chat/documents/${encodeURIComponent(docIdForPromote)}/promote`, {
+              method: "POST",
+              headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+              body: JSON.stringify({ visibility: "public" })
+            });
+            if (res.ok) {
+              promoteBtn.textContent = "\u2713 Public";
+              promoteBtn.classList.add("diag-hipaa-promote-btn--done");
+            } else {
+              const err = await res.json().catch(() => ({}));
+              promoteBtn.textContent = "Make public";
+              promoteBtn.disabled = false;
+              showChatStatusBanner(`Promote failed: ${err.detail || res.status}`, 5e3);
+            }
+          } catch (_e) {
+            promoteBtn.textContent = "Make public";
+            promoteBtn.disabled = false;
+            showChatStatusBanner("Promote request failed \u2014 check connection.", 4e3);
+          }
+        });
+        promoteRow.appendChild(promoteBtn);
+        body.appendChild(promoteRow);
+      }
+      hipaaSection.appendChild(header);
+      hipaaSection.appendChild(body);
       diagPanel.appendChild(hipaaSection);
     }
     const tabBar = bubble.querySelector(".ac-tab-bar");

@@ -9691,10 +9691,11 @@ function run(): void {
     if (opts.hipaaDiagnostics) {
       const hd = opts.hipaaDiagnostics;
       const hipaaSection = document.createElement("div");
-      hipaaSection.className = "diag-hipaa-section";
+      hipaaSection.className = "diag-hipaa-section collapsed";
 
       const gateLabel = hd.gate === "clean" ? "clean" : hd.gate === "indeterminate" ? "indeterminate" : "phi";
       const gateColor = hd.gate === "clean" ? "#22c55e" : hd.gate === "indeterminate" ? "#f59e0b" : "#ef4444";
+      const isPublicEligible = hd.action_taken === "published";
 
       // ceiling classification from action_taken
       let ceilingLabel = "—";
@@ -9703,19 +9704,82 @@ function run(): void {
       else if (hd.action_taken === "blocked") ceilingLabel = "blocked";
       else if (hd.action_taken === "blocked_indeterminate") ceilingLabel = "blocked (indeterminate)";
 
-      hipaaSection.innerHTML = `
-        <div class="diag-hipaa-header">
-          <span class="diag-hipaa-title">HIPAA Screening</span>
-          <span class="diag-hipaa-gate" style="color:${gateColor}; font-weight:600;">${gateLabel.toUpperCase()}</span>
-        </div>
-        <table class="diag-hipaa-table">
-          <tr><td class="diag-hipaa-key">Document</td><td class="diag-hipaa-val">${escapeHtml(hd.document_name)}</td></tr>
-          <tr><td class="diag-hipaa-key">PHI detected</td><td class="diag-hipaa-val">${hd.phi_flag ? "Yes" : "No"}</td></tr>
-          <tr><td class="diag-hipaa-key">Classification ceiling</td><td class="diag-hipaa-val">${escapeHtml(ceilingLabel)}</td></tr>
-          <tr><td class="diag-hipaa-key">HIPAA mode</td><td class="diag-hipaa-val">${hd.hipaa_mode_allowed ? "ON" : "OFF"}</td></tr>
-          ${hd.identifier_labels.length ? `<tr><td class="diag-hipaa-key">Identifiers</td><td class="diag-hipaa-val">${hd.identifier_labels.map(l => `<span class="diag-hipaa-pill">${escapeHtml(l)}</span>`).join(" ")}</td></tr>` : ""}
-          <tr><td class="diag-hipaa-key">Transaction</td><td class="diag-hipaa-val diag-hipaa-mono">${escapeHtml(hd.transaction_id || "—")}</td></tr>
-        </table>`;
+      // Collapsible header (collapsed by default — summary line visible)
+      const header = document.createElement("button");
+      header.type = "button";
+      header.className = "diag-hipaa-toggle";
+      header.innerHTML = `
+        <span class="diag-hipaa-chevron">▶</span>
+        <span class="diag-hipaa-title">HIPAA Screening</span>
+        <span class="diag-hipaa-gate" style="color:${gateColor};">${gateLabel.toUpperCase()}</span>
+        <span class="diag-hipaa-summary-pill">${escapeHtml(ceilingLabel)}</span>`;
+      header.addEventListener("click", () => {
+        const collapsed = hipaaSection.classList.toggle("collapsed");
+        header.querySelector(".diag-hipaa-chevron")!.textContent = collapsed ? "▶" : "▼";
+      });
+
+      // Expandable body (hidden when collapsed)
+      const body = document.createElement("div");
+      body.className = "diag-hipaa-body";
+
+      const table = document.createElement("table");
+      table.className = "diag-hipaa-table";
+      table.innerHTML = `
+        <tr><td class="diag-hipaa-key">Document</td><td class="diag-hipaa-val">${escapeHtml(hd.document_name)}</td></tr>
+        <tr><td class="diag-hipaa-key">PHI detected</td><td class="diag-hipaa-val">${hd.phi_flag ? "Yes" : "No"}</td></tr>
+        <tr><td class="diag-hipaa-key">Classification ceiling</td><td class="diag-hipaa-val">${escapeHtml(ceilingLabel)}</td></tr>
+        <tr><td class="diag-hipaa-key">HIPAA mode</td><td class="diag-hipaa-val">${hd.hipaa_mode_allowed ? "ON" : "OFF"}</td></tr>
+        ${hd.identifier_labels.length ? `<tr><td class="diag-hipaa-key">Identifiers</td><td class="diag-hipaa-val">${hd.identifier_labels.map(l => `<span class="diag-hipaa-pill">${escapeHtml(l)}</span>`).join(" ")}</td></tr>` : ""}
+        <tr><td class="diag-hipaa-key">Transaction</td><td class="diag-hipaa-val diag-hipaa-mono">${escapeHtml(hd.transaction_id || "—")}</td></tr>`;
+      body.appendChild(table);
+
+      // "Make public" action — only for public-eligible (clean gate, published action)
+      if (isPublicEligible && hd.transaction_id) {
+        // Extract document_id from context: stored on hd as document_id if present,
+        // else parse from the bubble's data attribute.
+        const docIdForPromote = (hd as any).document_id || "";
+        const promoteRow = document.createElement("div");
+        promoteRow.className = "diag-hipaa-promote-row";
+        const promoteBtn = document.createElement("button");
+        promoteBtn.type = "button";
+        promoteBtn.className = "diag-hipaa-promote-btn";
+        promoteBtn.textContent = "Make public";
+        promoteBtn.title = "Promote this document to the shared corpus (admin only)";
+        promoteBtn.addEventListener("click", async () => {
+          if (!docIdForPromote) {
+            showChatStatusBanner("Cannot promote — document ID unknown.", 4000);
+            return;
+          }
+          promoteBtn.disabled = true;
+          promoteBtn.textContent = "Promoting…";
+          try {
+            const token = (window as any).__mobiusAuthToken || "";
+            const res = await fetch(`/chat/documents/${encodeURIComponent(docIdForPromote)}/promote`, {
+              method: "POST",
+              headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+              body: JSON.stringify({ visibility: "public" }),
+            });
+            if (res.ok) {
+              promoteBtn.textContent = "✓ Public";
+              promoteBtn.classList.add("diag-hipaa-promote-btn--done");
+            } else {
+              const err = await res.json().catch(() => ({}));
+              promoteBtn.textContent = "Make public";
+              promoteBtn.disabled = false;
+              showChatStatusBanner(`Promote failed: ${(err as any).detail || res.status}`, 5000);
+            }
+          } catch (_e) {
+            promoteBtn.textContent = "Make public";
+            promoteBtn.disabled = false;
+            showChatStatusBanner("Promote request failed — check connection.", 4000);
+          }
+        });
+        promoteRow.appendChild(promoteBtn);
+        body.appendChild(promoteRow);
+      }
+
+      hipaaSection.appendChild(header);
+      hipaaSection.appendChild(body);
       diagPanel.appendChild(hipaaSection);
     }
 

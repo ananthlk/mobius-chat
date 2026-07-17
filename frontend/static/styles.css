@@ -8394,14 +8394,22 @@ body {
 }
 .hipaa-diag-dismiss:hover { color: var(--main-text); }
 
-/* ── HIPAA Screening section inside Diagnostics tab ── */
+/* ── HIPAA Screening section inside Diagnostics tab (collapsible) ── */
 .diag-hipaa-section {
   border-top: 1px solid var(--mobius-border);
   margin-top: 0.75rem;
-  padding-top: 0.75rem;
+  padding-top: 0.5rem;
 }
-.diag-hipaa-header {
-  display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.5rem;
+.diag-hipaa-toggle {
+  display: flex; align-items: center; gap: 0.45rem;
+  width: 100%; background: none; border: none; cursor: pointer;
+  padding: 0.15rem 0; text-align: left;
+  color: inherit;
+}
+.diag-hipaa-toggle:hover .diag-hipaa-title { color: var(--main-text); }
+.diag-hipaa-chevron {
+  font-size: 0.55rem; color: var(--mobius-text-muted); flex-shrink: 0;
+  transition: transform 0.15s ease;
 }
 .diag-hipaa-title {
   font-size: var(--mobius-text-xs); font-weight: 600;
@@ -8409,8 +8417,17 @@ body {
   color: var(--mobius-text-muted);
 }
 .diag-hipaa-gate {
-  font-size: var(--mobius-text-xs);
+  font-size: var(--mobius-text-xs); font-weight: 600;
 }
+.diag-hipaa-summary-pill {
+  font-size: 0.65rem; color: var(--mobius-text-muted);
+  border: 1px solid var(--mobius-border); border-radius: 999px;
+  padding: 0.05rem 0.4rem; margin-left: auto;
+}
+.diag-hipaa-body {
+  overflow: hidden; margin-top: 0.4rem;
+}
+.diag-hipaa-section.collapsed .diag-hipaa-body { display: none; }
 .diag-hipaa-table {
   border-collapse: collapse; width: 100%;
   font-size: var(--mobius-text-xs);
@@ -8429,6 +8446,26 @@ body {
   background: color-mix(in srgb, var(--mobius-accent) 12%, var(--mobius-bg-secondary));
   color: var(--mobius-accent);
   border: 1px solid color-mix(in srgb, var(--mobius-accent) 25%, transparent);
+}
+.diag-hipaa-promote-row {
+  margin-top: 0.5rem; padding-top: 0.4rem;
+  border-top: 1px solid var(--mobius-border);
+}
+.diag-hipaa-promote-btn {
+  font-size: var(--mobius-text-xs); font-weight: 500;
+  padding: 0.25rem 0.7rem; border-radius: 4px; cursor: pointer;
+  border: 1px solid var(--mobius-accent);
+  background: color-mix(in srgb, var(--mobius-accent) 10%, transparent);
+  color: var(--mobius-accent);
+  transition: background 0.15s;
+}
+.diag-hipaa-promote-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--mobius-accent) 18%, transparent);
+}
+.diag-hipaa-promote-btn:disabled { opacity: 0.6; cursor: default; }
+.diag-hipaa-promote-btn--done {
+  border-color: #22c55e; color: #22c55e;
+  background: color-mix(in srgb, #22c55e 10%, transparent);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
