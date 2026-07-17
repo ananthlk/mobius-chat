@@ -9789,15 +9789,16 @@ function run() {
         ${hd.identifier_labels.length ? `<tr><td class="diag-hipaa-key">Identifiers</td><td class="diag-hipaa-val">${hd.identifier_labels.map((l) => `<span class="diag-hipaa-pill">${escapeHtml4(l)}</span>`).join(" ")}</td></tr>` : ""}
         <tr><td class="diag-hipaa-key">Transaction</td><td class="diag-hipaa-val diag-hipaa-mono">${escapeHtml4(hd.transaction_id || "\u2014")}</td></tr>`;
       body.appendChild(table);
-      if (isPublicEligible && hd.transaction_id) {
+      const canPromote = getShowLlmPerformance(cachedProfile);
+      if (isPublicEligible && !hd.phi_flag && canPromote) {
         const docIdForPromote = hd.document_id || "";
         const promoteRow = document.createElement("div");
         promoteRow.className = "diag-hipaa-promote-row";
         const promoteBtn = document.createElement("button");
         promoteBtn.type = "button";
         promoteBtn.className = "diag-hipaa-promote-btn";
-        promoteBtn.textContent = "Make public";
-        promoteBtn.title = "Promote this document to the shared corpus (admin only)";
+        promoteBtn.textContent = "Make public \u2192";
+        promoteBtn.title = "Promote this document to the shared corpus";
         promoteBtn.addEventListener("click", async () => {
           if (!docIdForPromote) {
             showChatStatusBanner("Cannot promote \u2014 document ID unknown.", 4e3);

@@ -9733,18 +9733,20 @@ function run(): void {
         <tr><td class="diag-hipaa-key">Transaction</td><td class="diag-hipaa-val diag-hipaa-mono">${escapeHtml(hd.transaction_id || "—")}</td></tr>`;
       body.appendChild(table);
 
-      // "Make public" action — only for public-eligible (clean gate, published action)
-      if (isPublicEligible && hd.transaction_id) {
-        // Extract document_id from context: stored on hd as document_id if present,
-        // else parse from the bubble's data attribute.
+      // "Make public" action zone — gated on ceiling=public-eligible AND phi_flag===false
+      // AND canPromote from auth context (cachedProfile admin flag, NOT the diagnostics payload).
+      // Keeping authz out of hipaa_diagnostics matters: that payload is re-read from the
+      // audit row on the dedup-cached-verdict path and must be auth-free.
+      const canPromote = getShowLlmPerformance(cachedProfile);
+      if (isPublicEligible && !hd.phi_flag && canPromote) {
         const docIdForPromote = (hd as any).document_id || "";
         const promoteRow = document.createElement("div");
         promoteRow.className = "diag-hipaa-promote-row";
         const promoteBtn = document.createElement("button");
         promoteBtn.type = "button";
         promoteBtn.className = "diag-hipaa-promote-btn";
-        promoteBtn.textContent = "Make public";
-        promoteBtn.title = "Promote this document to the shared corpus (admin only)";
+        promoteBtn.textContent = "Make public →";
+        promoteBtn.title = "Promote this document to the shared corpus";
         promoteBtn.addEventListener("click", async () => {
           if (!docIdForPromote) {
             showChatStatusBanner("Cannot promote — document ID unknown.", 4000);

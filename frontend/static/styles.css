@@ -8448,8 +8448,10 @@ body {
   border: 1px solid color-mix(in srgb, var(--mobius-accent) 25%, transparent);
 }
 .diag-hipaa-promote-row {
-  margin-top: 0.5rem; padding-top: 0.4rem;
-  border-top: 1px solid var(--mobius-border);
+  margin-top: 0.6rem; padding: 0.5rem 0.6rem;
+  border: 1px dashed color-mix(in srgb, var(--mobius-accent) 40%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--mobius-accent) 4%, transparent);
 }
 .diag-hipaa-promote-btn {
   font-size: var(--mobius-text-xs); font-weight: 500;
