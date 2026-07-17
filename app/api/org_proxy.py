@@ -127,6 +127,8 @@ async def _forward(request: Request, upstream_path: str, is_write: bool) -> Fast
     ct = up.headers.get("content-type")
     if ct:
         response_headers["content-type"] = ct
+    # Org data is always live — never allow browser caching.
+    response_headers["cache-control"] = up.headers.get("cache-control", "no-store")
     return FastAPIResponse(
         content=up.content,
         status_code=up.status_code,
