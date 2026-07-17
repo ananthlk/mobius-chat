@@ -8350,6 +8350,87 @@ body {
 .phi-rec-card__action--secondary:hover { color: var(--main-text); border-color: var(--mobius-text-muted); }
 .phi-rec-card__action:disabled { opacity: 0.45; cursor: not-allowed; }
 
+/* ── HIPAA gate diagnostics bubble ──────────────────────────────────────── */
+.hipaa-diag-bubble {
+  display: flex; align-items: flex-start; gap: 0.6rem;
+  margin: 0 auto 0.5rem; padding: 0.7rem 0.9rem;
+  max-width: 640px;
+  background: var(--mobius-bg-secondary);
+  border: 1.5px solid var(--mobius-border);
+  border-radius: var(--mobius-radius-base);
+  box-shadow: var(--mobius-shadow-sm);
+  font-size: var(--mobius-text-sm);
+  color: var(--main-text);
+  animation: reminder-nudge-in 0.25s ease-out;
+}
+.hipaa-diag-bubble--phi         { border-color: #ef4444; background: color-mix(in srgb, #ef4444 7%, var(--mobius-bg-secondary)); }
+.hipaa-diag-bubble--indeterminate { border-color: #f59e0b; background: color-mix(in srgb, #f59e0b 7%, var(--mobius-bg-secondary)); }
+.hipaa-diag-bubble--private     { border-color: var(--mobius-accent); background: color-mix(in srgb, var(--mobius-accent) 6%, var(--mobius-bg-secondary)); }
+.hipaa-diag-icon { font-size: 1.1rem; flex-shrink: 0; margin-top: 0.1rem; }
+.hipaa-diag-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.35rem; }
+.hipaa-diag-title { font-weight: 600; line-height: 1.3; }
+.hipaa-diag-msg { color: var(--mobius-text-muted); font-size: var(--mobius-text-xs); line-height: 1.45; }
+.hipaa-diag-pills { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+.hipaa-diag-pill {
+  background: color-mix(in srgb, #ef4444 12%, var(--mobius-bg-secondary));
+  border: 1px solid #ef4444; border-radius: var(--mobius-radius-full);
+  padding: 0.1rem 0.5rem; font-size: var(--mobius-text-xs);
+  color: var(--main-text);
+}
+.hipaa-diag-chrome { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-top: 0.1rem; }
+.hipaa-diag-gate, .hipaa-diag-mode, .hipaa-diag-txn {
+  font-size: var(--mobius-text-xs); font-family: var(--mobius-font-mono, monospace);
+  color: var(--mobius-text-muted); padding: 0.05rem 0.35rem;
+  background: var(--mobius-bg-tertiary, rgba(0,0,0,0.12));
+  border-radius: 3px;
+}
+.hipaa-diag-gate--phi { color: #ef4444; }
+.hipaa-diag-gate--indeterminate { color: #f59e0b; }
+.hipaa-diag-gate--clean { color: #22c55e; }
+.hipaa-diag-dismiss {
+  flex-shrink: 0; background: none; border: none; cursor: pointer;
+  color: var(--mobius-text-muted); font-size: 1.1rem; padding: 0 0.2rem;
+  line-height: 1; margin-top: -0.1rem; align-self: flex-start;
+}
+.hipaa-diag-dismiss:hover { color: var(--main-text); }
+
+/* ── HIPAA Screening section inside Diagnostics tab ── */
+.diag-hipaa-section {
+  border-top: 1px solid var(--mobius-border);
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+}
+.diag-hipaa-header {
+  display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.5rem;
+}
+.diag-hipaa-title {
+  font-size: var(--mobius-text-xs); font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--mobius-text-muted);
+}
+.diag-hipaa-gate {
+  font-size: var(--mobius-text-xs);
+}
+.diag-hipaa-table {
+  border-collapse: collapse; width: 100%;
+  font-size: var(--mobius-text-xs);
+}
+.diag-hipaa-table tr { border-bottom: 1px solid var(--mobius-border); }
+.diag-hipaa-table tr:last-child { border-bottom: none; }
+.diag-hipaa-key {
+  color: var(--mobius-text-muted); padding: 0.2rem 0.6rem 0.2rem 0;
+  white-space: nowrap; width: 40%;
+}
+.diag-hipaa-val { padding: 0.2rem 0; color: var(--main-text); }
+.diag-hipaa-mono { font-family: var(--mobius-mono, monospace); font-size: 0.7rem; }
+.diag-hipaa-pill {
+  display: inline-block; padding: 0.05rem 0.35rem;
+  border-radius: 999px; font-size: 0.65rem;
+  background: color-mix(in srgb, var(--mobius-accent) 12%, var(--mobius-bg-secondary));
+  color: var(--mobius-accent);
+  border: 1px solid color-mix(in srgb, var(--mobius-accent) 25%, transparent);
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    Doc Reader Panel — inline document viewer slide-in
    ═══════════════════════════════════════════════════════════════════════════ */

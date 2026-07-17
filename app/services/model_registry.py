@@ -819,6 +819,7 @@ CORE_REASONING_STAGES: list[str] = [
     "classifier",
     "adjudicator",
     "email_draft",
+    "thread_summary",   # rolling conversation summary — cheap text task; wide pool needed to survive circuit-breaker exhaustion on 2-model pool
     # NOTE: rag_eval_adjudicate (the RAG eval/fact-checker "ruler") is
     # deliberately NOT here — it is LOCKED to a single model (gemini-2.5-pro)
     # in that model's eligible_stages below, so the adjudicator is deterministic
@@ -866,6 +867,8 @@ RAG_ROUTED_STAGES: list[str] = [
     "rag_strategy_b_synth",
     "rag_strategy_c_validate",
     "rag_strategy_d_external",
+    "rag_multi_invoke_synth",   # v2 multi-invoke union synthesis (2026-07-15); added to allowlist but missed here
+    "rag_fact_check",           # Two-grade QA critic owned by Eval agent (2026-07-17); same gap
 ]
 
 

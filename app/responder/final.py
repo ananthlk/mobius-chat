@@ -357,7 +357,7 @@ def format_response(
         text, usage = generate_sync(
             prompt,
             stage=llm_stage,
-            max_tokens=2500,
+            max_tokens=4096,
             config_sha=config_sha,
             correlation_id=correlation_id,
             thread_id=thread_id,

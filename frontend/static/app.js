@@ -9749,6 +9749,36 @@ function run() {
     );
     if (traceEl)
       diagPanel.appendChild(traceEl);
+    if (opts.hipaaDiagnostics) {
+      const hd = opts.hipaaDiagnostics;
+      const hipaaSection = document.createElement("div");
+      hipaaSection.className = "diag-hipaa-section";
+      const gateLabel = hd.gate === "clean" ? "clean" : hd.gate === "indeterminate" ? "indeterminate" : "phi";
+      const gateColor = hd.gate === "clean" ? "#22c55e" : hd.gate === "indeterminate" ? "#f59e0b" : "#ef4444";
+      let ceilingLabel = "\u2014";
+      if (hd.action_taken === "published")
+        ceilingLabel = "public-eligible";
+      else if (hd.action_taken === "published_private")
+        ceilingLabel = "private (PHI suspected)";
+      else if (hd.action_taken === "blocked")
+        ceilingLabel = "blocked";
+      else if (hd.action_taken === "blocked_indeterminate")
+        ceilingLabel = "blocked (indeterminate)";
+      hipaaSection.innerHTML = `
+        <div class="diag-hipaa-header">
+          <span class="diag-hipaa-title">HIPAA Screening</span>
+          <span class="diag-hipaa-gate" style="color:${gateColor}; font-weight:600;">${gateLabel.toUpperCase()}</span>
+        </div>
+        <table class="diag-hipaa-table">
+          <tr><td class="diag-hipaa-key">Document</td><td class="diag-hipaa-val">${escapeHtml4(hd.document_name)}</td></tr>
+          <tr><td class="diag-hipaa-key">PHI detected</td><td class="diag-hipaa-val">${hd.phi_flag ? "Yes" : "No"}</td></tr>
+          <tr><td class="diag-hipaa-key">Classification ceiling</td><td class="diag-hipaa-val">${escapeHtml4(ceilingLabel)}</td></tr>
+          <tr><td class="diag-hipaa-key">HIPAA mode</td><td class="diag-hipaa-val">${hd.hipaa_mode_allowed ? "ON" : "OFF"}</td></tr>
+          ${hd.identifier_labels.length ? `<tr><td class="diag-hipaa-key">Identifiers</td><td class="diag-hipaa-val">${hd.identifier_labels.map((l) => `<span class="diag-hipaa-pill">${escapeHtml4(l)}</span>`).join(" ")}</td></tr>` : ""}
+          <tr><td class="diag-hipaa-key">Transaction</td><td class="diag-hipaa-val diag-hipaa-mono">${escapeHtml4(hd.transaction_id || "\u2014")}</td></tr>
+        </table>`;
+      diagPanel.appendChild(hipaaSection);
+    }
     const tabBar = bubble.querySelector(".ac-tab-bar");
     if (tabBar) {
       const diagBtn = document.createElement("button");
@@ -10396,6 +10426,7 @@ function run() {
     orgEl.focus();
   }
   let _pendingMentions = [];
+  let _pendingHipaaDiagnostics = null;
   let _coworkerFetchTimer = null;
   let _coworkerDropdown = null;
   async function _fetchCoworkers(q) {
@@ -11126,6 +11157,8 @@ ${message}`;
       }
       const insightRows = data.usage_breakdown;
       const perfMeta = data.llm_performance;
+      const hipaaForTab = _pendingHipaaDiagnostics;
+      _pendingHipaaDiagnostics = null;
       if (getShowLlmPerformance(cachedProfile) && data.status === "completed") {
         const tin = Number(data.tokens_used?.input_tokens) || 0;
         const tout = Number(data.tokens_used?.output_tokens) || 0;
@@ -11141,7 +11174,8 @@ ${message}`;
             totalCostFallback: data.cost_usd,
             inputTokens: tin,
             outputTokens: tout,
-            routingFeedback: data.technical_feedback?.llm_performance ?? null
+            routingFeedback: data.technical_feedback?.llm_performance ?? null,
+            hipaaDiagnostics: hipaaForTab
           });
         } else if (Array.isArray(insightRows) && insightRows.length > 0) {
           turnWrap.appendChild(
@@ -11401,6 +11435,87 @@ ${message}`;
       _ragProgressCutoffTimer = null;
     }
     document.getElementById("ragProgressStrip")?.classList.add("rag-progress-strip--collapsed");
+  }
+  function _showHipaaDiagnosticsBubble(d) {
+    const anchor = document.querySelector(".composer-wrap");
+    if (!anchor || !anchor.parentElement)
+      return;
+    const bubble = document.createElement("div");
+    const isBlocked = d.action_taken === "blocked_phi" || d.action_taken === "blocked_indeterminate";
+    const isPrivate = d.action_taken === "published_private";
+    bubble.className = "hipaa-diag-bubble" + (isBlocked && d.gate === "phi" ? " hipaa-diag-bubble--phi" : "") + (isBlocked && d.gate === "indeterminate" ? " hipaa-diag-bubble--indeterminate" : "") + (isPrivate ? " hipaa-diag-bubble--private" : "");
+    const icon = document.createElement("span");
+    icon.className = "hipaa-diag-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = isBlocked && d.gate === "phi" ? "\u{1F6E1}\u2717" : isBlocked ? "\u26A0" : "\u{1F512}";
+    const body = document.createElement("div");
+    body.className = "hipaa-diag-body";
+    const title = document.createElement("div");
+    title.className = "hipaa-diag-title";
+    if (isBlocked && d.gate === "phi") {
+      title.textContent = `"${d.document_name}" contains PHI \u2014 not stored`;
+    } else if (isBlocked) {
+      title.textContent = `"${d.document_name}" couldn't be verified \u2014 not stored`;
+    } else {
+      title.textContent = `"${d.document_name}" stored in your private vault`;
+    }
+    body.appendChild(title);
+    if (isBlocked) {
+      const msg = document.createElement("div");
+      msg.className = "hipaa-diag-msg";
+      if (d.gate === "phi") {
+        msg.textContent = "This document contains protected health information and cannot be processed in the current mode. It was not stored.";
+      } else {
+        msg.textContent = "We couldn't verify this document's safety right now. It was not stored. Please try again shortly.";
+      }
+      body.appendChild(msg);
+    } else if (isPrivate) {
+      const msg = document.createElement("div");
+      msg.className = "hipaa-diag-msg";
+      msg.textContent = "PHI found \u2014 stored privately (not shared to the corpus).";
+      body.appendChild(msg);
+    }
+    const labels = d.identifier_labels.length ? d.identifier_labels : d.evidence_categories;
+    if (labels.length > 0 && d.gate === "phi") {
+      const pills = document.createElement("div");
+      pills.className = "hipaa-diag-pills";
+      labels.slice(0, 8).forEach((lbl) => {
+        const pill = document.createElement("span");
+        pill.className = "hipaa-diag-pill";
+        pill.textContent = lbl;
+        pills.appendChild(pill);
+      });
+      body.appendChild(pills);
+    }
+    const chrome2 = document.createElement("div");
+    chrome2.className = "hipaa-diag-chrome";
+    const gateBadge = document.createElement("span");
+    gateBadge.className = `hipaa-diag-gate hipaa-diag-gate--${d.gate}`;
+    gateBadge.textContent = `gate: ${d.gate}`;
+    chrome2.appendChild(gateBadge);
+    const modeBadge = document.createElement("span");
+    modeBadge.className = "hipaa-diag-mode";
+    modeBadge.textContent = `HIPAA mode: ${d.hipaa_mode_allowed ? "ON" : "OFF"}`;
+    chrome2.appendChild(modeBadge);
+    if (d.transaction_id) {
+      const txn = document.createElement("span");
+      txn.className = "hipaa-diag-txn";
+      txn.textContent = `txn ${d.transaction_id.slice(0, 8)}`;
+      chrome2.appendChild(txn);
+    }
+    body.appendChild(chrome2);
+    const dismiss = document.createElement("button");
+    dismiss.type = "button";
+    dismiss.className = "hipaa-diag-dismiss";
+    dismiss.setAttribute("aria-label", "Dismiss");
+    dismiss.innerHTML = "&times;";
+    dismiss.addEventListener("click", () => bubble.remove());
+    bubble.appendChild(icon);
+    bubble.appendChild(body);
+    bubble.appendChild(dismiss);
+    anchor.parentElement.insertBefore(bubble, anchor);
+    if (!isBlocked)
+      setTimeout(() => bubble.remove(), 3e4);
   }
   function _showPhiRecommendationCard(filename, documentId) {
     if (document.querySelector(".phi-rec-card"))
@@ -11725,8 +11840,30 @@ ${message}`;
       const uploadedDocId = String(data.document_id || "");
       const uploadedThreadId = String(data.thread_id || currentThreadId || "");
       const uxPath = String(data.ux_path || "blocking");
-      if (uploadedDocId && !redirectUrl)
+      const hipaaD = data.hipaa_diagnostics;
+      if (uxPath === "blocked" || data.status === "blocked") {
+        _showHipaaDiagnosticsBubble(hipaaD ?? {
+          gate: data.gate || "indeterminate",
+          phi_flag: true,
+          evidence_categories: [],
+          identifier_labels: [],
+          hipaa_mode_allowed: false,
+          action_taken: data.action_taken || "blocked_indeterminate",
+          reason: "",
+          transaction_id: "",
+          document_name: filename
+        });
+        return data;
+      }
+      if (uploadedDocId && !redirectUrl && !hipaaD) {
         _showPhiRecommendationCard(filename, uploadedDocId);
+      } else if (hipaaD && hipaaD.action_taken === "published_private") {
+        _showHipaaDiagnosticsBubble(hipaaD);
+        _pendingHipaaDiagnostics = hipaaD;
+      } else if (hipaaD && hipaaD.gate === "clean") {
+        showChatStatusBanner(`\u2713 "${filename}" screened \u2014 no PHI detected.`, 4e3);
+        _pendingHipaaDiagnostics = hipaaD;
+      }
       if (uxPath === "duplicate") {
         showChatStatusBanner(`\u2713 "${filename}" is ready \u2014 already in our corpus.`, 5e3);
       } else if (redirectUrl) {

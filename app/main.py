@@ -1094,10 +1094,9 @@ def _spawn_background_publish_watcher(
                         user_id=user_id,
                         org_name=org_name,
                     )
-                    # §3.3 — async PHI classification (must NOT block the ready signal).
-                    # Runs in a daemon thread; stores verdict on instant_rag_uploads
-                    # (migration 041 columns). Conservative default: any error → private.
-                    _run_phi_classification_async(document_id=document_id, rag_url=rag_url)
+                    # §3.3 — PHI classification now runs synchronously in the HIPAA gate
+                    # (pre-publish) when PHI_CLASSIFIER_URL is set. Skip async classify
+                    # here to avoid a second call on already-gated docs.
                     return
             # Timed out
             if _has_thread:
@@ -1118,10 +1117,237 @@ def _spawn_background_publish_watcher(
     )
 
 
+def _run_hipaa_gate_sync(
+    document_id: str,
+    rag_url: str,
+    phi_url: str,
+    user_id: str | None,
+    org_slug: str,
+    filename: str,
+    _test_gate_override: str | None = None,
+    _test_mode_override: bool | None = None,
+) -> dict:
+    """Run HIPAA gate synchronously on an extract-only document.
+
+    Flow (spec: docs/instant-rag-hipaa-gate-spec.md):
+      1. GET /pages → extracted text
+      2. sha256 the text (exact, no normalization)
+      3. POST /classify → tri-state gate
+      4. GET /hipaa-mode → allowed bool (fail-safe: False on error)
+      5. INSERT compliance.hipaa_analysis_log (fail-closed — raises on failure)
+      6. clean / phi+allowed → POST /publish; phi+blocked / indeterminate → DELETE
+      7. Return gate decision dict
+
+    Raises on audit write failure (fail-closed: caller must treat as blocked).
+    """
+    import hashlib as _hashlib
+    import json as _json_mod
+    import uuid as _uuid_mod
+    import urllib.request as _urllib_req
+
+    # ── 1. Fetch extracted text ──────────────────────────────────────────────
+    doc_text = ""
+    try:
+        with _urllib_req.urlopen(
+            f"{rag_url}/documents/{document_id}/pages", timeout=30
+        ) as _r:
+            pages_payload = _json_mod.loads(_r.read())
+        doc_text = "\n".join(
+            (p.get("text") or "") for p in (pages_payload.get("pages") or [])
+        )
+        # Do NOT strip/normalize — sha256 must hash the exact string sent to /classify
+    except Exception as _e:
+        logger.warning("[hipaa-gate] pages fetch failed for doc=%s: %s", document_id[:8], _e)
+        # Empty text → classify will return indeterminate (fail-closed)
+
+    # ── 2. Compute sha256 (frozen recipe: sha256(text.encode("utf-8")).hexdigest()) ──
+    content_sha256 = _hashlib.sha256(doc_text.encode("utf-8")).hexdigest()
+
+    # ── 3. Call PHI /classify ────────────────────────────────────────────────
+    verdict: dict = {}
+    # Dev-only override: HIPAA_GATE_OVERRIDE_ENABLED=1 + filename suffix lets
+    # the verification matrix exercise each gate branch without a live LLM.
+    # Never honored in prod (env var unset).
+    if _test_gate_override and os.environ.get("HIPAA_GATE_OVERRIDE_ENABLED") == "1":
+        _ov = _test_gate_override.lower()
+        if _ov == "indeterminate":
+            verdict = {"gate": "indeterminate", "phi_flag": True,
+                       "classifier_version": "test-override", "layers_run": ["test"],
+                       "reason": "Test override: indeterminate"}
+        elif _ov == "phi":
+            verdict = {"gate": "phi", "phi_flag": True,
+                       "recommended_ceiling": "private",
+                       "identifier_labels": ["SSN", "Date of Birth"],
+                       "identifiers_found": ["SSN", "DOB"],
+                       "classifier_version": "test-override", "layers_run": ["test"],
+                       "reason": "Test override: phi detected"}
+        elif _ov == "clean":
+            verdict = {"gate": "clean", "phi_flag": False,
+                       "recommended_ceiling": "public",
+                       "classifier_version": "test-override", "layers_run": ["test"],
+                       "reason": "Test override: clean"}
+        logger.info("[hipaa-gate] TEST OVERRIDE applied: gate=%s for doc=%s", _ov, document_id[:8])
+    else:
+        try:
+            _body = _json_mod.dumps({"text": doc_text, "document_id": document_id}).encode()
+            _req = _urllib_req.Request(
+                f"{phi_url}/classify",
+                data=_body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with _urllib_req.urlopen(_req, timeout=45) as _r:
+                verdict = _json_mod.loads(_r.read())
+        except Exception as _e:
+            logger.warning("[hipaa-gate] classify failed for doc=%s: %s", document_id[:8], _e)
+            verdict = {"gate": "indeterminate", "phi_flag": True, "error": str(_e)}
+
+    gate = str(verdict.get("gate") or "indeterminate")
+    if gate not in ("clean", "phi", "indeterminate"):
+        gate = "indeterminate"
+    phi_flag = bool(verdict.get("phi_flag", True))
+    ceiling = str(verdict.get("recommended_ceiling") or "private")
+    if ceiling not in ("private", "org", "public"):
+        ceiling = "private"
+    classifier_version = str(verdict.get("classifier_version") or "")
+    layers_run = list(verdict.get("layers_run") or (["error"] if "error" in verdict else []))
+    confidence = verdict.get("confidence")
+    identifier_labels = list(verdict.get("identifier_labels") or [])
+    identifiers_found = list(verdict.get("identifiers_found") or [])
+    reason = str(verdict.get("reason") or "")
+
+    # ── 4. GET /hipaa-mode (fail-safe: False on any error) ──────────────────
+    hipaa_mode_allowed = False
+    if _test_mode_override is not None and os.environ.get("HIPAA_GATE_OVERRIDE_ENABLED") == "1":
+        hipaa_mode_allowed = _test_mode_override
+        logger.info("[hipaa-gate] TEST mode_override applied: allowed=%s for doc=%s", _test_mode_override, document_id[:8])
+    else:
+        try:
+            _mreq = _urllib_req.Request(f"{phi_url}/hipaa-mode", method="GET")
+            with _urllib_req.urlopen(_mreq, timeout=10) as _r:
+                _mode = _json_mod.loads(_r.read())
+            hipaa_mode_allowed = bool(_mode.get("allowed", False))
+        except Exception as _e:
+            logger.warning("[hipaa-gate] hipaa-mode fetch failed for doc=%s: %s", document_id[:8], _e)
+            hipaa_mode_allowed = False  # conservative
+
+    # ── 5. Decide action ────────────────────────────────────────────────────
+    if gate == "clean":
+        action_taken = "published"
+        blocked = False
+    elif gate == "phi" and hipaa_mode_allowed:
+        action_taken = "published_private"
+        blocked = False
+    elif gate == "phi":
+        action_taken = "blocked_phi"
+        blocked = True
+    else:  # indeterminate
+        action_taken = "blocked_indeterminate"
+        blocked = True
+
+    # ── 6. Write audit (fail-closed) ─────────────────────────────────────────
+    # A failed write FAILS the gate closed — we cannot prove we screened → block.
+    transaction_id = str(_uuid_mod.uuid4())
+    from app.db_client import db_execute as _dbe
+    _dbe(
+        """
+        INSERT INTO compliance.hipaa_analysis_log
+            (id, transaction_id, document_id, content_sha256, user_id, org_slug,
+             gate, phi_flag, ceiling, hipaa_mode_allowed, action_taken,
+             evidence_categories, classifier_version, layers_run, confidence, reason)
+        VALUES
+            (:id, :txn, :doc_id, :sha256, :uid, :org,
+             :gate, :phi_flag, :ceiling, :mode_allowed, :action_taken,
+             :evidence_cats, :clf_ver, :layers, :confidence, :reason)
+        ON CONFLICT (id) DO NOTHING
+        """,
+        "chat",
+        params={
+            "id": transaction_id,
+            "txn": transaction_id,
+            "doc_id": document_id,
+            "sha256": content_sha256,
+            "uid": user_id or "",
+            "org": org_slug or "",
+            "gate": gate,
+            "phi_flag": phi_flag,
+            "ceiling": ceiling,
+            "mode_allowed": hipaa_mode_allowed,
+            "action_taken": action_taken,
+            "evidence_cats": identifiers_found,  # machine/canonical → audit
+            "clf_ver": classifier_version,
+            "layers": layers_run,
+            "confidence": float(confidence) if confidence is not None else None,
+            "reason": reason,
+        },
+    )
+    logger.info(
+        "[hipaa-gate] audit written for doc=%s gate=%s action=%s txn=%s",
+        document_id[:8], gate, action_taken, transaction_id[:8],
+    )
+
+    # ── 7. Execute gate action ───────────────────────────────────────────────
+    if not blocked:
+        # Publish: embed + make searchable
+        _pub_body = _json_mod.dumps({
+            "generator_id": "B",
+            "published_by": user_id or "chat-gate",
+        }).encode()
+        _pub_req = _urllib_req.Request(
+            f"{rag_url}/documents/{document_id}/publish",
+            data=_pub_body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with _urllib_req.urlopen(_pub_req, timeout=60) as _r:
+            _pub_resp = _json_mod.loads(_r.read())
+        logger.info(
+            "[hipaa-gate] publish OK for doc=%s action=%s resp=%s",
+            document_id[:8], action_taken, str(_pub_resp)[:80],
+        )
+    else:
+        # Block: delete the extract-only doc (no embeddings yet → clean purge)
+        try:
+            _del_req = _urllib_req.Request(
+                f"{rag_url}/documents/{document_id}",
+                method="DELETE",
+            )
+            with _urllib_req.urlopen(_del_req, timeout=30) as _r:
+                pass
+            logger.info(
+                "[hipaa-gate] deleted blocked doc=%s action=%s",
+                document_id[:8], action_taken,
+            )
+        except Exception as _de:
+            # Non-fatal: TTL will purge extract-only docs eventually.
+            logger.warning(
+                "[hipaa-gate] DELETE failed for doc=%s (will expire by TTL): %s",
+                document_id[:8], _de,
+            )
+
+    return {
+        "blocked": blocked,
+        "action_taken": action_taken,
+        "gate": gate,
+        "phi_flag": phi_flag,
+        "evidence_categories": identifiers_found,   # machine (audit)
+        "identifier_labels": identifier_labels,     # human (display pills)
+        "hipaa_mode_allowed": hipaa_mode_allowed,
+        "reason": reason,
+        "transaction_id": transaction_id,
+        "classifier_version": classifier_version,
+        "layers_run": layers_run,
+        "confidence": float(confidence) if confidence is not None else None,
+        "ceiling": ceiling,
+    }
+
+
 def _handle_instant_rag_upload(
     content: bytes, filename: str, org_name: str,
     thread_id: str | None, file_purpose: str,
     user_id: str | None = None,
+    gate_override: str | None = None,
+    mode_override: bool | None = None,
 ) -> dict[str, Any]:
     """Forward chat document uploads to mobius-rag's canonical /upload pipeline.
 
@@ -1268,18 +1494,57 @@ def _handle_instant_rag_upload(
                     )
                 except Exception as _e:
                     logger.warning("[catalog] dup dual-write failed thread=%s: %s", _real_tid_dup, _e)
-                # §3.3 dedup-classify: if the existing row has no PHI verdict yet
+                # §3.3a dedup-HIPAA: look up cached gate verdict for this doc.
+                # On a 409 the gate cannot run (no fresh doc_text to classify),
+                # but the prior screening row is in compliance.hipaa_analysis_log.
+                # Surface it as hipaa_diagnostics so the Diagnostics tab renders
+                # the cached result instead of silently showing nothing.
+                _cached_hipaa: dict | None = None
+                try:
+                    from app.db_client import db_query as _hq
+                    _hres = _hq(
+                        """
+                        SELECT gate, phi_flag, evidence_categories, identifier_labels,
+                               hipaa_mode_allowed, action_taken, transaction_id
+                        FROM compliance.hipaa_analysis_log
+                        WHERE document_id = :doc_id
+                        ORDER BY created_at DESC LIMIT 1
+                        """,
+                        "chat",
+                        params={"doc_id": existing_doc_id},
+                        max_rows=1,
+                    )
+                    _hrows = (_hres or {}).get("rows") or []
+                    if _hrows:
+                        _hr = _hrows[0]
+                        _cached_hipaa = {
+                            "gate": _hr.get("gate") or "clean",
+                            "phi_flag": bool(_hr.get("phi_flag")),
+                            "evidence_categories": list(_hr.get("evidence_categories") or []),
+                            "identifier_labels": list(_hr.get("identifier_labels") or []),
+                            "hipaa_mode_allowed": bool(_hr.get("hipaa_mode_allowed")),
+                            "action_taken": _hr.get("action_taken") or "published",
+                            "reason": "cached — duplicate file previously screened",
+                            "transaction_id": str(_hr.get("transaction_id") or ""),
+                            "document_name": filename,
+                        }
+                        logger.info("[hipaa-gate] dedup cached verdict: doc=%s gate=%s", existing_doc_id[:8], _cached_hipaa["gate"])
+                except Exception as _hcache_e:
+                    logger.debug("[hipaa-gate] cached verdict lookup failed (non-fatal): %s", _hcache_e)
+
+                # §3.3b dedup-classify: if the existing row has no PHI verdict yet
                 # (pre-feature or previously skipped), fire classify now so the
                 # recommendation card can render. Safe to re-run: idempotent UPDATE.
-                try:
-                    from app.storage.instant_rag_catalog import get_by_document_id as _dup_get
-                    _dup_row = _dup_get(existing_doc_id)
-                    if _dup_row and _dup_row.get("classified_at") is None:
-                        logger.info("§3.3 dedup-classify: doc=%s unclassified — firing classify", existing_doc_id[:8])
-                        _run_phi_classification_async(document_id=existing_doc_id, rag_url=rag_url)
-                except Exception as _phi_e:
-                    logger.warning("§3.3 dedup-classify check failed for doc=%s: %s", existing_doc_id[:8], _phi_e)
-                return {
+                if not _cached_hipaa:
+                    try:
+                        from app.storage.instant_rag_catalog import get_by_document_id as _dup_get
+                        _dup_row = _dup_get(existing_doc_id)
+                        if _dup_row and _dup_row.get("classified_at") is None:
+                            logger.info("§3.3 dedup-classify: doc=%s unclassified — firing classify", existing_doc_id[:8])
+                            _run_phi_classification_async(document_id=existing_doc_id, rag_url=rag_url)
+                    except Exception as _phi_e:
+                        logger.warning("§3.3 dedup-classify check failed for doc=%s: %s", existing_doc_id[:8], _phi_e)
+                _dup_resp: dict = {
                     "upload_id": existing_doc_id,
                     "org_id": "",
                     "org_name": org_name,
@@ -1300,6 +1565,9 @@ def _handle_instant_rag_upload(
                     "eta_seconds": 0,
                     "original_filename": detail.get("original_filename") or filename,
                 }
+                if _cached_hipaa:
+                    _dup_resp["hipaa_diagnostics"] = _cached_hipaa
+                return _dup_resp
             # Couldn't parse the duplicate detail — fall through to the
             # legacy 409 raise so the caller surfaces a real error.
             raise HTTPException(
@@ -1329,6 +1597,95 @@ def _handle_instant_rag_upload(
             detail=f"mobius-rag /upload returned no document_id: {rag_result}",
         )
     upload_id = str(document_id)
+
+    # ── HIPAA gate (P0 — Ananth 2026-07-17) ───────────────────────────────
+    # Run synchronously before embedding. Gate branches on tri-state `gate`
+    # field (NOT phi_flag alone — fail-open risk). Publish only on
+    # clean/phi+mode-allowed. Block + DELETE on phi-blocked or indeterminate.
+    # Audit INSERT is fail-closed: any DB write failure blocks the upload.
+    phi_url = (os.environ.get("PHI_CLASSIFIER_URL") or "").rstrip("/")
+    gate_result: dict = {}
+    if phi_url:
+        try:
+            gate_result = _run_hipaa_gate_sync(
+                document_id=str(document_id),
+                rag_url=rag_url,
+                phi_url=phi_url,
+                user_id=user_id,
+                org_slug=(org_name or "").lower().replace(" ", "-"),
+                filename=filename,
+                _test_gate_override=gate_override,
+                _test_mode_override=mode_override,
+            )
+        except Exception as _gate_err:
+            # Audit write failure or /publish failure → fail closed.
+            logger.error(
+                "[hipaa-gate] gate FAILED for doc=%s — treating as blocked: %s",
+                str(document_id)[:8], _gate_err,
+            )
+            gate_result = {
+                "blocked": True,
+                "action_taken": "blocked_indeterminate",
+                "gate": "indeterminate",
+                "phi_flag": True,
+                "evidence_categories": [],
+                "identifier_labels": [],
+                "hipaa_mode_allowed": False,
+                "reason": "Gate infrastructure error — fail-closed",
+                "transaction_id": "",
+                "classifier_version": "",
+                "layers_run": ["error"],
+                "confidence": None,
+                "ceiling": "private",
+            }
+
+        if gate_result.get("blocked"):
+            _action = gate_result.get("action_taken", "blocked_indeterminate")
+            _gate = gate_result.get("gate", "indeterminate")
+            logger.info(
+                "[hipaa-gate] BLOCKED doc=%s action=%s gate=%s",
+                str(document_id)[:8], _action, _gate,
+            )
+            _diag: dict[str, Any] = {
+                "gate": _gate,
+                "phi_flag": gate_result.get("phi_flag", True),
+                "evidence_categories": gate_result.get("evidence_categories", []),
+                "identifier_labels": gate_result.get("identifier_labels", []),
+                "hipaa_mode_allowed": gate_result.get("hipaa_mode_allowed", False),
+                "action_taken": _action,
+                "reason": gate_result.get("reason", ""),
+                "transaction_id": gate_result.get("transaction_id", ""),
+                "document_name": filename,
+            }
+            if _action == "blocked_phi":
+                _msg = (
+                    f'"{filename}" contains protected health information (PHI) '
+                    f"and cannot be processed in the current mode. It was not stored."
+                )
+            else:
+                _msg = (
+                    f'"{filename}" couldn\'t be verified for safety right now. '
+                    f"It was not stored. Please try again shortly."
+                )
+            return {
+                "status": "blocked",
+                "blocked": True,
+                "action_taken": _action,
+                "gate": _gate,
+                "filename": filename,
+                "document_id": str(document_id),
+                "upload_id": upload_id,
+                "message": _msg,
+                "thread_id": (thread_id or ""),
+                "hipaa_diagnostics": _diag,
+                "file_purpose": file_purpose,
+                "verification_tier": "rag",
+                "ux_path": "blocked",
+            }
+        # Gate passed (clean or phi+mode-on) — /publish already called by gate.
+        gate_result.setdefault("blocked", False)
+    else:
+        logger.debug("[hipaa-gate] PHI_CLASSIFIER_URL unset — gate skipped for doc=%s", str(document_id)[:8])
 
     # ── UX path selection ──────────────────────────────────────────
     # All new uploads use the background path. Blocking inline (eta<120s)
@@ -1514,6 +1871,20 @@ def _handle_instant_rag_upload(
     }
     if redirect_url:
         response["redirect_url"] = redirect_url
+    # HIPAA gate diagnostics — always include when gate ran so FE can
+    # render the appropriate diagnostics section without polling.
+    if gate_result:
+        response["hipaa_diagnostics"] = {
+            "gate": gate_result.get("gate", "clean"),
+            "phi_flag": gate_result.get("phi_flag", False),
+            "evidence_categories": gate_result.get("evidence_categories", []),
+            "identifier_labels": gate_result.get("identifier_labels", []),
+            "hipaa_mode_allowed": gate_result.get("hipaa_mode_allowed", False),
+            "action_taken": gate_result.get("action_taken", "published"),
+            "reason": gate_result.get("reason", ""),
+            "transaction_id": gate_result.get("transaction_id", ""),
+            "document_name": filename,
+        }
     return response
 
 
@@ -1552,6 +1923,23 @@ def post_chat_upload(
     _BLOCKED_EXTS = {"exe", "bat", "sh", "dll", "so", "dylib", "com", "msi", "scr"}
     if ext in _BLOCKED_EXTS:
         raise HTTPException(status_code=400, detail=f"File type '.{ext}' is not allowed")
+    gate_override: str | None = None
+    mode_override: bool | None = None
+    if os.environ.get("HIPAA_GATE_OVERRIDE_ENABLED") == "1":
+        # Accept via filename suffix (dev/test only):
+        #   __gate_phi           → classify stub=phi, real hipaa-mode
+        #   __gate_phi__mode_on  → classify stub=phi, hipaa-mode stub=True (Case 4)
+        #   __gate_indeterminate → classify stub=indeterminate (Case 3)
+        #   __gate_clean         → classify stub=clean
+        _suffix = filename.lower()
+        if "__gate_indeterminate" in _suffix:
+            gate_override = "indeterminate"
+        elif "__gate_phi" in _suffix:
+            gate_override = "phi"
+            if "__mode_on" in _suffix:
+                mode_override = True
+        elif "__gate_clean" in _suffix:
+            gate_override = "clean"
     return _handle_instant_rag_upload(
         content=content,
         filename=filename,
@@ -1559,6 +1947,8 @@ def post_chat_upload(
         thread_id=thread_id,
         file_purpose="instant_rag",
         user_id=user_id,
+        gate_override=gate_override,
+        mode_override=mode_override,
     )
 
 

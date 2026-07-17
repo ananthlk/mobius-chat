@@ -9647,6 +9647,12 @@ function run(): void {
       inputTokens: number;
       outputTokens: number;
       routingFeedback: unknown;
+      hipaaDiagnostics?: {
+        gate: string; phi_flag: boolean;
+        evidence_categories: string[]; identifier_labels: string[];
+        hipaa_mode_allowed: boolean; action_taken: string;
+        reason: string; transaction_id: string; document_name: string;
+      } | null;
     }
   ): void {
     if (bubble.querySelector(".ac-tab-panel--diagnostics")) return; // idempotent
@@ -9680,6 +9686,38 @@ function run(): void {
       opts.thinkingLog as ReadonlyArray<unknown> | null | undefined
     );
     if (traceEl) diagPanel.appendChild(traceEl);
+
+    // Section 3: HIPAA gate audit (if this turn followed an instant-RAG upload)
+    if (opts.hipaaDiagnostics) {
+      const hd = opts.hipaaDiagnostics;
+      const hipaaSection = document.createElement("div");
+      hipaaSection.className = "diag-hipaa-section";
+
+      const gateLabel = hd.gate === "clean" ? "clean" : hd.gate === "indeterminate" ? "indeterminate" : "phi";
+      const gateColor = hd.gate === "clean" ? "#22c55e" : hd.gate === "indeterminate" ? "#f59e0b" : "#ef4444";
+
+      // ceiling classification from action_taken
+      let ceilingLabel = "—";
+      if (hd.action_taken === "published") ceilingLabel = "public-eligible";
+      else if (hd.action_taken === "published_private") ceilingLabel = "private (PHI suspected)";
+      else if (hd.action_taken === "blocked") ceilingLabel = "blocked";
+      else if (hd.action_taken === "blocked_indeterminate") ceilingLabel = "blocked (indeterminate)";
+
+      hipaaSection.innerHTML = `
+        <div class="diag-hipaa-header">
+          <span class="diag-hipaa-title">HIPAA Screening</span>
+          <span class="diag-hipaa-gate" style="color:${gateColor}; font-weight:600;">${gateLabel.toUpperCase()}</span>
+        </div>
+        <table class="diag-hipaa-table">
+          <tr><td class="diag-hipaa-key">Document</td><td class="diag-hipaa-val">${escapeHtml(hd.document_name)}</td></tr>
+          <tr><td class="diag-hipaa-key">PHI detected</td><td class="diag-hipaa-val">${hd.phi_flag ? "Yes" : "No"}</td></tr>
+          <tr><td class="diag-hipaa-key">Classification ceiling</td><td class="diag-hipaa-val">${escapeHtml(ceilingLabel)}</td></tr>
+          <tr><td class="diag-hipaa-key">HIPAA mode</td><td class="diag-hipaa-val">${hd.hipaa_mode_allowed ? "ON" : "OFF"}</td></tr>
+          ${hd.identifier_labels.length ? `<tr><td class="diag-hipaa-key">Identifiers</td><td class="diag-hipaa-val">${hd.identifier_labels.map(l => `<span class="diag-hipaa-pill">${escapeHtml(l)}</span>`).join(" ")}</td></tr>` : ""}
+          <tr><td class="diag-hipaa-key">Transaction</td><td class="diag-hipaa-val diag-hipaa-mono">${escapeHtml(hd.transaction_id || "—")}</td></tr>
+        </table>`;
+      diagPanel.appendChild(hipaaSection);
+    }
 
     // Wire tab button into the tab bar
     const tabBar = bubble.querySelector(".ac-tab-bar") as HTMLElement | null;
@@ -10489,6 +10527,12 @@ function run(): void {
   // planner can use exact assignee_refs instead of re-resolving free text.
 
   let _pendingMentions: Array<{ display_name: string; assignee_ref: string }> = [];
+  let _pendingHipaaDiagnostics: {
+    gate: string; phi_flag: boolean;
+    evidence_categories: string[]; identifier_labels: string[];
+    hipaa_mode_allowed: boolean; action_taken: string;
+    reason: string; transaction_id: string; document_name: string;
+  } | null = null;
   let _coworkerFetchTimer: ReturnType<typeof setTimeout> | null = null;
   let _coworkerDropdown: HTMLElement | null = null;
 
@@ -11355,6 +11399,9 @@ function run(): void {
 
         const insightRows = data.usage_breakdown;
         const perfMeta = data.llm_performance;
+        // Consume pending HIPAA diagnostics for this turn regardless of admin mode
+        const hipaaForTab = _pendingHipaaDiagnostics;
+        _pendingHipaaDiagnostics = null;
         if (
           getShowLlmPerformance(cachedProfile) &&
           data.status === "completed"
@@ -11376,6 +11423,7 @@ function run(): void {
               inputTokens: tin,
               outputTokens: tout,
               routingFeedback: data.technical_feedback?.llm_performance ?? null,
+              hipaaDiagnostics: hipaaForTab,
             });
           } else if (Array.isArray(insightRows) && insightRows.length > 0) {
             // Admin path B: non-card turn — keep panels below the bubble as before
@@ -11678,6 +11726,106 @@ function run(): void {
     if (_ragProgressEs) { _ragProgressEs.close(); _ragProgressEs = null; }
     if (_ragProgressCutoffTimer !== null) { clearTimeout(_ragProgressCutoffTimer); _ragProgressCutoffTimer = null; }
     document.getElementById("ragProgressStrip")?.classList.add("rag-progress-strip--collapsed");
+  }
+
+  function _showHipaaDiagnosticsBubble(d: {
+    gate: string; phi_flag: boolean;
+    evidence_categories: string[]; identifier_labels: string[];
+    hipaa_mode_allowed: boolean; action_taken: string;
+    reason: string; transaction_id: string; document_name: string;
+  }): void {
+    const anchor = document.querySelector(".composer-wrap");
+    if (!anchor || !anchor.parentElement) return;
+
+    const bubble = document.createElement("div");
+    const isBlocked = d.action_taken === "blocked_phi" || d.action_taken === "blocked_indeterminate";
+    const isPrivate = d.action_taken === "published_private";
+    bubble.className = "hipaa-diag-bubble" +
+      (isBlocked && d.gate === "phi" ? " hipaa-diag-bubble--phi" : "") +
+      (isBlocked && d.gate === "indeterminate" ? " hipaa-diag-bubble--indeterminate" : "") +
+      (isPrivate ? " hipaa-diag-bubble--private" : "");
+
+    const icon = document.createElement("span");
+    icon.className = "hipaa-diag-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = isBlocked && d.gate === "phi" ? "🛡✗" : isBlocked ? "⚠" : "🔒";
+
+    const body = document.createElement("div");
+    body.className = "hipaa-diag-body";
+
+    const title = document.createElement("div");
+    title.className = "hipaa-diag-title";
+    if (isBlocked && d.gate === "phi") {
+      title.textContent = `"${d.document_name}" contains PHI — not stored`;
+    } else if (isBlocked) {
+      title.textContent = `"${d.document_name}" couldn't be verified — not stored`;
+    } else {
+      title.textContent = `"${d.document_name}" stored in your private vault`;
+    }
+    body.appendChild(title);
+
+    if (isBlocked) {
+      const msg = document.createElement("div");
+      msg.className = "hipaa-diag-msg";
+      if (d.gate === "phi") {
+        msg.textContent = "This document contains protected health information and cannot be processed in the current mode. It was not stored.";
+      } else {
+        msg.textContent = "We couldn't verify this document's safety right now. It was not stored. Please try again shortly.";
+      }
+      body.appendChild(msg);
+    } else if (isPrivate) {
+      const msg = document.createElement("div");
+      msg.className = "hipaa-diag-msg";
+      msg.textContent = "PHI found — stored privately (not shared to the corpus).";
+      body.appendChild(msg);
+    }
+
+    // Evidence pills (masked category labels — never raw values)
+    const labels = d.identifier_labels.length ? d.identifier_labels : d.evidence_categories;
+    if (labels.length > 0 && d.gate === "phi") {
+      const pills = document.createElement("div");
+      pills.className = "hipaa-diag-pills";
+      labels.slice(0, 8).forEach((lbl) => {
+        const pill = document.createElement("span");
+        pill.className = "hipaa-diag-pill";
+        pill.textContent = lbl;
+        pills.appendChild(pill);
+      });
+      body.appendChild(pills);
+    }
+
+    // Diagnostics chrome (gate badge, HIPAA mode, txn id)
+    const chrome = document.createElement("div");
+    chrome.className = "hipaa-diag-chrome";
+    const gateBadge = document.createElement("span");
+    gateBadge.className = `hipaa-diag-gate hipaa-diag-gate--${d.gate}`;
+    gateBadge.textContent = `gate: ${d.gate}`;
+    chrome.appendChild(gateBadge);
+    const modeBadge = document.createElement("span");
+    modeBadge.className = "hipaa-diag-mode";
+    modeBadge.textContent = `HIPAA mode: ${d.hipaa_mode_allowed ? "ON" : "OFF"}`;
+    chrome.appendChild(modeBadge);
+    if (d.transaction_id) {
+      const txn = document.createElement("span");
+      txn.className = "hipaa-diag-txn";
+      txn.textContent = `txn ${d.transaction_id.slice(0, 8)}`;
+      chrome.appendChild(txn);
+    }
+    body.appendChild(chrome);
+
+    const dismiss = document.createElement("button");
+    dismiss.type = "button";
+    dismiss.className = "hipaa-diag-dismiss";
+    dismiss.setAttribute("aria-label", "Dismiss");
+    dismiss.innerHTML = "&times;";
+    dismiss.addEventListener("click", () => bubble.remove());
+
+    bubble.appendChild(icon);
+    bubble.appendChild(body);
+    bubble.appendChild(dismiss);
+    anchor.parentElement.insertBefore(bubble, anchor);
+
+    if (!isBlocked) setTimeout(() => bubble.remove(), 30_000);
   }
 
   function _showPhiRecommendationCard(filename: string, documentId: string): void {
@@ -12008,13 +12156,43 @@ function run(): void {
       const uploadedDocId    = String((data as any).document_id || "");
       const uploadedThreadId = String((data as any).thread_id || currentThreadId || "");
       const uxPath = String((data as any).ux_path || "blocking");
+      const hipaaD = (data as any).hipaa_diagnostics as {
+        gate: string; phi_flag: boolean;
+        evidence_categories: string[]; identifier_labels: string[];
+        hipaa_mode_allowed: boolean; action_taken: string;
+        reason: string; transaction_id: string; document_name: string;
+      } | undefined;
 
-      // §3.3 PHI card: fire unconditionally on any successful upload with a document_id
-      // (except large-doc redirect which hands off to an external RAG UI). The card's
-      // own 30s poll handles the async classify verdict on every path — inline-ready,
-      // SSE-ready, >12s escape-to-background, and duplicate. Single source of truth;
-      // the dedup guard inside _showPhiRecommendationCard prevents duplicate cards.
-      if (uploadedDocId && !redirectUrl) _showPhiRecommendationCard(filename, uploadedDocId);
+      // HIPAA gate: blocked path — hard-stop, no PHI card, no progress strip.
+      if (uxPath === "blocked" || (data as any).status === "blocked") {
+        _showHipaaDiagnosticsBubble(hipaaD ?? {
+          gate: (data as any).gate || "indeterminate",
+          phi_flag: true,
+          evidence_categories: [],
+          identifier_labels: [],
+          hipaa_mode_allowed: false,
+          action_taken: (data as any).action_taken || "blocked_indeterminate",
+          reason: "",
+          transaction_id: "",
+          document_name: filename,
+        });
+        return data;
+      }
+
+      // PHI card: skip when gate already ran (hipaa_diagnostics present) —
+      // we have the synchronous verdict; no need to poll. Fall back to the
+      // polling card for duplicate/legacy paths that don't run the gate.
+      if (uploadedDocId && !redirectUrl && !hipaaD) {
+        _showPhiRecommendationCard(filename, uploadedDocId);
+      } else if (hipaaD && hipaaD.action_taken === "published_private") {
+        _showHipaaDiagnosticsBubble(hipaaD);
+        // Also surface in the next turn's Diagnostics tab for the full audit trail
+        _pendingHipaaDiagnostics = hipaaD;
+      } else if (hipaaD && hipaaD.gate === "clean") {
+        showChatStatusBanner(`✓ "${filename}" screened — no PHI detected.`, 4000);
+        // Surface the full audit in the next turn's Diagnostics tab
+        _pendingHipaaDiagnostics = hipaaD;
+      }
 
       if (uxPath === "duplicate") {
         showChatStatusBanner(`✓ "${filename}" is ready — already in our corpus.`, 5000);
