@@ -9348,6 +9348,18 @@ function run(): void {
       }).catch(() => {});
     }
 
+    function _sendTrainingEvent(
+      eventType: string,
+      source?: string,
+      text?: string,
+    ): void {
+      void apiFetch(`${API_BASE}/chat/training-event`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event_type: eventType, source, text }),
+      }).catch(() => {});
+    }
+
     function _finishOnboarding(): void {
       void apiFetch(`${authApiBase}/auth/onboarding`, {
         method: "PUT",
@@ -9360,7 +9372,13 @@ function run(): void {
     function _dismiss(permanent: boolean): void {
       wrap.hidden = true;
       wrap.innerHTML = "";
-      if (permanent) { _finishOnboarding(); } else { sessionStorage.setItem("_tm_skip", "1"); }
+      if (permanent) {
+        _sendTrainingEvent("training_dismissed");
+        _finishOnboarding();
+      } else {
+        _sendTrainingEvent("training_skipped");
+        sessionStorage.setItem("_tm_skip", "1");
+      }
     }
 
     function prog(n: number): string {
@@ -9467,6 +9485,7 @@ function run(): void {
         }));
         const advance = () => {
           if (hesList.length) _writePrefs({ hesitations: hesList });
+          _sendTrainingEvent("training_completed");
           _finishOnboarding();
           step = 5; _render();
         };
@@ -9518,15 +9537,28 @@ function run(): void {
         const f = e.currentTarget as HTMLElement;
         f.dataset.flipped = f.dataset.flipped === "true" ? "false" : "true";
       });
+      let _fromChip = false;
       wrap.querySelectorAll(".tm-try").forEach(b => b.addEventListener("click", () => {
         const ci = document.getElementById("tmInput") as HTMLInputElement | null;
-        if (ci) ci.value = (b as HTMLElement).dataset.q as string;
+        if (ci) { ci.value = (b as HTMLElement).dataset.q as string; _fromChip = true; }
       }));
+      (document.getElementById("tmInput") as HTMLInputElement | null)
+        ?.addEventListener("input", () => { _fromChip = false; });
       const fire = () => {
         const ci = document.getElementById("tmInput") as HTMLInputElement | null;
         const v = (ci?.value ?? "").trim();
         if (!v) return;
+        const src = _fromChip ? "chip" : "typed";
         wrap.hidden = true; wrap.innerHTML = "";
+        _sendTrainingEvent("graduation_question_fired", src, v);
+        if (src === "typed") {
+          // Typed first-question is fresh intent — route to PA's gap writer.
+          void apiFetch(`${API_BASE}/chat/product-feedback`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ verbatim: v, category: "feature_request", trigger: "graduation" }),
+          }).catch(() => {});
+        }
         sendMessage(v);
       };
       document.getElementById("tmSend")?.addEventListener("click", fire);

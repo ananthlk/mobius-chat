@@ -1942,6 +1942,7 @@ from app.api.feedback import router as _feedback_router
 from app.api.history import router as _history_router
 from app.api.product_feedback import router as _product_feedback_router
 from app.api.tasks import router as _tasks_router
+from app.api.training import router as _training_router
 from app.api.uploads import router as _uploads_router
 from app.api.user_tools import router as _user_tools_router
 app.include_router(_chat_router)  # Phase 2b.2 — core chat lifecycle extracted from main.py
@@ -1949,6 +1950,7 @@ app.include_router(_credentialing_router)  # credentialing-runs + NPI lookup (re
 app.include_router(_history_router)
 app.include_router(_feedback_router)
 app.include_router(_product_feedback_router)  # open product feedback + CSAT/NPS surveys
+app.include_router(_training_router)          # training-mode telemetry (outcomes + graduation)
 app.include_router(_tasks_router)
 app.include_router(_uploads_router)  # Phase B.1c — cross-thread uploads catalog
 app.include_router(_download_router)  # upload downloads + guarded web download proxy
