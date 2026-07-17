@@ -691,7 +691,7 @@
       return;
     }
     tbody.innerHTML = list.map(function(e) {
-      var name = [e.first_name, e.last_name].filter(Boolean).join(' ') || '—';
+      var name = e.name || e.display_name || [e.first_name, e.last_name].filter(Boolean).join(' ') || '—';
       var roles = (e.roles || []).map(function(r){ return '<span class="role-tag">' + esc(r) + '</span>'; }).join('');
       var statusVal = (e.status || 'pending').toLowerCase();
       var statusLabel = statusVal.charAt(0).toUpperCase() + statusVal.slice(1);
