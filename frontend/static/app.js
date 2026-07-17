@@ -4765,8 +4765,9 @@ function renderClarificationOptions(opts) {
   return wrap;
 }
 function renderAssistantMessage(text, isError, opts) {
+  const variantClass = opts?.variant === "warn" ? " message--warn" : isError || opts?.variant === "error" ? " message--error" : "";
   const wrap = document.createElement("div");
-  wrap.className = "message message--assistant" + (isError ? " message--error" : "");
+  wrap.className = "message message--assistant" + variantClass;
   const bubble = document.createElement("div");
   bubble.className = "message-bubble";
   bubble.appendChild(
@@ -11018,6 +11019,10 @@ ${message}`;
               suppressConfidenceForAdminQcFail: suppressConf,
               threadId: data.thread_id ?? currentThreadId ?? null
             })
+          );
+        } else if (data.response_source === "content_filtered") {
+          turnWrap.appendChild(
+            renderAssistantMessage(contentToShow, false, { variant: "warn" })
           );
         } else {
           turnWrap.appendChild(

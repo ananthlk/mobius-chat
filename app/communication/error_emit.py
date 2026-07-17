@@ -94,6 +94,26 @@ def classify_exception(
     _has_4xx = _HTTP_4XX_RE.search(raw) is not None
     _has_5xx = _HTTP_5XX_RE.search(raw) is not None
 
+    # ── Content filtering (Vertex BLOCK_SAFETY, Anthropic 400 content policy) ─
+    # Must come before the 4xx/5xx scans: a 400 content-filter hit would
+    # otherwise fall through to internal_error (no URL → not scrape, not 5xx).
+    _CF_SIGNALS = (
+        "output blocked by content filtering",
+        "content filtering policy",
+        "vertexblockederror",  # VertexBlockedError re-raised after condensed-prompt retry
+    )
+    if any(sig in lower for sig in _CF_SIGNALS):
+        return ErrorEnvelope(
+            error_code="refusal",
+            user_facing_message=(
+                "This response was blocked by a content safety rule. "
+                "Try rephrasing or asking a more specific question."
+            ),
+            internal_detail=raw,
+            tool=tool,
+            round=round,
+        )
+
     # ── Rate limit (Groq 429, Anthropic TPM, generic 429) ────────────────────
     if (
         "rate_limit_exceeded" in lower

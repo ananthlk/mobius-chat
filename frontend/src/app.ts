@@ -3971,10 +3971,13 @@ function renderClarificationOptions(opts: ClarificationOption[]): HTMLElement {
 function renderAssistantMessage(
   text: string,
   isError?: boolean,
-  opts?: { sourceConfidenceStrip?: string }
+  opts?: { sourceConfidenceStrip?: string; variant?: "warn" | "error" }
 ): HTMLElement {
+  const variantClass = opts?.variant === "warn"
+    ? " message--warn"
+    : (isError || opts?.variant === "error") ? " message--error" : "";
   const wrap = document.createElement("div");
-  wrap.className = "message message--assistant" + (isError ? " message--error" : "");
+  wrap.className = "message message--assistant" + variantClass;
   const bubble = document.createElement("div");
   bubble.className = "message-bubble";
   bubble.appendChild(
@@ -11196,6 +11199,11 @@ function run(): void {
                 suppressConfidenceForAdminQcFail: suppressConf,
                 threadId: data.thread_id ?? currentThreadId ?? null,
               })
+            );
+          } else if (data.response_source === "content_filtered") {
+            // Content-safety block: amber notice, no answer card, no sources.
+            turnWrap.appendChild(
+              renderAssistantMessage(contentToShow, false, { variant: "warn" })
             );
           } else {
             turnWrap.appendChild(

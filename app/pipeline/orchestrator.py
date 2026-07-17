@@ -1382,6 +1382,17 @@ def _publish_failed(
         _env = classify_exception(err, tool="orchestrator") if err is not None else None
     except Exception:
         _env = None
+
+    # Detect content-filter hits so the frontend can render a distinct amber
+    # "content policy" state rather than a generic failure bubble.
+    _CF_SIGNALS = (
+        "output blocked by content filtering",
+        "content filtering policy",
+        "vertexblockederror",
+    )
+    _err_lower = err_str.lower() if err_str else ""
+    _is_content_filtered = any(sig in _err_lower for sig in _CF_SIGNALS)
+
     chunks = list(thinking_chunks) if thinking_chunks is not None else []
 
     # Sprint A.1 commit 3: emit turn_failed envelope before building
@@ -1434,13 +1445,18 @@ def _publish_failed(
         _user_message = (
             f"{_env.user_facing_message} Please try rephrasing your question."
         )
+    if _is_content_filtered:
+        _user_message = (
+            "This response was blocked by a content safety rule. "
+            "Try rephrasing or asking a more specific question."
+        )
     response_payload = {
         "status": "failed",
         "message": _user_message,
         "error_envelope": _env.model_dump() if _env is not None else None,
         "plan": None,
         "thinking_log": chunks,
-        "response_source": "error",
+        "response_source": "content_filtered" if _is_content_filtered else "error",
         "model_used": None,
         "llm_error": err_str,
         "tokens_used": {"input_tokens": 0, "output_tokens": 0},

@@ -2142,6 +2142,28 @@ body {
   border: 1px solid #fecaca;
   color: var(--error-text);
 }
+.message--warn .message-bubble {
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  color: #92400e;
+}
+@media (prefers-color-scheme: dark) {
+  .message--warn .message-bubble {
+    background: #1c1507;
+    border-color: #78350f;
+    color: #fcd34d;
+  }
+}
+:root[data-theme="dark"] .message--warn .message-bubble {
+  background: #1c1507;
+  border-color: #78350f;
+  color: #fcd34d;
+}
+:root[data-theme="light"] .message--warn .message-bubble {
+  background: #fffbeb;
+  border-color: #fcd34d;
+  color: #92400e;
+}
 
 /* AnswerCard: reference-first, flat, scannable – policy reference not form */
 .answer-card .answer-card-bubble {
