@@ -12355,8 +12355,15 @@ function run(): void {
     inputEl.disabled = true;
     try {
       const uploadedName = composerStagedFile.name;
-      await uploadStagedAttachmentForInstantRag();
+      const uploadResult = await uploadStagedAttachmentForInstantRag();
       clearComposerAttachment();
+      // HIPAA gate hard-stop: blocked upload must NOT proceed to a chat turn.
+      // PHI must never reach the LLM composer — abort here, block bubble already shown.
+      if ((uploadResult as any)?.blocked || (uploadResult as any)?.status === "blocked") {
+        sendBtn.disabled = false;
+        inputEl.disabled = false;
+        return;
+      }
       const typed = (inputEl.value ?? "").trim();
       const effective = typed || `I just uploaded "${uploadedName}" — what does it say?`;
       if (!typed) inputEl.value = effective;

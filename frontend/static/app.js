@@ -11974,8 +11974,13 @@ ${message}`;
     inputEl.disabled = true;
     try {
       const uploadedName = composerStagedFile.name;
-      await uploadStagedAttachmentForInstantRag();
+      const uploadResult = await uploadStagedAttachmentForInstantRag();
       clearComposerAttachment();
+      if (uploadResult?.blocked || uploadResult?.status === "blocked") {
+        sendBtn.disabled = false;
+        inputEl.disabled = false;
+        return;
+      }
       const typed = (inputEl.value ?? "").trim();
       const effective = typed || `I just uploaded "${uploadedName}" \u2014 what does it say?`;
       if (!typed)
