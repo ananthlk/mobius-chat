@@ -9303,7 +9303,6 @@ function run() {
         return;
     }
     _tmShownThisSession = true;
-    document.querySelector(".landing-card")?.setAttribute("hidden", "");
     const esc = (s) => String(s).replace(
       /[&<>"']/g,
       (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
@@ -9462,7 +9461,6 @@ function run() {
     function _dismiss(permanent) {
       wrap.hidden = true;
       wrap.innerHTML = "";
-      document.querySelector(".landing-card")?.removeAttribute("hidden");
       if (permanent) {
         _sendTrainingEvent("training_dismissed");
         _finishOnboarding2();
@@ -9685,7 +9683,7 @@ function run() {
     if (sessionStorage.getItem("_tm_skip") === "1")
       return;
     _tmShownThisSession = true;
-    const ACTIVE_ARMS = ["A", "C", "D"];
+    const ACTIVE_ARMS = ["A", "B", "C", "D"];
     const arm = ACTIVE_ARMS[Math.floor(Math.random() * ACTIVE_ARMS.length)];
     const _revealTrainingEvent = (eventType, source, text) => {
       void apiFetch(`${API_BASE}/chat/training-event`, {

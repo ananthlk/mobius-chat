@@ -9241,8 +9241,6 @@ function run(): void {
       if (sessionStorage.getItem("_tm_skip") === "1") return;
     }
     _tmShownThisSession = true;
-    // Hide standard landing hero while training is active — mutually exclusive.
-    document.querySelector<HTMLElement>(".landing-card")?.setAttribute("hidden", "");
 
     const esc = (s: string) => String(s).replace(/[&<>"']/g, c =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] as string
@@ -9397,8 +9395,6 @@ function run(): void {
     function _dismiss(permanent: boolean): void {
       wrap.hidden = true;
       wrap.innerHTML = "";
-      // Restore standard landing hero now that training is gone.
-      document.querySelector<HTMLElement>(".landing-card")?.removeAttribute("hidden");
       if (permanent) {
         _sendTrainingEvent("training_dismissed");
         _finishOnboarding();
@@ -9612,7 +9608,7 @@ function run(): void {
     if (sessionStorage.getItem("_tm_skip") === "1") return;
     _tmShownThisSession = true;
 
-    const ACTIVE_ARMS = ["A", "C", "D"] as const;
+    const ACTIVE_ARMS = ["A", "B", "C", "D"] as const;
     const arm = ACTIVE_ARMS[Math.floor(Math.random() * ACTIVE_ARMS.length)];
 
     // Log arm assignment on the first training_completed/skipped row (stored
