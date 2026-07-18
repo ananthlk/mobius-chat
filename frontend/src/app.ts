@@ -9690,6 +9690,7 @@ function run(): void {
     iframe.src = "/static/grand-reveal.html";
     iframe.setAttribute("title", "Mobius first-run experience");
     iframe.setAttribute("allowtransparency", "true");
+    iframe.addEventListener("load", () => { iframe.style.opacity = "1"; });
     overlay.hidden = false;
     overlay.appendChild(iframe);
   }

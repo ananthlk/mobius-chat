@@ -570,7 +570,7 @@ const VERS={
   D:{scenes:['D0','D1','D-scen','D2','D-auto','D3','D4'],labels:['Silence','Good morning','Scenario','Tone','Autonomy','Trained','Home'],name:'Morning',tag:'All-light from pixel one · wordmark materializes in header · soft training cards',lightAt:0}
 };
 
-let ver='A', cur=0, bState=0, busy=false, autoT=null;
+let ver='A', cur=0, bState=0, busy=false, autoT=null, bAutoT=null;
 const $=id=>document.getElementById(id);
 const dots=$('dots'),pb=$('pb'),nb=$('nb'),slbl=$('slbl');
 const bcurtain=$('b-curtain'), cwm=$('c-wm'), dwm=$('d-wm');
@@ -650,9 +650,12 @@ function bPrev(){
   if(bState>0)setBState(bState-1);
 }
 function setBState(i){
+  clearTimeout(bAutoT);
   bState=i;
   document.querySelectorAll('.bcs').forEach((s,idx)=>s.classList.toggle('on',idx===bState));
   refreshUI();
+  const bAuto={0:1800,1:2400};
+  if(bAuto[i]!==undefined) bAutoT=setTimeout(()=>{if(bState===i&&ver==='B')nextBC();},bAuto[i]);
 }
 function nextBC(){if(bState<5)setBState(bState+1);}
 function raiseCurtain(){
@@ -726,11 +729,13 @@ function onEnter(n){
   clearTimeout(autoT);
   if(ver==='A'){
     if(n===0) autoT=setTimeout(()=>{if(cur===0&&ver==='A')goTo(1);},1100);
+    if(n===1) autoT=setTimeout(()=>{if(cur===1&&ver==='A')goTo(2);},1800);
+    if(n===2) autoT=setTimeout(()=>{if(cur===2&&ver==='A')goTo(3);},2600);
     if(n===6) confetti();
   }
   if(ver==='C'){
-    if(n===0)setCWm('hidden');
-    else if(n===1)setCWm('center');
+    if(n===0){setCWm('hidden');autoT=setTimeout(()=>{if(cur===0&&ver==='C')goTo(1);},700);}
+    else if(n===1){setCWm('center');autoT=setTimeout(()=>{if(cur===1&&ver==='C')goTo(2);},2200);}
     else if(n<=5)setCWm('hidden');  // light training cards — logo hidden, card takes over
     else if(!_cFlying)setCWm('header',true); // direct nav to C6: instant snap
     // else: triggerCTransform fly is in progress — don't interrupt
@@ -738,6 +743,7 @@ function onEnter(n){
   if(ver==='D'){
     dwm.style.opacity=n>=1?'1':'0';
     if(n===0) autoT=setTimeout(()=>{if(cur===0&&ver==='D')goTo(1);},700);
+    if(n===1) autoT=setTimeout(()=>{if(cur===1&&ver==='D')goTo(2);},2500);
   } else dwm.style.opacity='0';
   // Overlay: wire graduation scene inputs when scene is entered
   if(_cb){
@@ -760,6 +766,7 @@ function onEnter(n){
 
 function setVer(v){
   clearTimeout(autoT);
+  clearTimeout(bAutoT);
   const old=VERS[ver];
   $(old.scenes[cur]).classList.remove('on');
   ver=v; cur=0; bState=0;
