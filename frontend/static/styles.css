@@ -5400,7 +5400,78 @@ body {
   flex-shrink: 0;
   padding: 1.25rem 2rem 1.5rem;
   background: var(--main-bg);
+  transition: transform 200ms cubic-bezier(.22,1,.36,1);
 }
+
+/* ── Centered-composer landing state ───────────────────────────────────────
+   When body.landing-state is set (cleared on first message), the composer
+   floats to the vertical center of the viewport. The reveal overlay dissolves
+   into this state; the 200ms ease removes itself as messages arrive.       */
+body.landing-state .composer-wrap {
+  transform: translateY(-42vh);
+}
+
+/* Landing chips — shown above the composer while centered */
+.composer-landing-chips {
+  display: none;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+  max-width: 680px;
+  margin: 0 auto 0.85rem;
+  padding: 0 0.5rem;
+}
+body.landing-state .composer-landing-chips {
+  display: flex;
+}
+.composer-chip {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 100px;
+  padding: 5px 14px;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+.composer-chip:hover {
+  border-color: var(--mobius-accent, #3b82f6);
+  color: var(--mobius-accent, #3b82f6);
+  background: color-mix(in srgb, var(--mobius-accent, #3b82f6) 6%, transparent);
+}
+
+/* Grand-reveal overlay iframe */
+#grandRevealOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9900;
+  background: transparent;
+  transition: opacity 600ms cubic-bezier(.22,1,.36,1);
+}
+#grandRevealOverlay[hidden] { display: none; }
+#grandRevealOverlay iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+/* Skip button on reveal overlay */
+#revealSkipBtn {
+  position: fixed;
+  bottom: 1.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9901;
+  background: none;
+  border: none;
+  color: rgba(255,255,255,.22);
+  font-size: 0.75rem;
+  cursor: pointer;
+  letter-spacing: 0.04em;
+  transition: color .2s;
+  padding: 0.4rem 1rem;
+}
+#revealSkipBtn:hover { color: rgba(255,255,255,.45); }
 
 .composer {
   display: flex;

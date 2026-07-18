@@ -1,0 +1,839 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mobius — First-run Versions</title>
+<style>
+/* VENDORED from mobius-design/tokens.css — do not edit here */
+:root {
+  --mobius-accent:         #3b82f6;
+  --mobius-accent-hover:   #2563eb;
+  --mobius-text-primary:   #1a1d21;
+  --mobius-text-secondary: #374151;
+  --mobius-text-muted:     #64748b;
+  --mobius-bg-primary:     #fafbfc;
+  --mobius-font-sans:      "DM Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+}
+/* local accent tints */
+:root {
+  --ac-60: color-mix(in srgb, var(--mobius-accent) 60%, transparent);
+  --ac-55: color-mix(in srgb, var(--mobius-accent) 55%, transparent);
+  --ac-50: color-mix(in srgb, var(--mobius-accent) 50%, transparent);
+  --ac-40: color-mix(in srgb, var(--mobius-accent) 40%, transparent);
+  --ac-35: color-mix(in srgb, var(--mobius-accent) 35%, transparent);
+  --ac-30: color-mix(in srgb, var(--mobius-accent) 30%, transparent);
+  --ac-22: color-mix(in srgb, var(--mobius-accent) 22%, transparent);
+  --ac-13: color-mix(in srgb, var(--mobius-accent) 13%, transparent);
+  --ac-12: color-mix(in srgb, var(--mobius-accent) 12%, transparent);
+  --ac-10: color-mix(in srgb, var(--mobius-accent) 10%, transparent);
+  --ac-08: color-mix(in srgb, var(--mobius-accent) 8%, transparent);
+  --ac-07: color-mix(in srgb, var(--mobius-accent) 7%, transparent);
+  --ac-06: color-mix(in srgb, var(--mobius-accent) 6%, transparent);
+  --ac-04: color-mix(in srgb, var(--mobius-accent) 4%, transparent);
+  /* storyboard-specific scene colours */
+  --reveal-dark-bg:   #0c0b10;
+  --reveal-light-bg:  #f8f7fb;
+  --stage-light-text: #f4f2ff;  /* body text on dark stage */
+  --stage-dark-text:  #1c1927;  /* body text on light stage */
+  --stage-muted-text: #9d99b5;  /* placeholder / muted on light stage */
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;overflow:hidden;font-family:var(--mobius-font-sans)}
+body{background:var(--reveal-dark-bg);color:var(--stage-light-text);transition:background .9s cubic-bezier(.22,1,.36,1)}
+body.light{background:var(--reveal-light-bg);color:var(--stage-dark-text)}
+
+#stage{position:fixed;inset:0}
+.sc{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .45s cubic-bezier(.22,1,.36,1)}
+.sc.on{opacity:1;pointer-events:auto}
+
+#vtabs{position:fixed;top:20px;right:24px;display:flex;gap:6px;z-index:1000}
+.vt{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);border-radius:100px;padding:6px 16px;font-size:.75rem;font-weight:500;letter-spacing:.04em;cursor:pointer;color:rgba(255,255,255,.6);transition:all .2s;backdrop-filter:blur(8px)}
+.vt.on{background:var(--mobius-accent);border-color:var(--mobius-accent);color:#fff}
+body.light .vt{background:rgba(28,25,39,.06);border-color:rgba(28,25,39,.14);color:rgba(28,25,39,.55)}
+body.light .vt.on{background:var(--mobius-accent);border-color:var(--mobius-accent);color:#fff}
+
+#slbl{position:fixed;top:22px;left:50%;transform:translateX(-50%);font-size:.6875rem;letter-spacing:.18em;text-transform:uppercase;color:rgba(255,255,255,.15);z-index:999;pointer-events:none;white-space:nowrap}
+body.light #slbl{color:rgba(28,25,39,.15)}
+
+#nav{position:fixed;bottom:28px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:12px;z-index:1000}
+.nd{width:5px;height:5px;border-radius:50%;border:none;padding:0;background:rgba(255,255,255,.22);cursor:pointer;transition:all .32s cubic-bezier(.22,1,.36,1)}
+.nd.on{width:18px;border-radius:3px;background:var(--mobius-accent)}
+body.light .nd{background:rgba(28,25,39,.18)}
+body.light .nd.on{background:var(--mobius-accent)}
+.na{width:34px;height:34px;border-radius:50%;border:1px solid rgba(255,255,255,.15);background:none;color:rgba(255,255,255,.5);cursor:pointer;font-size:1rem;display:grid;place-items:center;transition:all .2s}
+.na:hover{border-color:var(--ac-60);color:color-mix(in srgb,var(--mobius-accent) 70%,#fff);background:var(--ac-10)}
+.na:disabled{opacity:.2;cursor:default}
+.na:disabled:hover{border-color:rgba(255,255,255,.15);color:rgba(255,255,255,.5);background:none}
+body.light .na{border-color:rgba(28,25,39,.15);color:rgba(28,25,39,.45)}
+body.light .na:hover{border-color:var(--ac-50);color:var(--mobius-accent);background:var(--ac-06)}
+body.light .na:disabled:hover{border-color:rgba(28,25,39,.15);color:rgba(28,25,39,.45);background:none}
+
+#vdesc{position:fixed;bottom:72px;left:50%;transform:translateX(-50%);text-align:center;pointer-events:none}
+#vdesc-name{font-size:.6875rem;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--mobius-accent);margin-bottom:3px}
+#vdesc-tag{font-size:.75rem;color:rgba(255,255,255,.3);letter-spacing:.03em;white-space:nowrap}
+body.light #vdesc-tag{color:rgba(28,25,39,.3)}
+
+#confetti{position:fixed;inset:0;pointer-events:none;z-index:50}
+
+/* ceremony */
+.wm{font-size:clamp(2.5rem,7vw,5.2rem);font-weight:100;letter-spacing:.12em;color:#fff;text-align:center;animation:fadeUp 1s cubic-bezier(.22,1,.36,1) .1s both}
+.gpre{font-size:.68rem;letter-spacing:.16em;text-transform:uppercase;color:rgba(244,242,255,.25);margin-bottom:.4rem;animation:fadeUp .7s cubic-bezier(.22,1,.36,1) .05s both;text-align:center}
+.gname{font-size:clamp(2rem,5vw,3.4rem);font-weight:200;color:var(--stage-light-text);animation:fadeUp .8s cubic-bezier(.22,1,.36,1) .2s both;text-align:center}
+.gmission{margin-top:.5rem;font-size:1.05rem;font-weight:300;color:rgba(244,242,255,.55);animation:fadeUp .7s cubic-bezier(.22,1,.36,1) .35s both;text-align:center}
+.gsub{margin-top:.4rem;font-size:.86rem;font-weight:300;color:rgba(244,242,255,.3);animation:fadeUp .7s cubic-bezier(.22,1,.36,1) .52s both;text-align:center}
+.gcta{margin-top:2.5rem;display:block;margin-left:auto;margin-right:auto;background:none;border:1px solid rgba(255,255,255,.13);border-radius:100px;padding:.65rem 2.2rem;color:rgba(255,255,255,.6);font-size:.86rem;font-weight:300;letter-spacing:.1em;cursor:pointer;transition:all .22s;animation:fadeUp .7s cubic-bezier(.22,1,.36,1) .72s both}
+.gcta:hover{border-color:var(--ac-55);color:#fff;background:var(--ac-10)}
+
+/* training card dark */
+.tc{width:min(520px,88vw);background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:20px;padding:1.8rem 2.4rem 2rem;animation:fadeUp .5s cubic-bezier(.22,1,.36,1) both}
+.ttrk{display:flex;gap:4px;margin-bottom:1.5rem}
+.tp{flex:1;height:2px;border-radius:100px;background:rgba(255,255,255,.1)}
+.tp.on{background:var(--mobius-accent)}
+.th{font-size:1.1rem;font-weight:500;color:var(--stage-light-text);line-height:1.35;margin-bottom:.28rem}
+.ts{font-size:.79rem;color:rgba(244,242,255,.35);line-height:1.55;margin-bottom:1rem}
+.tones{display:flex;flex-direction:column;gap:7px;margin-bottom:1rem}
+.tone{background:rgba(255,255,255,.04);border:1.5px solid rgba(255,255,255,.08);border-radius:12px;padding:.82rem 1.05rem;color:rgba(244,242,255,.72);font-size:.79rem;line-height:1.52;cursor:pointer;text-align:left;transition:all .17s;width:100%}
+.tone:hover{border-color:var(--ac-40);background:var(--ac-07)}
+.tone.picked{border-color:var(--mobius-accent);background:var(--ac-13);color:var(--stage-light-text)}
+.tact{display:flex;align-items:center;gap:1rem}
+.bv{background:var(--mobius-accent);color:#fff;border:none;border-radius:100px;padding:.5rem 1.4rem;font-size:.83rem;font-weight:500;cursor:pointer;transition:background .15s}
+.bv:hover{background:var(--mobius-accent-hover)}
+.bskip{background:none;border:none;color:rgba(244,242,255,.2);font-size:.77rem;cursor:pointer;transition:color .15s}
+.bskip:hover{color:rgba(244,242,255,.42)}
+.gtags{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:.8rem}
+.gtag{background:var(--ac-12);border:1px solid var(--ac-22);color:color-mix(in srgb,var(--mobius-accent) 70%,#fff);border-radius:100px;padding:.2rem .68rem;font-size:.72rem;font-weight:500}
+.gql{font-size:.75rem;color:rgba(244,242,255,.28);margin-bottom:.42rem}
+.ginp{display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.05);border:1.5px solid rgba(255,255,255,.1);border-radius:11px;padding:.58rem .88rem}
+.ginp input{flex:1;background:none;border:none;color:var(--stage-light-text);font-size:.82rem;outline:none;min-width:0}
+.ginp input::placeholder{color:rgba(244,242,255,.2)}
+.gsend{background:var(--mobius-accent);border:none;border-radius:8px;width:26px;height:26px;display:grid;place-items:center;cursor:pointer;color:#fff;font-size:.75rem;flex-shrink:0;transition:background .15s;padding:0}
+.gsend:hover{background:var(--mobius-accent-hover)}
+
+/* training card light */
+.tc-l{width:min(520px,88vw);background:#fff;border:1px solid rgba(28,25,39,.08);border-radius:20px;padding:1.8rem 2.4rem 2rem;box-shadow:0 2px 32px rgba(28,25,39,.07);animation:fadeUp .5s cubic-bezier(.22,1,.36,1) both}
+.tp-l{flex:1;height:2px;border-radius:100px;background:rgba(28,25,39,.08)}
+.tp-l.on{background:var(--mobius-accent)}
+.th-l{font-size:1.1rem;font-weight:500;color:var(--stage-dark-text);line-height:1.35;margin-bottom:.28rem}
+.ts-l{font-size:.79rem;color:rgba(28,25,39,.35);line-height:1.55;margin-bottom:1rem}
+.tone-l{background:rgba(28,25,39,.03);border:1.5px solid rgba(28,25,39,.09);border-radius:12px;padding:.82rem 1.05rem;color:rgba(28,25,39,.68);font-size:.79rem;line-height:1.52;cursor:pointer;text-align:left;transition:all .17s;width:100%}
+.tone-l:hover{border-color:var(--ac-35);background:var(--ac-04)}
+.tone-l.picked{border-color:var(--mobius-accent);background:var(--ac-07);color:var(--stage-dark-text)}
+.bskip-l{background:none;border:none;color:rgba(28,25,39,.2);font-size:.77rem;cursor:pointer;transition:color .15s}
+.bskip-l:hover{color:rgba(28,25,39,.42)}
+.gql-l{font-size:.75rem;color:rgba(28,25,39,.28);margin-bottom:.42rem}
+.ginp-l{display:flex;align-items:center;gap:8px;background:var(--reveal-light-bg);border:1.5px solid rgba(28,25,39,.1);border-radius:11px;padding:.58rem .88rem}
+.ginp-l input{flex:1;background:none;border:none;color:var(--stage-dark-text);font-size:.82rem;outline:none;min-width:0}
+.ginp-l input::placeholder{color:var(--stage-muted-text)}
+
+/* revealed page */
+.rev{position:fixed;inset:0;display:flex}
+.rail{width:50px;border-right:1px solid rgba(28,25,39,.07);display:flex;flex-direction:column;align-items:center;padding:14px 0;gap:5px;flex-shrink:0}
+.ri{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;font-size:.8125rem;color:rgba(28,25,39,.25);cursor:pointer;transition:all .15s}
+.ri:hover{background:var(--ac-08);color:var(--mobius-accent)}
+.ri.on{background:var(--ac-10);color:var(--mobius-accent)}
+.rspc{flex:1}
+.rmain{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 2rem;min-width:0}
+.rwm{font-size:1.3rem;font-weight:100;letter-spacing:.08em;color:var(--mobius-text-secondary);margin-bottom:2rem;animation:fadeUp .8s cubic-bezier(.22,1,.36,1) .1s both}
+.rinpwrap{width:min(580px,100%);animation:fadeUp .8s cubic-bezier(.22,1,.36,1) .3s both}
+.rinp{display:flex;align-items:center;gap:10px;border:1.5px solid rgba(28,25,39,.1);border-radius:16px;padding:.95rem 1.2rem;background:#fff;box-shadow:0 1px 20px rgba(28,25,39,.06);transition:border-color .2s,box-shadow .2s}
+.rinp:focus-within{border-color:var(--ac-30);box-shadow:0 1px 20px rgba(28,25,39,.06),0 0 0 3px var(--ac-06)}
+.rinp input{flex:1;border:none;background:none;font-size:1rem;color:var(--stage-dark-text);outline:none;min-width:0}
+.rinp input::placeholder{color:var(--stage-muted-text)}
+.rsend{background:var(--mobius-accent);border:none;border-radius:11px;width:38px;height:38px;display:grid;place-items:center;cursor:pointer;color:#fff;font-size:1rem;flex-shrink:0;transition:background .15s,transform .15s;padding:0}
+.rsend:hover{background:var(--mobius-accent-hover);transform:scale(1.04)}
+.rhint{font-size:.72rem;color:rgba(28,25,39,.2);text-align:center;margin-top:.85rem;animation:fadeUp .7s cubic-bezier(.22,1,.36,1) .55s both}
+
+/* product landing content (C4 / full product state) */
+.planding{flex:1;overflow-y:auto;min-width:0;background:var(--reveal-light-bg)}
+.planding-inner{max-width:640px;width:100%;margin:0 auto;padding:3.5rem 1.8rem 3rem}
+.pl-greeting{font-size:1.55rem;font-weight:600;color:var(--stage-dark-text);line-height:1.2;margin-bottom:.22rem;animation:fadeUp .8s cubic-bezier(.22,1,.36,1) .15s both}
+.pl-sub{font-size:.78rem;color:rgba(28,25,39,.32);margin-bottom:1.8rem;animation:fadeUp .7s cubic-bezier(.22,1,.36,1) .38s both}
+.pl-card{background:#fff;border:1px solid rgba(28,25,39,.07);border-radius:12px;padding:1.3rem 1.5rem;margin-bottom:1.4rem;box-shadow:0 1px 10px rgba(28,25,39,.04);animation:fadeUp .7s cubic-bezier(.22,1,.36,1) .52s both}
+.pl-card-hd{display:flex;align-items:center;gap:.65rem;margin-bottom:.9rem}
+.pl-card-title{font-size:.86rem;font-weight:600;color:var(--stage-dark-text);line-height:1.35}
+.pl-together{border-left:2.5px solid rgba(28,25,39,.09);padding-left:.85rem}
+.pl-together-lbl{font-size:.65rem;font-weight:700;color:rgba(28,25,39,.38);letter-spacing:.08em;text-transform:uppercase;margin-bottom:.28rem}
+.pl-together-hd{font-size:.86rem;font-weight:600;color:var(--stage-dark-text);margin-bottom:.5rem;line-height:1.35}
+.pl-bullets{display:flex;flex-direction:column;gap:.28rem;margin-bottom:.55rem}
+.pl-bullet{font-size:.77rem;color:rgba(28,25,39,.48);padding-left:.85rem;position:relative}
+.pl-bullet::before{content:'·';position:absolute;left:.1rem;color:rgba(28,25,39,.28)}
+.pl-link{color:var(--mobius-accent);text-decoration:none;font-size:.77rem}
+.pl-link:hover{text-decoration:underline}
+.pl-section{animation:fadeUp .7s cubic-bezier(.22,1,.36,1) .68s both;margin-bottom:1.3rem}
+.pl-section-lbl{font-size:.64rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:rgba(28,25,39,.28);margin-bottom:.35rem}
+.pl-section-hint{font-size:.73rem;color:rgba(28,25,39,.28);margin-bottom:.4rem}
+.pl-prompts{display:flex;gap:1.1rem;flex-wrap:wrap}
+.pl-prompt{color:var(--mobius-accent);font-size:.78rem;text-decoration:none;cursor:pointer;padding:.18rem 0}
+.pl-updates{display:flex;flex-direction:column;gap:.8rem;margin-top:.5rem;animation:fadeUp .7s cubic-bezier(.22,1,.36,1) .82s both}
+.pl-update{border-left:3px solid var(--mobius-accent);padding-left:.85rem}
+.pl-update-title{font-size:.8rem;font-weight:600;color:var(--stage-dark-text);margin-bottom:.14rem}
+.pl-update-desc{font-size:.74rem;color:rgba(28,25,39,.42);margin-bottom:.14rem}
+.pl-update-try{font-size:.72rem;color:rgba(28,25,39,.28)}
+
+/* B curtain */
+#b-curtain{position:fixed;inset:0;background:var(--reveal-dark-bg);z-index:20;display:flex;flex-direction:column;align-items:center;justify-content:center;transition:transform 1.1s cubic-bezier(.22,1,.36,1);visibility:hidden}
+#b-curtain.on{visibility:visible}
+#b-curtain.risen{transform:translateY(-100%)}
+.bcs{display:none;flex-direction:column;align-items:center;text-align:center;width:min(520px,88vw)}
+.bcs.on{display:flex}
+.bc-wm{font-size:clamp(2rem,5vw,4rem);font-weight:100;letter-spacing:.12em;color:#fff;animation:fadeUp 1s cubic-bezier(.22,1,.36,1) .1s both}
+
+/* C floating logo (∞ icon, migrates center→sidebar) */
+#c-wm{position:fixed;z-index:25;pointer-events:none;opacity:0;font-size:4.5rem;font-weight:300;color:var(--mobius-text-muted);line-height:1;letter-spacing:0;text-indent:0}
+
+/* D wordmark at header */
+#d-wm{position:fixed;top:18px;left:62px;font-size:1.25rem;font-weight:100;letter-spacing:.08em;color:var(--mobius-text-secondary);z-index:25;pointer-events:none;opacity:0;transition:opacity .9s cubic-bezier(.22,1,.36,1)}
+
+@keyframes fadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+</style>
+</head>
+<body>
+
+<canvas id="confetti"></canvas>
+
+<div id="vtabs">
+  <button class="vt on" onclick="setVer('A')">A</button>
+  <button class="vt" onclick="setVer('B')">B</button>
+  <button class="vt" onclick="setVer('C')">C</button>
+  <button class="vt" onclick="setVer('D')">D</button>
+</div>
+<div id="slbl"></div>
+<div id="vdesc"><div id="vdesc-name"></div><div id="vdesc-tag"></div></div>
+<div id="nav">
+  <button class="na" id="pb" onclick="prev()" disabled>&#8249;</button>
+  <div id="dots"></div>
+  <button class="na" id="nb" onclick="next()">&#8250;</button>
+</div>
+
+<div id="stage">
+
+<!-- A: dark stage all the way through training, then dissolves to light -->
+<div class="sc on" id="A0" data-ver="A"></div>
+
+<div class="sc" id="A1" data-ver="A">
+  <div class="wm">Mobius</div>
+</div>
+
+<div class="sc" id="A2" data-ver="A">
+  <div class="gpre">Florida Behavioral Health Partners</div>
+  <div class="gname">Welcome, Ananth.</div>
+  <div class="gmission">Answers, not phone calls.</div>
+  <div class="gsub">Your org already set you up — zero forms.</div>
+  <button class="gcta" onclick="next()">Let's begin</button>
+</div>
+
+<div class="sc" id="A-scen" data-ver="A">
+  <div class="tc">
+    <div class="ttrk"><div class="tp on"></div><div class="tp"></div><div class="tp"></div></div>
+    <div class="th">What walked through your door this week?</div>
+    <div class="ts">Your first pick becomes the thread — I'll tune everything to how you actually work.</div>
+    <div class="tones">
+      <button class="tone" onclick="pickTone(this)">❌ A claim came back denied</button>
+      <button class="tone" onclick="pickTone(this)">🪪 A new clinician needs billing</button>
+      <button class="tone" onclick="pickTone(this)">📄 What does a payer cover?</button>
+      <button class="tone" onclick="pickTone(this)">🚌 Patient transportation help</button>
+      <button class="tone" onclick="pickTone(this)">🩺 A patient needs a PCP</button>
+      <button class="tone" onclick="pickTone(this)">📈 Getting paid fairly?</button>
+    </div>
+    <div class="tact"><button class="bskip" onclick="next()">skip</button></div>
+  </div>
+</div>
+
+<div class="sc" id="A3" data-ver="A">
+  <div class="tc">
+    <div class="ttrk"><div class="tp on"></div><div class="tp on"></div><div class="tp"></div></div>
+    <div class="th">Your situation. Three ways to answer it.</div>
+    <div class="ts">You asked: <em style="color:rgba(244,242,255,.5);font-style:italic">"Why was this claim denied and how do I fix it?"</em><br>No labels — pick the reply you'd rather read.</div>
+    <div class="tones">
+      <button class="tone" onclick="pickTone(this)">This claim was denied with CARC 197: prior authorization not on file. The denial is typically recoverable through a retroactive authorization request, where the payer permits it, or a formal appeal supported by medical-necessity documentation. I can prepare the appeal letter.</button>
+      <button class="tone" onclick="pickTone(this)">Okay, decoded it — the payer says nobody got prior auth first (code 197). Don't worry, this one's usually saveable: we either ask for a retro-auth or appeal it. I can draft the letter with you.</button>
+      <button class="tone" onclick="pickTone(this)">CARC 197 — no PA. Retro-auth or appeal. Draft?</button>
+    </div>
+    <div class="tact"><button class="bskip" onclick="next()">skip</button></div>
+  </div>
+</div>
+
+<div class="sc" id="A-auto" data-ver="A">
+  <div class="tc">
+    <div class="ttrk"><div class="tp on"></div><div class="tp on"></div><div class="tp on"></div></div>
+    <div class="th">A denial needs reworking. What should I do?</div>
+    <div class="ts">This is sensitive territory — billing. Your call sets how much I act on my own.</div>
+    <div class="tones">
+      <button class="tone" onclick="pickTone(this)" style="padding:.9rem 1.05rem">Just handle it<br><span style="font-size:.75rem;color:rgba(244,242,255,.3);font-weight:300">I act on routine things, tell you after</span></button>
+      <button class="tone" onclick="pickTone(this)" style="padding:.9rem 1.05rem">Show me first<br><span style="font-size:.75rem;color:rgba(244,242,255,.3);font-weight:300">I line it up, you press go</span></button>
+      <button class="tone" onclick="pickTone(this)" style="padding:.9rem 1.05rem">Walk me through it<br><span style="font-size:.75rem;color:rgba(244,242,255,.3);font-weight:300">We do it together, step by step</span></button>
+    </div>
+    <div class="tact"><button class="bskip" onclick="next()">skip</button></div>
+  </div>
+</div>
+
+<div class="sc" id="A4" data-ver="A">
+  <div class="tc">
+    <div class="ttrk"><div class="tp on"></div><div class="tp on"></div><div class="tp on"></div></div>
+    <div class="th">Trained. Here's your Mobius, Ananth.</div>
+    <div class="ts" style="margin-bottom:.65rem">Retrain or change these anytime in Preferences.</div>
+    <div class="gtags"><span class="gtag">★ Denials &amp; appeals</span><span class="gtag">Professional tone</span><span class="gtag">Show me before you act</span></div>
+    <div class="gql">Now — type your three-phone-call moment.</div>
+    <div class="ginp"><input type="text" placeholder="The prior auth, the denial, the coverage question you're stuck on…"><button class="gsend">↑</button></div>
+    <div class="tact" style="margin-top:1rem"><button class="bv" onclick="next()">Open Mobius →</button></div>
+  </div>
+</div>
+
+<div class="sc" id="A5" data-ver="A">
+  <div class="rev">
+    <div class="rail"><div class="ri on">💬</div><div class="ri">📂</div><div class="ri">☑</div><div class="rspc"></div><div class="ri">⚙</div></div>
+    <div class="rmain">
+      <div class="rwm">Mobius</div>
+      <div class="rinpwrap">
+        <div class="rinp"><input type="text" placeholder="Ask anything about your practice…"><button class="rsend">↑</button></div>
+        <div class="rhint">Eligibility check · Prior auth · Claims · Denial appeals</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- B: revealed page always lives here; curtain overlay runs the ceremony above it -->
+<div class="sc" id="B0" data-ver="B">
+  <div class="rev">
+    <div class="rail"><div class="ri on">💬</div><div class="ri">📂</div><div class="ri">☑</div><div class="rspc"></div><div class="ri">⚙</div></div>
+    <div class="rmain">
+      <div class="rwm" style="animation:none">Mobius</div>
+      <div class="rinpwrap" style="animation:none">
+        <div class="rinp"><input type="text" placeholder="Ask anything about your practice…"><button class="rsend">↑</button></div>
+        <div class="rhint" style="animation:none">Eligibility check · Prior auth · Claims · Denial appeals</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- C: void → big word → word migrates → training on light page → revealed -->
+<div class="sc" id="C0" data-ver="C"></div>
+
+<div class="sc" id="C1" data-ver="C">
+  <!-- #c-wm floats at center; input below is the permanent chat landing surface -->
+  <div style="display:flex;flex-direction:column;align-items:center;gap:2.8rem;width:min(580px,88vw)">
+    <div style="height:clamp(2.5rem,7vw,5.2rem)"></div><!-- spacer — #c-wm sits above this -->
+    <div class="rinpwrap" style="width:100%;animation:fadeUp .8s cubic-bezier(.22,1,.36,1) .55s both">
+      <div class="rinp"><input type="text" placeholder="What can I help you with today?"><button class="rsend" onclick="next()" title="Send — starts calibration on first run">↑</button></div>
+      <div class="rhint" style="animation:none">Eligibility check · Prior auth · Claims · Denial appeals</div>
+    </div>
+  </div>
+</div>
+
+<div class="sc" id="C-scen" data-ver="C">
+  <div class="tc-l">
+    <div class="ttrk"><div class="tp-l on"></div><div class="tp-l"></div><div class="tp-l"></div></div>
+    <div class="th-l">What walked through your door this week?</div>
+    <div class="ts-l">Your first pick becomes the thread — I'll tune everything to how you actually work.</div>
+    <div class="tones">
+      <button class="tone-l" onclick="pickTone(this)">❌ A claim came back denied</button>
+      <button class="tone-l" onclick="pickTone(this)">🪪 A new clinician needs billing</button>
+      <button class="tone-l" onclick="pickTone(this)">📄 What does a payer cover?</button>
+      <button class="tone-l" onclick="pickTone(this)">🚌 Patient transportation help</button>
+      <button class="tone-l" onclick="pickTone(this)">🩺 A patient needs a PCP</button>
+      <button class="tone-l" onclick="pickTone(this)">📈 Getting paid fairly?</button>
+    </div>
+    <div class="tact"><button class="bskip-l" onclick="next()">skip</button></div>
+  </div>
+</div>
+
+<div class="sc" id="C2" data-ver="C">
+  <div class="tc-l">
+    <div class="ttrk"><div class="tp-l on"></div><div class="tp-l on"></div><div class="tp-l"></div></div>
+    <div class="th-l">Your situation. Three ways to answer it.</div>
+    <div class="ts-l">You asked: <em style="color:rgba(28,25,39,.4);font-style:italic">"Why was this claim denied and how do I fix it?"</em><br>No labels — pick the reply you'd rather read.</div>
+    <div class="tones">
+      <button class="tone-l" onclick="pickTone(this)">This claim was denied with CARC 197: prior authorization not on file. The denial is typically recoverable through a retroactive authorization request, where the payer permits it, or a formal appeal supported by medical-necessity documentation. I can prepare the appeal letter.</button>
+      <button class="tone-l" onclick="pickTone(this)">Okay, decoded it — the payer says nobody got prior auth first (code 197). Don't worry, this one's usually saveable: we either ask for a retro-auth or appeal it. I can draft the letter with you.</button>
+      <button class="tone-l" onclick="pickTone(this)">CARC 197 — no PA. Retro-auth or appeal. Draft?</button>
+    </div>
+    <div class="tact"><button class="bskip-l" onclick="next()">skip</button></div>
+  </div>
+</div>
+
+<div class="sc" id="C-auto" data-ver="C">
+  <div class="tc-l">
+    <div class="ttrk"><div class="tp-l on"></div><div class="tp-l on"></div><div class="tp-l on"></div></div>
+    <div class="th-l">A denial needs reworking. What should I do?</div>
+    <div class="ts-l">This is sensitive territory — billing. Your call sets how much I act on my own.</div>
+    <div class="tones">
+      <button class="tone-l" onclick="pickTone(this)" style="padding:.9rem 1.05rem">Just handle it<br><span style="font-size:.75rem;color:rgba(28,25,39,.35);font-weight:300">I act on routine things, tell you after</span></button>
+      <button class="tone-l" onclick="pickTone(this)" style="padding:.9rem 1.05rem">Show me first<br><span style="font-size:.75rem;color:rgba(28,25,39,.35);font-weight:300">I line it up, you press go</span></button>
+      <button class="tone-l" onclick="pickTone(this)" style="padding:.9rem 1.05rem">Walk me through it<br><span style="font-size:.75rem;color:rgba(28,25,39,.35);font-weight:300">We do it together, step by step</span></button>
+    </div>
+    <div class="tact"><button class="bskip-l" onclick="next()">skip</button></div>
+  </div>
+</div>
+
+<div class="sc" id="C3" data-ver="C">
+  <div class="tc-l">
+    <div class="ttrk"><div class="tp-l on"></div><div class="tp-l on"></div><div class="tp-l on"></div></div>
+    <div class="th-l">Trained. Here's your Mobius, Ananth.</div>
+    <div class="ts-l" style="margin-bottom:.65rem">Retrain or change these anytime in Preferences.</div>
+    <div class="gtags"><span class="gtag">★ Denials &amp; appeals</span><span class="gtag">Professional tone</span><span class="gtag">Show me before you act</span></div>
+    <div class="gql-l">Now — type your three-phone-call moment.</div>
+    <div class="ginp-l"><input type="text" placeholder="The prior auth, the denial, the coverage question you're stuck on…"><button class="gsend">↑</button></div>
+    <div class="tact" style="margin-top:1rem"><button class="bv" onclick="triggerCTransform()">Open Mobius →</button></div>
+  </div>
+</div>
+
+<div class="sc" id="C4" data-ver="C">
+  <div class="rev">
+    <div class="rail">
+      <div class="ri on" id="c4-rail-icon" style="font-size:.9375rem;font-weight:600;color:var(--mobius-text-muted);opacity:0">∞</div>
+      <div class="ri">☰</div>
+      <div class="ri">📄</div>
+      <div class="ri">🔍</div>
+      <div class="rspc"></div>
+      <div class="ri">⚙</div>
+    </div>
+    <div class="rmain">
+      <div class="rwm" style="font-size:1.6rem;letter-spacing:.01em;font-weight:200;text-transform:none;color:var(--stage-dark-text);animation:fadeUp .8s cubic-bezier(.22,1,.36,1) .1s both">Good evening, Ananth.</div>
+      <div class="rinpwrap" style="animation:fadeUp .8s cubic-bezier(.22,1,.36,1) .35s both">
+        <div class="rinp"><input type="text" placeholder="Ask anything about your practice…"><button class="rsend">↑</button></div>
+        <div class="rhint">Eligibility check · Prior auth · Claims · Denial appeals</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- D: all light from the first pixel; wordmark materializes in header; training cards appear -->
+<div class="sc" id="D0" data-ver="D"></div>
+
+<div class="sc" id="D1" data-ver="D">
+  <!-- #d-wm at header position fades in via JS -->
+  <div style="text-align:center">
+    <div style="font-size:clamp(1.6rem,4vw,2.6rem);font-weight:200;color:var(--stage-dark-text);letter-spacing:.02em;animation:fadeUp .9s cubic-bezier(.22,1,.36,1) .15s both">Good morning, Ananth.</div>
+    <div style="margin-top:.5rem;font-size:1rem;font-weight:300;color:rgba(28,25,39,.5);animation:fadeUp .8s cubic-bezier(.22,1,.36,1) .35s both">Answers, not phone calls.</div>
+    <div style="margin-top:.32rem;font-size:.78rem;color:rgba(28,25,39,.25);animation:fadeUp .7s cubic-bezier(.22,1,.36,1) .55s both">Florida Behavioral Health Partners · already configured.</div>
+    <button style="margin-top:2.4rem;background:none;border:1px solid rgba(28,25,39,.12);border-radius:100px;padding:.65rem 2.2rem;color:rgba(28,25,39,.45);font-size:.85rem;font-weight:300;letter-spacing:.1em;cursor:pointer;transition:all .22s;animation:fadeUp .7s cubic-bezier(.22,1,.36,1) .85s both" onmouseover="this.style.borderColor='var(--ac-40)';this.style.color='var(--mobius-accent)'" onmouseout="this.style.borderColor='rgba(28,25,39,.12)';this.style.color='rgba(28,25,39,.45)'" onclick="next()">Personalize Mobius →</button>
+  </div>
+</div>
+
+<div class="sc" id="D-scen" data-ver="D">
+  <div class="tc-l">
+    <div class="ttrk"><div class="tp-l on"></div><div class="tp-l"></div><div class="tp-l"></div></div>
+    <div class="th-l">What walked through your door this week?</div>
+    <div class="ts-l">Your first pick becomes the thread — I'll tune everything to how you actually work.</div>
+    <div class="tones">
+      <button class="tone-l" onclick="pickTone(this)">❌ A claim came back denied</button>
+      <button class="tone-l" onclick="pickTone(this)">🪪 A new clinician needs billing</button>
+      <button class="tone-l" onclick="pickTone(this)">📄 What does a payer cover?</button>
+      <button class="tone-l" onclick="pickTone(this)">🚌 Patient transportation help</button>
+      <button class="tone-l" onclick="pickTone(this)">🩺 A patient needs a PCP</button>
+      <button class="tone-l" onclick="pickTone(this)">📈 Getting paid fairly?</button>
+    </div>
+    <div class="tact"><button class="bskip-l" onclick="next()">skip</button></div>
+  </div>
+</div>
+
+<div class="sc" id="D2" data-ver="D">
+  <div class="tc-l">
+    <div class="ttrk"><div class="tp-l on"></div><div class="tp-l on"></div><div class="tp-l"></div></div>
+    <div class="th-l">Your situation. Three ways to answer it.</div>
+    <div class="ts-l">You asked: <em style="color:rgba(28,25,39,.48);font-style:italic">"Why was this claim denied and how do I fix it?"</em><br>No labels — pick the reply you'd rather read.</div>
+    <div class="tones">
+      <button class="tone-l" onclick="pickTone(this)">This claim was denied with CARC 197: prior authorization not on file. The denial is typically recoverable through a retroactive authorization request, where the payer permits it, or a formal appeal supported by medical-necessity documentation. I can prepare the appeal letter.</button>
+      <button class="tone-l" onclick="pickTone(this)">Okay, decoded it — the payer says nobody got prior auth first (code 197). Don't worry, this one's usually saveable: we either ask for a retro-auth or appeal it. I can draft the letter with you.</button>
+      <button class="tone-l" onclick="pickTone(this)">CARC 197 — no PA. Retro-auth or appeal. Draft?</button>
+    </div>
+    <div class="tact"><button class="bskip-l" onclick="next()">skip</button></div>
+  </div>
+</div>
+
+<div class="sc" id="D-auto" data-ver="D">
+  <div class="tc-l">
+    <div class="ttrk"><div class="tp-l on"></div><div class="tp-l on"></div><div class="tp-l on"></div></div>
+    <div class="th-l">A denial needs reworking. What should I do?</div>
+    <div class="ts-l">This is sensitive territory — billing. Your call sets how much I act on my own.</div>
+    <div class="tones">
+      <button class="tone-l" onclick="pickTone(this)" style="padding:.9rem 1.05rem">Just handle it<br><span style="font-size:.75rem;color:rgba(28,25,39,.35);font-weight:300">I act on routine things, tell you after</span></button>
+      <button class="tone-l" onclick="pickTone(this)" style="padding:.9rem 1.05rem">Show me first<br><span style="font-size:.75rem;color:rgba(28,25,39,.35);font-weight:300">I line it up, you press go</span></button>
+      <button class="tone-l" onclick="pickTone(this)" style="padding:.9rem 1.05rem">Walk me through it<br><span style="font-size:.75rem;color:rgba(28,25,39,.35);font-weight:300">We do it together, step by step</span></button>
+    </div>
+    <div class="tact"><button class="bskip-l" onclick="next()">skip</button></div>
+  </div>
+</div>
+
+<div class="sc" id="D3" data-ver="D">
+  <div class="tc-l">
+    <div class="ttrk"><div class="tp-l on"></div><div class="tp-l on"></div><div class="tp-l on"></div></div>
+    <div class="th-l">Trained. Here's your Mobius, Ananth.</div>
+    <div class="ts-l" style="margin-bottom:.65rem">Retrain or change these anytime in Preferences.</div>
+    <div class="gtags"><span class="gtag">★ Denials &amp; appeals</span><span class="gtag">Professional tone</span><span class="gtag">Show me before you act</span></div>
+    <div class="gql-l">Now — type your three-phone-call moment.</div>
+    <div class="ginp-l"><input type="text" placeholder="The prior auth, the denial, the coverage question you're stuck on…"><button class="gsend" onclick="next()">↑</button></div>
+    <div class="tact" style="margin-top:1rem"><button class="bv" onclick="next()">Open Mobius →</button></div>
+  </div>
+</div>
+
+<div class="sc" id="D4" data-ver="D">
+  <div class="rev">
+    <div class="rail"><div class="ri on">💬</div><div class="ri">📂</div><div class="ri">☑</div><div class="rspc"></div><div class="ri">⚙</div></div>
+    <div class="rmain">
+      <div class="rwm">Mobius</div>
+      <div class="rinpwrap">
+        <div class="rinp"><input type="text" placeholder="Ask anything about your practice…"><button class="rsend">↑</button></div>
+        <div class="rhint">Eligibility check · Prior auth · Claims · Denial appeals</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div><!-- /stage -->
+
+<!-- B curtain: fixed overlay running the ceremony while the product is live behind it -->
+<div id="b-curtain">
+  <div class="bcs on" id="bc0">
+    <div class="bc-wm">Mobius</div>
+  </div>
+  <div class="bcs" id="bc1">
+    <div class="gpre" style="animation:fadeUp .7s .05s both">Florida Behavioral Health Partners</div>
+    <div class="gname" style="animation:fadeUp .8s .2s both">Welcome, Ananth.</div>
+    <div class="gmission" style="animation:fadeUp .7s .35s both">Answers, not phone calls.</div>
+    <div class="gsub" style="animation:fadeUp .7s .52s both">Your org already set you up — zero forms.</div>
+    <button class="gcta" style="animation:fadeUp .7s .72s both" onclick="nextBC()">Let's begin</button>
+  </div>
+  <div class="bcs" id="bc-scen">
+    <div class="tc" style="animation:none">
+      <div class="ttrk"><div class="tp on"></div><div class="tp"></div><div class="tp"></div></div>
+      <div class="th">What walked through your door this week?</div>
+      <div class="ts">Your first pick becomes the thread — I'll tune everything to how you actually work.</div>
+      <div class="tones">
+        <button class="tone" onclick="pickTone(this)">❌ A claim came back denied</button>
+        <button class="tone" onclick="pickTone(this)">🪪 A new clinician needs billing</button>
+        <button class="tone" onclick="pickTone(this)">📄 What does a payer cover?</button>
+        <button class="tone" onclick="pickTone(this)">🚌 Patient transportation help</button>
+        <button class="tone" onclick="pickTone(this)">🩺 A patient needs a PCP</button>
+        <button class="tone" onclick="pickTone(this)">📈 Getting paid fairly?</button>
+      </div>
+      <div class="tact"><button class="bskip" onclick="nextBC()">skip</button></div>
+    </div>
+  </div>
+  <div class="bcs" id="bc2">
+    <div class="tc" style="animation:none">
+      <div class="ttrk"><div class="tp on"></div><div class="tp on"></div><div class="tp"></div></div>
+      <div class="th">Your situation. Three ways to answer it.</div>
+      <div class="ts">You asked: <em style="color:rgba(244,242,255,.5);font-style:italic">"Why was this claim denied and how do I fix it?"</em><br>No labels — pick the reply you'd rather read.</div>
+      <div class="tones">
+        <button class="tone" onclick="pickTone(this)">This claim was denied with CARC 197: prior authorization not on file. The denial is typically recoverable through a retroactive authorization request, where the payer permits it, or a formal appeal supported by medical-necessity documentation. I can prepare the appeal letter.</button>
+        <button class="tone" onclick="pickTone(this)">Okay, decoded it — the payer says nobody got prior auth first (code 197). Don't worry, this one's usually saveable: we either ask for a retro-auth or appeal it. I can draft the letter with you.</button>
+        <button class="tone" onclick="pickTone(this)">CARC 197 — no PA. Retro-auth or appeal. Draft?</button>
+      </div>
+      <div class="tact"><button class="bskip" onclick="nextBC()">skip</button></div>
+    </div>
+  </div>
+  <div class="bcs" id="bc-auto">
+    <div class="tc" style="animation:none">
+      <div class="ttrk"><div class="tp on"></div><div class="tp on"></div><div class="tp on"></div></div>
+      <div class="th">A denial needs reworking. What should I do?</div>
+      <div class="ts">This is sensitive territory — billing. Your call sets how much I act on my own.</div>
+      <div class="tones">
+        <button class="tone" onclick="pickTone(this)" style="padding:.9rem 1.05rem">Just handle it<br><span style="font-size:.75rem;color:rgba(244,242,255,.3);font-weight:300">I act on routine things, tell you after</span></button>
+        <button class="tone" onclick="pickTone(this)" style="padding:.9rem 1.05rem">Show me first<br><span style="font-size:.75rem;color:rgba(244,242,255,.3);font-weight:300">I line it up, you press go</span></button>
+        <button class="tone" onclick="pickTone(this)" style="padding:.9rem 1.05rem">Walk me through it<br><span style="font-size:.75rem;color:rgba(244,242,255,.3);font-weight:300">We do it together, step by step</span></button>
+      </div>
+      <div class="tact"><button class="bskip" onclick="nextBC()">skip</button></div>
+    </div>
+  </div>
+  <div class="bcs" id="bc3">
+    <div class="tc" style="animation:none">
+      <div class="ttrk"><div class="tp on"></div><div class="tp on"></div><div class="tp on"></div></div>
+      <div class="th">Trained. Here's your Mobius, Ananth.</div>
+      <div class="ts" style="margin-bottom:.65rem">Retrain or change these anytime in Preferences.</div>
+      <div class="gtags"><span class="gtag" style="animation:none">★ Denials &amp; appeals</span><span class="gtag" style="animation:none">Professional tone</span><span class="gtag" style="animation:none">Show me before you act</span></div>
+      <div class="gql">Now — type your three-phone-call moment.</div>
+      <div class="ginp"><input type="text" placeholder="The prior auth, the denial, the coverage question you're stuck on…"><button class="gsend">↑</button></div>
+      <div class="tact" style="margin-top:1rem"><button class="bv" onclick="raiseCurtain()">Open Mobius →</button></div>
+    </div>
+  </div>
+</div>
+
+<!-- C floating wordmark: persists across C scenes, JS animates position -->
+<div id="c-wm">∞</div>
+
+<!-- D floating wordmark: always in header position, fades in -->
+<div id="d-wm">Mobius</div>
+
+<script>
+// ── Overlay integration ─────────────────────────────────────────────────────
+// When loaded as an iframe from the chat overlay, window.parent.__revealCallbacks
+// is populated before this script runs. _cb is null in standalone preview mode.
+const _cb=(function(){try{return(window.parent&&window.parent!==window&&window.parent.__revealCallbacks)?window.parent.__revealCallbacks:null;}catch(e){return null;}})();
+if(_cb){['vtabs','nav','vdesc','slbl'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display='none';});}
+// ────────────────────────────────────────────────────────────────────────────
+const VERS={
+  A:{scenes:['A0','A1','A2','A-scen','A3','A-auto','A4','A5'],labels:['Opening','Mobius','Welcome','Scenario','Tone','Autonomy','Trained','Revealed'],name:'Grand Ceremony',tag:'Dark stage throughout · ceremony + training · dissolves to light',lightAt:7},
+  B:{scenes:['B0'],labels:['Mobius','Welcome','Scenario','Tone','Autonomy','Trained','Revealed'],name:'The Curtain',tag:'Product is live behind dark curtain · ceremony plays on it · curtain rises to reveal',lightAt:999},
+  C:{scenes:['C0','C1','C-scen','C2','C-auto','C3','C4'],labels:['Void','Chat landing','Scenario','Tone','Autonomy','Trained','Revealed'],name:'Word Transforms',tag:'C1 = permanent chat landing page · light throughout · ∞ icon flies from center to sidebar as the payoff',lightAt:1},
+  D:{scenes:['D0','D1','D-scen','D2','D-auto','D3','D4'],labels:['Silence','Good morning','Scenario','Tone','Autonomy','Trained','Home'],name:'Morning',tag:'All-light from pixel one · wordmark materializes in header · soft training cards',lightAt:0}
+};
+
+let ver='A', cur=0, bState=0, busy=false, autoT=null;
+const $=id=>document.getElementById(id);
+const dots=$('dots'),pb=$('pb'),nb=$('nb'),slbl=$('slbl');
+const bcurtain=$('b-curtain'), cwm=$('c-wm'), dwm=$('d-wm');
+
+function buildDots(){
+  dots.innerHTML='';
+  const n=ver==='B'?7:VERS[ver].scenes.length;
+  for(let i=0;i<n;i++){
+    const d=document.createElement('button');
+    d.className='nd';
+    const ii=i;
+    d.onclick=()=>ver==='B'?dotB(ii):goTo(ii);
+    dots.appendChild(d);
+  }
+}
+
+function refreshUI(){
+  const idx=ver==='B'?bDotIdx():cur;
+  dots.querySelectorAll('.nd').forEach((d,i)=>d.classList.toggle('on',i===idx));
+  const labels=VERS[ver].labels;
+  slbl.textContent=labels[idx]||'';
+  $('vdesc-name').textContent=VERS[ver].name;
+  $('vdesc-tag').textContent=VERS[ver].tag;
+  document.querySelectorAll('.vt').forEach(t=>t.classList.toggle('on',t.textContent.trim()===ver));
+  if(ver==='B'){
+    pb.disabled=bDotIdx()===0;
+    nb.disabled=bDotIdx()===6;
+  } else {
+    pb.disabled=cur===0;
+    nb.disabled=cur===VERS[ver].scenes.length-1;
+  }
+}
+
+function bDotIdx(){return bcurtain.classList.contains('risen')?6:bState;}
+
+function goTo(n){
+  if(busy||n===cur) return;
+  const v=VERS[ver];
+  if(n<0||n>=v.scenes.length) return;
+  busy=true;
+  const fromEl=$(v.scenes[cur]);
+  const toEl=$(v.scenes[n]);
+  if(fromEl) fromEl.classList.remove('on');
+  setTimeout(()=>{
+    if(toEl){toEl.classList.add('on');reanimate(toEl);}
+    cur=n;
+    document.body.classList.toggle('light',n>=v.lightAt);
+    onEnter(n);
+    refreshUI();
+    busy=false;
+  },280);
+}
+
+function next(){if(ver==='B'){bNext();}else if(!busy){goTo(cur+1);}}
+function prev(){if(ver==='B'){bPrev();}else if(!busy){goTo(cur-1);}}
+
+// B nav
+function dotB(i){
+  if(i===6){raiseCurtain();return;}
+  if(bcurtain.classList.contains('risen')){
+    bcurtain.classList.remove('risen');
+    document.body.classList.remove('light');
+  }
+  setBState(i);
+}
+function bNext(){
+  if(bcurtain.classList.contains('risen'))return;
+  if(bState<5)nextBC();else raiseCurtain();
+}
+function bPrev(){
+  if(bcurtain.classList.contains('risen')){
+    bcurtain.classList.remove('risen');
+    document.body.classList.remove('light');
+    setBState(5);
+    return;
+  }
+  if(bState>0)setBState(bState-1);
+}
+function setBState(i){
+  bState=i;
+  document.querySelectorAll('.bcs').forEach((s,idx)=>s.classList.toggle('on',idx===bState));
+  refreshUI();
+}
+function nextBC(){if(bState<5)setBState(bState+1);}
+function raiseCurtain(){
+  if(_cb){
+    const inp=document.querySelector('#bc3 .ginp input');
+    const q=(inp&&inp.value?inp.value:'').trim();
+    _cb.onGraduate(q||null);
+    return;
+  }
+  bcurtain.classList.add('risen');
+  setTimeout(()=>document.body.classList.add('light'),600);
+  setTimeout(()=>refreshUI(),50);
+}
+
+// Tone/scenario/autonomy pick — visual + advance + (overlay) real pref write
+function pickTone(btn){
+  btn.closest('.tones').querySelectorAll('.tone,.tone-l').forEach(o=>o.classList.remove('picked'));
+  btn.classList.add('picked');
+  if(_cb){
+    const sceneId=ver==='B'?['bc0','bc1','bc-scen','bc2','bc-auto','bc3'][bState]:VERS[ver].scenes[cur];
+    const text=btn.textContent.trim();
+    if(sceneId.includes('scen')){
+      const SMAP={'A claim came back denied':'rework_denials','A new clinician needs billing':'credentialing','What does a payer cover?':'submit_claims','Patient transportation help':'patient_outreach','A patient needs a PCP':'check_in_patients','Getting paid fairly?':'strategy'};
+      const ak=Object.entries(SMAP).find(([k])=>text.includes(k));
+      if(ak)_cb.onPick('activities',[ak[1]]);
+    }else if(['A3','C2','D2','bc2'].includes(sceneId)){
+      const btns=[...btn.closest('.tones').querySelectorAll('.tone,.tone-l')];
+      _cb.onPick('tone',['professional','friendly','concise'][btns.indexOf(btn)]||'professional');
+    }else if(sceneId.includes('auto')){
+      const AMAP={'Just handle it':'automatic','Show me first':'confirm_first','Walk me through it':'manual'};
+      const av=Object.entries(AMAP).find(([k])=>text.startsWith(k));
+      if(av)_cb.onPick('autonomy_sensitive_tasks',av[1]);
+    }
+  }
+  setTimeout(()=>{if(ver==='B')nextBC();else next();},480);
+}
+
+// C logo (∞ icon, flies center → sidebar)
+let _cFlying=false;
+function setCWm(phase, instant){
+  if(phase==='hidden'){cwm.style.opacity='0';return;}
+  if(phase==='center'){
+    cwm.style.transition='none';
+    cwm.style.cssText='position:fixed;z-index:25;pointer-events:none;top:40%;left:50%;transform:translate(-50%,-50%);font-size:5.5rem;font-weight:300;color:#64748b;line-height:1;letter-spacing:0;text-indent:0;opacity:1';
+    return;
+  }
+  if(phase==='header'){
+    if(instant){
+      cwm.style.transition='none';
+      cwm.style.cssText='position:fixed;z-index:25;pointer-events:none;top:14px;left:13px;transform:none;font-size:1.35rem;font-weight:500;line-height:1;letter-spacing:0;text-indent:0;color:#64748b;opacity:1';
+    } else {
+      cwm.style.transition='top .95s cubic-bezier(.22,1,.36,1),left .95s cubic-bezier(.22,1,.36,1),font-size .95s cubic-bezier(.22,1,.36,1),transform .95s cubic-bezier(.22,1,.36,1)';
+      cwm.style.top='14px'; cwm.style.left='13px';
+      cwm.style.transform='translate(0,0)';
+      cwm.style.fontSize='1.35rem'; cwm.style.fontWeight='500';
+      cwm.style.letterSpacing='0'; cwm.style.color='#64748b'; cwm.style.opacity='1';
+    }
+  }
+}
+function triggerCTransform(){
+  _cFlying=true;
+  setCWm('center');
+  requestAnimationFrame(()=>{
+    setCWm('header');           // 950ms fly starts here
+    setTimeout(()=>{ goTo(6); setTimeout(()=>_cFlying=false,600); },500);
+  });
+}
+
+// Side effects on scene enter
+function onEnter(n){
+  clearTimeout(autoT);
+  if(ver==='A'){
+    if(n===0) autoT=setTimeout(()=>{if(cur===0&&ver==='A')goTo(1);},1100);
+    if(n===6) confetti();
+  }
+  if(ver==='C'){
+    if(n===0)setCWm('hidden');
+    else if(n===1)setCWm('center');
+    else if(n<=5)setCWm('hidden');  // light training cards — logo hidden, card takes over
+    else if(!_cFlying)setCWm('header',true); // direct nav to C6: instant snap
+    // else: triggerCTransform fly is in progress — don't interrupt
+  } else setCWm('hidden');
+  if(ver==='D'){
+    dwm.style.opacity=n>=1?'1':'0';
+    if(n===0) autoT=setTimeout(()=>{if(cur===0&&ver==='D')goTo(1);},700);
+  } else dwm.style.opacity='0';
+  // Overlay: wire graduation scene inputs when scene is entered
+  if(_cb){
+    const sceneId=VERS[ver].scenes[n];
+    if(['A4','C3','D3'].includes(sceneId)){
+      setTimeout(()=>{
+        const sc=document.getElementById(sceneId);
+        if(!sc)return;
+        const inp=sc.querySelector('.ginp input,.ginp-l input');
+        const send=sc.querySelector('.gsend');
+        const open=sc.querySelector('.bv');
+        const fire=()=>{const q=(inp&&inp.value?inp.value:'').trim();_cb.onGraduate(q||null);};
+        if(send)send.onclick=fire;
+        if(inp)inp.onkeydown=e=>{if(e.key==='Enter')fire();};
+        if(open)open.onclick=fire;
+      },50);
+    }
+  }
+}
+
+function setVer(v){
+  clearTimeout(autoT);
+  const old=VERS[ver];
+  $(old.scenes[cur]).classList.remove('on');
+  ver=v; cur=0; bState=0;
+  const nv=VERS[v];
+  if(v==='B'){
+    document.body.classList.remove('light');
+    bcurtain.classList.add('on');
+    bcurtain.classList.remove('risen');
+    setBState(0);
+  } else {
+    bcurtain.classList.remove('on','risen');
+    document.body.classList.toggle('light',0>=nv.lightAt);
+  }
+  clearConfetti();
+  setCWm('hidden');
+  dwm.style.opacity='0';
+  buildDots();
+  const toEl=$(nv.scenes[0]);
+  if(toEl){toEl.classList.add('on');reanimate(toEl);}
+  onEnter(0);
+  refreshUI();
+}
+
+function reanimate(el){
+  el.querySelectorAll('*').forEach(e=>{e.style.animation='none';void e.offsetHeight;e.style.animation='';});
+}
+
+let _confRaf=null;
+function clearConfetti(){
+  if(_confRaf){cancelAnimationFrame(_confRaf);_confRaf=null;}
+  const c=$('confetti'),ctx=c.getContext('2d');
+  ctx.clearRect(0,0,c.width,c.height);
+}
+function confetti(){
+  clearConfetti();
+  const c=$('confetti'),ctx=c.getContext('2d');
+  c.width=innerWidth; c.height=innerHeight;
+  const P=Array.from({length:55},()=>({x:Math.random()*c.width,y:-8-Math.random()*40,v:1.2+Math.random()*2,r:2.5+Math.random()*2.2,a:Math.random()*6.28,col:['#3b82f6','rgba(59,130,246,.35)','#93c5fd','rgba(147,197,253,.45)'][0|Math.random()*4]}));
+  let f=0;
+  (function go(){ctx.clearRect(0,0,c.width,c.height);P.forEach(p=>{p.y+=p.v;p.x+=Math.sin(p.a+=.05)*.9;ctx.fillStyle=p.col;ctx.fillRect(p.x,p.y,p.r,p.r*1.4);});if(++f<90){_confRaf=requestAnimationFrame(go);}else{_confRaf=null;ctx.clearRect(0,0,c.width,c.height);}})();
+}
+
+document.addEventListener('keydown',e=>{
+  if(['ArrowRight','ArrowDown'].includes(e.key)){e.preventDefault();next();}
+  else if(['ArrowLeft','ArrowUp'].includes(e.key)){e.preventDefault();prev();}
+  else if(e.key==='1')setVer('A');
+  else if(e.key==='2')setVer('B');
+  else if(e.key==='3')setVer('C');
+  else if(e.key==='4')setVer('D');
+});
+
+// Init — arm assignment.
+// In overlay mode (_cb): parent pre-assigns the arm (A/C/D pool, B excluded until UX ships it).
+// In standalone preview: randomize from A/B/C/D and persist to localStorage for consistent review.
+let _arm;
+if(_cb&&_cb.arm){
+  _arm=_cb.arm;
+}else{
+  const _ARMS=['A','B','C','D'];
+  _arm=null;
+  try{_arm=localStorage.getItem('mobius_reveal_arm');}catch(e){}
+  if(!_ARMS.includes(_arm)){
+    _arm=_ARMS[Math.floor(Math.random()*_ARMS.length)];
+    try{localStorage.setItem('mobius_reveal_arm',_arm);}catch(e){}
+  }
+  // dev affordance: ?arm=A|B|C|D forces an arm; ?arm=reset re-randomizes next load
+  try{
+    const q=new URLSearchParams(location.search).get('arm');
+    if(q==='reset'){localStorage.removeItem('mobius_reveal_arm');}
+    else if(_ARMS.includes(q)){localStorage.setItem('mobius_reveal_arm',q);_arm=q;}
+  }catch(e){}
+}
+buildDots();
+setVer(_arm);
+</script>
+</body>
+</html>

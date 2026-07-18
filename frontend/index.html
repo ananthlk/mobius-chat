@@ -190,62 +190,7 @@
       </header>
       <div id="trainingMode" hidden class="training-mode-wrap" aria-label="Training mode"></div>
       <div class="chat-thread" id="messages">
-        <div class="chat-empty" id="chatEmpty">
-          <div class="landing-card" role="region" aria-label="Workspace overview">
-            <div class="landing-brand">
-              <div class="landing-brand-logo-wrap" aria-hidden="true">
-                <img class="landing-brand-logo" src="static/logo.svg" alt="" />
-              </div>
-              <div class="landing-brand-copy">
-                <div class="landing-brand-title">Support for the non-clinical work that keeps care moving</div>
-              </div>
-            </div>
-
-            <div class="landing-section landing-section--together">
-              <div class="landing-section-header">Together, we will</div>
-              <p class="landing-together-lede">Turn uncertainty into fast answers—so care doesn’t slow down.</p>
-              <div class="landing-together-list" aria-label="Together, we will">
-                <div class="landing-together-item">Resolve the administrative issues blocking care, patient by patient</div>
-                <div class="landing-together-item">Replace phone calls and policy searches with answers in seconds</div>
-                <div class="landing-together-item">Keep care financially viable through billing, disputes, and appeals</div>
-              </div>
-              <p class="landing-together-note"><span class="landing-together-note-emph">Community mental health centers</span> keep mental health care running.</p>
-            </div>
-
-            <div class="landing-section">
-              <div class="landing-section-header">Quick prompts</div>
-              <p class="landing-quick-lede">Start from a common task (edit in the box before sending if needed).</p>
-              <div class="landing-quick-actions" role="group" aria-label="Quick prompts">
-                <button type="button" class="landing-try-link landing-quick-btn" data-query="What is timely filing for participating providers with Sunshine Health?">Sunshine timely filing</button>
-                <button type="button" class="landing-try-link landing-quick-btn" data-query="Look up NPI 1669572290 and summarize practice location and taxonomy">NPI profile sample</button>
-                <button type="button" class="landing-try-link landing-quick-btn" data-query="What prior authorization rules apply to behavioral health for Sunshine Health?">BH prior auth</button>
-              </div>
-            </div>
-
-            <div class="landing-section">
-              <div class="landing-section-header">Release updates</div>
-              <div class="landing-updates" aria-label="Release updates">
-                <div class="landing-update">
-                  <div class="landing-update-title">Improved citation coverage</div>
-                  <div class="landing-update-desc">Answers now include clearer source references when available.</div>
-                  <div class="landing-update-try">Try: <button type="button" class="landing-try-link" data-query="How does a provider enroll with Sunshine Health?">How does a provider enroll with Sunshine Health?</button></div>
-                </div>
-
-                <div class="landing-update">
-                  <div class="landing-update-title">Expanded dispute and appeal support</div>
-                  <div class="landing-update-desc">Better retrieval for claims disputes and appeal workflows.</div>
-                  <div class="landing-update-try">Try: <button type="button" class="landing-try-link" data-query="What is the process to dispute a claim decision with Sunshine Health?">What is the process to dispute a claim decision with Sunshine Health?</button></div>
-                </div>
-
-                <div class="landing-update">
-                  <div class="landing-update-title">Faster responses for long questions</div>
-                  <div class="landing-update-desc">Optimized handling of complex policy queries.</div>
-                  <div class="landing-update-try">Try: <button type="button" class="landing-try-link" data-query="Does Sunshine require prior authorization for behavioral health services?">Does Sunshine require prior authorization for behavioral health services?</button></div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <div class="chat-empty" id="chatEmpty" aria-hidden="true"></div>
       </div>
       <div class="chat-status-banner" id="chatStatusBanner" role="status" aria-live="polite" hidden>
         <span class="chat-status-banner-text" id="chatStatusBannerText"></span>
@@ -306,7 +251,17 @@
 
       <div id="chat-suggestions" class="chat-suggestions" aria-label="Suggested follow-ups" hidden></div>
 
+      <!-- Grand-reveal overlay: inserted by JS when is_onboarded=false -->
+      <div id="grandRevealOverlay" hidden></div>
+
       <div class="composer-wrap">
+        <!-- Landing chips: visible before first message (body.landing-state) -->
+        <div class="composer-landing-chips" id="composerLandingChips" aria-label="Quick prompts">
+          <button type="button" class="composer-chip" data-query="Check eligibility for a Sunshine Health member">Eligibility check</button>
+          <button type="button" class="composer-chip" data-query="What prior authorization rules apply to behavioral health services?">Prior auth</button>
+          <button type="button" class="composer-chip" data-query="How do I submit a corrected claim?">Claims</button>
+          <button type="button" class="composer-chip" data-query="How do I appeal a denied claim?">Denial appeals</button>
+        </div>
         <!-- Phase B.1a: inline attach-to-send.
              Paperclip stages a file (chip appears above composer); Send
              uploads first via /chat/roster-upload?file_purpose=instant_rag,

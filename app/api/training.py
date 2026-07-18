@@ -27,11 +27,14 @@ _VALID_TYPES = frozenset({
     "graduation_question_fired",
 })
 
+_VALID_REVEAL_VERSIONS = frozenset({"A", "B", "C", "D"})
+
 
 class TrainingEventBody(BaseModel):
     event_type: str
-    source: str | None = None  # chip|typed (graduation_question_fired only)
-    text: str | None = None    # question text (graduation_question_fired only)
+    source: str | None = None         # chip|typed (graduation_question_fired only)
+    text: str | None = None            # question text (graduation_question_fired only)
+    reveal_version: str | None = None  # A|B|C|D — which grand-reveal arm was shown
 
 
 @router.post("/chat/training-event", status_code=204)
@@ -41,17 +44,19 @@ async def record_training_event(
 ) -> None:
     if body.event_type not in _VALID_TYPES:
         return  # silently ignore unknown types for forward-compat
+    reveal_ver = body.reveal_version if body.reveal_version in _VALID_REVEAL_VERSIONS else None
     pool = await get_pool()
     if not pool:
         return
     async with pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO training_events (user_id, event_type, source, text)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO training_events (user_id, event_type, source, text, reveal_version)
+            VALUES ($1, $2, $3, $4, $5)
             """,
             user_id,
             body.event_type,
             body.source,
             body.text[:2000] if body.text else None,  # guard against runaway text
+            reveal_ver,
         )

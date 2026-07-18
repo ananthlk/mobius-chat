@@ -9603,6 +9603,102 @@ function run(): void {
   }
   // ── end training mode ─────────────────────────────────────────────────
 
+  // ── Grand-reveal overlay ───────────────────────────────────────────────
+  // Replaces the training card for first-run (is_onboarded=false) users.
+  // Picks arm from A/C/D (B is stub until UX ships it), logs to training_events,
+  // wires real prefs writes + graduation → sendMessage dissolve.
+  function _showRevealOverlay(): void {
+    if (_tmShownThisSession) return;
+    if (sessionStorage.getItem("_tm_skip") === "1") return;
+    _tmShownThisSession = true;
+
+    const ACTIVE_ARMS = ["A", "C", "D"] as const;
+    const arm = ACTIVE_ARMS[Math.floor(Math.random() * ACTIVE_ARMS.length)];
+
+    // Log arm assignment on the first training_completed/skipped row (stored
+    // as reveal_version). We capture it in closure for the callback handlers.
+    const _revealTrainingEvent = (eventType: string, source?: string, text?: string) => {
+      void apiFetch(`${API_BASE}/chat/training-event`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event_type: eventType, source, text, reveal_version: arm }),
+      }).catch(() => {});
+    };
+
+    const overlay = document.getElementById("grandRevealOverlay") as HTMLDivElement | null;
+    if (!overlay) return;
+
+    // Skip button: sits above the iframe so it's always clickable
+    const skipBtn = document.createElement("button");
+    skipBtn.id = "revealSkipBtn";
+    skipBtn.textContent = "I'll explore on my own";
+    skipBtn.setAttribute("type", "button");
+
+    const _dissolve = (fast = false) => {
+      overlay.style.opacity = "0";
+      skipBtn.style.display = "none";
+      setTimeout(() => {
+        overlay.hidden = true;
+        overlay.innerHTML = "";
+        overlay.style.opacity = "";
+        skipBtn.remove();
+        delete (window as unknown as Record<string, unknown>).__revealCallbacks;
+      }, fast ? 320 : 650);
+    };
+
+    skipBtn.addEventListener("click", () => {
+      _revealTrainingEvent("training_skipped");
+      sessionStorage.setItem("_tm_skip", "1");
+      _dissolve(true);
+    });
+    document.body.appendChild(skipBtn);
+
+    // Callbacks the iframe calls via window.parent.__revealCallbacks
+    (window as unknown as Record<string, unknown>).__revealCallbacks = {
+      arm,
+      onPick: (field: string, value: unknown) => {
+        // Write the preference immediately; same PUT contract as training card
+        void apiFetch(`${authApiBase}/auth/preferences`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ [field]: value, source: "training_mode" }),
+        }).catch(() => {});
+      },
+      onGraduate: (question: string | null) => {
+        // User completed the reveal (typed a question or clicked "Open Mobius →")
+        _revealTrainingEvent("training_completed");
+        if (question) {
+          _revealTrainingEvent("graduation_question_fired", "typed", question);
+          // Feed graduation question to product-feedback gap writer
+          void apiFetch(`${API_BASE}/chat/product-feedback`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ verbatim: question, category: "feature_request", trigger: "graduation", area_tags: ["rag"] }),
+          }).catch(() => {});
+        }
+        _finishOnboarding();
+        _dissolve();
+        if (question) {
+          setTimeout(() => sendMessage(question), 660);
+        }
+      },
+      onSkip: () => {
+        _revealTrainingEvent("training_skipped");
+        sessionStorage.setItem("_tm_skip", "1");
+        _dissolve(true);
+      },
+    };
+
+    // Mount the iframe
+    const iframe = document.createElement("iframe");
+    iframe.src = "/static/grand-reveal.html";
+    iframe.setAttribute("title", "Mobius first-run experience");
+    iframe.setAttribute("allowtransparency", "true");
+    overlay.hidden = false;
+    overlay.appendChild(iframe);
+  }
+  // ── end grand-reveal overlay ───────────────────────────────────────────
+
   let cachedProfile: MobiusChatUserProfile | null = null;
 
   function syncAnswerInsightsCheckbox(): void {
@@ -9905,10 +10001,10 @@ function run(): void {
         if (sidebarUserName && (!sidebarUserName.textContent || sidebarUserName.textContent === "Guest")) {
           if (nameFromMe) sidebarUserName.textContent = nameFromMe;
         }
-        // Show training mode for un-onboarded users, or when ?welcome=1 is in the URL.
+        // Show reveal overlay for first-run users; retrain via /training still uses training card.
         const tmName = nameFromMe ?? "there";
         if (user.is_onboarded === false) {
-          _showTrainingMode(tmName, "invited");
+          _showRevealOverlay();
         } else if (new URL(location.href).searchParams.get("welcome") === "1") {
           _showTrainingMode(tmName, "invited", true);
         }
@@ -10760,6 +10856,7 @@ function run(): void {
     }
 
     if (chatEmpty) chatEmpty.classList.add("hidden");
+    document.body.classList.remove("landing-state");
 
     // Auto-dismiss the alpha banner on first query — no need to keep
     // it in the way once the user is actively working.
@@ -12958,6 +13055,7 @@ function run(): void {
       hideRosterUploadReceipt();
       messagesEl.querySelectorAll(".chat-turn").forEach((n) => n.remove());
       if (chatEmpty) chatEmpty.classList.remove("hidden");
+      document.body.classList.add("landing-state");
       loadSidebarHistory();
     });
   }
@@ -12978,6 +13076,7 @@ function run(): void {
   async function loadAndRenderThread(threadId: string): Promise<void> {
     const tid = (threadId || "").trim();
     if (!tid) return;
+    document.body.classList.remove("landing-state");
     type RehydratedTurn = {
       correlation_id: string;
       question: string;
@@ -13451,6 +13550,24 @@ function run(): void {
   }
   // end _loadSidebarHistoryFull (legacy, elements no longer in DOM)
 
+  // Set landing-state on load; cleared on first message send.
+  // Only applies when there are no existing thread messages (fresh page load without a thread).
+  if (messagesEl && messagesEl.querySelectorAll(".chat-turn").length === 0) {
+    document.body.classList.add("landing-state");
+  }
+
+  // Composer landing chips: set composer text + send on click.
+  document.getElementById("composerLandingChips")?.addEventListener("click", (e) => {
+    const chip = (e.target as HTMLElement).closest(".composer-chip") as HTMLElement | null;
+    if (!chip) return;
+    const q = chip.getAttribute("data-query")?.trim();
+    if (!q) return;
+    inputEl.value = q;
+    updateSendState();
+    sendMessage();
+  });
+
+  // Legacy: .landing-try-link clicks (kept for any old links still in DOM).
   const chatEmptyLanding = document.getElementById("chatEmpty");
   chatEmptyLanding?.addEventListener("click", (e) => {
     const t = (e.target as HTMLElement).closest(".landing-try-link");
@@ -13478,6 +13595,7 @@ function run(): void {
       u.searchParams.delete("thread");
       const next = u.pathname + (u.search ? u.search : "") + u.hash;
       window.history.replaceState({}, "", next);
+      document.body.classList.remove("landing-state");
       void loadAndRenderThread(pThread);
     }
   } catch {

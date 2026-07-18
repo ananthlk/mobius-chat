@@ -9448,7 +9448,7 @@ function run() {
       }).catch(() => {
       });
     }
-    function _finishOnboarding() {
+    function _finishOnboarding2() {
       void apiFetch(`${authApiBase}/auth/onboarding`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -9465,7 +9465,7 @@ function run() {
       document.querySelector(".landing-card")?.removeAttribute("hidden");
       if (permanent) {
         _sendTrainingEvent("training_dismissed");
-        _finishOnboarding();
+        _finishOnboarding2();
       } else {
         _sendTrainingEvent("training_skipped");
         sessionStorage.setItem("_tm_skip", "1");
@@ -9585,7 +9585,7 @@ function run() {
           if (hesList.length)
             _writePrefs({ hesitations: hesList });
           _sendTrainingEvent("training_completed");
-          _finishOnboarding();
+          _finishOnboarding2();
           step = 5;
           _render();
         };
@@ -9678,6 +9678,86 @@ function run() {
     }
     wrap.hidden = false;
     _render();
+  }
+  function _showRevealOverlay() {
+    if (_tmShownThisSession)
+      return;
+    if (sessionStorage.getItem("_tm_skip") === "1")
+      return;
+    _tmShownThisSession = true;
+    const ACTIVE_ARMS = ["A", "C", "D"];
+    const arm = ACTIVE_ARMS[Math.floor(Math.random() * ACTIVE_ARMS.length)];
+    const _revealTrainingEvent = (eventType, source, text) => {
+      void apiFetch(`${API_BASE}/chat/training-event`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event_type: eventType, source, text, reveal_version: arm })
+      }).catch(() => {
+      });
+    };
+    const overlay = document.getElementById("grandRevealOverlay");
+    if (!overlay)
+      return;
+    const skipBtn = document.createElement("button");
+    skipBtn.id = "revealSkipBtn";
+    skipBtn.textContent = "I'll explore on my own";
+    skipBtn.setAttribute("type", "button");
+    const _dissolve = (fast = false) => {
+      overlay.style.opacity = "0";
+      skipBtn.style.display = "none";
+      setTimeout(() => {
+        overlay.hidden = true;
+        overlay.innerHTML = "";
+        overlay.style.opacity = "";
+        skipBtn.remove();
+        delete window.__revealCallbacks;
+      }, fast ? 320 : 650);
+    };
+    skipBtn.addEventListener("click", () => {
+      _revealTrainingEvent("training_skipped");
+      sessionStorage.setItem("_tm_skip", "1");
+      _dissolve(true);
+    });
+    document.body.appendChild(skipBtn);
+    window.__revealCallbacks = {
+      arm,
+      onPick: (field, value) => {
+        void apiFetch(`${authApiBase}/auth/preferences`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ [field]: value, source: "training_mode" })
+        }).catch(() => {
+        });
+      },
+      onGraduate: (question) => {
+        _revealTrainingEvent("training_completed");
+        if (question) {
+          _revealTrainingEvent("graduation_question_fired", "typed", question);
+          void apiFetch(`${API_BASE}/chat/product-feedback`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ verbatim: question, category: "feature_request", trigger: "graduation", area_tags: ["rag"] })
+          }).catch(() => {
+          });
+        }
+        _finishOnboarding();
+        _dissolve();
+        if (question) {
+          setTimeout(() => sendMessage(question), 660);
+        }
+      },
+      onSkip: () => {
+        _revealTrainingEvent("training_skipped");
+        sessionStorage.setItem("_tm_skip", "1");
+        _dissolve(true);
+      }
+    };
+    const iframe = document.createElement("iframe");
+    iframe.src = "/static/grand-reveal.html";
+    iframe.setAttribute("title", "Mobius first-run experience");
+    iframe.setAttribute("allowtransparency", "true");
+    overlay.hidden = false;
+    overlay.appendChild(iframe);
   }
   let cachedProfile = null;
   function syncAnswerInsightsCheckbox() {
@@ -9923,7 +10003,7 @@ function run() {
         }
         const tmName = nameFromMe ?? "there";
         if (user.is_onboarded === false) {
-          _showTrainingMode(tmName, "invited");
+          _showRevealOverlay();
         } else if (new URL(location.href).searchParams.get("welcome") === "1") {
           _showTrainingMode(tmName, "invited", true);
         }
@@ -10627,6 +10707,7 @@ ${message}`;
     }
     if (chatEmpty)
       chatEmpty.classList.add("hidden");
+    document.body.classList.remove("landing-state");
     if (alphaBanner && !alphaBanner.hidden) {
       alphaBanner.hidden = true;
       localStorage.setItem("alpha_banner_dismissed", "1");
@@ -12507,6 +12588,7 @@ ${message}`;
       messagesEl.querySelectorAll(".chat-turn").forEach((n) => n.remove());
       if (chatEmpty)
         chatEmpty.classList.remove("hidden");
+      document.body.classList.add("landing-state");
       loadSidebarHistory();
     });
   }
@@ -12514,6 +12596,7 @@ ${message}`;
     const tid = (threadId || "").trim();
     if (!tid)
       return;
+    document.body.classList.remove("landing-state");
     let turns;
     try {
       const r = await fetch(
@@ -12894,6 +12977,20 @@ ${message}`;
       });
     })();
   }
+  if (messagesEl && messagesEl.querySelectorAll(".chat-turn").length === 0) {
+    document.body.classList.add("landing-state");
+  }
+  document.getElementById("composerLandingChips")?.addEventListener("click", (e) => {
+    const chip = e.target.closest(".composer-chip");
+    if (!chip)
+      return;
+    const q = chip.getAttribute("data-query")?.trim();
+    if (!q)
+      return;
+    inputEl.value = q;
+    updateSendState();
+    sendMessage();
+  });
   const chatEmptyLanding = document.getElementById("chatEmpty");
   chatEmptyLanding?.addEventListener("click", (e) => {
     const t = e.target.closest(".landing-try-link");
@@ -12922,6 +13019,7 @@ ${message}`;
       u.searchParams.delete("thread");
       const next = u.pathname + (u.search ? u.search : "") + u.hash;
       window.history.replaceState({}, "", next);
+      document.body.classList.remove("landing-state");
       void loadAndRenderThread(pThread);
     }
   } catch {
