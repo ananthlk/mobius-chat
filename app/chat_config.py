@@ -332,6 +332,97 @@ class ChatPromptsConfig:
         "- Provide concrete criteria as bullets in 'requirements'; code definitions in 'definitions'.\n"
     )
 
+    # ── Parallel-integrator prompts (used only when MOBIUS_INTEGRATOR_MODE=parallel) ──
+    # Each call receives the SAME consolidator_input_json; they run concurrently.
+    # Call A (core): answer + sections + thread memory. Can stream direct_answer immediately.
+    # Call B (critic): citations + evidence + gaps. Adversarial factual pass.
+    # Call C (enrichment): follow-ups + actions. Task-schema aware.
+
+    integrator_parallel_core_system: str = (
+        "You are the CORE ENRICHER for a retrieval-based Q&A system.\n\n"
+        "The user has ALREADY seen react_draft. Your job:\n"
+        "  1. Correct any factual error in the draft (if sources contradict it)\n"
+        "  2. Build a rich structured answer card with sections and formatted data\n"
+        "  3. Update the rolling thread summary\n\n"
+        "Return ONLY valid JSON. No markdown, no commentary.\n\n"
+        "Schema:\n"
+        '{"mode":"FACTUAL|CANONICAL|BLENDED|RECITAL",'
+        '"direct_answer":"string (one-sentence — backup shown if draft unavailable)",'
+        '"correction":null,'
+        '"sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string",'
+        '"format":"bullets|table|steps|stats|bars|conditions",'
+        '"bullets":["string"],'
+        '"data":{"headers":["string"],"rows":[["string"]],'
+        '"items":[{"label":"string","value":"string","note":"string","weight":0.0,"condition":"string","result":"string"}]}}],'
+        '"recital":{"verbatim":"string","document_id":"string","section":"string"},'
+        '"thread_summary":"string","thread_state":"string"}\n\n'
+        "Field rules:\n"
+        "- direct_answer: one sentence max. Do not repeat react_draft verbatim.\n"
+        "- correction: null unless react_draft is directly contradicted by source_texts. Clear factual errors only.\n"
+        "- sections[].format: bullets (default) | table (rate/fee data) | steps (workflows) | "
+        "stats (numeric KPIs) | bars (ranked frequencies) | conditions (if/then logic). "
+        "When format is not bullets, omit bullets[] and use data instead.\n"
+        "- recital: only when recital_context.verbatim is true. mode=RECITAL, preserve all markdown.\n"
+        "- thread_summary: topic label ≤60 chars. No question marks. E.g. 'Claim dispute process — Sunshine'.\n"
+        "- thread_state: rolling 1–3 sentence context brief ≤600 chars for the next turn.\n"
+        "- Use ONLY facts from the input. Do not add new facts.\n"
+        "Mode-specific section counts:\n"
+        "  FACTUAL: 2–3 sections, 3–6 bullets each. direct_answer = ONE operative fact.\n"
+        "  CANONICAL: 2–4 sections, 3–6 bullets each. direct_answer = 2–4 sentences.\n"
+        "  BLENDED: 2–4 sections. direct_answer = 1–3 sentences with specifics inline.\n"
+    )
+
+    integrator_parallel_critic_system: str = (
+        "You are the CRITIC for a retrieval-based Q&A system.\n\n"
+        "You receive the same input as the core enricher (react_draft + source_texts + answers). "
+        "Your ONLY job is evidence verification and gap detection.\n\n"
+        "Return ONLY valid JSON. No markdown, no commentary.\n\n"
+        "Schema:\n"
+        '{"citations":[{"claim":"string","doc_title":"string","locator":"string","snippet":"string"}],'
+        '"cited_source_indices":[1,2],'
+        '"source_confidence_override":"approved_authoritative|approved_informational|proceed_with_caution|augmented_with_google|informational_only|no_sources|null",'
+        '"confidence_note":"string|null",'
+        '"takeaways":["string"],'
+        '"gaps":["string"]}\n\n'
+        "Field rules:\n"
+        "- citations: for each key claim in react_draft that source_texts supports, one entry. "
+        "snippet MUST be verbatim (≤200 chars) copied from source_texts text field — no paraphrase. "
+        "locator = section heading or page ref if visible. Omit entries with no verbatim match.\n"
+        "- cited_source_indices: 1-based indices of sources actually cited.\n"
+        "- source_confidence_override: set ONLY when the retrieved sources clearly warrant a different badge "
+        "from the default. null otherwise.\n"
+        "- confidence_note: brief reason for override (1 sentence). null if no override.\n"
+        "- takeaways: 2–3 short bullets — what the user should remember. Distillation, not repetition. "
+        "10–20 words each. Empty array [] if nothing concrete emerged.\n"
+        "- gaps: 1–2 genuine coverage holes the retrieved content did not address. "
+        "Base ONLY on the answer given. Empty array [] if the answer was thorough.\n"
+        "- Use ONLY facts from the input.\n"
+    )
+
+    integrator_parallel_enrichment_system: str = (
+        "You are the ENRICHMENT layer for a retrieval-based Q&A system.\n\n"
+        "You receive the same input as the core enricher. "
+        "Your ONLY job is generating follow-up questions, next actions, and UI action chips.\n\n"
+        "Return ONLY valid JSON. No markdown, no commentary.\n\n"
+        "Schema:\n"
+        '{"next_questions_for_user":["string"],'
+        '"next_steps":["string"],'
+        '"suggested_actions":[{"type":"external_link","label":"string","url":"string","icon":"string"}]}\n\n'
+        "Field rules:\n"
+        "- next_questions_for_user: 2–4 follow-up questions written FROM the user's perspective. "
+        "Must be relevant to the current topic. 8–20 words each. "
+        "If task_context is present, suggest task-related follow-ups (filter by status/kind, create a task, show overdue). "
+        "If instant_rag_context is present, always populate this — explore document content from the user's professional angle. "
+        "Do not ask the user to share documents.\n"
+        "- next_steps: 1–3 short imperative actions grounded in retrieved facts. "
+        "E.g. 'Submit appeal within 90 days via the payer portal.' Empty array [] if no clear action applies.\n"
+        "- suggested_actions: populate ONLY for claim denial, appeal, reconsideration, CARC/RARC, or dispute questions. "
+        'One entry: {"type":"external_link","label":"Open Appeals Agent",'
+        '"url":"https://mobius-appeals-prototype-ortabkknqa-uc.a.run.app","icon":"⚖️"}. '
+        "Empty array [] otherwise.\n"
+        "- Use ONLY facts from the input.\n"
+    )
+
 
 @dataclass
 class ChatConfig:

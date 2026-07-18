@@ -25,6 +25,7 @@ from app.communication.json_display_sanitize import (
 from app.communication.gate import send_to_user
 from app.pipeline.context import PipelineContext
 from app.responder import format_response
+from app.responder.final_parallel import format_response_parallel
 from app.services.cost_model import compute_cost
 from app.services.model_registry import integrator_llm_stage, per_call_router_composite
 from app.state.jurisdiction import get_jurisdiction_from_active, jurisdiction_to_summary
@@ -89,6 +90,9 @@ def _answer_step_label(stage: str) -> str:
         "rag": "Library research & draft",
         "integrator_roster": "Composing your report answer",
         "integrator": "Composing your answer",
+        "integrator_a": "Composing your answer",
+        "integrator_critic": "Critique & citations",
+        "integrator_enrichment": "Next steps & follow-ups",
         "context": "Context assembly",
         "badge": "Safety badge",
         "classifier": "Classifier",
@@ -131,8 +135,12 @@ def _display_stage_name(stage: str) -> str:
         return "RAG"
     if s == "integrator_roster":
         return "Roster integrator"
-    if s == "integrator":
+    if s in ("integrator", "integrator_a"):
         return "Integrator"
+    if s == "integrator_critic":
+        return "Critic"
+    if s == "integrator_enrichment":
+        return "Enrichment"
     if s.startswith("react_"):
         suf = s.split("_", 1)[-1] if "_" in s else ""
         try:
@@ -324,6 +332,24 @@ from app.services.doc_assembly import (
 )
 
 
+def _pick_integrator_mode() -> str:
+    """Return 'parallel' or 'sequential' based on env config.
+
+    MOBIUS_INTEGRATOR_MODE=parallel|sequential forces a path.
+    MOBIUS_INTEGRATOR_PARALLEL_PCT=0-100 samples when MODE is unset.
+    Default: sequential (0% parallel) for safe rollout.
+    """
+    import random
+    forced = (os.environ.get("MOBIUS_INTEGRATOR_MODE") or "").strip().lower()
+    if forced in ("parallel", "sequential"):
+        return forced
+    try:
+        pct = float(os.environ.get("MOBIUS_INTEGRATOR_PARALLEL_PCT") or "0")
+    except ValueError:
+        pct = 0.0
+    return "parallel" if random.random() * 100 < pct else "sequential"
+
+
 def _default_source_confidence(
     retrieval_signals: list[str],
     all_sources: list[dict],
@@ -491,10 +517,11 @@ def run_integrate(
         bool(_recital_ctx and _recital_ctx.get("verbatim")),
         bool(_recital_ctx and _recital_ctx.get("text")),
     )
-    final_message, integrator_usage = format_response(
-        plan,
-        answers,
-        user_message=ctx.message,
+    _integ_path = _pick_integrator_mode()
+    ctx.integrator_mode = "P" if _integ_path == "parallel" else "S"
+    logger.info("[integrate] integrator_mode=%s", ctx.integrator_mode)
+
+    _shared_integ_kwargs = dict(
         emitter=emitter,
         message_chunk_callback=_stream_answer_chunk,
         retrieval_metadata=retrieval_metadata,
@@ -506,7 +533,6 @@ def run_integrate(
         thread_id=ctx.thread_id,
         config_sha=_cfg_sha,
         phi_detected=False,
-        llm_stage=_integ_stage,
         mode=getattr(ctx, "chat_mode", None),
         previous_thread_summary=getattr(ctx, "previous_thread_summary", None),
         user_profile=getattr(ctx, "user_profile", None),
@@ -516,6 +542,23 @@ def run_integrate(
         instant_rag_context=_instant_rag_ctx,
         recital_context=_recital_ctx,
     )
+
+    integrator_usage: dict | None = None
+    integrator_usages: list[dict] = []
+
+    if _integ_path == "parallel":
+        final_message, integrator_usages = format_response_parallel(
+            plan, answers, user_message=ctx.message,
+            llm_stage="integrator_a",
+            **_shared_integ_kwargs,
+        )
+        integrator_usage = integrator_usages[0] if integrator_usages else None
+    else:
+        final_message, integrator_usage = format_response(
+            plan, answers, user_message=ctx.message,
+            llm_stage=_integ_stage,
+            **_shared_integ_kwargs,
+        )
 
     # Post-process: when ctx.recital.verbatim is set, upgrade the integrator's
     # card to mode=RECITAL and inject the verbatim text. The integrator still
@@ -626,7 +669,14 @@ def run_integrate(
     except Exception:
         pass  # audit must never break the turn
 
-    if integrator_usage:
+    if integrator_usages:
+        # Parallel path: 3 usage dicts (A=core, B=critic, C=enrichment)
+        usages = list(usages) + integrator_usages
+        if isinstance(integrator_usages[0], dict):
+            ctx.integrator_llm_call_id = integrator_usages[0].get("llm_call_id")
+            ctx.integrator_model_id = integrator_usages[0].get("model")
+    elif integrator_usage:
+        # Sequential path: single usage dict
         usages = list(usages) + [integrator_usage]
         if isinstance(integrator_usage, dict):
             ctx.integrator_llm_call_id = integrator_usage.get("llm_call_id")
@@ -639,7 +689,7 @@ def run_integrate(
     total_cost = sum(compute_cost(u) for u in usages)
     integrator_model = None
     for u in reversed(usages):
-        if isinstance(u, dict) and u.get("stage") in ("integrator", "integrator_roster"):
+        if isinstance(u, dict) and u.get("stage") in ("integrator", "integrator_roster", "integrator_a"):
             integrator_model = u.get("model")
             break
     model_used = integrator_model or ((usages[0].get("model") or None) if usages else None)
@@ -949,7 +999,7 @@ def run_integrate(
             pass
     integ_explore: bool | None = None
     for r in reversed(usage_breakdown):
-        if r.get("stage") in ("integrator", "integrator_roster"):
+        if r.get("stage") in ("integrator", "integrator_roster", "integrator_a"):
             v = r.get("is_ab_call")
             integ_explore = bool(v) if v is not None else None
             break
@@ -990,6 +1040,7 @@ def run_integrate(
         },
         "top_source": _top_corpus_hit(response_sources),
         "integrator_exploration": integ_explore,
+        "integrator_mode": ctx.integrator_mode,
         "router_by_stage": router_by_stage[:40] if router_by_stage else [],
     }
 

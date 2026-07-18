@@ -213,6 +213,8 @@ class PipelineContext:
     # Post-run adjudication (integrator llm_calls row for quality_score attachment)
     integrator_llm_call_id: str | None = None
     integrator_model_id: str | None = None
+    # A/B path tracking: "S"=sequential (single call), "P"=parallel (3 calls)
+    integrator_mode: str | None = None
 
     # Product-feedback skill (docs/feedback-agent-spec.md §6):
     #   feedback_signal — cadence signal injected INTO the planner context this
