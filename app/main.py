@@ -1306,31 +1306,49 @@ def _run_hipaa_gate_sync(
             document_id[:8], action_taken, str(_pub_resp)[:80],
         )
     else:
-        # Block: mark the doc phi_blocked (not embedded, TTL will purge it).
-        # We PATCH rather than DELETE so the file_hash stays in the documents
-        # table — next upload of the same file hits the dedup path and gets
-        # the cached HIPAA verdict instead of running the full pipeline again.
+        # Block: DELETE the doc so RAG purges all embeddings/chunks immediately.
+        # PATCH phi_blocked is insufficient — RAG's async embed pipeline may set
+        # published_at after the PATCH, leaving chunks in the retrieval corpus
+        # (observed: doc ed165692, 2026-07-18). DELETE is the only path that
+        # guarantees zero embeddings and zero retrievability. The file_hash dedup
+        # cache is sacrificed intentionally — HIPAA compliance > convenience.
         try:
-            _patch_body = _json_mod.dumps({"status": "phi_blocked"}).encode()
-            _patch_req = _urllib_req.Request(
+            _del_req = _urllib_req.Request(
                 f"{rag_url}/documents/{document_id}",
-                data=_patch_body,
-                headers={"Content-Type": "application/json"},
-                method="PATCH",
+                method="DELETE",
             )
-            with _urllib_req.urlopen(_patch_req, timeout=30) as _r:
+            with _urllib_req.urlopen(_del_req, timeout=30) as _r:
                 pass
             logger.info(
-                "[hipaa-gate] marked phi_blocked doc=%s action=%s",
+                "[hipaa-gate] DELETE ok doc=%s action=%s (embeddings purged)",
                 document_id[:8], action_taken,
             )
         except Exception as _de:
-            # Non-fatal: TTL will purge extract-only docs eventually, and the
-            # doc stays unembedded so it can't pollute retrieval.
-            logger.warning(
-                "[hipaa-gate] PATCH phi_blocked failed for doc=%s (non-fatal): %s",
+            # DELETE failed — try PATCH as fallback to at least mark it blocked.
+            # Log at ERROR so ops sees it; doc may still be in corpus.
+            logger.error(
+                "[hipaa-gate] DELETE FAILED for doc=%s (non-compliant if embeddings exist): %s",
                 document_id[:8], _de,
             )
+            try:
+                _patch_body = _json_mod.dumps({"status": "phi_blocked"}).encode()
+                _patch_req = _urllib_req.Request(
+                    f"{rag_url}/documents/{document_id}",
+                    data=_patch_body,
+                    headers={"Content-Type": "application/json"},
+                    method="PATCH",
+                )
+                with _urllib_req.urlopen(_patch_req, timeout=30) as _r:
+                    pass
+                logger.warning(
+                    "[hipaa-gate] fallback PATCH phi_blocked for doc=%s (DELETE failed)",
+                    document_id[:8],
+                )
+            except Exception as _pe:
+                logger.error(
+                    "[hipaa-gate] fallback PATCH also failed for doc=%s: %s",
+                    document_id[:8], _pe,
+                )
 
     return {
         "blocked": blocked,
