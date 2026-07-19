@@ -646,6 +646,7 @@ def _run(call: SkillCall) -> SkillEnvelope:
                     "fact_score": resp.get("fact_score") or 1.0,
                     "fact_predicate": resp.get("fact_predicate"),
                     "fact_cert_grades": _routing.get("fact_cert_grades"),
+                    "fact_telemetry_id": _routing.get("fact_telemetry_id"),
                     "confidence": resp.get("confidence"),
                 },
             )
