@@ -7350,11 +7350,12 @@ function _dcActSection(data: any, routing: any, isFactStore: boolean): HTMLEleme
     });
     body.appendChild(retrieveEl);
 
-    // ── rerank ──
+    // ── rerank — scoring_trace lives inside the matched strategies_tried entry ──
     if (isFactStore) {
       body.appendChild(_dcLeaf("rerank", "gray", "not executed · direct serve"));
     } else {
-      const sc: any[] = data.scoring_trace ?? [];
+      const primarySt = strategies.find((s) => s.strategy === strategy) ?? strategies[0] ?? {};
+      const sc: any[] = primarySt.scoring_trace ?? [];
       const topRR = typeof sc[0]?.rerank_score === "number" ? sc[0].rerank_score as number : null;
       body.appendChild(_dcLeaf("rerank", "ok", `top ${typeof topRR === "number" ? topRR.toFixed(2) : "—"}`,
         sc.length ? (b) => {
@@ -7406,7 +7407,7 @@ function _dcActSection(data: any, routing: any, isFactStore: boolean): HTMLEleme
 function _dcObserveSection(data: any, routing: any, isFactStore: boolean): HTMLElement {
   return _dcSection("3 · OBSERVE", "ok", "retrieval —/synth grading… · 1 row", (body) => {
     body.appendChild(_dcLeaf("retrieval_grade", "gray",
-      isFactStore ? "certified · see provenance card" : "no gold in prod · —"));
+      isFactStore ? "certified · see provenance card" : "n/a · no gold at inference"));
     body.appendChild(_dcLeaf("synthesis_grade", "gray", "grading…"));
     body.appendChild(_dcLeaf("per_claim_ledger", "gray", "not available in prod"));
     const decId = String(routing.fact_telemetry_id ?? data.routing_decision_id ?? "");

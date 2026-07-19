@@ -7847,7 +7847,8 @@ function _dcActSection(data, routing, isFactStore) {
     if (isFactStore) {
       body.appendChild(_dcLeaf("rerank", "gray", "not executed \xB7 direct serve"));
     } else {
-      const sc = data.scoring_trace ?? [];
+      const primarySt = strategies.find((s) => s.strategy === strategy) ?? strategies[0] ?? {};
+      const sc = primarySt.scoring_trace ?? [];
       const topRR = typeof sc[0]?.rerank_score === "number" ? sc[0].rerank_score : null;
       body.appendChild(_dcLeaf(
         "rerank",
@@ -7910,7 +7911,7 @@ function _dcObserveSection(data, routing, isFactStore) {
     body.appendChild(_dcLeaf(
       "retrieval_grade",
       "gray",
-      isFactStore ? "certified \xB7 see provenance card" : "no gold in prod \xB7 \u2014"
+      isFactStore ? "certified \xB7 see provenance card" : "n/a \xB7 no gold at inference"
     ));
     body.appendChild(_dcLeaf("synthesis_grade", "gray", "grading\u2026"));
     body.appendChild(_dcLeaf("per_claim_ledger", "gray", "not available in prod"));
