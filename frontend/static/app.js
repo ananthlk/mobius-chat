@@ -7780,7 +7780,7 @@ function _dcActRetrieveContent(container, st, data, routing) {
 }
 function _dcActSection(data, routing, isFactStore) {
   const strategies = data.strategies_tried ?? [];
-  const strategy = String(routing.strategy ?? routing.executed_strategy ?? (isFactStore ? "s" : "a"));
+  const strategy = String(routing.executed_strategy ?? routing.strategy ?? (isFactStore ? "s" : "a"));
   const nChunks = data.n_chunks ?? strategies.reduce((a, s) => a + (s.n_chunks ?? 0), 0) ?? 0;
   const conf = String(data.confidence ?? "\u2014");
   const answerSnip = String(data.llm_answer ?? "").slice(0, 50);
@@ -7979,8 +7979,8 @@ function renderDiagnosticsCard(thinkingLog) {
   const last = traces[traces.length - 1];
   const data = last.data ?? {};
   const routing = data.routing ?? {};
-  const isFactStore = String(routing.method ?? "") === "fact_store";
-  const strategy = String(routing.strategy ?? routing.executed_strategy ?? (isFactStore ? "s" : "?"));
+  const isFactStore = String(routing.method ?? "") === "fact_store" && (Boolean(routing.fact_predicate) || Boolean(routing.fact_telemetry_id));
+  const strategy = String(routing.executed_strategy ?? routing.strategy ?? (isFactStore ? "s" : "?"));
   const totalMs = Number(data.total_ms ?? (data.timing ?? {}).total_ms ?? 0);
   const conf = String(data.confidence ?? "");
   const wrap = document.createElement("div");

@@ -7279,7 +7279,7 @@ function _dcActRetrieveContent(container: HTMLElement, st: any, data: any, routi
 
 function _dcActSection(data: any, routing: any, isFactStore: boolean): HTMLElement {
   const strategies: any[] = data.strategies_tried ?? [];
-  const strategy = String(routing.strategy ?? routing.executed_strategy ?? (isFactStore ? "s" : "a"));
+  const strategy = String(routing.executed_strategy ?? routing.strategy ?? (isFactStore ? "s" : "a"));
   const nChunks: number = data.n_chunks ?? strategies.reduce((a: number, s: any) => a + (s.n_chunks ?? 0), 0) ?? 0;
   const conf = String(data.confidence ?? "—");
   const answerSnip = String(data.llm_answer ?? "").slice(0, 50);
@@ -7472,8 +7472,12 @@ function renderDiagnosticsCard(
   const last = traces[traces.length - 1];
   const data = last.data ?? {};
   const routing = (data.routing ?? {}) as any;
-  const isFactStore = String(routing.method ?? "") === "fact_store";
-  const strategy = String(routing.strategy ?? routing.executed_strategy ?? (isFactStore ? "s" : "?"));
+  // routing.method="fact_store" fires even on a miss; require fact_predicate/telemetry_id
+  // as proof that a fact was actually matched and served (not just attempted).
+  const isFactStore = String(routing.method ?? "") === "fact_store"
+    && (Boolean(routing.fact_predicate) || Boolean(routing.fact_telemetry_id));
+  // executed_strategy = what actually ran (authoritative); strategy = scorer's pick (may differ)
+  const strategy = String(routing.executed_strategy ?? routing.strategy ?? (isFactStore ? "s" : "?"));
   const totalMs = Number(data.total_ms ?? (data.timing ?? {}).total_ms ?? 0);
   const conf = String(data.confidence ?? "");
 
