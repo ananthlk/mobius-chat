@@ -1153,6 +1153,7 @@ def _publish_completed(ctx: PipelineContext, t0_start: float) -> None:
             total_cost_usd=total_cost,
             thread_id=ctx.thread_id,
             user_id=ctx.user_id,
+            integrator_mode=getattr(ctx, "integrator_mode", None),
         )
         # Record directly in thinking_chunks (no emitter here — this
         # fires at publish time, after run_react has returned).

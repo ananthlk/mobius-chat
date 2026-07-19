@@ -704,23 +704,27 @@ def make_turn_completed(
     total_cost_usd: float | None = None,
     thread_id: str | None = None,
     user_id: str | None = None,
+    integrator_mode: str | None = None,
 ) -> EmitEnvelope:
     """A chat turn finished successfully. Promoted as ``info``
     (low) — the throughput + cost-per-turn + rounds-distribution
     dashboard foundation."""
+    data: dict = {
+        "rounds_used": rounds_used,
+        "tools_used": tools_used,
+        "final_signal": final_signal,
+        "duration_ms": duration_ms,
+        "total_llm_tokens": total_llm_tokens,
+        "total_cost_usd": total_cost_usd,
+    }
+    if integrator_mode is not None:
+        data["integrator_mode"] = integrator_mode
     return EmitEnvelope(
         signal="turn_completed",
         correlation_id=correlation_id,
         step_id="turn_complete",
         note=f"✓ Turn completed in {rounds_used} round(s), {duration_ms}ms",
-        data={
-            "rounds_used": rounds_used,
-            "tools_used": tools_used,
-            "final_signal": final_signal,
-            "duration_ms": duration_ms,
-            "total_llm_tokens": total_llm_tokens,
-            "total_cost_usd": total_cost_usd,
-        },
+        data=data,
         thread_id=thread_id,
         user_id=user_id,
         report_to_task_manager=True,
