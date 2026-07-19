@@ -6797,18 +6797,19 @@ function syncAdjudicatorScorecardDom(
 function _renderFactStoreLeaf(data: any, routing: any): HTMLElement {
   const predicate = String(routing.fact_predicate ?? "certified fact");
   const factScore = typeof routing.fact_score === "number" ? routing.fact_score : 1.0;
-  const certGrades: any[] = Array.isArray(routing.fact_cert_grades) ? routing.fact_cert_grades : [];
-  const firstGrade = certGrades[0] ?? {};
+  // fact_cert_grades is a dict {retrieval, synthesis}, not an array.
+  const certGrades = (routing.fact_cert_grades ?? {}) as any;
   const retrievalGrade =
-    typeof firstGrade.grade === "number" ? firstGrade.grade.toFixed(2) : String(firstGrade.grade ?? "—");
-  const grader = String(firstGrade.grader ?? "—");
-  const served = (data.served ?? {}) as any;
-  const freshness = (served.freshness ?? {}) as any;
-  const cert = (served.cert ?? {}) as any;
-  const sourceRef = String(served.source_ref ?? "");
+    typeof certGrades.retrieval === "number" ? certGrades.retrieval.toFixed(2) : String(certGrades.retrieval ?? "—");
+  const grader = "fact_check_v1";
+  // All provenance lives under routing.fact_provenance (no served.* block in live payload).
+  const prov = (routing.fact_provenance ?? {}) as any;
+  const freshness = (prov.freshness ?? {}) as any;
+  const sourceRefObj = (prov.source_ref ?? {}) as any;
+  const sourceRef = String(sourceRefObj.registry_notes ?? sourceRefObj.url ?? "");
   const lastVerified = String(freshness.last_verified_at ?? "");
   const validUntil = String(freshness.valid_until ?? "");
-  const certStatus = String(cert.status ?? "");
+  const certStatus = String(prov.cert_status ?? "");
   const stale = Boolean(freshness.stale);
 
   const fmtDate = (iso: string) => {

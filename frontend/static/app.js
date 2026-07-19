@@ -7321,17 +7321,16 @@ function syncAdjudicatorScorecardDom(wrap, qc, oneline, badgesWrap) {
 function _renderFactStoreLeaf(data, routing) {
   const predicate = String(routing.fact_predicate ?? "certified fact");
   const factScore = typeof routing.fact_score === "number" ? routing.fact_score : 1;
-  const certGrades = Array.isArray(routing.fact_cert_grades) ? routing.fact_cert_grades : [];
-  const firstGrade = certGrades[0] ?? {};
-  const retrievalGrade = typeof firstGrade.grade === "number" ? firstGrade.grade.toFixed(2) : String(firstGrade.grade ?? "\u2014");
-  const grader = String(firstGrade.grader ?? "\u2014");
-  const served = data.served ?? {};
-  const freshness = served.freshness ?? {};
-  const cert = served.cert ?? {};
-  const sourceRef = String(served.source_ref ?? "");
+  const certGrades = routing.fact_cert_grades ?? {};
+  const retrievalGrade = typeof certGrades.retrieval === "number" ? certGrades.retrieval.toFixed(2) : String(certGrades.retrieval ?? "\u2014");
+  const grader = "fact_check_v1";
+  const prov = routing.fact_provenance ?? {};
+  const freshness = prov.freshness ?? {};
+  const sourceRefObj = prov.source_ref ?? {};
+  const sourceRef = String(sourceRefObj.registry_notes ?? sourceRefObj.url ?? "");
   const lastVerified = String(freshness.last_verified_at ?? "");
   const validUntil = String(freshness.valid_until ?? "");
-  const certStatus = String(cert.status ?? "");
+  const certStatus = String(prov.cert_status ?? "");
   const stale = Boolean(freshness.stale);
   const fmtDate = (iso) => {
     if (!iso)
