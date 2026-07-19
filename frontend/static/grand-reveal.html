@@ -544,7 +544,7 @@ body.light #vdesc-tag{color:rgba(28,25,39,.3)}
       <div class="ts" style="margin-bottom:.65rem">Retrain or change these anytime in Preferences.</div>
       <div class="gtags"><span class="gtag" style="animation:none">★ Denials &amp; appeals</span><span class="gtag" style="animation:none">Professional tone</span><span class="gtag" style="animation:none">Show me before you act</span></div>
       <div class="gql">Now — type your three-phone-call moment.</div>
-      <div class="ginp"><input type="text" placeholder="The prior auth, the denial, the coverage question you're stuck on…"><button class="gsend">↑</button></div>
+      <div class="ginp"><input type="text" placeholder="The prior auth, the denial, the coverage question you're stuck on…" onkeydown="if(event.key==='Enter')raiseCurtain()"><button class="gsend" onclick="raiseCurtain()">↑</button></div>
       <div class="tact" style="margin-top:1rem"><button class="bv" onclick="raiseCurtain()">Open Mobius →</button></div>
     </div>
   </div>
