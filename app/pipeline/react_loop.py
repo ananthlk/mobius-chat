@@ -1494,8 +1494,9 @@ def _execute_tool(
         # the skill returned content + sources + a non-empty signal.
         # Operational skills (create_task, list_uploads, etc.) return no sources
         # and RETRIEVAL_SIGNAL_NO_SOURCES, so they never trip this gate.
+        _golden_explicit = bool((env.extra or {}).get("golden"))
         _skill_golden = bool(
-            (env.extra or {}).get("golden")
+            _golden_explicit
             or (
                 _skill_success
                 and env.sources
@@ -1509,6 +1510,7 @@ def _execute_tool(
             "signal": env.signal,
             "sources": [s.to_dict() for s in env.sources],
             "golden": _skill_golden,
+            "golden_explicit": _golden_explicit,
         }
 
     return {
@@ -2563,10 +2565,15 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         #   (b) heuristic: success + sources + non-empty signal (inferred)
         # Operational skills (create_task, list_uploads, etc.) produce no sources
         # and RETRIEVAL_SIGNAL_NO_SOURCES so they never match.
+        # golden_explicit bypasses the 30-char length gate — short certified facts
+        # (e.g. a payer ID "68069") are valid terminal answers from the fact store.
         if (
             result.get("golden")
             and result.get("success")
-            and len((result.get("result") or "").strip()) >= 30
+            and (
+                result.get("golden_explicit")
+                or len((result.get("result") or "").strip()) >= 30
+            )
         ):
             emit(f"  ✓ {last_tool}: authoritative answer — finalizing.")
             _finalize_response(

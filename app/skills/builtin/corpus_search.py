@@ -639,6 +639,7 @@ def _run(call: SkillCall) -> SkillEnvelope:
                 sources=[],
                 signal="corpus_only",
                 extra={
+                    "golden": True,
                     "pipeline_trace": telemetry,
                     "skill_call_ms": elapsed_ms,
                     "search_id": search_id,
