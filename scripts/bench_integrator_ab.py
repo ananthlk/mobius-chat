@@ -191,25 +191,22 @@ def _stream_turn(
                 except json.JSONDecodeError:
                     continue
 
-                # turn_completed is emitted as an entry inside thinking_log,
-                # not as a top-level SSE event.
-                entries_to_check: list[dict] = []
-                if event.get("signal") == "turn_completed":
-                    entries_to_check = [event]
-                elif "thinking_log" in event:
-                    log = event.get("thinking_log") or []
-                    entries_to_check = [e for e in log if isinstance(e, dict)]
-
-                for entry in entries_to_check:
-                    if entry.get("signal") != "turn_completed":
-                        continue
-                    data = entry.get("data") or {}
-                    if data.get("total_llm_tokens") is not None:
-                        total_tokens = int(data["total_llm_tokens"])
-                    raw_mode = data.get("integrator_mode")
+                # SSE envelope: {"event": "completed", "data": {...}}
+                # integrator_mode and tokens live directly on data.
+                if event.get("event") == "completed":
+                    data = event.get("data") or {}
+                    tu = data.get("tokens_used") or {}
+                    if tu.get("input_tokens") is not None:
+                        total_tokens = (tu.get("input_tokens") or 0) + (tu.get("output_tokens") or 0)
+                    perf = data.get("llm_performance") or {}
+                    raw_mode = perf.get("integrator_mode")
                     if raw_mode:
                         mode_detected = {"S": "sequential", "P": "parallel"}.get(raw_mode, raw_mode)
-                    llm_calls = data.get("llm_calls") or []
+                    # Also check thinking_log for turn_completed entries
+                    for entry in (data.get("thinking_log") or []):
+                        if isinstance(entry, dict) and entry.get("signal") == "turn_completed":
+                            tc = entry.get("data") or {}
+                            llm_calls = tc.get("llm_calls") or []
     except Exception as exc:
         logger.debug("stream error for %s: %s", correlation_id[:8], exc)
 
@@ -342,7 +339,7 @@ def main() -> None:
         first_chunks = [t.first_chunk_ms for t in ok if t.first_chunk_ms is not None]
         tokens = [t.total_tokens for t in ok if t.total_tokens is not None]
         # Verify mode was actually honoured by the server
-        confirmed = [t for t in ok if t.mode == mode[0].upper()]
+        confirmed = [t for t in ok if t.mode == mode]
 
         report["modes"][mode] = {
             "turns_total": len(turns),
