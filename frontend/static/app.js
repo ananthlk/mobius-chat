@@ -7778,13 +7778,13 @@ function _dcActRetrieveContent(container, st, data, routing) {
       _dcKV(container, "top_rerank", st.top_rerank.toFixed(2));
   }
 }
-function _dcActSection(data, routing, isFactStore) {
+function _dcActSection(data, routing, isFactStore, chainLabel) {
   const strategies = data.strategies_tried ?? [];
   const strategy = String(routing.executed_strategy ?? routing.strategy ?? (isFactStore ? "s" : "a"));
   const nChunks = data.n_chunks ?? strategies.reduce((a, s) => a + (s.n_chunks ?? 0), 0) ?? 0;
   const conf = String(data.confidence ?? "\u2014");
   const answerSnip = String(data.llm_answer ?? "").slice(0, 50);
-  const sum = `strategy ${strategy} \xB7 ${nChunks} chunks \xB7 ${conf}${answerSnip ? " \xB7 " + answerSnip + "\u2026" : ""}`;
+  const sum = `${chainLabel} \xB7 ${nChunks} chunks \xB7 ${conf}${answerSnip ? " \xB7 " + answerSnip + "\u2026" : ""}`;
   return _dcSection("2 \xB7 ACT", "ok", sum, (body) => {
     const retrieveEl = document.createElement("div");
     retrieveEl.className = "dc-leaf";
@@ -7849,7 +7849,7 @@ function _dcActSection(data, routing, isFactStore) {
     } else {
       const primarySt = strategies.find((s) => s.strategy === strategy) ?? strategies[0] ?? {};
       const sc = primarySt.scoring_trace ?? [];
-      const topRR = typeof sc[0]?.rerank_score === "number" ? sc[0].rerank_score : null;
+      const topRR = typeof primarySt.top_rerank === "number" ? primarySt.top_rerank : null;
       body.appendChild(_dcLeaf(
         "rerank",
         "ok",
@@ -7858,7 +7858,10 @@ function _dcActSection(data, routing, isFactStore) {
           sc.slice(0, 6).forEach((c) => {
             const row = document.createElement("div");
             row.className = "rt-kv";
-            row.innerHTML = `<span class="rt-kv-k">${rtEscapeAttr(String(c?.document_name ?? c?.doc_name ?? "?").slice(0, 30))}</span><span class="rt-kv-v">rr=${typeof c?.rerank_score === "number" ? c.rerank_score.toFixed(2) : "\xB7"} sim=${typeof c?.sim_raw === "number" ? c.sim_raw.toFixed(2) : typeof c?.similarity === "number" ? c.similarity.toFixed(2) : "\xB7"}</span>`;
+            const sim = typeof c?.sim_raw === "number" ? c.sim_raw.toFixed(2) : "\xB7";
+            const auth = typeof c?.authority_raw === "number" ? ` auth=${c.authority_raw.toFixed(2)}` : "";
+            const cov = typeof c?.coverage_raw === "number" ? ` cov=${c.coverage_raw.toFixed(2)}` : "";
+            row.innerHTML = `<span class="rt-kv-k">${rtEscapeAttr(String(c?.document_name ?? c?.doc_name ?? "?").slice(0, 30))}</span><span class="rt-kv-v">sim=${sim}${auth}${cov}</span>`;
             b.appendChild(row);
           });
         } : void 0
@@ -7915,13 +7918,15 @@ function _dcObserveSection(data, routing, isFactStore) {
     ));
     body.appendChild(_dcLeaf("synthesis_grade", "gray", "grading\u2026"));
     body.appendChild(_dcLeaf("per_claim_ledger", "gray", "not available in prod"));
-    const decId = String(routing.fact_telemetry_id ?? data.routing_decision_id ?? "");
+    const decId = String(
+      data.routing_decision_id ?? routing.routing_decision_id ?? routing.fact_telemetry_id ?? data.telemetry?.routing_decision_id ?? ""
+    );
     body.appendChild(_dcLeaf(
       "decision_row",
       "ok",
-      decId ? `id=${decId.slice(0, 12)}` : "telemetry row",
+      decId ? `id=${decId.slice(0, 12)}` : "row pending\u2026",
       (b) => {
-        _dcKV(b, "decision_id", decId || "\u2014");
+        _dcKV(b, "decision_id", decId || "pending\u2026");
         _dcKV(b, "caller_id", "not captured yet");
         if (data.priors_version)
           _dcKV(b, "priors_version", String(data.priors_version));
@@ -7938,24 +7943,22 @@ function _dcObserveSection(data, routing, isFactStore) {
     ));
   });
 }
-function _dcDecideSection(data, routing) {
+function _dcDecideSection(data, routing, chainArr) {
   const fe = data.fast_exit ?? {};
   const fastExitFired = Boolean(fe.fired);
   const escalated = Boolean(data.escalated);
-  const chain = data.strategy_chain ?? [];
   const micConsidered = Boolean(routing.multi_invoke_considered);
-  const sum = `${chain.length > 1 ? `${chain.length}-try chain` : "single"}${fastExitFired ? " \xB7 fast-exit fired" : ""}${escalated ? " \xB7 escalated" : ""} \xB7 bandit not wired`;
+  const chainStr = chainArr.length > 1 ? chainArr.join("\u2192") : "";
+  const sum = `${chainArr.length > 1 ? `${chainStr} \xB7 ${chainArr.length}-try` : "single"}${fastExitFired ? " \xB7 fast-exit fired" : ""}${escalated && !chainStr ? " \xB7 escalated" : ""} \xB7 bandit not wired`;
   return _dcSection("4 \xB7 DECIDE", "warn", sum, (body) => {
     body.appendChild(_dcLeaf(
       "multi_invoke",
       micConsidered ? "ok" : "gray",
       micConsidered ? "considered" : "not triggered"
     ));
-    body.appendChild(_dcLeaf(
-      "escalate",
-      escalated ? "warn" : "ok",
-      chain.length > 1 ? `${chain.length}-try chain \xB7 ${chain.join("\u2192")}` : "single attempt"
-    ));
+    const escalReason = data.escalation_reason ?? data.strategies_tried?.slice(-1)[0]?.escalation_reason ?? "";
+    const escalSum = chainArr.length > 1 ? `${chainStr}${escalReason ? " \xB7 " + escalReason : ""}` : escalated ? "escalated" : "single attempt";
+    body.appendChild(_dcLeaf("escalate", escalated || chainArr.length > 1 ? "warn" : "ok", escalSum));
     body.appendChild(_dcLeaf(
       "fast_exit",
       fastExitFired ? "warn" : "ok",
@@ -7981,6 +7984,8 @@ function renderDiagnosticsCard(thinkingLog) {
   const routing = data.routing ?? {};
   const isFactStore = String(routing.method ?? "") === "fact_store" && (Boolean(routing.fact_predicate) || Boolean(routing.fact_telemetry_id));
   const strategy = String(routing.executed_strategy ?? routing.strategy ?? (isFactStore ? "s" : "?"));
+  const chainArr = data.strategy_chain ?? [];
+  const chainLabel = chainArr.length > 1 ? chainArr.join("\u2192") : strategy;
   const totalMs = Number(data.total_ms ?? (data.timing ?? {}).total_ms ?? 0);
   const conf = String(data.confidence ?? "");
   const wrap = document.createElement("div");
@@ -8001,7 +8006,7 @@ function renderDiagnosticsCard(thinkingLog) {
     oneline.textContent = `\u26A1 s \xB7 fact_store \xB7 ${pred || "certified fact"} \xB7 score ${score}`;
   } else {
     const qtype = String((data.query_profile ?? {}).query_type ?? "");
-    oneline.textContent = `\u2192 ${strategy}${qtype ? " \xB7 " + qtype : ""}${conf ? " \xB7 " + conf : ""}${totalMs > 0 ? " \xB7 " + (totalMs / 1e3).toFixed(2) + "s" : ""}${traces.length > 1 ? ` \xB7 ${traces.length} rounds` : ""}`;
+    oneline.textContent = `\u2192 ${chainLabel}${qtype ? " \xB7 " + qtype : ""}${conf ? " \xB7 " + conf : ""}${totalMs > 0 ? " \xB7 " + (totalMs / 1e3).toFixed(2) + "s" : ""}${traces.length > 1 ? ` \xB7 ${traces.length} rounds` : ""}`;
   }
   const chev = document.createElement("span");
   chev.className = "llm-performance-chevron";
@@ -8013,9 +8018,9 @@ function renderDiagnosticsCard(thinkingLog) {
   const body = document.createElement("div");
   body.className = "llm-performance-body";
   body.appendChild(_dcReasonSection(data, routing));
-  body.appendChild(_dcActSection(data, routing, isFactStore));
+  body.appendChild(_dcActSection(data, routing, isFactStore, chainLabel));
   body.appendChild(_dcObserveSection(data, routing, isFactStore));
-  body.appendChild(_dcDecideSection(data, routing));
+  body.appendChild(_dcDecideSection(data, routing, chainArr));
   wrap.appendChild(preview);
   wrap.appendChild(body);
   const toggle = () => {

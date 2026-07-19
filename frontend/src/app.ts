@@ -7277,13 +7277,13 @@ function _dcActRetrieveContent(container: HTMLElement, st: any, data: any, routi
   }
 }
 
-function _dcActSection(data: any, routing: any, isFactStore: boolean): HTMLElement {
+function _dcActSection(data: any, routing: any, isFactStore: boolean, chainLabel: string): HTMLElement {
   const strategies: any[] = data.strategies_tried ?? [];
   const strategy = String(routing.executed_strategy ?? routing.strategy ?? (isFactStore ? "s" : "a"));
   const nChunks: number = data.n_chunks ?? strategies.reduce((a: number, s: any) => a + (s.n_chunks ?? 0), 0) ?? 0;
   const conf = String(data.confidence ?? "—");
   const answerSnip = String(data.llm_answer ?? "").slice(0, 50);
-  const sum = `strategy ${strategy} · ${nChunks} chunks · ${conf}${answerSnip ? " · " + answerSnip + "…" : ""}`;
+  const sum = `${chainLabel} · ${nChunks} chunks · ${conf}${answerSnip ? " · " + answerSnip + "…" : ""}`;
 
   return _dcSection("2 · ACT", "ok", sum, (body) => {
     // ── retrieve ──
@@ -7356,16 +7356,19 @@ function _dcActSection(data: any, routing: any, isFactStore: boolean): HTMLEleme
     } else {
       const primarySt = strategies.find((s) => s.strategy === strategy) ?? strategies[0] ?? {};
       const sc: any[] = primarySt.scoring_trace ?? [];
-      const topRR = typeof sc[0]?.rerank_score === "number" ? sc[0].rerank_score as number : null;
+      // top_rerank on the entry; sim_raw/authority_raw are the confirmed per-chunk fields (no rerank_score)
+      const topRR = typeof primarySt.top_rerank === "number" ? primarySt.top_rerank as number : null;
       body.appendChild(_dcLeaf("rerank", "ok", `top ${typeof topRR === "number" ? topRR.toFixed(2) : "—"}`,
         sc.length ? (b) => {
           sc.slice(0, 6).forEach((c: any) => {
             const row = document.createElement("div");
             row.className = "rt-kv";
+            const sim = typeof c?.sim_raw === "number" ? (c.sim_raw as number).toFixed(2) : "·";
+            const auth = typeof c?.authority_raw === "number" ? ` auth=${(c.authority_raw as number).toFixed(2)}` : "";
+            const cov = typeof c?.coverage_raw === "number" ? ` cov=${(c.coverage_raw as number).toFixed(2)}` : "";
             row.innerHTML =
               `<span class="rt-kv-k">${rtEscapeAttr(String(c?.document_name ?? c?.doc_name ?? "?").slice(0, 30))}</span>` +
-              `<span class="rt-kv-v">rr=${typeof c?.rerank_score === "number" ? (c.rerank_score as number).toFixed(2) : "·"} ` +
-              `sim=${typeof c?.sim_raw === "number" ? (c.sim_raw as number).toFixed(2) : (typeof c?.similarity === "number" ? (c.similarity as number).toFixed(2) : "·")}</span>`;
+              `<span class="rt-kv-v">sim=${sim}${auth}${cov}</span>`;
             b.appendChild(row);
           });
         } : undefined));
@@ -7410,11 +7413,15 @@ function _dcObserveSection(data: any, routing: any, isFactStore: boolean): HTMLE
       isFactStore ? "certified · see provenance card" : "n/a · no gold at inference"));
     body.appendChild(_dcLeaf("synthesis_grade", "gray", "grading…"));
     body.appendChild(_dcLeaf("per_claim_ledger", "gray", "not available in prod"));
-    const decId = String(routing.fact_telemetry_id ?? data.routing_decision_id ?? "");
+    // routing_decision_id: RAG sends at top-level; fact_telemetry_id aliases for strategy-s
+    const decId = String(
+      data.routing_decision_id ?? routing.routing_decision_id ??
+      routing.fact_telemetry_id ?? data.telemetry?.routing_decision_id ?? ""
+    );
     body.appendChild(_dcLeaf("decision_row", "ok",
-      decId ? `id=${decId.slice(0, 12)}` : "telemetry row",
+      decId ? `id=${decId.slice(0, 12)}` : "row pending…",
       (b) => {
-        _dcKV(b, "decision_id", decId || "—");
+        _dcKV(b, "decision_id", decId || "pending…");
         _dcKV(b, "caller_id", "not captured yet");
         if (data.priors_version) _dcKV(b, "priors_version", String(data.priors_version));
         if (data.corpus_version) {
@@ -7430,23 +7437,27 @@ function _dcObserveSection(data: any, routing: any, isFactStore: boolean): HTMLE
   });
 }
 
-function _dcDecideSection(data: any, routing: any): HTMLElement {
+function _dcDecideSection(data: any, routing: any, chainArr: string[]): HTMLElement {
   const fe = (data.fast_exit ?? {}) as any;
   const fastExitFired = Boolean(fe.fired);
   const escalated = Boolean(data.escalated);
-  const chain: unknown[] = data.strategy_chain ?? [];
   const micConsidered = Boolean(routing.multi_invoke_considered);
+  const chainStr = chainArr.length > 1 ? chainArr.join("→") : "";
   const sum =
-    `${chain.length > 1 ? `${chain.length}-try chain` : "single"}` +
+    `${chainArr.length > 1 ? `${chainStr} · ${chainArr.length}-try` : "single"}` +
     `${fastExitFired ? " · fast-exit fired" : ""}` +
-    `${escalated ? " · escalated" : ""}` +
+    `${escalated && !chainStr ? " · escalated" : ""}` +
     ` · bandit not wired`;
 
   return _dcSection("4 · DECIDE", "warn", sum, (body) => {
     body.appendChild(_dcLeaf("multi_invoke", micConsidered ? "ok" : "gray",
       micConsidered ? "considered" : "not triggered"));
-    body.appendChild(_dcLeaf("escalate", escalated ? "warn" : "ok",
-      chain.length > 1 ? `${chain.length}-try chain · ${chain.join("→")}` : "single attempt"));
+    // escalate leaf: show real chain (e.g. "b→d · corpus_exhausted") not generic count
+    const escalReason = data.escalation_reason ?? (data.strategies_tried as any[])?.slice(-1)[0]?.escalation_reason ?? "";
+    const escalSum = chainArr.length > 1
+      ? `${chainStr}${escalReason ? " · " + escalReason : ""}`
+      : (escalated ? "escalated" : "single attempt");
+    body.appendChild(_dcLeaf("escalate", (escalated || chainArr.length > 1) ? "warn" : "ok", escalSum));
     body.appendChild(_dcLeaf("fast_exit", fastExitFired ? "warn" : "ok",
       fastExitFired ? `fired · ${fe.reason ?? "?"}` : "not triggered"));
     body.appendChild(_dcLeaf("bandit", "gray", "not built · loop open"));
@@ -7478,6 +7489,9 @@ function renderDiagnosticsCard(
     && (Boolean(routing.fact_predicate) || Boolean(routing.fact_telemetry_id));
   // executed_strategy = what actually ran (authoritative); strategy = scorer's pick (may differ)
   const strategy = String(routing.executed_strategy ?? routing.strategy ?? (isFactStore ? "s" : "?"));
+  const chainArr: string[] = data.strategy_chain ?? [];
+  // chainLabel: "b→d" on escalation, plain strategy otherwise
+  const chainLabel = chainArr.length > 1 ? chainArr.join("→") : strategy;
   const totalMs = Number(data.total_ms ?? (data.timing ?? {}).total_ms ?? 0);
   const conf = String(data.confidence ?? "");
 
@@ -7502,7 +7516,7 @@ function renderDiagnosticsCard(
   } else {
     const qtype = String((data.query_profile ?? {}).query_type ?? "");
     oneline.textContent =
-      `→ ${strategy}${qtype ? " · " + qtype : ""}${conf ? " · " + conf : ""}` +
+      `→ ${chainLabel}${qtype ? " · " + qtype : ""}${conf ? " · " + conf : ""}` +
       `${totalMs > 0 ? " · " + (totalMs / 1000).toFixed(2) + "s" : ""}` +
       `${traces.length > 1 ? ` · ${traces.length} rounds` : ""}`;
   }
@@ -7518,9 +7532,9 @@ function renderDiagnosticsCard(
   const body = document.createElement("div");
   body.className = "llm-performance-body";
   body.appendChild(_dcReasonSection(data, routing));
-  body.appendChild(_dcActSection(data, routing, isFactStore));
+  body.appendChild(_dcActSection(data, routing, isFactStore, chainLabel));
   body.appendChild(_dcObserveSection(data, routing, isFactStore));
-  body.appendChild(_dcDecideSection(data, routing));
+  body.appendChild(_dcDecideSection(data, routing, chainArr));
 
   wrap.appendChild(preview);
   wrap.appendChild(body);
