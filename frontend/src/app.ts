@@ -6793,6 +6793,249 @@ function syncAdjudicatorScorecardDom(
   if (note && qc.user_score_comment != null) note.value = String(qc.user_score_comment);
 }
 
+/** Fact-store leaf card rendered when routing.method === "fact_store". */
+function _renderFactStoreLeaf(data: any, routing: any): HTMLElement {
+  const predicate = String(routing.fact_predicate ?? "certified fact");
+  const factScore = typeof routing.fact_score === "number" ? routing.fact_score : 1.0;
+  const certGrades: any[] = Array.isArray(routing.fact_cert_grades) ? routing.fact_cert_grades : [];
+  const firstGrade = certGrades[0] ?? {};
+  const retrievalGrade =
+    typeof firstGrade.grade === "number" ? firstGrade.grade.toFixed(2) : String(firstGrade.grade ?? "—");
+  const grader = String(firstGrade.grader ?? "—");
+  const served = (data.served ?? {}) as any;
+  const freshness = (served.freshness ?? {}) as any;
+  const cert = (served.cert ?? {}) as any;
+  const sourceRef = String(served.source_ref ?? "");
+  const lastVerified = String(freshness.last_verified_at ?? "");
+  const validUntil = String(freshness.valid_until ?? "");
+  const certStatus = String(cert.status ?? "");
+  const stale = Boolean(freshness.stale);
+
+  const fmtDate = (iso: string) => {
+    if (!iso) return "—";
+    try { return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }); }
+    catch { return iso; }
+  };
+
+  const wrap = document.createElement("div");
+  wrap.className = "llm-performance retrieval-trace collapsed" + (stale ? " rt-fs-stale" : "");
+
+  // ── Preview row ──────────────────────────────────────────────────
+  const preview = document.createElement("div");
+  preview.className = "llm-performance-preview";
+  preview.setAttribute("role", "button");
+  preview.setAttribute("tabindex", "0");
+  preview.setAttribute("aria-expanded", "false");
+  const titleEl = document.createElement("span");
+  titleEl.className = "llm-performance-title";
+  titleEl.textContent = "Retrieval";
+  const oneline = document.createElement("span");
+  oneline.className = "llm-performance-oneline";
+  const fsBadge = document.createElement("span");
+  fsBadge.className = "rt-fs-badge" + (stale ? " rt-fs-badge--stale" : "");
+  fsBadge.textContent = "⚡ s · fact_store";
+  const fsSummary = document.createElement("span");
+  fsSummary.className = "rt-fs-summary";
+  fsSummary.textContent = ` · ${predicate} · score ${factScore.toFixed(2)} · n_chunks=0 · direct serve`;
+  oneline.appendChild(fsBadge);
+  oneline.appendChild(fsSummary);
+  const chev = document.createElement("span");
+  chev.className = "llm-performance-chevron";
+  chev.setAttribute("aria-hidden", "true");
+  chev.textContent = "▼";
+  preview.appendChild(titleEl);
+  preview.appendChild(oneline);
+  preview.appendChild(chev);
+
+  // ── Expanded body — provenance card ─────────────────────────────
+  const body = document.createElement("div");
+  body.className = "llm-performance-body";
+  const card = document.createElement("div");
+  card.className = "rt-fs-card";
+
+  // Header: predicate + cert pill
+  const hdr = document.createElement("div");
+  hdr.className = "rt-fs-header";
+  const hdrLeft = document.createElement("div");
+  hdrLeft.className = "rt-fs-predicate";
+  hdrLeft.textContent = predicate;
+  const hdrRight = document.createElement("div");
+  const certPill = document.createElement("span");
+  certPill.className = "rt-fs-cert-pill" + (stale ? " rt-fs-cert-pill--stale" : "");
+  certPill.textContent = `${certStatus || "certified"} · score ${factScore.toFixed(2)}`;
+  hdrRight.appendChild(certPill);
+  hdr.appendChild(hdrLeft);
+  hdr.appendChild(hdrRight);
+  card.appendChild(hdr);
+
+  // Derivation section
+  const divider1 = document.createElement("div");
+  divider1.className = "rt-fs-divider";
+  const divLabel1 = document.createElement("span");
+  divLabel1.className = "rt-fs-divider-label";
+  divLabel1.textContent = "how this answer was derived";
+  divider1.appendChild(divLabel1);
+  card.appendChild(divider1);
+
+  const derivGrid = document.createElement("div");
+  derivGrid.className = "rt-fs-grid";
+  ([
+    ["extraction", "corpus-grounded", false],
+    ["retrieval grade", retrievalGrade, false],
+    ["synthesis grade", "n/a · direct read", true],
+    ["grader", grader, false],
+  ] as Array<[string, string, boolean]>).forEach(([k, v, muted]) => {
+    const row = document.createElement("div");
+    row.className = "rt-fs-kv";
+    const kEl = document.createElement("span");
+    kEl.className = "rt-fs-kv-k";
+    kEl.textContent = k;
+    const vEl = document.createElement("span");
+    vEl.className = muted ? "rt-fs-kv-v rt-fs-muted" : "rt-fs-kv-v";
+    vEl.textContent = v;
+    row.appendChild(kEl);
+    row.appendChild(vEl);
+    derivGrid.appendChild(row);
+  });
+  card.appendChild(derivGrid);
+
+  // Sources section
+  const divider2 = document.createElement("div");
+  divider2.className = "rt-fs-divider";
+  const divLabel2 = document.createElement("span");
+  divLabel2.className = "rt-fs-divider-label";
+  divLabel2.textContent = "sources — watched for change";
+  divider2.appendChild(divLabel2);
+  card.appendChild(divider2);
+
+  if (sourceRef) {
+    const srcRow = document.createElement("div");
+    srcRow.className = "rt-fs-source-row";
+    const srcTitle = document.createElement("div");
+    srcTitle.className = "rt-fs-source-title";
+    srcTitle.textContent = "📄 " + sourceRef;
+    const srcPill = document.createElement("span");
+    srcPill.className = "rt-fs-pill rt-fs-pill--success";
+    srcPill.textContent = "live · watched";
+    srcRow.appendChild(srcTitle);
+    srcRow.appendChild(srcPill);
+    card.appendChild(srcRow);
+  } else {
+    const pendingRow = document.createElement("div");
+    pendingRow.className = "rt-fs-source-row rt-fs-source-row--pending";
+    const pendingTitle = document.createElement("div");
+    pendingTitle.className = "rt-fs-source-title";
+    pendingTitle.textContent = "📍 exact source pointer ";
+    const pendingCode = document.createElement("code");
+    pendingCode.className = "rt-fs-code";
+    pendingCode.textContent = "doc_id · chunk_id · page";
+    pendingTitle.appendChild(pendingCode);
+    const pendingPill = document.createElement("span");
+    pendingPill.className = "rt-fs-pill rt-fs-pill--warning";
+    pendingPill.textContent = "proposed";
+    pendingRow.appendChild(pendingTitle);
+    pendingRow.appendChild(pendingPill);
+    card.appendChild(pendingRow);
+    const pendingNote = document.createElement("div");
+    pendingNote.className = "rt-fs-pending-note";
+    pendingNote.textContent =
+      "Comparator sees the grounding chunk; persisting doc/chunk/page lets drift-watch pinpoint which source changed.";
+    card.appendChild(pendingNote);
+  }
+
+  // Freshness tiles
+  const divider3 = document.createElement("div");
+  divider3.className = "rt-fs-divider";
+  card.appendChild(divider3);
+
+  const tiles = document.createElement("div");
+  tiles.className = "rt-fs-tiles";
+  const freshStatus = stale ? "stale" : (lastVerified ? "fresh" : "—");
+  ([
+    ["last verified", fmtDate(lastVerified)],
+    ["valid until", fmtDate(validUntil)],
+    ["status", freshStatus],
+  ] as Array<[string, string]>).forEach(([label, value]) => {
+    const tile = document.createElement("div");
+    tile.className = "rt-fs-tile";
+    const tLabel = document.createElement("div");
+    tLabel.className = "rt-fs-tile-label";
+    tLabel.textContent = label;
+    const tValue = document.createElement("div");
+    let valCls = "rt-fs-tile-value";
+    if (label === "status") {
+      valCls += stale ? " rt-fs-stale-text" : (lastVerified ? " rt-fs-fresh-text" : "");
+    }
+    tValue.className = valCls;
+    tValue.textContent = value;
+    tile.appendChild(tLabel);
+    tile.appendChild(tValue);
+    tiles.appendChild(tile);
+  });
+  card.appendChild(tiles);
+
+  // Drift-watch section
+  const divider4 = document.createElement("div");
+  divider4.className = "rt-fs-divider";
+  const divLabel4 = document.createElement("span");
+  divLabel4.className = "rt-fs-divider-label";
+  divLabel4.textContent = "drift watch — §8 re-verify loop";
+  divider4.appendChild(divLabel4);
+  card.appendChild(divider4);
+
+  const driftDiv = document.createElement("div");
+  driftDiv.className = "rt-fs-drift";
+  const driftVerb = certStatus === "drift" ? "drift" : (certStatus ? certStatus : "confirm");
+  const line1 = document.createElement("div");
+  line1.className = "rt-fs-drift-line";
+  line1.textContent = "last re-verify: ";
+  const driftSpan = document.createElement("span");
+  driftSpan.className = driftVerb === "drift" ? "rt-fs-warn-text" : "rt-fs-primary-text";
+  driftSpan.textContent = driftVerb;
+  line1.appendChild(driftSpan);
+  if (driftVerb !== "drift") {
+    const extra = document.createTextNode(` — re-derived from live sources, still grounds at ${factScore.toFixed(2)}`);
+    line1.appendChild(extra);
+  }
+  const line2 = document.createElement("div");
+  line2.className = "rt-fs-drift-line";
+  line2.textContent = "next check: auto at 80% of TTL, or on demand";
+  const line3 = document.createElement("div");
+  line3.className = "rt-fs-drift-line";
+  line3.textContent = "if a watched source changes so the fact no longer grounds → ";
+  const driftWarnSpan = document.createElement("span");
+  driftWarnSpan.className = "rt-fs-warn-text";
+  driftWarnSpan.textContent = "drift";
+  const driftThen = document.createTextNode(" → status ");
+  const staleSpan = document.createElement("span");
+  staleSpan.className = "rt-fs-primary-text";
+  staleSpan.textContent = "stale";
+  const driftEnd = document.createTextNode(" → re-cert queue");
+  line3.appendChild(driftWarnSpan);
+  line3.appendChild(driftThen);
+  line3.appendChild(staleSpan);
+  line3.appendChild(driftEnd);
+  driftDiv.appendChild(line1);
+  driftDiv.appendChild(line2);
+  driftDiv.appendChild(line3);
+  card.appendChild(driftDiv);
+
+  body.appendChild(card);
+  wrap.appendChild(preview);
+  wrap.appendChild(body);
+
+  const toggle = () => {
+    const collapsed = wrap.classList.toggle("collapsed");
+    preview.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    chev.textContent = collapsed ? "▼" : "▲";
+  };
+  preview.addEventListener("click", toggle);
+  preview.addEventListener("keydown", (e: KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+  });
+  return wrap;
+}
+
 /**
  * Retrieval trace panel — surfaces the rag-side corpus_search
  * telemetry envelope (signal="retrieval_trace") in a collapsible
@@ -6827,6 +7070,14 @@ function renderRetrievalTrace(
     }
   }
   if (traces.length === 0) return null;
+
+  // Fact-store certified fast-exit: render provenance card instead of retrieval dump.
+  // Detect by routing.method === "fact_store" (NOT by n_chunks === 0).
+  const _lastData = traces[traces.length - 1]?.data ?? {};
+  const _lastRouting = (_lastData.routing ?? {}) as any;
+  if (String(_lastRouting.method ?? "") === "fact_store") {
+    return _renderFactStoreLeaf(_lastData, _lastRouting);
+  }
 
   const wrap = document.createElement("div");
   wrap.className = "llm-performance retrieval-trace collapsed";

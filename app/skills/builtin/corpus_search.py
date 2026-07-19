@@ -605,6 +605,9 @@ def _run(call: SkillCall) -> SkillEnvelope:
         "arms": {"returned": len(chunks)},
     }
     telemetry = {**telemetry, **_pipeline_trace}
+    # Pass served.* from RAG when present (fact_store provenance card).
+    if resp.get("served"):
+        telemetry = {**telemetry, "served": resp["served"]}
 
     # Always emit the retrieval_trace envelope, even on zero hits — the
     # technical UI panel needs to show "BM25 0 vec 0" for failure

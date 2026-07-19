@@ -9566,6 +9566,90 @@ body.landing-state .composer-landing-chips {
   border: 1px solid currentColor;
 }
 
+/* ── Fact-store leaf card (strategy s · routing.method=fact_store) ─── */
+.rt-fs-badge {
+  display: inline-flex; align-items: center;
+  padding: 1px 7px; border-radius: 999px;
+  font-size: 0.60rem; font-weight: 600;
+  background: rgba(245,158,11,0.12);
+  color: var(--mobius-warning, #f59e0b);
+  border: 1px solid rgba(245,158,11,0.30);
+  letter-spacing: 0.02em;
+}
+.rt-fs-badge--stale { border-color: var(--mobius-warning, #f59e0b); }
+.rt-fs-summary { font-size: 0.62rem; color: var(--mobius-text-secondary); margin-left: 4px; }
+.rt-fs-card {
+  background: var(--mobius-bg-secondary, #f8fafc);
+  border: 0.5px solid var(--mobius-border);
+  border-radius: var(--radius-sm);
+  padding: 0.85rem 1rem;
+  font-family: var(--font-sans);
+}
+.rt-fs-stale .rt-fs-card { border-color: var(--mobius-warning, #f59e0b); }
+.rt-fs-header {
+  display: flex; align-items: flex-start;
+  justify-content: space-between; gap: 12px; margin-bottom: 0.1rem;
+}
+.rt-fs-predicate { font-size: 0.78rem; font-weight: 500; color: var(--mobius-text-primary); }
+.rt-fs-cert-pill {
+  display: inline-block; font-size: 0.58rem;
+  padding: 2px 8px; border-radius: 999px;
+  background: rgba(22,163,74,0.10); color: var(--mobius-success, #16a34a);
+}
+.rt-fs-cert-pill--stale {
+  background: rgba(245,158,11,0.10); color: var(--mobius-warning, #f59e0b);
+}
+.rt-fs-divider {
+  border-top: 0.5px solid var(--mobius-border);
+  margin: 0.65rem 0 0;
+}
+.rt-fs-divider-label {
+  display: block; font-size: 0.58rem;
+  color: var(--mobius-text-muted);
+  margin-top: 0.4rem; margin-bottom: 0.35rem;
+}
+.rt-fs-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.3rem 1.25rem;
+}
+.rt-fs-kv { display: flex; justify-content: space-between; gap: 6px; align-items: baseline; }
+.rt-fs-kv-k { font-size: 0.58rem; color: var(--mobius-text-muted); }
+.rt-fs-kv-v { font-size: 0.62rem; font-family: var(--font-mono); color: var(--mobius-text-primary); }
+.rt-fs-muted { color: var(--mobius-text-muted) !important; font-family: var(--font-sans) !important; font-style: italic; }
+.rt-fs-source-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 0.45rem 0.65rem;
+  border: 0.5px solid var(--mobius-border);
+  border-radius: var(--radius-sm); margin-bottom: 0.3rem;
+}
+.rt-fs-source-row--pending { border-color: var(--mobius-warning, #f59e0b); }
+.rt-fs-source-title { display: flex; align-items: center; gap: 6px; font-size: 0.63rem; color: var(--mobius-text-secondary); }
+.rt-fs-code { font-family: var(--font-mono); font-size: 0.58rem; color: var(--mobius-text-muted); }
+.rt-fs-pending-note {
+  font-size: 0.58rem; color: var(--mobius-text-muted);
+  margin-bottom: 0.3rem; padding: 0 0.2rem;
+}
+.rt-fs-pill { font-size: 0.58rem; padding: 2px 7px; border-radius: 999px; white-space: nowrap; flex-shrink: 0; }
+.rt-fs-pill--success { background: rgba(22,163,74,0.10); color: var(--mobius-success, #16a34a); }
+.rt-fs-pill--warning { background: rgba(245,158,11,0.10); color: var(--mobius-warning, #f59e0b); }
+.rt-fs-tiles {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 0.45rem;
+}
+.rt-fs-tile {
+  background: var(--mobius-bg-hover, #f9fafb);
+  border-radius: var(--radius-sm); padding: 0.45rem 0.65rem;
+}
+.rt-fs-tile-label { font-size: 0.58rem; color: var(--mobius-text-muted); }
+.rt-fs-tile-value { font-size: 0.70rem; font-weight: 500; margin-top: 2px; color: var(--mobius-text-primary); }
+.rt-fs-fresh-text { color: var(--mobius-success, #16a34a); }
+.rt-fs-stale-text { color: var(--mobius-warning, #f59e0b); }
+.rt-fs-warn-text  { color: var(--mobius-warning, #f59e0b); }
+.rt-fs-primary-text { color: var(--mobius-text-primary); }
+.rt-fs-drift { display: flex; flex-direction: column; gap: 0.28rem; }
+.rt-fs-drift-line { font-size: 0.62rem; color: var(--mobius-text-secondary); }
+
 /* ─────────────────────────────────────────────────────────────────
    Recent queries dump (drawer → modal). Reuses the
    .llm-router-report-modal__* structural shell; only adds filter
