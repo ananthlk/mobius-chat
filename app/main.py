@@ -1117,13 +1117,36 @@ def _spawn_background_publish_watcher(
     )
 
 
+def _resolve_gate_org(user_id: str | None) -> tuple[str, str]:
+    """Resolve the uploader's real org at gate time from the roster org master.
+
+    Returns (org_slug, org_source).  org_source is 'gate' when resolved live,
+    'unresolved' when the user has no org membership.  Never returns a service
+    sentinel — callers use '__unresolved__' as the reserved no-org token.
+    """
+    if user_id:
+        try:
+            from app.services.user_identity import resolve_self as _rs
+            me = _rs(user_id)
+            memberships = (me or {}).get("org_memberships") or []
+            slug = (memberships[0].get("org_slug") or "").strip() if memberships else ""
+            if slug:
+                return (slug, "gate")
+        except Exception as _e:
+            logger.warning("[hipaa-gate] org resolution failed for user=%s: %s", user_id, _e)
+    return ("__unresolved__", "unresolved")
+
+
 def _run_hipaa_gate_sync(
     document_id: str,
     rag_url: str,
     phi_url: str,
     user_id: str | None,
     org_slug: str,
+    org_source: str,
     filename: str,
+    gate_source: str = "chat_upload",
+    correlation_id: str | None = None,
     _test_gate_override: str | None = None,
     _test_mode_override: bool | None = None,
 ) -> dict:
@@ -1254,11 +1277,13 @@ def _run_hipaa_gate_sync(
         INSERT INTO compliance.hipaa_analysis_log
             (id, transaction_id, document_id, content_sha256, user_id, org_slug,
              gate, phi_flag, ceiling, hipaa_mode_allowed, action_taken,
-             evidence_categories, classifier_version, layers_run, confidence, reason)
+             evidence_categories, classifier_version, layers_run, confidence, reason,
+             org_source, gate_source, correlation_id)
         VALUES
             (:id, :txn, :doc_id, :sha256, :uid, :org,
              :gate, :phi_flag, :ceiling, :mode_allowed, :action_taken,
-             :evidence_cats, :clf_ver, :layers, :confidence, :reason)
+             :evidence_cats, :clf_ver, :layers, :confidence, :reason,
+             :org_source, :gate_source, :correlation_id)
         ON CONFLICT (id) DO NOTHING
         """,
         "chat",
@@ -1279,6 +1304,9 @@ def _run_hipaa_gate_sync(
             "layers": layers_run,
             "confidence": float(confidence) if confidence is not None else None,
             "reason": reason,
+            "org_source": org_source,
+            "gate_source": gate_source,
+            "correlation_id": correlation_id,
         },
     )
     logger.info(
@@ -1637,13 +1665,17 @@ def _handle_instant_rag_upload(
     gate_result: dict = {}
     if phi_url:
         try:
+            _gate_org_slug, _gate_org_source = _resolve_gate_org(user_id)
             gate_result = _run_hipaa_gate_sync(
                 document_id=str(document_id),
                 rag_url=rag_url,
                 phi_url=phi_url,
                 user_id=user_id,
-                org_slug=(org_name or "").lower().replace(" ", "-"),
+                org_slug=_gate_org_slug,
+                org_source=_gate_org_source,
                 filename=filename,
+                gate_source="chat_upload",
+                correlation_id=None,  # no turn exists at upload time
                 _test_gate_override=gate_override,
                 _test_mode_override=mode_override,
             )
@@ -2046,7 +2078,7 @@ def post_chat_upload(
     return _handle_instant_rag_upload(
         content=content,
         filename=filename,
-        org_name=(org_name or "").strip() or "instant-rag",
+        org_name=(org_name or "").strip(),
         thread_id=thread_id,
         file_purpose="instant_rag",
         user_id=user_id,
