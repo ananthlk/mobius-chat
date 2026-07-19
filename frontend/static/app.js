@@ -7541,40 +7541,449 @@ function _renderFactStoreLeaf(data, routing) {
   });
   return wrap;
 }
-function renderRetrievalTrace(thinkingLog) {
+function _dcKV(container, key, val) {
+  const row = document.createElement("div");
+  row.className = "rt-kv";
+  row.innerHTML = `<span class="rt-kv-k">${rtEscapeAttr(key)}</span><span class="rt-kv-v">${rtEscapeAttr(val)}</span>`;
+  container.appendChild(row);
+}
+function _dcSection(title, status, summary, build) {
+  const sec = document.createElement("div");
+  sec.className = `dc-section dc-section--${status}`;
+  const hdr = document.createElement("div");
+  hdr.className = "dc-section-hdr";
+  hdr.setAttribute("role", "button");
+  hdr.setAttribute("tabindex", "0");
+  hdr.setAttribute("aria-expanded", "true");
+  hdr.innerHTML = `<span class="dc-dot dc-dot--${status}"></span><span class="dc-section-title">${rtEscapeAttr(title)}</span><span class="dc-section-sum">${rtEscapeAttr(summary)}</span><span class="dc-chev" aria-hidden="true">\u25B2</span>`;
+  const bdy = document.createElement("div");
+  bdy.className = "dc-section-body";
+  build(bdy);
+  const toggle = () => {
+    const hidden = bdy.classList.toggle("dc-section-body--hidden");
+    hdr.setAttribute("aria-expanded", hidden ? "false" : "true");
+    hdr.querySelector(".dc-chev").textContent = hidden ? "\u25BC" : "\u25B2";
+  };
+  hdr.addEventListener("click", toggle);
+  hdr.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      toggle();
+    }
+  });
+  sec.appendChild(hdr);
+  sec.appendChild(bdy);
+  return sec;
+}
+function _dcLeaf(title, status, summary, build) {
+  const leaf = document.createElement("div");
+  leaf.className = "dc-leaf";
+  const hdr = document.createElement("div");
+  hdr.className = "dc-leaf-hdr";
+  if (build) {
+    hdr.setAttribute("role", "button");
+    hdr.setAttribute("tabindex", "0");
+    hdr.setAttribute("aria-expanded", "false");
+  }
+  hdr.innerHTML = `<span class="dc-dot dc-dot--${status}"></span><span class="dc-leaf-title">${rtEscapeAttr(title)}</span><span class="dc-leaf-sum">${rtEscapeAttr(summary)}</span>` + (build ? `<span class="dc-chev dc-chev-leaf" aria-hidden="true">\u25BE</span>` : "");
+  leaf.appendChild(hdr);
+  if (build) {
+    const bdy = document.createElement("div");
+    bdy.className = "dc-leaf-body dc-leaf-body--hidden";
+    build(bdy);
+    leaf.appendChild(bdy);
+    const toggle = () => {
+      const hidden = bdy.classList.toggle("dc-leaf-body--hidden");
+      hdr.setAttribute("aria-expanded", hidden ? "false" : "true");
+      hdr.querySelector(".dc-chev-leaf").textContent = hidden ? "\u25BE" : "\u25B4";
+    };
+    hdr.addEventListener("click", toggle);
+    hdr.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        toggle();
+      }
+    });
+  }
+  return leaf;
+}
+function _dcReasonSection(data, routing) {
+  const qp = data.query_profile ?? {};
+  const qtype = String(qp.query_type ?? "");
+  const cov = typeof qp.coverage === "number" ? qp.coverage.toFixed(2) : "?";
+  const scores = routing.scores ?? {};
+  const topEntry = Object.entries(scores).sort(([, a], [, b]) => b - a)[0];
+  const topSt = topEntry?.[0] ?? "?";
+  const topSc = typeof topEntry?.[1] === "number" ? topEntry[1].toFixed(2) : "?";
+  const sum = `${qtype || "?"} \xB7 coverage ${cov} \xB7 ${topSt} wins ${topSc}`;
+  return _dcSection("1 \xB7 REASON", "ok", sum, (body) => {
+    const gate = data.gate ?? {};
+    const gatePassed = gate.passed !== false;
+    body.appendChild(_dcLeaf(
+      "gate",
+      gatePassed ? "ok" : "warn",
+      gatePassed ? "passed" : `fired \xB7 ${gate.reason ?? "?"}`
+    ));
+    const anchors = qp.literal_anchors ?? [];
+    const tagMatches = qp.tag_matches ?? [];
+    const untagged = qp.untagged_meaningful ?? [];
+    const dropped = qp.dropped ?? [];
+    const nIn = anchors.length + tagMatches.length + untagged.length + dropped.length || "?";
+    const nKept = anchors.length + tagMatches.length + untagged.length || "?";
+    body.appendChild(_dcLeaf("cleanup", "ok", `${nIn} tokens \u2192 ${nKept} kept`, (b) => {
+      if (anchors.length)
+        _dcKV(b, "literal anchors", anchors.join(" \xB7 "));
+      if (tagMatches.length)
+        _dcKV(b, "tag matches", tagMatches.join("  "));
+      if (untagged.length)
+        _dcKV(b, "untagged meaningful", untagged.join("  "));
+      if (dropped.length)
+        _dcKV(b, "dropped (noise)", dropped.join("  "));
+    }));
+    const qps = data.queries_per_strategy ?? {};
+    const qpsKeys = Object.keys(qps);
+    body.appendChild(_dcLeaf(
+      "rewrite",
+      "ok",
+      `${qpsKeys.length || 3} per-strategy variants`,
+      qpsKeys.length ? (b) => {
+        for (const [k, v] of Object.entries(qps))
+          _dcKV(b, k, String(v).slice(0, 120));
+      } : void 0
+    ));
+    body.appendChild(_dcLeaf("classify", "ok", `${qtype || "?"} \xB7 coverage ${cov}`, (b) => {
+      _dcKV(b, "query_type", qtype || "\u2014");
+      _dcKV(b, "coverage", cov);
+      const dt = qp.d_tags ?? qp.domain_tags ?? [];
+      const jt = qp.j_tags ?? qp.jurisdiction_tags ?? [];
+      const pt = qp.p_tags ?? qp.process_tags ?? [];
+      if (dt.length)
+        _dcKV(b, "domain_tags", dt.join("  "));
+      if (jt.length)
+        _dcKV(b, "jurisdiction_tags", jt.join("  "));
+      if (pt.length)
+        _dcKV(b, "process_tags", pt.join("  "));
+      const cf = routing.classify_flags ?? {};
+      const activeFlags = Object.entries(cf).filter(([, v]) => v).map(([k]) => k);
+      if (activeFlags.length)
+        _dcKV(b, "flags", activeFlags.join("  "));
+      const sc = qp.semantic_core ?? "";
+      if (sc)
+        _dcKV(b, "semantic_core", String(sc));
+    }));
+    const sb = routing.score_breakdown ?? {};
+    const fv = routing.feature_vector ?? {};
+    const sa = routing.self_assessments ?? {};
+    const withdrawn = routing.withdrawn ?? [];
+    const micConsidered = Boolean(routing.multi_invoke_considered);
+    body.appendChild(_dcLeaf(
+      "scorer",
+      "ok",
+      `${topSt} wins ${topSc} argmax${micConsidered ? " \xB7 multi_invoke considered" : ""}`,
+      (b) => {
+        if (Object.keys(scores).length) {
+          const tbl = document.createElement("table");
+          tbl.className = "rt-score-table rt-mono";
+          tbl.innerHTML = "<thead><tr><th>strat</th><th>score</th><th>accuracy</th><th>recall</th><th>speed</th><th>shape</th></tr></thead>";
+          const tb = document.createElement("tbody");
+          for (const [s, score] of Object.entries(scores)) {
+            const bd = sb[s] ?? {};
+            const fmt = (x) => typeof x === "number" ? x.toFixed(2) : x?.contrib !== void 0 ? x.contrib.toFixed(2) : "\xB7";
+            const tr = document.createElement("tr");
+            const isW = s === topSt;
+            const isWd = withdrawn.includes(s);
+            if (isW)
+              tr.className = "rt-score-winner";
+            else if (isWd)
+              tr.className = "rt-sa-withdrawn";
+            tr.innerHTML = `<td>${isW ? "\u2605 " : ""}${rtEscapeAttr(s)}${isWd ? " \u2298" : ""}</td><td><b>${typeof score === "number" ? score.toFixed(2) : "\xB7"}</b></td><td>${fmt(bd.accuracy)}</td><td>${fmt(bd.recall)}</td><td>${fmt(bd.speed)}</td><td>${fmt(bd.shape)}</td>`;
+            tb.appendChild(tr);
+          }
+          tbl.appendChild(tb);
+          b.appendChild(tbl);
+        }
+        const fvKeys = Object.keys(fv);
+        if (fvKeys.length) {
+          _dcKV(
+            b,
+            "feature_vector",
+            fvKeys.map((k) => `${k}=${typeof fv[k] === "number" ? fv[k].toFixed(2) : fv[k]}`).join("  ")
+          );
+        }
+        for (const [s, v] of Object.entries(sa)) {
+          const est = typeof v?.est_recall === "number" ? v.est_recall : Array.isArray(v) ? v[0] : null;
+          if (est !== null)
+            _dcKV(b, `${s} est_recall`, typeof est === "number" ? est.toFixed(2) : String(est));
+        }
+      }
+    ));
+  });
+}
+function _dcActRetrieveContent(container, st, data, routing) {
+  const strat = String(st?.strategy ?? routing.strategy ?? routing.executed_strategy ?? "a");
+  const arms = st?.arms ?? {};
+  if (strat === "b") {
+    const themes = data.themes ?? [];
+    _dcKV(container, "wide\u2192themes\u2192narrow", `${themes.length} themes`);
+    const stb = data.telemetry ?? {};
+    const sb = stb.strategy_b ?? data.theme_diagnostic ?? {};
+    if (sb.wide_hits !== void 0)
+      _dcKV(container, "wide_hits", String(sb.wide_hits));
+    const parts = [];
+    if (sb.wide_ms)
+      parts.push(`wide ${sb.wide_ms}ms`);
+    if (sb.themes_ms)
+      parts.push(`themes ${sb.themes_ms}ms`);
+    if (sb.narrow_ms)
+      parts.push(`narrow ${sb.narrow_ms}ms`);
+    if (parts.length)
+      _dcKV(container, "timings", parts.join(" \xB7 "));
+    themes.slice(0, 5).forEach((th) => {
+      const topR = th?.top_chunks?.[0]?.rerank_score;
+      const row = document.createElement("div");
+      row.className = "rt-kv";
+      row.innerHTML = `<span class="rt-kv-k">${rtEscapeAttr(String(th?.label ?? "?"))}</span><span class="rt-kv-v">${th?.n_chunks_seen ?? "?"} chunks${typeof topR === "number" ? ` \xB7 top ${topR.toFixed(2)}` : ""}</span>`;
+      container.appendChild(row);
+    });
+  } else if (strat === "c") {
+    const vc = data.validated_citations ?? [];
+    _dcKV(container, "reverse-RAG", `${vc.length} citations verified`);
+    vc.slice(0, 4).forEach((c) => {
+      const row = document.createElement("div");
+      row.className = "rt-kv";
+      row.innerHTML = `<span class="rt-kv-k">${rtEscapeAttr(String(c?.url ?? c?.title ?? "?").slice(0, 40))}</span><span class="rt-kv-v">${rtEscapeAttr(String(c?.outcome ?? "?"))}</span>`;
+      container.appendChild(row);
+    });
+  } else if (strat === "d") {
+    _dcKV(container, "external search", `${st?.n_chunks ?? 0} results`);
+    const hint = document.createElement("div");
+    hint.className = "rt-expansion-hint";
+    hint.textContent = "per-URL fetch breakdown \u2014 not captured yet";
+    container.appendChild(hint);
+    _dcKV(container, "caller_id", "not captured yet");
+  } else {
+    _dcKV(container, "BM25 pool", String(arms.bm25_pool_hits ?? arms.bm25_hits ?? arms.bm25 ?? 0));
+    _dcKV(container, "vector pool", String(arms.vector_pool_hits ?? arms.vec_hits ?? arms.vector ?? 0));
+    const rb = arms.result_breakdown ?? {};
+    if (Object.keys(rb).length) {
+      _dcKV(container, "result split", `bm25=${rb.bm25_only ?? 0} vec=${rb.vector_only ?? 0} both=${rb.both ?? 0}`);
+    }
+    const tm = arms.timing_ms ?? {};
+    const tmParts = Object.entries(tm).filter(([, v]) => typeof v === "number" && v > 0).map(([k, v]) => `${k} ${Math.round(v)}ms`);
+    if (tmParts.length)
+      _dcKV(container, "timings", tmParts.join(" \xB7 "));
+    if (st?.n_chunks !== void 0)
+      _dcKV(container, "chunks returned", String(st.n_chunks));
+    if (typeof st?.top_rerank === "number")
+      _dcKV(container, "top_rerank", st.top_rerank.toFixed(2));
+  }
+}
+function _dcActSection(data, routing, isFactStore) {
+  const strategies = data.strategies_tried ?? [];
+  const strategy = String(routing.strategy ?? routing.executed_strategy ?? (isFactStore ? "s" : "a"));
+  const nChunks = data.n_chunks ?? strategies.reduce((a, s) => a + (s.n_chunks ?? 0), 0) ?? 0;
+  const conf = String(data.confidence ?? "\u2014");
+  const answerSnip = String(data.llm_answer ?? "").slice(0, 50);
+  const sum = `strategy ${strategy} \xB7 ${nChunks} chunks \xB7 ${conf}${answerSnip ? " \xB7 " + answerSnip + "\u2026" : ""}`;
+  return _dcSection("2 \xB7 ACT", "ok", sum, (body) => {
+    const retrieveEl = document.createElement("div");
+    retrieveEl.className = "dc-leaf";
+    const retrieveHdr = document.createElement("div");
+    retrieveHdr.className = "dc-leaf-hdr";
+    retrieveHdr.setAttribute("role", "button");
+    retrieveHdr.setAttribute("tabindex", "0");
+    retrieveHdr.setAttribute("aria-expanded", "false");
+    const retrieveSum = isFactStore ? "\u26A1 s \xB7 fact_store \xB7 direct serve" : `${strategy} \xB7 ${nChunks} chunks`;
+    retrieveHdr.innerHTML = `<span class="dc-dot dc-dot--ok"></span><span class="dc-leaf-title">retrieve</span><span class="dc-leaf-sum">${rtEscapeAttr(retrieveSum)}</span><span class="dc-chev dc-chev-leaf" aria-hidden="true">\u25BE</span>`;
+    retrieveEl.appendChild(retrieveHdr);
+    const retrieveBody = document.createElement("div");
+    retrieveBody.className = "dc-leaf-body dc-leaf-body--hidden";
+    if (isFactStore) {
+      const fsWrap = _renderFactStoreLeaf(data, routing);
+      const fsInner = fsWrap.querySelector(".llm-performance-body");
+      if (fsInner)
+        retrieveBody.appendChild(fsInner.cloneNode(true));
+    } else if (strategies.length > 1) {
+      const tabBar = document.createElement("div");
+      tabBar.className = "dc-tab-bar";
+      const panels = [];
+      strategies.forEach((st, i) => {
+        const stLabel = String(st?.strategy ?? i);
+        const tab = document.createElement("button");
+        tab.type = "button";
+        tab.className = `dc-tab${i === 0 ? " dc-tab--active" : ""}`;
+        tab.textContent = stLabel;
+        const panel = document.createElement("div");
+        panel.className = `dc-tab-panel${i === 0 ? "" : " dc-tab-panel--hidden"}`;
+        _dcActRetrieveContent(panel, st, data, routing);
+        panels.push(panel);
+        tab.addEventListener("click", () => {
+          tabBar.querySelectorAll(".dc-tab").forEach((t) => t.classList.remove("dc-tab--active"));
+          panels.forEach((p) => p.classList.add("dc-tab-panel--hidden"));
+          tab.classList.add("dc-tab--active");
+          panel.classList.remove("dc-tab-panel--hidden");
+        });
+        tabBar.appendChild(tab);
+      });
+      retrieveBody.appendChild(tabBar);
+      panels.forEach((p) => retrieveBody.appendChild(p));
+    } else {
+      _dcActRetrieveContent(retrieveBody, strategies[0] ?? { strategy }, data, routing);
+    }
+    retrieveEl.appendChild(retrieveBody);
+    const retrieveToggle = () => {
+      const hidden = retrieveBody.classList.toggle("dc-leaf-body--hidden");
+      retrieveHdr.setAttribute("aria-expanded", hidden ? "false" : "true");
+      retrieveHdr.querySelector(".dc-chev-leaf").textContent = hidden ? "\u25BE" : "\u25B4";
+    };
+    retrieveHdr.addEventListener("click", retrieveToggle);
+    retrieveHdr.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        retrieveToggle();
+      }
+    });
+    body.appendChild(retrieveEl);
+    if (isFactStore) {
+      body.appendChild(_dcLeaf("rerank", "gray", "not executed \xB7 direct serve"));
+    } else {
+      const sc = data.scoring_trace ?? [];
+      const topRR = typeof sc[0]?.rerank_score === "number" ? sc[0].rerank_score : null;
+      body.appendChild(_dcLeaf(
+        "rerank",
+        "ok",
+        `top ${typeof topRR === "number" ? topRR.toFixed(2) : "\u2014"}`,
+        sc.length ? (b) => {
+          sc.slice(0, 6).forEach((c) => {
+            const row = document.createElement("div");
+            row.className = "rt-kv";
+            row.innerHTML = `<span class="rt-kv-k">${rtEscapeAttr(String(c?.document_name ?? c?.doc_name ?? "?").slice(0, 30))}</span><span class="rt-kv-v">rr=${typeof c?.rerank_score === "number" ? c.rerank_score.toFixed(2) : "\xB7"} sim=${typeof c?.sim_raw === "number" ? c.sim_raw.toFixed(2) : typeof c?.similarity === "number" ? c.similarity.toFixed(2) : "\xB7"}</span>`;
+            b.appendChild(row);
+          });
+        } : void 0
+      ));
+    }
+    if (isFactStore) {
+      body.appendChild(_dcLeaf("assemble", "gray", "not executed \xB7 direct serve"));
+    } else {
+      const asm = data.assembly ?? {};
+      body.appendChild(_dcLeaf(
+        "assemble",
+        "ok",
+        `${asm.total_selected ?? nChunks}/${data.k ?? "?"} \xB7 ${asm.strategy ?? data.mode ?? "corpus"}`,
+        Object.keys(asm).length ? (b) => {
+          if (asm.canonical_ratio !== void 0)
+            _dcKV(b, "canonical_ratio", Number(asm.canonical_ratio).toFixed(2));
+          if (asm.total_selected !== void 0)
+            _dcKV(b, "total_selected", String(asm.total_selected));
+          if (asm.strategy)
+            _dcKV(b, "strategy", String(asm.strategy));
+        } : void 0
+      ));
+    }
+    if (isFactStore) {
+      body.appendChild(_dcLeaf("synthesize", "gray", "not executed \xB7 direct serve"));
+    } else {
+      const tel = data.telemetry ?? {};
+      const llmMs = tel.llm_ms ?? 0;
+      body.appendChild(_dcLeaf(
+        "synthesize",
+        "ok",
+        `answer built \xB7 ${conf}${llmMs ? ` \xB7 ${llmMs}ms` : ""}`,
+        (b) => {
+          if (tel.model)
+            _dcKV(b, "model", String(tel.model));
+          if (llmMs)
+            _dcKV(b, "llm_ms", String(llmMs));
+          if (tel.n_passages_offered)
+            _dcKV(b, "passages_offered", String(tel.n_passages_offered));
+          const used = tel.used_passages ?? [];
+          if (used.length)
+            _dcKV(b, "used_passages", used.join(", "));
+        }
+      ));
+    }
+  });
+}
+function _dcObserveSection(data, routing, isFactStore) {
+  return _dcSection("3 \xB7 OBSERVE", "ok", "retrieval \u2014/synth grading\u2026 \xB7 1 row", (body) => {
+    body.appendChild(_dcLeaf(
+      "retrieval_grade",
+      "gray",
+      isFactStore ? "certified \xB7 see provenance card" : "no gold in prod \xB7 \u2014"
+    ));
+    body.appendChild(_dcLeaf("synthesis_grade", "gray", "grading\u2026"));
+    body.appendChild(_dcLeaf("per_claim_ledger", "gray", "not available in prod"));
+    const decId = String(routing.fact_telemetry_id ?? data.routing_decision_id ?? "");
+    body.appendChild(_dcLeaf(
+      "decision_row",
+      "ok",
+      decId ? `id=${decId.slice(0, 12)}` : "telemetry row",
+      (b) => {
+        _dcKV(b, "decision_id", decId || "\u2014");
+        _dcKV(b, "caller_id", "not captured yet");
+        if (data.priors_version)
+          _dcKV(b, "priors_version", String(data.priors_version));
+        if (data.corpus_version) {
+          _dcKV(b, "corpus_version", String(data.corpus_version));
+          if (Number(data.corpus_version) === 1) {
+            const note = document.createElement("div");
+            note.className = "rt-expansion-hint";
+            note.textContent = "bump not wired";
+            b.appendChild(note);
+          }
+        }
+      }
+    ));
+  });
+}
+function _dcDecideSection(data, routing) {
+  const fe = data.fast_exit ?? {};
+  const fastExitFired = Boolean(fe.fired);
+  const escalated = Boolean(data.escalated);
+  const chain = data.strategy_chain ?? [];
+  const micConsidered = Boolean(routing.multi_invoke_considered);
+  const sum = `${chain.length > 1 ? `${chain.length}-try chain` : "single"}${fastExitFired ? " \xB7 fast-exit fired" : ""}${escalated ? " \xB7 escalated" : ""} \xB7 bandit not wired`;
+  return _dcSection("4 \xB7 DECIDE", "warn", sum, (body) => {
+    body.appendChild(_dcLeaf(
+      "multi_invoke",
+      micConsidered ? "ok" : "gray",
+      micConsidered ? "considered" : "not triggered"
+    ));
+    body.appendChild(_dcLeaf(
+      "escalate",
+      escalated ? "warn" : "ok",
+      chain.length > 1 ? `${chain.length}-try chain \xB7 ${chain.join("\u2192")}` : "single attempt"
+    ));
+    body.appendChild(_dcLeaf(
+      "fast_exit",
+      fastExitFired ? "warn" : "ok",
+      fastExitFired ? `fired \xB7 ${fe.reason ?? "?"}` : "not triggered"
+    ));
+    body.appendChild(_dcLeaf("bandit", "gray", "not built \xB7 loop open"));
+  });
+}
+function renderDiagnosticsCard(thinkingLog) {
   if (!Array.isArray(thinkingLog) || thinkingLog.length === 0)
     return null;
   const traces = [];
   for (const entry of thinkingLog) {
     if (entry && typeof entry === "object" && entry.signal === "retrieval_trace") {
       const e = entry;
-      traces.push({
-        data: e.data ?? {},
-        step_id: e.step_id,
-        note: e.note
-      });
+      traces.push({ data: e.data ?? {}, step_id: e.step_id });
     }
   }
   if (traces.length === 0)
     return null;
-  const _lastData = traces[traces.length - 1]?.data ?? {};
-  const _lastRouting = _lastData.routing ?? {};
-  if (String(_lastRouting.method ?? "") === "fact_store") {
-    return _renderFactStoreLeaf(_lastData, _lastRouting);
-  }
+  const last = traces[traces.length - 1];
+  const data = last.data ?? {};
+  const routing = data.routing ?? {};
+  const isFactStore = String(routing.method ?? "") === "fact_store";
+  const strategy = String(routing.strategy ?? routing.executed_strategy ?? (isFactStore ? "s" : "?"));
+  const totalMs = Number(data.total_ms ?? (data.timing ?? {}).total_ms ?? 0);
+  const conf = String(data.confidence ?? "");
   const wrap = document.createElement("div");
   wrap.className = "llm-performance retrieval-trace collapsed";
-  const last = traces[traces.length - 1];
-  const tel = last.data ?? {};
-  const armHits = tel.arm_hits ?? tel.arms ?? {};
-  const bm25 = Number(armHits.bm25 ?? armHits.bm25_hits ?? 0);
-  const vec = Number(armHits.vector ?? armHits.vec_hits ?? 0);
-  const totalMs = Number(
-    tel.total_ms ?? (tel.timing && tel.timing.total_ms) ?? 0
-  );
-  const totalSec = totalMs > 0 ? (totalMs / 1e3).toFixed(2) : "0.00";
-  const k = Number(tel.k ?? 0);
-  const mode = String(tel.mode ?? "corpus");
   const preview = document.createElement("div");
   preview.className = "llm-performance-preview";
   preview.setAttribute("role", "button");
@@ -7585,7 +7994,14 @@ function renderRetrievalTrace(thinkingLog) {
   titleEl.textContent = "Retrieval";
   const oneline = document.createElement("span");
   oneline.className = "llm-performance-oneline";
-  oneline.textContent = `${mode} \xB7 BM25 ${bm25} \xB7 pgvector ${vec} \xB7 ${totalSec}s` + (traces.length > 1 ? ` \xB7 ${traces.length} rounds` : "") + (k ? ` \xB7 k=${k}` : "");
+  if (isFactStore) {
+    const pred = String(routing.fact_predicate ?? "");
+    const score = typeof routing.fact_score === "number" ? routing.fact_score.toFixed(2) : "1.00";
+    oneline.textContent = `\u26A1 s \xB7 fact_store \xB7 ${pred || "certified fact"} \xB7 score ${score}`;
+  } else {
+    const qtype = String((data.query_profile ?? {}).query_type ?? "");
+    oneline.textContent = `\u2192 ${strategy}${qtype ? " \xB7 " + qtype : ""}${conf ? " \xB7 " + conf : ""}${totalMs > 0 ? " \xB7 " + (totalMs / 1e3).toFixed(2) + "s" : ""}${traces.length > 1 ? ` \xB7 ${traces.length} rounds` : ""}`;
+  }
   const chev = document.createElement("span");
   chev.className = "llm-performance-chevron";
   chev.setAttribute("aria-hidden", "true");
@@ -7595,521 +8011,16 @@ function renderRetrievalTrace(thinkingLog) {
   preview.appendChild(chev);
   const body = document.createElement("div");
   body.className = "llm-performance-body";
-  traces.forEach((t, idx) => {
-    const data = t.data ?? {};
-    const arms = data.arm_hits ?? data.arms ?? {};
-    const ah_b = Number(arms.bm25 ?? arms.bm25_hits ?? 0);
-    const ah_v = Number(arms.vector ?? arms.vec_hits ?? 0);
-    const overlap = Number(arms.overlap ?? 0);
-    const tim = data.timing ?? data;
-    const embed_ms = Number(tim.embed_ms ?? 0);
-    const bm25_ms = Number(tim.bm25_ms ?? 0);
-    const vec_ms = Number(tim.vec_ms ?? 0);
-    const rerank_ms = Number(tim.rerank_ms ?? 0);
-    const total_ms = Number(data.total_ms ?? tim.total_ms ?? 0);
-    const norm_q = data.bm25_normalized_query;
-    const orig_q = data.query ?? "";
-    const search_id = String(data.search_id ?? "").slice(0, 12);
-    const round = document.createElement("div");
-    round.className = "retrieval-trace-round";
-    if (traces.length > 1) {
-      const h = document.createElement("div");
-      h.className = "retrieval-trace-round-header";
-      h.textContent = `Round ${idx + 1}${t.step_id ? `  \xB7  ${t.step_id}` : ""}${search_id ? `  \xB7  search_id=${search_id}` : ""}`;
-      round.appendChild(h);
-    }
-    const badges = document.createElement("div");
-    badges.className = "llm-performance-badges";
-    const specs = [
-      { cls: "llm-performance-badge llm-performance-badge--model", text: `mode: ${data.mode || "corpus"}` },
-      { cls: "llm-performance-badge llm-performance-badge--latency", text: `${(total_ms / 1e3).toFixed(2)}s` },
-      { cls: "llm-performance-badge", text: `BM25 ${ah_b}` },
-      { cls: "llm-performance-badge", text: `pgvector ${ah_v}` }
-    ];
-    if (overlap)
-      specs.push({ cls: "llm-performance-badge", text: `overlap ${overlap}` });
-    specs.forEach((s) => {
-      const el2 = document.createElement("span");
-      el2.className = s.cls;
-      el2.textContent = s.text;
-      badges.appendChild(el2);
-    });
-    round.appendChild(badges);
-    if (embed_ms || bm25_ms || vec_ms || rerank_ms) {
-      const tdiv = document.createElement("div");
-      tdiv.className = "retrieval-trace-timing";
-      const stages = [
-        ["embed", embed_ms],
-        ["BM25", bm25_ms],
-        ["vector", vec_ms],
-        ["rerank", rerank_ms]
-      ];
-      stages.filter(([, ms]) => ms > 0).forEach(([label, ms]) => {
-        const cell = document.createElement("span");
-        cell.className = "retrieval-trace-timing-cell";
-        cell.textContent = `${label} ${ms.toFixed(0)}ms`;
-        tdiv.appendChild(cell);
-      });
-      round.appendChild(tdiv);
-    }
-    if (orig_q) {
-      const q = document.createElement("div");
-      q.className = "retrieval-trace-query";
-      q.textContent = `query: ${orig_q}`;
-      round.appendChild(q);
-    }
-    if (norm_q && norm_q !== orig_q) {
-      const nq = document.createElement("div");
-      nq.className = "retrieval-trace-query retrieval-trace-query--norm";
-      nq.textContent = `bm25 normalized: ${norm_q}`;
-      round.appendChild(nq);
-    }
-    const bm25Exp = data.bm25_expansion;
-    if (bm25Exp && typeof bm25Exp === "object") {
-      const sec = rtMakeSection(
-        "Query Rewrite",
-        bm25Exp.matched_codes?.length > 0 ? `${bm25Exp.matched_codes.length} lex hit \xB7 +${bm25Exp.expansion_phrases_count ?? 0} phrases` : "no lexicon match (raw fallback)",
-        /* collapsed= */
-        true
-      );
-      const expDiv = document.createElement("div");
-      expDiv.className = "rt-expansion";
-      const rwBlock = document.createElement("div");
-      rwBlock.className = "rt-rewrite-block";
-      const orig = data.query || "";
-      const norm = data.bm25_normalized_query;
-      const tsq = bm25Exp.final_tsquery || "";
-      [
-        { label: "user typed", text: orig || "(empty)", cls: "" },
-        ...norm && norm !== orig ? [{ label: "stripped to", text: norm, cls: "" }] : [],
-        { label: "tsquery run", text: tsq || "(empty)", cls: "rt-rw-final" }
-      ].forEach(({ label, text, cls }) => {
-        const row = document.createElement("div");
-        row.className = "rt-rewrite-row";
-        const lbl = document.createElement("span");
-        lbl.className = `rt-rewrite-label ${cls}`;
-        lbl.textContent = label;
-        const val = document.createElement("code");
-        val.className = "rt-rewrite-val";
-        val.title = text;
-        val.textContent = text.length > 80 ? text.slice(0, 80) + "\u2026" : text;
-        row.appendChild(lbl);
-        row.appendChild(val);
-        rwBlock.appendChild(row);
-      });
-      expDiv.appendChild(rwBlock);
-      const tagKinds = [
-        ["domain", bm25Exp.domain_tags ?? [], "rt-code-pill--d"],
-        ["jurisdiction", bm25Exp.jurisdiction_tags ?? [], "rt-code-pill--j"],
-        ["process", bm25Exp.process_tags ?? [], "rt-code-pill--p"]
-      ];
-      tagKinds.forEach(([kind, tags, pillCls]) => {
-        if (!tags.length)
-          return;
-        const row = document.createElement("div");
-        row.className = "rt-codes-row";
-        const kindEl = document.createElement("span");
-        kindEl.className = `rt-codes-kind rt-codes-kind--${kind[0]}`;
-        kindEl.textContent = kind;
-        row.appendChild(kindEl);
-        tags.forEach((code) => {
-          const p = document.createElement("span");
-          p.className = `rt-code-pill ${pillCls}`;
-          p.textContent = code;
-          row.appendChild(p);
-        });
-        expDiv.appendChild(row);
-      });
-      const phrases = bm25Exp.expansion_phrases ?? [];
-      if (phrases.length > 0) {
-        const phDiv = document.createElement("div");
-        phDiv.className = "rt-phrases";
-        const phLabel = document.createElement("div");
-        phLabel.className = "rt-phrases-label";
-        phLabel.textContent = `+${phrases.length} expansion phrases`;
-        phDiv.appendChild(phLabel);
-        const phCloud = document.createElement("div");
-        phCloud.className = "rt-phrases-cloud";
-        phrases.forEach((ph) => {
-          const chip = document.createElement("span");
-          chip.className = "rt-phrase-chip";
-          chip.textContent = ph;
-          phCloud.appendChild(chip);
-        });
-        phDiv.appendChild(phCloud);
-        expDiv.appendChild(phDiv);
-      }
-      if (!bm25Exp.matched_codes?.length) {
-        const hint = document.createElement("div");
-        hint.className = "rt-expansion-hint";
-        hint.textContent = "\u26A0 No lexicon entry matched \u2014 falling back to OR-joined raw tokens. Candidate for lexicon addition.";
-        expDiv.appendChild(hint);
-      }
-      sec.body.appendChild(expDiv);
-      round.appendChild(sec.el);
-    }
-    const qp = data.query_profile;
-    if (qp && typeof qp === "object") {
-      const qtype = String(qp.query_type ?? "");
-      const coverage = typeof qp.coverage === "number" ? `cov=${qp.coverage.toFixed(2)}` : "";
-      const tags = Array.isArray(qp.tag_matches) ? qp.tag_matches : [];
-      const anchors = Array.isArray(qp.literal_anchors) ? qp.literal_anchors : [];
-      const badge = [qtype, coverage].filter(Boolean).join(" \xB7 ") || "classified";
-      const sec = rtMakeSection(
-        "Parser",
-        badge,
-        /* collapsed= */
-        true
-      );
-      const pDiv = document.createElement("div");
-      pDiv.className = "rt-parser";
-      if (qtype) {
-        const typeRow = document.createElement("div");
-        typeRow.className = "rt-kv";
-        typeRow.innerHTML = `<span class="rt-kv-k">type</span><span class="rt-kv-v">${rtEscapeAttr(qtype)}</span>`;
-        pDiv.appendChild(typeRow);
-      }
-      if (typeof qp.coverage === "number") {
-        const covRow = document.createElement("div");
-        covRow.className = "rt-kv";
-        covRow.innerHTML = `<span class="rt-kv-k">coverage</span><span class="rt-kv-v">${qp.coverage.toFixed(3)}</span>`;
-        pDiv.appendChild(covRow);
-      }
-      if (anchors.length) {
-        const aRow = document.createElement("div");
-        aRow.className = "rt-kv";
-        aRow.innerHTML = `<span class="rt-kv-k">anchors</span><span class="rt-kv-v">${rtEscapeAttr(anchors.join(" \xB7 "))}</span>`;
-        pDiv.appendChild(aRow);
-      }
-      if (tags.length) {
-        const tRow = document.createElement("div");
-        tRow.className = "rt-codes-row";
-        tags.forEach((t2) => {
-          const prefix = t2.split(":")[0] ?? "";
-          const pill = document.createElement("span");
-          pill.className = `rt-code-pill rt-code-pill--${prefix === "d" ? "d" : prefix === "j" ? "j" : "p"}`;
-          pill.textContent = t2;
-          tRow.appendChild(pill);
-        });
-        pDiv.appendChild(tRow);
-      }
-      const untagged = Array.isArray(qp.untagged_meaningful_tokens) ? qp.untagged_meaningful_tokens : [];
-      if (untagged.length) {
-        const uRow = document.createElement("div");
-        uRow.className = "rt-kv";
-        uRow.innerHTML = `<span class="rt-kv-k">untagged tokens</span><span class="rt-kv-v">${rtEscapeAttr(untagged.join(" "))}</span>`;
-        pDiv.appendChild(uRow);
-      }
-      sec.body.appendChild(pDiv);
-      round.appendChild(sec.el);
-    }
-    const routing = data.routing;
-    if (routing && typeof routing === "object") {
-      const strat = String(routing.strategy ?? routing.executed_strategy ?? "?");
-      const method = String(routing.method ?? "");
-      const qclass = String(routing.query_class ?? "");
-      const badge = `\u2192 ${strat}${qclass ? ` (${qclass})` : ""}${method ? ` via ${method}` : ""}`;
-      const sec = rtMakeSection(
-        "Router",
-        badge,
-        /* collapsed= */
-        true
-      );
-      const rDiv = document.createElement("div");
-      rDiv.className = "rt-router";
-      const stratRow = document.createElement("div");
-      stratRow.className = "rt-kv";
-      stratRow.innerHTML = `<span class="rt-kv-k">strategy</span><span class="rt-kv-v">${rtEscapeAttr(strat)}` + (routing.fallback ? ` \u2192 fallback: ${rtEscapeAttr(String(routing.fallback))}` : "") + `</span>`;
-      rDiv.appendChild(stratRow);
-      const scores = routing.scores ?? {};
-      if (typeof scores === "object" && Object.keys(scores).length > 0) {
-        const scRow = document.createElement("div");
-        scRow.className = "rt-kv";
-        const scoreStr = Object.entries(scores).map(([k2, v]) => `${k2}=${typeof v === "number" ? v.toFixed(2) : v}`).join("  ");
-        scRow.innerHTML = `<span class="rt-kv-k">scores</span><span class="rt-kv-v rt-mono">${rtEscapeAttr(scoreStr)}</span>`;
-        rDiv.appendChild(scRow);
-      }
-      const sa = routing.self_assessments ?? {};
-      if (typeof sa === "object" && Object.keys(sa).length > 0) {
-        const saRow = document.createElement("div");
-        saRow.className = "rt-kv";
-        const saStr = Object.entries(sa).map(([k2, v]) => {
-          const arr = Array.isArray(v) ? v : [v, ""];
-          return `${k2}=${typeof arr[0] === "number" ? arr[0].toFixed(2) : arr[0]}`;
-        }).join("  ");
-        saRow.innerHTML = `<span class="rt-kv-k">self-assess</span><span class="rt-kv-v rt-mono">${rtEscapeAttr(saStr)}</span>`;
-        rDiv.appendChild(saRow);
-      }
-      const withdrawn = Array.isArray(routing.withdrawn) ? routing.withdrawn : [];
-      if (withdrawn.length) {
-        const wRow = document.createElement("div");
-        wRow.className = "rt-kv";
-        wRow.innerHTML = `<span class="rt-kv-k">withdrawn</span><span class="rt-kv-v">${rtEscapeAttr(withdrawn.join(", "))}</span>`;
-        rDiv.appendChild(wRow);
-      }
-      const pool = data.candidate_pool;
-      if (pool && typeof pool === "object") {
-        const poolRow = document.createElement("div");
-        poolRow.className = "rt-kv";
-        poolRow.innerHTML = `<span class="rt-kv-k">pool</span><span class="rt-kv-v">${rtEscapeAttr(String(pool.cascade_level ?? "?"))} \xB7 ${pool.size ?? "?"} docs</span>`;
-        rDiv.appendChild(poolRow);
-      }
-      const sb = routing.score_breakdown;
-      if (sb && typeof sb === "object" && Object.keys(sb).length > 0) {
-        const picked = String(routing.strategy ?? routing.executed_strategy ?? "");
-        const fmt = (x) => typeof x === "number" ? x.toFixed(2) : x ?? "\xB7";
-        const contrib = (c) => c && typeof c === "object" ? fmt(c.contrib) : "\xB7";
-        const tbl = document.createElement("table");
-        tbl.className = "rt-score-table rt-mono";
-        tbl.innerHTML = "<thead><tr><th>strat</th><th>accuracy</th><th>recall</th><th>speed</th><th>shape</th><th>total</th></tr></thead>";
-        const tb = document.createElement("tbody");
-        for (const [strat2, raw] of Object.entries(sb)) {
-          const b = raw || {};
-          const tr = document.createElement("tr");
-          if (strat2 === picked)
-            tr.className = "rt-score-winner";
-          tr.innerHTML = `<td>${strat2 === picked ? "\u2605 " : ""}${rtEscapeAttr(strat2)}${b.withdrawn ? " \u2298" : ""}</td><td>${contrib(b.accuracy)}</td><td>${contrib(b.recall)}</td><td>${contrib(b.speed)}</td><td>${contrib(b.shape)}</td><td><b>${fmt(b.total)}</b></td>`;
-          tb.appendChild(tr);
-        }
-        tbl.appendChild(tb);
-        rDiv.appendChild(tbl);
-      }
-      const saFull = routing.self_assessments;
-      if (saFull && typeof saFull === "object" && Object.keys(saFull).length > 0) {
-        const wdl = Array.isArray(routing.withdrawn) ? routing.withdrawn : [];
-        const tbl = document.createElement("table");
-        tbl.className = "rt-sa-table rt-mono";
-        tbl.innerHTML = "<thead><tr><th>strat</th><th>est</th><th>static</th><th>\u0394</th><th>reason</th></tr></thead>";
-        const tb = document.createElement("tbody");
-        for (const [strat2, raw] of Object.entries(saFull)) {
-          const v = raw || {};
-          const est = typeof v.est_recall === "number" ? v.est_recall : Array.isArray(v) && typeof v[0] === "number" ? v[0] : null;
-          const stat = typeof v.static_recall === "number" ? v.static_recall : typeof v.static === "number" ? v.static : null;
-          const delta = typeof est === "number" && typeof stat === "number" ? est - stat : null;
-          const reason = String(v.reason ?? "");
-          const tr = document.createElement("tr");
-          if (wdl.includes(strat2))
-            tr.className = "rt-sa-withdrawn";
-          tr.innerHTML = `<td>${rtEscapeAttr(strat2)}</td><td>${typeof est === "number" ? est.toFixed(2) : "\xB7"}</td><td>${typeof stat === "number" ? stat.toFixed(2) : "\xB7"}</td><td>${typeof delta === "number" ? (delta >= 0 ? "+" : "") + delta.toFixed(2) : "\xB7"}</td><td class="rt-sa-reason" title="${rtEscapeAttr(reason)}">${rtEscapeAttr(reason.length > 64 ? reason.slice(0, 64) + "\u2026" : reason)}</td>`;
-          tb.appendChild(tr);
-        }
-        tbl.appendChild(tb);
-        rDiv.appendChild(tbl);
-      }
-      sec.body.appendChild(rDiv);
-      round.appendChild(sec.el);
-    }
-    const stExec = Array.isArray(data.strategies_tried) ? data.strategies_tried : [];
-    if (stExec.length > 0) {
-      const sec = rtMakeSection(
-        "Strategy",
-        `${stExec.length} tried`,
-        /* collapsed= */
-        true
-      );
-      const eDiv = document.createElement("div");
-      eDiv.className = "rt-strat-exec";
-      stExec.forEach((s) => {
-        const arms2 = s.arms || {};
-        const rb = arms2.result_breakdown || {};
-        const tim2 = arms2.timing_ms || {};
-        const ok = s.succeeded ? "\u2713" : "\xB7";
-        const armStr = `bm25_pool=${arms2.bm25_pool_hits ?? 0} vec_pool=${arms2.vector_pool_hits ?? 0}` + (rb && Object.keys(rb).length ? ` \xB7 split b=${rb.bm25_only ?? 0}/v=${rb.vector_only ?? 0}/both=${rb.both ?? 0}` : "");
-        const timStr = Object.entries(tim2).filter(([, m]) => typeof m === "number" && m > 0).map(([key, m]) => `${key} ${Math.round(m)}ms`).join(" ");
-        const row = document.createElement("div");
-        row.className = "rt-strat-row";
-        row.innerHTML = `<div class="rt-strat-head">${ok} <b>${rtEscapeAttr(String(s.strategy ?? "?"))}</b> \xB7 ${s.n_chunks ?? 0} chunks \xB7 top ${typeof s.top_rerank === "number" ? s.top_rerank.toFixed(2) : "\xB7"} \xB7 ${Math.round(s.elapsed_ms ?? 0)}ms</div><div class="rt-strat-arms rt-mono">${rtEscapeAttr(armStr)}</div>` + (timStr ? `<div class="rt-strat-tim rt-mono">${rtEscapeAttr(timStr)}</div>` : "") + (s.note ? `<div class="rt-strat-note">${rtEscapeAttr(String(s.note))}</div>` : "");
-        eDiv.appendChild(row);
-      });
-      sec.body.appendChild(eDiv);
-      round.appendChild(sec.el);
-    }
-    const rrc = Array.isArray(data.reranked_chunks) ? data.reranked_chunks : [];
-    if (rrc.length > 0) {
-      const topR = rrc.reduce(
-        (m, c) => Math.max(m, typeof c.rerank_score === "number" ? c.rerank_score : 0),
-        0
-      );
-      const armSplit = {};
-      rrc.forEach((c) => {
-        const a = (Array.isArray(c.retrieval_arms) ? c.retrieval_arms : []).join("+") || "\u2014";
-        armSplit[a] = (armSplit[a] ?? 0) + 1;
-      });
-      const splitStr = Object.entries(armSplit).map(([k2, v]) => `${k2}=${v}`).join(" ");
-      const sec = rtMakeSection(
-        "Reranking",
-        `${rrc.length} chunks \xB7 top ${topR.toFixed(2)}${splitStr ? ` \xB7 ${splitStr}` : ""}`,
-        /* collapsed= */
-        true
-      );
-      const tbl = document.createElement("table");
-      tbl.className = "rt-rerank-table rt-mono";
-      tbl.innerHTML = "<thead><tr><th>#</th><th>arms</th><th>rerank</th><th>sim</th><th>auth</th><th>doc</th><th>p</th></tr></thead>";
-      const tb = document.createElement("tbody");
-      rrc.forEach((c) => {
-        const arms2 = Array.isArray(c.retrieval_arms) ? c.retrieval_arms.join("+") : "";
-        const rr = typeof c.rerank_score === "number" ? c.rerank_score.toFixed(3) : "\xB7";
-        const sim = typeof c.similarity === "number" ? c.similarity.toFixed(3) : "\xB7";
-        const auth = String(c.authority_level ?? "").replace(/_/g, " ");
-        const doc = String(c.document_name ?? "");
-        const docShort = doc.length > 24 ? doc.slice(0, 24) + "\u2026" : doc;
-        const tr = document.createElement("tr");
-        tr.innerHTML = `<td>${c.rank ?? ""}</td><td>${rtEscapeAttr(arms2)}</td><td>${rr}</td><td>${sim}</td><td class="rt-rr-auth">${rtEscapeAttr(auth)}</td><td class="rt-rr-doc" title="${rtEscapeAttr(doc)}">${rtEscapeAttr(docShort)}</td><td>${c.page_number ?? ""}</td>`;
-        tb.appendChild(tr);
-      });
-      tbl.appendChild(tb);
-      sec.body.appendChild(tbl);
-      round.appendChild(sec.el);
-    }
-    const themes = Array.isArray(data.themes) ? data.themes : [];
-    const themeDiag = data.theme_diagnostic;
-    if (themes.length > 0) {
-      const domShare = typeof themeDiag?.dominant_theme_share === "number" ? ` \xB7 dom ${(themeDiag.dominant_theme_share * 100).toFixed(0)}%` : "";
-      const sec = rtMakeSection(
-        "Themes",
-        `${themes.length} theme${themes.length !== 1 ? "s" : ""}${domShare}`,
-        /* collapsed= */
-        true
-      );
-      const tDiv = document.createElement("div");
-      tDiv.className = "rt-themes";
-      themes.forEach((th) => {
-        const row = document.createElement("div");
-        row.className = "rt-kv";
-        const n = th.n_chunks_seen ?? th.top_chunks?.length ?? 0;
-        const rerank = typeof th.top_rerank === "number" ? ` \xB7 rerank=${th.top_rerank.toFixed(2)}` : "";
-        row.innerHTML = `<span class="rt-kv-k">${rtEscapeAttr(th.label ?? th.full_code ?? "?")}</span><span class="rt-kv-v">${n} chunks${rerank}</span>`;
-        tDiv.appendChild(row);
-      });
-      sec.body.appendChild(tDiv);
-      round.appendChild(sec.el);
-    }
-    const topChunks = data.top_chunks ?? data.scoring_trace ?? [];
-    if (Array.isArray(topChunks) && topChunks.length > 0) {
-      const weights = data.rerank_weights || data.weights || {};
-      const wLabel = (k2) => {
-        const v = Number(weights[k2]);
-        return Number.isFinite(v) && v > 0 ? ` \xD7${v.toFixed(2).replace(/^0/, "")}` : "";
-      };
-      const table = document.createElement("table");
-      table.className = "retrieval-trace-chunks retrieval-trace-chunks--rich";
-      const head = document.createElement("thead");
-      head.innerHTML = `<tr><th>#</th><th>doc</th><th class="rt-col-p">p</th><th>arms</th><th>conf</th><th class="rt-col-num">rerank</th><th class="rt-col-bar">sim${wLabel("sim")}</th><th class="rt-col-bar">auth${wLabel("auth")}</th><th class="rt-col-bar">jpd${wLabel("jpd")}</th></tr>`;
-      table.appendChild(head);
-      const tb = document.createElement("tbody");
-      topChunks.slice(0, 10).forEach((c, i) => {
-        const sig = c.signals ?? c.rerank_signals ?? {};
-        const arms2 = Array.isArray(c.retrieval_arms) ? c.retrieval_arms : [];
-        const armBadges = (() => {
-          if (!arms2.length)
-            return "\u2014";
-          const both = arms2.length >= 2;
-          if (both) {
-            return '<span class="rt-arm rt-arm--both">BOTH</span>';
-          }
-          const a = arms2[0];
-          if (a === "bm25")
-            return '<span class="rt-arm rt-arm--bm25">BM25</span>';
-          if (a === "vector")
-            return '<span class="rt-arm rt-arm--vec">VEC</span>';
-          return `<span class="rt-arm">${rtEscapeAttr(a.toUpperCase())}</span>`;
-        })();
-        const sim = Number(sig.sim_weighted ?? sig.sim_raw ?? 0);
-        const auth = Number(sig.auth_weighted ?? sig.authority_weighted ?? 0);
-        const jpd = Number(sig.jpd_weighted ?? 0);
-        const tr = document.createElement("tr");
-        tr.innerHTML = `<td>${i + 1}</td><td title="${rtEscapeAttr(c.document_name || "")}" class="rt-col-doc">${rtEscapeAttr((c.document_name || "").slice(0, 32))}</td><td class="rt-col-p">${c.page ?? c.page_number ?? "\u2014"}</td><td>${armBadges}</td><td>${rtConfBadge(c.confidence_label)}</td><td class="rt-col-num">${rtFormatSig(c.rerank_score)}</td><td class="rt-col-bar">${rtBar(sim, "sim")}</td><td class="rt-col-bar">${rtBar(auth, "auth")}</td><td class="rt-col-bar">${rtBar(jpd, "jpd")}</td>`;
-        tb.appendChild(tr);
-      });
-      table.appendChild(tb);
-      round.appendChild(table);
-    }
-    const assembly = data.assembly;
-    if (assembly && typeof assembly === "object") {
-      const canonPct = Math.round(Math.min(100, Math.max(0, (assembly.canonical_ratio ?? 0) * 100)));
-      const strictPct = Math.round(Math.min(100, Math.max(0, (assembly.strict_canonical_ratio ?? 0) * 100)));
-      const sec = rtMakeSection(
-        "Assembly",
-        `${assembly.strategy ?? "score"} \xB7 ${canonPct}% canonical`,
-        /* collapsed= */
-        true
-      );
-      const asmDiv = document.createElement("div");
-      asmDiv.className = "rt-assembly";
-      const metaRow = document.createElement("div");
-      metaRow.className = "rt-assembly-meta";
-      [
-        ["strategy", assembly.strategy ?? "score"],
-        ...assembly.canonical_floor != null ? [["floor", `${Math.round(assembly.canonical_floor * 100)}%`]] : [],
-        ["selected", String(assembly.total_selected ?? "?")]
-      ].forEach(([k2, v]) => {
-        const kv = document.createElement("span");
-        kv.className = "rt-kv";
-        kv.innerHTML = `<span class="rt-k">${k2}</span><code class="rt-v">${v}</code>`;
-        metaRow.appendChild(kv);
-      });
-      asmDiv.appendChild(metaRow);
-      [
-        { label: "Canonical (CoT + PP)", pct: canonPct, color: "#2563eb" },
-        { label: "Strict (CoT only)", pct: strictPct, color: "#16a34a" }
-      ].forEach(({ label, pct, color }) => {
-        const row = document.createElement("div");
-        row.className = "rt-ratio-row";
-        const lbl = document.createElement("span");
-        lbl.className = "rt-ratio-label";
-        lbl.textContent = label;
-        const track = document.createElement("div");
-        track.className = "rt-ratio-track";
-        const fill = document.createElement("div");
-        fill.className = "rt-ratio-fill";
-        fill.style.cssText = `width:${pct}%;background:${color}`;
-        track.appendChild(fill);
-        const pctEl = document.createElement("span");
-        pctEl.className = "rt-ratio-pct";
-        pctEl.textContent = `${pct}%`;
-        row.appendChild(lbl);
-        row.appendChild(track);
-        row.appendChild(pctEl);
-        asmDiv.appendChild(row);
-      });
-      const tierOrder = ["contract_source_of_truth", "payer_policy", "operational_suggested", "fyi_not_citable"];
-      const tierLabel = { contract_source_of_truth: "CoT", payer_policy: "PP", operational_suggested: "Ops", fyi_not_citable: "FYI" };
-      const tierColor = { contract_source_of_truth: "#16a34a", payer_policy: "#2563eb", operational_suggested: "#0891b2", fyi_not_citable: "#d97706" };
-      const breakdown = assembly.tier_breakdown ?? {};
-      const tierRow = document.createElement("div");
-      tierRow.className = "rt-tier-row";
-      tierOrder.forEach((tier) => {
-        const n = breakdown[tier] ?? 0;
-        if (!n)
-          return;
-        const pill = document.createElement("span");
-        pill.className = "rt-tier-pill";
-        pill.style.cssText = `border-color:${tierColor[tier]};color:${tierColor[tier]}`;
-        pill.title = tier;
-        pill.textContent = `${tierLabel[tier]} \xD7${n}`;
-        tierRow.appendChild(pill);
-      });
-      const untagged = (breakdown["untagged"] ?? 0) + (breakdown["null"] ?? 0) + (breakdown["None"] ?? 0);
-      if (untagged) {
-        const pill = document.createElement("span");
-        pill.className = "rt-tier-pill";
-        pill.style.cssText = "border-color:#9ca3af;color:#9ca3af";
-        pill.textContent = `untagged \xD7${untagged}`;
-        tierRow.appendChild(pill);
-      }
-      if (tierRow.children.length)
-        asmDiv.appendChild(tierRow);
-      sec.body.appendChild(asmDiv);
-      round.appendChild(sec.el);
-    }
-    body.appendChild(round);
-  });
+  body.appendChild(_dcReasonSection(data, routing));
+  body.appendChild(_dcActSection(data, routing, isFactStore));
+  body.appendChild(_dcObserveSection(data, routing, isFactStore));
+  body.appendChild(_dcDecideSection(data, routing));
   wrap.appendChild(preview);
   wrap.appendChild(body);
   const toggle = () => {
-    const expanded = wrap.classList.toggle("collapsed");
-    preview.setAttribute("aria-expanded", expanded ? "false" : "true");
-    chev.textContent = expanded ? "\u25BC" : "\u25B2";
+    const collapsed = wrap.classList.toggle("collapsed");
+    preview.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    chev.textContent = collapsed ? "\u25BC" : "\u25B2";
   };
   preview.addEventListener("click", toggle);
   preview.addEventListener("keydown", (e) => {
@@ -8120,67 +8031,8 @@ function renderRetrievalTrace(thinkingLog) {
   });
   return wrap;
 }
-function rtMakeSection(title, badge, collapsed = false) {
-  const el2 = document.createElement("div");
-  el2.className = "rt-section" + (collapsed ? " rt-section--collapsed" : "");
-  const hdr = document.createElement("button");
-  hdr.type = "button";
-  hdr.className = "rt-section-hdr";
-  hdr.setAttribute("aria-expanded", String(!collapsed));
-  const chev = document.createElement("span");
-  chev.className = "rt-section-chev";
-  chev.setAttribute("aria-hidden", "true");
-  chev.textContent = collapsed ? "\u25B6" : "\u25BC";
-  const titleEl = document.createElement("span");
-  titleEl.className = "rt-section-title";
-  titleEl.textContent = title;
-  const badgeEl = document.createElement("span");
-  badgeEl.className = "rt-section-badge";
-  badgeEl.textContent = badge;
-  hdr.appendChild(chev);
-  hdr.appendChild(titleEl);
-  hdr.appendChild(badgeEl);
-  const body = document.createElement("div");
-  body.className = "rt-section-body";
-  if (collapsed)
-    body.style.display = "none";
-  hdr.addEventListener("click", () => {
-    const isCollapsed = el2.classList.toggle("rt-section--collapsed");
-    body.style.display = isCollapsed ? "none" : "";
-    chev.textContent = isCollapsed ? "\u25B6" : "\u25BC";
-    hdr.setAttribute("aria-expanded", String(!isCollapsed));
-  });
-  el2.appendChild(hdr);
-  el2.appendChild(body);
-  return { el: el2, body };
-}
 function rtEscapeAttr(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-function rtFormatSig(v) {
-  if (typeof v !== "number")
-    return "\u2014";
-  return v.toFixed(3);
-}
-function rtBar(value, kind) {
-  if (!Number.isFinite(value) || value <= 0) {
-    return '<span class="rt-bar rt-bar--empty">\u2014</span>';
-  }
-  const pct = Math.max(0, Math.min(100, value * 100));
-  return `<span class="rt-bar rt-bar--${kind}"><span class="rt-bar-track"><span class="rt-bar-fill" style="width:${pct.toFixed(1)}%"></span></span><span class="rt-bar-val">${value.toFixed(3)}</span></span>`;
-}
-function rtConfBadge(label) {
-  if (typeof label !== "string" || !label)
-    return "\u2014";
-  const lc = label.toLowerCase();
-  let cls = "rt-conf";
-  if (lc === "high")
-    cls += " rt-conf--high";
-  else if (lc === "medium" || lc === "med")
-    cls += " rt-conf--med";
-  else if (lc === "low")
-    cls += " rt-conf--low";
-  return `<span class="${cls}">${rtEscapeAttr(label)}</span>`;
 }
 function renderLlmPerformance(rows, meta, opts) {
   const wrap = document.createElement("div");
@@ -10062,7 +9914,7 @@ function run() {
       );
       diagPanel.appendChild(perfEl);
     }
-    const traceEl = renderRetrievalTrace(
+    const traceEl = renderDiagnosticsCard(
       opts.thinkingLog
     );
     if (traceEl)
@@ -11564,7 +11416,7 @@ ${message}`;
               routingFeedback: data.technical_feedback?.llm_performance ?? null
             })
           );
-          const retrievalPanel = renderRetrievalTrace(data.thinking_log);
+          const retrievalPanel = renderDiagnosticsCard(data.thinking_log);
           if (retrievalPanel)
             turnWrap.appendChild(retrievalPanel);
         }

@@ -9651,6 +9651,63 @@ body.landing-state .composer-landing-chips {
 .rt-fs-drift-line { font-size: 0.62rem; color: var(--mobius-text-secondary); }
 
 /* ─────────────────────────────────────────────────────────────────
+   DiagnosticsCard  (dc-*)
+   reason → act → observe → decide drill-down for ALL strategies.
+   ───────────────────────────────────────────────────────────── */
+
+/* Status indicator dots */
+.dc-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.dc-dot--ok   { background: var(--mobius-success, #16a34a); }
+.dc-dot--warn { background: var(--mobius-warning, #f59e0b); }
+.dc-dot--gray { background: var(--mobius-border, rgba(150,150,150,0.40)); }
+
+/* Section accordion (top-level: REASON / ACT / OBSERVE / DECIDE) */
+.dc-section { border-top: 1px solid var(--mobius-border, rgba(255,255,255,0.07)); }
+.dc-section:first-child { border-top: none; }
+.dc-section-hdr {
+  display: flex; align-items: center; gap: 0.40rem;
+  padding: 0.40rem 0.75rem;
+  cursor: pointer; user-select: none;
+  border-radius: 4px;
+}
+.dc-section-hdr:hover { background: rgba(255,255,255,0.03); }
+.dc-section-title { font-size: 0.60rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--mobius-text-secondary); flex-shrink: 0; }
+.dc-section-sum { font-size: 0.60rem; color: var(--mobius-text-muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dc-chev { font-size: 0.60rem; color: var(--mobius-text-muted); margin-left: auto; flex-shrink: 0; }
+.dc-section-body { padding: 0 0.5rem 0.4rem 0.75rem; }
+.dc-section-body--hidden { display: none; }
+
+/* Leaf nodes inside a section */
+.dc-leaf { display: flex; flex-direction: column; margin-bottom: 0.15rem; }
+.dc-leaf-hdr {
+  display: flex; align-items: center; gap: 0.35rem;
+  padding: 0.22rem 0.25rem;
+  border-radius: 3px;
+  cursor: default;
+}
+.dc-leaf-hdr[role="button"] { cursor: pointer; }
+.dc-leaf-hdr[role="button"]:hover { background: rgba(255,255,255,0.03); }
+.dc-leaf-title { font-size: 0.60rem; font-weight: 500; color: var(--mobius-text-secondary); flex-shrink: 0; min-width: 5.5rem; }
+.dc-leaf-sum { font-size: 0.60rem; color: var(--mobius-text-muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dc-chev-leaf { font-size: 0.60rem; color: var(--mobius-text-muted); margin-left: auto; flex-shrink: 0; }
+.dc-leaf-body { padding: 0.20rem 0.25rem 0.20rem 1.25rem; display: flex; flex-direction: column; gap: 0.15rem; }
+.dc-leaf-body--hidden { display: none; }
+
+/* Strategy retrieve tab bar */
+.dc-tab-bar { display: flex; gap: 0.25rem; margin-bottom: 0.35rem; flex-wrap: wrap; }
+.dc-tab {
+  font-size: 0.58rem; padding: 0.15rem 0.5rem; border-radius: 3px;
+  border: 1px solid var(--mobius-border, rgba(255,255,255,0.10));
+  background: transparent; color: var(--mobius-text-muted); cursor: pointer;
+}
+.dc-tab:hover { background: rgba(255,255,255,0.04); color: var(--mobius-text-secondary); }
+.dc-tab--active { background: rgba(124,58,237,0.12); border-color: var(--mobius-violet, #7c3aed); color: var(--mobius-text-primary); font-weight: 600; }
+.dc-tab-panel--hidden { display: none; }
+
+/* Feature vector row */
+.dc-fv { margin-top: 0.2rem; }
+
+/* ─────────────────────────────────────────────────────────────────
    Recent queries dump (drawer → modal). Reuses the
    .llm-router-report-modal__* structural shell; only adds filter
    bar / summary strip / table styling here.
