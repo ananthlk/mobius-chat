@@ -9711,22 +9711,29 @@ function run(): void {
         }).catch(() => {});
       },
       onGraduate: (question: string | null) => {
-        // User completed the reveal (typed a question or clicked "Open Mobius →")
+        // User completed the reveal (typed a question or clicked "Open Mobius →").
+        // Dissolve + sendMessage FIRST — user-visible payoff must never be blocked by API failures.
+        _dissolve();
+        if (question) {
+          setTimeout(() => sendMessage(question), 660);
+        }
+        // Fire-and-forget events + onboarding flip (failures cannot block the dissolve above).
         _revealTrainingEvent("training_completed");
         if (question) {
           _revealTrainingEvent("graduation_question_fired", "typed", question);
-          // Feed graduation question to product-feedback gap writer
           void apiFetch(`${API_BASE}/chat/product-feedback`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ verbatim: question, category: "feature_request", trigger: "graduation", area_tags: ["rag"] }),
           }).catch(() => {});
         }
-        _finishOnboarding();
-        _dissolve();
-        if (question) {
-          setTimeout(() => sendMessage(question), 660);
-        }
+        // Inline _finishOnboarding (defined inside _showTrainingMode, out of scope here).
+        void apiFetch(`${authApiBase}/auth/onboarding`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        }).then(() => { void _fetchNestedUserProfile(); }).catch(() => {});
+        _syncOnboardingNudge(true);
       },
       onSkip: () => {
         _revealTrainingEvent("training_skipped");

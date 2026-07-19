@@ -9533,7 +9533,7 @@ function run() {
       }).catch(() => {
       });
     }
-    function _finishOnboarding2() {
+    function _finishOnboarding() {
       void apiFetch(`${authApiBase}/auth/onboarding`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -9549,7 +9549,7 @@ function run() {
       wrap.innerHTML = "";
       if (permanent) {
         _sendTrainingEvent("training_dismissed");
-        _finishOnboarding2();
+        _finishOnboarding();
       } else {
         _sendTrainingEvent("training_skipped");
         sessionStorage.setItem("_tm_skip", "1");
@@ -9669,7 +9669,7 @@ function run() {
           if (hesList.length)
             _writePrefs({ hesitations: hesList });
           _sendTrainingEvent("training_completed");
-          _finishOnboarding2();
+          _finishOnboarding();
           step = 5;
           _render();
         };
@@ -9814,6 +9814,10 @@ function run() {
         });
       },
       onGraduate: (question) => {
+        _dissolve();
+        if (question) {
+          setTimeout(() => sendMessage(question), 660);
+        }
         _revealTrainingEvent("training_completed");
         if (question) {
           _revealTrainingEvent("graduation_question_fired", "typed", question);
@@ -9824,11 +9828,15 @@ function run() {
           }).catch(() => {
           });
         }
-        _finishOnboarding();
-        _dissolve();
-        if (question) {
-          setTimeout(() => sendMessage(question), 660);
-        }
+        void apiFetch(`${authApiBase}/auth/onboarding`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({})
+        }).then(() => {
+          void _fetchNestedUserProfile();
+        }).catch(() => {
+        });
+        _syncOnboardingNudge(true);
       },
       onSkip: () => {
         _revealTrainingEvent("training_skipped");
