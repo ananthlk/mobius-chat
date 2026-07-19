@@ -618,6 +618,38 @@ def _run(call: SkillCall) -> SkillEnvelope:
         telemetry=telemetry,
     )
 
+    # ── Fact-store fast-exit (strategy "s") ─────────────────────────────
+    # RAG's payor fact store serves pre-certified deterministic facts with
+    # n_chunks=0 (no retrieval needed — the fact IS the answer). If we fall
+    # through to the chunk-based path the LLM will re-synthesise from empty
+    # evidence and produce "Not found." instead of the certified answer.
+    # Fast-exit: return llm_answer directly as a corpus_only hit, score 1.0.
+    _routing = resp.get("routing") or {}
+    _strategy_s = (
+        resp.get("strategy_used") == "s"
+        or _routing.get("method") == "fact_store"
+    )
+    if _strategy_s:
+        _fact_answer = str(resp.get("llm_answer") or "").strip()
+        if _fact_answer:
+            if call.emitter:
+                call.emitter(f"📋 Certified fact: {_fact_answer}")
+            return SkillEnvelope(
+                text=_fact_answer,
+                sources=[],
+                signal="corpus_only",
+                extra={
+                    "pipeline_trace": telemetry,
+                    "skill_call_ms": elapsed_ms,
+                    "search_id": search_id,
+                    "mode": "s",
+                    "fact_score": resp.get("fact_score") or 1.0,
+                    "fact_predicate": resp.get("fact_predicate"),
+                    "fact_cert_grades": _routing.get("fact_cert_grades"),
+                    "confidence": resp.get("confidence"),
+                },
+            )
+
     if not chunks:
         if call.emitter:
             strategy_used = resp.get("strategy_used") or ""
