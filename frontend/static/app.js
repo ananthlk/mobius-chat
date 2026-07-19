@@ -3043,7 +3043,7 @@ function splitSectionsByVisibility(sections, mode) {
     return { visible: [], hidden: all };
   if (mode === "CANONICAL")
     return { visible: all, hidden: [] };
-  const visibleIntents = /* @__PURE__ */ new Set(["definitions"]);
+  const visibleIntents = /* @__PURE__ */ new Set(["definitions", "requirements", "process"]);
   const visible = all.filter((s) => visibleIntents.has(s.intent ?? "process"));
   const hidden = all.filter((s) => !visibleIntents.has(s.intent ?? "process"));
   return { visible, hidden };

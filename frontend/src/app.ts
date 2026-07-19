@@ -1939,9 +1939,9 @@ function splitSectionsByVisibility(
   const all = sections.slice(0, MAX_SECTIONS);
   if (mode === "FACTUAL") return { visible: [], hidden: all };
   if (mode === "CANONICAL") return { visible: all, hidden: [] };
-  // Phase 0.14: only "definitions" surface immediately; "requirements" collapses
-  // behind Show details to reduce bubble height.
-  const visibleIntents = new Set(["definitions"]);
+  // BLENDED: surface requirements, process, and definitions immediately.
+  // Only exceptions and references collapse — they're supplementary.
+  const visibleIntents = new Set(["definitions", "requirements", "process"]);
   const visible = all.filter((s) => visibleIntents.has(s.intent ?? "process"));
   const hidden = all.filter((s) => !visibleIntents.has(s.intent ?? "process"));
   return { visible, hidden };
