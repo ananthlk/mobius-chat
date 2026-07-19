@@ -694,14 +694,17 @@ def _execute_tool(
                     phi_detected=False,
                     config_sha=_get_config_sha() or None,
                     mode=getattr(ctx, "chat_mode", None),
-                )
-            # Map SkillEnvelope → 4-tuple the rest of this dispatcher consumes.
+                ) + (False,)  # no golden on legacy fallback
+            # Map SkillEnvelope → 5-tuple; 5th element carries golden_explicit so
+            # the fact-store fast-exit (short certified facts, empty sources) can
+            # bypass the >80-char success gate and the merged_signal override.
             sources_dicts = [s.to_dict() for s in env.sources]
             return (
                 env.text or "",
                 sources_dicts,
                 env.usage,
                 env.signal or "no_sources",
+                bool((env.extra or {}).get("golden")),
             )
 
         def _run_upload(doc_id: str) -> tuple[str, list[dict], dict | None, str]:
@@ -729,11 +732,11 @@ def _execute_tool(
             # different from an upload miss. Materialize each result
             # independently so partial failure still returns something.
             try:
-                corpus_answer, corpus_sources, corpus_usage, corpus_signal = corpus_future.result()
+                corpus_answer, corpus_sources, corpus_usage, corpus_signal, _corpus_golden_explicit = corpus_future.result()
             except Exception as _e:
                 logger.warning("[B.4] corpus search failed: %s", _e)
-                corpus_answer, corpus_sources, corpus_usage, corpus_signal = (
-                    "", [], None, "no_sources",
+                corpus_answer, corpus_sources, corpus_usage, corpus_signal, _corpus_golden_explicit = (
+                    "", [], None, "no_sources", False,
                 )
             upload_results = [(u, f.result()) for u, f in upload_futures]
 
@@ -780,17 +783,22 @@ def _execute_tool(
         else:
             merged_result = corpus_answer or ""
 
-        # Success if EITHER path contributed usable evidence.
+        # Success if EITHER path contributed usable evidence. Golden fast-exits
+        # (fact-store strategy-s) may have short answers and empty corpus_sources
+        # by design — bypass the >80-char gate for those.
         success = (
             bool(merged_result and len(merged_result.strip()) > 80 and corpus_signal != RETRIEVAL_SIGNAL_NO_SOURCES)
             or upload_chunks_total > 0
+            or (_corpus_golden_explicit and bool(merged_result))
         )
 
         # Signal favors whichever path had hits — corpus_only when we got
         # anything; no_sources only when both pools returned empty. This
         # matches what the 0.19 retry guard expects for recording
         # success/failure on the (search_corpus, inputs) pair.
-        if corpus_signal != RETRIEVAL_SIGNAL_NO_SOURCES and corpus_sources:
+        # _corpus_golden_explicit: fact-store fast-exit has no chunks but IS a
+        # valid corpus hit — don't let empty corpus_sources override the signal.
+        if corpus_signal != RETRIEVAL_SIGNAL_NO_SOURCES and (corpus_sources or _corpus_golden_explicit):
             merged_signal = corpus_signal
         elif upload_chunks_total > 0:
             merged_signal = "corpus_only"  # keep shape; integrator treats it the same
@@ -846,6 +854,8 @@ def _execute_tool(
             "result": merged_result,
             "signal": merged_signal,
             "sources": merged_sources,
+            "golden": _corpus_golden_explicit,
+            "golden_explicit": _corpus_golden_explicit,
             "usage": corpus_usage,  # upload side makes no LLM calls (Phase B.1 design)
             "improvement_hint": _improvement_hint or None,
             "fast_exit": _fast_exit,
