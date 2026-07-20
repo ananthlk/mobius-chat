@@ -10928,8 +10928,7 @@ function run(): void {
 
     // Read mode before rendering user message (badge depends on it)
     const selectedMode = (
-      (document.querySelector("#composerModeStrip .composer-mode-btn.active") as HTMLElement | null)?.dataset.mode
-      || localStorage.getItem("_mobiusChatMode")
+      localStorage.getItem("_mobiusChatMode")
       || "copilot"
     ) as "quick" | "copilot" | "agentic";
 

@@ -277,34 +277,65 @@
           <button type="button" class="composer-attachment-chip__remove" id="composerAttachmentChipRemove" aria-label="Remove attachment" title="Remove attachment">×</button>
         </div>
         <div class="composer">
-          <div id="composerModeStrip" class="composer-mode-strip" role="radiogroup"
-               aria-label="Response mode" data-tour-id="composer-mode"
-               title="Response mode&#10;⚡ Fast — 2 rounds, brief answer&#10;◉ Normal — registry-first, practical&#10;✦ Think — deep research, high confidence">
-            <button type="button" class="composer-mode-btn" data-mode="quick" aria-label="Fast mode">⚡ Fast</button>
-            <button type="button" class="composer-mode-btn active" data-mode="copilot" aria-label="Normal mode" aria-checked="true">◉ Normal</button>
-            <button type="button" class="composer-mode-btn" data-mode="agentic" aria-label="Think mode">✦ Think</button>
+          <div id="composerModePill" class="composer-mode-pill" data-active="copilot" data-tour-id="composer-mode">
+            <button type="button" class="mode-pill-btn" aria-haspopup="listbox" aria-expanded="false" aria-label="Response mode">
+              <span class="mode-pill-icon">◉</span>
+              <span class="mode-pill-label">Normal</span>
+              <span class="mode-pill-chevron">▾</span>
+            </button>
+            <div class="mode-dropdown" role="listbox" aria-label="Response mode">
+              <button type="button" class="mode-option" data-mode="quick" role="option" aria-selected="false">
+                <span class="mode-option-icon">⚡</span>
+                <span class="mode-option-text">
+                  <span class="mode-option-label">Fast</span>
+                  <span class="mode-option-meta">Quick answers, no deep reasoning</span>
+                </span>
+                <span class="mode-option-dot"></span>
+              </button>
+              <button type="button" class="mode-option" data-mode="copilot" role="option" aria-selected="true">
+                <span class="mode-option-icon">◉</span>
+                <span class="mode-option-text">
+                  <span class="mode-option-label">Normal</span>
+                  <span class="mode-option-meta">Balanced speed and quality</span>
+                </span>
+                <span class="mode-option-dot"></span>
+              </button>
+              <button type="button" class="mode-option" data-mode="agentic" role="option" aria-selected="false">
+                <span class="mode-option-icon">✦</span>
+                <span class="mode-option-text">
+                  <span class="mode-option-label">Think</span>
+                  <span class="mode-option-meta">Deep reasoning, takes longer</span>
+                </span>
+                <span class="mode-option-dot"></span>
+              </button>
+            </div>
           </div>
           <script>
             (function(){
-              var m=localStorage.getItem('_mobiusChatMode');
-              var strip=document.getElementById('composerModeStrip');
-              if(strip&&m&&['quick','copilot','agentic'].includes(m)){
-                strip.querySelectorAll('.composer-mode-btn').forEach(function(b){
-                  var active=b.dataset.mode===m;
-                  b.classList.toggle('active',active);
-                  b.setAttribute('aria-checked',active?'true':'false');
+              var MODES={quick:{icon:'⚡',label:'Fast'},copilot:{icon:'◉',label:'Normal'},agentic:{icon:'✦',label:'Think'}};
+              var pill=document.getElementById('composerModePill');
+              if(!pill)return;
+              var trigBtn=pill.querySelector('.mode-pill-btn');
+              var dropdown=pill.querySelector('.mode-dropdown');
+              function setMode(m){
+                if(!MODES[m])m='copilot';
+                pill.setAttribute('data-active',m);
+                pill.querySelector('.mode-pill-icon').textContent=MODES[m].icon;
+                pill.querySelector('.mode-pill-label').textContent=MODES[m].label;
+                pill.querySelectorAll('.mode-option').forEach(function(o){
+                  var a=o.dataset.mode===m;
+                  o.classList.toggle('active',a);
+                  o.setAttribute('aria-selected',a?'true':'false');
                 });
+                localStorage.setItem('_mobiusChatMode',m);
               }
-              strip&&strip.addEventListener('click',function(e){
-                var btn=e.target.closest('.composer-mode-btn');
-                if(!btn)return;
-                strip.querySelectorAll('.composer-mode-btn').forEach(function(b){
-                  var active=b===btn;
-                  b.classList.toggle('active',active);
-                  b.setAttribute('aria-checked',active?'true':'false');
-                });
-                localStorage.setItem('_mobiusChatMode',btn.dataset.mode||'copilot');
-              });
+              function openDrop(){dropdown.classList.add('open');trigBtn.setAttribute('aria-expanded','true');}
+              function closeDrop(){dropdown.classList.remove('open');trigBtn.setAttribute('aria-expanded','false');}
+              var saved=localStorage.getItem('_mobiusChatMode');
+              setMode(['quick','copilot','agentic'].indexOf(saved)!==-1?saved:'copilot');
+              trigBtn.addEventListener('click',function(e){e.stopPropagation();dropdown.classList.contains('open')?closeDrop():openDrop();});
+              dropdown.addEventListener('click',function(e){var o=e.target.closest('.mode-option');if(!o)return;setMode(o.dataset.mode);closeDrop();});
+              document.addEventListener('click',function(){closeDrop();});
             })();
           </script>
           <!-- Paperclip attach + hidden file input. Accept set matches
@@ -770,7 +801,7 @@
   </script>
   <script src="static/task-manager.js"></script>
   <script src="static/vault-panel.js"></script>
-  <script type="module" src="static/app.js?v=45"></script>
+  <script type="module" src="static/app.js?v=46"></script>
   <script src="https://mobius-interact-ortabkknqa-uc.a.run.app/runner.js" defer></script>
 </body>
 </html>
