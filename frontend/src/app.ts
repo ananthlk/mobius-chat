@@ -14189,14 +14189,24 @@ function run(): void {
     // Expose suite tiles globally so the Vault panel (and any future consumer)
     // can read the canonical list + resolved URLs without duplicating this logic.
     // Format: {label, url, icon, tagline, badge?} — badge set for comingSoon tiles.
-    (window as Window & typeof globalThis & Record<string, unknown>)._mobiusSuiteTiles =
-      SUITE_TILES.map((t) => ({
+    // Appeals Agent is a standalone demo tile (not in SUITE_TILES) — appended here
+    // so the Vault panel's tools section has the full picture.
+    (window as Window & typeof globalThis & Record<string, unknown>)._mobiusSuiteTiles = [
+      ...SUITE_TILES.map((t) => ({
         label: t.label,
         url: t.comingSoon ? "" : tileUrl(t),
         icon: "",
         tagline: t.tagline,
         ...(t.comingSoon ? { badge: "coming soon" } : {}),
-      }));
+      })),
+      {
+        label: "Appeals Agent",
+        url: "https://mobius-appeals-prototype-ortabkknqa-uc.a.run.app",
+        icon: "⚖️",
+        tagline: "Build defensible appeals end-to-end",
+        badge: "demo",
+      },
+    ];
 
     type ChatTheme = {
       title: string;

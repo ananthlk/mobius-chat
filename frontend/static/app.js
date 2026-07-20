@@ -13562,13 +13562,22 @@ ${message}`;
       }
       return url;
     }
-    window._mobiusSuiteTiles = SUITE_TILES.map((t) => ({
-      label: t.label,
-      url: t.comingSoon ? "" : tileUrl(t),
-      icon: "",
-      tagline: t.tagline,
-      ...t.comingSoon ? { badge: "coming soon" } : {}
-    }));
+    window._mobiusSuiteTiles = [
+      ...SUITE_TILES.map((t) => ({
+        label: t.label,
+        url: t.comingSoon ? "" : tileUrl(t),
+        icon: "",
+        tagline: t.tagline,
+        ...t.comingSoon ? { badge: "coming soon" } : {}
+      })),
+      {
+        label: "Appeals Agent",
+        url: "https://mobius-appeals-prototype-ortabkknqa-uc.a.run.app",
+        icon: "\u2696\uFE0F",
+        tagline: "Build defensible appeals end-to-end",
+        badge: "demo"
+      }
+    ];
     const CHAT_THEMES = [
       {
         title: "Healthcare lookup",

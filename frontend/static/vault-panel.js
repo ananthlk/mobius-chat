@@ -62,17 +62,32 @@
     selTasks: new Set(), selUploads: new Set(), // bulk-select
     coworkers: null,                             // cached /chat/coworkers
     currentThreadId: null,                       // active chat thread (for "use in chat")
+    loading: false,                              // show a loading state during the open fetch
+    pinned: ["recent", "liked", "tasks"],        // user's 3 pinned sections (shared w/ sidebar); set from readPinned() on open
   };
   const EXPIRING_DAYS = 3;
   function clearFilters() { state.uFilter = null; state.tFilter = null; }
 
-  const TABS = [
-    { key: "recent", ico: "🕘", label: "Recent" },
-    { key: "liked", ico: "★", label: "Liked" },
-    { key: "tasks", ico: "✓", label: "Tasks" },
-    { key: "uploads", ico: "📄", label: "Uploads" },
+  // Section pool — ids/labels MUST match the sidebar picker 1:1 (UX contract 2026-07-20).
+  const SECTIONS = [
+    { id: "recent", ico: "🕘", label: "Recent", desc: "Chat history" },
+    { id: "liked", ico: "★", label: "Liked", desc: "Saved answers" },
+    { id: "tasks", ico: "✓", label: "Tasks", desc: "Open tasks" },
+    { id: "uploads", ico: "📄", label: "Uploads", desc: "Your documents" },
+    { id: "tools", ico: "🧰", label: "Tools", desc: "Suite links" },
+    { id: "bookmarks", ico: "🔖", label: "Bookmarks", desc: "Saved items" },
+    { id: "notifications", ico: "🔔", label: "Notifications", desc: "Alerts" },
   ];
-  const SOON = ["Bookmarks", "Saved reports", "My feedback"];
+  // Shared pin preference with the sidebar. Panel shows ALL 7; the pinned 3 are highlighted.
+  const PINNED_KEY = "mobius_sidebar_sections";
+  const DEFAULT_PINNED = ["recent", "liked", "tasks"];
+  function readPinned() {
+    try {
+      const a = JSON.parse(localStorage.getItem(PINNED_KEY) || "null");
+      if (Array.isArray(a) && a.length) { const v = a.filter(id => SECTIONS.some(s => s.id === id)); if (v.length) return v; }
+    } catch { /* fall through */ }
+    return DEFAULT_PINNED.slice();
+  }
 
   // ── dom helpers ──────────────────────────────────────────────────
   let root = null; // .mv-root overlay
@@ -148,7 +163,7 @@
     if (aref) jobs.push(authFetch("/chat/tasks?status=open&assignee=" + encodeURIComponent(aref) + "&limit=100").then(r => r.ok ? r.json() : {}).then(d => bucketTasks(arr(d, "tasks"))).catch(() => {}));
     if (orgName) jobs.push(authFetch("/chat/tasks?status=open&org_name=" + encodeURIComponent(orgName) + "&limit=100").then(r => r.ok ? r.json() : {}).then(d => state.tasksOrg = arr(d, "tasks").filter(t => (t.kind || "work_item") === "work_item")).catch(() => {}));
     await Promise.all(jobs);
-    state.loaded = true; renderAll();
+    state.loaded = true; state.loading = false; renderAll();
   }
   function arr(d, key) {
     if (Array.isArray(d)) return d;
@@ -165,8 +180,9 @@
   function counts() {
     return {
       recent: state.recent.length, liked: state.liked.length,
-      tasks: state.tasksWork.length + state.tasksOrg.length + state.tasksNotif.length,
+      tasks: state.tasksWork.length + state.tasksOrg.length,   // notifications are their own section now
       uploads: state.uploads.filter(u => !isExpired(u) && u.status !== "discarded").length,
+      notifications: state.tasksNotif.length,
     };
   }
 
@@ -185,16 +201,25 @@
 
   function renderRail() {
     const c = counts(); const rail = q(".mv-rail"); if (!rail) return; rail.innerHTML = "";
-    for (const t of TABS) {
-      const item = el("button", "mv-rail-item" + (state.tab === t.key ? " active" : ""));
-      item.appendChild(el("span", "mv-rail-ico", t.ico));
-      item.appendChild(el("span", "mv-rail-label", t.label));
-      const n = c[t.key] || 0; if (n) item.appendChild(el("span", "mv-rail-count", String(n)));
-      item.addEventListener("click", () => { clearFilters(); switchTab(t.key); });
+    // Show ALL sections; the user's pinned 3 (shared with the sidebar) come first + marked.
+    const pinnedIds = state.pinned.filter(id => SECTIONS.some(s => s.id === id));
+    const ordered = [
+      ...pinnedIds.map(id => SECTIONS.find(s => s.id === id)),
+      ...SECTIONS.filter(s => !pinnedIds.includes(s.id)),
+    ];
+    let sepDone = false;
+    for (const s of ordered) {
+      const isPinned = pinnedIds.includes(s.id);
+      if (!isPinned && !sepDone && pinnedIds.length) { rail.appendChild(el("div", "mv-rail-sep", "More")); sepDone = true; }
+      const item = el("button", "mv-rail-item" + (state.tab === s.id ? " active" : "") + (isPinned ? " pinned" : ""));
+      item.title = s.desc;
+      if (isPinned) item.appendChild(el("span", "mv-rail-pin", "•"));
+      item.appendChild(el("span", "mv-rail-ico", s.ico));
+      item.appendChild(el("span", "mv-rail-label", s.label));
+      const n = c[s.id]; if (n) item.appendChild(el("span", "mv-rail-count", String(n)));
+      item.addEventListener("click", () => { clearFilters(); switchTab(s.id); });
       rail.appendChild(item);
     }
-    rail.appendChild(el("div", "mv-rail-sep", "Coming soon"));
-    for (const label of SOON) { const item = el("button", "mv-rail-item is-soon"); item.appendChild(el("span", "mv-rail-ico", "○")); item.appendChild(el("span", "mv-rail-label", label)); item.disabled = true; rail.appendChild(item); }
   }
 
   function emptyState(copy, chipLabel) {
@@ -283,7 +308,48 @@
     };
     group("Assigned to me", state.tasksWork);
     group("My org's open tasks", state.tasksOrg);
-    group("Notifications", state.tasksNotif, "notifications");
+    // Notifications moved to their own top-level section (Task agent ruling 2026-07-20).
+  }
+
+  function renderTools() {
+    const p = q('[data-panel="tools"]'); if (!p) return; p.innerHTML = "";
+    // Shared source of truth with the sidebar (Chat exposes window._mobiusSuiteTiles).
+    const tiles = Array.isArray(window._mobiusSuiteTiles) ? window._mobiusSuiteTiles.slice() : [];
+    // Fixed Appeals demo tile (always present) — de-duped if already in the array.
+    if (!tiles.some(t => /appeals/i.test(t.label || ""))) {
+      tiles.push({ label: "Appeals Agent", badge: "demo", url: "https://mobius-appeals-prototype-ortabkknqa-uc.a.run.app", icon: "⚖️" });
+    }
+    const shown = tiles.filter(t => matchesSearch(t.label));
+    if (!shown.length) { p.appendChild(emptyState("No tools available yet.")); return; }
+    const grid = el("div", "mv-tools");
+    for (const t of shown) {
+      const a = el("a", "mv-tool");
+      a.href = t.url || "#"; a.target = "_blank"; a.rel = "noopener noreferrer"; a.title = t.label;
+      a.appendChild(el("span", "mv-tool-ico", t.icon || "▦"));
+      const lab = el("span", "mv-tool-label", t.label);
+      if (t.badge) lab.appendChild(el("span", "mv-tool-badge", t.badge));
+      a.appendChild(lab); a.appendChild(el("span", "mv-tool-arrow", "↗"));
+      grid.appendChild(a);
+    }
+    p.appendChild(grid);
+  }
+
+  function renderBookmarks() {
+    const p = q('[data-panel="bookmarks"]'); if (!p) return; p.innerHTML = "";
+    // Stub for P1 — bookmarks capture is a future surface.
+    p.appendChild(emptyState("No bookmarks yet — like an answer to save it here."));
+  }
+
+  function renderNotifications() {
+    const p = q('[data-panel="notifications"]'); if (!p) return; p.innerHTML = "";
+    const rows = state.tasksNotif
+      .filter(t => matchesSearch((t.title || "") + " " + (t.body || "")))
+      .slice()
+      .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));  // newest first
+    if (!rows.length) { p.appendChild(emptyState("No notifications.")); return; }
+    const ul = el("ul", "mv-row-list");
+    for (const t of rows) ul.appendChild(taskRow(t, true));  // isNotif=true → 🔔 + Dismiss
+    p.appendChild(ul);
   }
   function taskRow(t, isNotif) {
     const id = t.task_id || t.id;
@@ -469,9 +535,10 @@
   function toggleSel(tab, id, on) { const s = selSet(tab); if (on) s.add(id); else s.delete(id); renderAll(); }
   async function bulk(ids, fn, doneMsg) {
     if (!ids.length) return;
+    toast("◌ Working on " + ids.length + "…");   // before: don't go silent
     const results = await Promise.allSettled(ids.map(fn));
     const ok = results.filter(r => r.status === "fulfilled" && r.value !== false).length;
-    toast(doneMsg(ok, ids.length));
+    toast(doneMsg(ok, ids.length));               // after: concrete outcome (N/N)
     renderAll();
   }
   const findUpload = (id) => state.uploads.find(u => u.document_id === id);
@@ -553,9 +620,18 @@
 
   function renderAll() {
     if (!root) return;
-    renderUrgency(); renderRail(); renderRecent(); renderLiked(); renderTasks(); renderUploads();
-    qa(".mv-panel-body [data-panel]").forEach(p => p.classList.toggle("active", p.dataset.panel === state.tab));
+    renderRail();
     const banner = q(".mv-preview"); if (banner) banner.style.display = state.preview ? "block" : "none";
+    qa(".mv-panel-body [data-panel]").forEach(p => p.classList.toggle("active", p.dataset.panel === state.tab));
+    if (state.loading) {
+      // Don't go silent during the open fetch — show a concrete loading line.
+      const active = q('.mv-panel-body [data-panel="' + state.tab + '"]');
+      if (active) { active.innerHTML = ""; active.appendChild(el("div", "mv-loading", "◌ Loading your vault…")); }
+      const strip = q(".mv-urgency"); if (strip) strip.classList.remove("show");
+      return;
+    }
+    renderUrgency(); renderRecent(); renderLiked(); renderTasks(); renderUploads();
+    renderTools(); renderBookmarks(); renderNotifications();
   }
   function switchTab(key) { state.tab = key; renderAll(); }
 
@@ -583,7 +659,7 @@
       { document_id: "d4", filename: "scan_2026_07_10.pdf", status: "failed", byte_size: 3407872, created_at: iso(-0.5), expires_at: iso(6) },
       { document_id: "d5", filename: "old_scan_2026_06.pdf", status: "expired", byte_size: 291840, created_at: iso(-10), expires_at: iso(-3) },
     ];
-    state.loaded = true; renderAll();
+    state.loaded = true; state.loading = false; renderAll();
   }
 
   // ── drawer chrome ────────────────────────────────────────────────
@@ -619,6 +695,9 @@
             '<section class="mv-tab" data-panel="liked"></section>' +
             '<section class="mv-tab" data-panel="tasks"></section>' +
             '<section class="mv-tab" data-panel="uploads"></section>' +
+            '<section class="mv-tab" data-panel="tools"></section>' +
+            '<section class="mv-tab" data-panel="bookmarks"></section>' +
+            '<section class="mv-tab" data-panel="notifications"></section>' +
           '</main>' +
         '</div>' +
         '<div class="mv-toast" role="status" aria-live="polite"></div>' +
@@ -639,12 +718,13 @@
     // Active chat thread for "Use in current chat" — host passes it (or sets
     // window.mobiusCurrentThreadId); null disables that action gracefully.
     state.currentThreadId = opts.currentThreadId || window.mobiusCurrentThreadId || null;
+    state.pinned = readPinned();                  // re-read each open — sidebar may have changed it
     state.selTasks.clear(); state.selUploads.clear();
     build();
     state.open = true;
     void root.offsetWidth;            // force reflow so the slide-in transition plays
     root.classList.add("open");       // synchronous (rAF is throttled in background tabs)
-    if (!state.loaded) { renderAll(); loadAll(); } else renderAll();
+    if (!state.loaded) { state.loading = true; renderAll(); loadAll(); } else renderAll();
   }
   function close() { if (!root) return; state.open = false; root.classList.remove("open"); }
   function toggle(opts) { state.open ? close() : open(opts); }
@@ -773,7 +853,17 @@ tr.is-expired .mv-name{text-decoration:line-through;color:var(--mobius-text-mute
 .mv-date,.mv-text{padding:6px 8px;border:1px solid var(--mobius-border-medium,#d1d5db);border-radius:6px;font-size:13px;font-family:inherit;color:inherit;background:var(--mobius-bg-primary,#fff);}
 .mv-text{width:100%;}
 .mv-btn-primary{border-color:var(--mobius-violet,#7C3AED);background:var(--mobius-violet,#7C3AED);color:#fff;}
-@media (max-width:640px){.mv-panel-body{grid-template-columns:56px 1fr;}.mv-rail-label,.mv-rail-sep{display:none;}.mv-search{width:120px;}}
+.mv-loading{padding:40px 20px;text-align:center;color:var(--mobius-text-muted,#64748b);font-size:13px;}
+.mv-rail-pin{color:var(--mobius-violet,#7C3AED);font-size:9px;line-height:1;margin-right:-4px;flex:0 0 auto;}
+.mv-rail-item.pinned .mv-rail-label{font-weight:600;}
+.mv-tools{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;}
+.mv-tool{display:flex;align-items:center;gap:10px;padding:12px;border:1px solid var(--mobius-border-light,#e5e7eb);border-radius:10px;background:var(--mobius-bg-secondary,#f8fafc);text-decoration:none;color:var(--mobius-text-primary,#1a1d21);}
+.mv-tool:hover{border-color:var(--mobius-violet,#7C3AED);}
+.mv-tool-ico{font-size:18px;flex:0 0 auto;}
+.mv-tool-label{flex:1;font-size:13px;display:flex;align-items:center;gap:6px;}
+.mv-tool-badge{font-size:9px;text-transform:uppercase;letter-spacing:.04em;padding:1px 6px;border-radius:9999px;background:var(--mobius-bg-tertiary,#f1f5f9);color:var(--mobius-text-muted,#64748b);}
+.mv-tool-arrow{color:var(--mobius-text-muted,#64748b);font-size:12px;}
+@media (max-width:640px){.mv-panel-body{grid-template-columns:56px 1fr;}.mv-rail-label,.mv-rail-sep,.mv-rail-pin{display:none;}.mv-search{width:120px;}}
 `;
 
   // ── public API ───────────────────────────────────────────────────
