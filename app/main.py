@@ -2633,6 +2633,41 @@ async def internal_skill_llm(
     return {"text": text, "usage": usage}
 
 
+# ─── Internal progress push (for out-of-process skills like RAG) ────────────
+
+
+class _ProgressPushBody(BaseModel):
+    label: str = ""
+
+
+_PROGRESS_KEY = (os.environ.get("MOBIUS_INTERNAL_PROGRESS_KEY") or "").strip()
+
+
+@app.post("/internal/progress/{cid}", status_code=204)
+async def internal_progress_push(
+    cid: str,
+    body: _ProgressPushBody,
+    x_mobius_key: str | None = Header(None, alias="X-Mobius-Internal-Key"),
+):
+    """Push a thinking-log line into an active turn's SSE stream.
+
+    Used by out-of-process skills (e.g. RAG perceived-latency reporting)
+    to append progress into the turn already open in the client.
+
+    Security: requires X-Mobius-Internal-Key == MOBIUS_INTERNAL_PROGRESS_KEY.
+    Silently no-ops on unknown cid (append_thinking drops unknown ids).
+
+    PHI §4: label must be a count/enum/template string — never raw user text.
+    """
+    if _PROGRESS_KEY and (x_mobius_key or "").strip() != _PROGRESS_KEY:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    label = (body.label or "").strip()
+    if label:
+        from app.storage.progress import append_thinking
+        append_thinking(cid, label)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Financial Strategy proxies REMOVED 2026-04-18.
 # Nine /chat/financial-strategy/*, /chat/org-story, /chat/org-story-v2,

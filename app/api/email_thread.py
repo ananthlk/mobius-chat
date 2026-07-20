@@ -236,9 +236,13 @@ def email_thread(
     if not thread_id or not thread_id.strip():
         raise HTTPException(status_code=400, detail="thread_id required")
 
+    logger.info("email_thread start thread_id=%s scope=%s mode=%s to_count=%d",
+                thread_id, body.scope, body.mode, len(body.to))
+
     turns = _fetch_turns(thread_id)
     if not turns:
         raise HTTPException(status_code=404, detail="thread has no turns")
+    logger.info("email_thread turns loaded n=%d thread_id=%s", len(turns), thread_id)
 
     selected = turns if body.scope == "thread" else _last_exchange(turns)
     if not selected:
@@ -251,6 +255,8 @@ def email_thread(
 
     if body.mode == "summary":
         # Summary uses chat's own llm_manager — same bandit, in-process
+        logger.info("email_thread draft_summary start thread_id=%s turns_selected=%d",
+                    thread_id, len(selected))
         try:
             drafted = asyncio.run(_draft_summary(
                 transcript,
@@ -266,6 +272,8 @@ def email_thread(
                 ))
             finally:
                 loop.close()
+        logger.info("email_thread draft_summary done thread_id=%s subject_len=%d body_len=%d",
+                    thread_id, len(drafted.get("subject") or ""), len(drafted.get("body") or ""))
         subject = drafted["subject"]
         body_text = drafted["body"]
     else:
@@ -295,10 +303,12 @@ def email_thread(
         "run_id": thread_id,
         "step_id": f"thread-email:{key[-12:]}",
     }
+    logger.info("email_thread post_skill start thread_id=%s key_suffix=%s confirm=%s",
+                thread_id, key[-12:], body.confirm_before_send)
     res = _post_email_skill(payload)
 
     logger.info(
-        "email_thread thread_id=%s scope=%s mode=%s actor=%s status=%s replay=%s",
+        "email_thread done thread_id=%s scope=%s mode=%s actor=%s status=%s replay=%s",
         thread_id, body.scope, body.mode, actor,
         res.get("status"), res.get("idempotent_replay"),
     )

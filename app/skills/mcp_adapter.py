@@ -57,6 +57,125 @@ from app.skills.registry import (
 logger = logging.getLogger(__name__)
 
 
+def _mcp_before_label(tool_name: str, inputs: dict) -> str:
+    """Return a concrete before-emit label for a known MCP tool, or a generic fallback."""
+    i = inputs or {}
+
+    def _s(key: str, fallback: str = "?") -> str:
+        return str(i.get(key) or fallback)
+
+    # Appeals
+    if tool_name == "appeals_assemble_letter":
+        return f"◌ Assembling appeal letter for CARC {_s('carc')} / {_s('payor')} — takes 30–90s…"
+    if tool_name == "appeals_validate_claim":
+        return f"◌ Running AI recommendation for CARC {_s('carc')}…"
+    if tool_name == "appeals_lookup_rules":
+        return f"◌ Looking up CARC {_s('carc')} rules…"
+    if tool_name == "appeals_get_playbook":
+        return f"◌ Checking playbook for {_s('payor')}…"
+    # Credentialing — named / dual-mode
+    if tool_name == "lookup_npi":
+        return f"◌ Looking up NPI for {_s('org')}…"
+    if tool_name == "search_orgs":
+        return f"◌ Searching organizations matching '{_s('query')}'…"
+    if tool_name == "check_provider_credentialing":
+        if i.get("npi"):
+            return f"◌ Checking credentialing status for NPI {_s('npi')} at {_s('org_slug')}…"
+        return f"◌ Checking panel credentialing status for {_s('org_slug')}…"
+    # Credentialing — org-centric (slow BQ)
+    if tool_name == "get_org_profile":
+        return f"◌ Loading {_s('org_slug')} profile ({_s('period_year', '2024')})…"
+    if tool_name == "get_org_service_line_profile":
+        return f"◌ Loading service-line breakdown for {_s('org_slug')}…"
+    if tool_name == "get_org_benchmark":
+        return f"◌ Benchmarking {_s('org_slug')} against peers ({_s('period_year', '2024')})…"
+    if tool_name == "get_org_leakage":
+        return f"◌ Analyzing patient leakage for {_s('org_slug')}…"
+    if tool_name == "get_org_rate_gap":
+        return f"◌ Computing rate gap for {_s('org_slug')}…"
+    if tool_name == "get_service_line_opportunity":
+        tgt = _s("org_slug") if i.get("org_slug") else (_s("org_type") if i.get("org_type") else "the market")
+        return f"◌ Sizing service-line opportunity for {tgt} ({_s('period_year', '2024')})…"
+    if tool_name == "get_market_share_timeseries":
+        tgt = _s("org_slug") if i.get("org_slug") else (_s("entity") if i.get("entity") else "all orgs")
+        return f"◌ Fetching market share for {tgt} ({_s('year_from', '2019')}–{_s('year_to', '2024')})…"
+    # Credentialing — entity-level
+    if tool_name == "get_fact_pack":
+        return f"◌ Loading {_s('entity')} fact pack…"
+    if tool_name == "get_churn_benchmark":
+        return f"◌ Loading {_s('entity')} clinician churn benchmarks…"
+    if tool_name == "get_service_mix":
+        return f"◌ Loading {_s('entity')} service mix ({_s('period_year', '2024')})…"
+    if tool_name == "get_market_retention":
+        return f"◌ Loading {_s('entity')} panel retention rates…"
+    # Credentialing — market-level
+    if tool_name == "get_market_timeseries":
+        return f"◌ Loading FL Medicaid BH market trends ({_s('year_from', '2019')}–{_s('year_to', '2024')})…"
+    if tool_name == "get_market_decomposition":
+        return f"◌ Decomposing FL BH market by service line ({_s('period_year', '2024')})…"
+    if tool_name == "get_entrant_analysis":
+        return f"◌ Analyzing new-entrant displacement ({_s('period_year', '2024')})…"
+    if tool_name == "get_top_orgs":
+        return f"◌ Ranking top orgs by {_s('metric', 'benes')} ({_s('period_year', '2024')})…"
+    if tool_name == "get_org_type_stats":
+        return f"◌ Loading {_s('org_type')} market stats ({_s('period_year', '2024')})…"
+    if tool_name == "get_market_size":
+        return "◌ Loading FL Medicaid BH market size…"
+    if tool_name == "get_benchmark_dimensions":
+        return f"◌ Loading peer benchmark distributions ({_s('period_year', '2024')})…"
+    # Generic fallback — covers fast lookups + any future MCP tool
+    return f"◌ Running {tool_name}…"
+
+
+def _mcp_after_label(tool_name: str, inputs: dict, text: str, success: bool) -> str:
+    """Return a concrete after-emit label."""
+    if not success:
+        return f"⊘ {tool_name} failed"
+    i = inputs or {}
+
+    def _s(key: str, fallback: str = "?") -> str:
+        return str(i.get(key) or fallback)
+
+    if tool_name == "appeals_assemble_letter":
+        wc = len((text or "").split())
+        return f"✓ Letter assembled ({wc} words)"
+    if tool_name == "appeals_validate_claim":
+        # try to parse action/confidence from JSON response
+        try:
+            import json as _j
+            _d = _j.loads(text or "{}")
+            _action = _d.get("action") or _d.get("recommendation") or "see result"
+            _conf = _d.get("confidence") or _d.get("confidence_score")
+            if _conf:
+                return f"✓ Recommendation: {_action} ({_conf})"
+            return f"✓ Recommendation: {_action}"
+        except Exception:
+            return f"✓ Recommendation ready"
+    if tool_name == "check_provider_credentialing":
+        try:
+            import json as _j
+            _d = _j.loads(text or "{}")
+            _status = _d.get("status") or _d.get("credentialing_status")
+            if _status:
+                return f"✓ Credentialing status: {_status}"
+        except Exception:
+            pass
+        if i.get("npi"):
+            return f"✓ Credentialing check for NPI {_s('npi')} done"
+        _providers = None
+        try:
+            import json as _j
+            _d = _j.loads(text or "{}")
+            _providers = _d.get("n") or _d.get("providers_checked") or _d.get("count")
+        except Exception:
+            pass
+        return f"✓ Report ready ({_providers} providers checked)" if _providers else "✓ Report ready"
+    if tool_name in ("get_org_financial_strategy", "get_org_scorecard"):
+        return f"✓ {tool_name.replace('get_', '').replace('_', ' ').title()} ready"
+    # Fast lookups and market calls — generic outcome
+    return f"✓ {tool_name} done"
+
+
 def _make_mcp_handler(tool_name: str):
     """Build a handler closure that forwards a ``SkillCall`` to the
     named MCP tool.
@@ -74,12 +193,12 @@ def _make_mcp_handler(tool_name: str):
     """
 
     def _run(call: SkillCall) -> SkillEnvelope:
+        _inputs = call.inputs or {}
         if call.emitter:
-            call.emitter(f"◌ Calling MCP tool: {tool_name}…")
-        text, success = call_mcp_tool(tool_name, call.inputs or {})
+            call.emitter(_mcp_before_label(tool_name, _inputs))
+        text, success = call_mcp_tool(tool_name, _inputs)
         if call.emitter:
-            if success and text:
-                call.emitter(f"✓ {tool_name} returned {len(text)} chars")
+            call.emitter(_mcp_after_label(tool_name, _inputs, text, success))
 
         # Structured response: {"text": "...", "extra": {...}}
         # MCP tools can optionally return this JSON shape to pass out-of-band
