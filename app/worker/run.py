@@ -105,6 +105,10 @@ def process_one(correlation_id: str, payload: dict) -> None:
     user_profile = payload.get("profile")
     if user_profile is not None and not isinstance(user_profile, dict):
         user_profile = None
+    # PHI gate verdict forwarded from POST /chat (categories only, no raw text).
+    phi_gate_verdict = payload.get("phi_gate_verdict")
+    if phi_gate_verdict is not None and not isinstance(phi_gate_verdict, dict):
+        phi_gate_verdict = None
 
     deadline_s = _turn_deadline_seconds()
     is_main_thread = threading.current_thread() is threading.main_thread()
@@ -161,6 +165,7 @@ def process_one(correlation_id: str, payload: dict) -> None:
                 system_context=system_context,
                 cache_assist=cache_assist,
                 user_profile=user_profile,
+                phi_gate_verdict=phi_gate_verdict,
             )
 
     if is_main_thread and hasattr(signal, "SIGALRM"):

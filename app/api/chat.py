@@ -337,6 +337,16 @@ def post_chat(
     else:
         _log_phi_msg_gate(correlation_id, thread_id, user_id, "passed", _phi)
 
+    # Carry the gate verdict into the pipeline so it can emit a thinking step.
+    # Categories only (identifier_labels) — no raw text, no phi_evidence.
+    _phi_action = "overridden" if (body.phi_override and _phi.get("block")) else "passed"
+    payload["phi_gate_verdict"] = {
+        "gate": _phi.get("gate", "clean"),
+        "phi_flag": bool(_phi.get("phi_flag")),
+        "identifier_labels": list(_phi.get("identifier_labels") or []),
+        "action": _phi_action,
+    }
+
     get_queue().publish_request(correlation_id, payload)
     return ChatResponse(correlation_id=correlation_id, thread_id=thread_id)
 

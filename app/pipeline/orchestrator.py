@@ -347,6 +347,7 @@ def run_pipeline(
     system_context: str | None = None,
     cache_assist: bool | None = None,
     user_profile: dict | None = None,
+    phi_gate_verdict: dict | None = None,
 ) -> None:
     """Run the full pipeline: state_load -> classify -> plan -> clarify -> [resolve -> integrate] | early_exit.
 
@@ -485,6 +486,24 @@ def run_pipeline(
         # other emit so it rides the SSE stream and lands in
         # thinking_log for replay.
         on_thinking("◌ Thinking…")
+
+        # PHI message-gate verdict — emitted as first reasoning step so the
+        # user sees PHI protection status in real time. Categories only; no
+        # raw text. Sourced from the pre-farm gate run in POST /chat.
+        if phi_gate_verdict:
+            _pg = phi_gate_verdict
+            _pg_gate = _pg.get("gate", "clean")
+            _pg_action = _pg.get("action", "passed")
+            _pg_labels = _pg.get("identifier_labels") or []
+            if _pg_action == "overridden" and _pg_labels:
+                _label_str = ", ".join(_pg_labels[:5])
+                on_thinking(f"⚠ PHI detected ({_label_str}) — proceeding on your override")
+            elif _pg_action == "overridden":
+                on_thinking("⚠ PHI detected — proceeding on your override")
+            elif _pg_gate == "indeterminate":
+                on_thinking("⚠ PHI check unavailable — blocked (fail-closed)")
+            else:
+                on_thinking("✓ PHI check — no patient info detected")
 
         # 2026-05-06: emit a personalization_applied envelope very
         # early so the user sees their mobius-user preferences are
