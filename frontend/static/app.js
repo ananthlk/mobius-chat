@@ -10025,6 +10025,38 @@ function run() {
       hipaaSection.appendChild(body);
       diagPanel.appendChild(hipaaSection);
     }
+    if (opts.msgPhiGate) {
+      const mg = opts.msgPhiGate;
+      const row = document.createElement("div");
+      row.className = "diag-phi-msg-row";
+      let icon = "\u2713";
+      let label = "HIPAA checked \xB7 no PHI";
+      let stateClass = "diag-phi-msg-row--clean";
+      if (mg.action === "overridden") {
+        icon = "\u26A0";
+        label = "PHI detected \xB7 user override";
+        stateClass = "diag-phi-msg-row--override";
+      } else if (mg.gate === "indeterminate") {
+        icon = "\u26A0";
+        label = "PHI check unavailable \xB7 blocked (fail-closed)";
+        stateClass = "diag-phi-msg-row--indeterminate";
+      } else if (mg.gate === "phi" || mg.phi_flag) {
+        icon = "\u2715";
+        label = "PHI detected \xB7 blocked";
+        stateClass = "diag-phi-msg-row--blocked";
+      }
+      row.classList.add(stateClass);
+      const labelParts = [
+        `<span class="diag-phi-msg-icon">${icon}</span>`,
+        `<span class="diag-phi-msg-label">${label}</span>`
+      ];
+      if (mg.identifier_labels.length) {
+        const pills = mg.identifier_labels.map((l) => `<span class="diag-phi-msg-pill">${escapeHtml4(l)}</span>`).join(" ");
+        labelParts.push(`<span class="diag-phi-msg-pills">${pills}</span>`);
+      }
+      row.innerHTML = labelParts.join("");
+      diagPanel.appendChild(row);
+    }
     const tabBar = bubble.querySelector(".ac-tab-bar");
     if (tabBar) {
       const diagBtn = document.createElement("button");
@@ -10673,6 +10705,7 @@ function run() {
   }
   let _pendingMentions = [];
   let _pendingHipaaDiagnostics = null;
+  let _pendingMsgPhiGate = null;
   let _coworkerFetchTimer = null;
   let _coworkerDropdown = null;
   async function _fetchCoworkers(q) {
@@ -10890,8 +10923,22 @@ ${message}`;
         }
         if (gateAction === "dismiss")
           return;
+        _pendingMsgPhiGate = {
+          gate: _phiResult.gate ?? "phi",
+          phi_flag: true,
+          identifier_labels: _phiResult.identifier_labels ?? [],
+          action: "overridden"
+        };
         sendMessage(message, { ...opts || {}, phi_override: true });
         return;
+      }
+      if (_phiResult) {
+        _pendingMsgPhiGate = {
+          gate: _phiResult.gate ?? "clean",
+          phi_flag: _phiResult.phi_flag ?? false,
+          identifier_labels: _phiResult.identifier_labels ?? [],
+          action: "passed"
+        };
       }
     }
     if (chatEmpty)
@@ -11496,6 +11543,8 @@ ${message}`;
       const perfMeta = data.llm_performance;
       const hipaaForTab = _pendingHipaaDiagnostics;
       _pendingHipaaDiagnostics = null;
+      const msgPhiGateForTab = _pendingMsgPhiGate;
+      _pendingMsgPhiGate = null;
       if (getShowLlmPerformance(cachedProfile) && data.status === "completed") {
         const tin = Number(data.tokens_used?.input_tokens) || 0;
         const tout = Number(data.tokens_used?.output_tokens) || 0;
@@ -11512,7 +11561,8 @@ ${message}`;
             inputTokens: tin,
             outputTokens: tout,
             routingFeedback: data.technical_feedback?.llm_performance ?? null,
-            hipaaDiagnostics: hipaaForTab
+            hipaaDiagnostics: hipaaForTab,
+            msgPhiGate: msgPhiGateForTab
           });
         } else if (Array.isArray(insightRows) && insightRows.length > 0) {
           turnWrap.appendChild(

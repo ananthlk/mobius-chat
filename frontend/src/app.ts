@@ -9831,6 +9831,9 @@ function run(): void {
         hipaa_mode_allowed: boolean; action_taken: string;
         reason: string; transaction_id: string; document_name: string;
       } | null;
+      msgPhiGate?: {
+        gate: string; phi_flag: boolean; identifier_labels: string[]; action: string;
+      } | null;
     }
   ): void {
     if (bubble.querySelector(".ac-tab-panel--diagnostics")) return; // idempotent
@@ -9961,6 +9964,44 @@ function run(): void {
       hipaaSection.appendChild(header);
       hipaaSection.appendChild(body);
       diagPanel.appendChild(hipaaSection);
+    }
+
+    // Section 4: PHI message gate verdict
+    if (opts.msgPhiGate) {
+      const mg = opts.msgPhiGate;
+      const row = document.createElement("div");
+      row.className = "diag-phi-msg-row";
+
+      let icon = "✓";
+      let label = "HIPAA checked · no PHI";
+      let stateClass = "diag-phi-msg-row--clean";
+      if (mg.action === "overridden") {
+        icon = "⚠";
+        label = "PHI detected · user override";
+        stateClass = "diag-phi-msg-row--override";
+      } else if (mg.gate === "indeterminate") {
+        icon = "⚠";
+        label = "PHI check unavailable · blocked (fail-closed)";
+        stateClass = "diag-phi-msg-row--indeterminate";
+      } else if (mg.gate === "phi" || mg.phi_flag) {
+        icon = "✕";
+        label = "PHI detected · blocked";
+        stateClass = "diag-phi-msg-row--blocked";
+      }
+
+      row.classList.add(stateClass);
+      const labelParts = [
+        `<span class="diag-phi-msg-icon">${icon}</span>`,
+        `<span class="diag-phi-msg-label">${label}</span>`,
+      ];
+      if (mg.identifier_labels.length) {
+        const pills = mg.identifier_labels
+          .map(l => `<span class="diag-phi-msg-pill">${escapeHtml(l)}</span>`)
+          .join(" ");
+        labelParts.push(`<span class="diag-phi-msg-pills">${pills}</span>`);
+      }
+      row.innerHTML = labelParts.join("");
+      diagPanel.appendChild(row);
     }
 
     // Wire tab button into the tab bar
@@ -10777,6 +10818,10 @@ function run(): void {
     hipaa_mode_allowed: boolean; action_taken: string;
     reason: string; transaction_id: string; document_name: string;
   } | null = null;
+  // PHI message-gate verdict for the next assistant turn's diagnostics tab.
+  let _pendingMsgPhiGate: {
+    gate: string; phi_flag: boolean; identifier_labels: string[]; action: string;
+  } | null = null;
   let _coworkerFetchTimer: ReturnType<typeof setTimeout> | null = null;
   let _coworkerDropdown: HTMLElement | null = null;
 
@@ -10993,8 +11038,23 @@ function run(): void {
         }
         if (gateAction === "dismiss") return;
         // gateAction === "override" — re-enter with override flag so backend accepts
+        _pendingMsgPhiGate = {
+          gate: _phiResult.gate ?? "phi",
+          phi_flag: true,
+          identifier_labels: _phiResult.identifier_labels ?? [],
+          action: "overridden",
+        };
         sendMessage(message, {...(opts || {}), phi_override: true});
         return;
+      }
+      // Message passed the gate clean — stash verdict for diagnostics tab
+      if (_phiResult) {
+        _pendingMsgPhiGate = {
+          gate: (_phiResult as {gate?: string}).gate ?? "clean",
+          phi_flag: (_phiResult as {phi_flag?: boolean}).phi_flag ?? false,
+          identifier_labels: _phiResult.identifier_labels ?? [],
+          action: "passed",
+        };
       }
     }
 
@@ -11729,9 +11789,11 @@ function run(): void {
 
         const insightRows = data.usage_breakdown;
         const perfMeta = data.llm_performance;
-        // Consume pending HIPAA diagnostics for this turn regardless of admin mode
+        // Consume pending HIPAA/PHI diagnostics for this turn regardless of admin mode
         const hipaaForTab = _pendingHipaaDiagnostics;
         _pendingHipaaDiagnostics = null;
+        const msgPhiGateForTab = _pendingMsgPhiGate;
+        _pendingMsgPhiGate = null;
         if (
           getShowLlmPerformance(cachedProfile) &&
           data.status === "completed"
@@ -11754,6 +11816,7 @@ function run(): void {
               outputTokens: tout,
               routingFeedback: data.technical_feedback?.llm_performance ?? null,
               hipaaDiagnostics: hipaaForTab,
+              msgPhiGate: msgPhiGateForTab,
             });
           } else if (Array.isArray(insightRows) && insightRows.length > 0) {
             // Admin path B: non-card turn — keep panels below the bubble as before
