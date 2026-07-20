@@ -5797,30 +5797,48 @@ body.landing-state .composer-landing-chips {
 }
 
 /* Mode selector — replaces the Agentic checkbox */
-.composer-mode-select {
+.composer-mode-strip {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  background: rgba(0,0,0,0.06);
+  border-radius: 7px;
+  padding: 2px;
+  gap: 1px;
+}
+@media (prefers-color-scheme: dark) {
+  .composer-mode-strip { background: rgba(255,255,255,0.08); }
+}
+:root[data-theme="dark"] .composer-mode-strip { background: rgba(255,255,255,0.08); }
+:root[data-theme="light"] .composer-mode-strip { background: rgba(0,0,0,0.06); }
+
+.composer-mode-btn {
   flex-shrink: 0;
   font-size: 0.72rem;
   font-family: inherit;
   font-weight: 500;
   color: var(--sidebar-text-muted);
   background: transparent;
-  border: 1px solid var(--border, #e2e8f0);
-  border-radius: 6px;
-  padding: 0.22rem 0.5rem;
+  border: none;
+  border-radius: 5px;
+  padding: 0.20rem 0.45rem;
   cursor: pointer;
   outline: none;
   white-space: nowrap;
-  transition: border-color 0.12s, color 0.12s;
-  -webkit-appearance: auto;
-  appearance: auto;
+  transition: background 0.12s, color 0.12s;
+  line-height: 1.4;
 }
-.composer-mode-select:hover {
-  border-color: var(--accent, #3b82f6);
+.composer-mode-btn:hover {
   color: var(--accent, #3b82f6);
 }
-.composer-mode-select:focus {
-  border-color: var(--accent, #3b82f6);
-  color: var(--accent, #3b82f6);
+.composer-mode-btn.active {
+  background: var(--accent, #3b82f6);
+  color: #fff;
+  font-weight: 600;
+}
+.composer-mode-btn:focus-visible {
+  outline: 2px solid var(--accent, #3b82f6);
+  outline-offset: 1px;
 }
 
 .credentialing-envelope-field {

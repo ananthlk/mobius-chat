@@ -277,15 +277,35 @@
           <button type="button" class="composer-attachment-chip__remove" id="composerAttachmentChipRemove" aria-label="Remove attachment" title="Remove attachment">×</button>
         </div>
         <div class="composer">
-          <select id="composerMode" class="composer-mode-select" data-tour-id="composer-mode"
-            title="Response mode&#10;⚡ Fast — 2 rounds, brief answer&#10;◉ Normal — registry-first, practical&#10;✦ Thinking — deep research, high confidence"
-            onchange="localStorage.setItem('_mobiusChatMode',this.value)">
-            <option value="quick">⚡ Fast</option>
-            <option value="copilot" selected>◉ Normal</option>
-            <option value="agentic">✦ Thinking</option>
-          </select>
+          <div id="composerModeStrip" class="composer-mode-strip" role="radiogroup"
+               aria-label="Response mode" data-tour-id="composer-mode"
+               title="Response mode&#10;⚡ Fast — 2 rounds, brief answer&#10;◉ Normal — registry-first, practical&#10;✦ Think — deep research, high confidence">
+            <button type="button" class="composer-mode-btn" data-mode="quick" aria-label="Fast mode">⚡ Fast</button>
+            <button type="button" class="composer-mode-btn active" data-mode="copilot" aria-label="Normal mode" aria-checked="true">◉ Normal</button>
+            <button type="button" class="composer-mode-btn" data-mode="agentic" aria-label="Think mode">✦ Think</button>
+          </div>
           <script>
-            (function(){const m=localStorage.getItem('_mobiusChatMode');const s=document.getElementById('composerMode');if(s&&m&&['quick','copilot','agentic'].includes(m))s.value=m;})();
+            (function(){
+              var m=localStorage.getItem('_mobiusChatMode');
+              var strip=document.getElementById('composerModeStrip');
+              if(strip&&m&&['quick','copilot','agentic'].includes(m)){
+                strip.querySelectorAll('.composer-mode-btn').forEach(function(b){
+                  var active=b.dataset.mode===m;
+                  b.classList.toggle('active',active);
+                  b.setAttribute('aria-checked',active?'true':'false');
+                });
+              }
+              strip&&strip.addEventListener('click',function(e){
+                var btn=e.target.closest('.composer-mode-btn');
+                if(!btn)return;
+                strip.querySelectorAll('.composer-mode-btn').forEach(function(b){
+                  var active=b===btn;
+                  b.classList.toggle('active',active);
+                  b.setAttribute('aria-checked',active?'true':'false');
+                });
+                localStorage.setItem('_mobiusChatMode',btn.dataset.mode||'copilot');
+              });
+            })();
           </script>
           <!-- Paperclip attach + hidden file input. Accept set matches
                chat's _handle_instant_rag_upload extractors: PDF/DOCX/HTML/TXT. -->

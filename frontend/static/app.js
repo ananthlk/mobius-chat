@@ -10807,8 +10807,7 @@ ${message}`;
       alphaBanner.hidden = true;
       localStorage.setItem("alpha_banner_dismissed", "1");
     }
-    const modeSelect = document.getElementById("composerMode");
-    const selectedMode = modeSelect?.value || localStorage.getItem("_mobiusChatMode") || "copilot";
+    const selectedMode = document.querySelector("#composerModeStrip .composer-mode-btn.active")?.dataset.mode || localStorage.getItem("_mobiusChatMode") || "copilot";
     messagesEl.querySelectorAll(".thinking-block").forEach((block) => {
       block.classList.add("collapsed");
       const p = block.querySelector(".thinking-preview");
