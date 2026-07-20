@@ -202,8 +202,13 @@ _PHI_GATE_URL = os.environ.get(
 def _phi_check_message(text: str, thread_id: str | None = None) -> dict:
     """POST to /message-check and return the parsed body.
 
-    Fails open on network error — the frontend pre-check is the UX gate;
-    this is the authoritative re-run that decides whether to 422 or proceed.
+    FAIL-CLOSED: any network error, timeout, or non-200 response returns
+    block=True with gate='indeterminate'. A transient classifier outage
+    must never silently pass an unverified message — that would make the
+    gate bypassable by taking the classifier offline.
+
+    The frontend pre-check fails-open (UX layer only). This backend
+    re-run is the authoritative enforcement layer.
     """
     import httpx
     try:
@@ -214,10 +219,12 @@ def _phi_check_message(text: str, thread_id: str | None = None) -> dict:
             )
             if r.status_code == 200:
                 return r.json()
-            logger.warning("[phi-gate] /message-check returned %s", r.status_code)
+            logger.warning("[phi-gate] /message-check returned %s — blocking (fail-closed)", r.status_code)
     except Exception as exc:
-        logger.warning("[phi-gate] /message-check unreachable: %s", exc)
-    return {"block": False, "gate": "indeterminate", "phi_flag": False}
+        logger.warning("[phi-gate] /message-check unreachable (%s) — blocking (fail-closed)", exc)
+    # Fail-closed sentinel: block=True, gate='indeterminate' distinguishes
+    # "classifier said PHI" from "classifier couldn't be reached".
+    return {"block": True, "gate": "indeterminate", "phi_flag": False, "_check_error": True}
 
 
 def _log_phi_msg_gate(
