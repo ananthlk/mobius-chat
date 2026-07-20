@@ -45,7 +45,6 @@
               <svg class="vault-block-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M2 6h12"/><path d="M6 9h4"/></svg>
               My Vault <span class="vault-block-tag">· private</span>
             </span>
-            <button type="button" class="vault-block-open-btn" id="vaultOpenBtn" aria-label="Open My Vault panel">⤢ Open</button>
           </div>
           <div class="vault-block-tabs" id="vaultSectionTabs" role="tablist" aria-label="Vault sections">
             <!-- populated by renderSidebarTabs() -->
@@ -354,6 +353,14 @@
           <button type="button" class="btn-send" id="send" aria-label="Send" data-tour-id="composer-send">
             <svg class="send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>
           </button>
+        </div>
+        <!-- Universal notification tray — shown/hidden by _notify manager in app.ts -->
+        <div class="notif-tray" id="notifTray" hidden aria-live="polite" aria-label="Notifications">
+          <div class="notif-tray-header">
+            <span class="notif-tray-count" id="notifTrayCount">1 notification</span>
+            <button type="button" class="notif-tray-dismiss-all" id="notifDismissAll" aria-label="Dismiss all">Dismiss all ×</button>
+          </div>
+          <div class="notif-tray-list" id="notifTrayList"></div>
         </div>
         <!-- Landing chips: visible before first message (body.landing-state), positioned below composer -->
         <div class="composer-landing-chips" id="composerLandingChips" aria-label="Quick prompts">

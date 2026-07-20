@@ -12088,42 +12088,73 @@ ${message}`;
       void _poll();
     }, 3e3);
   }
-  function _showReadyNudge(filename, documentId, threadId) {
-    if (document.querySelector(".rag-ready-nudge"))
-      return;
-    const anchor = document.querySelector(".composer-wrap");
-    if (!anchor || !anchor.parentElement)
-      return;
-    const chip = document.createElement("div");
-    chip.className = "reminder-nudge rag-ready-nudge";
-    const label = document.createElement("span");
-    label.className = "reminder-nudge-label";
-    label.textContent = `\u{1F4C4} "${filename}" is ready`;
-    const askBtn = document.createElement("button");
-    askBtn.type = "button";
-    askBtn.className = "reminder-nudge-view";
-    askBtn.textContent = "Ask now";
-    askBtn.addEventListener("click", () => {
-      chip.remove();
-      if (threadId && currentThreadId !== threadId) {
+  const _notify = (() => {
+    const items = /* @__PURE__ */ new Map();
+    function updateHeader() {
+      const tray = document.getElementById("notifTray");
+      const count = document.getElementById("notifTrayCount");
+      const n = items.size;
+      if (!tray)
+        return;
+      if (n === 0) {
+        tray.hidden = true;
+        return;
       }
-      const inputEl2 = document.getElementById("input");
-      if (inputEl2 && !inputEl2.value.trim()) {
-        inputEl2.value = `Tell me about "${filename}"`;
-        inputEl2.dispatchEvent(new Event("input"));
-        inputEl2.focus();
+      tray.hidden = false;
+      if (count)
+        count.textContent = n === 1 ? "1 notification" : `${n} notifications`;
+    }
+    function remove(id) {
+      const item = items.get(id);
+      if (item) {
+        item.el.remove();
+        items.delete(id);
+      }
+      updateHeader();
+    }
+    function add(id, opts) {
+      remove(id);
+      const list = document.getElementById("notifTrayList");
+      if (!list)
+        return;
+      const el2 = document.createElement("div");
+      el2.className = "notif-item";
+      el2.innerHTML = `<span class="notif-icon">${opts.icon}</span><span class="notif-msg">${opts.message}</span>` + (opts.action ? `<button type="button" class="notif-action">${opts.action.label}</button>` : "") + `<button type="button" class="notif-close" aria-label="Dismiss">\xD7</button>`;
+      if (opts.action) {
+        const actionOpts = opts.action;
+        el2.querySelector(".notif-action")?.addEventListener("click", () => {
+          actionOpts.onClick();
+          remove(id);
+        });
+      }
+      el2.querySelector(".notif-close")?.addEventListener("click", () => remove(id));
+      list.appendChild(el2);
+      items.set(id, { el: el2 });
+      updateHeader();
+    }
+    document.getElementById("notifDismissAll")?.addEventListener("click", () => {
+      [...items.keys()].forEach((id) => remove(id));
+    });
+    return { add, remove };
+  })();
+  function _showReadyNudge(filename, documentId, threadId) {
+    _notify.add(`rag-ready-${documentId}`, {
+      icon: "\u{1F4C4}",
+      message: `"${filename}" is ready`,
+      action: {
+        label: "Ask now",
+        onClick: () => {
+          if (threadId && currentThreadId !== threadId) {
+          }
+          const inputEl2 = document.getElementById("input");
+          if (inputEl2 && !inputEl2.value.trim()) {
+            inputEl2.value = `Tell me about "${filename}"`;
+            inputEl2.dispatchEvent(new Event("input"));
+            inputEl2.focus();
+          }
+        }
       }
     });
-    const dismissBtn = document.createElement("button");
-    dismissBtn.type = "button";
-    dismissBtn.className = "reminder-nudge-dismiss";
-    dismissBtn.setAttribute("aria-label", "Dismiss");
-    dismissBtn.innerHTML = "&times;";
-    dismissBtn.addEventListener("click", () => chip.remove());
-    chip.appendChild(label);
-    chip.appendChild(askBtn);
-    chip.appendChild(dismissBtn);
-    anchor.parentElement.insertBefore(chip, anchor);
   }
   function _openRagProgressStrip(filename, progressChannel, documentId, threadId) {
     const strip = document.getElementById("ragProgressStrip");
@@ -13152,7 +13183,6 @@ ${message}`;
     const vaultBlock = document.getElementById("sidebarVaultBlock");
     if (!vaultBlock)
       return;
-    document.getElementById("vaultOpenBtn")?.addEventListener("click", () => openVaultPanel(_vaultActiveTab));
     document.getElementById("vaultManageBtn")?.addEventListener("click", () => openVaultPanel("recent"));
     document.getElementById("vaultRailBtn")?.addEventListener("click", () => {
       const sidebar2 = document.getElementById("sidebar");
