@@ -14186,6 +14186,18 @@ function run(): void {
       return url;
     }
 
+    // Expose suite tiles globally so the Vault panel (and any future consumer)
+    // can read the canonical list + resolved URLs without duplicating this logic.
+    // Format: {label, url, icon, tagline, badge?} — badge set for comingSoon tiles.
+    (window as Window & typeof globalThis & Record<string, unknown>)._mobiusSuiteTiles =
+      SUITE_TILES.map((t) => ({
+        label: t.label,
+        url: t.comingSoon ? "" : tileUrl(t),
+        icon: "",
+        tagline: t.tagline,
+        ...(t.comingSoon ? { badge: "coming soon" } : {}),
+      }));
+
     type ChatTheme = {
       title: string;
       tagline: string;

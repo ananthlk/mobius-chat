@@ -13562,6 +13562,13 @@ ${message}`;
       }
       return url;
     }
+    window._mobiusSuiteTiles = SUITE_TILES.map((t) => ({
+      label: t.label,
+      url: t.comingSoon ? "" : tileUrl(t),
+      icon: "",
+      tagline: t.tagline,
+      ...t.comingSoon ? { badge: "coming soon" } : {}
+    }));
     const CHAT_THEMES = [
       {
         title: "Healthcare lookup",
