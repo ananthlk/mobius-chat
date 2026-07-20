@@ -141,6 +141,11 @@ class ChatRequest(BaseModel):
     mobius-user side.
     """
 
+    phi_override: bool = False
+    """When True the caller has acknowledged a PHI gate warning and is
+    explicitly proceeding. The backend still re-runs /message-check
+    authoritatively and logs the override before dispatching."""
+
 
 class ChatResponse(BaseModel):
     correlation_id: str
@@ -188,6 +193,70 @@ def _enrich_completed_response_from_db(resp: dict) -> dict:
 
 
 @router.post("/chat", response_model=ChatResponse)
+_PHI_GATE_URL = os.environ.get(
+    "PHI_GATE_URL",
+    "https://mobius-phi-classifier-ortabkknqa-uc.a.run.app",
+).rstrip("/")
+
+
+def _phi_check_message(text: str, thread_id: str | None = None) -> dict:
+    """POST to /message-check and return the parsed body.
+
+    Fails open on network error — the frontend pre-check is the UX gate;
+    this is the authoritative re-run that decides whether to 422 or proceed.
+    """
+    import httpx
+    try:
+        with httpx.Client(timeout=4.0) as client:
+            r = client.post(
+                f"{_PHI_GATE_URL}/message-check",
+                json={"text": text, "thread_id": thread_id},
+            )
+            if r.status_code == 200:
+                return r.json()
+            logger.warning("[phi-gate] /message-check returned %s", r.status_code)
+    except Exception as exc:
+        logger.warning("[phi-gate] /message-check unreachable: %s", exc)
+    return {"block": False, "gate": "indeterminate", "phi_flag": False}
+
+
+def _log_phi_msg_gate(
+    correlation_id: str,
+    thread_id: str | None,
+    user_id: str | None,
+    action: str,
+    phi_result: dict,
+) -> None:
+    """Best-effort INSERT into compliance.hipaa_message_check_log."""
+    import json as _json
+    from app.db_client import db_execute as _dbe
+    try:
+        _dbe(
+            """
+            INSERT INTO compliance.hipaa_message_check_log
+                (correlation_id, thread_id, user_id, action,
+                 gate, phi_flag, identifier_labels, phi_evidence, classifier_version)
+            VALUES
+                (:cid, :tid, :uid, :action,
+                 :gate, :phi_flag, :labels, :evidence::jsonb, :clf_ver)
+            """,
+            "chat",
+            params={
+                "cid": correlation_id,
+                "tid": thread_id,
+                "uid": user_id,
+                "action": action,
+                "gate": phi_result.get("gate"),
+                "phi_flag": bool(phi_result.get("phi_flag")),
+                "labels": phi_result.get("identifier_labels") or [],
+                "evidence": _json.dumps(phi_result.get("phi_evidence") or []),
+                "clf_ver": phi_result.get("classifier_version") or "",
+            },
+        )
+    except Exception as exc:
+        logger.warning("[phi-gate] audit INSERT failed: %s", exc)
+
+
 def post_chat(
     body: ChatRequest,
     user_id: str | None = Depends(require_user),
@@ -240,6 +309,25 @@ def post_chat(
     # stage-system prompts and reads autonomy for tool gating.
     if isinstance(body.profile, dict) and body.profile:
         payload["profile"] = body.profile
+    # PHI gate — authoritative re-run before dispatch. Frontend pre-checks
+    # for UX; this is the enforcement layer that can't be bypassed.
+    _phi = _phi_check_message(body.message or "", thread_id)
+    if _phi.get("block"):
+        if not body.phi_override:
+            _log_phi_msg_gate(correlation_id, thread_id, user_id, "blocked", _phi)
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "phi_blocked": True,
+                    "phi_evidence": _phi.get("phi_evidence") or [],
+                    "identifier_labels": _phi.get("identifier_labels") or [],
+                    "message": _phi.get("message") or "Message contains PHI — remove or override to proceed.",
+                },
+            )
+        _log_phi_msg_gate(correlation_id, thread_id, user_id, "overridden", _phi)
+    else:
+        _log_phi_msg_gate(correlation_id, thread_id, user_id, "passed", _phi)
+
     get_queue().publish_request(correlation_id, payload)
     return ChatResponse(correlation_id=correlation_id, thread_id=thread_id)
 

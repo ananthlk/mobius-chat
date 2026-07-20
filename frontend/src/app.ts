@@ -576,6 +576,8 @@ interface SendMessageOpts {
   /** When true, do not intercept with credentialing envelope */
   skipCredentialingEnvelope?: boolean;
   use_react?: boolean;
+  /** When true, user acknowledged the PHI gate warning and is proceeding. */
+  phi_override?: boolean;
 }
 
 /** Aligned with mobius-chat/app/services/tool_agent.py roster_triggers + roster_triggers_new */
@@ -10878,6 +10880,58 @@ function run(): void {
     if (_coworkerDropdown && !_coworkerDropdown.contains(e.target as Node)) _closeAtDropdown();
   });
 
+  const _PHI_GATE_URL = "https://mobius-phi-classifier-ortabkknqa-uc.a.run.app";
+
+  function _phiHighlightHtml(
+    message: string,
+    evidence: Array<{category: string; redacted_span: string; offset: number; length: number}>
+  ): string {
+    function esc(s: string) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+    const chars = Array.from(message);
+    const spans = [...evidence].sort((a, b) => a.offset - b.offset);
+    let pos = 0;
+    const parts: string[] = [];
+    for (const sp of spans) {
+      if (sp.offset > pos) parts.push(esc(chars.slice(pos, sp.offset).join("")));
+      const spanText = chars.slice(sp.offset, sp.offset + sp.length).join("");
+      parts.push(`<mark class="phi-hl phi-hl--${esc(sp.category.toLowerCase())}">${esc(spanText)}</mark>`);
+      pos = sp.offset + sp.length;
+    }
+    if (pos < chars.length) parts.push(esc(chars.slice(pos).join("")));
+    return parts.join("");
+  }
+
+  function _showPhiGateCard(
+    message: string,
+    phiResult: {phi_evidence?: Array<{category: string; redacted_span: string; offset: number; length: number}>; identifier_labels?: string[]}
+  ): Promise<"edit" | "override" | "dismiss"> {
+    return new Promise((resolve) => {
+      function esc(s: string) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+      const evidence = phiResult.phi_evidence || [];
+      const labels = phiResult.identifier_labels || [];
+      const labelStr = labels.length ? labels.join(", ") : "protected health information";
+      const card = document.createElement("div");
+      card.className = "phi-gate-card";
+      card.innerHTML = `
+        <div class="phi-gate-header">
+          <span class="phi-gate-icon">🔒</span>
+          <span class="phi-gate-title">PHI detected — message not sent</span>
+          <button type="button" class="phi-gate-dismiss" aria-label="Dismiss">✕</button>
+        </div>
+        <p class="phi-gate-desc">This message appears to contain <strong>${esc(labelStr)}</strong>. Edit or remove the sensitive information before sending.</p>
+        <div class="phi-gate-preview">${_phiHighlightHtml(message, evidence)}</div>
+        <div class="phi-gate-actions">
+          <button type="button" class="phi-gate-btn phi-gate-btn--edit">Edit message</button>
+          <button type="button" class="phi-gate-btn phi-gate-btn--override">Send anyway</button>
+        </div>`;
+      card.querySelector(".phi-gate-dismiss")!.addEventListener("click", () => { card.remove(); resolve("dismiss"); });
+      card.querySelector(".phi-gate-btn--edit")!.addEventListener("click", () => { card.remove(); resolve("edit"); });
+      card.querySelector(".phi-gate-btn--override")!.addEventListener("click", () => { card.remove(); resolve("override"); });
+      messagesEl.appendChild(card);
+      scrollToBottom(messagesEl);
+    });
+  }
+
   function sendMessage(overrideMessage?: string, opts?: SendMessageOpts): void { void _sendMessageAsync(overrideMessage, opts); }
   async function _sendMessageAsync(overrideMessage?: string, opts?: SendMessageOpts): Promise<void> {
     let message = (overrideMessage ?? (inputEl.value ?? "").trim()).trim();
@@ -10914,6 +10968,34 @@ function run(): void {
     ) {
       openCredentialingEnvelope(message);
       return;
+    }
+
+    // PHI pre-send gate — UX layer before DOM render. Backend re-checks authoritatively.
+    // Fail-open on network error so a dead classifier never blocks the user.
+    if (!opts?.phi_override) {
+      let _phiResult: {block?: boolean; phi_evidence?: Array<{category: string; redacted_span: string; offset: number; length: number}>; identifier_labels?: string[]} | null = null;
+      try {
+        sendBtn.disabled = true;
+        const _r = await fetch(`${_PHI_GATE_URL}/message-check`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({text: message, thread_id: currentThreadId}),
+        });
+        if (_r.ok) _phiResult = await _r.json();
+      } catch { /* fail open */ } finally {
+        sendBtn.disabled = false;
+      }
+      if (_phiResult?.block) {
+        const gateAction = await _showPhiGateCard(message, _phiResult);
+        if (gateAction === "edit") {
+          if (!overrideMessage) { inputEl.value = message; inputEl.focus(); }
+          return;
+        }
+        if (gateAction === "dismiss") return;
+        // gateAction === "override" — re-enter with override flag so backend accepts
+        sendMessage(message, {...(opts || {}), phi_override: true});
+        return;
+      }
     }
 
     if (chatEmpty) chatEmpty.classList.add("hidden");
@@ -11171,6 +11253,9 @@ function run(): void {
     // Explicit override still honored for internal callers.
     if (opts?.use_react !== undefined) {
       payload.use_react = opts.use_react;
+    }
+    if (opts?.phi_override) {
+      (payload as Record<string, unknown>).phi_override = true;
     }
     // 2026-04-27: include the model_profile dropdown selection in the
     // request payload. Previously the dropdown only POSTed to

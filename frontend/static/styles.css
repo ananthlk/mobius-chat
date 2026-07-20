@@ -10621,3 +10621,73 @@ body.landing-state .composer-landing-chips {
   .tm-face--a { background: rgba(22,163,74,.15); }
   .tm-x:hover { background: rgba(255,255,255,.07); }
 }
+
+/* ── PHI gate card ───────────────────────────────────────────────────── */
+.phi-gate-card {
+  max-width: 680px;
+  margin: 0 auto 16px;
+  background: var(--card-bg, #fff);
+  border: 1.5px solid #f59e0b;
+  border-radius: 12px;
+  padding: 16px 18px;
+  box-shadow: 0 2px 10px rgba(245,158,11,0.14);
+}
+@media (prefers-color-scheme: dark) { .phi-gate-card { background: var(--card-bg, #1e1e2e); } }
+:root[data-theme="dark"] .phi-gate-card { background: var(--card-bg, #1e1e2e); }
+:root[data-theme="light"] .phi-gate-card { background: var(--card-bg, #fff); }
+
+.phi-gate-header {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+}
+.phi-gate-icon { font-size: 1rem; flex-shrink: 0; }
+.phi-gate-title {
+  flex: 1; font-size: 0.85rem; font-weight: 700; color: #b45309;
+}
+@media (prefers-color-scheme: dark) { .phi-gate-title { color: #fbbf24; } }
+:root[data-theme="dark"] .phi-gate-title { color: #fbbf24; }
+:root[data-theme="light"] .phi-gate-title { color: #b45309; }
+
+.phi-gate-dismiss {
+  flex-shrink: 0; background: none; border: none; cursor: pointer;
+  font-size: 0.85rem; color: var(--sidebar-text-muted, #888); padding: 2px 4px; line-height: 1;
+}
+.phi-gate-dismiss:hover { color: var(--sidebar-text, inherit); }
+
+.phi-gate-desc {
+  font-size: 0.8rem; color: var(--sidebar-text, inherit); margin: 0 0 10px; line-height: 1.5;
+}
+
+.phi-gate-preview {
+  font-size: 0.82rem; font-family: inherit; line-height: 1.6;
+  padding: 10px 12px; border-radius: 7px; margin-bottom: 14px;
+  background: rgba(0,0,0,0.04); word-break: break-word;
+}
+@media (prefers-color-scheme: dark) { .phi-gate-preview { background: rgba(255,255,255,0.06); } }
+:root[data-theme="dark"] .phi-gate-preview { background: rgba(255,255,255,0.06); }
+:root[data-theme="light"] .phi-gate-preview { background: rgba(0,0,0,0.04); }
+
+.phi-hl {
+  background: #fef08a; color: #78350f;
+  border-radius: 3px; padding: 1px 2px;
+}
+@media (prefers-color-scheme: dark) { .phi-hl { background: #854d0e; color: #fef08a; } }
+:root[data-theme="dark"] .phi-hl { background: #854d0e; color: #fef08a; }
+:root[data-theme="light"] .phi-hl { background: #fef08a; color: #78350f; }
+
+.phi-gate-actions { display: flex; gap: 8px; }
+.phi-gate-btn {
+  font-size: 0.78rem; font-family: inherit; font-weight: 600;
+  border-radius: 7px; padding: 6px 14px; cursor: pointer; border: none;
+  transition: opacity 0.1s;
+}
+.phi-gate-btn:hover { opacity: 0.85; }
+.phi-gate-btn--edit {
+  background: rgba(0,0,0,0.07); color: var(--sidebar-text, inherit);
+}
+@media (prefers-color-scheme: dark) { .phi-gate-btn--edit { background: rgba(255,255,255,0.1); } }
+:root[data-theme="dark"] .phi-gate-btn--edit { background: rgba(255,255,255,0.1); }
+:root[data-theme="light"] .phi-gate-btn--edit { background: rgba(0,0,0,0.07); }
+
+.phi-gate-btn--override {
+  background: #f59e0b; color: #fff;
+}
