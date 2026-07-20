@@ -196,7 +196,12 @@ def format_response_parallel(
     usage_b: dict[str, Any] | None = None
     usage_c: dict[str, Any] | None = None
 
+    def _e(msg: str) -> None:
+        if emitter and msg:
+            emitter(msg)
+
     try:
+        _e("◌ Drafting answer — running 3 parallel LLM passes…")
         with ThreadPoolExecutor(max_workers=3) as pool:
             fut_a = pool.submit(_call_llm, prompt_a, "integrator_a", 4096, **shared_kwargs)
             fut_b = pool.submit(_call_llm, prompt_b, "integrator_critic", 1024, **shared_kwargs)
@@ -206,16 +211,20 @@ def format_response_parallel(
                 if fut is fut_a:
                     try:
                         text_a, usage_a = fut.result()
+                        _e("  ✓ Core draft ready")
                     except Exception as e:
                         logger.warning("[parallel:A] call failed: %s", e)
+                        _e("  ⚠ Core draft failed — using fallback")
                 elif fut is fut_b:
                     try:
                         text_b, usage_b = fut.result()
+                        _e("  ✓ Critic pass done")
                     except Exception as e:
                         logger.warning("[parallel:B] call failed: %s", e)
                 else:
                     try:
                         text_c, usage_c = fut.result()
+                        _e("  ✓ Enrichment pass done")
                     except Exception as e:
                         logger.warning("[parallel:C] call failed: %s", e)
     except Exception as e:

@@ -554,17 +554,24 @@ def _run_fetch_document(call: SkillCall) -> SkillEnvelope:
             signal="no_sources",
         )
 
+    def _e(msg: str) -> None:
+        if call.emitter and msg:
+            call.emitter(msg)
+
     # Tier 0: files uploaded on this thread ("send me back the file I
     # uploaded", "download my roster"). Checked first because thread
     # uploads are the most specific context we have.
+    _e(f"◌ Looking up document: {query[:80]}…")
     try:
         uploads = _thread_upload_matches(call, query)
     except Exception as exc:
         logger.warning("fetch_document: thread-upload match failed: %s", exc)
         uploads = []
     if uploads:
+        _e(f"✓ Found {len(uploads)} uploaded file(s) on this thread")
         return _upload_envelope(call, query, uploads)
 
+    _e("  Searching document index…")
     try:
         candidates = _fetch_candidates(query)
     except Exception as exc:  # pragma: no cover — defensive
@@ -577,6 +584,7 @@ def _run_fetch_document(call: SkillCall) -> SkillEnvelope:
     matches = _rank_matches(query, candidates)
     resolved_via = "name_match"
     if not matches:
+        _e("  No name match — trying corpus search…")
         try:
             matches = _merge_metadata(_corpus_search_resolve(query), candidates)
             resolved_via = "corpus_search"
@@ -586,12 +594,14 @@ def _run_fetch_document(call: SkillCall) -> SkillEnvelope:
     if not matches:
         # Tier 3: the sitemap-fed web-source registry — docs Mobius
         # knows exist on payer/agency sites but hasn't ingested.
+        _e("  Not in corpus — checking source registry…")
         try:
             web_docs = _web_registry_resolve(query)
         except Exception as exc:
             logger.warning("fetch_document: web registry fallback failed: %s", exc)
             web_docs = []
         if web_docs:
+            _e(f"✓ Found {len(web_docs)} known source(s) in registry")
             return _web_registry_envelope(call, query, web_docs)
     if not matches:
         return SkillEnvelope(

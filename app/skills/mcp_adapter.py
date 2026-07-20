@@ -74,11 +74,12 @@ def _make_mcp_handler(tool_name: str):
     """
 
     def _run(call: SkillCall) -> SkillEnvelope:
-        # MCP tools are synchronous request/response: they don't use
-        # the emitter, thread_id, active_context, etc. We pass only the
-        # structured inputs. If a remote tool ever wants context, the
-        # planner can forward it explicitly via tool_inputs.
+        if call.emitter:
+            call.emitter(f"◌ Calling MCP tool: {tool_name}…")
         text, success = call_mcp_tool(tool_name, call.inputs or {})
+        if call.emitter:
+            if success and text:
+                call.emitter(f"✓ {tool_name} returned {len(text)} chars")
 
         # Structured response: {"text": "...", "extra": {...}}
         # MCP tools can optionally return this JSON shape to pass out-of-band

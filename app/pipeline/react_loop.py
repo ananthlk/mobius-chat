@@ -494,7 +494,13 @@ def _execute_tool(
     if tool == "lookup_authoritative_sources":
         from app.pipeline.curator_tools import call_lookup_authoritative_sources
         emit("◌ Searching curator registry for known sources…")
-        return call_lookup_authoritative_sources(inputs)
+        _src_result = call_lookup_authoritative_sources(inputs)
+        _src_count = len(_src_result.get("sources") or [])
+        if _src_count:
+            emit(f"✓ Found {_src_count} known source(s) in registry")
+        else:
+            emit("⊘ No matching sources in registry")
+        return _src_result
 
     if tool == "ingest_url":
         from app.pipeline.curator_tools import call_ingest_url
@@ -509,7 +515,12 @@ def _execute_tool(
                 "sources": [],
             }
         emit(f"◌ Fetching + indexing {url}…")
-        return call_ingest_url(inputs)
+        _ingest_result = call_ingest_url(inputs)
+        if _ingest_result.get("success"):
+            emit(f"✓ Ingested and indexed: {url}")
+        else:
+            emit(f"⊘ Ingest failed for {url}")
+        return _ingest_result
 
     if tool == "document_upload_skill":
         emit("◌ Document upload skill…")

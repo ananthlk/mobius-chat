@@ -132,6 +132,8 @@ def _run_product_help(call: SkillCall) -> SkillEnvelope:
         "module": inputs.get("module"),
         "in_scope_only": bool(inputs.get("in_scope_only", False)),
     }
+    if call.emitter:
+        call.emitter(f"◌ Searching product help for: {query[:80]}…")
     resp = _search(payload)
     if resp is None:
         # service unreachable — return empty so the integrator sees a clean miss,
@@ -139,6 +141,12 @@ def _run_product_help(call: SkillCall) -> SkillEnvelope:
         return SkillEnvelope(text="", signal="no_sources")
 
     outcome = resp.get("outcome")
+    if call.emitter:
+        _items = resp.get("items") or []
+        if outcome in ("answer", "recite"):
+            call.emitter(f"✓ Product help: answer found ({len(_items)} source(s))")
+        elif outcome == "gap":
+            call.emitter("⊘ Product help: topic not in scope — gap logged")
     answer = resp.get("text") or ""
 
     # ANSWER first; THEN file any gap (post-answer, best-effort) — the load-bearing invariant.
