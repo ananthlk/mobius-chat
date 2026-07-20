@@ -274,6 +274,28 @@ def get_progress_from_db(correlation_id: str) -> tuple[list[str], str]:
     return (thinking, message_so_far)
 
 
+def push_external_thinking(correlation_id: str, line: str) -> None:
+    """Push a thinking-log line from an external caller (e.g. RAG via /internal/progress).
+
+    Cross-instance safe: always persists to DB + Redis-publishes via
+    _publish_progress_event regardless of which Cloud Run instance handles the
+    request. Appends to the local _progress dict only if this instance happens
+    to own the turn (no-op otherwise — the DB-backed SSE poll picks it up).
+
+    This is the right primitive for external HTTP push; use append_thinking
+    for in-process emits only.
+    """
+    if not (line or "").strip():
+        return
+    ts, ts_readable = _event_ts()
+    ev: dict[str, Any] = {"event": "thinking", "data": {"line": line.strip(), "ts": ts, "ts_readable": ts_readable}}
+    with _lock:
+        if correlation_id in _progress:
+            _progress[correlation_id]["thinking"].append(line.strip())
+            _progress[correlation_id]["events"].append(ev)
+    _publish_progress_event(correlation_id, ev)
+
+
 def publish_quality_audit_event(correlation_id: str, audit: dict[str, Any], line: str) -> None:
     """Emit a standalone progress event for QC / eval audit (SSE + optional DB replay)."""
     ts, ts_readable = _event_ts()

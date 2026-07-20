@@ -2694,8 +2694,8 @@ async def internal_progress_push(
         line = body.label.strip()
 
     if line:
-        from app.storage.progress import append_thinking
-        append_thinking(cid, line)
+        from app.storage.progress import push_external_thinking
+        push_external_thinking(cid, line)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
