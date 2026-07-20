@@ -244,7 +244,9 @@ def _run_create_task(call: SkillCall) -> SkillEnvelope:
     _emit(call, "◌ Task manager: create_task…")
     inputs = call.inputs or {}
     body = {
-        "org_name": inputs.get("org") or inputs.get("org_name") or "",
+        # No org in the turn ("remind me to...") -> "_shared_", the same
+        # org chat promotions use; manual_chat_created requires non-empty.
+        "org_name": inputs.get("org") or inputs.get("org_name") or "_shared_",
         "text": inputs.get("text") or inputs.get("description") or "",
         "source_module": inputs.get("module") or "manual",
         "severity": inputs.get("severity") or "low",
