@@ -11044,6 +11044,7 @@ function run(): void {
           identifier_labels: _phiResult.identifier_labels ?? [],
           action: "overridden",
         };
+        inputEl.value = ""; // clear composer — normal send flow skips this for override re-entry
         sendMessage(message, {...(opts || {}), phi_override: true});
         return;
       }
@@ -11378,7 +11379,8 @@ function run(): void {
           const line = thinkingLineFromEntry(entry);
           if (!thinkingLines.includes(line)) addThinkingLineAndScroll(line);
         });
-        const fullMessage = data.message ?? "(No message)";
+        // raw_text is the bypass-integrate path (refuse, task mode); message is the normal path
+        const fullMessage = data.message ?? data.raw_text ?? "";
         const { body, sources } = parseMessageAndSources(fullMessage);
 
         if (data.response_source === "llm" && data.model_used) {

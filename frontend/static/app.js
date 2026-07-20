@@ -10929,6 +10929,7 @@ ${message}`;
           identifier_labels: _phiResult.identifier_labels ?? [],
           action: "overridden"
         };
+        inputEl.value = "";
         sendMessage(message, { ...opts || {}, phi_override: true });
         return;
       }
@@ -11229,7 +11230,7 @@ ${message}`;
         if (!thinkingLines.includes(line))
           addThinkingLineAndScroll(line);
       });
-      const fullMessage = data.message ?? "(No message)";
+      const fullMessage = data.message ?? data.raw_text ?? "";
       const { body, sources } = parseMessageAndSources(fullMessage);
       if (data.response_source === "llm" && data.model_used) {
         addThinkingLineAndScroll("Model: " + data.model_used);
