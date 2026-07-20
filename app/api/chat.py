@@ -189,10 +189,8 @@ def _enrich_completed_response_from_db(resp: dict) -> dict:
     return resp
 
 
-# ── Routes ──────────────────────────────────────────────────────────
+# ── PHI gate helpers ────────────────────────────────────────────────
 
-
-@router.post("/chat", response_model=ChatResponse)
 _PHI_GATE_URL = os.environ.get(
     "PHI_GATE_URL",
     "https://mobius-phi-classifier-ortabkknqa-uc.a.run.app",
@@ -264,6 +262,10 @@ def _log_phi_msg_gate(
         logger.warning("[phi-gate] audit INSERT failed: %s", exc)
 
 
+# ── Routes ──────────────────────────────────────────────────────────
+
+
+@router.post("/chat", response_model=ChatResponse)
 def post_chat(
     body: ChatRequest,
     user_id: str | None = Depends(require_user),
