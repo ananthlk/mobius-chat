@@ -13608,6 +13608,11 @@ function run(): void {
   // Only applies when there are no existing thread messages (fresh page load without a thread).
   if (messagesEl && messagesEl.querySelectorAll(".chat-turn").length === 0) {
     document.body.classList.add("landing-state");
+    // Collapse sidebar by default on landing — decluttered-landing spec.
+    const landingSidebar = document.getElementById("sidebar");
+    const landingMain = document.querySelector<HTMLElement>(".main");
+    if (landingSidebar) landingSidebar.classList.add("sidebar--collapsed");
+    if (landingMain) landingMain.classList.add("sidebar-collapsed");
   }
 
   // Composer landing chips: set composer text + send on click.

@@ -13074,6 +13074,12 @@ ${message}`;
   }
   if (messagesEl && messagesEl.querySelectorAll(".chat-turn").length === 0) {
     document.body.classList.add("landing-state");
+    const landingSidebar = document.getElementById("sidebar");
+    const landingMain = document.querySelector(".main");
+    if (landingSidebar)
+      landingSidebar.classList.add("sidebar--collapsed");
+    if (landingMain)
+      landingMain.classList.add("sidebar-collapsed");
   }
   document.getElementById("composerLandingChips")?.addEventListener("click", (e) => {
     const chip = e.target.closest(".composer-chip");

@@ -255,13 +255,6 @@
       <div id="grandRevealOverlay" hidden></div>
 
       <div class="composer-wrap">
-        <!-- Landing chips: visible before first message (body.landing-state) -->
-        <div class="composer-landing-chips" id="composerLandingChips" aria-label="Quick prompts">
-          <button type="button" class="composer-chip" data-query="Check eligibility for a Sunshine Health member">Eligibility check</button>
-          <button type="button" class="composer-chip" data-query="What prior authorization rules apply to behavioral health services?">Prior auth</button>
-          <button type="button" class="composer-chip" data-query="How do I submit a corrected claim?">Claims</button>
-          <button type="button" class="composer-chip" data-query="How do I appeal a denied claim?">Denial appeals</button>
-        </div>
         <!-- Phase B.1a: inline attach-to-send.
              Paperclip stages a file (chip appears above composer); Send
              uploads first via /chat/roster-upload?file_purpose=instant_rag,
@@ -308,6 +301,13 @@
           <button type="button" class="btn-send" id="send" aria-label="Send" data-tour-id="composer-send">
             <svg class="send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>
           </button>
+        </div>
+        <!-- Landing chips: visible before first message (body.landing-state), positioned below composer -->
+        <div class="composer-landing-chips" id="composerLandingChips" aria-label="Quick prompts">
+          <button type="button" class="composer-chip" data-query="Check eligibility for a Sunshine Health member">Eligibility check</button>
+          <button type="button" class="composer-chip" data-query="What prior authorization rules apply to behavioral health services?">Prior auth</button>
+          <button type="button" class="composer-chip" data-query="How do I submit a corrected claim?">Claims</button>
+          <button type="button" class="composer-chip" data-query="How do I appeal a denied claim?">Denial appeals</button>
         </div>
       </div>
     </main>
