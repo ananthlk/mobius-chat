@@ -793,7 +793,7 @@ def _post_system_message_to_thread(thread_id: str, content: str) -> None:
         except Exception:
             pass
         _insert_message(tid, str(_uuid_mod.uuid4()), "system", content)
-        logger.info("system-message posted to thread=%s: %s", tid[:8], content[:80])
+        logger.info("system-message posted to thread=%s (%d chars)", tid[:8], len(content))
     except Exception as e:
         logger.warning("system-message post failed for thread=%s: %s", tid[:8], e)
 
