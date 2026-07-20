@@ -877,6 +877,68 @@ function routerReportTermsTooltip(row: LlmRouterReportModelRow): string {
 // ── Model profile picker (Sprint 2 #0) ────────────────────────────
 // Tiny header control that lets operators flip the active model
 // profile (bandit / optimal / gemini / anthropic / default) without
+// ── LLM pill (replaces sidebar select) ────────────────────────────────────
+const LLM_COLORS: Record<string, string> = {
+  gemini: "#0891b2", claude: "#d97706", "gpt-4": "#059669", gpt: "#059669",
+};
+function _llmPillColor(p: string): string {
+  return LLM_COLORS[(p || "").toLowerCase()] ?? "#7c3aed";
+}
+function _renderLlmPill(profiles: { value: string; label: string }[], activeValue: string): void {
+  const pill = document.getElementById("modelProfilePill") as HTMLButtonElement | null;
+  const labelEl = document.getElementById("modelProfilePillLabel");
+  const dropdown = document.getElementById("modelProfileDropdown");
+  if (!pill || !labelEl || !dropdown) return;
+  const active = profiles.find((p) => p.value === activeValue) ?? profiles[0];
+  if (!active) return;
+  pill.dataset.profile = active.value.toLowerCase();
+  labelEl.textContent = active.label;
+  const color = _llmPillColor(active.value);
+  pill.style.color = color;
+  pill.style.borderColor = color;
+  dropdown.innerHTML = profiles
+    .map(
+      (p) => `<div class="llm-opt${p.value === activeValue ? " active" : ""}" role="option"
+        aria-selected="${p.value === activeValue}" data-value="${p.value}">
+        <span class="llm-opt-dot" style="background:${_llmPillColor(p.value)}"></span>
+        ${p.label}<span class="llm-opt-check">${p.value === activeValue ? "✓" : ""}</span>
+      </div>`
+    )
+    .join("");
+  dropdown.querySelectorAll(".llm-opt").forEach((opt) => {
+    (opt as HTMLElement).addEventListener("click", () => {
+      const val = (opt as HTMLElement).dataset.value ?? "";
+      const sel = document.getElementById("modelProfileSelect") as HTMLSelectElement | null;
+      if (sel) {
+        sel.value = val;
+        sel.dispatchEvent(new Event("change"));
+      }
+      _renderLlmPill(profiles, val);
+      _closeLlmPill();
+    });
+  });
+}
+function _closeLlmPill(): void {
+  document.getElementById("modelProfileDropdown")?.classList.remove("open");
+  document.getElementById("modelProfilePill")?.setAttribute("aria-expanded", "false");
+}
+document.getElementById("modelProfilePill")?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const dd = document.getElementById("modelProfileDropdown");
+  const open = dd?.classList.toggle("open");
+  document.getElementById("modelProfilePill")?.setAttribute("aria-expanded", String(!!open));
+});
+document.addEventListener("click", (e) => {
+  const dd = document.getElementById("modelProfileDropdown");
+  if (
+    dd?.classList.contains("open") &&
+    !(e.target as HTMLElement).closest("#modelProfileDropdown") &&
+    !(e.target as HTMLElement).closest("#modelProfilePill")
+  ) {
+    _closeLlmPill();
+  }
+});
+
 // a redeploy. Hidden automatically when admin endpoints return 404
 // (i.e. MOBIUS_ADMIN_ENABLED=0, e.g. prod).
 function initModelProfilePicker(): void {
@@ -930,6 +992,11 @@ function initModelProfilePicker(): void {
       if (p === activeDisplay) opt.selected = true;
       sel.appendChild(opt);
     });
+    // Also update the pill UI
+    _renderLlmPill(
+      display.map((p) => ({ value: p, label: p.charAt(0).toUpperCase() + p.slice(1) })),
+      activeDisplay,
+    );
   };
   const load = () => {
     fetch(API_BASE + "/chat/admin/model-profile")
@@ -9279,6 +9346,16 @@ function run(): void {
       (user?.email ? user.email.split("@")[0] : null) ||
       "Guest";
     sidebarUserName.textContent = name;
+    // Update collapsed-rail avatar initials
+    const railAvatar = document.getElementById("railUserAvatar");
+    if (railAvatar) {
+      const parts = name.trim().split(/\s+/).filter(Boolean);
+      railAvatar.textContent =
+        parts.length >= 2
+          ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+          : (parts[0]?.[0] ?? "?").toUpperCase();
+      railAvatar.title = "Signed in as " + name;
+    }
   }
 
   function _syncOnboardingNudge(isOnboarded: boolean): void {
@@ -13460,6 +13537,133 @@ function run(): void {
 
   let _vaultActiveTab = "recent";
 
+  // ── Customizable sidebar sections ────────────────────────────────────────
+  const _SECTION_POOL = [
+    { id: "recent",        label: "Recent",       icon: "🕐", desc: "Chat history"    },
+    { id: "liked",         label: "Liked",         icon: "♥",  desc: "Saved answers"   },
+    { id: "tasks",         label: "Tasks",         icon: "☐",  desc: "Open tasks"      },
+    { id: "uploads",       label: "Uploads",       icon: "📎", desc: "Your documents"  },
+    { id: "tools",         label: "Tools",         icon: "⚙",  desc: "Suite links"     },
+    { id: "bookmarks",     label: "Bookmarks",     icon: "🔖", desc: "Saved items"     },
+    { id: "notifications", label: "Notifications", icon: "🔔", desc: "Alerts"          },
+  ] as const;
+  const _SECTIONS_KEY = "mobius_sidebar_sections";
+  const _DEFAULT_SECTIONS = ["recent", "liked", "tasks"];
+
+  function _getSidebarSections(): string[] {
+    try {
+      const raw = localStorage.getItem(_SECTIONS_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as unknown;
+        if (Array.isArray(parsed) && parsed.length === 3) return parsed as string[];
+      }
+    } catch { /* ignore */ }
+    return [..._DEFAULT_SECTIONS];
+  }
+
+  function _saveSidebarSections(sections: string[]): void {
+    localStorage.setItem(_SECTIONS_KEY, JSON.stringify(sections));
+  }
+
+  function _renderSidebarTabs(): void {
+    const tabsEl = document.getElementById("vaultSectionTabs");
+    if (!tabsEl) return;
+    const sections = _getSidebarSections();
+    tabsEl.innerHTML = sections
+      .map((id) => {
+        const sec = _SECTION_POOL.find((s) => s.id === id);
+        if (!sec) return "";
+        const isActive = id === _vaultActiveTab;
+        return `<button role="tab" class="vault-tab${isActive ? " vault-tab--active" : ""}"
+          data-vault-tab="${id}" aria-selected="${isActive}"
+          aria-controls="vaultTabPanel">${sec.label}</button>`;
+      })
+      .join("");
+    tabsEl.querySelectorAll<HTMLButtonElement>(".vault-tab").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        _vaultActiveTab = btn.dataset.vaultTab ?? "recent";
+        _renderSidebarTabs();
+        _renderSectionContent(_vaultActiveTab);
+      });
+    });
+  }
+
+  function _renderSectionContent(sectionId: string): void {
+    if (["recent", "liked", "tasks", "uploads"].includes(sectionId)) {
+      void loadVaultTab(sectionId);
+      return;
+    }
+    const panel = document.getElementById("vaultTabPanel");
+    if (!panel) return;
+    const list = document.getElementById("vaultItemList");
+    if (sectionId === "tools") {
+      // Inject a fresh #suiteTilesContainer into the vault panel so
+      // renderSidebarSuiteTiles() (which uses that id) can find it.
+      if (list) {
+        list.innerHTML = `<li class="vault-item vault-tools-wrap">
+          <div class="suite-tiles" id="suiteTilesContainer"></div>
+          <a href="https://mobius-appeals-prototype-ortabkknqa-uc.a.run.app"
+             target="_blank" rel="noopener noreferrer" class="suite-demo-tile"
+             title="Interactive claims appeal walkthrough (demo)">
+            <span class="suite-demo-tile-icon">⚖️</span>
+            <span class="suite-demo-tile-label">Appeals Agent <span class="suite-demo-badge">demo</span></span>
+            <span class="suite-demo-tile-arrow">↗</span>
+          </a>
+          <button type="button" class="suite-learn-more" id="suiteLearnMore" data-tour-id="sidebar-skills-info">
+            Learn more about chat skills →
+          </button>
+        </li>`;
+        // Wire "Learn more" — setupSkillsModal already ran before this element was injected;
+        // trigger modal open by showing the overlay+modal directly.
+        document.getElementById("suiteLearnMore")?.addEventListener("click", () => {
+          document.getElementById("skillsOverlay")?.removeAttribute("hidden");
+          document.getElementById("skillsModal")?.removeAttribute("hidden");
+        });
+      }
+      renderSidebarSuiteTiles();
+      return;
+    }
+    if (sectionId === "bookmarks") {
+      if (list) list.innerHTML = `<li class="vault-item vault-item--muted">No bookmarks yet.</li>`;
+      return;
+    }
+    if (sectionId === "notifications") {
+      if (list) list.innerHTML = `<li class="vault-item vault-item--muted">No notifications.</li>`;
+      return;
+    }
+  }
+
+  function _renderSectionPicker(): void {
+    const grid = document.getElementById("vspGrid");
+    const countEl = document.getElementById("vspCount");
+    if (!grid) return;
+    const current = _getSidebarSections();
+    grid.innerHTML = _SECTION_POOL.map((sec) => {
+      const selected = current.includes(sec.id);
+      return `<div class="vsp-item${selected ? " vsp-item--active" : ""}" data-sec="${sec.id}">
+        <span class="vsp-icon">${sec.icon}</span>
+        <div><div class="vsp-name">${sec.label}</div><div class="vsp-desc">${sec.desc}</div></div>
+        <span class="vsp-check" aria-hidden="true">✓</span>
+      </div>`;
+    }).join("");
+    const updateCount = () => {
+      const n = grid.querySelectorAll(".vsp-item--active").length;
+      if (countEl) countEl.textContent = `${n} of 3 selected`;
+    };
+    grid.querySelectorAll<HTMLElement>(".vsp-item").forEach((item) => {
+      item.addEventListener("click", () => {
+        const isActive = item.classList.contains("vsp-item--active");
+        const activeCount = grid.querySelectorAll(".vsp-item--active").length;
+        if (isActive && activeCount <= 1) return; // keep at least 1
+        if (!isActive && activeCount >= 3) {
+          grid.querySelector(".vsp-item--active")?.classList.remove("vsp-item--active");
+        }
+        item.classList.toggle("vsp-item--active", !isActive);
+        updateCount();
+      });
+    });
+  }
+
   function initVaultBlock(): void {
     const vaultBlock = document.getElementById("sidebarVaultBlock");
     if (!vaultBlock) return;
@@ -13468,7 +13672,6 @@ function run(): void {
     document.getElementById("vaultOpenBtn")?.addEventListener("click", () => openVaultPanel(_vaultActiveTab));
     document.getElementById("vaultManageBtn")?.addEventListener("click", () => openVaultPanel("recent"));
     document.getElementById("vaultRailBtn")?.addEventListener("click", () => {
-      // Expand sidebar if collapsed, then scroll vault block into view
       const sidebar = document.getElementById("sidebar");
       if (sidebar?.classList.contains("sidebar--collapsed")) {
         document.getElementById("sidebarChevron")?.click();
@@ -13476,21 +13679,50 @@ function run(): void {
       vaultBlock.scrollIntoView({ behavior: "smooth", block: "nearest" });
     });
 
-    // Wire tabs
-    vaultBlock.querySelectorAll<HTMLButtonElement>(".vault-tab").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const tab = btn.dataset.vaultTab || "recent";
-        vaultBlock.querySelectorAll(".vault-tab").forEach((t) => {
-          t.classList.toggle("vault-tab--active", t === btn);
-          t.setAttribute("aria-selected", t === btn ? "true" : "false");
-        });
-        _vaultActiveTab = tab;
-        void loadVaultTab(tab);
-      });
+    // Customizable tabs
+    _vaultActiveTab = _getSidebarSections()[0] ?? "recent";
+    _renderSidebarTabs();
+    _renderSectionContent(_vaultActiveTab);
+
+    // Customize button
+    document.getElementById("vaultCustomizeBtn")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      _renderSectionPicker();
+      const picker = document.getElementById("vaultSectionPicker");
+      if (picker) picker.hidden = false;
+    });
+    document.getElementById("vspClose")?.addEventListener("click", () => {
+      const picker = document.getElementById("vaultSectionPicker");
+      if (picker) picker.hidden = true;
+    });
+    document.getElementById("vspDone")?.addEventListener("click", () => {
+      const grid = document.getElementById("vspGrid");
+      const picker = document.getElementById("vaultSectionPicker");
+      if (!grid || !picker) return;
+      const selected = [...grid.querySelectorAll<HTMLElement>(".vsp-item--active")]
+        .map((el) => el.dataset.sec ?? "")
+        .filter(Boolean)
+        .slice(0, 3);
+      if (selected.length === 3) {
+        _saveSidebarSections(selected);
+        _vaultActiveTab = selected[0];
+        _renderSidebarTabs();
+        _renderSectionContent(_vaultActiveTab);
+      }
+      picker.hidden = true;
+    });
+    document.addEventListener("click", (e) => {
+      const picker = document.getElementById("vaultSectionPicker");
+      if (
+        picker && !picker.hidden &&
+        !(e.target as HTMLElement).closest("#vaultSectionPicker") &&
+        !(e.target as HTMLElement).closest("#vaultCustomizeBtn")
+      ) {
+        picker.hidden = true;
+      }
     });
 
     void loadVaultCounts();
-    void loadVaultTab("recent");
   }
 
   async function loadVaultCounts(): Promise<void> {
@@ -13778,7 +14010,7 @@ function run(): void {
     if (landingMain) landingMain.classList.add("sidebar-collapsed");
   }
 
-  // Composer landing chips: set composer text + send on click.
+  // Composer landing chips: prefill composer and position cursor — user edits then sends.
   document.getElementById("composerLandingChips")?.addEventListener("click", (e) => {
     const chip = (e.target as HTMLElement).closest(".composer-chip") as HTMLElement | null;
     if (!chip) return;
@@ -13786,7 +14018,8 @@ function run(): void {
     if (!q) return;
     inputEl.value = q;
     updateSendState();
-    sendMessage();
+    inputEl.focus();
+    inputEl.setSelectionRange(q.length, q.length);
   });
 
   // Legacy: .landing-try-link clicks (kept for any old links still in DOM).
@@ -14019,6 +14252,9 @@ function run(): void {
     }
 
     function renderSidebarSuiteTiles(): void {
+      // Live query so we find #suiteTilesContainer whether it's in the static
+      // sidebar-skills block (now removed) or dynamically injected by _renderSectionContent.
+      const sidebarTilesContainer = document.getElementById("suiteTilesContainer");
       if (!sidebarTilesContainer) return;
       sidebarTilesContainer.innerHTML = "";
       for (const t of SUITE_TILES) {

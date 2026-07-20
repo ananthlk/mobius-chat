@@ -2112,6 +2112,65 @@ function routerReportTermsTooltip(row) {
     return "";
   }
 }
+var LLM_COLORS = {
+  gemini: "#0891b2",
+  claude: "#d97706",
+  "gpt-4": "#059669",
+  gpt: "#059669"
+};
+function _llmPillColor(p) {
+  return LLM_COLORS[(p || "").toLowerCase()] ?? "#7c3aed";
+}
+function _renderLlmPill(profiles, activeValue) {
+  const pill = document.getElementById("modelProfilePill");
+  const labelEl = document.getElementById("modelProfilePillLabel");
+  const dropdown = document.getElementById("modelProfileDropdown");
+  if (!pill || !labelEl || !dropdown)
+    return;
+  const active = profiles.find((p) => p.value === activeValue) ?? profiles[0];
+  if (!active)
+    return;
+  pill.dataset.profile = active.value.toLowerCase();
+  labelEl.textContent = active.label;
+  const color = _llmPillColor(active.value);
+  pill.style.color = color;
+  pill.style.borderColor = color;
+  dropdown.innerHTML = profiles.map(
+    (p) => `<div class="llm-opt${p.value === activeValue ? " active" : ""}" role="option"
+        aria-selected="${p.value === activeValue}" data-value="${p.value}">
+        <span class="llm-opt-dot" style="background:${_llmPillColor(p.value)}"></span>
+        ${p.label}<span class="llm-opt-check">${p.value === activeValue ? "\u2713" : ""}</span>
+      </div>`
+  ).join("");
+  dropdown.querySelectorAll(".llm-opt").forEach((opt) => {
+    opt.addEventListener("click", () => {
+      const val = opt.dataset.value ?? "";
+      const sel = document.getElementById("modelProfileSelect");
+      if (sel) {
+        sel.value = val;
+        sel.dispatchEvent(new Event("change"));
+      }
+      _renderLlmPill(profiles, val);
+      _closeLlmPill();
+    });
+  });
+}
+function _closeLlmPill() {
+  document.getElementById("modelProfileDropdown")?.classList.remove("open");
+  document.getElementById("modelProfilePill")?.setAttribute("aria-expanded", "false");
+}
+document.getElementById("modelProfilePill")?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const dd = document.getElementById("modelProfileDropdown");
+  const open = dd?.classList.toggle("open");
+  document.getElementById("modelProfilePill")?.setAttribute("aria-expanded", String(!!open));
+});
+document.addEventListener("click", (e) => {
+  const dd = document.getElementById("modelProfileDropdown");
+  if (dd?.classList.contains("open") && !e.target.closest("#modelProfileDropdown") && !e.target.closest("#modelProfilePill")) {
+    _closeLlmPill();
+  }
+});
 function initModelProfilePicker() {
   const wrap = document.getElementById("modelProfileWrap");
   const sel = document.getElementById("modelProfileSelect");
@@ -2156,6 +2215,10 @@ function initModelProfilePicker() {
         opt.selected = true;
       sel.appendChild(opt);
     });
+    _renderLlmPill(
+      display.map((p) => ({ value: p, label: p.charAt(0).toUpperCase() + p.slice(1) })),
+      activeDisplay
+    );
   };
   const load = () => {
     fetch(API_BASE + "/chat/admin/model-profile").then((r) => {
@@ -9377,6 +9440,12 @@ function run() {
       return;
     const name = user?.greeting_name || user?.preferred_name || user?.first_name || user?.display_name || (user?.email ? user.email.split("@")[0] : null) || "Guest";
     sidebarUserName.textContent = name;
+    const railAvatar = document.getElementById("railUserAvatar");
+    if (railAvatar) {
+      const parts = name.trim().split(/\s+/).filter(Boolean);
+      railAvatar.textContent = parts.length >= 2 ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase() : (parts[0]?.[0] ?? "?").toUpperCase();
+      railAvatar.title = "Signed in as " + name;
+    }
   }
   function _syncOnboardingNudge(isOnboarded) {
     const nudge = document.getElementById("onboardingNudge");
@@ -12955,6 +13024,130 @@ ${message}`;
     }
   }
   let _vaultActiveTab = "recent";
+  const _SECTION_POOL = [
+    { id: "recent", label: "Recent", icon: "\u{1F550}", desc: "Chat history" },
+    { id: "liked", label: "Liked", icon: "\u2665", desc: "Saved answers" },
+    { id: "tasks", label: "Tasks", icon: "\u2610", desc: "Open tasks" },
+    { id: "uploads", label: "Uploads", icon: "\u{1F4CE}", desc: "Your documents" },
+    { id: "tools", label: "Tools", icon: "\u2699", desc: "Suite links" },
+    { id: "bookmarks", label: "Bookmarks", icon: "\u{1F516}", desc: "Saved items" },
+    { id: "notifications", label: "Notifications", icon: "\u{1F514}", desc: "Alerts" }
+  ];
+  const _SECTIONS_KEY = "mobius_sidebar_sections";
+  const _DEFAULT_SECTIONS = ["recent", "liked", "tasks"];
+  function _getSidebarSections() {
+    try {
+      const raw = localStorage.getItem(_SECTIONS_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length === 3)
+          return parsed;
+      }
+    } catch {
+    }
+    return [..._DEFAULT_SECTIONS];
+  }
+  function _saveSidebarSections(sections) {
+    localStorage.setItem(_SECTIONS_KEY, JSON.stringify(sections));
+  }
+  function _renderSidebarTabs() {
+    const tabsEl = document.getElementById("vaultSectionTabs");
+    if (!tabsEl)
+      return;
+    const sections = _getSidebarSections();
+    tabsEl.innerHTML = sections.map((id) => {
+      const sec = _SECTION_POOL.find((s) => s.id === id);
+      if (!sec)
+        return "";
+      const isActive = id === _vaultActiveTab;
+      return `<button role="tab" class="vault-tab${isActive ? " vault-tab--active" : ""}"
+          data-vault-tab="${id}" aria-selected="${isActive}"
+          aria-controls="vaultTabPanel">${sec.label}</button>`;
+    }).join("");
+    tabsEl.querySelectorAll(".vault-tab").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        _vaultActiveTab = btn.dataset.vaultTab ?? "recent";
+        _renderSidebarTabs();
+        _renderSectionContent(_vaultActiveTab);
+      });
+    });
+  }
+  function _renderSectionContent(sectionId) {
+    if (["recent", "liked", "tasks", "uploads"].includes(sectionId)) {
+      void loadVaultTab(sectionId);
+      return;
+    }
+    const panel = document.getElementById("vaultTabPanel");
+    if (!panel)
+      return;
+    const list = document.getElementById("vaultItemList");
+    if (sectionId === "tools") {
+      if (list) {
+        list.innerHTML = `<li class="vault-item vault-tools-wrap">
+          <div class="suite-tiles" id="suiteTilesContainer"></div>
+          <a href="https://mobius-appeals-prototype-ortabkknqa-uc.a.run.app"
+             target="_blank" rel="noopener noreferrer" class="suite-demo-tile"
+             title="Interactive claims appeal walkthrough (demo)">
+            <span class="suite-demo-tile-icon">\u2696\uFE0F</span>
+            <span class="suite-demo-tile-label">Appeals Agent <span class="suite-demo-badge">demo</span></span>
+            <span class="suite-demo-tile-arrow">\u2197</span>
+          </a>
+          <button type="button" class="suite-learn-more" id="suiteLearnMore" data-tour-id="sidebar-skills-info">
+            Learn more about chat skills \u2192
+          </button>
+        </li>`;
+        document.getElementById("suiteLearnMore")?.addEventListener("click", () => {
+          document.getElementById("skillsOverlay")?.removeAttribute("hidden");
+          document.getElementById("skillsModal")?.removeAttribute("hidden");
+        });
+      }
+      renderSidebarSuiteTiles();
+      return;
+    }
+    if (sectionId === "bookmarks") {
+      if (list)
+        list.innerHTML = `<li class="vault-item vault-item--muted">No bookmarks yet.</li>`;
+      return;
+    }
+    if (sectionId === "notifications") {
+      if (list)
+        list.innerHTML = `<li class="vault-item vault-item--muted">No notifications.</li>`;
+      return;
+    }
+  }
+  function _renderSectionPicker() {
+    const grid = document.getElementById("vspGrid");
+    const countEl = document.getElementById("vspCount");
+    if (!grid)
+      return;
+    const current = _getSidebarSections();
+    grid.innerHTML = _SECTION_POOL.map((sec) => {
+      const selected = current.includes(sec.id);
+      return `<div class="vsp-item${selected ? " vsp-item--active" : ""}" data-sec="${sec.id}">
+        <span class="vsp-icon">${sec.icon}</span>
+        <div><div class="vsp-name">${sec.label}</div><div class="vsp-desc">${sec.desc}</div></div>
+        <span class="vsp-check" aria-hidden="true">\u2713</span>
+      </div>`;
+    }).join("");
+    const updateCount = () => {
+      const n = grid.querySelectorAll(".vsp-item--active").length;
+      if (countEl)
+        countEl.textContent = `${n} of 3 selected`;
+    };
+    grid.querySelectorAll(".vsp-item").forEach((item) => {
+      item.addEventListener("click", () => {
+        const isActive = item.classList.contains("vsp-item--active");
+        const activeCount = grid.querySelectorAll(".vsp-item--active").length;
+        if (isActive && activeCount <= 1)
+          return;
+        if (!isActive && activeCount >= 3) {
+          grid.querySelector(".vsp-item--active")?.classList.remove("vsp-item--active");
+        }
+        item.classList.toggle("vsp-item--active", !isActive);
+        updateCount();
+      });
+    });
+  }
   function initVaultBlock() {
     const vaultBlock = document.getElementById("sidebarVaultBlock");
     if (!vaultBlock)
@@ -12968,19 +13161,42 @@ ${message}`;
       }
       vaultBlock.scrollIntoView({ behavior: "smooth", block: "nearest" });
     });
-    vaultBlock.querySelectorAll(".vault-tab").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const tab = btn.dataset.vaultTab || "recent";
-        vaultBlock.querySelectorAll(".vault-tab").forEach((t) => {
-          t.classList.toggle("vault-tab--active", t === btn);
-          t.setAttribute("aria-selected", t === btn ? "true" : "false");
-        });
-        _vaultActiveTab = tab;
-        void loadVaultTab(tab);
-      });
+    _vaultActiveTab = _getSidebarSections()[0] ?? "recent";
+    _renderSidebarTabs();
+    _renderSectionContent(_vaultActiveTab);
+    document.getElementById("vaultCustomizeBtn")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      _renderSectionPicker();
+      const picker = document.getElementById("vaultSectionPicker");
+      if (picker)
+        picker.hidden = false;
+    });
+    document.getElementById("vspClose")?.addEventListener("click", () => {
+      const picker = document.getElementById("vaultSectionPicker");
+      if (picker)
+        picker.hidden = true;
+    });
+    document.getElementById("vspDone")?.addEventListener("click", () => {
+      const grid = document.getElementById("vspGrid");
+      const picker = document.getElementById("vaultSectionPicker");
+      if (!grid || !picker)
+        return;
+      const selected = [...grid.querySelectorAll(".vsp-item--active")].map((el2) => el2.dataset.sec ?? "").filter(Boolean).slice(0, 3);
+      if (selected.length === 3) {
+        _saveSidebarSections(selected);
+        _vaultActiveTab = selected[0];
+        _renderSidebarTabs();
+        _renderSectionContent(_vaultActiveTab);
+      }
+      picker.hidden = true;
+    });
+    document.addEventListener("click", (e) => {
+      const picker = document.getElementById("vaultSectionPicker");
+      if (picker && !picker.hidden && !e.target.closest("#vaultSectionPicker") && !e.target.closest("#vaultCustomizeBtn")) {
+        picker.hidden = true;
+      }
     });
     void loadVaultCounts();
-    void loadVaultTab("recent");
   }
   async function loadVaultCounts() {
     const _authHeaders = await auth.getAuthHeader?.() ?? {};
@@ -13240,7 +13456,8 @@ ${message}`;
       return;
     inputEl.value = q;
     updateSendState();
-    sendMessage();
+    inputEl.focus();
+    inputEl.setSelectionRange(q.length, q.length);
   });
   const chatEmptyLanding = document.getElementById("chatEmpty");
   chatEmptyLanding?.addEventListener("click", (e) => {
@@ -13392,10 +13609,11 @@ ${message}`;
     function escapeHtml5(s) {
       return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
     }
-    function renderSidebarSuiteTiles() {
-      if (!sidebarTilesContainer)
+    function renderSidebarSuiteTiles2() {
+      const sidebarTilesContainer2 = document.getElementById("suiteTilesContainer");
+      if (!sidebarTilesContainer2)
         return;
-      sidebarTilesContainer.innerHTML = "";
+      sidebarTilesContainer2.innerHTML = "";
       for (const t of SUITE_TILES) {
         const btn = document.createElement("button");
         btn.type = "button";
@@ -13416,7 +13634,7 @@ ${message}`;
             window.open(url, "_blank", "noopener");
           });
         }
-        sidebarTilesContainer.appendChild(btn);
+        sidebarTilesContainer2.appendChild(btn);
       }
     }
     const SUITE_LONG_DESC = {
@@ -13495,7 +13713,7 @@ ${message}`;
       overlay?.setAttribute("hidden", "");
       modal2?.setAttribute("hidden", "");
     }
-    renderSidebarSuiteTiles();
+    renderSidebarSuiteTiles2();
     renderSkillsModal();
     learnMoreBtn?.addEventListener("click", openSkillsModal);
     document.getElementById("skillsModalClose")?.addEventListener("click", closeSkillsModal);

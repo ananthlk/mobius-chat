@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="static/styles.css?v=42" />
+  <link rel="stylesheet" href="static/styles.css?v=43" />
   <link rel="stylesheet" href="static/task-manager.css" />
 </head>
 <body>
@@ -47,19 +47,31 @@
             </span>
             <button type="button" class="vault-block-open-btn" id="vaultOpenBtn" aria-label="Open My Vault panel">⤢ Open</button>
           </div>
-          <div class="vault-block-tabs" role="tablist" aria-label="My Vault sections">
-            <button role="tab" class="vault-tab vault-tab--active" data-vault-tab="recent" aria-selected="true" aria-controls="vaultTabPanel" data-tour-id="vault-tab-recent">
-              Recent<span class="vault-tab-count" id="vaultCountRecent"></span>
-            </button>
-            <button role="tab" class="vault-tab" data-vault-tab="liked" aria-selected="false" aria-controls="vaultTabPanel" data-tour-id="vault-tab-liked">
-              Liked<span class="vault-tab-count" id="vaultCountLiked"></span>
-            </button>
-            <button role="tab" class="vault-tab" data-vault-tab="tasks" aria-selected="false" aria-controls="vaultTabPanel">
-              Tasks<span class="vault-tab-count" id="vaultCountTasks"></span>
-            </button>
-            <button role="tab" class="vault-tab" data-vault-tab="uploads" aria-selected="false" aria-controls="vaultTabPanel">
-              Uploads<span class="vault-tab-count" id="vaultCountUploads"></span>
-            </button>
+          <div class="vault-block-tabs" id="vaultSectionTabs" role="tablist" aria-label="Vault sections">
+            <!-- populated by renderSidebarTabs() -->
+          </div>
+          <button type="button" class="vault-section-customize" id="vaultCustomizeBtn"
+                  aria-label="Customize sections" title="Choose your 3 sections">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+                 stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="1" y="1" width="6" height="6" rx="1"/>
+              <rect x="9" y="1" width="6" height="6" rx="1"/>
+              <rect x="1" y="9" width="6" height="6" rx="1"/>
+              <rect x="9" y="9" width="6" height="6" rx="1"/>
+            </svg>
+          </button>
+
+          <div class="vault-section-picker" id="vaultSectionPicker" role="dialog"
+               aria-label="Choose sections" hidden>
+            <div class="vsp-head">
+              <span class="vsp-title">Choose 3 sections</span>
+              <button type="button" class="vsp-close" id="vspClose" aria-label="Close">✕</button>
+            </div>
+            <div class="vsp-grid" id="vspGrid"></div>
+            <div class="vsp-foot">
+              <span class="vsp-count" id="vspCount">3 of 3 selected</span>
+              <button type="button" class="vsp-done" id="vspDone">Done</button>
+            </div>
           </div>
           <div class="vault-block-content" id="vaultTabPanel" role="tabpanel">
             <ul class="vault-item-list" id="vaultItemList"></ul>
@@ -71,30 +83,7 @@
         <!-- Panel mount point — Vault agent injects slide-in panel here -->
         <div id="vaultPanelMount"></div>
 
-        <div class="sidebar-skills">
-          <h3 class="sidebar-section-title sidebar-section-toggle" role="button" tabindex="0" aria-expanded="true" aria-controls="skillsListWrap">
-            <span>Operations Suite</span>
-            <span class="sidebar-section-arrow" aria-hidden="true">▾</span>
-          </h3>
-          <div class="sidebar-section-body" id="skillsListWrap">
-            <!-- Populated by renderSidebarSuiteTiles() in app.ts. Always-
-                 visible direct-link tiles for products with their own
-                 UI (Strategy, Credentialing, Roster). The "Learn more"
-                 link below opens the full themed skills modal. -->
-            <div class="suite-tiles" id="suiteTilesContainer"></div>
-            <!-- Appeals Agent demo tile -->
-            <a href="https://mobius-appeals-prototype-ortabkknqa-uc.a.run.app"
-               target="_blank" rel="noopener noreferrer"
-               class="suite-demo-tile" title="Interactive claims appeal walkthrough (demo)">
-              <span class="suite-demo-tile-icon">⚖️</span>
-              <span class="suite-demo-tile-label">Appeals Agent <span class="suite-demo-badge">demo</span></span>
-              <span class="suite-demo-tile-arrow">↗</span>
-            </a>
-            <button type="button" class="suite-learn-more" id="suiteLearnMore" data-tour-id="sidebar-skills-info">
-              Learn more about chat skills →
-            </button>
-          </div>
-        </div>
+        <!-- sidebar-skills removed — Tools is now a section in the customizable vault tabs pool -->
 
         <div class="sidebar-user sidebar-user--clickable" id="sidebarUser" data-tour-id="sidebar-user" role="button" tabindex="0" title="Click to sign in or manage account">
           <span class="sidebar-user-label">Signed in as</span>
@@ -106,8 +95,18 @@
           </button>
         </div>
         <div class="sidebar-llm" id="modelProfileWrap">
-          <span class="sidebar-llm-label">LLM</span>
-          <select id="modelProfileSelect" class="sidebar-llm-select" aria-label="Model profile">
+          <div class="llm-pill-row">
+            <span class="sidebar-llm-label">LLM</span>
+            <button type="button" class="llm-pill" id="modelProfilePill"
+                    data-profile="" aria-haspopup="listbox" aria-expanded="false" aria-label="Model profile">
+              <span class="lp-dot"></span>
+              <span class="lp-label" id="modelProfilePillLabel">—</span>
+              <span class="lp-chevron">▴</span>
+            </button>
+          </div>
+          <div class="llm-dropdown" id="modelProfileDropdown" role="listbox" aria-label="Model profile"></div>
+          <!-- keep hidden for backward-compat with existing JS -->
+          <select id="modelProfileSelect" class="sidebar-llm-select" aria-hidden="true" style="display:none" aria-label="Model profile">
             <option value="__loading">loading…</option>
           </select>
           <span class="sidebar-llm-status" id="modelProfileStatus" aria-live="polite"></span>
@@ -123,6 +122,9 @@
         <button type="button" class="sidebar-rail-icon" data-target="skillsListWrap" title="Skills" aria-label="Skills">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 6l4-4 4 4-4 4z"/><path d="M9 9l5 5"/></svg>
         </button>
+        <button type="button" class="rail-user-avatar" id="railUserAvatar"
+                title="Signed in as…" aria-label="Account"
+                onclick="document.getElementById('sidebarUser').click()">G</button>
       </div>
       <button type="button" class="sidebar-chevron" id="sidebarChevron" aria-label="Collapse sidebar" title="Collapse sidebar">
         <svg class="sidebar-chevron-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
@@ -355,10 +357,10 @@
         </div>
         <!-- Landing chips: visible before first message (body.landing-state), positioned below composer -->
         <div class="composer-landing-chips" id="composerLandingChips" aria-label="Quick prompts">
-          <button type="button" class="composer-chip" data-query="Check eligibility for a Sunshine Health member">Eligibility check</button>
-          <button type="button" class="composer-chip" data-query="What prior authorization rules apply to behavioral health services?">Prior auth</button>
-          <button type="button" class="composer-chip" data-query="How do I submit a corrected claim?">Claims</button>
-          <button type="button" class="composer-chip" data-query="How do I appeal a denied claim?">Denial appeals</button>
+          <button type="button" class="composer-chip" data-query="Check eligibility for ">Check eligibility for…</button>
+          <button type="button" class="composer-chip" data-query="Prior auth for ">Prior auth for…</button>
+          <button type="button" class="composer-chip" data-query="Submit a claim for ">Submit a claim for…</button>
+          <button type="button" class="composer-chip" data-query="Appeal a denial for ">Appeal a denial for…</button>
         </div>
       </div>
     </main>
@@ -801,7 +803,7 @@
   </script>
   <script src="static/task-manager.js"></script>
   <script src="static/vault-panel.js"></script>
-  <script type="module" src="static/app.js?v=49"></script>
+  <script type="module" src="static/app.js?v=50"></script>
   <script src="https://mobius-interact-ortabkknqa-uc.a.run.app/runner.js" defer></script>
 </body>
 </html>
