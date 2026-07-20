@@ -35,7 +35,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
-from app.api.front_door import auth_mode, require_user
+from app.api.front_door import require_user
 from app.storage.instant_rag_catalog import get_by_document_id
 
 logger = logging.getLogger(__name__)
@@ -65,22 +65,49 @@ def _safe_filename(name: str, fallback: str = "document") -> str:
 # ── Upload download ─────────────────────────────────────────────────
 
 
+def _row_visibility(row: dict[str, Any]) -> str:
+    """Effective visibility ceiling for a catalog row.
+
+    PHI-policy gate contract (PHI agent ruling 2026-07-20): access
+    control keys on the catalog's VISIBILITY column — confirmed first,
+    suggested as the unpromoted fallback, and absent/unknown values
+    fail closed to 'private' (strictest)."""
+    v = (
+        (row.get("confirmed_visibility") or row.get("suggested_visibility") or "")
+        .strip().lower()
+    )
+    return v if v in ("private", "org", "public") else "private"
+
+
 @router.get("/chat/uploads/{document_id}/download")
 def download_upload(
     document_id: str,
     user_id: str | None = Depends(require_user),
 ) -> StreamingResponse:
-    """Stream an instant-rag upload's original bytes back to its owner."""
+    """Stream an instant-rag upload's original bytes.
+
+    Visibility-keyed access control, enforced UNCONDITIONALLY (not
+    gated on auth_mode — a private upload served to any UUID-holder in
+    optional-auth dev is an authz leak of private content regardless
+    of PHI): private → owner-only; org → owner-only until chat carries
+    an org-membership identity (fail-closed stand-in); public → open.
+    Absent caller identity on a non-public row → 403 (can't prove
+    ownership → deny)."""
     row = get_by_document_id(document_id)
     if not row:
         raise HTTPException(status_code=404, detail="Upload not found in catalog.")
 
-    # Ownership: same policy as link_upload_to_thread — enforced when
-    # auth is required, skipped in dev auth-off/optional modes.
-    if auth_mode() == "required":
+    visibility = _row_visibility(row)
+    if visibility != "public":
         if not user_id:
-            raise HTTPException(status_code=401, detail="Authentication required.")
-        if row.get("user_id") and row.get("user_id") != user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="This upload is not public — sign in as its owner to download it.",
+            )
+        owner = (row.get("user_id") or "").strip()
+        if owner != user_id:
+            # Includes legacy rows with no recorded owner: ownership
+            # can't be proven → fail closed.
             raise HTTPException(status_code=403, detail="This upload belongs to another user.")
 
     base = _rag_base()
@@ -90,9 +117,13 @@ def download_upload(
     upstream_url = f"{base}/documents/{urllib.parse.quote(document_id)}/file"
     filename = _safe_filename(row.get("filename") or "", fallback="upload")
 
+    # PHI-in-logs standard: filenames are user-chosen and PHI-capable —
+    # log the UUID + extension only (the catalog keeps the real name
+    # behind access control).
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     logger.info(
-        "download: upload document_id=%s user=%s filename=%s",
-        document_id, user_id or "-", filename,
+        "download: upload document_id=%s user=%s visibility=%s ext=%s",
+        document_id, user_id or "-", visibility, ext or "-",
     )
     return _stream_upstream(upstream_url, filename=filename)
 
