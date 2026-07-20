@@ -246,8 +246,35 @@ def _run_product_feedback(call: SkillCall) -> SkillEnvelope:
     if not verbatim:
         return SkillEnvelope(text="", signal="no_sources")
 
+    def _emit(msg: str) -> None:
+        if callable(call.emitter):
+            try:
+                call.emitter(msg)
+            except Exception:
+                pass
+
+    # PHI gate FIRST — raw verbatim must never reach the classifier LLM, the DB,
+    # or task-manager. scrub-and-keep; drop only if it can't be scrubbed safely.
+    _emit("◌ Checking for sensitive info…")
+    from app.skills.phi_gate import gate_feedback_text, _DROP_MESSAGE
+    safe_verbatim, phi_scrubbed, dropped = gate_feedback_text(
+        verbatim, thread_id=thread_id, user_id=user_id)
+
+    if dropped:
+        cat = inputs.get("category") if inputs.get("category") in _CATEGORY_LABEL else "other"
+        fid = store.insert_open_feedback(
+            trigger=trigger, category=cat, verbatim="", tidied="",
+            summary="[text withheld — possible patient info]",
+            routed_to=store.route_for(cat), user_id=user_id, thread_id=thread_id,
+            correlation_id=correlation_id, org_slug=org_slug, config_sha=config_sha,
+            phi_scrubbed=True)
+        return SkillEnvelope(text=_DROP_MESSAGE, signal="no_sources",
+                             extra={"feedback_id": fid, "kind": "open",
+                                    "category": cat, "phi_dropped": True})
+
+    _emit("◌ Reading your feedback…")
     resp = _classify(
-        verbatim=verbatim,
+        verbatim=safe_verbatim,
         context_excerpt=inputs.get("context_excerpt") or "",
         provisional=inputs.get("category"),
         cid=correlation_id,
@@ -259,8 +286,8 @@ def _run_product_feedback(call: SkillCall) -> SkillEnvelope:
     fid = store.insert_open_feedback(
         trigger=trigger,
         category=category,
-        verbatim=verbatim,
-        tidied=c.get("tidied") or verbatim,
+        verbatim=safe_verbatim,
+        tidied=c.get("tidied") or safe_verbatim,
         summary=c.get("summary") or "",
         sentiment=c.get("sentiment") or "neutral",
         severity=c.get("severity") or "low",
@@ -269,16 +296,19 @@ def _run_product_feedback(call: SkillCall) -> SkillEnvelope:
         user_id=user_id, thread_id=thread_id, correlation_id=correlation_id,
         org_slug=org_slug, config_sha=config_sha,
         parent_feedback_id=inputs.get("parent_feedback_id"),
+        phi_scrubbed=phi_scrubbed,
     )
     store.log_event(trigger=trigger, action="submitted", user_id=user_id,
                     thread_id=thread_id, kind="open", category=category, feedback_id=fid)
     if user_id:
         store.mark_captured(user_id)
+    _emit(f"✓ Logged under {_CATEGORY_DISPLAY.get(category, 'feedback')}")
 
     # Page a human when the feedback names a broken/wrong thing (best-effort).
+    # Uses the scrubbed text — raw PHI never reaches task-manager.
     _maybe_promote_task(
         feedback_id=fid, category=category, sentiment=c.get("sentiment") or "neutral",
-        severity=c.get("severity") or "low", verbatim=verbatim,
+        severity=c.get("severity") or "low", verbatim=safe_verbatim,
         summary=c.get("summary") or "", correlation_id=correlation_id,
         thread_id=thread_id, user_id=user_id, org_slug=org_slug,
     )
@@ -288,7 +318,7 @@ def _run_product_feedback(call: SkillCall) -> SkillEnvelope:
     # Standard playback envelope (chat text today; capture_card in extra lets a
     # future frontend render the same thing as an editable card).
     return SkillEnvelope(
-        text=_open_receipt(category, c.get("tidied") or verbatim, tracked),
+        text=_open_receipt(category, c.get("tidied") or safe_verbatim, tracked),
         signal="no_sources",
         extra={
             "feedback_id": fid,
@@ -299,7 +329,7 @@ def _run_product_feedback(call: SkillCall) -> SkillEnvelope:
                 "category": category,
                 "categories": list(_CATEGORY_LABEL.keys()),
                 "sentiment": c.get("sentiment") or "neutral",
-                "tidied": c.get("tidied") or verbatim,
+                "tidied": c.get("tidied") or safe_verbatim,
                 "editable": True,
                 "mode": "confirm",           # pre-filled playback of captured feedback
                 "update_url": "/chat/product-feedback/update",

@@ -149,9 +149,11 @@ def insert_open_feedback(
     parent_feedback_id: str | None = None,
     config_sha: str | None = None,
     linked_task_id: str | None = None,
+    phi_scrubbed: bool = False,
 ) -> str | None:
     """Insert one open-instrument feedback row. Returns feedback_id (or None in
-    dev when the DB is unavailable)."""
+    dev when the DB is unavailable). ``phi_scrubbed`` marks rows whose verbatim
+    was PHI-redacted at capture (stored in the ``extra`` JSONB)."""
     import json
 
     fid = str(uuid.uuid4())
@@ -160,11 +162,11 @@ def insert_open_feedback(
         INSERT INTO product_feedback
             (feedback_id, trigger, kind, category, verbatim, tidied, summary,
              sentiment, severity, area_tags, routed_to, user_id, thread_id,
-             correlation_id, org_slug, parent_feedback_id, config_sha, linked_task_id)
+             correlation_id, org_slug, parent_feedback_id, config_sha, linked_task_id, extra)
         VALUES
             (:fid, :trigger, 'open', :category, :verbatim, :tidied, :summary,
              :sentiment, :severity, CAST(:area_tags AS JSONB), :routed_to, :user_id, :thread_id,
-             :correlation_id, :org_slug, :parent, :config_sha, :task_id)
+             :correlation_id, :org_slug, :parent, :config_sha, :task_id, CAST(:extra AS JSONB))
         """,
         _DB,
         params={
@@ -185,6 +187,7 @@ def insert_open_feedback(
             "parent": parent_feedback_id,
             "config_sha": config_sha,
             "task_id": linked_task_id,
+            "extra": json.dumps({"phi_scrubbed": True} if phi_scrubbed else {}),
         },
     )
     if _err_code(result) is not None:

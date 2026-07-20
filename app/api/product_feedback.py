@@ -106,6 +106,20 @@ def post_product_feedback(
     if not (body.verbatim or "").strip():
         raise HTTPException(status_code=400, detail="verbatim is required")
     category = body.category if body.category in _CATEGORIES else "other"
+    # PHI gate — raw form text must never reach the DB or task-manager. Same
+    # scrub-and-keep gate as the skill path (app.skills.phi_gate).
+    from app.skills.phi_gate import gate_feedback_text, _DROP_MESSAGE
+    safe_verbatim, phi_scrubbed, dropped = gate_feedback_text(
+        body.verbatim, thread_id=body.thread_id, user_id=user_id)
+    if dropped:
+        fid = store.insert_open_feedback(
+            trigger=body.trigger, category=category, verbatim="", tidied="",
+            summary="[text withheld — possible patient info]",
+            routed_to=store.route_for(category), user_id=body.source or user_id,
+            thread_id=body.thread_id, correlation_id=body.correlation_id, phi_scrubbed=True)
+        return {"status": "ok", "feedback_id": fid, "category": category,
+                "routed_to": store.route_for(category), "phi_dropped": True,
+                "message": _DROP_MESSAGE}
     # Harvested (system-filed) vs. genuinely user-voiced feedback. Harvested =
     # a `source` is set OR the trigger isn't one of the user-voiced ones
     # (agent_signal, auto_harvest, graduation, …). Harvested writes skip the
@@ -115,8 +129,8 @@ def post_product_feedback(
     fid = store.insert_open_feedback(
         trigger=body.trigger,
         category=category,
-        verbatim=body.verbatim,
-        tidied=body.tidied or body.verbatim,
+        verbatim=safe_verbatim,
+        tidied=body.tidied or safe_verbatim,
         summary=body.summary or "",
         sentiment=body.sentiment,
         severity=body.severity,
@@ -126,6 +140,7 @@ def post_product_feedback(
         thread_id=body.thread_id,
         correlation_id=body.correlation_id,
         parent_feedback_id=body.parent_feedback_id,
+        phi_scrubbed=phi_scrubbed,
     )
     # The durable product_feedback row above is the record. The funnel event +
     # cadence advance are USER-only — harvested signals (agent_signal,

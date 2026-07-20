@@ -165,6 +165,14 @@ class TestStorageFailClosed:
 # ── skill handler ───────────────────────────────────────────────────────────
 
 class TestSkillHandler:
+    @pytest.fixture(autouse=True)
+    def _phi_clean(self, monkeypatch):
+        # Default: PHI gate passes text through clean, so these tests exercise the
+        # classify/persist/route logic without hitting the real classifier.
+        # (PHI behavior itself is tested in TestPhiGate.)
+        monkeypatch.setattr("app.skills.phi_gate.gate_feedback_text",
+                            lambda text, **k: (text, False, False))
+
     @pytest.fixture
     def _skill(self):
         import app.skills.builtin.product_feedback as pf
@@ -442,3 +450,116 @@ class TestSkillHandler:
              "category": "speed"}))
         assert env.extra["feedback_id"] == "fid-x"
         assert env.extra["category"] == "speed"  # provisional preserved on fallback
+
+
+# ── PHI gate (feedback capture scrub) ───────────────────────────────────────
+
+class _FakeResp:
+    def __init__(self, code, body):
+        self.status_code = code
+        self._body = body
+    def json(self):
+        return self._body
+
+
+def _fake_httpx(responses):
+    """responses: dict of url-substring -> (status_code, body). Missing -> 500."""
+    class _Client:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, url, json=None):
+            for sub, (code, body) in responses.items():
+                if sub in url:
+                    return _FakeResp(code, body)
+            return _FakeResp(500, {})
+    return _Client
+
+
+class TestPhiGate:
+    def _gate(self):
+        import app.skills.phi_gate as g
+        return g
+
+    def test_clean_passes_raw(self, monkeypatch):
+        g = self._gate()
+        monkeypatch.setattr("httpx.Client", _fake_httpx({"/message-check": (200, {"gate": "clean"})}))
+        assert g.gate_feedback_text("the sidebar is slow") == ("the sidebar is slow", False, False)
+
+    def test_phi_masked_is_scrubbed(self, monkeypatch):
+        g = self._gate()
+        monkeypatch.setattr("httpx.Client", _fake_httpx({
+            "/message-check": (200, {"gate": "phi", "identifier_labels": ["NAME"], "identifiers_found": 1}),
+            "/redact": (200, {"redaction": "masked", "redacted_text": "the export for [NAME] is broken"}),
+        }))
+        safe, scrubbed, dropped = g.gate_feedback_text("the export for John Doe is broken")
+        assert safe == "the export for [NAME] is broken" and scrubbed is True and dropped is False
+
+    def test_phi_suppressed_is_dropped(self, monkeypatch):
+        g = self._gate()
+        monkeypatch.setattr("httpx.Client", _fake_httpx({
+            "/message-check": (200, {"gate": "phi"}),
+            "/redact": (200, {"redaction": "suppressed", "redacted_text": ""}),
+        }))
+        assert g.gate_feedback_text("dense PHI here") == (None, True, True)
+
+    def test_message_check_down_fails_closed_to_redact(self, monkeypatch):
+        # message-check unreachable → indeterminate → redact; masked → scrubbed
+        g = self._gate()
+        monkeypatch.setattr("httpx.Client", _fake_httpx({
+            "/message-check": (503, {}),
+            "/redact": (200, {"redaction": "masked", "redacted_text": "scrubbed"}),
+        }))
+        assert g.gate_feedback_text("x") == ("scrubbed", True, False)
+
+    def test_redact_down_drops(self, monkeypatch):
+        g = self._gate()
+        monkeypatch.setattr("httpx.Client", _fake_httpx({
+            "/message-check": (200, {"gate": "phi"}),
+            "/redact": (500, {}),
+        }))
+        assert g.gate_feedback_text("x") == (None, True, True)
+
+    def test_skill_drops_phi_verbatim(self, monkeypatch):
+        import app.skills.builtin.product_feedback as pf
+        monkeypatch.setattr("app.skills.phi_gate.gate_feedback_text",
+                            lambda text, **k: (None, True, True))
+        # if it were NOT dropped, _classify would be called — assert it isn't
+        monkeypatch.setattr(pf, "_classify", lambda **k: (_ for _ in ()).throw(AssertionError("classify raw PHI!")))
+        monkeypatch.setattr(pf.store, "insert_open_feedback", lambda **k: "fid-drop")
+        call = SkillCall(name="product_feedback",
+                         inputs={"trigger": "inline", "verbatim": "patient John Doe SSN 123"},
+                         question="", user_message="patient John Doe SSN 123", thread_id="t")
+        env = pf._run_product_feedback(call)
+        assert env.extra["phi_dropped"] is True
+        assert "patient info" in env.text.lower()
+
+    def test_skill_uses_scrubbed_text_not_raw(self, monkeypatch):
+        import app.skills.builtin.product_feedback as pf
+        monkeypatch.setattr("app.skills.phi_gate.gate_feedback_text",
+                            lambda text, **k: ("the export for [NAME] is broken", True, False))
+        seen = {}
+        monkeypatch.setattr(pf, "_classify", lambda **k: seen.update(k) or {
+            "classification": {"category": "bug", "tidied": "Export broken.", "sentiment": "negative",
+                               "severity": "high", "summary": "s"}, "routed_to": "triage_queue"})
+        monkeypatch.setattr(pf.store, "insert_open_feedback", lambda **k: seen.update(persist=k) or "fid")
+        monkeypatch.setattr(pf.store, "log_event", lambda **k: None)
+        monkeypatch.setattr(pf.store, "mark_captured", lambda *a, **k: None)
+        monkeypatch.setattr(pf, "_maybe_promote_task", lambda **k: seen.update(promote=k))
+        call = SkillCall(name="product_feedback",
+                         inputs={"trigger": "inline", "verbatim": "the export for John Doe is broken"},
+                         question="", user_message="x", thread_id="t")
+        pf._run_product_feedback(call)
+        assert seen["verbatim"] == "the export for [NAME] is broken"   # classify got scrubbed
+        assert seen["persist"]["verbatim"] == "the export for [NAME] is broken"  # DB got scrubbed
+        assert seen["persist"]["phi_scrubbed"] is True
+        assert seen["promote"]["verbatim"] == "the export for [NAME] is broken"  # task-manager got scrubbed
+
+    def test_api_drops_phi(self, monkeypatch):
+        import app.api.product_feedback as api
+        monkeypatch.setattr("app.skills.phi_gate.gate_feedback_text",
+                            lambda text, **k: (None, True, True))
+        monkeypatch.setattr(api.store, "insert_open_feedback", lambda **k: "fid")
+        body = api.OpenFeedbackBody(verbatim="patient info here", category="bug")
+        r = api.post_product_feedback(body, user_id="u")
+        assert r["phi_dropped"] is True
