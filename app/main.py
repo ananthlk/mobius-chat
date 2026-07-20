@@ -2638,7 +2638,21 @@ async def internal_skill_llm(
 
 class _ProgressPushBody(BaseModel):
     label: str = ""
+    event: str = ""   # RAG event key — mapped to verbatim Eval label via _PROGRESS_EVENT_LABELS
+    n: int | None = None  # interpolation field for themes/ranking events
 
+
+# Eval-owned label strings — verbatim, do NOT reword (Eval diagnostics content tree)
+_PROGRESS_EVENT_LABELS: dict[str, str] = {
+    "understanding": "Understanding your question…",
+    "fact_check":    "Checking certified payer facts…",
+    "searching":     "Searching the knowledge base…",
+    "themes":        "Found {n} themes — narrowing in…",
+    "ranking":       "Ranking {n} passages by relevance…",
+    "external":      "Checking external payer sources…",
+    "composing":     "Composing the answer…",
+    "verifying":     "Verifying against sources…",
+}
 
 _PROGRESS_KEY = (os.environ.get("MOBIUS_INTERNAL_PROGRESS_KEY") or "").strip()
 
@@ -2657,15 +2671,31 @@ async def internal_progress_push(
     Security: requires X-Mobius-Internal-Key == MOBIUS_INTERNAL_PROGRESS_KEY.
     Silently no-ops on unknown cid (append_thinking drops unknown ids).
 
-    PHI §4: label must be a count/enum/template string — never raw user text.
+    Callers should send either:
+      - `event` (one of the RAG event keys in _PROGRESS_EVENT_LABELS) — mapped
+        to a verbatim Eval-approved label; `n` provides interpolation for
+        themes/ranking events.
+      - `label` (arbitrary string) — used as-is for callers outside the RAG
+        event taxonomy.
+
+    PHI §4: labels are counts/enums/template params only — never raw user text.
     """
     if _PROGRESS_KEY and (x_mobius_key or "").strip() != _PROGRESS_KEY:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    label = (body.label or "").strip()
-    if label:
+    # Prefer event-based lookup; fall back to raw label
+    line = ""
+    ev = (body.event or "").strip()
+    if ev and ev in _PROGRESS_EVENT_LABELS:
+        tmpl = _PROGRESS_EVENT_LABELS[ev]
+        n = body.n
+        line = tmpl.format(n=n) if n is not None and "{n}" in tmpl else tmpl.replace(" {n}", "").replace("{n}", "")
+    elif (body.label or "").strip():
+        line = body.label.strip()
+
+    if line:
         from app.storage.progress import append_thinking
-        append_thinking(cid, label)
+        append_thinking(cid, line)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
