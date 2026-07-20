@@ -5059,6 +5059,11 @@ function renderDemoChip(demo, meta) {
         throw new Error("MobiusInteract runner not loaded");
       btn.textContent = "\u25B6 Show me";
       btn.disabled = false;
+      const _sb = document.getElementById("sidebar");
+      if (_sb?.classList.contains("sidebar--collapsed")) {
+        _sb.classList.remove("sidebar--collapsed");
+        document.querySelector(".main")?.classList.remove("sidebar-collapsed");
+      }
       MI.run(script, {
         correlationId: meta.correlationId,
         onAbort: () => {

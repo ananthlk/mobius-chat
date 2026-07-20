@@ -4317,6 +4317,12 @@ function renderDemoChip(
         if (!MI) throw new Error("MobiusInteract runner not loaded");
         btn.textContent = "▶ Show me";
         btn.disabled = false;
+        // Expand collapsed sidebar before running any tour so sidebar-targeting steps are visible.
+        const _sb = document.getElementById("sidebar");
+        if (_sb?.classList.contains("sidebar--collapsed")) {
+          _sb.classList.remove("sidebar--collapsed");
+          document.querySelector<HTMLElement>(".main")?.classList.remove("sidebar-collapsed");
+        }
         MI.run(script, {
           correlationId: meta.correlationId,
           onAbort: () => { btn.disabled = false; },
