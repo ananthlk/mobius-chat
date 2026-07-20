@@ -267,6 +267,14 @@ def _run_create_task(call: SkillCall) -> SkillEnvelope:
     }
     body = {k: v for k, v in body.items() if v is not None}
 
+    # Planner intermittently drops kind="reminder" — a live "remind me to
+    # check <provider>'s credentials" replay (2026-07-20) arrived kind-less,
+    # so the row missed reminder auto-assign and every "my tasks"/nudge
+    # scope. Same planner-paraphrase class as the list_tasks defaults:
+    # read the user's words, not the rewrite.
+    if not body.get("kind") and "remind" in (call.question or call.user_message or "").lower():
+        body["kind"] = "reminder"
+
     # Before-emit stays structural (kind/org/severity, no free text): the
     # task-manager's PHI gate hasn't screened the text yet at this point.
     _emit(call, f"◌ Task manager: creating {body.get('kind') or 'task'} "
