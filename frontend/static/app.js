@@ -6499,7 +6499,8 @@ async function _maybeShowDocReadyNudge() {
   if (!me)
     return;
   try {
-    const r = await apiFetch(`${API_BASE}/chat/tasks?kind=notification&status=open&limit=10`);
+    const assignee = encodeURIComponent(me.assignee_ref || "");
+    const r = await apiFetch(`${API_BASE}/chat/tasks?kind=notification&status=open&limit=10${assignee ? `&assigned_to=${assignee}` : ""}`);
     if (!r.ok)
       return;
     const tasks = (await r.json()).tasks || [];
@@ -12267,9 +12268,12 @@ ${message}`;
       return;
     if (userDismissedRestoreBanner())
       return;
+    const _whoami2 = await _getWhoami();
+    if (!_whoami2)
+      return;
     if (currentThreadId) {
       try {
-        const r = await fetch(
+        const r = await apiFetch(
           API_BASE + "/chat/thread/" + encodeURIComponent(currentThreadId) + "/uploads"
         );
         if (r.ok) {
@@ -12288,7 +12292,7 @@ ${message}`;
       const params = new URLSearchParams({ limit: "5" });
       if (currentThreadId)
         params.set("current_thread_id", currentThreadId);
-      const r = await fetch(API_BASE + "/chat/uploads/recent/for-restoration?" + params.toString());
+      const r = await apiFetch(API_BASE + "/chat/uploads/recent/for-restoration?" + params.toString());
       if (!r.ok)
         return;
       const body = await r.json();

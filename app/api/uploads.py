@@ -151,13 +151,14 @@ def list_recent_for_restoration(
     # db-agent refactor: moved the inline "global recent" SQL into
     # ``list_recent_global`` on the catalog module so all catalog DB
     # access goes through ``app.db_client``.
-    from app.storage.instant_rag_catalog import list_recent_global
+    if not user_id:
+        # No identity = no uploads. list_recent_global() is removed from
+        # the request path — returning cross-session uploads to an
+        # unauthenticated caller is a data-isolation violation.
+        return {"auth_scope": "none", "current_thread_id": current_thread_id,
+                "count": 0, "uploads": []}
 
-    if user_id:
-        rows = list_for_user(user_id, include_inactive=False, limit=limit * 2)
-    else:
-        # Dev / auth-off branch — query catalog without user scope.
-        rows = list_recent_global(limit=limit * 2)
+    rows = list_for_user(user_id, include_inactive=False, limit=limit * 2)
 
     # Filter out uploads already on the current thread so the banner only
     # offers things the user genuinely needs to restore.
@@ -166,7 +167,7 @@ def list_recent_for_restoration(
 
     rows = rows[:limit]
     return {
-        "auth_scope": "user" if user_id else "global",
+        "auth_scope": "user",
         "current_thread_id": current_thread_id,
         "count": len(rows),
         "uploads": [_to_payload(r) for r in rows],

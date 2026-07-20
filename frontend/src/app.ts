@@ -5902,7 +5902,8 @@ async function _maybeShowDocReadyNudge(): Promise<void> {
   const me = await _getWhoami();
   if (!me) return;
   try {
-    const r = await apiFetch(`${API_BASE}/chat/tasks?kind=notification&status=open&limit=10`);
+    const assignee = encodeURIComponent(me.assignee_ref || "");
+    const r = await apiFetch(`${API_BASE}/chat/tasks?kind=notification&status=open&limit=10${assignee ? `&assigned_to=${assignee}` : ""}`);
     if (!r.ok) return;
     const tasks: any[] = (await r.json()).tasks || [];
     const docReadyTasks = tasks.filter((t: any) => t.type === "doc_ready");
@@ -12678,11 +12679,15 @@ function run(): void {
   async function maybeShowRestoreBanner(): Promise<void> {
     if (!uploadRestoreBanner || !uploadRestoreBannerList) return;
     if (userDismissedRestoreBanner()) return;
+    // Defense-in-depth: if the caller has no identity, the backend now
+    // returns empty, but bail early to skip the round-trip entirely.
+    const _whoami = await _getWhoami();
+    if (!_whoami) return;
     // If the current thread already has instant-rag uploads, the user
     // isn't looking for a restore — don't nag them.
     if (currentThreadId) {
       try {
-        const r = await fetch(
+        const r = await apiFetch(
           API_BASE + "/chat/thread/" + encodeURIComponent(currentThreadId) + "/uploads",
         );
         if (r.ok) {
@@ -12702,12 +12707,12 @@ function run(): void {
       }
     }
 
-    // Fetch recent uploads not on this thread.
+    // Fetch recent uploads not on this thread (auth header propagates identity).
     let uploads: any[] = [];
     try {
       const params = new URLSearchParams({ limit: "5" });
       if (currentThreadId) params.set("current_thread_id", currentThreadId);
-      const r = await fetch(API_BASE + "/chat/uploads/recent/for-restoration?" + params.toString());
+      const r = await apiFetch(API_BASE + "/chat/uploads/recent/for-restoration?" + params.toString());
       if (!r.ok) return;
       const body = await r.json();
       uploads = body?.uploads || [];
