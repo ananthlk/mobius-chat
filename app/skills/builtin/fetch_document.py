@@ -652,6 +652,9 @@ def _run_fetch_document(call: SkillCall) -> SkillEnvelope:
 
     _attach_download_payload(call, download_docs, query)
 
+    _via = "corpus search" if resolved_via == "corpus_search" else "name match"
+    _e(f"✓ Resolved {len(sources)} document(s) by {_via}")
+
     if len(sources) == 1:
         text = f"Found **{sources[0].document_name}**. Use the card below to download it."
     else:
