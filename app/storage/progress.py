@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 _progress: dict[str, dict] = {}  # correlation_id -> {"thinking": list[str], "message": str, "events": list[dict]}
 _lock = threading.Lock()
 _progress_redis_logged: set[str] = set()  # correlation_ids we've logged "[progress] publishing to Redis" for
+_external_last_line: dict[str, str] = {}  # cid -> last line pushed via push_external_thinking (dedup guard)
 
 # Serial DB insert queues — one per active request. Ensures DB insertion order == emit order.
 # Each queue is drained by exactly one background thread. None sentinel signals shutdown.
@@ -285,13 +286,21 @@ def push_external_thinking(correlation_id: str, line: str) -> None:
     This is the right primitive for external HTTP push; use append_thinking
     for in-process emits only.
     """
-    if not (line or "").strip():
+    line = (line or "").strip()
+    if not line:
         return
+    # Suppress immediate consecutive duplicates from RAG re-emitting the same
+    # opening labels on each tool-call. Instance-local check — catches the common
+    # case where consecutive POSTs land on the same instance.
+    with _lock:
+        if _external_last_line.get(correlation_id) == line:
+            return
+        _external_last_line[correlation_id] = line
     ts, ts_readable = _event_ts()
-    ev: dict[str, Any] = {"event": "thinking", "data": {"line": line.strip(), "ts": ts, "ts_readable": ts_readable}}
+    ev: dict[str, Any] = {"event": "thinking", "data": {"line": line, "ts": ts, "ts_readable": ts_readable}}
     with _lock:
         if correlation_id in _progress:
-            _progress[correlation_id]["thinking"].append(line.strip())
+            _progress[correlation_id]["thinking"].append(line)
             _progress[correlation_id]["events"].append(ev)
     _publish_progress_event(correlation_id, ev)
 

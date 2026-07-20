@@ -448,15 +448,10 @@ def _run(call: SkillCall) -> SkillEnvelope:
 
     filters = _filters_from_active(call.active_context)
 
-    if call.emitter:
-        payer = filters.get("payer") or ""
-        state = filters.get("state") or ""
-        ctx_label = " · ".join(x for x in [payer, state] if x)
-        qshort = (query[:55] + "…") if len(query) > 55 else query
-        if ctx_label:
-            call.emitter(f"◌ Searching {ctx_label} materials for \"{qshort}\"…")
-        else:
-            call.emitter(f"◌ Searching policy docs for \"{qshort}\"…")
+    # Retrieval-stage emit owned by RAG's granular progress lines
+    # (understanding→searching→themes→ranking via /internal/progress).
+    # Removed chat-side "◌ Searching {ctx_label} materials…" to avoid
+    # double-voice and mislabeling (ctx_label = active context, not query target).
 
     # X-Caller-Id = the chat turn correlation_id when present, else
     # a fresh uuid. Lets rag correlate a search_events row with the
