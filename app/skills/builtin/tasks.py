@@ -131,7 +131,6 @@ def _run_list_tasks(call: SkillCall) -> SkillEnvelope:
     if _is_stub_url(base):
         return _stub_envelope("list")
 
-    _emit(call, "◌ Task manager: list_tasks…")
     inputs = call.inputs or {}
 
     # Server-side hardening (2026-07-09): the planner intermittently drops
@@ -187,10 +186,15 @@ def _run_list_tasks(call: SkillCall) -> SkillEnvelope:
     if params["audience"] == "all":
         params["audience"] = None
 
+    _filters_desc = ", ".join(
+        f"{k}={v}" for k, v in params.items()
+        if v not in (None, "") and k not in ("limit", "audience")) or "no filters"
+    _emit(call, f"◌ Task manager: querying tasks ({_filters_desc})…")
     try:
         data = _http_get("/tasks", params)
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as e:
         logger.warning("list_tasks: task-manager unreachable: %s", e)
+        _emit(call, f"⚠ Task manager unreachable: {e}")
         return SkillEnvelope(
             text=f"Task manager error: {e}",
             signal="no_sources",
@@ -199,6 +203,8 @@ def _run_list_tasks(call: SkillCall) -> SkillEnvelope:
     raw_tasks = data.get("tasks") or []
     rows = [TaskRow.from_api(t) for t in raw_tasks if isinstance(t, dict)]
     count = data.get("count", len(rows))
+    _emit(call, f"✓ {count} task(s) matched"
+                + (" — scoped to your assignments" if inputs.get("assigned_to_me") and assignee else ""))
 
     if rows:
         lines = [f"**{count} task(s) found**\n"]
@@ -241,7 +247,6 @@ def _run_create_task(call: SkillCall) -> SkillEnvelope:
     if _is_stub_url(base):
         return _stub_envelope("create")
 
-    _emit(call, "◌ Task manager: create_task…")
     inputs = call.inputs or {}
     body = {
         # No org in the turn ("remind me to...") -> "_shared_", the same
@@ -262,6 +267,11 @@ def _run_create_task(call: SkillCall) -> SkillEnvelope:
     }
     body = {k: v for k, v in body.items() if v is not None}
 
+    # Before-emit stays structural (kind/org/severity, no free text): the
+    # task-manager's PHI gate hasn't screened the text yet at this point.
+    _emit(call, f"◌ Task manager: creating {body.get('kind') or 'task'} "
+                f"for {body['org_name']} (severity {body.get('severity', 'low')})…")
+
     # Reminders auto-assign to their creator — "remind ME" must land in
     # the asking user's own queue, or per-user nudge scoping (assignee=me)
     # would hide it. Explicit assignee wins; unknown identity → unassigned
@@ -278,12 +288,17 @@ def _run_create_task(call: SkillCall) -> SkillEnvelope:
         created = _http_request("POST", f"{base}/tasks", body=body)
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as e:
         logger.warning("create_task: task-manager unreachable: %s", e)
+        _emit(call, f"⚠ Task creation failed: {e}")
         return SkillEnvelope(
             text=f"Task manager error: {e}",
             signal="no_sources",
         )
 
     row = TaskRow.from_api(created)
+    # Emit the RETURNED text, not the request body — if the task-manager's
+    # PHI gate scrubbed it, the thinking log must show the scrubbed form.
+    _emit(call, f"✓ created task {row.task_id[:8]}: {(row.text or row.title or '(untitled)')[:60]}"
+                + (" (assigned to you)" if body.get("assigned_to") else ""))
     summary = (
         f"Task created: **{row.text or row.title or '(untitled)'}** "
         f"(ID: `{row.task_id[:8]}`, severity: {row.severity})"
@@ -332,12 +347,14 @@ def _run_resolve_task(call: SkillCall) -> SkillEnvelope:
         resolved = _http_request("POST", f"{base}/tasks/{task_id}/resolve", body=body)
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as e:
         logger.warning("resolve_task: task-manager unreachable: %s", e)
+        _emit(call, f"⚠ Resolve failed: {e}")
         return SkillEnvelope(
             text=f"Task manager error: {e}",
             signal="no_sources",
         )
 
     row = TaskRow.from_api(resolved) if isinstance(resolved, dict) else None
+    _emit(call, f"✓ resolved task {task_id[:8]}")
     summary = f"Task `{task_id[:8]}` marked as resolved."
 
     envelope = _confirmation_envelope("resolve", row, summary)
@@ -395,10 +412,12 @@ def _run_patch_task(call: SkillCall) -> SkillEnvelope:
         patched = _http_request("PATCH", f"{base}/tasks/{task_id}", body=updates)
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as e:
         logger.warning("patch_task: task-manager unreachable: %s", e)
+        _emit(call, f"⚠ Edit failed: {e}")
         return SkillEnvelope(text=f"Task manager error: {e}", signal="no_sources")
 
     row = TaskRow.from_api(patched) if isinstance(patched, dict) else None
     changed = ", ".join(sorted(k for k in updates if k != "note"))
+    _emit(call, f"✓ updated task {task_id[:8]}" + (f" ({changed})" if changed else " (note added)"))
     summary = f"Task `{task_id[:8]}` updated ({changed})." if changed else f"Note added to task `{task_id[:8]}`."
     envelope = _confirmation_envelope("patch", row, summary)
     _attach_to_ctx(call, envelope)
@@ -447,9 +466,12 @@ def _run_assign_task(call: SkillCall) -> SkillEnvelope:
                             "note": f"assigned to {display}" + (f" ({canonical})" if canonical != display else "")})
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as e:
         logger.warning("assign_task: task-manager unreachable: %s", e)
+        _emit(call, f"⚠ Assign failed: {e}")
         return SkillEnvelope(text=f"Task manager error: {e}", signal="no_sources")
 
     row = TaskRow.from_api(patched) if isinstance(patched, dict) else None
+    _emit(call, f"✓ assigned task {task_id[:8]} to {display}"
+                + ("" if cand else " (no user profile match — stored as plain text)"))
     summary = f"Task `{task_id[:8]}` assigned to **{display}**."
     if not cand:
         summary += " _(no matching user profile — stored as plain text; enroll them in mobius-user for exact 'my tasks' matching)_"
@@ -475,9 +497,11 @@ def _run_dismiss_task(call: SkillCall) -> SkillEnvelope:
                                   body={"dismissed_by": inputs.get("dismissed_by") or "chat"})
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as e:
         logger.warning("dismiss_task: task-manager unreachable: %s", e)
+        _emit(call, f"⚠ Dismiss failed: {e}")
         return SkillEnvelope(text=f"Task manager error: {e}", signal="no_sources")
 
     row = TaskRow.from_api(dismissed) if isinstance(dismissed, dict) else None
+    _emit(call, f"✓ dismissed task {task_id[:8]}")
     summary = f"Task `{task_id[:8]}` dismissed."
     envelope = _confirmation_envelope("dismiss", row, summary)
     _attach_to_ctx(call, envelope)
