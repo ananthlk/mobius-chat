@@ -72,6 +72,7 @@ def _build_consolidator_input_json(
     task_context: dict | None = None,
     instant_rag_context: dict | None = None,
     recital_context: dict | None = None,
+    tool_section_hints: list[dict] | None = None,
 ) -> str:
     """Build JSON payload for consolidator: user_message, subquestions, answers, retrieval_metadata, sources_summary, jurisdiction_summary, user_provided_context, previous_thread_summary."""
     _subs = getattr(plan, "subquestions", None) or []
@@ -115,6 +116,10 @@ def _build_consolidator_input_json(
         payload["instant_rag_context"] = instant_rag_context
     if recital_context:
         payload["recital_context"] = recital_context
+    # Structured section hints from analytics tool outputs (section_format, headers, rows, items).
+    # Passed explicitly so the integrator can render typed panels instead of defaulting to bullets.
+    if tool_section_hints:
+        payload["tool_section_hints"] = tool_section_hints
     return json.dumps(payload, indent=2)
 
 
@@ -275,6 +280,7 @@ def format_response(
     task_context: dict | None = None,
     instant_rag_context: dict | None = None,
     recital_context: dict | None = None,
+    tool_section_hints: list[dict] | None = None,
 ) -> tuple[str, LLMUsageDict | None]:
     """Turn plan + answers into one chat-friendly message via llm_manager (integrator or integrator_roster).
     On LLM failure, returns fallback and None usage."""
@@ -304,6 +310,7 @@ def format_response(
             task_context=task_context,
             instant_rag_context=instant_rag_context,
             recital_context=recital_context,
+            tool_section_hints=tool_section_hints,
         )
         canonical_score = blended_canonical_score(plan)
         consolidator_type = choose_consolidator_type(

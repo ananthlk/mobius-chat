@@ -541,6 +541,7 @@ def run_integrate(
         task_context=_task_ctx,
         instant_rag_context=_instant_rag_ctx,
         recital_context=_recital_ctx,
+        tool_section_hints=getattr(ctx, "tool_section_hints", None) or None,
     )
 
     integrator_usage: dict | None = None

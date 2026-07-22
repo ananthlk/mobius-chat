@@ -1524,7 +1524,7 @@ def _execute_tool(
                 and (env.signal or "") not in ("", RETRIEVAL_SIGNAL_NO_SOURCES)
             )
         )
-        return {
+        _tr: dict = {
             "tool": tool,
             "success": _skill_success,
             "result": env.text or f"{tool} returned no content.",
@@ -1533,6 +1533,13 @@ def _execute_tool(
             "golden": _skill_golden,
             "golden_explicit": _golden_explicit,
         }
+        # Passthrough structured section hints from analytics tools so the integrator
+        # can render typed panels (table/stats/bars) instead of defaulting to bullets.
+        _hint_keys = ("section_format", "table_headers", "rows", "items")
+        _section_hint = {k: (env.extra or {}).get(k) for k in _hint_keys if (env.extra or {}).get(k) is not None}
+        if _section_hint:
+            _tr["section_hint"] = _section_hint
+        return _tr
 
     return {
         "tool": tool,
@@ -1712,6 +1719,7 @@ def _finalize_response(
     final_signal: str,
     last_tool: str | None,
     emitter=None,
+    tool_results: list[dict] | None = None,
 ) -> None:
     """Map ReAct output to ctx fields so run_integrate() works unchanged."""
     _sync_extra_out_to_context(ctx, emitter)
@@ -1736,6 +1744,12 @@ def _finalize_response(
         }
     }
     ctx.react_last_tool = last_tool
+    # Collect section_hint entries from this turn's tool results so the integrator
+    # can render typed panels (table/stats/bars) for analytics tool outputs.
+    _all_tr = list(tool_results or []) + list(getattr(ctx, "seed_tool_results", None) or [])
+    _all_hints = [tr["section_hint"] for tr in _all_tr if tr.get("section_hint")]
+    if _all_hints:
+        ctx.tool_section_hints = _all_hints
 
 
 # ---------------------------------------------------------------------------
@@ -2461,6 +2475,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     final_signal if final_signal != RETRIEVAL_SIGNAL_NO_SOURCES else "corpus_only",
                     last_tool,
                     emitter,
+                    tool_results=tool_results,
                 )
                 return
             # Empty answer but claimed complete — fall through to next iteration or exhaust
