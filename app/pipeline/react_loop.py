@@ -2683,6 +2683,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 final_signal,
                 last_tr.get("tool") or last_tool,
                 emitter,
+                tool_results=tool_results,
             )
             return
     # Phase 0.7: if every round failed and nothing succeeded, emit a clean
@@ -2731,4 +2732,4 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         "after checking our materials and searching the web. "
         "You may want to contact the payer directly or provide a link to their documentation."
     )
-    _finalize_response(ctx, honest, all_sources, RETRIEVAL_SIGNAL_NO_SOURCES, last_tool, emitter)
+    _finalize_response(ctx, honest, all_sources, RETRIEVAL_SIGNAL_NO_SOURCES, last_tool, emitter, tool_results=tool_results)
