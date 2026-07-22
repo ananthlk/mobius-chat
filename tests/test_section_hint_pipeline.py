@@ -294,3 +294,46 @@ def test_table_rows_normalized_to_rows():
     assert "rows" in sh, "rows must be present after normalization"
     assert sh["rows"] == [["H2019", "$10.50"]]
     assert "table_rows" not in sh, "table_rows must not leak into section_hint"
+
+
+# ---------------------------------------------------------------------------
+# h) _normalize_answer_card converts ui_blocks → format/data
+# ---------------------------------------------------------------------------
+
+def test_normalize_answer_card_converts_ui_blocks_table():
+    """LLM may emit ui_blocks instead of format+data; normalizer must fix it."""
+    from app.responder.final import _parse_answer_card
+
+    raw_card = json.dumps({
+        "mode": "BLENDED",
+        "direct_answer": "See table.",
+        "sections": [
+            {
+                "intent": "process",
+                "label": "Rate Gap",
+                "bullets": [],
+                "ui_blocks": [
+                    {
+                        "type": "table",
+                        "title": "Rate Gap",
+                        "headers": ["Service Line", "Org PPC", "Peer P50"],
+                        "rows": [["Psych Rehab", "$124.46", "$77.27"]],
+                    }
+                ],
+            }
+        ],
+        "takeaways": [],
+        "next_steps": [],
+        "gaps": [],
+        "next_questions_for_user": [],
+        "thread_summary": "Rate gap",
+        "suggested_actions": [],
+    })
+
+    card = _parse_answer_card(raw_card)
+    assert card is not None, "_parse_answer_card should succeed"
+    sec = card["sections"][0]
+    assert sec.get("format") == "table", f"expected format=table, got {sec.get('format')!r}"
+    assert "ui_blocks" not in sec, "ui_blocks must be removed after normalization"
+    assert sec["data"]["headers"] == ["Service Line", "Org PPC", "Peer P50"]
+    assert sec["data"]["rows"] == [["Psych Rehab", "$124.46", "$77.27"]]

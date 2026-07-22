@@ -167,6 +167,7 @@ def _parse_answer_card(text: str, emitter: Callable[[str], None] | None = None) 
     def _normalize_answer_card(data: dict) -> dict:
         """Coerce sections so one bad intent does not void the whole card (avoids losing details)."""
         valid_intents = ("process", "requirements", "definitions", "exceptions", "references")
+        valid_formats = ("bullets", "table", "stats", "bars", "steps", "conditions")
         out = dict(data)
         sections = out.get("sections")
         if not isinstance(sections, list):
@@ -184,6 +185,28 @@ def _parse_answer_card(text: str, emitter: Callable[[str], None] | None = None) 
                         intent,
                     )
                 sec["intent"] = "references"
+            # Normalize LLM-invented ui_blocks → canonical format/data structure.
+            # The LLM sometimes puts table/stats data in ui_blocks instead of
+            # format+data when given tool_section_hints. Map it back to schema.
+            if "ui_blocks" in sec and not sec.get("format"):
+                blocks = sec.pop("ui_blocks", []) or []
+                for blk in blocks:
+                    if not isinstance(blk, dict):
+                        continue
+                    blk_type = blk.get("type", "")
+                    if blk_type == "table" and blk.get("headers") and blk.get("rows"):
+                        sec["format"] = "table"
+                        sec["data"] = {"headers": blk["headers"], "rows": blk["rows"]}
+                        sec.pop("bullets", None)
+                        break
+                    if blk_type in ("stats", "bars") and blk.get("items"):
+                        sec["format"] = blk_type
+                        sec["data"] = {"items": blk["items"]}
+                        sec.pop("bullets", None)
+                        break
+            # Ensure format is set; default bullets when absent.
+            if sec.get("format") and sec["format"] not in valid_formats:
+                sec["format"] = "bullets"
             fixed.append(sec)
         out["sections"] = fixed
         return out
