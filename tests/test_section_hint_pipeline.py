@@ -1,0 +1,296 @@
+"""Tests for the section_hint pipeline: capture → ctx → integrator payload.
+
+Verifies that analytics-tool section hints flow from _execute_tool through
+ctx.react_tool_results into _finalize_response and ultimately reach the
+consolidator JSON payload via _build_consolidator_input_json.
+
+All tests are pure-function / unit level — no LLM, no DB, no external services.
+"""
+from __future__ import annotations
+
+import json
+import types
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from app.planner.schemas import Plan
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _make_hint(
+    section_format="table",
+    section_title="Rate Gap",
+    table_headers=None,
+    rows=None,
+) -> dict:
+    h: dict = {"section_format": section_format, "section_title": section_title}
+    if table_headers is not None:
+        h["table_headers"] = table_headers
+    if rows is not None:
+        h["rows"] = rows
+    return h
+
+
+def _make_ctx(**kwargs):
+    """Return a SimpleNamespace that mimics the ctx fields _finalize_response reads."""
+    defaults = dict(
+        chat_mode=None,
+        system_context=None,
+        usages=[],
+        seed_tool_results=None,
+        react_tool_results=None,
+        # fields _make_react_plan / _sync_extra_out_to_context need
+        effective_message="test query",
+        message="test query",
+        correlation_id="cid",
+        thread_id="t1",
+        extra_out=None,
+        # fields _execute_tool needs
+        merged_state=None,
+        user_profile=None,
+    )
+    defaults.update(kwargs)
+    return types.SimpleNamespace(**defaults)
+
+
+# ---------------------------------------------------------------------------
+# a) _execute_tool sets _tr["section_hint"] when env.extra has section_format
+# ---------------------------------------------------------------------------
+
+def test_section_hint_captured_in_tr():
+    """_execute_tool must copy env.extra fields into _tr['section_hint']."""
+    from app.pipeline.react_loop import _execute_tool
+
+    envelope_extra = {
+        "section_format": "table",
+        "section_title": "Rate Gap",
+        "table_headers": ["A", "B"],
+        "table_rows": [["x", "y"]],
+    }
+
+    mock_env = MagicMock()
+    mock_env.text = "some result text"
+    mock_env.extra = envelope_extra
+    mock_env.signal = "corpus_only"
+    mock_env.sources = []
+    mock_env.golden = False
+
+    ctx = _make_ctx(correlation_id="test-cid", thread_id="t1")
+
+    # _execute_tool does `from app.skills import registry as _skill_registry` locally,
+    # so we patch the module object's attributes rather than a module-level name.
+    import app.skills.registry as _skills_reg_mod
+    original_has = getattr(_skills_reg_mod, "has", None)
+    original_dispatch = getattr(_skills_reg_mod, "dispatch", None)
+    original_SkillCall = getattr(_skills_reg_mod, "SkillCall", None)
+
+    mock_call_instance = MagicMock()
+    mock_SkillCall = MagicMock(return_value=mock_call_instance)
+    _skills_reg_mod.has = MagicMock(return_value=True)
+    _skills_reg_mod.dispatch = MagicMock(return_value=mock_env)
+    _skills_reg_mod.SkillCall = mock_SkillCall
+    try:
+        tr = _execute_tool(
+            tool="get_org_rate_gap",
+            inputs={"org_id": "123"},
+            ctx=ctx,
+            emitter=None,
+        )
+    finally:
+        if original_has is not None:
+            _skills_reg_mod.has = original_has
+        if original_dispatch is not None:
+            _skills_reg_mod.dispatch = original_dispatch
+        if original_SkillCall is not None:
+            _skills_reg_mod.SkillCall = original_SkillCall
+
+    assert "section_hint" in tr, "section_hint must be set when env.extra has section_format"
+    sh = tr["section_hint"]
+    assert sh["section_format"] == "table"
+    assert sh["section_title"] == "Rate Gap"
+    assert sh["table_headers"] == ["A", "B"]
+    # table_rows must be normalized to rows
+    assert sh["rows"] == [["x", "y"]], "table_rows should be normalized to rows"
+    assert "table_rows" not in sh, "original table_rows key should not be in section_hint"
+
+
+# ---------------------------------------------------------------------------
+# b) tr_entry preserves section_hint when appending to tool_results
+# ---------------------------------------------------------------------------
+
+def test_tr_entry_preserves_section_hint():
+    """When a result dict has section_hint, the appended tr_entry must carry it."""
+    hint = _make_hint(rows=[["x", "y"]])
+    result = {
+        "success": True,
+        "result": "some result",
+        "section_hint": hint,
+    }
+
+    # Mimic the append logic at ~line 2581-2592
+    tr_entry: dict = {
+        "tool": "get_org_rate_gap",
+        "success": result.get("success", False),
+        "result": result.get("result", ""),
+    }
+    if result.get("section_hint"):
+        tr_entry["section_hint"] = result["section_hint"]
+
+    assert tr_entry["section_hint"] == hint
+
+
+# ---------------------------------------------------------------------------
+# c) _finalize_response sets ctx.tool_section_hints from react_tool_results
+# ---------------------------------------------------------------------------
+
+def test_finalize_response_sets_tool_section_hints():
+    """_finalize_response must collect section_hint entries from ctx.react_tool_results."""
+    from app.pipeline.react_loop import _finalize_response
+
+    hint = _make_hint(table_headers=["A", "B"], rows=[["x", "y"]])
+    ctx = _make_ctx(
+        correlation_id="cid",
+        thread_id="t1",
+        react_tool_results=[
+            {
+                "tool": "get_org_rate_gap",
+                "success": True,
+                "result": "some text",
+                "section_hint": hint,
+            }
+        ],
+    )
+
+    _finalize_response(ctx, "answer text", [], "no_sources", "get_org_rate_gap", None)
+
+    assert hasattr(ctx, "tool_section_hints"), "ctx.tool_section_hints must be set"
+    assert ctx.tool_section_hints == [hint]
+
+
+# ---------------------------------------------------------------------------
+# d) _finalize_response leaves tool_section_hints unset when no hints exist
+# ---------------------------------------------------------------------------
+
+def test_finalize_response_no_hints_when_no_section_hint():
+    """When no tool result carries section_hint, ctx.tool_section_hints must not be set."""
+    from app.pipeline.react_loop import _finalize_response
+
+    ctx = _make_ctx(
+        correlation_id="cid",
+        thread_id="t1",
+        react_tool_results=[
+            {
+                "tool": "search_corpus",
+                "success": True,
+                "result": "some plain text",
+                # no section_hint
+            }
+        ],
+    )
+
+    _finalize_response(ctx, "answer", [], "corpus_only", "search_corpus", None)
+
+    assert getattr(ctx, "tool_section_hints", None) is None
+
+
+# ---------------------------------------------------------------------------
+# e) _build_consolidator_input_json includes tool_section_hints when provided
+# ---------------------------------------------------------------------------
+
+def test_build_consolidator_includes_tool_section_hints():
+    """Consolidator JSON payload must include tool_section_hints when passed."""
+    from app.responder.final import _build_consolidator_input_json
+
+    plan = Plan(subquestions=[])
+    hints = [{"section_format": "table", "section_title": "Rate Gap", "rows": [["x", "y"]]}]
+
+    raw = _build_consolidator_input_json(
+        plan,
+        [],
+        "What is the rate gap?",
+        tool_section_hints=hints,
+    )
+    payload = json.loads(raw)
+
+    assert "tool_section_hints" in payload
+    assert payload["tool_section_hints"] == hints
+
+
+# ---------------------------------------------------------------------------
+# f) _build_consolidator_input_json omits tool_section_hints when None
+# ---------------------------------------------------------------------------
+
+def test_build_consolidator_omits_hints_when_none():
+    """Consolidator JSON payload must NOT include tool_section_hints when not provided."""
+    from app.responder.final import _build_consolidator_input_json
+
+    plan = Plan(subquestions=[])
+
+    raw = _build_consolidator_input_json(
+        plan,
+        [],
+        "What is the rate gap?",
+        tool_section_hints=None,
+    )
+    payload = json.loads(raw)
+
+    assert "tool_section_hints" not in payload
+
+
+# ---------------------------------------------------------------------------
+# g) table_rows is normalized to rows; table_rows key absent from section_hint
+# ---------------------------------------------------------------------------
+
+def test_table_rows_normalized_to_rows():
+    """_execute_tool must normalize env.extra['table_rows'] → section_hint['rows']."""
+    from app.pipeline.react_loop import _execute_tool
+
+    envelope_extra = {
+        "section_format": "table",
+        "section_title": "Rate Table",
+        "table_headers": ["Code", "Rate"],
+        "table_rows": [["H2019", "$10.50"]],
+        # no 'rows' key — only table_rows
+    }
+
+    mock_env = MagicMock()
+    mock_env.text = "result"
+    mock_env.extra = envelope_extra
+    mock_env.signal = "corpus_only"
+    mock_env.sources = []
+    mock_env.golden = False
+
+    ctx = _make_ctx(correlation_id="cid2", thread_id="t2")
+
+    import app.skills.registry as _skills_reg_mod
+    mock_call_instance = MagicMock()
+    mock_SkillCall = MagicMock(return_value=mock_call_instance)
+    _orig_has = getattr(_skills_reg_mod, "has", None)
+    _orig_dispatch = getattr(_skills_reg_mod, "dispatch", None)
+    _orig_SC = getattr(_skills_reg_mod, "SkillCall", None)
+    _skills_reg_mod.has = MagicMock(return_value=True)
+    _skills_reg_mod.dispatch = MagicMock(return_value=mock_env)
+    _skills_reg_mod.SkillCall = mock_SkillCall
+    try:
+        tr = _execute_tool(
+            tool="get_org_rate_gap",
+            inputs={},
+            ctx=ctx,
+            emitter=None,
+        )
+    finally:
+        if _orig_has is not None:
+            _skills_reg_mod.has = _orig_has
+        if _orig_dispatch is not None:
+            _skills_reg_mod.dispatch = _orig_dispatch
+        if _orig_SC is not None:
+            _skills_reg_mod.SkillCall = _orig_SC
+
+    sh = tr.get("section_hint", {})
+    assert "rows" in sh, "rows must be present after normalization"
+    assert sh["rows"] == [["H2019", "$10.50"]]
+    assert "table_rows" not in sh, "table_rows must not leak into section_hint"

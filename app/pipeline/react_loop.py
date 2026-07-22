@@ -1727,7 +1727,6 @@ def _finalize_response(
     final_signal: str,
     last_tool: str | None,
     emitter=None,
-    tool_results: list[dict] | None = None,
 ) -> None:
     """Map ReAct output to ctx fields so run_integrate() works unchanged."""
     _sync_extra_out_to_context(ctx, emitter)
@@ -1754,15 +1753,10 @@ def _finalize_response(
     ctx.react_last_tool = last_tool
     # Collect section_hint entries from this turn's tool results so the integrator
     # can render typed panels (table/stats/bars) for analytics tool outputs.
-    _all_tr = list(tool_results or []) + list(getattr(ctx, "seed_tool_results", None) or [])
+    # ctx.react_tool_results is assigned by reference at the top of run_react() so
+    # it stays in sync with every append inside the loop — no need to pass it here.
+    _all_tr = list(getattr(ctx, "react_tool_results", None) or []) + list(getattr(ctx, "seed_tool_results", None) or [])
     _all_hints = [tr["section_hint"] for tr in _all_tr if tr.get("section_hint")]
-    logger.info(
-        "_finalize_response: tool_results=%d seed=%d hints=%d tools=%s",
-        len(list(tool_results or [])),
-        len(list(getattr(ctx, "seed_tool_results", None) or [])),
-        len(_all_hints),
-        [tr.get("tool") for tr in _all_tr],
-    )
     if _all_hints:
         ctx.tool_section_hints = _all_hints
 
@@ -2032,6 +2026,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
     # calls from pre-round-1 injections.
     seed = list(getattr(ctx, "seed_tool_results", None) or [])
     tool_results: list[dict] = seed
+    ctx.react_tool_results = tool_results  # mutable ref — stays in sync as loop appends
     all_sources: list[dict] = []
     for s in seed:
         seed_sources = s.get("sources") or []
@@ -2490,7 +2485,6 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     final_signal if final_signal != RETRIEVAL_SIGNAL_NO_SOURCES else "corpus_only",
                     last_tool,
                     emitter,
-                    tool_results=tool_results,
                 )
                 return
             # Empty answer but claimed complete — fall through to next iteration or exhaust
@@ -2694,7 +2688,6 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 final_signal,
                 last_tr.get("tool") or last_tool,
                 emitter,
-                tool_results=tool_results,
             )
             return
     # Phase 0.7: if every round failed and nothing succeeded, emit a clean
@@ -2743,4 +2736,4 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         "after checking our materials and searching the web. "
         "You may want to contact the payer directly or provide a link to their documentation."
     )
-    _finalize_response(ctx, honest, all_sources, RETRIEVAL_SIGNAL_NO_SOURCES, last_tool, emitter, tool_results=tool_results)
+    _finalize_response(ctx, honest, all_sources, RETRIEVAL_SIGNAL_NO_SOURCES, last_tool, emitter)
