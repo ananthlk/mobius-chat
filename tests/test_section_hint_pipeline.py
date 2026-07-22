@@ -377,3 +377,86 @@ def test_pre_built_sections_omitted_when_no_hints():
         _build_consolidator_input_json(Plan(subquestions=[]), [], "what is prior auth?")
     )
     assert "pre_built_sections" not in payload
+
+
+# ---------------------------------------------------------------------------
+# k) extra.sections[] multi-section path
+# ---------------------------------------------------------------------------
+
+def test_execute_tool_multi_section_sets_section_hints():
+    """extra.sections[] → _tr['section_hints'] (plural) with both entries."""
+    from app.pipeline.react_loop import _execute_tool
+
+    multi_extra = {
+        "sections": [
+            {
+                "section_format": "table",
+                "section_title": "Service-Line Rate Gap",
+                "table_headers": ["Service Line", "Org PPC"],
+                "table_rows": [["Psych Rehab", "$124.46"]],
+            },
+            {
+                "section_format": "table",
+                "section_title": "Rate Gap by MSA",
+                "table_headers": ["MSA", "Org PPC", "MSA P50"],
+                "table_rows": [["Naples", "$124.46", "$80.00"]],
+            },
+        ]
+    }
+
+    mock_env = MagicMock()
+    mock_env.text = "Rate gap analysis..."
+    mock_env.extra = multi_extra
+    mock_env.sources = []
+    mock_env.signal = "no_sources"
+
+    import app.skills.registry as _skills_reg_mod
+    _orig_has = getattr(_skills_reg_mod, "has", None)
+    _orig_dispatch = getattr(_skills_reg_mod, "dispatch", None)
+    _orig_SC = getattr(_skills_reg_mod, "SkillCall", None)
+
+    _skills_reg_mod.has = lambda name: True
+    _skills_reg_mod.dispatch = lambda call: mock_env
+    _skills_reg_mod.SkillCall = MagicMock(return_value=MagicMock())
+
+    ctx = _make_ctx(correlation_id="test-multi")
+
+    try:
+        tr = _execute_tool("get_org_rate_gap", {"include_msa_cut": True}, ctx, None)
+    finally:
+        if _orig_has is not None: _skills_reg_mod.has = _orig_has
+        if _orig_dispatch is not None: _skills_reg_mod.dispatch = _orig_dispatch
+        if _orig_SC is not None: _skills_reg_mod.SkillCall = _orig_SC
+
+    assert "section_hints" in tr, "section_hints (plural) must be set for multi-section extra"
+    assert "section_hint" not in tr, "section_hint (singular) must NOT be set for multi-section path"
+    hints = tr["section_hints"]
+    assert len(hints) == 2
+    assert hints[0]["section_format"] == "table"
+    assert hints[0]["section_title"] == "Service-Line Rate Gap"
+    assert hints[0]["rows"] == [["Psych Rehab", "$124.46"]]
+    assert hints[1]["section_title"] == "Rate Gap by MSA"
+    assert hints[1]["rows"] == [["Naples", "$124.46", "$80.00"]]
+
+
+def test_finalize_response_collects_plural_section_hints():
+    """_finalize_response must collect section_hints (plural) into ctx.tool_section_hints."""
+    from app.pipeline.react_loop import _finalize_response
+
+    hints = [
+        {"section_format": "table", "section_title": "A", "rows": [["x"]]},
+        {"section_format": "table", "section_title": "B", "rows": [["y"]]},
+    ]
+    ctx = _make_ctx(
+        correlation_id="test",
+        react_tool_results=[
+            {"tool": "get_org_rate_gap", "success": True, "result": "...", "section_hints": hints}
+        ],
+    )
+
+    _finalize_response(ctx, "answer", [], "no_sources", "get_org_rate_gap", None)
+
+    assert hasattr(ctx, "tool_section_hints")
+    assert len(ctx.tool_section_hints) == 2
+    assert ctx.tool_section_hints[0]["section_title"] == "A"
+    assert ctx.tool_section_hints[1]["section_title"] == "B"

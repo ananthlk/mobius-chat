@@ -1535,18 +1535,35 @@ def _execute_tool(
         }
         # Passthrough structured section hints from analytics tools so the integrator
         # can render typed panels (table/stats/bars) instead of defaulting to bullets.
-        # Normalize Strategy Agent's table_rows → rows to match integrator prompt schema.
+        # Two shapes supported:
+        #   multi : extra.sections = [{section_format, section_title, table_headers, table_rows}, ...]
+        #   single: extra.section_format / extra.table_headers / extra.table_rows (flat, legacy)
         _ex = env.extra or {}
-        _section_hint: dict = {}
-        for k in ("section_format", "section_title", "table_headers", "items"):
-            if _ex.get(k) is not None:
-                _section_hint[k] = _ex[k]
-        # table_rows is the name Strategy Agent uses; normalize to rows for the integrator
-        _rows = _ex.get("table_rows") or _ex.get("rows")
-        if _rows is not None:
-            _section_hint["rows"] = _rows
-        if _section_hint.get("section_format"):
-            _tr["section_hint"] = _section_hint
+
+        def _parse_hint(h: dict) -> dict:
+            """Normalise one raw section-hint dict; returns {} if unusable."""
+            out: dict = {}
+            for k in ("section_format", "section_title", "table_headers", "items"):
+                if h.get(k) is not None:
+                    out[k] = h[k]
+            # Strategy Agent uses table_rows; normalise to rows for the integrator
+            _r = h.get("table_rows") or h.get("rows")
+            if _r is not None:
+                out["rows"] = _r
+            return out
+
+        _sections_raw = _ex.get("sections")
+        if isinstance(_sections_raw, list):
+            # Multi-section path — collect all valid hints
+            _hints = [_parse_hint(s) for s in _sections_raw if isinstance(s, dict)]
+            _hints = [h for h in _hints if h.get("section_format")]
+            if _hints:
+                _tr["section_hints"] = _hints  # plural key for multi-section
+        else:
+            # Single-section path (flat extra keys, backward-compatible)
+            _hint = _parse_hint(_ex)
+            if _hint.get("section_format"):
+                _tr["section_hint"] = _hint  # singular key
         return _tr
 
     return {
@@ -1756,7 +1773,12 @@ def _finalize_response(
     # ctx.react_tool_results is assigned by reference at the top of run_react() so
     # it stays in sync with every append inside the loop — no need to pass it here.
     _all_tr = list(getattr(ctx, "react_tool_results", None) or []) + list(getattr(ctx, "seed_tool_results", None) or [])
-    _all_hints = [tr["section_hint"] for tr in _all_tr if tr.get("section_hint")]
+    _all_hints: list[dict] = []
+    for _tr in _all_tr:
+        if _tr.get("section_hint"):
+            _all_hints.append(_tr["section_hint"])
+        if _tr.get("section_hints"):
+            _all_hints.extend(_tr["section_hints"])
     if _all_hints:
         ctx.tool_section_hints = _all_hints
 
@@ -2578,10 +2600,12 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         rsum_t = (result.get("result_summary") or "").strip()
         if rsum_t:
             tr_entry["result_summary"] = rsum_t
-        # Preserve section_hint from analytics tools so _finalize_response
-        # can collect them into ctx.tool_section_hints for the integrator.
+        # Preserve section hints so _finalize_response collects them into
+        # ctx.tool_section_hints for the integrator's pre_built_sections.
         if result.get("section_hint"):
             tr_entry["section_hint"] = result["section_hint"]
+        if result.get("section_hints"):
+            tr_entry["section_hints"] = result["section_hints"]
         tool_results.append(tr_entry)
 
         # §5b bypass: if the tool marked ctx.react_bypass_integrate, exit the
