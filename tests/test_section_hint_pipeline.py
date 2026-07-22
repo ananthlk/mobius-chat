@@ -337,3 +337,43 @@ def test_normalize_answer_card_converts_ui_blocks_table():
     assert "ui_blocks" not in sec, "ui_blocks must be removed after normalization"
     assert sec["data"]["headers"] == ["Service Line", "Org PPC", "Peer P50"]
     assert sec["data"]["rows"] == [["Psych Rehab", "$124.46", "$77.27"]]
+
+
+# ---------------------------------------------------------------------------
+# i) pre_built_sections generated from table hints
+# ---------------------------------------------------------------------------
+
+def test_pre_built_sections_generated_from_table_hint():
+    """When tool_section_hints has a table hint, pre_built_sections must be populated."""
+    from app.responder.final import _build_consolidator_input_json
+
+    hints = [
+        {
+            "section_format": "table",
+            "section_title": "Rate Gap Analysis",
+            "table_headers": ["Service Line", "Org PPC", "Peer P50"],
+            "rows": [["Psych Rehab", "$124.46", "$77.27"]],
+        }
+    ]
+    payload = json.loads(
+        _build_consolidator_input_json(
+            Plan(subquestions=[]), [], "rate gap?", tool_section_hints=hints
+        )
+    )
+    assert "pre_built_sections" in payload, "pre_built_sections must be present"
+    pbs = payload["pre_built_sections"]
+    assert len(pbs) == 1
+    assert pbs[0]["format"] == "table"
+    assert pbs[0]["label"] == "Rate Gap Analysis"
+    assert pbs[0]["data"]["headers"] == ["Service Line", "Org PPC", "Peer P50"]
+    assert pbs[0]["data"]["rows"] == [["Psych Rehab", "$124.46", "$77.27"]]
+
+
+def test_pre_built_sections_omitted_when_no_hints():
+    """Without hints, pre_built_sections must not appear in payload."""
+    from app.responder.final import _build_consolidator_input_json
+
+    payload = json.loads(
+        _build_consolidator_input_json(Plan(subquestions=[]), [], "what is prior auth?")
+    )
+    assert "pre_built_sections" not in payload

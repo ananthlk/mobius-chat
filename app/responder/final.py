@@ -120,9 +120,34 @@ def _build_consolidator_input_json(
     if recital_context:
         payload["recital_context"] = recital_context
     # Structured section hints from analytics tool outputs (section_format, headers, rows, items).
-    # Passed explicitly so the integrator can render typed panels instead of defaulting to bullets.
+    # Pre-build typed sections from hints so the integrator cannot fall back to bullets
+    # for data that has explicit structure. The LLM must include these sections verbatim
+    # and may add 1-2 additional narrative sections around them.
     if tool_section_hints:
         payload["tool_section_hints"] = tool_section_hints
+        pre_built: list[dict] = []
+        for h in tool_section_hints:
+            fmt = h.get("section_format", "")
+            if not fmt or fmt == "bullets":
+                continue
+            section: dict = {
+                "intent": "process",
+                "label": h.get("section_title") or "Data",
+                "format": fmt,
+            }
+            if fmt == "table":
+                hdrs = h.get("table_headers") or []
+                rows = h.get("rows") or []
+                if hdrs and rows:
+                    section["data"] = {"headers": hdrs, "rows": rows}
+                    pre_built.append(section)
+            elif fmt in ("stats", "bars"):
+                items = h.get("items") or []
+                if items:
+                    section["data"] = {"items": items}
+                    pre_built.append(section)
+        if pre_built:
+            payload["pre_built_sections"] = pre_built
     return json.dumps(payload, indent=2)
 
 
