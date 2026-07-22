@@ -107,7 +107,10 @@ def _build_consolidator_input_json(
     # integrator enriches rather than restates. source_texts provides
     # verbatim chunks for accurate citation snippets.
     if react_draft and react_draft.strip():
-        payload["react_draft"] = react_draft.strip()[:6000]
+        # Raise cap for analytics queries (tool_section_hints present) — rate tables
+        # are inherently long and a 6000-char cut produces truncated mid-sentence output.
+        _draft_cap = 16000 if tool_section_hints else 6000
+        payload["react_draft"] = react_draft.strip()[:_draft_cap]
     if source_texts:
         payload["source_texts"] = source_texts
     if task_context:

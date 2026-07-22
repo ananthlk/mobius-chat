@@ -1535,9 +1535,17 @@ def _execute_tool(
         }
         # Passthrough structured section hints from analytics tools so the integrator
         # can render typed panels (table/stats/bars) instead of defaulting to bullets.
-        _hint_keys = ("section_format", "table_headers", "rows", "items")
-        _section_hint = {k: (env.extra or {}).get(k) for k in _hint_keys if (env.extra or {}).get(k) is not None}
-        if _section_hint:
+        # Normalize Strategy Agent's table_rows → rows to match integrator prompt schema.
+        _ex = env.extra or {}
+        _section_hint: dict = {}
+        for k in ("section_format", "section_title", "table_headers", "items"):
+            if _ex.get(k) is not None:
+                _section_hint[k] = _ex[k]
+        # table_rows is the name Strategy Agent uses; normalize to rows for the integrator
+        _rows = _ex.get("table_rows") or _ex.get("rows")
+        if _rows is not None:
+            _section_hint["rows"] = _rows
+        if _section_hint.get("section_format"):
             _tr["section_hint"] = _section_hint
         return _tr
 
