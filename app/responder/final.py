@@ -123,6 +123,13 @@ def _build_consolidator_input_json(
     # Passed explicitly so the integrator can render typed panels instead of defaulting to bullets.
     if tool_section_hints:
         payload["tool_section_hints"] = tool_section_hints
+        logger.info(
+            "_build_consolidator_input_json: tool_section_hints=%d hint(s) — formats=%s",
+            len(tool_section_hints),
+            [h.get("section_format") for h in tool_section_hints],
+        )
+    else:
+        logger.debug("_build_consolidator_input_json: no tool_section_hints")
     return json.dumps(payload, indent=2)
 
 

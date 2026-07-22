@@ -1756,6 +1756,13 @@ def _finalize_response(
     # can render typed panels (table/stats/bars) for analytics tool outputs.
     _all_tr = list(tool_results or []) + list(getattr(ctx, "seed_tool_results", None) or [])
     _all_hints = [tr["section_hint"] for tr in _all_tr if tr.get("section_hint")]
+    logger.info(
+        "_finalize_response: tool_results=%d seed=%d hints=%d tools=%s",
+        len(list(tool_results or [])),
+        len(list(getattr(ctx, "seed_tool_results", None) or [])),
+        len(_all_hints),
+        [tr.get("tool") for tr in _all_tr],
+    )
     if _all_hints:
         ctx.tool_section_hints = _all_hints
 
