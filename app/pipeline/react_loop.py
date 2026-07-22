@@ -2584,6 +2584,10 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         rsum_t = (result.get("result_summary") or "").strip()
         if rsum_t:
             tr_entry["result_summary"] = rsum_t
+        # Preserve section_hint from analytics tools so _finalize_response
+        # can collect them into ctx.tool_section_hints for the integrator.
+        if result.get("section_hint"):
+            tr_entry["section_hint"] = result["section_hint"]
         tool_results.append(tr_entry)
 
         # §5b bypass: if the tool marked ctx.react_bypass_integrate, exit the
