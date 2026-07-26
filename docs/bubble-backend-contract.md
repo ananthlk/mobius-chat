@@ -1,6 +1,6 @@
 # Contract — `bubble-backend` (BFF for the chat bubble surface)
 
-**Status:** DRAFT — build against this; **formal co-sign required before merge.**
+**Status:** Implementation COMPLETE on branch `claude/chat-fe-v2-answercard` (commits `a6d4e81` bubble_backend + guards, `4bf741d` render/bubble + ui-helpers, `025c544` AC-FE-3 fixes). **Formal 3-way co-sign required before merge; the atomic cutover (LLM Agent) is the remaining build step.**
 **Co-signers:** Chat front end (owner) · LLM Agent (enricher-seam) · Chat Architecture (coordinator)
 **Seam contract:** `SPEC_CHAT_FRONTEND_V2_UX.md §2` (already signed — this doc does not change it; it records `bubble-backend`'s internal invariants).
 
@@ -46,7 +46,7 @@ The produce/shape cut is a **two-sided, atomic edit**. When `bubble-backend` tak
 
 ## Frontend side of the pair
 
-`render/bubble` — `renderAnswerCard` extracted from `app.ts`, reading only `bubble-backend`'s output. FE-model layer already built + tested: `answer-card.ts` (parse/validate/visibility) + `card-render-model.ts` (field→tab map + additive-merge), 42 vitest tests green.
+`render/bubble` — `renderAnswerCard` extracted from `app.ts`, reading only `bubble-backend`'s output, its one app-state dep (`openCreateTaskDialog`) injected via `opts.onCreateTask`. Built + tested: `answer-card.ts` + `card-render-model.ts` + `render/bubble.ts` (+ jsdom render tests) — **48 FE vitest + 6 Python guard tests green**, live-browser smoked in real Chrome.
 
 ## Template
 
