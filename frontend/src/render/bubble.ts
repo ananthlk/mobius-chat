@@ -29,7 +29,12 @@ function _renderSectionBody(sec: AnswerCardSection, body: HTMLElement): void {
       const tr = tbody.insertRow();
       row.forEach((cell) => { const td = tr.insertCell(); td.textContent = cell; });
     });
-    body.appendChild(tbl);
+    // Scroll wrapper: on narrow widths the table scrolls horizontally instead of crushing
+    // its columns (§1.3 "tables scroll horizontally on mobile, no body overflow").
+    const scroll = document.createElement("div");
+    scroll.className = "ac-fmt-table-scroll";
+    scroll.appendChild(tbl);
+    body.appendChild(scroll);
     return;
   }
 
