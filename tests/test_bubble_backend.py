@@ -115,3 +115,66 @@ def test_shape_matches_legacy_integrate_output():
         if v is not None:
             expected[k] = v
     assert out == expected
+
+
+# --- B/C typed-block builders (task #12): shape parity with assistant_envelope --------------
+
+def _card():
+    return {
+        # assistant_envelope gates takeaways/gaps/action_chips behind a direct_answer (line 453);
+        # the gating stays in the caller — these per-block builders just shape the field.
+        "direct_answer": "the answer",
+        "correction": {"original": "old", "corrected": "new"},
+        "takeaways": ["  keep this  ", "", "and this", None],
+        "gaps": ["rate table stale", ""],
+        "suggested_actions": [
+            {"type": "external_link", "label": "Appeals", "url": "https://x"},
+            {"type": "other", "label": "skip", "url": "https://y"},  # filtered
+        ],
+        "next_steps": ["confirm units", {"text": "check plan", "clickable": True}],
+        "next_questions_for_user": ["what ceiling?"],
+    }
+
+
+def test_bc_block_shapes_unit():
+    c = _card()
+    assert bubble_backend.build_correction_block(c) == {"type": "correction", "original": "old", "corrected": "new"}
+    assert bubble_backend.build_takeaways_block(c) == {"type": "takeaways", "items": ["keep this", "and this"]}
+    gap = bubble_backend.build_gaps_callout_block(c)
+    assert gap["type"] == "callout" and gap["variant"] == "info" and "rate table stale" in gap["body"]
+    chips = bubble_backend.build_action_chips_block(c)
+    assert chips == {"type": "action_chips", "chips": [{"type": "external_link", "label": "Appeals", "url": "https://x"}]}
+    ns = bubble_backend.build_next_steps_block(c["next_steps"], collapsed_default=False)
+    assert ns == {"type": "next_steps", "items": [{"text": "confirm units", "clickable": False}, {"text": "check plan", "clickable": True}], "collapsed_default": False}
+    nq = bubble_backend.build_next_questions_block(c["next_questions_for_user"], collapsed_default=True)
+    assert nq == {"type": "suggested_questions", "items": [{"text": "what ceiling?", "clickable": True}], "collapsed_default": True}
+
+
+def test_bc_block_none_when_absent():
+    empty = {}
+    assert bubble_backend.build_correction_block(empty) is None
+    assert bubble_backend.build_takeaways_block(empty) is None
+    assert bubble_backend.build_gaps_callout_block(empty) is None
+    assert bubble_backend.build_action_chips_block(empty) is None
+    assert bubble_backend.build_next_steps_block([], collapsed_default=False) is None
+
+
+def test_bc_block_parity_with_assistant_envelope():
+    """bubble-backend's per-block output is byte-identical to assistant_envelope's inline build,
+    so the cutover (assistant_envelope delegates to these) is a pure move — one builder."""
+    from app.communication.assistant_envelope import build_assistant_envelope_v1
+    from app.communication.followup_next_steps_quality import followup_blocks_collapsed_default
+    c = _card()
+    env = build_assistant_envelope_v1(
+        answer_card=c, ui_blocks_raw=None, tool_fired="", response_sources=[],
+        next_steps=c["next_steps"], next_questions_for_user=c["next_questions_for_user"],
+        roster_report_final_md=None, has_roster_pdf=False, source_confidence_strip="",
+    )
+    by_type = {b["type"]: b for b in env["blocks"]}
+    collapsed = followup_blocks_collapsed_default("")
+    assert by_type["correction"] == bubble_backend.build_correction_block(c)
+    assert by_type["takeaways"] == bubble_backend.build_takeaways_block(c)
+    assert by_type["callout"] == bubble_backend.build_gaps_callout_block(c)
+    assert by_type["action_chips"] == bubble_backend.build_action_chips_block(c)
+    assert by_type["next_steps"] == bubble_backend.build_next_steps_block(c["next_steps"], collapsed_default=collapsed)
+    assert by_type["suggested_questions"] == bubble_backend.build_next_questions_block(c["next_questions_for_user"], collapsed_default=collapsed)

@@ -80,3 +80,98 @@ def shape_answer_card_json(
     allowlist copy here (LLM Agent's atomic edit) so there is one source of truth, not two.
     """
     return json.dumps(shape_answer_card(mode, direct_answer, sections, extra_from=extra_from))
+
+
+# --- B/C typed-block shape (MOVED from assistant_envelope.py:417 build) --------------------
+# The presentation shape for the enricher's B (critic) + C (enrichment) fields — takeaways,
+# gaps, correction, suggested_actions, next_steps, next_questions. bubble-backend BUILDS these
+# blocks from the merged card (per contract invariant 1: one builder). assistant_envelope
+# delegates to these per-block builders at cutover, keeping its own block ORDERING while the
+# SHAPE lives here once. All pure (stdlib only) — the UX-policy `collapsed_default` is computed
+# by the caller and passed in, so this module imports nothing new and stays guard-clean.
+
+
+def build_correction_block(card: dict[str, Any]) -> dict[str, Any] | None:
+    """B: correction {original, corrected} → a correction block, shown before the draft."""
+    corr = card.get("correction")
+    if isinstance(corr, dict):
+        orig = (corr.get("original") or "").strip()
+        fixed = (corr.get("corrected") or "").strip()
+        if orig and fixed:
+            return {"type": "correction", "original": orig[:2000], "corrected": fixed[:2000]}
+    return None
+
+
+def build_takeaways_block(card: dict[str, Any]) -> dict[str, Any] | None:
+    """B: takeaways[] → a takeaways block (≤5 distilled bullets)."""
+    tw = card.get("takeaways")
+    if isinstance(tw, list):
+        items = [str(t).strip() for t in tw if t and str(t).strip()][:5]
+        if items:
+            return {"type": "takeaways", "items": items}
+    return None
+
+
+def build_gaps_callout_block(card: dict[str, Any]) -> dict[str, Any] | None:
+    """B: gaps[] → an info callout ("Sources did not cover: …"), ≤4 lines."""
+    gaps = card.get("gaps")
+    if isinstance(gaps, list):
+        lines = [str(g).strip() for g in gaps if g and str(g).strip()][:4]
+        if lines:
+            return {
+                "type": "callout",
+                "variant": "info",
+                "body": "**Sources did not cover:**\n\n" + "\n".join(f"- {g}" for g in lines),
+            }
+    return None
+
+
+def build_action_chips_block(card: dict[str, Any]) -> dict[str, Any] | None:
+    """C: suggested_actions[] → an action_chips block (external_link chips only)."""
+    sa = card.get("suggested_actions")
+    if isinstance(sa, list) and sa:
+        chips = [
+            a for a in sa
+            if isinstance(a, dict)
+            and a.get("type") == "external_link"
+            and isinstance(a.get("label"), str)
+            and isinstance(a.get("url"), str)
+        ]
+        if chips:
+            return {"type": "action_chips", "chips": chips}
+    return None
+
+
+def followup_items(items: list[Any], *, fallback_clickable: bool) -> list[dict[str, Any]]:
+    """Normalize follow-up items to [{text, clickable}] (accepts dicts or legacy strings, ≤8)."""
+    out: list[dict[str, Any]] = []
+    for x in items or []:
+        if isinstance(x, dict):
+            t = (x.get("text") or "").strip()
+            if not t:
+                continue
+            c = x.get("clickable")
+            if c is None:
+                c = fallback_clickable
+            out.append({"text": t[:500], "clickable": bool(c)})
+        elif isinstance(x, str) and x.strip():
+            out.append({"text": x.strip()[:500], "clickable": fallback_clickable})
+        if len(out) >= 8:
+            break
+    return out
+
+
+def build_next_steps_block(next_steps: list[Any], *, collapsed_default: bool) -> dict[str, Any] | None:
+    """C: next_steps → a next_steps block. `collapsed_default` is the caller's UX-policy value."""
+    items = followup_items(next_steps, fallback_clickable=False)
+    if items:
+        return {"type": "next_steps", "items": items, "collapsed_default": collapsed_default}
+    return None
+
+
+def build_next_questions_block(next_questions: list[Any], *, collapsed_default: bool) -> dict[str, Any] | None:
+    """C: next_questions_for_user → a suggested_questions block."""
+    items = followup_items(next_questions, fallback_clickable=True)
+    if items:
+        return {"type": "suggested_questions", "items": items, "collapsed_default": collapsed_default}
+    return None
