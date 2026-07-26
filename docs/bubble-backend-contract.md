@@ -20,11 +20,11 @@ This is a **structural consolidation, not a contract change** — it gathers pre
 | Code | `final_parallel.py` — merged A/B/C card + phase signals (the emit) | `integrate.py:42/77` (`_ANSWER_CARD_ENVELOPE_KEYS` allowlist copy) + `assistant_envelope.py:417` (typed-block build from B/C) |
 | Rule | The emit contract. **Stays put.** | **Moves into `bubble-backend`.** |
 
-`bubble-backend` **reads** the produced outputs (`final_parallel` merged card, `assistant_envelope` typed blocks, retriever sources) and shapes them for the bubble. It never produces.
+`bubble-backend` **reads** the `final_parallel` **merged card** (`final_parallel.py:265–306` — A+B+C already merged onto one card, including the B/C fields `next_steps` / `next_questions` / `takeaways` / `gaps` / `suggested_actions`) **plus retriever sources**, and shapes them for the bubble — which includes **building the typed blocks itself** from the merged B/C fields (the moved-in `assistant_envelope:417` shape logic). It does **not** consume pre-built `assistant_envelope` blocks as input (that build is what moves in). It routes/retrieves/enriches nothing — it presents.
 
 ## Invariants (all six)
 
-1. **Read-only aggregator.** Reads `final_parallel` merged card + `assistant_envelope` blocks + retriever sources. Nothing else.
+1. **Reads the merged card, builds the presentation.** Inputs = the `final_parallel` **merged card** (incl. the merged B/C fields) + **retriever sources** — nothing else. bubble-backend **builds** the typed blocks from those merged fields (moved-in shape logic); it does **not** consume pre-built `assistant_envelope` blocks as input. Post-cutover there is exactly **one** typed-block builder (bubble-backend), never two — which is the point of move-not-copy. "Read-only" = reads inputs, never mutates the answer content or reaches into the brain (invariant 2).
 2. **Presentation-only.** No LLM calls, no retrieval, no re-ranking, **no mutation of answer content.** If a surface must *change* the answer, that is the emit's job — not the BFF. Enforced structurally (§ below).
 3. **Positive-filter allowlist preserved.** The move of `integrate.py:77`'s allowlist keeps it a **positive `allowlist → client` filter** — only allowlisted keys reach the FE. It must **not** degrade into "pass through whatever is on the card," or consolidation silently widens what leaks to the frontend (raw reasoning, `source_confidence_override` internals, etc.).
 4. **Semantics vs presentation split.** LLM Agent owns what B/C fields *mean* (`next_steps`, `gaps`, `takeaways`, …). `bubble-backend` owns **tab mapping + envelope selection + phase→slot resolution** (already modeled in `card-render-model.ts`).
