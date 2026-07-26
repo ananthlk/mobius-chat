@@ -3284,11 +3284,16 @@ body {
 }
 
 /* ─── Envelope: table ───────────────────────────────────────────────────────── */
+.ac-fmt-table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 0.25rem 0 0.5rem;
+}
 .ac-fmt-table {
   width: 100%;
+  min-width: 30rem;   /* narrower than this and the wrapper scrolls, columns keep their room */
   border-collapse: collapse;
   font-size: 0.78rem;
-  margin: 0.25rem 0 0.5rem;
 }
 .ac-fmt-table th {
   text-align: left;
@@ -3318,8 +3323,11 @@ body {
   margin: 0.25rem 0 0.5rem;
 }
 .ac-fmt-condition-row {
+  /* Condition text (can be a full sentence) takes the room; the result reads as a compact
+     tag on the right. Wraps to two lines on narrow widths instead of crushing the condition. */
   display: grid;
-  grid-template-columns: 2rem 1fr;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
   gap: 0.5rem;
   font-size: 0.78rem;
   line-height: 1.45;
@@ -3329,16 +3337,23 @@ body {
   border-left: 2px solid rgba(0,0,0,0.09);
 }
 .ac-fmt-condition-if {
-  font-size: 0.6rem;
+  min-width: 0;              /* allow the condition text to shrink/wrap within its column */
+  color: var(--sidebar-text);
+  overflow-wrap: anywhere;
+}
+.ac-fmt-condition-then {
+  font-size: 0.62rem;
   font-weight: 700;
   color: var(--sidebar-text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  padding-top: 0.2rem;
-  align-self: start;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  justify-self: end;
 }
-.ac-fmt-condition-then {
-  color: var(--sidebar-text);
+@media (max-width: 420px) {
+  /* Stack on very narrow widths: condition on its own line, result tag beneath. */
+  .ac-fmt-condition-row { grid-template-columns: 1fr; }
+  .ac-fmt-condition-then { justify-self: start; }
 }
 
 /* ─── Citations (Details tab) ───────────────────────────────────────────────── */
