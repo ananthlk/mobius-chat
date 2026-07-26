@@ -267,6 +267,11 @@ SET_ENV_VARS=(
     # Dev-only: gate injection for HIPAA Cases 3/4 testing (__gate_phi__ / __gate_indeterminate).
     # Set to "1" in dev .env; leave unset or "0" in prod. Persisted here so redeploys don't drop it.
     "HIPAA_GATE_OVERRIDE_ENABLED=${HIPAA_GATE_OVERRIDE_ENABLED:-0}"
+    # v2 composable-prompt read path (2026-07-26). SET_ENV_VARS is an explicit
+    # allowlist — being in deploy/${ENV_LABEL}.env is NOT sufficient, a var must
+    # ALSO be listed here or gcloud never sees it (caught live: MOBIUS_PROMPT_SOURCE
+    # was in dev.env but silently absent from every deploy until this line landed).
+    "MOBIUS_PROMPT_SOURCE=${MOBIUS_PROMPT_SOURCE:-}"
     # Secret Manager loader needs this to know which project to fetch
     # secrets from. Cloud Run sets GOOGLE_CLOUD_PROJECT automatically,
     # but CHAT_GCP_PROJECT wins if set — useful during debugging.
