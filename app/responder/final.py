@@ -124,7 +124,12 @@ def _build_consolidator_input_json(
     # for data that has explicit structure. The LLM must include these sections verbatim
     # and may add 1-2 additional narrative sections around them.
     if tool_section_hints:
-        payload["tool_section_hints"] = tool_section_hints
+        # Cap rows per table hint — uncapped rate tables (2000+ HCPCS rows) blow
+        # up the integrator prompt past Vertex AI's per-minute TPM limit (observed
+        # 473K char prompt → 429). pre_built_sections is what the LLM actually
+        # copies verbatim; tool_section_hints is dropped from the payload to avoid
+        # sending the same data twice.
+        _MAX_ROWS = 200
         pre_built: list[dict] = []
         for h in tool_section_hints:
             fmt = h.get("section_format", "")
@@ -139,7 +144,10 @@ def _build_consolidator_input_json(
                 hdrs = h.get("table_headers") or []
                 rows = h.get("rows") or []
                 if hdrs and rows:
-                    section["data"] = {"headers": hdrs, "rows": rows}
+                    capped = rows[:_MAX_ROWS]
+                    section["data"] = {"headers": hdrs, "rows": capped}
+                    if len(rows) > _MAX_ROWS:
+                        section["data"]["truncated"] = len(rows) - _MAX_ROWS
                     pre_built.append(section)
             elif fmt in ("stats", "bars"):
                 items = h.get("items") or []
@@ -382,6 +390,28 @@ def format_response(
             prompt_system = cfg.prompts.integrator_canonical_system
         else:
             prompt_system = cfg.prompts.integrator_blended_system
+
+        # v2 modular-prompt path (MOBIUS_PROMPT_SOURCE=composition): resolve the
+        # enricher system prompt from the DB-backed composable blocks instead of the
+        # hardcoded string. Flag-gated + fail-soft — any miss/error keeps the prompt
+        # above, so live chat is untouched until the flag flips and never breaks on a
+        # resolution problem. (LLMManager v2 §5; composition seeded via block_seed.)
+        import os as _os
+        if (_os.environ.get("MOBIUS_PROMPT_SOURCE") or "").strip().lower() == "composition":
+            try:
+                from app.services.prompt_manager import resolve_composition_sync
+                _mk = {"factual": "integrator_enricher_factual"}.get(consolidator_type)
+                if _mk:
+                    _rc = resolve_composition_sync(
+                        _mk,
+                        conditions={"emits_json": True, "hipaa_on": bool(phi_detected), "has_org": False},
+                    )
+                    if _rc and _rc.system_prompt.strip():
+                        prompt_system = _rc.system_prompt
+                        logger.info("[integrator] v2 composition prompt module=%s hash=%s",
+                                    _mk, _rc.composition_hash[:16])
+            except Exception as _e:
+                logger.warning("[integrator] composition resolve failed, using hardcoded: %s", _e)
         # 2026-05-06: integrator/consolidator is the user-facing voice —
         # tone + ai_experience_level matter most here. Splice user
         # profile rendered_prompt into the system block with an explicit
