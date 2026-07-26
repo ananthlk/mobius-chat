@@ -400,7 +400,10 @@ def format_response(
         if (_os.environ.get("MOBIUS_PROMPT_SOURCE") or "").strip().lower() == "composition":
             try:
                 from app.services.prompt_manager import resolve_composition_sync
-                _mk = {"factual": "integrator_enricher_factual"}.get(consolidator_type)
+                _mk = {
+                    "factual": "integrator_enricher_factual",
+                    "blended": "integrator_enricher_blended",
+                }.get(consolidator_type)
                 if _mk:
                     _rc = resolve_composition_sync(
                         _mk,

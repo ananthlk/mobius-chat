@@ -72,13 +72,17 @@ _ENRICHER_FACTUAL = (
 )
 
 BLOCK_SPECS: list[BlockSpec] = [
-    # The three enricher blocks are a FAITHFUL, byte-preserving decomposition of the
-    # live chat_config.integrator_factual_system (single source of truth) — sliced at
-    # its section markers, not re-typed. concat(intro, schema, factual) == original.
+    # The enricher blocks are a FAITHFUL, byte-preserving decomposition of the live
+    # chat_config integrator_{factual,blended,canonical}_system prompts (single source
+    # of truth) — sliced at section markers, not re-typed. intro+schema are IDENTICAL
+    # across all three modes (verified: only the mode-rules tail differs), so they're
+    # shared blocks; each mode gets its own rules leaf.
+    # concat(intro, schema, <mode>_rules) == chat_config.integrator_<mode>_system.
     BlockSpec("module.enricher", "static", "system", "@enricher:intro", owner="llm-agent"),
     BlockSpec("enricher.answercard_schema_and_rules", "static", "system",
               "@enricher:schema", owner="llm-agent"),
     BlockSpec("module.enricher.factual", "static", "system", "@enricher:factual", owner="llm-agent"),
+    BlockSpec("module.enricher.blended", "static", "system", "@enricher:blended", owner="llm-agent"),
     BlockSpec("hipaa_context", "conditional", "system",
               "HIPAA: never surface or invent a patient identifier (name, MRN, DOB, address). "
               "Never fabricate a clinical fact. If PHI is required to answer and none is grounded, "
@@ -99,30 +103,65 @@ COMPOSITIONS: dict[str, list[str]] = {
         "hipaa_context",
         "forced_json",
     ],
+    "integrator_enricher_blended": [
+        "module.enricher",
+        "enricher.answercard_schema_and_rules",
+        "module.enricher.blended",
+        "hipaa_context",
+        "forced_json",
+    ],
 }
 
 
-_ENRICHER_MARKERS = ("AnswerCard schema", "Mode-specific rules for FACTUAL")
+_ENRICHER_MODE_ATTR = {
+    "factual": "integrator_factual_system",
+    "blended": "integrator_blended_system",
+    "canonical": "integrator_canonical_system",
+}
+_SCHEMA_MARKER = "AnswerCard schema"
 
 
 def _decompose_enricher(strict: bool = True) -> dict:
-    """FAITHFUL byte-preserving split of chat_config.integrator_factual_system into
-    (intro, schema, factual) at its section markers. concat == original — no re-typing,
-    no drift. strict=False tolerates absence (dry-run)."""
+    """FAITHFUL byte-preserving split of each chat_config.integrator_<mode>_system into
+    (intro, schema, <mode>) at the shared schema marker + the per-mode rules tail.
+    concat(intro, schema, mode) == the original prompt for EVERY mode — no re-typing,
+    no drift. intro/schema are asserted IDENTICAL across modes (else seeding refuses —
+    a divergence there would mean the modes no longer share the schema, and silently
+    seeding one mode's intro/schema for all three would be wrong). strict=False
+    tolerates absence (dry-run)."""
     try:
         from app.chat_config import ChatPromptsConfig
-        s = ChatPromptsConfig().integrator_factual_system or ""
+        cfg = ChatPromptsConfig()
     except Exception:
-        s = ""
-    a, b = (s.find(m) for m in _ENRICHER_MARKERS)
-    if s and a > 0 and b > a:
-        return {"intro": s[:a], "schema": s[a:b], "factual": s[b:]}
-    if strict:
-        raise ValueError(
-            "block_seed: could not decompose chat_config.integrator_factual_system at its "
-            f"markers {_ENRICHER_MARKERS} — the prompt structure changed; fix the split before seeding."
-        )
-    return {"intro": "<<intro>>", "schema": "<<schema>>", "factual": "<<factual>>"}
+        cfg = None
+
+    out: dict[str, str] = {}
+    intro = schema = None
+    for mode, attr in _ENRICHER_MODE_ATTR.items():
+        s = (getattr(cfg, attr, "") or "") if cfg else ""
+        a = s.find(_SCHEMA_MARKER)
+        rules_marker = f"Mode-specific rules for {mode.upper()}"
+        b = s.find(rules_marker)
+        if not s or a <= 0 or b <= a:
+            if strict:
+                raise ValueError(
+                    f"block_seed: could not decompose chat_config.{attr} at "
+                    f"{_SCHEMA_MARKER!r} / {rules_marker!r} — prompt structure changed."
+                )
+            out[mode] = f"<<{mode}>>"
+            continue
+        this_intro, this_schema, this_rules = s[:a], s[a:b], s[b:]
+        if intro is None:
+            intro, schema = this_intro, this_schema
+        elif strict and (this_intro != intro or this_schema != schema):
+            raise ValueError(
+                f"block_seed: {attr}'s intro/schema diverges from the other modes' — "
+                f"they're supposed to be shared blocks. Re-check before seeding a split."
+            )
+        out[mode] = this_rules
+    out["intro"] = intro or "<<intro>>"
+    out["schema"] = schema or "<<schema>>"
+    return out
 
 
 def resolve_body(spec: BlockSpec, *, strict: bool = True) -> str:
