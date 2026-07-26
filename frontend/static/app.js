@@ -1838,6 +1838,889 @@ function createAuthService(config) {
   return new AuthService(config);
 }
 
+// src/answer-card.ts
+var SECTION_INTENTS = ["process", "requirements", "definitions", "exceptions", "references"];
+function isSectionIntent(s) {
+  return typeof s === "string" && SECTION_INTENTS.includes(s);
+}
+var MAX_SECTIONS = 4;
+function findMatchingCloseBrace(str, start) {
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  let quote = "";
+  for (let i = start; i < str.length; i++) {
+    const c = str[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (inString) {
+      if (c === "\\")
+        escape = true;
+      else if (c === quote)
+        inString = false;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      inString = true;
+      quote = c;
+      continue;
+    }
+    if (c === "{")
+      depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0)
+        return i;
+    }
+  }
+  return -1;
+}
+function tryParseAnswerCard(message) {
+  if (!message || !message.trim())
+    return null;
+  let raw = message.trim();
+  if (raw.startsWith("```")) {
+    const lines = raw.split("\n");
+    if (lines[0].startsWith("```"))
+      lines.shift();
+    if (lines.length > 0 && lines[lines.length - 1].trim() === "```")
+      lines.pop();
+    raw = lines.join("\n").trim();
+  }
+  const parseOne = (str) => {
+    try {
+      const data = JSON.parse(str);
+      const rawMode = typeof data.mode === "string" ? data.mode : void 0;
+      if (rawMode === "RECITAL") {
+        const rec = data.recital;
+        if (!rec || typeof rec.verbatim !== "string" || !rec.verbatim.trim())
+          return null;
+        return {
+          mode: "RECITAL",
+          direct_answer: typeof data.direct_answer === "string" ? data.direct_answer : "",
+          sections: [],
+          recital: {
+            verbatim: rec.verbatim,
+            document_id: typeof rec.document_id === "string" ? rec.document_id : void 0,
+            section: typeof rec.section === "string" ? rec.section : void 0
+          }
+        };
+      }
+      if (typeof data.direct_answer !== "string" || !data.direct_answer.trim())
+        return null;
+      const KNOWN_LEGACY_MODES = ["FACTUAL", "CANONICAL", "BLENDED"];
+      const mode = rawMode && KNOWN_LEGACY_MODES.includes(rawMode) ? rawMode : void 0;
+      const rawSections = Array.isArray(data.sections) ? data.sections.slice(0, MAX_SECTIONS) : [];
+      const VALID_FORMATS = ["bullets", "table", "steps", "stats", "bars", "conditions"];
+      const sections = rawSections.map((sec) => ({
+        intent: isSectionIntent(sec.intent) ? sec.intent : "process",
+        label: typeof sec.label === "string" ? sec.label : "",
+        format: VALID_FORMATS.includes(sec.format) ? sec.format : "bullets",
+        // Unknown/absent visibility → undefined; the §1.2 fallback resolves it at render time.
+        visibility: sec.visibility === "primary" || sec.visibility === "detail" ? sec.visibility : void 0,
+        bullets: Array.isArray(sec.bullets) ? sec.bullets : [],
+        data: sec.data && typeof sec.data === "object" ? sec.data : void 0
+      }));
+      return {
+        mode,
+        direct_answer: data.direct_answer,
+        sections,
+        required_variables: Array.isArray(data.required_variables) ? data.required_variables : void 0,
+        confidence_note: typeof data.confidence_note === "string" ? data.confidence_note : void 0,
+        citations: Array.isArray(data.citations) ? data.citations : void 0,
+        followups: Array.isArray(data.followups) ? data.followups : void 0
+      };
+    } catch {
+      return null;
+    }
+  };
+  if (raw.startsWith("{")) {
+    const card = parseOne(raw);
+    if (card)
+      return card;
+    const close = findMatchingCloseBrace(raw, 0);
+    if (close !== -1) {
+      const card2 = parseOne(raw.slice(0, close + 1));
+      if (card2)
+        return card2;
+    }
+    const fixed = raw.replace(/\}\]\}\],/g, "}],").replace(/\}\]\},/g, "}],");
+    if (fixed !== raw) {
+      const card3 = parseOne(fixed);
+      if (card3)
+        return card3;
+    }
+  }
+  const modeRe = /["']mode["']\s*:\s*["'](FACTUAL|CANONICAL|BLENDED|RECITAL)["']/;
+  const m = raw.match(modeRe);
+  if (m) {
+    const idx = raw.indexOf(m[0]);
+    const start = raw.lastIndexOf("{", idx);
+    if (start !== -1) {
+      const end = findMatchingCloseBrace(raw, start);
+      if (end !== -1) {
+        const card = parseOne(raw.slice(start, end + 1));
+        if (card)
+          return card;
+      }
+    }
+  }
+  const daRe = /["']direct_answer["']\s*:/;
+  const m2 = raw.match(daRe);
+  if (m2) {
+    const idx = raw.indexOf(m2[0]);
+    const start = raw.lastIndexOf("{", idx);
+    if (start !== -1) {
+      const end = findMatchingCloseBrace(raw, start);
+      if (end !== -1) {
+        const card = parseOne(raw.slice(start, end + 1));
+        if (card)
+          return card;
+      }
+    }
+  }
+  return null;
+}
+function splitSectionsByVisibility(sections, mode) {
+  const all = sections.slice(0, MAX_SECTIONS);
+  const isKnownLegacy = mode === "FACTUAL" || mode === "CANONICAL" || mode === "BLENDED";
+  const anyVisibility = all.some((s) => s.visibility === "primary" || s.visibility === "detail");
+  if (anyVisibility || !isKnownLegacy) {
+    const visible2 = [];
+    const hidden2 = [];
+    all.forEach((s, i) => {
+      const resolved = s.visibility === "primary" || s.visibility === "detail" ? s.visibility : i === 0 ? "primary" : "detail";
+      (resolved === "primary" ? visible2 : hidden2).push(s);
+    });
+    return { visible: visible2, hidden: hidden2 };
+  }
+  if (mode === "FACTUAL")
+    return { visible: [], hidden: all };
+  if (mode === "CANONICAL")
+    return { visible: all, hidden: [] };
+  const visibleIntents = /* @__PURE__ */ new Set(["definitions", "requirements", "process"]);
+  const visible = all.filter((s) => visibleIntents.has(s.intent ?? "process"));
+  const hidden = all.filter((s) => !visibleIntents.has(s.intent ?? "process"));
+  return { visible, hidden };
+}
+
+// src/ui-helpers.ts
+function simpleMarkdownToHtml(text) {
+  const s = (text ?? "").trim();
+  if (!s)
+    return "";
+  const escape = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const imgs = [];
+  const imgRe = /!\[([^\]]*)\]\(([^)]+)\)/g;
+  let out = s.replace(imgRe, (_m, alt, url) => {
+    const escapedAlt = escape(alt || "");
+    const i = imgs.length;
+    imgs.push(`<img src="${url}" alt="${escapedAlt}" class="report-chart" loading="lazy" />`);
+    return `\uE000${i}\uE001`;
+  });
+  const links = [];
+  const stashLink = (html) => {
+    const i = links.length;
+    links.push(html);
+    return `\uE010${i}\uE011`;
+  };
+  const MOBIUS_URL_RE = /https:\/\/mobius-[a-z0-9\-]+\.(?:a\.run\.app|us-central1\.run\.app)[^\s"'<>()[\]]*[^\s"'<>()[\].,!?;:]/g;
+  const EMAIL_RE = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
+  const PHONE_RE = /(?:\+?1[\s.\-]?)?\(?[2-9]\d{2}\)?[\s.\-]\d{3}[\s.\-]\d{4}/g;
+  out = out.replace(/\[([^\]]+)\]\((https:\/\/[^)]+)\)/g, (_m, linkText, url) => {
+    if (/^https:\/\/mobius-/.test(url)) {
+      return stashLink(`<a href="${url}" class="chat-link chat-link--url" target="_blank" rel="noopener noreferrer" title="${url}">${linkText} \u2197</a>`);
+    }
+    return linkText;
+  });
+  out = out.replace(MOBIUS_URL_RE, (url) => {
+    let display = url;
+    try {
+      display = new URL(url).hostname.replace(/\.(?:a\.run|us-central1\.run)\.app$/, "").replace(/^mobius-/, "").replace(/-[a-z0-9]+-uc$/, "");
+    } catch {
+      display = url.length > 40 ? url.slice(0, 39) + "\u2026" : url;
+    }
+    return stashLink(`<a href="${url}" class="chat-link chat-link--url" target="_blank" rel="noopener noreferrer" title="${url}">${display} \u2197</a>`);
+  });
+  out = out.replace(
+    EMAIL_RE,
+    (email) => stashLink(`<a href="mailto:${email}" class="chat-link chat-link--email">${email}</a>`)
+  );
+  out = out.replace(PHONE_RE, (raw) => {
+    const digits = raw.replace(/[^\d+]/g, "");
+    return stashLink(`<a href="tel:${digits}" class="chat-link chat-link--tel">${raw}</a>`);
+  });
+  out = escape(out);
+  imgs.forEach((img, i) => {
+    out = out.replace(`\uE000${i}\uE001`, img);
+  });
+  links.forEach((html, i) => {
+    out = out.replace(`\uE010${i}\uE011`, html);
+  });
+  out = out.replace(/^#### (.+)$/gm, "<h4>$1</h4>");
+  out = out.replace(/^### (.+)$/gm, "<h3>$1</h3>");
+  out = out.replace(/^## (.+)$/gm, "<h2>$1</h2>");
+  out = out.replace(/^# (.+)$/gm, "<h1>$1</h1>");
+  out = out.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  out = out.replace(/\n\n+/g, "</p><p>");
+  out = out.replace(/\n/g, "<br>\n");
+  return "<p>" + out + "</p>";
+}
+function simpleMarkdownToHtmlInner(text) {
+  const s = (text ?? "").trim();
+  if (!s)
+    return "";
+  let out = s;
+  out = out.replace(/^#### (.+)$/gm, "<h4>$1</h4>");
+  out = out.replace(/^### (.+)$/gm, "<h3>$1</h3>");
+  out = out.replace(/^## (.+)$/gm, "<h2>$1</h2>");
+  out = out.replace(/^# (.+)$/gm, "<h1>$1</h1>");
+  out = out.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  out = out.replace(/^- (.+)$/gm, "<li>$1</li>");
+  out = out.replace(/\n\n+/g, "</p><p>");
+  out = out.replace(/\n/g, "<br>\n");
+  out = "<p>" + out + "</p>";
+  out = out.replace(/((?:<li>[\s\S]*?<\/li>(?:<br>\s*)?)+)/g, "<ul>$1</ul>");
+  return out;
+}
+function rosterStepMarkdownToHtml(text) {
+  const s = (text ?? "").trim();
+  if (!s)
+    return "";
+  if (!s.includes("npi-profile-card")) {
+    return simpleMarkdownToHtml(s);
+  }
+  const cardBlocks = [];
+  const placeholder = (i) => `\uE000CARD${i}\uE001`;
+  const re = /<div class="npi-profile-card" markdown="1">\s*([\s\S]*?)<\/div>/g;
+  let out = s.replace(re, (_full, inner) => {
+    const i = cardBlocks.length;
+    cardBlocks.push(inner);
+    return placeholder(i);
+  });
+  out = simpleMarkdownToHtml(out);
+  cardBlocks.forEach((inner, i) => {
+    const cardHtml = '<div class="npi-profile-card">' + simpleMarkdownToHtmlInner(inner) + "</div>";
+    out = out.replace(placeholder(i), cardHtml);
+  });
+  return out;
+}
+var CONFIDENCE_BADGE_MAP = {
+  approved_authoritative: {
+    label: "Approved \u2013 Authoritative",
+    variant: "approved_authoritative",
+    icon: "check"
+  },
+  approved_informational: {
+    label: "Approved \u2013 Informational",
+    variant: "approved_informational",
+    icon: "shield"
+  },
+  proceed_with_caution: {
+    label: "Proceed with Caution",
+    variant: "proceed_with_caution",
+    icon: "alert-triangle"
+  },
+  augmented_with_google: {
+    label: "Augmented with External Search",
+    variant: "augmented_with_google",
+    icon: "globe"
+  },
+  informational_only: {
+    label: "Informational Only",
+    variant: "informational_only",
+    icon: "info"
+  },
+  no_sources: {
+    label: "No Sources",
+    variant: "no_sources",
+    icon: "alert-circle"
+  }
+};
+function renderConfidenceBadge(strip) {
+  const key = strip.toLowerCase().replace(/\s+/g, "_");
+  const cfg = CONFIDENCE_BADGE_MAP[key] ?? {
+    label: strip.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
+    variant: "unverified",
+    icon: "info"
+  };
+  const wrap = document.createElement("div");
+  wrap.className = "confidence-badge-wrap";
+  const badge = document.createElement("span");
+  badge.className = `confidence-badge confidence-badge--${cfg.variant}`;
+  badge.setAttribute("aria-label", "Source confidence: " + cfg.label);
+  const iconEl = document.createElement("span");
+  iconEl.className = "confidence-badge-icon";
+  iconEl.setAttribute("aria-hidden", "true");
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("width", "14");
+  svg.setAttribute("height", "14");
+  const paths = {
+    check: "M20 6L9 17l-5-5",
+    shield: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z",
+    "alert-triangle": "M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z M12 9v4 M12 17h.01",
+    globe: "M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9",
+    info: "M12 16v-4 M12 8h.01 M22 12c0 5.523-4.477 10-10 10S2 17.523 2 12 6.477 2 12 2s10 4.477 10 10z",
+    "alert-circle": "M12 8v4m0 4h.01M22 12c0 5.523-4.477 10-10 10S2 17.523 2 12 6.477 2 12 2s10 4.477 10 10z"
+  };
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", paths[cfg.icon] ?? paths.info);
+  svg.appendChild(path);
+  iconEl.appendChild(svg);
+  const labelEl = document.createElement("span");
+  labelEl.className = "confidence-badge-label";
+  labelEl.textContent = cfg.label;
+  badge.appendChild(iconEl);
+  badge.appendChild(labelEl);
+  wrap.appendChild(badge);
+  return wrap;
+}
+function createQcSampleShieldSvg() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "qc-audit-badge-shield-svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "11");
+  svg.setAttribute("height", "11");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke", "currentColor");
+  path.setAttribute("stroke-width", "1.35");
+  path.setAttribute("stroke-linejoin", "round");
+  path.setAttribute(
+    "d",
+    "M12 2.5 19.5 5.2v5.8c0 3.2-2.4 6.5-7.5 8.5-5.1-2-7.5-5.3-7.5-8.5V5.2L12 2.5z"
+  );
+  svg.appendChild(path);
+  return svg;
+}
+function renderQcAuditBadge(_qc) {
+  const wrap = document.createElement("div");
+  wrap.className = "qc-audit-badge-wrap";
+  wrap.setAttribute("data-qc-sample", "1");
+  const row = document.createElement("div");
+  row.className = "qc-audit-badge-row";
+  const badge = document.createElement("span");
+  badge.className = "qc-audit-badge qc-audit-badge--neutral";
+  badge.setAttribute(
+    "aria-label",
+    "This reply was checked by an automated quality review. It does not change your answer."
+  );
+  const iconEl = document.createElement("span");
+  iconEl.className = "qc-audit-badge-icon";
+  iconEl.setAttribute("aria-hidden", "true");
+  iconEl.appendChild(createQcSampleShieldSvg());
+  const labelEl = document.createElement("span");
+  labelEl.className = "qc-audit-badge-label";
+  labelEl.textContent = "Quality review completed";
+  badge.appendChild(iconEl);
+  badge.appendChild(labelEl);
+  row.appendChild(badge);
+  wrap.appendChild(row);
+  const foot = document.createElement("p");
+  foot.className = "qc-audit-badge-footnote";
+  foot.textContent = "Does not change your answer.";
+  wrap.appendChild(foot);
+  return wrap;
+}
+
+// src/card-render-model.ts
+var TAB_ORDER = ["summary", "citations", "corrections", "follow-up", "tasks", "diagnostics"];
+
+// src/render/bubble.ts
+var MAX_BULLETS_PER_SECTION = 4;
+function _renderSectionBody(sec, body) {
+  const fmt = sec.format ?? "bullets";
+  const data = sec.data;
+  if (fmt === "table" && data?.headers && data?.rows) {
+    const tbl = document.createElement("table");
+    tbl.className = "ac-fmt-table";
+    const thead = tbl.createTHead();
+    const hRow = thead.insertRow();
+    data.headers.forEach((h) => {
+      const th = document.createElement("th");
+      th.textContent = h;
+      hRow.appendChild(th);
+    });
+    const tbody = tbl.createTBody();
+    data.rows.forEach((row) => {
+      const tr = tbody.insertRow();
+      row.forEach((cell) => {
+        const td = tr.insertCell();
+        td.textContent = cell;
+      });
+    });
+    const scroll = document.createElement("div");
+    scroll.className = "ac-fmt-table-scroll";
+    scroll.appendChild(tbl);
+    body.appendChild(scroll);
+    return;
+  }
+  if (fmt === "steps" && data?.items) {
+    const ol = document.createElement("ol");
+    ol.className = "ac-fmt-steps";
+    data.items.forEach((item) => {
+      const li = document.createElement("li");
+      li.className = "ac-fmt-step";
+      li.textContent = typeof item === "string" ? item : item.label ?? "";
+      ol.appendChild(li);
+    });
+    body.appendChild(ol);
+    return;
+  }
+  if (fmt === "stats" && data?.items) {
+    const grid = document.createElement("div");
+    grid.className = "ac-fmt-stats";
+    data.items.slice(0, 4).forEach((item) => {
+      const tile = document.createElement("div");
+      tile.className = "ac-fmt-stat-tile";
+      const val = document.createElement("div");
+      val.className = "ac-fmt-stat-value";
+      val.textContent = item.value ?? "";
+      const lbl = document.createElement("div");
+      lbl.className = "ac-fmt-stat-label";
+      lbl.textContent = item.label ?? "";
+      tile.appendChild(val);
+      tile.appendChild(lbl);
+      if (item.note) {
+        const note = document.createElement("div");
+        note.className = "ac-fmt-stat-note";
+        note.textContent = item.note;
+        tile.appendChild(note);
+      }
+      grid.appendChild(tile);
+    });
+    body.appendChild(grid);
+    return;
+  }
+  if (fmt === "bars" && data?.items) {
+    const list = document.createElement("div");
+    list.className = "ac-fmt-bars";
+    data.items.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "ac-fmt-bar-row";
+      const lbl = document.createElement("div");
+      lbl.className = "ac-fmt-bar-label";
+      lbl.textContent = item.label ?? "";
+      const track = document.createElement("div");
+      track.className = "ac-fmt-bar-track";
+      const fill = document.createElement("div");
+      fill.className = "ac-fmt-bar-fill";
+      const pct = Math.round(Math.min(1, Math.max(0, item.weight ?? 0)) * 100);
+      fill.style.width = `${pct}%`;
+      track.appendChild(fill);
+      row.appendChild(lbl);
+      row.appendChild(track);
+      if (item.note) {
+        const note = document.createElement("div");
+        note.className = "ac-fmt-bar-note";
+        note.textContent = item.note;
+        row.appendChild(note);
+      }
+      list.appendChild(row);
+    });
+    body.appendChild(list);
+    return;
+  }
+  if (fmt === "conditions" && data?.items) {
+    const list = document.createElement("div");
+    list.className = "ac-fmt-conditions";
+    data.items.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "ac-fmt-condition-row";
+      const cond = document.createElement("div");
+      cond.className = "ac-fmt-condition-if";
+      cond.textContent = item.condition ?? "";
+      const result = document.createElement("div");
+      result.className = "ac-fmt-condition-then";
+      result.textContent = item.result ?? "";
+      row.appendChild(cond);
+      row.appendChild(result);
+      list.appendChild(row);
+    });
+    body.appendChild(list);
+    return;
+  }
+  const bullets = (sec.bullets ?? []).slice(0, MAX_BULLETS_PER_SECTION);
+  bullets.forEach((b) => {
+    const li = document.createElement("div");
+    li.className = "answer-card-bullet";
+    li.textContent = b;
+    body.appendChild(li);
+  });
+  if (bullets.length < (sec.bullets?.length ?? 0)) {
+    const more = document.createElement("div");
+    more.className = "answer-card-more";
+    more.textContent = "Show more";
+    more.setAttribute("aria-label", "Show more bullets");
+    body.appendChild(more);
+  }
+}
+function renderOneSection(sec) {
+  const sectionEl = document.createElement("div");
+  sectionEl.className = `answer-card-section answer-card-section--${sec.format ?? "bullets"}`;
+  const labelEl = document.createElement("div");
+  labelEl.className = "answer-card-section-label";
+  labelEl.textContent = sec.label || "";
+  sectionEl.appendChild(labelEl);
+  _renderSectionBody(sec, sectionEl);
+  return sectionEl;
+}
+function renderAnswerCard(card, isError, opts) {
+  const wrap = document.createElement("div");
+  wrap.className = "message message--assistant answer-card answer-card--" + // v2 cards carry no mode → a stable "v2" modifier class (legacy keeps factual/canonical/blended/recital).
+  (card.mode ? card.mode.toLowerCase() : "v2") + (isError ? " message--error" : "");
+  const bubble = document.createElement("div");
+  bubble.className = "message-bubble answer-card-bubble";
+  if (card.mode === "RECITAL" && card.recital?.verbatim) {
+    const attr = document.createElement("div");
+    attr.className = "recital-attr";
+    attr.textContent = "From the Mobius founding essay:";
+    bubble.appendChild(attr);
+    const RECITAL_PARA_LIMIT = 3;
+    const stripSeparators = (t) => t.replace(/^[ \t]*[-*_]{3,}[ \t]*$/gm, "").trim();
+    const fullText = stripSeparators(card.recital.verbatim);
+    const allParas = fullText.split(/\n\n+/);
+    const clipped = allParas.length > RECITAL_PARA_LIMIT;
+    const proseText = clipped ? allParas.slice(0, RECITAL_PARA_LIMIT).join("\n\n") : fullText;
+    const prose = document.createElement("div");
+    prose.className = "recital-prose";
+    prose.innerHTML = simpleMarkdownToHtml(proseText);
+    bubble.appendChild(prose);
+    if (clipped) {
+      const readMore = document.createElement("button");
+      readMore.type = "button";
+      readMore.className = "recital-read-more";
+      readMore.textContent = "Read the full essay \u2197";
+      let expanded = false;
+      readMore.addEventListener("click", () => {
+        expanded = !expanded;
+        prose.innerHTML = simpleMarkdownToHtml(expanded ? fullText : proseText);
+        readMore.textContent = expanded ? "Collapse \u2191" : "Read the full essay \u2197";
+        const container = readMore.closest(".answer-card--recital") ?? wrap;
+        container.classList.toggle("recital-expanded", expanded);
+      });
+      bubble.appendChild(readMore);
+    }
+    if (opts?.showConfidenceBadge !== false && !opts?.suppressConfidenceForAdminQcFail) {
+      bubble.appendChild(renderConfidenceBadge("approved_authoritative"));
+    }
+    wrap.appendChild(bubble);
+    return wrap;
+  }
+  const direct = document.createElement("div");
+  direct.className = "answer-card-direct";
+  direct.innerHTML = simpleMarkdownToHtml(card.direct_answer);
+  bubble.appendChild(direct);
+  if (opts?.showConfidenceBadge !== false && !opts?.suppressConfidenceForAdminQcFail) {
+    bubble.appendChild(
+      renderConfidenceBadge((opts?.sourceConfidenceStrip ?? "").trim() || "informational_only")
+    );
+  }
+  const metaRow = document.createElement("div");
+  metaRow.className = "answer-card-meta-row";
+  if (card.required_variables && card.required_variables.length > 0) {
+    const dep = document.createElement("span");
+    dep.className = "answer-card-depends";
+    dep.textContent = "Depends on: " + card.required_variables.join(", ");
+    metaRow.appendChild(dep);
+  }
+  if (!opts?.suppressFollowups && card.followups && card.followups.length > 0 && metaRow.childNodes.length > 0) {
+    const sep = document.createElement("span");
+    sep.className = "answer-card-meta-sep";
+    sep.textContent = " \xB7 ";
+    metaRow.appendChild(sep);
+  }
+  if (!opts?.suppressFollowups && card.followups && card.followups.length > 0) {
+    const confirmLabel = document.createElement("span");
+    confirmLabel.className = "answer-card-confirm-label";
+    confirmLabel.textContent = "Confirm";
+    metaRow.appendChild(confirmLabel);
+    card.followups.slice(0, 4).forEach((f) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "answer-card-followup-chip";
+      const questionText = f.question || f.reason || f.field || "";
+      chip.textContent = questionText;
+      chip.setAttribute("aria-label", questionText);
+      if (opts?.onFollowupClick && questionText) {
+        chip.addEventListener("click", () => opts.onFollowupClick(questionText));
+      }
+      metaRow.appendChild(chip);
+    });
+  }
+  const answerPanel = document.createElement("div");
+  answerPanel.className = "ac-tab-panel ac-tab-panel--summary ac-tab-panel--active";
+  answerPanel.setAttribute("role", "tabpanel");
+  if (metaRow.childNodes.length > 0)
+    answerPanel.appendChild(metaRow);
+  const { visible, hidden } = splitSectionsByVisibility(card.sections ?? [], card.mode);
+  visible.forEach((sec) => answerPanel.appendChild(renderOneSection(sec)));
+  if (hidden.length > 0) {
+    const detailsBlock = document.createElement("div");
+    detailsBlock.className = "answer-card-details";
+    detailsBlock.setAttribute("aria-hidden", "true");
+    hidden.forEach((sec) => detailsBlock.appendChild(renderOneSection(sec)));
+    answerPanel.appendChild(detailsBlock);
+    const toggleBtn = document.createElement("button");
+    toggleBtn.type = "button";
+    toggleBtn.className = "answer-card-show-details";
+    toggleBtn.textContent = "Show details";
+    toggleBtn.setAttribute("aria-label", "Show details");
+    toggleBtn.setAttribute("aria-expanded", "false");
+    toggleBtn.addEventListener("click", () => {
+      const expanded = detailsBlock.classList.toggle("answer-card-details--expanded");
+      detailsBlock.setAttribute("aria-hidden", expanded ? "false" : "true");
+      toggleBtn.setAttribute("aria-expanded", String(expanded));
+      toggleBtn.textContent = expanded ? "Hide details" : "Show details";
+      toggleBtn.setAttribute("aria-label", expanded ? "Hide details" : "Show details");
+    });
+    answerPanel.appendChild(toggleBtn);
+  }
+  if (card.confidence_note && card.confidence_note.trim()) {
+    const note = document.createElement("div");
+    note.className = "answer-card-confidence";
+    note.textContent = card.confidence_note;
+    answerPanel.appendChild(note);
+  }
+  const _corrections = opts?.corrections ?? [];
+  const _nextStepQuestions = opts?.nextQuestions ?? [];
+  const _nextStepTasks = opts?.nextStepTasks ?? [];
+  const hasCitations = Array.isArray(card.citations) && card.citations.length > 0;
+  const hasCorrections = _corrections.length > 0;
+  const hasNextSteps = _nextStepQuestions.length > 0;
+  const hasTasks = _nextStepTasks.length > 0;
+  const showTabBar = hasCitations || hasCorrections || hasNextSteps || hasTasks;
+  const citationsPanel = document.createElement("div");
+  citationsPanel.className = "ac-tab-panel ac-tab-panel--citations";
+  citationsPanel.setAttribute("role", "tabpanel");
+  citationsPanel.setAttribute("hidden", "");
+  if (hasCitations) {
+    const citList = document.createElement("div");
+    citList.className = "ac-citations-list";
+    (card.citations ?? []).forEach((cit) => {
+      const row = document.createElement("div");
+      row.className = "ac-citation-row";
+      const title = document.createElement("div");
+      title.className = "ac-citation-title";
+      title.textContent = cit.doc_title || "";
+      const meta = document.createElement("div");
+      meta.className = "ac-citation-meta";
+      if (cit.locator)
+        meta.textContent = cit.locator;
+      const snippet = document.createElement("div");
+      snippet.className = "ac-citation-snippet";
+      snippet.textContent = cit.snippet || "";
+      row.appendChild(title);
+      if (cit.locator)
+        row.appendChild(meta);
+      if (cit.snippet)
+        row.appendChild(snippet);
+      citList.appendChild(row);
+    });
+    citationsPanel.appendChild(citList);
+  }
+  const correctionsPanel = document.createElement("div");
+  correctionsPanel.className = "ac-tab-panel ac-tab-panel--corrections";
+  correctionsPanel.setAttribute("role", "tabpanel");
+  correctionsPanel.setAttribute("hidden", "");
+  if (hasCorrections) {
+    const corrList = document.createElement("div");
+    corrList.className = "ac-correction-list";
+    _corrections.forEach(({ label, text }) => {
+      const row = document.createElement("div");
+      row.className = "ac-correction-row";
+      const lbl = document.createElement("div");
+      lbl.className = "ac-correction-label";
+      lbl.textContent = label;
+      row.appendChild(lbl);
+      row.appendChild(document.createTextNode(text));
+      corrList.appendChild(row);
+    });
+    correctionsPanel.appendChild(corrList);
+    const corrCallout = document.createElement("div");
+    corrCallout.className = "ac-answer-correction-callout";
+    const corrIcon = document.createElement("span");
+    corrIcon.className = "ac-answer-correction-icon";
+    corrIcon.textContent = "\u26A0";
+    corrIcon.setAttribute("aria-hidden", "true");
+    const corrBody = document.createElement("div");
+    const corrLbl = document.createElement("div");
+    corrLbl.className = "ac-answer-correction-callout-label";
+    corrLbl.textContent = _corrections[0].label;
+    const corrP = document.createElement("p");
+    corrP.className = "ac-answer-correction-callout-text";
+    corrP.appendChild(document.createTextNode(
+      _corrections.length === 1 ? _corrections[0].text.slice(0, 120) + (_corrections[0].text.length > 120 ? "\u2026" : "") + " \u2014 " : `${_corrections.length} corrections noted \u2014 `
+    ));
+    const corrTabLink = document.createElement("button");
+    corrTabLink.type = "button";
+    corrTabLink.className = "ac-correction-tab-link";
+    corrTabLink.textContent = "see Corrections tab";
+    corrTabLink.addEventListener("click", () => {
+      const liveBubble = corrTabLink.closest(".answer-card-bubble") ?? bubble;
+      liveBubble.querySelector('[data-panel="corrections"]')?.click();
+    });
+    corrP.appendChild(corrTabLink);
+    corrP.appendChild(document.createTextNode(" for details."));
+    corrBody.appendChild(corrLbl);
+    corrBody.appendChild(corrP);
+    corrCallout.appendChild(corrIcon);
+    corrCallout.appendChild(corrBody);
+    answerPanel.appendChild(corrCallout);
+  }
+  const nextStepsPanel = document.createElement("div");
+  nextStepsPanel.className = "ac-tab-panel ac-tab-panel--next-steps";
+  nextStepsPanel.setAttribute("role", "tabpanel");
+  nextStepsPanel.setAttribute("hidden", "");
+  if (_nextStepQuestions.length > 0) {
+    const nsWrap = document.createElement("div");
+    nsWrap.className = "ac-next-steps";
+    _nextStepQuestions.forEach((q) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "ac-next-step-question";
+      btn.textContent = q.text;
+      if (opts?.onFollowupClick && q.text) {
+        btn.addEventListener("click", () => opts.onFollowupClick(q.text));
+      }
+      nsWrap.appendChild(btn);
+    });
+    nextStepsPanel.appendChild(nsWrap);
+  }
+  const tasksPanel = document.createElement("div");
+  tasksPanel.className = "ac-tab-panel ac-tab-panel--tasks";
+  tasksPanel.setAttribute("role", "tabpanel");
+  tasksPanel.setAttribute("hidden", "");
+  if (_nextStepTasks.length > 0) {
+    const tWrap = document.createElement("div");
+    tWrap.className = "ac-tasks-list";
+    _nextStepTasks.forEach(({ text, taskType }) => {
+      const row = document.createElement("div");
+      row.className = "ac-next-step-task-row";
+      const taskText = document.createElement("span");
+      taskText.className = "ac-next-step-task-text";
+      taskText.textContent = text;
+      const createBtn = document.createElement("button");
+      createBtn.type = "button";
+      createBtn.className = "ac-next-step-create-btn";
+      createBtn.setAttribute("data-task-type", taskType || "general");
+      createBtn.setAttribute("data-task-text", text);
+      createBtn.textContent = "+ Add to my tasks";
+      createBtn.addEventListener("click", () => {
+        opts?.onCreateTask?.({
+          title: text.slice(0, 60),
+          excerpt: text,
+          sourceModule: "next_steps",
+          onCreated: () => {
+            createBtn.textContent = "Added \u2713";
+            createBtn.disabled = true;
+            createBtn.classList.add("ac-next-step-create-btn--done");
+          }
+        });
+      });
+      row.appendChild(taskText);
+      row.appendChild(createBtn);
+      tWrap.appendChild(row);
+    });
+    tasksPanel.appendChild(tWrap);
+  }
+  if (showTabBar) {
+    const tabBar = document.createElement("div");
+    tabBar.className = "ac-tab-bar";
+    tabBar.setAttribute("role", "tablist");
+    const mkTab = (label, panelKey, count, active) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "ac-tab" + (active ? " ac-tab--active" : "");
+      btn.setAttribute("role", "tab");
+      btn.setAttribute("aria-selected", String(active));
+      btn.setAttribute("data-panel", panelKey);
+      if (count !== void 0 && count === 0)
+        btn.setAttribute("data-empty", "1");
+      if (count !== void 0 && count > 0) {
+        btn.appendChild(document.createTextNode(label + " "));
+        const badge = document.createElement("span");
+        badge.className = "ac-tab-count";
+        badge.textContent = String(count);
+        btn.appendChild(badge);
+      } else {
+        btn.textContent = label;
+      }
+      btn.addEventListener("click", () => {
+        const liveBubble = btn.closest(".answer-card-bubble") ?? bubble;
+        tabBar.querySelectorAll(".ac-tab").forEach((t) => {
+          t.classList.remove("ac-tab--active");
+          t.setAttribute("aria-selected", "false");
+        });
+        liveBubble.querySelectorAll(".ac-tab-panel").forEach((p) => {
+          p.hidden = true;
+          p.classList.remove("ac-tab-panel--active");
+        });
+        btn.classList.add("ac-tab--active");
+        btn.setAttribute("aria-selected", "true");
+        const targetPanel = liveBubble.querySelector(`.ac-tab-panel--${panelKey}`);
+        if (targetPanel) {
+          targetPanel.hidden = false;
+          targetPanel.classList.add("ac-tab-panel--active");
+        }
+      });
+      return btn;
+    };
+    const TAB_DOM = {
+      "summary": { label: "Summary", panelKey: "summary", count: void 0 },
+      "citations": { label: "Citations", panelKey: "citations", count: (card.citations ?? []).length },
+      "corrections": { label: "Corrections", panelKey: "corrections", count: _corrections.length },
+      "follow-up": { label: "Follow-up", panelKey: "next-steps", count: _nextStepQuestions.length },
+      "tasks": { label: "Tasks", panelKey: "tasks", count: _nextStepTasks.length }
+    };
+    let firstTab = true;
+    for (const tab of TAB_ORDER) {
+      const dom = TAB_DOM[tab];
+      if (!dom)
+        continue;
+      tabBar.appendChild(mkTab(dom.label, dom.panelKey, dom.count, firstTab));
+      firstTab = false;
+    }
+    bubble.appendChild(tabBar);
+  }
+  bubble.appendChild(answerPanel);
+  bubble.appendChild(citationsPanel);
+  bubble.appendChild(correctionsPanel);
+  bubble.appendChild(nextStepsPanel);
+  bubble.appendChild(tasksPanel);
+  if (card.suggested_actions && card.suggested_actions.length > 0) {
+    const actionsWrap = document.createElement("div");
+    actionsWrap.className = "answer-card-actions";
+    card.suggested_actions.forEach((action) => {
+      if (action.type === "external_link" && action.url && action.label) {
+        const a = document.createElement("a");
+        a.href = action.url;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.className = "answer-card-action-chip";
+        a.textContent = (action.icon ? action.icon + " " : "") + action.label + " \u2197";
+        a.setAttribute("aria-label", action.label + " (opens in new tab)");
+        actionsWrap.appendChild(a);
+      }
+    });
+    if (actionsWrap.childNodes.length > 0)
+      wrap.appendChild(actionsWrap);
+  }
+  if (opts?.qcAudit)
+    bubble.appendChild(renderQcAuditBadge(opts.qcAudit));
+  wrap.appendChild(bubble);
+  return wrap;
+}
+
 // src/app.ts
 var activeClarificationDraft = null;
 function buildWorkflowSelectionPreface() {
@@ -2000,9 +2883,36 @@ function extractCredentialingOrgHint(text) {
   }
   return "";
 }
-var SECTION_INTENTS = ["process", "requirements", "definitions", "exceptions", "references"];
-function isSectionIntent(s) {
-  return typeof s === "string" && SECTION_INTENTS.includes(s);
+function applyQcAuditToTurn(turnWrap, qc) {
+  if (!qc)
+    return;
+  refreshLlmPerformanceQuality(turnWrap, qc);
+  const assistantEl = turnWrap.querySelector(".message--assistant:last-of-type") ?? turnWrap.querySelector(".message--assistant");
+  if (!assistantEl || assistantEl.querySelector(".qc-audit-badge-wrap"))
+    return;
+  const bubble = assistantEl.querySelector(".answer-card-bubble") ?? assistantEl.querySelector(".message-bubble");
+  if (!bubble)
+    return;
+  const node = renderQcAuditBadge(qc);
+  bubble.appendChild(node);
+}
+function refreshLlmPerformanceQuality(turnWrap, qc) {
+  const panel = turnWrap.querySelector(".llm-performance");
+  if (!panel)
+    return;
+  const eq = effectiveQcScore(qc);
+  const qText = eq !== null ? eq.toFixed(2) : "\u2014";
+  const oneline = panel.querySelector(".llm-performance-oneline");
+  if (oneline) {
+    const m = oneline.dataset.m || "\u2014";
+    const sec = oneline.dataset.s || "0";
+    const cost = oneline.dataset.c || "0";
+    const leg = oneline.dataset.legacy === "1";
+    oneline.textContent = `${leg ? "[LEGACY] " : ""}${m} \xB7 ${sec}s \xB7 $${cost} \xB7 quality ${qText}`;
+  }
+  const badgeQ = panel.querySelector("[data-llm-badge-quality]");
+  if (badgeQ)
+    badgeQ.textContent = `quality ${qText}`;
 }
 var API_BASE = typeof window !== "undefined" && window.API_BASE && window.API_BASE.startsWith("http") ? window.API_BASE : "http://localhost:8000";
 function renderLlmRouterReportCompositeSpec(parent, spec) {
@@ -2874,871 +3784,10 @@ function thinkingFriendlyStatus(line) {
     return "Finishing up\u2026";
   return "Working on your answer\u2026";
 }
-function simpleMarkdownToHtml(text) {
-  const s = (text ?? "").trim();
-  if (!s)
-    return "";
-  const escape = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  const imgs = [];
-  const imgRe = /!\[([^\]]*)\]\(([^)]+)\)/g;
-  let out = s.replace(imgRe, (_m, alt, url) => {
-    const escapedAlt = escape(alt || "");
-    const i = imgs.length;
-    imgs.push(`<img src="${url}" alt="${escapedAlt}" class="report-chart" loading="lazy" />`);
-    return `\uE000${i}\uE001`;
-  });
-  const links = [];
-  const stashLink = (html) => {
-    const i = links.length;
-    links.push(html);
-    return `\uE010${i}\uE011`;
-  };
-  const MOBIUS_URL_RE = /https:\/\/mobius-[a-z0-9\-]+\.(?:a\.run\.app|us-central1\.run\.app)[^\s"'<>()[\]]*[^\s"'<>()[\].,!?;:]/g;
-  const EMAIL_RE = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
-  const PHONE_RE = /(?:\+?1[\s.\-]?)?\(?[2-9]\d{2}\)?[\s.\-]\d{3}[\s.\-]\d{4}/g;
-  out = out.replace(/\[([^\]]+)\]\((https:\/\/[^)]+)\)/g, (_m, linkText, url) => {
-    if (/^https:\/\/mobius-/.test(url)) {
-      return stashLink(`<a href="${url}" class="chat-link chat-link--url" target="_blank" rel="noopener noreferrer" title="${url}">${linkText} \u2197</a>`);
-    }
-    return linkText;
-  });
-  out = out.replace(MOBIUS_URL_RE, (url) => {
-    let display = url;
-    try {
-      display = new URL(url).hostname.replace(/\.(?:a\.run|us-central1\.run)\.app$/, "").replace(/^mobius-/, "").replace(/-[a-z0-9]+-uc$/, "");
-    } catch {
-      display = url.length > 40 ? url.slice(0, 39) + "\u2026" : url;
-    }
-    return stashLink(`<a href="${url}" class="chat-link chat-link--url" target="_blank" rel="noopener noreferrer" title="${url}">${display} \u2197</a>`);
-  });
-  out = out.replace(
-    EMAIL_RE,
-    (email) => stashLink(`<a href="mailto:${email}" class="chat-link chat-link--email">${email}</a>`)
-  );
-  out = out.replace(PHONE_RE, (raw) => {
-    const digits = raw.replace(/[^\d+]/g, "");
-    return stashLink(`<a href="tel:${digits}" class="chat-link chat-link--tel">${raw}</a>`);
-  });
-  out = escape(out);
-  imgs.forEach((img, i) => {
-    out = out.replace(`\uE000${i}\uE001`, img);
-  });
-  links.forEach((html, i) => {
-    out = out.replace(`\uE010${i}\uE011`, html);
-  });
-  out = out.replace(/^#### (.+)$/gm, "<h4>$1</h4>");
-  out = out.replace(/^### (.+)$/gm, "<h3>$1</h3>");
-  out = out.replace(/^## (.+)$/gm, "<h2>$1</h2>");
-  out = out.replace(/^# (.+)$/gm, "<h1>$1</h1>");
-  out = out.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-  out = out.replace(/\n\n+/g, "</p><p>");
-  out = out.replace(/\n/g, "<br>\n");
-  return "<p>" + out + "</p>";
-}
-function simpleMarkdownToHtmlInner(text) {
-  const s = (text ?? "").trim();
-  if (!s)
-    return "";
-  let out = s;
-  out = out.replace(/^#### (.+)$/gm, "<h4>$1</h4>");
-  out = out.replace(/^### (.+)$/gm, "<h3>$1</h3>");
-  out = out.replace(/^## (.+)$/gm, "<h2>$1</h2>");
-  out = out.replace(/^# (.+)$/gm, "<h1>$1</h1>");
-  out = out.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-  out = out.replace(/^- (.+)$/gm, "<li>$1</li>");
-  out = out.replace(/\n\n+/g, "</p><p>");
-  out = out.replace(/\n/g, "<br>\n");
-  out = "<p>" + out + "</p>";
-  out = out.replace(/((?:<li>[\s\S]*?<\/li>(?:<br>\s*)?)+)/g, "<ul>$1</ul>");
-  return out;
-}
-function rosterStepMarkdownToHtml(text) {
-  const s = (text ?? "").trim();
-  if (!s)
-    return "";
-  if (!s.includes("npi-profile-card")) {
-    return simpleMarkdownToHtml(s);
-  }
-  const cardBlocks = [];
-  const placeholder = (i) => `\uE000CARD${i}\uE001`;
-  const re = /<div class="npi-profile-card" markdown="1">\s*([\s\S]*?)<\/div>/g;
-  let out = s.replace(re, (_full, inner) => {
-    const i = cardBlocks.length;
-    cardBlocks.push(inner);
-    return placeholder(i);
-  });
-  out = simpleMarkdownToHtml(out);
-  cardBlocks.forEach((inner, i) => {
-    const cardHtml = '<div class="npi-profile-card">' + simpleMarkdownToHtmlInner(inner) + "</div>";
-    out = out.replace(placeholder(i), cardHtml);
-  });
-  return out;
-}
-var MAX_SECTIONS = 4;
-var MAX_BULLETS_PER_SECTION = 4;
-function findMatchingCloseBrace(str, start) {
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-  let quote = "";
-  for (let i = start; i < str.length; i++) {
-    const c = str[i];
-    if (escape) {
-      escape = false;
-      continue;
-    }
-    if (inString) {
-      if (c === "\\")
-        escape = true;
-      else if (c === quote)
-        inString = false;
-      continue;
-    }
-    if (c === '"' || c === "'") {
-      inString = true;
-      quote = c;
-      continue;
-    }
-    if (c === "{")
-      depth++;
-    else if (c === "}") {
-      depth--;
-      if (depth === 0)
-        return i;
-    }
-  }
-  return -1;
-}
-function tryParseAnswerCard(message) {
-  if (!message || !message.trim())
-    return null;
-  let raw = message.trim();
-  if (raw.startsWith("```")) {
-    const lines = raw.split("\n");
-    if (lines[0].startsWith("```"))
-      lines.shift();
-    if (lines.length > 0 && lines[lines.length - 1].trim() === "```")
-      lines.pop();
-    raw = lines.join("\n").trim();
-  }
-  const parseOne = (str) => {
-    try {
-      const data = JSON.parse(str);
-      if (data.mode !== "FACTUAL" && data.mode !== "CANONICAL" && data.mode !== "BLENDED" && data.mode !== "RECITAL")
-        return null;
-      if (typeof data.direct_answer !== "string")
-        return null;
-      if (data.mode === "RECITAL") {
-        const rec = data.recital;
-        if (!rec || typeof rec.verbatim !== "string" || !rec.verbatim.trim())
-          return null;
-        return {
-          mode: "RECITAL",
-          direct_answer: data.direct_answer,
-          sections: [],
-          recital: {
-            verbatim: rec.verbatim,
-            document_id: typeof rec.document_id === "string" ? rec.document_id : void 0,
-            section: typeof rec.section === "string" ? rec.section : void 0
-          }
-        };
-      }
-      if (!Array.isArray(data.sections))
-        return null;
-      const rawSections = data.sections.slice(0, MAX_SECTIONS);
-      const VALID_FORMATS = ["bullets", "table", "steps", "stats", "bars", "conditions"];
-      const sections = rawSections.map((sec) => ({
-        intent: isSectionIntent(sec.intent) ? sec.intent : "process",
-        label: typeof sec.label === "string" ? sec.label : "",
-        format: VALID_FORMATS.includes(sec.format) ? sec.format : "bullets",
-        bullets: Array.isArray(sec.bullets) ? sec.bullets : [],
-        data: sec.data && typeof sec.data === "object" ? sec.data : void 0
-      }));
-      return {
-        mode: data.mode,
-        direct_answer: data.direct_answer,
-        sections,
-        required_variables: Array.isArray(data.required_variables) ? data.required_variables : void 0,
-        confidence_note: typeof data.confidence_note === "string" ? data.confidence_note : void 0,
-        citations: Array.isArray(data.citations) ? data.citations : void 0,
-        followups: Array.isArray(data.followups) ? data.followups : void 0
-      };
-    } catch {
-      return null;
-    }
-  };
-  if (raw.startsWith("{")) {
-    const card = parseOne(raw);
-    if (card)
-      return card;
-    const close = findMatchingCloseBrace(raw, 0);
-    if (close !== -1) {
-      const card2 = parseOne(raw.slice(0, close + 1));
-      if (card2)
-        return card2;
-    }
-    const fixed = raw.replace(/\}\]\}\],/g, "}],").replace(/\}\]\},/g, "}],");
-    if (fixed !== raw) {
-      const card3 = parseOne(fixed);
-      if (card3)
-        return card3;
-    }
-  }
-  const modeRe = /["']mode["']\s*:\s*["'](FACTUAL|CANONICAL|BLENDED|RECITAL)["']/;
-  const m = raw.match(modeRe);
-  if (m) {
-    const idx = raw.indexOf(m[0]);
-    const start = raw.lastIndexOf("{", idx);
-    if (start !== -1) {
-      const end = findMatchingCloseBrace(raw, start);
-      if (end !== -1) {
-        const card = parseOne(raw.slice(start, end + 1));
-        if (card)
-          return card;
-      }
-    }
-  }
-  return null;
-}
-function splitSectionsByVisibility(sections, mode) {
-  const all = sections.slice(0, MAX_SECTIONS);
-  if (mode === "FACTUAL")
-    return { visible: [], hidden: all };
-  if (mode === "CANONICAL")
-    return { visible: all, hidden: [] };
-  const visibleIntents = /* @__PURE__ */ new Set(["definitions", "requirements", "process"]);
-  const visible = all.filter((s) => visibleIntents.has(s.intent ?? "process"));
-  const hidden = all.filter((s) => !visibleIntents.has(s.intent ?? "process"));
-  return { visible, hidden };
-}
-function _renderSectionBody(sec, body) {
-  const fmt = sec.format ?? "bullets";
-  const data = sec.data;
-  if (fmt === "table" && data?.headers && data?.rows) {
-    const tbl = document.createElement("table");
-    tbl.className = "ac-fmt-table";
-    const thead = tbl.createTHead();
-    const hRow = thead.insertRow();
-    data.headers.forEach((h) => {
-      const th = document.createElement("th");
-      th.textContent = h;
-      hRow.appendChild(th);
-    });
-    const tbody = tbl.createTBody();
-    data.rows.forEach((row) => {
-      const tr = tbody.insertRow();
-      row.forEach((cell) => {
-        const td = tr.insertCell();
-        td.textContent = cell;
-      });
-    });
-    body.appendChild(tbl);
-    return;
-  }
-  if (fmt === "steps" && data?.items) {
-    const ol = document.createElement("ol");
-    ol.className = "ac-fmt-steps";
-    data.items.forEach((item) => {
-      const li = document.createElement("li");
-      li.className = "ac-fmt-step";
-      li.textContent = typeof item === "string" ? item : item.label ?? "";
-      ol.appendChild(li);
-    });
-    body.appendChild(ol);
-    return;
-  }
-  if (fmt === "stats" && data?.items) {
-    const grid = document.createElement("div");
-    grid.className = "ac-fmt-stats";
-    data.items.slice(0, 4).forEach((item) => {
-      const tile = document.createElement("div");
-      tile.className = "ac-fmt-stat-tile";
-      const val = document.createElement("div");
-      val.className = "ac-fmt-stat-value";
-      val.textContent = item.value ?? "";
-      const lbl = document.createElement("div");
-      lbl.className = "ac-fmt-stat-label";
-      lbl.textContent = item.label ?? "";
-      tile.appendChild(val);
-      tile.appendChild(lbl);
-      if (item.note) {
-        const note = document.createElement("div");
-        note.className = "ac-fmt-stat-note";
-        note.textContent = item.note;
-        tile.appendChild(note);
-      }
-      grid.appendChild(tile);
-    });
-    body.appendChild(grid);
-    return;
-  }
-  if (fmt === "bars" && data?.items) {
-    const list = document.createElement("div");
-    list.className = "ac-fmt-bars";
-    data.items.forEach((item) => {
-      const row = document.createElement("div");
-      row.className = "ac-fmt-bar-row";
-      const lbl = document.createElement("div");
-      lbl.className = "ac-fmt-bar-label";
-      lbl.textContent = item.label ?? "";
-      const track = document.createElement("div");
-      track.className = "ac-fmt-bar-track";
-      const fill = document.createElement("div");
-      fill.className = "ac-fmt-bar-fill";
-      const pct = Math.round(Math.min(1, Math.max(0, item.weight ?? 0)) * 100);
-      fill.style.width = `${pct}%`;
-      track.appendChild(fill);
-      row.appendChild(lbl);
-      row.appendChild(track);
-      if (item.note) {
-        const note = document.createElement("div");
-        note.className = "ac-fmt-bar-note";
-        note.textContent = item.note;
-        row.appendChild(note);
-      }
-      list.appendChild(row);
-    });
-    body.appendChild(list);
-    return;
-  }
-  if (fmt === "conditions" && data?.items) {
-    const list = document.createElement("div");
-    list.className = "ac-fmt-conditions";
-    data.items.forEach((item) => {
-      const row = document.createElement("div");
-      row.className = "ac-fmt-condition-row";
-      const cond = document.createElement("div");
-      cond.className = "ac-fmt-condition-if";
-      cond.textContent = item.condition ?? "";
-      const result = document.createElement("div");
-      result.className = "ac-fmt-condition-then";
-      result.textContent = item.result ?? "";
-      row.appendChild(cond);
-      row.appendChild(result);
-      list.appendChild(row);
-    });
-    body.appendChild(list);
-    return;
-  }
-  const bullets = (sec.bullets ?? []).slice(0, MAX_BULLETS_PER_SECTION);
-  bullets.forEach((b) => {
-    const li = document.createElement("div");
-    li.className = "answer-card-bullet";
-    li.textContent = b;
-    body.appendChild(li);
-  });
-  if (bullets.length < (sec.bullets?.length ?? 0)) {
-    const more = document.createElement("div");
-    more.className = "answer-card-more";
-    more.textContent = "Show more";
-    more.setAttribute("aria-label", "Show more bullets");
-    body.appendChild(more);
-  }
-}
-function renderOneSection(sec) {
-  const sectionEl = document.createElement("div");
-  sectionEl.className = `answer-card-section answer-card-section--${sec.format ?? "bullets"}`;
-  const labelEl = document.createElement("div");
-  labelEl.className = "answer-card-section-label";
-  labelEl.textContent = sec.label || "";
-  sectionEl.appendChild(labelEl);
-  _renderSectionBody(sec, sectionEl);
-  return sectionEl;
-}
-var CONFIDENCE_BADGE_MAP = {
-  approved_authoritative: {
-    label: "Approved \u2013 Authoritative",
-    variant: "approved_authoritative",
-    icon: "check"
-  },
-  approved_informational: {
-    label: "Approved \u2013 Informational",
-    variant: "approved_informational",
-    icon: "shield"
-  },
-  proceed_with_caution: {
-    label: "Proceed with Caution",
-    variant: "proceed_with_caution",
-    icon: "alert-triangle"
-  },
-  augmented_with_google: {
-    label: "Augmented with External Search",
-    variant: "augmented_with_google",
-    icon: "globe"
-  },
-  informational_only: {
-    label: "Informational Only",
-    variant: "informational_only",
-    icon: "info"
-  },
-  no_sources: {
-    label: "No Sources",
-    variant: "no_sources",
-    icon: "alert-circle"
-  }
-};
-function renderConfidenceBadge(strip) {
-  const key = strip.toLowerCase().replace(/\s+/g, "_");
-  const cfg = CONFIDENCE_BADGE_MAP[key] ?? {
-    label: strip.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
-    variant: "unverified",
-    icon: "info"
-  };
-  const wrap = document.createElement("div");
-  wrap.className = "confidence-badge-wrap";
-  const badge = document.createElement("span");
-  badge.className = `confidence-badge confidence-badge--${cfg.variant}`;
-  badge.setAttribute("aria-label", "Source confidence: " + cfg.label);
-  const iconEl = document.createElement("span");
-  iconEl.className = "confidence-badge-icon";
-  iconEl.setAttribute("aria-hidden", "true");
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("fill", "none");
-  svg.setAttribute("stroke", "currentColor");
-  svg.setAttribute("stroke-width", "2");
-  svg.setAttribute("stroke-linecap", "round");
-  svg.setAttribute("stroke-linejoin", "round");
-  svg.setAttribute("width", "14");
-  svg.setAttribute("height", "14");
-  const paths = {
-    check: "M20 6L9 17l-5-5",
-    shield: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z",
-    "alert-triangle": "M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z M12 9v4 M12 17h.01",
-    globe: "M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9",
-    info: "M12 16v-4 M12 8h.01 M22 12c0 5.523-4.477 10-10 10S2 17.523 2 12 6.477 2 12 2s10 4.477 10 10z",
-    "alert-circle": "M12 8v4m0 4h.01M22 12c0 5.523-4.477 10-10 10S2 17.523 2 12 6.477 2 12 2s10 4.477 10 10z"
-  };
-  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  path.setAttribute("d", paths[cfg.icon] ?? paths.info);
-  svg.appendChild(path);
-  iconEl.appendChild(svg);
-  const labelEl = document.createElement("span");
-  labelEl.className = "confidence-badge-label";
-  labelEl.textContent = cfg.label;
-  badge.appendChild(iconEl);
-  badge.appendChild(labelEl);
-  wrap.appendChild(badge);
-  return wrap;
-}
-function createQcSampleShieldSvg() {
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("class", "qc-audit-badge-shield-svg");
-  svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("width", "11");
-  svg.setAttribute("height", "11");
-  svg.setAttribute("aria-hidden", "true");
-  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  path.setAttribute("fill", "none");
-  path.setAttribute("stroke", "currentColor");
-  path.setAttribute("stroke-width", "1.35");
-  path.setAttribute("stroke-linejoin", "round");
-  path.setAttribute(
-    "d",
-    "M12 2.5 19.5 5.2v5.8c0 3.2-2.4 6.5-7.5 8.5-5.1-2-7.5-5.3-7.5-8.5V5.2L12 2.5z"
-  );
-  svg.appendChild(path);
-  return svg;
-}
-function renderQcAuditBadge(_qc) {
-  const wrap = document.createElement("div");
-  wrap.className = "qc-audit-badge-wrap";
-  wrap.setAttribute("data-qc-sample", "1");
-  const row = document.createElement("div");
-  row.className = "qc-audit-badge-row";
-  const badge = document.createElement("span");
-  badge.className = "qc-audit-badge qc-audit-badge--neutral";
-  badge.setAttribute(
-    "aria-label",
-    "This reply was checked by an automated quality review. It does not change your answer."
-  );
-  const iconEl = document.createElement("span");
-  iconEl.className = "qc-audit-badge-icon";
-  iconEl.setAttribute("aria-hidden", "true");
-  iconEl.appendChild(createQcSampleShieldSvg());
-  const labelEl = document.createElement("span");
-  labelEl.className = "qc-audit-badge-label";
-  labelEl.textContent = "Quality review completed";
-  badge.appendChild(iconEl);
-  badge.appendChild(labelEl);
-  row.appendChild(badge);
-  wrap.appendChild(row);
-  const foot = document.createElement("p");
-  foot.className = "qc-audit-badge-footnote";
-  foot.textContent = "Does not change your answer.";
-  wrap.appendChild(foot);
-  return wrap;
-}
-function applyQcAuditToTurn(turnWrap, qc) {
-  if (!qc)
-    return;
-  refreshLlmPerformanceQuality(turnWrap, qc);
-  const assistantEl = turnWrap.querySelector(".message--assistant:last-of-type") ?? turnWrap.querySelector(".message--assistant");
-  if (!assistantEl || assistantEl.querySelector(".qc-audit-badge-wrap"))
-    return;
-  const bubble = assistantEl.querySelector(".answer-card-bubble") ?? assistantEl.querySelector(".message-bubble");
-  if (!bubble)
-    return;
-  const node = renderQcAuditBadge(qc);
-  bubble.appendChild(node);
-}
-function refreshLlmPerformanceQuality(turnWrap, qc) {
-  const panel = turnWrap.querySelector(".llm-performance");
-  if (!panel)
-    return;
-  const eq = effectiveQcScore(qc);
-  const qText = eq !== null ? eq.toFixed(2) : "\u2014";
-  const oneline = panel.querySelector(".llm-performance-oneline");
-  if (oneline) {
-    const m = oneline.dataset.m || "\u2014";
-    const sec = oneline.dataset.s || "0";
-    const cost = oneline.dataset.c || "0";
-    const leg = oneline.dataset.legacy === "1";
-    oneline.textContent = `${leg ? "[LEGACY] " : ""}${m} \xB7 ${sec}s \xB7 $${cost} \xB7 quality ${qText}`;
-  }
-  const badgeQ = panel.querySelector("[data-llm-badge-quality]");
-  if (badgeQ)
-    badgeQ.textContent = `quality ${qText}`;
-}
-function renderAnswerCard(card, isError, opts) {
-  const wrap = document.createElement("div");
-  wrap.className = "message message--assistant answer-card answer-card--" + card.mode.toLowerCase() + (isError ? " message--error" : "");
-  const bubble = document.createElement("div");
-  bubble.className = "message-bubble answer-card-bubble";
-  if (card.mode === "RECITAL" && card.recital?.verbatim) {
-    const attr = document.createElement("div");
-    attr.className = "recital-attr";
-    attr.textContent = "From the Mobius founding essay:";
-    bubble.appendChild(attr);
-    const RECITAL_PARA_LIMIT = 3;
-    const stripSeparators = (t) => t.replace(/^[ \t]*[-*_]{3,}[ \t]*$/gm, "").trim();
-    const fullText = stripSeparators(card.recital.verbatim);
-    const allParas = fullText.split(/\n\n+/);
-    const clipped = allParas.length > RECITAL_PARA_LIMIT;
-    const proseText = clipped ? allParas.slice(0, RECITAL_PARA_LIMIT).join("\n\n") : fullText;
-    const prose = document.createElement("div");
-    prose.className = "recital-prose";
-    prose.innerHTML = simpleMarkdownToHtml(proseText);
-    bubble.appendChild(prose);
-    if (clipped) {
-      const readMore = document.createElement("button");
-      readMore.type = "button";
-      readMore.className = "recital-read-more";
-      readMore.textContent = "Read the full essay \u2197";
-      let expanded = false;
-      readMore.addEventListener("click", () => {
-        expanded = !expanded;
-        prose.innerHTML = simpleMarkdownToHtml(expanded ? fullText : proseText);
-        readMore.textContent = expanded ? "Collapse \u2191" : "Read the full essay \u2197";
-        const container = readMore.closest(".answer-card--recital") ?? wrap;
-        container.classList.toggle("recital-expanded", expanded);
-      });
-      bubble.appendChild(readMore);
-    }
-    if (opts?.showConfidenceBadge !== false && !opts?.suppressConfidenceForAdminQcFail) {
-      bubble.appendChild(renderConfidenceBadge("approved_authoritative"));
-    }
-    wrap.appendChild(bubble);
-    return wrap;
-  }
-  const direct = document.createElement("div");
-  direct.className = "answer-card-direct";
-  direct.innerHTML = simpleMarkdownToHtml(card.direct_answer);
-  bubble.appendChild(direct);
-  if (opts?.showConfidenceBadge !== false && !opts?.suppressConfidenceForAdminQcFail) {
-    bubble.appendChild(
-      renderConfidenceBadge((opts?.sourceConfidenceStrip ?? "").trim() || "informational_only")
-    );
-  }
-  const metaRow = document.createElement("div");
-  metaRow.className = "answer-card-meta-row";
-  if (card.required_variables && card.required_variables.length > 0) {
-    const dep = document.createElement("span");
-    dep.className = "answer-card-depends";
-    dep.textContent = "Depends on: " + card.required_variables.join(", ");
-    metaRow.appendChild(dep);
-  }
-  if (!opts?.suppressFollowups && card.followups && card.followups.length > 0 && metaRow.childNodes.length > 0) {
-    const sep = document.createElement("span");
-    sep.className = "answer-card-meta-sep";
-    sep.textContent = " \xB7 ";
-    metaRow.appendChild(sep);
-  }
-  if (!opts?.suppressFollowups && card.followups && card.followups.length > 0) {
-    const confirmLabel = document.createElement("span");
-    confirmLabel.className = "answer-card-confirm-label";
-    confirmLabel.textContent = "Confirm";
-    metaRow.appendChild(confirmLabel);
-    card.followups.slice(0, 4).forEach((f) => {
-      const chip = document.createElement("button");
-      chip.type = "button";
-      chip.className = "answer-card-followup-chip";
-      const questionText = f.question || f.reason || f.field || "";
-      chip.textContent = questionText;
-      chip.setAttribute("aria-label", questionText);
-      if (opts?.onFollowupClick && questionText) {
-        chip.addEventListener("click", () => opts.onFollowupClick(questionText));
-      }
-      metaRow.appendChild(chip);
-    });
-  }
-  const answerPanel = document.createElement("div");
-  answerPanel.className = "ac-tab-panel ac-tab-panel--summary ac-tab-panel--active";
-  answerPanel.setAttribute("role", "tabpanel");
-  if (metaRow.childNodes.length > 0)
-    answerPanel.appendChild(metaRow);
-  const { visible, hidden } = splitSectionsByVisibility(card.sections ?? [], card.mode);
-  visible.forEach((sec) => answerPanel.appendChild(renderOneSection(sec)));
-  if (hidden.length > 0) {
-    const detailsBlock = document.createElement("div");
-    detailsBlock.className = "answer-card-details";
-    detailsBlock.setAttribute("aria-hidden", "true");
-    hidden.forEach((sec) => detailsBlock.appendChild(renderOneSection(sec)));
-    answerPanel.appendChild(detailsBlock);
-    const toggleBtn = document.createElement("button");
-    toggleBtn.type = "button";
-    toggleBtn.className = "answer-card-show-details";
-    toggleBtn.textContent = "Show details";
-    toggleBtn.setAttribute("aria-label", "Show details");
-    toggleBtn.setAttribute("aria-expanded", "false");
-    toggleBtn.addEventListener("click", () => {
-      const expanded = detailsBlock.classList.toggle("answer-card-details--expanded");
-      detailsBlock.setAttribute("aria-hidden", expanded ? "false" : "true");
-      toggleBtn.setAttribute("aria-expanded", String(expanded));
-      toggleBtn.textContent = expanded ? "Hide details" : "Show details";
-      toggleBtn.setAttribute("aria-label", expanded ? "Hide details" : "Show details");
-    });
-    answerPanel.appendChild(toggleBtn);
-  }
-  if (card.confidence_note && card.confidence_note.trim()) {
-    const note = document.createElement("div");
-    note.className = "answer-card-confidence";
-    note.textContent = card.confidence_note;
-    answerPanel.appendChild(note);
-  }
-  const _corrections = opts?.corrections ?? [];
-  const _nextStepQuestions = opts?.nextQuestions ?? [];
-  const _nextStepTasks = opts?.nextStepTasks ?? [];
-  const hasCitations = Array.isArray(card.citations) && card.citations.length > 0;
-  const hasCorrections = _corrections.length > 0;
-  const hasNextSteps = _nextStepQuestions.length > 0;
-  const hasTasks = _nextStepTasks.length > 0;
-  const showTabBar = hasCitations || hasCorrections || hasNextSteps || hasTasks;
-  const citationsPanel = document.createElement("div");
-  citationsPanel.className = "ac-tab-panel ac-tab-panel--citations";
-  citationsPanel.setAttribute("role", "tabpanel");
-  citationsPanel.setAttribute("hidden", "");
-  if (hasCitations) {
-    const citList = document.createElement("div");
-    citList.className = "ac-citations-list";
-    (card.citations ?? []).forEach((cit) => {
-      const row = document.createElement("div");
-      row.className = "ac-citation-row";
-      const title = document.createElement("div");
-      title.className = "ac-citation-title";
-      title.textContent = cit.doc_title || "";
-      const meta = document.createElement("div");
-      meta.className = "ac-citation-meta";
-      if (cit.locator)
-        meta.textContent = cit.locator;
-      const snippet = document.createElement("div");
-      snippet.className = "ac-citation-snippet";
-      snippet.textContent = cit.snippet || "";
-      row.appendChild(title);
-      if (cit.locator)
-        row.appendChild(meta);
-      if (cit.snippet)
-        row.appendChild(snippet);
-      citList.appendChild(row);
-    });
-    citationsPanel.appendChild(citList);
-  }
-  const correctionsPanel = document.createElement("div");
-  correctionsPanel.className = "ac-tab-panel ac-tab-panel--corrections";
-  correctionsPanel.setAttribute("role", "tabpanel");
-  correctionsPanel.setAttribute("hidden", "");
-  if (hasCorrections) {
-    const corrList = document.createElement("div");
-    corrList.className = "ac-correction-list";
-    _corrections.forEach(({ label, text }) => {
-      const row = document.createElement("div");
-      row.className = "ac-correction-row";
-      const lbl = document.createElement("div");
-      lbl.className = "ac-correction-label";
-      lbl.textContent = label;
-      row.appendChild(lbl);
-      row.appendChild(document.createTextNode(text));
-      corrList.appendChild(row);
-    });
-    correctionsPanel.appendChild(corrList);
-    const corrCallout = document.createElement("div");
-    corrCallout.className = "ac-answer-correction-callout";
-    const corrIcon = document.createElement("span");
-    corrIcon.className = "ac-answer-correction-icon";
-    corrIcon.textContent = "\u26A0";
-    corrIcon.setAttribute("aria-hidden", "true");
-    const corrBody = document.createElement("div");
-    const corrLbl = document.createElement("div");
-    corrLbl.className = "ac-answer-correction-callout-label";
-    corrLbl.textContent = _corrections[0].label;
-    const corrP = document.createElement("p");
-    corrP.className = "ac-answer-correction-callout-text";
-    corrP.appendChild(document.createTextNode(
-      _corrections.length === 1 ? _corrections[0].text.slice(0, 120) + (_corrections[0].text.length > 120 ? "\u2026" : "") + " \u2014 " : `${_corrections.length} corrections noted \u2014 `
-    ));
-    const corrTabLink = document.createElement("button");
-    corrTabLink.type = "button";
-    corrTabLink.className = "ac-correction-tab-link";
-    corrTabLink.textContent = "see Corrections tab";
-    corrTabLink.addEventListener("click", () => {
-      const liveBubble = corrTabLink.closest(".answer-card-bubble") ?? bubble;
-      liveBubble.querySelector('[data-panel="corrections"]')?.click();
-    });
-    corrP.appendChild(corrTabLink);
-    corrP.appendChild(document.createTextNode(" for details."));
-    corrBody.appendChild(corrLbl);
-    corrBody.appendChild(corrP);
-    corrCallout.appendChild(corrIcon);
-    corrCallout.appendChild(corrBody);
-    answerPanel.appendChild(corrCallout);
-  }
-  const nextStepsPanel = document.createElement("div");
-  nextStepsPanel.className = "ac-tab-panel ac-tab-panel--next-steps";
-  nextStepsPanel.setAttribute("role", "tabpanel");
-  nextStepsPanel.setAttribute("hidden", "");
-  if (_nextStepQuestions.length > 0) {
-    const nsWrap = document.createElement("div");
-    nsWrap.className = "ac-next-steps";
-    _nextStepQuestions.forEach((q) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "ac-next-step-question";
-      btn.textContent = q.text;
-      if (opts?.onFollowupClick && q.text) {
-        btn.addEventListener("click", () => opts.onFollowupClick(q.text));
-      }
-      nsWrap.appendChild(btn);
-    });
-    nextStepsPanel.appendChild(nsWrap);
-  }
-  const tasksPanel = document.createElement("div");
-  tasksPanel.className = "ac-tab-panel ac-tab-panel--tasks";
-  tasksPanel.setAttribute("role", "tabpanel");
-  tasksPanel.setAttribute("hidden", "");
-  if (_nextStepTasks.length > 0) {
-    const tWrap = document.createElement("div");
-    tWrap.className = "ac-tasks-list";
-    _nextStepTasks.forEach(({ text, taskType }) => {
-      const row = document.createElement("div");
-      row.className = "ac-next-step-task-row";
-      const taskText = document.createElement("span");
-      taskText.className = "ac-next-step-task-text";
-      taskText.textContent = text;
-      const createBtn = document.createElement("button");
-      createBtn.type = "button";
-      createBtn.className = "ac-next-step-create-btn";
-      createBtn.setAttribute("data-task-type", taskType || "general");
-      createBtn.setAttribute("data-task-text", text);
-      createBtn.textContent = "+ Add to my tasks";
-      createBtn.addEventListener("click", () => {
-        openCreateTaskDialog({
-          title: text.slice(0, 60),
-          excerpt: text,
-          sourceModule: "next_steps",
-          onCreated: () => {
-            createBtn.textContent = "Added \u2713";
-            createBtn.disabled = true;
-            createBtn.classList.add("ac-next-step-create-btn--done");
-          }
-        });
-      });
-      row.appendChild(taskText);
-      row.appendChild(createBtn);
-      tWrap.appendChild(row);
-    });
-    tasksPanel.appendChild(tWrap);
-  }
-  if (showTabBar) {
-    const tabBar = document.createElement("div");
-    tabBar.className = "ac-tab-bar";
-    tabBar.setAttribute("role", "tablist");
-    const mkTab = (label, panelKey, count, active) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "ac-tab" + (active ? " ac-tab--active" : "");
-      btn.setAttribute("role", "tab");
-      btn.setAttribute("aria-selected", String(active));
-      btn.setAttribute("data-panel", panelKey);
-      if (count !== void 0 && count === 0)
-        btn.setAttribute("data-empty", "1");
-      if (count !== void 0 && count > 0) {
-        btn.appendChild(document.createTextNode(label + " "));
-        const badge = document.createElement("span");
-        badge.className = "ac-tab-count";
-        badge.textContent = String(count);
-        btn.appendChild(badge);
-      } else {
-        btn.textContent = label;
-      }
-      btn.addEventListener("click", () => {
-        const liveBubble = btn.closest(".answer-card-bubble") ?? bubble;
-        tabBar.querySelectorAll(".ac-tab").forEach((t) => {
-          t.classList.remove("ac-tab--active");
-          t.setAttribute("aria-selected", "false");
-        });
-        liveBubble.querySelectorAll(".ac-tab-panel").forEach((p) => {
-          p.hidden = true;
-          p.classList.remove("ac-tab-panel--active");
-        });
-        btn.classList.add("ac-tab--active");
-        btn.setAttribute("aria-selected", "true");
-        const targetPanel = liveBubble.querySelector(`.ac-tab-panel--${panelKey}`);
-        if (targetPanel) {
-          targetPanel.hidden = false;
-          targetPanel.classList.add("ac-tab-panel--active");
-        }
-      });
-      return btn;
-    };
-    tabBar.appendChild(mkTab("Summary", "summary", void 0, true));
-    tabBar.appendChild(mkTab("Citations", "citations", (card.citations ?? []).length, false));
-    tabBar.appendChild(mkTab("Corrections", "corrections", _corrections.length, false));
-    tabBar.appendChild(mkTab("Follow-up", "next-steps", _nextStepQuestions.length, false));
-    tabBar.appendChild(mkTab("Tasks", "tasks", _nextStepTasks.length, false));
-    bubble.appendChild(tabBar);
-  }
-  bubble.appendChild(answerPanel);
-  bubble.appendChild(citationsPanel);
-  bubble.appendChild(correctionsPanel);
-  bubble.appendChild(nextStepsPanel);
-  bubble.appendChild(tasksPanel);
-  if (card.suggested_actions && card.suggested_actions.length > 0) {
-    const actionsWrap = document.createElement("div");
-    actionsWrap.className = "answer-card-actions";
-    card.suggested_actions.forEach((action) => {
-      if (action.type === "external_link" && action.url && action.label) {
-        const a = document.createElement("a");
-        a.href = action.url;
-        a.target = "_blank";
-        a.rel = "noopener noreferrer";
-        a.className = "answer-card-action-chip";
-        a.textContent = (action.icon ? action.icon + " " : "") + action.label + " \u2197";
-        a.setAttribute("aria-label", action.label + " (opens in new tab)");
-        actionsWrap.appendChild(a);
-      }
-    });
-    if (actionsWrap.childNodes.length > 0)
-      wrap.appendChild(actionsWrap);
-  }
-  if (opts?.qcAudit)
-    bubble.appendChild(renderQcAuditBadge(opts.qcAudit));
-  wrap.appendChild(bubble);
-  return wrap;
-}
 function renderAssistantContent(body, isError, opts) {
   const card = tryParseAnswerCard(body);
   if (card)
-    return renderAnswerCard(card, isError, { ...opts, nextQuestions: opts?.nextQuestions });
+    return renderAnswerCard(card, isError, { ...opts, nextQuestions: opts?.nextQuestions, onCreateTask: openCreateTaskDialog });
   const trimmed = (body ?? "").trim();
   if (trimmed.startsWith("{") && trimmed.length > 10) {
     const errWrap = document.createElement("div");
@@ -11417,7 +11466,8 @@ ${message}`;
               qcAudit: qcFromPayload,
               suppressConfidenceForAdminQcFail: suppressConf,
               corrections: _extractedCorrections,
-              nextStepTasks: _extractedNextStepTasks
+              nextStepTasks: _extractedNextStepTasks,
+              onCreateTask: openCreateTaskDialog
             });
             const renderedBubble = renderedCard.querySelector(".answer-card-bubble");
             if (renderedBubble) {
