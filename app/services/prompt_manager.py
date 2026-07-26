@@ -185,29 +185,20 @@ def resolve_composition_sync(
 
 
 def _connect_sync(url: str):
-    """psycopg2 connect from a possibly-SQLAlchemy URL (strip +driver, parse parts)."""
+    """psycopg2 connect using the app's OWN proven fallback-URL mechanism
+    (app.db_client._get_fallback_url) rather than a bespoke parser — that function
+    already does the regex password-injection Cloud Run requires (CHAT_DB_PASSWORD
+    has no URL slot to fill via a separate connect() kwarg for a socket DSN; libpq
+    needs it IN the URL/DSN string). ``url`` is accepted for API compat but ignored:
+    _get_fallback_url reads CHAT_RAG_DATABASE_URL + CHAT_DB_PASSWORD from the
+    environment directly, which is the same source this module's caller uses."""
     import psycopg2
+    from app.db_client import _get_fallback_url
 
-    u = url.replace("postgresql+psycopg2://", "postgresql://").replace(
-        "postgresql+asyncpg://", "postgresql://")
-    try:
-        from sqlalchemy.engine import make_url
-        p = make_url(u)
-        # Cloud Run connects via the /cloudsql UNIX SOCKET given as ?host=/cloudsql/INSTANCE
-        # (netloc host is empty there); local/proxy uses a TCP host. Honor both.
-        q = dict(getattr(p, "query", {}) or {})
-        host = p.host or q.get("host") or "127.0.0.1"
-        # Cloud Run's CHAT_RAG_DATABASE_URL carries NO password (injected from the
-        # CHAT_DB_PASSWORD secret at connect time — same as the app's own db client).
-        password = p.password or __import__("os").environ.get("CHAT_DB_PASSWORD") or ""
-        return psycopg2.connect(
-            host=host, port=p.port or 5432,
-            dbname=(p.database or "postgres").lstrip("/"),
-            user=p.username or "postgres", password=password,
-            connect_timeout=10,
-        )
-    except Exception:
-        return psycopg2.connect(u, connect_timeout=10)
+    full_url = _get_fallback_url("chat")
+    if not full_url:
+        raise RuntimeError("resolve_composition_sync: CHAT_RAG_DATABASE_URL not set")
+    return psycopg2.connect(full_url, connect_timeout=10)
 
 
 class PromptManager:
