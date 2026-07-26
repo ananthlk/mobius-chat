@@ -706,52 +706,12 @@ interface RosterUploadResponse {
   reconciliation_ui_url?: string | null;
 }
 
-/** Section intent for visibility rules */
-const SECTION_INTENTS = ["process", "requirements", "definitions", "exceptions", "references"] as const;
-type SectionIntent = (typeof SECTION_INTENTS)[number];
-
-function isSectionIntent(s: unknown): s is SectionIntent {
-  return typeof s === "string" && SECTION_INTENTS.includes(s as SectionIntent);
-}
-
-/** AnswerCard JSON from consolidator (FACTUAL / CANONICAL / BLENDED / RECITAL) */
-type SectionFormat = "bullets" | "table" | "steps" | "stats" | "bars" | "conditions";
-interface SectionDataItem {
-  label?: string;
-  value?: string;
-  note?: string;
-  weight?: number;
-  condition?: string;
-  result?: string;
-}
-interface SectionData {
-  headers?: string[];
-  rows?: string[][];
-  items?: SectionDataItem[];
-}
-interface AnswerCardSection {
-  intent?: SectionIntent;
-  label: string;
-  format?: SectionFormat;
-  bullets: string[];
-  data?: SectionData;
-}
-interface AnswerCard {
-  mode: "FACTUAL" | "CANONICAL" | "BLENDED" | "RECITAL";
-  direct_answer: string;
-  sections: AnswerCardSection[];
-  recital?: {
-    verbatim: string;
-    document_id?: string;
-    section?: string;
-  };
-  required_variables?: string[];
-  confidence_note?: string;
-  citations?: Array<{ id: string; doc_title: string; locator: string; snippet: string }>;
-  followups?: Array<{ question: string; reason: string; field: string }>;
-  suggested_actions?: Array<{ type: string; label: string; url: string; icon?: string }>;
-  thread_summary?: string;
-}
+// AnswerCard types + pure parse/visibility logic live in ./answer-card (unit-tested via vitest).
+import {
+  tryParseAnswerCard,
+  splitSectionsByVisibility,
+} from "./answer-card";
+import type { AnswerCard, AnswerCardSection } from "./answer-card";
 
 const API_BASE =
   typeof window !== "undefined" &&
@@ -1886,135 +1846,7 @@ function rosterStepMarkdownToHtml(text: string): string {
   return out;
 }
 
-const MAX_SECTIONS = 4;
 const MAX_BULLETS_PER_SECTION = 4;
-
-function findMatchingCloseBrace(str: string, start: number): number {
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-  let quote = "";
-  for (let i = start; i < str.length; i++) {
-    const c = str[i];
-    if (escape) {
-      escape = false;
-      continue;
-    }
-    if (inString) {
-      if (c === "\\") escape = true;
-      else if (c === quote) inString = false;
-      continue;
-    }
-    if (c === '"' || c === "'") {
-      inString = true;
-      quote = c;
-      continue;
-    }
-    if (c === "{") depth++;
-    else if (c === "}") {
-      depth--;
-      if (depth === 0) return i;
-    }
-  }
-  return -1;
-}
-
-function tryParseAnswerCard(message: string): AnswerCard | null {
-  if (!message || !message.trim()) return null;
-  let raw = message.trim();
-  if (raw.startsWith("```")) {
-    const lines = raw.split("\n");
-    if (lines[0].startsWith("```")) lines.shift();
-    if (lines.length > 0 && lines[lines.length - 1].trim() === "```") lines.pop();
-    raw = lines.join("\n").trim();
-  }
-  const parseOne = (str: string): AnswerCard | null => {
-    try {
-      const data = JSON.parse(str) as Record<string, unknown>;
-      if (data.mode !== "FACTUAL" && data.mode !== "CANONICAL" && data.mode !== "BLENDED" && data.mode !== "RECITAL") return null;
-      if (typeof data.direct_answer !== "string") return null;
-      // RECITAL mode: sections optional, recital.verbatim required
-      if (data.mode === "RECITAL") {
-        const rec = data.recital as Record<string, unknown> | undefined;
-        if (!rec || typeof rec.verbatim !== "string" || !rec.verbatim.trim()) return null;
-        return {
-          mode: "RECITAL",
-          direct_answer: data.direct_answer as string,
-          sections: [],
-          recital: {
-            verbatim: rec.verbatim as string,
-            document_id: typeof rec.document_id === "string" ? rec.document_id : undefined,
-            section: typeof rec.section === "string" ? rec.section : undefined,
-          },
-        };
-      }
-      if (!Array.isArray(data.sections)) return null;
-      const rawSections = (data.sections as Array<{ intent?: unknown; label?: string; bullets?: string[] }>).slice(0, MAX_SECTIONS);
-      const VALID_FORMATS: SectionFormat[] = ["bullets", "table", "steps", "stats", "bars", "conditions"];
-      const sections: AnswerCardSection[] = (rawSections as Array<Record<string, unknown>>).map((sec) => ({
-        intent: isSectionIntent(sec.intent) ? sec.intent as SectionIntent : "process",
-        label: typeof sec.label === "string" ? sec.label : "",
-        format: VALID_FORMATS.includes(sec.format as SectionFormat) ? sec.format as SectionFormat : "bullets",
-        bullets: Array.isArray(sec.bullets) ? sec.bullets as string[] : [],
-        data: sec.data && typeof sec.data === "object" ? sec.data as SectionData : undefined,
-      }));
-      return {
-        mode: data.mode as AnswerCard["mode"],
-        direct_answer: data.direct_answer as string,
-        sections,
-        required_variables: Array.isArray(data.required_variables) ? (data.required_variables as string[]) : undefined,
-        confidence_note: typeof data.confidence_note === "string" ? data.confidence_note : undefined,
-        citations: Array.isArray(data.citations) ? (data.citations as AnswerCard["citations"]) : undefined,
-        followups: Array.isArray(data.followups) ? (data.followups as AnswerCard["followups"]) : undefined,
-      };
-    } catch {
-      return null;
-    }
-  };
-  if (raw.startsWith("{")) {
-    const card = parseOne(raw);
-    if (card) return card;
-    const close = findMatchingCloseBrace(raw, 0);
-    if (close !== -1) {
-      const card2 = parseOne(raw.slice(0, close + 1));
-      if (card2) return card2;
-    }
-    const fixed = raw.replace(/\}\]\}\],/g, "}],").replace(/\}\]\},/g, "}],");
-    if (fixed !== raw) {
-      const card3 = parseOne(fixed);
-      if (card3) return card3;
-    }
-  }
-  const modeRe = /["']mode["']\s*:\s*["'](FACTUAL|CANONICAL|BLENDED|RECITAL)["']/;
-  const m = raw.match(modeRe);
-  if (m) {
-    const idx = raw.indexOf(m[0]);
-    const start = raw.lastIndexOf("{", idx);
-    if (start !== -1) {
-      const end = findMatchingCloseBrace(raw, start);
-      if (end !== -1) {
-        const card = parseOne(raw.slice(start, end + 1));
-        if (card) return card;
-      }
-    }
-  }
-  return null;
-}
-
-function splitSectionsByVisibility(
-  sections: AnswerCardSection[],
-  mode: AnswerCard["mode"]
-): { visible: AnswerCardSection[]; hidden: AnswerCardSection[] } {
-  const all = sections.slice(0, MAX_SECTIONS);
-  if (mode === "FACTUAL") return { visible: [], hidden: all };
-  if (mode === "CANONICAL") return { visible: all, hidden: [] };
-  // BLENDED: surface requirements, process, and definitions immediately.
-  // Only exceptions and references collapse — they're supplementary.
-  const visibleIntents = new Set(["definitions", "requirements", "process"]);
-  const visible = all.filter((s) => visibleIntents.has(s.intent ?? "process"));
-  const hidden = all.filter((s) => !visibleIntents.has(s.intent ?? "process"));
-  return { visible, hidden };
-}
 
 function _renderSectionBody(sec: AnswerCardSection, body: HTMLElement): void {
   const fmt = sec.format ?? "bullets";
@@ -2355,7 +2187,8 @@ function renderAnswerCard(
   const wrap = document.createElement("div");
   wrap.className =
     "message message--assistant answer-card answer-card--" +
-    card.mode.toLowerCase() +
+    // v2 cards carry no mode → a stable "v2" modifier class (legacy keeps factual/canonical/blended/recital).
+    (card.mode ? card.mode.toLowerCase() : "v2") +
     (isError ? " message--error" : "");
 
   const bubble = document.createElement("div");
