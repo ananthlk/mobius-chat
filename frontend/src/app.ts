@@ -712,6 +712,8 @@ import {
   splitSectionsByVisibility,
 } from "./answer-card";
 import type { AnswerCard, AnswerCardSection } from "./answer-card";
+// §1.4 tabbed-bubble field→tab map + §2.1 additive-merge contract (unit-tested via vitest).
+import { TAB_ORDER, type TabKey } from "./card-render-model";
 
 const API_BASE =
   typeof window !== "undefined" &&
@@ -2520,11 +2522,23 @@ function renderAnswerCard(
       });
       return btn;
     };
-    tabBar.appendChild(mkTab("Summary", "summary", undefined, true));
-    tabBar.appendChild(mkTab("Citations", "citations", (card.citations ?? []).length, false));
-    tabBar.appendChild(mkTab("Corrections", "corrections", _corrections.length, false));
-    tabBar.appendChild(mkTab("Follow-up", "next-steps", _nextStepQuestions.length, false));
-    tabBar.appendChild(mkTab("Tasks", "tasks", _nextStepTasks.length, false));
+    // Tab set + order come from the render model (single source of truth, §1.4). Iterating
+    // TAB_ORDER keeps the bar consistent with the field→tab map; the Diagnostics slot (tab 6)
+    // is reserved here and injected by the admin/QA path when present.
+    const TAB_DOM: Partial<Record<TabKey, { label: string; panelKey: string; count: number | undefined }>> = {
+      "summary": { label: "Summary", panelKey: "summary", count: undefined },
+      "citations": { label: "Citations", panelKey: "citations", count: (card.citations ?? []).length },
+      "corrections": { label: "Corrections", panelKey: "corrections", count: _corrections.length },
+      "follow-up": { label: "Follow-up", panelKey: "next-steps", count: _nextStepQuestions.length },
+      "tasks": { label: "Tasks", panelKey: "tasks", count: _nextStepTasks.length },
+    };
+    let firstTab = true;
+    for (const tab of TAB_ORDER) {
+      const dom = TAB_DOM[tab];
+      if (!dom) continue; // diagnostics: no static DOM here (admin path injects into its TAB_ORDER slot)
+      tabBar.appendChild(mkTab(dom.label, dom.panelKey, dom.count, firstTab));
+      firstTab = false;
+    }
     bubble.appendChild(tabBar);
   }
 
