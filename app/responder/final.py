@@ -411,8 +411,12 @@ def format_response(
                     )
                     if _rc and _rc.system_prompt.strip():
                         prompt_system = _rc.system_prompt
+                        # FULL hash logged (not truncated) — this line is the display copy of
+                        # composition_hash, the real value stored/compared is always full-sha256
+                        # (prompt_blocks.py._hash); a prior truncated display copy here was
+                        # mistaken for a storage regression during Tech Health's spot-check.
                         logger.info("[integrator] v2 composition prompt module=%s hash=%s",
-                                    _mk, _rc.composition_hash[:16])
+                                    _mk, _rc.composition_hash)
             except Exception as _e:
                 logger.warning("[integrator] composition resolve failed, using hardcoded: %s", _e)
         # 2026-05-06: integrator/consolidator is the user-facing voice —
