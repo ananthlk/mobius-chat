@@ -40,6 +40,39 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Final-round self-report instruction (2026-07-30, Ananth's framing): react's
+# last round is a distinct prompt "mode" — the model knows no further rounds
+# follow, so instead of a generic honest-escalation string bolted on after
+# the loop exits, the model self-reports its own terminal state as part of
+# its normal JSON output for that round. Context-message-only (like
+# round_directive/is_guidance_round) — deliberately NOT a system-prompt
+# block, staying inside Phase A's existing boundary that the 12-section
+# context message is Python-built, not DB-composed. Read at the exhausted-
+# iterations fallback below; fail-soft if the model doesn't comply (falls
+# back to the pre-existing generic string, zero regression risk).
+_REACT_FINAL_ROUND_INSTRUCTION = (
+    "This is your FINAL round — there is no round after this one, so do NOT "
+    "request another tool call even if you think one would help.\n"
+    "If you can fully answer: respond normally (is_complete: true, answer, "
+    "sources, confidence).\n"
+    "If you CANNOT fully answer: set is_complete: false, tool: null, and "
+    "ALSO include these three fields so the user gets an honest, specific "
+    "explanation instead of a generic refusal:\n"
+    "  \"unfinished_reason\": one of \"need_more_time\" (you have a "
+    "promising lead but ran out of rounds — more searching would likely "
+    "help), \"need_more_info\" (you're missing a specific fact, document, "
+    "or clarification only the user can supply), or \"no_path_forward\" "
+    "(you've exhausted the available tools/angles and the information is "
+    "likely not reachable this way),\n"
+    "  \"unfinished_summary\": 1-2 sentences on what you checked and what, "
+    "if anything, you found — specific to this question, not generic,\n"
+    "  \"unblock_ask\" (only when unfinished_reason is \"need_more_info\"): "
+    "the SPECIFIC question or piece of information that would let you "
+    "continue — concrete (e.g. \"the exact plan name\", \"a link to their "
+    "provider manual\", \"the specific service date\"), never generic "
+    "(\"more details\")."
+)
+
 import httpx
 
 from app.communication.plan_display import emit_jurisdiction_context, jurisdiction_summary
@@ -2254,6 +2287,13 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 round_n=rn, max_rounds=max_it, elapsed_s=_pp_elapsed_s,
                 soft_target_s=_pp_contract.soft_target_s, directive=_pp_pre_directive, reason=_pp_pre_reason,
             )
+        # Final-round self-report instruction (see constant docstring above).
+        # rn==max_it is the actual last round even when Product Promise has
+        # grown max_it mid-turn via "extend" — max_it already reflects the
+        # new ceiling by the time this round runs, so this fires on the
+        # correct (possibly-extended) final round, not a stale one.
+        if rn == max_it:
+            reasoning_context = reasoning_context + "\n\n" + _REACT_FINAL_ROUND_INSTRUCTION
         # system_context (2026-04-22): when Round 0 fell through to the
         # tool loop (NEEDS_TOOLS sentinel), surface the caller-supplied
         # verified data to every subsequent reasoning round. Tools can
@@ -2766,6 +2806,20 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 )
                 return
 
+        # Final-round self-report (see _REACT_FINAL_ROUND_INSTRUCTION): the
+        # model was told NOT to request another tool call this round. If it
+        # complied (tool is falsy) and reported unfinished_reason, don't let
+        # the block below default it to `tool or "search_corpus"` — that
+        # would re-run the SAME call as a prior round (empty inputs, same
+        # tool), which the retry-guard's duplicate-signature check then
+        # blocks and finalizes through ITS OWN summary path, never reaching
+        # the exhausted-iterations fallback below that actually reads
+        # unfinished_reason/unfinished_summary/unblock_ask. Skip dispatch
+        # entirely and let the loop exhaust naturally — `decision` (holding
+        # these fields) is exactly what the post-loop fallback reads.
+        if not tool and decision.get("unfinished_reason"):
+            continue
+
         # Phase 0.7: block repeat call if (tool, inputs) already failed and
         # no new evidence has come in since.
         blocked_by = retry_guard.should_block(
@@ -2994,9 +3048,43 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         return
 
     emit("  No verified answer after checking materials and web — escalating honestly.")
-    honest = (
+    # Prefer the model's own final-round self-report (see
+    # _REACT_FINAL_ROUND_INSTRUCTION above) over a generic string — `decision`
+    # still holds the last executed round's parsed JSON (for-loops don't
+    # scope in Python; a mid-parse failure sets it to None, guarded below).
+    # Fail-soft: any reason the model didn't comply (older/non-compliant
+    # model, malformed JSON, this round never actually reached the final-
+    # round instruction) falls through to the pre-existing generic string —
+    # zero regression risk on non-compliance.
+    _generic_fallback = (
         "I wasn't able to find a verified answer to this question "
         "after checking our materials and searching the web. "
         "You may want to contact the payer directly or provide a link to their documentation."
     )
+    _uf_reason = decision.get("unfinished_reason") if decision else None
+    if _uf_reason in ("need_more_time", "need_more_info", "no_path_forward"):
+        _uf_summary = (decision.get("unfinished_summary") or "").strip()
+        _uf_unblock = (decision.get("unblock_ask") or "").strip()
+        parts = [_uf_summary] if _uf_summary else []
+        if _uf_reason == "need_more_time" and mode_label != "agentic":
+            parts.append(
+                f"I ran out of rounds in {mode_label} mode before I could "
+                "fully resolve this. Try asking again in **Agentic mode**, "
+                "which allows more time and a deeper search."
+            )
+        elif _uf_reason == "need_more_info" and _uf_unblock:
+            parts.append(f"To help me find this: {_uf_unblock}")
+        else:
+            # no_path_forward, OR need_more_time with no higher mode tier
+            # left to offer, OR need_more_info without a specific enough
+            # ask — genuinely stuck, nothing further react itself can try.
+            parts.append(
+                "I don't have a specific next step to try from here — "
+                "rephrasing the question or providing more specific details "
+                "(exact plan name, code, or a link to their documentation) "
+                "may help."
+            )
+        honest = "\n\n".join(parts) if parts else _generic_fallback
+    else:
+        honest = _generic_fallback
     _finalize_response(ctx, honest, all_sources, RETRIEVAL_SIGNAL_NO_SOURCES, last_tool, emitter)
