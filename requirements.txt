@@ -111,3 +111,8 @@ redis>=5.0.0
 # Beta monolith uses the in-process path so this is currently
 # unused-at-runtime but kept for the post-beta split.
 mcp>=1.0.0
+
+# ── LLMManager (Chat pipeline refactor) ──────────────────────────────
+# PromptManager renders DB-backed prompt templates with Jinja2
+# (autoescape=False — prompts are not HTML). See docs/SPEC_LLM_MANAGER.md §3.1.
+jinja2>=3.1,<4.0
