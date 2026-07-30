@@ -104,22 +104,35 @@ def _react_block_specs() -> list[BlockSpec]:
         # latest active), and prompt_blocks allows multiple active versions
         # (resolver picks highest), unlike prompt_compositions' one-active
         # constraint.
-        BlockSpec("react.output_intent_instruction", "static", "system", react_prompts.REACT_OUTPUT_INTENT_TEXT,
-                  owner="react-agent", version=2),
+        # v3 (2026-07-30): v2 (schema-explicit + concrete example) ALSO
+        # verified reaching Flash correctly (live: composition_id set on the
+        # completing round) but STILL didn't produce the fields. v3 adds an
+        # explicit negative constraint ("...is INVALID and will be
+        # rejected") and — combined with the member reorder below — moves
+        # it to the position closest to generation. One focused, combined
+        # attempt per Chat Architecture's direction before escalating to
+        # model-routing if this also doesn't close the gap.
+        # +"\n" here (not on the shared constant): now that this block is
+        # last-before-user_profile after the v3 reorder, it needs the same
+        # trailing-newline compensation react.critical_rules used to carry
+        # (see the note there) — the legacy f-string's own layout puts this
+        # block last too, contributing an equivalent trailing newline via a
+        # different mechanism. Adding it to the shared REACT_OUTPUT_INTENT_TEXT
+        # constant itself would double it on the legacy path.
+        BlockSpec("react.output_intent_instruction", "static", "system", react_prompts.REACT_OUTPUT_INTENT_TEXT + "\n",
+                  owner="react-agent", version=3),
         BlockSpec("react.format_rules", "static", "system", react_prompts.REACT_FORMAT_RULES_TEXT,
                   owner="react-agent"),
         # is_authority=False for Phase A (Chat Architecture ruling, 2026-07-29 —
         # docs/REACT_PHASE_A_IMPLEMENTATION_PLAN.md §4): marking this authority
         # would make the assembler force it after react.user_profile, inverting
         # today's actual order (critical_rules, then user_profile appended).
-        # +"\n" here (not on the shared REACT_CRITICAL_RULES_TEXT constant): the
-        # legacy f-string's OWN line layout already contributes this trailing
-        # newline via a separate mechanism (see AC-6 parity notes below) — adding
-        # it to the shared constant would double it on the legacy path. Verified
-        # via scratchpad/parity_check_composition.py: this makes the block-join
-        # output byte-identical whether critical_rules is the last kept block
-        # (no user_profile) or followed by react.user_profile.
-        BlockSpec("react.critical_rules", "static", "system", react_prompts.REACT_CRITICAL_RULES_TEXT + "\n",
+        # No trailing "+\n" here (v3, 2026-07-30): that compensation moved to
+        # react.output_intent_instruction below, since critical_rules is no
+        # longer the last-before-user_profile block after the v3 reorder —
+        # keeping it here would double the newline at this new boundary
+        # (caught by scratchpad/parity_check_composition.py).
+        BlockSpec("react.critical_rules", "static", "system", react_prompts.REACT_CRITICAL_RULES_TEXT,
                   owner="chat-architecture"),
         # Shared with critic.audit (Chat Architecture ruling, 2026-07-29): one
         # block_key, member of both react_* and critic_audit compositions.
@@ -152,21 +165,36 @@ def _react_block_specs() -> list[BlockSpec]:
 # member-list changes require a new COMPOSITION version too (the member list
 # of an already-validated composition isn't mutated in place; see seed()'s
 # deactivate-then-insert handling below).
-_REACT_TOOLS_MEMBERS_V2 = [
+# v3 (2026-07-30): reordered — output_intent_instruction moved to the END
+# (right before react.user_profile) instead of between response_shape/
+# format_rules. Chat Architecture's diagnosis: v1/v2 text reached Gemini
+# Flash correctly (verified live: composition_id populated, hash matched)
+# but Flash still didn't comply — recency in the prompt may matter more
+# for Flash's instruction-following than for Claude (which the spec was
+# validated against). Reordering a composition's members needs a new
+# COMPOSITION version (member list is fixed per composition_id, unlike a
+# block version bump which floats automatically via pinned_version=NULL).
+# Caveat carried over from v2: this places it second-to-last, immediately
+# before user_profile, in BOTH the legacy and block paths — not
+# absolute-last when a user_profile IS present (splice_user_profile's
+# separate append-last mechanism wasn't restructured for this). Kept
+# consistent across both paths deliberately, for continued cross-path
+# parity verification.
+_REACT_TOOLS_MEMBERS_V3 = [
     "react.identity",
     "react.mode_quality_bar",
     "react.tool_manifest",
     "react.response_shape",
-    "react.output_intent_instruction",
     "react.format_rules",
     "react.critical_rules",
+    "react.output_intent_instruction",
     "react.user_profile",
 ]
 
 COMPOSITIONS: dict[str, dict] = {
-    "react_explore": {"prompt_address": "react.explore", "members": _REACT_TOOLS_MEMBERS_V2, "version": 2},
-    "react_synthesize": {"prompt_address": "react.synthesize", "members": _REACT_TOOLS_MEMBERS_V2, "version": 2},
-    "react_draft": {"prompt_address": "react.draft", "members": _REACT_TOOLS_MEMBERS_V2, "version": 2},
+    "react_explore": {"prompt_address": "react.explore", "members": _REACT_TOOLS_MEMBERS_V3, "version": 3},
+    "react_synthesize": {"prompt_address": "react.synthesize", "members": _REACT_TOOLS_MEMBERS_V3, "version": 3},
+    "react_draft": {"prompt_address": "react.draft", "members": _REACT_TOOLS_MEMBERS_V3, "version": 3},
     "react_no_tools": {"prompt_address": "react.no_tools", "members": ["react.no_tools_body"], "version": 1},
     "critic_audit": {"prompt_address": "critic.audit",
                       "members": ["critic.audit_rules", "react.user_profile"], "version": 1},

@@ -374,6 +374,7 @@ Final answer (have enough evidence to answer now):
 }"""
 
 REACT_OUTPUT_INTENT_TEXT = """REQUIRED when is_complete is true: include "output_intent" and "display_summary" in your JSON response. These are not optional — every final-answer JSON must have both keys.
+A JSON response with is_complete:true that is missing output_intent or display_summary is INVALID and will be rejected. These fields are not optional.
 
 Example of a complete final-answer JSON with both fields populated:
 {"thought": "Found the deadline and drafted it for the team.", "tool": null, "inputs": {}, "is_complete": true, "answer": "...", "sources": [], "confidence": "high", "output_intent": "email", "display_summary": "Dear billing team, the timely filing deadline for Sunshine Health claim reconsiderations is..."}
@@ -495,11 +496,11 @@ def _react_reasoning_system(
 
 {REACT_RESPONSE_SHAPE_TEXT}
 
-{REACT_OUTPUT_INTENT_TEXT}
-
 {REACT_FORMAT_RULES_TEXT}
 
 {critical_rules_rendered}
+
+{REACT_OUTPUT_INTENT_TEXT}
 """
     # 2026-05-06 — splice mobius-user profile (rendered_prompt) so the
     # planner / ReAct picks tools and frames intermediate thinking in
