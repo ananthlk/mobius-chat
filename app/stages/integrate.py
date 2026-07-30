@@ -537,6 +537,8 @@ def run_integrate(
         previous_thread_summary=getattr(ctx, "previous_thread_summary", None),
         user_profile=getattr(ctx, "user_profile", None),
         react_draft=getattr(ctx, "react_draft", None),
+        display_summary=getattr(ctx, "display_summary", None),
+        output_intent=getattr(ctx, "output_intent", None),
         source_texts=source_texts or None,
         task_context=_task_ctx,
         instant_rag_context=_instant_rag_ctx,

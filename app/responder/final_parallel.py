@@ -111,6 +111,8 @@ def format_response_parallel(
     instant_rag_context: dict | None = None,
     recital_context: dict | None = None,
     tool_section_hints: list[dict] | None = None,
+    display_summary: str | None = None,
+    output_intent: str | None = None,
 ) -> tuple[str, list[LLMUsageDict]]:
     """Run 3 parallel LLM calls and merge into a single AnswerCard JSON.
 
@@ -142,6 +144,8 @@ def format_response_parallel(
         instant_rag_context=instant_rag_context,
         recital_context=recital_context,
         tool_section_hints=tool_section_hints,
+        display_summary=display_summary,
+        output_intent=output_intent,
     )
 
     canonical_score = blended_canonical_score(plan)
