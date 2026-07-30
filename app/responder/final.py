@@ -73,8 +73,6 @@ def _build_consolidator_input_json(
     instant_rag_context: dict | None = None,
     recital_context: dict | None = None,
     tool_section_hints: list[dict] | None = None,
-    display_summary: str | None = None,
-    output_intent: str | None = None,
 ) -> str:
     """Build JSON payload for consolidator: user_message, subquestions, answers, retrieval_metadata, sources_summary, jurisdiction_summary, user_provided_context, previous_thread_summary."""
     _subs = getattr(plan, "subquestions", None) or []
@@ -113,19 +111,6 @@ def _build_consolidator_input_json(
         # are inherently long and a 6000-char cut produces truncated mid-sentence output.
         _draft_cap = 16000 if tool_section_hints else 6000
         payload["react_draft"] = react_draft.strip()[:_draft_cap]
-    # ReAct final-round classification (2026-07-30): the model's own read of what
-    # kind of deliverable this answer is, plus a display-ready summary distinct
-    # from the rough react_draft bullets. Additive — the enricher's direct_answer
-    # rule seeds from display_summary when present, still corrects it against
-    # source_texts (v4 block); output_intent routes into surface/channel logic
-    # downstream, not consumed here. Absent on ~12 of 15 call sites (only the
-    # is_complete round ever runs the classification instruction) — omit cleanly.
-    if display_summary and display_summary.strip():
-        payload["display_summary"] = display_summary.strip()
-    if output_intent and output_intent.strip():
-        payload["output_intent"] = output_intent.strip()
-    logger.info("[consolidator-input] output_intent=%r display_summary_present=%s",
-                output_intent, bool(display_summary and display_summary.strip()))
     if source_texts:
         payload["source_texts"] = source_texts
     if task_context:
@@ -355,8 +340,6 @@ def format_response(
     instant_rag_context: dict | None = None,
     recital_context: dict | None = None,
     tool_section_hints: list[dict] | None = None,
-    display_summary: str | None = None,
-    output_intent: str | None = None,
 ) -> tuple[str, LLMUsageDict | None]:
     """Turn plan + answers into one chat-friendly message via llm_manager (integrator or integrator_roster).
     On LLM failure, returns fallback and None usage."""
@@ -387,8 +370,6 @@ def format_response(
             instant_rag_context=instant_rag_context,
             recital_context=recital_context,
             tool_section_hints=tool_section_hints,
-            display_summary=display_summary,
-            output_intent=output_intent,
         )
         canonical_score = blended_canonical_score(plan)
         consolidator_type = choose_consolidator_type(

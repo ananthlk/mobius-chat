@@ -62,6 +62,15 @@ _ANSWER_CARD_ENVELOPE_KEYS = (
     "recital",
     # next_questions_for_user — suggested follow-up prompts for the user.
     "next_questions_for_user",
+    # 2026-07-30: the enricher's own classification of what kind of deliverable
+    # this answer is (read/report/email/sms/emr/appeal/payor_report) + a
+    # display-ready summary distinct from direct_answer. Moved here from a
+    # ReAct-side attempt (Flash wouldn't comply via prompt instruction) — the
+    # enricher runs a stronger model and already has full sources, so produces
+    # both fields itself now. Without these two keys, they'd be silently
+    # dropped before reaching the client (this allowlist is a positive filter).
+    "output_intent",
+    "display_summary",
 )
 
 
@@ -537,8 +546,6 @@ def run_integrate(
         previous_thread_summary=getattr(ctx, "previous_thread_summary", None),
         user_profile=getattr(ctx, "user_profile", None),
         react_draft=getattr(ctx, "react_draft", None),
-        display_summary=getattr(ctx, "display_summary", None),
-        output_intent=getattr(ctx, "output_intent", None),
         source_texts=source_texts or None,
         task_context=_task_ctx,
         instant_rag_context=_instant_rag_ctx,
