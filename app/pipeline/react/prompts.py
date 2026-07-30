@@ -368,31 +368,8 @@ Final answer (have enough evidence to answer now):
   "is_complete": true,
   "answer": "<structured answer — see FORMAT RULES below>",
   "sources": [],
-  "confidence": "high",
-  "output_intent": "read | report | email | sms | emr | appeal | payor_report",
-  "display_summary": "<a clean, ready-to-show deliverable — NOT a repeat of 'answer'>"
+  "confidence": "high"
 }"""
-
-REACT_OUTPUT_INTENT_TEXT = """REQUIRED when is_complete is true: include "output_intent" and "display_summary" in your JSON response. These are not optional — every final-answer JSON must have both keys.
-A JSON response with is_complete:true that is missing output_intent or display_summary is INVALID and will be rejected. These fields are not optional.
-
-Example of a complete final-answer JSON with both fields populated:
-{"thought": "Found the deadline and drafted it for the team.", "tool": null, "inputs": {}, "is_complete": true, "answer": "...", "sources": [], "confidence": "high", "output_intent": "email", "display_summary": "Dear billing team, the timely filing deadline for Sunshine Health claim reconsiderations is..."}
-
-OUTPUT_INTENT — classify based on the question's own nature, not a guess:
-- "read" (default): the user is asking to understand something, in-chat.
-- "report": the user wants something exportable/shareable.
-- "email": the question implies sending this to someone else.
-- "sms": very short, single-fact lookup where a text-length answer is natural.
-- "emr": clinical/patient-record-adjacent phrasing suggesting it belongs in a chart note.
-- "appeal": the question is specifically about drafting/understanding an appeal or dispute.
-- "payor_report": the question is about payer-facing documentation/compliance reporting.
-If genuinely ambiguous, use "read" — do not force a more specific intent without a real signal.
-
-DISPLAY_SUMMARY — write this as if handing the user the finished answer directly:
-plain language, verdict up front. For "email" phrase it as something ready to paste (with a
-greeting/sign-off placeholder if appropriate); for "sms" keep it to 1-2 sentences; for "appeal"
-frame it as appeal-letter-ready language."""
 
 REACT_FORMAT_RULES_TEXT = """FORMAT RULES for the "answer" field (structural defaults — USER PREFERENCES appended at the end of this prompt take FINAL AUTHORITY, including over length):
 • Start with ONE bold sentence that gives the direct bottom line: **The answer here.**
@@ -499,8 +476,6 @@ def _react_reasoning_system(
 {REACT_FORMAT_RULES_TEXT}
 
 {critical_rules_rendered}
-
-{REACT_OUTPUT_INTENT_TEXT}
 """
     # 2026-05-06 — splice mobius-user profile (rendered_prompt) so the
     # planner / ReAct picks tools and frames intermediate thinking in

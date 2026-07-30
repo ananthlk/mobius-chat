@@ -82,57 +82,38 @@ def _react_block_specs() -> list[BlockSpec]:
                   owner="react-agent"),
         BlockSpec("react.tool_manifest", "derived", "system", "{{ tool_manifest_text }}",
                   owner="react-agent"),
-        # v2 (2026-07-30): content changed (added output_intent/display_summary
-        # fields to the final-answer example, per SPEC_REACT_OUTPUT_INTENT.md +
-        # Chat Architecture ruling) — prompt_blocks bodies are append-only, so
-        # this is a new version, not an edit to v1.
+        # v3 (2026-07-30): v1's original content (no output_intent/
+        # display_summary in the example). v2 briefly added those fields for
+        # SPEC_REACT_OUTPUT_INTENT.md; REVERTED per Chat Architecture's
+        # 2026-07-30 ruling — classification moves to the enricher (LLM
+        # Agent, running on Claude) instead of react (Gemini Flash proved
+        # non-compliant across 3 verified prompt-tightening attempts; see
+        # docs/REACT_PHASE_A_IMPLEMENTATION_PLAN.md). v3 is a NEW version
+        # matching v1's content exactly (bodies are append-only — can't
+        # un-write v2), not a reactivation of v1 itself, to keep the
+        # version history forward-only and auditable.
         BlockSpec("react.response_shape", "static", "system", react_prompts.REACT_RESPONSE_SHAPE_TEXT,
-                  owner="react-agent", version=2),
-        # New block (2026-07-30, SPEC_REACT_OUTPUT_INTENT.md): shared member of
-        # ALL THREE react_explore/synthesize/draft (not draft-only — is_complete
-        # fires retrospectively at any round, corrected ruling from Chat
-        # Architecture 2026-07-30 after an initial "draft only" ruling proved
-        # wrong against react_agent_role()'s actual mechanics).
-        # v2 (2026-07-30): v1 resolved + reached the model correctly (verified
-        # live: composition_id populated, hash matched) but Gemini Flash never
-        # produced output_intent/display_summary — proved empirically (a live
-        # test showed composition_id set, output_intent still None). Chat
-        # Architecture's ruling: prose wasn't schema-explicit enough for
-        # Flash. v2 leads with a REQUIRED directive + a concrete populated
-        # JSON example instead of only descriptive prose. No composition
-        # version bump needed — members use pinned_version=NULL (float to
-        # latest active), and prompt_blocks allows multiple active versions
-        # (resolver picks highest), unlike prompt_compositions' one-active
-        # constraint.
-        # v3 (2026-07-30): v2 (schema-explicit + concrete example) ALSO
-        # verified reaching Flash correctly (live: composition_id set on the
-        # completing round) but STILL didn't produce the fields. v3 adds an
-        # explicit negative constraint ("...is INVALID and will be
-        # rejected") and — combined with the member reorder below — moves
-        # it to the position closest to generation. One focused, combined
-        # attempt per Chat Architecture's direction before escalating to
-        # model-routing if this also doesn't close the gap.
-        # +"\n" here (not on the shared constant): now that this block is
-        # last-before-user_profile after the v3 reorder, it needs the same
-        # trailing-newline compensation react.critical_rules used to carry
-        # (see the note there) — the legacy f-string's own layout puts this
-        # block last too, contributing an equivalent trailing newline via a
-        # different mechanism. Adding it to the shared REACT_OUTPUT_INTENT_TEXT
-        # constant itself would double it on the legacy path.
-        BlockSpec("react.output_intent_instruction", "static", "system", react_prompts.REACT_OUTPUT_INTENT_TEXT + "\n",
                   owner="react-agent", version=3),
+        # react.output_intent_instruction (v1/v2/v3) REMOVED from the
+        # composition (2026-07-30 revert, see react.response_shape's note
+        # above) — no longer a member of any active composition. Its
+        # BlockSpec is deleted along with REACT_OUTPUT_INTENT_TEXT (the
+        # constant it referenced) rather than left as dead/unreferenced
+        # code; git history has the full text if this needs reviving.
         BlockSpec("react.format_rules", "static", "system", react_prompts.REACT_FORMAT_RULES_TEXT,
                   owner="react-agent"),
         # is_authority=False for Phase A (Chat Architecture ruling, 2026-07-29 —
         # docs/REACT_PHASE_A_IMPLEMENTATION_PLAN.md §4): marking this authority
         # would make the assembler force it after react.user_profile, inverting
         # today's actual order (critical_rules, then user_profile appended).
-        # No trailing "+\n" here (v3, 2026-07-30): that compensation moved to
-        # react.output_intent_instruction below, since critical_rules is no
-        # longer the last-before-user_profile block after the v3 reorder —
-        # keeping it here would double the newline at this new boundary
-        # (caught by scratchpad/parity_check_composition.py).
-        BlockSpec("react.critical_rules", "static", "system", react_prompts.REACT_CRITICAL_RULES_TEXT,
+        # +"\n" here (not on the shared constant): the legacy f-string's OWN
+        # line layout already contributes this trailing newline via a
+        # separate mechanism — adding it to the shared constant would double
+        # it on the legacy path. Restored 2026-07-30 (was moved to
+        # react.output_intent_instruction for v3's reorder; that block is
+        # now removed, so critical_rules is last-before-user_profile again,
+        # same as the original Phase A layout).
+        BlockSpec("react.critical_rules", "static", "system", react_prompts.REACT_CRITICAL_RULES_TEXT + "\n",
                   owner="chat-architecture"),
         # Shared with critic.audit (Chat Architecture ruling, 2026-07-29): one
         # block_key, member of both react_* and critic_audit compositions.
@@ -161,40 +142,28 @@ def _react_block_specs() -> list[BlockSpec]:
 # llm_calls.composition_id, not by matching strings (different tables,
 # different meanings, confirmed by Chat Architecture + verified against
 # prompt_manager.py's actual resolver code).
-# v2 (2026-07-30): added react.output_intent_instruction as a shared member —
-# member-list changes require a new COMPOSITION version too (the member list
-# of an already-validated composition isn't mutated in place; see seed()'s
-# deactivate-then-insert handling below).
-# v3 (2026-07-30): reordered — output_intent_instruction moved to the END
-# (right before react.user_profile) instead of between response_shape/
-# format_rules. Chat Architecture's diagnosis: v1/v2 text reached Gemini
-# Flash correctly (verified live: composition_id populated, hash matched)
-# but Flash still didn't comply — recency in the prompt may matter more
-# for Flash's instruction-following than for Claude (which the spec was
-# validated against). Reordering a composition's members needs a new
-# COMPOSITION version (member list is fixed per composition_id, unlike a
-# block version bump which floats automatically via pinned_version=NULL).
-# Caveat carried over from v2: this places it second-to-last, immediately
-# before user_profile, in BOTH the legacy and block paths — not
-# absolute-last when a user_profile IS present (splice_user_profile's
-# separate append-last mechanism wasn't restructured for this). Kept
-# consistent across both paths deliberately, for continued cross-path
-# parity verification.
-_REACT_TOOLS_MEMBERS_V3 = [
+# v2/v3 (2026-07-30): added + repositioned react.output_intent_instruction
+# for SPEC_REACT_OUTPUT_INTENT.md (see git history / the doc for the full
+# attempt record — 3 verified prompt-tightening iterations, none got Gemini
+# Flash to comply).
+# v4 (2026-07-30): REVERTED per Chat Architecture ruling — classification
+# moves to the enricher (Claude) instead. Matches v1's original 7-member
+# list exactly (no output_intent_instruction), as a new forward version
+# (member lists are fixed per composition_id, can't be edited in place).
+_REACT_TOOLS_MEMBERS_V4 = [
     "react.identity",
     "react.mode_quality_bar",
     "react.tool_manifest",
     "react.response_shape",
     "react.format_rules",
     "react.critical_rules",
-    "react.output_intent_instruction",
     "react.user_profile",
 ]
 
 COMPOSITIONS: dict[str, dict] = {
-    "react_explore": {"prompt_address": "react.explore", "members": _REACT_TOOLS_MEMBERS_V3, "version": 3},
-    "react_synthesize": {"prompt_address": "react.synthesize", "members": _REACT_TOOLS_MEMBERS_V3, "version": 3},
-    "react_draft": {"prompt_address": "react.draft", "members": _REACT_TOOLS_MEMBERS_V3, "version": 3},
+    "react_explore": {"prompt_address": "react.explore", "members": _REACT_TOOLS_MEMBERS_V4, "version": 4},
+    "react_synthesize": {"prompt_address": "react.synthesize", "members": _REACT_TOOLS_MEMBERS_V4, "version": 4},
+    "react_draft": {"prompt_address": "react.draft", "members": _REACT_TOOLS_MEMBERS_V4, "version": 4},
     "react_no_tools": {"prompt_address": "react.no_tools", "members": ["react.no_tools_body"], "version": 1},
     "critic_audit": {"prompt_address": "critic.audit",
                       "members": ["critic.audit_rules", "react.user_profile"], "version": 1},

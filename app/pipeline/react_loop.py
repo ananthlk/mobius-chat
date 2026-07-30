@@ -1744,31 +1744,13 @@ def _finalize_response(
     final_signal: str,
     last_tool: str | None,
     emitter=None,
-    *,
-    output_intent: str | None = None,
-    display_summary: str | None = None,
 ) -> None:
-    """Map ReAct output to ctx fields so run_integrate() works unchanged.
-
-    ``output_intent``/``display_summary`` (SPEC_REACT_OUTPUT_INTENT.md,
-    2026-07-30) are keyword-only with a None default deliberately: only the
-    3 call sites that finalize a real LLM completion decision (the one that
-    went through the output-intent classification instruction) have real
-    values to pass. The other ~12 call sites (golden-answer tool exit, fast-
-    mode exit, task/no-tools mode, exhausted-iterations fallback, honest-
-    escalation) never saw that instruction and correctly leave these None —
-    not a gap, since there's no classification to thread from those paths.
-    """
+    """Map ReAct output to ctx fields so run_integrate() works unchanged."""
     _sync_extra_out_to_context(ctx, emitter)
     ctx.plan = _make_react_plan(ctx)
     ctx.answers = [final_answer]
     ctx.usages = getattr(ctx, "usages", []) or []
     ctx.final_message = final_answer
-    # Set on every path (default None) so callers can rely on plain
-    # attribute access; only the 3 output-intent-classifying call sites
-    # (see the docstring above) pass a real value.
-    ctx.output_intent = output_intent
-    ctx.display_summary = display_summary
     # Phase 0.8: dedupe sources by (document_id, page_number) so the citation
     # list doesn't explode when multiple rounds cite the same document.
     ctx.sources = _dedupe_sources(all_sources) if all_sources else []
@@ -2329,12 +2311,6 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
 
         if is_complete or not tool:
             answer = decision.get("answer", "")
-            # SPEC_REACT_OUTPUT_INTENT.md (2026-07-30): only produced when the
-            # model actually completes via the react.output_intent_instruction
-            # block — absent/None on modes that never saw that instruction
-            # (task/no-tools) or on non-LLM-classified finalize paths.
-            output_intent = decision.get("output_intent")
-            display_summary = decision.get("display_summary")
             # Product-feedback (docs/feedback-agent-spec.md §6): honor the
             # planner's offer_feedback ONLY when a cadence signal was actually
             # injected this turn — the eligibility ceiling lives in code, so the
@@ -2386,7 +2362,6 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                         ).to_dict())
                     _finalize_response(
                         ctx, answer, all_sources, final_signal, last_tool, emitter,
-                        output_intent=output_intent, display_summary=display_summary,
                     )
                     return
 
@@ -2420,7 +2395,6 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                         )
                         _finalize_response(
                             ctx, answer, all_sources, final_signal, last_tool, emitter,
-                            output_intent=output_intent, display_summary=display_summary,
                         )
                         return
 
@@ -2583,7 +2557,6 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     final_signal if final_signal != RETRIEVAL_SIGNAL_NO_SOURCES else "corpus_only",
                     last_tool,
                     emitter,
-                    output_intent=output_intent, display_summary=display_summary,
                 )
                 return
             # Empty answer but claimed complete — fall through to next iteration or exhaust
