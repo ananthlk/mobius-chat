@@ -89,6 +89,8 @@ def build_record(
     phi_detected: bool = False,
     phi_scrubbed: bool = False,
     phi_types: str | None = None,
+    composition_id: int | None = None,
+    composition_hash: str | None = None,
 ) -> dict[str, Any]:
     """Build llm_calls row (prompt stored as hash only). Includes call_id and ts."""
     usage = usage or {}
@@ -132,6 +134,8 @@ def build_record(
         "prompt_hash": prompt_hash,
         "synced_to_bq": False,
         "synced_at": None,
+        "composition_id": composition_id,
+        "composition_hash": composition_hash,
     }
 
 
@@ -151,11 +155,12 @@ async def _write_async(record: dict[str, Any]) -> None:
                     success, is_rate_limit, is_fallback, fallback_from, completion_valid, error_type,
                     latency_ms, input_tokens, output_tokens, cost_usd,
                     quality_score, quality_source, phi_detected, phi_scrubbed, phi_types,
-                    prompt_len_chars, output_len_chars, prompt_hash, synced_to_bq, synced_at
+                    prompt_len_chars, output_len_chars, prompt_hash, synced_to_bq, synced_at,
+                    composition_id, composition_hash
                 ) VALUES (
                     $1, $2, $3, $4::timestamptz, $5, $6, $7, $8, $9, $10, $11, $12,
                     $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27,
-                    $28, $29, $30, $31, $32
+                    $28, $29, $30, $31, $32, $33, $34
                 )
                 """,
                 record["call_id"],
@@ -190,6 +195,8 @@ async def _write_async(record: dict[str, Any]) -> None:
                 record["prompt_hash"],
                 record["synced_to_bq"],
                 record["synced_at"],
+                record["composition_id"],
+                record["composition_hash"],
             )
     except Exception as e:
         logger.warning("llm_analytics write failed: %s", e)

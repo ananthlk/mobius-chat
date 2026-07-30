@@ -84,9 +84,18 @@ async def generate(
     phi_detected: bool = False,
     complexity: str | None = None,
     mode: str | None = None,
+    composition_id: int | None = None,
+    composition_hash: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """
     Call LLM via dynamic model router, record to llm_calls.
+
+    ``composition_id``/``composition_hash``: when the caller resolved its system
+    prompt from a v2 DB-backed composition (PromptManager.resolve_composition),
+    pass them through so the llm_calls row is attributable to the exact block
+    manifest that built the prompt (fleet-wide gap found 2026-07-27: the columns
+    existed since mig 053 but nothing ever wrote to them — every v2-composed call
+    was logged as if it came from nowhere). None for calls not on the v2 path.
     Returns (text, usage_dict).
     usage_dict includes: model, provider, latency_ms, latency_s, stage.
 
@@ -236,6 +245,8 @@ async def generate(
             complexity=complexity,
             phi_detected=phi_detected,
             error_type=error_type,
+            composition_id=composition_id,
+            composition_hash=composition_hash,
         )
         # Await write so asyncio.run(generate_sync(...)) finishes DB insert before closing the loop
         # (write_record(..., create_task) would leave work pending and lose the row).
@@ -298,6 +309,8 @@ def generate_sync(
     phi_detected: bool = False,
     complexity: str | None = None,
     mode: str | None = None,
+    composition_id: int | None = None,
+    composition_hash: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Sync wrapper for scripts/eval (creates one event loop).
 
@@ -320,6 +333,8 @@ def generate_sync(
                 phi_detected=phi_detected,
                 complexity=complexity,
                 mode=mode,
+                composition_id=composition_id,
+                composition_hash=composition_hash,
             )
         )
 

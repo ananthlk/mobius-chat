@@ -20,6 +20,7 @@ CallManager's CalibrationSnapshot since temperature is ConfigManager's).
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -142,10 +143,17 @@ def resolve_composition_sync(
         try:
             conn.autocommit = True
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                # prompt_address lookup (mig 054), falling back to module_key — decouples
+                # composition lookup from the bandit arm for callers like ReAct whose
+                # module_key/arm varies independently from which composition to run.
+                # Existing rows have prompt_address=NULL, so they only ever match via
+                # module_key (unchanged behavior, no call-site changes needed).
                 cur.execute(
                     "SELECT id, variant_id, composition_hash, status FROM prompt_compositions "
-                    "WHERE module_key=%s AND active=true AND variant_id='default' LIMIT 1",
-                    (module_key,),
+                    "WHERE active=true AND variant_id='default' "
+                    "AND (prompt_address=%s OR module_key=%s) "
+                    "ORDER BY (prompt_address=%s) DESC LIMIT 1",
+                    (module_key, module_key, module_key),
                 )
                 comp = cur.fetchone()
                 if comp is not None:
@@ -168,6 +176,20 @@ def resolve_composition_sync(
 
                     asm = BlockAssembler().assemble(
                         ordered, blocks, conditions=conditions, template_vars=template_vars or {}
+                    )
+                    # Insert-on-first-render into the snapshot registry (spec §6) — makes
+                    # composition_hash DEREFERENCEABLE and is a HARD DEPENDENCY, not just
+                    # nice-to-have: llm_calls.composition_hash FKs to this table, so any
+                    # caller logging composition_hash without this row existing gets a
+                    # constraint violation. (Gap found 2026-07-27: this insert was designed
+                    # in 053 and documented, but never actually implemented — the registry
+                    # had zero rows despite the resolver running in production.)
+                    cur.execute(
+                        "INSERT INTO prompt_composition_snapshots "
+                        "(composition_hash, manifest, module_key, variant_id) "
+                        "VALUES (%s, %s, %s, %s) ON CONFLICT (composition_hash) DO NOTHING",
+                        (asm.composition_hash, json.dumps(list(asm.blocks_used)),
+                         module_key, comp["variant_id"]),
                     )
                     result = RenderedComposition(
                         system_prompt=asm.text, composition_id=comp["id"],
@@ -270,11 +292,15 @@ class PromptManager:
             logger.warning("PromptManager: no PG pool; composition module_key=%s", module_key)
             return None
         async with pool.acquire() as conn:
+            # prompt_address lookup (mig 054), falling back to module_key — see the
+            # matching comment in resolve_composition_sync's SQL for the rationale.
             return await conn.fetchrow(
                 """
                 SELECT id, variant_id, composition_hash, status
                 FROM prompt_compositions
-                WHERE module_key = $1 AND active = true AND variant_id = 'default'
+                WHERE active = true AND variant_id = 'default'
+                  AND (prompt_address = $1 OR module_key = $1)
+                ORDER BY (prompt_address = $1) DESC
                 LIMIT 1
                 """,
                 module_key,
@@ -335,6 +361,9 @@ class PromptManager:
         assembled = BlockAssembler().assemble(
             ordered, blocks, conditions=conditions, template_vars=template_vars
         )
+        await self._upsert_snapshot(
+            assembled.composition_hash, assembled.blocks_used, module_key, comp["variant_id"]
+        )
         return RenderedComposition(
             system_prompt=assembled.text,
             composition_id=comp["id"],
@@ -342,6 +371,26 @@ class PromptManager:
             manifest=assembled.blocks_used,
             variant_id=comp["variant_id"],
         )
+
+    async def _upsert_snapshot(
+        self, composition_hash: str, manifest: tuple, module_key: str, variant_id: str
+    ) -> None:
+        """Insert-on-first-render into prompt_composition_snapshots (spec §6) — a HARD
+        dependency, not decoration: llm_calls.composition_hash FKs to this table, so any
+        caller logging composition_hash without this row existing gets a constraint
+        violation. (Gap found 2026-07-27 — designed in 053, documented, never wired.)"""
+        from app.services.pg_pool import get_pool
+
+        pool = await get_pool()
+        if pool is None:
+            return
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO prompt_composition_snapshots "
+                "(composition_hash, manifest, module_key, variant_id) "
+                "VALUES ($1, $2::jsonb, $3, $4) ON CONFLICT (composition_hash) DO NOTHING",
+                composition_hash, json.dumps(list(manifest)), module_key, variant_id,
+            )
 
     # ── tag-match: exact → partial → default ─────────────────────────────────
 

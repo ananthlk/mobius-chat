@@ -397,6 +397,7 @@ def format_response(
         # above, so live chat is untouched until the flag flips and never breaks on a
         # resolution problem. (LLMManager v2 §5; composition seeded via block_seed.)
         import os as _os
+        _rc = None
         if (_os.environ.get("MOBIUS_PROMPT_SOURCE") or "").strip().lower() == "composition":
             try:
                 from app.services.prompt_manager import resolve_composition_sync
@@ -458,6 +459,8 @@ def format_response(
             thread_id=thread_id,
             phi_detected=phi_detected,
             mode=mode,
+            composition_id=(_rc.composition_id if _rc else None),
+            composition_hash=(_rc.composition_hash if _rc else None),
         )
         text = (text or "").strip()
 
