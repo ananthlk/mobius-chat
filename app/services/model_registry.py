@@ -1950,6 +1950,14 @@ class ModelRouter:
                     logger.warning(
                         "ModelRouter: matview REFRESH failed (reading stale): %s", _re
                     )
+                # variant_id='default' is REQUIRED (migration 052 co-change):
+                # model_performance_by_stage now has variant_id in its grain (one row
+                # per stage/model/variant). Model selection reads the default-prompt
+                # slice — consistent with the §5 mutual-exclusion design (model
+                # exploration happens on default-variant turns; non-default variants
+                # are prompt-A/B turns with the model pinned, which must not feed model
+                # selection). Without this filter, non-default variants would overwrite
+                # per-(stage,model) stats in new_stats below (last variant wins).
                 rows = await conn.fetch("""
                     SELECT
                         stage, model,
@@ -1959,6 +1967,7 @@ class ModelRouter:
                         avg_latency_ms, p95_latency_ms, avg_cost_usd,
                         avg_quality, quality_stddev
                     FROM model_performance_by_stage
+                    WHERE variant_id = 'default'
                 """)
             new_stats: dict[str, dict[str, dict]] = {}
             for row in rows:
