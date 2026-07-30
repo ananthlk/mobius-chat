@@ -93,8 +93,19 @@ def _react_block_specs() -> list[BlockSpec]:
         # fires retrospectively at any round, corrected ruling from Chat
         # Architecture 2026-07-30 after an initial "draft only" ruling proved
         # wrong against react_agent_role()'s actual mechanics).
+        # v2 (2026-07-30): v1 resolved + reached the model correctly (verified
+        # live: composition_id populated, hash matched) but Gemini Flash never
+        # produced output_intent/display_summary — proved empirically (a live
+        # test showed composition_id set, output_intent still None). Chat
+        # Architecture's ruling: prose wasn't schema-explicit enough for
+        # Flash. v2 leads with a REQUIRED directive + a concrete populated
+        # JSON example instead of only descriptive prose. No composition
+        # version bump needed — members use pinned_version=NULL (float to
+        # latest active), and prompt_blocks allows multiple active versions
+        # (resolver picks highest), unlike prompt_compositions' one-active
+        # constraint.
         BlockSpec("react.output_intent_instruction", "static", "system", react_prompts.REACT_OUTPUT_INTENT_TEXT,
-                  owner="react-agent"),
+                  owner="react-agent", version=2),
         BlockSpec("react.format_rules", "static", "system", react_prompts.REACT_FORMAT_RULES_TEXT,
                   owner="react-agent"),
         # is_authority=False for Phase A (Chat Architecture ruling, 2026-07-29 —

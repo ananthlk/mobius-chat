@@ -373,7 +373,12 @@ Final answer (have enough evidence to answer now):
   "display_summary": "<a clean, ready-to-show deliverable — NOT a repeat of 'answer'>"
 }"""
 
-REACT_OUTPUT_INTENT_TEXT = """OUTPUT_INTENT — classify based on the question's own nature, not a guess:
+REACT_OUTPUT_INTENT_TEXT = """REQUIRED when is_complete is true: include "output_intent" and "display_summary" in your JSON response. These are not optional — every final-answer JSON must have both keys.
+
+Example of a complete final-answer JSON with both fields populated:
+{"thought": "Found the deadline and drafted it for the team.", "tool": null, "inputs": {}, "is_complete": true, "answer": "...", "sources": [], "confidence": "high", "output_intent": "email", "display_summary": "Dear billing team, the timely filing deadline for Sunshine Health claim reconsiderations is..."}
+
+OUTPUT_INTENT — classify based on the question's own nature, not a guess:
 - "read" (default): the user is asking to understand something, in-chat.
 - "report": the user wants something exportable/shareable.
 - "email": the question implies sending this to someone else.
