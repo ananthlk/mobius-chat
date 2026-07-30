@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 
 from app.pipeline.context import PipelineContext
 # Import the module (not the symbol) so each _react_reasoning_system()
@@ -503,13 +504,29 @@ def _react_reasoning_system(
     return splice_user_profile(_base_prompt_text, user_profile)
 
 
+@dataclass(frozen=True)
+class ResolvedCompositionPrompt:
+    """Return shape for the v2 resolvers — carries composition_id/hash
+    alongside the text so the caller can thread them into ``_call_llm_json``
+    for llm_calls attribution (2026-07-30 fix: these were resolved + logged
+    but never passed through to the actual LLM call, so llm_calls.
+    composition_id/hash stayed NULL for every react/critic call despite the
+    composition path resolving correctly — found via live Cloud Logging
+    inspection after Chat Architecture reported output_intent=None end to
+    end; see docs/REACT_PHASE_A_IMPLEMENTATION_PLAN.md)."""
+
+    system_prompt: str
+    composition_id: int | None
+    composition_hash: str | None
+
+
 def resolve_react_system_prompt_v2(
     max_iterations: int,
     chat_mode: str,
     user_profile: dict | None,
     allowed_tools: list[str] | None,
     agent_role: str,
-) -> str | None:
+) -> "ResolvedCompositionPrompt | None":
     """v2 block-composition path (Phase A, docs/REACT_PHASE_A_IMPLEMENTATION_PLAN.md).
 
     Mirrors app/responder/final.py's MOBIUS_PROMPT_SOURCE=composition pattern:
@@ -534,7 +551,7 @@ def resolve_react_system_prompt_v2(
             rc = resolve_composition_sync("react.no_tools", conditions={}, template_vars={})
             if rc and rc.system_prompt.strip():
                 logger.info("[react] v2 composition prompt module=react_no_tools hash=%s", rc.composition_hash)
-                return rc.system_prompt
+                return ResolvedCompositionPrompt(rc.system_prompt, rc.composition_id, rc.composition_hash)
             return None
 
         if mode not in ("agentic", "quick"):
@@ -567,7 +584,7 @@ def resolve_react_system_prompt_v2(
             # Leading "\n" — matches the legacy f-string's own leading newline
             # (an artifact of its layout, not of any block's content); see
             # scratchpad/parity_check_composition.py for the verified derivation.
-            return "\n" + rc.system_prompt
+            return ResolvedCompositionPrompt("\n" + rc.system_prompt, rc.composition_id, rc.composition_hash)
         return None
     except Exception as exc:  # fail-soft: never break a turn on a resolution error
         logger.warning("[react] v2 composition resolve failed (agent_role=%s), using hardcoded: %s", agent_role, exc)
@@ -590,8 +607,19 @@ def _call_llm_json(
     max_tokens: int = 800,
     ctx: PipelineContext | None = None,
     stage: str = "planner",
+    *,
+    composition_id: int | None = None,
+    composition_hash: str | None = None,
 ) -> str:
-    """Call LLM and return raw string (expect JSON). When ctx is provided, uses llm_manager and appends usage to ctx.usages."""
+    """Call LLM and return raw string (expect JSON). When ctx is provided, uses llm_manager and appends usage to ctx.usages.
+
+    ``composition_id``/``composition_hash``: pass through when the caller
+    resolved its system prompt via the v2 block-composition path (see
+    ``resolve_react_system_prompt_v2``/``resolve_critic_system_prompt_v2``),
+    so the actual ``llm_calls`` row can be attributed — mirrors the same
+    param LLM Agent added to ``generate()``/``generate_sync()`` for the
+    integrator's composition path. None (the default) for the legacy path.
+    """
     from app.services.llm_provider import VertexBlockedError
 
     if (stage or "").startswith("react_"):
@@ -612,11 +640,16 @@ def _call_llm_json(
                     thread_id=getattr(ctx, "thread_id", None),
                     parser=False,
                     mode=getattr(ctx, "chat_mode", None),
+                    composition_id=composition_id,
+                    composition_hash=composition_hash,
                 )
             )
             return (raw or "").strip(), usage
         from app.services.llm_manager import generate_sync
-        raw, usage = generate_sync(prompt, stage="planner", max_tokens=max_tokens, parser=False, mode=None)
+        raw, usage = generate_sync(
+            prompt, stage="planner", max_tokens=max_tokens, parser=False, mode=None,
+            composition_id=composition_id, composition_hash=composition_hash,
+        )
         return (raw or "").strip(), usage
 
     try:

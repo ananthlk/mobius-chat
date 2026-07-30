@@ -2087,6 +2087,13 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         allowed_tools=getattr(ctx, "allowed_tools", None),
     )
     _react_prompt_source_v2 = (os.environ.get("MOBIUS_PROMPT_SOURCE") or "").strip().lower() == "composition"
+    # Set alongside `reasoning_system` whenever the v2 path resolves — passed
+    # into _call_llm_json below so the actual llm_calls row gets attributed
+    # (2026-07-30 fix: resolution + logging existed, but nothing threaded
+    # these into the LLM call itself, so llm_calls.composition_id/hash stayed
+    # NULL despite the composition path resolving and rendering correctly).
+    _reasoning_composition_id: int | None = None
+    _reasoning_composition_hash: str | None = None
 
     # Phase 0.7: smart-retry guard — tracks failed attempts so we don't repeat
     # the same (tool, inputs) when no new evidence has come in, and enables
@@ -2166,12 +2173,19 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         if _react_prompt_source_v2:
             from app.pipeline.react.prompts import react_agent_role, resolve_react_system_prompt_v2
             _agent_role = react_agent_role(iteration, max_it)
-            _resolved_system = resolve_react_system_prompt_v2(
+            _resolved = resolve_react_system_prompt_v2(
                 max_it, mode_label, getattr(ctx, "user_profile", None),
                 getattr(ctx, "allowed_tools", None), _agent_role,
             )
-            if _resolved_system is not None:
-                reasoning_system = _resolved_system
+            if _resolved is not None:
+                reasoning_system = _resolved.system_prompt
+                _reasoning_composition_id = _resolved.composition_id
+                _reasoning_composition_hash = _resolved.composition_hash
+            # else: leave reasoning_system AND the composition_id/hash at
+            # whatever they were (this round's fail-soft fallback reuses the
+            # prior value, so the attribution must stay in sync with it —
+            # resetting composition_id/hash to None here would misattribute
+            # a still-composition-sourced prompt as legacy/untracked.
 
         reasoning_context = build_reasoning_context(
             ctx, tool_results, rn, max_iterations=max_it,
@@ -2193,6 +2207,8 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             reasoning_context,
             ctx=ctx,
             stage=f"react_{rn}",
+            composition_id=_reasoning_composition_id,
+            composition_hash=_reasoning_composition_hash,
         )
 
         decision = _parse_react_decision_json(decision_raw)
@@ -2453,11 +2469,15 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     # level, autonomy gating) on top of grounding.
                     from app.pipeline.personalization import splice_user_profile as _splice_critic
                     _critic_system = _splice_critic(CRITIC_SYSTEM_PROMPT, getattr(ctx, "user_profile", None))
+                    _critic_composition_id: int | None = None
+                    _critic_composition_hash: str | None = None
                     if _react_prompt_source_v2:
                         from app.pipeline.react.critic import resolve_critic_system_prompt_v2
-                        _resolved_critic_system = resolve_critic_system_prompt_v2(getattr(ctx, "user_profile", None))
-                        if _resolved_critic_system is not None:
-                            _critic_system = _resolved_critic_system
+                        _resolved_critic = resolve_critic_system_prompt_v2(getattr(ctx, "user_profile", None))
+                        if _resolved_critic is not None:
+                            _critic_system = _resolved_critic.system_prompt
+                            _critic_composition_id = _resolved_critic.composition_id
+                            _critic_composition_hash = _resolved_critic.composition_hash
                     critic_raw = _call_llm_json(
                         _critic_system,
                         build_critic_user_message(
@@ -2469,6 +2489,8 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                         ctx=ctx,
                         stage="critique",
                         max_tokens=1200,
+                        composition_id=_critic_composition_id,
+                        composition_hash=_critic_composition_hash,
                     )
                     critique = parse_critic_response(critic_raw)
 

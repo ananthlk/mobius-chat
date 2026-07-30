@@ -355,7 +355,7 @@ def build_critic_user_message(
     return "\n".join(lines)
 
 
-def resolve_critic_system_prompt_v2(user_profile: dict | None) -> str | None:
+def resolve_critic_system_prompt_v2(user_profile: dict | None) -> "ResolvedCompositionPrompt | None":
     """v2 block-composition path for the critic (Phase A,
     docs/REACT_PHASE_A_IMPLEMENTATION_PLAN.md §5). Mirrors
     app/pipeline/react/prompts.py's resolve_react_system_prompt_v2 — same
@@ -365,8 +365,12 @@ def resolve_critic_system_prompt_v2(user_profile: dict | None) -> str | None:
     block_key as react's, not a duplicate) — verified byte-identical to
     ``splice_user_profile(CRITIC_SYSTEM_PROMPT, user_profile)`` for both the
     present- and absent-profile cases via scratchpad/parity_check_composition.py.
+    Returns composition_id/hash alongside the text (2026-07-30 fix — see
+    ResolvedCompositionPrompt's docstring) so the caller can thread them into
+    ``_call_llm_json`` for llm_calls attribution.
     """
     from app.pipeline.personalization import _enabled as _personalization_enabled
+    from app.pipeline.react.prompts import ResolvedCompositionPrompt
     from app.services.prompt_manager import resolve_composition_sync
 
     try:
@@ -382,7 +386,7 @@ def resolve_critic_system_prompt_v2(user_profile: dict | None) -> str | None:
         )
         if rc and rc.system_prompt.strip():
             logger.info("[react] v2 composition prompt module=critic_audit hash=%s", rc.composition_hash)
-            return rc.system_prompt
+            return ResolvedCompositionPrompt(rc.system_prompt, rc.composition_id, rc.composition_hash)
         return None
     except Exception as exc:  # fail-soft: never break a turn on a resolution error
         logger.warning("[react] v2 composition resolve failed (critic_audit), using hardcoded: %s", exc)
