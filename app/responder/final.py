@@ -124,6 +124,8 @@ def _build_consolidator_input_json(
         payload["display_summary"] = display_summary.strip()
     if output_intent and output_intent.strip():
         payload["output_intent"] = output_intent.strip()
+    logger.info("[consolidator-input] output_intent=%r display_summary_present=%s",
+                output_intent, bool(display_summary and display_summary.strip()))
     if source_texts:
         payload["source_texts"] = source_texts
     if task_context:
