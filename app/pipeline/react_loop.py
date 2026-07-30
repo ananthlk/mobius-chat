@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import itertools as _itertools
 import os
 import re
 from typing import Any
@@ -2077,6 +2078,22 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
     _reasoning_composition_id: int | None = None
     _reasoning_composition_hash: str | None = None
 
+    # Product Promise governor (docs/REACT_PRODUCT_PROMISE_SPEC.md), behind
+    # MOBIUS_PRODUCT_PROMISE_ENABLED (default off — Chat Architecture ruling,
+    # 2026-07-30: this flag is the ONLY thing authorized to bypass the
+    # existing critic_enabled()/should_run_critic() gates; when off, nothing
+    # below this point changes anything). See governor.py's module docstring
+    # for the explicit scope boundary (does not touch composition selection).
+    import time as _pp_time_mod
+    from app.pipeline.react.governor import product_promise_enabled as _pp_enabled_fn
+    _pp_enabled = _pp_enabled_fn()
+    _pp_contract = None
+    _pp_turn_start = _pp_time_mod.monotonic()
+    _pp_extension_rounds_used = 0
+    if _pp_enabled:
+        from app.pipeline.react.governor import default_contract_for_mode
+        _pp_contract = default_contract_for_mode(mode_label)
+
     # Phase 0.7: smart-retry guard — tracks failed attempts so we don't repeat
     # the same (tool, inputs) when no new evidence has come in, and enables
     # fail-fast when every round errors.
@@ -2117,7 +2134,18 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
     # children in Cloud Trace — no per-round parent span needed.
 
     _react_pf("preflight_TOTAL_to_iteration_start", _t_react_pf)
-    for iteration in range(max_it):
+    # Product Promise governor (docs/REACT_PRODUCT_PROMISE_SPEC.md, behind
+    # MOBIUS_PRODUCT_PROMISE_ENABLED — see governor.py's module docstring for
+    # the full scope note). `itertools.count()` + an explicit bound check
+    # (rather than `range(max_it)`) so `max_it` can grow mid-turn when the
+    # governor grants an "extend" — incrementing `max_it` before the next
+    # iteration's check runs is enough; no other line in this ~600-line loop
+    # body needs to change or re-indent. When the flag is off, `max_it`
+    # never changes, so this is byte-for-byte equivalent to the original
+    # `for iteration in range(max_it)`.
+    for iteration in _itertools.count():
+        if iteration >= max_it:
+            break
         rn = iteration + 1
         # Keep ctx.react_rounds_used current so whichever exit path
         # the loop takes (finalize, break, exception-to-integrator
@@ -2144,17 +2172,43 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                         user_id=getattr(ctx, "user_id", None),
                     ).to_dict())
 
+        # Product Promise governor: pre-round directive (search/consolidate/
+        # extend/finalize only — proposes_complete isn't known until the
+        # model responds this round, so "complete" is unreachable here; see
+        # governor.py). Computed BEFORE composition resolution below because
+        # it now also SELECTS the composition when the governor is on (Chat
+        # Architecture ruling, 2026-07-30, option (b): directive replaces
+        # react_agent_role() as the live selector for the same 3
+        # byte-identical compositions — Phase B/temperature-routing is
+        # closed, directive owns that intent now).
+        _pp_pre_directive = None
+        _pp_pre_reason = None
+        _pp_elapsed_s = 0.0
+        if _pp_enabled and _pp_contract is not None:
+            from app.pipeline.react.governor import RoundState, evaluate
+            _pp_elapsed_s = _pp_time_mod.monotonic() - _pp_turn_start
+            _pp_pre_state = RoundState(
+                proposes_complete=False, self_reported_confidence=None, critic_verdict=None,
+                groundedness_passed=None, elapsed_s=_pp_elapsed_s,
+                base_rounds_remaining=max_it - iteration,
+                extension_rounds_available=_pp_contract.max_extension_rounds - _pp_extension_rounds_used,
+            )
+            _pp_pre_directive, _pp_pre_reason = evaluate(_pp_contract, _pp_pre_state)
+
         # v2 composition path (Phase A, docs/REACT_PHASE_A_IMPLEMENTATION_PLAN.md):
-        # resolve per round via react_agent_role — react_explore/synthesize/draft
-        # currently hold IDENTICAL content (addressing/attribution infra only;
-        # does not drive temperature/content here, that's Phase B), so this is a
-        # resolution-frequency change, not a behavior change. Fail-soft: a miss
-        # or error leaves `reasoning_system` at its last-good value (the
-        # pre-loop legacy default on round 1, or the prior round's resolved
-        # value), never breaks the turn.
+        # resolve per round via react_agent_role (flag off / governor off) or
+        # the governor's directive (flag on) — react_explore/synthesize/draft
+        # stay byte-identical content either way; only the selector differs.
+        # Fail-soft: a miss or error leaves `reasoning_system` at its last-good
+        # value (the pre-loop legacy default on round 1, or the prior round's
+        # resolved value), never breaks the turn.
         if _react_prompt_source_v2:
             from app.pipeline.react.prompts import react_agent_role, resolve_react_system_prompt_v2
-            _agent_role = react_agent_role(iteration, max_it)
+            if _pp_enabled and _pp_pre_directive is not None:
+                from app.pipeline.react.governor import directive_to_agent_role
+                _agent_role = directive_to_agent_role(_pp_pre_directive)
+            else:
+                _agent_role = react_agent_role(iteration, max_it)
             _resolved = resolve_react_system_prompt_v2(
                 max_it, mode_label, getattr(ctx, "user_profile", None),
                 getattr(ctx, "allowed_tools", None), _agent_role,
@@ -2169,9 +2223,33 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             # resetting composition_id/hash to None here would misattribute
             # a still-composition-sourced prompt as legacy/untracked.
 
+        # Governor active → suppress the old round-index guidance instruction
+        # rather than let it collide with round_directive below. The two
+        # fire on different signals (is_guidance_round: iteration vs. 80% of
+        # max_it; round_directive: elapsed_s vs. soft_target_s) and WILL
+        # disagree — e.g. an agentic round 3-of-10 with an expensive tool
+        # call already past soft_target_s: round-index says "still
+        # exploring," wall-clock says "consolidate now." Sending both to the
+        # model is a contradictory prompt on exactly the case this governor
+        # exists to fix (Product Promise session, 2026-07-30). Narrow fix,
+        # no signature change: build_reasoning_context only adds the
+        # guidance text when max_iterations is not None (prompts.py:722-725),
+        # so passing None here suppresses it cleanly. A full replacement of
+        # is_guidance_round with round_directive-derived context (needing a
+        # real signature change) stays a tracked follow-up, not done here.
+        _pp_suppress_guidance = _pp_enabled and _pp_contract is not None
         reasoning_context = build_reasoning_context(
-            ctx, tool_results, rn, max_iterations=max_it,
+            ctx, tool_results, rn,
+            max_iterations=(None if _pp_suppress_guidance else max_it),
         )
+        # Directive text appended to context — NOT a composition/system-
+        # prompt block (see governor.py's module docstring for why).
+        if _pp_enabled and _pp_contract is not None and _pp_pre_directive is not None:
+            from app.pipeline.react.governor import round_directive_text
+            reasoning_context = reasoning_context + "\n\n" + round_directive_text(
+                round_n=rn, max_rounds=max_it, elapsed_s=_pp_elapsed_s,
+                soft_target_s=_pp_contract.soft_target_s, directive=_pp_pre_directive, reason=_pp_pre_reason,
+            )
         # system_context (2026-04-22): when Round 0 fell through to the
         # tool loop (NEEDS_TOOLS sentinel), surface the caller-supplied
         # verified data to every subsequent reasoning round. Tools can
@@ -2322,6 +2400,102 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     "trigger": "periodic",
                 }
             if answer:
+                # Product Promise governor — mandatory groundedness floor
+                # (docs/REACT_PRODUCT_PROMISE_SPEC.md), behind
+                # MOBIUS_PRODUCT_PROMISE_ENABLED, confidence_bar in
+                # {"medium","high"} only — "low" (quick mode) trusts
+                # self-report as today, no added call. Runs BEFORE and
+                # INDEPENDENTLY of the existing critic_enabled()/
+                # should_run_critic()-gated path below, which is completely
+                # unchanged for every other case (Chat Architecture ruling,
+                # 2026-07-30: this flag is the only thing authorized to
+                # bypass those gates).
+                if _pp_enabled and _pp_contract is not None and _pp_contract.confidence_bar in ("medium", "high"):
+                    from app.pipeline.personalization import splice_user_profile as _pp_splice_profile
+                    from app.pipeline.react.critic import (
+                        CRITIC_SYSTEM_PROMPT as _pp_critic_prompt,
+                        build_critic_user_message as _pp_build_critic_msg,
+                        format_critique_as_observation as _pp_format_critique_obs,
+                        parse_critic_response as _pp_parse_critic,
+                    )
+                    from app.pipeline.react.governor import RoundState, evaluate
+
+                    _pp_critic_system = _pp_splice_profile(_pp_critic_prompt, getattr(ctx, "user_profile", None))
+                    _pp_critic_comp_id: int | None = None
+                    _pp_critic_comp_hash: str | None = None
+                    if _react_prompt_source_v2:
+                        from app.pipeline.react.critic import resolve_critic_system_prompt_v2
+                        _pp_resolved_critic = resolve_critic_system_prompt_v2(getattr(ctx, "user_profile", None))
+                        if _pp_resolved_critic is not None:
+                            _pp_critic_system = _pp_resolved_critic.system_prompt
+                            _pp_critic_comp_id = _pp_resolved_critic.composition_id
+                            _pp_critic_comp_hash = _pp_resolved_critic.composition_hash
+                    _pp_critic_raw = _call_llm_json(
+                        _pp_critic_system,
+                        _pp_build_critic_msg(
+                            question=ctx.effective_message or ctx.message or "",
+                            draft_answer=answer, sources=all_sources, tool_results=tool_results,
+                        ),
+                        ctx=ctx, stage="critique", max_tokens=1200,
+                        composition_id=_pp_critic_comp_id, composition_hash=_pp_critic_comp_hash,
+                    )
+                    _pp_critique = _pp_parse_critic(_pp_critic_raw)
+                    _pp_groundedness_passed = not _pp_critique.has_blocking_issues
+
+                    _pp_elapsed_s = _pp_time_mod.monotonic() - _pp_turn_start
+                    _pp_post_state = RoundState(
+                        proposes_complete=True,
+                        self_reported_confidence=decision.get("confidence"),
+                        # The existing critic_enabled()-gated path below is
+                        # separate and unmerged with this dedicated floor —
+                        # its verdict isn't folded in here.
+                        critic_verdict=None,
+                        groundedness_passed=_pp_groundedness_passed,
+                        elapsed_s=_pp_elapsed_s,
+                        base_rounds_remaining=max_it - rn,
+                        extension_rounds_available=_pp_contract.max_extension_rounds - _pp_extension_rounds_used,
+                    )
+                    _pp_directive, _pp_reason = evaluate(_pp_contract, _pp_post_state)
+                    # Telemetry marker (Chat Architecture clarification,
+                    # 2026-07-30): distinguishes a verified-clean "complete"
+                    # from a budget-forced "finalize" for anything downstream
+                    # that tracks turn quality — content is unaffected either way.
+                    ctx.product_promise_directive = _pp_directive
+
+                    if _pp_directive == "extend":
+                        _pp_extension_rounds_used += 1
+                        max_it += 1
+                        tool_results.append({
+                            "tool": "_product_promise_groundedness",
+                            "success": False,
+                            "result": _pp_format_critique_obs(_pp_critique.high_severity_issues),
+                        })
+                        continue
+
+                    if _pp_directive == "finalize":
+                        # Same "Groundedness notice" ship-with-warning
+                        # content as the existing critic_enabled() path
+                        # below — no content swap, directive="finalize" is
+                        # the only new signal (see the marker above).
+                        warning_lines = [
+                            "", "---",
+                            "⚠ **Groundedness notice:** the following claims in this "
+                            "answer could not be verified against the retrieved sources:",
+                        ]
+                        for i, issue in enumerate(_pp_critique.high_severity_issues, 1):
+                            claim_preview = issue.claim
+                            if len(claim_preview) > 150:
+                                claim_preview = claim_preview[:150].rstrip() + "…"
+                            warning_lines.append(f"  {i}. {claim_preview}")
+                        warning_lines.append("Verify these specifically before acting on them.")
+                        answer = answer.rstrip() + "\n" + "\n".join(warning_lines)
+                        _finalize_response(ctx, answer, all_sources, final_signal, last_tool, emitter)
+                        return
+                    # directive == "complete": fall through to the existing
+                    # logic below unchanged (which may still independently
+                    # run the optional critic_enabled() path — intentional,
+                    # per Chat Architecture: that path stays untouched).
+
                 # ── Critic gate (Phase groundedness-v1) ──────────────
                 # Before finalizing, audit the draft against collected
                 # sources. If the critic flags high-severity ungrounded

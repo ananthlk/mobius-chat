@@ -183,6 +183,15 @@ class ScriptedLLM:
 @pytest.fixture
 def critic_on(monkeypatch):
     monkeypatch.setenv("MOBIUS_REACT_CRITIC", "1")
+    # These tests exercise the legacy critic_enabled()/should_run_critic()
+    # gate in isolation. MOBIUS_PRODUCT_PROMISE_ENABLED's mandatory
+    # groundedness floor (app/pipeline/react/governor.py) runs an
+    # unconditional critique call independently of that gate — if it's on
+    # in the ambient environment (e.g. a dev-wide flag flip), it adds an
+    # extra scripted "critique" call these fixtures don't expect. Force it
+    # off here so this file always tests the old gate alone, regardless of
+    # what else is set globally.
+    monkeypatch.delenv("MOBIUS_PRODUCT_PROMISE_ENABLED", raising=False)
     yield
 
 
@@ -313,6 +322,9 @@ class TestRunReactCriticIntegration:
         ran when disabled, turning off the flag wouldn't be a true
         rollback."""
         monkeypatch.delenv("MOBIUS_REACT_CRITIC", raising=False)
+        # Same reasoning as the critic_on fixture above: force the governor
+        # off so this test isolates the legacy flag's behavior only.
+        monkeypatch.delenv("MOBIUS_PRODUCT_PROMISE_ENABLED", raising=False)
 
         from app.pipeline.react_loop import run_react
 
