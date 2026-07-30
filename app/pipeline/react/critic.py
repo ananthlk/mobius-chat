@@ -355,6 +355,40 @@ def build_critic_user_message(
     return "\n".join(lines)
 
 
+def resolve_critic_system_prompt_v2(user_profile: dict | None) -> str | None:
+    """v2 block-composition path for the critic (Phase A,
+    docs/REACT_PHASE_A_IMPLEMENTATION_PLAN.md §5). Mirrors
+    app/pipeline/react/prompts.py's resolve_react_system_prompt_v2 — same
+    flag-gated (caller checks MOBIUS_PROMPT_SOURCE), fail-soft (returns None
+    on any miss/error) pattern. ``critic.audit_rules`` + the SHARED
+    ``react.user_profile`` block (Chat Architecture ruling, 2026-07-29: same
+    block_key as react's, not a duplicate) — verified byte-identical to
+    ``splice_user_profile(CRITIC_SYSTEM_PROMPT, user_profile)`` for both the
+    present- and absent-profile cases via scratchpad/parity_check_composition.py.
+    """
+    from app.pipeline.personalization import _enabled as _personalization_enabled
+    from app.services.prompt_manager import resolve_composition_sync
+
+    try:
+        rendered_profile = ""
+        if user_profile and isinstance(user_profile, dict):
+            rendered_profile = (user_profile.get("rendered_prompt") or "").strip()
+        has_user_profile = bool(_personalization_enabled() and rendered_profile)
+
+        rc = resolve_composition_sync(
+            "critic.audit",
+            conditions={"has_user_profile": has_user_profile},
+            template_vars={"user_profile_text": rendered_profile},
+        )
+        if rc and rc.system_prompt.strip():
+            logger.info("[react] v2 composition prompt module=critic_audit hash=%s", rc.composition_hash)
+            return rc.system_prompt
+        return None
+    except Exception as exc:  # fail-soft: never break a turn on a resolution error
+        logger.warning("[react] v2 composition resolve failed (critic_audit), using hardcoded: %s", exc)
+        return None
+
+
 # ── Response parser ──────────────────────────────────────────────────
 
 

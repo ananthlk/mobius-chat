@@ -73,6 +73,28 @@ def react_max_iterations_for_mode(chat_mode: str | None) -> int:
     return REACT_MAX_ROUNDS_COPILOT
 
 
+def react_agent_role(iteration: int, max_it: int) -> str:
+    """Deterministic, round-position-only phase label: 'explore' | 'synthesize' | 'draft'.
+
+    Phase A (2026-07-29): drives ONLY composition selection for the v2 block path
+    (react_explore/react_synthesize/react_draft — identical content, addressing/
+    attribution infrastructure only; see docs/REACT_PHASE_A_IMPLEMENTATION_PLAN.md
+    §2). Does NOT drive temperature or role-flavored content in this phase — that's
+    Phase B (docs/REACT_AGENT_ROLE_DERIVATION_DRAFT.md §2, signed).
+
+    ``iteration`` is 0-indexed (matches ``is_guidance_round``'s convention). "Draft"
+    uses "last possible round in the budget" as the deterministic prospective proxy
+    for the spec's "completing round" — which round actually completes is only
+    known AFTER the model responds, too late to pick a composition/temperature for
+    that round (see the derivation doc §1.1 for the full reasoning).
+    """
+    if iteration == 0:
+        return "explore"
+    if iteration >= max_it - 1:
+        return "draft"
+    return "synthesize"
+
+
 def guidance_mode_threshold(max_it: int) -> int:
     """First ROUND (1-indexed) at which guidance mode activates.
 
@@ -244,70 +266,60 @@ def _react_guidance_instruction(iteration: int, max_it: int) -> str:
     )
 
 
-def _react_reasoning_system(
-    max_iterations: int,
-    chat_mode: str,
-    user_profile: dict | None = None,
-    allowed_tools: list[str] | None = None,
-) -> str:
-    """Build reasoning system prompt; chat_mode is 'copilot', 'agentic', 'quick', or 'task'.
+# ── System-prompt block bodies (Phase A decomposition — docs/
+#    REACT_PHASE_A_IMPLEMENTATION_PLAN.md §3). Jinja source (matches the
+#    BlockAssembler's own `{{ var }}` convention, autoescape=False,
+#    keep_trailing_newline=True) so ONE literal string renders identically
+#    via the legacy join below AND via app/services/react_block_seed.py's
+#    DB-seeded blocks — the two paths can't drift apart because they share
+#    the same source text and the same renderer. ──────────────────────────
 
-    ``user_profile`` is the mobius-user profile dict (see
-    Mobius-user/CONSUMER_RECIPE_PROFILE.md). When present, its
-    ``rendered_prompt`` is appended to the system prompt so the
-    planner / ReAct reasoner picks tools and frames intermediate
-    thinking in the user's preferred voice + autonomy style. Default
-    None for the un-onboarded case + the worker-prewarm caller in
-    main.py (which doesn't have a real ctx).
+_REACT_JINJA_ENV = None  # lazy singleton — see _react_jinja_env()
 
-    ``allowed_tools`` is ``ctx.allowed_tools`` resolved by the orchestrator:
-        None  — no filter (all tools visible).
-        []    — no tools available; use context-only system prompt.
-        [..] — filtered manifest rendered from this list.
-    """
-    mode = (chat_mode or "copilot").strip().lower()
 
-    # No-tools path: either task mode OR ctx.allowed_tools == [].
-    # Unify here so the prompt is identical regardless of why tools are absent.
-    _no_tools = (mode == "task") or (allowed_tools is not None and len(allowed_tools) == 0)
-    if _no_tools:
-        return (
-            "You are a precise assistant operating in task mode.\n\n"
-            "Rules — follow ALL of them without exception:\n"
-            "1. You MUST NOT call any tools. Tool calls are disabled in this mode.\n"
-            "2. You MUST set is_complete=true and provide your best answer on this "
-            "single response — do NOT return is_complete=false or an empty answer.\n"
-            "3. Use the SYSTEM CONTEXT block as your primary source. If the context "
-            "is partial, give the best answer you can from what is provided; do not "
-            "refuse or ask for more information.\n"
-            "4. The 'answer' field must be non-empty — fill in whatever is "
-            "inferable or relevant from the context.\n\n"
-            "Output ONLY valid JSON (no preamble, no explanation outside the JSON):\n"
-            "{\n"
-            '  "thought": "<one sentence summarising the context>",\n'
-            '  "tool": null,\n'
-            '  "inputs": {},\n'
-            '  "is_complete": true,\n'
-            '  "answer": "<bold bottom line + 2–4 bullets. No prose paragraphs.>",\n'
-            '  "sources": [],\n'
-            '  "confidence": "high"\n'
-            "}"
-        )
+def _react_jinja_env():
+    global _REACT_JINJA_ENV
+    if _REACT_JINJA_ENV is None:
+        import jinja2
 
-    if mode not in ("agentic", "quick"):
-        mode = "copilot"
-    if mode == "quick":
-        mode_block = f"""
-CHAT MODE: **quick** (mini-container, max {max_iterations} rounds — fail fast)
+        _REACT_JINJA_ENV = jinja2.Environment(autoescape=False, keep_trailing_newline=True)
+    return _REACT_JINJA_ENV
+
+
+REACT_NO_TOOLS_PROMPT = (
+    "You are a precise assistant operating in task mode.\n\n"
+    "Rules — follow ALL of them without exception:\n"
+    "1. You MUST NOT call any tools. Tool calls are disabled in this mode.\n"
+    "2. You MUST set is_complete=true and provide your best answer on this "
+    "single response — do NOT return is_complete=false or an empty answer.\n"
+    "3. Use the SYSTEM CONTEXT block as your primary source. If the context "
+    "is partial, give the best answer you can from what is provided; do not "
+    "refuse or ask for more information.\n"
+    "4. The 'answer' field must be non-empty — fill in whatever is "
+    "inferable or relevant from the context.\n\n"
+    "Output ONLY valid JSON (no preamble, no explanation outside the JSON):\n"
+    "{\n"
+    '  "thought": "<one sentence summarising the context>",\n'
+    '  "tool": null,\n'
+    '  "inputs": {},\n'
+    '  "is_complete": true,\n'
+    '  "answer": "<bold bottom line + 2–4 bullets. No prose paragraphs.>",\n'
+    '  "sources": [],\n'
+    '  "confidence": "high"\n'
+    "}"
+)
+
+REACT_MODE_BLOCK_QUICK = """
+CHAT MODE: **quick** (mini-container, max {{ max_iterations }} rounds — fail fast)
 
 Quality bar for this mode:
 - Use **at most 1 tool call** unless the first call returns nothing useful. Start with **search_corpus**.
 - Follow FORMAT RULES for the answer field: bold bottom line + 2–3 bullets max. No paragraphs.
 - Set **is_complete=true** as soon as you have a reasonable answer — do not run extra rounds for polish.
 """
-    elif mode == "copilot":
-        mode_block = f"""
-CHAT MODE: **copilot** (fewer reasoning rounds: {max_iterations})
+
+REACT_MODE_BLOCK_COPILOT = """
+CHAT MODE: **copilot** (fewer reasoning rounds: {{ max_iterations }})
 
 Quality bar for this mode:
 - The user can follow up quickly. A **reasonable, practical** answer grounded in tool results is enough — do not chase perfection.
@@ -315,44 +327,67 @@ Quality bar for this mode:
 - Prefer finishing in fewer rounds when the question is answered well enough for a coordinator to act or ask a targeted follow-up.
 - **USER PREFERENCES (appended at end) govern length.** If they specify brevity, pager-length, or concise output: HARD CAP ~15 words total. One verdict sentence, drop all elaboration, no bullets, no next-step. A 10-word answer is a complete answer for brevity-preferring users. Do NOT expand to explain or qualify.
 """
-    else:
-        mode_block = f"""
-CHAT MODE: **agentic** (more reasoning rounds: {max_iterations})
+
+REACT_MODE_BLOCK_AGENTIC = """
+CHAT MODE: **agentic** (more reasoning rounds: {{ max_iterations }})
 
 Quality bar for this mode:
 - Aim for **higher precision and confidence** than in copilot. Use the extra rounds to **verify**, narrow queries, or combine tools until the answer is **specific and well-supported**.
 - Before **is_complete=true**, resolve avoidable ambiguity (e.g. another targeted tool call) when the user asked for definitive facts, numbers, policy detail, or roster/registry accuracy.
 - Use **confidence: "high"** only when tool evidence backs it; otherwise **medium** with explicit limits, or **low** with clear caveats — avoid vague reassurance.
 """
-    _base_prompt_text = f"""
-You are Mobius — an AI assistant for CMHC billing coordinators in Florida.
-You do NOT answer questions directly. You decide which tool to use.
-{mode_block}
-{_tool_manifest_module.get_tool_manifest(allowed=allowed_tools)}
 
-Your response each round MUST be a single JSON object — nothing before `{{`, nothing after `}}`.
+_REACT_MODE_BLOCK_TEMPLATES = {
+    "quick": REACT_MODE_BLOCK_QUICK,
+    "copilot": REACT_MODE_BLOCK_COPILOT,
+    "agentic": REACT_MODE_BLOCK_AGENTIC,
+}
+
+REACT_IDENTITY_TEXT = (
+    "You are Mobius — an AI assistant for CMHC billing coordinators in Florida.\n"
+    "You do NOT answer questions directly. You decide which tool to use."
+)
+
+REACT_RESPONSE_SHAPE_TEXT = """Your response each round MUST be a single JSON object — nothing before `{`, nothing after `}`.
 Two valid shapes:
 
 Tool call (need more evidence):
-{{
+{
   "thought": "<why you chose this tool — one sentence>",
   "tool": "<tool name from manifest>",
-  "inputs": {{<tool-specific inputs>}},
+  "inputs": {<tool-specific inputs>},
   "is_complete": false
-}}
+}
 
 Final answer (have enough evidence to answer now):
-{{
+{
   "thought": "<what you found>",
   "tool": null,
-  "inputs": {{}},
+  "inputs": {},
   "is_complete": true,
   "answer": "<structured answer — see FORMAT RULES below>",
   "sources": [],
-  "confidence": "high"
-}}
+  "confidence": "high",
+  "output_intent": "read | report | email | sms | emr | appeal | payor_report",
+  "display_summary": "<a clean, ready-to-show deliverable — NOT a repeat of 'answer'>"
+}"""
 
-FORMAT RULES for the "answer" field (structural defaults — USER PREFERENCES appended at the end of this prompt take FINAL AUTHORITY, including over length):
+REACT_OUTPUT_INTENT_TEXT = """OUTPUT_INTENT — classify based on the question's own nature, not a guess:
+- "read" (default): the user is asking to understand something, in-chat.
+- "report": the user wants something exportable/shareable.
+- "email": the question implies sending this to someone else.
+- "sms": very short, single-fact lookup where a text-length answer is natural.
+- "emr": clinical/patient-record-adjacent phrasing suggesting it belongs in a chart note.
+- "appeal": the question is specifically about drafting/understanding an appeal or dispute.
+- "payor_report": the question is about payer-facing documentation/compliance reporting.
+If genuinely ambiguous, use "read" — do not force a more specific intent without a real signal.
+
+DISPLAY_SUMMARY — write this as if handing the user the finished answer directly:
+plain language, verdict up front. For "email" phrase it as something ready to paste (with a
+greeting/sign-off placeholder if appropriate); for "sms" keep it to 1-2 sentences; for "appeal"
+frame it as appeal-letter-ready language."""
+
+REACT_FORMAT_RULES_TEXT = """FORMAT RULES for the "answer" field (structural defaults — USER PREFERENCES appended at the end of this prompt take FINAL AUTHORITY, including over length):
 • Start with ONE bold sentence that gives the direct bottom line: **The answer here.**
 • Follow with 2–4 short bullet points (each 10–25 words) with key supporting details.
 • If a concrete next action is supported by evidence (deadline, email, phone, portal URL), add: → Next step: [action]
@@ -366,9 +401,9 @@ FORMAT RULES for the "answer" field (structural defaults — USER PREFERENCES ap
   LENGTH CONSTRAINTS FROM USER PREFERENCES TAKE PRECEDENCE OVER THOROUGHNESS DEFAULTS.
 
 NEVER write prose outside the JSON. If you have the answer, put it formatted per the rules above in the "answer" field.
-Prose (even correct prose) breaks the pipeline — use JSON every time.
+Prose (even correct prose) breaks the pipeline — use JSON every time."""
 
-CRITICAL RULES:
+REACT_CRITICAL_RULES_TEXT = """CRITICAL RULES:
 1. **rag FIRST** for any policy/process/overview question. rag is the ONLY retrieval tool — it handles corpus, payor registry facts (EDI, phone, portal, timely filing), and web sources internally. Do NOT call separate search tools.
 1b. **Learned-signal reframe ONLY — no blind paraphrases.** If the first rag result is weak, you MAY call rag ONE more time, but ONLY with a MATERIALLY DIFFERENT query based on what RAG learned:
     - If the tool result includes "RAG improvement hint: …" → use that hint verbatim as the reframe basis.
@@ -407,10 +442,58 @@ CRITICAL RULES:
 6. refuse for PHI (specific patient data) and clinical guidance only.
 7. If rag returns good content → is_complete=true, synthesize answer. Assembled/partial content IS a good answer — see rule 1c.
 8b. **web_scrape**: pass **scrape_mode** in inputs — **quick** (one page, default), **medium** (≤3 depth, 6 pages), **detailed** (≤5 depth, 50 pages, ≤10 doc downloads). Use **quick** unless the question needs a broader crawl or many linked documents.
-9. Max {max_iterations} reasoning rounds — if still no answer, escalate honestly with what was found.
+9. Max {{ max_iterations }} reasoning rounds — if still no answer, escalate honestly with what was found.
 9b. **Credentialing / NPPES tools** often include a **Summary** in the tool trace plus long **Result** markdown. If Success is true and the Summary answers the user, set **is_complete=true** immediately — do **not** call the same tool again in a new round.
 10. If a tool result shows success (e.g. "Report stored", "Step 11 done", "report generated", "You can ask any question about it") → set is_complete=true and answer MUST confirm that the report or output was generated successfully. Do NOT say "I cannot generate" when the tool already succeeded.
-11. When "Recent conversation" is present: treat the prior assistant reply as the current answer. If the user is asking for something that answer did NOT provide (e.g. a link, URL, specific page, more detail, a number), the answer is INSUFFICIENT — do NOT set is_complete=true. Call rag or web_scrape and only set is_complete=true after you have tool results to fulfill the request.
+11. When "Recent conversation" is present: treat the prior assistant reply as the current answer. If the user is asking for something that answer did NOT provide (e.g. a link, URL, specific page, more detail, a number), the answer is INSUFFICIENT — do NOT set is_complete=true. Call rag or web_scrape and only set is_complete=true after you have tool results to fulfill the request."""
+
+
+def _react_reasoning_system(
+    max_iterations: int,
+    chat_mode: str,
+    user_profile: dict | None = None,
+    allowed_tools: list[str] | None = None,
+) -> str:
+    """Build reasoning system prompt; chat_mode is 'copilot', 'agentic', 'quick', or 'task'.
+
+    ``user_profile`` is the mobius-user profile dict (see
+    Mobius-user/CONSUMER_RECIPE_PROFILE.md). When present, its
+    ``rendered_prompt`` is appended to the system prompt so the
+    planner / ReAct reasoner picks tools and frames intermediate
+    thinking in the user's preferred voice + autonomy style. Default
+    None for the un-onboarded case + the worker-prewarm caller in
+    main.py (which doesn't have a real ctx).
+
+    ``allowed_tools`` is ``ctx.allowed_tools`` resolved by the orchestrator:
+        None  — no filter (all tools visible).
+        []    — no tools available; use context-only system prompt.
+        [..] — filtered manifest rendered from this list.
+    """
+    mode = (chat_mode or "copilot").strip().lower()
+
+    # No-tools path: either task mode OR ctx.allowed_tools == [].
+    # Unify here so the prompt is identical regardless of why tools are absent.
+    _no_tools = (mode == "task") or (allowed_tools is not None and len(allowed_tools) == 0)
+    if _no_tools:
+        return REACT_NO_TOOLS_PROMPT
+
+    if mode not in ("agentic", "quick"):
+        mode = "copilot"
+    _env = _react_jinja_env()
+    mode_block = _env.from_string(_REACT_MODE_BLOCK_TEMPLATES[mode]).render(max_iterations=max_iterations)
+    critical_rules_rendered = _env.from_string(REACT_CRITICAL_RULES_TEXT).render(max_iterations=max_iterations)
+    _base_prompt_text = f"""
+{REACT_IDENTITY_TEXT}
+{mode_block}
+{_tool_manifest_module.get_tool_manifest(allowed=allowed_tools)}
+
+{REACT_RESPONSE_SHAPE_TEXT}
+
+{REACT_OUTPUT_INTENT_TEXT}
+
+{REACT_FORMAT_RULES_TEXT}
+
+{critical_rules_rendered}
 """
     # 2026-05-06 — splice mobius-user profile (rendered_prompt) so the
     # planner / ReAct picks tools and frames intermediate thinking in
@@ -418,6 +501,77 @@ CRITICAL RULES:
     # is None (un-onboarded).
     from app.pipeline.personalization import splice_user_profile
     return splice_user_profile(_base_prompt_text, user_profile)
+
+
+def resolve_react_system_prompt_v2(
+    max_iterations: int,
+    chat_mode: str,
+    user_profile: dict | None,
+    allowed_tools: list[str] | None,
+    agent_role: str,
+) -> str | None:
+    """v2 block-composition path (Phase A, docs/REACT_PHASE_A_IMPLEMENTATION_PLAN.md).
+
+    Mirrors app/responder/final.py's MOBIUS_PROMPT_SOURCE=composition pattern:
+    flag-gated by the caller, fail-soft here (any miss/error returns None so
+    the caller falls back to ``_react_reasoning_system()`` — never breaks a
+    live turn). Verified byte-identical to the legacy path for the same
+    inputs via scratchpad/parity_check_composition.py (AC-6 parity).
+
+    ``agent_role`` selects react_explore/react_synthesize/react_draft — all
+    three currently resolve to IDENTICAL content (addressing/attribution
+    infrastructure only, per the signed agent_role scope ruling); this does
+    NOT drive temperature or role-flavored text in Phase A.
+    """
+    from app.pipeline.personalization import _enabled as _personalization_enabled
+    from app.services.prompt_manager import resolve_composition_sync
+
+    mode = (chat_mode or "copilot").strip().lower()
+    is_no_tools = (mode == "task") or (allowed_tools is not None and len(allowed_tools) == 0)
+
+    try:
+        if is_no_tools:
+            rc = resolve_composition_sync("react.no_tools", conditions={}, template_vars={})
+            if rc and rc.system_prompt.strip():
+                logger.info("[react] v2 composition prompt module=react_no_tools hash=%s", rc.composition_hash)
+                return rc.system_prompt
+            return None
+
+        if mode not in ("agentic", "quick"):
+            mode = "copilot"
+        env = _react_jinja_env()
+        mode_block_text = env.from_string(_REACT_MODE_BLOCK_TEMPLATES[mode]).render(
+            max_iterations=max_iterations
+        ).strip("\n")
+        tool_manifest_text = _tool_manifest_module.get_tool_manifest(allowed=allowed_tools)
+
+        rendered_profile = ""
+        if user_profile and isinstance(user_profile, dict):
+            rendered_profile = (user_profile.get("rendered_prompt") or "").strip()
+        has_user_profile = bool(_personalization_enabled() and rendered_profile)
+
+        rc = resolve_composition_sync(
+            f"react.{agent_role}",
+            conditions={"has_user_profile": has_user_profile},
+            template_vars={
+                "mode_block_text": mode_block_text,
+                "tool_manifest_text": tool_manifest_text,
+                "user_profile_text": rendered_profile,
+                "max_iterations": max_iterations,
+            },
+        )
+        if rc and rc.system_prompt.strip():
+            logger.info(
+                "[react] v2 composition prompt module=react_%s hash=%s", agent_role, rc.composition_hash
+            )
+            # Leading "\n" — matches the legacy f-string's own leading newline
+            # (an artifact of its layout, not of any block's content); see
+            # scratchpad/parity_check_composition.py for the verified derivation.
+            return "\n" + rc.system_prompt
+        return None
+    except Exception as exc:  # fail-soft: never break a turn on a resolution error
+        logger.warning("[react] v2 composition resolve failed (agent_role=%s), using hardcoded: %s", agent_role, exc)
+        return None
 
 
 # ── LLM call wrapper ──────────────────────────────────────────────────────

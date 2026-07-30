@@ -1744,13 +1744,31 @@ def _finalize_response(
     final_signal: str,
     last_tool: str | None,
     emitter=None,
+    *,
+    output_intent: str | None = None,
+    display_summary: str | None = None,
 ) -> None:
-    """Map ReAct output to ctx fields so run_integrate() works unchanged."""
+    """Map ReAct output to ctx fields so run_integrate() works unchanged.
+
+    ``output_intent``/``display_summary`` (SPEC_REACT_OUTPUT_INTENT.md,
+    2026-07-30) are keyword-only with a None default deliberately: only the
+    3 call sites that finalize a real LLM completion decision (the one that
+    went through the output-intent classification instruction) have real
+    values to pass. The other ~12 call sites (golden-answer tool exit, fast-
+    mode exit, task/no-tools mode, exhausted-iterations fallback, honest-
+    escalation) never saw that instruction and correctly leave these None —
+    not a gap, since there's no classification to thread from those paths.
+    """
     _sync_extra_out_to_context(ctx, emitter)
     ctx.plan = _make_react_plan(ctx)
     ctx.answers = [final_answer]
     ctx.usages = getattr(ctx, "usages", []) or []
     ctx.final_message = final_answer
+    # Set on every path (default None) so callers can rely on plain
+    # attribute access; only the 3 output-intent-classifying call sites
+    # (see the docstring above) pass a real value.
+    ctx.output_intent = output_intent
+    ctx.display_summary = display_summary
     # Phase 0.8: dedupe sources by (document_id, page_number) so the citation
     # list doesn't explode when multiple rounds cite the same document.
     ctx.sources = _dedupe_sources(all_sources) if all_sources else []
@@ -2058,12 +2076,17 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
     last_tool: str | None = None
     # 2026-05-06: pass user_profile so splice_user_profile appends
     # rendered_prompt to the planner/ReAct system prompt.
+    # This value is the default AND the fail-soft fallback for the v2
+    # composition path below (MOBIUS_PROMPT_SOURCE=composition) — computed
+    # once here exactly as before, so the flag-off path has zero behavior
+    # change (docs/REACT_PHASE_A_IMPLEMENTATION_PLAN.md).
     reasoning_system = _react_reasoning_system(
         max_it,
         mode_label,
         getattr(ctx, "user_profile", None),
         allowed_tools=getattr(ctx, "allowed_tools", None),
     )
+    _react_prompt_source_v2 = (os.environ.get("MOBIUS_PROMPT_SOURCE") or "").strip().lower() == "composition"
 
     # Phase 0.7: smart-retry guard — tracks failed attempts so we don't repeat
     # the same (tool, inputs) when no new evidence has come in, and enables
@@ -2131,6 +2154,24 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                         thread_id=ctx.thread_id,
                         user_id=getattr(ctx, "user_id", None),
                     ).to_dict())
+
+        # v2 composition path (Phase A, docs/REACT_PHASE_A_IMPLEMENTATION_PLAN.md):
+        # resolve per round via react_agent_role — react_explore/synthesize/draft
+        # currently hold IDENTICAL content (addressing/attribution infra only;
+        # does not drive temperature/content here, that's Phase B), so this is a
+        # resolution-frequency change, not a behavior change. Fail-soft: a miss
+        # or error leaves `reasoning_system` at its last-good value (the
+        # pre-loop legacy default on round 1, or the prior round's resolved
+        # value), never breaks the turn.
+        if _react_prompt_source_v2:
+            from app.pipeline.react.prompts import react_agent_role, resolve_react_system_prompt_v2
+            _agent_role = react_agent_role(iteration, max_it)
+            _resolved_system = resolve_react_system_prompt_v2(
+                max_it, mode_label, getattr(ctx, "user_profile", None),
+                getattr(ctx, "allowed_tools", None), _agent_role,
+            )
+            if _resolved_system is not None:
+                reasoning_system = _resolved_system
 
         reasoning_context = build_reasoning_context(
             ctx, tool_results, rn, max_iterations=max_it,
@@ -2272,6 +2313,12 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
 
         if is_complete or not tool:
             answer = decision.get("answer", "")
+            # SPEC_REACT_OUTPUT_INTENT.md (2026-07-30): only produced when the
+            # model actually completes via the react.output_intent_instruction
+            # block — absent/None on modes that never saw that instruction
+            # (task/no-tools) or on non-LLM-classified finalize paths.
+            output_intent = decision.get("output_intent")
+            display_summary = decision.get("display_summary")
             # Product-feedback (docs/feedback-agent-spec.md §6): honor the
             # planner's offer_feedback ONLY when a cadence signal was actually
             # injected this turn — the eligibility ceiling lives in code, so the
@@ -2323,6 +2370,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                         ).to_dict())
                     _finalize_response(
                         ctx, answer, all_sources, final_signal, last_tool, emitter,
+                        output_intent=output_intent, display_summary=display_summary,
                     )
                     return
 
@@ -2356,6 +2404,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                         )
                         _finalize_response(
                             ctx, answer, all_sources, final_signal, last_tool, emitter,
+                            output_intent=output_intent, display_summary=display_summary,
                         )
                         return
 
@@ -2404,6 +2453,11 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     # level, autonomy gating) on top of grounding.
                     from app.pipeline.personalization import splice_user_profile as _splice_critic
                     _critic_system = _splice_critic(CRITIC_SYSTEM_PROMPT, getattr(ctx, "user_profile", None))
+                    if _react_prompt_source_v2:
+                        from app.pipeline.react.critic import resolve_critic_system_prompt_v2
+                        _resolved_critic_system = resolve_critic_system_prompt_v2(getattr(ctx, "user_profile", None))
+                        if _resolved_critic_system is not None:
+                            _critic_system = _resolved_critic_system
                     critic_raw = _call_llm_json(
                         _critic_system,
                         build_critic_user_message(
@@ -2507,6 +2561,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     final_signal if final_signal != RETRIEVAL_SIGNAL_NO_SOURCES else "corpus_only",
                     last_tool,
                     emitter,
+                    output_intent=output_intent, display_summary=display_summary,
                 )
                 return
             # Empty answer but claimed complete — fall through to next iteration or exhaust
