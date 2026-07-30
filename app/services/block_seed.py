@@ -247,7 +247,13 @@ async def seed(conn) -> dict:
         row = await conn.fetchrow(_UPSERT_COMPOSITION, module_key, info["composition_hash"])
         if row is not None:  # freshly inserted; write its ordered members
             for pos, bk in enumerate(info["blocks"], start=1):
-                await conn.execute(_INSERT_MEMBER, row["id"], pos, bk, 1)
+                # pinned_version=NULL (not a hardcoded version): a 'validated' (not yet
+                # 'frozen') composition is meant to FLOAT to each block's latest active
+                # version — that's the whole point of the live-editable block system (a
+                # new block version takes effect with no redeploy, no composition edit).
+                # Pinning here would silently defeat that (caught live: a v2 block edit
+                # had no effect until this was found and fixed).
+                await conn.execute(_INSERT_MEMBER, row["id"], pos, bk, None)
             out[module_key] = {"seeded": True, "composition_hash": info["composition_hash"]}
         else:
             out[module_key] = {"seeded": False, "reason": "already present"}

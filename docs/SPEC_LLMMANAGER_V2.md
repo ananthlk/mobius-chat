@@ -3,7 +3,7 @@
 **Module owner:** LLM Agent
 **Coordinator:** Chat Architecture
 **Builds on:** `SPEC_LLM_MANAGER.md` (v1 — ratified, 5/5 DB gate, build sign-off). v2 evolves the prompt representation *before v1's schema lands*, so this is a greenfield schema revision, not a migration on live data.
-**Status:** ALL GATES CLOSED ✅ — Tech Health ✅ · Eval ✅ · Compliance ✅ · Database ✅ · Org ✅ (deferred) · Broadcaster ✅ (2026-07-26). **Build unblocked.**
+**Status:** ALL GATES CLOSED ✅ — Tech Health ✅ · Eval ✅ · Compliance ✅ · Database ✅ · Org ✅ (deferred) · Broadcaster ✅ (2026-07-26). **LIVE ON DEV** (2026-07-26) — see `RUNBOOK_V2_DEPLOY.md` for the deploy record and `docs/STATUS_V2_LIVE_2026-07-26.md` for the full architect-facing status. Serving revision `mobius-chat-00592-8r7`, `MOBIUS_PROMPT_SOURCE=composition`, verified via a real production turn (`composition_hash c0c6f950690db74b`) and a live screenshot of the v2 tabbed-bubble UI rendering it. Remaining work is incremental (transform endpoint, bubble-backend cutover, AC-v2-11), not gating.
 
 ---
 

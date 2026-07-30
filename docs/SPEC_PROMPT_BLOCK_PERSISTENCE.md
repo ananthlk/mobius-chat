@@ -1,8 +1,8 @@
 # SPEC — Prompt Block Persistence (blocks · versions · compositions)
 
 **Owner:** LLMManager (authors schema + read path; owns `prompt_blocks.py` / `BlockAssembler`)
-**Gate:** **Database seat (Platform Architects — DB) must ratify the DDL before the migration lands** — same gate mig 049 (`prompt_templates`) passed 5/5 on 2026-07-25.
-**Status:** DRAFT for DB-seat review. No migration file committed until ratified.
+**Gate:** **Database seat (Platform Architects — DB) ratified the DDL 2026-07-26** — same gate mig 049 (`prompt_templates`) passed 5/5 on 2026-07-25. Tech Health additionally required the composition-snapshot registry (§6) and the full-sha256 hash (both implemented) as landing conditions.
+**Status:** **RATIFIED + LIVE ON DEV.** Migration 053 applied 2026-07-26 (`mobius-os-dev:us-central1:mobius-platform-dev-db`, db `mobius_chat`). Both triggers (`tg_authority_immutable_kind`, `tg_block_body_immutable`) verified firing against the live DB (functional probes, not just DDL review). `factual` + `blended` enricher compositions seeded and resolving in production. See `docs/STATUS_V2_LIVE_2026-07-26.md` for the full verification record.
 **Why:** the v2 composable-block engine (`app/services/prompt_blocks.py`) is built and tested, but **blocks live only in code today** — `Block(...)` literals. To manage prompts through the Composition Studio (author/version/sequence blocks per agent), blocks and their per-agent orderings must be **persisted, versioned, and validated in the DB**, and `BlockAssembler` must read from those rows.
 
 ---

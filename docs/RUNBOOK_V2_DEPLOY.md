@@ -1,8 +1,18 @@
 # Runbook — deploy v2 modular-prompt enrichment to GCP dev (+ live test)
 
-**Status:** STAGED. Every step below is push-button EXCEPT step 0, which gates all of it.
-**Blocker (step 0):** Database hands over the Q3/Q4 trigger DDL → migration 053 lands. Until then, the block tables don't exist and steps 2–6 cannot run.
-**Owner:** LLMManager (steps 0–4, 6) · Chat front end (step 5).
+**Status:** ✅ **COMPLETE — LIVE ON DEV** (2026-07-26). All 6 steps executed. Serving revision `mobius-chat-00592-8r7`, `MOBIUS_PROMPT_SOURCE=composition`, verified via a real production turn (log: `[integrator] v2 composition prompt module=integrator_enricher_blended hash=c0c6f950690db74b`) and a live screenshot of the v2 tabbed-bubble UI (Summary/Citations/Corrections/Follow-up/Tasks/Diagnostics) rendering it correctly, including gaps-routing and a real correction firing.
+**Owner:** LLMManager (steps 0–4, 6) · Chat front end (step 5, banked green ahead of need).
+
+## §0 — Four real bugs found and fixed during rollout (read before your next deploy)
+
+Getting from "flag is set" to "actually running" took four independent fixes, each caught by verifying rather than assuming a step worked:
+
+1. **Log-query mistake (mine).** `mobius-chat` logs structured JSON — the message is under `jsonPayload.message`, not `textPayload`. Early verification attempts silently matched nothing and looked like the pipeline was stuck. **Always query `jsonPayload.message` on this service.**
+2. **Prompt-mode coverage gap.** The initial cutover only wired the `factual` consolidator type; live dev traffic defaults to a canonical score of 0.50 → `blended` mode, which never touched the composed prompt. Fixed by generalizing the block decomposition to cover any mode and seeding `integrator_enricher_blended` too (§ below). **Any future mode/consolidator-type addition needs its own composition seeded — nothing falls back to "compose it anyway."**
+3. **`deploy.sh`'s `SET_ENV_VARS` is a hardcoded allowlist array, separate from `deploy/<env>.env`.** Adding a var to `dev.env` is necessary but NOT sufficient — it must ALSO be added as an explicit line in `scripts/deploy.sh`'s `SET_ENV_VARS` array, or it's silently absent from every deploy no matter what's in the env file. (This predates v2 — even `MOBIUS_INTEGRATOR_PARALLEL_PCT` had this exposure.) **Fixed** — `MOBIUS_PROMPT_SOURCE` is now in both places.
+4. **DB password injection.** Cloud Run's `CHAT_RAG_DATABASE_URL` carries no password (unix-socket DSN); the password must be regex-injected from the `CHAT_DB_PASSWORD` secret, exactly as `app/db_client._get_fallback_url` already does for the rest of the app. My first sync-resolver implementation used a different (broken) approach and silently fail-soft'ed to the old hardcoded prompt with no error visible to a user. **Fixed** — `prompt_manager._connect_sync` now calls `_get_fallback_url` directly instead of re-deriving the same logic.
+
+None of these broke a live user turn — the fail-soft design degraded to the pre-v2 prompt each time, which is why they were only caught by explicit log verification, not by a turn failing.
 
 ---
 
