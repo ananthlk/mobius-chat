@@ -11,15 +11,16 @@ today's `react_max_iterations_for_mode()`/`is_guidance_round()`/
 The flag is the ONLY thing authorized to bypass the existing critic gates —
 nothing in this module bypasses them independently.
 
-Scope note: this module does NOT touch composition selection
-(`react_agent_role()` / `resolve_react_system_prompt_v2()`). That's a
-separate, still-open question with Chat Architecture (does `directive`
-replace the live round-position-based composition selector, or does the
-existing selector keep running as infrastructure while `directive` is a
-new, orthogonal signal). Until that's answered, `directive` only controls
-round CONTROL FLOW (continue/extend/finalize) and the new
-`round_directive` context-message text — it does not affect which
-DB-backed composition resolves each round.
+Scope note: this module DOES now touch composition selection, per Chat
+Architecture's ruling, 2026-07-30 (option (b), confirmed): `directive`
+REPLACES `react_agent_role()` as the live selector for the
+react_explore/synthesize/draft compositions (see
+`_DIRECTIVE_TO_AGENT_ROLE`/`directive_to_agent_role()` below) — the
+selector logic changed, the 3 compositions themselves did not (still
+byte-identical content; Phase B/temperature-routing stays closed,
+`directive` owns that intent now). The actual selector swap lives in
+react_loop.py's composition-resolution block, not in this module —
+this file only supplies the mapping function.
 """
 from __future__ import annotations
 

@@ -272,6 +272,10 @@ SET_ENV_VARS=(
     # ALSO be listed here or gcloud never sees it (caught live: MOBIUS_PROMPT_SOURCE
     # was in dev.env but silently absent from every deploy until this line landed).
     "MOBIUS_PROMPT_SOURCE=${MOBIUS_PROMPT_SOURCE:-}"
+    # Product Promise round governor (2026-07-30). Same allowlist
+    # requirement as MOBIUS_PROMPT_SOURCE above — being in
+    # deploy/${ENV_LABEL}.env is not enough, must be listed here too.
+    "MOBIUS_PRODUCT_PROMISE_ENABLED=${MOBIUS_PRODUCT_PROMISE_ENABLED:-}"
     # Secret Manager loader needs this to know which project to fetch
     # secrets from. Cloud Run sets GOOGLE_CLOUD_PROJECT automatically,
     # but CHAT_GCP_PROJECT wins if set — useful during debugging.

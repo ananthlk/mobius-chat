@@ -2194,6 +2194,10 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 extension_rounds_available=_pp_contract.max_extension_rounds - _pp_extension_rounds_used,
             )
             _pp_pre_directive, _pp_pre_reason = evaluate(_pp_contract, _pp_pre_state)
+            logger.info(
+                "[react] product_promise directive=%s round=%d/%d elapsed_s=%.1f reason=%s",
+                _pp_pre_directive, rn, max_it, _pp_elapsed_s, _pp_pre_reason,
+            )
 
         # v2 composition path (Phase A, docs/REACT_PHASE_A_IMPLEMENTATION_PLAN.md):
         # resolve per round via react_agent_role (flag off / governor off) or
@@ -2472,6 +2476,8 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                         })
                         continue
 
+                    logger.info("[react] product_promise directive=%s round=%d reason=%s", _pp_directive, rn, _pp_reason)
+
                     if _pp_directive == "finalize":
                         # Same "Groundedness notice" ship-with-warning
                         # content as the existing critic_enabled() path
@@ -2495,6 +2501,15 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     # logic below unchanged (which may still independently
                     # run the optional critic_enabled() path — intentional,
                     # per Chat Architecture: that path stays untouched).
+                elif _pp_enabled and _pp_contract is not None:
+                    # confidence_bar == "low" (quick mode): trust the
+                    # self-reported completion as today, no added critic
+                    # call. Telemetry-only marker so downstream analytics
+                    # sees "complete" uniformly across every mode instead of
+                    # None for quick mode vs. an explicit directive
+                    # everywhere else — doesn't affect gating (Product
+                    # Promise, 2026-07-30).
+                    ctx.product_promise_directive = "complete"
 
                 # ── Critic gate (Phase groundedness-v1) ──────────────
                 # Before finalizing, audit the draft against collected
