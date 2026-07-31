@@ -96,6 +96,7 @@ Signal = Literal[
     "mcp_skill_invoked",              # derivable from tool_called
     "healthcare_query_no_match",      # rare; kept chat-side for now
     "retrieval_trace",                # corpus_search skill telemetry — diagnostic UI panel
+    "react_trace",                    # react loop telemetry (governor/critic/unfinished) — diagnostic UI panel
     "note",                           # generic fallback — plain-text emits migrated later
 
     # ── Thinking-chain trace (2026-05-04) ──────────────────────────────
@@ -285,6 +286,77 @@ def make_retrieval_trace(
         },
         note=note,
         round=round,
+        thread_id=thread_id,
+        report_to_task_manager=False,
+    )
+
+
+def make_react_trace(
+    correlation_id: str,
+    *,
+    mode: str,
+    max_rounds: int,
+    rounds_used: int,
+    governor_enabled: bool,
+    rounds: list[dict[str, Any]],
+    groundedness_floor_ran: bool = False,
+    groundedness_passed: bool | None = None,
+    final_directive: str | None = None,
+    unfinished_reason: str | None = None,
+    unfinished_summary: str | None = None,
+    unblock_ask: str | None = None,
+    total_elapsed_s: float | None = None,
+    hard_ceiling_s: float | None = None,
+    thread_id: str | None = None,
+) -> EmitEnvelope:
+    """React-loop trace emitted once per turn (2026-07-31).
+
+    Analogous to ``make_retrieval_trace`` — same diagnostic-only tier,
+    same "one panel per subsystem" pattern in the Diagnostics tab. Before
+    this, the governor's directive+reason (react_loop.py's actual
+    per-round decision) only reached server logs; the user-facing
+    thinking trail showed nothing but the static positional headline
+    (_react_round_headline). This surfaces the real reasoning.
+
+    ``rounds``: one dict per round, e.g.
+        {"round": 2, "directive": "consolidate", "reason": "...",
+         "agent_role": "synthesize", "composition_id": 26, "elapsed_s": 70.9}
+    ``directive``/``reason`` are None per-round when the governor is off
+    (MOBIUS_PRODUCT_PROMISE_ENABLED=false) — agent_role/composition_id
+    still populate either way.
+
+    Diagnostic-only: ``report_to_task_manager=False``, same tier as
+    ``critic_approved``/``retrieval_trace`` — useful for debugging turn
+    behavior, not a top-level dashboard event.
+    """
+    parts = [f"{mode} · {rounds_used}/{max_rounds} round(s)"]
+    if final_directive:
+        parts.append(final_directive)
+    if unfinished_reason:
+        parts.append(f"unfinished: {unfinished_reason}")
+    if groundedness_floor_ran:
+        parts.append(f"groundedness {'passed' if groundedness_passed else 'flagged'}")
+    note = "→ " + " · ".join(parts)
+    return EmitEnvelope(
+        signal="react_trace",
+        correlation_id=correlation_id,
+        step_id="react_trace",
+        data={
+            "mode": mode,
+            "max_rounds": max_rounds,
+            "rounds_used": rounds_used,
+            "governor_enabled": governor_enabled,
+            "rounds": rounds,
+            "groundedness_floor_ran": groundedness_floor_ran,
+            "groundedness_passed": groundedness_passed,
+            "final_directive": final_directive,
+            "unfinished_reason": unfinished_reason,
+            "unfinished_summary": unfinished_summary,
+            "unblock_ask": unblock_ask,
+            "total_elapsed_s": total_elapsed_s,
+            "hard_ceiling_s": hard_ceiling_s,
+        },
+        note=note,
         thread_id=thread_id,
         report_to_task_manager=False,
     )

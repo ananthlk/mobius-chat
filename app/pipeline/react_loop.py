@@ -1816,6 +1816,42 @@ def _finalize_response(
     if _all_hints:
         ctx.tool_section_hints = _all_hints
 
+    # react_trace diagnostics panel (2026-07-31) — one per turn, same
+    # "diagnostic-only, doesn't affect the answer" tier as retrieval_trace.
+    # Defensive: a bug in trace-building must never break the actual
+    # finalize this function exists for. Guarded on react_trace_rounds
+    # being non-empty so this is a no-op for finalize paths that never
+    # entered the round loop at all (e.g. a pre-loop short-circuit).
+    try:
+        _rounds = getattr(ctx, "react_trace_rounds", None)
+        if _rounds:
+            import time as _rt_time_mod
+            from app.communication.emit_envelope import make_react_trace
+            from app.pipeline.react.governor import product_promise_enabled as _rt_pp_enabled_fn
+            _rt_start = getattr(ctx, "react_turn_start_monotonic", None)
+            _rt_elapsed = (_rt_time_mod.monotonic() - _rt_start) if _rt_start is not None else None
+            env = make_react_trace(
+                correlation_id=ctx.correlation_id,
+                mode=react_chat_mode_label(getattr(ctx, "chat_mode", None)),
+                max_rounds=getattr(ctx, "react_max_rounds", None) or len(_rounds),
+                rounds_used=getattr(ctx, "react_rounds_used", None) or len(_rounds),
+                governor_enabled=_rt_pp_enabled_fn(),
+                rounds=_rounds,
+                groundedness_floor_ran=bool(getattr(ctx, "react_groundedness_floor_ran", False)),
+                groundedness_passed=getattr(ctx, "react_groundedness_passed", None),
+                final_directive=getattr(ctx, "product_promise_directive", None),
+                unfinished_reason=getattr(ctx, "react_unfinished_reason", None),
+                unfinished_summary=getattr(ctx, "react_unfinished_summary", None),
+                unblock_ask=getattr(ctx, "react_unblock_ask", None),
+                total_elapsed_s=round(_rt_elapsed, 1) if _rt_elapsed is not None else None,
+                thread_id=ctx.thread_id,
+            )
+            chunks = getattr(ctx, "thinking_chunks", None)
+            if isinstance(chunks, list):
+                chunks.append(env.to_dict())
+    except Exception as _rt_exc:  # pragma: no cover — defensive, matches _maybe_emit_retrieval_trace
+        logger.debug("react_trace emit failed: %s", _rt_exc)
+
 
 # ---------------------------------------------------------------------------
 # ReAct main loop
@@ -2122,10 +2158,25 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
     _pp_enabled = _pp_enabled_fn()
     _pp_contract = None
     _pp_turn_start = _pp_time_mod.monotonic()
+    # Stashed unconditionally (not just when the governor is on) so
+    # _finalize_response can report total elapsed time in the react_trace
+    # diagnostics panel regardless of MOBIUS_PRODUCT_PROMISE_ENABLED.
+    ctx.react_turn_start_monotonic = _pp_turn_start
     _pp_extension_rounds_used = 0
     if _pp_enabled:
         from app.pipeline.react.governor import default_contract_for_mode
         _pp_contract = default_contract_for_mode(mode_label)
+
+    # react_trace diagnostics panel (see make_react_trace, emit_envelope.py)
+    # — per-round entries collected as the loop runs, emitted once at turn
+    # end by _finalize_response. Populated regardless of governor flag
+    # state (directive/reason are just None per-round when it's off).
+    ctx.react_trace_rounds = []
+    ctx.react_groundedness_floor_ran = False
+    ctx.react_groundedness_passed = None
+    ctx.react_unfinished_reason = None
+    ctx.react_unfinished_summary = None
+    ctx.react_unblock_ask = None
 
     # Phase 0.7: smart-retry guard — tracks failed attempts so we don't repeat
     # the same (tool, inputs) when no new evidence has come in, and enables
@@ -2184,9 +2235,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         # the loop takes (finalize, break, exception-to-integrator
         # fallback), _publish_completed reads the correct round count.
         ctx.react_rounds_used = rn
-        headline = _react_round_headline(iteration, max_it)
-        emit(f"  Round {rn}/{max_it} — {headline}")
-        emit(f"  Reasoning round {rn}/{max_it}…")
+        ctx.react_max_rounds = max_it
 
         # Structured signal at the guidance-mode transition.
         if not _guidance_mode_emitted:
@@ -2232,6 +2281,20 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 _pp_pre_directive, rn, max_it, _pp_elapsed_s, _pp_pre_reason,
             )
 
+        # Round headline: prefer the governor's real per-round reasoning
+        # (directive + reason) over the static positional label
+        # (_react_round_headline — "Scoping"/"Grounding"/etc, which is keyed
+        # purely on round index+mode and doesn't reflect what's actually
+        # happening this round). Same underlying data now also collected
+        # into ctx.react_trace_rounds below for the react_trace diagnostics
+        # panel — this is the user-facing half of the same fix.
+        if _pp_pre_directive is not None:
+            headline = f"{_pp_pre_directive} — {_pp_pre_reason}"
+        else:
+            headline = _react_round_headline(iteration, max_it)
+        emit(f"  Round {rn}/{max_it} — {headline}")
+        emit(f"  Reasoning round {rn}/{max_it}…")
+
         # v2 composition path (Phase A, docs/REACT_PHASE_A_IMPLEMENTATION_PLAN.md):
         # resolve per round via react_agent_role (flag off / governor off) or
         # the governor's directive (flag on) — react_explore/synthesize/draft
@@ -2239,6 +2302,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         # Fail-soft: a miss or error leaves `reasoning_system` at its last-good
         # value (the pre-loop legacy default on round 1, or the prior round's
         # resolved value), never breaks the turn.
+        _agent_role = None
         if _react_prompt_source_v2:
             from app.pipeline.react.prompts import react_agent_role, resolve_react_system_prompt_v2
             if _pp_enabled and _pp_pre_directive is not None:
@@ -2259,6 +2323,20 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             # prior value, so the attribution must stay in sync with it —
             # resetting composition_id/hash to None here would misattribute
             # a still-composition-sourced prompt as legacy/untracked.
+
+        # Per-round entry for the react_trace diagnostics panel (see
+        # make_react_trace in emit_envelope.py). Collected on ctx (like
+        # ctx.react_tool_results/react_last_tool above) so _finalize_response
+        # can build+emit the trace once at turn end without every one of
+        # its ~15 call sites needing a new parameter.
+        ctx.react_trace_rounds.append({
+            "round": rn,
+            "directive": _pp_pre_directive,
+            "reason": _pp_pre_reason,
+            "agent_role": _agent_role,
+            "composition_id": _reasoning_composition_id,
+            "elapsed_s": round(_pp_elapsed_s, 1) if _pp_enabled else None,
+        })
 
         # Governor active → suppress the old round-index guidance instruction
         # rather than let it collide with round_directive below. The two
@@ -2485,6 +2563,11 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     )
                     _pp_critique = _pp_parse_critic(_pp_critic_raw)
                     _pp_groundedness_passed = not _pp_critique.has_blocking_issues
+                    # react_trace diagnostics: record that the mandatory floor
+                    # actually ran + its verdict, distinct from the separate
+                    # (optional) critic_enabled()-gated path below.
+                    ctx.react_groundedness_floor_ran = True
+                    ctx.react_groundedness_passed = _pp_groundedness_passed
 
                     _pp_elapsed_s = _pp_time_mod.monotonic() - _pp_turn_start
                     _pp_post_state = RoundState(
@@ -3065,6 +3148,11 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
     if _uf_reason in ("need_more_time", "need_more_info", "no_path_forward"):
         _uf_summary = (decision.get("unfinished_summary") or "").strip()
         _uf_unblock = (decision.get("unblock_ask") or "").strip()
+        # react_trace diagnostics: record the self-report regardless of
+        # which rendering branch below actually fires.
+        ctx.react_unfinished_reason = _uf_reason
+        ctx.react_unfinished_summary = _uf_summary or None
+        ctx.react_unblock_ask = _uf_unblock or None
         parts = [_uf_summary] if _uf_summary else []
         if _uf_reason == "need_more_time" and mode_label != "agentic":
             parts.append(
