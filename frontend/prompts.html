@@ -170,7 +170,7 @@
     <div class="topbar">
       <h1>Prompt Studio</h1>
       <span class="topbar-sub" id="topbarSub">Blocks</span>
-      <span class="actor">Acting as <b id="actorName"></b></span>
+      <span class="actor">Acting as <input id="actorInput" type="text" placeholder="your name" style="width:110px;border:1px solid var(--border-strong);border-radius:6px;padding:3px 6px;font-size:11.5px;background:var(--card);color:var(--text-1);font-family:var(--sans)"/></span>
     </div>
     <div class="body">
       <div class="screen active" id="screen-blocks">
@@ -190,9 +190,13 @@
 
 <script>
 const API = '';
-let actor = localStorage.getItem('mobius.prompts.actor');
-if (!actor) { actor = window.prompt('Your name (for version/actor attribution):') || 'unknown'; localStorage.setItem('mobius.prompts.actor', actor); }
-document.getElementById('actorName').textContent = actor;
+let actor = localStorage.getItem('mobius.prompts.actor') || 'unknown';
+const actorInput = document.getElementById('actorInput');
+actorInput.value = actor;
+actorInput.addEventListener('input', () => {
+  actor = actorInput.value.trim() || 'unknown';
+  localStorage.setItem('mobius.prompts.actor', actor);
+});
 
 function esc(s) { return (s == null ? '' : String(s)).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function fmtNum(n, d=1) { return (n === null || n === undefined) ? '—' : Number(n).toFixed(d); }
