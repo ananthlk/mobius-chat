@@ -2581,6 +2581,15 @@ class SkillLLMRequest(BaseModel):
     correlation_id: str | None = None
     thread_id: str | None = None
     mode: str | None = None
+    # v2 composable-block path (migration 054 prompt_address decoupling):
+    # when set, ``system`` is resolved server-side from the live composition
+    # instead of the caller's raw string — lets sibling services (RAG, QA)
+    # get the same DB-backed, hot-editable prompts chat's own call-sites use,
+    # without vendoring the block-resolution logic into their own repo.
+    # Falls back to ``system`` if no active composition matches (never a
+    # hard failure). ``stage`` stays the bandit-arm identifier either way.
+    prompt_address: str | None = None
+    template_vars: dict | None = None
 
 
 @app.post("/internal/skill-llm")
@@ -2609,7 +2618,25 @@ async def internal_skill_llm(
             detail=f"Invalid stage; allowed: {sorted(_SKILL_LLM_ALLOWED_STAGES)}",
         )
 
-    prompt = f"{body.system}\n\n{body.user}"
+    system_text = body.system
+    composition_id: int | None = None
+    composition_hash: str | None = None
+    addr = (body.prompt_address or "").strip()
+    if addr:
+        from app.services.prompt_manager import PromptManager
+        try:
+            rc = await PromptManager().resolve_composition(
+                addr, body.template_vars or {}, conditions={},
+            )
+        except Exception:
+            logger.warning("[skill-llm] composition resolve failed for prompt_address=%r; falling back to body.system", addr, exc_info=True)
+            rc = None
+        if rc is not None:
+            system_text = rc.system_prompt
+            composition_id = rc.composition_id
+            composition_hash = rc.composition_hash
+
+    prompt = f"{system_text}\n\n{body.user}"
     from app.services import llm_manager
 
     try:
@@ -2620,6 +2647,8 @@ async def internal_skill_llm(
             correlation_id=(body.correlation_id or "").strip() or None,
             thread_id=(body.thread_id or "").strip() or None,
             mode=(body.mode or "").strip() or None,
+            composition_id=composition_id,
+            composition_hash=composition_hash,
         )
     except asyncio.TimeoutError as e:
         raise HTTPException(
