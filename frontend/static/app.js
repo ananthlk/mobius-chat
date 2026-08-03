@@ -3496,12 +3496,21 @@ function formatTok(n) {
   return String(n);
 }
 function syncQueriesDumpVisibility(profile) {
+  const show = getShowLlmPerformance(profile);
   const launch = document.getElementById("drawerQueriesDumpLaunch");
-  if (!launch)
-    return;
-  launch.hidden = !getShowLlmPerformance(profile);
+  if (launch)
+    launch.hidden = !show;
+  const promptStudio = document.getElementById("drawerPromptStudioLaunch");
+  if (promptStudio)
+    promptStudio.hidden = !show;
 }
 function setupLlmRouterReportUI() {
+  const promptStudioBtn = document.getElementById("btnPromptStudio");
+  if (promptStudioBtn) {
+    promptStudioBtn.addEventListener("click", () => {
+      window.open(API_BASE + "/admin/prompts", "_blank", "noopener");
+    });
+  }
   const btn = document.getElementById("btnLlmRouterReport");
   const modal = document.getElementById("llmRouterReportModal");
   const body = document.getElementById("llmRouterReportBody");

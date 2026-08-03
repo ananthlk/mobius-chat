@@ -1405,12 +1405,22 @@ function formatTok(n: number): string {
     the user has the llm_performance flag/override on, mirroring how
     the LLM-performance UI bits are conditionally rendered. */
 function syncQueriesDumpVisibility(profile: MobiusChatUserProfile | null): void {
+  const show = getShowLlmPerformance(profile);
   const launch = document.getElementById("drawerQueriesDumpLaunch");
-  if (!launch) return;
-  launch.hidden = !getShowLlmPerformance(profile);
+  if (launch) launch.hidden = !show;
+  // Prompt Studio (v0) — same admin-ish gate; backend /admin/prompts is separately admin-gated.
+  const promptStudio = document.getElementById("drawerPromptStudioLaunch");
+  if (promptStudio) promptStudio.hidden = !show;
 }
 
 function setupLlmRouterReportUI(): void {
+  // Prompt Studio (v0) launch — opens the admin composable-prompt-block UI in a new tab.
+  const promptStudioBtn = document.getElementById("btnPromptStudio");
+  if (promptStudioBtn) {
+    promptStudioBtn.addEventListener("click", () => {
+      window.open(API_BASE + "/admin/prompts", "_blank", "noopener");
+    });
+  }
   const btn = document.getElementById("btnLlmRouterReport");
   const modal = document.getElementById("llmRouterReportModal");
   const body = document.getElementById("llmRouterReportBody");

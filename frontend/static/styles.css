@@ -10879,3 +10879,17 @@ body.landing-state .composer-landing-chips {
   padding: 0 2px; flex-shrink: 0; line-height: 1;
 }
 .notif-close:hover { color: var(--text-primary); }
+
+/* Small inline "v0" badge next to a drawer launch button label. */
+.drawer-inline-badge {
+  display: inline-block;
+  margin-left: 0.4em;
+  padding: 0.05em 0.4em;
+  border-radius: 4px;
+  font-size: 0.7em;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  vertical-align: middle;
+  background: rgba(124, 58, 237, 0.12);
+  color: var(--mobius-violet, #7c3aed);
+}
