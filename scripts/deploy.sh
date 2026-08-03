@@ -288,6 +288,9 @@ SET_ENV_VARS=(
 SET_SECRETS=(
     "GROQ_API_KEY=groq-api-key:latest"
     "ANTHROPIC_API_KEY=anthropic-api-key:latest"
+    # Perplexity sonar-pro — scoped to rag_strategy_c_validate only
+    # (see model_registry.py MODEL_ROSTER["sonar-pro"] for why).
+    "PERPLEXITY_API_KEY=perplexity-api-key:latest"
     "JWT_SECRET=jwt-secret:latest"
     # Beta: postgres superuser password for direct Cloud SQL connect.
     # Injected into CHAT_RAG_DATABASE_URL at connect time by db_client.

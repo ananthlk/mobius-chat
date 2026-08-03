@@ -68,6 +68,9 @@ def _provider_from_spec(spec) -> "Any":
     elif spec.provider == "together":
         from app.services.llm_provider import TogetherProvider
         return TogetherProvider(model=spec.model_id)
+    elif spec.provider == "perplexity":
+        from app.services.llm_provider import PerplexityProvider
+        return PerplexityProvider(model=spec.model_id)
     else:
         # Unknown provider — fall back to configured default
         return get_llm_provider(parser=False)

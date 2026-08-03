@@ -48,7 +48,7 @@ from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
-ProviderType = Literal["vertex", "groq", "anthropic", "openai", "ollama", "together"]
+ProviderType = Literal["vertex", "groq", "anthropic", "openai", "ollama", "together", "perplexity"]
 
 EXPLORATION_INTERVAL = 20     # every N turns per stage, force least-sampled model
 CIRCUIT_BREAKER_ERROR = 0.20  # hard error rate threshold → pull from rotation
@@ -1238,6 +1238,45 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         ema_cost_usd=0.075,
     ),
 
+    # ── PERPLEXITY (live web-grounded — real citations, not self-reported) ────
+    # Scoped ONLY to rag_strategy_c_validate: Filler C's "LLM answers from its
+    # own knowledge, then we validate the citation against our corpus"
+    # strategy was root-caused to fabricate plausible-but-wrong payer-specific
+    # numbers (Vertex Gemini pattern-matches to generic industry norms) with a
+    # matching fabricated citation. Perplexity's sonar-pro searches the live
+    # web per-request and returns provider-verified source URLs (see
+    # ``citations`` in usage_dict, llm_provider.PerplexityProvider) —
+    # reproduced correct on 2 real payer-specific questions against a live
+    # page, independently WebFetch-verified. Not rostered onto any other
+    # stage: this is a targeted fix for one strategy's grounding gap, not a
+    # general-purpose reasoning swap-in.
+    #
+    # hipaa_eligible=False is load-bearing, not a placeholder — Perplexity
+    # has no BAA. Router hard constraint (see module docstring) already
+    # excludes non-hipaa_eligible models whenever phi_detected=True.
+    # Idle when PERPLEXITY_API_KEY is unset (auto_enable_from_env gates this).
+    #
+    # Pricing/context-window figures below are approximate (Perplexity's
+    # published sonar-pro figures, per-request search fee not modeled) —
+    # fine for bandit cost-scoring priors, not billing-accurate.
+
+    "sonar-pro": ModelSpec(
+        model_id="sonar-pro",
+        provider="perplexity",
+        display_name="Perplexity Sonar Pro",
+        enabled=False,
+        hipaa_eligible=False,
+        eligible_stages=["rag_strategy_c_validate"],
+        spec_tokens_per_sec=60.0,
+        spec_context_k=200,
+        spec_input_per_1m_usd=3.00,
+        spec_output_per_1m_usd=15.00,
+        benchmark_category="frontier_fast",
+        ema_quality=0.6,
+        ema_latency_ms=4000.0,
+        ema_cost_usd=0.01,
+    ),
+
     # ── TOGETHER.AI (big open-source, cheap) ──────────────────────────────────
 
     "meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo": ModelSpec(
@@ -2041,6 +2080,7 @@ def auto_enable_from_env() -> None:
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     together_key  = os.environ.get("TOGETHER_API_KEY", "").strip()
     openai_key    = os.environ.get("OPENAI_API_KEY", "").strip()
+    perplexity_key = os.environ.get("PERPLEXITY_API_KEY", "").strip()
 
     enabled = []
     ollama_available: set[str] | None = None
@@ -2057,6 +2097,9 @@ def auto_enable_from_env() -> None:
             spec.enabled = True
             enabled.append(spec.model_id)
         elif spec.provider == "openai" and openai_key:
+            spec.enabled = True
+            enabled.append(spec.model_id)
+        elif spec.provider == "perplexity" and perplexity_key:
             spec.enabled = True
             enabled.append(spec.model_id)
         elif spec.provider == "ollama":

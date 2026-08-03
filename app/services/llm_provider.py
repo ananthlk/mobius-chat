@@ -1076,6 +1076,102 @@ def _together_factory(config: Dict[str, Any]) -> LLMProvider:
 register_provider("together", _together_factory)
 
 
+class PerplexityProvider(LLMProvider):
+    """Perplexity — OpenAI-compatible chat completions with live web grounding.
+
+    Unlike the other REST providers here, Perplexity's ``sonar``/``sonar-pro``
+    models search the live web per-request and return a ``citations`` array of
+    real, fetched source URLs alongside the answer — not the model's own
+    self-reported (and frequently fabricated) in-text citations. That array
+    rides through ``generate_with_usage``'s usage dict (see ``usage.py``) so
+    callers like RAG's Filler C can cross-check its own citation claims
+    against provider-verified URLs instead of trusting the model's text.
+
+    Not HIPAA-eligible (no Anthropic-style BAA) — ``ModelSpec.hipaa_eligible``
+    for perplexity entries in model_registry.py MUST stay False so the router
+    excludes this provider whenever phi_detected=True.
+    """
+
+    def __init__(self, model: str = "sonar-pro"):
+        import os
+        from app.secrets_loader import get_secret
+        self.model = model
+        self.api_key = (get_secret("PERPLEXITY_API_KEY") or "").strip()
+        if not self.api_key:
+            raise ValueError(
+                "PERPLEXITY_API_KEY not set. Add to .env (dev) or populate "
+                "Secret Manager secret 'perplexity-api-key' (hosted): "
+                "PERPLEXITY_API_KEY=pplx-..."
+            )
+        self.base_url = "https://api.perplexity.ai"
+        self.timeout = float(os.environ.get("LLM_TIMEOUT_SECONDS", "60"))
+
+    async def generate(self, prompt: str, **kwargs) -> str:
+        text, _ = await self.generate_with_usage(prompt, **kwargs)
+        return text
+
+    async def stream_generate(self, prompt: str, **kwargs):
+        text = await self.generate(prompt, **kwargs)
+        yield text
+
+    async def generate_with_usage(
+        self, prompt: str, **kwargs
+    ) -> tuple[str, LLMUsageDict]:
+        max_out = int(kwargs.get("max_tokens", 4096))
+        temp = float(kwargs.get("temperature", 0.1))
+        body = json.dumps({
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": temp,
+            "max_tokens": max_out,
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+            method="POST",
+        )
+
+        def _call() -> tuple[str, LLMUsageDict]:
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                body_text = ""
+                try:
+                    body_text = e.read().decode("utf-8")
+                except Exception:
+                    pass
+                raise Exception(f"Perplexity API error {e.code}: {body_text}") from e
+            text = (
+                (data.get("choices", [{}])[0].get("message", {}).get("content", ""))
+                or ""
+            )
+            citations = data.get("citations")
+            if not isinstance(citations, list):
+                citations = None
+            u = data.get("usage", {}) or {}
+            return text, usage_dict(
+                provider="perplexity",
+                model=self.model,
+                input_tokens=int(u.get("prompt_tokens") or 0),
+                output_tokens=int(u.get("completion_tokens") or 0),
+                citations=citations,
+            )
+
+        return await asyncio.to_thread(_call)
+
+
+def _perplexity_factory(config: Dict[str, Any]) -> LLMProvider:
+    return PerplexityProvider(model=config.get("model") or "sonar-pro")
+
+
+register_provider("perplexity", _perplexity_factory)
+
+
 def get_llm_provider(parser: bool = False) -> LLMProvider:
     """Get LLM provider from chat config only (CHAT_LLM_*, VERTEX_*, OLLAMA_*). Does not use RAG config.
     Called by: worker (process_one → _answer_for_subquestion → answer_non_patient), planner (parse), responder (final).
