@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Prompt Studio — Mobius</title>
+  <link rel="icon" href="static/logo.svg" type="image/svg+xml"/>
+  <style>
+    :root {
+      --violet:#7c3aed; --violet-hover:#6d28d9; --violet-wash:rgba(124,58,237,.08);
+      --emerald:#059669; --emerald-wash:rgba(5,150,105,.10);
+      --amber:#b45309;  --amber-wash:rgba(180,83,9,.10);
+      --red:#dc2626;    --red-wash:rgba(220,38,38,.10);
+      --text-1:#111827; --text-2:#374151; --text-3:#6b7280;
+      --bg:#f9fafb; --surface:#ffffff; --border:rgba(0,0,0,.09);
+      --border-strong:rgba(0,0,0,.14); --radius:10px;
+      --font:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+      --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    }
+    @media (prefers-color-scheme:dark) {
+      :root {
+        --violet:#a78bfa; --violet-hover:#c4b5fd; --violet-wash:rgba(167,139,250,.13);
+        --emerald:#34d399; --emerald-wash:rgba(52,211,153,.12);
+        --amber:#fbbf24;  --amber-wash:rgba(251,191,36,.12);
+        --red:#f87171;    --red-wash:rgba(248,113,113,.12);
+        --text-1:#f1f0ee; --text-2:#cbd5e1; --text-3:#8b949e;
+        --bg:#0f1117; --surface:#161b22; --border:rgba(255,255,255,.09);
+        --border-strong:rgba(255,255,255,.14);
+      }
+    }
+    :root[data-theme="dark"] {
+      --violet:#a78bfa; --violet-hover:#c4b5fd; --violet-wash:rgba(167,139,250,.13);
+      --emerald:#34d399; --emerald-wash:rgba(52,211,153,.12);
+      --amber:#fbbf24;  --amber-wash:rgba(251,191,36,.12);
+      --red:#f87171;    --red-wash:rgba(248,113,113,.12);
+      --text-1:#f1f0ee; --text-2:#cbd5e1; --text-3:#8b949e;
+      --bg:#0f1117; --surface:#161b22; --border:rgba(255,255,255,.09);
+      --border-strong:rgba(255,255,255,.14);
+    }
+    :root[data-theme="light"] {
+      --violet:#7c3aed; --violet-hover:#6d28d9; --violet-wash:rgba(124,58,237,.08);
+      --emerald:#059669; --emerald-wash:rgba(5,150,105,.10);
+      --amber:#b45309;  --amber-wash:rgba(180,83,9,.10);
+      --red:#dc2626;    --red-wash:rgba(220,38,38,.10);
+      --text-1:#111827; --text-2:#374151; --text-3:#6b7280;
+      --bg:#f9fafb; --surface:#ffffff; --border:rgba(0,0,0,.09);
+      --border-strong:rgba(0,0,0,.14);
+    }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    html{font-size:16px}
+    body{font-family:var(--font);background:var(--bg);color:var(--text-1);min-height:100vh;-webkit-font-smoothing:antialiased}
+
+    .topbar{height:48px;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 1.25rem;gap:.75rem;position:sticky;top:0;z-index:10}
+    .topbar-back{display:flex;align-items:center;gap:6px;font-size:.8125rem;color:var(--text-3);text-decoration:none;border:none;background:none;cursor:pointer;padding:4px 0}
+    .topbar-back:hover{color:var(--text-2)}
+    .topbar-div{width:1px;height:1rem;background:var(--border-strong)}
+    .topbar-title{font-size:.875rem;font-weight:500;color:var(--text-2)}
+    .topbar-badge{margin-left:auto;font-size:.6875rem;color:var(--amber);background:var(--amber-wash);padding:.2rem .5rem;border-radius:6px;font-weight:600}
+
+    .tabs{display:flex;gap:1.5rem;padding:0 1.25rem;border-bottom:1px solid var(--border);background:var(--surface)}
+    .tab{padding:.7rem 0;font-size:.8125rem;color:var(--text-3);cursor:pointer;border-bottom:2px solid transparent;font-weight:500}
+    .tab.active{color:var(--violet);border-bottom-color:var(--violet)}
+
+    .layout{display:grid;grid-template-columns:320px 1fr;height:calc(100vh - 48px - 41px)}
+    .sidebar{border-right:1px solid var(--border);overflow-y:auto;background:var(--surface)}
+    .sidebar-item{padding:.65rem 1rem;border-bottom:1px solid var(--border);cursor:pointer;font-size:.8125rem}
+    .sidebar-item:hover{background:var(--violet-wash)}
+    .sidebar-item.selected{background:var(--violet-wash);border-left:3px solid var(--violet)}
+    .sidebar-item-title{font-weight:600;color:var(--text-1);font-family:var(--mono);font-size:.75rem;word-break:break-all}
+    .sidebar-item-meta{color:var(--text-3);font-size:.6875rem;margin-top:2px}
+    .badge{display:inline-block;font-size:.625rem;padding:.1rem .4rem;border-radius:5px;font-weight:600;margin-right:.25rem}
+    .badge-active{background:var(--emerald-wash);color:var(--emerald)}
+    .badge-inactive{background:var(--border);color:var(--text-3)}
+    .badge-authority{background:var(--violet-wash);color:var(--violet)}
+
+    .detail{overflow-y:auto;padding:1.5rem}
+    .empty{color:var(--text-3);font-size:.875rem;padding:2rem;text-align:center}
+    .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1rem;margin-bottom:1rem}
+    .card-title{font-size:.75rem;font-weight:600;color:var(--text-3);text-transform:uppercase;letter-spacing:.03em;margin-bottom:.75rem}
+    .kv{display:grid;grid-template-columns:140px 1fr;gap:.4rem .75rem;font-size:.8125rem}
+    .kv dt{color:var(--text-3)}
+    .kv dd{color:var(--text-1);font-family:var(--mono);word-break:break-all}
+
+    table{width:100%;border-collapse:collapse;font-size:.8125rem}
+    th{text-align:left;color:var(--text-3);font-weight:600;font-size:.6875rem;text-transform:uppercase;padding:.4rem .5rem;border-bottom:1px solid var(--border)}
+    td{padding:.5rem;border-bottom:1px solid var(--border);vertical-align:top}
+    tr:last-child td{border-bottom:none}
+
+    textarea{width:100%;min-height:220px;font-family:var(--mono);font-size:.75rem;padding:.75rem;border:1px solid var(--border-strong);border-radius:8px;background:var(--bg);color:var(--text-1);resize:vertical}
+    input[type=text]{font-family:var(--mono);font-size:.75rem;padding:.4rem .6rem;border:1px solid var(--border-strong);border-radius:6px;background:var(--bg);color:var(--text-1)}
+    label{font-size:.75rem;color:var(--text-3);display:block;margin:.6rem 0 .25rem}
+
+    button{font-size:.75rem;font-weight:600;padding:.45rem .9rem;border-radius:7px;border:1px solid var(--border-strong);background:var(--surface);color:var(--text-1);cursor:pointer}
+    button:hover{border-color:var(--violet)}
+    button.primary{background:var(--violet);border-color:var(--violet);color:#fff}
+    button.primary:hover{background:var(--violet-hover)}
+    button.danger{color:var(--red);border-color:var(--red)}
+    button.danger:hover{background:var(--red-wash)}
+    .btn-row{display:flex;gap:.5rem;margin-top:.75rem}
+
+    .stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:.75rem}
+    .stat{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:.75rem}
+    .stat-label{font-size:.6875rem;color:var(--text-3);text-transform:uppercase}
+    .stat-value{font-size:1.25rem;font-weight:700;color:var(--text-1);margin-top:.15rem}
+    code.hash{font-family:var(--mono);font-size:.7rem;color:var(--text-3)}
+  </style>
+</head>
+<body>
+  <nav class="topbar">
+    <a class="topbar-back" href="/">&larr; Chat</a>
+    <div class="topbar-div"></div>
+    <span class="topbar-title">Prompt Studio</span>
+    <span class="topbar-badge">v0 — functional, pending UX design pass</span>
+  </nav>
+  <div class="tabs">
+    <div class="tab active" data-tab="compositions">Compositions</div>
+    <div class="tab" data-tab="blocks">Blocks</div>
+    <div class="tab" data-tab="monitoring">Monitoring</div>
+  </div>
+  <div class="layout">
+    <div class="sidebar" id="sidebar"></div>
+    <div class="detail" id="detail"><div class="empty">Select an item on the left.</div></div>
+  </div>
+
+<script>
+const API = '';
+let actor = localStorage.getItem('mobius.prompts.actor') || '';
+if (!actor) { actor = prompt('Your name (for version/actor attribution):') || 'unknown'; localStorage.setItem('mobius.prompts.actor', actor); }
+
+let state = { tab: 'compositions', compositions: [], blocks: [] };
+
+function esc(s) { return (s == null ? '' : String(s)).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function fmtNum(n, d=1) { return n == null ? '—' : Number(n).toFixed(d); }
+
+async function jget(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+async function jpost(url, body) {
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => selectTab(t.dataset.tab)));
+
+async function selectTab(tab) {
+  state.tab = tab;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  document.getElementById('detail').innerHTML = '<div class="empty">Select an item on the left.</div>';
+  if (tab === 'compositions') await loadCompositions();
+  else if (tab === 'blocks') await loadBlocks();
+  else await loadMonitoringOverview();
+}
+
+async function loadCompositions() {
+  const rows = await jget(API + '/admin/api/prompts/compositions');
+  state.compositions = rows;
+  const sb = document.getElementById('sidebar');
+  sb.innerHTML = rows.map(c => `
+    <div class="sidebar-item" data-id="${c.id}">
+      <div class="sidebar-item-title">${esc(c.prompt_address || c.module_key)}</div>
+      <div class="sidebar-item-meta">
+        <span class="badge ${c.active ? 'badge-active' : 'badge-inactive'}">${c.active ? 'active' : c.status}</span>
+        ${esc(c.module_key)} · ${c.block_count} block(s) · v${c.version}
+      </div>
+    </div>`).join('') || '<div class="empty">No compositions yet.</div>';
+  sb.querySelectorAll('.sidebar-item').forEach(el => el.addEventListener('click', () => selectComposition(Number(el.dataset.id), el)));
+}
+
+async function selectComposition(id, el) {
+  document.querySelectorAll('.sidebar-item').forEach(e => e.classList.remove('selected'));
+  if (el) el.classList.add('selected');
+  const data = await jget(API + `/admin/api/prompts/compositions/${id}`);
+  const c = data.composition;
+  let mon = null;
+  try { mon = await jget(API + `/admin/api/prompts/monitoring/${id}?days=7`); } catch (e) {}
+  const statRow = (mon && mon.by_hash && mon.by_hash.length)
+    ? mon.by_hash.map(h => `
+        <div class="card">
+          <div class="card-title">composition_hash <code class="hash">${esc((h.composition_hash||'').slice(0,16))}…</code></div>
+          <div class="stat-grid">
+            <div class="stat"><div class="stat-label">Calls (7d)</div><div class="stat-value">${h.call_count}</div></div>
+            <div class="stat"><div class="stat-label">Avg latency</div><div class="stat-value">${fmtNum(h.avg_latency_ms,0)}ms</div></div>
+            <div class="stat"><div class="stat-label">Avg quality</div><div class="stat-value">${fmtNum(h.avg_quality,2)}</div></div>
+            <div class="stat"><div class="stat-label">Cost (7d)</div><div class="stat-value">$${fmtNum(h.total_cost_usd,3)}</div></div>
+          </div>
+        </div>`).join('')
+    : '<div class="empty">No calls in the last 7 days.</div>';
+
+  document.getElementById('detail').innerHTML = `
+    <div class="card">
+      <div class="card-title">Composition</div>
+      <dl class="kv">
+        <dt>module_key</dt><dd>${esc(c.module_key)}</dd>
+        <dt>prompt_address</dt><dd>${esc(c.prompt_address || '(none — module_key only)')}</dd>
+        <dt>variant_id</dt><dd>${esc(c.variant_id)}</dd>
+        <dt>status</dt><dd>${esc(c.status)}</dd>
+        <dt>active</dt><dd>${c.active}</dd>
+        <dt>composition_hash</dt><dd>${esc((c.composition_hash||'').slice(0,24))}…</dd>
+      </dl>
+    </div>
+    <div class="card">
+      <div class="card-title">Members (ordered)</div>
+      <table><thead><tr><th>#</th><th>block_key</th><th>pinned</th><th>effective v</th><th>authority</th></tr></thead>
+      <tbody>${data.members.map(m => `
+        <tr>
+          <td>${m.position}</td>
+          <td><a href="#" onclick="selectTab('blocks');setTimeout(()=>selectBlockByKey('${esc(m.block_key)}'),50);return false;" style="color:var(--violet)">${esc(m.block_key)}</a></td>
+          <td>${m.pinned_version ?? 'float'}</td>
+          <td>${m.effective_version}</td>
+          <td>${m.is_authority ? '<span class="badge badge-authority">authority</span>' : ''}</td>
+        </tr>`).join('')}</tbody></table>
+    </div>
+    <div class="card">
+      <div class="card-title">Live monitoring (7d)</div>
+      ${statRow}
+    </div>
+  `;
+}
+
+async function loadBlocks() {
+  const rows = await jget(API + '/admin/api/prompts/blocks');
+  state.blocks = rows;
+  const sb = document.getElementById('sidebar');
+  sb.innerHTML = rows.map(b => `
+    <div class="sidebar-item" data-key="${esc(b.block_key)}">
+      <div class="sidebar-item-title">${esc(b.block_key)}</div>
+      <div class="sidebar-item-meta">
+        <span class="badge badge-active">v${b.active_version}</span>
+        ${b.version_count} version(s) · ${esc(b.owner)}
+        ${b.has_authority_version ? '<span class="badge badge-authority">authority</span>' : ''}
+      </div>
+    </div>`).join('') || '<div class="empty">No blocks yet.</div>';
+  sb.querySelectorAll('.sidebar-item').forEach(el => el.addEventListener('click', () => selectBlock(el.dataset.key, el)));
+}
+
+function selectBlockByKey(key) {
+  const el = Array.from(document.querySelectorAll('.sidebar-item')).find(e => e.dataset.key === key);
+  if (el) selectBlock(key, el);
+}
+
+async function selectBlock(blockKey, el) {
+  document.querySelectorAll('.sidebar-item').forEach(e => e.classList.remove('selected'));
+  if (el) el.classList.add('selected');
+  const versions = await jget(API + `/admin/api/prompts/blocks/${encodeURIComponent(blockKey)}/versions`);
+  const latest = versions[0];
+  document.getElementById('detail').innerHTML = `
+    <div class="card">
+      <div class="card-title">Version history — ${esc(blockKey)}</div>
+      <table><thead><tr><th>v</th><th>active</th><th>role/kind</th><th>owner</th><th>created</th><th></th></tr></thead>
+      <tbody>${versions.map(v => `
+        <tr>
+          <td>${v.version}</td>
+          <td><span class="badge ${v.active ? 'badge-active' : 'badge-inactive'}">${v.active ? 'active' : 'inactive'}</span></td>
+          <td>${esc(v.role)}/${esc(v.block_kind)}${v.is_authority ? ' <span class="badge badge-authority">auth</span>' : ''}</td>
+          <td>${esc(v.owner)}</td>
+          <td>${new Date(v.created_at).toLocaleString()}</td>
+          <td><button data-v="${v.version}" data-active="${v.active}" class="toggle-btn ${v.active ? 'danger' : ''}">${v.active ? 'Deactivate' : 'Activate'}</button></td>
+        </tr>`).join('')}</tbody></table>
+    </div>
+    <div class="card">
+      <div class="card-title">Body — v${latest.version} (current)</div>
+      <pre style="white-space:pre-wrap;font-family:var(--mono);font-size:.75rem;color:var(--text-2);max-height:240px;overflow-y:auto">${esc(latest.template_body)}</pre>
+    </div>
+    <div class="card">
+      <div class="card-title">Create new version</div>
+      <label>Template body (starts from current v${latest.version})</label>
+      <textarea id="newBody">${esc(latest.template_body)}</textarea>
+      <label><input type="checkbox" id="newActivate" checked style="width:auto"/> Activate immediately</label>
+      <div class="btn-row">
+        <button class="primary" id="saveVersionBtn">Save as v${latest.version + 1}</button>
+      </div>
+    </div>
+  `;
+  document.querySelectorAll('.toggle-btn').forEach(btn => btn.addEventListener('click', async () => {
+    const v = Number(btn.dataset.v);
+    const currentlyActive = btn.dataset.active === 'true';
+    try {
+      await jpost(API + `/admin/api/prompts/blocks/${encodeURIComponent(blockKey)}/versions/${v}/active`, { active: !currentlyActive, actor });
+      await selectBlock(blockKey, el);
+      await loadBlocks();
+    } catch (e) { alert('Failed: ' + e.message); }
+  }));
+  document.getElementById('saveVersionBtn').addEventListener('click', async () => {
+    const body = document.getElementById('newBody').value;
+    const activate = document.getElementById('newActivate').checked;
+    try {
+      await jpost(API + `/admin/api/prompts/blocks/${encodeURIComponent(blockKey)}/versions`, {
+        template_body: body,
+        block_kind: latest.block_kind,
+        role: latest.role,
+        condition: latest.condition,
+        is_authority: latest.is_authority,
+        directives: latest.directives || [],
+        owner: latest.owner,
+        created_by: actor,
+        activate,
+      });
+      await selectBlock(blockKey, el);
+      await loadBlocks();
+    } catch (e) { alert('Failed: ' + e.message); }
+  });
+}
+
+async function loadMonitoringOverview() {
+  const rows = await jget(API + '/admin/api/prompts/monitoring?days=7');
+  document.getElementById('sidebar').innerHTML = '<div class="empty" style="padding:1rem">Fleet-wide, trailing 7 days.</div>';
+  document.getElementById('detail').innerHTML = `
+    <div class="card">
+      <div class="card-title">All active compositions</div>
+      <table><thead><tr><th>module_key</th><th>prompt_address</th><th>calls</th><th>avg latency</th><th>avg quality</th><th>cost</th><th>last call</th></tr></thead>
+      <tbody>${rows.map(r => `
+        <tr>
+          <td>${esc(r.module_key)}</td>
+          <td>${esc(r.prompt_address || '—')}</td>
+          <td>${r.call_count || 0}</td>
+          <td>${fmtNum(r.avg_latency_ms,0)}ms</td>
+          <td>${fmtNum(r.avg_quality,2)}</td>
+          <td>$${fmtNum(r.total_cost_usd,3)}</td>
+          <td>${r.last_called_at ? new Date(r.last_called_at).toLocaleString() : '—'}</td>
+        </tr>`).join('')}</tbody></table>
+    </div>
+  `;
+}
+
+selectTab('compositions');
+</script>
+</body>
+</html>

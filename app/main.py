@@ -2456,6 +2456,7 @@ def get_chat_config_by_sha(config_sha: str):
 # app.services.credentialing_* and app.storage.credentialing_* for
 # server-side orchestration — only the public HTTP surface was removed.
 from app.api.admin import router as _admin_router
+from app.api.admin_prompts import router as _admin_prompts_router
 from app.api.auth_proxy import router as _auth_proxy_router
 from app.api.org_proxy import router as _org_proxy_router
 from app.api.chat import router as _chat_router
@@ -2482,6 +2483,7 @@ app.include_router(_download_router)  # upload downloads + guarded web download 
 app.include_router(_doc_reader_router)  # Phase 2b.1 — doc-reader proxy extracted from main.py
 app.include_router(_email_thread_router)  # POST /chat/thread/{id}/email — proxy to mobius-skills/email
 app.include_router(_admin_router)  # Dev-token minter + future ops-only endpoints
+app.include_router(_admin_prompts_router)  # v2 prompt-block CRUD + monitoring (blocks/compositions/versions)
 app.include_router(_auth_proxy_router)  # 2026-05-06 — /api/v1/auth/* + /api/v1/public-config → mobius-user
 app.include_router(_org_proxy_router)   # /api/v1/org/* → mobius-org-agent (admin/clients console)
 app.include_router(_user_tools_router)  # GET/PUT/DELETE /user/tools — per-user tool policy settings
@@ -2942,6 +2944,12 @@ if _frontend.exists():
     @app.get("/admin/clients")
     def clients_page():
         r = FileResponse(_frontend / "clients.html")
+        r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return r
+
+    @app.get("/admin/prompts")
+    def prompts_studio_page():
+        r = FileResponse(_frontend / "prompts.html")
         r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return r
 
