@@ -16,7 +16,7 @@ max(active version) picks the previous one, never rewriting history.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -283,12 +283,14 @@ async def get_composition_monitoring(composition_id: int, days: int = 7) -> dict
 @router.get("/admin/api/prompts/monitoring")
 async def list_monitoring_overview(days: int = 7) -> list[dict[str, Any]]:
     """Fleet-wide: one row per active composition, trailing ``days`` volume
-    + quality — the landing view before drilling into one composition."""
+    + quality — the landing view before drilling into one composition.
+    ``daily`` is a real per-day call-count series (oldest -> newest) for
+    sparklines -- no synthetic/decorative data, absent days are 0."""
     _gate()
     days = max(1, min(90, days))
     pool = await _pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
+        totals = await conn.fetch(
             """
             SELECT c.id AS composition_id, c.module_key, c.prompt_address,
                    COUNT(l.call_id) AS call_count,
@@ -305,4 +307,27 @@ async def list_monitoring_overview(days: int = 7) -> list[dict[str, Any]]:
             """,
             str(days),
         )
-    return [dict(r) for r in rows]
+        daily_rows = await conn.fetch(
+            """
+            SELECT composition_id, date_trunc('day', ts) AS day, COUNT(*) AS n
+            FROM llm_calls
+            WHERE composition_id IS NOT NULL AND ts > NOW() - ($1 || ' days')::interval
+            GROUP BY composition_id, date_trunc('day', ts)
+            """,
+            str(days),
+        )
+    daily_by_comp: dict[int, dict[str, int]] = {}
+    for r in daily_rows:
+        daily_by_comp.setdefault(r["composition_id"], {})[r["day"].date().isoformat()] = r["n"]
+
+    day_keys = [
+        (datetime.now(timezone.utc).date() - timedelta(days=offset)).isoformat()
+        for offset in range(days - 1, -1, -1)
+    ]
+    out = []
+    for r in totals:
+        d = dict(r)
+        series = daily_by_comp.get(d["composition_id"], {})
+        d["daily"] = [series.get(k, 0) for k in day_keys]
+        out.append(d)
+    return out
