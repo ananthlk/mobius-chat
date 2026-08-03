@@ -865,7 +865,17 @@ RAG_ROUTED_STAGES: list[str] = [
     "rag_lexicon_triage",
     "rag_strategy_a_synth",
     "rag_strategy_b_synth",
-    "rag_strategy_c_validate",
+    # rag_strategy_c_validate deliberately NOT here (2026-08-03): LOCKED to
+    # sonar-pro (perplexity) instead — see that ModelSpec's eligible_stages
+    # below. Same rationale as rag_eval_adjudicate's single-model lock: this
+    # isn't a general model-quality question the bandit should explore, it's
+    # a targeted fix for a verified citation-fabrication bug (Vertex Gemini
+    # pattern-matches to generic industry numbers instead of the real
+    # payer-specific figure). Leaving Vertex eligible here would mean the
+    # bandit keeps sampling the broken path most of the time, defeating the
+    # fix. Unlike rag_extraction/synthesis, this call doesn't carry
+    # multi-page chunks (single Q&A, small prompt) so it never needed the
+    # 1M-context justification the rest of this list has.
     "rag_strategy_d_external",
     "rag_multi_invoke_synth",   # v2 multi-invoke union synthesis (2026-07-15); added to allowlist but missed here
     "rag_fact_check",           # Two-grade QA critic owned by Eval agent (2026-07-17); same gap
