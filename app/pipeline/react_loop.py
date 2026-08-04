@@ -2324,6 +2324,39 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             # resetting composition_id/hash to None here would misattribute
             # a still-composition-sourced prompt as legacy/untracked.
 
+        # Model-bandit selection criteria (2026-08-04, react-prep — scoped
+        # with Chat Architecture/LLM Agent/Eval, LLM Agent's router.select()
+        # side already live). Both None when the governor is off, matching
+        # its fail-soft posture everywhere else in this module — the bandit
+        # falls back to its existing mode-derived default either way.
+        #
+        # Derives its OWN agent_role from _pp_pre_directive directly, rather
+        # than reusing the composition-selection block's `_agent_role` var —
+        # that one is only computed when MOBIUS_PROMPT_SOURCE=composition is
+        # ALSO set (it exists to pick a DB composition), which would
+        # silently couple this unrelated feature to that flag and leave
+        # reasoning_depth None whenever the composition path is off even
+        # with the governor on. Caught via direct verification (mocked
+        # _call_llm_json, inspected the actual kwargs), not assumed correct
+        # from reading the code alone.
+        #
+        # Computed here (before the trace-append below) rather than right
+        # at the _call_llm_json call site further down, so the SAME values
+        # both drive the actual model-selection call AND populate the
+        # react_trace diagnostics panel — one computation, not two that
+        # could silently drift apart.
+        _bandit_reasoning_depth = None
+        _bandit_latency_budget_ms = None
+        if _pp_enabled:
+            from app.pipeline.react.governor import agent_role_to_reasoning_depth, directive_to_agent_role
+            _bandit_agent_role = directive_to_agent_role(_pp_pre_directive) if _pp_pre_directive is not None else None
+            _bandit_reasoning_depth = agent_role_to_reasoning_depth(_bandit_agent_role)
+            if _pp_contract is not None:
+                from app.pipeline.react.governor import latency_budget_ms as _pp_latency_budget_ms
+                _bandit_latency_budget_ms = _pp_latency_budget_ms(
+                    _pp_contract, _pp_elapsed_s, _pp_pre_directive,
+                )
+
         # Per-round entry for the react_trace diagnostics panel (see
         # make_react_trace in emit_envelope.py). Collected on ctx (like
         # ctx.react_tool_results/react_last_tool above) so _finalize_response
@@ -2336,6 +2369,8 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             "agent_role": _agent_role,
             "composition_id": _reasoning_composition_id,
             "elapsed_s": round(_pp_elapsed_s, 1) if _pp_enabled else None,
+            "reasoning_depth": _bandit_reasoning_depth,
+            "latency_budget_ms": _bandit_latency_budget_ms,
         })
 
         # Governor active → suppress the old round-index guidance instruction
@@ -2385,33 +2420,10 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         if hint:
             reasoning_context = f"{reasoning_context}\n\n{hint}"
 
-        # Model-bandit selection criteria (2026-08-04, react-prep — scoped
-        # with Chat Architecture/LLM Agent/Eval, LLM Agent's router.select()
-        # side already live). Both None when the governor is off, matching
-        # its fail-soft posture everywhere else in this module — the bandit
-        # falls back to its existing mode-derived default either way.
-        #
-        # Derives its OWN agent_role from _pp_pre_directive directly, rather
-        # than reusing the composition-selection block's `_agent_role` var —
-        # that one is only computed when MOBIUS_PROMPT_SOURCE=composition is
-        # ALSO set (it exists to pick a DB composition), which would
-        # silently couple this unrelated feature to that flag and leave
-        # reasoning_depth None whenever the composition path is off even
-        # with the governor on. Caught via direct verification (mocked
-        # _call_llm_json, inspected the actual kwargs), not assumed correct
-        # from reading the code alone.
-        _bandit_reasoning_depth = None
-        _bandit_latency_budget_ms = None
-        if _pp_enabled:
-            from app.pipeline.react.governor import agent_role_to_reasoning_depth, directive_to_agent_role
-            _bandit_agent_role = directive_to_agent_role(_pp_pre_directive) if _pp_pre_directive is not None else None
-            _bandit_reasoning_depth = agent_role_to_reasoning_depth(_bandit_agent_role)
-            if _pp_contract is not None:
-                from app.pipeline.react.governor import latency_budget_ms as _pp_latency_budget_ms
-                _bandit_latency_budget_ms = _pp_latency_budget_ms(
-                    _pp_contract, _pp_elapsed_s, _pp_pre_directive,
-                )
-
+        # _bandit_reasoning_depth/_bandit_latency_budget_ms computed earlier
+        # in this iteration (see the react_trace block above) — reused here
+        # rather than recomputed, so the same values both drive this call
+        # and the diagnostics panel.
         decision_raw = _call_llm_json(
             reasoning_system,
             reasoning_context,

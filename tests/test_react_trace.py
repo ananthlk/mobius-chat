@@ -98,6 +98,12 @@ def test_trace_captures_governor_directive_and_completion():
     assert data["governor_enabled"] is True
     assert data["rounds"][0]["directive"] == "search"
     assert isinstance(data["rounds"][0]["reason"], str) and data["rounds"][0]["reason"]
+    # Model-bandit selection criteria (2026-08-04) — must be visible in the
+    # same diagnostics panel, not just driving the call invisibly. Caught
+    # as a real gap (built the criteria, never added them here) when
+    # Ananth asked directly whether this was actually in the diagnostics.
+    assert data["rounds"][0]["reasoning_depth"] == "fast"  # directive=search -> explore -> fast
+    assert "latency_budget_ms" in data["rounds"][0]
     assert data["groundedness_floor_ran"] is True
     assert data["groundedness_passed"] is True
     assert data["final_directive"] == "complete"
