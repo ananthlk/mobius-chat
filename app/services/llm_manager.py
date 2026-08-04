@@ -306,6 +306,20 @@ async def generate(
                 out_usage["router_composite_at_pick"] = router_meta["router_composite_at_pick"]
             if router_meta.get("router_composite_breakdown"):
                 out_usage["router_composite_breakdown"] = router_meta["router_composite_breakdown"]
+            if router_meta.get("bandit_mode") is not None:
+                out_usage["router_bandit_mode"] = router_meta["bandit_mode"]
+            if router_meta.get("reasoning_depth") is not None:
+                out_usage["router_reasoning_depth"] = router_meta["reasoning_depth"]
+            if router_meta.get("latency_budget_ms") is not None:
+                out_usage["router_latency_budget_ms"] = int(router_meta["latency_budget_ms"])
+            if router_meta.get("candidates_trimmed_by_latency_budget") is not None:
+                out_usage["router_candidates_trimmed_by_latency_budget"] = int(
+                    router_meta["candidates_trimmed_by_latency_budget"]
+                )
+            if router_meta.get("latency_budget_exhausted") is not None:
+                out_usage["router_latency_budget_exhausted"] = bool(
+                    router_meta["latency_budget_exhausted"]
+                )
 
     return (text, out_usage)
 
