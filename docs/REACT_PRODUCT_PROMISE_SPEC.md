@@ -129,9 +129,9 @@ Wired into `react_loop.py`'s main reasoning-round call site (`_call_llm_json(...
 
 The first wiring attempt derived `reasoning_depth` from the composition-selection block's `_agent_role` local variable — which only populates when `MOBIUS_PROMPT_SOURCE=composition` is *also* set (an unrelated flag, needed for DB composition lookup, not for knowing explore/synthesize/draft). That silently left `reasoning_depth` `None` whenever the composition flag was off, even with the governor fully on. Caught by mocking `_call_llm_json` and directly inspecting the kwargs it actually received on a scripted turn — not by re-reading the code and assuming it was correct. Fixed by deriving the bandit's agent_role directly from `_pp_pre_directive` via `directive_to_agent_role()`, independent of the composition-selection path. Locked in permanently by `tests/test_governor_bandit_criteria.py::test_reasoning_depth_reaches_call_llm_json_without_composition_flag`.
 
-### 8.4 Known gap, not blocking
+### 8.4 Correction (2026-08-04)
 
-`generate_sync()` does not yet accept `reasoning_depth`/`latency_budget_ms` (only the async `generate()` path does). Not a problem for react today — `_call_llm_json` always passes `ctx`, so it always takes the async path — but worth LLM Agent closing for symmetry if any future sync caller wants these criteria.
+Earlier revisions of this section flagged `generate_sync()` as not yet accepting `reasoning_depth`/`latency_budget_ms`. That was wrong at the time of writing and LLM Agent corrected it: both kwargs were added to `generate_sync()` in the same commit (`bb0fb0e`) that added them to `generate()`/`router.select()` — verified directly against the current signature, not just taken on their word. No gap; both the sync and async paths carry the full criteria.
 
 ### 8.5 Tests
 
