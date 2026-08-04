@@ -89,6 +89,8 @@ async def generate(
     mode: str | None = None,
     composition_id: int | None = None,
     composition_hash: str | None = None,
+    reasoning_depth: str | None = None,
+    latency_budget_ms: int | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """
     Call LLM via dynamic model router, record to llm_calls.
@@ -104,6 +106,11 @@ async def generate(
 
     mode: chat router mode (e.g. copilot, agentic). ``copilot`` restricts Thompson sampling
     to faster model tiers; ``None`` / ``agentic`` uses the full eligible pool per stage.
+
+    ``reasoning_depth``/``latency_budget_ms`` (2026-08-04): per-call selection inputs,
+    passed straight through to ``ModelRouter.select()`` — see that docstring for the
+    full contract (mode-weighting override + hard latency pre-filter, respectively).
+    Both ``None`` by default — no caller has to change to get today's exact behavior.
     """
     _ensure_env()
 
@@ -127,6 +134,8 @@ async def generate(
             mode=mode,
             estimated_prompt_tokens=estimated_prompt_tokens,
             expected_output_tokens=max_tokens,
+            reasoning_depth=reasoning_depth,
+            latency_budget_ms=latency_budget_ms,
         )
         provider = _provider_from_spec(spec)
     except Exception as e:
@@ -314,11 +323,15 @@ def generate_sync(
     mode: str | None = None,
     composition_id: int | None = None,
     composition_hash: str | None = None,
+    reasoning_depth: str | None = None,
+    latency_budget_ms: int | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Sync wrapper for scripts/eval (creates one event loop).
 
     If called while an event loop is already running (e.g. async tests), runs
     ``generate`` in a fresh thread so ``asyncio.run`` is valid.
+
+    ``reasoning_depth``/``latency_budget_ms``: see ``generate()`` / ``ModelRouter.select()``.
     """
     import asyncio
     import concurrent.futures
@@ -338,6 +351,8 @@ def generate_sync(
                 mode=mode,
                 composition_id=composition_id,
                 composition_hash=composition_hash,
+                reasoning_depth=reasoning_depth,
+                latency_budget_ms=latency_budget_ms,
             )
         )
 

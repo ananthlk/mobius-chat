@@ -1472,6 +1472,8 @@ class ModelRouter:
         *,
         estimated_prompt_tokens: int | None = None,
         expected_output_tokens: int | None = None,
+        reasoning_depth: str | None = None,
+        latency_budget_ms: int | None = None,
     ) -> tuple[ModelSpec, dict[str, Any]]:
         """Select best model for this stage. Returns (spec, meta) for UI / usage_breakdown.
 
@@ -1486,6 +1488,30 @@ class ModelRouter:
         TPM ceiling gets picked for a 9_000-token request → 413). Leave ``None`` to skip
         the filter (legacy behavior).
 
+        ``reasoning_depth`` (2026-08-04, ReAct per-call selection inputs): one of
+        ``"fast"``/``"normal"``/``"thinking"`` — when set, OVERRIDES the session-level
+        ``mode``-derived bandit weighting for this one call (same fast/normal/thinking
+        tables in ``bandit_weights.py``, just a finer-grained input). Callers with a
+        per-call reasoning signal that's more precise than session chat_mode (e.g.
+        ReAct's per-round ``agent_role`` — explore→fast, synthesize/draft→thinking) map
+        to this themselves; this module stays agnostic about what produced the value.
+        Does NOT affect ``effective_stage`` / candidate eligibility / PG-stats indexing —
+        only which weight table blends quality/reliability/latency/cost for this draw.
+        Safe for the learned quality prior (Eval-verified 2026-08-04): the Beta posterior
+        is rebuilt fresh per call from mode-invariant raw PG stats (avg_quality etc.) via
+        ``composite_router_signal`` — no mode-weighted number is ever persisted, so
+        per-call mode variance can't contaminate history. Invalid/unrecognized values
+        fall back to the ``mode``-derived default.
+
+        ``latency_budget_ms`` (same batch): HARD pre-filter, same shape/placement as the
+        token-budget filter below — trims candidates whose ``ema_latency_ms`` exceeds the
+        budget BEFORE Thompson sampling, so a caller with a real deadline (e.g. ReAct's
+        Product Promise governor nearing its hard ceiling) gets a guarantee, not just a
+        probabilistic lean toward faster models. Degrades gracefully: if the filter would
+        empty the candidate pool, keeps the single fastest remaining candidate (by
+        ``ema_latency_ms``) instead of hard-failing — same "degraded is better than none"
+        posture as the token-budget fallback. ``None`` skips the filter (legacy behavior).
+
         ``meta`` keys: mode, reason, router_stage, candidates_eligible,
         candidates_after_circuit_breaker, circuit_relief (bool), exploration_round (bool),
         router_composite_at_pick, router_composite_breakdown (PG row at decision time),
@@ -1494,14 +1520,22 @@ class ModelRouter:
         Additional meta keys when ``estimated_prompt_tokens`` is set:
         ``estimated_prompt_tokens``, ``expected_output_tokens``, ``request_tokens``,
         ``candidates_trimmed_by_context``, ``candidates_trimmed_by_tpm``.
+
+        Additional meta keys when ``latency_budget_ms`` is set: ``latency_budget_ms``,
+        ``candidates_trimmed_by_latency_budget`` (logged per Eval's ask, 2026-08-04, so a
+        latency-starved model's lower sample count reads as "under-sampled under time
+        pressure," not misread as "this model is worse").
         """
         self._maybe_refresh()
 
         effective_stage = "planner" if is_planner else stage
-        # Bandit weighting mode: derived from UX chat_mode when not
-        # explicitly set. quick→fast, copilot→normal, agentic→thinking.
+        # Bandit weighting mode: reasoning_depth (per-call, when the caller has a more
+        # precise signal than session chat_mode) wins; else derived from UX chat_mode.
+        # quick→fast, copilot→normal, agentic→thinking.
         from app.services.bandit_weights import derive_bandit_mode, weights_for_stage
-        bandit_mode = derive_bandit_mode(mode)
+        _valid_depths = ("fast", "normal", "thinking")
+        _rd = (reasoning_depth or "").strip().lower()
+        bandit_mode = _rd if _rd in _valid_depths else derive_bandit_mode(mode)
         _, effective_bandit_mode = weights_for_stage(effective_stage, bandit_mode)
         meta: dict[str, Any] = {
             "router_stage": effective_stage,
@@ -1509,6 +1543,10 @@ class ModelRouter:
             "router_mode": (mode or "").strip().lower() or None,
             "bandit_mode": effective_bandit_mode,
         }
+        if reasoning_depth is not None:
+            meta["reasoning_depth"] = reasoning_depth
+        if latency_budget_ms is not None:
+            meta["latency_budget_ms"] = int(latency_budget_ms)
 
         # Profile pin (Sprint 2 #0, 2026-04-24). When an active profile
         # (``MOBIUS_MODEL_PROFILE`` env or runtime override) pins this
@@ -1588,6 +1626,26 @@ class ModelRouter:
                 meta["circuit_relief"] = False
                 meta["exploration_round"] = False
                 return chosen, meta
+
+        # ── Latency-budget filter (2026-08-04, ReAct per-call selection inputs) ──
+        # Same placement/shape as the token-budget filter above: runs before circuit
+        # breakers and Thompson draw, so a real deadline (not just a mode preference)
+        # actually constrains the candidate pool rather than merely nudging the draw.
+        if latency_budget_ms is not None:
+            budget = int(latency_budget_ms)
+            n_before_lat = len(candidates)
+            within_budget = [c for c in candidates if c.ema_latency_ms <= budget]
+            trimmed_lat = n_before_lat - len(within_budget)
+            if trimmed_lat:
+                meta["candidates_trimmed_by_latency_budget"] = trimmed_lat
+            if within_budget:
+                candidates = within_budget
+            elif candidates:
+                # Degraded-mode, same posture as the token-budget fallback: a real
+                # deadline with zero candidates inside it should still return the
+                # closest thing available (fastest known), not hard-fail the turn.
+                candidates = [min(candidates, key=lambda c: c.ema_latency_ms)]
+                meta["latency_budget_exhausted"] = True
 
         if not candidates:
             logger.error(
