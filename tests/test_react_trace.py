@@ -107,6 +107,26 @@ def test_trace_captures_governor_directive_and_completion():
     assert data["groundedness_floor_ran"] is True
     assert data["groundedness_passed"] is True
     assert data["final_directive"] == "complete"
+    # 2026-08-04 (Chat Architecture, reviewing for Bandit Agent's reward
+    # signal): hard_ceiling_s was ALWAYS None in every real trace -- the
+    # field existed on make_react_trace()'s signature but nothing ever
+    # actually passed a value for it. Locks in the fix.
+    assert data["hard_ceiling_s"] is not None
+    assert data["hard_ceiling_s"] > 0
+
+
+def test_trace_hard_ceiling_s_is_none_when_governor_off():
+    def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+        return '{"thought": "done", "tool": null, "inputs": {}, "is_complete": true, "answer": "a real answer here", "confidence": "high"}'
+
+    ctx = _make_ctx("copilot")
+    with patch.dict("os.environ", {"MOBIUS_PRODUCT_PROMISE_ENABLED": ""}), \
+         patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm), \
+         patch("app.pipeline.react_loop._execute_tool_with_retry", return_value=_SEARCH_RESULT):
+        run_react(ctx, emitter=None)
+
+    data = _trace_entries(ctx)[0]["data"]
+    assert data["hard_ceiling_s"] is None, "no contract exists without the governor -- no ceiling to report"
 
 
 def test_trace_captures_unfinished_self_report():

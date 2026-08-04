@@ -1868,6 +1868,7 @@ def _finalize_response(
                 unfinished_summary=getattr(ctx, "react_unfinished_summary", None),
                 unblock_ask=getattr(ctx, "react_unblock_ask", None),
                 total_elapsed_s=round(_rt_elapsed, 1) if _rt_elapsed is not None else None,
+                hard_ceiling_s=getattr(ctx, "react_hard_ceiling_s", None),
                 thread_id=ctx.thread_id,
             )
             chunks = getattr(ctx, "thinking_chunks", None)
@@ -2201,6 +2202,15 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
     ctx.react_unfinished_reason = None
     ctx.react_unfinished_summary = None
     ctx.react_unblock_ask = None
+    # Stashed for the SAME reason as react_max_rounds/react_rounds_used
+    # above — _pp_contract is local to this function, _finalize_response is
+    # a separate module-level function that needs its own ctx-side copy.
+    # 2026-08-04 (Chat Architecture, Bandit Agent reward-signal review):
+    # this was ALWAYS None in every real react_trace before this fix — the
+    # field existed on make_react_trace()'s signature but nothing ever
+    # actually passed a value for it. None when the governor is off
+    # (no contract exists to read a ceiling from).
+    ctx.react_hard_ceiling_s = _pp_contract.hard_ceiling_s if _pp_contract is not None else None
 
     # Phase 0.7: smart-retry guard — tracks failed attempts so we don't repeat
     # the same (tool, inputs) when no new evidence has come in, and enables
