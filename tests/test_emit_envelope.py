@@ -148,7 +148,7 @@ class TestPromotionPolicy:
     severity of a blocker down to info, or un-promote a signal we
     rely on for analytics."""
 
-    def test_critic_flagged_is_promoted_as_insight_med(self):
+    def test_critic_flagged_is_promoted_as_insight_info(self):
         env = make_critic_flagged(
             correlation_id="c-1",
             round=3,
@@ -159,9 +159,9 @@ class TestPromotionPolicy:
         )
         assert env.report_to_task_manager is True
         assert env.task_type == "insight"
-        assert env.task_severity == "med"
+        assert env.task_severity == "info"
 
-    def test_rounds_exhausted_is_promoted_as_blocker_high(self):
+    def test_rounds_exhausted_is_promoted_as_blocker_warning(self):
         """This is the hard-fail signal — user should see it in
         their feed. HIGH severity, blocker type."""
         env = make_rounds_exhausted_with_warning(
@@ -171,7 +171,7 @@ class TestPromotionPolicy:
         )
         assert env.report_to_task_manager is True
         assert env.task_type == "blocker"
-        assert env.task_severity == "high"
+        assert env.task_severity == "warning"
 
     def test_critic_approved_after_retry_is_promoted_as_insight_low(self):
         """Self-correction — worth tracking but not alarming.

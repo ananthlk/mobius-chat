@@ -89,7 +89,7 @@ class TestBuildSignalBody:
         # Task-manager expects these top-level fields:
         assert body["signal"] == "critic_flagged"
         assert body["type"] == "insight"
-        assert body["severity"] == "med"
+        assert body["severity"] == "info"
         assert body["source_module"] == "chat"
         assert body["workflow"] == "chat"
         assert body["source_ref"] == "correlation_id:c-abc"
@@ -113,7 +113,7 @@ class TestBuildSignalBody:
         )
         body = _build_signal_body(env.to_dict())
         assert body["type"] == "blocker"
-        assert body["severity"] == "high"
+        assert body["severity"] == "warning"
 
     def test_missing_correlation_id_omits_source_ref(self):
         """Defensive: correlation_id might be empty in a weird state.

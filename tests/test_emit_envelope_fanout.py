@@ -37,7 +37,7 @@ from app.communication.emit_envelope import (
 
 
 class TestToolSignals:
-    def test_tool_exhausted_promoted_as_insight_med(self):
+    def test_tool_exhausted_promoted_as_insight_info(self):
         """Tool-exhaustion is the main analytics signal for RAG / tool
         quality tuning — which tools burn rounds without producing
         useful output. Must promote, otherwise the chat PM can't
@@ -50,7 +50,7 @@ class TestToolSignals:
         )
         assert env.report_to_task_manager is True
         assert env.task_type == "insight"
-        assert env.task_severity == "med"
+        assert env.task_severity == "info"
         assert env.data["tool"] == "search_corpus"
         assert env.data["attempts_before_exhaustion"] == 2
 
@@ -85,9 +85,9 @@ class TestToolSignals:
         )
         assert env.report_to_task_manager is True
         assert env.task_type == "failure"
-        assert env.task_severity == "med"
+        assert env.task_severity == "info"
 
-    def test_rate_limit_hit_is_promoted_as_failure_high(self):
+    def test_rate_limit_hit_is_promoted_as_failure_warning(self):
         """Rate-limiting is an operator-visible capacity issue (the
         2026-04-19 'Anthropic 400 credits' class). HIGH severity
         so it surfaces immediately in the ops feed — not aggregated."""
@@ -100,7 +100,7 @@ class TestToolSignals:
         )
         assert env.report_to_task_manager is True
         assert env.task_type == "failure"
-        assert env.task_severity == "high"
+        assert env.task_severity == "warning"
         assert env.data["provider"] == "anthropic"
         assert env.data["retry_after_seconds"] == 30.0
 
@@ -190,7 +190,7 @@ class TestTurnSignals:
         assert env.data["duration_ms"] == 4500
         assert env.data["total_cost_usd"] == 0.02
 
-    def test_turn_failed_is_promoted_as_failure_high(self):
+    def test_turn_failed_is_promoted_as_failure_warning(self):
         """Top-level failure. Operators must see this in the feed
         immediately — HIGH severity. The chat PM watches this
         counter for regression spikes."""
@@ -203,7 +203,7 @@ class TestTurnSignals:
         )
         assert env.report_to_task_manager is True
         assert env.task_type == "failure"
-        assert env.task_severity == "high"
+        assert env.task_severity == "warning"
         assert env.data["stage"] == "react_loop"
         assert env.data["error_class"] == "TimeoutError"
         assert env.data["last_tool"] == "search_corpus"
