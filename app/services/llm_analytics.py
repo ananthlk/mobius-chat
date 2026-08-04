@@ -242,7 +242,7 @@ async def update_quality_for_correlation_stages_async(
     overall_score: float,
     quality_source: str = "adjudication_v2",
     stage_scores: dict[str, float] | None = None,
-    quality_judge_model: str | None = None,
+    quality_ruler: str | None = None,
 ) -> None:
     """
     After full adjudication, write per-stage quality_score on llm_calls rows
@@ -297,7 +297,7 @@ async def update_quality_for_correlation_stages_async(
             if q is None:
                 continue
             persisted = await update_quality_async(
-                row["id"], float(q), quality_source, quality_judge_model
+                row["id"], float(q), quality_source, quality_ruler
             )
             if persisted:
                 try:
@@ -313,7 +313,7 @@ async def update_quality_async(
     call_id: str | uuid.UUID,
     quality_score: float,
     quality_source: str,
-    quality_judge_model: str | None = None,
+    quality_ruler: str | None = None,
 ) -> bool:
     """Update llm_calls.quality_score/source(/judge_model) and insert
     llm_quality_updates row.
@@ -325,7 +325,8 @@ async def update_quality_async(
     this would be a hope, not a confirmation. Existing caller
     (thread_summarizer.py) ignores the return value, so this is additive.
 
-    ``quality_judge_model`` (mig 055, Bandit Agent reward contract step 2):
+    ``quality_ruler`` (mig 055, renamed from quality_judge_model in mig 056
+    to match Database's actual naming; Bandit Agent reward contract step 2):
     which adjudicator LLM produced this score -- lets reward aggregates
     filter to a single trusted judge (Eval: flash grades RAG-producer arms
     materially differently than pro, until rag_fact_check locks to pro).
@@ -338,11 +339,11 @@ async def update_quality_async(
                 return False
             await conn.execute(
                 "UPDATE llm_calls SET quality_score = $1, quality_source = $2, "
-                "quality_judge_model = COALESCE($4, quality_judge_model) WHERE call_id = $3::uuid",
+                "quality_ruler = COALESCE($4, quality_ruler) WHERE call_id = $3::uuid",
                 round(quality_score, 3),
                 quality_source,
                 cid,
-                quality_judge_model,
+                quality_ruler,
             )
             await conn.execute(
                 """

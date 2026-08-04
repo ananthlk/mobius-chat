@@ -171,7 +171,7 @@ async def _run_async(ctx: PipelineContext, payload: dict[str, Any]) -> None:
         score,
         "post_run_adjudicator_v2",
         stage_scores=stage_scores,
-        quality_judge_model=adj_model or None,
+        quality_ruler=adj_model or None,
     )
 
     audited_at = datetime.now(timezone.utc).isoformat()
