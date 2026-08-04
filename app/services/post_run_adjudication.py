@@ -161,18 +161,20 @@ async def _run_async(ctx: PipelineContext, payload: dict[str, Any]) -> None:
     attr = adj.get("attribution") or {}
 
     stage_scores = adj.get("stage_scores") if isinstance(adj.get("stage_scores"), dict) else None
+    adjud_usage = adj.get("adjudicator_usage") if isinstance(adj.get("adjudicator_usage"), dict) else {}
+    adj_model = str(adjud_usage.get("model") or "").strip()
+    adj_call = str(adjud_usage.get("llm_call_id") or "").strip()
+
     await update_quality_for_correlation_stages_async(
         ctx.correlation_id,
         merged,
         score,
         "post_run_adjudicator_v2",
         stage_scores=stage_scores,
+        quality_judge_model=adj_model or None,
     )
 
     audited_at = datetime.now(timezone.utc).isoformat()
-    adjud_usage = adj.get("adjudicator_usage") if isinstance(adj.get("adjudicator_usage"), dict) else {}
-    adj_model = str(adjud_usage.get("model") or "").strip()
-    adj_call = str(adjud_usage.get("llm_call_id") or "").strip()
 
     qc_dict: dict[str, Any] = {
         "passed": passed,

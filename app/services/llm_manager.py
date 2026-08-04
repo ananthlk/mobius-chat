@@ -240,6 +240,18 @@ async def generate(
 
         # Analytics record
         is_ab = (getattr(spec, "call_count", 0) < 100) if spec else False
+        # is_hard_pinned (2026-08-04, Bandit Agent reward contract step 1):
+        # router_meta["mode"] is "thompson"/"exploration" on a genuine
+        # bandit-driven pick, or "profile_pinned"/"budget_fallback"/
+        # "fallback_no_models"/"router_error_fallback" on every other path --
+        # all of those mean the model was NOT chosen by the bandit, so the
+        # resulting quality/latency observation shouldn't count toward what
+        # the bandit learns about that model. None only if router_meta itself
+        # is somehow absent (shouldn't happen -- always set to a dict above).
+        is_hard_pinned = (
+            (router_meta or {}).get("mode") not in ("thompson", "exploration")
+            if router_meta is not None else None
+        )
         record = build_record(
             model=model_id,
             provider=provider_n,
@@ -255,6 +267,7 @@ async def generate(
             is_ab_call=is_ab,
             ab_variant=model_id,
             complexity=complexity,
+            is_hard_pinned=is_hard_pinned,
             phi_detected=phi_detected,
             error_type=error_type,
             composition_id=composition_id,

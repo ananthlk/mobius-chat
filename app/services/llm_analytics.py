@@ -91,8 +91,17 @@ def build_record(
     phi_types: str | None = None,
     composition_id: int | None = None,
     composition_hash: str | None = None,
+    is_hard_pinned: bool | None = None,
 ) -> dict[str, Any]:
-    """Build llm_calls row (prompt stored as hash only). Includes call_id and ts."""
+    """Build llm_calls row (prompt stored as hash only). Includes call_id and ts.
+
+    ``is_hard_pinned``: True when this call was routed via a profile pin
+    rather than Thompson sampling (see caller in llm_manager.generate()).
+    None when the caller can't determine it (e.g. router raised before
+    router_meta was ever assigned) -- distinct from False (confirmed
+    bandit-driven) so the matview FILTER can tell "known not pinned" from
+    "unknown, don't count either way" (mig 055).
+    """
     usage = usage or {}
     inp = int(usage.get("input_tokens") or 0)
     out = int(usage.get("output_tokens") or 0)
@@ -136,6 +145,7 @@ def build_record(
         "synced_at": None,
         "composition_id": composition_id,
         "composition_hash": composition_hash,
+        "is_hard_pinned": is_hard_pinned,
     }
 
 
@@ -156,11 +166,11 @@ async def _write_async(record: dict[str, Any]) -> None:
                     latency_ms, input_tokens, output_tokens, cost_usd,
                     quality_score, quality_source, phi_detected, phi_scrubbed, phi_types,
                     prompt_len_chars, output_len_chars, prompt_hash, synced_to_bq, synced_at,
-                    composition_id, composition_hash
+                    composition_id, composition_hash, is_hard_pinned
                 ) VALUES (
                     $1, $2, $3, $4::timestamptz, $5, $6, $7, $8, $9, $10, $11, $12,
                     $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27,
-                    $28, $29, $30, $31, $32, $33, $34
+                    $28, $29, $30, $31, $32, $33, $34, $35
                 )
                 """,
                 record["call_id"],
@@ -197,6 +207,7 @@ async def _write_async(record: dict[str, Any]) -> None:
                 record["synced_at"],
                 record["composition_id"],
                 record["composition_hash"],
+                record["is_hard_pinned"],
             )
     except Exception as e:
         logger.warning("llm_analytics write failed: %s", e)
@@ -231,6 +242,7 @@ async def update_quality_for_correlation_stages_async(
     overall_score: float,
     quality_source: str = "adjudication_v2",
     stage_scores: dict[str, float] | None = None,
+    quality_judge_model: str | None = None,
 ) -> None:
     """
     After full adjudication, write per-stage quality_score on llm_calls rows
@@ -284,7 +296,9 @@ async def update_quality_for_correlation_stages_async(
                 q = get_stage_quality_score(rubric_stage, sub_scores, float(overall_score))
             if q is None:
                 continue
-            persisted = await update_quality_async(row["id"], float(q), quality_source)
+            persisted = await update_quality_async(
+                row["id"], float(q), quality_source, quality_judge_model
+            )
             if persisted:
                 try:
                     from app.storage.progress import publish_bandit_reward_event
@@ -295,25 +309,40 @@ async def update_quality_for_correlation_stages_async(
         logger.warning("update_quality_for_correlation_stages failed: %s", e)
 
 
-async def update_quality_async(call_id: str | uuid.UUID, quality_score: float, quality_source: str) -> bool:
-    """Update llm_calls.quality_score/source and insert llm_quality_updates row.
+async def update_quality_async(
+    call_id: str | uuid.UUID,
+    quality_score: float,
+    quality_source: str,
+    quality_judge_model: str | None = None,
+) -> bool:
+    """Update llm_calls.quality_score/source(/judge_model) and insert
+    llm_quality_updates row.
 
     Returns True on a real successful write, False otherwise (no pool, or the
     UPDATE/INSERT raised) -- previously returned None unconditionally, so a
     caller couldn't tell a silent failure from success. Needed by Task #23
     (bandit_reward_persisted emit, 2026-08-04): emitting "persisted" without
     this would be a hope, not a confirmation. Existing caller
-    (thread_summarizer.py) ignores the return value, so this is additive."""
+    (thread_summarizer.py) ignores the return value, so this is additive.
+
+    ``quality_judge_model`` (mig 055, Bandit Agent reward contract step 2):
+    which adjudicator LLM produced this score -- lets reward aggregates
+    filter to a single trusted judge (Eval: flash grades RAG-producer arms
+    materially differently than pro, until rag_fact_check locks to pro).
+    None when the caller doesn't know (e.g. thread_summarizer's non-turn
+    quality write)."""
     try:
         cid = str(call_id) if isinstance(call_id, uuid.UUID) else call_id
         async with _acquire_conn() as conn:
             if conn is None:
                 return False
             await conn.execute(
-                "UPDATE llm_calls SET quality_score = $1, quality_source = $2 WHERE call_id = $3::uuid",
+                "UPDATE llm_calls SET quality_score = $1, quality_source = $2, "
+                "quality_judge_model = COALESCE($4, quality_judge_model) WHERE call_id = $3::uuid",
                 round(quality_score, 3),
                 quality_source,
                 cid,
+                quality_judge_model,
             )
             await conn.execute(
                 """
