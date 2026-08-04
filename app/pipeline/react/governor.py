@@ -194,3 +194,63 @@ def directive_to_agent_role(directive: Directive) -> str:
     the call site, not a runtime condition to fail-soft on: a pre-round
     directive should never be "complete" (see the module comment above)."""
     return _DIRECTIVE_TO_AGENT_ROLE[directive]
+
+
+# ── Model-bandit selection criteria (2026-08-04) ────────────────────────
+#
+# Ananth's react-prep ask: the model bandit should be able to select on
+# latency/reasoning-depth per call, not just per-session chat_mode. Scoped
+# with Chat Architecture + LLM Agent (who own the actual selection
+# mechanics in model_registry.py/bandit_weights.py/llm_manager.py) + Eval
+# (calibration-risk sign-off — confirmed safe: the Beta posterior is
+# recomputed fresh per call from mode-invariant raw PG stats, so per-call
+# reasoning_depth variance can't corrupt the learned quality prior).
+# These two functions are ReAct's side of that split: pure, testable
+# derivations from state react already has (agent_role, governor timing),
+# producing the two new `router.select()`/`generate()` kwargs LLM Agent's
+# side defines. Both gated behind MOBIUS_PRODUCT_PROMISE_ENABLED like
+# everything else in this module — None when off, matching every other
+# governor signal's fail-soft posture (LLM Agent's design: None on either
+# kwarg is exactly today's pre-existing selection behavior).
+
+_AGENT_ROLE_TO_REASONING_DEPTH: dict[str, str] = {
+    "explore": "fast",       # a lookup round — cheap, latency-favoring model is fine
+    "synthesize": "thinking",  # real synthesis work — favor quality
+    "draft": "thinking",       # same — draft is the completing round, not a cheap lookup
+}
+
+
+def agent_role_to_reasoning_depth(agent_role: str | None) -> str | None:
+    """Maps react's per-round agent_role to the bandit's reasoning_depth
+    hint (a soft nudge into bandit_weights.py's existing fast/normal/
+    thinking tables — no new weight math, just a finer-grained input than
+    session-level chat_mode). None when agent_role is None (governor off,
+    or the round hasn't resolved a composition-selector role) or
+    unrecognized — the bandit's own mode-derived default applies."""
+    if agent_role is None:
+        return None
+    return _AGENT_ROLE_TO_REASONING_DEPTH.get(agent_role)
+
+
+def latency_budget_ms(
+    contract: ProductPromiseContract, elapsed_s: float, directive: Directive | None,
+) -> int | None:
+    """Hard latency ceiling (ms) for the NEXT LLM call, for the bandit's
+    hard pre-filter — only set when directive is "consolidate"/"finalize"
+    (time is already tight; most rounds are unconstrained, returning None,
+    per LLM Agent's design). Deliberately reuses the SAME time-accounting
+    the governor uses for its own hard-stop (hard_ceiling_s,
+    FINALIZE_MARGIN_S) rather than an independently-invented number, so
+    the model-selection deadline and the governor's own emit-now deadline
+    can't drift apart as two different formulas computing "how much time
+    is left" differently.
+
+    Returns None (unconstrained) once remaining time is already at/past
+    the margin — at that point the governor's own hard-stop path is what
+    handles it, not a latency filter on the next model pick."""
+    if directive not in ("consolidate", "finalize"):
+        return None
+    remaining_s = contract.hard_ceiling_s - elapsed_s - FINALIZE_MARGIN_S
+    if remaining_s <= 0:
+        return None
+    return int(remaining_s * 1000)

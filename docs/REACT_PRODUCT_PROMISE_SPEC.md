@@ -1,7 +1,7 @@
-# SPEC — ReAct Product Promise Contract (module prep, draft)
+# SPEC — ReAct Product Promise Contract (module prep)
 
 **Author:** ReAct Agent
-**Status:** DRAFT — proposed by Ananth 2026-07-30, live session. Spec'd out for a new agent Ananth is standing up ("Product Promise"). Not built, not scoped for implementation yet. Routing to Chat Architecture for awareness + input before this goes further, per Ananth's own instruction.
+**Status:** §1–§7 below are the ORIGINAL DRAFT (2026-07-30) — kept as-written for the historical record of the design reasoning. As of 2026-08-04 the governor itself is BUILT and LIVE on dev (`app/pipeline/react/governor.py`, gated behind `MOBIUS_PRODUCT_PROMISE_ENABLED`) — see §8 for the model-bandit selection criteria extension, the newest piece of "react prep" built on top of it. §6's "none of this is built" no longer applies to the core contract/evaluate()/directive machinery; it now applies only to the specific items still listed there (checkpoint/recovery).
 **Origin:** Ananth — "we need a react module prep module... the first of this is getting a new module called product promise that can tell us what good looks like for the entire react loop... react executes... the agent then updates based on react... new loop runs."
 
 ---
@@ -83,3 +83,56 @@ None of this is built. This section exists so whoever picks up the implementatio
 ## 7. Summary for Chat Architecture
 
 Ananth is standing up a new agent ("Product Promise") to own an explicit contract for what a good ReAct turn looks like (time/token budget, accuracy target, tone, format, and — the genuinely new piece — decision authority to grant more time/rounds when the answer isn't reached). This spec lays out the concept, a draft contract shape, and flags three things that need resolving before a build starts: (1) between-turns vs. in-the-loop mechanics — a real cost/latency fork, (2) reconciling scope with Eval (accuracy), Router (strategy), and agent_role/Phase B (per-round behavior) so this doesn't become a fourth overlapping policy layer, (3) the hard `MOBIUS_TURN_DEADLINE_S` ceiling any time budget must respect. Not built, not implemented — routing for awareness and input per Ananth's instruction.
+
+---
+
+## 8. Model-bandit selection criteria (built 2026-08-04)
+
+**Origin:** Ananth, continuing the "react prep" framing this whole doc started from — "the next part of our react logic is to specifically direct the bandit to give us a clear model that fits a criteria... the things that drive this are latency, token amount, level of reasoning required... this is part of the react prep because we need to account for the react call itself." Explicitly instructed to coordinate with Chat Architecture and LLM Agent to scope before building — not built unilaterally.
+
+### 8.1 What already existed (verified against code, not assumed)
+
+Before this work, react's LLM calls already went through `ModelRouter.select()` (Thompson sampling, `app/services/model_registry.py`) via `llm_manager.generate()`. Of Ananth's 3 criteria:
+
+- **Token amount** — already solved. `router.select()` took `estimated_prompt_tokens`/`expected_output_tokens` as a hard pre-filter (candidates whose context window/TPM budget can't fit the request are dropped before Thompson sampling runs).
+- **Reasoning depth** — existed, but coarsely. `app/services/bandit_weights.py`'s `fast`/`normal`/`thinking` composite-weight profiles (latency-vs-quality-vs-cost-vs-reliability) were derived ONLY from session-level `chat_mode` (quick→fast, copilot→normal, agentic→thinking) plus a few hardcoded per-stage floors. No per-call signal existed.
+- **Latency** — only tracked as an OUTCOME (`router.update_ema(model_id, latency_ms, cost_usd)` after each call completes), never as a selection-time INPUT constraint.
+- A `complexity: str | None` parameter existed on `generate()`'s public signature but was silently dropped before reaching `router.select()` — a dead parameter, not a working mechanism.
+
+### 8.2 The two real gaps, and what got built
+
+**Ownership split:** LLM Agent owns the actual selection mechanics (`model_registry.py`/`bandit_weights.py`/`llm_manager.py` — the router side). ReAct owns the caller side (deriving the two new signals from state react already has, and passing them through). Eval signed off on the calibration-risk question (per-call `reasoning_depth` variance doesn't corrupt the Beta posterior, since it's recomputed fresh per call from mode-invariant raw PG stats — nothing mode-weighted is ever persisted).
+
+**LLM Agent's side (already shipped independently):** `router.select()`, `generate()`, and `generate_sync()` (partial — see below) now accept two new optional kwargs, both `None` by default (zero behavior change for any existing caller):
+- `reasoning_depth: str | None` — a SOFT nudge. Overrides the chat_mode-derived `bandit_mode` for that one call, reusing the existing `fast`/`normal`/`thinking` weight tables (no new weight math).
+- `latency_budget_ms: int | None` — a HARD pre-filter, same architectural shape as the existing token-budget filter. Trims candidates whose `ema_latency_ms` exceeds the budget before Thompson sampling runs; if that would empty the candidate pool, keeps the single fastest candidate rather than hard-failing.
+
+**ReAct's side** (`app/pipeline/react/governor.py`):
+
+```python
+def agent_role_to_reasoning_depth(agent_role: str | None) -> str | None:
+    # explore -> "fast" (a lookup round, latency-favoring model is fine)
+    # synthesize -> "thinking", draft -> "thinking" (real synthesis work)
+    # None -> None (governor off, or role not resolved this round)
+
+def latency_budget_ms(contract, elapsed_s, directive) -> int | None:
+    # Only set when directive is "consolidate"/"finalize" — most rounds
+    # are unconstrained (None). Reuses the SAME time-accounting the
+    # governor uses for its own hard-stop (hard_ceiling_s, FINALIZE_MARGIN_S)
+    # rather than an independently-invented number, so the model-selection
+    # deadline and the governor's own emit-now deadline can't drift apart.
+```
+
+Wired into `react_loop.py`'s main reasoning-round call site (`_call_llm_json(..., stage=f"react_{rn}", ...)`), both derived per-round from the governor's own live state and passed straight through to `generate()`. Both stay `None` whenever `MOBIUS_PRODUCT_PROMISE_ENABLED` is off — same fail-soft posture as every other governor signal in this codebase.
+
+### 8.3 A real bug caught during implementation, not by inspection
+
+The first wiring attempt derived `reasoning_depth` from the composition-selection block's `_agent_role` local variable — which only populates when `MOBIUS_PROMPT_SOURCE=composition` is *also* set (an unrelated flag, needed for DB composition lookup, not for knowing explore/synthesize/draft). That silently left `reasoning_depth` `None` whenever the composition flag was off, even with the governor fully on. Caught by mocking `_call_llm_json` and directly inspecting the kwargs it actually received on a scripted turn — not by re-reading the code and assuming it was correct. Fixed by deriving the bandit's agent_role directly from `_pp_pre_directive` via `directive_to_agent_role()`, independent of the composition-selection path. Locked in permanently by `tests/test_governor_bandit_criteria.py::test_reasoning_depth_reaches_call_llm_json_without_composition_flag`.
+
+### 8.4 Known gap, not blocking
+
+`generate_sync()` does not yet accept `reasoning_depth`/`latency_budget_ms` (only the async `generate()` path does). Not a problem for react today — `_call_llm_json` always passes `ctx`, so it always takes the async path — but worth LLM Agent closing for symmetry if any future sync caller wants these criteria.
+
+### 8.5 Tests
+
+- `tests/test_governor_bandit_criteria.py` — 15 tests: pure-function coverage for both derivations (all `agent_role`/`directive` mappings, boundary cases on the latency formula) plus 3 end-to-end tests through `run_react()` proving the actual kwargs reach `_call_llm_json` correctly (the governor-off fail-soft floor, the consolidate-triggers-a-latency-budget case, and the regression above).

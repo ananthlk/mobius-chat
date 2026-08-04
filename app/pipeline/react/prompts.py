@@ -591,6 +591,8 @@ def _call_llm_json(
     *,
     composition_id: int | None = None,
     composition_hash: str | None = None,
+    reasoning_depth: str | None = None,
+    latency_budget_ms: int | None = None,
 ) -> str:
     """Call LLM and return raw string (expect JSON). When ctx is provided, uses llm_manager and appends usage to ctx.usages.
 
@@ -600,6 +602,17 @@ def _call_llm_json(
     so the actual ``llm_calls`` row can be attributed — mirrors the same
     param LLM Agent added to ``generate()``/``generate_sync()`` for the
     integrator's composition path. None (the default) for the legacy path.
+
+    ``reasoning_depth``/``latency_budget_ms`` (2026-08-04): react's model-
+    bandit selection criteria — see governor.py's
+    ``agent_role_to_reasoning_depth()``/``latency_budget_ms()`` for how
+    react derives these (agent_role for the former, the governor's own
+    hard-stop time-accounting for the latter). Threaded straight through
+    to ``generate()``/``ModelRouter.select()`` (LLM Agent's side); both
+    None by default — no caller has to change to get today's exact
+    behavior. Only threaded on the ``ctx is not None`` (async ``generate``)
+    path below — ``generate_sync()`` doesn't accept these yet, so the
+    legacy sync fallback branch is untouched.
     """
     from app.services.llm_provider import VertexBlockedError
 
@@ -623,6 +636,8 @@ def _call_llm_json(
                     mode=getattr(ctx, "chat_mode", None),
                     composition_id=composition_id,
                     composition_hash=composition_hash,
+                    reasoning_depth=reasoning_depth,
+                    latency_budget_ms=latency_budget_ms,
                 )
             )
             return (raw or "").strip(), usage
