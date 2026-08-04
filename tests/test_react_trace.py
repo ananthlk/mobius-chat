@@ -24,6 +24,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from app.pipeline.context import PipelineContext
 from app.pipeline.react_loop import run_react
 
@@ -113,6 +115,48 @@ def test_trace_captures_governor_directive_and_completion():
     # actually passed a value for it. Locks in the fix.
     assert data["hard_ceiling_s"] is not None
     assert data["hard_ceiling_s"] > 0
+
+
+def test_trace_groundedness_score_none_when_heuristic_flag_off():
+    """2026-08-04 (Bandit Agent reward contract, Eval/Chat Architecture
+    design review): the continuous groundedness heuristic is scaffolded
+    behind its own flag (MOBIUS_REACT_GROUNDEDNESS_HEURISTIC), separate
+    from MOBIUS_PRODUCT_PROMISE_ENABLED -- must stay None in the trace
+    even when the mandatory groundedness floor runs and passes."""
+    def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+        if stage == "react_1":
+            return '{"thought": "search", "tool": "search_corpus", "inputs": {"query": "x"}, "is_complete": false}'
+        if stage == "critique":
+            return '{"grounded": true, "issues": []}'
+        return '{"thought": "done", "tool": null, "inputs": {}, "is_complete": true, "answer": "a real, sufficiently long, grounded answer here", "confidence": "high"}'
+
+    ctx = _make_ctx("copilot")
+    with patch.dict("os.environ", {"MOBIUS_PRODUCT_PROMISE_ENABLED": "1", "MOBIUS_REACT_GROUNDEDNESS_HEURISTIC": ""}), \
+         patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm), \
+         patch("app.pipeline.react_loop._execute_tool_with_retry", return_value=_SEARCH_RESULT):
+        run_react(ctx, emitter=None)
+
+    data = _trace_entries(ctx)[0]["data"]
+    assert data["groundedness_score"] is None
+
+
+def test_trace_groundedness_score_populated_when_heuristic_flag_on():
+    def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+        if stage == "react_1":
+            return '{"thought": "search", "tool": "search_corpus", "inputs": {"query": "x"}, "is_complete": false}'
+        if stage == "critique":
+            return '{"grounded": false, "issues": [{"claim": "x", "severity": "medium", "reason": "r"}]}'
+        return '{"thought": "done", "tool": null, "inputs": {}, "is_complete": true, "answer": "a real, sufficiently long, grounded answer here", "confidence": "high"}'
+
+    ctx = _make_ctx("copilot")
+    with patch.dict("os.environ", {"MOBIUS_PRODUCT_PROMISE_ENABLED": "1", "MOBIUS_REACT_GROUNDEDNESS_HEURISTIC": "1"}), \
+         patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm), \
+         patch("app.pipeline.react_loop._execute_tool_with_retry", return_value=_SEARCH_RESULT):
+        run_react(ctx, emitter=None)
+
+    data = _trace_entries(ctx)[0]["data"]
+    # medium severity, default weight 0.2 -> 1 - 0.2 = 0.8
+    assert data["groundedness_score"] == pytest.approx(0.8)
 
 
 def test_trace_hard_ceiling_s_is_none_when_governor_off():

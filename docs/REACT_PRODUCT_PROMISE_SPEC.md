@@ -136,3 +136,29 @@ Earlier revisions of this section flagged `generate_sync()` as not yet accepting
 ### 8.5 Tests
 
 - `tests/test_governor_bandit_criteria.py` — 15 tests: pure-function coverage for both derivations (all `agent_role`/`directive` mappings, boundary cases on the latency formula) plus 3 end-to-end tests through `run_react()` proving the actual kwargs reach `_call_llm_json` correctly (the governor-off fail-soft floor, the consolidate-triggers-a-latency-budget case, and the regression above).
+
+## 9. Continuous groundedness heuristic (scaffolded 2026-08-04, flag OFF)
+
+**Why.** `CritiqueResult.has_blocking_issues` (§critic.py) is boolean — a turn either has a high-severity ungrounded claim or it doesn't. The Bandit Agent reward contract wants a continuous groundedness signal per turn instead, closer to what mobius-rag's `fact_checker.check_facts(grounding_only=True)` already returns as a `.score` in `[0, 1]` for RAG's own producer arms. Calling that fact_checker live from react's round loop would mean a cross-service network hop plus a second judge-model call per scoring round — directly working against the same latency budget §8's `reasoning_depth`/`latency_budget_ms` criteria exist to protect. So this is an in-process approximation computed from data the critic already produces, not a new judge call.
+
+**The formula.** `app/pipeline/react/critic.py::compute_groundedness_heuristic(issues, weights=None)`:
+
+```
+score = clamp(1 − Σ penalty[issue.severity] for issue in issues, 0.0, 1.0)
+penalty = {"high": 0.5, "medium": 0.2, "low": 0.05}   # provisional priors
+```
+
+This is a penalty sum, not a ratio — `CritiqueResult.issues` only contains *flagged* (ungrounded) claims, there's no total-claims denominator to divide by (Eval caught this on the first draft of the formula, which had assumed a `1 − unsupported/N_claims` shape that isn't computable from the critic's actual output).
+
+**Direction vs. magnitude.** Eval gave a structural argument (2026-08-04, not an empirical sample) that the *direction* is safe to build on without waiting for calibration: both this penalty sum and fact_checker's `.score` are monotonic in the same underlying construct — unsupported-claim mass in the answer — so a sign inversion would require the critic and fact_checker to disagree on what "grounded" means, which is implausible for two source-grounding judges applying near-identical rubrics. *Magnitude* (the actual weight values) is explicitly NOT safe yet — that's what Eval's locked-judge GCP calibration run resolves. Two shape risks flagged ahead of that run, both worth knowing before reading any value out of this function today:
+
+1. **Saturation** — `high=0.5` means two high-severity issues already floor the score at `0.0` (`0.5 × 2 = 1.0` penalty). A turn with 2 fabrications and a turn with 8 both score `0.0`; fact_checker's continuous score would still discriminate between them. Eval expects the fit to want `high` lower than `0.5`.
+2. **Granularity** — this is a coarse discrete sum standing in for a continuous score. The calibration run should *fit* the three weights from real (answer, chunks) pairs against fact_checker's score, not just validate the `{0.5, 0.2, 0.05}` priors as correct.
+
+**Why gated, and why config not code.** `groundedness_heuristic_enabled()` (env `MOBIUS_REACT_GROUNDEDNESS_HEURISTIC`, same on/off value set as `critic_enabled()`) is OFF by default — this is a scaffold, not wired into any decision path. `has_blocking_issues` alone still decides whether a round loop continues; nothing about turn behavior changes whether this flag is on or off. The three penalty weights are env-overridable (`MOBIUS_REACT_GROUNDEDNESS_PENALTY_{HIGH,MEDIUM,LOW}`), not hardcoded, so when Eval's GCP run produces fitted values, dropping them in is a config change, not a code change or a redeploy of the formula itself.
+
+**Where it surfaces.** When the flag is on and either critic call site (the Product Promise mandatory floor, or the legacy `critic_enabled()`-gated path) runs, `ctx.react_groundedness_score` is set from the round's `CritiqueResult.issues` and threaded into the `react_trace` diagnostics envelope (`make_react_trace(..., groundedness_score=...)`, `app/communication/emit_envelope.py`) alongside the existing boolean `groundedness_passed`. `None` when the flag is off or the critic never ran that turn.
+
+**Tests.** `tests/test_react_critic.py::TestGroundednessHeuristicFlag` (flag on/off values) and `::TestComputeGroundednessHeuristic` (pure-function coverage: zero issues, each severity alone, the exact 2-high saturation case Eval flagged, mixed severities, env-override, invalid-env fallback, explicit-weights-param precedence). `tests/test_react_trace.py::test_trace_groundedness_score_none_when_heuristic_flag_off` / `::test_trace_groundedness_score_populated_when_heuristic_flag_on` — end-to-end through `run_react()`, not just the pure function.
+
+**Not done here:** nothing reads or acts on `react_groundedness_score` yet — no gating logic, no bandit reward wiring, no dashboard. That's the next decision once Eval's calibration run lands, not part of this scaffold.

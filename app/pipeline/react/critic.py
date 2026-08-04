@@ -228,6 +228,84 @@ class CritiqueResult:
         return any(i.is_high for i in self.issues)
 
 
+# ── Groundedness heuristic (provisional, gated) ─────────────────────
+#
+# has_blocking_issues is boolean — either a high-severity issue exists
+# or it doesn't. The Bandit Agent reward contract wants a continuous
+# groundedness signal instead, mirroring mobius-rag's fact_checker.
+# check_facts(grounding_only=True) ``.score`` in [0, 1], computed
+# in-process from the critic's own flagged issues instead of a live
+# cross-service call.
+#
+# Direction (Eval, 2026-08-04, structural argument, not an empirical
+# sample): this penalty sum and fact_checker's score are both
+# monotonic in the same underlying construct — unsupported-claim mass.
+# A sign inversion would require the two source-grounding judges to
+# disagree on what "grounded" means, which is implausible. Direction
+# is safe to build on.
+#
+# Magnitude is NOT safe yet — that's what Eval's locked-judge GCP
+# calibration run resolves, not this scaffold. Two shape risks flagged
+# ahead of that run:
+#   1. Saturation — high=0.5 floors the score at 0 after just two
+#      high-severity issues, discarding resolution across "very bad"
+#      answers that fact_checker's continuous score would still
+#      discriminate between. Expect the fit to want `high` lower.
+#   2. Granularity — this sum is a coarse discrete stand-in for a
+#      continuous score. Calibration should FIT the three weights from
+#      real (answer, chunks) pairs, not just validate these priors.
+#
+# So: weights are env-overridable, not hardcoded, so the GCP-fitted
+# values drop in as a config change, not a code change. Flag OFF by
+# default — scaffold only, not wired into any decision path (loop
+# continuation still runs on has_blocking_issues alone) until the
+# calibration run backs flipping it on.
+
+_DEFAULT_GROUNDEDNESS_PENALTY = {"high": 0.5, "medium": 0.2, "low": 0.05}
+
+
+def groundedness_heuristic_enabled() -> bool:
+    return (os.environ.get("MOBIUS_REACT_GROUNDEDNESS_HEURISTIC") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _groundedness_penalty_weights() -> dict[str, float]:
+    """Per-severity penalty weights — env-overridable so the GCP-fitted
+    values (see module notes above) drop in without a code change."""
+    weights = dict(_DEFAULT_GROUNDEDNESS_PENALTY)
+    for sev in ("high", "medium", "low"):
+        raw = os.environ.get(f"MOBIUS_REACT_GROUNDEDNESS_PENALTY_{sev.upper()}")
+        if not raw:
+            continue
+        try:
+            weights[sev] = float(raw)
+        except ValueError:
+            logger.warning(
+                "invalid MOBIUS_REACT_GROUNDEDNESS_PENALTY_%s=%r, using default %s",
+                sev.upper(), raw, weights[sev],
+            )
+    return weights
+
+
+def compute_groundedness_heuristic(
+    issues: list[CritiqueIssue],
+    *,
+    weights: dict[str, float] | None = None,
+) -> float:
+    """Continuous groundedness estimate in [0, 1] from the critic's
+    flagged issues — provisional stand-in for fact_checker's
+    check_facts(grounding_only=True) ``.score``. See the module notes
+    above for the direction argument and the two shape risks
+    (saturation, granularity) this hasn't been calibrated against yet."""
+    w = weights if weights is not None else _groundedness_penalty_weights()
+    penalty = sum(w.get(issue.severity, w["low"]) for issue in issues)
+    return max(0.0, min(1.0, 1.0 - penalty))
+
+
 # ── Prompts ──────────────────────────────────────────────────────────
 
 

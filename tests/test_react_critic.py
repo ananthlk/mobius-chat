@@ -50,8 +50,10 @@ from app.pipeline.react.critic import (
     CritiqueIssue,
     CritiqueResult,
     build_critic_user_message,
+    compute_groundedness_heuristic,
     critic_enabled,
     format_critique_as_observation,
+    groundedness_heuristic_enabled,
     parse_critic_response,
 )
 
@@ -76,6 +78,93 @@ class TestCriticFlag:
     def test_explicit_off_values(self, monkeypatch, val):
         monkeypatch.setenv("MOBIUS_REACT_CRITIC", val)
         assert critic_enabled() is False
+
+
+# ── Groundedness heuristic (provisional, gated) ────────────────────────
+#
+# 2026-08-04 (Eval + Chat Architecture design review, Bandit Agent reward
+# contract): continuous stand-in for fact_checker's check_facts(
+# grounding_only=True) .score, computed from the critic's own flagged
+# issues. Direction confirmed safe by Eval's structural argument; weights
+# are provisional until the locked-judge GCP calibration run, hence
+# env-overridable rather than hardcoded, and hence gated behind its own
+# flag distinct from MOBIUS_REACT_CRITIC.
+
+
+class TestGroundednessHeuristicFlag:
+    def test_default_is_off(self, monkeypatch):
+        monkeypatch.delenv("MOBIUS_REACT_GROUNDEDNESS_HEURISTIC", raising=False)
+        assert groundedness_heuristic_enabled() is False
+
+    @pytest.mark.parametrize("val", ["1", "true", "TRUE", "yes", "on"])
+    def test_explicit_on_values(self, monkeypatch, val):
+        monkeypatch.setenv("MOBIUS_REACT_GROUNDEDNESS_HEURISTIC", val)
+        assert groundedness_heuristic_enabled() is True
+
+    @pytest.mark.parametrize("val", ["0", "false", "no", "off", ""])
+    def test_explicit_off_values(self, monkeypatch, val):
+        monkeypatch.setenv("MOBIUS_REACT_GROUNDEDNESS_HEURISTIC", val)
+        assert groundedness_heuristic_enabled() is False
+
+
+class TestComputeGroundednessHeuristic:
+    def test_no_issues_is_perfect_score(self):
+        assert compute_groundedness_heuristic([]) == 1.0
+
+    def test_single_high_severity_issue(self):
+        issues = [CritiqueIssue(claim="x", severity="high", reason="r")]
+        assert compute_groundedness_heuristic(issues) == pytest.approx(0.5)
+
+    def test_single_medium_severity_issue(self):
+        issues = [CritiqueIssue(claim="x", severity="medium", reason="r")]
+        assert compute_groundedness_heuristic(issues) == pytest.approx(0.8)
+
+    def test_single_low_severity_issue(self):
+        issues = [CritiqueIssue(claim="x", severity="low", reason="r")]
+        assert compute_groundedness_heuristic(issues) == pytest.approx(0.95)
+
+    def test_saturates_at_zero_not_negative(self):
+        """Eval's saturation flag: three high-severity issues sum past 1.0
+        (0.5 * 3 = 1.5) -- the score clamps at 0, it does not go negative."""
+        issues = [CritiqueIssue(claim=f"x{i}", severity="high", reason="r") for i in range(3)]
+        assert compute_groundedness_heuristic(issues) == 0.0
+
+    def test_two_high_issues_already_saturates(self):
+        """The exact saturation case Eval flagged: two high-severity
+        issues (2 * 0.5 = 1.0) floor the score at 0, discarding any
+        distinction from a turn with three or more."""
+        two = [CritiqueIssue(claim=f"x{i}", severity="high", reason="r") for i in range(2)]
+        three = [CritiqueIssue(claim=f"x{i}", severity="high", reason="r") for i in range(3)]
+        assert compute_groundedness_heuristic(two) == 0.0
+        assert compute_groundedness_heuristic(three) == 0.0
+
+    def test_mixed_severities_sum_penalties(self):
+        issues = [
+            CritiqueIssue(claim="a", severity="high", reason="r"),
+            CritiqueIssue(claim="b", severity="medium", reason="r"),
+            CritiqueIssue(claim="c", severity="low", reason="r"),
+        ]
+        # 1 - (0.5 + 0.2 + 0.05) = 0.25
+        assert compute_groundedness_heuristic(issues) == pytest.approx(0.25)
+
+    def test_env_override_changes_weights(self, monkeypatch):
+        """Weights are env-overridable, not hardcoded -- the mechanism the
+        GCP-fitted values are meant to use as a config change, not a code
+        change."""
+        monkeypatch.setenv("MOBIUS_REACT_GROUNDEDNESS_PENALTY_HIGH", "0.3")
+        issues = [CritiqueIssue(claim="x", severity="high", reason="r")]
+        assert compute_groundedness_heuristic(issues) == pytest.approx(0.7)
+
+    def test_invalid_env_override_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("MOBIUS_REACT_GROUNDEDNESS_PENALTY_HIGH", "not-a-number")
+        issues = [CritiqueIssue(claim="x", severity="high", reason="r")]
+        assert compute_groundedness_heuristic(issues) == pytest.approx(0.5)
+
+    def test_explicit_weights_param_overrides_env(self, monkeypatch):
+        monkeypatch.setenv("MOBIUS_REACT_GROUNDEDNESS_PENALTY_HIGH", "0.9")
+        issues = [CritiqueIssue(claim="x", severity="high", reason="r")]
+        result = compute_groundedness_heuristic(issues, weights={"high": 0.1, "medium": 0.2, "low": 0.05})
+        assert result == pytest.approx(0.9)
 
 
 # ── Response parser ──────────────────────────────────────────────────

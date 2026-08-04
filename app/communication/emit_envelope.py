@@ -307,6 +307,7 @@ def make_react_trace(
     unblock_ask: str | None = None,
     total_elapsed_s: float | None = None,
     hard_ceiling_s: float | None = None,
+    groundedness_score: float | None = None,
     thread_id: str | None = None,
 ) -> EmitEnvelope:
     """React-loop trace emitted once per turn (2026-07-31).
@@ -355,6 +356,7 @@ def make_react_trace(
             "unblock_ask": unblock_ask,
             "total_elapsed_s": total_elapsed_s,
             "hard_ceiling_s": hard_ceiling_s,
+            "groundedness_score": groundedness_score,
         },
         note=note,
         thread_id=thread_id,

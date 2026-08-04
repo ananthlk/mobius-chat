@@ -1869,6 +1869,7 @@ def _finalize_response(
                 unblock_ask=getattr(ctx, "react_unblock_ask", None),
                 total_elapsed_s=round(_rt_elapsed, 1) if _rt_elapsed is not None else None,
                 hard_ceiling_s=getattr(ctx, "react_hard_ceiling_s", None),
+                groundedness_score=getattr(ctx, "react_groundedness_score", None),
                 thread_id=ctx.thread_id,
             )
             chunks = getattr(ctx, "thinking_chunks", None)
@@ -2199,6 +2200,12 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
     ctx.react_trace_rounds = []
     ctx.react_groundedness_floor_ran = False
     ctx.react_groundedness_passed = None
+    # Continuous groundedness heuristic (critic.py's compute_groundedness_
+    # heuristic) — stays None unless MOBIUS_REACT_GROUNDEDNESS_HEURISTIC is
+    # on; see critic.py's module notes for why this is gated separately
+    # from react_groundedness_passed (the boolean gate keeps deciding loop
+    # continuation either way).
+    ctx.react_groundedness_score = None
     ctx.react_unfinished_reason = None
     ctx.react_unfinished_summary = None
     ctx.react_unblock_ask = None
@@ -2623,7 +2630,9 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     from app.pipeline.react.critic import (
                         CRITIC_SYSTEM_PROMPT as _pp_critic_prompt,
                         build_critic_user_message as _pp_build_critic_msg,
+                        compute_groundedness_heuristic,
                         format_critique_as_observation as _pp_format_critique_obs,
+                        groundedness_heuristic_enabled,
                         parse_critic_response as _pp_parse_critic,
                     )
                     from app.pipeline.react.governor import RoundState, evaluate
@@ -2654,6 +2663,8 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     # (optional) critic_enabled()-gated path below.
                     ctx.react_groundedness_floor_ran = True
                     ctx.react_groundedness_passed = _pp_groundedness_passed
+                    if groundedness_heuristic_enabled():
+                        ctx.react_groundedness_score = compute_groundedness_heuristic(_pp_critique.issues)
 
                     _pp_elapsed_s = _pp_time_mod.monotonic() - _pp_turn_start
                     _pp_post_state = RoundState(
@@ -2735,8 +2746,10 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 from app.pipeline.react.critic import (
                     CRITIC_SYSTEM_PROMPT,
                     build_critic_user_message,
+                    compute_groundedness_heuristic,
                     critic_enabled,
                     format_critique_as_observation,
+                    groundedness_heuristic_enabled,
                     parse_critic_response,
                 )
 
@@ -2865,6 +2878,8 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                         composition_hash=_critic_composition_hash,
                     )
                     critique = parse_critic_response(critic_raw)
+                    if groundedness_heuristic_enabled():
+                        ctx.react_groundedness_score = compute_groundedness_heuristic(critique.issues)
 
                     if critique.has_blocking_issues and rounds_remaining > 0:
                         # Inject the critique + keep going. Planner sees
