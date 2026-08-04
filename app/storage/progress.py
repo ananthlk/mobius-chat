@@ -319,6 +319,34 @@ def publish_quality_audit_event(correlation_id: str, audit: dict[str, Any], line
     _publish_progress_event(correlation_id, ev)
 
 
+def publish_bandit_reward_event(
+    correlation_id: str, call_id: str, stage: str, quality_score: float
+) -> None:
+    """Emit one event per llm_calls.quality_score write that actually persisted
+    (Task #23, 2026-08-04 — Bandit Agent ruled per-call, not per-turn: with the
+    DISTINCT ON grain fix, a turn with N retries at one stage now scores all N
+    calls, and per-call is the only way to visually confirm that in the FE
+    rather than take it on faith). Same SSE + DB-replay pattern as
+    ``publish_quality_audit_event`` — no new plumbing. Fire-and-forget: caller
+    (``update_quality_for_correlation_stages_async``) only calls this AFTER its
+    own DB write succeeds, so an event here is a true confirmation, not a hope."""
+    ts, ts_readable = _event_ts()
+    ev: dict[str, Any] = {
+        "event": "bandit_reward_persisted",
+        "data": {
+            "call_id": call_id,
+            "stage": stage,
+            "quality_score": round(float(quality_score), 4),
+            "ts": ts,
+            "ts_readable": ts_readable,
+        },
+    }
+    with _lock:
+        if correlation_id in _progress:
+            _progress[correlation_id]["events"].append(ev)
+    _publish_progress_event(correlation_id, ev)
+
+
 def get_progress_events_from_db(correlation_id: str, after_id: int = 0) -> list[tuple[int, dict[str, Any]]]:
     """Poll chat_progress_events for this correlation_id. Returns [(id, {event, data}), ...] for API stream.
     Used when worker runs in separate process (Redis queue); worker persists events to DB.

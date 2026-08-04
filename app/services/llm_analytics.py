@@ -284,18 +284,31 @@ async def update_quality_for_correlation_stages_async(
                 q = get_stage_quality_score(rubric_stage, sub_scores, float(overall_score))
             if q is None:
                 continue
-            await update_quality_async(row["id"], float(q), quality_source)
+            persisted = await update_quality_async(row["id"], float(q), quality_source)
+            if persisted:
+                try:
+                    from app.storage.progress import publish_bandit_reward_event
+                    publish_bandit_reward_event(correlation_id, row["id"], raw_stage, float(q))
+                except Exception:
+                    pass
     except Exception as e:
         logger.warning("update_quality_for_correlation_stages failed: %s", e)
 
 
-async def update_quality_async(call_id: str | uuid.UUID, quality_score: float, quality_source: str) -> None:
-    """Update llm_calls.quality_score/source and insert llm_quality_updates row."""
+async def update_quality_async(call_id: str | uuid.UUID, quality_score: float, quality_source: str) -> bool:
+    """Update llm_calls.quality_score/source and insert llm_quality_updates row.
+
+    Returns True on a real successful write, False otherwise (no pool, or the
+    UPDATE/INSERT raised) -- previously returned None unconditionally, so a
+    caller couldn't tell a silent failure from success. Needed by Task #23
+    (bandit_reward_persisted emit, 2026-08-04): emitting "persisted" without
+    this would be a hope, not a confirmation. Existing caller
+    (thread_summarizer.py) ignores the return value, so this is additive."""
     try:
         cid = str(call_id) if isinstance(call_id, uuid.UUID) else call_id
         async with _acquire_conn() as conn:
             if conn is None:
-                return
+                return False
             await conn.execute(
                 "UPDATE llm_calls SET quality_score = $1, quality_source = $2 WHERE call_id = $3::uuid",
                 round(quality_score, 3),
@@ -311,8 +324,10 @@ async def update_quality_async(call_id: str | uuid.UUID, quality_score: float, q
                 round(quality_score, 3),
                 quality_source,
             )
+        return True
     except Exception as e:
         logger.warning("llm_analytics update_quality failed: %s", e)
+        return False
 
 
 async def fetch_quality_enrich_map_for_correlation_async(correlation_id: str) -> dict[str, dict[str, Any]]:
