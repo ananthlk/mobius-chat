@@ -234,7 +234,22 @@ async def update_quality_for_correlation_stages_async(
 ) -> None:
     """
     After full adjudication, write per-stage quality_score on llm_calls rows
-    for this correlation_id (latest successful call per mapped stage).
+    for this correlation_id -- EVERY successful call at each mapped stage,
+    not just the latest.
+
+    2026-08-04 (Bandit Agent audit): this used to be ``SELECT DISTINCT ON
+    (stage) ... ORDER BY stage, ts DESC`` -- only the last successful call
+    per stage per turn got scored. RAG escalation loops (same stage, multiple
+    attempts within one turn -- e.g. a retry after a low-confidence result)
+    meant earlier attempts kept quality_score=NULL forever: invisible to
+    model_performance_by_stage's avg_quality, invisible to the bandit reward
+    signal. Fixed at the query grain (score every successful call) rather
+    than asking callers to rename stages per attempt/slot, which would have
+    fragmented the stage taxonomy that routing/PG-stats/composite caps all
+    key on. The adjudicator's score is turn-and-stage-level, not per-attempt
+    -- applying it to every successful call at that stage this turn is the
+    correct semantics we already had for a single call, just not withheld
+    from earlier attempts anymore.
 
     When stage_scores is provided (from adjudicator per-round evaluation), use
     those for react_1, react_2, etc. instead of the shared planner mapping.
@@ -252,10 +267,9 @@ async def update_quality_for_correlation_stages_async(
                 return
             rows = await conn.fetch(
                 """
-                SELECT DISTINCT ON (stage) call_id::text AS id, stage
+                SELECT call_id::text AS id, stage
                 FROM llm_calls
                 WHERE correlation_id = $1 AND success = true
-                ORDER BY stage, ts DESC
                 """,
                 correlation_id,
             )

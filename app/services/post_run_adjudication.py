@@ -107,7 +107,6 @@ async def _run_async(ctx: PipelineContext, payload: dict[str, Any]) -> None:
         fetch_quality_enrich_map_for_correlation_async,
         update_quality_for_correlation_stages_async,
     )
-    from app.services.model_registry import get_router
     from app.storage.adjudication_scores import insert_adjudication_score_row
     from app.storage.progress import publish_quality_audit_event
     from app.storage.turns import fetch_turn_qc_audit, update_turn_qc_audit
@@ -169,13 +168,6 @@ async def _run_async(ctx: PipelineContext, payload: dict[str, Any]) -> None:
         "post_run_adjudicator_v2",
         stage_scores=stage_scores,
     )
-
-    model_id = getattr(ctx, "integrator_model_id", None) or (payload.get("model_used") or "").strip() or None
-    if model_id:
-        try:
-            get_router().observe_quality(model_id, score)
-        except Exception as e:
-            logger.debug("post_run observe_quality: %s", e)
 
     audited_at = datetime.now(timezone.utc).isoformat()
     adjud_usage = adj.get("adjudicator_usage") if isinstance(adj.get("adjudicator_usage"), dict) else {}
