@@ -8164,6 +8164,102 @@ function renderDiagnosticsCard(thinkingLog) {
   });
   return wrap;
 }
+function renderReactTraceCard(thinkingLog) {
+  if (!Array.isArray(thinkingLog) || thinkingLog.length === 0)
+    return null;
+  let entry = null;
+  for (const e of thinkingLog) {
+    if (e && typeof e === "object" && e.signal === "react_trace") {
+      entry = e;
+    }
+  }
+  if (!entry)
+    return null;
+  const data = entry.data ?? {};
+  const rounds = Array.isArray(data.rounds) ? data.rounds : [];
+  if (rounds.length === 0)
+    return null;
+  const wrap = document.createElement("div");
+  wrap.className = "llm-performance react-trace collapsed";
+  const preview = document.createElement("div");
+  preview.className = "llm-performance-preview";
+  preview.setAttribute("role", "button");
+  preview.setAttribute("tabindex", "0");
+  preview.setAttribute("aria-expanded", "false");
+  const titleEl = document.createElement("span");
+  titleEl.className = "llm-performance-title";
+  titleEl.textContent = "React";
+  const oneline = document.createElement("span");
+  oneline.className = "llm-performance-oneline";
+  oneline.textContent = String(
+    entry.note ?? `${data.mode ?? "?"} \xB7 ${data.rounds_used ?? "?"}/${data.max_rounds ?? "?"} round(s)`
+  ).replace(/^→\s*/, "");
+  const chev = document.createElement("span");
+  chev.className = "llm-performance-chevron";
+  chev.setAttribute("aria-hidden", "true");
+  chev.textContent = "\u25BC";
+  preview.appendChild(titleEl);
+  preview.appendChild(oneline);
+  preview.appendChild(chev);
+  const body = document.createElement("div");
+  body.className = "llm-performance-body";
+  for (const r of rounds) {
+    const directive = r?.directive != null ? String(r.directive) : null;
+    const status = directive === "finalize" ? "warn" : directive ? "ok" : "gray";
+    const summary = directive ? `${directive}${r?.reason ? " \u2014 " + String(r.reason) : ""}` : "governor off";
+    body.appendChild(_dcLeaf(`Round ${r?.round ?? "?"}`, status, summary, (b) => {
+      if (r?.agent_role)
+        _dcKV(b, "agent_role", String(r.agent_role));
+      if (r?.composition_id != null)
+        _dcKV(b, "composition_id", String(r.composition_id));
+      if (r?.reasoning_depth)
+        _dcKV(b, "reasoning_depth", String(r.reasoning_depth));
+      if (r?.latency_budget_ms != null)
+        _dcKV(b, "latency_budget_ms", `${r.latency_budget_ms}ms`);
+      if (r?.elapsed_s != null)
+        _dcKV(b, "elapsed_s", String(r.elapsed_s));
+    }));
+  }
+  const finalDirective = data.final_directive != null ? String(data.final_directive) : null;
+  const unfinishedReason = data.unfinished_reason != null ? String(data.unfinished_reason) : null;
+  let outcomeStatus = "gray";
+  let outcomeSummary = "n/a";
+  if (finalDirective) {
+    outcomeStatus = finalDirective === "complete" ? "ok" : "warn";
+    outcomeSummary = finalDirective;
+    if (data.groundedness_floor_ran) {
+      outcomeSummary += data.groundedness_passed ? " \xB7 groundedness passed" : " \xB7 groundedness flagged";
+    }
+  } else if (unfinishedReason) {
+    outcomeStatus = "warn";
+    outcomeSummary = `unfinished: ${unfinishedReason}`;
+  }
+  body.appendChild(_dcLeaf("outcome", outcomeStatus, outcomeSummary, (b) => {
+    if (data.unfinished_summary)
+      _dcKV(b, "unfinished_summary", String(data.unfinished_summary));
+    if (data.unblock_ask)
+      _dcKV(b, "unblock_ask", String(data.unblock_ask));
+    if (data.total_elapsed_s != null)
+      _dcKV(b, "total_elapsed_s", String(data.total_elapsed_s));
+    if (data.hard_ceiling_s != null)
+      _dcKV(b, "hard_ceiling_s", String(data.hard_ceiling_s));
+  }));
+  wrap.appendChild(preview);
+  wrap.appendChild(body);
+  const toggle = () => {
+    const collapsed = wrap.classList.toggle("collapsed");
+    preview.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    chev.textContent = collapsed ? "\u25BC" : "\u25B2";
+  };
+  preview.addEventListener("click", toggle);
+  preview.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      toggle();
+    }
+  });
+  return wrap;
+}
 function rtEscapeAttr(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
@@ -10066,6 +10162,11 @@ function run() {
     );
     if (traceEl)
       diagPanel.appendChild(traceEl);
+    const reactTraceEl = renderReactTraceCard(
+      opts.thinkingLog
+    );
+    if (reactTraceEl)
+      diagPanel.appendChild(reactTraceEl);
     if (opts.hipaaDiagnostics) {
       const hd = opts.hipaaDiagnostics;
       const hipaaSection = document.createElement("div");
@@ -11708,6 +11809,9 @@ ${message}`;
           const retrievalPanel = renderDiagnosticsCard(data.thinking_log);
           if (retrievalPanel)
             turnWrap.appendChild(retrievalPanel);
+          const reactTracePanel = renderReactTraceCard(data.thinking_log);
+          if (reactTracePanel)
+            turnWrap.appendChild(reactTracePanel);
         }
       }
       mergeTechnicalPanels(turnWrap, data);

@@ -6663,6 +6663,120 @@ function renderDiagnosticsCard(
   return wrap;
 }
 
+/** React-loop diagnostics card (2026-08 — Ananth's ask: the emit trail was
+ * "blah" and none of the governor's real reasoning was surfaced anywhere
+ * queryable). One leaf per round showing the governor's actual directive
+ * + reason (not the static positional headline), the composition/agent_role
+ * selected, and the model-bandit selection criteria (reasoning_depth/
+ * latency_budget_ms — react-prep, 2026-08-04), plus an outcome leaf for how
+ * the turn actually ended (groundedness result, or the final-round
+ * unfinished self-report). Same collapsible-card shell as
+ * renderDiagnosticsCard (Retrieval) — sits alongside it in the Diagnostics
+ * tab, see _injectDiagnosticsTab. Backend: make_react_trace in
+ * app/communication/emit_envelope.py, react_loop.py's per-round
+ * ctx.react_trace_rounds collection + _finalize_response's single emit. */
+function renderReactTraceCard(
+  thinkingLog: ReadonlyArray<unknown> | null | undefined,
+): HTMLElement | null {
+  if (!Array.isArray(thinkingLog) || thinkingLog.length === 0) return null;
+  // Exactly one react_trace envelope per turn today, but iterate to the
+  // last just in case (matches renderDiagnosticsCard's own defensiveness).
+  let entry: { data?: any; note?: string } | null = null;
+  for (const e of thinkingLog) {
+    if (e && typeof e === "object" && (e as any).signal === "react_trace") {
+      entry = e as any;
+    }
+  }
+  if (!entry) return null;
+  const data = (entry.data ?? {}) as any;
+  const rounds: any[] = Array.isArray(data.rounds) ? data.rounds : [];
+  if (rounds.length === 0) return null;
+
+  const wrap = document.createElement("div");
+  wrap.className = "llm-performance react-trace collapsed";
+
+  // ── Glance bar ─────────────────────────────────────────────────────
+  const preview = document.createElement("div");
+  preview.className = "llm-performance-preview";
+  preview.setAttribute("role", "button");
+  preview.setAttribute("tabindex", "0");
+  preview.setAttribute("aria-expanded", "false");
+  const titleEl = document.createElement("span");
+  titleEl.className = "llm-performance-title";
+  titleEl.textContent = "React";
+  const oneline = document.createElement("span");
+  oneline.className = "llm-performance-oneline";
+  // note is already the exact "→ mode · N/M round(s) · ..." summary built
+  // server-side by make_react_trace — reuse verbatim rather than re-derive.
+  oneline.textContent = String(
+    entry.note ?? `${data.mode ?? "?"} · ${data.rounds_used ?? "?"}/${data.max_rounds ?? "?"} round(s)`
+  ).replace(/^→\s*/, "");
+  const chev = document.createElement("span");
+  chev.className = "llm-performance-chevron";
+  chev.setAttribute("aria-hidden", "true");
+  chev.textContent = "▼";
+  preview.appendChild(titleEl);
+  preview.appendChild(oneline);
+  preview.appendChild(chev);
+
+  // ── Expanded body — one leaf per round + a final outcome leaf ───────
+  const body = document.createElement("div");
+  body.className = "llm-performance-body";
+
+  for (const r of rounds) {
+    const directive = r?.directive != null ? String(r.directive) : null;
+    // finalize = budget-forced, worth a glance; search/consolidate = normal
+    // progress; null = governor off, this round has no directive at all.
+    const status: "ok" | "warn" | "gray" = directive === "finalize" ? "warn" : directive ? "ok" : "gray";
+    const summary = directive
+      ? `${directive}${r?.reason ? " — " + String(r.reason) : ""}`
+      : "governor off";
+    body.appendChild(_dcLeaf(`Round ${r?.round ?? "?"}`, status, summary, (b) => {
+      if (r?.agent_role) _dcKV(b, "agent_role", String(r.agent_role));
+      if (r?.composition_id != null) _dcKV(b, "composition_id", String(r.composition_id));
+      if (r?.reasoning_depth) _dcKV(b, "reasoning_depth", String(r.reasoning_depth));
+      if (r?.latency_budget_ms != null) _dcKV(b, "latency_budget_ms", `${r.latency_budget_ms}ms`);
+      if (r?.elapsed_s != null) _dcKV(b, "elapsed_s", String(r.elapsed_s));
+    }));
+  }
+
+  const finalDirective = data.final_directive != null ? String(data.final_directive) : null;
+  const unfinishedReason = data.unfinished_reason != null ? String(data.unfinished_reason) : null;
+  let outcomeStatus: "ok" | "warn" | "gray" = "gray";
+  let outcomeSummary = "n/a";
+  if (finalDirective) {
+    outcomeStatus = finalDirective === "complete" ? "ok" : "warn";
+    outcomeSummary = finalDirective;
+    if (data.groundedness_floor_ran) {
+      outcomeSummary += data.groundedness_passed ? " · groundedness passed" : " · groundedness flagged";
+    }
+  } else if (unfinishedReason) {
+    outcomeStatus = "warn";
+    outcomeSummary = `unfinished: ${unfinishedReason}`;
+  }
+  body.appendChild(_dcLeaf("outcome", outcomeStatus, outcomeSummary, (b) => {
+    if (data.unfinished_summary) _dcKV(b, "unfinished_summary", String(data.unfinished_summary));
+    if (data.unblock_ask) _dcKV(b, "unblock_ask", String(data.unblock_ask));
+    if (data.total_elapsed_s != null) _dcKV(b, "total_elapsed_s", String(data.total_elapsed_s));
+    if (data.hard_ceiling_s != null) _dcKV(b, "hard_ceiling_s", String(data.hard_ceiling_s));
+  }));
+
+  wrap.appendChild(preview);
+  wrap.appendChild(body);
+
+  const toggle = () => {
+    const collapsed = wrap.classList.toggle("collapsed");
+    preview.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    chev.textContent = collapsed ? "▼" : "▲";
+  };
+  preview.addEventListener("click", toggle);
+  preview.addEventListener("keydown", (e: KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+  });
+
+  return wrap;
+}
+
 /** Create a collapsible section div matching the RAG UI's stp-section pattern.
  *  Returns { el, body } where body is the content container to append into. */
 function rtMakeSection(
@@ -8980,6 +9094,13 @@ function run(): void {
     );
     if (traceEl) diagPanel.appendChild(traceEl);
 
+    // Section 2b: React loop trace (governor directive/reason per round,
+    // model-bandit selection criteria, groundedness/unfinished outcome)
+    const reactTraceEl = renderReactTraceCard(
+      opts.thinkingLog as ReadonlyArray<unknown> | null | undefined
+    );
+    if (reactTraceEl) diagPanel.appendChild(reactTraceEl);
+
     // Section 3: HIPAA gate audit (if this turn followed an instant-RAG upload)
     if (opts.hipaaDiagnostics) {
       const hd = opts.hipaaDiagnostics;
@@ -10948,6 +11069,8 @@ function run(): void {
             );
             const retrievalPanel = renderDiagnosticsCard(data.thinking_log);
             if (retrievalPanel) turnWrap.appendChild(retrievalPanel);
+            const reactTracePanel = renderReactTraceCard(data.thinking_log);
+            if (reactTracePanel) turnWrap.appendChild(reactTracePanel);
           }
         }
 
