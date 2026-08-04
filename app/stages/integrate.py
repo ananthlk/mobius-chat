@@ -281,6 +281,29 @@ def breakdown_row_from_usage(
         br = u.get("router_composite_breakdown")
         if isinstance(br, dict) and br:
             row["router_composite_breakdown"] = br
+        # Per-call selection inputs (2026-08-04) -- a SECOND allowlist from
+        # llm_manager.generate()'s out_usage, independent of it. Fields added
+        # there don't automatically reach here; found live (Ananth asked
+        # whether these were actually observable, they weren't -- out_usage
+        # had them, this row-builder didn't).
+        if u.get("router_bandit_mode"):
+            row["router_bandit_mode"] = str(u["router_bandit_mode"])
+        if u.get("router_reasoning_depth"):
+            row["router_reasoning_depth"] = str(u["router_reasoning_depth"])
+        if u.get("router_latency_budget_ms") is not None:
+            try:
+                row["router_latency_budget_ms"] = int(u["router_latency_budget_ms"])
+            except (TypeError, ValueError):
+                pass
+        if u.get("router_candidates_trimmed_by_latency_budget") is not None:
+            try:
+                row["router_candidates_trimmed_by_latency_budget"] = int(
+                    u["router_candidates_trimmed_by_latency_budget"]
+                )
+            except (TypeError, ValueError):
+                pass
+        if "router_latency_budget_exhausted" in u:
+            row["router_latency_budget_exhausted"] = bool(u.get("router_latency_budget_exhausted"))
     ok = row.get("call_status") != "error"
     lat = row.get("latency_ms")
     cost = row.get("cost_usd")
