@@ -73,6 +73,30 @@ _REACT_FINAL_ROUND_INSTRUCTION = (
     "(\"more details\")."
 )
 
+# Structural-exhaustion offramp (2026-08-04, Ananth: "why are we forcing 3
+# rounds when we already exhausted... doesn't it have to be dynamic"). The
+# self-report above is a MANDATORY instruction that only fires when rn ==
+# max_it (literally no round left). This one fires EARLIER, once
+# ReactRetryGuard.structurally_exhausted() is true (zero successes, 2+
+# genuinely different tools already failed) — but on a round that ISN'T
+# the mechanical last one, so it must NOT claim "no round after this" (that
+# would be false) or forbid further tool calls (the model may still have a
+# real angle left). It only makes the self-report format LEGAL early,
+# as an option — an additive offramp, not a forced early stop. Same three
+# fields, same downstream rendering in the exhausted-iterations fallback;
+# only the eligibility condition and the framing text differ.
+_REACT_STRUCTURAL_EXHAUSTION_OFFRAMP = (
+    "You've now tried multiple different approaches for this and none have "
+    "worked (see the failed-attempts list above) — you're not required to "
+    "stop, keep going if you have a genuinely different angle left to try. "
+    "But if you don't, you don't have to keep spending rounds on it: you "
+    "may respond now with is_complete: false, tool: null, and the same "
+    "\"unfinished_reason\"/\"unfinished_summary\"/\"unblock_ask\" fields "
+    "described for the final round (see this turn's later context if you've "
+    "seen that instruction before) — an honest, specific explanation is "
+    "always better than a forced extra attempt that's unlikely to help."
+)
+
 import httpx
 
 from app.communication.plan_display import emit_jurisdiction_context, jurisdiction_summary
@@ -2405,8 +2429,18 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         # grown max_it mid-turn via "extend" — max_it already reflects the
         # new ceiling by the time this round runs, so this fires on the
         # correct (possibly-extended) final round, not a stale one.
+        #
+        # elif (not a separate `if`): the two instructions must never stack
+        # in the same context message — the offramp's "you're not required
+        # to stop" framing would directly contradict the final-round
+        # instruction's "do NOT request another tool call" on the round
+        # where both conditions happen to be true at once (max_it reached
+        # AND structurally exhausted) — final-round wins since it's the
+        # stricter, actually-true statement (no round after this one).
         if rn == max_it:
             reasoning_context = reasoning_context + "\n\n" + _REACT_FINAL_ROUND_INSTRUCTION
+        elif retry_guard.structurally_exhausted():
+            reasoning_context = reasoning_context + "\n\n" + _REACT_STRUCTURAL_EXHAUSTION_OFFRAMP
         # system_context (2026-04-22): when Round 0 fell through to the
         # tool loop (NEEDS_TOOLS sentinel), surface the caller-supplied
         # verified data to every subsequent reasoning round. Tools can
@@ -2931,19 +2965,32 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 )
                 return
 
-        # Final-round self-report (see _REACT_FINAL_ROUND_INSTRUCTION): the
-        # model was told NOT to request another tool call this round. If it
-        # complied (tool is falsy) and reported unfinished_reason, don't let
-        # the block below default it to `tool or "search_corpus"` — that
-        # would re-run the SAME call as a prior round (empty inputs, same
-        # tool), which the retry-guard's duplicate-signature check then
-        # blocks and finalizes through ITS OWN summary path, never reaching
-        # the exhausted-iterations fallback below that actually reads
-        # unfinished_reason/unfinished_summary/unblock_ask. Skip dispatch
-        # entirely and let the loop exhaust naturally — `decision` (holding
-        # these fields) is exactly what the post-loop fallback reads.
+        # Final-round self-report (see _REACT_FINAL_ROUND_INSTRUCTION) OR the
+        # structural-exhaustion offramp (_REACT_STRUCTURAL_EXHAUSTION_OFFRAMP)
+        # firing early: either way, the model was told it's legal to stop
+        # here, and it did (tool is falsy, unfinished_reason present). Break
+        # out of the loop NOW rather than default to `tool or "search_corpus"`
+        # below — that would re-run the SAME call as a prior round (empty
+        # inputs, same tool), which the retry-guard's duplicate-signature
+        # check then blocks and finalizes through ITS OWN summary path,
+        # never reaching the exhausted-iterations fallback below that
+        # actually reads unfinished_reason/unfinished_summary/unblock_ask.
+        #
+        # `break`, not `continue`: on the true final round (rn==max_it) these
+        # are equivalent — the loop's own `if iteration >= max_it: break`
+        # bound check fires immediately on the next pass either way. But on
+        # an EARLY offramp round (rn < max_it, structurally_exhausted), a
+        # `continue` would just advance to iteration+1 and burn another round
+        # instead of actually finalizing — caught live 2026-08-04 (Ananth:
+        # "why are we forcing 3 rounds when we already exhausted... doesn't
+        # it have to be dynamic") building the offramp itself: the FIRST
+        # version of this offramp used the old `continue` and silently kept
+        # looping past the round where the model had already said it was
+        # done, all the way to max_it anyway — defeating the entire point.
+        # Caught by a real scripted test asserting the exact round sequence,
+        # not by inspection.
         if not tool and decision.get("unfinished_reason"):
-            continue
+            break
 
         # Phase 0.7: block repeat call if (tool, inputs) already failed and
         # no new evidence has come in since.

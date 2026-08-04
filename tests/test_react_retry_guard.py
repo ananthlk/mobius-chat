@@ -227,3 +227,95 @@ class TestFailureHint:
         assert "web_scrape" in hint
         assert "scrape_failed" in hint
         assert "do not repeat" in hint.lower()
+
+
+# ── structurally_exhausted (2026-08-04) ──────────────────────────────────
+#
+# Ananth: "why are we forcing 3 rounds when we already exhausted... doesn't
+# it have to be dynamic." This is the data-driven signal react_loop.py uses
+# to make the honest self-report available BEFORE the mechanical last round
+# — only once genuine breadth (2+ DIFFERENT tools) has failed with zero
+# success, not on round count or a single tool's retry streak alone.
+
+
+class TestStructurallyExhausted:
+    def test_false_with_no_attempts(self):
+        assert ReactRetryGuard().structurally_exhausted() is False
+
+    def test_false_with_one_tool_failed(self):
+        """Only tried ONE strategy so far — not "breadth exhausted" yet,
+        even though that one attempt failed."""
+        g = ReactRetryGuard()
+        g.record_result(
+            tool="search_corpus", inputs={"q": "x"},
+            result={"success": False, "result": "nothing"},
+            round=1, results_count_before=0,
+        )
+        assert g.structurally_exhausted() is False
+
+    def test_false_when_same_tool_retried_with_different_inputs(self):
+        """Re-trying the SAME tool with a different query isn't breadth —
+        must be genuinely DIFFERENT tools."""
+        g = ReactRetryGuard()
+        g.record_result(
+            tool="search_corpus", inputs={"q": "x"},
+            result={"success": False, "result": "nothing"},
+            round=1, results_count_before=0,
+        )
+        g.record_result(
+            tool="search_corpus", inputs={"q": "y"},
+            result={"success": False, "result": "nothing"},
+            round=2, results_count_before=0,
+        )
+        assert g.structurally_exhausted() is False
+
+    def test_true_when_two_distinct_tools_both_failed(self):
+        """The exact live scenario: corpus failed, then web failed — zero
+        successes, two genuinely different strategies both dead ends."""
+        g = ReactRetryGuard()
+        g.record_result(
+            tool="search_corpus", inputs={"q": "x"},
+            result={"success": False, "result": "nothing"},
+            round=1, results_count_before=0,
+        )
+        g.record_result(
+            tool="web_scrape", inputs={"url": "https://x"},
+            result={"success": False, "error": {"error_code": "scrape_failed"}},
+            round=2, results_count_before=0,
+        )
+        assert g.structurally_exhausted() is True
+
+    def test_false_once_something_succeeds(self):
+        """Even after 2 distinct failures, ONE success this turn means
+        there's real evidence to work with — not structurally exhausted."""
+        g = ReactRetryGuard()
+        g.record_result(
+            tool="search_corpus", inputs={"q": "x"},
+            result={"success": False, "result": "nothing"},
+            round=1, results_count_before=0,
+        )
+        g.record_result(
+            tool="web_scrape", inputs={"url": "https://x"},
+            result={"success": True, "result": "some real content"},
+            round=2, results_count_before=1,
+        )
+        assert g.structurally_exhausted() is False
+
+    def test_distinct_tools_failed_set(self):
+        g = ReactRetryGuard()
+        g.record_result(
+            tool="search_corpus", inputs={"q": "x"},
+            result={"success": False, "result": "nothing"},
+            round=1, results_count_before=0,
+        )
+        g.record_result(
+            tool="search_corpus", inputs={"q": "y"},
+            result={"success": False, "result": "nothing"},
+            round=2, results_count_before=0,
+        )
+        g.record_result(
+            tool="web_scrape", inputs={"url": "https://x"},
+            result={"success": False, "error": {"error_code": "scrape_failed"}},
+            round=3, results_count_before=0,
+        )
+        assert g.distinct_tools_failed() == {"search_corpus", "web_scrape"}

@@ -187,6 +187,28 @@ class ReactRetryGuard:
             and len(self.failed_attempts) >= rounds_completed
         )
 
+    def distinct_tools_failed(self) -> set[str]:
+        """Distinct tool names with at least one recorded failure this turn."""
+        return {fa.tool for fa in self.failed_attempts}
+
+    def structurally_exhausted(self, min_distinct_tools: int = 2) -> bool:
+        """True when genuine breadth has already been tried and nothing has
+        worked — zero successes this turn, and at least ``min_distinct_tools``
+        DIFFERENT tools have each failed (not just the same tool re-tried
+        with different inputs).
+
+        2026-08-04 (Ananth: "why are we forcing 3 rounds when we already
+        exhausted... doesn't it have to be dynamic"): a data-driven signal
+        the ReAct loop uses to make the final-round "honest self-report"
+        instruction available BEFORE the mechanical last round — not to
+        force an early stop (the model can still keep trying if it believes
+        another angle is worth it), just to make the honest-give-up format
+        legal as soon as it's actually earned, instead of only at rn==max_it.
+        Deliberately keyed on DISTINCT tools, not round count or a single
+        tool's retry streak — trying the same tool 3 different ways isn't
+        "breadth," corpus-then-web (2 different strategies) is."""
+        return self.successful_attempts == 0 and len(self.distinct_tools_failed()) >= min_distinct_tools
+
     def failure_hint_for_prompt(self) -> str:
         """Human-readable list of already-failed attempts for the reasoning prompt.
 
