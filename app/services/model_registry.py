@@ -878,7 +878,13 @@ RAG_ROUTED_STAGES: list[str] = [
     # 1M-context justification the rest of this list has.
     "rag_strategy_d_external",
     "rag_multi_invoke_synth",   # v2 multi-invoke union synthesis (2026-07-15); added to allowlist but missed here
-    "rag_fact_check",           # Two-grade QA critic owned by Eval agent (2026-07-17); same gap
+    # rag_fact_check LOCKED to gemini-2.5-pro ONLY (Task #14, Eval, 2026-08-04):
+    # removed from this shared routed-list (pro+flash) and added exclusively to
+    # gemini-2.5-pro's eligible_stages below — same deterministic-ruler lock as
+    # rag_eval_adjudicate. It was bandit-sampled pro/flash, which decalibrated
+    # the RAG-producer reward at the ruler (flash- vs pro-graded rows not
+    # interchangeable). Still in main.py _SKILL_LLM_ALLOWED_STAGES, so the proxy
+    # still accepts the stage — this changes routing eligibility only.
 ]
 
 
@@ -943,7 +949,7 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         # "ruler") — it appears in no other model's eligible_stages, so the
         # bandit always resolves it to gemini-2.5-pro → deterministic scoring
         # across calibration runs (drift monitor + lift comparability).
-        eligible_stages=vertex_roster_eligible_stages() + ["thread_summary", LEXICON_ANALYZE_STAGE, "rag_eval_adjudicate"],
+        eligible_stages=vertex_roster_eligible_stages() + ["thread_summary", LEXICON_ANALYZE_STAGE, "rag_eval_adjudicate", "rag_fact_check"],
         spec_tokens_per_sec=100.0,
         spec_context_k=1000,
         spec_input_per_1m_usd=1.25,
