@@ -22,6 +22,7 @@ from app.pipeline.react.governor import (
     FINALIZE_MARGIN_S,
     ProductPromiseContract,
     agent_role_to_reasoning_depth,
+    directive_to_reasoning_depth,
     latency_budget_ms,
 )
 from app.pipeline.react_loop import run_react
@@ -60,6 +61,47 @@ def test_none_agent_role_maps_to_none():
 
 def test_unrecognized_agent_role_maps_to_none():
     assert agent_role_to_reasoning_depth("some_future_role") is None
+
+
+# ── directive_to_reasoning_depth ─────────────────────────────────────────
+#
+# The precise, non-lossy version — added 2026-08-04 after a real live turn
+# showed reasoning_depth="thinking" on a round where directive=consolidate
+# (Ananth: "feels like the fast mode is not triggering right"). Root cause:
+# react_loop.py originally derived reasoning_depth via agent_role_to_
+# reasoning_depth(directive_to_agent_role(directive)) — and consolidate +
+# extend both collapse to the same "synthesize" agent_role bucket despite
+# being opposite in intent. These tests exist specifically because the
+# agent_role-routed tests above would NOT have caught this: they only
+# exercise the "explore"/"synthesize"/"draft" labels, never the directive
+# that produced them.
+
+
+def test_search_maps_to_fast():
+    assert directive_to_reasoning_depth("search") == "fast"
+
+
+def test_consolidate_maps_to_fast_not_thinking():
+    """The exact regression: consolidate fires because time is short
+    (soft_target_s exceeded) — must favor speed, not quality."""
+    assert directive_to_reasoning_depth("consolidate") == "fast"
+
+
+def test_extend_maps_to_thinking():
+    """The one case where "thinking" is actually correct: extend means
+    deliberately spending MORE round budget on a groundedness problem,
+    not time pressure — worth the extra latency for a better answer."""
+    assert directive_to_reasoning_depth("extend") == "thinking"
+
+
+def test_finalize_maps_to_fast_not_thinking():
+    """Also part of the regression: finalize means budget is EXHAUSTED —
+    must respond immediately, even more time-critical than consolidate."""
+    assert directive_to_reasoning_depth("finalize") == "fast"
+
+
+def test_directive_none_maps_to_none():
+    assert directive_to_reasoning_depth(None) is None
 
 
 # ── latency_budget_ms ─────────────────────────────────────────────────
@@ -220,4 +262,37 @@ def test_latency_budget_populates_on_consolidate_directive():
     assert later_rounds, "expected at least a round 2"
     assert all(budget is not None and budget > 0 for _, _depth, budget in later_rounds), (
         f"expected a positive latency_budget_ms once consolidate fires, got {later_rounds}"
+    )
+
+
+def test_consolidate_round_reaches_call_llm_json_with_fast_not_thinking():
+    """The exact live-turn regression, proven through a real (scripted)
+    run_react() call rather than the pure function in isolation — this is
+    what the pre-fix code would have failed (reasoning_depth would have
+    come back "thinking" on round 2+, matching the live bug report)."""
+    calls = []
+
+    def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+        calls.append((stage, kwargs.get("reasoning_depth")))
+        n = int(stage.split("_")[1]) if stage.startswith("react_") else None
+        if n is not None and n < 3:
+            return '{"thought": "search", "tool": "search_corpus", "inputs": {"query": "x"}, "is_complete": false}'
+        return '{"thought": "done", "tool": null, "inputs": {}, "is_complete": true, "answer": "a real long enough answer here", "confidence": "high"}'
+
+    ctx = _make_ctx()
+    tiny_contract = ProductPromiseContract(
+        max_rounds=3, max_extension_rounds=1, confidence_bar="medium",
+        soft_target_s=0.0, hard_ceiling_s=300.0,
+    )
+    with patch.dict("os.environ", {"MOBIUS_PRODUCT_PROMISE_ENABLED": "1"}), \
+         patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm), \
+         patch("app.pipeline.react.governor.default_contract_for_mode", return_value=tiny_contract), \
+         patch("app.pipeline.react_loop._execute_tool_with_retry", return_value=_SEARCH_RESULT):
+        run_react(ctx, emitter=None)
+
+    react_calls = [c for c in calls if c[0].startswith("react_")]
+    later_rounds = [c for c in react_calls if int(c[0].split("_")[1]) >= 2]
+    assert later_rounds, "expected at least a round 2 (consolidating given soft_target_s=0.0)"
+    assert all(depth == "fast" for _, depth in later_rounds), (
+        f"expected reasoning_depth='fast' once consolidate fires (time pressure), got {later_rounds}"
     )

@@ -226,10 +226,47 @@ def agent_role_to_reasoning_depth(agent_role: str | None) -> str | None:
     thinking tables — no new weight math, just a finer-grained input than
     session-level chat_mode). None when agent_role is None (governor off,
     or the round hasn't resolved a composition-selector role) or
-    unrecognized — the bandit's own mode-derived default applies."""
+    unrecognized — the bandit's own mode-derived default applies.
+
+    KNOWN LOSSY — kept for reference / any other caller, but react_loop.py's
+    actual selection call uses ``directive_to_reasoning_depth()`` below
+    instead. agent_role is a 3-bucket collapse of directive
+    (_DIRECTIVE_TO_AGENT_ROLE above): both "consolidate" (time pressure —
+    wrap up NOW) and "extend" (deliberately spending MORE budget on a
+    groundedness problem, not time-pressured) collapse to "synthesize",
+    which this function then maps to "thinking" for BOTH — backwards for
+    consolidate, and "finalize" (budget exhausted, must respond
+    immediately) collapses to "draft" -> also wrongly "thinking". Caught
+    live 2026-08-04 (Ananth: "feels like the fast mode is not triggering
+    right" on a real turn where consolidate fired and picked reasoning_depth
+    =thinking) — not a triggering bug, a real mapping bug from routing
+    through the lossy agent_role intermediate instead of directive directly."""
     if agent_role is None:
         return None
     return _AGENT_ROLE_TO_REASONING_DEPTH.get(agent_role)
+
+
+_DIRECTIVE_TO_REASONING_DEPTH: dict[str, str] = {
+    "search": "fast",        # exploring/looking things up — cheap is fine
+    "consolidate": "fast",   # time pressure (soft_target_s exceeded) — wrap up FAST
+    "extend": "thinking",    # deliberately spending more budget on a groundedness
+                              # problem, NOT time-constrained — the one case where
+                              # "spend more to get it right" is the actual intent
+    "finalize": "fast",      # budget exhausted — must respond NOW, no time for a
+                              # slower "thinking"-weighted model
+}
+
+
+def directive_to_reasoning_depth(directive: Directive | None) -> str | None:
+    """Maps the governor's pre-round directive DIRECTLY to reasoning_depth
+    — the precise version of agent_role_to_reasoning_depth() above, which
+    loses the search/consolidate/extend/finalize distinction by routing
+    through the 3-bucket agent_role first. Same fail-soft posture: None
+    when directive is None (governor off) or "complete" (terminal, never
+    seen at the pre-round call site this feeds)."""
+    if directive is None:
+        return None
+    return _DIRECTIVE_TO_REASONING_DEPTH.get(directive)
 
 
 def latency_budget_ms(

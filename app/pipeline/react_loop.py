@@ -2330,15 +2330,16 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         # its fail-soft posture everywhere else in this module — the bandit
         # falls back to its existing mode-derived default either way.
         #
-        # Derives its OWN agent_role from _pp_pre_directive directly, rather
-        # than reusing the composition-selection block's `_agent_role` var —
-        # that one is only computed when MOBIUS_PROMPT_SOURCE=composition is
-        # ALSO set (it exists to pick a DB composition), which would
-        # silently couple this unrelated feature to that flag and leave
-        # reasoning_depth None whenever the composition path is off even
-        # with the governor on. Caught via direct verification (mocked
-        # _call_llm_json, inspected the actual kwargs), not assumed correct
-        # from reading the code alone.
+        # Derives reasoning_depth DIRECTLY from _pp_pre_directive (not via
+        # agent_role) — caught live 2026-08-04 (Ananth, real turn: "feels
+        # like the fast mode is not triggering right") that routing through
+        # agent_role loses the search/consolidate/extend/finalize
+        # distinction, since consolidate+extend both collapse to the same
+        # "synthesize" bucket despite being opposite in intent (consolidate
+        # = time pressure = should favor speed; extend = deliberately
+        # spending MORE budget on quality = should favor thinking) — see
+        # directive_to_reasoning_depth()'s docstring in governor.py for the
+        # full mapping and reasoning.
         #
         # Computed here (before the trace-append below) rather than right
         # at the _call_llm_json call site further down, so the SAME values
@@ -2348,9 +2349,8 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         _bandit_reasoning_depth = None
         _bandit_latency_budget_ms = None
         if _pp_enabled:
-            from app.pipeline.react.governor import agent_role_to_reasoning_depth, directive_to_agent_role
-            _bandit_agent_role = directive_to_agent_role(_pp_pre_directive) if _pp_pre_directive is not None else None
-            _bandit_reasoning_depth = agent_role_to_reasoning_depth(_bandit_agent_role)
+            from app.pipeline.react.governor import directive_to_reasoning_depth
+            _bandit_reasoning_depth = directive_to_reasoning_depth(_pp_pre_directive)
             if _pp_contract is not None:
                 from app.pipeline.react.governor import latency_budget_ms as _pp_latency_budget_ms
                 _bandit_latency_budget_ms = _pp_latency_budget_ms(
