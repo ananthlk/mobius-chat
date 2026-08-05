@@ -407,6 +407,18 @@ async def chat_stream(correlation_id: str):
     loop = asyncio.get_running_loop()
     last_keepalive = loop.time()
     timeout_s = int(os.environ.get("CHAT_STREAM_TIMEOUT_S", "1800"))
+    # Task #32 (2026-08-05): post_run_adjudication runs as a fire-and-forget
+    # background thread STARTED AFTER the main response is already
+    # published (schedule_post_run_adjudication in orchestrator.py) --
+    # observed 30-70s after turn completion in this cid's own timestamps.
+    # bandit_reward_persisted / quality_audit events it emits are correctly
+    # published to Redis and persisted to chat_progress_events (verified
+    # directly against the DB), but the stream used to `return` the
+    # instant the terminal "completed" response was found -- closing the
+    # connection before adjudication even started, so those events had no
+    # live listener. This grace window keeps polling for late progress
+    # events after "completed" instead of closing immediately.
+    post_complete_grace_s = int(os.environ.get("CHAT_STREAM_POST_COMPLETE_GRACE_S", "90"))
 
     async def event_generator():
         nonlocal last_progress_id, last_keepalive
@@ -444,7 +456,7 @@ async def chat_stream(correlation_id: str):
                 resp = get_response(correlation_id)
             if resp is not None:
                 yield f"data: {json.dumps({'event': 'completed', 'data': resp})}\n\n"
-                return
+                break
             # Keepalive every 10s (was 15s) — Cloud Run's HTTP/2 path
             # occasionally idle-timeouts SSE at ~30s without a cushion.
             # 10s gives two chances to hit the timer before it fires.
@@ -452,6 +464,39 @@ async def chat_stream(correlation_id: str):
                 yield ": keepalive\n\n"
                 last_keepalive = now
             await asyncio.sleep(0.2)
+
+        # Post-complete grace window (Task #32): post_run_adjudication is a
+        # fire-and-forget background thread started AFTER the response
+        # above was already published, so its bandit_reward_persisted /
+        # quality_audit events land here, minutes-scale after "completed".
+        # Keep polling the same progress-event sources for a bounded
+        # window instead of closing the connection immediately.
+        #
+        # Skipped entirely when MOBIUS_POST_RUN_ADJUDICATE is off (or the
+        # window is configured to 0) -- no adjudication will ever run for
+        # ANY turn in that case, so holding the connection open to wait
+        # for events that can't come would just burn a Cloud Run
+        # concurrency slot per completed turn for nothing.
+        _adjudicate_flag = (os.environ.get("MOBIUS_POST_RUN_ADJUDICATE") or "1").strip().lower()
+        _adjudicate_enabled = _adjudicate_flag not in ("0", "false", "no", "off")
+        if not _adjudicate_enabled or post_complete_grace_s <= 0:
+            return
+        grace_start = loop.time()
+        while loop.time() - grace_start < post_complete_grace_s:
+            now = loop.time()
+            if use_db:
+                for ev_id, ev in get_progress_events_from_db(correlation_id, after_id=last_progress_id):
+                    last_progress_id = ev_id
+                    yield f"data: {json.dumps(ev)}\n\n"
+                    last_keepalive = now
+            else:
+                for ev in get_and_clear_events(correlation_id):
+                    yield f"data: {json.dumps(ev)}\n\n"
+                    last_keepalive = now
+            if now - last_keepalive > 10:
+                yield ": keepalive\n\n"
+                last_keepalive = now
+            await asyncio.sleep(0.5)
 
     return StreamingResponse(
         event_generator(),

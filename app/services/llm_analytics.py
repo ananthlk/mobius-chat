@@ -337,7 +337,7 @@ async def update_quality_async(
         async with _acquire_conn() as conn:
             if conn is None:
                 return False
-            await conn.execute(
+            status = await conn.execute(
                 "UPDATE llm_calls SET quality_score = $1, quality_source = $2, "
                 "quality_ruler = COALESCE($4, quality_ruler) WHERE call_id = $3::uuid",
                 round(quality_score, 3),
@@ -345,6 +345,23 @@ async def update_quality_async(
                 cid,
                 quality_ruler,
             )
+            # asyncpg's execute() returns a command-tag string like "UPDATE 1"
+            # or "UPDATE 0" -- a 0-match UPDATE doesn't raise, so the prior
+            # code (bare `return True` after both statements ran without
+            # exception) couldn't tell "wrote the row" from "matched
+            # nothing" (e.g. a stale/bad call_id). Parse the row count so
+            # the caller's bandit_reward_persisted emit (gated on this
+            # return value) is a real confirmation, not a hope.
+            try:
+                matched = int(status.rsplit(" ", 1)[-1])
+            except (ValueError, AttributeError):
+                matched = 1  # unexpected tag shape -- don't false-negative on a parse miss
+            if matched == 0:
+                logger.warning(
+                    "llm_analytics update_quality: UPDATE matched 0 rows for call_id=%s "
+                    "(quality_score not written)", cid,
+                )
+                return False
             await conn.execute(
                 """
                 INSERT INTO llm_quality_updates (call_id, quality_score, quality_source)

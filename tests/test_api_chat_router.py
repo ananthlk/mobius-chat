@@ -42,6 +42,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import os
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -322,9 +324,15 @@ class TestRoutesMounted:
         fake_queue.get_response.return_value = {"status": "completed", "correlation_id": "c"}
         fake_cfg = MagicMock()
         fake_cfg.queue_type = "memory"
+        # Task #32: the stream now holds open for CHAT_STREAM_POST_COMPLETE_GRACE_S
+        # after "completed" to relay late post_run_adjudication events.
+        # MOBIUS_POST_RUN_ADJUDICATE=0 short-circuits that window -- this
+        # test only cares about route presence + SSE headers, not draining
+        # a real stream, so skip the wait entirely.
         with patch("app.api.chat.get_queue", return_value=fake_queue), \
              patch("app.api.chat.get_response", return_value=None), \
-             patch("app.api.chat.get_config", return_value=fake_cfg):
+             patch("app.api.chat.get_config", return_value=fake_cfg), \
+             patch.dict(os.environ, {"MOBIUS_POST_RUN_ADJUDICATE": "0"}):
             with client.stream("GET", "/chat/stream/c") as resp:
                 # Route exists and returns an SSE-shaped response.
                 assert resp.status_code == 200

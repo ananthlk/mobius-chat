@@ -96,3 +96,53 @@ def test_write_record_fire_and_forget_with_loop():
             mock_write.assert_called_once_with(record)
 
     asyncio.run(run())
+
+
+class _FakeConn:
+    """Mimics asyncpg.Connection.execute()'s command-tag return shape."""
+
+    def __init__(self, update_tag: str):
+        self._update_tag = update_tag
+        self.executed = []
+
+    async def execute(self, sql, *args):
+        self.executed.append((sql, args))
+        if sql.strip().startswith("UPDATE"):
+            return self._update_tag
+        return "INSERT 0 1"
+
+
+class _FakeAcquireConn:
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def __aenter__(self):
+        return self._conn
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+def test_update_quality_async_returns_true_on_real_write():
+    """UPDATE matching 1 row -> True, and the quality_updates INSERT runs."""
+    conn = _FakeConn(update_tag="UPDATE 1")
+    with patch.object(llm_analytics, "_acquire_conn", return_value=_FakeAcquireConn(conn)):
+        result = asyncio.run(
+            llm_analytics.update_quality_async("11111111-1111-1111-1111-111111111111", 0.9, "test_source")
+        )
+    assert result is True
+    assert len(conn.executed) == 2  # UPDATE + INSERT both ran
+
+
+def test_update_quality_async_returns_false_when_update_matches_zero_rows():
+    """Task #32: UPDATE matching 0 rows (stale/bad call_id) must return
+    False, not silently report success -- this is the exact bug that made
+    bandit_reward_persisted's "persisted" gate untrustworthy."""
+    conn = _FakeConn(update_tag="UPDATE 0")
+    with patch.object(llm_analytics, "_acquire_conn", return_value=_FakeAcquireConn(conn)):
+        result = asyncio.run(
+            llm_analytics.update_quality_async("11111111-1111-1111-1111-111111111111", 0.9, "test_source")
+        )
+    assert result is False
+    # The quality_updates INSERT must NOT run for a call_id that doesn't exist.
+    assert len(conn.executed) == 1
