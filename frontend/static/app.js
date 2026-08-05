@@ -7377,10 +7377,16 @@ function renderAdjudicatorScorecard(qc, correlationId, technicalFeedback) {
   const b4 = document.createElement("span");
   b4.className = "adjudicator-scorecard-badge adjudicator-scorecard-badge--user";
   b4.textContent = userS !== void 0 ? `User: ${userS.toFixed(2)}` : "User: \u2014";
+  const b5 = document.createElement("span");
+  b5.className = "adjudicator-scorecard-badge adjudicator-scorecard-badge--bandit bandit-persisted-val";
+  if (correlationId)
+    b5.setAttribute("data-bandit-cid", correlationId);
+  _paintBanditCheckmark(b5, correlationId ? _banditRewardCounts.get(correlationId) ?? 0 : 0);
   badges.appendChild(b1);
   badges.appendChild(b2);
   badges.appendChild(b3);
   badges.appendChild(b4);
+  badges.appendChild(b5);
   body.appendChild(badges);
   body.appendChild(buildAdjudicatorDetailWrap(qc));
   const reasonBox = document.createElement("div");
