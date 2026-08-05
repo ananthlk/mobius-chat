@@ -8312,6 +8312,104 @@ function renderReactTraceCard(thinkingLog) {
   });
   return wrap;
 }
+function renderQaVerdictsPanel(qc) {
+  if (!qc)
+    return null;
+  const verdict = adjudicationVerdictUi(qc);
+  const qualityScore = typeof qc.automated_score === "number" ? qc.automated_score : typeof qc.score === "number" ? qc.score : null;
+  const scoreStr = qualityScore != null ? qualityScore.toFixed(4) : "\u2014";
+  let raw = null;
+  if (qc.adjudicator_full_response) {
+    try {
+      raw = JSON.parse(qc.adjudicator_full_response);
+    } catch {
+      raw = null;
+    }
+  }
+  const flags = Array.isArray(raw?.flags) ? raw.flags.map(String) : [];
+  const subScores = qc.sub_scores && typeof qc.sub_scores === "object" ? qc.sub_scores : raw?.sub_scores && typeof raw.sub_scores === "object" ? raw.sub_scores : {};
+  const wrap = document.createElement("div");
+  wrap.className = "llm-performance qa-verdicts collapsed";
+  const preview = document.createElement("div");
+  preview.className = "llm-performance-preview";
+  preview.setAttribute("role", "button");
+  preview.setAttribute("tabindex", "0");
+  preview.setAttribute("aria-expanded", "false");
+  const titleEl = document.createElement("span");
+  titleEl.className = "llm-performance-title";
+  titleEl.textContent = "QA verdict";
+  const oneline = document.createElement("span");
+  oneline.className = "llm-performance-oneline";
+  oneline.textContent = `${verdict.shortLabel} \xB7 quality ${scoreStr}`;
+  const chev = document.createElement("span");
+  chev.className = "llm-performance-chevron";
+  chev.setAttribute("aria-hidden", "true");
+  chev.textContent = "\u25BC";
+  preview.appendChild(titleEl);
+  preview.appendChild(oneline);
+  preview.appendChild(chev);
+  const body = document.createElement("div");
+  body.className = "llm-performance-body";
+  const s1Status = verdict.badgeVariant === "pass" ? "ok" : "warn";
+  body.appendChild(_dcLeaf(`Quality summary \u2014 ${verdict.shortLabel}`, s1Status, verdict.verdictBadgeText, (b) => {
+    if (flags.length)
+      _dcKV(b, "detected issues", flags.join(", "));
+    if (qualityScore != null)
+      _dcKV(b, "quality score (rubric \xB7 authoritative)", scoreStr);
+    const dims = Object.keys(subScores).length;
+    if (dims)
+      _dcKV(b, "rubric computed from", `${dims} dimension${dims === 1 ? "" : "s"}`);
+    if (qc.reason)
+      _dcKV(b, "note", String(qc.reason));
+    else if (raw?.reasoning)
+      _dcKV(b, "note", String(raw.reasoning));
+  }));
+  body.appendChild(_dcLeaf(
+    "Bandit reward tracking",
+    qualityScore != null ? "ok" : "gray",
+    qc.adjudicator_model ? `ruler: ${qc.adjudicator_model}` : "quality ruler",
+    (b) => {
+      if (qc.adjudicator_model)
+        _dcKV(b, "quality ruler (judge model)", String(qc.adjudicator_model));
+      if (qualityScore != null)
+        _dcKV(b, "quality score", scoreStr);
+      Object.keys(subScores).forEach((k) => _dcKV(b, `  ${k}`, Number(subScores[k]).toFixed(2)));
+      _dcKV(b, "bandit reward persisted", "pending (bandit_reward_persisted emit)");
+    }
+  ));
+  if (qc.adjudicator_full_response) {
+    body.appendChild(_dcLeaf(
+      "Raw adjudication (debug \xB7 self-report, NOT authoritative)",
+      "gray",
+      "model self-report \u2014 the authoritative score is the rubric quality score above",
+      (b) => {
+        const note = document.createElement("div");
+        note.className = "qa-raw-note";
+        note.textContent = "Model self-report, discarded for scoring. The authoritative quality score is rubric-computed (Section 1/2) and drives the bandit reward loop.";
+        b.appendChild(note);
+        const pre = document.createElement("pre");
+        pre.className = "qa-raw-json";
+        pre.textContent = qc.adjudicator_full_response;
+        b.appendChild(pre);
+      }
+    ));
+  }
+  wrap.appendChild(preview);
+  wrap.appendChild(body);
+  const toggle = () => {
+    const collapsed = wrap.classList.toggle("collapsed");
+    preview.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    chev.textContent = collapsed ? "\u25BC" : "\u25B2";
+  };
+  preview.addEventListener("click", toggle);
+  preview.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      toggle();
+    }
+  });
+  return wrap;
+}
 function rtEscapeAttr(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
@@ -10219,6 +10317,9 @@ function run() {
     );
     if (reactTraceEl)
       diagPanel.appendChild(reactTraceEl);
+    const qaVerdictsEl = renderQaVerdictsPanel(opts.qc);
+    if (qaVerdictsEl)
+      diagPanel.appendChild(qaVerdictsEl);
     if (opts.hipaaDiagnostics) {
       const hd = opts.hipaaDiagnostics;
       const hipaaSection = document.createElement("div");
