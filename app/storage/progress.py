@@ -248,6 +248,31 @@ def append_draft_answer(correlation_id: str, text: str, mode_hint: str | None = 
     _publish_progress_event(correlation_id, ev)
 
 
+def append_evidence_checkpoint(correlation_id: str, text: str) -> None:
+    """Task #33 (2026-08-05): the silent, no-SSE counterpart to
+    append_draft_answer(), for react_loop.py's mid-loop
+    _checkpoint_best_evidence() to call instead.
+
+    _checkpoint_best_evidence() runs after EVERY round's tool dispatch
+    and its input is the raw tool result (retrieved document chunks,
+    "[1] file.pdf (p.18) ..." citation dumps) -- unsynthesized evidence,
+    not an answer. It was calling append_draft_answer(), which both
+    fires a live draft_ready SSE event AND overwrites
+    _progress[cid]["draft_answer"] -- so every round, raw evidence
+    streamed to the client as if it were the answer, and could clobber
+    a genuine draft that had already been set. This function stashes
+    the SAME text get_checkpoint() already knows how to read (as the
+    "evidence" quality, one tier below "draft" -- see that docstring,
+    which already spec'd this exact field and called it unwritten) on
+    ``_progress[cid]["last_evidence"]`` only -- no event, no
+    draft_answer write. Task #29's mid-turn truncation recovery keeps
+    working unchanged (get_checkpoint() already has the read side);
+    live users just stop seeing raw evidence rendered as an answer."""
+    with _lock:
+        if correlation_id in _progress:
+            _progress[correlation_id]["last_evidence"] = text
+
+
 def get_checkpoint(correlation_id: str) -> dict[str, Any] | None:
     """Return the best available partial content for a truncated turn, or
     None if there's nothing to checkpoint (Task #29, 2026-08-05, spec §1/§6).

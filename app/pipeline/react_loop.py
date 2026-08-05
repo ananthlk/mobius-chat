@@ -1916,7 +1916,17 @@ def _checkpoint_best_evidence(ctx: PipelineContext, tool_results: list[dict]) ->
     preferring the fuller ``result`` field over ``result_summary``.
     No-ops (silently) when nothing usable exists yet — most turns finish
     in 1-3 rounds and never need this at all; this only matters for the
-    turns that don't."""
+    turns that don't.
+
+    Task #33 (2026-08-05): this writes RAW tool-result text — retrieved
+    document chunks, "[1] file.pdf (p.18) ..." citation dumps — not a
+    synthesized answer. It used to call append_draft_answer(), which
+    fires a live draft_ready SSE event; every round, that streamed raw
+    evidence to the client as if it were the draft answer (and could
+    clobber a real draft already set). Uses append_evidence_checkpoint()
+    instead — same durable-stash purpose for Task #29's mid-turn
+    recovery (get_checkpoint() already reads this as the "evidence"
+    quality, one tier below a real "draft"), no live event."""
     best = next((tr for tr in reversed(tool_results) if tr.get("success")), None)
     if best is None:
         return
@@ -1926,8 +1936,8 @@ def _checkpoint_best_evidence(ctx: PipelineContext, tool_results: list[dict]) ->
     if not text or len(text) < 40:
         return
     try:
-        from app.storage.progress import append_draft_answer
-        append_draft_answer(ctx.correlation_id, text)
+        from app.storage.progress import append_evidence_checkpoint
+        append_evidence_checkpoint(ctx.correlation_id, text)
     except Exception:
         # Checkpointing must never break the actual turn it's protecting.
         logger.debug("checkpoint_best_evidence failed (cid=%s)", getattr(ctx, "correlation_id", "?"), exc_info=True)

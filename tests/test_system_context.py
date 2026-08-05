@@ -439,7 +439,12 @@ def test_publish_completed_adds_answered_from_system_context_flag():
     should carry ``answered_from_system_context: True``."""
     from app.pipeline import orchestrator as orch
 
-    ctx = PipelineContext(correlation_id="cid", thread_id=None, message="q")
+    # Unique per-test cid -- try_finalize()'s _finalized_turns set is
+    # module-level, persistent across tests in this process; a shared
+    # "cid" here would make this test's _publish_completed() call
+    # silently no-op if it ever runs after the other test in this file
+    # that also finalizes "cid" (order-dependent flakiness).
+    ctx = PipelineContext(correlation_id="cid-with-flag", thread_id=None, message="q")
     ctx.final_message = "42"
     ctx.retrieval_signals = [RETRIEVAL_SIGNAL_SYSTEM_CONTEXT]
     ctx.response_payload = {
@@ -463,7 +468,6 @@ def test_publish_completed_adds_answered_from_system_context_flag():
 
     with patch.object(orch, "get_queue", return_value=FakeQueue()), \
          patch.object(orch, "get_persistence", return_value=FakePersistence()), \
-         patch.object(orch, "clear_progress"), \
          patch.object(orch, "save_state_full"), \
          patch("app.services.task_manager_promotion.promote"):
         orch._publish_completed(ctx, t0_start=0.0)
@@ -476,7 +480,7 @@ def test_publish_completed_omits_flag_when_signal_absent():
     from app.pipeline import orchestrator as orch
     from app.services.doc_assembly import RETRIEVAL_SIGNAL_CORPUS_ONLY
 
-    ctx = PipelineContext(correlation_id="cid", thread_id=None, message="q")
+    ctx = PipelineContext(correlation_id="cid-without-flag", thread_id=None, message="q")
     ctx.final_message = "normal answer"
     ctx.retrieval_signals = [RETRIEVAL_SIGNAL_CORPUS_ONLY]
     ctx.response_payload = {"correlation_id": "cid", "status": "completed", "message": "x"}
@@ -495,7 +499,6 @@ def test_publish_completed_omits_flag_when_signal_absent():
 
     with patch.object(orch, "get_queue", return_value=FakeQueue()), \
          patch.object(orch, "get_persistence", return_value=FakePersistence()), \
-         patch.object(orch, "clear_progress"), \
          patch.object(orch, "save_state_full"), \
          patch("app.services.task_manager_promotion.promote"):
         orch._publish_completed(ctx, t0_start=0.0)

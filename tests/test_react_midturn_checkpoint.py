@@ -4,15 +4,24 @@ docs/MIDTURN_TRUNCATION_RECOVERY_SPEC.md §1: if a timeout kills a turn
 before react_loop.py returns, orchestrator.py's append_draft_answer() call
 (which runs AFTER run_react() returns) never fires — a truncated turn has
 nothing to hand off for a "Continue" retry. _checkpoint_best_evidence()
-closes that gap by writing the best available tool result to the SAME
-draft_ready channel after every round, so worker/run.py's checkpoint-read
-(LLM Agent's side of this task) finds something regardless of whether the
-turn finished react_loop or was killed mid-round.
+closes that gap by writing the best available tool result after every
+round, so worker/run.py's checkpoint-read (LLM Agent's side of this task)
+finds something regardless of whether the turn finished react_loop or was
+killed mid-round.
+
+Task #33 (2026-08-05): this used to reuse append_draft_answer() — same
+channel as a real synthesized draft, including its live draft_ready SSE
+event. Since this writes RAW tool-result text (unsynthesized evidence),
+that meant raw evidence streamed to the client every round as if it were
+the answer. Now uses append_evidence_checkpoint() (progress.py) instead:
+same durable-stash purpose for Task #29, no live event, and
+get_checkpoint() reads it as the "evidence" quality (one tier below a
+real "draft") rather than being indistinguishable from one.
 
 These tests lock in: the pure selection logic (best successful result,
-short-circuits below a length floor), and that it's actually called once
-per round in a real (scripted) run_react() turn — not just that the
-function exists.
+short-circuits below a length floor), that it writes to the silent
+evidence-checkpoint path (not the live draft_ready one), and that it's
+actually called once per round in a real (scripted) run_react() turn.
 """
 
 from __future__ import annotations
@@ -42,13 +51,13 @@ def _make_ctx(chat_mode: str = "agentic") -> PipelineContext:
 class TestCheckpointBestEvidenceSelection:
     def test_no_successful_results_is_a_noop(self):
         ctx = _make_ctx()
-        with patch("app.storage.progress.append_draft_answer") as mock_append:
+        with patch("app.storage.progress.append_evidence_checkpoint") as mock_append:
             _checkpoint_best_evidence(ctx, [{"tool": "search_corpus", "success": False, "result": "nothing found"}])
         mock_append.assert_not_called()
 
     def test_short_result_below_length_floor_is_a_noop(self):
         ctx = _make_ctx()
-        with patch("app.storage.progress.append_draft_answer") as mock_append:
+        with patch("app.storage.progress.append_evidence_checkpoint") as mock_append:
             _checkpoint_best_evidence(ctx, [{"tool": "search_corpus", "success": True, "result": "too short"}])
         mock_append.assert_not_called()
 
@@ -59,7 +68,7 @@ class TestCheckpointBestEvidenceSelection:
             {"tool": "web_scrape", "success": False, "result": "HTTP 403 — this one failed"},
             {"tool": "search_corpus", "success": True, "result": "the NEWER, most recent successful result found here"},
         ]
-        with patch("app.storage.progress.append_draft_answer") as mock_append:
+        with patch("app.storage.progress.append_evidence_checkpoint") as mock_append:
             _checkpoint_best_evidence(ctx, tool_results)
         mock_append.assert_called_once()
         args, _ = mock_append.call_args
@@ -73,7 +82,7 @@ class TestCheckpointBestEvidenceSelection:
             "tool": "search_corpus", "success": True, "result": "short",
             "result_summary": "a sufficiently long fallback summary of what was actually found in this round",
         }]
-        with patch("app.storage.progress.append_draft_answer") as mock_append:
+        with patch("app.storage.progress.append_evidence_checkpoint") as mock_append:
             _checkpoint_best_evidence(ctx, tool_results)
         mock_append.assert_called_once()
         args, _ = mock_append.call_args
@@ -83,16 +92,30 @@ class TestCheckpointBestEvidenceSelection:
         """Checkpointing must never break the turn it's protecting."""
         ctx = _make_ctx()
         tool_results = [{"tool": "search_corpus", "success": True, "result": "a real, sufficiently long useful snippet"}]
-        with patch("app.storage.progress.append_draft_answer", side_effect=RuntimeError("boom")):
+        with patch("app.storage.progress.append_evidence_checkpoint", side_effect=RuntimeError("boom")):
             _checkpoint_best_evidence(ctx, tool_results)  # must not raise
+
+    def test_does_not_fire_a_live_draft_ready_event(self):
+        """Task #33's actual regression guard: mid-loop raw-evidence
+        checkpointing must never touch append_draft_answer (the live
+        draft_ready SSE channel) — that's the exact bug being fixed."""
+        ctx = _make_ctx()
+        tool_results = [{"tool": "search_corpus", "success": True, "result": "a real, sufficiently long useful snippet"}]
+        with patch("app.storage.progress.append_draft_answer") as mock_draft, \
+             patch("app.storage.progress.append_evidence_checkpoint") as mock_evidence:
+            _checkpoint_best_evidence(ctx, tool_results)
+        mock_draft.assert_not_called()
+        mock_evidence.assert_called_once()
 
 
 def test_checkpoint_fires_once_per_round_in_a_real_turn():
     """End-to-end through run_react(): a multi-round turn checkpoints
-    after each successful round, and the checkpoint content it writes
+    after each successful round via the silent evidence-checkpoint path
+    (not the live draft_ready one), and the checkpoint content it writes
     matches the round's actual tool result -- not just that the call
     happens, but that it carries real, current evidence each time."""
     checkpoint_calls = []
+    draft_ready_calls = []
 
     def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
         if stage in ("react_1", "react_2"):
@@ -109,12 +132,16 @@ def test_checkpoint_fires_once_per_round_in_a_real_turn():
             "signal": "corpus_only", "sources": [], "usage": None,
         }
 
-    def fake_append_draft_answer(correlation_id, text, mode_hint=None):
+    def fake_append_evidence_checkpoint(correlation_id, text):
         checkpoint_calls.append((correlation_id, text))
+
+    def fake_append_draft_answer(correlation_id, text, mode_hint=None):
+        draft_ready_calls.append((correlation_id, text))
 
     ctx = _make_ctx("agentic")
     with patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm), \
          patch("app.pipeline.react_loop._execute_tool_with_retry", side_effect=fake_exec_retry), \
+         patch("app.storage.progress.append_evidence_checkpoint", side_effect=fake_append_evidence_checkpoint), \
          patch("app.storage.progress.append_draft_answer", side_effect=fake_append_draft_answer):
         run_react(ctx, emitter=None)
 
@@ -122,3 +149,7 @@ def test_checkpoint_fires_once_per_round_in_a_real_turn():
     assert checkpoint_calls[0][0] == "checkpoint-test"
     assert "round 1 evidence" in checkpoint_calls[0][1]
     assert "round 2 evidence" in checkpoint_calls[1][1]
+    # The mid-loop checkpoints must never fire a live draft_ready event —
+    # only a real post-react draft (orchestrator.py, outside this loop)
+    # should ever call append_draft_answer.
+    assert draft_ready_calls == []
