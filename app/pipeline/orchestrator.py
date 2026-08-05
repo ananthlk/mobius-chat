@@ -696,7 +696,7 @@ def run_pipeline(
                 run_react(ctx, emitter=on_thinking)
             except Exception as e:
                 logger.exception("ReAct stage error: %s", e)
-                _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e)
+                _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e, user_id=ctx.user_id)
                 return
             _emit_model_summary(ctx, time.perf_counter() - t_react_start, on_thinking)
             # Two-phase latency: emit ReAct answer immediately so the frontend renders
@@ -737,7 +737,7 @@ def run_pipeline(
                 resolvable = run_clarify(ctx, emitter=on_thinking)
             except Exception as e:
                 logger.exception("Clarify stage error: %s", e)
-                _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e)
+                _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e, user_id=ctx.user_id)
                 return
             if not resolvable:
                 _publish_clarification_or_refinement(ctx, t0)
@@ -753,7 +753,7 @@ def run_pipeline(
                 run_resolve(ctx, emitter=on_thinking)
             except Exception as e:
                 logger.exception("Resolve stage error: %s", e)
-                _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e)
+                _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e, user_id=ctx.user_id)
                 return
 
             updates = {}
@@ -810,7 +810,7 @@ def run_pipeline(
             run_integrate(ctx, emitter=on_thinking)
         except Exception as e:
             logger.exception("Integrate stage error: %s", e)
-            _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e)
+            _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e, user_id=ctx.user_id)
             return
 
         # Integrator may output resolved_subquestions when it used user_provided_context; update objective
@@ -915,7 +915,7 @@ def run_pipeline(
             if "not iterable" in err_str or "nonetype" in err_str:
                 logger.error("NoneType/iterable TypeError in pipeline; full traceback:\n%s", traceback.format_exc())
         logger.exception("Pipeline error: %s", e)
-        _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e)
+        _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e, user_id=ctx.user_id)
         # Stamp the exception onto the tracing span for cross-reference
         # with Cloud Trace error views.
         if _pipeline_span_cm is not None:
@@ -1445,8 +1445,29 @@ def _publish_failed(
     thread_id: str | None,
     thinking_chunks: list[str] | None,
     err: Exception,
+    *,
+    user_id: str | None = None,
+    config_sha: str | None = None,
 ) -> None:
-    """Publish failed response. Always emits a structured payload; never raises."""
+    """Publish failed response. Always emits a structured payload; never raises.
+
+    Task B interim hotfix (2026-08-04): previously this function ONLY
+    published live (store_response/publish_response) -- it never called
+    persistence, so a failed turn left ZERO chat_turns rows. Consequence,
+    found while building Task A's retry detector: get_last_turn_question()
+    (ORDER BY created_at DESC LIMIT 1) silently skips a failed turn and
+    resolves "try again" to the turn BEFORE it -- if the failed turn was a
+    genuinely new, different question, the user's retry silently re-answers
+    a stale unrelated question instead, with no indication anything went
+    wrong. Worse than just failing again visibly.
+
+    This is an INTERIM marker ("[turn_failed]" placeholder in
+    assistant_content), not the final structured sentinel -- that needs
+    Chat FE sign-off on the exact shape (in flight). Swapping the string
+    for the real one is a one-line change once that lands; the important
+    fix RIGHT NOW is that a row exists at all, so retry resolves to the
+    correct (failed) turn's question instead of skipping past it.
+    """
     from app.storage import store_response
 
     try:
@@ -1553,3 +1574,42 @@ def _publish_failed(
         logger.warning("Published failed response for %s: %s", correlation_id[:8], err_str)
     except Exception as e:
         logger.exception("Failed to publish error response for %s: %s", correlation_id[:8], e)
+
+    # Persist the failed turn (interim marker -- see docstring). Best-effort,
+    # separate try/except so a persistence hiccup can never mask the
+    # already-failing turn or block the live response already published above.
+    try:
+        persistence = get_persistence()
+        _assistant_marker = "[turn_failed]"
+        if thread_id:
+            persistence.save_turn_with_messages(
+                correlation_id=correlation_id,
+                question=message,
+                thinking_log=(thinking_chunks if thinking_chunks is not None else []),
+                final_message=_assistant_marker,
+                sources=[],
+                duration_ms=None,
+                model_used=None,
+                llm_provider=None,
+                thread_id=thread_id,
+                user_content=message,
+                assistant_content=_assistant_marker,
+                config_sha=config_sha,
+                user_id=user_id,
+            )
+        else:
+            persistence.save_turn(
+                correlation_id=correlation_id,
+                question=message,
+                thinking_log=(thinking_chunks if thinking_chunks is not None else []),
+                final_message=_assistant_marker,
+                sources=[],
+                duration_ms=None,
+                model_used=None,
+                llm_provider=None,
+                thread_id=None,
+                config_sha=config_sha,
+                user_id=user_id,
+            )
+    except Exception as e:
+        logger.warning("Failed to persist failed-turn marker for %s: %s", correlation_id[:8], e)
