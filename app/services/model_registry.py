@@ -817,7 +817,13 @@ CORE_REASONING_STAGES: list[str] = [
     "critique",
     "badge",
     "classifier",
-    "adjudicator",
+    # adjudicator LOCKED to gemini-2.5-pro (Task #25, Eval, 2026-08-04): removed
+    # from CORE_REASONING_STAGES + CHEAP_STAGES, added to gemini-2.5-pro
+    # eligible_stages ONLY. The turn-level QA judge grades every stage's reward
+    # via DISTINCT-ON-stage write, so a bandit-sampled ruler (was 18 models)
+    # decalibrated the reward fleet-wide. Same deterministic-ruler lock as
+    # rag_eval_adjudicate / rag_fact_check. Cost note: it's an every-turn stage
+    # now on pro — pair with a sample-rate (EVERY_N) cut at prod if needed.
     "email_draft",
     "thread_summary",   # rolling conversation summary — cheap text task; wide pool needed to survive circuit-breaker exhaustion on 2-model pool
     # NOTE: rag_eval_adjudicate (the RAG eval/fact-checker "ruler") is
@@ -912,7 +918,7 @@ def integrator_llm_stage(ctx: Any) -> str:
     return "integrator"
 
 
-CHEAP_STAGES = ["badge", "classifier", "critique", "adjudicator", "vibe"]
+CHEAP_STAGES = ["badge", "classifier", "critique", "vibe"]  # adjudicator removed → locked to gemini-2.5-pro (Task #25)
 PHI_SAFE_STAGES = ["phi_detector", "phi_classify"]
 
 # roster_clean: lightweight batch classification (junk-row detection).
@@ -949,7 +955,7 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         # "ruler") — it appears in no other model's eligible_stages, so the
         # bandit always resolves it to gemini-2.5-pro → deterministic scoring
         # across calibration runs (drift monitor + lift comparability).
-        eligible_stages=vertex_roster_eligible_stages() + ["thread_summary", LEXICON_ANALYZE_STAGE, "rag_eval_adjudicate", "rag_fact_check"],
+        eligible_stages=vertex_roster_eligible_stages() + ["thread_summary", LEXICON_ANALYZE_STAGE, "rag_eval_adjudicate", "rag_fact_check", "adjudicator"],
         spec_tokens_per_sec=100.0,
         spec_context_k=1000,
         spec_input_per_1m_usd=1.25,
