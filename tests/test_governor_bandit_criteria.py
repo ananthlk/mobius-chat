@@ -23,7 +23,10 @@ from app.pipeline.react.governor import (
     ProductPromiseContract,
     agent_role_to_reasoning_depth,
     directive_to_reasoning_depth,
+    extract_query_intent_floor,
     latency_budget_ms,
+    resolve_reasoning_depth,
+    scale_ceiling_for_intent,
 )
 from app.pipeline.react_loop import run_react
 
@@ -296,3 +299,150 @@ def test_consolidate_round_reaches_call_llm_json_with_fast_not_thinking():
     assert all(depth == "fast" for _, depth in later_rounds), (
         f"expected reasoning_depth='fast' once consolidate fires (time pressure), got {later_rounds}"
     )
+
+
+# ── Query-intent reasoning-depth floor (2026-08-04) ─────────────────────
+#
+# Ananth's live testing: reasoning_depth was purely stage/directive-derived
+# — a "generate a report" turn and an "is X covered?" turn got identical
+# per-round effort. extract_query_intent_floor()/resolve_reasoning_depth()/
+# scale_ceiling_for_intent() close that gap. Chat Architecture spec'd this
+# after LLM Agent confirmed the seam was clean.
+
+
+class TestResolveReasoningDepth:
+    def test_stage_only(self):
+        assert resolve_reasoning_depth("fast", None) == "fast"
+        assert resolve_reasoning_depth("thinking", None) == "thinking"
+
+    def test_floor_only(self):
+        assert resolve_reasoning_depth(None, "thinking") == "thinking"
+
+    def test_both_none(self):
+        assert resolve_reasoning_depth(None, None) is None
+
+    def test_floor_raises_fast_to_thinking(self):
+        """Floor semantics: query intent can RAISE depth above what the
+        stage earned -- a consolidate round (fast) on a report query still
+        gets thinking."""
+        assert resolve_reasoning_depth("fast", "thinking") == "thinking"
+
+    def test_floor_never_lowers_stage_depth(self):
+        """The only floor value today is 'thinking', so there's no case
+        where the floor is LOWER than the stage depth -- but the max()
+        combiner guarantees it structurally: a 'fast' floor could never
+        drag a 'thinking' stage depth down."""
+        assert resolve_reasoning_depth("thinking", "fast") == "thinking"
+
+
+class TestExtractQueryIntentFloor:
+    def test_default_is_none(self):
+        assert extract_query_intent_floor("is telehealth covered for behavioral health?") is None
+        assert extract_query_intent_floor("") is None
+        assert extract_query_intent_floor(None) is None
+
+    def test_report_keyword_triggers_thinking(self):
+        assert extract_query_intent_floor("Can you produce a detailed summary report on telehealth coverage?") == "thinking"
+
+    def test_case_insensitive(self):
+        assert extract_query_intent_floor("Generate a DETAILED REPORT on this") == "thinking"
+
+    def test_credentialing_report_keyword(self):
+        assert extract_query_intent_floor("run the credentialing report for this provider") == "thinking"
+
+    def test_analysis_keyword(self):
+        assert extract_query_intent_floor("give me a full analysis of the payer mix") == "thinking"
+
+    def test_short_yes_no_question_stays_none(self):
+        """Conservative on purpose: a quick factual question must not be
+        misclassified into an over-allocated thinking floor."""
+        assert extract_query_intent_floor("is prior authorization required for H0036?") is None
+
+
+class TestScaleCeilingForIntent:
+    def test_no_floor_is_unscaled(self, monkeypatch):
+        monkeypatch.setenv("MOBIUS_TURN_DEADLINE_S", "300")
+        assert scale_ceiling_for_intent(200.0, None) == 200.0
+
+    def test_fast_floor_is_unscaled(self, monkeypatch):
+        monkeypatch.setenv("MOBIUS_TURN_DEADLINE_S", "300")
+        assert scale_ceiling_for_intent(200.0, "fast") == 200.0
+
+    def test_thinking_floor_scales_1_5x_within_headroom(self, monkeypatch):
+        monkeypatch.setenv("MOBIUS_TURN_DEADLINE_S", "900")
+        assert scale_ceiling_for_intent(200.0, "thinking") == 300.0
+
+    def test_clamped_to_absolute_cap(self, monkeypatch):
+        monkeypatch.setenv("MOBIUS_TURN_DEADLINE_S", "900")
+        # 500 * 1.5 = 750, above the 600s absolute cap
+        assert scale_ceiling_for_intent(500.0, "thinking") == 600.0
+
+    def test_clamped_to_real_infra_deadline(self, monkeypatch):
+        """The critical safety case: the governor must never promise more
+        wall-clock than MOBIUS_TURN_DEADLINE_S actually allows, even when
+        the 1.5x scale and the 600s absolute cap would both permit more.
+        With today's default (300s) already at the mode ceiling, this is a
+        no-op in practice until MOBIUS_TURN_DEADLINE_S itself is raised --
+        intentional, not a bug."""
+        monkeypatch.setenv("MOBIUS_TURN_DEADLINE_S", "300")
+        # base is already at the infra deadline -- scaling can't exceed it
+        assert scale_ceiling_for_intent(300.0, "thinking") == 300.0
+
+
+def _make_ctx_with_message(chat_mode: str, message: str) -> "PipelineContext":
+    ctx = _make_ctx(chat_mode)
+    ctx.message = message
+    ctx.effective_message = message
+    return ctx
+
+
+class TestQueryIntentFloorEndToEnd:
+    def test_report_query_gets_thinking_on_a_search_round(self):
+        """The exact live scenario: agentic mode, a report-shaped ask,
+        round 1's directive is 'search' (which alone would map to 'fast')
+        -- the query-intent floor must raise it to 'thinking'."""
+        calls = []
+
+        def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+            calls.append((stage, kwargs.get("reasoning_depth")))
+            if stage == "react_1":
+                return '{"thought": "search", "tool": "search_corpus", "inputs": {"query": "x"}, "is_complete": false}'
+            return '{"thought": "done", "tool": null, "inputs": {}, "is_complete": true, "answer": "a real long enough answer here", "confidence": "high"}'
+
+        ctx = _make_ctx_with_message(
+            "agentic",
+            "Can you produce a detailed summary report on telehealth coverage for Medicaid in Florida?",
+        )
+        with patch.dict("os.environ", {"MOBIUS_PRODUCT_PROMISE_ENABLED": "1"}), \
+             patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm), \
+             patch("app.pipeline.react_loop._execute_tool_with_retry", return_value=_SEARCH_RESULT):
+            run_react(ctx, emitter=None)
+
+        react_1_calls = [c for c in calls if c[0] == "react_1"]
+        assert react_1_calls, "expected round 1 to run"
+        assert react_1_calls[0][1] == "thinking", (
+            f"expected the report query's floor to raise round 1's directive-derived 'fast' "
+            f"to 'thinking', got {react_1_calls}"
+        )
+
+    def test_quick_factual_question_stays_at_stage_derived_depth(self):
+        """Control case: a plain factual question must NOT get bumped to
+        thinking -- the floor stays None, stage-derived depth (fast on a
+        search round) wins unchanged."""
+        calls = []
+
+        def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+            calls.append((stage, kwargs.get("reasoning_depth")))
+            if stage == "react_1":
+                return '{"thought": "search", "tool": "search_corpus", "inputs": {"query": "x"}, "is_complete": false}'
+            return '{"thought": "done", "tool": null, "inputs": {}, "is_complete": true, "answer": "a real long enough answer here", "confidence": "high"}'
+
+        ctx = _make_ctx_with_message("agentic", "is prior authorization required for H0036?")
+        with patch.dict("os.environ", {"MOBIUS_PRODUCT_PROMISE_ENABLED": "1"}), \
+             patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm), \
+             patch("app.pipeline.react_loop._execute_tool_with_retry", return_value=_SEARCH_RESULT):
+            run_react(ctx, emitter=None)
+
+        react_1_calls = [c for c in calls if c[0] == "react_1"]
+        assert react_1_calls
+        assert react_1_calls[0][1] == "fast"

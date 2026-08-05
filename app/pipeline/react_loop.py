@@ -2189,9 +2189,26 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
     # diagnostics panel regardless of MOBIUS_PRODUCT_PROMISE_ENABLED.
     ctx.react_turn_start_monotonic = _pp_turn_start
     _pp_extension_rounds_used = 0
+    # Query-intent reasoning-depth floor (2026-08-04, Chat Architecture +
+    # Ananth's live testing: "generate a report" and "is X covered?"
+    # shouldn't get identical per-round effort). Computed once, pre-Round-1,
+    # unconditionally (cheap keyword check on the raw message, no cost to
+    # computing it even when the governor ends up off and nothing reads it)
+    # — see governor.py's extract_query_intent_floor()/resolve_reasoning_
+    # depth() for the combiner semantics (floor only, never lowers what the
+    # stage already earned).
+    from app.pipeline.react.governor import extract_query_intent_floor
+    _pp_query_intent_floor = extract_query_intent_floor(
+        getattr(ctx, "effective_message", None) or ctx.message or ""
+    )
     if _pp_enabled:
-        from app.pipeline.react.governor import default_contract_for_mode
+        from app.pipeline.react.governor import default_contract_for_mode, scale_ceiling_for_intent
         _pp_contract = default_contract_for_mode(mode_label)
+        if _pp_query_intent_floor is not None:
+            import dataclasses as _pp_dataclasses
+            _pp_scaled_ceiling = scale_ceiling_for_intent(_pp_contract.hard_ceiling_s, _pp_query_intent_floor)
+            if _pp_scaled_ceiling != _pp_contract.hard_ceiling_s:
+                _pp_contract = _pp_dataclasses.replace(_pp_contract, hard_ceiling_s=_pp_scaled_ceiling)
 
     # react_trace diagnostics panel (see make_react_trace, emit_envelope.py)
     # — per-round entries collected as the loop runs, emitted once at turn
@@ -2390,8 +2407,15 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         _bandit_reasoning_depth = None
         _bandit_latency_budget_ms = None
         if _pp_enabled:
-            from app.pipeline.react.governor import directive_to_reasoning_depth
-            _bandit_reasoning_depth = directive_to_reasoning_depth(_pp_pre_directive)
+            from app.pipeline.react.governor import directive_to_reasoning_depth, resolve_reasoning_depth
+            # resolve_reasoning_depth: floor semantics only -- the query-
+            # intent floor computed pre-loop can RAISE this round's depth
+            # above what the directive alone earned (e.g. a "consolidate"
+            # round on a report query still gets thinking), never lower it
+            # below the directive's own choice.
+            _bandit_reasoning_depth = resolve_reasoning_depth(
+                directive_to_reasoning_depth(_pp_pre_directive), _pp_query_intent_floor,
+            )
             if _pp_contract is not None:
                 from app.pipeline.react.governor import latency_budget_ms as _pp_latency_budget_ms
                 _bandit_latency_budget_ms = _pp_latency_budget_ms(

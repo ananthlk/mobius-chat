@@ -291,3 +291,90 @@ def latency_budget_ms(
     if remaining_s <= 0:
         return None
     return int(remaining_s * 1000)
+
+
+# ── Query-intent reasoning-depth floor (2026-08-04) ─────────────────
+#
+# Ananth, live testing: reasoning_depth was purely stage/directive-derived
+# (see directive_to_reasoning_depth above) — a "generate a detailed report"
+# turn and an "is X covered?" turn got identical per-round effort, even
+# when the user was already in the highest-budget mode. The gap: mode
+# selection is the coarse query-intent signal the user already gave us,
+# but the per-round depth computation ignored it below the synthesize/
+# finalize rounds. This adds a FLOOR derived from the raw message,
+# combined with the stage-derived depth via resolve_reasoning_depth()
+# below — floor semantics only, never lowers what the stage earned.
+
+_DEPTH_RANK = {"fast": 0, "normal": 1, "thinking": 2}
+
+
+def resolve_reasoning_depth(
+    stage_depth: str | None, query_floor: str | None,
+) -> str | None:
+    """Combine the round's stage-derived depth with the turn's query-intent
+    floor. Floor semantics only — query intent can RAISE depth above what
+    the stage earned, never lower it: a "consolidate" round under governor
+    time pressure stays fast even on a report query; equally, a report
+    query's floor can't be dragged down by a stage that would otherwise
+    want fast. None when both inputs are None (fail-soft, matches every
+    other bandit-criteria function in this module)."""
+    candidates = [d for d in (stage_depth, query_floor) if d is not None]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda d: _DEPTH_RANK[d])
+
+
+# Conservative on purpose (Chat Architecture's explicit instruction, citing
+# Ananth's feedback): err toward None over a false "thinking" classification
+# — a missed report query gets normal (stage-derived) treatment; a
+# misclassified quick question gets over-allocated thinking, which costs
+# latency/money for no benefit. Keyword heuristic, deliberately NOT an LLM
+# classification call — same reasoning as declining Eval's empirical
+# groundedness pre-read: don't spend a network hop + judge-call latency,
+# pre-Round-1, on EVERY turn, for a signal a cheap deterministic check
+# gets close enough on.
+_THINKING_INTENT_KEYWORDS = (
+    "report", "analysis", "breakdown", "detailed", "comprehensive",
+    "summary of", "credentialing report", "assessment",
+)
+
+
+def extract_query_intent_floor(message: str) -> str | None:
+    """Pre-Round-1 reasoning_depth floor derived from the raw user message
+    — the query-intent half of resolve_reasoning_depth()'s inputs. Returns
+    "thinking" when the message signals a report/analysis-shaped ask, else
+    None (let the stage-derived depth decide entirely — this is a floor,
+    not an override, so "no signal" must mean "no opinion")."""
+    low = (message or "").lower()
+    if any(kw in low for kw in _THINKING_INTENT_KEYWORDS):
+        return "thinking"
+    return None
+
+
+# The other half of Ananth's ask ("give report mode really long token/time
+# limits"): a deep-intent query should also get more wall-clock, not just a
+# better model. 1.5x is a starting prior, not tuned against real turns yet.
+_CEILING_SCALE_BY_INTENT: dict[str, float] = {"thinking": 1.5}
+_CEILING_SCALE_ABSOLUTE_CAP_S = 600.0
+
+
+def scale_ceiling_for_intent(base_ceiling_s: float, query_floor: str | None) -> float:
+    """Extend hard_ceiling_s for deep-intent queries — 1.5x for "thinking"
+    intent, unchanged (1.0x) otherwise. Capped at both
+    _CEILING_SCALE_ABSOLUTE_CAP_S AND the real infra deadline
+    (_turn_deadline_seconds()) — the governor must never promise more
+    wall-clock than the worker's own background-thread deadline
+    (MOBIUS_TURN_DEADLINE_S) will actually allow; that's a harder,
+    independent kill-switch this function can't see past, and a contract
+    promising time the infra will yank out from under it is worse than no
+    scaling at all — an abrupt kill instead of a graceful finalize.
+
+    Because default_contract_for_mode() already sets hard_ceiling_s to
+    exactly _turn_deadline_seconds() for every mode (no per-mode headroom
+    below the infra deadline today), this scaling has NO visible effect
+    until MOBIUS_TURN_DEADLINE_S itself is raised above its current value —
+    that's an intentional consequence of the clamp, not a bug in this
+    function."""
+    scale = _CEILING_SCALE_BY_INTENT.get(query_floor or "", 1.0)
+    scaled = base_ceiling_s * scale
+    return min(scaled, _CEILING_SCALE_ABSOLUTE_CAP_S, float(_turn_deadline_seconds()))
