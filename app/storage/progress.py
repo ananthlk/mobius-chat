@@ -443,7 +443,8 @@ def publish_quality_audit_event(correlation_id: str, audit: dict[str, Any], line
 
 
 def publish_bandit_reward_event(
-    correlation_id: str, call_id: str, stage: str, quality_score: float
+    correlation_id: str, call_id: str, stage: str, quality_score: float,
+    quality_metric: str | None = None,
 ) -> None:
     """Emit one event per llm_calls.quality_score write that actually persisted
     (Task #23, 2026-08-04 — Bandit Agent ruled per-call, not per-turn: with the
@@ -452,18 +453,25 @@ def publish_bandit_reward_event(
     rather than take it on faith). Same SSE + DB-replay pattern as
     ``publish_quality_audit_event`` — no new plumbing. Fire-and-forget: caller
     (``update_quality_for_correlation_stages_async``) only calls this AFTER its
-    own DB write succeeds, so an event here is a true confirmation, not a hope."""
+    own DB write succeeds, so an event here is a true confirmation, not a hope.
+
+    ``quality_metric`` (Task #34 follow-up, 2026-08-05, Chat FE): human
+    -readable label for which sub-score/formula produced this stage's
+    quality_score (e.g. "grounding × efficiency", "overall_quality") --
+    Chat FE's Diagnostics per-stage breakdown reads this directly, falling
+    back to a provisional guess client-side when it's absent (older
+    events, or a caller that hasn't been updated to pass it)."""
     ts, ts_readable = _event_ts()
-    ev: dict[str, Any] = {
-        "event": "bandit_reward_persisted",
-        "data": {
-            "call_id": call_id,
-            "stage": stage,
-            "quality_score": round(float(quality_score), 4),
-            "ts": ts,
-            "ts_readable": ts_readable,
-        },
+    data: dict[str, Any] = {
+        "call_id": call_id,
+        "stage": stage,
+        "quality_score": round(float(quality_score), 4),
+        "ts": ts,
+        "ts_readable": ts_readable,
     }
+    if quality_metric:
+        data["quality_metric"] = quality_metric
+    ev: dict[str, Any] = {"event": "bandit_reward_persisted", "data": data}
     with _lock:
         if correlation_id in _progress:
             _progress[correlation_id]["events"].append(ev)

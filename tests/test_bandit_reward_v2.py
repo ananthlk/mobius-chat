@@ -197,3 +197,55 @@ def test_stage_scores_override_still_takes_priority_over_react_round_mapping():
             )
         )
     assert written["call-react-2"] == 0.95
+
+
+def test_quality_metric_label_react_round_with_efficiency():
+    from app.services.llm_analytics import _quality_metric_label
+    assert _quality_metric_label("react_round", efficiency_applied=True) == "grounding × efficiency"
+
+
+def test_quality_metric_label_react_round_without_efficiency():
+    from app.services.llm_analytics import _quality_metric_label
+    assert _quality_metric_label("react_round", efficiency_applied=False) == "grounding"
+
+
+def test_quality_metric_label_rag_fact_check():
+    from app.services.llm_analytics import _quality_metric_label
+    assert _quality_metric_label("rag_fact_check", efficiency_applied=False) == "factual_consistency"
+
+
+def test_quality_metric_label_falls_back_to_overall_quality_for_none_or_unmapped():
+    from app.services.llm_analytics import _quality_metric_label
+    assert _quality_metric_label("integrator", efficiency_applied=False) == "overall_quality"
+    assert _quality_metric_label("thread_summary", efficiency_applied=False) == "overall_quality"
+
+
+def test_bandit_reward_event_carries_quality_metric_end_to_end():
+    """Task #34 follow-up (Chat FE): the SSE event itself must carry
+    quality_metric, not just the internal label helper."""
+    rows = [
+        {"id": "call-react-1", "stage": "react_1"},
+        {"id": "call-integrator", "stage": "integrator"},
+    ]
+    sub_scores = {"grounding": 0.6}
+    published = []
+
+    async def fake_update_quality_async(call_id, quality_score, quality_source, quality_ruler=None):
+        return True
+
+    def fake_publish(correlation_id, call_id, stage, quality_score, quality_metric=None):
+        published.append((call_id, stage, quality_metric))
+
+    with patch("app.services.llm_analytics._acquire_conn", return_value=_FakeAcquireConn(_FakeConn(rows))), \
+         patch("app.services.llm_analytics.update_quality_async", side_effect=fake_update_quality_async), \
+         patch("app.storage.progress.publish_bandit_reward_event", side_effect=fake_publish):
+        asyncio.run(
+            update_quality_for_correlation_stages_async(
+                "cid-metric-label-test", sub_scores, 0.5,
+                react_rounds_used=2, react_max_rounds=10,
+            )
+        )
+
+    by_call = {c: (s, m) for c, s, m in published}
+    assert by_call["call-react-1"] == ("react_1", "grounding × efficiency")
+    assert by_call["call-integrator"] == ("integrator", "overall_quality")

@@ -242,6 +242,28 @@ def _map_llm_call_stage_to_rubric_stage(stage: str) -> str:
     return s
 
 
+def _quality_metric_label(rubric_stage: str, *, efficiency_applied: bool) -> str:
+    """Human-readable label for which sub-score/formula produced a
+    stage's quality_score (Task #34 follow-up, 2026-08-05, Chat FE's
+    Diagnostics per-stage breakdown -- rendered directly from the
+    bandit_reward_persisted SSE event's quality_metric field).
+
+    Derived from STAGE_QUALITY_MAP itself rather than a separate literal
+    table, so a mapping change here can't silently drift from the label
+    describing it. A None/dict-miss mapping means get_stage_quality_score
+    fell back to the broadcast overall_score -- label that plainly rather
+    than implying a per-stage signal that isn't there."""
+    from app.services.adjudication.utils import STAGE_QUALITY_MAP
+
+    mapping = STAGE_QUALITY_MAP.get(rubric_stage)
+    if not mapping:
+        return "overall_quality"
+    label = " + ".join(mapping)
+    if rubric_stage == "react_round" and efficiency_applied:
+        label += " × efficiency"
+    return label
+
+
 async def update_quality_for_correlation_stages_async(
     correlation_id: str,
     sub_scores: dict[str, float | None],
@@ -314,13 +336,18 @@ async def update_quality_for_correlation_stages_async(
         for row in rows:
             raw_stage = str(row["stage"] or "").strip()
             q: float | None = None
+            metric_label = "overall_quality"
             if raw_stage.startswith("react_") and raw_stage in stage_scores:
                 q = stage_scores[raw_stage]
+                metric_label = "adjudicator_per_round"
             else:
                 rubric_stage = _map_llm_call_stage_to_rubric_stage(raw_stage)
                 q = get_stage_quality_score(rubric_stage, sub_scores, float(overall_score))
+                efficiency_applied = False
                 if q is not None and rubric_stage == "react_round" and efficiency_mult is not None:
                     q = round(q * efficiency_mult, 3)
+                    efficiency_applied = True
+                metric_label = _quality_metric_label(rubric_stage, efficiency_applied=efficiency_applied)
             if q is None:
                 continue
             persisted = await update_quality_async(
@@ -329,7 +356,9 @@ async def update_quality_for_correlation_stages_async(
             if persisted:
                 try:
                     from app.storage.progress import publish_bandit_reward_event
-                    publish_bandit_reward_event(correlation_id, row["id"], raw_stage, float(q))
+                    publish_bandit_reward_event(
+                        correlation_id, row["id"], raw_stage, float(q), quality_metric=metric_label,
+                    )
                 except Exception:
                     pass
     except Exception as e:
