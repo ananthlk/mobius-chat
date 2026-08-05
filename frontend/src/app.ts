@@ -9886,6 +9886,9 @@ function run(): void {
       // Stall bailout (mirrors pollResponse): if SSE delivers no events for STALL_MS,
       // treat as orphaned turn. Protects against the backend losing the job silently.
       const STALL_MS = 90_000;
+      // Task #23: how long to keep the SSE open after "completed" for post-run events
+      // (bandit_reward_persisted from post-run adjudication). Bounded so we never leak a stream.
+      const POST_RUN_EVENT_WINDOW_MS = 90_000;
       let lastEventMs = Date.now();
       const es = new EventSource(streamUrl);
       const stallTimer = window.setInterval(() => {
@@ -9922,9 +9925,14 @@ function run(): void {
             onStreamingMessage(messageSoFar);
           } else if (ev === "completed" && data) {
             resolved = true;
-            es.close();
             window.clearInterval(stallTimer);
             resolve(data as unknown as ChatResponse);
+            // Task #23 timing fix: schedule_post_run_adjudication fires bandit_reward_persisted
+            // AFTER "completed". If we close the ES here, the QA-panel checkmark never gets the
+            // event and stays "awaiting". Keep the stream open a bounded post-run window so those
+            // late events (handled above via _noteBanditRewardPersisted) still land, then close.
+            // Turn is already resolved + UI rendered; this only listens for post-run events.
+            window.setTimeout(() => { try { es.close(); } catch { /* already closed */ } }, POST_RUN_EVENT_WINDOW_MS);
           } else if (ev === "error" && data.message != null) {
             resolved = true;
             es.close();

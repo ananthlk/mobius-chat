@@ -10826,6 +10826,7 @@ function run() {
       let resolved = false;
       let draftEmitted = false;
       const STALL_MS = 9e4;
+      const POST_RUN_EVENT_WINDOW_MS = 9e4;
       let lastEventMs = Date.now();
       const es = new EventSource(streamUrl);
       const stallTimer = window.setInterval(() => {
@@ -10861,9 +10862,14 @@ function run() {
             onStreamingMessage(messageSoFar);
           } else if (ev === "completed" && data) {
             resolved = true;
-            es.close();
             window.clearInterval(stallTimer);
             resolve(data);
+            window.setTimeout(() => {
+              try {
+                es.close();
+              } catch {
+              }
+            }, POST_RUN_EVENT_WINDOW_MS);
           } else if (ev === "error" && data.message != null) {
             resolved = true;
             es.close();
