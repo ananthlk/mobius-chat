@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
-import { renderAnswerCard } from "./bubble";
+import { renderAnswerCard, buildFormatChip } from "./bubble";
 import type { AnswerCard } from "../answer-card";
 
 // A v2 (no-mode) card: primary section leads, detail tucks; citations light up their tab.
@@ -63,5 +63,44 @@ describe("renderAnswerCard — DOM output (§1.4 tabbed bubble + §1.2 visibilit
     const el = renderAnswerCard(card, false, { onCreateTask: () => { called = true; } });
     expect(el).toBeTruthy();
     expect(called).toBe(false); // not invoked at render time, only on user click
+  });
+});
+
+describe("Task #10 — output_intent format chip", () => {
+  it("maps each real backend intent to an icon+label chip with a semantic class", () => {
+    const cases: Array<[string, string]> = [
+      ["report", "Report"], ["read", "Answer"], ["email", "Email"],
+      ["sms", "Text"], ["emr", "EMR Note"], ["appeal", "Appeal"],
+      ["payor_report", "Payor Report"],
+    ];
+    for (const [intent, label] of cases) {
+      const chip = buildFormatChip(intent)!;
+      expect(chip, intent).not.toBeNull();
+      expect(chip.className).toContain("answer-card-format-chip--" + intent);
+      expect(chip.querySelector(".answer-card-format-chip-text")?.textContent).toBe(label);
+      expect(chip.getAttribute("aria-label")).toContain(label);
+    }
+  });
+
+  it("is case-insensitive and trims", () => {
+    expect(buildFormatChip("  REPORT ")?.className).toContain("answer-card-format-chip--report");
+  });
+
+  it("renders NO chip for absent/unknown intent — never invents a label", () => {
+    expect(buildFormatChip(undefined)).toBeNull();
+    expect(buildFormatChip("")).toBeNull();
+    expect(buildFormatChip("banana")).toBeNull();
+  });
+
+  it("the chip appears in the rendered card only when output_intent is set", () => {
+    const withIntent = renderAnswerCard({ ...card, output_intent: "report" });
+    expect(withIntent.querySelector(".answer-card-format-chip--report")).not.toBeNull();
+    const without = renderAnswerCard(card);
+    expect(without.querySelector(".answer-card-format-chip")).toBeNull();
+  });
+
+  it("the chip's icon is aria-hidden (text carries the meaning)", () => {
+    const chip = buildFormatChip("emr")!;
+    expect(chip.querySelector(".answer-card-format-chip-icon")?.getAttribute("aria-hidden")).toBe("true");
   });
 });

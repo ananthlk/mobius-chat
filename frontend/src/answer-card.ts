@@ -55,6 +55,11 @@ export interface AnswerCard {
   followups?: Array<{ question: string; reason: string; field: string }>;
   suggested_actions?: Array<{ type: string; label: string; url: string; icon?: string }>;
   thread_summary?: string;
+  // Enricher deliverable classification (integrate.py allowlist). Values are deliverable
+  // TYPES — read/report/email/sms/emr/appeal/payor_report — not answer formats; may be
+  // absent (None end-to-end). Task #10 surfaces this as a read-only format chip.
+  output_intent?: string;
+  display_summary?: string;
 }
 
 export const MAX_SECTIONS = 4;

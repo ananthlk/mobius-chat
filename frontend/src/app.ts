@@ -331,6 +331,12 @@ interface ChatResponse {
   qc_audit?: QcAuditInfo;
   /** DB-backed routing + adjudicator thumbs (merged on poll for completed turns). */
   technical_feedback?: TechnicalFeedback;
+  /** Task #29: truncation-recovery sentinel. Set on a terminal payload when the turn
+   *  ended mid-stream with a usable checkpoint. partial_message is the text produced so
+   *  far; "Continue" re-sends it as system_context so the backend resumes from it. */
+  was_truncated?: boolean;
+  partial_message?: string | null;
+  checkpoint_kind?: string | null;
   /** product_feedback skill: editable confirmation card returned after inline capture. */
   capture_card?: {
     feedback_id: string;
@@ -554,6 +560,9 @@ interface SendMessageOpts {
   use_react?: boolean;
   /** When true, user acknowledged the PHI gate warning and is proceeding. */
   phi_override?: boolean;
+  /** Task #29: "Continue" a truncated turn — sends the checkpointed partial_message as
+   *  system_context on a fresh turn (backend Round-0 short-circuits from it). Not a resume. */
+  system_context?: string;
 }
 
 /** Aligned with mobius-chat/app/services/tool_agent.py roster_triggers + roster_triggers_new */
@@ -1763,7 +1772,13 @@ function thinkingFriendlyStatus(line: unknown): string {
 
 /** Failed-turn sentinel shape persisted in assistant_content (contract signed w/ LLM Agent):
  *  {turn_failed:true, error_code, message, retryable}. Returns the parsed info or null. */
-interface FailedTurnInfo { message?: string; error_code?: string; retryable?: boolean }
+interface FailedTurnInfo {
+  message?: string;
+  error_code?: string;
+  retryable?: boolean;
+  /** Task #29: turn ended mid-stream with a usable checkpoint → offer "Continue". */
+  was_truncated?: boolean;
+}
 function parseFailedTurn(body: string | null | undefined): FailedTurnInfo | null {
   const t = (body ?? "").trim();
   if (!t.startsWith("{")) return null;
@@ -1780,18 +1795,31 @@ function parseFailedTurn(body: string | null | undefined): FailedTurnInfo | null
   return null;
 }
 
-/** Failed-turn marker (Task A live errors + Task B history sentinel): a visually distinct
- *  "This request failed" state, with a "Try again" button ONLY when the backend marked the
- *  failure retryable and a re-submit handler is provided (never on refusals/PHI/rate-limits). */
-function renderFailedTurn(info: FailedTurnInfo, onRetry?: () => void): HTMLElement {
+/** Failed-turn marker (Task A live errors + Task B history sentinel + Task #29 truncation):
+ *  a visually distinct failure state. Buttons are gated on backend intent —
+ *   • "Try again" shows only when the failure is retryable and onRetry is provided
+ *     (never on refusals / PHI / rate-limits).
+ *   • "Continue" shows only when the turn was truncated with a checkpoint (was_truncated)
+ *     and onContinue is provided; it resumes from the partial output, not a fresh retry.
+ *  Ordering (contract): when BOTH apply, Continue is primary and Retry secondary — the
+ *  cheaper, more-likely-correct recovery leads. Continue-only or Retry-only render alone. */
+function renderFailedTurn(
+  info: FailedTurnInfo,
+  onRetry?: () => void,
+  onContinue?: () => void
+): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "message message--assistant message--failed";
   const bubble = document.createElement("div");
   bubble.className = "message-bubble message-bubble--failed";
 
+  const canContinue = info.was_truncated === true && !!onContinue;
+  const canRetry = info.retryable === true && !!onRetry;
+
   const marker = document.createElement("div");
   marker.className = "failed-turn-marker";
-  marker.textContent = "This request failed";
+  // Truncation is a softer failure than a hard error — label it honestly so "Continue" reads.
+  marker.textContent = canContinue ? "This answer was cut off" : "This request failed";
   bubble.appendChild(marker);
 
   const msg = (info.message ?? "").trim();
@@ -1802,18 +1830,46 @@ function renderFailedTurn(info: FailedTurnInfo, onRetry?: () => void): HTMLEleme
     bubble.appendChild(msgEl);
   }
 
-  if (info.retryable && onRetry) {
-    const retryBtn = document.createElement("button");
-    retryBtn.type = "button";
-    retryBtn.className = "failed-turn-retry";
-    retryBtn.textContent = "Try again";
-    retryBtn.setAttribute("aria-label", "Try this request again");
-    retryBtn.addEventListener("click", () => {
-      retryBtn.disabled = true;
-      retryBtn.textContent = "Retrying…";
-      onRetry();
+  const makeContinue = (primary: boolean): HTMLButtonElement => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "failed-turn-continue" + (primary ? " failed-turn-continue--primary" : "");
+    btn.textContent = "Continue";
+    btn.setAttribute("aria-label", "Continue this answer from where it stopped");
+    btn.addEventListener("click", () => {
+      btn.disabled = true;
+      btn.textContent = "Continuing…";
+      onContinue!();
     });
-    bubble.appendChild(retryBtn);
+    return btn;
+  };
+  const makeRetry = (primary: boolean): HTMLButtonElement => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "failed-turn-retry" + (primary ? " failed-turn-retry--primary" : "");
+    btn.textContent = "Try again";
+    btn.setAttribute("aria-label", "Try this request again");
+    btn.addEventListener("click", () => {
+      btn.disabled = true;
+      btn.textContent = "Retrying…";
+      onRetry!();
+    });
+    return btn;
+  };
+
+  if (canContinue || canRetry) {
+    const actions = document.createElement("div");
+    actions.className = "failed-turn-actions";
+    if (canContinue && canRetry) {
+      // Both: Continue primary, Retry secondary.
+      actions.appendChild(makeContinue(true));
+      actions.appendChild(makeRetry(false));
+    } else if (canContinue) {
+      actions.appendChild(makeContinue(true));
+    } else {
+      actions.appendChild(makeRetry(false));
+    }
+    bubble.appendChild(actions);
   }
 
   wrap.appendChild(bubble);
@@ -10467,7 +10523,11 @@ function run(): void {
         const _r = await fetch(`${_PHI_GATE_URL}/message-check`, {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({text: message, thread_id: currentThreadId}),
+          body: JSON.stringify({
+            text: message,
+            thread_id: currentThreadId,
+            ...(opts?.system_context ? { system_context: opts.system_context } : {}),
+          }),
         });
         if (_r.ok) _phiResult = await _r.json();
       } catch { /* fail open */ } finally {
@@ -11108,6 +11168,25 @@ function run(): void {
               })
             );
           }
+        }
+
+        // Task #29: mid-turn truncation recovery. When the backend closes a turn with a usable
+        // checkpoint (was_truncated + partial_message), the partial answer is already rendered
+        // above; append a recovery bar beneath it. "Continue" re-sends the partial as
+        // system_context (backend resumes from it) — distinct from "Try again" which restarts.
+        // A truncated turn is always retryable, so both actions show and Continue is primary.
+        if (data.was_truncated === true) {
+          const partial =
+            typeof data.partial_message === "string" ? data.partial_message.trim() : "";
+          turnWrap.appendChild(
+            renderFailedTurn(
+              { message: "", error_code: "truncated", retryable: true, was_truncated: true },
+              () => sendMessage(message),
+              partial
+                ? () => sendMessage(message, { system_context: partial })
+                : undefined
+            )
+          );
         }
 
         const mergeQc = (d: ChatResponse): void => {

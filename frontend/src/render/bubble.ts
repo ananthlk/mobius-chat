@@ -14,6 +14,45 @@ import {
 
 const MAX_BULLETS_PER_SECTION = 4;
 
+// Task #10 — format chip. Maps the enricher's output_intent (a deliverable TYPE, not a
+// format) to a read-only icon+label chip. Keyed on the REAL backend enum documented in
+// app/stages/integrate.py (read/report/email/sms/emr/appeal/payor_report). Unknown or
+// absent intents yield no chip — we never invent a label for a value the backend didn't send.
+// Semantic hues are set per-intent in styles.css (.answer-card-format-chip--<intent>), kept
+// orthogonal to accent/success/warn/error so the chip scans as "what kind of answer".
+const FORMAT_CHIP_SPEC: Record<string, { label: string; icon: string }> = {
+  read: { label: "Answer", icon: "💬" },
+  report: { label: "Report", icon: "📋" },
+  email: { label: "Email", icon: "✉️" },
+  sms: { label: "Text", icon: "📱" },
+  emr: { label: "EMR Note", icon: "🏥" },
+  appeal: { label: "Appeal", icon: "⚖️" },
+  payor_report: { label: "Payor Report", icon: "📊" },
+};
+
+/** Build the read-only format chip, or null when output_intent is absent/unknown. Exported for test. */
+export function buildFormatChip(outputIntent?: string): HTMLElement | null {
+  const key = (outputIntent ?? "").trim().toLowerCase();
+  const spec = FORMAT_CHIP_SPEC[key];
+  if (!spec) return null;
+  const chip = document.createElement("span");
+  chip.className = "answer-card-format-chip answer-card-format-chip--" + key;
+  // Text is always present (icon is supplementary), so no ARIA role is needed; the label
+  // spells out the meaning for assistive tech.
+  chip.setAttribute("aria-label", "Answer format: " + spec.label);
+  chip.setAttribute("title", spec.label);
+  const icon = document.createElement("span");
+  icon.className = "answer-card-format-chip-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = spec.icon;
+  const text = document.createElement("span");
+  text.className = "answer-card-format-chip-text";
+  text.textContent = spec.label;
+  chip.appendChild(icon);
+  chip.appendChild(text);
+  return chip;
+}
+
 function _renderSectionBody(sec: AnswerCardSection, body: HTMLElement): void {
   const fmt = sec.format ?? "bullets";
   const data = sec.data;
@@ -228,6 +267,16 @@ export function renderAnswerCard(
     }
     wrap.appendChild(bubble);
     return wrap;
+  }
+
+  // Task #10 — format chip sits at the top of the card (Variant A/B), a subtle read-only
+  // marker of what kind of deliverable this is. Absent/unknown output_intent → no chip.
+  const formatChip = buildFormatChip(card.output_intent);
+  if (formatChip) {
+    const chipRow = document.createElement("div");
+    chipRow.className = "answer-card-format-row";
+    chipRow.appendChild(formatChip);
+    bubble.appendChild(chipRow);
   }
 
   const direct = document.createElement("div");

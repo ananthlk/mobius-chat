@@ -2237,6 +2237,35 @@ var TAB_ORDER = ["summary", "citations", "corrections", "follow-up", "tasks", "d
 
 // src/render/bubble.ts
 var MAX_BULLETS_PER_SECTION = 4;
+var FORMAT_CHIP_SPEC = {
+  read: { label: "Answer", icon: "\u{1F4AC}" },
+  report: { label: "Report", icon: "\u{1F4CB}" },
+  email: { label: "Email", icon: "\u2709\uFE0F" },
+  sms: { label: "Text", icon: "\u{1F4F1}" },
+  emr: { label: "EMR Note", icon: "\u{1F3E5}" },
+  appeal: { label: "Appeal", icon: "\u2696\uFE0F" },
+  payor_report: { label: "Payor Report", icon: "\u{1F4CA}" }
+};
+function buildFormatChip(outputIntent) {
+  const key = (outputIntent ?? "").trim().toLowerCase();
+  const spec = FORMAT_CHIP_SPEC[key];
+  if (!spec)
+    return null;
+  const chip = document.createElement("span");
+  chip.className = "answer-card-format-chip answer-card-format-chip--" + key;
+  chip.setAttribute("aria-label", "Answer format: " + spec.label);
+  chip.setAttribute("title", spec.label);
+  const icon = document.createElement("span");
+  icon.className = "answer-card-format-chip-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = spec.icon;
+  const text = document.createElement("span");
+  text.className = "answer-card-format-chip-text";
+  text.textContent = spec.label;
+  chip.appendChild(icon);
+  chip.appendChild(text);
+  return chip;
+}
 function _renderSectionBody(sec, body) {
   const fmt = sec.format ?? "bullets";
   const data = sec.data;
@@ -2415,6 +2444,13 @@ function renderAnswerCard(card, isError, opts) {
     }
     wrap.appendChild(bubble);
     return wrap;
+  }
+  const formatChip = buildFormatChip(card.output_intent);
+  if (formatChip) {
+    const chipRow = document.createElement("div");
+    chipRow.className = "answer-card-format-row";
+    chipRow.appendChild(formatChip);
+    bubble.appendChild(chipRow);
   }
   const direct = document.createElement("div");
   direct.className = "answer-card-direct";
@@ -3810,14 +3846,16 @@ function parseFailedTurn(body) {
   }
   return null;
 }
-function renderFailedTurn(info, onRetry) {
+function renderFailedTurn(info, onRetry, onContinue) {
   const wrap = document.createElement("div");
   wrap.className = "message message--assistant message--failed";
   const bubble = document.createElement("div");
   bubble.className = "message-bubble message-bubble--failed";
+  const canContinue = info.was_truncated === true && !!onContinue;
+  const canRetry = info.retryable === true && !!onRetry;
   const marker = document.createElement("div");
   marker.className = "failed-turn-marker";
-  marker.textContent = "This request failed";
+  marker.textContent = canContinue ? "This answer was cut off" : "This request failed";
   bubble.appendChild(marker);
   const msg = (info.message ?? "").trim();
   if (msg) {
@@ -3826,18 +3864,44 @@ function renderFailedTurn(info, onRetry) {
     msgEl.textContent = msg;
     bubble.appendChild(msgEl);
   }
-  if (info.retryable && onRetry) {
-    const retryBtn = document.createElement("button");
-    retryBtn.type = "button";
-    retryBtn.className = "failed-turn-retry";
-    retryBtn.textContent = "Try again";
-    retryBtn.setAttribute("aria-label", "Try this request again");
-    retryBtn.addEventListener("click", () => {
-      retryBtn.disabled = true;
-      retryBtn.textContent = "Retrying\u2026";
+  const makeContinue = (primary) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "failed-turn-continue" + (primary ? " failed-turn-continue--primary" : "");
+    btn.textContent = "Continue";
+    btn.setAttribute("aria-label", "Continue this answer from where it stopped");
+    btn.addEventListener("click", () => {
+      btn.disabled = true;
+      btn.textContent = "Continuing\u2026";
+      onContinue();
+    });
+    return btn;
+  };
+  const makeRetry = (primary) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "failed-turn-retry" + (primary ? " failed-turn-retry--primary" : "");
+    btn.textContent = "Try again";
+    btn.setAttribute("aria-label", "Try this request again");
+    btn.addEventListener("click", () => {
+      btn.disabled = true;
+      btn.textContent = "Retrying\u2026";
       onRetry();
     });
-    bubble.appendChild(retryBtn);
+    return btn;
+  };
+  if (canContinue || canRetry) {
+    const actions = document.createElement("div");
+    actions.className = "failed-turn-actions";
+    if (canContinue && canRetry) {
+      actions.appendChild(makeContinue(true));
+      actions.appendChild(makeRetry(false));
+    } else if (canContinue) {
+      actions.appendChild(makeContinue(true));
+    } else {
+      actions.appendChild(makeRetry(false));
+    }
+    bubble.appendChild(actions);
   }
   wrap.appendChild(bubble);
   return wrap;
@@ -11321,7 +11385,11 @@ ${message}`;
         const _r = await fetch(`${_PHI_GATE_URL}/message-check`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: message, thread_id: currentThreadId })
+          body: JSON.stringify({
+            text: message,
+            thread_id: currentThreadId,
+            ...opts?.system_context ? { system_context: opts.system_context } : {}
+          })
         });
         if (_r.ok)
           _phiResult = await _r.json();
@@ -11879,6 +11947,16 @@ ${message}`;
             })
           );
         }
+      }
+      if (data.was_truncated === true) {
+        const partial = typeof data.partial_message === "string" ? data.partial_message.trim() : "";
+        turnWrap.appendChild(
+          renderFailedTurn(
+            { message: "", error_code: "truncated", retryable: true, was_truncated: true },
+            () => sendMessage(message),
+            partial ? () => sendMessage(message, { system_context: partial }) : void 0
+          )
+        );
       }
       const mergeQc = (d) => {
         const q = d.qc_audit && typeof d.qc_audit === "object" && typeof d.qc_audit.passed === "boolean" ? d.qc_audit : void 0;
