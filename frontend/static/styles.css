@@ -10893,3 +10893,47 @@ body.landing-state .composer-landing-chips {
   background: rgba(124, 58, 237, 0.12);
   color: var(--mobius-violet, #7c3aed);
 }
+
+/* Failed-turn marker (Task A live errors + Task B history sentinel) — visually distinct from
+   a normal assistant reply, so a failed turn is never mistaken for an empty answer. */
+.message-bubble--failed {
+  border: 1px solid rgba(180, 35, 42, 0.35);
+  background: rgba(180, 35, 42, 0.05);
+  border-radius: 10px;
+  padding: 0.75rem 0.9rem;
+}
+.failed-turn-marker {
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: #b4232a;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.failed-turn-marker::before {
+  content: "⚠";
+  font-size: 0.95rem;
+}
+.failed-turn-message {
+  margin-top: 0.35rem;
+  font-size: 0.82rem;
+  color: var(--sidebar-text, #4a4560);
+  line-height: 1.45;
+}
+.failed-turn-retry {
+  margin-top: 0.6rem;
+  padding: 0.35rem 0.85rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  border-radius: 7px;
+  border: 1px solid var(--mobius-violet, #7c3aed);
+  background: transparent;
+  color: var(--mobius-violet, #7c3aed);
+  cursor: pointer;
+}
+.failed-turn-retry:hover:not(:disabled) { background: rgba(124, 58, 237, 0.08); }
+.failed-turn-retry:disabled { opacity: 0.6; cursor: default; }
+@media (prefers-color-scheme: dark) {
+  .message-bubble--failed { border-color: rgba(240, 121, 127, 0.35); background: rgba(240, 121, 127, 0.08); }
+  .failed-turn-marker { color: #f0797f; }
+}

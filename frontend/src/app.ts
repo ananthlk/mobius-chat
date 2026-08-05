@@ -1761,6 +1761,65 @@ function thinkingFriendlyStatus(line: unknown): string {
 /** Minimal markdown to HTML for report display (headers, bold, paragraphs, images). Escapes HTML first. */
 
 
+/** Failed-turn sentinel shape persisted in assistant_content (contract signed w/ LLM Agent):
+ *  {turn_failed:true, error_code, message, retryable}. Returns the parsed info or null. */
+interface FailedTurnInfo { message?: string; error_code?: string; retryable?: boolean }
+function parseFailedTurn(body: string | null | undefined): FailedTurnInfo | null {
+  const t = (body ?? "").trim();
+  if (!t.startsWith("{")) return null;
+  try {
+    const o = JSON.parse(t) as Record<string, unknown>;
+    if (o && o.turn_failed === true) {
+      return {
+        message: typeof o.message === "string" ? o.message : undefined,
+        error_code: typeof o.error_code === "string" ? o.error_code : undefined,
+        retryable: o.retryable === true,
+      };
+    }
+  } catch { /* not JSON — fall through */ }
+  return null;
+}
+
+/** Failed-turn marker (Task A live errors + Task B history sentinel): a visually distinct
+ *  "This request failed" state, with a "Try again" button ONLY when the backend marked the
+ *  failure retryable and a re-submit handler is provided (never on refusals/PHI/rate-limits). */
+function renderFailedTurn(info: FailedTurnInfo, onRetry?: () => void): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "message message--assistant message--failed";
+  const bubble = document.createElement("div");
+  bubble.className = "message-bubble message-bubble--failed";
+
+  const marker = document.createElement("div");
+  marker.className = "failed-turn-marker";
+  marker.textContent = "This request failed";
+  bubble.appendChild(marker);
+
+  const msg = (info.message ?? "").trim();
+  if (msg) {
+    const msgEl = document.createElement("div");
+    msgEl.className = "failed-turn-message";
+    msgEl.textContent = msg;
+    bubble.appendChild(msgEl);
+  }
+
+  if (info.retryable && onRetry) {
+    const retryBtn = document.createElement("button");
+    retryBtn.type = "button";
+    retryBtn.className = "failed-turn-retry";
+    retryBtn.textContent = "Try again";
+    retryBtn.setAttribute("aria-label", "Try this request again");
+    retryBtn.addEventListener("click", () => {
+      retryBtn.disabled = true;
+      retryBtn.textContent = "Retrying…";
+      onRetry();
+    });
+    bubble.appendChild(retryBtn);
+  }
+
+  wrap.appendChild(bubble);
+  return wrap;
+}
+
 /** Render assistant content: AnswerCard JSON (formatted) or prose fallback. */
 function renderAssistantContent(
   body: string,
@@ -1775,8 +1834,15 @@ function renderAssistantContent(
     renderAsMarkdown?: boolean;
     qcAudit?: QcAuditInfo;
     suppressConfidenceForAdminQcFail?: boolean;
+    /** Injected: re-submit the original user message (retry). Keeps this renderer state-free. */
+    onRetry?: () => void;
   }
 ): HTMLElement {
+  // Failed-turn sentinel (Task B): a persisted {turn_failed:true,...} row in assistant_content.
+  // Checked BEFORE AnswerCard/prose so a failed history turn renders an explicit marker, not
+  // empty prose. "Try again" shows only when the backend marked the failure retryable.
+  const failed = parseFailedTurn(body);
+  if (failed) return renderFailedTurn(failed, opts?.onRetry);
   const card = tryParseAnswerCard(body);
   if (card) return renderAnswerCard(card, isError, { ...opts, nextQuestions: opts?.nextQuestions, onCreateTask: openCreateTaskDialog });
   const trimmed = (body ?? "").trim();
@@ -11109,8 +11175,15 @@ function run(): void {
       .catch((err: Error) => {
         markRequestFailed();
         thinkingDone(thinkingLines.length);
+        // Task A: a client-side stream failure (stall / no-progress / timeout / lost job) is a
+        // FAILED turn, rendered distinctly, with a "Try again" that re-queues the ORIGINAL message.
+        // These transport failures are retryable (a content refusal / PHI block would arrive as a
+        // completed turn with a server sentinel, not here).
         turnWrap.appendChild(
-          renderAssistantMessage("Error: " + (err?.message ?? String(err)), true, {})
+          renderFailedTurn(
+            { message: err?.message ?? String(err), error_code: "stream_failure", retryable: true },
+            () => sendMessage(message)
+          )
         );
         scrollToBottom(messagesEl);
       })

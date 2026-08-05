@@ -3793,7 +3793,59 @@ function thinkingFriendlyStatus(line) {
     return "Finishing up\u2026";
   return "Working on your answer\u2026";
 }
+function parseFailedTurn(body) {
+  const t = (body ?? "").trim();
+  if (!t.startsWith("{"))
+    return null;
+  try {
+    const o = JSON.parse(t);
+    if (o && o.turn_failed === true) {
+      return {
+        message: typeof o.message === "string" ? o.message : void 0,
+        error_code: typeof o.error_code === "string" ? o.error_code : void 0,
+        retryable: o.retryable === true
+      };
+    }
+  } catch {
+  }
+  return null;
+}
+function renderFailedTurn(info, onRetry) {
+  const wrap = document.createElement("div");
+  wrap.className = "message message--assistant message--failed";
+  const bubble = document.createElement("div");
+  bubble.className = "message-bubble message-bubble--failed";
+  const marker = document.createElement("div");
+  marker.className = "failed-turn-marker";
+  marker.textContent = "This request failed";
+  bubble.appendChild(marker);
+  const msg = (info.message ?? "").trim();
+  if (msg) {
+    const msgEl = document.createElement("div");
+    msgEl.className = "failed-turn-message";
+    msgEl.textContent = msg;
+    bubble.appendChild(msgEl);
+  }
+  if (info.retryable && onRetry) {
+    const retryBtn = document.createElement("button");
+    retryBtn.type = "button";
+    retryBtn.className = "failed-turn-retry";
+    retryBtn.textContent = "Try again";
+    retryBtn.setAttribute("aria-label", "Try this request again");
+    retryBtn.addEventListener("click", () => {
+      retryBtn.disabled = true;
+      retryBtn.textContent = "Retrying\u2026";
+      onRetry();
+    });
+    bubble.appendChild(retryBtn);
+  }
+  wrap.appendChild(bubble);
+  return wrap;
+}
 function renderAssistantContent(body, isError, opts) {
+  const failed = parseFailedTurn(body);
+  if (failed)
+    return renderFailedTurn(failed, opts?.onRetry);
   const card = tryParseAnswerCard(body);
   if (card)
     return renderAnswerCard(card, isError, { ...opts, nextQuestions: opts?.nextQuestions, onCreateTask: openCreateTaskDialog });
@@ -11840,7 +11892,10 @@ ${message}`;
       markRequestFailed();
       thinkingDone(thinkingLines.length);
       turnWrap.appendChild(
-        renderAssistantMessage("Error: " + (err?.message ?? String(err)), true, {})
+        renderFailedTurn(
+          { message: err?.message ?? String(err), error_code: "stream_failure", retryable: true },
+          () => sendMessage(message)
+        )
       );
       scrollToBottom(messagesEl);
     }).finally(() => {
