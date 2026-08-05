@@ -248,6 +248,31 @@ def append_draft_answer(correlation_id: str, text: str, mode_hint: str | None = 
     _publish_progress_event(correlation_id, ev)
 
 
+def append_detail_answer(correlation_id: str, content: str, output_intent: str | None = None) -> None:
+    """Emit the full detailed-answer tab content as soon as the integrator's
+    AnswerCard JSON parses (2026-08-05, Chat Master spec — "detail" tab
+    alongside the Summary tab's tldr_summary). Mirrors append_draft_answer's
+    draft_ready pattern exactly: same fire-live-then-let-completed-replace
+    shape, just a distinct event so Chat FE can route it to its own tab
+    instead of overwriting the draft/summary rendering.
+
+    ``content`` is display_summary verbatim (the field already required on
+    every complete turn, already formatted per output_intent — see the
+    enricher.answercard_schema_and_rules prompt block, version 6+).
+    ``output_intent`` is the raw classified token (read|report|email|sms|
+    emr|appeal|payor_report) -- NOT a display label; Chat FE renders/
+    labels it client-side. No durable-stash / get_checkpoint() integration
+    here (unlike append_draft_answer) -- this isn't part of Task #29's
+    mid-turn recovery contract, just a live UI event."""
+    ev: dict[str, Any] = {"event": "detail_ready", "data": {"content": content}}
+    if output_intent:
+        ev["data"]["output_intent"] = output_intent
+    with _lock:
+        if correlation_id in _progress:
+            _progress[correlation_id]["events"].append(ev)
+    _publish_progress_event(correlation_id, ev)
+
+
 def append_evidence_checkpoint(correlation_id: str, text: str) -> None:
     """Task #33 (2026-08-05): the silent, no-SSE counterpart to
     append_draft_answer(), for react_loop.py's mid-loop

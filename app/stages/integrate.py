@@ -71,6 +71,11 @@ _ANSWER_CARD_ENVELOPE_KEYS = (
     # dropped before reaching the client (this allowlist is a positive filter).
     "output_intent",
     "display_summary",
+    # 2026-08-05: always-populated 2-4 sentence TL;DR for the Summary tab
+    # (Chat Master spec — "detailed answer" feature). Distinct from
+    # direct_answer, which stays a one-sentence fallback for when no
+    # draft exists; tldr_summary is always written, not a fallback path.
+    "tldr_summary",
 )
 
 
@@ -638,6 +643,30 @@ def run_integrate(
                 _tstate = _parsed.get("thread_state")
                 if isinstance(_tstate, str) and _tstate.strip():
                     ctx.thread_state = _tstate.strip()[:600]
+
+                # New "detailed answer" tab (2026-08-05, Chat Master spec):
+                # the enricher already produces display_summary (the full,
+                # formatted-per-output_intent deliverable — required on
+                # every complete turn) + output_intent. Fire a detail_ready
+                # SSE event as soon as the integrator's JSON parses,
+                # mirroring append_draft_answer's draft_ready pattern, so
+                # Chat FE can render the detail tab without waiting for the
+                # full "completed" payload.
+                _detail = _parsed.get("display_summary")
+                _oi = _parsed.get("output_intent")
+                if isinstance(_detail, str) and _detail.strip():
+                    try:
+                        from app.storage.progress import append_detail_answer
+                        append_detail_answer(
+                            ctx.correlation_id, _detail,
+                            output_intent=_oi if isinstance(_oi, str) else None,
+                        )
+                    except Exception:
+                        logger.debug(
+                            "append_detail_answer failed (cid=%s)",
+                            getattr(ctx, "correlation_id", "?"), exc_info=True,
+                        )
+
                 _ts = _parsed.get("thread_summary")
                 if isinstance(_ts, str) and _ts.strip():
                     # Cap at ~600 chars to match the legacy regex-built
