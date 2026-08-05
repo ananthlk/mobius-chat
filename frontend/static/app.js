@@ -1930,7 +1930,12 @@ function tryParseAnswerCard(message) {
         required_variables: Array.isArray(data.required_variables) ? data.required_variables : void 0,
         confidence_note: typeof data.confidence_note === "string" ? data.confidence_note : void 0,
         citations: Array.isArray(data.citations) ? data.citations : void 0,
-        followups: Array.isArray(data.followups) ? data.followups : void 0
+        followups: Array.isArray(data.followups) ? data.followups : void 0,
+        // Task #10: the enricher's deliverable classification. parseOne is a positive filter, so
+        // these MUST be copied through explicitly or the format chip never sees them (they were
+        // present in the JSON but dropped here — the live "no chip on any turn" bug, 2026-08-05).
+        output_intent: typeof data.output_intent === "string" ? data.output_intent : void 0,
+        display_summary: typeof data.display_summary === "string" ? data.display_summary : void 0
       };
     } catch {
       return null;
@@ -11507,9 +11512,9 @@ ${message}`;
     }
     function streamingDisplayText(text) {
       const t = (text ?? "").trim();
-      if (t.startsWith("{"))
-        return "Formatting answer\u2026";
-      return normalizeMessageText(text);
+      if (!t)
+        return "";
+      return "Composing your answer\u2026";
     }
     function onStreamingMessage(text) {
       onRequestStreamChunk(text);

@@ -154,6 +154,11 @@ export function tryParseAnswerCard(message: string): AnswerCard | null {
         confidence_note: typeof data.confidence_note === "string" ? data.confidence_note : undefined,
         citations: Array.isArray(data.citations) ? (data.citations as AnswerCard["citations"]) : undefined,
         followups: Array.isArray(data.followups) ? (data.followups as AnswerCard["followups"]) : undefined,
+        // Task #10: the enricher's deliverable classification. parseOne is a positive filter, so
+        // these MUST be copied through explicitly or the format chip never sees them (they were
+        // present in the JSON but dropped here — the live "no chip on any turn" bug, 2026-08-05).
+        output_intent: typeof data.output_intent === "string" ? data.output_intent : undefined,
+        display_summary: typeof data.display_summary === "string" ? data.display_summary : undefined,
       };
     } catch {
       return null;

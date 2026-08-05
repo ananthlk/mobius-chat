@@ -10673,9 +10673,16 @@ function run(): void {
     }
     /** During stream, do not show raw JSON; show placeholder until final render (AnswerCard or prose). */
     function streamingDisplayText(text: string): string {
+      // UX directive (2026-08-05 live test): raw message-chunk content must NEVER render in the
+      // response area mid-stream. These chunks are the integrator's token-by-token output — often
+      // partial AnswerCard JSON, and sometimes echoed raw tool context (retrieved document text,
+      // provider-type lists) before the final synthesized card replaces them. Showing any of it
+      // is bleed. The clean streamed summary arrives on its OWN path (draft_ready → onDraftReady),
+      // so here we only ever show a status placeholder. Keeps the response area to "status, not
+      // raw content" until draft_ready or completed swaps in the real answer.
       const t = (text ?? "").trim();
-      if (t.startsWith("{")) return "Formatting answer…";
-      return normalizeMessageText(text);
+      if (!t) return "";
+      return "Composing your answer…";
     }
     function onStreamingMessage(text: string): void {
       onRequestStreamChunk(text);

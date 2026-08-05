@@ -93,6 +93,22 @@ describe("tryParseAnswerCard — AC-FE-1 (mode optional, min-valid anchor, both 
     const card = tryParseAnswerCard(json({ direct_answer: "hi", sections: [sec({ visibility: "detail" as AnswerCardSection["visibility"] })] }));
     expect(card!.sections[0].visibility).toBe("detail");
   });
+
+  // Task #10 regression (2026-08-05 live bug: chip never rendered because parseOne, a positive
+  // filter, dropped output_intent — present in the JSON but never copied onto the AnswerCard).
+  it("output_intent + display_summary survive parsing (chip depends on this)", () => {
+    const card = tryParseAnswerCard(json({ direct_answer: "hi", output_intent: "report", display_summary: "A short report." }));
+    expect(card!.output_intent).toBe("report");
+    expect(card!.display_summary).toBe("A short report.");
+  });
+  it("absent output_intent stays undefined (no fabricated value)", () => {
+    const card = tryParseAnswerCard(json({ direct_answer: "hi" }));
+    expect(card!.output_intent).toBeUndefined();
+  });
+  it("non-string output_intent is dropped to undefined", () => {
+    const card = tryParseAnswerCard(json({ direct_answer: "hi", output_intent: 42 as unknown as string }));
+    expect(card!.output_intent).toBeUndefined();
+  });
 });
 
 describe("splitSectionsByVisibility — AC-FE-2 / §5 discriminator / §1.2 fallback", () => {
