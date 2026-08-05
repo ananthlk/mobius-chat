@@ -8365,11 +8365,21 @@ function renderReactTraceCard(thinkingLog) {
   return wrap;
 }
 var _banditRewardCounts = /* @__PURE__ */ new Map();
-function _noteBanditRewardPersisted(correlationId) {
+var _banditStageScores = /* @__PURE__ */ new Map();
+function _noteBanditRewardPersisted(correlationId, stage, quality, metric) {
   if (!correlationId)
     return;
   _banditRewardCounts.set(correlationId, (_banditRewardCounts.get(correlationId) ?? 0) + 1);
+  if (stage && typeof quality === "number" && Number.isFinite(quality)) {
+    let m = _banditStageScores.get(correlationId);
+    if (!m) {
+      m = /* @__PURE__ */ new Map();
+      _banditStageScores.set(correlationId, m);
+    }
+    m.set(stage, { score: quality, metric: (metric || "").trim() || void 0 });
+  }
   document.querySelectorAll(`[data-bandit-cid="${correlationId}"]`).forEach((el2) => _paintBanditCheckmark(el2, _banditRewardCounts.get(correlationId) ?? 0));
+  _updateBanditAttribution(correlationId);
 }
 function _paintBanditCheckmark(el2, count) {
   if (count > 0) {
@@ -8379,6 +8389,110 @@ function _paintBanditCheckmark(el2, count) {
     el2.classList.remove("bandit-persisted--ok");
     el2.textContent = "awaiting bandit reward event\u2026";
   }
+}
+var _BANDIT_STAGE_METRIC = {
+  integrator: "overall quality",
+  rag: "grounding",
+  corpus_search: "grounding",
+  rag_fact_check: "factual consistency",
+  decomposer: "addresses question",
+  planner: "addresses question"
+};
+function _banditMetricLabel(stage) {
+  if (/^react[_-]?\d+$/i.test(stage) || /^react_round_\d+$/i.test(stage))
+    return "grounding \xD7 efficiency";
+  return _BANDIT_STAGE_METRIC[stage] ?? "";
+}
+var _BANDIT_STAGE_ORDER = [
+  "decomposer",
+  "planner",
+  "corpus_search",
+  "rag",
+  "rag_fact_check",
+  "react_1",
+  "react_2",
+  "react_3",
+  "react_4",
+  "react_5",
+  "integrator"
+];
+function _banditStageRank(stage) {
+  const i = _BANDIT_STAGE_ORDER.indexOf(stage);
+  return i === -1 ? 900 : i;
+}
+function renderBanditAttribution(correlationId) {
+  const wrap = document.createElement("div");
+  wrap.className = "dc-leaf bandit-attribution";
+  wrap.setAttribute("data-bandit-attr-cid", correlationId);
+  const hdr = document.createElement("div");
+  hdr.className = "dc-leaf-hdr";
+  hdr.setAttribute("role", "button");
+  hdr.setAttribute("tabindex", "0");
+  hdr.setAttribute("aria-expanded", "false");
+  hdr.innerHTML = `<span class="dc-dot dc-dot--ok"></span><span class="dc-leaf-title">Bandit reward attribution</span><span class="dc-leaf-sum bandit-attr-sum"></span><span class="dc-chev dc-chev-leaf" aria-hidden="true">\u25BE</span>`;
+  const body = document.createElement("div");
+  body.className = "dc-leaf-body dc-leaf-body--hidden bandit-attribution-body";
+  wrap.appendChild(hdr);
+  wrap.appendChild(body);
+  const toggle = () => {
+    const hidden = body.classList.toggle("dc-leaf-body--hidden");
+    hdr.setAttribute("aria-expanded", hidden ? "false" : "true");
+    hdr.querySelector(".dc-chev-leaf").textContent = hidden ? "\u25BE" : "\u25B4";
+  };
+  hdr.addEventListener("click", toggle);
+  hdr.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      toggle();
+    }
+  });
+  _fillBanditAttributionBody(correlationId, wrap);
+  return wrap;
+}
+function _fillBanditAttributionBody(correlationId, wrap) {
+  const body = wrap.querySelector(".bandit-attribution-body");
+  const sum = wrap.querySelector(".bandit-attr-sum");
+  if (!body)
+    return;
+  const scores = _banditStageScores.get(correlationId);
+  body.textContent = "";
+  if (!scores || scores.size === 0) {
+    const empty = document.createElement("div");
+    empty.className = "bandit-attr-empty";
+    empty.textContent = "awaiting per-stage bandit rewards\u2026";
+    body.appendChild(empty);
+    if (sum)
+      sum.textContent = "";
+    return;
+  }
+  const entries = [...scores.entries()].sort(
+    (a, b) => _banditStageRank(a[0]) - _banditStageRank(b[0]) || a[0].localeCompare(b[0])
+  );
+  for (const [stage, reward] of entries) {
+    const row = document.createElement("div");
+    row.className = "bandit-attr-row";
+    const st = document.createElement("span");
+    st.className = "bandit-attr-stage";
+    st.textContent = stage;
+    const sc = document.createElement("span");
+    sc.className = "bandit-attr-score";
+    sc.textContent = reward.score.toFixed(2);
+    const mt = document.createElement("span");
+    mt.className = "bandit-attr-metric";
+    const label = reward.metric || _banditMetricLabel(stage);
+    mt.textContent = label ? `(${label})` : "";
+    row.appendChild(st);
+    row.appendChild(sc);
+    row.appendChild(mt);
+    body.appendChild(row);
+  }
+  if (sum)
+    sum.textContent = `${entries.length} stage${entries.length === 1 ? "" : "s"}`;
+}
+function _updateBanditAttribution(correlationId) {
+  if (!correlationId)
+    return;
+  document.querySelectorAll(`.bandit-attribution[data-bandit-attr-cid="${correlationId}"]`).forEach((wrap) => _fillBanditAttributionBody(correlationId, wrap));
 }
 function _reconcileQaAndBanditFromPoll(turnWrap, d) {
   const cid = (d.correlation_id || turnWrap.getAttribute("data-correlation-id") || "").trim();
@@ -10436,6 +10550,8 @@ function run() {
     const qaVerdictsEl = renderQaVerdictsPanel(opts.qc, opts.correlationId);
     if (qaVerdictsEl)
       diagPanel.appendChild(qaVerdictsEl);
+    if (opts.correlationId)
+      diagPanel.appendChild(renderBanditAttribution(opts.correlationId));
     if (opts.hipaaDiagnostics) {
       const hd = opts.hipaaDiagnostics;
       const hipaaSection = document.createElement("div");
@@ -10940,7 +11056,10 @@ function run() {
           } else if (ev === "quality_audit" && data.line != null && onThinking) {
             onThinking(String(data.line));
           } else if (ev === "bandit_reward_persisted") {
-            _noteBanditRewardPersisted(correlationId);
+            const _bStage = typeof data.stage === "string" ? data.stage : void 0;
+            const _bQual = typeof data.quality_score === "number" ? data.quality_score : null;
+            const _bMetric = typeof data.quality_metric === "string" ? data.quality_metric : void 0;
+            _noteBanditRewardPersisted(correlationId, _bStage, _bQual, _bMetric);
           } else if (ev === "draft_ready" && data.text != null) {
             draftEmitted = true;
             if (onDraftReady)

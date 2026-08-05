@@ -6911,13 +6911,32 @@ function renderReactTraceCard(
  *  per call (call_id/stage/quality_score); Ananth's intent is a SINGLE checkmark per turn with a
  *  count, so we coalesce by correlation_id and update the rendered checkmark live as events land. */
 const _banditRewardCounts = new Map<string, number>();
-function _noteBanditRewardPersisted(correlationId: string): void {
+// Task #34: per-stage reward attribution. Each bandit_reward_persisted event carries a DIFFERENT
+// quality_score per stage (rev 00657); accumulate them by correlation_id → stage → {score, metric}
+// as they arrive in the post-completion window, and render live. `metric` is the human-readable
+// reward formula — the backend does not send it yet (LLM Agent adding `quality_metric` to the
+// event); until then we fall back to a provisional FE label derived from the stage name.
+interface BanditStageReward { score: number; metric?: string }
+const _banditStageScores = new Map<string, Map<string, BanditStageReward>>();
+
+/** Record one bandit_reward_persisted event: bump the per-turn count (for the checkmark) and,
+ *  when the event carries a stage + score (Task #34), store it for the attribution breakdown.
+ *  Repaints both the checkmark badge and the attribution section live. */
+function _noteBanditRewardPersisted(
+  correlationId: string, stage?: string, quality?: number | null, metric?: string
+): void {
   if (!correlationId) return;
   _banditRewardCounts.set(correlationId, (_banditRewardCounts.get(correlationId) ?? 0) + 1);
+  if (stage && typeof quality === "number" && Number.isFinite(quality)) {
+    let m = _banditStageScores.get(correlationId);
+    if (!m) { m = new Map(); _banditStageScores.set(correlationId, m); }
+    m.set(stage, { score: quality, metric: (metric || "").trim() || undefined });
+  }
   // correlation ids are hex + dashes → selector-safe without escaping.
   document
     .querySelectorAll<HTMLElement>(`[data-bandit-cid="${correlationId}"]`)
     .forEach((el) => _paintBanditCheckmark(el, _banditRewardCounts.get(correlationId) ?? 0));
+  _updateBanditAttribution(correlationId);
 }
 function _paintBanditCheckmark(el: HTMLElement, count: number): void {
   if (count > 0) {
@@ -6927,6 +6946,109 @@ function _paintBanditCheckmark(el: HTMLElement, count: number): void {
     el.classList.remove("bandit-persisted--ok");
     el.textContent = "awaiting bandit reward event…";
   }
+}
+
+// Human-readable reward metric per stage (the sub-score(s) the bandit reward is computed from).
+// Mirrors the backend STAGE_QUALITY_MAP; display-only, so an unknown stage just shows no metric.
+const _BANDIT_STAGE_METRIC: Record<string, string> = {
+  integrator: "overall quality",
+  rag: "grounding",
+  corpus_search: "grounding",
+  rag_fact_check: "factual consistency",
+  decomposer: "addresses question",
+  planner: "addresses question",
+};
+function _banditMetricLabel(stage: string): string {
+  if (/^react[_-]?\d+$/i.test(stage) || /^react_round_\d+$/i.test(stage)) return "grounding × efficiency";
+  return _BANDIT_STAGE_METRIC[stage] ?? "";
+}
+// Stable display order: pipeline order, unknown stages sorted after by name.
+const _BANDIT_STAGE_ORDER = [
+  "decomposer", "planner", "corpus_search", "rag", "rag_fact_check",
+  "react_1", "react_2", "react_3", "react_4", "react_5", "integrator",
+];
+function _banditStageRank(stage: string): number {
+  const i = _BANDIT_STAGE_ORDER.indexOf(stage);
+  return i === -1 ? 900 : i;
+}
+
+/** Build the expandable "Bandit reward attribution" section (Task #34). Reads whatever is in the
+ *  per-turn stage-score map at build time; _updateBanditAttribution refreshes it as events land. */
+function renderBanditAttribution(correlationId: string): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "dc-leaf bandit-attribution";
+  wrap.setAttribute("data-bandit-attr-cid", correlationId);
+  const hdr = document.createElement("div");
+  hdr.className = "dc-leaf-hdr";
+  hdr.setAttribute("role", "button");
+  hdr.setAttribute("tabindex", "0");
+  hdr.setAttribute("aria-expanded", "false");
+  hdr.innerHTML =
+    `<span class="dc-dot dc-dot--ok"></span>` +
+    `<span class="dc-leaf-title">Bandit reward attribution</span>` +
+    `<span class="dc-leaf-sum bandit-attr-sum"></span>` +
+    `<span class="dc-chev dc-chev-leaf" aria-hidden="true">▾</span>`;
+  const body = document.createElement("div");
+  body.className = "dc-leaf-body dc-leaf-body--hidden bandit-attribution-body";
+  wrap.appendChild(hdr);
+  wrap.appendChild(body);
+  const toggle = () => {
+    const hidden = body.classList.toggle("dc-leaf-body--hidden");
+    hdr.setAttribute("aria-expanded", hidden ? "false" : "true");
+    hdr.querySelector<HTMLElement>(".dc-chev-leaf")!.textContent = hidden ? "▾" : "▴";
+  };
+  hdr.addEventListener("click", toggle);
+  hdr.addEventListener("keydown", (e: KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+  });
+  _fillBanditAttributionBody(correlationId, wrap);
+  return wrap;
+}
+function _fillBanditAttributionBody(correlationId: string, wrap: HTMLElement): void {
+  const body = wrap.querySelector<HTMLElement>(".bandit-attribution-body");
+  const sum = wrap.querySelector<HTMLElement>(".bandit-attr-sum");
+  if (!body) return;
+  const scores = _banditStageScores.get(correlationId);
+  body.textContent = "";
+  if (!scores || scores.size === 0) {
+    const empty = document.createElement("div");
+    empty.className = "bandit-attr-empty";
+    empty.textContent = "awaiting per-stage bandit rewards…";
+    body.appendChild(empty);
+    if (sum) sum.textContent = "";
+    return;
+  }
+  const entries = [...scores.entries()].sort(
+    (a, b) => _banditStageRank(a[0]) - _banditStageRank(b[0]) || a[0].localeCompare(b[0])
+  );
+  for (const [stage, reward] of entries) {
+    const row = document.createElement("div");
+    row.className = "bandit-attr-row";
+    const st = document.createElement("span");
+    st.className = "bandit-attr-stage";
+    st.textContent = stage;
+    const sc = document.createElement("span");
+    sc.className = "bandit-attr-score";
+    sc.textContent = reward.score.toFixed(2);
+    const mt = document.createElement("span");
+    mt.className = "bandit-attr-metric";
+    // Prefer the backend-supplied metric label; fall back to the provisional FE guess. Unknown
+    // stages (e.g. critique/thread_summary) get no label — we don't invent one.
+    const label = reward.metric || _banditMetricLabel(stage);
+    mt.textContent = label ? `(${label})` : "";
+    row.appendChild(st);
+    row.appendChild(sc);
+    row.appendChild(mt);
+    body.appendChild(row);
+  }
+  if (sum) sum.textContent = `${entries.length} stage${entries.length === 1 ? "" : "s"}`;
+}
+/** Refresh any already-rendered attribution section for this turn (called as events arrive). */
+function _updateBanditAttribution(correlationId: string): void {
+  if (!correlationId) return;
+  document
+    .querySelectorAll<HTMLElement>(`.bandit-attribution[data-bandit-attr-cid="${correlationId}"]`)
+    .forEach((wrap) => _fillBanditAttributionBody(correlationId, wrap));
 }
 
 /** Poll-side reconcile for the QA panel + bandit checkmark (live-test fix, 2026-08-05).
@@ -9422,6 +9544,10 @@ function run(): void {
     const qaVerdictsEl = renderQaVerdictsPanel(opts.qc, opts.correlationId);
     if (qaVerdictsEl) diagPanel.appendChild(qaVerdictsEl);
 
+    // Section 2d: Bandit reward attribution (Task #34) — per-stage quality_score from the
+    // bandit_reward_persisted SSE events, accumulated live in the post-completion window.
+    if (opts.correlationId) diagPanel.appendChild(renderBanditAttribution(opts.correlationId));
+
     // Section 3: HIPAA gate audit (if this turn followed an instant-RAG upload)
     if (opts.hipaaDiagnostics) {
       const hd = opts.hipaaDiagnostics;
@@ -10040,8 +10166,13 @@ function run(): void {
           } else if (ev === "quality_audit" && data.line != null && onThinking) {
             onThinking(String(data.line));
           } else if (ev === "bandit_reward_persisted") {
-            // #23: coalesce per turn; the QA panel's checkmark updates live via data-bandit-cid.
-            _noteBanditRewardPersisted(correlationId);
+            // #23/#34: coalesce per turn for the checkmark, AND record per-stage score for the
+            // attribution breakdown. Each event carries {stage, quality_score} (Task #34, rev 00657).
+            const _bStage = typeof data.stage === "string" ? data.stage : undefined;
+            const _bQual = typeof data.quality_score === "number" ? data.quality_score : null;
+            // quality_metric is a forthcoming field (LLM Agent) — read it if present.
+            const _bMetric = typeof data.quality_metric === "string" ? data.quality_metric : undefined;
+            _noteBanditRewardPersisted(correlationId, _bStage, _bQual, _bMetric);
           } else if (ev === "draft_ready" && data.text != null) {
             draftEmitted = true;
             if (onDraftReady) onDraftReady(String(data.text), data.mode_hint ? String(data.mode_hint) : undefined);
