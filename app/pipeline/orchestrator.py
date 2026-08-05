@@ -2,6 +2,7 @@
 
 Runs stages in order; handles clarification/refinement early exit; publishes response.
 """
+import json
 import logging
 import os
 import re
@@ -1575,12 +1576,30 @@ def _publish_failed(
     except Exception as e:
         logger.exception("Failed to publish error response for %s: %s", correlation_id[:8], e)
 
-    # Persist the failed turn (interim marker -- see docstring). Best-effort,
-    # separate try/except so a persistence hiccup can never mask the
-    # already-failing turn or block the live response already published above.
+    # Persist the failed turn. Best-effort, separate try/except so a
+    # persistence hiccup can never mask the already-failing turn or block
+    # the live response already published above.
+    #
+    # retryable (Chat FE sign-off, 2026-08-04): backend-computed, not
+    # FE-guessed from error_code -- Chat FE gates the "Try again" button on
+    # this field. Reuses ErrorEnvelope.is_recoverable (already precisely
+    # scoped to "should this be retried": rate_limit/timeout/provider_error/
+    # scrape_failed) rather than inventing a parallel judgment call. This
+    # correctly excludes "refusal" (content-safety/PHI-adjacent blocks) --
+    # without it, Task A would have offered a retry button on a PHI block or
+    # jailbreak refusal, which would just get blocked again. Default False
+    # when _env is None (unclassified failure) -- a user who can't retry is
+    # mildly confused; a user who retries something structurally blocked and
+    # gets blocked again is worse.
     try:
         persistence = get_persistence()
-        _assistant_marker = "[turn_failed]"
+        _retryable = bool(_env.is_recoverable) if _env is not None else False
+        _assistant_marker = json.dumps({
+            "turn_failed": True,
+            "error_code": (_env.error_code if _env is not None else "unknown"),
+            "message": _user_message,
+            "retryable": _retryable,
+        })
         if thread_id:
             persistence.save_turn_with_messages(
                 correlation_id=correlation_id,
