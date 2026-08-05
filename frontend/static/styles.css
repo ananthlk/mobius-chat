@@ -10960,3 +10960,7 @@ body.landing-state .composer-landing-chips {
   color: var(--sidebar-text, #4a4560);
 }
 @media (prefers-color-scheme: dark) { .qa-raw-json { background: rgba(255,255,255,0.04); } }
+
+/* Bandit reward persistence checkmark (#23) — green when the per-turn event(s) have landed. */
+.bandit-persisted-val { color: var(--text-tertiary, #9ca3af); font-style: italic; }
+.bandit-persisted-val.bandit-persisted--ok { color: var(--pass, #10b981); font-style: normal; font-weight: 600; }

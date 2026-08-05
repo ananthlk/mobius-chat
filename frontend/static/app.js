@@ -8312,7 +8312,23 @@ function renderReactTraceCard(thinkingLog) {
   });
   return wrap;
 }
-function renderQaVerdictsPanel(qc) {
+var _banditRewardCounts = /* @__PURE__ */ new Map();
+function _noteBanditRewardPersisted(correlationId) {
+  if (!correlationId)
+    return;
+  _banditRewardCounts.set(correlationId, (_banditRewardCounts.get(correlationId) ?? 0) + 1);
+  document.querySelectorAll(`[data-bandit-cid="${correlationId}"]`).forEach((el2) => _paintBanditCheckmark(el2, _banditRewardCounts.get(correlationId) ?? 0));
+}
+function _paintBanditCheckmark(el2, count) {
+  if (count > 0) {
+    el2.classList.add("bandit-persisted--ok");
+    el2.textContent = `\u2713 bandit event persisted${count > 1 ? ` (${count})` : ""}`;
+  } else {
+    el2.classList.remove("bandit-persisted--ok");
+    el2.textContent = "awaiting bandit reward event\u2026";
+  }
+}
+function renderQaVerdictsPanel(qc, correlationId) {
   if (!qc)
     return null;
   const verdict = adjudicationVerdictUi(qc);
@@ -8374,7 +8390,19 @@ function renderQaVerdictsPanel(qc) {
       if (qualityScore != null)
         _dcKV(b, "quality score", scoreStr);
       Object.keys(subScores).forEach((k) => _dcKV(b, `  ${k}`, Number(subScores[k]).toFixed(2)));
-      _dcKV(b, "bandit reward persisted", "pending (bandit_reward_persisted emit)");
+      const persistRow = document.createElement("div");
+      persistRow.className = "dc-kv bandit-persisted";
+      const persistKey = document.createElement("span");
+      persistKey.className = "dc-kv-key";
+      persistKey.textContent = "bandit reward";
+      const persistVal = document.createElement("span");
+      persistVal.className = "dc-kv-val bandit-persisted-val";
+      if (correlationId)
+        persistVal.setAttribute("data-bandit-cid", correlationId);
+      _paintBanditCheckmark(persistVal, correlationId ? _banditRewardCounts.get(correlationId) ?? 0 : 0);
+      persistRow.appendChild(persistKey);
+      persistRow.appendChild(persistVal);
+      b.appendChild(persistRow);
     }
   ));
   if (qc.adjudicator_full_response) {
@@ -10317,7 +10345,7 @@ function run() {
     );
     if (reactTraceEl)
       diagPanel.appendChild(reactTraceEl);
-    const qaVerdictsEl = renderQaVerdictsPanel(opts.qc);
+    const qaVerdictsEl = renderQaVerdictsPanel(opts.qc, opts.correlationId);
     if (qaVerdictsEl)
       diagPanel.appendChild(qaVerdictsEl);
     if (opts.hipaaDiagnostics) {
@@ -10822,6 +10850,8 @@ function run() {
             onThinking(String(data.line));
           } else if (ev === "quality_audit" && data.line != null && onThinking) {
             onThinking(String(data.line));
+          } else if (ev === "bandit_reward_persisted") {
+            _noteBanditRewardPersisted(correlationId);
           } else if (ev === "draft_ready" && data.text != null) {
             draftEmitted = true;
             if (onDraftReady)

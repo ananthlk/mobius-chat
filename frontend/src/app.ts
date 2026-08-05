@@ -6843,12 +6843,34 @@ function renderReactTraceCard(
   return wrap;
 }
 
+/** Per-turn bandit_reward_persisted accumulator (Task #23): the backend emits one SSE event
+ *  per call (call_id/stage/quality_score); Ananth's intent is a SINGLE checkmark per turn with a
+ *  count, so we coalesce by correlation_id and update the rendered checkmark live as events land. */
+const _banditRewardCounts = new Map<string, number>();
+function _noteBanditRewardPersisted(correlationId: string): void {
+  if (!correlationId) return;
+  _banditRewardCounts.set(correlationId, (_banditRewardCounts.get(correlationId) ?? 0) + 1);
+  // correlation ids are hex + dashes → selector-safe without escaping.
+  document
+    .querySelectorAll<HTMLElement>(`[data-bandit-cid="${correlationId}"]`)
+    .forEach((el) => _paintBanditCheckmark(el, _banditRewardCounts.get(correlationId) ?? 0));
+}
+function _paintBanditCheckmark(el: HTMLElement, count: number): void {
+  if (count > 0) {
+    el.classList.add("bandit-persisted--ok");
+    el.textContent = `✓ bandit event persisted${count > 1 ? ` (${count})` : ""}`;
+  } else {
+    el.classList.remove("bandit-persisted--ok");
+    el.textContent = "awaiting bandit reward event…";
+  }
+}
+
 /** QA verdicts panel (Task #22) — full adjudication breakdown in the Diagnostics tab, to UX's
  *  3-section wireframe: (1) user verdict summary + flags + rubric score, (2) bandit reward
  *  tracking (quality ruler / score / persistence), (3) collapsed raw adjudicator JSON.
  *  Eval-Architect constraint enforced: the rubric quality_score is authoritative; the model's
  *  raw overall_score is a self-report and is labelled non-authoritative, never shown as the grade. */
-function renderQaVerdictsPanel(qc: QcAuditInfo | null | undefined): HTMLElement | null {
+function renderQaVerdictsPanel(qc: QcAuditInfo | null | undefined, correlationId?: string): HTMLElement | null {
   if (!qc) return null;
   const verdict = adjudicationVerdictUi(qc);
   const qualityScore =
@@ -6905,7 +6927,20 @@ function renderQaVerdictsPanel(qc: QcAuditInfo | null | undefined): HTMLElement 
     if (qc.adjudicator_model) _dcKV(b, "quality ruler (judge model)", String(qc.adjudicator_model));
     if (qualityScore != null) _dcKV(b, "quality score", scoreStr);
     Object.keys(subScores).forEach((k) => _dcKV(b, `  ${k}`, Number(subScores[k]).toFixed(2)));
-    _dcKV(b, "bandit reward persisted", "pending (bandit_reward_persisted emit)");
+    // Live bandit-reward-persisted checkmark (#23) — coalesced per turn, updated as SSE events land.
+    const persistRow = document.createElement("div");
+    persistRow.className = "dc-kv bandit-persisted";
+    const persistKey = document.createElement("span");
+    persistKey.className = "dc-kv-key";
+    persistKey.textContent = "bandit reward";
+    const persistVal = document.createElement("span");
+    persistVal.className = "dc-kv-val bandit-persisted-val";
+    if (correlationId) persistVal.setAttribute("data-bandit-cid", correlationId);
+    _paintBanditCheckmark(persistVal, correlationId ? (_banditRewardCounts.get(correlationId) ?? 0) : 0);
+    persistRow.appendChild(persistKey); persistRow.appendChild(persistVal);
+    b.appendChild(persistRow);
+    // Per-stage reward signals (react_1/react_2/integrator) are a follow-on enhancement — the
+    // per-stage scores aren't in the current SSE payload (only the coalesced flag + quality_score).
   }));
 
   // Section 3 — raw adjudication (debug). Explicitly non-authoritative self-report.
@@ -9262,7 +9297,7 @@ function run(): void {
 
     // Section 2c: QA verdicts (Task #22) — full adjudication breakdown (verdict + flags +
     // rubric score, bandit reward tracking, collapsed raw self-report).
-    const qaVerdictsEl = renderQaVerdictsPanel(opts.qc);
+    const qaVerdictsEl = renderQaVerdictsPanel(opts.qc, opts.correlationId);
     if (qaVerdictsEl) diagPanel.appendChild(qaVerdictsEl);
 
     // Section 3: HIPAA gate audit (if this turn followed an instant-RAG upload)
@@ -9876,6 +9911,9 @@ function run(): void {
             onThinking(String(data.line));
           } else if (ev === "quality_audit" && data.line != null && onThinking) {
             onThinking(String(data.line));
+          } else if (ev === "bandit_reward_persisted") {
+            // #23: coalesce per turn; the QA panel's checkmark updates live via data-bandit-cid.
+            _noteBanditRewardPersisted(correlationId);
           } else if (ev === "draft_ready" && data.text != null) {
             draftEmitted = true;
             if (onDraftReady) onDraftReady(String(data.text), data.mode_hint ? String(data.mode_hint) : undefined);
