@@ -113,6 +113,15 @@ class SkillEnvelope:
     signal: str = "no_sources"  # RETRIEVAL_SIGNAL_* string for now; enum in commit 2+
     usage: dict[str, Any] | None = None
     extra: dict[str, Any] = field(default_factory=dict)
+    success: bool = True
+    """Explicit outcome flag. Defaults True so the ~60 existing construction
+    sites (builtins that return error-shaped text on failure without ever
+    setting this) keep their current behavior unchanged. MCP-backed skills
+    (mcp_adapter.py) are the first caller to set this False on failure —
+    previously failure and success envelopes were indistinguishable by shape,
+    so react_loop.py's success check had to (wrongly) infer from text
+    content, and an MCP error string could reach the integrator as if it
+    were real retrieved content (Task #30)."""
     """``extra`` is the escape hatch for skill-specific out-of-band data
     (e.g. roster_step_outputs). Kept so the registry doesn't force a
     breaking change on consumers that read ``extra_out`` today. New

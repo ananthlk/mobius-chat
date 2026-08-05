@@ -1568,7 +1568,13 @@ def _execute_tool(
         _recital = (env.extra or {}).get("recital") if env.extra else None
         if isinstance(_recital, dict) and _recital.get("verbatim"):
             ctx.recital = {**_recital, "text": env.text or ""}  # type: ignore[attr-defined]
-        _skill_success = bool(env.text and not env.text.startswith("Unknown skill"))
+        # env.success is the authoritative outcome flag (Task #30 fix) —
+        # MCP failures now set it False explicitly instead of being
+        # indistinguishable from success by text shape. Kept ANDed with
+        # the existing text checks as a belt-and-suspenders guard for
+        # skills that don't yet set success but still return an empty or
+        # "Unknown skill" text on failure.
+        _skill_success = env.success and bool(env.text and not env.text.startswith("Unknown skill"))
         # golden: explicit opt-in via env.extra["golden"], or inferred when
         # the skill returned content + sources + a non-empty signal.
         # Operational skills (create_task, list_uploads, etc.) return no sources

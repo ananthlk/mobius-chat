@@ -240,10 +240,12 @@ def _make_mcp_handler(tool_name: str):
         # Graceful failure shape: caller sees a non-empty text and can
         # route to a fallback. Matches the shape builtins produce on
         # MCP error so downstream (integrate, react_loop retry) has one
-        # shape to handle.
+        # shape to handle. success=False so react_loop's success check
+        # (env.success) doesn't mistake this error text for real content.
         return SkillEnvelope(
             text=text or f"MCP tool {tool_name!r} returned no content.",
             signal="no_sources",
+            success=False,
         )
 
     # Name the closure for easier debugging — stack traces will show
