@@ -11537,9 +11537,13 @@ ${message}`;
     }
     function onDraftReady(text, modeHint) {
       const _draft = (text ?? "").trim();
-      if (!_draft || _draft.startsWith("{") || _draft.startsWith("[{") || _draft.startsWith('["')) {
+      const _head = _draft.slice(0, 300);
+      const _looksRaw = !_draft || _draft.startsWith("{") || // JSON object
+      _draft.startsWith("[") || // JSON array OR a leading "[1]" citation marker
+      /\[\d+\]\s*\S+\.(pdf|docx?|html?|txt)\b/i.test(_head) || // "[1] file.pdf" source dump
+      /\(p\.?\s*\d+\)/.test(_draft.slice(0, 120));
+      if (_looksRaw)
         return;
-      }
       if (messageWrapEl) {
         messageWrapEl.remove();
         messageWrapEl = null;

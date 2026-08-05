@@ -10706,15 +10706,19 @@ function run(): void {
     }
     function onDraftReady(text: string, modeHint?: string): void {
       // Bleed guard (2026-08-05 live): the backend emits MULTIPLE draft_ready events — an early
-      // ReAct round can send RAW retrieved evidence as a JSON array/object ([{"org_entity_id":…}])
-      // before a later clean prose draft. Rendering the raw one streams tool output into the answer
-      // area. Ignore any draft that isn't human prose; keep showing the thinking status until a
-      // clean draft (or `completed`) arrives. JSON signals: leading "{", "[{", or "[\"" — markdown
-      // links ("[label](") and lists ("- "/"* ") never start that way, so clean drafts still stream.
+      // ReAct round can send RAW retrieved evidence before a later clean prose draft. Observed raw
+      // shapes: JSON ([{"org_entity_id":…}]) AND citation/source dumps ([1] file.pdf (p.18) …).
+      // Rendering either streams tool output into the answer area. Suppress anything that isn't
+      // human prose and keep showing the thinking status until a clean draft (or `completed`).
       const _draft = (text ?? "").trim();
-      if (!_draft || _draft.startsWith("{") || _draft.startsWith("[{") || _draft.startsWith("[\"")) {
-        return;
-      }
+      const _head = _draft.slice(0, 300);
+      const _looksRaw =
+        !_draft ||
+        _draft.startsWith("{") ||               // JSON object
+        _draft.startsWith("[") ||               // JSON array OR a leading "[1]" citation marker
+        /\[\d+\]\s*\S+\.(pdf|docx?|html?|txt)\b/i.test(_head) ||  // "[1] file.pdf" source dump
+        /\(p\.?\s*\d+\)/.test(_draft.slice(0, 120));             // "(p.18)" page ref near the top
+      if (_looksRaw) return;
       // Replace any interim plain bubble (thinking text) with the card shell
       if (messageWrapEl) { messageWrapEl.remove(); messageWrapEl = null; }
 
