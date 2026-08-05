@@ -8479,7 +8479,7 @@ function _fillBanditAttributionBody(correlationId, wrap) {
     sc.textContent = reward.score.toFixed(2);
     const mt = document.createElement("span");
     mt.className = "bandit-attr-metric";
-    const label = reward.metric || _banditMetricLabel(stage);
+    const label = (reward.metric || _banditMetricLabel(stage)).replace(/_/g, " ");
     mt.textContent = label ? `(${label})` : "";
     row.appendChild(st);
     row.appendChild(sc);

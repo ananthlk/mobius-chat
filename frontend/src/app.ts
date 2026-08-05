@@ -7032,9 +7032,11 @@ function _fillBanditAttributionBody(correlationId: string, wrap: HTMLElement): v
     sc.textContent = reward.score.toFixed(2);
     const mt = document.createElement("span");
     mt.className = "bandit-attr-metric";
-    // Prefer the backend-supplied metric label; fall back to the provisional FE guess. Unknown
-    // stages (e.g. critique/thread_summary) get no label — we don't invent one.
-    const label = reward.metric || _banditMetricLabel(stage);
+    // Prefer the backend-supplied metric label (LLM Agent's quality_metric, derived from
+    // STAGE_QUALITY_MAP so it can't drift); fall back to the provisional FE guess only until it
+    // arrives. Unknown stages (e.g. critique/thread_summary) get no label — we don't invent one.
+    // Prettify underscores→spaces so "factual_consistency" reads as "factual consistency".
+    const label = (reward.metric || _banditMetricLabel(stage)).replace(/_/g, " ");
     mt.textContent = label ? `(${label})` : "";
     row.appendChild(st);
     row.appendChild(sc);
