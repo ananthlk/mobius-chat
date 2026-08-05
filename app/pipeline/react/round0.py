@@ -5,6 +5,18 @@ from a caller that already did the work (story presentation nodes, skill
 cards with computed metrics) — we try to answer directly from that context
 before entering the normal Round 1..N tool loop.
 
+Second caller (2026-08-04, Task #29,
+docs/MIDTURN_TRUNCATION_RECOVERY_SPEC.md §3): a "Continue" retry after a
+truncated turn is just a new ``POST /chat`` with ``system_context`` set to
+the checkpointed evidence (see ``react_loop.py``'s
+``_checkpoint_best_evidence``). No react-side code change was needed for
+this reuse — ``sys_ctx`` flows into ``build_round0_user_message``
+unmodified regardless of which caller supplied it, so a checkpoint gets
+exactly the same "is this sufficient, or NEEDS_TOOLS" evaluation any other
+pre-loaded context gets. Locked in by
+``test_round0_accepts_checkpoint_evidence_as_system_context`` in
+tests/test_system_context.py.
+
 Prompt contract
 ---------------
 The LLM either returns a full answer (context sufficient), or returns

@@ -1884,6 +1884,49 @@ def _finalize_response(
 # ---------------------------------------------------------------------------
 
 
+def _checkpoint_best_evidence(ctx: PipelineContext, tool_results: list[dict]) -> None:
+    """Mid-loop truncation recovery checkpoint (Task #29,
+    docs/MIDTURN_TRUNCATION_RECOVERY_SPEC.md §1). If a timeout kills the
+    turn before a real draft answer exists (react_loop never returns, so
+    orchestrator.py's append_draft_answer() call after run_react() never
+    fires), this is what a "Continue" retry has to hand off instead of
+    nothing. Called after every round's tool dispatch — deliberately
+    overwrites rather than accumulates, since each call is either the
+    same best evidence as last round or strictly better.
+
+    Reuses append_draft_answer()'s existing draft_ready channel rather
+    than inventing a parallel one — same mechanism orchestrator.py
+    already uses for the POST-react draft, so the checkpoint-read side
+    (worker/run.py, LLM Agent's side of Task #29) has exactly one place
+    to check regardless of whether the turn got far enough to finish
+    react_loop or was killed mid-round. Deliberately does NOT distinguish
+    "genuine draft" from "mid-loop evidence snapshot" here — that's a
+    read-side classification (was react_loop still running when the
+    timeout hit?), not something the write call needs to encode.
+
+    Selection logic mirrors the two existing "best available tool
+    result" fallbacks in this file (the parse-failure fallback and the
+    exhausted-iterations fallback) — most recent *successful* result,
+    preferring the fuller ``result`` field over ``result_summary``.
+    No-ops (silently) when nothing usable exists yet — most turns finish
+    in 1-3 rounds and never need this at all; this only matters for the
+    turns that don't."""
+    best = next((tr for tr in reversed(tool_results) if tr.get("success")), None)
+    if best is None:
+        return
+    text = (best.get("result") or "").strip()
+    if len(text) < 40:
+        text = (best.get("result_summary") or "").strip()
+    if not text or len(text) < 40:
+        return
+    try:
+        from app.storage.progress import append_draft_answer
+        append_draft_answer(ctx.correlation_id, text)
+    except Exception:
+        # Checkpointing must never break the actual turn it's protecting.
+        logger.debug("checkpoint_best_evidence failed (cid=%s)", getattr(ctx, "correlation_id", "?"), exc_info=True)
+
+
 # Phase 0.13: cap on auto-retry sleep so a stale retry_after_seconds from a
 # provider can't stall the whole turn. 30s is tight enough to preserve UX and
 # wide enough to cover typical rate-limit windows.
@@ -3131,6 +3174,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         if result.get("section_hints"):
             tr_entry["section_hints"] = result["section_hints"]
         tool_results.append(tr_entry)
+        _checkpoint_best_evidence(ctx, tool_results)
 
         # §5b bypass: if the tool marked ctx.react_bypass_integrate, exit the
         # ReAct loop immediately without calling the LLM for another round.

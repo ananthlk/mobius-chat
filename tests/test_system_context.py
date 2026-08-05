@@ -327,6 +327,59 @@ def test_round0_prompt_passes_context_and_question_to_llm():
     assert "NEEDS_TOOLS" in captured["system"]
 
 
+# ── Round 0 as the "Continue" checkpoint consumer (Task #29) ───────────
+#
+# docs/MIDTURN_TRUNCATION_RECOVERY_SPEC.md §3: a "Continue" retry after a
+# truncated turn is a new POST /chat with system_context set to the
+# checkpointed evidence (react_loop.py's _checkpoint_best_evidence). These
+# tests use realistic evidence-snippet-shaped content -- not the generic
+# "bhpf_share_baseline: 0.16" style fixture above -- to confirm the
+# existing wiring genuinely needs no react-side change for this new caller.
+
+
+def test_round0_accepts_checkpoint_evidence_as_system_context():
+    """A checkpoint (raw retrieved-passage text, not a pre-computed
+    aggregate) flows into the LLM call exactly like any other
+    system_context -- same code path, no special-casing needed."""
+    checkpoint_text = (
+        "round 3 evidence: Untimely claims will be denied when submitted past the "
+        "timely filing deadline. Unless otherwise stated in the Provider agreement, "
+        "the following guidelines apply. There is no second level consideration for "
+        "cases denied for untimely filing."
+    )
+    ctx = _mk_ctx(checkpoint_text, message="What is the timely filing deadline for Florida Medicaid claims?")
+    captured = {}
+
+    def fake_llm(system, user, **_kwargs):
+        captured["user"] = user
+        return "Claims must be submitted before the timely filing deadline; late claims are denied."
+
+    with patch("app.pipeline.react.prompts._call_llm_json", side_effect=fake_llm):
+        result = _try_system_context_round0(ctx, emitter=None)
+
+    assert checkpoint_text in captured["user"]
+    assert result is True
+    assert ctx.final_message == "Claims must be submitted before the timely filing deadline; late claims are denied."
+
+
+def test_round0_falls_through_when_checkpoint_evidence_is_thin():
+    """A thin/partial checkpoint (turn was killed after round 1, not much
+    found yet) should correctly fall through to the normal tool loop
+    rather than force a stale short-circuit -- same NEEDS_TOOLS path any
+    insufficient context takes."""
+    thin_checkpoint = "round 1 evidence: general provider manual table of contents, no specific answer yet"
+    ctx = _mk_ctx(thin_checkpoint, message="What is the timely filing deadline for Florida Medicaid claims?")
+
+    with patch(
+        "app.pipeline.react.prompts._call_llm_json",
+        return_value="NEEDS_TOOLS: checkpoint doesn't contain the specific deadline",
+    ):
+        result = _try_system_context_round0(ctx, emitter=None)
+
+    assert result is False
+    assert ctx.final_message == ""
+
+
 # ── Round 0 helpers (pure functions, no LLM) ──────────────────────────
 
 
