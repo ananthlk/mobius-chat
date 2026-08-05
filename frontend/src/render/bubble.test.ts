@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
 import { renderAnswerCard, buildFormatChip } from "./bubble";
+import { tryParseAnswerCard } from "../answer-card";
 import type { AnswerCard } from "../answer-card";
 
 // A v2 (no-mode) card: primary section leads, detail tucks; citations light up their tab.
@@ -102,5 +103,35 @@ describe("Task #10 — output_intent format chip", () => {
   it("the chip's icon is aria-hidden (text carries the meaning)", () => {
     const chip = buildFormatChip("emr")!;
     expect(chip.querySelector(".answer-card-format-chip-icon")?.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  // End-to-end with the REAL live card shape (mode FACTUAL + output_intent:"read"), parsed the
+  // same way the app does — proves the chip renders through tryParseAnswerCard, not just when
+  // output_intent is handed straight to the renderer. Guards the parser-drop regression.
+  it("renders the chip for a real FACTUAL card carrying output_intent (full parse path)", () => {
+    const realJson = JSON.stringify({
+      mode: "FACTUAL",
+      direct_answer: "The provided sources confirm eligibility details.",
+      sections: [{ label: "Eligibility", visibility: "primary", format: "bullets", bullets: ["5–18 years"] }],
+      output_intent: "read",
+      display_summary: "A short answer.",
+    });
+    const card = tryParseAnswerCard(realJson)!;
+    expect(card.output_intent).toBe("read");
+    const el = renderAnswerCard(card);
+    expect(el.querySelector(".answer-card-format-chip--read")).not.toBeNull();
+    expect(el.querySelector(".answer-card-format-chip-text")?.textContent).toBe("Answer");
+  });
+
+  // Selector contract: the chip lives inside .answer-card-format-row, and that row is a direct
+  // child of the card bubble (a sibling of the tab panels). The streaming→completed in-place
+  // transplant relies on exactly this — it moves .answer-card-format-row into the live bubble.
+  // If this selector/placement changes, streaming turns silently lose the chip again.
+  it("wraps the chip in .answer-card-format-row as a direct child of the bubble (transplant contract)", () => {
+    const el = renderAnswerCard({ direct_answer: "hi", output_intent: "report" } as any);
+    const bubble = el.querySelector(".answer-card-bubble")!;
+    const row = bubble.querySelector(":scope > .answer-card-format-row");
+    expect(row).not.toBeNull();
+    expect(row!.querySelector(".answer-card-format-chip--report")).not.toBeNull();
   });
 });

@@ -11530,6 +11530,10 @@ ${message}`;
       scrollToBottom(messagesEl);
     }
     function onDraftReady(text, modeHint) {
+      const _draft = (text ?? "").trim();
+      if (!_draft || _draft.startsWith("{") || _draft.startsWith("[{") || _draft.startsWith('["')) {
+        return;
+      }
       if (messageWrapEl) {
         messageWrapEl.remove();
         messageWrapEl = null;
@@ -11865,6 +11869,10 @@ ${message}`;
             });
             const renderedBubble = renderedCard.querySelector(".answer-card-bubble");
             if (renderedBubble) {
+              const renderedChipRow = renderedBubble.querySelector(".answer-card-format-row");
+              if (renderedChipRow && !existingBubble.querySelector(".answer-card-format-row")) {
+                existingBubble.insertBefore(renderedChipRow, existingBubble.firstChild);
+              }
               const streamingTabBar = existingBubble.querySelector(".ac-tab-bar");
               const renderedTabBar = renderedBubble.querySelector(".ac-tab-bar");
               if (streamingTabBar && renderedTabBar) {

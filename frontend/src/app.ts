@@ -10697,6 +10697,16 @@ function run(): void {
       scrollToBottom(messagesEl);
     }
     function onDraftReady(text: string, modeHint?: string): void {
+      // Bleed guard (2026-08-05 live): the backend emits MULTIPLE draft_ready events — an early
+      // ReAct round can send RAW retrieved evidence as a JSON array/object ([{"org_entity_id":…}])
+      // before a later clean prose draft. Rendering the raw one streams tool output into the answer
+      // area. Ignore any draft that isn't human prose; keep showing the thinking status until a
+      // clean draft (or `completed`) arrives. JSON signals: leading "{", "[{", or "[\"" — markdown
+      // links ("[label](") and lists ("- "/"* ") never start that way, so clean drafts still stream.
+      const _draft = (text ?? "").trim();
+      if (!_draft || _draft.startsWith("{") || _draft.startsWith("[{") || _draft.startsWith("[\"")) {
+        return;
+      }
       // Replace any interim plain bubble (thinking text) with the card shell
       if (messageWrapEl) { messageWrapEl.remove(); messageWrapEl = null; }
 
@@ -11083,6 +11093,15 @@ function run(): void {
               const renderedBubble = renderedCard.querySelector(".answer-card-bubble");
 
               if (renderedBubble) {
+                // Format chip (Task #10): it's a sibling of the panels in the rendered card, so
+                // the panel-by-panel transplant below leaves it behind — streaming turns (the
+                // common case, since draft_ready fires) never showed it. Move it to the top of
+                // the existing bubble explicitly. (Live bug 2026-08-05: "badge is missing".)
+                const renderedChipRow = renderedBubble.querySelector(".answer-card-format-row");
+                if (renderedChipRow && !existingBubble.querySelector(".answer-card-format-row")) {
+                  existingBubble.insertBefore(renderedChipRow, existingBubble.firstChild);
+                }
+
                 // Swap streaming tab bar with fully-built one (count badges, correct empty state)
                 const streamingTabBar = existingBubble.querySelector(".ac-tab-bar");
                 const renderedTabBar = renderedBubble.querySelector(".ac-tab-bar");
