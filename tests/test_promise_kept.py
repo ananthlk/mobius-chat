@@ -117,50 +117,53 @@ async def test_hipaa_classifier_unconfigured_fails_closed():
 async def test_groundedness_no_sources_is_na():
     """§5: sources None/empty but groundedness promise active -> NA."""
     r = await grade_promise_kept(
-        output="a claim", active_promises=["grounding_promise"], sources=None, hipaa_on=False, query="q",
+        output="a claim", active_promises=["grounding_promise"], sources=None, hipaa_on=False,
+        adjudication_sub_scores={"grounding": 0.9},
     )
     assert r.overall == "NA"
 
 
 @pytest.mark.asyncio
-async def test_groundedness_grader_unwired_is_na_with_transient_error():
-    """§5: QUALITY grader failure -> NA + error_transient=True. Never
-    corrupt reward with a grader error (never BROKEN on grader-down)."""
-    with patch.dict(os.environ, {}, clear=False):
-        os.environ.pop("MOBIUS_RAG_CHECK_FACTS_URL", None)
-        r = await grade_promise_kept(
-            output="a claim", active_promises=["grounding_promise"],
-            sources=[{"text": "supporting chunk"}], hipaa_on=False, query="q",
-        )
+async def test_groundedness_adjudication_did_not_run_is_na():
+    """§5-adjacent: no adjudication_sub_scores at all -> NA, not BROKEN."""
+    r = await grade_promise_kept(
+        output="a claim", active_promises=["grounding_promise"],
+        sources=[{"text": "supporting chunk"}], hipaa_on=False,
+        adjudication_sub_scores=None,
+    )
     assert r.overall == "NA"
-    assert r.error_transient is True
+
+
+@pytest.mark.asyncio
+async def test_groundedness_dimension_inactive_is_na():
+    """§2b: grounding is None (dimension not active for this turn's
+    category) -> NA, not BROKEN."""
+    r = await grade_promise_kept(
+        output="a claim", active_promises=["grounding_promise"],
+        sources=[{"text": "supporting chunk"}], hipaa_on=False,
+        adjudication_sub_scores={"grounding": None, "tone": 0.8},
+    )
+    assert r.overall == "NA"
 
 
 @pytest.mark.asyncio
 async def test_groundedness_above_threshold_is_kept():
-    with patch.dict(os.environ, {"MOBIUS_RAG_CHECK_FACTS_URL": "https://rag.example"}):
-        with patch("httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post.return_value = _mock_response({"score": GROUNDEDNESS_KEPT_THRESHOLD + 0.1})
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
-            r = await grade_promise_kept(
-                output="a claim", active_promises=["grounding_promise"],
-                sources=[{"text": "supporting chunk"}], hipaa_on=False, query="q",
-            )
+    r = await grade_promise_kept(
+        output="a claim", active_promises=["grounding_promise"],
+        sources=[{"text": "supporting chunk"}], hipaa_on=False,
+        adjudication_sub_scores={"grounding": GROUNDEDNESS_KEPT_THRESHOLD + 0.1},
+    )
     assert r.overall == "KEPT"
+    assert r.per_promise[0].score == pytest.approx(GROUNDEDNESS_KEPT_THRESHOLD + 0.1)
 
 
 @pytest.mark.asyncio
 async def test_groundedness_below_threshold_is_broken():
-    with patch.dict(os.environ, {"MOBIUS_RAG_CHECK_FACTS_URL": "https://rag.example"}):
-        with patch("httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post.return_value = _mock_response({"score": GROUNDEDNESS_KEPT_THRESHOLD - 0.1})
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
-            r = await grade_promise_kept(
-                output="a claim", active_promises=["grounding_promise"],
-                sources=[{"text": "supporting chunk"}], hipaa_on=False, query="q",
-            )
+    r = await grade_promise_kept(
+        output="a claim", active_promises=["grounding_promise"],
+        sources=[{"text": "supporting chunk"}], hipaa_on=False,
+        adjudication_sub_scores={"grounding": GROUNDEDNESS_KEPT_THRESHOLD - 0.1},
+    )
     assert r.overall == "BROKEN"
 
 

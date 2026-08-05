@@ -22,11 +22,11 @@ logger = logging.getLogger(__name__)
 # code change.
 GROUNDEDNESS_KEPT_THRESHOLD = 0.60
 
-# Locked ruler for both branches (§6, non-negotiable) — same stage as
-# the rag_fact_check / adjudicator lock (Task #14/#25). Resolved via
-# model_registry so this stays a single source of truth if the pin
-# ever moves.
-_RULER_STAGE = "rag_eval_adjudicate"
+# Locked ruler for both branches (§6, non-negotiable) — the "adjudicator"
+# stage (Task #25) is the one that actually produces the grounding
+# sub-score §2b now reads. Resolved via model_registry so this stays a
+# single source of truth if the pin ever moves.
+_RULER_STAGE = "adjudicator"
 
 _PHI_CLASSIFY_TIMEOUT = float(os.environ.get("MOBIUS_PROMISE_KEPT_PHI_TIMEOUT_S", "20"))
 
@@ -157,76 +157,47 @@ async def _grade_hipaa_phi(*, output: str, hipaa_on: bool) -> _GradeOutcome:
 
 
 async def _grade_groundedness(
-    *, output: str, sources: list[dict] | None, query: str | None, correlation_id: str | None,
+    *,
+    output: str,
+    sources: list[dict] | None,
+    adjudication_sub_scores: dict[str, float | None] | None,
 ) -> _GradeOutcome:
     """§2b — QUALITY, graded score.
 
-    Reuses mobius-rag's fact_checker.check_facts(grounding_only=True)
-    per spec §2b ("reuse the exact grounder, do NOT invent a new
-    one"). That function lives in a separate deployed service
-    (mobius-rag) with no HTTP endpoint exposing it today — flagged to
-    Eval (2026-08-05) to confirm whether a new mobius-rag endpoint
-    should be added or whether this should route through mobius-chat's
-    own rag_eval_adjudicate-stage model call instead. Until that's
-    resolved, MOBIUS_RAG_CHECK_FACTS_URL is unset and this correctly
-    falls into the §5 "QUALITY grader fails" edge case: NA +
-    error_transient=True. Do NOT corrupt reward with a grader error —
-    swap the transport call below once Eval confirms the path; the
-    threshold/dispatch logic doesn't change.
+    REVISED 2026-08-04 (Eval) — resolves the cross-service gap flagged
+    2026-08-05: reuse the v2 post-run adjudicator's existing
+    ``grounding`` sub-score (adjudication/full.py's compute_overall_score,
+    stage ``adjudicator``, locked to gemini-2.5-pro per Task #25) rather
+    than calling mobius-rag's check_facts — that's a separate deployed
+    service with no HTTP endpoint exposing it, and it grades RAG's
+    internal synthesis, a different pipeline point than the chat
+    output. No cross-service call, no second grounder to drift.
     """
     if not (output or "").strip():
         return _GradeOutcome(PerPromiseVerdict("groundedness", "NA", None, "empty output — no claims to check"))
     if not sources:
         return _GradeOutcome(PerPromiseVerdict("groundedness", "NA", None, "no sources — can't ground"))
 
-    rag_check_url = (os.environ.get("MOBIUS_RAG_CHECK_FACTS_URL") or "").rstrip("/")
-    if not rag_check_url:
+    if not adjudication_sub_scores:
         return _GradeOutcome(
-            PerPromiseVerdict(
-                "groundedness", "NA", None,
-                "check_facts endpoint not yet wired (pending Eval decision on cross-service path)",
-            ),
-            grader_error="MOBIUS_RAG_CHECK_FACTS_URL not configured",
-            grader_error_transient=True,  # unwired-but-pending, not a hard failure
+            PerPromiseVerdict("groundedness", "NA", None, "adjudication did not run for this turn")
         )
 
-    try:
-        import httpx
-
-        async with httpx.AsyncClient(timeout=45.0) as client:
-            resp = await client.post(
-                f"{rag_check_url}/internal/check_facts",
-                json={
-                    "query": query or "",
-                    "must_facts": [],
-                    "chunks": sources,
-                    "answer": output,
-                    "stage": _RULER_STAGE,
-                    "correlation_id": correlation_id,
-                },
-            )
-            resp.raise_for_status()
-            body = resp.json()
-        score = float(body.get("score", 0.0))
-    except Exception as exc:
-        from app.communication.error_emit import classify_exception
-
-        env = classify_exception(exc, tool="promise_kept_check_facts")
-        # §5: QUALITY grader failure -> NA + error_transient, never BROKEN.
+    grounding = adjudication_sub_scores.get("grounding")
+    if grounding is None:
+        # §2b: dimension not active for this turn's category (e.g. a
+        # non-RAG category where DIMENSION_CATEGORIES doesn't include
+        # "grounding") -> NA, not BROKEN.
         return _GradeOutcome(
-            PerPromiseVerdict(
-                "groundedness", "NA", None,
-                _evidence(f"check_facts call failed ({type(exc).__name__}): {env.user_facing_message}", 200),
-            ),
-            grader_error=f"groundedness grader failed: {env.user_facing_message}",
-            grader_error_transient=env.is_recoverable,
+            PerPromiseVerdict("groundedness", "NA", None, "grounding dimension not active for this turn")
         )
 
+    score = float(grounding)
     verdict = "KEPT" if score >= GROUNDEDNESS_KEPT_THRESHOLD else "BROKEN"
     return _GradeOutcome(
         PerPromiseVerdict(
             "groundedness", verdict, score,
-            f"check_facts score={score:.3f} (threshold={GROUNDEDNESS_KEPT_THRESHOLD})",
+            f"adjudicator grounding sub-score={score:.3f} (threshold={GROUNDEDNESS_KEPT_THRESHOLD})",
         )
     )
 
@@ -251,7 +222,7 @@ async def grade_promise_kept(
     active_promises: list[str],
     sources: list[dict] | None,
     hipaa_on: bool,
-    query: str | None = None,
+    adjudication_sub_scores: dict[str, float | None] | None = None,
     correlation_id: str | None = None,
 ) -> PromiseKeptResult:
     """Grade whether OUTPUT honored each active promise. See spec §1-5."""
@@ -270,7 +241,7 @@ async def grade_promise_kept(
     if "groundedness" in active_types:
         outcomes.append(
             await _grade_groundedness(
-                output=output, sources=sources, query=query, correlation_id=correlation_id,
+                output=output, sources=sources, adjudication_sub_scores=adjudication_sub_scores,
             )
         )
     if "authoritative_source_cited" in active_types:
