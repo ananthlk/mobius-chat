@@ -52,6 +52,8 @@ def _normalize_chat_mode(raw: str | None) -> str:
         return "agentic"
     if m == "task":
         return "task"
+    if m == "quick":
+        return "quick"
     return "copilot"
 
 
