@@ -1,6 +1,7 @@
 """Persist rows to adjudication_scores (analytics)."""
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -69,8 +70,17 @@ async def insert_adjudication_score_row(record: dict[str, Any]) -> None:
             "adjudicator_version",
             "used_llm",
             "used_heuristic",
+            "promise_kept_overall",
+            "promise_kept_scores",
+            "promise_ruler",
         ]
         vals = [record.get(c) for c in cols]
+        # promise_kept_scores is jsonb — asyncpg has no dict->jsonb codec
+        # registered on this pool, so serialize before binding (matches
+        # the json.dumps-before-bind pattern used elsewhere in app/storage).
+        _pks_idx = cols.index("promise_kept_scores")
+        if vals[_pks_idx] is not None:
+            vals[_pks_idx] = json.dumps(vals[_pks_idx])
         placeholders = ", ".join(f"${i + 1}" for i in range(len(cols)))
         col_list = ", ".join(cols)
         sql = f"INSERT INTO adjudication_scores ({col_list}) VALUES ({placeholders})"

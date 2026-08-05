@@ -216,6 +216,76 @@ _PROMISE_BLOCK_KEY_TYPES = {
 }
 
 
+async def resolve_active_promises(correlation_id: str) -> tuple[list[str], bool]:
+    """Derive (active_promises, hipaa_on) for a turn from what was actually
+    resolved into its composition — no threading through format_response's
+    call chain needed.
+
+    Reads the ``integrator`` stage's llm_calls row for this turn to get
+    composition_hash (already logged live, per-call, since the v2 prompt
+    rollout), looks up that composition's manifest in
+    prompt_composition_snapshots, and intersects the manifest's block_keys
+    against prompt_blocks WHERE is_authority=true.
+
+    hipaa_on is derived, not passed in: ``hipaa_context``'s own DB
+    condition is ``hipaa_on`` (block_seed.py), so the block is only ever
+    IN a turn's manifest when hipaa_on was true at resolution time.
+    Presence in the manifest is exactly the signal grade_promise_kept
+    needs — no separate hipaa_on source required.
+
+    Returns ([], False) on any failure or missing data — grade_promise_kept
+    already treats an empty active_promises list as NA, so a resolution
+    miss degrades to "nothing to grade" rather than a crash.
+    """
+    if not correlation_id:
+        return [], False
+    try:
+        from app.services.pg_pool import get_pool
+
+        pool = await get_pool()
+        if not pool:
+            return [], False
+
+        async with pool.acquire() as conn:
+            comp_hash = await conn.fetchval(
+                """
+                SELECT composition_hash FROM llm_calls
+                WHERE correlation_id = $1 AND stage = 'integrator'
+                  AND composition_hash IS NOT NULL
+                ORDER BY ts DESC LIMIT 1
+                """,
+                correlation_id,
+            )
+            if not comp_hash:
+                return [], False
+
+            manifest_raw = await conn.fetchval(
+                "SELECT manifest FROM prompt_composition_snapshots WHERE composition_hash = $1",
+                comp_hash,
+            )
+            if not manifest_raw:
+                return [], False
+
+            import json as _json
+
+            manifest = manifest_raw if isinstance(manifest_raw, list) else _json.loads(manifest_raw)
+            block_keys = [entry[0] for entry in manifest if isinstance(entry, (list, tuple)) and entry]
+            if not block_keys:
+                return [], False
+
+            authority_rows = await conn.fetch(
+                "SELECT block_key FROM prompt_blocks WHERE block_key = ANY($1) AND is_authority = true",
+                block_keys,
+            )
+            active_promises = [r["block_key"] for r in authority_rows]
+    except Exception as exc:
+        logger.warning("resolve_active_promises failed for correlation_id=%s: %s", correlation_id, exc)
+        return [], False
+
+    hipaa_on = "hipaa_context" in active_promises
+    return active_promises, hipaa_on
+
+
 async def grade_promise_kept(
     *,
     output: str,

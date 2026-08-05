@@ -174,6 +174,41 @@ async def _run_async(ctx: PipelineContext, payload: dict[str, Any]) -> None:
         quality_ruler=adj_model or None,
     )
 
+    # AC-v2-11 (docs/SPEC_AC_V2_11_PROMISE_KEPT.md) — grade whether the
+    # turn's OUTPUT honored its active promise blocks. Runs after the
+    # adjudicator so groundedness can reuse its grounding sub-score
+    # (merged["grounding"]) instead of a second grading call. Best-effort:
+    # any failure here must not block the adjudication write above.
+    promise_kept_overall: str | None = None
+    promise_kept_scores_json: list[dict[str, Any]] | None = None
+    promise_ruler: str | None = None
+    try:
+        from app.services.promise_kept import grade_promise_kept, resolve_active_promises
+
+        active_promises, hipaa_on = await resolve_active_promises(ctx.correlation_id)
+        if active_promises:
+            pk = await grade_promise_kept(
+                output=answer,
+                active_promises=active_promises,
+                sources=sources_for_adj,
+                hipaa_on=hipaa_on,
+                adjudication_sub_scores=merged,
+                correlation_id=ctx.correlation_id,
+            )
+            promise_kept_overall = pk.overall
+            promise_kept_scores_json = [
+                {"promise_type": v.promise_type, "verdict": v.verdict, "score": v.score, "evidence": v.evidence}
+                for v in pk.per_promise
+            ]
+            promise_ruler = pk.ruler_model
+            if pk.error:
+                logger.info(
+                    "promise_kept grader issue for correlation_id=%s: %s (transient=%s)",
+                    ctx.correlation_id, pk.error, pk.error_transient,
+                )
+    except Exception as e:
+        logger.warning("grade_promise_kept failed for correlation_id=%s: %s", ctx.correlation_id, e)
+
     audited_at = datetime.now(timezone.utc).isoformat()
 
     qc_dict: dict[str, Any] = {
@@ -257,6 +292,9 @@ async def _run_async(ctx: PipelineContext, payload: dict[str, Any]) -> None:
                 "adjudicator_version": "v2",
                 "used_llm": bool(adj.get("used_llm")),
                 "used_heuristic": bool(adj.get("used_heuristic")),
+                "promise_kept_overall": promise_kept_overall,
+                "promise_kept_scores": promise_kept_scores_json,
+                "promise_ruler": promise_ruler,
             }
         )
     except Exception as e:
