@@ -229,10 +229,16 @@ def write_record(record: dict[str, Any]) -> None:
 
 
 def _map_llm_call_stage_to_rubric_stage(stage: str) -> str:
-    """Map llm_calls.stage (e.g. react_3) to STAGE_QUALITY_MAP key."""
+    """Map llm_calls.stage (e.g. react_3) to STAGE_QUALITY_MAP key.
+
+    Task #34: react_N used to map to "planner" (addresses_question) --
+    the same bucket a real planner/decomposer stage would use. Split into
+    its own "react_round" key (grounding, round-efficiency-penalized by
+    the caller) so react rounds stop sharing a signal that has nothing
+    to do with what a react round actually contributes."""
     s = (stage or "").strip().lower()
     if s.startswith("react_"):
-        return "planner"
+        return "react_round"
     return s
 
 
@@ -243,6 +249,8 @@ async def update_quality_for_correlation_stages_async(
     quality_source: str = "adjudication_v2",
     stage_scores: dict[str, float] | None = None,
     quality_ruler: str | None = None,
+    react_rounds_used: int | None = None,
+    react_max_rounds: int | None = None,
 ) -> None:
     """
     After full adjudication, write per-stage quality_score on llm_calls rows
@@ -264,7 +272,21 @@ async def update_quality_for_correlation_stages_async(
     from earlier attempts anymore.
 
     When stage_scores is provided (from adjudicator per-round evaluation), use
-    those for react_1, react_2, etc. instead of the shared planner mapping.
+    those for react_1, react_2, etc. instead of the shared react_round mapping.
+
+    Task #34 (2026-08-05): most stages besides "integrator"/"critique" were
+    silently falling through STAGE_QUALITY_MAP's dict-miss default and
+    getting the broadcast overall_score -- the bandit couldn't learn
+    per-stage model preferences because every stage in a turn got the
+    same number regardless of what that stage's model actually did.
+    react_round's mapped grounding sub-score additionally gets scaled by
+    ``1 - react_rounds_used/react_max_rounds`` when both are available and
+    positive (a turn that used most of its round budget gets its react
+    rounds' reward pulled toward 0 even if the final grounding was
+    decent -- reward efficient resolutions, not just "eventually
+    grounded" ones). Turn-level, not per-round-index: every react_N call
+    in the same turn gets the same penalty, since it reflects how the
+    WHOLE turn used its budget, not which round this one was.
     """
     try:
         from app.services.adjudication.utils import get_stage_quality_score
@@ -273,6 +295,9 @@ async def update_quality_for_correlation_stages_async(
             return
 
         stage_scores = stage_scores or {}
+        efficiency_mult: float | None = None
+        if react_rounds_used is not None and react_max_rounds and react_max_rounds > 0:
+            efficiency_mult = max(0.0, min(1.0, 1.0 - (react_rounds_used / react_max_rounds)))
 
         async with _acquire_conn() as conn:
             if conn is None:
@@ -294,6 +319,8 @@ async def update_quality_for_correlation_stages_async(
             else:
                 rubric_stage = _map_llm_call_stage_to_rubric_stage(raw_stage)
                 q = get_stage_quality_score(rubric_stage, sub_scores, float(overall_score))
+                if q is not None and rubric_stage == "react_round" and efficiency_mult is not None:
+                    q = round(q * efficiency_mult, 3)
             if q is None:
                 continue
             persisted = await update_quality_async(

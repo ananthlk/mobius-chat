@@ -172,6 +172,11 @@ async def _run_async(ctx: PipelineContext, payload: dict[str, Any]) -> None:
         "post_run_adjudicator_v2",
         stage_scores=stage_scores,
         quality_ruler=adj_model or None,
+        # Task #34: turn-level round-efficiency penalty for react_round's
+        # grounding score. Same ctx fields react_loop.py's own trace
+        # emission already reads (react_loop.py:1866-1867).
+        react_rounds_used=getattr(ctx, "react_rounds_used", None),
+        react_max_rounds=getattr(ctx, "react_max_rounds", None),
     )
 
     # AC-v2-11 (docs/SPEC_AC_V2_11_PROMISE_KEPT.md) — grade whether the

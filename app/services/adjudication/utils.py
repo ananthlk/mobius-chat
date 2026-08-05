@@ -528,10 +528,25 @@ def attribute_failure(
 
 
 # ── Per-stage quality mapping (llm_calls.quality_score wiring) ───────────────
+#
+# Task #34 (2026-08-05, Bandit Agent): react_N stages used to share the
+# "planner" mapping (addresses_question) with any real planner/decomposer
+# stage -- same signal broadcast to every react round regardless of what
+# that round's model actually contributed. Split into its own
+# "react_round" key (grounding sub-score, round-efficiency-penalized in
+# update_quality_for_correlation_stages_async -- the penalty needs
+# turn-level rounds_used/max_rounds, not something this static dict can
+# express). "rag" narrowed from a 3-way average to grounding alone per
+# spec (single clean retrieval signal, not diluted by source_authority/
+# data_freshness). rag_fact_check added (previously an unmapped miss --
+# fell through to the broadcast overall_score like every stage not in
+# this dict).
 
 STAGE_QUALITY_MAP: dict[str, list[str] | None] = {
     "planner": ["addresses_question"],
-    "rag": ["grounding", "source_authority", "data_freshness"],
+    "react_round": ["grounding"],
+    "rag": ["grounding"],
+    "rag_fact_check": ["factual_consistency"],
     "integrator": None,
     "badge": ["confidence_calibration"],
     "critique": None,
