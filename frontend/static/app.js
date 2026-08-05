@@ -8494,6 +8494,89 @@ function _updateBanditAttribution(correlationId) {
     return;
   document.querySelectorAll(`.bandit-attribution[data-bandit-attr-cid="${correlationId}"]`).forEach((wrap) => _fillBanditAttributionBody(correlationId, wrap));
 }
+var _detailAnswers = /* @__PURE__ */ new Map();
+var _DETAIL_TAB_LABELS = {
+  read: "Answer",
+  report: "Report",
+  email: "Email Draft",
+  sms: "SMS",
+  emr: "EMR Note",
+  appeal: "Appeal Letter",
+  payor_report: "Payor Report"
+};
+function detailTabLabel(outputIntent) {
+  const key = (outputIntent ?? "").trim().toLowerCase();
+  return _DETAIL_TAB_LABELS[key] ?? "Answer";
+}
+function _injectDetailTab(cardBubble, correlationId) {
+  if (!cardBubble || !correlationId)
+    return;
+  const detail = _detailAnswers.get(correlationId);
+  if (!detail || !detail.content.trim())
+    return;
+  const tabBar = cardBubble.querySelector(".ac-tab-bar");
+  if (!tabBar)
+    return;
+  if (tabBar.querySelector('[data-panel="detail"]'))
+    return;
+  const label = detailTabLabel(detail.outputIntent);
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "ac-tab";
+  btn.setAttribute("role", "tab");
+  btn.setAttribute("aria-selected", "false");
+  btn.setAttribute("data-panel", "detail");
+  btn.textContent = label;
+  btn.addEventListener("click", () => {
+    const lb = btn.closest(".answer-card-bubble") ?? cardBubble;
+    lb.querySelectorAll(".ac-tab").forEach((t) => {
+      t.classList.remove("ac-tab--active");
+      t.setAttribute("aria-selected", "false");
+    });
+    lb.querySelectorAll(".ac-tab-panel").forEach((p) => {
+      p.hidden = true;
+      p.classList.remove("ac-tab-panel--active");
+    });
+    btn.classList.add("ac-tab--active");
+    btn.setAttribute("aria-selected", "true");
+    const tp = lb.querySelector(".ac-tab-panel--detail");
+    if (tp) {
+      tp.hidden = false;
+      tp.classList.add("ac-tab-panel--active");
+    }
+  });
+  const summaryTab = tabBar.querySelector('[data-panel="summary"]') ?? tabBar.firstElementChild;
+  if (summaryTab)
+    summaryTab.insertAdjacentElement("afterend", btn);
+  else
+    tabBar.appendChild(btn);
+  const panel = document.createElement("div");
+  panel.className = "ac-tab-panel ac-tab-panel--detail";
+  panel.setAttribute("role", "tabpanel");
+  panel.setAttribute("hidden", "");
+  const copyBtn = document.createElement("button");
+  copyBtn.type = "button";
+  copyBtn.className = "ac-detail-copy";
+  copyBtn.textContent = "Copy";
+  copyBtn.addEventListener("click", () => {
+    void navigator.clipboard?.writeText(detail.content).then(
+      () => {
+        copyBtn.textContent = "Copied \u2713";
+        window.setTimeout(() => copyBtn.textContent = "Copy", 1500);
+      },
+      () => {
+        copyBtn.textContent = "Copy failed";
+        window.setTimeout(() => copyBtn.textContent = "Copy", 1500);
+      }
+    );
+  });
+  const content = document.createElement("div");
+  content.className = "ac-detail-content";
+  content.innerHTML = simpleMarkdownToHtml(detail.content);
+  panel.appendChild(copyBtn);
+  panel.appendChild(content);
+  cardBubble.appendChild(panel);
+}
 function _reconcileQaAndBanditFromPoll(turnWrap, d) {
   const cid = (d.correlation_id || turnWrap.getAttribute("data-correlation-id") || "").trim();
   const qc = d.qc_audit;
@@ -11064,6 +11147,12 @@ function run() {
             draftEmitted = true;
             if (onDraftReady)
               onDraftReady(String(data.text), data.mode_hint ? String(data.mode_hint) : void 0);
+          } else if (ev === "detail_ready") {
+            const _dContent = typeof data.content === "string" ? data.content : "";
+            const _dIntent = typeof data.output_intent === "string" ? data.output_intent : "";
+            if (correlationId && _dContent.trim()) {
+              _detailAnswers.set(correlationId, { content: _dContent, outputIntent: _dIntent });
+            }
           } else if (ev === "message" && data.chunk != null && !draftEmitted && onStreamingMessage) {
             messageSoFar += String(data.chunk);
             onStreamingMessage(messageSoFar);
@@ -12097,6 +12186,14 @@ ${message}`;
               suppressConfidenceForAdminQcFail: suppressConf
             })
           );
+        }
+      }
+      {
+        const _detailCid = _detailAnswers.has(activeCorrelationId) ? activeCorrelationId : _detailAnswers.has(cidForTurn) ? cidForTurn : "";
+        if (_detailCid) {
+          const detailBubble = turnWrap.querySelector(".answer-card-bubble");
+          if (detailBubble)
+            _injectDetailTab(detailBubble, _detailCid);
         }
       }
       if (data.was_truncated === true) {

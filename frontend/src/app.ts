@@ -7053,6 +7053,89 @@ function _updateBanditAttribution(correlationId: string): void {
     .forEach((wrap) => _fillBanditAttributionBody(correlationId, wrap));
 }
 
+// Detailed-answer tab (Chat Master 2026-08-05, LLM Agent detail_ready rev 00661). The event
+// fires just before "completed" carrying {content, output_intent}; we stash it per turn and
+// inject a tab (named via the client-side label map below) into the finalized card.
+interface DetailAnswer { content: string; outputIntent: string }
+const _detailAnswers = new Map<string, DetailAnswer>();
+// Client-side token→label map (Chat Master ruling — he owns this vocabulary, not a backend field).
+const _DETAIL_TAB_LABELS: Record<string, string> = {
+  read: "Answer",
+  report: "Report",
+  email: "Email Draft",
+  sms: "SMS",
+  emr: "EMR Note",
+  appeal: "Appeal Letter",
+  payor_report: "Payor Report",
+};
+function detailTabLabel(outputIntent?: string): string {
+  const key = (outputIntent ?? "").trim().toLowerCase();
+  return _DETAIL_TAB_LABELS[key] ?? "Answer";
+}
+
+/** Inject the detail-answer tab (after Summary) into a finalized answer card. Idempotent; no-op
+ *  when no detail answer was captured for this turn or the card has no tab bar. */
+function _injectDetailTab(cardBubble: HTMLElement, correlationId: string): void {
+  if (!cardBubble || !correlationId) return;
+  const detail = _detailAnswers.get(correlationId);
+  if (!detail || !detail.content.trim()) return;
+  const tabBar = cardBubble.querySelector(".ac-tab-bar");
+  if (!tabBar) return; // summary-only card with no tab chrome — nothing to attach to
+  if (tabBar.querySelector('[data-panel="detail"]')) return; // idempotent
+
+  const label = detailTabLabel(detail.outputIntent);
+
+  // Tab button — same shape/behavior as the card's other tabs (hide all panels, show mine).
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "ac-tab";
+  btn.setAttribute("role", "tab");
+  btn.setAttribute("aria-selected", "false");
+  btn.setAttribute("data-panel", "detail");
+  btn.textContent = label;
+  btn.addEventListener("click", () => {
+    const lb = btn.closest(".answer-card-bubble") ?? cardBubble;
+    lb.querySelectorAll(".ac-tab").forEach((t) => {
+      t.classList.remove("ac-tab--active");
+      t.setAttribute("aria-selected", "false");
+    });
+    lb.querySelectorAll(".ac-tab-panel").forEach((p) => {
+      (p as HTMLElement).hidden = true;
+      p.classList.remove("ac-tab-panel--active");
+    });
+    btn.classList.add("ac-tab--active");
+    btn.setAttribute("aria-selected", "true");
+    const tp = lb.querySelector(".ac-tab-panel--detail") as HTMLElement | null;
+    if (tp) { tp.hidden = false; tp.classList.add("ac-tab-panel--active"); }
+  });
+  // Insert immediately after the Summary tab.
+  const summaryTab = tabBar.querySelector('[data-panel="summary"]') ?? tabBar.firstElementChild;
+  if (summaryTab) summaryTab.insertAdjacentElement("afterend", btn);
+  else tabBar.appendChild(btn);
+
+  // Panel — verbatim markdown render of the detail content + a clean copy-just-the-content button.
+  const panel = document.createElement("div");
+  panel.className = "ac-tab-panel ac-tab-panel--detail";
+  panel.setAttribute("role", "tabpanel");
+  panel.setAttribute("hidden", "");
+  const copyBtn = document.createElement("button");
+  copyBtn.type = "button";
+  copyBtn.className = "ac-detail-copy";
+  copyBtn.textContent = "Copy";
+  copyBtn.addEventListener("click", () => {
+    void navigator.clipboard?.writeText(detail.content).then(
+      () => { copyBtn.textContent = "Copied ✓"; window.setTimeout(() => (copyBtn.textContent = "Copy"), 1500); },
+      () => { copyBtn.textContent = "Copy failed"; window.setTimeout(() => (copyBtn.textContent = "Copy"), 1500); }
+    );
+  });
+  const content = document.createElement("div");
+  content.className = "ac-detail-content";
+  content.innerHTML = simpleMarkdownToHtml(detail.content);
+  panel.appendChild(copyBtn);
+  panel.appendChild(content);
+  cardBubble.appendChild(panel);
+}
+
 /** Poll-side reconcile for the QA panel + bandit checkmark (live-test fix, 2026-08-05).
  *  Two failures this repairs, both rooted in post-run adjudication finishing AFTER the turn
  *  resolves (so qc_audit is absent on the initial `completed` payload):
@@ -10178,6 +10261,14 @@ function run(): void {
           } else if (ev === "draft_ready" && data.text != null) {
             draftEmitted = true;
             if (onDraftReady) onDraftReady(String(data.text), data.mode_hint ? String(data.mode_hint) : undefined);
+          } else if (ev === "detail_ready") {
+            // Detailed-answer tab source (fires just before "completed"). Stash by correlation_id;
+            // the completed handler injects the tab once the card's final tab bar is stable.
+            const _dContent = typeof data.content === "string" ? data.content : "";
+            const _dIntent = typeof data.output_intent === "string" ? data.output_intent : "";
+            if (correlationId && _dContent.trim()) {
+              _detailAnswers.set(correlationId, { content: _dContent, outputIntent: _dIntent });
+            }
           } else if (ev === "message" && data.chunk != null && !draftEmitted && onStreamingMessage) {
             messageSoFar += String(data.chunk);
             onStreamingMessage(messageSoFar);
@@ -11393,6 +11484,19 @@ function run(): void {
                 suppressConfidenceForAdminQcFail: suppressConf,
               })
             );
+          }
+        }
+
+        // Detailed-answer tab (detail_ready, stashed during the stream): inject once the card's
+        // final tab bar is stable. One query covers both the streaming in-place fill and the fresh
+        // non-streaming render. Keyed by the turn's correlation id (same as the stash key).
+        {
+          const _detailCid = _detailAnswers.has(activeCorrelationId)
+            ? activeCorrelationId
+            : (_detailAnswers.has(cidForTurn) ? cidForTurn : "");
+          if (_detailCid) {
+            const detailBubble = turnWrap.querySelector(".answer-card-bubble") as HTMLElement | null;
+            if (detailBubble) _injectDetailTab(detailBubble, _detailCid);
           }
         }
 

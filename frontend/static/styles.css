@@ -2980,6 +2980,31 @@ body {
   max-height: 55vh;
   overflow-y: auto;
 }
+/* Detailed-answer tab (detail_ready) — verbatim markdown render + a corner Copy button. */
+.ac-tab-panel--detail { position: relative; padding: 0.25rem 0; }
+.ac-detail-copy {
+  position: absolute;
+  top: 0;
+  right: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.2rem 0.55rem;
+  border-radius: 6px;
+  border: 1px solid var(--border, #e5e7eb);
+  background: var(--card-bg, #fff);
+  color: var(--mobius-violet, #7c3aed);
+  cursor: pointer;
+  z-index: 1;
+}
+.ac-detail-copy:hover { background: rgba(124, 58, 237, 0.08); }
+.ac-detail-content {
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  color: var(--text-primary, #111827);
+  padding-right: 3.5rem; /* clear the Copy button on the first line */
+  word-wrap: break-word;
+}
+.ac-detail-content p:first-child { margin-top: 0; }
 /* Remove outer chrome from nested LLM performance and retrieval trace panels
    when they live inside the Diagnostics tab — they already have their own headers */
 .ac-tab-panel--diagnostics .llm-performance,
