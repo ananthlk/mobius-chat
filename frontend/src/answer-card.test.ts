@@ -109,6 +109,14 @@ describe("tryParseAnswerCard — AC-FE-1 (mode optional, min-valid anchor, both 
     const card = tryParseAnswerCard(json({ direct_answer: "hi", output_intent: 42 as unknown as string }));
     expect(card!.output_intent).toBeUndefined();
   });
+
+  // Escalation hint survives parsing (parseOne is a positive filter — same class as the
+  // output_intent-drop bug). Backend sends it ONLY when true, so a strict true-check is used.
+  it("suggest_escalate:true survives parsing; absent/false → undefined", () => {
+    expect(tryParseAnswerCard(json({ direct_answer: "hi", suggest_escalate: true }))!.suggest_escalate).toBe(true);
+    expect(tryParseAnswerCard(json({ direct_answer: "hi" }))!.suggest_escalate).toBeUndefined();
+    expect(tryParseAnswerCard(json({ direct_answer: "hi", suggest_escalate: false as unknown as true }))!.suggest_escalate).toBeUndefined();
+  });
 });
 
 describe("splitSectionsByVisibility — AC-FE-2 / §5 discriminator / §1.2 fallback", () => {

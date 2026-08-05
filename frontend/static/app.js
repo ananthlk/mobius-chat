@@ -1935,7 +1935,10 @@ function tryParseAnswerCard(message) {
         // these MUST be copied through explicitly or the format chip never sees them (they were
         // present in the JSON but dropped here — the live "no chip on any turn" bug, 2026-08-05).
         output_intent: typeof data.output_intent === "string" ? data.output_intent : void 0,
-        display_summary: typeof data.display_summary === "string" ? data.display_summary : void 0
+        display_summary: typeof data.display_summary === "string" ? data.display_summary : void 0,
+        // Escalation hint — copied through explicitly (parseOne is a positive filter). Backend
+        // sends it only when true (absent otherwise), so a strict true check is correct.
+        suggest_escalate: data.suggest_escalate === true ? true : void 0
       };
     } catch {
       return null;
@@ -12194,6 +12197,30 @@ ${message}`;
           const detailBubble = turnWrap.querySelector(".answer-card-bubble");
           if (detailBubble)
             _injectDetailTab(detailBubble, _detailCid);
+        }
+      }
+      {
+        const escCard = tryParseAnswerCard(body || "");
+        const alreadyThink = (localStorage.getItem("_mobiusChatMode") || "copilot") === "agentic";
+        if (escCard?.suggest_escalate === true && !alreadyThink) {
+          const escBubble = turnWrap.querySelector(".answer-card-bubble");
+          if (escBubble && !escBubble.querySelector(".ac-escalate")) {
+            const host = escBubble.querySelector(".ac-tab-panel--summary") ?? escBubble;
+            const escBtn = document.createElement("button");
+            escBtn.type = "button";
+            escBtn.className = "ac-escalate";
+            escBtn.textContent = "\u26A1 Try with Think mode";
+            escBtn.addEventListener("click", () => {
+              const sel = document.getElementById("composerMode");
+              if (sel)
+                sel.value = "agentic";
+              localStorage.setItem("_mobiusChatMode", "agentic");
+              inputEl.value = message;
+              inputEl.dispatchEvent(new Event("input"));
+              sendMessage();
+            });
+            host.appendChild(escBtn);
+          }
         }
       }
       if (data.was_truncated === true) {

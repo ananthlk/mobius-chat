@@ -60,6 +60,10 @@ export interface AnswerCard {
   // absent (None end-to-end). Task #10 surfaces this as a read-only format chip.
   output_intent?: string;
   display_summary?: string;
+  // Backend escalation hint (Task: Try-with-Think-mode). true when the answer was quality-flagged
+  // and re-running in Think/agentic mode is suggested; ABSENT otherwise (never false). Suppressed
+  // server-side when the request was already agentic. Drives the "⚡ Try with Think mode" button.
+  suggest_escalate?: boolean;
 }
 
 export const MAX_SECTIONS = 4;
@@ -159,6 +163,9 @@ export function tryParseAnswerCard(message: string): AnswerCard | null {
         // present in the JSON but dropped here — the live "no chip on any turn" bug, 2026-08-05).
         output_intent: typeof data.output_intent === "string" ? data.output_intent : undefined,
         display_summary: typeof data.display_summary === "string" ? data.display_summary : undefined,
+        // Escalation hint — copied through explicitly (parseOne is a positive filter). Backend
+        // sends it only when true (absent otherwise), so a strict true check is correct.
+        suggest_escalate: data.suggest_escalate === true ? true : undefined,
       };
     } catch {
       return null;

@@ -11500,6 +11500,37 @@ function run(): void {
           }
         }
 
+        // "Try with Think mode" escalation button (suggest_escalate). Synchronous — read the flag
+        // off the completed AnswerCard and render immediately. Placed at the end of the Summary
+        // panel (below the note/corrections block, above the follow-up chips which live outside the
+        // card). Backend only sets it when the request was NOT already agentic; the mode-guard here
+        // is defense in depth. On click: switch the composer to Think (agentic), pre-fill the failed
+        // query, and auto-submit — sendMessage() with no arg re-reads the input + persisted mode, so
+        // an edit made before the (instant) submit is honored.
+        {
+          const escCard = tryParseAnswerCard(body || "");
+          const alreadyThink = (localStorage.getItem("_mobiusChatMode") || "copilot") === "agentic";
+          if (escCard?.suggest_escalate === true && !alreadyThink) {
+            const escBubble = turnWrap.querySelector(".answer-card-bubble") as HTMLElement | null;
+            if (escBubble && !escBubble.querySelector(".ac-escalate")) {
+              const host = (escBubble.querySelector(".ac-tab-panel--summary") as HTMLElement | null) ?? escBubble;
+              const escBtn = document.createElement("button");
+              escBtn.type = "button";
+              escBtn.className = "ac-escalate";
+              escBtn.textContent = "⚡ Try with Think mode";
+              escBtn.addEventListener("click", () => {
+                const sel = document.getElementById("composerMode") as HTMLSelectElement | null;
+                if (sel) sel.value = "agentic";
+                localStorage.setItem("_mobiusChatMode", "agentic");
+                inputEl.value = message;
+                inputEl.dispatchEvent(new Event("input"));
+                sendMessage();
+              });
+              host.appendChild(escBtn);
+            }
+          }
+        }
+
         // Task #29: mid-turn truncation recovery. When the backend closes a turn with a usable
         // checkpoint (was_truncated + partial_message), the partial answer is already rendered
         // above; append a recovery bar beneath it. "Continue" re-sends the partial as

@@ -2980,6 +2980,25 @@ body {
   max-height: 55vh;
   overflow-y: auto;
 }
+/* "Try with Think mode" escalation button — a prominent CTA under a quality-flagged answer. */
+.ac-escalate {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0.7rem 0 0.1rem;
+  padding: 0.4rem 0.85rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  border-radius: 8px;
+  border: 1px solid var(--mobius-violet, #7c3aed);
+  background: var(--mobius-violet, #7c3aed);
+  color: #fff;
+  cursor: pointer;
+  transition: filter 0.15s ease;
+}
+.ac-escalate:hover { filter: brightness(1.08); }
+.ac-escalate:disabled { opacity: 0.6; cursor: default; }
+
 /* Detailed-answer tab (detail_ready) — verbatim markdown render + a corner Copy button. */
 .ac-tab-panel--detail { position: relative; padding: 0.25rem 0; }
 .ac-detail-copy {
