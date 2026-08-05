@@ -2492,15 +2492,27 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             logger.warning("ReAct parse failure (stage=%s): %s", f"react_{rn}", preview)
             emit("  Could not parse model decision — stopping.")
             # Parse-failure prose fallback: the LLM produced plain prose
-            # instead of JSON.  Two cases where this prose IS the answer:
-            #   (a) Guidance rounds (round >= 80% of max) — model synthesising
-            #       final answer is the primary case; first fixed 2026-05-11.
-            #   (b) Mid-hunt rounds (0-based iteration >= 2, i.e. round 3+)
-            #       where the model has enough context to write a direct answer
-            #       and the prose does NOT look like a tool-call request.
-            #       Without this, we fall back to raw retrieval chunks which
-            #       can confuse the integrator into "unable to find" even when
-            #       the sources clearly contain the answer — seen 2026-05-29.
+            # instead of JSON. Trust it as a synthesised final answer ONLY
+            # on a guidance round (round >= 80% of max) — model synthesising
+            # a final answer is the primary case; first fixed 2026-05-11 —
+            # and only when the prose does NOT look like a tool-call
+            # request.
+            #
+            # 2026-08-04 (Ananth, live agentic-mode turn: "feels like the
+            # auto escalation mode did not fully kick on and extend"): this
+            # used to ALSO trust the prose on any flat `iteration >= 2`
+            # (round 3+), regardless of the mode's actual round budget.
+            # That threshold was a no-op for copilot/task (max_it=3) —
+            # is_guidance_round(2, 3) is already True there, same round —
+            # but for agentic (max_it=10, guidance doesn't start until
+            # round 8) it fired 5 rounds early: a round-4 parse failure on
+            # a "give me a detailed report" turn had the model's own
+            # "I'm still gathering information, broadening my search"
+            # narration shipped as the finished answer, with 6 rounds of
+            # budget left and the governor's extend/structural-exhaustion
+            # logic never reached (this path returns before either runs).
+            # Dropped the flat threshold — is_guidance_round alone already
+            # covers every mode correctly since it scales with max_it.
             from app.pipeline.react.prompts import is_guidance_round
             raw_prose = (decision_raw or "").strip()
             # Pattern: prose that starts with a known tool name is a
@@ -2513,9 +2525,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 and len(raw_prose) >= 40
                 and not _TOOL_CALL_RE.search(raw_prose)
             )
-            if _prose_looks_like_answer and (
-                is_guidance_round(iteration, max_it) or iteration >= 2
-            ):
+            if _prose_looks_like_answer and is_guidance_round(iteration, max_it):
                 logger.info(
                     "[parse-fallback] guidance round %d prose answer len=%d (cid=%s)",
                     rn, len(raw_prose), getattr(ctx, "correlation_id", "?")[:8],
