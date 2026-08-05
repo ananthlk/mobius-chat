@@ -25,6 +25,24 @@ logger = logging.getLogger(__name__)
 _progress: dict[str, dict] = {}  # correlation_id -> {"thinking": list[str], "message": str, "events": list[dict]}
 _lock = threading.Lock()
 _progress_redis_logged: set[str] = set()  # correlation_ids we've logged "[progress] publishing to Redis" for
+
+# Task #29 (mid-turn truncation recovery, 2026-08-05) -- separate from
+# _progress on purpose. try_finalize() below needs "has anyone already
+# finalized THIS turn" as its own signal, distinct from "does _progress
+# still have an entry" -- those are NOT the same question. A caller that
+# never ran start_progress() first (a direct unit-test call to
+# _publish_failed(), or any future call site that skips it) would find
+# correlation_id already absent from _progress and get treated as "already
+# finalized" under a naive check, silently dropping the response with no
+# error shown to the user -- worse than the double-publish race this is
+# meant to fix. _finalized_turns tracks "first caller wins" independently
+# so a normal single-publish turn is never affected either way.
+# Known limitation, not addressed here: unbounded growth over a long-lived
+# process (nothing ever prunes this set). Correlation_ids are per-turn
+# UUIDs, so this is a slow leak bounded by turn volume between Cloud Run
+# instance recycles, not a fast one -- acceptable for now, worth revisiting
+# if this process ever runs unusually long without redeploying.
+_finalized_turns: set[str] = set()
 _external_last_line: dict[str, str] = {}  # cid -> last line pushed via push_external_thinking (dedup guard)
 
 # Serial DB insert queues — one per active request. Ensures DB insertion order == emit order.
@@ -212,14 +230,94 @@ def append_message_chunk(correlation_id: str, chunk: str) -> None:
 def append_draft_answer(correlation_id: str, text: str, mode_hint: str | None = None) -> None:
     """Emit the raw ReAct answer before the integrator runs so the frontend can render it immediately.
     Fires a draft_ready SSE event; the completed event fills in remaining panels in-place.
-    mode_hint (e.g. "RECITAL") lets the renderer create the right shell without waiting for completed."""
+    mode_hint (e.g. "RECITAL") lets the renderer create the right shell without waiting for completed.
+
+    Also stashes the text durably on ``_progress[correlation_id]["draft_answer"]``
+    (Task #29, mid-turn truncation recovery, 2026-08-05) -- the SSE event
+    itself gets drained by ``get_and_clear_events()`` the moment a client
+    polls, so it's NOT reliably readable later by a deadline handler running
+    on a different thread. The durable field is what ``get_checkpoint()``
+    below actually reads."""
     ev: dict[str, Any] = {"event": "draft_ready", "data": {"text": text}}
     if mode_hint:
         ev["data"]["mode_hint"] = mode_hint
     with _lock:
         if correlation_id in _progress:
             _progress[correlation_id]["events"].append(ev)
+            _progress[correlation_id]["draft_answer"] = text
     _publish_progress_event(correlation_id, ev)
+
+
+def get_checkpoint(correlation_id: str) -> dict[str, Any] | None:
+    """Return the best available partial content for a truncated turn, or
+    None if there's nothing to checkpoint (Task #29, 2026-08-05, spec §1/§6).
+
+    Two qualities, matching the spec exactly:
+    - "draft": react_loop.py finished and produced a real draft answer
+      before the integrator's polish pass got cut off (append_draft_answer
+      already fired). The high-value, common case.
+    - "evidence": no draft yet, but react_loop.py checkpointed the last
+      successful tool result's content mid-loop. NOT YET WRITTEN BY
+      ANYTHING -- that write side is spec'd as ReAct's own future work
+      (spec §1 second bullet, §6: "genuinely new react_loop.py work
+      (mine)"). This read side is ready for it the moment react_loop.py
+      starts setting ``_progress[cid]["last_evidence"]``; until then this
+      branch is simply never hit and callers see ``checkpoint_kind=None``.
+
+    Same-process, same-thread-safe by construction: the deadline handler
+    (worker/run.py) and the pipeline thread it's watching share this
+    process's memory directly (see spec §0/§1 -- both deadline-enforcement
+    paths run the pipeline in a same-process thread, never a separate OS
+    process), so no cross-process DB read is needed for this specific
+    call path.
+    """
+    with _lock:
+        p = _progress.get(correlation_id)
+        if p is None:
+            return None
+        draft = p.get("draft_answer")
+        if draft:
+            return {"checkpoint_kind": "draft", "partial_content": draft}
+        evidence = p.get("last_evidence")
+        if evidence:
+            return {"checkpoint_kind": "evidence", "partial_content": evidence}
+        return None
+
+
+def try_finalize(correlation_id: str) -> bool:
+    """Atomically claim the right to publish THE terminal response for this
+    turn. Returns True if this caller is the first to finalize (proceed to
+    publish); False if someone already did (must skip publishing).
+
+    Closes the double-publish race (Task #29 spec §0/§6): a deadline
+    handler and a zombie thread's eventual late completion can both reach
+    a ``publish_response(correlation_id, ...)`` call for the same turn --
+    whichever calls this FIRST wins and should publish; the other must
+    back off. Also absorbs ``clear_progress()``'s exact cleanup (same
+    DB-worker sentinel logic) so callers don't need both.
+
+    Deliberately keyed on ``_finalized_turns``, NOT on ``correlation_id in
+    _progress`` -- those are different questions. A caller that never ran
+    ``start_progress()`` first (e.g. a direct unit-test call, or any future
+    call site that skips it) would have no _progress entry and, under a
+    naive "absent = already finalized" check, would have its response
+    silently dropped with no error shown to the user -- a worse failure
+    than the double-publish race this exists to close. Keying on a
+    dedicated set means the FIRST call always wins regardless of whether
+    _progress happens to still hold an entry, so single-publish turns
+    (the overwhelming majority) are completely unaffected."""
+    with _lock:
+        if correlation_id in _finalized_turns:
+            return False
+        _finalized_turns.add(correlation_id)
+        _progress.pop(correlation_id, None)
+        _progress_redis_logged.discard(correlation_id)
+    with _db_queues_lock:
+        q = _db_queues.pop(correlation_id, None)
+        _db_workers.pop(correlation_id, None)
+    if q is not None:
+        q.put(None)  # sentinel — worker exits after draining
+    return True
 
 
 def get_progress(correlation_id: str) -> tuple[bool, list[str], str]:

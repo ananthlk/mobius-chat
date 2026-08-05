@@ -134,6 +134,52 @@ def process_one(correlation_id: str, payload: dict) -> None:
     # The main user-visible symptom (infinite polling) is fixed.
 
     def _publish_deadline_failure() -> None:
+        # Task #29 (mid-turn truncation recovery, 2026-08-05),
+        # docs/MIDTURN_TRUNCATION_RECOVERY_SPEC.md §1/§2/§6.
+        #
+        # Read the checkpoint BEFORE claiming finalization -- try_finalize()
+        # clears the exact in-memory state get_checkpoint() reads from, so
+        # the order here is load-bearing, not stylistic.
+        checkpoint: dict | None = None
+        try:
+            from app.storage.progress import get_checkpoint
+            checkpoint = get_checkpoint(correlation_id)
+        except Exception as _cp_err:
+            logger.warning("get_checkpoint failed for %s: %s", correlation_id[:8] if correlation_id else "", _cp_err)
+
+        # Double-publish race (spec §0/§6): a zombie thread from a prior
+        # timed-out turn can eventually finish and try to publish its own
+        # completion AFTER this handler already published a failure (or
+        # vice versa, on a razor-thin timing edge). try_finalize() is the
+        # single choke point both paths go through -- whoever claims it
+        # first publishes; the other backs off silently.
+        try:
+            from app.storage.progress import try_finalize
+            if not try_finalize(correlation_id):
+                logger.info(
+                    "deadline-failure publish skipped for %s -- already finalized elsewhere",
+                    correlation_id[:8] if correlation_id else "",
+                )
+                return
+        except Exception as _fin_err:
+            logger.warning("try_finalize failed for %s: %s", correlation_id[:8] if correlation_id else "", _fin_err)
+
+        was_truncated = checkpoint is not None
+        checkpoint_kind = checkpoint.get("checkpoint_kind") if checkpoint else None
+        partial_message = checkpoint.get("partial_content") if checkpoint else None
+
+        try:
+            from app.communication.emit_envelope import make_turn_truncated
+            from app.services.task_manager_promotion import promote
+            env = make_turn_truncated(
+                correlation_id,
+                checkpoint_kind=checkpoint_kind,
+                thread_id=thread_id,
+            )
+            promote(env.to_dict())
+        except Exception:  # pragma: no cover — defensive, must not mask the deadline failure
+            pass
+
         try:
             from app.queue import get_queue
             get_queue().publish_response(
@@ -146,6 +192,9 @@ def process_one(correlation_id: str, payload: dict) -> None:
                     ),
                     "error": "turn_deadline_exceeded",
                     "deadline_s": deadline_s,
+                    "was_truncated": was_truncated,
+                    "partial_message": partial_message,
+                    "checkpoint_kind": checkpoint_kind,
                 },
             )
         except Exception as _pub_err:

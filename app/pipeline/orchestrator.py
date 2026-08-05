@@ -18,7 +18,7 @@ from app.pipeline.context import PipelineContext
 from app.persistence import get_persistence
 from app.queue import get_queue
 from app.storage import store_plan, store_response
-from app.storage.progress import clear_progress, start_progress
+from app.storage.progress import start_progress, try_finalize
 from app.storage.threads import register_open_slots, save_state_full
 
 
@@ -987,10 +987,12 @@ def _publish_pursuit_ended(correlation_id: str, ctx: PipelineContext, t0_start: 
             save_state_full(ctx.thread_id, merged)
     except Exception as e:
         logger.warning("Failed to persist pursuit-ended turn: %s", e)
-    clear_progress(correlation_id)
-    store_response(correlation_id, payload)
-    get_queue().publish_response(correlation_id, payload)
-    logger.info("Pursuit ended (user requested); response published for %s", correlation_id[:8])
+    if try_finalize(correlation_id):
+        store_response(correlation_id, payload)
+        get_queue().publish_response(correlation_id, payload)
+        logger.info("Pursuit ended (user requested); response published for %s", correlation_id[:8])
+    else:
+        logger.info("Pursuit-ended publish skipped for %s -- already finalized elsewhere", correlation_id[:8])
 
 
 def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) -> None:
@@ -1077,10 +1079,12 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
                 save_state_full(ctx.thread_id, merged)
         except Exception as e:
             logger.warning("Failed to persist route clarification turn: %s", e)
-        clear_progress(ctx.correlation_id)
-        store_response(ctx.correlation_id, response_payload)
-        get_queue().publish_response(ctx.correlation_id, response_payload)
-        logger.info("Route clarification published for %s", ctx.correlation_id[:8])
+        if try_finalize(ctx.correlation_id):
+            store_response(ctx.correlation_id, response_payload)
+            get_queue().publish_response(ctx.correlation_id, response_payload)
+            logger.info("Route clarification published for %s", ctx.correlation_id[:8])
+        else:
+            logger.info("Route clarification publish skipped for %s -- already finalized elsewhere", ctx.correlation_id[:8])
         return
 
     if ctx.needs_clarification and ctx.clarification_message:
@@ -1179,10 +1183,12 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
     except Exception as e:
         logger.warning("Failed to persist clarification/refinement turn: %s", e)
 
-    clear_progress(ctx.correlation_id)
-    store_response(ctx.correlation_id, response_payload)
-    get_queue().publish_response(ctx.correlation_id, response_payload)
-    logger.info("Clarification/refinement published for %s", ctx.correlation_id[:8])
+    if try_finalize(ctx.correlation_id):
+        store_response(ctx.correlation_id, response_payload)
+        get_queue().publish_response(ctx.correlation_id, response_payload)
+        logger.info("Clarification/refinement published for %s", ctx.correlation_id[:8])
+    else:
+        logger.info("Clarification/refinement publish skipped for %s -- already finalized elsewhere", ctx.correlation_id[:8])
 
 
 def _publish_completed(ctx: PipelineContext, t0_start: float) -> None:
@@ -1326,9 +1332,11 @@ def _publish_completed(ctx: PipelineContext, t0_start: float) -> None:
     except Exception as e:
         logger.warning("Failed to persist turn: %s", e)
 
-    clear_progress(ctx.correlation_id)
-    store_response(ctx.correlation_id, client_payload)
-    get_queue().publish_response(ctx.correlation_id, client_payload)
+    if try_finalize(ctx.correlation_id):
+        store_response(ctx.correlation_id, client_payload)
+        get_queue().publish_response(ctx.correlation_id, client_payload)
+    else:
+        logger.info("Turn-completion publish skipped for %s -- already finalized elsewhere (likely a deadline failure already published)", ctx.correlation_id[:8])
     try:
         from app.services.post_run_adjudication import schedule_post_run_adjudication
         schedule_post_run_adjudication(ctx, payload)
@@ -1498,6 +1506,19 @@ def _publish_failed(
 
     chunks = list(thinking_chunks) if thinking_chunks is not None else []
 
+    # Task #29 (mid-turn truncation recovery, 2026-08-05), spec §1/§6.
+    # Read BEFORE try_finalize()/clear_progress() below -- that call
+    # clears the exact in-memory state this reads from, so order matters.
+    _checkpoint: dict | None = None
+    try:
+        from app.storage.progress import get_checkpoint
+        _checkpoint = get_checkpoint(correlation_id)
+    except Exception:
+        _checkpoint = None
+    _was_truncated = _checkpoint is not None
+    _checkpoint_kind = _checkpoint.get("checkpoint_kind") if _checkpoint else None
+    _partial_content = _checkpoint.get("partial_content") if _checkpoint else None
+
     # Sprint A.1 commit 3: emit turn_failed envelope before building
     # the user-facing payload. Feeds top-level failure-rate dashboard
     # via task-manager promotion. Runs inside the try/except that
@@ -1526,6 +1547,15 @@ def _publish_failed(
         )
         chunks.append(env.to_dict())
         promote(env.to_dict())
+        if _was_truncated:
+            from app.communication.emit_envelope import make_turn_truncated
+            _trunc_env = make_turn_truncated(
+                correlation_id,
+                checkpoint_kind=_checkpoint_kind,
+                thread_id=thread_id,
+            )
+            chunks.append(_trunc_env.to_dict())
+            promote(_trunc_env.to_dict())
     except Exception:  # pragma: no cover — defensive
         # Must not double-fail: emission errors here are silent.
         pass
@@ -1569,12 +1599,20 @@ def _publish_failed(
         "source_confidence_strip": None,
         "cited_source_indices": [],
         "thread_id": thread_id,
+        "was_truncated": _was_truncated,
+        "partial_message": _partial_content,
+        "checkpoint_kind": _checkpoint_kind,
     }
     try:
-        clear_progress(correlation_id)
-        store_response(correlation_id, response_payload)
-        get_queue().publish_response(correlation_id, response_payload)
-        logger.warning("Published failed response for %s: %s", correlation_id[:8], err_str)
+        if try_finalize(correlation_id):
+            store_response(correlation_id, response_payload)
+            get_queue().publish_response(correlation_id, response_payload)
+            logger.warning("Published failed response for %s: %s", correlation_id[:8], err_str)
+        else:
+            logger.info(
+                "_publish_failed publish skipped for %s -- already finalized elsewhere",
+                correlation_id[:8],
+            )
     except Exception as e:
         logger.exception("Failed to publish error response for %s: %s", correlation_id[:8], e)
 
@@ -1601,6 +1639,8 @@ def _publish_failed(
             "error_code": (_env.error_code if _env is not None else "unknown"),
             "message": _user_message,
             "retryable": _retryable,
+            "was_truncated": _was_truncated,
+            "partial_content": _partial_content,
         })
         if thread_id:
             persistence.save_turn_with_messages(

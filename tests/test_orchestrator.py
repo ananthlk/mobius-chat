@@ -37,19 +37,18 @@ def test_publish_failed_produces_structured_payload():
         "thread_id",
     }
     with patch("app.pipeline.orchestrator.get_queue") as mock_q:
-        with patch("app.pipeline.orchestrator.clear_progress"):
-            with patch("app.pipeline.orchestrator.store_response"):
-                _publish_failed(
-                    "test-cid",
-                    "test message",
-                    None,
-                    ["chunk1"],
-                    ValueError("test error"),
-                )
+        with patch("app.pipeline.orchestrator.store_response"):
+            _publish_failed(
+                "test-cid-structured-payload",
+                "test message",
+                None,
+                ["chunk1"],
+                ValueError("test error"),
+            )
     # Verify structured payload was passed to publish_response
     mock_q.return_value.publish_response.assert_called_once()
     call_args = mock_q.return_value.publish_response.call_args
-    assert call_args[0][0] == "test-cid"
+    assert call_args[0][0] == "test-cid-structured-payload"
     payload = call_args[0][1]
     assert payload["status"] == "failed"
     assert payload["llm_error"] == "test error"
@@ -72,15 +71,14 @@ def test_publish_failed_handles_none_thinking_chunks():
     turn_failed envelope still gets appended, so thinking_log is
     a 1-element list carrying just the failure event."""
     with patch("app.pipeline.orchestrator.get_queue") as mock_q:
-        with patch("app.pipeline.orchestrator.clear_progress"):
-            with patch("app.pipeline.orchestrator.store_response"):
-                _publish_failed(
-                    "test-cid",
-                    "msg",
-                    None,
-                    None,
-                    RuntimeError("oops"),
-                )
+        with patch("app.pipeline.orchestrator.store_response"):
+            _publish_failed(
+                "test-cid-none-chunks",
+                "msg",
+                None,
+                None,
+                RuntimeError("oops"),
+            )
     payload = mock_q.return_value.publish_response.call_args[0][1]
     # Starts empty; _publish_failed appends the turn_failed envelope.
     log = payload["thinking_log"]
@@ -104,9 +102,8 @@ def test_clarify_stage_error_publishes_failed():
             with patch("app.pipeline.orchestrator.run_clarify") as mock_clarify:
                 mock_clarify.side_effect = RuntimeError("clarify crash")
                 with patch("app.pipeline.orchestrator.get_queue") as mock_q:
-                    with patch("app.pipeline.orchestrator.clear_progress"):
-                        with patch("app.pipeline.orchestrator.store_response"):
-                            run_pipeline("test-clarify-fail", "test msg", None)
+                    with patch("app.pipeline.orchestrator.store_response"):
+                        run_pipeline("test-clarify-fail", "test msg", None)
     mock_q.return_value.publish_response.assert_called_once()
     payload = mock_q.return_value.publish_response.call_args[0][1]
     assert payload["status"] == "failed"

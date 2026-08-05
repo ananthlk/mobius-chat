@@ -73,6 +73,7 @@ Signal = Literal[
     # ── Promoted to task-manager (10 analyzable events) ──
     "turn_completed",                 # → info  (outcome + cost + rounds distribution)
     "turn_failed",                    # → failure high
+    "turn_truncated",                 # → failure warning (deadline/timeout hit; may carry a checkpoint)
     "tool_failed",                    # → failure med (non-recoverable only)
     "tool_exhausted",                 # → insight med
     "rate_limit_hit",                 # → failure high
@@ -830,6 +831,47 @@ def make_turn_failed(
             "stage": stage,
             "error_message": error_message[:500],
             "last_tool": last_tool,
+        },
+        thread_id=thread_id,
+        user_id=user_id,
+        report_to_task_manager=True,
+        task_type="failure",
+        task_severity="warning",
+    )
+
+
+def make_turn_truncated(
+    correlation_id: str,
+    *,
+    checkpoint_kind: str | None,
+    rounds_completed: int | None = None,
+    elapsed_s: float | None = None,
+    thread_id: str | None = None,
+    user_id: str | None = None,
+) -> EmitEnvelope:
+    """A turn hit its deadline (Task #29, mid-turn truncation recovery,
+    2026-08-05 -- docs/MIDTURN_TRUNCATION_RECOVERY_SPEC.md). Mirrors
+    make_turn_failed()'s exact pattern -- same promotion, same dashboard
+    family, distinct signal so ops can tell "genuinely errored" from
+    "ran out of time but may have a usable checkpoint" apart.
+
+    Diagnostic only (Diagnostics tab visibility) -- does NOT carry the
+    full checkpoint text, just enough to see what happened at a glance.
+    The actual partial_message/checkpoint content rides on the top-level
+    response payload (was_truncated/partial_message/checkpoint_kind),
+    built separately in worker/run.py and orchestrator.py -- that's what
+    gates the FE's Continue button, not this envelope.
+    """
+    kind_note = checkpoint_kind or "none"
+    return EmitEnvelope(
+        signal="turn_truncated",
+        correlation_id=correlation_id,
+        step_id="turn_truncated",
+        note=f"⏱ Turn truncated (checkpoint: {kind_note})",
+        data={
+            "checkpoint_kind": checkpoint_kind,
+            "rounds_completed": rounds_completed,
+            "elapsed_s": elapsed_s,
         },
         thread_id=thread_id,
         user_id=user_id,
