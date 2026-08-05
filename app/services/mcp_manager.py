@@ -98,7 +98,16 @@ async def _call_mcp_tool_async(
             from mcp.client.streamable_http import streamable_http_client
 
             async with _create_http_client(read_timeout=read_timeout) as http_client:
-                async with streamable_http_client(url, http_client=http_client) as (read_stream, write_stream, _):
+                # Tolerant unpack: the installed `mcp` SDK version determines
+                # whether streamable_http_client yields (read, write) or
+                # (read, write, get_session_id) — requirements.txt pins
+                # mcp>=1.0.0 (unpinned ceiling) and Docker layer caching can
+                # keep an older resolution baked into the image even when a
+                # fresh install would pull a newer one. Only the first two
+                # elements are ever used here, so grab those regardless of
+                # arity instead of hard-failing on a 3-tuple assumption.
+                async with streamable_http_client(url, http_client=http_client) as _streams:
+                    read_stream, write_stream = _streams[0], _streams[1]
                     async with ClientSession(read_stream, write_stream) as session:
                         await session.initialize()
                         result = await session.call_tool(tool_name, arguments)
@@ -184,7 +193,9 @@ async def _list_mcp_tools_async() -> list[dict[str, Any]]:
         from mcp.client.streamable_http import streamable_http_client
 
         async with _create_http_client(read_timeout=None) as http_client:
-            async with streamable_http_client(url, http_client=http_client) as (read_stream, write_stream, _):
+            # Tolerant unpack — see _call_mcp_tool_async for why.
+            async with streamable_http_client(url, http_client=http_client) as _streams:
+                read_stream, write_stream = _streams[0], _streams[1]
                 async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()
                     result = await session.list_tools()

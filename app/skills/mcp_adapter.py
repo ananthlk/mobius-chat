@@ -344,7 +344,9 @@ def _list_tools_from_url(url: str) -> list[dict[str, Any]]:
             from mcp.client.streamable_http import streamable_http_client
             timeout = httpx.Timeout(read_timeout, connect=connect_timeout)
             async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as http_client:
-                async with streamable_http_client(url, http_client=http_client) as (r, w, _):
+                # Tolerant unpack — see mcp_manager._call_mcp_tool_async for why.
+                async with streamable_http_client(url, http_client=http_client) as _streams:
+                    r, w = _streams[0], _streams[1]
                     async with ClientSession(r, w) as session:
                         await session.initialize()
                         result = await session.list_tools()
