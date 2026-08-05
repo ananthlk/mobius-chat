@@ -704,7 +704,7 @@ import {
   simpleMarkdownToHtml, simpleMarkdownToHtmlInner, rosterStepMarkdownToHtml,
   CONFIDENCE_BADGE_MAP, renderConfidenceBadge, createQcSampleShieldSvg, renderQcAuditBadge,
 } from "./ui-helpers";
-import { renderAnswerCard } from "./render/bubble";
+import { renderAnswerCard, formatOutputIntentLabel } from "./render/bubble";
 
 /** Insert QC badge into an already-rendered assistant turn (late eval webhook). */
 function applyQcAuditToTurn(turnWrap: HTMLElement, qc: QcAuditInfo | undefined): void {
@@ -9356,6 +9356,8 @@ function run(): void {
       msgPhiGate?: {
         gate: string; phi_flag: boolean; identifier_labels: string[]; action: string;
       } | null;
+      /** Enricher output_intent — internal classification, shown as a telemetry row only. */
+      outputIntent?: string | null;
     }
   ): void {
     if (bubble.querySelector(".ac-tab-panel--diagnostics")) return; // idempotent
@@ -9365,6 +9367,24 @@ function run(): void {
     diagPanel.className = "ac-tab-panel ac-tab-panel--diagnostics";
     diagPanel.setAttribute("role", "tabpanel");
     diagPanel.setAttribute("hidden", "");
+
+    // Section 0: output_intent telemetry (Task #10) — an internal classification signal, not a
+    // user-facing label (Chat Master 2026-08-05). A single muted "Output intent · <value>" row,
+    // shown only when the enricher sent a known value.
+    const _oi = formatOutputIntentLabel(opts.outputIntent ?? undefined);
+    if (_oi) {
+      const oiRow = document.createElement("div");
+      oiRow.className = "diag-telemetry-row";
+      const oiKey = document.createElement("span");
+      oiKey.className = "diag-telemetry-key";
+      oiKey.textContent = "Output intent";
+      const oiVal = document.createElement("span");
+      oiVal.className = "diag-telemetry-val";
+      oiVal.textContent = _oi;
+      oiRow.appendChild(oiKey);
+      oiRow.appendChild(oiVal);
+      diagPanel.appendChild(oiRow);
+    }
 
     // Section 1: LLM performance breakdown
     if (opts.insightRows.length > 0) {
@@ -11105,14 +11125,8 @@ function run(): void {
               const renderedBubble = renderedCard.querySelector(".answer-card-bubble");
 
               if (renderedBubble) {
-                // Format chip (Task #10): it's a sibling of the panels in the rendered card, so
-                // the panel-by-panel transplant below leaves it behind — streaming turns (the
-                // common case, since draft_ready fires) never showed it. Move it to the top of
-                // the existing bubble explicitly. (Live bug 2026-08-05: "badge is missing".)
-                const renderedChipRow = renderedBubble.querySelector(".answer-card-format-row");
-                if (renderedChipRow && !existingBubble.querySelector(".answer-card-format-row")) {
-                  existingBubble.insertBefore(renderedChipRow, existingBubble.firstChild);
-                }
+                // (Task #10 output_intent no longer renders on the card face — it's a Diagnostics
+                // telemetry row now, see _injectDiagnosticsTab. Chat Master 2026-08-05.)
 
                 // Swap streaming tab bar with fully-built one (count badges, correct empty state)
                 const streamingTabBar = existingBubble.querySelector(".ac-tab-bar");
@@ -11422,6 +11436,7 @@ function run(): void {
               routingFeedback: data.technical_feedback?.llm_performance ?? null,
               hipaaDiagnostics: hipaaForTab,
               msgPhiGate: msgPhiGateForTab,
+              outputIntent: tryParseAnswerCard(body || "")?.output_intent ?? null,
             });
           } else if (Array.isArray(insightRows) && insightRows.length > 0) {
             // Admin path B: non-card turn — keep panels below the bubble as before

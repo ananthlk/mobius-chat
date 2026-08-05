@@ -2242,34 +2242,18 @@ var TAB_ORDER = ["summary", "citations", "corrections", "follow-up", "tasks", "d
 
 // src/render/bubble.ts
 var MAX_BULLETS_PER_SECTION = 4;
-var FORMAT_CHIP_SPEC = {
-  read: { label: "Answer", icon: "\u{1F4AC}" },
-  report: { label: "Report", icon: "\u{1F4CB}" },
-  email: { label: "Email", icon: "\u2709\uFE0F" },
-  sms: { label: "Text", icon: "\u{1F4F1}" },
-  emr: { label: "EMR Note", icon: "\u{1F3E5}" },
-  appeal: { label: "Appeal", icon: "\u2696\uFE0F" },
-  payor_report: { label: "Payor Report", icon: "\u{1F4CA}" }
-};
-function buildFormatChip(outputIntent) {
+var KNOWN_OUTPUT_INTENTS = /* @__PURE__ */ new Set([
+  "read",
+  "report",
+  "email",
+  "sms",
+  "emr",
+  "appeal",
+  "payor_report"
+]);
+function formatOutputIntentLabel(outputIntent) {
   const key = (outputIntent ?? "").trim().toLowerCase();
-  const spec = FORMAT_CHIP_SPEC[key];
-  if (!spec)
-    return null;
-  const chip = document.createElement("span");
-  chip.className = "answer-card-format-chip answer-card-format-chip--" + key;
-  chip.setAttribute("aria-label", "Answer format: " + spec.label);
-  chip.setAttribute("title", spec.label);
-  const icon = document.createElement("span");
-  icon.className = "answer-card-format-chip-icon";
-  icon.setAttribute("aria-hidden", "true");
-  icon.textContent = spec.icon;
-  const text = document.createElement("span");
-  text.className = "answer-card-format-chip-text";
-  text.textContent = spec.label;
-  chip.appendChild(icon);
-  chip.appendChild(text);
-  return chip;
+  return KNOWN_OUTPUT_INTENTS.has(key) ? key : null;
 }
 function _renderSectionBody(sec, body) {
   const fmt = sec.format ?? "bullets";
@@ -2449,13 +2433,6 @@ function renderAnswerCard(card, isError, opts) {
     }
     wrap.appendChild(bubble);
     return wrap;
-  }
-  const formatChip = buildFormatChip(card.output_intent);
-  if (formatChip) {
-    const chipRow = document.createElement("div");
-    chipRow.className = "answer-card-format-row";
-    chipRow.appendChild(formatChip);
-    bubble.appendChild(chipRow);
   }
   const direct = document.createElement("div");
   direct.className = "answer-card-direct";
@@ -10416,6 +10393,20 @@ function run() {
     diagPanel.className = "ac-tab-panel ac-tab-panel--diagnostics";
     diagPanel.setAttribute("role", "tabpanel");
     diagPanel.setAttribute("hidden", "");
+    const _oi = formatOutputIntentLabel(opts.outputIntent ?? void 0);
+    if (_oi) {
+      const oiRow = document.createElement("div");
+      oiRow.className = "diag-telemetry-row";
+      const oiKey = document.createElement("span");
+      oiKey.className = "diag-telemetry-key";
+      oiKey.textContent = "Output intent";
+      const oiVal = document.createElement("span");
+      oiVal.className = "diag-telemetry-val";
+      oiVal.textContent = _oi;
+      oiRow.appendChild(oiKey);
+      oiRow.appendChild(oiVal);
+      diagPanel.appendChild(oiRow);
+    }
     if (opts.insightRows.length > 0) {
       const perfEl = renderLlmPerformance(
         opts.insightRows,
@@ -11879,10 +11870,6 @@ ${message}`;
             });
             const renderedBubble = renderedCard.querySelector(".answer-card-bubble");
             if (renderedBubble) {
-              const renderedChipRow = renderedBubble.querySelector(".answer-card-format-row");
-              if (renderedChipRow && !existingBubble.querySelector(".answer-card-format-row")) {
-                existingBubble.insertBefore(renderedChipRow, existingBubble.firstChild);
-              }
               const streamingTabBar = existingBubble.querySelector(".ac-tab-bar");
               const renderedTabBar = renderedBubble.querySelector(".ac-tab-bar");
               if (streamingTabBar && renderedTabBar) {
@@ -12105,7 +12092,8 @@ ${message}`;
             outputTokens: tout,
             routingFeedback: data.technical_feedback?.llm_performance ?? null,
             hipaaDiagnostics: hipaaForTab,
-            msgPhiGate: msgPhiGateForTab
+            msgPhiGate: msgPhiGateForTab,
+            outputIntent: tryParseAnswerCard(body || "")?.output_intent ?? null
           });
         } else if (Array.isArray(insightRows) && insightRows.length > 0) {
           turnWrap.appendChild(
