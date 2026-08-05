@@ -76,6 +76,11 @@ _ANSWER_CARD_ENVELOPE_KEYS = (
     # direct_answer, which stays a one-sentence fallback for when no
     # draft exists; tldr_summary is always written, not a fallback path.
     "tldr_summary",
+    # 2026-08-05: backend-computed "Try with Think mode" escalation hint
+    # (Chat Master spec). Injected into `parsed` in run_integrate before
+    # this allowlist copy runs — never LLM-produced, but flows through
+    # the same copy mechanism as the LLM-produced fields above.
+    "suggest_escalate",
 )
 
 
@@ -803,6 +808,23 @@ def run_integrate(
             _ub = parsed.get("ui_blocks")
             if isinstance(_ub, list):
                 integrator_ui_blocks = _ub
+            # suggest_escalate (2026-08-05, Chat Master spec) — backend-computed,
+            # never LLM-produced. True iff the turn genuinely stalled (no_path_forward
+            # self-report, or the in-process critic found blocking groundedness
+            # issues -- react_groundedness_passed's existing meaning, repurposed
+            # here rather than re-derived) AND the caller isn't already in the
+            # deepest-reasoning mode (chat_mode="agentic" == the "thinking"
+            # bandit_mode value -- nowhere further to escalate to from there).
+            # Deliberately synchronous: the alternative (the post-run adjudicator's
+            # verdict) isn't computed until 30-70s after this response is already
+            # sent -- a button appearing that late would be confusing, not useful.
+            _groundedness_passed = getattr(ctx, "react_groundedness_passed", None)
+            _stalled = (
+                getattr(ctx, "react_unfinished_reason", None) == "no_path_forward"
+                or _groundedness_passed is False
+            )
+            if _stalled and getattr(ctx, "chat_mode", None) != "agentic":
+                parsed["suggest_escalate"] = True
             # Layer 2 appeals integration — inject suggested_actions if LLM omitted it.
             # The LLM is instructed to populate this for denial/appeal queries, but may
             # silently drop optional fields. We detect the intent here as a reliable fallback.

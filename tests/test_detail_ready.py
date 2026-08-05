@@ -124,3 +124,101 @@ def test_run_integrate_preserves_tldr_summary_in_client_payload():
 
     payload = json.loads(ctx.response_payload["message"])
     assert payload.get("tldr_summary") == "the tl;dr"
+
+
+# ── suggest_escalate (Chat Master spec, 2026-08-05) ─────────────────────────
+
+
+def test_suggest_escalate_true_on_no_path_forward_non_agentic():
+    ctx = _make_ctx()
+    ctx.chat_mode = "copilot"
+    ctx.react_unfinished_reason = "no_path_forward"
+    card = {"mode": "FACTUAL", "direct_answer": "backup", "sections": []}
+
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert payload.get("suggest_escalate") is True
+
+
+def test_suggest_escalate_true_on_groundedness_failed_non_agentic():
+    ctx = _make_ctx()
+    ctx.chat_mode = "quick"
+    ctx.react_groundedness_passed = False
+    card = {"mode": "FACTUAL", "direct_answer": "backup", "sections": []}
+
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert payload.get("suggest_escalate") is True
+
+
+def test_suggest_escalate_absent_when_already_agentic():
+    """Never suggested when already in the deepest-reasoning mode --
+    nowhere further to escalate to."""
+    ctx = _make_ctx()
+    ctx.chat_mode = "agentic"
+    ctx.react_unfinished_reason = "no_path_forward"
+    ctx.react_groundedness_passed = False
+    card = {"mode": "FACTUAL", "direct_answer": "backup", "sections": []}
+
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert "suggest_escalate" not in payload
+
+
+def test_suggest_escalate_absent_when_not_stalled():
+    """Normal, successful turn -- no unfinished_reason, groundedness
+    either None (critic didn't run) or True."""
+    ctx = _make_ctx()
+    ctx.chat_mode = "copilot"
+    ctx.react_unfinished_reason = None
+    ctx.react_groundedness_passed = None
+    card = {"mode": "FACTUAL", "direct_answer": "backup", "sections": []}
+
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert "suggest_escalate" not in payload
+
+
+def test_suggest_escalate_absent_when_groundedness_none_not_false():
+    """Critic never ran (None) must NOT be treated as a failure -- only
+    an explicit False triggers the groundedness leg of the condition."""
+    ctx = _make_ctx()
+    ctx.chat_mode = "copilot"
+    ctx.react_unfinished_reason = None
+    ctx.react_groundedness_passed = None
+    card = {"mode": "FACTUAL", "direct_answer": "backup", "sections": []}
+
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert "suggest_escalate" not in payload
+
+
+def test_suggest_escalate_true_with_other_non_agentic_modes():
+    """task mode is also a valid non-agentic caller_mode that should
+    still get the suggestion when stalled."""
+    ctx = _make_ctx()
+    ctx.chat_mode = "task"
+    ctx.react_unfinished_reason = "no_path_forward"
+    card = {"mode": "FACTUAL", "direct_answer": "backup", "sections": []}
+
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert payload.get("suggest_escalate") is True
