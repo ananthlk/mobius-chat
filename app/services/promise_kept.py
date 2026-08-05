@@ -247,6 +247,14 @@ async def resolve_active_promises(correlation_id: str) -> tuple[list[str], bool]
             return [], False
 
         async with pool.acquire() as conn:
+            # ASSUMPTION (Eval, 2026-08-05): only reads the integrator
+            # stage's composition. Correct today because hipaa_context
+            # (the only live is_authority block) is composed into the
+            # final-answer/integrator prompt — HIPAA applies to what the
+            # user sees. If a future promise block is composed ONLY into
+            # a non-integrator stage (e.g. a planner- or react-only
+            # authority block), this won't see it — add that stage here
+            # too when that happens.
             comp_hash = await conn.fetchval(
                 """
                 SELECT composition_hash FROM llm_calls
