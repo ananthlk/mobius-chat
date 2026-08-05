@@ -10949,11 +10949,13 @@ function run(): void {
       scrollToBottom(messagesEl);
     }
     function onDraftReady(text: string, modeHint?: string): void {
-      // Bleed guard (2026-08-05 live): the backend emits MULTIPLE draft_ready events — an early
-      // ReAct round can send RAW retrieved evidence before a later clean prose draft. Observed raw
-      // shapes: JSON ([{"org_entity_id":…}]) AND citation/source dumps ([1] file.pdf (p.18) …).
-      // Rendering either streams tool output into the answer area. Suppress anything that isn't
-      // human prose and keep showing the thinking status until a clean draft (or `completed`).
+      // Bleed guard (2026-08-05 live): the backend can send a RAW draft_ready (an early ReAct round
+      // with retrieved evidence — JSON [{"org_entity_id":…}] or a citation dump [1] file.pdf (p.18))
+      // before a clean prose draft. We must NOT stream that raw text into the answer area. But we
+      // MUST still build the streaming CARD SHELL — earlier this returned early, and a turn whose
+      // draft(s) were all raw then had NO is-streaming card, so the completed handler fell to the
+      // linear envelope path (no tabs, no detail tab / escalation button / Diagnostics). So: detect
+      // raw, build the shell either way, and gate only the word-stream (below) on it.
       const _draft = (text ?? "").trim();
       const _head = _draft.slice(0, 300);
       const _looksRaw =
@@ -10962,7 +10964,6 @@ function run(): void {
         _draft.startsWith("[") ||               // JSON array OR a leading "[1]" citation marker
         /\[\d+\]\s*\S+\.(pdf|docx?|html?|txt)\b/i.test(_head) ||  // "[1] file.pdf" source dump
         /\(p\.?\s*\d+\)/.test(_draft.slice(0, 120));             // "(p.18)" page ref near the top
-      if (_looksRaw) return;
       // Replace any interim plain bubble (thinking text) with the card shell
       if (messageWrapEl) { messageWrapEl.remove(); messageWrapEl = null; }
 
@@ -11090,25 +11091,32 @@ function run(): void {
       turnWrap.appendChild(messageWrapEl);
       releaseComposer();
 
-      // Word-stream into prose
-      const words = text.split(" ");
-      let wi = 0;
-      let cancelled = false;
-      draftStreamCancel = () => {
-        cancelled = true;
-        prose.innerHTML = simpleMarkdownToHtml(sanitizeDisplayMessage(text));
+      // Word-stream into prose — ONLY for clean prose drafts. A raw draft keeps the shell + the
+      // cycling status line but streams NOTHING (no bleed); the completed handler then fills the
+      // clean direct answer + sections into this same summary panel.
+      if (_looksRaw) {
         cursor.remove();
-        scrollToBottom(messagesEl);
-      };
-      function streamStep() {
-        if (cancelled) return;
-        wi = Math.min(wi + 5, words.length);
-        prose.innerHTML = simpleMarkdownToHtml(words.slice(0, wi).join(" "));
-        scrollToBottom(messagesEl);
-        if (wi < words.length) window.setTimeout(streamStep, 18);
-        else { draftStreamCancel = null; cursor.remove(); }
+        draftStreamCancel = null;
+      } else {
+        const words = text.split(" ");
+        let wi = 0;
+        let cancelled = false;
+        draftStreamCancel = () => {
+          cancelled = true;
+          prose.innerHTML = simpleMarkdownToHtml(sanitizeDisplayMessage(text));
+          cursor.remove();
+          scrollToBottom(messagesEl);
+        };
+        const streamStep = () => {
+          if (cancelled) return;
+          wi = Math.min(wi + 5, words.length);
+          prose.innerHTML = simpleMarkdownToHtml(words.slice(0, wi).join(" "));
+          scrollToBottom(messagesEl);
+          if (wi < words.length) window.setTimeout(streamStep, 18);
+          else { draftStreamCancel = null; cursor.remove(); }
+        };
+        streamStep();
       }
-      streamStep();
     }
 
     const payload: {
@@ -11364,6 +11372,14 @@ function run(): void {
                 const existingSummaryPanel = existingBubble.querySelector(".ac-tab-panel--summary") as HTMLElement | null;
                 const renderedSummaryPanel = renderedBubble.querySelector(".ac-tab-panel--summary") as HTMLElement | null;
                 if (existingSummaryPanel && renderedSummaryPanel) {
+                  // The streamed prose normally IS the direct answer. If it's empty (a raw draft was
+                  // suppressed, so nothing streamed), the tab card would be headless — pull the clean
+                  // direct answer from the rendered card into the prose so it reads correctly.
+                  const streamedProse = existingSummaryPanel.querySelector(".ac-summary-prose") as HTMLElement | null;
+                  const renderedDirect = renderedBubble.querySelector(".answer-card-direct") as HTMLElement | null;
+                  if (streamedProse && renderedDirect && !(streamedProse.textContent ?? "").trim()) {
+                    streamedProse.innerHTML = renderedDirect.innerHTML;
+                  }
                   Array.from(renderedSummaryPanel.children).forEach((child) => {
                     existingSummaryPanel.appendChild(child);
                   });

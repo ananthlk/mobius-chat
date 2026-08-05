@@ -11744,20 +11744,18 @@ ${message}`;
       _draft.startsWith("[") || // JSON array OR a leading "[1]" citation marker
       /\[\d+\]\s*\S+\.(pdf|docx?|html?|txt)\b/i.test(_head) || // "[1] file.pdf" source dump
       /\(p\.?\s*\d+\)/.test(_draft.slice(0, 120));
-      if (_looksRaw)
-        return;
       if (messageWrapEl) {
         messageWrapEl.remove();
         messageWrapEl = null;
       }
       if (modeHint === "RECITAL") {
         let recitalStreamStep2 = function() {
-          if (cancelled2)
+          if (cancelled)
             return;
-          wi2 = Math.min(wi2 + 5, words2.length);
-          prose2.innerHTML = simpleMarkdownToHtml(words2.slice(0, wi2).join(" "));
+          wi = Math.min(wi + 5, words.length);
+          prose2.innerHTML = simpleMarkdownToHtml(words.slice(0, wi).join(" "));
           scrollToBottom(messagesEl);
-          if (wi2 < words2.length)
+          if (wi < words.length)
             window.setTimeout(recitalStreamStep2, 18);
           else {
             draftStreamCancel = null;
@@ -11784,11 +11782,11 @@ ${message}`;
         messageWrapEl = wrap2;
         turnWrap.appendChild(messageWrapEl);
         releaseComposer();
-        const words2 = text.split(" ");
-        let wi2 = 0;
-        let cancelled2 = false;
+        const words = text.split(" ");
+        let wi = 0;
+        let cancelled = false;
         draftStreamCancel = () => {
-          cancelled2 = true;
+          cancelled = true;
           prose2.innerHTML = simpleMarkdownToHtml(sanitizeDisplayMessage(text));
           cursor2.remove();
           scrollToBottom(messagesEl);
@@ -11876,29 +11874,34 @@ ${message}`;
       messageWrapEl = wrap;
       turnWrap.appendChild(messageWrapEl);
       releaseComposer();
-      const words = text.split(" ");
-      let wi = 0;
-      let cancelled = false;
-      draftStreamCancel = () => {
-        cancelled = true;
-        prose.innerHTML = simpleMarkdownToHtml(sanitizeDisplayMessage(text));
+      if (_looksRaw) {
         cursor.remove();
-        scrollToBottom(messagesEl);
-      };
-      function streamStep() {
-        if (cancelled)
-          return;
-        wi = Math.min(wi + 5, words.length);
-        prose.innerHTML = simpleMarkdownToHtml(words.slice(0, wi).join(" "));
-        scrollToBottom(messagesEl);
-        if (wi < words.length)
-          window.setTimeout(streamStep, 18);
-        else {
-          draftStreamCancel = null;
+        draftStreamCancel = null;
+      } else {
+        const words = text.split(" ");
+        let wi = 0;
+        let cancelled = false;
+        draftStreamCancel = () => {
+          cancelled = true;
+          prose.innerHTML = simpleMarkdownToHtml(sanitizeDisplayMessage(text));
           cursor.remove();
-        }
+          scrollToBottom(messagesEl);
+        };
+        const streamStep = () => {
+          if (cancelled)
+            return;
+          wi = Math.min(wi + 5, words.length);
+          prose.innerHTML = simpleMarkdownToHtml(words.slice(0, wi).join(" "));
+          scrollToBottom(messagesEl);
+          if (wi < words.length)
+            window.setTimeout(streamStep, 18);
+          else {
+            draftStreamCancel = null;
+            cursor.remove();
+          }
+        };
+        streamStep();
       }
-      streamStep();
     }
     const payload = { message };
     if (currentThreadId)
@@ -12089,6 +12092,11 @@ ${message}`;
               const existingSummaryPanel = existingBubble.querySelector(".ac-tab-panel--summary");
               const renderedSummaryPanel = renderedBubble.querySelector(".ac-tab-panel--summary");
               if (existingSummaryPanel && renderedSummaryPanel) {
+                const streamedProse = existingSummaryPanel.querySelector(".ac-summary-prose");
+                const renderedDirect = renderedBubble.querySelector(".answer-card-direct");
+                if (streamedProse && renderedDirect && !(streamedProse.textContent ?? "").trim()) {
+                  streamedProse.innerHTML = renderedDirect.innerHTML;
+                }
                 Array.from(renderedSummaryPanel.children).forEach((child) => {
                   existingSummaryPanel.appendChild(child);
                 });
