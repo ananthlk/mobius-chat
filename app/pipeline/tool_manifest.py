@@ -39,37 +39,19 @@ from app.stages.agents.capabilities import tool_capabilities_for_parser
 # behavioral rules (e.g. "switch to recall if BM25 dominates") follow
 # from first principles instead of memorized symptoms.
 
-_FL_MEDICAID_DATA_ROUTING_BLOCK = """\
-FL MEDICAID BH MARKET DATA — read this FIRST before picking a tool.
-
-These tools query BigQuery directly and return verified numbers. Use them
-(NOT search_corpus) whenever the question is about quantitative FL Medicaid
-behavioral-health market data:
-
-  • Org rankings, market share, total benes/revenue/claims by org or type
-  • New entrant analysis — who entered, when, which codes/service lines
-  • Benchmarks — how a specific org compares to peers or the market
-  • Rate benchmarks — HCPCS-level rates, gaps, trends
-  • Service-line mix, utilization, market retention
-  • Market size totals or year-over-year trends (2019–2024)
-
-Quick-pick guide (use the first match):
-  ┌─────────────────────────────────────────────────────────────────────┐
-  │ Largest / top orgs, who serves the most benes  → get_top_orgs      │
-  │ New entrants, who captured CMHC share          → get_entrant_analysis │
-  │ Specific org profile (name given)              → get_org_profile    │
-  │ How org X compares to peers                    → get_org_benchmark  │
-  │ Market share over time (2019-2024)             → get_market_timeseries │
-  │ Official FL Medicaid fee schedule (ceiling rate) → get_published_rates │
-  │ Rate benchmarks, actual paid P50/P75           → get_rate_benchmarks │
-  │ Service line breakdown / mix                   → get_market_decomposition │
-  │ Find an org by name / get its slug             → search_orgs        │
-  │ All BHPF or FBHA member orgs                   → get_org_universe   │
-  └─────────────────────────────────────────────────────────────────────┘
-
-Full parameter details for every get_* tool are in the
-"Auto-discovered tools (from MCP)" section below — refer there for
-optional filter params (org_type, period_year, service_line, etc.)."""
+# _FL_MEDICAID_DATA_ROUTING_BLOCK removed 2026-08-04 (Chat Architecture,
+# live-testing regression: agent burned 5 rounds trying get_published_rates/
+# get_rate_benchmarks, both "tool not found"). This block promised ~10
+# get_*/search_orgs tools as a "read this FIRST" priority routing table, but
+# NONE of them are backed by a registered MCP tool -- confirmed live against
+# GET /chat/skills-manifest, whose "Auto-discovered tools (from MCP)" section
+# contains only the 4 appeals_* tools. No MCP URL in dev.env points at
+# whatever service is meant to provide these market-analytics tools; Chat
+# Architecture is surfacing that as a structural gap to Ananth separately.
+# A prominent routing table for tools that always 404 is worse than no
+# routing table at all. Restore this (or a corrected version) once that
+# service is actually wired into EXTRA_MCP_URLS -- see git history for the
+# original block/wording.
 
 
 _RETRIEVAL_METHODOLOGY_PRIMER = """\
@@ -350,9 +332,9 @@ def _compose_manifest(allowed: frozenset[str] | None = None) -> str:
         return prose
 
     curated_blocks = [
-        # FL Medicaid data routing gate — must come FIRST so the planner
-        # sees the quick-pick guide before it reaches rag.
-        _FL_MEDICAID_DATA_ROUTING_BLOCK if _allow("get_top_orgs") or allowed is None else "",
+        # FL Medicaid data routing gate removed 2026-08-04 -- see the
+        # module-level comment above _RETRIEVAL_METHODOLOGY_PRIMER's
+        # former neighbor for why (dangling MCP-tool promises).
         # Retrieval methodology primer — describes the single rag() entry point.
         _RETRIEVAL_METHODOLOGY_PRIMER if _allow("rag") else "",
         # rag: the ONE retrieval tool. Replaces search_corpus + payor_lookup +

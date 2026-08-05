@@ -50,6 +50,36 @@ def test_removed_tools_absent_from_manifest():
         )
 
 
+def test_fl_medicaid_market_data_tools_absent_from_manifest():
+    """Regression guard (2026-08-04, Chat Architecture live-testing
+    report): the "FL Medicaid BH Market Data" routing block promised
+    get_top_orgs/get_published_rates/get_rate_benchmarks/etc as a
+    "read this FIRST" priority table, but none of them are backed by a
+    registered MCP tool -- confirmed against the live deployed manifest,
+    which had zero of these in its "Auto-discovered tools (from MCP)"
+    section. The agent burned 5 rounds hitting "tool not found" before
+    falling back to rag. Block removed until the backing MCP service is
+    actually wired into EXTRA_MCP_URLS -- if any of these reappear here,
+    confirm the service is live before restoring the routing prose."""
+    for tool_name in (
+        "get_top_orgs",
+        "get_entrant_analysis",
+        "get_org_profile",
+        "get_org_benchmark",
+        "get_market_timeseries",
+        "get_published_rates",
+        "get_rate_benchmarks",
+        "get_market_decomposition",
+        "search_orgs",
+        "get_org_universe",
+    ):
+        assert tool_name not in TOOL_MANIFEST, (
+            f"{tool_name!r} reappeared in TOOL_MANIFEST -- confirm the backing "
+            f"MCP service is actually registered (check /chat/skills-manifest's "
+            f"'Auto-discovered tools' section) before restoring this promise."
+        )
+
+
 def test_entity_tools_set():
     """ENTITY_TOOLS contains tools that never receive jurisdiction context."""
     # Post-disconnect, only these five remain.

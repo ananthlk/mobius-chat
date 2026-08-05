@@ -18,6 +18,7 @@ from app.api.chat import ChatRequest
 from app.pipeline.context import PipelineContext
 from app.pipeline.react.round0 import (
     ROUND0_SENTINEL,
+    ROUND0_SYSTEM_PROMPT,
     build_round0_user_message,
     build_round_context_prefix,
     try_system_context_round0,
@@ -447,3 +448,31 @@ def test_publish_completed_omits_flag_when_signal_absent():
         orch._publish_completed(ctx, t0_start=0.0)
 
     assert "answered_from_system_context" not in captured["payload"]
+
+
+def test_round0_prompt_does_not_promise_unregistered_market_data_tools():
+    """Regression guard (2026-08-04, Chat Architecture live-testing
+    report): ROUND0_SYSTEM_PROMPT used to list ~14 FL Medicaid market-
+    data tools (get_top_orgs, get_published_rates, get_rate_benchmarks,
+    etc.) as available "in the next rounds" -- none of them are backed
+    by a registered MCP tool (confirmed against the live deployed
+    /chat/skills-manifest). Round 0 pointing the model at tools that
+    always 404 fed straight into the same tool_manifest.py regression
+    (see test_tool_manifest.py's matching guard). Removed the specific
+    tool-name list; the decision rule still correctly routes these
+    question types to NEEDS_TOOLS, they just fall through to rag()
+    instead of a phantom tool now."""
+    for tool_name in (
+        "search_orgs", "get_top_orgs", "get_org_profile", "get_org_universe",
+        "get_market_timeseries", "get_market_decomposition", "get_entrant_analysis",
+        "get_org_benchmark", "get_published_rates", "get_rate_benchmarks",
+        "get_rate_trends", "get_market_size", "get_org_leakage", "get_fact_pack",
+    ):
+        assert tool_name not in ROUND0_SYSTEM_PROMPT, (
+            f"{tool_name!r} reappeared in ROUND0_SYSTEM_PROMPT -- confirm the "
+            f"backing MCP service is actually registered before restoring this."
+        )
+    # The decision rule itself must still steer away from thin-context
+    # answers for these question types -- only the dangling tool NAMES
+    # were removed, not the routing behavior.
+    assert ROUND0_SENTINEL in ROUND0_SYSTEM_PROMPT
