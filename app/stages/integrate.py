@@ -659,6 +659,7 @@ def run_integrate(
                 # full "completed" payload.
                 _detail = _parsed.get("display_summary")
                 _oi = _parsed.get("output_intent")
+                _tldr = _parsed.get("tldr_summary")
                 if isinstance(_detail, str) and _detail.strip():
                     try:
                         from app.storage.progress import append_detail_answer
@@ -671,6 +672,40 @@ def run_integrate(
                             "append_detail_answer failed (cid=%s)",
                             getattr(ctx, "correlation_id", "?"), exc_info=True,
                         )
+
+                # Loud-fail visibility (2026-08-05, Chat Master — same
+                # pattern as thread_summary below): these three are
+                # supposed to be on every complete turn, but nothing was
+                # catching it when the model silently dropped them (found
+                # manually, see record_detail_fields_emitted's docstring).
+                # RECITAL mode is excluded — its schema never includes
+                # output_intent/display_summary/tldr_summary at all (it's
+                # a verbatim-text response, not a synthesized answer), so
+                # their absence there is correct, not a compliance miss.
+                if _parsed.get("mode") in ("FACTUAL", "CANONICAL", "BLENDED"):
+                    _detail_missing_fields: list[str] = []
+                    if not (isinstance(_oi, str) and _oi.strip()):
+                        _detail_missing_fields.append("output_intent")
+                    if not (isinstance(_detail, str) and _detail.strip()):
+                        _detail_missing_fields.append("display_summary")
+                    if not (isinstance(_tldr, str) and _tldr.strip()):
+                        _detail_missing_fields.append("tldr_summary")
+                    if _detail_missing_fields:
+                        logger.warning(
+                            "[phase13.7] integrator emitted AnswerCard missing %s "
+                            "(cid=%s mode=%s).",
+                            ",".join(_detail_missing_fields),
+                            getattr(ctx, "correlation_id", "?")[:8],
+                            _parsed.get("mode", "?"),
+                        )
+                    try:
+                        from app.services.phase_13_7_metrics import record_detail_fields_emitted
+                        record_detail_fields_emitted(
+                            missing_fields=_detail_missing_fields,
+                            mode=_parsed.get("mode") if isinstance(_parsed.get("mode"), str) else None,
+                        )
+                    except Exception:
+                        pass
 
                 _ts = _parsed.get("thread_summary")
                 if isinstance(_ts, str) and _ts.strip():

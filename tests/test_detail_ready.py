@@ -222,3 +222,73 @@ def test_suggest_escalate_true_with_other_non_agentic_modes():
 
     payload = json.loads(ctx.response_payload["message"])
     assert payload.get("suggest_escalate") is True
+
+
+# ── loud-fail visibility for missing output_intent/display_summary/tldr_summary ──
+
+
+def test_record_detail_fields_emitted_logs_all_present():
+    from unittest.mock import patch as _patch
+
+    ctx = _make_ctx()
+    card = {
+        "mode": "FACTUAL", "direct_answer": "backup", "sections": [],
+        "output_intent": "read", "display_summary": "detail", "tldr_summary": "tldr",
+    }
+    with patch("app.stages.integrate.format_response") as mock_format, \
+         _patch("app.services.phase_13_7_metrics.record_detail_fields_emitted") as mock_metric:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    mock_metric.assert_called_once_with(missing_fields=[], mode="FACTUAL")
+
+
+def test_record_detail_fields_emitted_logs_missing_fields():
+    """The real-world regression: a complete BLENDED-mode turn that
+    silently drops all three fields must be caught, not silently invisible."""
+    from unittest.mock import patch as _patch
+
+    ctx = _make_ctx()
+    card = {"mode": "BLENDED", "direct_answer": "backup", "sections": []}
+    with patch("app.stages.integrate.format_response") as mock_format, \
+         _patch("app.services.phase_13_7_metrics.record_detail_fields_emitted") as mock_metric:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    mock_metric.assert_called_once()
+    _, kwargs = mock_metric.call_args
+    assert set(kwargs["missing_fields"]) == {"output_intent", "display_summary", "tldr_summary"}
+    assert kwargs["mode"] == "BLENDED"
+
+
+def test_record_detail_fields_emitted_partial_miss():
+    from unittest.mock import patch as _patch
+
+    ctx = _make_ctx()
+    card = {
+        "mode": "CANONICAL", "direct_answer": "backup", "sections": [],
+        "output_intent": "report", "display_summary": "detail",
+        # tldr_summary omitted
+    }
+    with patch("app.stages.integrate.format_response") as mock_format, \
+         _patch("app.services.phase_13_7_metrics.record_detail_fields_emitted") as mock_metric:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    _, kwargs = mock_metric.call_args
+    assert kwargs["missing_fields"] == ["tldr_summary"]
+
+
+def test_record_detail_fields_emitted_skipped_for_recital_mode():
+    """RECITAL responses never carry these fields by design -- must not
+    false-positive as a compliance miss."""
+    from unittest.mock import patch as _patch
+
+    ctx = _make_ctx()
+    card = {"mode": "RECITAL", "direct_answer": "From the doc:", "recital": {"verbatim": "text"}}
+    with patch("app.stages.integrate.format_response") as mock_format, \
+         _patch("app.services.phase_13_7_metrics.record_detail_fields_emitted") as mock_metric:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    mock_metric.assert_not_called()

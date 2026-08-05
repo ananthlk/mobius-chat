@@ -186,6 +186,31 @@ def record_thread_summary_emitted(*, emitted: bool, mode: str | None = None) -> 
     )
 
 
+def record_detail_fields_emitted(*, missing_fields: list[str], mode: str | None = None) -> None:
+    """Fire from run_integrate after output_intent/display_summary/
+    tldr_summary extraction (2026-08-05 — same loud-fail pattern as
+    record_thread_summary_emitted, requested after a live turn where the
+    integrator silently dropped all three fields on a "produce a
+    detailed report" query and it was only caught by manually pulling
+    the stored row — see chat_turns.correlation_id
+    78f80c44-23cc-4751-b16a-bb046f477bc1).
+
+    ``missing_fields`` is a subset of {"output_intent", "display_summary",
+    "tldr_summary"} — whichever were absent/empty on this complete turn.
+    Empty list means all three were present. Aggregate the non-empty
+    rate as ``phase_13_7_detail_fields_miss_rate``; the specific
+    ``missing`` value tells you WHICH field(s) dropped, not just that
+    something did.
+    """
+    logger.info(
+        "phase13_7_detail_fields_emit channel=phase13_7_detail_fields_emit "
+        "emitted=%s missing=%s mode=%s",
+        "true" if not missing_fields else "false",
+        ",".join(missing_fields) if missing_fields else "none",
+        mode or "?",
+    )
+
+
 def record_persist_fallback_tier(tier: Literal[0, 1, 2]) -> None:
     """Fire from _atomic_save_turn_with_messages when ANY fallback runs.
 
