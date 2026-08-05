@@ -4,6 +4,7 @@ Runs stages in order; handles clarification/refinement early exit; publishes res
 """
 import logging
 import os
+import re
 import time
 import traceback
 from collections.abc import Callable
@@ -51,6 +52,53 @@ def _normalize_chat_mode(raw: str | None) -> str:
     if m == "task":
         return "task"
     return "copilot"
+
+
+# Task A (retry-intent detection, 2026-08-04). Deliberately a plain regex,
+# not an LLM call -- detecting "try again" is cheap and deterministic;
+# spending a planner round on it would add real latency+cost for nothing.
+# Anchored on the WHOLE message (allowing an optional leading "please" and
+# trailing punctuation) so a real question that happens to mention "try
+# again" mid-sentence -- e.g. "should I try again with a different payer"
+# -- does NOT false-positive; only a bare retry request matches.
+_RETRY_PHRASE_RE = re.compile(
+    r"^(please\s+)?"
+    r"(try\s+(that\s+)?again|retry|redo|do\s+that\s+again|can\s+you\s+try\s+again)"
+    r"[.!?\s]*$",
+    re.IGNORECASE,
+)
+
+
+def _detect_and_resolve_retry(ctx: PipelineContext) -> None:
+    """When ``ctx.message`` is a bare retry phrase, overwrite it with the
+    thread's prior question and set ``ctx.is_retry = True`` -- so the
+    planner sees the actual question to re-run, never the literal phrase.
+
+    No thread_id, or no prior turn found -- leaves ctx untouched (message
+    stays as-is, is_retry stays False); the planner sees "try again" as a
+    real message with nothing to retry, a reasonable degrade rather than
+    a special error path.
+    """
+    if not _RETRY_PHRASE_RE.match(ctx.message or ""):
+        return
+    if not ctx.thread_id:
+        return
+    try:
+        from app.storage.turns import get_last_turn_question
+        prior = get_last_turn_question(ctx.thread_id)
+    except Exception as e:
+        logger.warning("retry-intent: get_last_turn_question failed: %s", e)
+        return
+    if not prior:
+        return
+    logger.info(
+        "retry-intent: cid=%s thread=%s resolved %r -> prior question",
+        ctx.correlation_id[:8] if ctx.correlation_id else "",
+        ctx.thread_id[:8] if ctx.thread_id else "",
+        ctx.message,
+    )
+    ctx.message = prior
+    ctx.is_retry = True
 
 
 def _resolve_allowed_tools(
@@ -214,6 +262,16 @@ def _invoke_cache_assist(ctx, *, chat_mode_hint: str | None, emitter) -> None:
     )
     from app.services.cache_mode import select_cache_mode
     from app.skills.registry import SkillCall, dispatch, has as registry_has
+
+    # Task A (retry-intent detection, 2026-08-04): a retry turn re-runs the
+    # PRIOR question specifically because the user wasn't satisfied with
+    # what they got -- re-serving the same cached answer defeats the whole
+    # point of "try again". Skip the lookup entirely, don't just deprioritize
+    # it; ctx.cache_assist_override intentionally not touched (retry doesn't
+    # imply "cache is broken globally", just "not for THIS turn").
+    if getattr(ctx, "is_retry", False):
+        ctx.cache_mode = "off"
+        return
 
     mode = select_cache_mode(
         correlation_id=ctx.correlation_id,
@@ -382,6 +440,7 @@ def run_pipeline(
         cache_assist_override=cache_assist,
         user_profile=user_profile if isinstance(user_profile, dict) and user_profile else None,
     )
+    _detect_and_resolve_retry(ctx)
 
     def on_thinking(chunk) -> None:  # str | dict (EmitEnvelope.to_dict())
         """Accept legacy string emits OR structured envelope dicts.

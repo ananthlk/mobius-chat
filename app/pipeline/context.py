@@ -18,6 +18,15 @@ class PipelineContext:
     message: str
     """Raw user message for this turn."""
 
+    is_retry: bool = False
+    """True when this turn's raw message was detected as a bare retry phrase
+    ("try again", "retry", etc.) and ``message`` was overwritten with the
+    thread's prior question before the planner ran (Task A, 2026-08-04, see
+    orchestrator._detect_and_resolve_retry). Downstream stages check this to
+    behave differently on a retry -- cache-assist in particular MUST skip
+    its lookup on a retry turn (re-serving the same cached answer the user
+    is explicitly asking to redo defeats the purpose)."""
+
     system_context: str | None = None
     """Pre-loaded ground-truth context passed by the caller (POST /chat's
     ``system_context`` field). When set, ReAct runs a Round 0 attempt

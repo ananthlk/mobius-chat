@@ -370,6 +370,43 @@ def get_last_turn_sources(thread_id: str, limit_turns: int = 2) -> list[dict[str
     return out
 
 
+def get_last_turn_question(thread_id: str) -> str | None:
+    """Return the most recent turn's raw question text for this thread, or
+    None if there isn't one (new thread, or DB error -- never raises).
+
+    Task A (retry-intent detection, 2026-08-04): when a user sends a bare
+    "try again"/"retry" as a new message, the orchestrator needs the actual
+    prior question to re-run, not the literal retry phrase. Deliberately a
+    dedicated DESC LIMIT 1 query rather than reusing get_thread_turns() --
+    that function's ASC+LIMIT ordering keeps the OLDEST turns on long
+    threads (documented quirk, fine for its sidebar-rehydration use case,
+    wrong here where we specifically need the newest turn). No user_id gate
+    -- thread_id is the scoping boundary, same as get_last_turn_sources()
+    above; a retry must work in dev/unauthenticated mode too."""
+    tid = (thread_id or "").strip()
+    if not tid:
+        return None
+    result = db_query(
+        """
+        SELECT question
+        FROM chat_turns
+        WHERE thread_id = :thread_id AND question IS NOT NULL AND question != ''
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        _DB,
+        params={"thread_id": tid},
+    )
+    if _err_code(result) is not None:
+        logger.warning("Failed to get last turn question: %s", _err_message(result))
+        return None
+    rows = _rows_as_dicts(result)
+    if not rows:
+        return None
+    q = (rows[0].get("question") or "").strip()
+    return q or None
+
+
 def get_recent_turns(limit: int = 10, user_id: str | None = None) -> list[dict[str, Any]]:
     """Return list of recent turns: { correlation_id, question, created_at }.
 
