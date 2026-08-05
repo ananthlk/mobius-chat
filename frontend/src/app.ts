@@ -6921,6 +6921,44 @@ function _paintBanditCheckmark(el: HTMLElement, count: number): void {
   }
 }
 
+/** Poll-side reconcile for the QA panel + bandit checkmark (live-test fix, 2026-08-05).
+ *  Two failures this repairs, both rooted in post-run adjudication finishing AFTER the turn
+ *  resolves (so qc_audit is absent on the initial `completed` payload):
+ *   (1) The QA verdicts panel — which CONTAINS the bandit row — is built once, synchronously,
+ *       in _injectDiagnosticsTab, and only when qc is present. Absent qc → the panel (and its
+ *       bandit row) is never created; the poll that later brings qc never re-injects it. So we
+ *       late-inject it here the first time the poll carries a real qc_audit.
+ *   (2) The green checkmark relied solely on catching the bandit_reward_persisted SSE event in a
+ *       bounded window. The SAME signal (one persisted llm_calls.quality_score per event) is in
+ *       the polled usage_breakdown as rows carrying quality_score — a reliable source that does
+ *       not depend on SSE timing. We count those and paint, never regressing below the SSE count. */
+function _reconcileQaAndBanditFromPoll(turnWrap: HTMLElement, d: ChatResponse): void {
+  const cid = (d.correlation_id || turnWrap.getAttribute("data-correlation-id") || "").trim();
+  const qc = d.qc_audit;
+
+  // (1) Late-inject the QA verdicts panel once qc has arrived but the panel was never built.
+  if (qc && typeof (qc as QcAuditInfo).passed === "boolean") {
+    const diag = turnWrap.querySelector(".ac-tab-panel--diagnostics");
+    if (diag && !diag.querySelector(".qa-verdicts")) {
+      const el = renderQaVerdictsPanel(qc as QcAuditInfo, cid || undefined);
+      if (el) diag.appendChild(el);
+    }
+  }
+
+  // (2) Paint the bandit checkmark from persisted per-call quality scores in the poll.
+  if (cid) {
+    const rows = Array.isArray(d.usage_breakdown) ? (d.usage_breakdown as AnswerInsightRow[]) : [];
+    const persisted = rows.filter((r) => typeof r.quality_score === "number").length;
+    if (persisted > (_banditRewardCounts.get(cid) ?? 0)) _banditRewardCounts.set(cid, persisted);
+    const count = _banditRewardCounts.get(cid) ?? 0;
+    if (count > 0) {
+      turnWrap
+        .querySelectorAll<HTMLElement>(`[data-bandit-cid="${cid}"]`)
+        .forEach((el) => _paintBanditCheckmark(el, count));
+    }
+  }
+}
+
 /** QA verdicts panel (Task #22) — full adjudication breakdown in the Diagnostics tab, to UX's
  *  3-section wireframe: (1) user verdict summary + flags + rubric score, (2) bandit reward
  *  tracking (quality ruler / score / persistence), (3) collapsed raw adjudicator JSON.
@@ -9944,7 +9982,10 @@ function run(): void {
       const STALL_MS = 90_000;
       // Task #23: how long to keep the SSE open after "completed" for post-run events
       // (bandit_reward_persisted from post-run adjudication). Bounded so we never leak a stream.
-      const POST_RUN_EVENT_WINDOW_MS = 90_000;
+      // Must be ≥ the qc refetch window (last poll at 120s, below) — a shorter window let the
+      // stream close before a slow adjudication fired, so the checkmark stayed "awaiting" while
+      // the QA verdict itself arrived via the still-open poll. (Live-test bug, 2026-08-05.)
+      const POST_RUN_EVENT_WINDOW_MS = 130_000;
       let lastEventMs = Date.now();
       const es = new EventSource(streamUrl);
       const stallTimer = window.setInterval(() => {
@@ -11212,6 +11253,7 @@ function run(): void {
                 mergeLlmPerformanceUsageFromPoll(turnWrap, d);
                 mergeTechnicalPanels(turnWrap, d);
                 mergeLlmPerformanceRoutingHydrate(turnWrap, d);
+                _reconcileQaAndBanditFromPoll(turnWrap, d);
               })
               .catch(() => {});
           };

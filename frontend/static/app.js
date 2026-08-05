@@ -8392,6 +8392,28 @@ function _paintBanditCheckmark(el2, count) {
     el2.textContent = "awaiting bandit reward event\u2026";
   }
 }
+function _reconcileQaAndBanditFromPoll(turnWrap, d) {
+  const cid = (d.correlation_id || turnWrap.getAttribute("data-correlation-id") || "").trim();
+  const qc = d.qc_audit;
+  if (qc && typeof qc.passed === "boolean") {
+    const diag = turnWrap.querySelector(".ac-tab-panel--diagnostics");
+    if (diag && !diag.querySelector(".qa-verdicts")) {
+      const el2 = renderQaVerdictsPanel(qc, cid || void 0);
+      if (el2)
+        diag.appendChild(el2);
+    }
+  }
+  if (cid) {
+    const rows = Array.isArray(d.usage_breakdown) ? d.usage_breakdown : [];
+    const persisted = rows.filter((r) => typeof r.quality_score === "number").length;
+    if (persisted > (_banditRewardCounts.get(cid) ?? 0))
+      _banditRewardCounts.set(cid, persisted);
+    const count = _banditRewardCounts.get(cid) ?? 0;
+    if (count > 0) {
+      turnWrap.querySelectorAll(`[data-bandit-cid="${cid}"]`).forEach((el2) => _paintBanditCheckmark(el2, count));
+    }
+  }
+}
 function renderQaVerdictsPanel(qc, correlationId) {
   if (!qc)
     return null;
@@ -10890,7 +10912,7 @@ function run() {
       let resolved = false;
       let draftEmitted = false;
       const STALL_MS = 9e4;
-      const POST_RUN_EVENT_WINDOW_MS = 9e4;
+      const POST_RUN_EVENT_WINDOW_MS = 13e4;
       let lastEventMs = Date.now();
       const es = new EventSource(streamUrl);
       const stallTimer = window.setInterval(() => {
@@ -11976,6 +11998,7 @@ ${message}`;
             mergeLlmPerformanceUsageFromPoll(turnWrap, d);
             mergeTechnicalPanels(turnWrap, d);
             mergeLlmPerformanceRoutingHydrate(turnWrap, d);
+            _reconcileQaAndBanditFromPoll(turnWrap, d);
           }).catch(() => {
           });
         };
