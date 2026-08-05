@@ -2272,37 +2272,33 @@ body {
   white-space: normal;
   word-wrap: break-word;
 }
-/* Task #10 — output_intent format chip. Read-only marker at the top of the card. Semantic
-   per-intent hue (orthogonal to accent/success/warn/error); icon + text, color is never the
-   only signal. Text abbreviates gracefully only via narrow-viewport rule below. */
+/* Task #10 — output_intent format chip. This is a DIAGNOSTIC/internal marker, not a
+   user-facing element (Ananth 2026-08-05): render it near-invisible — no pill chrome, tiny
+   muted text, low opacity. It should read as a faint label, easy to miss, revealing a touch
+   more only on hover for anyone who goes looking. No per-intent color (that made it prominent). */
 .answer-card-format-row {
-  margin-bottom: 0.4rem;
+  margin-bottom: 0.25rem;
 }
 .answer-card-format-chip {
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
-  padding: 0.12rem 0.5rem;
-  border-radius: 999px;
-  font-size: 0.7rem;
-  font-weight: 600;
-  line-height: 1.4;
-  border: 1px solid var(--fmt-chip-color, #64748b);
-  color: var(--fmt-chip-color, #64748b);
-  background: color-mix(in srgb, var(--fmt-chip-color, #64748b) 10%, transparent);
+  gap: 0.2rem;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 0.6rem;
+  font-weight: 500;
+  line-height: 1.3;
+  letter-spacing: 0.01em;
+  color: var(--text-tertiary, #9ca3af);
+  opacity: 0.4;
   white-space: nowrap;
+  transition: opacity 0.15s ease;
 }
-.answer-card-format-chip-icon { font-size: 0.75rem; line-height: 1; }
-.answer-card-format-chip--read        { --fmt-chip-color: #64748b; }
-.answer-card-format-chip--report      { --fmt-chip-color: #3b82f6; }
-.answer-card-format-chip--email       { --fmt-chip-color: #0d9488; }
-.answer-card-format-chip--sms         { --fmt-chip-color: #06b6d4; }
-.answer-card-format-chip--emr         { --fmt-chip-color: #059669; }
-.answer-card-format-chip--appeal      { --fmt-chip-color: #d97706; }
-.answer-card-format-chip--payor_report { --fmt-chip-color: #db2777; }
+.answer-card-format-chip:hover { opacity: 0.7; }
+.answer-card-format-chip-icon { font-size: 0.62rem; line-height: 1; opacity: 0.8; }
 @media (max-width: 520px) {
-  /* Narrow viewport: keep the icon + text but tighten so it never forces card overflow. */
-  .answer-card-format-chip { font-size: 0.66rem; padding: 0.1rem 0.42rem; }
+  .answer-card-format-chip { font-size: 0.58rem; }
 }
 /* Inline links rendered inside LLM responses */
 .chat-link {
