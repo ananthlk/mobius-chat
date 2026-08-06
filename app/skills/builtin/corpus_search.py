@@ -105,6 +105,7 @@ def _post_skill(
     assembly_strategy: str | None,
     canonical_floor: float | None,
     caller_id: str | None,
+    citable_required: bool = False,
 ) -> dict[str, Any]:
     """POST to rag's v1 corpus_search_agent skill.
 
@@ -123,6 +124,14 @@ def _post_skill(
                                         with the chat turn that
                                         triggered it (chat passes
                                         the turn correlation_id)
+
+    ``citable_required`` (2026-08-05, Chat Architecture ruling): set True
+    only for queries that inherently demand verifiable sources (payor
+    policy, prior auth, coverage, claims — see react_loop.py's
+    ``_citable_required()``). Omitted from the body when False so the
+    Router's own default applies — chat does NOT send
+    ``authority_requirement``/``allocator_override``; those stay
+    Router-internal per the same ruling.
     """
     url = base_url.rstrip("/") + _SKILL_PATH
     body: dict[str, Any] = {
@@ -147,6 +156,8 @@ def _post_skill(
         body["caller_mode"] = assembly_strategy
     if canonical_floor is not None:
         body["accuracy_need"] = float(canonical_floor)
+    if citable_required:
+        body["citable_required"] = True
     payload = json.dumps(body).encode("utf-8")
     headers: dict[str, str] = {
         "Content-Type": "application/json",
@@ -434,6 +445,8 @@ def _run(call: SkillCall) -> SkillEnvelope:
     if include_document_ids and not isinstance(include_document_ids, list):
         include_document_ids = None
 
+    citable_required = bool(inputs.get("citable_required"))
+
     base_url = _resolve_base_url()
     if not base_url:
         logger.warning("corpus_search: RAG_API_URL not set")
@@ -471,6 +484,7 @@ def _run(call: SkillCall) -> SkillEnvelope:
             assembly_strategy=assembly_strategy,
             canonical_floor=canonical_floor,
             caller_id=caller_id,
+            citable_required=citable_required,
         )
     except urllib.error.HTTPError as e:
         body = ""

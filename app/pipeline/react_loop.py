@@ -484,6 +484,34 @@ _SENSITIVE_TOOLS: frozenset[str] = frozenset({
 })
 
 
+# ── citable_required passthrough (2026-08-05) ────────────────────────
+#
+# RAG's corpus_search_agent contract gained a real citable_required param
+# (Retriever, Task: tool-manifest swap prep) -- previously dead, no caller
+# could set it. Chat Architecture's ruling: chat decides this, RAG's own
+# authority_requirement/allocator_override stay off chat's request body
+# entirely (those are Router-internal gates chat must not duplicate).
+#
+# Deterministic keyword rule, not new inference -- queries that inherently
+# demand verifiable sources (payor policy, prior auth, coverage, claims)
+# set citable_required=True; everything else omits the key and lets the
+# Router decide. Checked concretely (not assumed) that no existing planner
+# signal already classifies this -- the only pre-dispatch lexicon data on
+# ctx is jurisdiction/payer-identity tagging (state_extractor.py), not
+# topical intent. Real-time query tagging from RAG's Lexicon would be the
+# better long-term source; noted as a future improvement, not built here.
+_CITABLE_TERMS = (
+    "prior auth", "prior authorization", "authorization", "pre-authorization",
+    "coverage", "benefit", "payor", "payer", "insurance", "claim", "denial",
+    "policy", "medical necessity", "formulary",
+)
+
+
+def _citable_required(query: str) -> bool:
+    q = (query or "").lower()
+    return any(term in q for term in _CITABLE_TERMS)
+
+
 def _execute_tool(
     tool: str,
     inputs: dict,
@@ -725,6 +753,7 @@ def _execute_tool(
                             "k": 10,
                             **({"include_document_ids": rag_overrides.get("include_document_ids")}
                                if rag_overrides.get("include_document_ids") else {}),
+                            **({"citable_required": True} if _citable_required(query) else {}),
                         },
                         question=query,
                         user_message=ctx.message,
