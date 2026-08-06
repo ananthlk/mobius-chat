@@ -2698,7 +2698,10 @@ function renderAnswerCard(card, isError, opts) {
     };
     const TAB_DOM = {
       "summary": { label: "Summary", panelKey: "summary", count: void 0 },
-      "citations": { label: "Citations", panelKey: "citations", count: (card.citations ?? []).length },
+      // Chat Master ruling (b) 2026-08-06: the Citations tab is repurposed into a consolidated
+      // "Sources" tab — reference chips (here) + source excerpts (snippets, here) + a collapsible
+      // narrative_full_redacted section injected post-render (app.ts completed handler).
+      "citations": { label: "Sources", panelKey: "citations", count: (card.citations ?? []).length },
       "corrections": { label: "Corrections", panelKey: "corrections", count: _corrections.length },
       "follow-up": { label: "Follow-up", panelKey: "next-steps", count: _nextStepQuestions.length },
       "tasks": { label: "Tasks", panelKey: "tasks", count: _nextStepTasks.length }
@@ -11706,7 +11709,7 @@ ${message}`;
         return btn;
       };
       streamTabBar.appendChild(_mkStreamBtn("Summary", "summary", true));
-      streamTabBar.appendChild(_mkStreamBtn("Citations", "citations", false));
+      streamTabBar.appendChild(_mkStreamBtn("Sources", "citations", false));
       streamTabBar.appendChild(_mkStreamBtn("Corrections", "corrections", false));
       streamTabBar.appendChild(_mkStreamBtn("Follow-up", "next-steps", false));
       streamTabBar.appendChild(_mkStreamBtn("Tasks", "tasks", false));
@@ -12099,6 +12102,35 @@ ${message}`;
             _prose.innerHTML = _html;
           if (_direct)
             _direct.innerHTML = _html;
+        }
+      }
+      {
+        let _redacted = "";
+        const _tl2 = Array.isArray(data.thinking_log) ? data.thinking_log : [];
+        for (const _e of _tl2) {
+          if (_e && typeof _e === "object" && _e.signal === "retrieval_trace") {
+            const _r = (_e.data || {}).narrative_full_redacted;
+            if (typeof _r === "string" && _r.trim()) {
+              _redacted = _r.trim();
+              break;
+            }
+          }
+        }
+        if (_redacted) {
+          const _srcPanel = turnWrap.querySelector(".ac-tab-panel--citations");
+          if (_srcPanel && !_srcPanel.querySelector(".ac-sources-narrative")) {
+            const _det = document.createElement("details");
+            _det.className = "ac-sources-narrative";
+            const _sum = document.createElement("summary");
+            _sum.className = "ac-sources-narrative-summary";
+            _sum.textContent = "Retrieval trace";
+            const _pre = document.createElement("pre");
+            _pre.className = "ac-sources-narrative-pre";
+            _pre.textContent = _redacted;
+            _det.appendChild(_sum);
+            _det.appendChild(_pre);
+            _srcPanel.appendChild(_det);
+          }
         }
       }
       {

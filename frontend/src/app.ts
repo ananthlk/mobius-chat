@@ -10937,7 +10937,7 @@ function run(): void {
         return btn;
       };
       streamTabBar.appendChild(_mkStreamBtn("Summary", "summary", true));
-      streamTabBar.appendChild(_mkStreamBtn("Citations", "citations", false));
+      streamTabBar.appendChild(_mkStreamBtn("Sources", "citations", false));
       streamTabBar.appendChild(_mkStreamBtn("Corrections", "corrections", false));
       streamTabBar.appendChild(_mkStreamBtn("Follow-up", "next-steps", false));
       streamTabBar.appendChild(_mkStreamBtn("Tasks", "tasks", false));
@@ -11435,6 +11435,39 @@ function run(): void {
             const _direct = _cb?.querySelector(".answer-card-direct") as HTMLElement | null;
             if (_prose) _prose.innerHTML = _html;
             if (_direct) _direct.innerHTML = _html;
+          }
+        }
+
+        // Sources tab (Chat Master ruling (b), 2026-08-06): the repurposed Citations→"Sources" tab
+        // gets a collapsible retrieval narrative. Use narrative_full_REDACTED (query-echo stripped,
+        // persist-safe) from the retrieval_trace envelope in thinking_log — so it's present on
+        // history/replay too. Show when present, hide when absent (RAG-gated: non-retrieval turns
+        // have no retrieval_trace → nothing appended). The full live narrative_full stays in the
+        // admin Diagnostics "Full retrieval trace", not this user-facing tab. Plain-text, never logged.
+        {
+          let _redacted = "";
+          const _tl2 = Array.isArray(data.thinking_log) ? data.thinking_log : [];
+          for (const _e of _tl2) {
+            if (_e && typeof _e === "object" && (_e as { signal?: string }).signal === "retrieval_trace") {
+              const _r = ((_e as { data?: Record<string, unknown> }).data || {}).narrative_full_redacted;
+              if (typeof _r === "string" && _r.trim()) { _redacted = _r.trim(); break; }
+            }
+          }
+          if (_redacted) {
+            const _srcPanel = turnWrap.querySelector(".ac-tab-panel--citations") as HTMLElement | null;
+            if (_srcPanel && !_srcPanel.querySelector(".ac-sources-narrative")) {
+              const _det = document.createElement("details");
+              _det.className = "ac-sources-narrative";
+              const _sum = document.createElement("summary");
+              _sum.className = "ac-sources-narrative-summary";
+              _sum.textContent = "Retrieval trace";
+              const _pre = document.createElement("pre");
+              _pre.className = "ac-sources-narrative-pre";
+              _pre.textContent = _redacted; // plain text — never innerHTML, never logged
+              _det.appendChild(_sum);
+              _det.appendChild(_pre);
+              _srcPanel.appendChild(_det);
+            }
           }
         }
 

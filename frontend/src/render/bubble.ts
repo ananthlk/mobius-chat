@@ -535,7 +535,10 @@ export function renderAnswerCard(
     // is reserved here and injected by the admin/QA path when present.
     const TAB_DOM: Partial<Record<TabKey, { label: string; panelKey: string; count: number | undefined }>> = {
       "summary": { label: "Summary", panelKey: "summary", count: undefined },
-      "citations": { label: "Citations", panelKey: "citations", count: (card.citations ?? []).length },
+      // Chat Master ruling (b) 2026-08-06: the Citations tab is repurposed into a consolidated
+      // "Sources" tab — reference chips (here) + source excerpts (snippets, here) + a collapsible
+      // narrative_full_redacted section injected post-render (app.ts completed handler).
+      "citations": { label: "Sources", panelKey: "citations", count: (card.citations ?? []).length },
       "corrections": { label: "Corrections", panelKey: "corrections", count: _corrections.length },
       "follow-up": { label: "Follow-up", panelKey: "next-steps", count: _nextStepQuestions.length },
       "tasks": { label: "Tasks", panelKey: "tasks", count: _nextStepTasks.length },

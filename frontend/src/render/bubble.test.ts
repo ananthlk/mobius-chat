@@ -36,12 +36,14 @@ describe("renderAnswerCard — DOM output (§1.4 tabbed bubble + §1.2 visibilit
     expect(el.querySelector(".answer-card-show-details")?.textContent).toContain("Show details");
   });
 
-  it("renders a tab bar with Summary + a Citations tab (count from the model-driven bar)", () => {
+  it("renders a tab bar with Summary + a Sources tab (Citations repurposed → 'Sources', ruling b)", () => {
     const el = renderAnswerCard(card);
     const tabs = Array.from(el.querySelectorAll(".ac-tab")).map((t) => t.textContent ?? "");
     expect(tabs.some((t) => t.includes("Summary"))).toBe(true);
-    expect(tabs.some((t) => t.includes("Citations"))).toBe(true);
-    // the citation lands in its own panel, not stacked into Summary
+    // The Citations tab was consolidated into "Sources" (label change; panel key stays citations).
+    expect(tabs.some((t) => t.includes("Sources"))).toBe(true);
+    expect(tabs.some((t) => t.includes("Citations"))).toBe(false);
+    // the citation still lands in its own (Sources) panel, not stacked into Summary
     expect(el.querySelector(".ac-tab-panel--citations")?.textContent).toContain("AHCA Handbook");
   });
 
