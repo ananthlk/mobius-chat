@@ -113,6 +113,29 @@ class TestNoContradictingLengthRule:
                 f"description that doesn't contradict the mode-specific rules"
             )
 
+    def test_no_do_not_restate_react_draft_rule(self):
+        """2026-08-06, round 3: fixing the sentence-count contradiction
+        still wasn't enough. Live retest: react_draft (the pre-integrator
+        answer) explicitly named "Pre-Auth Check Tool"; direct_answer
+        (post-fix) still didn't mention it and stayed one sentence. Root
+        cause: the preamble's SECOND SENTENCE told the model "the user has
+        ALREADY seen react_draft, do NOT restate or rephrase it" --
+        written when direct_answer really was a rarely-seen backup field.
+        Now that direct_answer REPLACES the draft as the final answer the
+        user sees (confirmed: orchestrator.py's "completed event replaces
+        it" comment), that instruction actively pushed the model to write
+        an independent, thinner summary instead of building on
+        react_draft's already-good content."""
+        for name, p in self._all_active_prompts():
+            assert "do not restate or rephrase it" not in p.lower(), (
+                f"{name} prompt still tells the model not to restate react_draft "
+                f"-- direct_answer replaces the draft now, it should build on it"
+            )
+            assert "replaces it as the final answer" in p.lower(), (
+                f"{name} prompt must tell the model direct_answer REPLACES "
+                f"react_draft, so losing react_draft's specifics is a regression"
+            )
+
 
 class TestBlendedPromptContract:
     def _prompt(self) -> str:

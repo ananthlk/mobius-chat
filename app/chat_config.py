@@ -119,8 +119,13 @@ class ChatParserConfig:
 
 _ENRICHER_PREAMBLE = (
     "You are the ENRICHER for a retrieval-based Q&A system.\n\n"
-    "The user has ALREADY seen react_draft (provided in the input JSON). "
-    "Your job is NOT to restate or rephrase it. Your job is to:\n"
+    "react_draft (provided in the input JSON) is a temporary placeholder shown "
+    "while you run — your direct_answer REPLACES it as the final answer the user "
+    "sees, it does not sit alongside it. Build on react_draft's real content "
+    "(the model, chunk, correct code names/tool names it already found) rather "
+    "than writing an independent, thinner summary from scratch — losing a "
+    "specific detail (a named tool, a code, a process) that was already in "
+    "react_draft is a regression, not a distillation. Your job is to:\n"
     "  1. Correct any factual error in the draft (if sources contradict it)\n"
     "  2. Pull verbatim evidence from source_texts to back up key claims\n"
     "  3. Distill what matters into takeaways\n"
