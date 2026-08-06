@@ -78,6 +78,42 @@ class TestYamlOverrideStaysInSync:
         assert "2–3 paragraphs" in live
 
 
+class TestNoContradictingLengthRule:
+    """2026-08-06, round 2: fixing the mode-specific "direct_answer" rule
+    wasn't enough by itself. The SHARED preamble/schema text (used by all
+    three modes, both in _ENRICHER_PREAMBLE and duplicated inline in the
+    YAML since it has no preamble variable) had its own "direct_answer:
+    one sentence max" / "one-sentence backup" instruction sitting BEFORE
+    the mode-specific rules -- confirmed live: even after the YAML sync
+    fix, a real query still produced a single sentence, because this
+    contradicting universal rule was still telling the model "one
+    sentence" for every mode regardless of what the mode-specific section
+    said. No prompt text anywhere should hardcode a sentence-count for
+    direct_answer outside the mode-specific rules blocks."""
+
+    def _all_active_prompts(self) -> list[tuple[str, str]]:
+        c = get_chat_config().prompts
+        return [
+            ("factual", c.integrator_factual_system),
+            ("blended", c.integrator_blended_system),
+            ("canonical", c.integrator_canonical_system),
+        ]
+
+    def test_no_universal_one_sentence_rule(self):
+        for name, p in self._all_active_prompts():
+            assert "one sentence max" not in p.lower(), (
+                f"{name} prompt (or its shared preamble) still tells the model "
+                f"direct_answer is one sentence max somewhere outside the "
+                f"mode-specific rules -- this silently overrides the paragraph-"
+                f"length instruction regardless of mode"
+            )
+            assert "one-sentence backup" not in p.lower(), (
+                f"{name} prompt's schema example still describes direct_answer "
+                f"as a one-sentence backup -- update to a mode-agnostic "
+                f"description that doesn't contradict the mode-specific rules"
+            )
+
+
 class TestBlendedPromptContract:
     def _prompt(self) -> str:
         return ChatPromptsConfig().integrator_blended_system

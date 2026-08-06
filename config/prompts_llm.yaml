@@ -434,7 +434,7 @@ prompts:
     CRITICAL: direct_answer must be plain human-readable text. Never embed JSON, code fences, or "json {" inside direct_answer.
 
     AnswerCard schema:
-    {"mode":"FACTUAL","direct_answer":"one-sentence backup shown if draft unavailable","correction":null,"takeaways":["string"],"sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string","bullets":["string"]}],"citations":[{"claim":"string","doc_title":"string","locator":"string","snippet":"verbatim excerpt from source_texts"}],"next_steps":["string"],"gaps":["string"],"next_questions_for_user":["string"],"thread_summary":"string","resolutions":[{"sq_id":"sq1","question":"string","resolution":"string","source":"user_input|rag|google|planner"}],"closed_task_ids":["sq1"],"open_task_ids":[],"suggested_actions":[]}
+    {"mode":"FACTUAL","direct_answer":"length + content per the mode-specific rules below","correction":null,"takeaways":["string"],"sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string","bullets":["string"]}],"citations":[{"claim":"string","doc_title":"string","locator":"string","snippet":"verbatim excerpt from source_texts"}],"next_steps":["string"],"gaps":["string"],"next_questions_for_user":["string"],"thread_summary":"string","resolutions":[{"sq_id":"sq1","question":"string","resolution":"string","source":"user_input|rag|google|planner"}],"closed_task_ids":["sq1"],"open_task_ids":[],"suggested_actions":[]}
 
     correction field: null UNLESS a specific verifiable claim in react_draft is directly contradicted by source_texts. Only correct clear factual errors (wrong numbers, wrong codes, wrong deadlines) — not tone or phrasing. Format: {"original":"the wrong claim","corrected":"accurate statement per sources"}.
 
@@ -478,7 +478,7 @@ prompts:
     CRITICAL: direct_answer must be plain human-readable text. Never embed JSON, code fences, or "json {" inside direct_answer.
 
     AnswerCard schema:
-    {"mode":"CANONICAL","direct_answer":"one-sentence backup shown if draft unavailable","correction":null,"takeaways":["string"],"sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string","bullets":["string"]}],"citations":[{"claim":"string","doc_title":"string","locator":"string","snippet":"verbatim excerpt from source_texts"}],"next_steps":["string"],"gaps":["string"],"next_questions_for_user":["string"],"thread_summary":"string","resolutions":[{"sq_id":"sq1","question":"string","resolution":"string","source":"user_input|rag|google|planner"}],"closed_task_ids":["sq1"],"open_task_ids":[],"suggested_actions":[]}
+    {"mode":"CANONICAL","direct_answer":"length + content per the mode-specific rules below","correction":null,"takeaways":["string"],"sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string","bullets":["string"]}],"citations":[{"claim":"string","doc_title":"string","locator":"string","snippet":"verbatim excerpt from source_texts"}],"next_steps":["string"],"gaps":["string"],"next_questions_for_user":["string"],"thread_summary":"string","resolutions":[{"sq_id":"sq1","question":"string","resolution":"string","source":"user_input|rag|google|planner"}],"closed_task_ids":["sq1"],"open_task_ids":[],"suggested_actions":[]}
 
     correction field: null UNLESS a specific verifiable claim in react_draft is directly contradicted by source_texts. Only correct clear factual errors. Format: {"original":"the wrong claim","corrected":"accurate statement per sources"}.
 
@@ -514,7 +514,7 @@ prompts:
     CRITICAL: direct_answer must be plain human-readable text. Never embed JSON, code fences, or "json {" inside direct_answer.
 
     AnswerCard schema:
-    {"mode":"BLENDED","direct_answer":"one-sentence backup shown if draft unavailable","correction":null,"takeaways":["string"],"sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string","bullets":["string"]}],"citations":[{"claim":"string","doc_title":"string","locator":"string","snippet":"verbatim excerpt from source_texts"}],"next_steps":["string"],"gaps":["string"],"next_questions_for_user":["string"],"thread_summary":"string","resolutions":[{"sq_id":"sq1","question":"string","resolution":"string","source":"user_input|rag|google|planner"}],"closed_task_ids":["sq1"],"open_task_ids":[],"suggested_actions":[]}
+    {"mode":"BLENDED","direct_answer":"length + content per the mode-specific rules below","correction":null,"takeaways":["string"],"sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string","bullets":["string"]}],"citations":[{"claim":"string","doc_title":"string","locator":"string","snippet":"verbatim excerpt from source_texts"}],"next_steps":["string"],"gaps":["string"],"next_questions_for_user":["string"],"thread_summary":"string","resolutions":[{"sq_id":"sq1","question":"string","resolution":"string","source":"user_input|rag|google|planner"}],"closed_task_ids":["sq1"],"open_task_ids":[],"suggested_actions":[]}
 
     correction field: null UNLESS a specific verifiable claim in react_draft is directly contradicted by source_texts. Only correct clear factual errors. Format: {"original":"the wrong claim","corrected":"accurate statement per sources"}.
 

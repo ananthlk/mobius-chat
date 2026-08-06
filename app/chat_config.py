@@ -129,7 +129,7 @@ _ENRICHER_PREAMBLE = (
     "Return ONLY valid JSON. No markdown, no commentary, no extra text.\n\n"
     "AnswerCard schema:\n"
     '{"mode":"FACTUAL|CANONICAL|BLENDED|RECITAL",'
-    '"direct_answer":"string (one-sentence backup — shown if draft unavailable)",'
+    '"direct_answer":"string (length + content per the mode-specific rules below)",'
     '"correction":null,'
     '"takeaways":["string"],'
     '"sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string",'
@@ -147,8 +147,9 @@ _ENRICHER_PREAMBLE = (
     "OR when there IS a correction:\n"
     '"correction":{"original":"the specific wrong claim from react_draft","corrected":"accurate statement per source_texts"}\n\n'
     "Field rules (apply to ALL modes):\n"
-    "- direct_answer: one sentence max. Backup only — do not repeat react_draft verbatim. "
-    "Used when the draft is unavailable; keep it to the single operative fact.\n"
+    "- direct_answer: length and content follow the mode-specific rules below — do NOT default to "
+    "one sentence regardless of mode. Never repeat react_draft verbatim; used when the draft is "
+    "unavailable, so it must stand on its own as a real answer, not a placeholder.\n"
     "- correction: null unless a specific, verifiable claim in react_draft is directly contradicted "
     "by source_texts. Only correct clear factual errors (wrong numbers, wrong codes, wrong deadlines) — "
     "not tone, phrasing, or level of detail. When in doubt, null.\n"
@@ -378,7 +379,7 @@ class ChatPromptsConfig:
         "Return ONLY valid JSON. No markdown, no commentary.\n\n"
         "Schema:\n"
         '{"mode":"FACTUAL|CANONICAL|BLENDED|RECITAL",'
-        '"direct_answer":"string (one-sentence — backup shown if draft unavailable)",'
+        '"direct_answer":"string (length + content per the mode-specific rules below)",'
         '"correction":null,'
         '"sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string",'
         '"format":"bullets|table|steps|stats|bars|conditions",'
@@ -388,7 +389,8 @@ class ChatPromptsConfig:
         '"recital":{"verbatim":"string","document_id":"string","section":"string"},'
         '"thread_summary":"string","thread_state":"string"}\n\n'
         "Field rules:\n"
-        "- direct_answer: one sentence max. Do not repeat react_draft verbatim.\n"
+        "- direct_answer: length and content follow the mode-specific rules below — do NOT default "
+        "to one sentence regardless of mode. Never repeat react_draft verbatim.\n"
         "- correction: null unless react_draft is directly contradicted by source_texts. Clear factual errors only.\n"
         "- pre_built_sections: MUST be copied verbatim into sections[] — preserve format/label/data exactly, no bullets. "
         "Add up to 2 narrative sections. For self-written sections: table=consistent columns; stats=2–5 KPIs; "
@@ -398,9 +400,12 @@ class ChatPromptsConfig:
         "- thread_state: rolling 1–3 sentence context brief ≤600 chars for the next turn.\n"
         "- Use ONLY facts from the input. Do not add new facts.\n"
         "Mode-specific section counts:\n"
-        "  FACTUAL: 2–3 sections, 3–6 bullets each. direct_answer = ONE operative fact.\n"
-        "  CANONICAL: 2–4 sections, 3–6 bullets each. direct_answer = 2–4 sentences.\n"
-        "  BLENDED: 2–4 sections. direct_answer = 1–3 sentences with specifics inline.\n"
+        "  FACTUAL: 2–3 sections, 3–6 substantive bullets each. direct_answer = 1–2 short paragraphs, "
+        "leanest of the three but not one-sentence-thin.\n"
+        "  CANONICAL: 2–4 sections, 3–6 substantive bullets each. direct_answer = 2–3 paragraphs, "
+        "most detailed of the three.\n"
+        "  BLENDED: 2–4 sections, 3–6 substantive bullets each. direct_answer = 1–2 short paragraphs "
+        "with specifics inlined.\n"
     )
 
     integrator_parallel_critic_system: str = (
