@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
-from app.skills.builtin.corpus_search import _derive_confidence_label, _run
+from app.skills.builtin.corpus_search import _derive_confidence_label, _format_context, _run
 from app.skills.registry import SkillCall
 
 _BASE_CHUNK = {
@@ -432,3 +432,47 @@ def test_grading_callback_not_registered_when_no_chunks():
         _run(call)
 
     assert call.pipeline_ctx.pending_rag_grade_calls == []
+
+
+# ── Fact-store chunks flagged in the reasoning context (2026-08-06) ────
+#
+# Real live-turn finding (Ananth): fact-store chunk text is a bare,
+# cryptic value (e.g. "68069") with score=1.0 and chosen_slot=
+# "direct_answer", but nothing in the reasoning context distinguished it
+# from a low-quality snippet -- the model burned all 10 rounds
+# re-searching an answer it already had on round 1. _format_context now
+# flags fact-store chunks distinctly so the model can recognize and
+# trust them instead of discounting them next to longer prose.
+
+
+def test_fact_store_chunk_gets_certified_answer_header():
+    fact_store_chunk = {**_BASE_CHUNK, "filler_strategy": "fact_store", "text": "68069", "document_name": "fact_ab4"}
+    text = _format_context([fact_store_chunk])
+    assert "CERTIFIED ANSWER" in text
+    assert "68069" in text
+    assert "verified, authoritative fact" in text
+
+
+def test_non_fact_store_chunk_gets_plain_header():
+    text = _format_context([_BASE_CHUNK])
+    assert "CERTIFIED ANSWER" not in text
+    assert text.startswith(f"[1] {_BASE_CHUNK['document_name']}")
+
+
+def test_mixed_chunks_only_fact_store_one_gets_flagged():
+    fact_store_chunk = {**_BASE_CHUNK, "filler_strategy": "fact_store", "text": "68069", "document_name": "fact_ab4"}
+    normal_chunk = {**_BASE_CHUNK, "filler_strategy": "bm25"}
+    text = _format_context([fact_store_chunk, normal_chunk])
+    lines = text.split("\n\n")
+    assert "CERTIFIED ANSWER" in lines[0]
+    assert "CERTIFIED ANSWER" not in lines[1]
+
+
+def test_fact_store_flag_survives_end_to_end_through_run():
+    """Not just the pure function -- confirms _run() actually threads
+    filler_strategy through to _format_context's input, not just to
+    SourceRef.extra."""
+    fact_store_chunk = {**_BASE_CHUNK, "filler_strategy": "fact_store", "text": "68069", "document_name": "fact_ab4"}
+    env = _run_with_response("q", {"chunks": [fact_store_chunk]})
+    assert "CERTIFIED ANSWER" in env.text
+    assert "68069" in env.text

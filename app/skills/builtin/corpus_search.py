@@ -268,15 +268,37 @@ def _format_context(chunks: list[dict[str, Any]]) -> str:
 
     Mirrors the shape ``answer_non_patient`` / the legacy inline path
     produced, so downstream prompt templates don't need to change.
+
+    Fact-store chunks get a distinct ``CERTIFIED ANSWER`` header (2026-08-06
+    finding, live turn: Ananth, "why does it feel off" — full history in
+    project memory / the Chat Architecture thread). Root cause: fact-store
+    chunk text is a bare, cryptic value (e.g. ``"68069"``, no prose) with a
+    real score of 1.0 and ``chosen_slot="direct_answer"`` — but with no
+    signal in the reasoning context distinguishing it from a low-quality
+    snippet, the LLM has no way to recognize it's an authoritative,
+    verified answer. It gets buried next to long provider-manual prose and
+    the model reasonably (from its own perspective) keeps searching for
+    something that reads as more substantial, burning rounds re-querying
+    an answer it already had. The old code never hit this because a
+    fact-store hit used to short-circuit straight to the answer, skipping
+    the reasoning loop entirely (see the module docstring's "golden-flag
+    early-return REMOVED" note) — nothing replaced that signal for the
+    model itself when the shortcut was removed. This does NOT reinterpret
+    or expand the cryptic value (no visibility into RAG's internal
+    fact-store semantics from here) — just flags it as authoritative so
+    the model weighs it correctly instead of discounting it.
     """
     parts: list[str] = []
     for i, c in enumerate(chunks, 1):
         doc = (c.get("document_name") or "document").strip()
         page = c.get("page_number")
         text = (c.get("text") or "").strip()
-        header = f"[{i}] {doc}"
+        is_fact_store = c.get("filler_strategy") == "fact_store"
+        header = f"[{i}] CERTIFIED ANSWER — {doc}" if is_fact_store else f"[{i}] {doc}"
         if isinstance(page, int):
             header += f" (p.{page})"
+        if is_fact_store:
+            header += "\n(This is a verified, authoritative fact from the certified fact store — trust it over general search results.)"
         parts.append(f"{header}\n{text}")
     return "\n\n".join(parts)
 
