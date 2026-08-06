@@ -502,8 +502,8 @@ _SENSITIVE_TOOLS: frozenset[str] = frozenset({
 # better long-term source; noted as a future improvement, not built here.
 _CITABLE_TERMS = (
     "prior auth", "prior authorization", "authorization", "pre-authorization",
-    "coverage", "benefit", "payor", "payer", "insurance", "claim", "denial",
-    "policy", "medical necessity", "formulary",
+    "coverage", "covered", "covers", "benefit", "payor", "payer", "insurance",
+    "claim", "denial", "policy", "medical necessity", "formulary",
 )
 
 

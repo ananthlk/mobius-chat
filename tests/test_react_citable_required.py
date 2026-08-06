@@ -42,13 +42,22 @@ class TestCitableRequiredKeywordRule:
     def test_coverage_triggers_true(self):
         assert _citable_required("What is the coverage policy for telehealth intake?") is True
 
-    def test_covered_without_coverage_stem_does_not_trigger(self):
-        """Known gap in the given term list: "coverage" as a literal
-        substring does not match "is X covered" phrasing (very common in
-        practice -- see live testing this session). Locking in current
-        behavior, not asserting it's correct; flagged to Chat Architecture
-        separately rather than silently expanding the agreed term list."""
-        assert _citable_required("Is telehealth covered for behavioral health intake?") is False
+    def test_covered_triggers_true(self):
+        """2026-08-05 (Chat Architecture, approved): "covered" and "covers"
+        added to close a real gap -- "coverage" alone missed "is X covered"
+        phrasing, which is common in practice (Ananth's own live queries
+        this session used exactly this wording multiple times)."""
+        assert _citable_required("Is telehealth covered for behavioral health intake?") is True
+
+    def test_covers_triggers_true(self):
+        assert _citable_required("Which services does this plan covers?") is True
+
+    def test_bare_cover_without_stem_is_a_known_narrower_residual_gap(self):
+        """"cover" (base form, no -s/-ed/-age suffix) still doesn't match --
+        e.g. "does this plan cover X" with singular "does". Narrower than
+        the original gap (covered/covers now both close), not asserting
+        this is correct, just locking in current behavior."""
+        assert _citable_required("Does this plan cover speech therapy?") is False
 
     def test_payor_triggers_true(self):
         assert _citable_required("What is Sunshine Health's payor slug?") is True
