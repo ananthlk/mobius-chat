@@ -6993,83 +6993,6 @@ function _updateBanditAttribution(correlationId: string): void {
 // inject a tab (named via the client-side label map below) into the finalized card.
 interface DetailAnswer { content: string; outputIntent: string }
 const _detailAnswers = new Map<string, DetailAnswer>();
-// Client-side token→label map (Chat Master ruling — he owns this vocabulary, not a backend field).
-const _DETAIL_TAB_LABELS: Record<string, string> = {
-  read: "Answer",
-  report: "Report",
-  email: "Email Draft",
-  sms: "SMS",
-  emr: "EMR Note",
-  appeal: "Appeal Letter",
-  payor_report: "Payor Report",
-};
-function detailTabLabel(outputIntent?: string): string {
-  const key = (outputIntent ?? "").trim().toLowerCase();
-  return _DETAIL_TAB_LABELS[key] ?? "Answer";
-}
-
-/** Inject the detail-answer tab (after Summary) into a finalized answer card. Idempotent; no-op
- *  when no detail answer was captured for this turn or the card has no tab bar. */
-function _injectDetailTab(cardBubble: HTMLElement, correlationId: string): void {
-  if (!cardBubble || !correlationId) return;
-  const detail = _detailAnswers.get(correlationId);
-  if (!detail || !detail.content.trim()) return;
-  const tabBar = cardBubble.querySelector(".ac-tab-bar");
-  if (!tabBar) return; // summary-only card with no tab chrome — nothing to attach to
-  if (tabBar.querySelector('[data-panel="detail"]')) return; // idempotent
-
-  const label = detailTabLabel(detail.outputIntent);
-
-  // Tab button — same shape/behavior as the card's other tabs (hide all panels, show mine).
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "ac-tab";
-  btn.setAttribute("role", "tab");
-  btn.setAttribute("aria-selected", "false");
-  btn.setAttribute("data-panel", "detail");
-  btn.textContent = label;
-  btn.addEventListener("click", () => {
-    const lb = btn.closest(".answer-card-bubble") ?? cardBubble;
-    lb.querySelectorAll(".ac-tab").forEach((t) => {
-      t.classList.remove("ac-tab--active");
-      t.setAttribute("aria-selected", "false");
-    });
-    lb.querySelectorAll(".ac-tab-panel").forEach((p) => {
-      (p as HTMLElement).hidden = true;
-      p.classList.remove("ac-tab-panel--active");
-    });
-    btn.classList.add("ac-tab--active");
-    btn.setAttribute("aria-selected", "true");
-    const tp = lb.querySelector(".ac-tab-panel--detail") as HTMLElement | null;
-    if (tp) { tp.hidden = false; tp.classList.add("ac-tab-panel--active"); }
-  });
-  // Insert immediately after the Summary tab.
-  const summaryTab = tabBar.querySelector('[data-panel="summary"]') ?? tabBar.firstElementChild;
-  if (summaryTab) summaryTab.insertAdjacentElement("afterend", btn);
-  else tabBar.appendChild(btn);
-
-  // Panel — verbatim markdown render of the detail content + a clean copy-just-the-content button.
-  const panel = document.createElement("div");
-  panel.className = "ac-tab-panel ac-tab-panel--detail";
-  panel.setAttribute("role", "tabpanel");
-  panel.setAttribute("hidden", "");
-  const copyBtn = document.createElement("button");
-  copyBtn.type = "button";
-  copyBtn.className = "ac-detail-copy";
-  copyBtn.textContent = "Copy";
-  copyBtn.addEventListener("click", () => {
-    void navigator.clipboard?.writeText(detail.content).then(
-      () => { copyBtn.textContent = "Copied ✓"; window.setTimeout(() => (copyBtn.textContent = "Copy"), 1500); },
-      () => { copyBtn.textContent = "Copy failed"; window.setTimeout(() => (copyBtn.textContent = "Copy"), 1500); }
-    );
-  });
-  const content = document.createElement("div");
-  content.className = "ac-detail-content";
-  content.innerHTML = simpleMarkdownToHtml(detail.content);
-  panel.appendChild(copyBtn);
-  panel.appendChild(content);
-  cardBubble.appendChild(panel);
-}
 
 /** Poll-side reconcile for the QA panel + bandit checkmark (live-test fix, 2026-08-05).
  *  Two failures this repairs, both rooted in post-run adjudication finishing AFTER the turn
@@ -10176,7 +10099,8 @@ function run(): void {
     correlationId: string,
     onThinking: ((line: string) => void) | null,
     onStreamingMessage: ((text: string) => void) | null,
-    onDraftReady?: ((text: string, modeHint?: string) => void) | null
+    onDraftReady?: ((text: string, modeHint?: string) => void) | null,
+    onDetailReady?: ((content: string, outputIntent: string) => void) | null
   ): Promise<ChatResponse> {
     if (typeof EventSource === "undefined") {
       return pollResponse(correlationId, onThinking, onStreamingMessage);
@@ -10232,12 +10156,15 @@ function run(): void {
             draftEmitted = true;
             if (onDraftReady) onDraftReady(String(data.text), data.mode_hint ? String(data.mode_hint) : undefined);
           } else if (ev === "detail_ready") {
-            // Detailed-answer tab source (fires just before "completed"). Stash by correlation_id;
-            // the completed handler injects the tab once the card's final tab bar is stable.
+            // display_summary (Chat Master ruling (b), 2026-08-06): the RICH final answer. It now
+            // becomes the PRIMARY Summary content — direct_answer was just the fast loading text,
+            // and this swaps in place when detail_ready fires (just before "completed"). Stash by
+            // correlation_id (completed handler re-applies it), and swap the live card immediately.
             const _dContent = typeof data.content === "string" ? data.content : "";
             const _dIntent = typeof data.output_intent === "string" ? data.output_intent : "";
             if (correlationId && _dContent.trim()) {
               _detailAnswers.set(correlationId, { content: _dContent, outputIntent: _dIntent });
+              if (onDetailReady) onDetailReady(_dContent, _dIntent);
             }
           } else if (ev === "message" && data.chunk != null && !draftEmitted && onStreamingMessage) {
             messageSoFar += String(data.chunk);
@@ -11113,6 +11040,21 @@ function run(): void {
     if (opts?.phi_override) {
       (payload as Record<string, unknown>).phi_override = true;
     }
+    function onDetailReady(content: string, _outputIntent: string): void {
+      // display_summary → primary Summary (Chat Master ruling (b), 2026-08-06). Swap the live
+      // streaming card's summary prose to the rich final answer, replacing the fast direct_answer/
+      // draft placeholder. No-op if there's no streaming card yet (non-streaming turn) — the
+      // completed handler applies it then. Same tab, same position, swap in place.
+      const _ds = (content ?? "").trim();
+      if (!_ds) return;
+      // Stop any in-flight draft word-stream so it can't overwrite the swap.
+      if (draftStreamCancel) { draftStreamCancel(); draftStreamCancel = null; }
+      const prose = messageWrapEl?.querySelector(".ac-summary-prose") as HTMLElement | null;
+      if (prose) {
+        prose.innerHTML = simpleMarkdownToHtml(_ds);
+        scrollToBottom(messagesEl);
+      }
+    }
     // 2026-04-27: include the model_profile dropdown selection in the
     // request payload. Previously the dropdown only POSTed to
     // /chat/admin/model-profile which sets a per-instance global —
@@ -11153,7 +11095,7 @@ function run(): void {
           onRequestCorrelationId();
         }
         addThinkingLineAndScroll("Request sent. Waiting for worker…");
-        return streamResponse(data.correlation_id, addThinkingLineAndScroll, onStreamingMessage, onDraftReady);
+        return streamResponse(data.correlation_id, addThinkingLineAndScroll, onStreamingMessage, onDraftReady, onDetailReady);
       })
       .then((data) =>
         // Refresh profile before admin-gated UI. Otherwise the first reply can render while
@@ -11473,16 +11415,26 @@ function run(): void {
           }
         }
 
-        // Detailed-answer tab (detail_ready, stashed during the stream): inject once the card's
-        // final tab bar is stable. One query covers both the streaming in-place fill and the fresh
-        // non-streaming render. Keyed by the turn's correlation id (same as the stash key).
+        // display_summary → PRIMARY Summary (Chat Master ruling (b), 2026-08-06). The rich final
+        // answer (detail_ready content) replaces direct_answer as the Summary's main text — shown
+        // by default, not behind a tab. onDetailReady already swapped the live streaming card's
+        // prose; re-apply here so the fresh non-streaming render (renderAnswerCard's
+        // .answer-card-direct) and any missed live swap also land it. direct_answer stays the fast
+        // loading placeholder. (The old template-named detail tab is retired; the Detail tab is
+        // being repurposed for source provenance separately.)
         {
-          const _detailCid = _detailAnswers.has(activeCorrelationId)
+          const _dsCid = _detailAnswers.has(activeCorrelationId)
             ? activeCorrelationId
             : (_detailAnswers.has(cidForTurn) ? cidForTurn : "");
-          if (_detailCid) {
-            const detailBubble = turnWrap.querySelector(".answer-card-bubble") as HTMLElement | null;
-            if (detailBubble) _injectDetailTab(detailBubble, _detailCid);
+          const _ds = _dsCid ? (_detailAnswers.get(_dsCid)?.content || "").trim() : "";
+          if (_ds) {
+            const _cb = turnWrap.querySelector(".answer-card-bubble") as HTMLElement | null;
+            const _html = simpleMarkdownToHtml(_ds);
+            // Streaming card uses .ac-summary-prose; fresh render uses .answer-card-direct.
+            const _prose = _cb?.querySelector(".ac-summary-prose") as HTMLElement | null;
+            const _direct = _cb?.querySelector(".answer-card-direct") as HTMLElement | null;
+            if (_prose) _prose.innerHTML = _html;
+            if (_direct) _direct.innerHTML = _html;
           }
         }
 
