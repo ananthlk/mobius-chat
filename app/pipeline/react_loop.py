@@ -647,33 +647,77 @@ def _execute_tool(
             make_query_understood, make_strategy_selected,
             make_retrieval_complete, make_fallback_triggered,
         )
-        # ── Corpus-then-external cascade ─────────────────────────────────────
-        # corpus_search_agent owns all internal strategy selection: it cascades
-        # through b→c→d with up to 3 attempts per call. The chat layer passes
-        # mode="auto" on the first search_corpus call (letting the agent decide)
-        # and escalates to strategy d (external) only on a second call, after
-        # the agent has already exhausted its internal fallbacks.
-        _arms_tried: set[str] = getattr(ctx, "_strategy_arms_tried", set())
-        _corpus_exhausted = "corpus" in _arms_tried
+        # ── citable_required relax-then-reframe: 3-call bounded protocol ────
+        # (2026-08-06, Chat Architecture spec, replacing the pre-cutover
+        # mode="auto"→"d" escalation cascade.) That model assumed chat
+        # itself needed to escalate corpus→external across calls with a
+        # caller-supplied mode; post Task #36, rag's own router (Shape→
+        # Pool→Router→Fillers) already runs a→b→c→d→s internally in ONE
+        # call, and the current corpus_search.py never reads inputs["mode"]
+        # or inputs["k"] at all (confirmed by grep) — passing them was dead
+        # weight. The one real lever chat has left is citable_required:
+        #   call 1: baseline citable_required (keyword rule).
+        #   call 2 (ONLY if call 1 was citable_required=True and returned 0
+        #     chunks): citable_required relaxed to False — not to answer
+        #     from, purely to learn the correct terminology / the actual
+        #     section that covers this, from non-citable sources.
+        #   call 3 (ONLY after a real call-2 relax): citable_required
+        #     restored, expects a materially reformulated query built from
+        #     what call 2 surfaced.
+        #   call 4+: HARD STOP below — "non-negotiable, no fallback to more
+        #     grinding rounds" (Chat Architecture ruling, 2026-08-06). A 4th
+        #     call would just repeat the same internal router escalation
+        #     rag already ran on call 1 — see Retriever's design writeup
+        #     (2026-08-06) for why blind retry past this point is zero-value.
+        # See react/prompts.py rule 1b for the LLM-facing protocol.
+        _rag_history: list[dict] = list(getattr(ctx, "_rag_call_history", []))
+        _rag_call_number = len(_rag_history) + 1
+        _baseline_citable = _citable_required(query)
+        _prior_rag_call = _rag_history[-1] if _rag_history else None
+        _relax_eligible = (
+            _rag_call_number == 2
+            and _baseline_citable
+            and _prior_rag_call is not None
+            and _prior_rag_call.get("citable_required")
+            and _prior_rag_call.get("n_chunks") == 0
+        )
+        _reframe_eligible = (
+            _rag_call_number == 3
+            and _prior_rag_call is not None
+            and _prior_rag_call.get("rag_phase") == "relaxed"
+        )
 
-        if _corpus_exhausted:
-            # Agent's full cascade already ran — escalate to external.
-            logger.info(
-                "search_corpus corpus already tried — escalating to "
-                "strategy d (external) cid=%s",
-                str(getattr(ctx, "correlation_id", ""))[:8],
-            )
-            _auto_mode = "d"
-            _auto_reason = None
-            _arms_tried = _arms_tried | {"google"}
+        if _rag_call_number >= 4:
+            # Hard stop — do not dispatch a 4th network call. Return
+            # immediately so the LLM gets an unambiguous terminal signal
+            # instead of grinding another round for zero new information.
+            emit("  ↓ rag call budget (3) exhausted for this question — answer honestly with what's been found.")
+            return {
+                "tool": "search_corpus",
+                "success": False,
+                "result": (
+                    "[RAG_BUDGET_EXHAUSTED] 3 rag calls already made for this question "
+                    "(initial, relaxed, reframed) — this is a genuine gap, not a phrasing "
+                    "problem. Do NOT call rag again. Answer honestly per SHAPE 2 (labeled "
+                    "full-miss, rule 1d) with what's been found so far, or use a different "
+                    "tool if one genuinely applies."
+                ),
+                "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
+                "sources": [],
+                "usage": None,
+                "rag_phase": "exhausted",
+                "rag_call_number": _rag_call_number,
+            }
+
+        if _relax_eligible:
+            _effective_citable = False
+            _rag_phase = "relaxed"
+        elif _reframe_eligible:
+            _effective_citable = _baseline_citable
+            _rag_phase = "reframed"
         else:
-            _auto_mode = "auto"
-            _auto_reason = None
-            _arms_tried = _arms_tried | {"corpus"}
-
-        ctx._strategy_arms_tried = _arms_tried  # type: ignore[attr-defined]
-        # Back-compat alias for any code that still reads the old name.
-        ctx._search_corpus_modes_used = list(_arms_tried)  # type: ignore[attr-defined]
+            _effective_citable = _baseline_citable
+            _rag_phase = "auto" if _rag_call_number == 1 else "repeat"
 
         emit_signal(make_query_understood(
             ctx.correlation_id, query=query, intent_summary=query[:120],
@@ -711,10 +755,10 @@ def _execute_tool(
 
         _strategy_reason = (
             f"and your attached doc{'s' if len(upload_candidates) > 1 else ''}"
-            if upload_candidates else _auto_reason
+            if upload_candidates else None
         )
         emit_signal(make_strategy_selected(
-            ctx.correlation_id, mode=_auto_mode,
+            ctx.correlation_id, mode=_rag_phase,
             reason=_strategy_reason,
             round=_rn, thread_id=ctx.thread_id,
         ))
@@ -725,7 +769,7 @@ def _execute_tool(
         import concurrent.futures as _cf
         from app.services.instant_rag_search import lazy_rag_search
 
-        def _run_corpus() -> tuple[str, list[dict], dict | None, str]:
+        def _run_corpus() -> tuple[str, list[dict], dict | None, str, bool, dict]:
             # 2026-04-28 — corpus retrieval moved to mobius-rag's
             # corpus_search skill, fronted by the mobius-os gateway
             # at {OS_API_URL}/api/v1/skills/corpus_search per the
@@ -749,11 +793,9 @@ def _execute_tool(
                         name="search_corpus",
                         inputs={
                             "query": query,
-                            "mode": _auto_mode,
-                            "k": 10,
                             **({"include_document_ids": rag_overrides.get("include_document_ids")}
                                if rag_overrides.get("include_document_ids") else {}),
-                            **({"citable_required": True} if _citable_required(query) else {}),
+                            **({"citable_required": True} if _effective_citable else {}),
                         },
                         question=query,
                         user_message=ctx.message,
@@ -792,10 +834,14 @@ def _execute_tool(
                     phi_detected=False,
                     config_sha=_get_config_sha() or None,
                     mode=getattr(ctx, "chat_mode", None),
-                ) + (False,)  # no golden on legacy fallback
-            # Map SkillEnvelope → 5-tuple; 5th element carries golden_explicit so
+                ) + (False, {})  # no golden, no telemetry on legacy fallback
+            # Map SkillEnvelope → 6-tuple; 5th element carries golden_explicit so
             # the fact-store fast-exit (short certified facts, empty sources) can
             # bypass the >80-char success gate and the merged_signal override.
+            # 6th element is the real pipeline_trace telemetry (status,
+            # dispatch_path, chosen_slot, n_chunks, ...) — see corpus_search.py's
+            # _run() for the exact shape. Used to build the rag call history and
+            # the real (not fabricated) reframe signal below.
             sources_dicts = [s.to_dict() for s in env.sources]
             return (
                 env.text or "",
@@ -803,6 +849,7 @@ def _execute_tool(
                 env.usage,
                 env.signal or "no_sources",
                 bool((env.extra or {}).get("golden")),
+                (env.extra or {}).get("pipeline_trace") or {},
             )
 
         def _run_upload(doc_id: str) -> tuple[str, list[dict], dict | None, str]:
@@ -830,11 +877,11 @@ def _execute_tool(
             # different from an upload miss. Materialize each result
             # independently so partial failure still returns something.
             try:
-                corpus_answer, corpus_sources, corpus_usage, corpus_signal, _corpus_golden_explicit = corpus_future.result()
+                corpus_answer, corpus_sources, corpus_usage, corpus_signal, _corpus_golden_explicit, _corpus_telemetry = corpus_future.result()
             except Exception as _e:
                 logger.warning("[B.4] corpus search failed: %s", _e)
-                corpus_answer, corpus_sources, corpus_usage, corpus_signal, _corpus_golden_explicit = (
-                    "", [], None, "no_sources", False,
+                corpus_answer, corpus_sources, corpus_usage, corpus_signal, _corpus_golden_explicit, _corpus_telemetry = (
+                    "", [], None, "no_sources", False, {},
                 )
             upload_results = [(u, f.result()) for u, f in upload_futures]
 
@@ -907,7 +954,7 @@ def _execute_tool(
             ctx.correlation_id,
             chunks_returned=len(merged_sources),
             tool="search_corpus",
-            mode="auto",
+            mode=_rag_phase,
             round=_rn,
             thread_id=ctx.thread_id,
         ))
@@ -922,29 +969,63 @@ def _execute_tool(
                 thread_id=ctx.thread_id,
             ))
 
-        # Surface RAG's reframe signal so the LLM can make a materially
-        # different requery rather than paraphrasing.  Appended to result
-        # text only on weak/miss results so it doesn't pollute good hits.
-        _extra = (env.extra or {}) if "env" in dir() else {}
-        _improvement_hint: str = (_extra.get("improvement_hint") or "").strip()
-        _fast_exit: bool = bool(_extra.get("fast_exit"))
-        _term_partition: dict = _extra.get("term_partition") or {}
-        _dropped_terms: list = _term_partition.get("dropped") or []
-        _query_profile: dict = _extra.get("query_profile") or {}
-        _untagged: list = _query_profile.get("untagged_meaningful_tokens") or []
+        # ── Real reframe signal (2026-08-06) ─────────────────────────────
+        # Replaces the old improvement_hint/term_partition/fast_exit block,
+        # which was dead two ways: `"env" in dir()` never held (env is a
+        # local inside the _run_corpus closure above, invisible in this
+        # scope), and even if it had, those keys don't exist in the new
+        # reduced telemetry dict (corpus_search.py's Phase 1 cutover
+        # shrank the old ~15-field pipeline_trace to ~10 real fields).
+        # Built from _corpus_telemetry instead, which IS real (threaded
+        # through _run_corpus's return above). Also records this call's
+        # outcome in ctx._rag_call_history so the next round's relax/
+        # reframe decision, and the LLM's own view of it in
+        # react/prompts.py's reasoning context, have real signal instead
+        # of the old fictional arms-tried narrative.
+        _status = _corpus_telemetry.get("status")
+        _dispatch_path = _corpus_telemetry.get("dispatch_path")
+        _chosen_slot = _corpus_telemetry.get("chosen_slot")
+        _n_chunks = _corpus_telemetry.get("n_chunks", len(corpus_sources or []))
+        _hit_fact_store = any(
+            s.get("filler_strategy") == "fact_store" for s in (corpus_sources or [])
+        )
+
+        ctx._rag_call_history = _rag_history + [{  # type: ignore[attr-defined]
+            "citable_required": _effective_citable,
+            "n_chunks": _n_chunks,
+            "status": _status,
+            "dispatch_path": _dispatch_path,
+            "chosen_slot": _chosen_slot,
+            "rag_phase": _rag_phase,
+            "call_number": _rag_call_number,
+        }]
 
         if not success:
-            _reframe_lines: list[str] = []
-            if _improvement_hint:
-                _reframe_lines.append(f"RAG improvement hint: {_improvement_hint}")
-            if _dropped_terms:
-                _reframe_lines.append(f"Terms RAG dropped (low selectivity): {', '.join(str(t) for t in _dropped_terms[:6])}")
-            if _untagged:
-                _reframe_lines.append(f"Tokens not mapped to any tag: {', '.join(str(t) for t in _untagged[:6])} — drop these from the reframe")
-            if _fast_exit:
-                _reframe_lines.append("RAG signaled fast_exit — all materially-different strategies exhausted; do NOT re-ask with a paraphrase")
-            if _reframe_lines:
-                merged_result = (merged_result or "") + "\n\n[Retrieval signal for reframe]\n" + "\n".join(_reframe_lines)
+            _reframe_lines: list[str] = [
+                f"RAG signal (call {_rag_call_number}/3): status={_status or 'unknown'}, "
+                f"citable_required={_effective_citable}, chunks={_n_chunks}, "
+                f"dispatch_path={_dispatch_path or 'n/a'}, chosen_slot={_chosen_slot or 'n/a'}."
+            ]
+            if _rag_phase == "relaxed":
+                _reframe_lines.append(
+                    "This was call 2 — RELAXED (citable_required off) after call 1 (citable-required) "
+                    "came back empty. This call is for terminology/context acquisition, not to answer "
+                    "from directly. Use whatever it surfaced, even non-citable, to build call 3's query "
+                    "(rule 1b)."
+                )
+            elif _rag_phase == "reframed":
+                _reframe_lines.append(
+                    "This was call 3 — REFRAMED (citable_required back on) using what call 2 taught you. "
+                    "If still empty, this is a genuine citable-corpus gap, not a phrasing problem — this "
+                    "was your last rag call for this question. Answer honestly now (rule 1d, SHAPE 2)."
+                )
+            elif _prior_rag_call is not None:
+                _reframe_lines.append(
+                    "Router already ran its own internal strategy escalation inside this one call — "
+                    "re-calling rag with the same query will not surface new information. Only retry with "
+                    "a query that changes the actual matched terms (rule 1b)."
+                )
+            merged_result = (merged_result or "") + "\n\n[Retrieval signal for reframe]\n" + "\n".join(_reframe_lines)
 
         return {
             "tool": "search_corpus",  # keep tool name stable for retry-guard + observability
@@ -955,8 +1036,17 @@ def _execute_tool(
             "golden": _corpus_golden_explicit,
             "golden_explicit": _corpus_golden_explicit,
             "usage": corpus_usage,  # upload side makes no LLM calls (Phase B.1 design)
-            "improvement_hint": _improvement_hint or None,
-            "fast_exit": _fast_exit,
+            # Real per-call telemetry (2026-08-06) — replaces the dead
+            # improvement_hint/fast_exit fields (confirmed by grep: no
+            # external caller ever read them).
+            "rag_phase": _rag_phase,
+            "rag_call_number": _rag_call_number,
+            "citable_required_used": _effective_citable,
+            "status": _status,
+            "dispatch_path": _dispatch_path,
+            "chosen_slot": _chosen_slot,
+            "n_chunks": _n_chunks,
+            "hit_fact_store": _hit_fact_store,
             # Phase B.4 observability — downstream code can inspect this to
             # know whether fan-out happened, and the logs name the upload_ids.
             "fanned_out_to": fanned_out_to,
@@ -1354,10 +1444,11 @@ def _execute_tool(
     if tool == "google_search":
         query = inputs.get("query") or (ctx.effective_message or ctx.message)
         emit(f"◌ Searching the web for: {(query or '')[:60]}…")
-        # Mark the "google" arm as tried in the 5-arm bandit so the planner
-        # knows only "llm_direct" remains if this also returns nothing.
-        _g_arms: set[str] = getattr(ctx, "_strategy_arms_tried", set())
-        ctx._strategy_arms_tried = _g_arms | {"google"}  # type: ignore[attr-defined]
+        # Real signal (2026-08-06) — replaces the old "5-arm bandit" write
+        # (ctx._strategy_arms_tried). google_search having been tried IS
+        # real, unlike the fictional bandit it used to feed; surfaced to
+        # the LLM in react/prompts.py's build_reasoning_context.
+        ctx._google_search_tried_this_turn = True  # type: ignore[attr-defined]
         answer, sources, usage, signal = answer_tool(
             query or "",
             emitter=emitter,
@@ -1371,9 +1462,9 @@ def _execute_tool(
         if not success:
             _result_msg = (
                 "[GOOGLE_EXHAUSTED] Web search returned no usable results. "
-                "Only llm_direct arm remains: answer from model knowledge "
-                "with appropriate caveats, or set is_complete=true and tell "
-                "the user the information could not be located in any source."
+                "Answer from model knowledge with appropriate caveats, or "
+                "set is_complete=true and tell the user the information "
+                "could not be located in any source."
             )
         else:
             _result_msg = answer or ""
@@ -3242,9 +3333,8 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         # Golden-answer early exit: any specific-knowledge skill (registered
         # via the skill registry OR answer_tool) that sets result["golden"]=True
         # is declaring itself authoritative. Finalize immediately — do NOT let
-        # the 5-arm bandit (which only tracks corpus+google arms) escalate to
-        # google_search or further retrieval, which would anchor composition on
-        # web content and discard the skill's answer.
+        # the loop escalate to google_search or further retrieval, which would
+        # anchor composition on web content and discard the skill's answer.
         #
         # golden is set by the dispatch return blocks above. Skills opt-in via:
         #   (a) env.extra["golden"] = True  — explicit skill-level opt-in

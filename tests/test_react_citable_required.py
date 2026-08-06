@@ -132,3 +132,111 @@ def test_citable_required_omitted_for_unrelated_query():
     search_calls = [c for c in captured_calls if c.name == "search_corpus"]
     assert search_calls, "expected at least one search_corpus dispatch"
     assert "citable_required" not in search_calls[0].inputs
+
+
+class TestRagRelaxThenReframeProtocol:
+    """2026-08-06, Chat Architecture spec: the 3-call bounded protocol that
+    replaced the dead mode="auto"->"d" arms cascade. Call 1 uses the
+    keyword-rule baseline; if it's citable_required=True and comes back
+    empty, call 2 automatically relaxes citable_required to learn from
+    non-citable sources; call 3 restores citable_required expecting a
+    reformulated query. Call 4+ is a hard, code-level stop -- "non-
+    negotiable, no fallback to more grinding rounds" -- verified here by
+    asserting the network is never actually hit a 4th time, not just that
+    the prompt asks the LLM nicely not to."""
+
+    @staticmethod
+    def _empty_dispatch(status: str = "no_retrieval"):
+        calls = []
+
+        def fake_dispatch(call):
+            calls.append(call)
+            env = MagicMock()
+            env.text = ""
+            env.sources = []
+            env.signal = "no_sources"
+            env.extra = {
+                "pipeline_trace": {
+                    "status": status, "n_chunks": 0,
+                    "dispatch_path": "a", "chosen_slot": None,
+                }
+            }
+            return env
+
+        return calls, fake_dispatch
+
+    def test_call_1_uses_baseline_citable_required(self):
+        calls, fake_dispatch = self._empty_dispatch()
+        ctx = _make_ctx("Is prior authorization required for H0036?")
+        with patch("app.skills.registry.dispatch", side_effect=fake_dispatch):
+            _execute_tool("rag", {"query": "Is prior authorization required for H0036?"}, ctx, emitter=None)
+        assert calls[0].inputs.get("citable_required") is True
+
+    def test_call_2_relaxes_citable_required_after_empty_citable_call_1(self):
+        calls, fake_dispatch = self._empty_dispatch()
+        ctx = _make_ctx("Is prior authorization required for H0036?")
+        query = "Is prior authorization required for H0036?"
+        with patch("app.skills.registry.dispatch", side_effect=fake_dispatch):
+            _execute_tool("rag", {"query": query}, ctx, emitter=None)  # call 1
+            _execute_tool("rag", {"query": query}, ctx, emitter=None)  # call 2
+        assert calls[0].inputs.get("citable_required") is True
+        assert "citable_required" not in calls[1].inputs
+
+    def test_call_3_reframes_with_citable_required_restored(self):
+        calls, fake_dispatch = self._empty_dispatch()
+        ctx = _make_ctx("Is prior authorization required for H0036?")
+        query = "Is prior authorization required for H0036?"
+        with patch("app.skills.registry.dispatch", side_effect=fake_dispatch):
+            _execute_tool("rag", {"query": query}, ctx, emitter=None)  # call 1
+            _execute_tool("rag", {"query": query}, ctx, emitter=None)  # call 2 (relaxed)
+            _execute_tool("rag", {"query": query}, ctx, emitter=None)  # call 3 (reframed)
+        assert len(calls) == 3
+        assert calls[2].inputs.get("citable_required") is True
+
+    def test_call_4_is_a_hard_stop_no_network_dispatch(self):
+        """The non-negotiable part: call 4 must not reach dispatch() at
+        all -- confirmed by asserting call count stays at 3, not by
+        trusting the prompt instruction."""
+        calls, fake_dispatch = self._empty_dispatch()
+        ctx = _make_ctx("Is prior authorization required for H0036?")
+        query = "Is prior authorization required for H0036?"
+        with patch("app.skills.registry.dispatch", side_effect=fake_dispatch):
+            for _ in range(3):
+                _execute_tool("rag", {"query": query}, ctx, emitter=None)
+            result4 = _execute_tool("rag", {"query": query}, ctx, emitter=None)
+
+        assert len(calls) == 3, "call 4 must not hit the network"
+        assert result4["success"] is False
+        assert "RAG_BUDGET_EXHAUSTED" in result4["result"]
+        assert result4.get("rag_call_number") == 4
+
+    def test_relax_never_triggers_when_call_1_already_had_chunks(self):
+        """Control: a call 1 that returns real chunks must not relax on
+        call 2 -- relax is specifically for empty citable-required results,
+        not a default behavior on every second call."""
+        call_log = []
+
+        def fake_dispatch(call):
+            call_log.append(call)
+            env = MagicMock()
+            if len(call_log) == 1:
+                env.text = "a real, sufficiently long, useful snippet about the policy"
+                env.sources = []
+                env.signal = "corpus_only"
+                env.extra = {"pipeline_trace": {"status": "ok", "n_chunks": 3, "dispatch_path": "a", "chosen_slot": "direct_answer"}}
+            else:
+                env.text = ""
+                env.sources = []
+                env.signal = "no_sources"
+                env.extra = {"pipeline_trace": {"status": "no_retrieval", "n_chunks": 0, "dispatch_path": "a", "chosen_slot": None}}
+            return env
+
+        ctx = _make_ctx("Is prior authorization required for H0036?")
+        query = "Is prior authorization required for H0036?"
+        with patch("app.skills.registry.dispatch", side_effect=fake_dispatch):
+            _execute_tool("rag", {"query": query}, ctx, emitter=None)  # call 1: real chunks
+            _execute_tool("rag", {"query": query}, ctx, emitter=None)  # call 2: should just repeat baseline
+
+        assert call_log[1].inputs.get("citable_required") is True, (
+            "call 2 must not relax when call 1 already returned usable chunks"
+        )

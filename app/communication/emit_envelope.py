@@ -1083,12 +1083,30 @@ def make_strategy_selected(
         "precision": "Checking for exact policy text",
         "recall":    "Doing a broad semantic scan",
         "fallback":  "Checking external sources",
-        "d":         "Corpus exhausted — searching external web sources",
         "e":         "Checking query scope",
+        # 2026-08-06 — real rag-retry phases (see react_loop.py's citable_
+        # required relax-then-reframe), replacing the old "d" label
+        # ("Corpus exhausted — searching external web sources"), which
+        # fired off a client-side flag (_auto_mode="d") that never
+        # corresponded to anything the server actually did differently —
+        # confirmed dead: the new /api/retriever/answer contract doesn't
+        # take a mode override at all, so nothing ever "escalated to
+        # external" on chat's say-so. These two are real: each names an
+        # actual, different call chat is about to make (Chat Architecture's
+        # copy, 2026-08-06 — "UX accuracy over false specificity"). "repeat"
+        # deliberately has NO entry here: a repeat call isn't tied to
+        # anything real about what's different this time, so it falls
+        # through to the generic "Searching" default below rather than
+        # inventing a label. Never label a call "switching to web" here —
+        # this fires BEFORE the call, so dispatch_path isn't known yet;
+        # that real signal only becomes available after the call returns
+        # (react_loop.py's "RAG signal:" reframe text on the result).
+        "relaxed":   "Expanding search scope",
+        "reframed":  "Refining search",
     }
     base = _mode_notes.get(mode, "Searching")
     # reason is shown as a parenthetical only when it adds user-visible context
-    if reason and mode not in ("auto", "corpus", "d", "e"):
+    if reason and mode not in ("auto", "corpus", "e"):
         note = f"{base} ({reason})…"
     else:
         note = f"{base}…"
