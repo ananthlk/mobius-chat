@@ -297,6 +297,17 @@ def test_s_strategy_chunk_confidence_label_is_always_high():
     assert env.sources[0].extra["confidence_label"] == "high"
 
 
+def test_fact_store_chunk_confidence_label_is_always_high():
+    """The REAL value observed in production (2026-08-06, live smoke-test
+    against the deployed endpoint): filler_strategy=="fact_store", not
+    "s" as Retriever described verbally. A literal `== "s"` check never
+    matched anything live -- this test locks in the actual value that
+    matters; the "s" test above is kept in case both appear somewhere."""
+    fact_store_chunk = {**_BASE_CHUNK, "filler_strategy": "fact_store", "rerank_score": None}
+    env = _run_with_response("q", {"chunks": [fact_store_chunk]})
+    assert env.sources[0].extra["confidence_label"] == "high"
+
+
 def test_non_s_chunk_with_null_rerank_score_still_abstains():
     """Control: the "always high" special-case is keyed on
     filler_strategy=="s" specifically, not on rerank_score being None in
@@ -334,7 +345,16 @@ def test_no_early_return_even_when_status_and_chosen_slot_suggest_fact_store():
     assert len(env.sources) == 1  # normal chunk path taken, not an early-return with empty sources
 
 
-# ── Zero-chunks / non-ok status ──────────────────────────────────────
+# ── Zero-chunks / status handling ─────────────────────────────────────
+#
+# 2026-08-06: gate is on chunks alone, NOT status. Real bug found + fixed
+# during live smoke verification for this deploy -- the first version
+# gated on `status not in (None, "ok")`, which silently discarded
+# status=="partial" responses even when they carried real, useful chunks
+# (confirmed via a direct call to the live endpoint: status="partial",
+# 10 real chunks including a fact_store hit with chosen_slot=
+# "direct_answer", score=1.0 -- "partial" means "not every slot filled,"
+# not "nothing usable").
 
 
 def test_empty_chunks_returns_no_sources():
@@ -343,12 +363,20 @@ def test_empty_chunks_returns_no_sources():
     assert env.sources == []
 
 
-def test_non_ok_status_returns_no_sources_even_with_chunks():
-    """Defensive: a non-"ok" status (timeout, no_retrieval, etc.) should
-    not surface partial/unreliable chunks as if the search succeeded."""
+def test_partial_status_with_real_chunks_still_succeeds():
+    """The actual regression this locks in: partial status + real chunks
+    is a normal, common, successful result -- must not be discarded."""
+    env = _run_with_response("q", {"chunks": [_BASE_CHUNK], "status": "partial"})
+    assert env.signal == "corpus_only"
+    assert len(env.sources) == 1
+
+
+def test_timeout_status_with_chunks_also_succeeds():
+    """status alone never gates -- only chunks presence does, for any
+    status value the new pipeline might report."""
     env = _run_with_response("q", {"chunks": [_BASE_CHUNK], "status": "timeout"})
-    assert env.signal == "no_sources"
-    assert env.sources == []
+    assert env.signal == "corpus_only"
+    assert len(env.sources) == 1
 
 
 def test_no_retrieval_status_clean_empty_result():

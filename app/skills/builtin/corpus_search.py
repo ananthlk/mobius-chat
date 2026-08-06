@@ -624,9 +624,20 @@ def _run(call: SkillCall) -> SkillEnvelope:
     # chunks DO get special confidence_label treatment below (module
     # docstring point 1) — that's the one real per-chunk behavior change.
 
-    if not chunks or status not in (None, "ok"):
+    # Gate on chunks alone, NOT status. Real bug found + fixed during live
+    # smoke verification (2026-08-06, this deploy): status=="partial" with
+    # 10 real, useful chunks (including a fact_store hit,
+    # chosen_slot="direct_answer", score=1.0) is a genuine, common,
+    # successful result -- "partial" means "not every slot filled," not
+    # "nothing usable." The first version of this gate treated any
+    # non-"ok" status as failure and silently discarded good chunks,
+    # confirmed via a direct call to the live endpoint reproducing
+    # exactly what a real chat turn hit. status is still surfaced in
+    # telemetry/logging for diagnostics -- just not used to discard
+    # otherwise-good results.
+    if not chunks:
         if call.emitter:
-            if status and status != "ok":
+            if status and status not in (None, "ok", "partial"):
                 call.emitter(f"↓ Retrieval status={status} — nothing usable found.")
             else:
                 call.emitter("↓ Nothing matched in our materials.")
@@ -662,16 +673,24 @@ def _run(call: SkillCall) -> SkillEnvelope:
     sources: list[SourceRef] = []
     for i, c in enumerate(chunks, 1):
         _filler_strategy = c.get("filler_strategy")
-        # "s" (fact-store) chunks: always "high", never run through the
-        # generic rerank_score threshold function (2026-08-06, Retriever
+        # Fact-store chunks: always "high", never run through the generic
+        # rerank_score threshold function (2026-08-06, Retriever
         # confirmed via code read — filler_s.py never sets rerank_score,
         # it's always None on these chunks; _derive_confidence_label(None)
         # would return "abstain", the worst label, for exactly the chunks
         # that deserve the best one. These are certified/verified facts,
         # not a probabilistic retrieval match — rerank_score's "how well
         # did this match" question doesn't apply here at all).
+        #
+        # Checked BOTH "fact_store" and "s": Retriever described this
+        # value verbally as "s", but a live smoke-test call to the
+        # production endpoint (2026-08-06, this deploy) observed the real
+        # per-chunk filler_strategy value as "fact_store", not "s" — a
+        # literal `== "s"` check silently never matched anything in
+        # production. Matching both until Retriever confirms which is
+        # authoritative (or whether both appear in different contexts).
         _confidence_label = (
-            "high" if _filler_strategy == "s"
+            "high" if _filler_strategy in ("s", "fact_store")
             else _derive_confidence_label(c.get("rerank_score"))
         )
         sources.append(
