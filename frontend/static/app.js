@@ -7842,115 +7842,41 @@ function _dcLeaf(title, status, summary, build) {
   return leaf;
 }
 function _dcReasonSection(data, routing) {
-  const qp = data.query_profile ?? {};
-  const qtype = String(qp.query_type ?? "");
-  const cov = typeof qp.coverage === "number" ? qp.coverage.toFixed(2) : "?";
-  const scores = routing.scores ?? {};
-  const topEntry = Object.entries(scores).sort(([, a], [, b]) => b - a)[0];
-  const topSt = topEntry?.[0] ?? "?";
-  const topSc = typeof topEntry?.[1] === "number" ? topEntry[1].toFixed(2) : "?";
-  const sum = `${qtype || "?"} \xB7 coverage ${cov} \xB7 ${topSt} wins ${topSc}`;
-  return _dcSection("1 \xB7 REASON", "ok", sum, (body) => {
-    const gate = data.gate ?? {};
-    const gatePassed = gate.passed !== false;
-    body.appendChild(_dcLeaf(
-      "gate",
-      gatePassed ? "ok" : "warn",
-      gatePassed ? "passed" : `fired \xB7 ${gate.reason ?? "?"}`
-    ));
-    const anchors = qp.literal_anchors ?? [];
-    const tagMatches = qp.tag_matches ?? [];
-    const untagged = qp.untagged_meaningful ?? [];
-    const dropped = qp.dropped ?? [];
-    const nIn = anchors.length + tagMatches.length + untagged.length + dropped.length || "?";
-    const nKept = anchors.length + tagMatches.length + untagged.length || "?";
-    body.appendChild(_dcLeaf("cleanup", "ok", `${nIn} tokens \u2192 ${nKept} kept`, (b) => {
-      if (anchors.length)
-        _dcKV(b, "literal anchors", anchors.join(" \xB7 "));
-      if (tagMatches.length)
-        _dcKV(b, "tag matches", tagMatches.join("  "));
-      if (untagged.length)
-        _dcKV(b, "untagged meaningful", untagged.join("  "));
-      if (dropped.length)
-        _dcKV(b, "dropped (noise)", dropped.join("  "));
-    }));
-    const qps = data.queries_per_strategy ?? {};
-    const qpsKeys = Object.keys(qps);
-    body.appendChild(_dcLeaf(
-      "rewrite",
-      "ok",
-      `${qpsKeys.length || 3} per-strategy variants`,
-      qpsKeys.length ? (b) => {
-        for (const [k, v] of Object.entries(qps))
-          _dcKV(b, k, String(v).slice(0, 120));
-      } : void 0
-    ));
-    body.appendChild(_dcLeaf("classify", "ok", `${qtype || "?"} \xB7 coverage ${cov}`, (b) => {
-      _dcKV(b, "query_type", qtype || "\u2014");
-      _dcKV(b, "coverage", cov);
-      const dt = qp.d_tags ?? qp.domain_tags ?? [];
-      const jt = qp.j_tags ?? qp.jurisdiction_tags ?? [];
-      const pt = qp.p_tags ?? qp.process_tags ?? [];
-      if (dt.length)
-        _dcKV(b, "domain_tags", dt.join("  "));
-      if (jt.length)
-        _dcKV(b, "jurisdiction_tags", jt.join("  "));
-      if (pt.length)
-        _dcKV(b, "process_tags", pt.join("  "));
-      const cf = routing.classify_flags ?? {};
-      const activeFlags = Object.entries(cf).filter(([, v]) => v).map(([k]) => k);
-      if (activeFlags.length)
-        _dcKV(b, "flags", activeFlags.join("  "));
-      const sc = qp.semantic_core ?? "";
-      if (sc)
-        _dcKV(b, "semantic_core", String(sc));
-    }));
-    const sb = routing.score_breakdown ?? {};
-    const fv = routing.feature_vector ?? {};
-    const sa = routing.self_assessments ?? {};
-    const withdrawn = routing.withdrawn ?? [];
-    const micConsidered = Boolean(routing.multi_invoke_considered);
-    body.appendChild(_dcLeaf(
-      "scorer",
-      "ok",
-      `${topSt} wins ${topSc} argmax${micConsidered ? " \xB7 multi_invoke considered" : ""}`,
-      (b) => {
-        if (Object.keys(scores).length) {
-          const tbl = document.createElement("table");
-          tbl.className = "rt-score-table rt-mono";
-          tbl.innerHTML = "<thead><tr><th>strat</th><th>score</th><th>accuracy</th><th>recall</th><th>speed</th><th>shape</th></tr></thead>";
-          const tb = document.createElement("tbody");
-          for (const [s, score] of Object.entries(scores)) {
-            const bd = sb[s] ?? {};
-            const fmt = (x) => typeof x === "number" ? x.toFixed(2) : x?.contrib !== void 0 ? x.contrib.toFixed(2) : "\xB7";
-            const tr = document.createElement("tr");
-            const isW = s === topSt;
-            const isWd = withdrawn.includes(s);
-            if (isW)
-              tr.className = "rt-score-winner";
-            else if (isWd)
-              tr.className = "rt-sa-withdrawn";
-            tr.innerHTML = `<td>${isW ? "\u2605 " : ""}${rtEscapeAttr(s)}${isWd ? " \u2298" : ""}</td><td><b>${typeof score === "number" ? score.toFixed(2) : "\xB7"}</b></td><td>${fmt(bd.accuracy)}</td><td>${fmt(bd.recall)}</td><td>${fmt(bd.speed)}</td><td>${fmt(bd.shape)}</td>`;
-            tb.appendChild(tr);
-          }
-          tbl.appendChild(tb);
-          b.appendChild(tbl);
+  const val = (k) => data[k] != null ? String(data[k]) : "\u2014";
+  const chosenSlot = val("chosen_slot");
+  const dispatchPath = val("dispatch_path");
+  const nChunks = data.n_chunks != null ? String(data.n_chunks) : "\u2014";
+  const score = typeof data.score === "number" ? data.score.toFixed(2) : val("score");
+  const status = val("status");
+  const bad = status !== "\u2014" && status !== "ok" && status !== "partial";
+  const sum = `${chosenSlot} \xB7 ${dispatchPath} \xB7 ${nChunks} chunks \xB7 score ${score}`;
+  return _dcSection("1 \xB7 REASON", bad ? "warn" : "ok", sum, (body) => {
+    _dcKV(body, "chosen_slot", chosenSlot);
+    _dcKV(body, "dispatch_path", dispatchPath);
+    _dcKV(body, "n_chunks", nChunks);
+    _dcKV(body, "score", score);
+    _dcKV(body, "status", status);
+    if (data.attempt_count != null)
+      _dcKV(body, "attempt_count", String(data.attempt_count));
+    if (data.latency_ms != null)
+      _dcKV(body, "latency_ms", `${data.latency_ms}ms`);
+    if (data.allocator_override != null)
+      _dcKV(body, "allocator_override", String(data.allocator_override));
+    if (data.authority_requirement != null)
+      _dcKV(body, "authority_requirement", String(data.authority_requirement));
+    const scores = routing?.scores ?? {};
+    if (Object.keys(scores).length) {
+      const top = Object.entries(scores).sort(([, a], [, b]) => b - a)[0];
+      body.appendChild(_dcLeaf(
+        "scorer (legacy)",
+        "ok",
+        `${top?.[0] ?? "?"} wins ${typeof top?.[1] === "number" ? top[1].toFixed(2) : "?"}`,
+        (b) => {
+          for (const [st, sc] of Object.entries(scores))
+            _dcKV(b, st, typeof sc === "number" ? sc.toFixed(2) : String(sc));
         }
-        const fvKeys = Object.keys(fv);
-        if (fvKeys.length) {
-          _dcKV(
-            b,
-            "feature_vector",
-            fvKeys.map((k) => `${k}=${typeof fv[k] === "number" ? fv[k].toFixed(2) : fv[k]}`).join("  ")
-          );
-        }
-        for (const [s, v] of Object.entries(sa)) {
-          const est = typeof v?.est_recall === "number" ? v.est_recall : Array.isArray(v) ? v[0] : null;
-          if (est !== null)
-            _dcKV(b, `${s} est_recall`, typeof est === "number" ? est.toFixed(2) : String(est));
-        }
-      }
-    ));
+      ));
+    }
   });
 }
 function _dcActRetrieveContent(container, st, data, routing) {
@@ -10628,6 +10554,20 @@ function run() {
     );
     if (traceEl)
       diagPanel.appendChild(traceEl);
+    const _nf = typeof opts.narrativeFull === "string" ? opts.narrativeFull.trim() : "";
+    if (_nf) {
+      const nfWrap = document.createElement("details");
+      nfWrap.className = "dc-narrative-full";
+      const nfSum = document.createElement("summary");
+      nfSum.className = "dc-narrative-full-summary";
+      nfSum.textContent = "Full retrieval trace";
+      const nfPre = document.createElement("pre");
+      nfPre.className = "dc-narrative-full-pre";
+      nfPre.textContent = _nf;
+      nfWrap.appendChild(nfSum);
+      nfWrap.appendChild(nfPre);
+      diagPanel.appendChild(nfWrap);
+    }
     const reactTraceEl = renderReactTraceCard(
       opts.thinkingLog
     );
@@ -12344,7 +12284,9 @@ ${message}`;
             routingFeedback: data.technical_feedback?.llm_performance ?? null,
             hipaaDiagnostics: hipaaForTab,
             msgPhiGate: msgPhiGateForTab,
-            outputIntent: tryParseAnswerCard(body || "")?.output_intent ?? null
+            outputIntent: tryParseAnswerCard(body || "")?.output_intent ?? null,
+            // narrative_full: live-only from the completed payload; PHI — render-only, never logged.
+            narrativeFull: typeof data.narrative_full === "string" ? data.narrative_full ?? null : null
           });
         } else if (Array.isArray(insightRows) && insightRows.length > 0) {
           turnWrap.appendChild(

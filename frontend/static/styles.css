@@ -2286,6 +2286,30 @@ body {
 .diag-telemetry-key { font-weight: 600; color: var(--text-tertiary, #9ca3af); }
 .diag-telemetry-key::after { content: " ·"; color: var(--text-tertiary, #9ca3af); }
 .diag-telemetry-val { font-family: var(--font-mono, ui-monospace, monospace); color: var(--text-primary, #111827); }
+/* Full retrieval trace (narrative_full, task #43) — expandable, default collapsed, plain-text. */
+.dc-narrative-full { margin: 0.4rem 0; }
+.dc-narrative-full-summary {
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary, #6b7280);
+  list-style: revert;
+}
+.dc-narrative-full-summary:hover { color: var(--text-primary, #111827); }
+.dc-narrative-full-pre {
+  margin: 0.4rem 0 0;
+  padding: 0.5rem 0.65rem;
+  background: var(--code-bg, #f6f6f9);
+  border-radius: 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.7rem;
+  line-height: 1.5;
+  color: var(--text-primary, #111827);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 40vh;
+  overflow-y: auto;
+}
 /* Inline links rendered inside LLM responses */
 .chat-link {
   color: var(--mobius-accent);

@@ -1254,6 +1254,14 @@ def _publish_completed(ctx: PipelineContext, t0_start: float) -> None:
 
     # Large adjudication-only source blobs must not go to SSE/HTTP clients or in-memory response cache.
     client_payload = {k: v for k, v in payload.items() if k != "adjudication_sources"}
+    # Ephemeral diagnostics: narrative_full (raw-query-verbatim, PHI-constrained — see
+    # corpus_search.py). It rides ONLY this live client payload (SSE "completed" event via
+    # store_response/publish_response) — it is deliberately NOT in `payload`, so it never reaches
+    # save_turn (enumerated columns), the answer cache (schedule_cache_write(payload)), thinking_log,
+    # or chat_progress_events. Render-only, discarded after the turn; never persisted anywhere.
+    _nf_eph = getattr(ctx, "narrative_full_ephemeral", None)
+    if isinstance(_nf_eph, str) and _nf_eph.strip():
+        client_payload["narrative_full"] = _nf_eph
     # quick_mode: pass truncation flag so mini container can show "Full answer" link
     if getattr(ctx, "quick_truncated", False):
         client_payload["quick_truncated"] = True

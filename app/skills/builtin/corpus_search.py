@@ -611,6 +611,21 @@ def _run(call: SkillCall) -> SkillEnvelope:
     status = contract.get("status")
     search_id = str(uuid.uuid4())
 
+    # ── narrative_full (ephemeral diagnostics, PHI-CONSTRAINED) ──────────────────────────────
+    # contract.traces.narrative_full echoes the raw query VERBATIM ("You asked: …"). It MUST NEVER
+    # be persisted — no DB, no analytics, no error tracking. So it is deliberately NOT added to the
+    # `telemetry` dict below: that dict is spread (`**telemetry`) into the retrieval_trace envelope
+    # by make_retrieval_trace, which lands in thinking_log (PERSISTED, turns.py), and also into the
+    # answer cache. Instead we stash it on an EPHEMERAL ctx attribute that _publish_completed copies
+    # into the live client payload ONLY (SSE completed event) — never into `payload`, thinking_log,
+    # chat_turns, chat_progress_events, or the answer cache. Render-only, discard after the turn.
+    _pctx = getattr(call, "pipeline_ctx", None)
+    if _pctx is not None:
+        _nf = (contract.get("traces") or {}).get("narrative_full")
+        if isinstance(_nf, str) and _nf.strip():
+            # Ephemeral, in-memory, per-turn. Never serialized to any persistence path.
+            _pctx.narrative_full_ephemeral = _nf
+
     # Reduced telemetry (Phase 1 cutover): the old ~15-field pipeline_trace
     # was confirmed to feed ONLY the diagnostics panel (react_loop.py never
     # reads it — see the field-consumption inventory in project memory /
