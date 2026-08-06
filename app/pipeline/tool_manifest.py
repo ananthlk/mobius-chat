@@ -71,22 +71,40 @@ RETRY GUIDANCE:
 # ── Router-owned prose (rag, healthcare_npi_lookup, etc.) ──
 
 _RAG_BLOCK = """\
-rag(query, mode?)
-  Single retrieval entry point — corpus, payor registry, and web.
-  RAG's router picks the optimal strategy internally (BM25 + pgvector
-    hybrid, payor fact lookup, external web). You pick the query; the
-    router handles strategy, cascades, and escalation.
-  mode (optional): "fast" for copilot / low-latency situations. Omit
-    for standard retrieval — the router picks the best effort level.
-  Use for: ANY retrieval question — policy, PA, appeals, credentialing
-    policies/rules, timely filing, covered services, claims procedures,
-    payor operational facts (EDI payer ID, phone, portal, addresses),
-    overview questions ("tell me about X"), web-sourced questions.
+rag(query)
+  Retrieves and cites facts, policy statements, and procedural content
+    from payer/provider documentation (provider manuals, coverage
+    policies, billing guides, prior-authorization criteria, appeals
+    processes, credentialing requirements) and, when no internal
+    citable source exists, from the general web or general knowledge.
+    Answers questions of the shape "what does the policy/documentation
+    say," "does X require Y," "how do I do Z," "what is the
+    deadline/process/requirement for W" — always grounded in specific
+    source text it can point to (a document passage, a certified fact,
+    or an external page), never a computed number.
+  Use for: any question whose honest answer is a fact, rule,
+    requirement, procedure, or definition that lives in written
+    documentation somewhere — coverage/prior-auth requirements, billing
+    and claims procedures, timely filing windows, credentialing steps,
+    appeals processes, code definitions, "does payer P require X for
+    code C," "how do I submit Y to Z." The presence of a payer or
+    organization NAME in the question is not itself the signal — the
+    signal is whether the answer is a STATEMENT FROM A DOCUMENT versus
+    a COMPUTED RESULT (see below).
+  Do NOT use for: any question whose honest answer requires computing
+    something ACROSS MANY RECORDS — a count, ranking, percentage,
+    market share, trend over time, or comparison between multiple
+    organizations/providers. Those answers don't exist as a sentence
+    anywhere in a document; they have to be calculated from structured
+    data, which this tool doesn't do. Test: if answering the question
+    requires "how many / what fraction / rank these / compare these
+    two entities' numbers," it's not this tool, EVEN IF a specific
+    payer or org name appears in the question. If the question is
+    "what does Sunshine Health's policy say about X," that's rag
+    regardless of Sunshine Health being a named organization.
   Do NOT use for: Credentialing STATUS for a specific provider or org
     (NPI enrollment status, compliance flags, NPPES/PML/TML data errors,
-    panel readiness) — use check_provider_credentialing for that.
-  Do NOT use for: FL Medicaid BH market data (org rankings, market
-    share, benchmarks, rate data) — use the get_* analytics tools above.
+    panel readiness) — that's a live status lookup, not a documented fact.
   Returns: numbered passages [1]…[N] with page citations and confidence."""
 
 # Kept for back-compat dispatch; no longer rendered in the planner manifest.
@@ -100,11 +118,22 @@ _PRECISION_SEARCH_BLOCK = ""  # retired — merged into search_corpus(mode="prec
 
 _HEALTHCARE_NPI_LOOKUP_BLOCK = """\
 healthcare_npi_lookup(question)
-  NPPES registry lookup ONLY when the user gives or asks about a 10-digit NPI number
-    (name, taxonomy, address from the national registry).
-  Do NOT use for: ICD-10, diagnosis codes, CPT, HCPCS, "what is code …", Medicare coverage, NCD/LCD —
-    those are healthcare_query.
-  Use when: question is specifically NPI-registry lookup by number."""
+  Looks up a provider or organization in the NPPES national registry by
+    NPI number — returns the registered name, taxonomy/specialty, and
+    practice address on file for that number.
+  Use for: a question that supplies or asks for a specific 10-digit NPI
+    and wants the registry facts tied to that number ("who is NPI
+    1234567890", "what's the taxonomy for NPI X", "what address is on
+    file for NPI X").
+  Do NOT use for: a question about a diagnosis, procedure, or billing
+    code, or what a code means or covers — those aren't NPI lookups
+    even if a number appears in the question (an ICD-10/CPT/HCPCS code
+    is not an NPI, and the question isn't asking about a registered
+    provider).
+  Do NOT use for: finding an NPI by organization NAME — that's the
+    reverse direction (a name in, a number out), not this tool's shape
+    (a number in, identity facts out).
+  Returns: registered name, taxonomy, and address for the given NPI."""
 
 _SEARCH_UPLOADED_DOCUMENT_BLOCK = """\
 search_uploaded_document(upload_id optional, query)
@@ -162,62 +191,28 @@ _REGISTRY_ORDER: tuple[str, ...] = (
 
 _LOOKUP_AUTHORITATIVE_SOURCES_BLOCK = """\
 lookup_authoritative_sources(payer?, state?, topic?, authority_level?)
-  Search Mobius's curated registry of authoritative URLs for a payer/
-    state/topic. Returns URLs Mobius has *seen* — both already-indexed
-    docs AND known sources that haven't been pulled into the corpus yet.
-    Backed by the discovered_sources table; fed by the curator's
-    sitemap parser + scraper link extraction.
-
-  ★ ESCALATION ROLE ★ — This is the **mandatory next step** when
-    search_corpus returns weak/no hits on a payer-specific question.
-    The curator's URL registry is much more likely to contain the
-    answer than google_search. The correct order is:
-      search_corpus → lookup_authoritative_sources → (ingest_url if
-      a relevant URL has ingested=false) → search_corpus again →
-      google_search ONLY if all of that fails.
-    Skipping this step and going straight to google_search is wrong
-    on payer-specific questions.
-
-  Use when:
-    - search_corpus came back with weak/no hits and you suspect the
-      answer lives in a doc Mobius knows about but hasn't indexed.
-    - You want to enumerate "what does Mobius know exists for X" before
-      committing to ingest_url.
-    - The user asks "do you have <X>?" — a hit here means yes, even if
-      not in the corpus yet.
-  Inputs (any combination):
-    payer            — canonical payer name, e.g. 'Sunshine Health', 'AHCA'
-    state            — 2-letter state code, e.g. 'FL'
-    topic            — semantic tag, e.g. 'ECT', 'PA', 'appeals'
-    authority_level  — 'payer_manual' | 'payer_policy' | 'member_handbook' | etc.
-  Returns: list of {url, host, payer, ingested, last_seen_at, content_kind}.
-    The ``ingested: bool`` flag tells you whether the URL is already in
-    the corpus (cite it from search_corpus) or not.
-
-  Pairing with downstream tools — pick one of these when a returned
-  URL with ``ingested: false`` matches the question:
-    • ``ingest_url(url)`` — when the URL is authoritative + likely to
-      be cited again (provider manuals, policy PDFs, member handbooks,
-      enrollment guides). Adds it to the corpus permanently;
-      future search_corpus calls cite it. Costs Vertex tokens; uses
-      the rag-admin auth path. Best when the user's question is
-      policy/process and the URL is clearly the right source.
-    • ``web_scrape(url)`` — when you just need to READ the page right
-      now without permanent indexing (one-off lookups, exploratory
-      "what's on this page" questions, time-sensitive content like
-      news/announcements). No admin auth, fast, content stays in the
-      turn only. Best for "go deeper on what this URL says" without
-      committing to long-term storage.
-
-  Auto-route guidance: for a single high-confidence URL match (host =
-    payer's domain AND path/topic clearly aligns), proceed with the
-    appropriate tool above without re-asking. Ask only when multiple
-    plausible URLs are returned and the right one is ambiguous, or
-    when the user's intent (cite vs. read-once) isn't clear from the
-    question.
-
-  Do NOT use for: free-text web search — that's google_search. This
-    only knows about Mobius's curated registry."""
+  Searches Mobius's own registry of authoritative URLs it has already
+    discovered for a payer/state/topic — both documents already indexed
+    into the corpus AND known sources that haven't been pulled in yet.
+    This is an INVENTORY lookup ("what does Mobius know exists"), not a
+    content search — it returns where things are, never what they say.
+  Use for: checking whether Mobius has already identified a source for
+    a payer/topic before assuming none exists ("do you have Sunshine
+    Health's provider manual", "what sources do we know about for FL
+    Medicaid appeals"), or when a content answer on the same question
+    was weak/missing and you want to know whether an unindexed source
+    might explain the gap rather than a genuine absence of information.
+  Do NOT use for: reading or retrieving the actual content of a policy
+    or document — this returns URL metadata only (host, payer, whether
+    it's indexed yet, when it was last seen), never document text.
+  Inputs (any combination): payer (canonical name, e.g. "Sunshine
+    Health"), state (2-letter code), topic (semantic tag, e.g. "ECT",
+    "PA", "appeals"), authority_level ("payer_manual" | "payer_policy" |
+    "member_handbook" | etc.).
+  Returns: list of {url, host, payer, ingested, last_seen_at,
+    content_kind}. The ``ingested: bool`` flag tells you whether that
+    URL's content is already searchable or still just a known pointer
+    Mobius hasn't pulled in yet."""
 
 
 _INGEST_URL_BLOCK = """\
