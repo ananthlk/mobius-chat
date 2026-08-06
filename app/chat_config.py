@@ -299,6 +299,20 @@ class ChatPromptsConfig:
 
     # Dynamic consolidator: three system prompts (JSON AnswerCard output).
     # All three use module-level _ENRICHER_PREAMBLE + mode-specific section rules.
+    # Phase 0.16 (2026-08-06, Ananth directive — supersedes Phase 0.14/0.15's
+    # sentence-count targets below): the "thin one-liner" bug (Phase 0.14)
+    # was partially fixed (BLENDED's 1-3 sentences, FACTUAL's substantive-
+    # bullets rule) but FACTUAL's direct_answer stayed capped at ONE
+    # sentence -- and FACTUAL is the mode real fast/copilot-mode questions
+    # actually land in (confirmed live: "is prior auth required for an
+    # in-home ventilator" classified as FACTUAL, produced a single
+    # sentence). A single sentence read as "too short" regardless of which
+    # mode technically produced it, so the fix is to the mode ACTUALLY
+    # being hit, not a reclassification project. All three modes now
+    # target real paragraph-length direct_answer content; FACTUAL stays
+    # the leanest of the three (still leads with the operative fact first)
+    # but is no longer artificially capped at a single sentence when the
+    # sources support more.
     integrator_factual_system: str = (
         _ENRICHER_PREAMBLE
         + "Mode-specific rules for FACTUAL:\n"
@@ -306,7 +320,17 @@ class ChatPromptsConfig:
         "- sections: 2–3 sections, each with 3–6 substantive bullets (8–25 words each). "
         "Intent must be one of: process, requirements, definitions, exceptions, references. "
         "No stub bullets. FACTUAL hides sections behind 'Show details' — they must carry real detail.\n"
-        "- direct_answer is ONE sentence — the single operative fact.\n"
+        "- direct_answer: 1–2 short paragraphs. Lead with the single operative fact in the first "
+        "sentence, then use the rest of the paragraph(s) for the specifics that actually answer the "
+        "question — the exact code/criteria involved, what determines the answer, and any real "
+        "caveat or exception the sources support. Do not pad with filler to hit length, but do not "
+        "compress real, relevant detail into one sentence either — SHORTEST of the three modes, not "
+        "the thinnest. Good direct_answer: \"The provided documents do not give a direct yes/no for "
+        "in-home ventilators, but they do outline the process: DME requests like this go through the "
+        "Pre-Auth Check Tool, which confirms whether the specific service code needs approval. "
+        "Requests tied to a hospital discharge follow a different path — a fax submission instead of "
+        "the online portal.\" Bad direct_answer (too thin — do not do this): \"Check the Pre-Auth "
+        "Check Tool.\"\n"
         "- required_variables: if the answer depends on an unknown (service code, plan subtype), list it. "
         "Add one followup question only if the user must clarify to get a definitive answer.\n"
     )
@@ -314,19 +338,29 @@ class ChatPromptsConfig:
         _ENRICHER_PREAMBLE
         + "Mode-specific rules for CANONICAL:\n"
         "- Set mode = 'CANONICAL'.\n"
-        "- sections: 2–4 sections, each with 3–6 complete bullets. All sections visible by default.\n"
-        "- direct_answer: 2–4 sentences covering what the concept is, its canonical scope, and key conditions.\n"
+        "- sections: 2–4 sections, each with 3–6 substantive bullets. No stub bullets. All sections "
+        "visible by default.\n"
+        "- direct_answer: 2–3 paragraphs — the most detailed of the three modes. Cover what the "
+        "concept is, its canonical scope, key conditions, and relevant exceptions in prose, not just "
+        "as a pointer to the sections below.\n"
         "- Do not include procedural 'how to submit' steps unless the policy explicitly describes them.\n"
     )
     integrator_blended_system: str = (
         _ENRICHER_PREAMBLE
         + "Mode-specific rules for BLENDED:\n"
         "- Set mode = 'BLENDED'.\n"
-        "- sections: 2–4 sections. requirements + definitions sections are visible by default; "
-        "process, exceptions, references are behind 'Show details'.\n"
-        "- direct_answer: 1–3 sentences. Include specifics inline when sources supply them "
-        "(codes, numbers, criteria names, page refs). Do not retreat to framework-name-only one-liners.\n"
-        "- Provide concrete criteria as bullets in 'requirements'; code definitions in 'definitions'.\n"
+        "- sections: 2–4 sections, each with 3–6 substantive bullets. No stub bullets. requirements "
+        "AND definitions sections are visible by default; process, exceptions, references are behind "
+        "'Show details'.\n"
+        "- direct_answer: 1–2 short paragraphs. Include specifics inline when sources supply them — "
+        "code definitions (e.g. \"H0036 = Community Psychiatric Supportive Treatment\"), named "
+        "criteria/standards (e.g. \"InterQual\"), and the source document (e.g. \"per the Provider "
+        "Manual\"). Do not retreat to framework-name-only one-liners. Good direct_answer: \"H0036 "
+        "(Community Psychiatric Supportive Treatment) requires prior authorization when medical "
+        "necessity is evaluated using InterQual criteria, per the Provider Manual.\" Bad direct_answer "
+        "(too thin — do not do this): \"The payer uses InterQual criteria to evaluate H0036.\"\n"
+        "- Provide concrete criteria as bullets in 'requirements'; code definitions and term "
+        "meanings/standard names in 'definitions'.\n"
     )
 
     # ── Parallel-integrator prompts (used only when MOBIUS_INTEGRATOR_MODE=parallel) ──

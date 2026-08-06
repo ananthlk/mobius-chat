@@ -1,24 +1,38 @@
-"""Phase 0.14 — answer-detail fidelity.
+"""Phase 0.14/0.15/0.16 — answer-detail fidelity.
 
-Regression for the "thin one-liner" UX bug: the integrator's BLENDED-mode
-answer card produced a vague summary even when the reasoning trace had
-clear specifics (code definition, standard name, manual page). Root cause
-was a combination of:
+Regression for the "thin one-liner" UX bug: the integrator's answer card
+produced a vague summary even when the reasoning trace had clear
+specifics (code definition, standard name, manual page). Root cause was
+a combination of:
 
 1. BLENDED system prompt instructing ``direct_answer`` to be 1-2 sentences
-   and implying that specifics belong in hidden sections.
+   and implying that specifics belong in hidden sections. (Phase 0.14)
 2. BLENDED UI visibility rule showing only ``requirements`` sections by
    default — so ``definitions`` (e.g. "H0036 = Community Psychiatric
-   Supportive Treatment") was always hidden behind "Show details".
+   Supportive Treatment") was always hidden behind "Show details". (0.14)
+3. FACTUAL's direct_answer stayed capped at ONE sentence even after 1/2
+   landed — and FACTUAL is the mode real fast/copilot-mode questions
+   actually land in (confirmed live, 2026-08-06: "is prior auth required
+   for an in-home ventilator" classified FACTUAL, produced a single
+   sentence — read as "too short" by the user regardless of which mode
+   technically produced it). (Phase 0.16, Ananth directive)
 
-Fixes (prompt + visibility, two levers compose):
+Fixes (prompt + visibility, three levers compose):
 
-A) BLENDED system prompt: direct_answer is now 1–3 sentences AND must
+A) BLENDED system prompt: direct_answer is 1-2 short paragraphs and must
    include inline specifics when the user asked for them (code meaning,
    criteria values, rule conditions). Includes a worked example so the
-   LLM sees the contrast between a good and bad direct_answer.
-B) UI ``splitSectionsByVisibility`` for BLENDED now shows both
-   ``requirements`` AND ``definitions`` by default.
+   LLM sees the contrast between a good and bad direct_answer. (0.14)
+B) UI ``splitSectionsByVisibility`` for BLENDED shows both
+   ``requirements`` AND ``definitions`` by default. (0.14)
+C) All three modes (FACTUAL/BLENDED/CANONICAL) now target real
+   paragraph-length direct_answer content. FACTUAL stays the leanest of
+   the three (still leads with the operative fact first) but is no
+   longer capped at a single sentence when sources support more.
+   CANONICAL — the most detailed mode — moved from a few sentences to
+   2-3 full paragraphs. The relative gradient (FACTUAL leanest,
+   CANONICAL most expansive) is preserved; the absolute floor for all
+   three moved up. (0.16)
 
 These tests assert the prompt contract is intact. UI behavior is harder
 to unit-test in Python; the TS/JS change is mirrored and the smoke check
@@ -34,12 +48,14 @@ class TestBlendedPromptContract:
     def _prompt(self) -> str:
         return ChatPromptsConfig().integrator_blended_system
 
-    def test_direct_answer_permits_up_to_three_sentences(self):
-        """The new contract allows 1–3 sentences for direct_answer (was 1–2)."""
+    def test_direct_answer_permits_short_paragraphs(self):
+        """Phase 0.16: BLENDED direct_answer is 1-2 short paragraphs (was
+        1-3 sentences in Phase 0.14) — a single sentence, however
+        specific, still reads as thin."""
         p = self._prompt()
-        assert "1–3 sentences" in p, (
-            "BLENDED prompt must allow 1–3 sentences for direct_answer; "
-            "tighter than this produces thin one-liners on detail questions"
+        assert "1–2 short paragraphs" in p, (
+            "BLENDED prompt must allow 1-2 short paragraphs for direct_answer; "
+            "a sentence-count cap produces thin answers regardless of the cap size"
         )
         assert "1–2 sentences max" not in p, (
             "old 1-2 sentence rule was the primary cause of thin answers"
@@ -48,7 +64,7 @@ class TestBlendedPromptContract:
     def test_direct_answer_must_include_specifics_when_asked(self):
         """The prompt explicitly directs the LLM to inline specifics."""
         p = self._prompt().lower()
-        assert "include those specifics inline" in p, (
+        assert "include specifics inline" in p, (
             "prompt must push specifics into direct_answer, not only sections"
         )
         # The worked example mentions H0036 — validates the example survived edits.
@@ -85,37 +101,48 @@ class TestBlendedPromptContract:
 
 
 class TestOtherModesUnchanged:
-    """FACTUAL stays terse; CANONICAL goes to a full paragraph (Phase 0.15).
+    """FACTUAL stays leanest of the three; CANONICAL is the most expansive
+    (Phase 0.15, targets updated in 0.16).
 
     These tests lock in the mode-gradient the user wanted:
-        FACTUAL  = 1 line (shortest)
-        BLENDED  = 1–3 sentences (middle)
-        CANONICAL = short paragraph (longest)
+        FACTUAL   = 1-2 short paragraphs (leanest — still leads with the
+                    single operative fact, but not artificially one-sentence)
+        BLENDED   = 1-2 short paragraphs (middle — specifics inlined)
+        CANONICAL = 2-3 paragraphs (longest, most expansive)
     """
 
-    def test_factual_still_one_sentence_operational(self):
+    def test_factual_permits_short_paragraphs(self):
+        """Phase 0.16: FACTUAL direct_answer is 1-2 short paragraphs — no
+        longer capped at one sentence (that was the root cause of the
+        "too short" complaint, since FACTUAL is the mode real fast-mode
+        questions actually land in)."""
         p = ChatPromptsConfig().integrator_factual_system
-        assert "one sentence, operational" in p
+        assert "1–2 short paragraphs" in p
+        assert "direct_answer is ONE sentence" not in p, (
+            "old one-sentence FACTUAL rule must be gone — it's what made "
+            "real fast-mode answers read as too thin"
+        )
 
     def test_factual_is_declared_shortest(self):
         """Phase 0.15: prompt explicitly tells the LLM FACTUAL is the shortest mode."""
         p = ChatPromptsConfig().integrator_factual_system
         assert "SHORTEST of the three modes" in p
 
-    def test_canonical_allows_paragraph_not_one_sentence(self):
-        """Phase 0.15: CANONICAL permits 3–6 sentence direct_answer.
+    def test_canonical_allows_multiple_paragraphs(self):
+        """Phase 0.16: CANONICAL permits 2-3 paragraphs (was 3-6 sentences
+        in 0.15, one sentence before that).
 
         Regression: the old "one-sentence summary" rule kept CANONICAL
         direct_answer as thin as FACTUAL, eliminating the mode gradient.
         """
         p = ChatPromptsConfig().integrator_canonical_system
-        assert "3–6 sentences" in p, (
-            "CANONICAL direct_answer must be a short paragraph, not one sentence"
+        assert "2–3 paragraphs" in p, (
+            "CANONICAL direct_answer must be multiple real paragraphs, not one sentence"
         )
         assert "one-sentence summary" not in p, (
             "old one-sentence CANONICAL rule must be gone"
         )
-        assert "most detailed display mode" in p, (
+        assert "most detailed of the three modes" in p, (
             "prompt must signal that CANONICAL is the most-expansive mode"
         )
 
