@@ -105,6 +105,14 @@ rag(query)
   Do NOT use for: Credentialing STATUS for a specific provider or org
     (NPI enrollment status, compliance flags, NPPES/PML/TML data errors,
     panel readiness) — that's a live status lookup, not a documented fact.
+  Weak-result signal: if rag returns the same generic chunks across 2+
+    calls on a payer- or source-specific question (the payer/state was
+    recognized correctly, but no specific fact was found), call
+    lookup_authoritative_sources before concluding the corpus doesn't
+    have it. A genuine source gap (the document exists but isn't
+    indexed yet) looks identical to a real content gap (the fact truly
+    isn't documented anywhere) in rag's output alone —
+    lookup_authoritative_sources is the only way to tell them apart.
   Returns: numbered passages [1]…[N] with page citations and confidence."""
 
 # Kept for back-compat dispatch; no longer rendered in the planner manifest.
