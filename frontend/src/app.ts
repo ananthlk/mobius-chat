@@ -9555,16 +9555,30 @@ function run(): void {
     );
     if (traceEl) diagPanel.appendChild(traceEl);
 
-    // Section 2a: Full retrieval trace (narrative_full, task #43). Expandable, default collapsed
-    // (don't spam the panel every turn). PLAIN-TEXT render (it already has --- section headers) —
-    // NO markdown. PHI: render-only; the value never touches console/Sentry/analytics/persistence.
-    const _nf = typeof opts.narrativeFull === "string" ? opts.narrativeFull.trim() : "";
+    // Section 2a: Full retrieval trace (task #43/#44). Expandable, default collapsed. PLAIN-TEXT
+    // (already has --- section headers) — NO markdown. Prefer the LIVE full narrative_full (from
+    // the ephemeral client_payload, fresh turns only, PHI live-only). On history/replay that field
+    // is gone (never persisted), so fall back to narrative_full_REDACTED — the raw-query echo
+    // stripped, safe-to-persist variant that rides the telemetry dict → retrieval_trace envelope in
+    // thinking_log. Render-only either way; never console/Sentry/analytics.
+    let _nf = typeof opts.narrativeFull === "string" ? opts.narrativeFull.trim() : "";
+    let _nfRedacted = false;
+    if (!_nf) {
+      const _tl = Array.isArray(opts.thinkingLog) ? opts.thinkingLog : [];
+      for (const _e of _tl) {
+        if (_e && typeof _e === "object" && (_e as { signal?: string }).signal === "retrieval_trace") {
+          const _r = ((_e as { data?: Record<string, unknown> }).data || {}).narrative_full_redacted;
+          if (typeof _r === "string" && _r.trim()) { _nf = _r.trim(); _nfRedacted = true; break; }
+        }
+      }
+    }
     if (_nf) {
       const nfWrap = document.createElement("details");
       nfWrap.className = "dc-narrative-full";
       const nfSum = document.createElement("summary");
       nfSum.className = "dc-narrative-full-summary";
-      nfSum.textContent = "Full retrieval trace";
+      // Label distinguishes the persisted redacted trace (history) from the live full one.
+      nfSum.textContent = _nfRedacted ? "Full retrieval trace (redacted)" : "Full retrieval trace";
       const nfPre = document.createElement("pre");
       nfPre.className = "dc-narrative-full-pre";
       nfPre.textContent = _nf; // textContent — never innerHTML, never logged

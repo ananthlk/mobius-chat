@@ -10554,13 +10554,27 @@ function run() {
     );
     if (traceEl)
       diagPanel.appendChild(traceEl);
-    const _nf = typeof opts.narrativeFull === "string" ? opts.narrativeFull.trim() : "";
+    let _nf = typeof opts.narrativeFull === "string" ? opts.narrativeFull.trim() : "";
+    let _nfRedacted = false;
+    if (!_nf) {
+      const _tl = Array.isArray(opts.thinkingLog) ? opts.thinkingLog : [];
+      for (const _e of _tl) {
+        if (_e && typeof _e === "object" && _e.signal === "retrieval_trace") {
+          const _r = (_e.data || {}).narrative_full_redacted;
+          if (typeof _r === "string" && _r.trim()) {
+            _nf = _r.trim();
+            _nfRedacted = true;
+            break;
+          }
+        }
+      }
+    }
     if (_nf) {
       const nfWrap = document.createElement("details");
       nfWrap.className = "dc-narrative-full";
       const nfSum = document.createElement("summary");
       nfSum.className = "dc-narrative-full-summary";
-      nfSum.textContent = "Full retrieval trace";
+      nfSum.textContent = _nfRedacted ? "Full retrieval trace (redacted)" : "Full retrieval trace";
       const nfPre = document.createElement("pre");
       nfPre.className = "dc-narrative-full-pre";
       nfPre.textContent = _nf;

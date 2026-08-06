@@ -643,6 +643,13 @@ def _run(call: SkillCall) -> SkillEnvelope:
         "allocator_override": resp.get("allocator_override"),
         "authority_requirement": resp.get("authority_requirement"),
         "n_chunks": len(chunks),
+        # narrative_full_REDACTED (mobius-rag 1fc9194): same retrieval narrative with the raw-query
+        # echo lines stripped, so it IS safe to persist. Unlike narrative_full (which is stashed on
+        # an ephemeral ctx attr and never enters this dict), the redacted variant CAN ride the
+        # telemetry dict → make_retrieval_trace → thinking_log, giving durable diagnostics that
+        # survive into history/replay (Chat Master ruling option (b), 2026-08-06). The FE shows the
+        # full live narrative on fresh turns and falls back to this redacted one on history reload.
+        "narrative_full_redacted": (contract.get("traces") or {}).get("narrative_full_redacted"),
     }
 
     # Always emit the retrieval_trace envelope, even on zero hits — the
