@@ -45,41 +45,48 @@ key, and the callback is re-registered here + re-wired in
 ``.../decisions/{rag_agent_id}/grade``. Live against Retriever's
 ``persist_decision()`` fix (mobius-rag 6c124e6).
 
-**Fact-store ("s" strategy) chunk handling — resolved after a Retriever
-pairing session (2026-08-06), per Chat Architecture's instruction not to
-build this piece solo.** The old golden-flag early-return pattern
-(``extra["golden"]=True`` + ``llm_answer`` as direct answer text) is
-removed entirely — the new response never has a bare answer string to
-fast-exit on. What replaced it, confirmed against real RAG code, not
-guessed:
+**Fact-store (``filler_strategy=="fact_store"``) chunk handling —
+resolved after a Retriever pairing session (2026-08-06), per Chat
+Architecture's instruction not to build this piece solo.** The old
+golden-flag early-return pattern (``extra["golden"]=True`` + ``llm_answer``
+as direct answer text) is removed entirely — the new response never has a
+bare answer string to fast-exit on. What replaced it, confirmed against
+real RAG code, not guessed:
 
-1. **confidence_label**: hardcoded ``"high"`` for ``filler_strategy=="s"``
-   chunks, bypassing ``_derive_confidence_label`` entirely — RAG's
-   ``filler_s.py`` never sets ``rerank_score`` on these (always ``None``),
-   and the threshold function would otherwise return ``"abstain"``, the
-   worst label, for exactly the chunks that deserve the best one. "s"
-   chunks are certified/verified facts, not a probabilistic retrieval
-   match — the "how well did this match" question ``rerank_score``
-   answers doesn't apply.
+1. **confidence_label**: hardcoded ``"high"`` for
+   ``filler_strategy=="fact_store"`` chunks, bypassing
+   ``_derive_confidence_label`` entirely — RAG's ``filler_s.py`` never
+   sets ``rerank_score`` on these (always ``None``), and the threshold
+   function would otherwise return ``"abstain"``, the worst label, for
+   exactly the chunks that deserve the best one. Fact-store chunks are
+   certified/verified facts, not a probabilistic retrieval match — the
+   "how well did this match" question ``rerank_score`` answers doesn't
+   apply. (An earlier revision checked ``filler_strategy in ("s",
+   "fact_store")`` — Retriever had described the value verbally as "s,"
+   which turned out to be the single-letter strategy identifier used in
+   routing/taxonomy fields like ``executed_order``/``forced_strategy``, a
+   different field entirely from per-chunk ``filler_strategy``, which is
+   always a descriptive label. Narrowed to ``"fact_store"`` only once
+   Retriever confirmed it's the sole correct value.)
 2. **Authority/citation marking**: needs NO chat-side change.
    ``authority_level="contract_source_of_truth"`` is hardcoded server-side
    (``filler_s.py``) and RAG's own ``synthesis.py::_infer_authority`` uses
    ``authority_level`` FIRST when present — so ``chunk["authority"]`` is
-   already ``"authoritative"`` on every "s" chunk by the time it reaches
-   chat, live-verified by Retriever. ``source_type=="fact_store"`` (also
-   hardcoded server-side) is the distinct marker already available in
-   this file's per-chunk mapping under ``extra["chunk_grain"]`` — a
+   already ``"authoritative"`` on every fact-store chunk by the time it
+   reaches chat, live-verified by Retriever. ``source_type=="fact_store"``
+   (also hardcoded server-side) is the distinct marker already available
+   in this file's per-chunk mapping under ``extra["chunk_grain"]`` — a
    citation UI can key off it directly for "certified fact" vs "general
    corpus passage" styling; no new field needed here.
-3. **No chat-side short-circuit on seeing an "s" chunk.** Whether to keep
-   escalating (react's own round loop, or its separate auto→d web-search
-   cascade) is the Router/Observer's decision, already baked into the
-   response before it reaches chat — gate on the overall response's
-   ``status``/``chosen_slot``/``score``/terminal signal
+3. **No chat-side short-circuit on seeing a fact-store chunk.** Whether
+   to keep escalating (react's own round loop, or its separate auto→d
+   web-search cascade) is the Router/Observer's decision, already baked
+   into the response before it reaches chat — gate on the overall
+   response's ``status``/``chosen_slot``/``score``/terminal signal
    (``routing_keys.routing_verdict.slots[slot_id].terminal``), never on
    strategy identity. Re-implementing a strategy-specific stop condition
    here would duplicate a decision the pipeline already made and risks
-   disagreeing with it (an "s" chunk that only partially answers a
+   disagreeing with it (a fact-store chunk that only partially answers a
    multi-fact query should NOT force a stop). This file makes no such
    decision today — intentionally left to react_loop.py's existing
    round/escalation logic, which is already keyed on its own state, not
@@ -613,16 +620,16 @@ def _run(call: SkillCall) -> SkillEnvelope:
         telemetry=telemetry,
     )
 
-    # Fact-store ("s" strategy) golden-flag early-return REMOVED per Chat
-    # Architecture's spec (2026-08-05) — the new response never has a bare
-    # answer string to fast-exit on (answer_text/thinking are always
-    # null). No chat-side short-circuit replaces it — see module
-    # docstring point 3 (Retriever pairing, 2026-08-06): escalation
+    # Fact-store (filler_strategy=="fact_store") golden-flag early-return
+    # REMOVED per Chat Architecture's spec (2026-08-05) — the new response
+    # never has a bare answer string to fast-exit on (answer_text/thinking
+    # are always null). No chat-side short-circuit replaces it — see
+    # module docstring point 3 (Retriever pairing, 2026-08-06): escalation
     # decisions belong to the Router/Observer, already reflected in the
     # response's own status/chosen_slot/terminal signal, not something
-    # this file re-derives from chunk strategy identity. "s"-tagged
-    # chunks DO get special confidence_label treatment below (module
-    # docstring point 1) — that's the one real per-chunk behavior change.
+    # this file re-derives from chunk strategy identity. Fact-store chunks
+    # DO get special confidence_label treatment below (module docstring
+    # point 1) — that's the one real per-chunk behavior change.
 
     # Gate on chunks alone, NOT status. Real bug found + fixed during live
     # smoke verification (2026-08-06, this deploy): status=="partial" with
@@ -682,15 +689,16 @@ def _run(call: SkillCall) -> SkillEnvelope:
         # not a probabilistic retrieval match — rerank_score's "how well
         # did this match" question doesn't apply here at all).
         #
-        # Checked BOTH "fact_store" and "s": Retriever described this
-        # value verbally as "s", but a live smoke-test call to the
-        # production endpoint (2026-08-06, this deploy) observed the real
-        # per-chunk filler_strategy value as "fact_store", not "s" — a
-        # literal `== "s"` check silently never matched anything in
-        # production. Matching both until Retriever confirms which is
-        # authoritative (or whether both appear in different contexts).
+        # "fact_store" is the ONLY correct value (Retriever confirmed,
+        # 2026-08-06, resolving the dual-match this code briefly carried).
+        # "s" is the single-letter strategy identifier used in routing/
+        # taxonomy fields (executed_order, forced_strategy, etc.) — a
+        # different field entirely from per-chunk filler_strategy, which
+        # is always a descriptive label ("vector_rerank", "web_search",
+        # "fact_store"), never a bare letter. The original `== "s"` check
+        # was checking the wrong field's vocabulary against this one.
         _confidence_label = (
-            "high" if _filler_strategy in ("s", "fact_store")
+            "high" if _filler_strategy == "fact_store"
             else _derive_confidence_label(c.get("rerank_score"))
         )
         sources.append(

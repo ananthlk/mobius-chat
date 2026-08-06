@@ -284,28 +284,31 @@ def test_s_strategy_chunks_flow_through_generic_mapping_no_early_return():
     assert env.sources[0].extra["retrieval_arms"] == ["s"]
 
 
-def test_s_strategy_chunk_confidence_label_is_always_high():
-    """2026-08-06, Retriever confirmed via code read: filler_s.py never
-    sets rerank_score on "s" chunks (always None) -- these are certified
-    facts, not a probabilistic retrieval match, so rerank_score's "how
-    well did this match" question doesn't apply. Running None through
-    _derive_confidence_label would give "abstain", the worst label, for
-    exactly the chunks that deserve the best one. Real-world shape: no
-    rerank_score at all on these chunks."""
-    s_chunk = {**_BASE_CHUNK, "filler_strategy": "s", "rerank_score": None}
-    env = _run_with_response("q", {"chunks": [s_chunk]})
-    assert env.sources[0].extra["confidence_label"] == "high"
-
-
 def test_fact_store_chunk_confidence_label_is_always_high():
-    """The REAL value observed in production (2026-08-06, live smoke-test
-    against the deployed endpoint): filler_strategy=="fact_store", not
-    "s" as Retriever described verbally. A literal `== "s"` check never
-    matched anything live -- this test locks in the actual value that
-    matters; the "s" test above is kept in case both appear somewhere."""
+    """"fact_store" is the ONLY correct value (Retriever confirmed,
+    2026-08-06) -- the real per-chunk filler_strategy value observed via
+    a live smoke-test against the deployed endpoint. rerank_score is
+    always None on these chunks (RAG's filler_s.py never sets it) --
+    running None through _derive_confidence_label would give "abstain",
+    the worst label, for exactly the chunks that deserve the best one."""
     fact_store_chunk = {**_BASE_CHUNK, "filler_strategy": "fact_store", "rerank_score": None}
     env = _run_with_response("q", {"chunks": [fact_store_chunk]})
     assert env.sources[0].extra["confidence_label"] == "high"
+
+
+def test_bare_s_no_longer_triggers_fact_store_treatment():
+    """2026-08-06, Retriever confirmed: bare "s" is the single-letter
+    strategy identifier used in routing/taxonomy fields (executed_order,
+    forced_strategy), a completely different field from per-chunk
+    filler_strategy, which is always a descriptive label. An earlier
+    revision of this code matched both "s" and "fact_store" as a
+    temporary hold; narrowed to "fact_store" only once confirmed. A
+    chunk with the literal (wrong-field) value "s" must fall through to
+    the generic rerank_score-based derivation, not get the special-case
+    treatment."""
+    s_chunk = {**_BASE_CHUNK, "filler_strategy": "s", "rerank_score": None}
+    env = _run_with_response("q", {"chunks": [s_chunk]})
+    assert env.sources[0].extra["confidence_label"] == "abstain"
 
 
 def test_non_s_chunk_with_null_rerank_score_still_abstains():
