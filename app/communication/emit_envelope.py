@@ -247,14 +247,31 @@ def make_retrieval_trace(
     # arm_hits.{bm25,vector}; older draft used nested timing.* +
     # arms.{bm25_hits,vec_hits}. Read both so the helper works
     # against whichever rev is live.
+    #
+    # 2026-08-06 (Chat Master, live bug post-RAG-endpoint-cutover): the
+    # new pipeline's reduced telemetry dict is {chosen_slot, score,
+    # status, attempt_count, latency_ms, dispatch_path,
+    # allocator_override, authority_requirement, n_chunks} -- no
+    # arm_hits/arms/chunks at all. That's not a rename, arm-level BM25/
+    # vector hit counts genuinely don't exist in the new pipeline. The
+    # old fallback chain (arms_legacy.returned -> len(chunks)) silently
+    # evaluated to 0 for every new-pipeline turn, so retrieval that
+    # found 19 real chunks rendered "BM25=0 vec=0 -- no matches" in the
+    # diagnostics panel on every single turn since the cutover.
     t = telemetry or {}
     arm_hits = t.get("arm_hits") or {}
     arms_legacy = t.get("arms") or {}
     timing_legacy = t.get("timing") or {}
+    # Presence, not truthiness -- an OLD-pipeline turn with genuinely
+    # zero hits still has these keys (empty/zero-valued); a NEW-pipeline
+    # turn never has them at all. Only the latter should suppress the
+    # BM25/vec segment below.
+    has_arm_data = ("arm_hits" in t) or ("arms" in t)
     bm25 = int(arm_hits.get("bm25") or arms_legacy.get("bm25_hits") or 0)
     vec = int(arm_hits.get("vector") or arms_legacy.get("vec_hits") or 0)
     returned = int(
-        arms_legacy.get("returned")
+        t.get("n_chunks")
+        or arms_legacy.get("returned")
         or len(t.get("chunks") or [])
         or 0
     )
@@ -267,11 +284,15 @@ def make_retrieval_trace(
     if strategy_used == "e" or (total_ms < 15 and returned == 0 and fail_fast_reason):
         note = f"⚡ Fail-fast ({fail_fast_reason or 'no_domain_match'}) — corpus search skipped"
     elif returned == 0:
-        note = f"↺ BM25={bm25} vec={vec} — no matches after {total_ms}ms"
+        note = (
+            f"↺ BM25={bm25} vec={vec} — no matches after {total_ms}ms" if has_arm_data
+            else f"↺ no matches after {total_ms}ms"
+        )
     else:
         note = (
             f"◌ corpus search: {returned} chunk{'s' if returned != 1 else ''} · "
-            f"{total_ms}ms · BM25={bm25} vec={vec}"
+            f"{total_ms}ms · BM25={bm25} vec={vec}" if has_arm_data
+            else f"◌ corpus search: {returned} chunk{'s' if returned != 1 else ''} · {total_ms}ms"
         )
     step_id = f"round_{round}.retrieval" if round is not None else "retrieval"
     return EmitEnvelope(
