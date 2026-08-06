@@ -176,11 +176,14 @@ def test_suggest_escalate_absent_when_already_agentic():
 
 def test_suggest_escalate_absent_when_not_stalled():
     """Normal, successful turn -- no unfinished_reason, groundedness
-    either None (critic didn't run) or True."""
+    either None (critic didn't run) or True, and a real react_draft
+    (this IS what a successful turn looks like -- orchestrator.py
+    always sets react_draft before a normal completion)."""
     ctx = _make_ctx()
     ctx.chat_mode = "copilot"
     ctx.react_unfinished_reason = None
     ctx.react_groundedness_passed = None
+    ctx.react_draft = "a real, substantial synthesized answer with plenty of content"
     card = {"mode": "FACTUAL", "direct_answer": "backup", "sections": []}
 
     with patch("app.stages.integrate.format_response") as mock_format:
@@ -198,6 +201,7 @@ def test_suggest_escalate_absent_when_groundedness_none_not_false():
     ctx.chat_mode = "copilot"
     ctx.react_unfinished_reason = None
     ctx.react_groundedness_passed = None
+    ctx.react_draft = "a real, substantial synthesized answer with plenty of content"
     card = {"mode": "FACTUAL", "direct_answer": "backup", "sections": []}
 
     with patch("app.stages.integrate.format_response") as mock_format:
@@ -292,3 +296,98 @@ def test_record_detail_fields_emitted_skipped_for_recital_mode():
         run_integrate(ctx)
 
     mock_metric.assert_not_called()
+
+
+# ── suggest_escalate: react_draft evidence-empty (Chat Master follow-up) ────
+
+
+def test_suggest_escalate_true_on_short_react_draft_quick_mode():
+    """The exact reported bug: quick mode, corpus miss, react_draft is a
+    real-but-useless short string -- no unfinished_reason, no
+    groundedness failure, but still nothing to synthesize from."""
+    ctx = _make_ctx()
+    ctx.chat_mode = "quick"
+    ctx.react_draft = "data does not contain the name of the CEO"  # 42 chars
+    card = {"mode": "FACTUAL", "direct_answer": "backup", "sections": []}
+
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert payload.get("suggest_escalate") is True
+
+
+def test_suggest_escalate_true_on_missing_react_draft():
+    """react_draft never set at all (getattr default None) must be
+    treated the same as empty -- nothing to synthesize from."""
+    ctx = _make_ctx()
+    ctx.chat_mode = "copilot"
+    card = {"mode": "FACTUAL", "direct_answer": "backup", "sections": []}
+
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert payload.get("suggest_escalate") is True
+
+
+def test_suggest_escalate_absent_with_substantial_react_draft():
+    """Regression guard: a real, substantial react_draft with no other
+    stall signal must NOT trigger the new evidence-empty leg."""
+    ctx = _make_ctx()
+    ctx.chat_mode = "quick"
+    ctx.react_draft = "x" * 200
+    card = {"mode": "FACTUAL", "direct_answer": "backup", "sections": []}
+
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert "suggest_escalate" not in payload
+
+
+def test_suggest_escalate_boundary_exactly_50_chars_is_not_empty():
+    ctx = _make_ctx()
+    ctx.chat_mode = "quick"
+    ctx.react_draft = "x" * 50
+    card = {"mode": "FACTUAL", "direct_answer": "backup", "sections": []}
+
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert "suggest_escalate" not in payload
+
+
+def test_suggest_escalate_boundary_49_chars_is_empty():
+    ctx = _make_ctx()
+    ctx.chat_mode = "quick"
+    ctx.react_draft = "x" * 49
+    card = {"mode": "FACTUAL", "direct_answer": "backup", "sections": []}
+
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert payload.get("suggest_escalate") is True
+
+
+def test_suggest_escalate_still_suppressed_in_agentic_despite_empty_draft():
+    """The agentic exclusion must still win even when evidence is empty --
+    nowhere further to escalate to regardless of which condition fired."""
+    ctx = _make_ctx()
+    ctx.chat_mode = "agentic"
+    ctx.react_draft = ""
+    card = {"mode": "FACTUAL", "direct_answer": "backup", "sections": []}
+
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert "suggest_escalate" not in payload

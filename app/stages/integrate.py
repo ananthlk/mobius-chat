@@ -853,10 +853,28 @@ def run_integrate(
             # Deliberately synchronous: the alternative (the post-run adjudicator's
             # verdict) isn't computed until 30-70s after this response is already
             # sent -- a button appearing that late would be confusing, not useful.
+            #
+            # 2026-08-05 follow-up (Chat Master): quick/normal-mode corpus misses
+            # were falling through both conditions above -- the loop "completes"
+            # cleanly (no unfinished_reason) and the groundedness critic often
+            # doesn't run outside agentic mode (groundedness_passed stays None,
+            # which is deliberately NOT treated as a failure). So a turn whose
+            # react_draft is essentially "nothing found" produced no escalation
+            # hint at all. ctx.react_draft is the same field draft_ready streams
+            # (set at orchestrator.py:708, right before append_draft_answer) --
+            # a short one here means react itself had nothing to synthesize from,
+            # independent of whether unfinished_reason or the critic ever fired.
+            # 50 chars is a floor for "not literally empty," not a quality bar --
+            # short-but-legitimate answers (e.g. FACTUAL mode's one-sentence
+            # scope) are a separate, larger population this must not catch;
+            # tune only against evidence of false positives there.
             _groundedness_passed = getattr(ctx, "react_groundedness_passed", None)
+            _react_draft = getattr(ctx, "react_draft", None)
+            _evidence_empty = not (_react_draft or "").strip() or len((_react_draft or "").strip()) < 50
             _stalled = (
                 getattr(ctx, "react_unfinished_reason", None) == "no_path_forward"
                 or _groundedness_passed is False
+                or _evidence_empty
             )
             if _stalled and getattr(ctx, "chat_mode", None) != "agentic":
                 parsed["suggest_escalate"] = True
