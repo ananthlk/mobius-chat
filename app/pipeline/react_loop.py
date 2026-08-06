@@ -512,6 +512,35 @@ def _citable_required(query: str) -> bool:
     return any(term in q for term in _CITABLE_TERMS)
 
 
+def _compute_gap_status(rag_call_history: list[dict]) -> str:
+    """EvidenceLedger phase 1 (Task #48, Chat Architecture spec,
+    2026-08-06) -- mechanical, code-only detection of whether the last
+    two rag calls converged on the same internal strategy and outcome
+    without closing anything. Subsumes Task #50: this IS the reframe
+    signal now, replacing the old `if not success:` gate inside the rag
+    dispatch block, which never fired when rag returned real-but-wrong
+    chunks (confirmed live: Amerigroup case -- 3 rounds, identical
+    dispatch_path/chosen_slot/status, success=True throughout since
+    chunks were non-empty). No LLM inference here -- pure function over
+    the same telemetry corpus_search.py already returns.
+
+    "empty" is excluded from the stagnant check deliberately: two
+    genuinely empty results in a row on citable_required=True is what
+    the relax-then-reframe protocol (rule 1b) already handles as its own
+    distinct path -- this function isn't meant to double-fire on that.
+    """
+    if len(rag_call_history) < 2:
+        return "fresh" if not rag_call_history else "progressing"
+    last = rag_call_history[-1]
+    prev = rag_call_history[-2]
+    stagnant = (
+        last.get("dispatch_path") == prev.get("dispatch_path")
+        and last.get("chosen_slot") == prev.get("chosen_slot")
+        and last.get("status") not in (None, "empty")
+    )
+    return "stagnant" if stagnant else "progressing"
+
+
 def _execute_tool(
     tool: str,
     inputs: dict,
@@ -2632,9 +2661,25 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         # is_guidance_round with round_directive-derived context (needing a
         # real signature change) stays a tracked follow-up, not done here.
         _pp_suppress_guidance = _pp_enabled and _pp_contract is not None
+
+        # ── EvidenceLedger phase 1 (Task #48, Chat Architecture spec,
+        # 2026-08-06) — code-computed, no LLM inference. Subsumes Task #50:
+        # gap_status=="stagnant" IS the reframe signal, mechanically
+        # detected from ctx._rag_call_history instead of relying on the
+        # `if not success:` gate inside the rag dispatch block, which
+        # silently never fired when rag returned real-but-wrong chunks
+        # (confirmed live: Amerigroup case, 3 rounds of identical
+        # dispatch_path/chosen_slot/status, success=True throughout since
+        # chunks were non-empty). build_reasoning_context renders this
+        # unconditionally each round — no gate to miss.
+        _ledger_history: list[dict] = list(getattr(ctx, "_rag_call_history", []))
+        _gap_status = _compute_gap_status(_ledger_history)
+
         reasoning_context = build_reasoning_context(
             ctx, tool_results, rn,
             max_iterations=(None if _pp_suppress_guidance else max_it),
+            gap_status=_gap_status,
+            rag_call_history=_ledger_history,
         )
         # Directive text appended to context — NOT a composition/system-
         # prompt block (see governor.py's module docstring for why).

@@ -389,7 +389,7 @@ Prose (even correct prose) breaks the pipeline — use JSON every time."""
 
 REACT_CRITICAL_RULES_TEXT = """CRITICAL RULES:
 1. **rag FIRST** for any policy/process/overview question. rag is the ONLY retrieval tool — it handles corpus, payor registry facts (EDI, phone, portal, timely filing), and web sources internally. Do NOT call separate search tools.
-1b. **Retry protocol — relax, then reframe. Never blind-retry.** rag already runs its own internal strategy escalation (BM25/vector/web/fact-store) INSIDE one call — calling it again with the same or cosmetically-reworded query changes nothing server-side and gains zero new information. Every rag tool result carries a "RAG signal:" line (status, citable_required, chunks) — read it before deciding your next move, and check the rag call history above for what's already happened this turn:
+1b. **Retry protocol — relax, then reframe. Never blind-retry.** rag already runs its own internal strategy escalation (BM25/vector/web/fact-store) INSIDE one call — calling it again with the same or cosmetically-reworded query changes nothing server-side and gains zero new information. Every rag tool result carries a "RAG signal:" line (status, citable_required, chunks), and the [Evidence Ledger] block above shows gap_status for this exact pattern — read both before deciding your next move:
     - **First call weak/empty, citable_required=True**: your next rag call, same conceptual question, will automatically run with citable_required relaxed — you don't set this yourself, just call rag again with the same query. This re-opens non-citable sources (web/general) to learn the correct terminology or which section actually covers it. Do not treat this relaxed call as your answer — it's for learning.
     - **Result was the RELAXED call**: your next rag call MUST use a query that is MATERIALLY DIFFERENT — built from what the relaxed call actually taught you (the real term, code, or policy section), not a reworded version of the original phrasing. This is your one reframe.
     - **Result was the REFRAMED call and still empty**: this is a genuine gap, not a phrasing problem. STOP calling rag on this question — go to SHAPE 2 below.
@@ -686,8 +686,28 @@ def build_reasoning_context(
     tool_results: list[dict],
     iteration: int,
     max_iterations: int | None = None,
+    gap_status: str | None = None,
+    rag_call_history: list[dict] | None = None,
 ) -> str:
     """Build the context the model reasons over each iteration.
+
+    ``gap_status``/``rag_call_history`` (2026-08-06, Task #48, Chat
+    Architecture spec — EvidenceLedger phase 1): code-computed entirely
+    by the caller (react_loop.py, from ``ctx._rag_call_history``) BEFORE
+    this function runs — no LLM inference happens here, this function
+    only renders. Replaces the old per-round telemetry prose block
+    (fictional-arms-era "Strategy arms tried", then its real-but-
+    unstructured successor "rag calls made so far this turn") with a
+    single named ``[Evidence Ledger]`` block. Rendered UNCONDITIONALLY
+    every round the history is non-empty -- this is the actual fix for
+    the bug that made the previous reframe signal invisible: that
+    signal lived inside react_loop.py's tool-result text, gated behind
+    ``if not success:``, which never fired when rag returned real-but-
+    wrong chunks (confirmed live, Amerigroup case -- 3 rounds, identical
+    dispatch_path/chosen_slot/status, success=True throughout since
+    chunks were non-empty). The ledger has no such gate: ``gap_status``
+    is computed and shown regardless of whether the last call
+    "succeeded" by the content-length heuristic.
 
     ``max_iterations`` is optional so legacy tests that call this with
     three positional args keep working. When supplied, it enables the
@@ -896,64 +916,46 @@ def build_reasoning_context(
             + _prev_summary[:600]
         )
 
-    # ── Real per-turn rag call history (2026-08-06) ──────────────────────
-    # Replaces the old "5-arm bandit" (precision/recall/hybrid/google/
-    # llm_direct) that told the LLM to track which of 5 strategies it had
-    # tried and pick from the "remaining" ones. That model stopped
-    # matching reality when the Task #36 cutover made rag() a single
-    # comprehensive call — the router already runs its own internal
-    # a→b→c→d→s escalation INSIDE one call, so there was never a real
-    # "arm" left for chat to separately dispatch. The LLM was reasoning
-    # against a fictional strategy-progression narrative (confirmed via
-    # the H0036 regression: 8 rounds of near-identical reworded queries,
-    # because the only thing that could actually change between calls was
-    # the query text, and nothing told the LLM that).
-    #
-    # This surfaces the REAL outcome of each rag call this turn instead —
-    # see react_loop.py's _rag_call_history for how it's built, and rule
-    # 1b below for what each outcome means for the next move.
-    _rag_history: list[dict] = list(getattr(ctx, "_rag_call_history", []))
-    if _rag_history:
-        _hist_lines = [
-            f"  call {h.get('call_number', i)} ({h.get('rag_phase', '?')}): "
-            f"citable_required={h.get('citable_required')}, status={h.get('status') or 'unknown'}, "
-            f"chunks={h.get('n_chunks')}, dispatch_path={h.get('dispatch_path') or 'n/a'}, "
-            f"chosen_slot={h.get('chosen_slot') or 'n/a'}"
-            for i, h in enumerate(_rag_history, 1)
+    # ── Evidence Ledger (2026-08-06, Task #48, Chat Architecture spec) ───
+    # Code-computed by the caller (react_loop.py, from ctx._rag_call_history)
+    # BEFORE this function runs — rendered here verbatim, no LLM inference.
+    # Replaces two predecessors: the "5-arm bandit" (precision/recall/
+    # hybrid/google/llm_direct — stopped matching reality once Task #36
+    # made rag() a single comprehensive call), and this block's own
+    # immediate successor (real per-call history as prose), which fixed
+    # the fictional-arms problem but still relied on react_loop.py's
+    # `if not success:` gate to surface a reframe signal — invisible
+    # whenever rag returned real-but-wrong chunks (confirmed live:
+    # Amerigroup case, 3 rounds, identical dispatch_path/chosen_slot/
+    # status, success=True throughout since chunks were non-empty).
+    # gap_status is rendered UNCONDITIONALLY here, success or not — that
+    # gate is what actually needed removing, not the wording.
+    _ledger_history = (
+        rag_call_history if rag_call_history is not None
+        else list(getattr(ctx, "_rag_call_history", []))
+    )
+    if _ledger_history:
+        _strategy_tried = [
+            "citable retrieval" if h.get("citable_required") else "relaxed retrieval"
+            for h in _ledger_history
         ]
+        _tool_tried = ["rag" for _ in _ledger_history]
+        _dispatch_path_history = [h.get("dispatch_path") or "n/a" for h in _ledger_history]
         parts.append(
-            "rag calls made so far this turn (real outcomes — see rule 1b "
-            "for what each one means for your next move):\n" + "\n".join(_hist_lines)
+            "[Evidence Ledger]\n"
+            f"round: {iteration}\n"
+            f"strategy_tried: {_strategy_tried}\n"
+            f"tool_tried: {_tool_tried}\n"
+            f"dispatch_path_history: {_dispatch_path_history}\n"
+            f"gap_status: \"{gap_status or 'progressing'}\"\n"
+            "When gap_status is \"stagnant\": the last two rag calls converged on the same "
+            "internal strategy and outcome — calling rag again with the same or similar "
+            "query will not surface new information. A real content gap (the fact isn't "
+            "documented anywhere) looks identical to a source gap (a document exists but "
+            "isn't indexed yet) from rag's output alone — consider lookup_authoritative_sources "
+            "before concluding the corpus doesn't have it, or switch to a materially "
+            "different approach."
         )
-        # Explicit forward-looking framing (Chat Architecture, 2026-08-06:
-        # "make call 2's purpose explicit to the LLM ... reason against
-        # real signal, not infer strategy from silence"). Tells the LLM
-        # exactly what its NEXT rag call would be before it decides to
-        # make it, rather than leaving it to infer the protocol.
-        _last_rag_call = _rag_history[-1]
-        _next_call_number = len(_rag_history) + 1
-        if _next_call_number >= 4:
-            parts.append(
-                "rag call budget (3) is exhausted for this question — the pipeline will refuse a "
-                "4th call. Do NOT call rag again. Answer honestly now (rule 1d, SHAPE 2) or use a "
-                "different tool if one genuinely applies."
-            )
-        elif (
-            _next_call_number == 2
-            and _last_rag_call.get("citable_required")
-            and _last_rag_call.get("n_chunks") == 0
-        ):
-            parts.append(
-                "Calling rag again on the same conceptual question will automatically run as call 2 "
-                "— RELAXED (citable_required off). This call is for terminology/context acquisition "
-                "only, not to answer from directly — use what it surfaces to build call 3's query."
-            )
-        elif _next_call_number == 3 and _last_rag_call.get("rag_phase") == "relaxed":
-            parts.append(
-                "Calling rag again will run as call 3 — REFRAMED (citable_required restored). Your "
-                "query MUST be materially different, built from what call 2 (the relaxed call) just "
-                "taught you. This is the last rag call available for this question."
-            )
     if getattr(ctx, "_google_search_tried_this_turn", False):
         parts.append(
             "google_search has already been tried this turn and returned no "
