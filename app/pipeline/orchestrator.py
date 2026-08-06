@@ -1386,8 +1386,21 @@ def _fire_rag_grade_callbacks(ctx: PipelineContext) -> None:
 
     chat callers pass skip_synthesis=True to the RAG service, so synthesis_grade
     is NULL on prod rows. This fires after the chat LLM produces final_message,
-    calling PATCH /observe/decisions/{rag_agent_id}/grade on each pending entry.
+    calling PATCH /observe/decisions/{correlation_id}/grade on each pending entry.
     Fire-and-forget threads; grading failures are logged but never block the turn.
+
+    Re-keyed on ``correlation_id`` (2026-08-06, Phase 1 RAG endpoint
+    cutover): the legacy corpus_search_agent response carried a
+    ``rag_agent_id`` this callback used to key the PATCH URL. The new
+    ``/api/retriever/answer`` response has no equivalent identifier --
+    RAG's grade endpoint actually filters ``WHERE correlation_id = :cid``
+    on the DB (confirmed by Retriever), so chat's own turn
+    correlation_id -- already known before the request even goes out,
+    already sent in the request body (see corpus_search.py's
+    ``_post_skill``) -- is now the key instead. PATCH URL shape and body
+    are otherwise unchanged from legacy. Retriever's persist_decision()
+    fix (mobius-rag 6c124e6) is live, so this is a real, working path
+    again, not a stub.
     """
     pending = getattr(ctx, "pending_rag_grade_calls", None) or []
     if not pending:
@@ -1402,8 +1415,8 @@ def _fire_rag_grade_callbacks(ctx: PipelineContext) -> None:
     def _call(entry: dict) -> None:
         try:
             base_url = entry["base_url"].rstrip("/")
-            rag_agent_id = entry["rag_agent_id"]
-            url = f"{base_url}/api/observe/decisions/{rag_agent_id}/grade"
+            correlation_id = entry["correlation_id"]
+            url = f"{base_url}/api/observe/decisions/{correlation_id}/grade"
             body = _json.dumps({
                 "answer": final_answer,
                 "query": entry.get("query") or "",
@@ -1414,7 +1427,7 @@ def _fire_rag_grade_callbacks(ctx: PipelineContext) -> None:
             with urllib.request.urlopen(req, timeout=30) as r:
                 r.read()
         except Exception as exc:
-            logger.debug("rag grade callback failed for %s: %s", entry.get("rag_agent_id"), exc)
+            logger.debug("rag grade callback failed for %s: %s", entry.get("correlation_id"), exc)
 
     for entry in pending:
         threading.Thread(target=_call, args=(entry,), daemon=True).start()

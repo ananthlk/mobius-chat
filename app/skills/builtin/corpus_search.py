@@ -1,38 +1,98 @@
 """Builtin skill: search_corpus.
 
-Per spec from the rag agent (2026-04-28). Replaces today's chat-side
-hybrid (BM25 ⊕ vector) which never had a real BM25 arm in production
-post-Chroma — see docs/CORPUS_RETRIEVAL_SKILL_EXTRACTION_PLAN.md and
-the 22% completion-rate baseline that drove this extraction.
+Originally per spec from the rag agent (2026-04-28), replacing chat-side
+hybrid (BM25 ⊕ vector) — see docs/CORPUS_RETRIEVAL_SKILL_EXTRACTION_PLAN.md.
+
+**Phase 1 endpoint cutover (2026-08-06, Chat Architecture spec, coordinated
+with Retriever/RAG over several rounds — see project memory for the full
+back-and-forth on the mode_override naming collision, the response-shape
+inventory, and the fact-store "s"-chunk finding):** swapped off the legacy
+``corpus_search_agent`` skill (its own separate router/CALLER_MODE_PRESETS
+pipeline, being retired) onto RAG's production ``/api/retriever/answer``
+endpoint — the Shape→Pool→Router→Fillers pipeline that Task #14's greedy-
+allocator fix and ``authority_requirement`` actually live in.
 
 What this file does
 -------------------
 
-* HTTP client for ``POST {RAG_API_URL}/api/skills/v1/corpus_search_agent``.
-* Maps the rag service response (chunks + telemetry) into the
-  ``SkillEnvelope`` shape chat consumers already understand:
-  ``text`` (formatted ``[1]…[N]`` context block), ``sources``
-  (``SourceRef`` list with ``rerank_score`` / ``confidence_label`` /
-  ``jpd_tags`` / ``retrieval_arms`` extras), ``signal`` (``corpus_only``
-  or ``no_sources``), ``extra["pipeline_trace"]`` (the rag-side
-  telemetry payload, surfaced into the technical-mode UI panel).
-* Emits a ``retrieval_trace`` envelope into ``thinking_log`` so the
-  technical UI's existing per-event rendering picks it up under a new
-  Retrieval panel (alongside ``llm_calls`` / ``qa_score`` / ``critic``).
-* Persists into ``retrieval_runs`` via the legacy
-  ``insert_retrieval_run`` adapter — zero schema migration, the
-  v1 trace fields map cleanly onto the existing columns
-  (``arms.bm25_hits → bm25_raw_n``, etc.).
+* HTTP client for ``POST {RAG_API_URL}/api/retriever/answer``.
+* Maps the response's ``contract.chunks[]`` into the ``SkillEnvelope``
+  shape chat consumers already understand: ``text`` (formatted
+  ``[1]…[N]`` context block), ``sources`` (``SourceRef`` list with
+  ``rerank_score`` / ``confidence_label`` (now derived, see
+  ``_derive_confidence_label``) / ``tags`` / ``retrieval_arms`` extras),
+  ``signal`` (``corpus_only`` or ``no_sources``).
+* Emits a ``retrieval_trace`` envelope into ``thinking_log`` (reduced
+  shape post-cutover — most of the old pipeline_trace fields were
+  confirmed telemetry-only with no react-side consumer; see the field
+  inventory in project memory / the Chat Architecture thread).
+* Persists into ``retrieval_runs`` via the legacy ``insert_retrieval_run``
+  adapter, best-effort, degraded (arm-hit breakdown is gone — the new
+  pipeline doesn't report bm25/vector split the same way; the adapter's
+  own ``.get(..., 0)`` fallbacks handle this gracefully, not an error).
+
+**Grading callback — resolved (2026-08-06).** The old code registered a
+post-synthesis grading callback (``pending_rag_grade_calls`` →
+``PATCH /api/observe/decisions/{rag_agent_id}/grade``) keyed on
+``telemetry.get("agent_id")``, populating RAG's own OBSERVE-row
+synthesis_grade/ledger. The new response has no equivalent field.
+Retriever confirmed the grade endpoint actually filters
+``WHERE correlation_id = :cid`` on the DB — chat's own turn correlation_id
+(already sent in the request body, see ``_post_skill``) is the correct
+key, and the callback is re-registered here + re-wired in
+``orchestrator.py::_fire_rag_grade_callbacks`` to PATCH
+``.../decisions/{correlation_id}/grade`` instead of
+``.../decisions/{rag_agent_id}/grade``. Live against Retriever's
+``persist_decision()`` fix (mobius-rag 6c124e6).
+
+**Fact-store ("s" strategy) chunk handling — resolved after a Retriever
+pairing session (2026-08-06), per Chat Architecture's instruction not to
+build this piece solo.** The old golden-flag early-return pattern
+(``extra["golden"]=True`` + ``llm_answer`` as direct answer text) is
+removed entirely — the new response never has a bare answer string to
+fast-exit on. What replaced it, confirmed against real RAG code, not
+guessed:
+
+1. **confidence_label**: hardcoded ``"high"`` for ``filler_strategy=="s"``
+   chunks, bypassing ``_derive_confidence_label`` entirely — RAG's
+   ``filler_s.py`` never sets ``rerank_score`` on these (always ``None``),
+   and the threshold function would otherwise return ``"abstain"``, the
+   worst label, for exactly the chunks that deserve the best one. "s"
+   chunks are certified/verified facts, not a probabilistic retrieval
+   match — the "how well did this match" question ``rerank_score``
+   answers doesn't apply.
+2. **Authority/citation marking**: needs NO chat-side change.
+   ``authority_level="contract_source_of_truth"`` is hardcoded server-side
+   (``filler_s.py``) and RAG's own ``synthesis.py::_infer_authority`` uses
+   ``authority_level`` FIRST when present — so ``chunk["authority"]`` is
+   already ``"authoritative"`` on every "s" chunk by the time it reaches
+   chat, live-verified by Retriever. ``source_type=="fact_store"`` (also
+   hardcoded server-side) is the distinct marker already available in
+   this file's per-chunk mapping under ``extra["chunk_grain"]`` — a
+   citation UI can key off it directly for "certified fact" vs "general
+   corpus passage" styling; no new field needed here.
+3. **No chat-side short-circuit on seeing an "s" chunk.** Whether to keep
+   escalating (react's own round loop, or its separate auto→d web-search
+   cascade) is the Router/Observer's decision, already baked into the
+   response before it reaches chat — gate on the overall response's
+   ``status``/``chosen_slot``/``score``/terminal signal
+   (``routing_keys.routing_verdict.slots[slot_id].terminal``), never on
+   strategy identity. Re-implementing a strategy-specific stop condition
+   here would duplicate a decision the pipeline already made and risks
+   disagreeing with it (an "s" chunk that only partially answers a
+   multi-fact query should NOT force a stop). This file makes no such
+   decision today — intentionally left to react_loop.py's existing
+   round/escalation logic, which is already keyed on its own state, not
+   on chunk strategy identity.
 
 What this file is NOT
 ---------------------
 
-* It does not run BM25 or pgvector locally — those live server-side
-  in mobius-rag now (the entire point of the extraction).
+* It does not run BM25 or pgvector locally — retrieval lives entirely
+  server-side in mobius-rag.
 * It does not touch the chat-side ``retriever_hybrid`` /
-  ``retriever_backend`` modules. Those remain as dead code for one
-  more cleanup pass once we're confident the skill is healthy in
-  production. (Keeping them around for the rollback ramp.)
+  ``retriever_backend`` modules (separate legacy fallback path,
+  untouched by this cutover).
 * It does not implement upload fan-out (search_corpus + thread
   uploaded docs in parallel). That logic stays in
   ``react_loop.py`` because it spans two distinct retrieval
@@ -64,22 +124,22 @@ from app.skills.registry import (
 logger = logging.getLogger(__name__)
 
 
-_VALID_MODES = ("corpus", "precision", "recall", "auto", "d")
-_VALID_ASSEMBLY = ("score", "canonical_first", "balanced")
-_DEFAULT_K = 10
 _HTTP_TIMEOUT_S = 120.0
-# Endpoint shape per the rag-agent spec (2026-04-28, refined):
+# Phase 1 cutover (2026-08-06): production, non-admin-gated endpoint on
+# the Shape→Pool→Router→Fillers pipeline — confirmed live by Retriever
+# (mobius-rag 15ef396). Replaces _SKILL_PATH's legacy
+# /api/skills/v1/corpus_search_agent, which dispatched to a separate
+# router/CALLER_MODE_PRESETS pipeline being retired.
 #
-#   POST {RAG_API_URL}/api/skills/v1/corpus_search
+#   POST {RAG_API_URL}/api/retriever/answer
 #   Content-Type: application/json
-#   {"query": ..., "caller": "mobius_chat", ...}
+#   {"query": ..., ...}
 #
-# Direct call to rag — no gateway in dev. The earlier intent was to
-# proxy through mobius-os for caller attribution, but rag now writes
-# search_events.caller from the body field, so the indirection adds
-# no value. If/when prod adds X-Skill-Token auth, only this file
-# changes.
-_SKILL_PATH = "/api/skills/v1/corpus_search_agent"
+# Direct call to rag — no gateway in dev. Caller attribution stays on
+# headers (X-Caller/X-Caller-Id) rather than a body field — unconfirmed
+# whether the new endpoint reads them, kept for cross-rev safety since
+# they're harmless if ignored.
+_ANSWER_PATH = "/api/retriever/answer"
 _CALLER = "mobius_chat"
 
 
@@ -98,66 +158,63 @@ def _post_skill(
     *,
     base_url: str,
     query: str,
-    k: int,
-    mode: str,
-    filters: dict[str, Any],
-    include_document_ids: list[str] | None,
-    assembly_strategy: str | None,
-    canonical_floor: float | None,
+    caller_mode: str | None,
+    token_budget_for_retrieval: int | None,
+    citable_required: bool,
     caller_id: str | None,
-    citable_required: bool = False,
 ) -> dict[str, Any]:
-    """POST to rag's v1 corpus_search_agent skill.
+    """POST to rag's production /api/retriever/answer endpoint (Phase 1
+    cutover, 2026-08-06 — see module docstring).
 
-    Returns the full CorpusSearchAgentResponse JSON which includes
-    ``chunks``, ``telemetry``, and the rich pipeline trace fields:
-    ``query_profile``, ``routing``, ``themes``, ``candidate_pool``.
+    Returns the full response JSON: ``{contract: {query, chosen_slot,
+    score, chunks[], answer_text, thinking, traces, routing_keys,
+    grounding_markers, latency_ms, attempt_count, status}, latency_ms,
+    dispatch_path, allocator_override, authority_requirement,
+    strategies_per_slot}``. ``answer_text``/``thinking`` are always null
+    on this path (chunks-only, no synthesis — matches chat's own LLM
+    doing synthesis, same assumption the legacy ``skip_synthesis=True``
+    flag encoded, just no toggle needed since it's the only mode now).
     Raises on HTTP / network / JSON errors; caller maps to a
     ``no_sources`` envelope.
 
-    Caller attribution is sent THREE ways for cross-rev compatibility:
-      * Body field   ``caller``       — original spec
-      * Header       ``X-Caller``     — newer spec, used by
-                                        search_events writer
-      * Header       ``X-Caller-Id``  — per-request unique id, lets
-                                        rag correlate a search row
-                                        with the chat turn that
-                                        triggered it (chat passes
-                                        the turn correlation_id)
+    Caller attribution stays on headers (X-Caller/X-Caller-Id), same as
+    the legacy endpoint — unconfirmed whether the new endpoint reads
+    them, harmless if ignored.
 
-    ``citable_required`` (2026-08-05, Chat Architecture ruling): set True
-    only for queries that inherently demand verifiable sources (payor
-    policy, prior auth, coverage, claims — see react_loop.py's
-    ``_citable_required()``). Omitted from the body when False so the
-    Router's own default applies — chat does NOT send
-    ``authority_requirement``/``allocator_override``; those stay
-    Router-internal per the same ruling.
+    Deliberately NOT sent (Chat Architecture ruling, 2026-08-05):
+    ``allocator_override`` (chat doesn't set retrieval strategy) and
+    ``authority_requirement`` (Router-internal calibrated gate; chat
+    setting it separately would create two diverging governance layers).
+
+    ``caller_mode`` (resolved 2026-08-06, Chat Architecture clarification
+    — this was flagged as an open question in an earlier revision; NOT
+    the LLMManager v2 "chat.default"/"chat.copilot"/"chat.thinking" speed
+    vocabulary this docstring previously guessed at): the Router uses it
+    for strategy weighting, and the natural value is chat's own
+    quick/copilot/agentic/task ``chat_mode`` — see ``_run()``'s
+    resolution (``call.mode``, which every dispatch site already sets to
+    ``ctx.chat_mode``).
     """
-    url = base_url.rstrip("/") + _SKILL_PATH
-    body: dict[str, Any] = {
-        "query": query,
-        "k": int(k),
-        "filters": filters or {},
-        # Chat has its own LLM — skip the agent's internal synthesis to
-        # avoid paying for two LLM calls per search round (~20-30s saved).
-        "skip_synthesis": True,
-    }
-    # Pass mode as a strategy override when explicitly set (precision/recall).
-    # The agent picks its own strategy when mode is "corpus" / unset —
-    # that gives the router more signal. Explicit arms still win.
-    if mode and mode != "corpus":
-        body["mode"] = mode
-    if include_document_ids:
-        body["include_document_ids"] = list(include_document_ids)
-    # assembly_strategy / canonical_floor are not in CorpusSearchAgentRequest;
-    # the agent owns assembly internally. Pass them as caller_mode hints
-    # instead so the router can factor them into its preference resolution.
-    if assembly_strategy:
-        body["caller_mode"] = assembly_strategy
-    if canonical_floor is not None:
-        body["accuracy_need"] = float(canonical_floor)
+    url = base_url.rstrip("/") + _ANSWER_PATH
+    body: dict[str, Any] = {"query": query}
+    if caller_mode:
+        body["caller_mode"] = caller_mode
+    if token_budget_for_retrieval is not None:
+        body["token_budget_for_retrieval"] = int(token_budget_for_retrieval)
     if citable_required:
         body["citable_required"] = True
+    # correlation_id (2026-08-06, spec amendment): the grading-callback gap
+    # flagged earlier -- RAG's PATCH /observe/decisions/{id}/grade filters
+    # WHERE correlation_id = :cid on the DB column. routing_keys.decision_id
+    # (my first guess) maps to a different column and would 404 silently.
+    # Same value already sent as X-Caller-Id (chat's own turn correlation_id
+    # -- see caller_id above), now ALSO sent in the body under the exact
+    # column name so Retriever's persist_decision() fix can pick it up with
+    # no translation. Inert until that fix deploys (their ETA: this
+    # session) -- ignored server-side until then, no second change needed
+    # here once it lands.
+    if caller_id:
+        body["correlation_id"] = str(caller_id)
     payload = json.dumps(body).encode("utf-8")
     headers: dict[str, str] = {
         "Content-Type": "application/json",
@@ -173,6 +230,30 @@ def _post_skill(
     )
     with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:
         return json.loads(resp.read().decode())
+
+
+def _derive_confidence_label(rerank_score: float | None) -> str:
+    """Phase 1 cutover (2026-08-06): the new /api/retriever/answer chunk
+    shape has no pre-resolved ``confidence_label`` (the legacy endpoint
+    computed this server-side) — derive it chat-side from ``rerank_score``.
+
+    Thresholds copied from the legacy reranker's own scale (this file's
+    prior ``corpus_search.py`` history, pre-cutover). Chat Architecture's
+    explicit caveat: these were calibrated for the OLD reranker's score
+    distribution — the new pipeline's ``rerank_score`` may be a different
+    composite, or null (falls back to ``original_score`` at the call
+    site). Labels are informational for citation display only, nothing
+    branches on them react-side. Phase 2 recalibrates against real
+    traffic once the new pipeline's score distribution is known."""
+    if rerank_score is None:
+        return "abstain"
+    if rerank_score >= 0.55:
+        return "high"
+    if rerank_score >= 0.35:
+        return "medium"
+    if rerank_score >= 0.18:
+        return "low"
+    return "abstain"
 
 
 def _format_context(chunks: list[dict[str, Any]]) -> str:
@@ -387,22 +468,23 @@ def _emit_retrieval_trace_envelope(
 def _run(call: SkillCall) -> SkillEnvelope:
     """search_corpus skill entry point.
 
-    Behavior:
+    Behavior (Phase 1 cutover, 2026-08-06 — see module docstring):
 
-    1. Resolve query (input override > pipeline message), mode
-       (default ``corpus``), k (default 10), assembly_strategy
-       (passthrough), filters (from active jurisdiction).
-    2. POST to ``{RAG_API_URL}/api/skills/v1/corpus_search``.
-    3. Map response into ``SkillEnvelope`` + emit ``retrieval_trace``
-       envelope + persist to ``retrieval_runs``.
+    1. Resolve query (input override > pipeline message), citable_required
+       (keyword-rule output from react_loop.py), caller_mode (chat's own
+       ``call.mode``/``chat_mode`` — see ``_post_skill``'s docstring),
+       token_budget_for_retrieval (passthrough when explicitly supplied).
+    2. POST to ``{RAG_API_URL}/api/retriever/answer``.
+    3. Map ``contract.chunks[]`` into ``SkillEnvelope`` + emit a reduced
+       ``retrieval_trace`` envelope + persist to ``retrieval_runs``
+       (degraded — arm-hit breakdown no longer available).
     4. Return.
 
     Failure modes:
       * No RAG_API_URL → ``no_sources`` with explanatory text.
       * HTTP 4xx/5xx → ``no_sources`` with redacted error in
         ``extra["error"]``; UI shows "I couldn't reach our materials".
-      * Empty chunks → ``no_sources`` with the telemetry preserved
-        (so the panel can show "BM25 0 vec 0" diagnostics).
+      * Empty chunks / non-ok ``contract.status`` → ``no_sources``.
     """
     inputs = call.inputs if isinstance(call.inputs, dict) else {}
     query = (inputs.get("query") or call.question or call.user_message or "").strip()
@@ -414,38 +496,26 @@ def _run(call: SkillCall) -> SkillEnvelope:
             extra={"error": "empty_query"},
         )
 
-    mode = (inputs.get("mode") or "corpus").strip().lower()
-    if mode not in _VALID_MODES:
-        logger.warning("corpus_search: unknown mode=%r; using 'corpus'", mode)
-        mode = "corpus"
-
-    try:
-        k = int(inputs.get("k") or _DEFAULT_K)
-    except (TypeError, ValueError):
-        k = _DEFAULT_K
-    k = max(1, min(50, k))
-
-    assembly_strategy = inputs.get("assembly_strategy")
-    if assembly_strategy is not None:
-        assembly_strategy = str(assembly_strategy).strip().lower() or None
-        if assembly_strategy not in (None,) + _VALID_ASSEMBLY:
-            logger.warning(
-                "corpus_search: unknown assembly_strategy=%r; passing through",
-                assembly_strategy,
-            )
-
-    canonical_floor = inputs.get("canonical_floor")
-    if canonical_floor is not None:
-        try:
-            canonical_floor = float(canonical_floor)
-        except (TypeError, ValueError):
-            canonical_floor = None
-
-    include_document_ids = inputs.get("include_document_ids")
-    if include_document_ids and not isinstance(include_document_ids, list):
-        include_document_ids = None
-
     citable_required = bool(inputs.get("citable_required"))
+    # caller_mode (2026-08-06, Chat Architecture clarification — resolves
+    # the open question in _post_skill's docstring): the Router uses this
+    # for strategy weighting; the natural mapping is chat's own
+    # quick/copilot/agentic/task chat_mode, not a separate vocabulary.
+    # ``call.mode`` already carries this — every react_loop.py dispatch
+    # site sets it to ``getattr(ctx, "chat_mode", "copilot") or "copilot"``
+    # (see react_loop.py's SkillCall construction), so no new plumbing is
+    # needed to reach it. inputs.get("caller_mode") still wins if an
+    # explicit override is ever set there.
+    caller_mode = inputs.get("caller_mode") or call.mode
+    caller_mode = str(caller_mode).strip() if caller_mode else None
+    # token_budget_for_retrieval: passthrough only, no inference —
+    # react_loop.py doesn't currently supply it.
+    token_budget_for_retrieval = inputs.get("token_budget_for_retrieval")
+    if token_budget_for_retrieval is not None:
+        try:
+            token_budget_for_retrieval = int(token_budget_for_retrieval)
+        except (TypeError, ValueError):
+            token_budget_for_retrieval = None
 
     base_url = _resolve_base_url()
     if not base_url:
@@ -458,8 +528,6 @@ def _run(call: SkillCall) -> SkillEnvelope:
             signal="no_sources",
             extra={"error": "rag_api_url_unset"},
         )
-
-    filters = _filters_from_active(call.active_context)
 
     # Retrieval-stage emit owned by RAG's granular progress lines
     # (understanding→searching→themes→ranking via /internal/progress).
@@ -477,14 +545,10 @@ def _run(call: SkillCall) -> SkillEnvelope:
         resp = _post_skill(
             base_url=base_url,
             query=query,
-            k=k,
-            mode=mode,
-            filters=filters,
-            include_document_ids=include_document_ids,
-            assembly_strategy=assembly_strategy,
-            canonical_floor=canonical_floor,
-            caller_id=caller_id,
+            caller_mode=caller_mode,
+            token_budget_for_retrieval=token_budget_for_retrieval,
             citable_required=citable_required,
+            caller_id=caller_id,
         )
     except urllib.error.HTTPError as e:
         body = ""
@@ -513,171 +577,59 @@ def _run(call: SkillCall) -> SkillEnvelope:
         )
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
-    chunks = resp.get("chunks") or []
-    telemetry = resp.get("telemetry") or {}
+    contract = resp.get("contract") or {}
+    chunks = contract.get("chunks") or []
+    status = contract.get("status")
     search_id = str(uuid.uuid4())
 
-    # Build full pipeline_trace matching the canonical schematic:
-    # gate → parser → pool → bandit → retrieval → assembler.
-    # Merged into telemetry so make_retrieval_trace and the chat UI
-    # render the identical trace the RAG test tab shows.
-    strategies_tried = resp.get("strategies_tried") or []
-    _primary = strategies_tried[0] if strategies_tried else {}
-    _arms = _primary.get("arms") or {}
-    _timing = _arms.get("timing_ms") or {}
-
-    _pipeline_trace: dict[str, Any] = {
-        # [1] Gate
-        "gate": resp.get("gate") or {
-            "passed": resp.get("strategy_used") != "e",
-            "fail_fast_reason": (resp.get("fail_fast") or {}).get("reason"),
-        },
-        # [2] Parser
-        "parser": {
-            **(resp.get("query_profile") or {}),
-        },
-        # [3] Pool
-        "pool": resp.get("candidate_pool") or {},
-        # [4] Bandit / router decision
-        "bandit": {
-            "strategy_picked": resp.get("strategy_used"),
-            "forced": bool(mode),
-            "routing": resp.get("routing") or {},
-        },
-        # [5] Retrieval — per-arm breakdown from primary strategy
-        "retrieval": {
-            "strategies_tried": strategies_tried,
-            "arm_hits": {
-                "bm25": sum((s.get("arms") or {}).get("bm25_pool_hits", 0) or 0 for s in strategies_tried),
-                "vector": sum((s.get("arms") or {}).get("vector_pool_hits", 0) or 0 for s in strategies_tried),
-            },
-            "top_rerank": _primary.get("top_rerank"),
-            "timing_ms": _timing,
-        },
-        # [6] Assembler
-        "assembler": {
-            "n_chunks": len(chunks),
-            "confidence": resp.get("confidence"),
-            "strategy_used": resp.get("strategy_used"),
-            "total_ms": (resp.get("telemetry") or {}).get("total_ms"),
-        },
-        # Pass-through fields the UI already uses
-        "strategy_used": resp.get("strategy_used"),
-        "themes": resp.get("themes"),
-        "theme_diagnostic": resp.get("theme_diagnostic"),
-        "queries_per_strategy": resp.get("queries_per_strategy"),
-        # Raw RAG response fields, FLAT — the chat retrieval-trace UI
-        # (frontend/src/app.ts renderRetrievalTrace) reads these by the
-        # SAME names the rag agent's own frontend uses. Without the flat
-        # pass-through the Parser / Router / Cascade / Strategy sections
-        # read ``undefined`` and silently render nothing — which is why
-        # only themes + rewrite showed and the panel looked "simpler".
-        "query_profile": resp.get("query_profile"),
-        "routing": resp.get("routing"),
-        "candidate_pool": resp.get("candidate_pool"),
-        "term_partition": resp.get("term_partition"),
-        # RAG-provided reframe hint (populated when fast_exit=true or all
-        # strategies missed). Chat surfaces this to the ReAct LLM so it
-        # can reframe from learned signal rather than paraphrasing blindly.
-        "improvement_hint": resp.get("improvement_hint"),
-        "fast_exit": resp.get("fast_exit", False),
-        "strategies_tried": strategies_tried,
-        "confidence": resp.get("confidence"),
-        # Slim per-chunk projection for the UI "Reranking" table (§9) —
-        # metadata only (no text; the chunk bodies already render as
-        # citation sources). Mirrors the rag agent UI's rerank table.
-        "reranked_chunks": [
-            {
-                "rank": _i,
-                "document_name": _c.get("document_name"),
-                "page_number": _c.get("page_number"),
-                "retrieval_arms": _c.get("retrieval_arms") or [],
-                "rerank_score": _c.get("rerank_score"),
-                "similarity": _c.get("similarity"),
-                "authority_level": _c.get("authority_level"),
-                # For the Assembly (§10) context-adequacy stats: length,
-                # confidence tier, and whether a section path was resolved.
-                "text_len": len(str(_c.get("text") or "")),
-                "confidence_label": _c.get("confidence_label"),
-                "section_path": _c.get("section_path"),
-            }
-            for _i, _c in enumerate(chunks, 1)
-        ],
-        # arm_hits = FINAL returned arm split (from each chunk's
-        # ``retrieval_arms``), NOT pool-stage hits — so the badge shows
-        # e.g. "pgvector 10" to match the rag UI's "arm split: vector=10"
-        # instead of the misleading "0".
-        "arm_hits": {
-            "bm25": sum(1 for c in chunks if "bm25" in (c.get("retrieval_arms") or [])),
-            "vector": sum(1 for c in chunks if "vector" in (c.get("retrieval_arms") or [])),
-        },
-        "arms": {"returned": len(chunks)},
+    # Reduced telemetry (Phase 1 cutover): the old ~15-field pipeline_trace
+    # was confirmed to feed ONLY the diagnostics panel (react_loop.py never
+    # reads it — see the field-consumption inventory in project memory /
+    # the Chat Architecture thread). This is intentionally much smaller —
+    # whatever the new response actually gives us, not a reconstruction of
+    # the old shape. Phase 2 re-wires the diagnostics panel against
+    # traces[]/routing_keys/grounding_markers properly.
+    telemetry: dict[str, Any] = {
+        "chosen_slot": contract.get("chosen_slot"),
+        "score": contract.get("score"),
+        "status": status,
+        "attempt_count": contract.get("attempt_count"),
+        "latency_ms": resp.get("latency_ms") or contract.get("latency_ms"),
+        "dispatch_path": resp.get("dispatch_path"),
+        "allocator_override": resp.get("allocator_override"),
+        "authority_requirement": resp.get("authority_requirement"),
+        "n_chunks": len(chunks),
     }
-    telemetry = {**telemetry, **_pipeline_trace}
-    # Pass served.* from RAG when present (fact_store provenance card).
-    if resp.get("served"):
-        telemetry = {**telemetry, "served": resp["served"]}
 
     # Always emit the retrieval_trace envelope, even on zero hits — the
-    # technical UI panel needs to show "BM25 0 vec 0" for failure
-    # modes, not silently elide the diagnostic.
+    # technical UI panel needs to show a failure state, not silently
+    # elide the diagnostic.
     _emit_retrieval_trace_envelope(
         call=call,
         search_id=search_id,
         query=query,
-        mode=resp.get("strategy_used") or mode,
-        k=k,
+        mode=str(telemetry.get("dispatch_path") or "unknown"),
+        k=len(chunks),
         telemetry=telemetry,
     )
 
-    # ── Fact-store fast-exit (strategy "s") ─────────────────────────────
-    # RAG's payor fact store serves pre-certified deterministic facts with
-    # n_chunks=0 (no retrieval needed — the fact IS the answer). If we fall
-    # through to the chunk-based path the LLM will re-synthesise from empty
-    # evidence and produce "Not found." instead of the certified answer.
-    # Fast-exit: return llm_answer directly as a corpus_only hit, score 1.0.
-    _routing = resp.get("routing") or {}
-    _strategy_s = (
-        resp.get("strategy_used") == "s"
-        or _routing.get("method") == "fact_store"
-    )
-    if _strategy_s:
-        _fact_answer = str(resp.get("llm_answer") or "").strip()
-        if _fact_answer:
-            if call.emitter:
-                call.emitter(f"📋 Certified fact: {_fact_answer}")
-            return SkillEnvelope(
-                text=_fact_answer,
-                sources=[],
-                signal="corpus_only",
-                extra={
-                    "golden": True,
-                    "pipeline_trace": telemetry,
-                    "skill_call_ms": elapsed_ms,
-                    "search_id": search_id,
-                    "mode": "s",
-                    "fact_score": resp.get("fact_score") or 1.0,
-                    "fact_predicate": resp.get("fact_predicate"),
-                    "fact_cert_grades": _routing.get("fact_cert_grades"),
-                    "fact_telemetry_id": _routing.get("fact_telemetry_id"),
-                    "confidence": resp.get("confidence"),
-                },
-            )
+    # Fact-store ("s" strategy) golden-flag early-return REMOVED per Chat
+    # Architecture's spec (2026-08-05) — the new response never has a bare
+    # answer string to fast-exit on (answer_text/thinking are always
+    # null). No chat-side short-circuit replaces it — see module
+    # docstring point 3 (Retriever pairing, 2026-08-06): escalation
+    # decisions belong to the Router/Observer, already reflected in the
+    # response's own status/chosen_slot/terminal signal, not something
+    # this file re-derives from chunk strategy identity. "s"-tagged
+    # chunks DO get special confidence_label treatment below (module
+    # docstring point 1) — that's the one real per-chunk behavior change.
 
-    if not chunks:
+    if not chunks or status not in (None, "ok"):
         if call.emitter:
-            strategy_used = resp.get("strategy_used") or ""
-            gate = resp.get("gate") or {}
-            if strategy_used == "e" or gate.get("fail_fast_reason"):
-                fail_reason = gate.get("fail_fast_reason") or "no_domain_match"
-                call.emitter(f"⚡ Query outside current coverage ({fail_reason}) — no corpus search run.")
+            if status and status != "ok":
+                call.emitter(f"↓ Retrieval status={status} — nothing usable found.")
             else:
-                strats = resp.get("strategies_tried") or []
-                n_tried = len(strats)
-                if n_tried > 1:
-                    call.emitter(f"↓ Tried {n_tried} search strategies — nothing matched in our materials.")
-                else:
-                    call.emitter("↓ Nothing matched in our materials.")
+                call.emitter("↓ Nothing matched in our materials.")
         return SkillEnvelope(
             text="",
             sources=[],
@@ -686,23 +638,42 @@ def _run(call: SkillCall) -> SkillEnvelope:
                 "pipeline_trace": telemetry,
                 "skill_call_ms": elapsed_ms,
                 "search_id": search_id,
-                "mode": mode,
             },
         )
 
     # ── Build SourceRef list ─────────────────────────────────────────
-    # Map every field rag returns into SourceRef.extra so downstream
-    # consumers (integrator citation rendering, retrieval_runs writer,
-    # technical-mode UI panel) all see the full chunk shape without
-    # reaching back into pipeline_trace.
+    # Per-chunk field mapping, Chat Architecture's spec (2026-08-06):
+    #   direct:  text, document_name, document_id, page_number,
+    #            rerank_score, paragraph_index, source_type
+    #   renamed: authority_level -> authority
+    #   derived: confidence_label (from rerank_score, see
+    #            _derive_confidence_label), retrieval_arms (from
+    #            filler_strategy, single-strategy-per-chunk in the new
+    #            architecture, wrapped in a list to preserve shape)
+    #   renamed/reshaped: jpd_tags -> tags (now a raw dict, not
+    #            pre-resolved — stashed as-is; compute a summary later
+    #            if a downstream consumer actually needs one)
+    #   ABSENT (Phase 2, Retriever to thread through Pool→Filler→
+    #            Synthesis): payer, state -- both None for now
+    #   original_score is functionally similar to the old `similarity`
+    #            but a different formula per the spec -- not aliased to
+    #            `similarity` in extra, kept under its own name so nothing
+    #            downstream mistakes it for the old metric.
     sources: list[SourceRef] = []
     for i, c in enumerate(chunks, 1):
-        # ``source_type`` from rag is "hierarchical" / "fact" — that's
-        # the chunk's structural grain. Map it onto SourceRef's
-        # ``source_type`` field where the chat shape uses
-        # "document" / "web" / etc. We pin to "document" here and
-        # stash rag's grain under extra.chunk_grain so neither
-        # consumer is confused.
+        _filler_strategy = c.get("filler_strategy")
+        # "s" (fact-store) chunks: always "high", never run through the
+        # generic rerank_score threshold function (2026-08-06, Retriever
+        # confirmed via code read — filler_s.py never sets rerank_score,
+        # it's always None on these chunks; _derive_confidence_label(None)
+        # would return "abstain", the worst label, for exactly the chunks
+        # that deserve the best one. These are certified/verified facts,
+        # not a probabilistic retrieval match — rerank_score's "how well
+        # did this match" question doesn't apply here at all).
+        _confidence_label = (
+            "high" if _filler_strategy == "s"
+            else _derive_confidence_label(c.get("rerank_score"))
+        )
         sources.append(
             SourceRef(
                 document_name=str(c.get("document_name") or "document"),
@@ -711,38 +682,59 @@ def _run(call: SkillCall) -> SkillEnvelope:
                 source_type="document",
                 document_id=(str(c.get("document_id") or "") or None),
                 page_number=c.get("page_number"),
-                authority=(str(c.get("authority_level") or "") or None),
+                authority=(str(c.get("authority") or "") or None),
                 extra={
                     "rerank_score": c.get("rerank_score"),
-                    "similarity": c.get("similarity"),
-                    "confidence_label": c.get("confidence_label"),
-                    "retrieval_arms": c.get("retrieval_arms") or [],
-                    "jpd_tags": c.get("jpd_tags") or [],
+                    "original_score": c.get("original_score"),
+                    "confidence_label": _confidence_label,
+                    "retrieval_arms": [_filler_strategy] if _filler_strategy else [],
+                    "filler_strategy": _filler_strategy,
+                    "tags": c.get("tags") or {},
                     "paragraph_index": c.get("paragraph_index"),
                     "chunk_grain": c.get("source_type"),
-                    "payer": c.get("payer"),
-                    "state": c.get("state"),
+                    "slot_id": c.get("slot_id"),
+                    "slot_semantics": c.get("slot_semantics"),
+                    "verified": c.get("verified"),
+                    "is_neighbor": c.get("is_neighbor"),
+                    "url": c.get("url"),
+                    # Phase 2 (not yet threaded through by RAG):
+                    "payer": None,
+                    "state": None,
                 },
             )
         )
 
     # ── Register post-synthesis grading callback ─────────────────────
-    # _observe_async on the RAG side is called before chat synthesis
-    # (skip_synthesis=True), so synthesis_grade is NULL on prod rows.
-    # After the chat LLM generates the final answer, _publish_completed
-    # fires these callbacks to PATCH the row with grounding grades.
-    _rag_agent_id = telemetry.get("agent_id") or ""
-    if _rag_agent_id and base_url and chunks:
+    # Re-keyed on correlation_id (2026-08-06, Phase 1 cutover -- see
+    # orchestrator.py::_fire_rag_grade_callbacks for the full history).
+    # Legacy keyed this on a rag_agent_id read from the response;
+    # the new endpoint has no such field. RAG's grade endpoint filters
+    # WHERE correlation_id = :cid on the DB, so chat's own turn
+    # correlation_id -- already known before the request even went out,
+    # already sent in the request body above -- is the correct key now.
+    # Retriever's persist_decision() fix (mobius-rag 6c124e6) is live,
+    # so this is a real, working registration again, not a stub.
+    # caller_id is the exact same value already sent in the request body's
+    # correlation_id field (see _post_skill call above) -- reusing it here
+    # keeps "what RAG's row was created with" and "what we PATCH against"
+    # guaranteed identical, including the str(uuid.uuid4()) fallback case
+    # when pipeline_ctx has no correlation_id.
+    if base_url and chunks and caller_id:
         _pending = getattr(call.pipeline_ctx, "pending_rag_grade_calls", None)
         if _pending is not None:
             _pending.append({
                 "base_url": base_url,
-                "rag_agent_id": _rag_agent_id,
+                "correlation_id": caller_id,
                 "query": query,
                 "chunks": chunks,
             })
 
-    # ── Persist to retrieval_runs (best-effort) ──────────────────────
+    # ── Persist to retrieval_runs (best-effort, degraded) ─────────────
+    # _persist_retrieval_run's own arm-hit fields fall back to 0 when
+    # absent from telemetry (they always did, for cross-rev safety) --
+    # this is a real reduction in what retrieval_runs captures for
+    # chat-originated searches post-cutover, not a crash. Not addressed
+    # by Chat Architecture's Phase 1 spec; flagged separately if needed.
     correlation_id = getattr(call.pipeline_ctx, "correlation_id", "") or ""
     _persist_retrieval_run(
         correlation_id=correlation_id,
@@ -753,16 +745,10 @@ def _run(call: SkillCall) -> SkillEnvelope:
     )
 
     # ── User-facing emit ─────────────────────────────────────────────
-    # Rag's response shape (refined 2026-04-28) puts arm counts under
-    # ``telemetry.arm_hits.bm25 / .vector``. The earlier draft used
-    # ``arms.bm25_hits / .vec_hits`` — we read both keys so the emit
-    # works against whichever rag rev is live without coordination.
     if call.emitter:
         ret_n = len(chunks)
-        # Unique source documents for "from N docs" label
         unique_docs = len({c.get("document_name") or "" for c in chunks if c.get("document_name")})
         doc_label = f" across {unique_docs} doc{'s' if unique_docs != 1 else ''}" if unique_docs > 1 else ""
-        # Top relevance score
         top_score = max((c.get("rerank_score") or 0.0) for c in chunks) if chunks else 0.0
         score_label = f" · top match {top_score:.0%}" if top_score > 0 else ""
         call.emitter(
@@ -777,7 +763,6 @@ def _run(call: SkillCall) -> SkillEnvelope:
             "pipeline_trace": telemetry,
             "skill_call_ms": elapsed_ms,
             "search_id": search_id,
-            "mode": mode,
         },
     )
 
@@ -785,34 +770,23 @@ def _run(call: SkillCall) -> SkillEnvelope:
 SPEC = SkillSpec(
     name="search_corpus",
     description=(
-        "Hybrid corpus search across our curated knowledge base. Use for any "
-        "question that should be answered from our authoritative materials "
-        "(provider manuals, payer policies, Medicaid policies, etc.).\n"
+        "Corpus search across our curated knowledge base (Phase 1 cutover, "
+        "2026-08-06 — dispatches to RAG's production Shape→Pool→Router→"
+        "Fillers pipeline, strategy selection is entirely Router-owned, no "
+        "mode override from chat).\n"
         "\n"
-        "Modes:\n"
-        "  corpus    (default) BM25 + pgvector hybrid — best for most questions.\n"
-        "  precision BM25-only, exact-phrase / code lookups (HCPCS, FL.UM.87).\n"
-        "  recall    vector-only, broad scan — early-round 'what do we know about X'.\n"
-        "\n"
-        "Returns numbered context passages [1]…[N] plus per-chunk citations with "
-        "rerank_score, confidence_label, retrieval_arms, and jpd_tags."
+        "Returns numbered context passages [1]…[N] plus per-chunk citations "
+        "with rerank_score, confidence_label (chat-derived), and "
+        "retrieval_arms."
     ),
     handler=_run,
     inputs_schema={
         "type": "object",
         "properties": {
             "query": {"type": "string"},
-            "mode": {"type": "string", "enum": list(_VALID_MODES)},
-            "k": {"type": "integer", "minimum": 1, "maximum": 50},
-            "assembly_strategy": {
-                "type": "string",
-                "enum": list(_VALID_ASSEMBLY),
-            },
-            "canonical_floor": {
-                "type": "number",
-                "minimum": 0.0,
-                "maximum": 1.0,
-            },
+            "citable_required": {"type": "boolean"},
+            "caller_mode": {"type": "string"},
+            "token_budget_for_retrieval": {"type": "integer", "minimum": 1},
         },
     },
     requires_jurisdiction=True,

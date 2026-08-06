@@ -137,3 +137,78 @@ def test_emit_model_summary_answered_from_report():
     _emit_model_summary(ctx, 0.2, emitted.append)
     assert len(emitted) == 1
     assert "Answered from report" in emitted[0]
+
+
+# ── RAG post-synthesis grading callback (2026-08-06, Phase 1 cutover) ──
+#
+# _fire_rag_grade_callbacks re-keyed from rag_agent_id to correlation_id
+# (see app/skills/builtin/corpus_search.py's module docstring for the
+# full history: RAG's new /api/retriever/answer response has no
+# agent_id-equivalent field, and Retriever confirmed the grade endpoint
+# actually filters WHERE correlation_id = :cid on the DB).
+
+
+def test_fire_rag_grade_callbacks_patches_correlation_id_url():
+    from app.pipeline.orchestrator import _fire_rag_grade_callbacks
+
+    ctx = PipelineContext(correlation_id="turn-cid-123", thread_id="t", message="m")
+    ctx.final_message = "The timely filing deadline is 180 days."
+    ctx.pending_rag_grade_calls = [{
+        "base_url": "https://mobius-rag-ortabkknqa-uc.a.run.app",
+        "correlation_id": "turn-cid-123",
+        "query": "What is the timely filing deadline?",
+        "chunks": [{"text": "180 days"}],
+    }]
+
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["method"] = req.get_method()
+        import json as _json
+        captured["body"] = _json.loads(req.data.decode())
+        class _Resp:
+            def read(self):
+                return b"{}"
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+        return _Resp()
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        _fire_rag_grade_callbacks(ctx)
+        import time as _time
+        _time.sleep(0.05)  # fire-and-forget thread — give it a moment
+
+    assert captured["url"] == "https://mobius-rag-ortabkknqa-uc.a.run.app/api/observe/decisions/turn-cid-123/grade"
+    assert captured["method"] == "PATCH"
+    assert captured["body"]["answer"] == "The timely filing deadline is 180 days."
+    assert captured["body"]["query"] == "What is the timely filing deadline?"
+
+
+def test_fire_rag_grade_callbacks_noop_when_no_pending():
+    from app.pipeline.orchestrator import _fire_rag_grade_callbacks
+
+    ctx = PipelineContext(correlation_id="c", thread_id="t", message="m")
+    ctx.final_message = "an answer"
+    ctx.pending_rag_grade_calls = []
+
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        _fire_rag_grade_callbacks(ctx)
+    mock_urlopen.assert_not_called()
+
+
+def test_fire_rag_grade_callbacks_noop_when_no_final_answer():
+    from app.pipeline.orchestrator import _fire_rag_grade_callbacks
+
+    ctx = PipelineContext(correlation_id="c", thread_id="t", message="m")
+    ctx.final_message = ""
+    ctx.pending_rag_grade_calls = [{
+        "base_url": "https://rag.example.com", "correlation_id": "cid",
+        "query": "q", "chunks": [],
+    }]
+
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        _fire_rag_grade_callbacks(ctx)
+    mock_urlopen.assert_not_called()

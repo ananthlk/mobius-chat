@@ -3,9 +3,15 @@
 The chat-side keyword rule lives in react_loop.py (see
 tests/test_react_citable_required.py); this locks in the other half —
 that _post_skill() actually puts citable_required in the HTTP body sent
-to corpus_search_agent when True, and omits the key entirely when False
-(matching the Router's "omit means use your own default" contract, not
-sending an explicit false).
+to RAG when True, and omits the key entirely when False (matching the
+Router's "omit means use your own default" contract, not sending an
+explicit false).
+
+2026-08-06: _post_skill()'s signature changed with the Phase 1 endpoint
+cutover (corpus_search_agent -> /api/retriever/answer, see
+tests/test_corpus_search_rag_cutover.py for the full rewrite coverage) --
+updated these calls to match (k/mode/filters/include_document_ids/
+assembly_strategy/canonical_floor no longer exist as params).
 """
 
 from __future__ import annotations
@@ -20,7 +26,7 @@ def _mock_urlopen_capturing(captured: dict):
     def _urlopen(req, timeout=None):
         captured["body"] = json.loads(req.data.decode())
         resp = MagicMock()
-        resp.read.return_value = b'{"chunks": [], "telemetry": {}}'
+        resp.read.return_value = b'{"contract": {"chunks": [], "status": "no_retrieval"}}'
         resp.__enter__ = lambda self: resp
         resp.__exit__ = lambda self, *a: None
         return resp
@@ -33,14 +39,10 @@ def test_citable_required_true_is_included_in_request_body():
         _post_skill(
             base_url="https://rag.example.com",
             query="Is prior authorization required for H0036?",
-            k=10,
-            mode="corpus",
-            filters={},
-            include_document_ids=None,
-            assembly_strategy=None,
-            canonical_floor=None,
-            caller_id="cid-1",
+            caller_mode=None,
+            token_budget_for_retrieval=None,
             citable_required=True,
+            caller_id="cid-1",
         )
     assert captured["body"].get("citable_required") is True
 
@@ -51,31 +53,10 @@ def test_citable_required_false_is_omitted_from_request_body():
         _post_skill(
             base_url="https://rag.example.com",
             query="What is the ICD-10 code for major depressive disorder?",
-            k=10,
-            mode="corpus",
-            filters={},
-            include_document_ids=None,
-            assembly_strategy=None,
-            canonical_floor=None,
-            caller_id="cid-2",
+            caller_mode=None,
+            token_budget_for_retrieval=None,
             citable_required=False,
-        )
-    assert "citable_required" not in captured["body"]
-
-
-def test_citable_required_defaults_to_omitted_when_not_passed():
-    captured: dict = {}
-    with patch("urllib.request.urlopen", side_effect=_mock_urlopen_capturing(captured)):
-        _post_skill(
-            base_url="https://rag.example.com",
-            query="q",
-            k=10,
-            mode="corpus",
-            filters={},
-            include_document_ids=None,
-            assembly_strategy=None,
-            canonical_floor=None,
-            caller_id="cid-3",
+            caller_id="cid-2",
         )
     assert "citable_required" not in captured["body"]
 
@@ -90,14 +71,10 @@ def test_request_body_does_not_carry_allocator_override_or_authority_requirement
         _post_skill(
             base_url="https://rag.example.com",
             query="Is prior authorization required for H0036?",
-            k=10,
-            mode="corpus",
-            filters={},
-            include_document_ids=None,
-            assembly_strategy=None,
-            canonical_floor=None,
-            caller_id="cid-4",
+            caller_mode=None,
+            token_budget_for_retrieval=None,
             citable_required=True,
+            caller_id="cid-4",
         )
     assert "allocator_override" not in captured["body"]
     assert "mode_override" not in captured["body"]
