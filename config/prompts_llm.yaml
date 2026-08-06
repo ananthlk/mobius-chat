@@ -463,8 +463,8 @@ prompts:
     Workflow selection UI: when workflow_selection_ui.active=true, keep direct_answer to 1–2 sentences; do NOT list org names or NPIs.
 
     FACTUAL mode rules:
-    - direct_answer: ONE sentence — the single operative fact (backup for when draft is unavailable).
-    - sections: 2–3 sections, each with 2–4 substantive bullets (8–25 words each). Intent: process|requirements|definitions|exceptions|references. Sections hidden behind 'Show details' — make them worth clicking.
+    - direct_answer: 1–2 short paragraphs. Lead with the single operative fact in the first sentence, then use the rest for the specifics that actually answer the question — the exact code/criteria involved, what determines the answer, and any real caveat the sources support. Do not pad with filler, but do not compress real relevant detail into one sentence either — SHORTEST of the three modes, not the thinnest. Good example: "The provided documents do not give a direct yes/no for in-home ventilators, but they do outline the process: DME requests like this go through the Pre-Auth Check Tool, which confirms whether the specific service code needs approval. Requests tied to a hospital discharge follow a different path — a fax submission instead of the online portal." Bad example (too thin — do not do this): "Check the Pre-Auth Check Tool."
+    - sections: 2–3 sections, each with 3–6 substantive bullets (8–25 words each). Intent: process|requirements|definitions|exceptions|references. No stub bullets. Sections hidden behind 'Show details' — make them worth clicking.
     - required_variables: list unknowns (service code, plan subtype) if the answer depends on them.
 
     Optional ui_blocks: {"type":"chart",...}, {"type":"table",...}, {"type":"callout","body":"...","variant":"info|warning|tip"}, {"type":"detail","markdown":"...","collapsed_default":true}. Do not repeat direct_answer in ui_blocks.
@@ -499,8 +499,8 @@ prompts:
     Source confidence, jurisdiction, user-provided context: same rules as FACTUAL.
 
     CANONICAL mode rules:
-    - direct_answer: 1-sentence backup covering what the concept is and its canonical scope.
-    - sections: 2–4 sections, all visible by default. 2–4 bullets each. No stub bullets.
+    - direct_answer: 2–3 paragraphs — the most detailed of the three modes. Cover what the concept is, its canonical scope, key conditions, and relevant exceptions in prose, not just as a pointer to the sections below.
+    - sections: 2–4 sections, all visible by default. 3–6 substantive bullets each. No stub bullets.
     - Do not include procedural steps unless the policy explicitly describes them.
 
     Optional ui_blocks: chart/table/callout/detail — same format as FACTUAL. No prose outside JSON.
@@ -535,8 +535,8 @@ prompts:
     Source confidence, jurisdiction, user-provided context, workflow UI: same rules as FACTUAL.
 
     BLENDED mode rules:
-    - direct_answer: 1-sentence backup. Include key specifics inline when sources supply them (codes, numbers, criteria).
-    - sections: 2–4 sections. requirements + definitions visible by default; process/exceptions/references behind 'Show details'. 2–4 bullets each.
-    - Provide concrete criteria in 'requirements'; definitions/code meanings in 'definitions'. No speculation.
+    - direct_answer: 1–2 short paragraphs. Include specifics inline when sources supply them — code definitions (e.g. "H0036 = Community Psychiatric Supportive Treatment"), named criteria/standards (e.g. "InterQual"), and the source document (e.g. "per the Provider Manual"). Do not retreat to framework-name-only one-liners. Good example: "H0036 (Community Psychiatric Supportive Treatment) requires prior authorization when medical necessity is evaluated using InterQual criteria, per the Provider Manual." Bad example (too thin — do not do this): "The payer uses InterQual criteria to evaluate H0036."
+    - sections: 2–4 sections, 3–6 substantive bullets each. No stub bullets. requirements AND definitions visible by default; process/exceptions/references behind 'Show details'.
+    - Provide concrete criteria in 'requirements'; definitions/code meanings/standard names in 'definitions'. No speculation.
 
     Optional ui_blocks: chart/table/callout/detail — same format as FACTUAL. No prose outside JSON.

@@ -41,7 +41,41 @@ is "re-run Sunshine/H0036 in mstart."
 
 from __future__ import annotations
 
-from app.chat_config import ChatPromptsConfig
+from app.chat_config import ChatPromptsConfig, get_chat_config
+
+
+class TestYamlOverrideStaysInSync:
+    """2026-08-06: config/prompts_llm.yaml, when present, OVERRIDES these
+    Python dataclass defaults entirely (get_chat_config() prefers YAML
+    content over ChatPromptsConfig()'s field defaults whenever the YAML
+    key is non-empty). Found live: the Phase 0.16 prompt edits below had
+    ZERO effect on production because the YAML held its own, even-more-
+    stale copy of these three prompts (still "ONE sentence" for FACTUAL,
+    no worked examples, 2-4 bullets not 3-6) — the Python-only tests
+    above all passed while the live answer stayed a single sentence.
+
+    These tests exercise get_chat_config() (the real merge path a live
+    request uses), not ChatPromptsConfig() directly, so a future prompt
+    edit that updates the Python default but forgets the YAML fails loudly
+    here instead of silently doing nothing in production."""
+
+    def test_factual_yaml_matches_python_default(self):
+        py = ChatPromptsConfig().integrator_factual_system
+        live = get_chat_config().prompts.integrator_factual_system
+        assert "1–2 short paragraphs" in live, (
+            "config/prompts_llm.yaml's integrator_factual_system is stale relative "
+            "to the Python default — update the YAML, not just chat_config.py"
+        )
+        assert "SHORTEST of the three modes" in py  # sanity: Python source itself is current
+
+    def test_blended_yaml_matches_python_default(self):
+        live = get_chat_config().prompts.integrator_blended_system
+        assert "1–2 short paragraphs" in live
+        assert "InterQual" in live
+
+    def test_canonical_yaml_matches_python_default(self):
+        live = get_chat_config().prompts.integrator_canonical_system
+        assert "2–3 paragraphs" in live
 
 
 class TestBlendedPromptContract:
