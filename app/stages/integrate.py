@@ -400,6 +400,43 @@ def _pick_integrator_mode() -> str:
     return "parallel" if random.random() * 100 < pct else "sequential"
 
 
+def _appeals_hint_pseudo_sources(tool_section_hints: list[dict] | None) -> list[dict]:
+    """Appeals tools (appeals_find_carc/appeals_lookup_rules) return sources=[] --
+    their rule text only reaches the card via pre_built_sections (a copy-verbatim
+    passthrough), never via source_texts. That makes citations[] structurally blind
+    to appeals content, since citations are only ever built from source_texts
+    (2026-08-07: Ananth -- 'integrator should have access to everything react
+    collected'). Walks both known appeals data shapes (appeals_find_carc's
+    data.matches[].rules[], appeals_lookup_rules's data.rules[]) and produces one
+    pseudo-source per rule so its rule_statement/appeal_argument text is citable
+    the same way retrieved corpus chunks are. Not folded into ctx.sources/
+    all_sources -- this only feeds source_texts/sources_summary, so it can't shift
+    the source-confidence badge (which is computed from all_sources separately)."""
+    out: list[dict] = []
+    for h in (tool_section_hints or []):
+        if not isinstance(h, dict):
+            continue
+        data = h.get("data")
+        if not isinstance(data, dict):
+            continue
+        rule_groups = data.get("matches") or [data]
+        for group in rule_groups:
+            if not isinstance(group, dict):
+                continue
+            for rule in (group.get("rules") or []):
+                if not isinstance(rule, dict):
+                    continue
+                parts = [rule.get("rule_statement"), rule.get("appeal_argument")]
+                text = " ".join(p.strip() for p in parts if p and p.strip())
+                if not text:
+                    continue
+                out.append({
+                    "document_name": rule.get("rule_name") or rule.get("rule_id") or "Appeals rule",
+                    "text": text,
+                })
+    return out
+
+
 def _default_source_confidence(
     retrieval_signals: list[str],
     all_sources: list[dict],
@@ -504,6 +541,23 @@ def run_integrate(
         for i, s in enumerate(_sorted_sources[:_src_cap])
         if (s.get("text") or "").strip()
     ]
+    # Appeals tools return sources=[] -- fold their rule text in here too, so
+    # citations[] (which only ever draws from source_texts) can cite appeals
+    # content, not just retrieved corpus chunks. See _appeals_hint_pseudo_sources.
+    _appeals_pseudo = _appeals_hint_pseudo_sources(getattr(ctx, "tool_section_hints", None))
+    if _appeals_pseudo:
+        _next_idx = len(source_texts) + 1
+        for j, ps in enumerate(_appeals_pseudo):
+            source_texts.append({
+                "index": _next_idx + j,
+                "title": ps["document_name"][:200],
+                "text": ps["text"][:_src_chars],
+            })
+            sources_summary.append({
+                "index": _next_idx + j,
+                "document_name": ps["document_name"],
+                "confidence_label": None,
+            })
 
     # Stream only the direct-answer plain text (see format_response); never raw partial JSON.
     from app.storage.progress import append_message_chunk
