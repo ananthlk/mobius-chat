@@ -64,19 +64,32 @@ def _build_consolidator_input_json(
     user_message: str,
     *,
     retrieval_metadata: dict | None = None,
-    sources_summary: list[dict] | None = None,
     jurisdiction_summary: str | None = None,
     user_provided_context: str | None = None,
     workflow_selection_ui: dict[str, Any] | None = None,
     previous_thread_summary: str | None = None,
     react_draft: str | None = None,
-    source_texts: list[dict] | None = None,
+    rag_chunks: list[dict] | None = None,
+    tool_outputs: dict[str, list[dict]] | None = None,
+    reasoning_ledger: list[dict] | None = None,
     task_context: dict | None = None,
     instant_rag_context: dict | None = None,
     recital_context: dict | None = None,
     tool_section_hints: list[dict] | None = None,
 ) -> str:
-    """Build JSON payload for consolidator: user_message, subquestions, answers, retrieval_metadata, sources_summary, jurisdiction_summary, user_provided_context, previous_thread_summary."""
+    """Build JSON payload for consolidator: user_message, subquestions, answers,
+    retrieval_metadata, rag_chunks, jurisdiction_summary, user_provided_context,
+    previous_thread_summary.
+
+    2026-08-07 (Task #58, factory model): rag_chunks replaces the old
+    sources_summary/source_texts split -- one unified list, capped/scored at
+    the call site (integrate.py owns the cap; the upstream pool ctx.rag_chunks
+    is deliberately uncapped since react's keep-set can exceed 7). tool_outputs
+    and reasoning_ledger are new: raw non-rag tool results and react's
+    per-round enrichment (learned/running_answer/gaps), respectively -- under
+    the factory model react does the reasoning inline, so the enricher's job
+    shrinks from synthesizing to formatting what react already concluded.
+    """
     _subs = getattr(plan, "subquestions", None) or []
     _stub = stub_answers if stub_answers is not None else []
     subquestions = [{"id": sq.id, "text": sq.text} for sq in _subs]
@@ -91,8 +104,8 @@ def _build_consolidator_input_json(
     }
     if retrieval_metadata:
         payload["retrieval_metadata"] = retrieval_metadata
-    if sources_summary:
-        payload["sources_summary"] = sources_summary
+    if rag_chunks:
+        payload["rag_chunks"] = rag_chunks
     if jurisdiction_summary and jurisdiction_summary.strip():
         payload["jurisdiction_summary"] = jurisdiction_summary.strip()
     if user_provided_context and user_provided_context.strip():
@@ -105,16 +118,20 @@ def _build_consolidator_input_json(
     # the AnswerCard JSON. ≤60 words. See prompt instructions.
     if previous_thread_summary and previous_thread_summary.strip():
         payload["previous_thread_summary"] = previous_thread_summary.strip()
-    # Two-phase enricher: react_draft is what the user already saw; the
-    # integrator enriches rather than restates. source_texts provides
-    # verbatim chunks for accurate citation snippets.
+    # react_draft is what the user already saw (Summary tab, pinned permanently
+    # per Ananth's ruling). Under the factory model react has already reasoned
+    # across evidence inline (reasoning_ledger carries that); rag_chunks still
+    # provides verbatim text for accurate citation snippets, since citations
+    # need real chunk text, not just react's enrichment prose.
     if react_draft and react_draft.strip():
         # Raise cap for analytics queries (tool_section_hints present) — rate tables
         # are inherently long and a 6000-char cut produces truncated mid-sentence output.
         _draft_cap = 16000 if tool_section_hints else 6000
         payload["react_draft"] = react_draft.strip()[:_draft_cap]
-    if source_texts:
-        payload["source_texts"] = source_texts
+    if reasoning_ledger:
+        payload["reasoning_ledger"] = reasoning_ledger
+    if tool_outputs:
+        payload["tool_outputs"] = tool_outputs
     if task_context:
         payload["task_context"] = task_context
     if instant_rag_context:
@@ -332,7 +349,6 @@ def format_response(
     message_chunk_callback: Callable[[str], None] | None = None,
     *,
     retrieval_metadata: dict | None = None,
-    sources_summary: list[dict] | None = None,
     jurisdiction_summary: str | None = None,
     user_provided_context: str | None = None,
     workflow_selection_ui: dict[str, Any] | None = None,
@@ -345,7 +361,9 @@ def format_response(
     previous_thread_summary: str | None = None,
     user_profile: dict | None = None,
     react_draft: str | None = None,
-    source_texts: list[dict] | None = None,
+    rag_chunks: list[dict] | None = None,
+    tool_outputs: dict[str, list[dict]] | None = None,
+    reasoning_ledger: list[dict] | None = None,
     task_context: dict | None = None,
     instant_rag_context: dict | None = None,
     recital_context: dict | None = None,
@@ -369,13 +387,14 @@ def format_response(
         consolidator_input_json = _build_consolidator_input_json(
             plan, stub_answers, user_message,
             retrieval_metadata=retrieval_metadata,
-            sources_summary=sources_summary,
+            rag_chunks=rag_chunks,
             jurisdiction_summary=jurisdiction_summary,
             user_provided_context=user_provided_context,
             workflow_selection_ui=workflow_selection_ui,
             previous_thread_summary=previous_thread_summary,
             react_draft=react_draft,
-            source_texts=source_texts,
+            tool_outputs=tool_outputs,
+            reasoning_ledger=reasoning_ledger,
             task_context=task_context,
             instant_rag_context=instant_rag_context,
             recital_context=recital_context,

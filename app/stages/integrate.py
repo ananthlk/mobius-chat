@@ -437,6 +437,122 @@ def _appeals_hint_pseudo_sources(tool_section_hints: list[dict] | None) -> list[
     return out
 
 
+def _build_rag_chunks(
+    all_sources: list[dict],
+    tool_section_hints: list[dict] | None,
+    chat_mode: str | None,
+) -> list[dict]:
+    """Unified RAG-chunk pool for the enricher prompt (Task #58, factory model,
+    2026-08-07). ctx.rag_chunks (the upstream pool this reads from, via
+    all_sources -- same underlying data, ReAct's ctx.rag_chunks is a plain
+    alias of ctx.sources) is deliberately uncapped -- react's evidence-review
+    keep-set can exceed 7, no upstream ceiling. Capping is a consumption-side
+    decision, made here, not baked into the pool itself. Replaces the old
+    two-list sources_summary/source_texts split with one list carrying both
+    the lightweight index (document_name) and the citable text, plus
+    authority/score/filler_strategy so the enricher can weight citations
+    rather than treat every chunk as equally trustworthy.
+
+    Appeals tools return sources=[] -- their rule text is folded in here too
+    (see _appeals_hint_pseudo_sources) so citations[] isn't blind to them.
+    This bridge stays until the typed tool_outputs.appeals citation channel
+    (still being designed) supersedes it.
+    """
+    is_quick = chat_mode == "quick"
+    cap = 4 if is_quick else 7
+    chars = 600 if is_quick else 1000
+    sorted_sources = sorted(
+        all_sources, key=lambda x: -(float(x.get("rerank_score") or x.get("match_score") or 0))
+    )
+    chunks = [
+        {
+            "index": i + 1,
+            "document_name": (s.get("document_name") or "document")[:200],
+            "text": (s.get("text") or "")[:chars],
+            "authority": s.get("authority") or s.get("confidence_label"),
+            "score": s.get("rerank_score") if s.get("rerank_score") is not None else s.get("match_score"),
+            "filler_strategy": s.get("filler_strategy"),
+        }
+        for i, s in enumerate(sorted_sources[:cap])
+        if (s.get("text") or "").strip()
+    ]
+    appeals_pseudo = _appeals_hint_pseudo_sources(tool_section_hints)
+    next_idx = len(chunks) + 1
+    for j, ps in enumerate(appeals_pseudo):
+        chunks.append({
+            "index": next_idx + j,
+            "document_name": ps["document_name"][:200],
+            "text": ps["text"][:chars],
+            "authority": "appeals_rule",
+            "score": None,
+            "filler_strategy": "appeals",
+        })
+    return chunks
+
+
+def _build_tool_outputs_for_prompt(tool_outputs: dict | None) -> dict[str, list[dict]]:
+    """Caps ctx.tool_outputs for the prompt (Task #58, factory model). Same
+    cap-at-consumption principle as _build_rag_chunks -- ctx.tool_outputs
+    itself is uncapped (list-valued per tool specifically so a tool called
+    many times in one turn, e.g. appeals_get_playbook 7x in the live COB
+    trace, doesn't lose calls). Per-entry result text is capped with an
+    explicit truncation marker (never silent); calls per tool capped at 10 as
+    a pathological-loop guard, not a normal-case limit."""
+    if not tool_outputs:
+        return {}
+    _RESULT_CHARS = 1200
+    _MAX_CALLS_PER_TOOL = 10
+    out: dict[str, list[dict]] = {}
+    for tool_name, calls in tool_outputs.items():
+        if not isinstance(calls, list):
+            continue
+        capped_calls = []
+        for c in calls[:_MAX_CALLS_PER_TOOL]:
+            if not isinstance(c, dict):
+                continue
+            result = c.get("result") or ""
+            if len(result) > _RESULT_CHARS:
+                result = result[:_RESULT_CHARS] + f"...[+{len(result) - _RESULT_CHARS} chars truncated]"
+            capped_calls.append({
+                "success": c.get("success", False),
+                "result": result,
+                "result_summary": c.get("result_summary"),
+            })
+        if len(calls) > _MAX_CALLS_PER_TOOL:
+            capped_calls.append({"note": f"[+{len(calls) - _MAX_CALLS_PER_TOOL} more {tool_name} calls omitted]"})
+        if capped_calls:
+            out[tool_name] = capped_calls
+    return out
+
+
+def _build_reasoning_ledger(react_trace_rounds: list[dict] | None) -> list[dict]:
+    """Flattens ctx.react_trace_rounds[].enrichment into the formatter's
+    primary reasoning input (Task #58, factory model). Under the factory
+    model react enriches inline per round (learned/running_answer/gaps);
+    the enricher formats from this rather than re-deriving it from raw
+    evidence. As shipped (react_loop.py, 2026-08-07), gaps is ONE free-text
+    field, not split into gaps_closed/gaps_open -- that split was the
+    originally proposed shape but wasn't built (flagged by ReAct as a
+    follow-up, not fabricated here). Rounds without an enrichment key are
+    skipped, not padded, so the ledger degrades gracefully to empty
+    (react_draft-only) rather than erroring."""
+    out = []
+    for r in (react_trace_rounds or []):
+        if not isinstance(r, dict):
+            continue
+        enr = r.get("enrichment")
+        if not isinstance(enr, dict):
+            continue
+        entry: dict = {"round": r.get("round"), "tool": r.get("tool")}
+        for k in ("learned", "running_answer", "gaps"):
+            v = enr.get(k)
+            if v:
+                entry[k] = str(v)[:500]
+        if len(entry) > 2:  # more than just round/tool
+            out.append(entry)
+    return out
+
+
 def _default_source_confidence(
     retrieval_signals: list[str],
     all_sources: list[dict],
@@ -521,43 +637,17 @@ def run_integrate(
             + " NOTE: One or more answers came from general reasoning (Layer 4)."
             " Set mode to FACTUAL or BLENDED — never CANONICAL for Layer 4 content."
         )
-    sources_summary = [
-        {"index": s.get("index", i + 1), "document_name": s.get("document_name") or "document", "confidence_label": s.get("confidence_label")}
-        for i, s in enumerate(all_sources)
-    ]
-    # Top sources with text for the enricher to cite verbatim.
-    # Sort by match_score descending; cap count + char limit by mode to control
-    # integrator prompt size (10×1500 = 15K chars was the main latency driver).
-    _is_quick = getattr(ctx, "chat_mode", None) == "quick"
-    _src_cap = 4 if _is_quick else 7
-    _src_chars = 600 if _is_quick else 1000
-    _sorted_sources = sorted(all_sources, key=lambda x: -(float(x.get("match_score") or 0)))
-    source_texts = [
-        {
-            "index": s.get("index", i + 1),
-            "title": (s.get("document_name") or "document")[:200],
-            "text": (s.get("text") or "")[:_src_chars],
-        }
-        for i, s in enumerate(_sorted_sources[:_src_cap])
-        if (s.get("text") or "").strip()
-    ]
-    # Appeals tools return sources=[] -- fold their rule text in here too, so
-    # citations[] (which only ever draws from source_texts) can cite appeals
-    # content, not just retrieved corpus chunks. See _appeals_hint_pseudo_sources.
-    _appeals_pseudo = _appeals_hint_pseudo_sources(getattr(ctx, "tool_section_hints", None))
-    if _appeals_pseudo:
-        _next_idx = len(source_texts) + 1
-        for j, ps in enumerate(_appeals_pseudo):
-            source_texts.append({
-                "index": _next_idx + j,
-                "title": ps["document_name"][:200],
-                "text": ps["text"][:_src_chars],
-            })
-            sources_summary.append({
-                "index": _next_idx + j,
-                "document_name": ps["document_name"],
-                "confidence_label": None,
-            })
+    # rag_chunks (Task #58, factory model): unified pool, sourced from the
+    # uncapped ctx.rag_chunks alias when present (falls back to all_sources
+    # for turns/paths that predate the field), capped here for prompt size.
+    _rag_chunks_pool = getattr(ctx, "rag_chunks", None)
+    if _rag_chunks_pool is None:
+        _rag_chunks_pool = all_sources
+    rag_chunks = _build_rag_chunks(
+        _rag_chunks_pool, getattr(ctx, "tool_section_hints", None), getattr(ctx, "chat_mode", None),
+    )
+    tool_outputs = _build_tool_outputs_for_prompt(getattr(ctx, "tool_outputs", None))
+    reasoning_ledger = _build_reasoning_ledger(getattr(ctx, "react_trace_rounds", None))
 
     # Stream only the direct-answer plain text (see format_response); never raw partial JSON.
     from app.storage.progress import append_message_chunk
@@ -629,7 +719,7 @@ def run_integrate(
         emitter=emitter,
         message_chunk_callback=_stream_answer_chunk,
         retrieval_metadata=retrieval_metadata,
-        sources_summary=sources_summary,
+        rag_chunks=rag_chunks or None,
         jurisdiction_summary=jurisdiction_summary,
         user_provided_context=getattr(ctx, "user_provided_context", None),
         workflow_selection_ui=_workflow_selection_ui,
@@ -641,7 +731,8 @@ def run_integrate(
         previous_thread_summary=getattr(ctx, "previous_thread_summary", None),
         user_profile=getattr(ctx, "user_profile", None),
         react_draft=getattr(ctx, "react_draft", None),
-        source_texts=source_texts or None,
+        tool_outputs=tool_outputs or None,
+        reasoning_ledger=reasoning_ledger or None,
         task_context=_task_ctx,
         instant_rag_context=_instant_rag_ctx,
         recital_context=_recital_ctx,
