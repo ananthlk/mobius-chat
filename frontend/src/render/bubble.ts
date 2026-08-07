@@ -8,7 +8,7 @@ import type {
   AnswerCard, AnswerCardSection,
   AppealsRulesData, AppealsRule, AppealsPlaybookData,
 } from "../answer-card";
-import { splitSectionsByVisibility } from "../answer-card";
+import { MAX_SECTIONS } from "../answer-card";
 import { TAB_ORDER, type TabKey } from "../card-render-model";
 import {
   simpleMarkdownToHtml, renderConfidenceBadge, renderQcAuditBadge,
@@ -581,37 +581,14 @@ export function renderAnswerCard(
     });
   }
 
-  // Build the Summary panel content (sections + meta + confidence note)
+  // Build the Summary panel content. Ananth ruling 2026-08-07: Summary is ReAct's synthesis
+  // (react_draft, streamed into .ac-summary-prose on the live path / .answer-card-direct on
+  // reload). The integrator's sections[] now live in the ANSWER tab (built above), NOT here —
+  // Summary carries only meta (depends-on / confirm chips) + confidence note.
   const answerPanel = document.createElement("div");
   answerPanel.className = "ac-tab-panel ac-tab-panel--summary ac-tab-panel--active";
   answerPanel.setAttribute("role", "tabpanel");
   if (metaRow.childNodes.length > 0) answerPanel.appendChild(metaRow);
-
-  const { visible, hidden } = splitSectionsByVisibility(card.sections ?? [], card.mode);
-  visible.forEach((sec) => answerPanel.appendChild(renderOneSection(sec)));
-
-  if (hidden.length > 0) {
-    const detailsBlock = document.createElement("div");
-    detailsBlock.className = "answer-card-details";
-    detailsBlock.setAttribute("aria-hidden", "true");
-    hidden.forEach((sec) => detailsBlock.appendChild(renderOneSection(sec)));
-    answerPanel.appendChild(detailsBlock);
-
-    const toggleBtn = document.createElement("button");
-    toggleBtn.type = "button";
-    toggleBtn.className = "answer-card-show-details";
-    toggleBtn.textContent = "Show details";
-    toggleBtn.setAttribute("aria-label", "Show details");
-    toggleBtn.setAttribute("aria-expanded", "false");
-    toggleBtn.addEventListener("click", () => {
-      const expanded = detailsBlock.classList.toggle("answer-card-details--expanded");
-      detailsBlock.setAttribute("aria-hidden", expanded ? "false" : "true");
-      toggleBtn.setAttribute("aria-expanded", String(expanded));
-      toggleBtn.textContent = expanded ? "Hide details" : "Show details";
-      toggleBtn.setAttribute("aria-label", expanded ? "Hide details" : "Show details");
-    });
-    answerPanel.appendChild(toggleBtn);
-  }
 
   if (card.confidence_note && card.confidence_note.trim()) {
     const note = document.createElement("div");
@@ -620,13 +597,18 @@ export function renderAnswerCard(
     answerPanel.appendChild(note);
   }
 
-  // Answer tab (Ananth ruling 2026-08-07): the integrator envelope output (display_summary),
-  // labeled by which envelope produced it (card.mode: FACTUAL/BLENDED/CANONICAL/RECITAL). This is
-  // the "final answer" surface, distinct from Summary (react_draft). The panel element is ALWAYS
-  // built (so the streaming completed-fill panel-swap has a target); the tab BUTTON appears only
-  // when display_summary is present (see TAB_DOM below).
+  // Answer tab (Ananth ruling 2026-08-07; scope widened by Chat Master 2026-08-07): the integrator
+  // envelope output, the "final answer" surface distinct from Summary (react_draft). It's a
+  // near-full-card view of what the integrator produced, mode-labeled:
+  //   mode badge → tldr_summary (verdict) → display_summary (prose lead) → sections[] (typed detail).
+  // sections[] live HERE (integrator output), NOT in Summary. Fires when EITHER display_summary OR
+  // sections[] has content — appeals turns carry rich sections[] with an EMPTY display_summary
+  // (Chat Master, cid 4d9456e2). Citations/takeaways/next-steps keep their own dedicated tabs.
+  // Panel element is ALWAYS built (streaming panel-swap target); the tab BUTTON only when content.
   const _displaySummary = (card.display_summary ?? "").trim();
-  const hasAnswerEnvelope = _displaySummary.length > 0;
+  const _tldrSummary = (card.tldr_summary ?? "").trim();
+  const _answerSections = card.sections ?? [];
+  const hasAnswerEnvelope = _displaySummary.length > 0 || _answerSections.length > 0;
   const answerPanelEl = document.createElement("div");
   answerPanelEl.className = "ac-tab-panel ac-tab-panel--answer";
   answerPanelEl.setAttribute("role", "tabpanel");
@@ -640,10 +622,23 @@ export function renderAnswerCard(
       lbl.textContent = modeLabel;
       answerPanelEl.appendChild(lbl);
     }
-    const body = document.createElement("div");
-    body.className = "ac-answer-envelope-body";
-    body.innerHTML = simpleMarkdownToHtml(_displaySummary);
-    answerPanelEl.appendChild(body);
+    // tldr_summary — 2-4 sentence verdict; hidden when empty.
+    if (_tldrSummary) {
+      const tldr = document.createElement("div");
+      tldr.className = "ac-answer-tldr";
+      tldr.innerHTML = simpleMarkdownToHtml(_tldrSummary);
+      answerPanelEl.appendChild(tldr);
+    }
+    // display_summary — prose lead; hidden when empty (appeals turns lead with sections).
+    if (_displaySummary) {
+      const body = document.createElement("div");
+      body.className = "ac-answer-envelope-body";
+      body.innerHTML = simpleMarkdownToHtml(_displaySummary);
+      answerPanelEl.appendChild(body);
+    }
+    // sections[] — typed structured detail (table/stats/bars/steps/bullets/appeals_*), rendered
+    // flat (no Summary-style show-details collapse; the Summary/Answer split IS the disclosure).
+    _answerSections.slice(0, MAX_SECTIONS).forEach((sec) => answerPanelEl.appendChild(renderOneSection(sec)));
   }
 
   // Tab data — pull from opts

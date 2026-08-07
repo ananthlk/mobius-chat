@@ -1936,6 +1936,8 @@ function tryParseAnswerCard(message) {
         // present in the JSON but dropped here — the live "no chip on any turn" bug, 2026-08-05).
         output_intent: typeof data.output_intent === "string" ? data.output_intent : void 0,
         display_summary: typeof data.display_summary === "string" ? data.display_summary : void 0,
+        // Answer-tab lead; positive filter, copy through explicitly (same class as the output_intent-drop bug).
+        tldr_summary: typeof data.tldr_summary === "string" ? data.tldr_summary : void 0,
         // Escalation hint — copied through explicitly (parseOne is a positive filter). Backend
         // sends it only when true (absent otherwise), so a strict true check is correct.
         suggest_escalate: data.suggest_escalate === true ? true : void 0
@@ -1990,28 +1992,6 @@ function tryParseAnswerCard(message) {
     }
   }
   return null;
-}
-function splitSectionsByVisibility(sections, mode) {
-  const all = sections.slice(0, MAX_SECTIONS);
-  const isKnownLegacy = mode === "FACTUAL" || mode === "CANONICAL" || mode === "BLENDED";
-  const anyVisibility = all.some((s) => s.visibility === "primary" || s.visibility === "detail");
-  if (anyVisibility || !isKnownLegacy) {
-    const visible2 = [];
-    const hidden2 = [];
-    all.forEach((s, i) => {
-      const resolved = s.visibility === "primary" || s.visibility === "detail" ? s.visibility : i === 0 ? "primary" : "detail";
-      (resolved === "primary" ? visible2 : hidden2).push(s);
-    });
-    return { visible: visible2, hidden: hidden2 };
-  }
-  if (mode === "FACTUAL")
-    return { visible: [], hidden: all };
-  if (mode === "CANONICAL")
-    return { visible: all, hidden: [] };
-  const visibleIntents = /* @__PURE__ */ new Set(["definitions", "requirements", "process"]);
-  const visible = all.filter((s) => visibleIntents.has(s.intent ?? "process"));
-  const hidden = all.filter((s) => !visibleIntents.has(s.intent ?? "process"));
-  return { visible, hidden };
 }
 
 // src/ui-helpers.ts
@@ -2730,29 +2710,6 @@ function renderAnswerCard(card, isError, opts) {
   answerPanel.setAttribute("role", "tabpanel");
   if (metaRow.childNodes.length > 0)
     answerPanel.appendChild(metaRow);
-  const { visible, hidden } = splitSectionsByVisibility(card.sections ?? [], card.mode);
-  visible.forEach((sec) => answerPanel.appendChild(renderOneSection(sec)));
-  if (hidden.length > 0) {
-    const detailsBlock = document.createElement("div");
-    detailsBlock.className = "answer-card-details";
-    detailsBlock.setAttribute("aria-hidden", "true");
-    hidden.forEach((sec) => detailsBlock.appendChild(renderOneSection(sec)));
-    answerPanel.appendChild(detailsBlock);
-    const toggleBtn = document.createElement("button");
-    toggleBtn.type = "button";
-    toggleBtn.className = "answer-card-show-details";
-    toggleBtn.textContent = "Show details";
-    toggleBtn.setAttribute("aria-label", "Show details");
-    toggleBtn.setAttribute("aria-expanded", "false");
-    toggleBtn.addEventListener("click", () => {
-      const expanded = detailsBlock.classList.toggle("answer-card-details--expanded");
-      detailsBlock.setAttribute("aria-hidden", expanded ? "false" : "true");
-      toggleBtn.setAttribute("aria-expanded", String(expanded));
-      toggleBtn.textContent = expanded ? "Hide details" : "Show details";
-      toggleBtn.setAttribute("aria-label", expanded ? "Hide details" : "Show details");
-    });
-    answerPanel.appendChild(toggleBtn);
-  }
   if (card.confidence_note && card.confidence_note.trim()) {
     const note = document.createElement("div");
     note.className = "answer-card-confidence";
@@ -2760,7 +2717,9 @@ function renderAnswerCard(card, isError, opts) {
     answerPanel.appendChild(note);
   }
   const _displaySummary = (card.display_summary ?? "").trim();
-  const hasAnswerEnvelope = _displaySummary.length > 0;
+  const _tldrSummary = (card.tldr_summary ?? "").trim();
+  const _answerSections = card.sections ?? [];
+  const hasAnswerEnvelope = _displaySummary.length > 0 || _answerSections.length > 0;
   const answerPanelEl = document.createElement("div");
   answerPanelEl.className = "ac-tab-panel ac-tab-panel--answer";
   answerPanelEl.setAttribute("role", "tabpanel");
@@ -2773,10 +2732,19 @@ function renderAnswerCard(card, isError, opts) {
       lbl.textContent = modeLabel;
       answerPanelEl.appendChild(lbl);
     }
-    const body = document.createElement("div");
-    body.className = "ac-answer-envelope-body";
-    body.innerHTML = simpleMarkdownToHtml(_displaySummary);
-    answerPanelEl.appendChild(body);
+    if (_tldrSummary) {
+      const tldr = document.createElement("div");
+      tldr.className = "ac-answer-tldr";
+      tldr.innerHTML = simpleMarkdownToHtml(_tldrSummary);
+      answerPanelEl.appendChild(tldr);
+    }
+    if (_displaySummary) {
+      const body = document.createElement("div");
+      body.className = "ac-answer-envelope-body";
+      body.innerHTML = simpleMarkdownToHtml(_displaySummary);
+      answerPanelEl.appendChild(body);
+    }
+    _answerSections.slice(0, MAX_SECTIONS).forEach((sec) => answerPanelEl.appendChild(renderOneSection(sec)));
   }
   const _corrections = opts?.corrections ?? [];
   const _nextStepQuestions = opts?.nextQuestions ?? [];

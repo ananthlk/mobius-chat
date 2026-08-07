@@ -3480,6 +3480,19 @@ body {
 .ac-answer-mode-label--blended { background: #2563eb; }      /* blue — blended synthesis */
 .ac-answer-mode-label--canonical { background: #0f766e; }    /* teal — canonical/authoritative */
 .ac-answer-mode-label--recital { background: #92400e; }      /* amber-brown — verbatim recital */
+.ac-answer-tldr {
+  font-size: 0.9rem;
+  font-weight: 550;
+  line-height: 1.5;
+  color: var(--text-primary, #111827);
+  padding: 0.5rem 0.7rem;
+  margin-bottom: 0.6rem;
+  border-radius: 6px;
+  background: rgba(124, 58, 237, 0.06);
+  border-left: 3px solid var(--mobius-violet, #7c3aed);
+}
+.ac-answer-tldr p { margin: 0 0 0.4rem; }
+.ac-answer-tldr p:last-child { margin-bottom: 0; }
 .ac-answer-envelope-body {
   font-size: 0.86rem;
   line-height: 1.55;

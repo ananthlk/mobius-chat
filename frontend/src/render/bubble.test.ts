@@ -22,18 +22,19 @@ describe("renderAnswerCard — DOM output (§1.4 tabbed bubble + §1.2 visibilit
     expect(el.querySelector(".answer-card-direct")?.textContent).toContain("parity");
   });
 
-  it("primary sections lead; detail sits behind a Show details toggle", () => {
+  it("sections render in the Answer tab (integrator output), NOT in Summary (Ananth 2026-08-07)", () => {
     const el = renderAnswerCard(card);
+    // Summary is ReAct's synthesis — the integrator's section labels are NOT stacked into it.
     const summary = el.querySelector(".ac-tab-panel--summary")!;
-    // primary section labels are directly in the summary panel
     const summaryText = summary.textContent ?? "";
-    expect(summaryText).toContain("Covered codes");
-    expect(summaryText).toContain("Documentation");
-    // detail section is inside the collapsed details block, and a toggle exists
-    const details = el.querySelector(".answer-card-details")!;
-    expect(details).not.toBeNull();
-    expect(details.textContent).toContain("Exceptions");
-    expect(el.querySelector(".answer-card-show-details")?.textContent).toContain("Show details");
+    expect(summaryText).not.toContain("Covered codes");
+    expect(summaryText).not.toContain("Exceptions");
+    // All sections live in the Answer panel, rendered flat (no Show-details collapse anymore).
+    const answer = el.querySelector(".ac-tab-panel--answer")!;
+    expect(answer.textContent).toContain("Covered codes");
+    expect(answer.textContent).toContain("Documentation");
+    expect(answer.textContent).toContain("Exceptions");
+    expect(el.querySelector(".answer-card-show-details")).toBeNull();
   });
 
   it("renders a tab bar with Summary + a Sources tab (Citations repurposed → 'Sources', ruling b)", () => {
@@ -89,8 +90,30 @@ describe("Answer tab (Ananth 2026-08-07 — Summary=react_draft, Answer=display_
     expect(el.querySelector(".ac-tab-panel--answer")?.textContent).toContain("ENVELOPE_ONLY_TEXT_XYZ");
   });
 
-  it("shows NO Answer tab when display_summary is absent", () => {
-    const el = renderAnswerCard(card); // base card has no display_summary
+  it("fires the Answer tab on sections[] even when display_summary is EMPTY (appeals turn, cid 4d9456e2)", () => {
+    // Real appeals turns lead with rich sections[] and an empty display_summary — the Answer tab
+    // must still render (guard is display_summary OR sections).
+    const el = renderAnswerCard({
+      direct_answer: "Here's the appeal path.",
+      mode: "FACTUAL",
+      sections: [{ label: "CARC 22 rules", visibility: "primary", format: "bullets", bullets: ["Coordinate benefits first"] }],
+    });
+    const tabs = Array.from(el.querySelectorAll(".ac-tab")).map((t) => t.textContent ?? "");
+    expect(tabs.some((t) => t.includes("Answer"))).toBe(true);
+    const answer = el.querySelector(".ac-tab-panel--answer")!;
+    expect(answer.textContent).toContain("CARC 22 rules");
+    expect(answer.textContent).toContain("Coordinate benefits first");
+  });
+
+  it("renders tldr_summary as the Answer lead when present; hides it when empty", () => {
+    const withTldr = renderAnswerCard({ ...card, mode: "BLENDED", tldr_summary: "Two-sentence verdict here." });
+    expect(withTldr.querySelector(".ac-answer-tldr")?.textContent).toContain("verdict");
+    const noTldr = renderAnswerCard({ ...card, mode: "BLENDED", display_summary: "prose" });
+    expect(noTldr.querySelector(".ac-answer-tldr")).toBeNull();
+  });
+
+  it("shows NO Answer tab when there is neither display_summary NOR sections", () => {
+    const el = renderAnswerCard({ direct_answer: "Just a sentence." });
     const tabs = Array.from(el.querySelectorAll(".ac-tab")).map((t) => t.textContent ?? "");
     expect(tabs.some((t) => t.includes("Answer"))).toBe(false);
     // the panel element is still built (empty, hidden) so the streaming panel-swap has a target

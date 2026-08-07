@@ -694,7 +694,6 @@ interface RosterUploadResponse {
 // AnswerCard types + pure parse/visibility logic live in ./answer-card (unit-tested via vitest).
 import {
   tryParseAnswerCard,
-  splitSectionsByVisibility,
 } from "./answer-card";
 import type { AnswerCard, AnswerCardSection } from "./answer-card";
 // §1.4 tabbed-bubble field→tab map + §2.1 additive-merge contract (unit-tested via vitest).
