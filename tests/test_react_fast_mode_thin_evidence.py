@@ -1,22 +1,26 @@
-"""Fast-mode thin-evidence hedge (2026-08-07, Task #65 follow-up, Chat
-Master relaying Ananth's UX contract).
+"""Fast-mode thin-evidence handling (2026-08-07, Task #65 follow-up +
+"always summarize" grace rule, Chat Master relaying Ananth's UX
+contract).
 
 The round-1 early exit in fast/"quick" mode used to ship whatever the
 first rag call returned verbatim -- confirmed live (cid d288d009) as
-the same fabrication mechanism #65 fixed for the normal reasoning path:
-no evidence_review ran here at all, so raw, possibly-thin/mismatched
-chunk text shipped as a confident-looking answer.
+the same fabrication mechanism #65 fixed for the normal reasoning path.
 
-Ananth's three principles, all preserved by this fix:
-1. Always stream something fast -- neither branch (rich or thin) adds a
-   full reasoning round or an extra LLM call.
-2. Never fabricate -- thin evidence gets an honest, code-CONSTRUCTED
-   hedge (a literal excerpt of the retrieved text, not an LLM summary
-   that could itself hallucinate).
-3. Answer tab still gets the full integrator card either way -- this
-   only changes what ships as react_draft/Summary, not whether
-   integrate.py runs afterward (unchanged, happens in orchestrator.py
-   regardless of which branch fires here).
+Ananth's principles, current shape:
+1. Always stream something fast -- the thin-evidence path adds ONE
+   lightweight synthesis call (not a full reasoning round: no tool-call
+   decision schema, no evidence_review) -- materially faster than
+   agentic's multi-round path on the same evidence, even though it's no
+   longer literally zero-LLM-calls. ("one pass instead of two rounds")
+2. Never fabricate -- the synthesis call is citation-disciplined
+   (state only what's literally in the evidence, say what's missing
+   rather than guess) -- same spirit as rule 1c-2's citation-discipline
+   rule from #65. Falls back to the pure code-constructed excerpt
+   (_build_fast_mode_hedge) if the synthesis call itself fails.
+3. "Always let ReAct summarize, even on early exit" (2026-08-07,
+   Ananth, directly, a grace rule): thin evidence still gets a real
+   best-effort answer, not just "I couldn't find enough" -- the hedge
+   and suggest_escalate accompany the summary, they don't replace it.
 """
 from __future__ import annotations
 
@@ -37,6 +41,8 @@ _RICH_CHUNKS = "\n\n".join(
 )
 _THIN_CHUNKS = "[1] Doc A\nBrief unrelated mention.\n\n[4] Doc B\nAnother short passage."
 
+_SYNTHESIS_STAGE_SUFFIX = "_fast_synthesis"
+
 
 def _make_ctx():
     ctx = PipelineContext(correlation_id="fast-thin-test", thread_id=None, message="care programs?")
@@ -47,13 +53,20 @@ def _make_ctx():
     return ctx
 
 
-def _run_fast_mode(rag_result_text: str, sources: list[dict]):
+def _run_fast_mode(rag_result_text: str, sources: list[dict], synthesis_response="Synthesized best-effort answer."):
+    """synthesis_response: what the fast-mode synthesis LLM call returns.
+    None simulates a failed/empty synthesis call (exercises the
+    fallback-to-code-hedge path)."""
     ctx = _make_ctx()
 
     def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
         if stage == "react_1":
             return '{"thought": "search", "tool": "rag", "inputs": {"query": "care programs"}, "is_complete": false}'
-        raise AssertionError(f"fast mode must not reach a second reasoning round (stage={stage})")
+        if stage.endswith(_SYNTHESIS_STAGE_SUFFIX):
+            if synthesis_response is None:
+                raise RuntimeError("simulated synthesis failure")
+            return synthesis_response
+        raise AssertionError(f"unexpected stage in fast mode (stage={stage})")
 
     with patch("app.pipeline.react.critic.critic_enabled", return_value=False), \
          patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm):
@@ -74,11 +87,11 @@ class TestAllChunkStats:
 
 
 class TestBuildFastModeHedge:
+    """_build_fast_mode_hedge is now the FALLBACK when the synthesis
+    call fails, not the primary thin-evidence path -- still tested
+    directly since it's still real, load-bearing code."""
+
     def test_hedge_is_a_literal_excerpt_not_synthesis(self):
-        """2026-08-07 (Ananth, directly): wording must lead with what was
-        actually found ("Found N relevant passages"), not a blanket
-        dismissal -- a live turn had real, useful content in the Answer
-        tab while the old hedge phrasing implied nothing was found at all."""
         hedge = _build_fast_mode_hedge(_THIN_CHUNKS, 2)
         assert "Brief unrelated mention" in hedge
         assert "Found 2 relevant passage" in hedge
@@ -101,9 +114,9 @@ class TestRichEvidenceKeepsCurrentBehavior:
         gates the early-exit. A 15-chunk, 11,685-char turn with
         top_score=0.00 (rerank_score simply not populated for those
         chunks) is substantial evidence regardless -- must ship
-        directly, not fall into the hedge. This was the exact live
-        regression: fast mode hedged while agentic mode, given the SAME
-        evidence, produced a fuller answer."""
+        directly, not fall into the hedge/synthesis path. This was the
+        exact live regression: fast mode hedged while agentic mode,
+        given the SAME evidence, produced a fuller answer."""
         ctx = _run_fast_mode(_RICH_CHUNKS, [{"rerank_score": None}, {"rerank_score": None}])
         assert ctx.final_message == _RICH_CHUNKS.strip()
         assert getattr(ctx, "react_unfinished_reason", None) is None
@@ -115,28 +128,62 @@ class TestRichEvidenceKeepsCurrentBehavior:
         assert ctx.final_message == _RICH_CHUNKS.strip()
 
 
-class TestThinEvidenceGetsHonestHedge:
-    def test_thin_chunk_count_triggers_hedge(self):
-        """Only 2 chunks, below _FAST_MODE_MIN_CHUNKS=3."""
-        ctx = _run_fast_mode(_THIN_CHUNKS, [{"rerank_score": 0.6}])
-        assert ctx.final_message != _THIN_CHUNKS
-        assert "Found 2 relevant passage" in ctx.final_message
+class TestThinEvidenceGetsSynthesizedAnswer:
+    """2026-08-07 (Ananth, directly): "always let ReAct summarize, even
+    on early exit." Thin evidence now gets a real synthesis attempt
+    (mocked here), not just the code-constructed excerpt."""
+
+    def test_thin_evidence_gets_synthesized_answer_plus_think_mode_line(self):
+        ctx = _run_fast_mode(_THIN_CHUNKS, [{"rerank_score": 0.6}], synthesis_response="Here's a real synthesized answer from the thin evidence.")
+        assert "Here's a real synthesized answer from the thin evidence." in ctx.final_message
         assert "Think mode" in ctx.final_message
 
     def test_hedge_path_sets_no_path_forward_for_suggest_escalate(self):
         """Reuses the EXISTING suggest_escalate signal (integrate.py reads
         react_unfinished_reason=="no_path_forward") rather than inventing
-        a new mechanism -- confirms the field actually gets set."""
+        a new mechanism -- confirms the field actually gets set even
+        though the answer is now a real synthesis, not a bare hedge."""
         ctx = _run_fast_mode(_THIN_CHUNKS, [])
         assert ctx.react_unfinished_reason == "no_path_forward"
 
-    def test_hedge_never_fabricates_beyond_the_retrieved_text(self):
-        """The hedge for thin evidence must not contain content that
-        isn't literally present in what was retrieved -- e.g. no
-        invented program names or numbers."""
-        ctx = _run_fast_mode(_THIN_CHUNKS, [])
-        assert "MMA" not in ctx.final_message
-        assert "Comprehensive program" not in ctx.final_message
+    def test_synthesis_call_receives_the_raw_evidence_and_question(self):
+        captured = {}
+
+        def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+            if stage == "react_1":
+                return '{"thought": "search", "tool": "rag", "inputs": {"query": "care programs"}, "is_complete": false}'
+            captured["system"] = system
+            captured["user"] = user
+            return "synthesized."
+
+        ctx = _make_ctx()
+        with patch("app.pipeline.react.critic.critic_enabled", return_value=False), \
+             patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm):
+            with patch("app.pipeline.react_loop._execute_tool") as mock_execute:
+                mock_execute.return_value = {
+                    "tool": "rag", "success": True, "result": _THIN_CHUNKS,
+                    "signal": "corpus_only", "sources": [], "usage": None,
+                }
+                run_react(ctx, emitter=None)
+
+        assert "Brief unrelated mention" in captured["user"]
+        assert ctx.message in captured["user"]
+        assert "literally present" in captured["system"]
+
+    def test_synthesis_failure_falls_back_to_code_hedge(self):
+        """When the synthesis call raises/fails, must fall back to the
+        pure code-constructed excerpt -- never crash, never ship nothing."""
+        ctx = _run_fast_mode(_THIN_CHUNKS, [], synthesis_response=None)
+        assert "Brief unrelated mention" in ctx.final_message
+        assert "Found 2 relevant passage" in ctx.final_message
+        assert ctx.react_unfinished_reason == "no_path_forward"
+
+    def test_synthesis_never_fabricates_beyond_mocked_response(self):
+        """The mocked synthesis response itself is what ships -- this
+        test locks in that nothing gets appended/injected beyond the
+        synthesis text + the fixed Think-mode line."""
+        ctx = _run_fast_mode(_THIN_CHUNKS, [], synthesis_response="Only what the evidence says.")
+        assert ctx.final_message == "Only what the evidence says.\n\nFor a more complete, verified answer, try Think mode."
 
 
 class TestThresholdConstantsAreTheApprovedShape:
@@ -149,14 +196,15 @@ class TestThresholdConstantsAreTheApprovedShape:
 
 class TestNonChunkedToolResultsBypassTheHedge:
     """2026-08-07 (Ananth, directly, live screenshot: "Can you tell me
-    how to appeal for a sunshine health COB denial?"). The three-signal
-    gate only makes sense for chunk-numbered rag results. A COB-appeal
-    question routes to appeals_find_carc in round 1, not rag -- its raw
-    result is JSON, not "[N] Doc\\ntext" chunks, so _all_chunk_stats
-    correctly reads 0 chunks. Without this guard, that 0 was
-    misinterpreted as "thin evidence" and real, good appeals data (CARC
-    22 + 4 real rules) got flattened into the generic "couldn't confirm
-    specific details" hedge -- confirmed live."""
+    how to appeal for a sunshine health COB denial?"). The gate only
+    makes sense for chunk-numbered rag results. A COB-appeal question
+    routes to appeals_find_carc in round 1, not rag -- its raw result is
+    JSON, not "[N] Doc\\ntext" chunks, so _all_chunk_stats correctly
+    reads 0 chunks. Without this guard, that 0 was misinterpreted as
+    "thin evidence" and real, good appeals data got routed into the
+    hedge/synthesis path instead of shipping directly -- confirmed live.
+    This bypass happens BEFORE the thin/rich branch, so it never reaches
+    the synthesis call at all."""
 
     def test_non_rag_tool_result_ships_directly_not_hedged(self):
         ctx = _make_ctx()
@@ -165,7 +213,7 @@ class TestNonChunkedToolResultsBypassTheHedge:
         def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
             if stage == "react_1":
                 return '{"thought": "appeal", "tool": "appeals_find_carc", "inputs": {"denial_description": "COB"}, "is_complete": false}'
-            raise AssertionError(f"fast mode must not reach a second reasoning round (stage={stage})")
+            raise AssertionError(f"non-chunked results must bypass synthesis entirely (stage={stage})")
 
         with patch("app.pipeline.react.critic.critic_enabled", return_value=False), \
              patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm):

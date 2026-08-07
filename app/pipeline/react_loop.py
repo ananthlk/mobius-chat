@@ -359,6 +359,48 @@ def _build_fast_mode_hedge(raw: str, chunk_count: int) -> str:
     )
 
 
+# 2026-08-07 (Ananth, directly — "always let ReAct summarize, even on
+# early exit," a grace rule, not optional): the pure code-constructed
+# hedge above was a deliberate zero-fabrication-risk choice, but Ananth's
+# explicit call is that thin evidence should still get ONE real
+# synthesis attempt before hedging -- "the user gets an attempt + honest
+# uncertainty, not just uncertainty." This is a genuine reversal of the
+# earlier "no LLM call on this path" constraint, not an oversight --
+# Ananth accepted the latency tradeoff explicitly ("one pass instead of
+# two rounds"). The citation-discipline instruction below is the SAME
+# rule #65 added to evidence_review (rule 1c-2) -- reused here verbatim
+# in spirit so this one-shot path doesn't reopen the exact fabrication
+# risk #65 was built to close. _build_fast_mode_hedge remains the
+# fallback when this call fails or returns nothing usable.
+_FAST_MODE_SYNTHESIS_SYSTEM = (
+    "You are Mobius, answering from LIMITED retrieved evidence in fast mode. "
+    "Write a short, honest, best-effort answer (2-4 sentences) using ONLY facts "
+    "literally present in the evidence below. State a specific number, name, "
+    "rule, or eligibility detail ONLY if it is directly written in the evidence "
+    "-- if you are inferring or generalizing beyond what's literally there, say "
+    "so explicitly instead of stating it as settled fact. If the evidence "
+    "doesn't fully answer the question, say plainly what's missing rather than "
+    "guessing. Output ONLY the answer text -- no JSON, no preamble, no "
+    "meta-commentary about these instructions."
+)
+
+
+def _fast_mode_synthesize_answer(query: str, raw_text: str, ctx: PipelineContext, stage: str) -> str | None:
+    """One lightweight LLM pass over the raw retrieved text -- NOT a
+    full reasoning round (no tool-call decision schema, no
+    evidence_review, no JSON parsing required of the response). Returns
+    None on any failure/empty response so the caller can fall back to
+    the code-constructed hedge rather than crash or ship nothing."""
+    try:
+        user = f"User question: {query}\n\nAvailable evidence (may be incomplete):\n{raw_text}"
+        raw = _call_llm_json(_FAST_MODE_SYNTHESIS_SYSTEM, user, max_tokens=350, ctx=ctx, stage=stage)
+        answer = (raw or "").strip()
+        return answer or None
+    except Exception:
+        logger.warning("fast-mode synthesis call failed (stage=%s); falling back to code hedge", stage, exc_info=True)
+        return None
+
+
 from app.state.jurisdiction import rag_filters_from_active
 
 # ---------------------------------------------------------------------------
@@ -4330,21 +4372,33 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 emit("  ⚡ Fast mode: using first corpus answer.")
                 _finalize_response(ctx, _raw_text, all_sources, final_signal, last_tool, emitter)
                 return
-            # Thin evidence: honest hedge instead of the raw dump, same
-            # latency budget (no LLM call here either — see
-            # _build_fast_mode_hedge). react_unfinished_reason="no_path_forward"
-            # is the EXISTING signal integrate.py's suggest_escalate check
-            # already reads (app/stages/integrate.py:1090-1096) — reusing
-            # it, not duplicating the "Try with Think mode" wiring.
+            # Thin evidence: ONE lightweight synthesis pass on what's
+            # available (2026-08-07, Ananth, directly -- "always let
+            # ReAct summarize, even on early exit," a grace rule) --
+            # NOT a full reasoning round, so still materially faster
+            # than agentic's 2-round path on the same evidence. Falls
+            # back to the pure code-constructed hedge if the synthesis
+            # call itself fails or returns nothing usable.
+            # react_unfinished_reason="no_path_forward" is the EXISTING
+            # signal integrate.py's suggest_escalate check already reads
+            # (app/stages/integrate.py:1090-1096) — reusing it, not
+            # duplicating the "Try with Think mode" wiring.
             emit(
                 f"  ⚡ Fast mode: evidence too thin ({_chunk_count} chunks, {_total_chars} chars, "
-                f"top score {_top_score:.2f}) — honest hedge, suggesting Think mode."
+                f"top score {_top_score:.2f}) — synthesizing a best-effort answer, then hedging."
             )
+            _synthesized = _fast_mode_synthesize_answer(
+                (ctx.effective_message or ctx.message or ""), _raw_text, ctx,
+                stage=f"react_{rn}_fast_synthesis",
+            )
+            if _synthesized:
+                emit("  ⚡ Fast mode: synthesis complete — appending Think mode suggestion.")
+                _body = f"{_synthesized}\n\nFor a more complete, verified answer, try Think mode."
+            else:
+                emit("  ⚡ Fast mode: synthesis call failed — falling back to evidence excerpt.")
+                _body = _build_fast_mode_hedge(_raw_text, _chunk_count)
             ctx.react_unfinished_reason = "no_path_forward"
-            _finalize_response(
-                ctx, _build_fast_mode_hedge(_raw_text, _chunk_count),
-                all_sources, final_signal, last_tool, emitter,
-            )
+            _finalize_response(ctx, _body, all_sources, final_signal, last_tool, emitter)
             return
 
         # 2026-04-18 disconnect: the roster-report early-exit (which
