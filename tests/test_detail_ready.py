@@ -506,3 +506,63 @@ def test_suggest_escalate_still_suppressed_in_agentic_despite_empty_draft():
 
     payload = json.loads(ctx.response_payload["message"])
     assert "suggest_escalate" not in payload
+
+
+# ── tldr_summary repurposed as Answer tab lead (2026-08-07, Chat Master) ──
+
+
+def test_append_detail_answer_carries_tldr_summary():
+    cid = "detail-event-test-5"
+    with _lock:
+        _progress[cid] = {"events": []}
+    try:
+        with patch("app.storage.progress._publish_progress_event"):
+            append_detail_answer(cid, "content", tldr_summary="the verdict in 2-4 sentences")
+        with _lock:
+            data = _progress[cid]["events"][0]["data"]
+        assert data["tldr_summary"] == "the verdict in 2-4 sentences"
+    finally:
+        with _lock:
+            _progress.pop(cid, None)
+
+
+def test_run_integrate_passes_tldr_summary_to_detail_ready():
+    ctx = _make_ctx()
+    card = {
+        "mode": "FACTUAL", "direct_answer": "backup", "sections": [],
+        "display_summary": "the full answer", "tldr_summary": "the verdict",
+    }
+    with patch("app.stages.integrate.format_response") as mock_format, \
+         patch("app.storage.progress.append_detail_answer") as mock_detail:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    _, kwargs = mock_detail.call_args
+    assert kwargs.get("tldr_summary") == "the verdict"
+
+
+def test_run_integrate_fires_detail_ready_from_tldr_summary_alone():
+    """The other real gap this same investigation surfaced: a turn could
+    have ONLY tldr_summary populated (no display_summary, no sections) --
+    must still fire, not be silently skipped."""
+    ctx = _make_ctx()
+    card = {"mode": "FACTUAL", "direct_answer": "backup", "sections": [], "tldr_summary": "the verdict only"}
+    with patch("app.stages.integrate.format_response") as mock_format, \
+         patch("app.storage.progress.append_detail_answer") as mock_detail:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    mock_detail.assert_called_once()
+    _, kwargs = mock_detail.call_args
+    assert kwargs.get("tldr_summary") == "the verdict only"
+
+
+def test_run_integrate_still_skips_when_all_three_absent():
+    ctx = _make_ctx()
+    card = {"mode": "FACTUAL", "direct_answer": "backup", "sections": []}
+    with patch("app.stages.integrate.format_response") as mock_format, \
+         patch("app.storage.progress.append_detail_answer") as mock_detail:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    mock_detail.assert_not_called()

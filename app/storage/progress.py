@@ -252,6 +252,7 @@ def append_detail_answer(
     correlation_id: str,
     content: str,
     output_intent: str | None = None,
+    tldr_summary: str | None = None,
     sections: list | None = None,
     citations: list | None = None,
     takeaways: list | None = None,
@@ -282,10 +283,21 @@ def append_detail_answer(
     the same parsed AnswerCard -- Chat FE reuses its existing typed-section
     card-body renderer rather than this being prose-only. Each is omitted
     (not sent as an empty list) when not populated, matching output_intent's
-    existing omit-if-absent convention."""
+    existing omit-if-absent convention.
+
+    2026-08-07 (Chat Master, second follow-up): tldr_summary is no longer
+    the Summary tab's content (Summary stays permanently pinned to
+    react_draft, by design -- react's view vs the integrator's view is
+    the point). tldr_summary is repurposed as the ANSWER tab's lead item
+    instead: hierarchy is tldr_summary -> content (display_summary) ->
+    sections[] -> citations/takeaways/next_steps. Threaded through here
+    so it arrives in the same event as everything else the Answer tab
+    needs, rather than a second round-trip."""
     ev: dict[str, Any] = {"event": "detail_ready", "data": {"content": content}}
     if output_intent:
         ev["data"]["output_intent"] = output_intent
+    if tldr_summary:
+        ev["data"]["tldr_summary"] = tldr_summary
     if sections:
         ev["data"]["sections"] = sections
     if citations:

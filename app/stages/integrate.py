@@ -678,13 +678,22 @@ def run_integrate(
                 _detail_next_steps = _parsed.get("next_steps")
                 _has_detail_prose = isinstance(_detail, str) and _detail.strip()
                 _has_detail_sections = isinstance(_detail_sections, list) and bool(_detail_sections)
-                if _has_detail_prose or _has_detail_sections:
+                # 2026-08-07 (Chat Master decision): Summary tab stays
+                # permanently pinned to react_draft -- tldr_summary is
+                # repurposed as the Answer tab's LEAD item (hierarchy:
+                # tldr_summary -> display_summary -> sections[] ->
+                # citations/takeaways/next_steps). Threaded through here
+                # so Chat FE gets it in the same event as everything else
+                # it now needs for that tab.
+                _has_tldr = isinstance(_tldr, str) and _tldr.strip()
+                if _has_detail_prose or _has_detail_sections or _has_tldr:
                     try:
                         from app.storage.progress import append_detail_answer
                         append_detail_answer(
                             ctx.correlation_id,
                             _detail if _has_detail_prose else "",
                             output_intent=_oi if isinstance(_oi, str) else None,
+                            tldr_summary=_tldr if _has_tldr else None,
                             sections=_detail_sections if _has_detail_sections else None,
                             citations=_detail_citations if isinstance(_detail_citations, list) and _detail_citations else None,
                             takeaways=_detail_takeaways if isinstance(_detail_takeaways, list) and _detail_takeaways else None,
