@@ -321,7 +321,18 @@ def _build_fast_mode_hedge(raw: str, chunk_count: int) -> str:
     constructed from the ACTUAL retrieved text (a literal excerpt), never
     an LLM call, so it carries zero fabrication risk of its own. That's
     the whole point: a quick LLM "summarize this" pass could still
-    hallucinate past what the excerpt supports, defeating the fix."""
+    hallucinate past what the excerpt supports, defeating the fix.
+
+    2026-08-07 (Ananth, directly, live finding): the first version of
+    this text ("Limited sources... I couldn't confirm specific details")
+    read as a blanket dismissal even when real, partial work WAS done --
+    a live turn had 4 real appeal rules synthesized correctly in the
+    Answer tab while the Summary hedge implied nothing useful was found
+    at all. Calibrated wording: lead with what was actually found (real
+    work happened, here it is), frame the limitation as incompleteness
+    ("may not be the full picture") rather than total inability, since
+    that's what's actually true -- this is still a genuine excerpt, not
+    a confident answer, just not phrased as if nothing was found."""
     blocks = _extract_chunk_blocks(raw)
     snippet = ""
     if blocks:
@@ -331,14 +342,14 @@ def _build_fast_mode_hedge(raw: str, chunk_count: int) -> str:
             snippet = snippet.rstrip() + "…"
     if not snippet:
         return (
-            "Limited sources available on this topic — I couldn't confirm specific "
-            "details. For a more complete answer, try Think mode."
+            "I didn't find enough in our materials to answer this with confidence. "
+            "For a more thorough look, try Think mode."
         )
     plural = "s" if chunk_count != 1 else ""
     return (
-        f"Limited sources available on this topic ({chunk_count} passage{plural} found). "
-        f"Here's what I found: {snippet} I cannot confirm further details beyond this. "
-        "For a more complete answer, try Think mode."
+        f"Found {chunk_count} relevant passage{plural} on this topic — here's what "
+        f"they say: {snippet} This may not be the complete picture for your specific "
+        "question. For a fuller, more thorough answer, try Think mode."
     )
 
 
@@ -4228,6 +4239,25 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         ):
             _raw_text = (result.get("result") or "").strip()
             _chunk_count, _total_chars = _all_chunk_stats(_raw_text)
+            # 2026-08-07 (Ananth, directly, live screenshot -- "Can you tell
+            # me how to appeal for a sunshine health COB denial?"): the
+            # three-signal gate below only makes sense for chunk-numbered
+            # rag results ("[N] Doc\ntext"). Non-rag tools (appeals_find_carc
+            # etc.) return their OWN structured JSON, which _all_chunk_stats
+            # correctly reads as 0 chunks -- but that's not "thin evidence,"
+            # it's just a different tool's result shape. Without this
+            # guard, EVERY successful non-rag fast-mode call got forced
+            # into the hedge path regardless of how good the actual data
+            # was -- confirmed live: appeals_find_carc found real CARC 22 +
+            # rules, but shipped the fallback "couldn't confirm specific
+            # details" hedge instead. Non-rag tools already gate their own
+            # quality via `success` (see corpus_search.py's rag() vs.
+            # appeals_get_playbook's usable-content check earlier today) --
+            # the chunk/score heuristic is rag-specific and must stay that way.
+            if _chunk_count == 0:
+                emit("  ⚡ Fast mode: using first tool answer.")
+                _finalize_response(ctx, _raw_text, all_sources, final_signal, last_tool, emitter)
+                return
             _sources_for_score = result.get("sources") or []
             _top_score = max(
                 (float(s.get("rerank_score") or 0.0) for s in _sources_for_score),

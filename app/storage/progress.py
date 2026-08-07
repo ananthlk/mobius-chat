@@ -227,10 +227,26 @@ def append_message_chunk(correlation_id: str, chunk: str) -> None:
         _publish_progress_event(correlation_id, ev_to_publish)
 
 
-def append_draft_answer(correlation_id: str, text: str, mode_hint: str | None = None) -> None:
+def append_draft_answer(
+    correlation_id: str, text: str, mode_hint: str | None = None,
+    suggest_escalate: bool = False,
+) -> None:
     """Emit the raw ReAct answer before the integrator runs so the frontend can render it immediately.
     Fires a draft_ready SSE event; the completed event fills in remaining panels in-place.
     mode_hint (e.g. "RECITAL") lets the renderer create the right shell without waiting for completed.
+
+    suggest_escalate (2026-08-07, Ananth, directly, live UX finding): the
+    "Try with Think mode" button previously only appeared on the LATER
+    completed-card event (app/stages/integrate.py's suggest_escalate
+    field, computed after the integrator's LLM call finishes) -- Ananth's
+    point: on the fast-mode thin-evidence hedge path, the answer text
+    itself already streams immediately, but the button that goes with it
+    was stuck waiting for the slower integrator pass for no reason, since
+    react already knows at draft time (ctx.react_unfinished_reason ==
+    "no_path_forward") that escalation is warranted. Passing it through
+    here lets the FE render the button alongside the draft text with zero
+    added latency -- the completed event still sets its own
+    suggest_escalate too (unchanged), this is additive, not a replacement.
 
     Also stashes the text durably on ``_progress[correlation_id]["draft_answer"]``
     (Task #29, mid-turn truncation recovery, 2026-08-05) -- the SSE event
@@ -241,6 +257,8 @@ def append_draft_answer(correlation_id: str, text: str, mode_hint: str | None = 
     ev: dict[str, Any] = {"event": "draft_ready", "data": {"text": text}}
     if mode_hint:
         ev["data"]["mode_hint"] = mode_hint
+    if suggest_escalate:
+        ev["data"]["suggest_escalate"] = True
     with _lock:
         if correlation_id in _progress:
             _progress[correlation_id]["events"].append(ev)

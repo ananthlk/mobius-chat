@@ -708,7 +708,17 @@ def run_pipeline(
                 ctx.react_draft = ctx.final_message  # saved before integrator overwrites
                 from app.storage.progress import append_draft_answer
                 _mode_hint = "RECITAL" if getattr(ctx, "recital", None) else None
-                append_draft_answer(ctx.correlation_id, ctx.final_message, mode_hint=_mode_hint)
+                # 2026-08-07 (Ananth, directly): same condition
+                # integrate.py's suggest_escalate check uses
+                # (react_unfinished_reason == "no_path_forward") --
+                # available synchronously right here, so the "Try with
+                # Think mode" button doesn't have to wait for the
+                # integrator's slower completed-card event.
+                _draft_suggest_escalate = getattr(ctx, "react_unfinished_reason", None) == "no_path_forward"
+                append_draft_answer(
+                    ctx.correlation_id, ctx.final_message, mode_hint=_mode_hint,
+                    suggest_escalate=_draft_suggest_escalate,
+                )
             updates = {}
             if getattr(ctx, "failed_query", None):
                 updates["last_failed_query"] = ctx.failed_query

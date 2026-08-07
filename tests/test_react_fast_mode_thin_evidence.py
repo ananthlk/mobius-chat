@@ -76,15 +76,19 @@ class TestAllChunkStats:
 
 class TestBuildFastModeHedge:
     def test_hedge_is_a_literal_excerpt_not_synthesis(self):
+        """2026-08-07 (Ananth, directly): wording must lead with what was
+        actually found ("Found N relevant passages"), not a blanket
+        dismissal -- a live turn had real, useful content in the Answer
+        tab while the old hedge phrasing implied nothing was found at all."""
         hedge = _build_fast_mode_hedge(_THIN_CHUNKS, 2)
         assert "Brief unrelated mention" in hedge
-        assert "Limited sources" in hedge
+        assert "Found 2 relevant passage" in hedge
         assert "Think mode" in hedge
 
     def test_hedge_never_crashes_on_non_chunked_text(self):
         hedge = _build_fast_mode_hedge("plain prose, no headers", 0)
-        assert "Limited sources" in hedge
         assert "Think mode" in hedge
+        assert hedge.strip()
 
 
 class TestRichEvidenceKeepsCurrentBehavior:
@@ -99,13 +103,13 @@ class TestThinEvidenceGetsHonestHedge:
         """Only 2 chunks, below _FAST_MODE_MIN_CHUNKS=3."""
         ctx = _run_fast_mode(_THIN_CHUNKS, [{"rerank_score": 0.6}])
         assert ctx.final_message != _THIN_CHUNKS
-        assert "Limited sources" in ctx.final_message
+        assert "Found 2 relevant passage" in ctx.final_message
         assert "Think mode" in ctx.final_message
 
     def test_thin_score_triggers_hedge_even_with_enough_chunks_and_chars(self):
         """Rich chunk count/chars but low relevance score -- must still hedge."""
         ctx = _run_fast_mode(_RICH_CHUNKS, [{"rerank_score": 0.1}, {"rerank_score": 0.05}])
-        assert "Limited sources" in ctx.final_message
+        assert "Found 3 relevant passage" in ctx.final_message
 
     def test_hedge_path_sets_no_path_forward_for_suggest_escalate(self):
         """Reuses the EXISTING suggest_escalate signal (integrate.py reads
@@ -128,3 +132,37 @@ class TestThresholdConstantsAreTheApprovedShape:
         assert _FAST_MODE_MIN_CHUNKS >= 1
         assert _FAST_MODE_MIN_CHARS >= 1
         assert 0.0 < _FAST_MODE_MIN_SCORE < 1.0
+
+
+class TestNonChunkedToolResultsBypassTheHedge:
+    """2026-08-07 (Ananth, directly, live screenshot: "Can you tell me
+    how to appeal for a sunshine health COB denial?"). The three-signal
+    gate only makes sense for chunk-numbered rag results. A COB-appeal
+    question routes to appeals_find_carc in round 1, not rag -- its raw
+    result is JSON, not "[N] Doc\\ntext" chunks, so _all_chunk_stats
+    correctly reads 0 chunks. Without this guard, that 0 was
+    misinterpreted as "thin evidence" and real, good appeals data (CARC
+    22 + 4 real rules) got flattened into the generic "couldn't confirm
+    specific details" hedge -- confirmed live."""
+
+    def test_non_rag_tool_result_ships_directly_not_hedged(self):
+        ctx = _make_ctx()
+        appeals_json = '{"matches": [{"carc": 22, "title": "Coordination of Benefits", "rules": [{"rule_id": "COB.R001"}]}], "top_carc": 22}'
+
+        def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+            if stage == "react_1":
+                return '{"thought": "appeal", "tool": "appeals_find_carc", "inputs": {"denial_description": "COB"}, "is_complete": false}'
+            raise AssertionError(f"fast mode must not reach a second reasoning round (stage={stage})")
+
+        with patch("app.pipeline.react.critic.critic_enabled", return_value=False), \
+             patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm):
+            with patch("app.pipeline.react_loop._execute_tool") as mock_execute:
+                mock_execute.return_value = {
+                    "tool": "appeals_find_carc", "success": True, "result": appeals_json,
+                    "signal": None, "sources": [], "usage": None,
+                }
+                run_react(ctx, emitter=None)
+
+        assert ctx.final_message == appeals_json
+        assert "Found" not in ctx.final_message  # not routed through the hedge template
+        assert getattr(ctx, "react_unfinished_reason", None) is None
