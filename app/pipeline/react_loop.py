@@ -2342,6 +2342,20 @@ def _finalize_response(
     # Phase 0.8: dedupe sources by (document_id, page_number) so the citation
     # list doesn't explode when multiple rounds cite the same document.
     ctx.sources = _dedupe_sources(all_sources) if all_sources else []
+    # 2026-08-07 (Task #58, Chat Architecture directive, Ananth's ruling on
+    # envelope taxonomy) -- integrate.py's source_texts today reads only the
+    # top-7-by-score slice of ctx.sources for the enricher prompt, silently
+    # dropping the rest. ctx.sources itself is already the FULL deduped,
+    # unified pool (every rag call this turn, every filler arm merged --
+    # RAG's own /api/retriever/answer response is already unified before it
+    # reaches corpus_search.py; filler_strategy is carried as a per-chunk
+    # detail field, not a separation) with rich per-chunk metadata
+    # (authority, rerank_score, confidence_label, filler_strategy, document
+    # identity) via SourceRef.to_dict() -- it just wasn't exposed under a
+    # name integrate.py could read the FULL set from. ctx.rag_chunks is that
+    # name: a plain alias, not new data collection, so integrate.py can
+    # choose how much of it to use instead of being hard-capped upstream.
+    ctx.rag_chunks = list(ctx.sources)
     ctx.retrieval_signals = [final_signal] if final_signal else [RETRIEVAL_SIGNAL_NO_SOURCES]
     # Quick mode: flag long answers so the mini container shows "Full answer →" link
     if react_chat_mode_label(getattr(ctx, "chat_mode", None)) == "quick":
@@ -2369,6 +2383,30 @@ def _finalize_response(
             _all_hints.extend(_tr["section_hints"])
     if _all_hints:
         ctx.tool_section_hints = _all_hints
+
+    # 2026-08-07 (Task #58, Chat Architecture directive, Ananth's ruling on
+    # envelope taxonomy) -- "typed tool outputs, grouped by tool: appeals
+    # tools, analytics/financial, lookup_authoritative_sources." rag is
+    # deliberately excluded here -- that's ctx.rag_chunks' unified pool,
+    # above. Unlike tool_section_hints (a curated/extracted subset for
+    # rendering), this is the RAW result string exactly as the tool
+    # returned it, so the enricher isn't limited to whatever a section_hint
+    # happened to extract. Keyed by tool name -> LIST, not a single dict:
+    # the exact live case motivating this (appeals_get_playbook called 7x
+    # in one turn, see the zero-result fix earlier today) would silently
+    # lose every call but the last under a single-value dict.
+    _tool_outputs: dict[str, list[dict]] = {}
+    for _tr in _all_tr:
+        _t = _tr.get("tool")
+        if not _t or _t in ("rag", "search_corpus"):
+            continue
+        _tool_outputs.setdefault(_t, []).append({
+            "success": _tr.get("success", False),
+            "result": _tr.get("result", ""),
+            "result_summary": _tr.get("result_summary"),
+        })
+    if _tool_outputs:
+        ctx.tool_outputs = _tool_outputs
 
     # react_trace diagnostics panel (2026-07-31) — one per turn, same
     # "diagnostic-only, doesn't affect the answer" tier as retrieval_trace.
