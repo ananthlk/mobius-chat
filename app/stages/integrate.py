@@ -81,6 +81,14 @@ _ANSWER_CARD_ENVELOPE_KEYS = (
     # this allowlist copy runs — never LLM-produced, but flows through
     # the same copy mechanism as the LLM-produced fields above.
     "suggest_escalate",
+    # 2026-08-07: react's own pre-integrator synthesis (Chat FE / Ananth's
+    # ruling — Summary tab = react_draft, including on history reload).
+    # Backend-computed (ctx.react_draft, set at orchestrator.py:708),
+    # never LLM-produced. Rides this same final_message JSON blob so it
+    # survives save_turn's persistence without a new DB column — the FE
+    # reads card.react_draft on reload the same way it reads
+    # card.direct_answer today.
+    "react_draft",
 )
 
 
@@ -910,6 +918,24 @@ def run_integrate(
             )
             if _stalled and getattr(ctx, "chat_mode", None) != "agentic":
                 parsed["suggest_escalate"] = True
+
+            # react_draft persistence (2026-08-07, Chat FE / Ananth's ruling:
+            # Summary tab = react_draft, always, including on history reload).
+            # Live turns already get react_draft via the draft_ready SSE event
+            # (fires before the integrator even runs) -- this is the RELOAD
+            # gap: draft_ready isn't persisted, so a reloaded thread fell back
+            # to the stored card's direct_answer (integrator output, not
+            # react's own synthesis). save_turn's signature is an explicit
+            # column enumeration (no spread) -- adding a real DB column is
+            # more surface than this needs. Backend-computed, same pattern as
+            # suggest_escalate: inject into the parsed dict here so it rides
+            # the EXISTING final_message JSON blob that already gets
+            # persisted verbatim via save_turn -- no new column, no schema
+            # change, and the FE reads it the same way it reads
+            # card.direct_answer today, just a different key.
+            if _react_draft and _react_draft.strip():
+                parsed["react_draft"] = _react_draft
+
             # Layer 2 appeals integration — inject suggested_actions if LLM omitted it.
             # The LLM is instructed to populate this for denial/appeal queries, but may
             # silently drop optional fields. We detect the intent here as a reliable fallback.

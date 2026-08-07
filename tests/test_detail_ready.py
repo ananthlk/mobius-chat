@@ -566,3 +566,44 @@ def test_run_integrate_still_skips_when_all_three_absent():
         run_integrate(ctx)
 
     mock_detail.assert_not_called()
+
+
+# ── react_draft persistence for history reload (2026-08-07, Chat FE) ──────
+
+
+def test_react_draft_persisted_into_client_payload():
+    ctx = _make_ctx()
+    ctx.react_draft = "ReAct's own synthesized answer, exactly what streamed via draft_ready"
+    card = {"mode": "FACTUAL", "direct_answer": "backup", "sections": []}
+
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert payload.get("react_draft") == "ReAct's own synthesized answer, exactly what streamed via draft_ready"
+
+
+def test_react_draft_omitted_when_absent():
+    ctx = _make_ctx()
+    card = {"mode": "FACTUAL", "direct_answer": "backup", "sections": []}
+
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert "react_draft" not in payload
+
+
+def test_react_draft_omitted_when_blank():
+    ctx = _make_ctx()
+    ctx.react_draft = "   "
+    card = {"mode": "FACTUAL", "direct_answer": "backup", "sections": []}
+
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert "react_draft" not in payload
