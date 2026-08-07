@@ -248,7 +248,15 @@ def append_draft_answer(correlation_id: str, text: str, mode_hint: str | None = 
     _publish_progress_event(correlation_id, ev)
 
 
-def append_detail_answer(correlation_id: str, content: str, output_intent: str | None = None) -> None:
+def append_detail_answer(
+    correlation_id: str,
+    content: str,
+    output_intent: str | None = None,
+    sections: list | None = None,
+    citations: list | None = None,
+    takeaways: list | None = None,
+    next_steps: list | None = None,
+) -> None:
     """Emit the full detailed-answer tab content as soon as the integrator's
     AnswerCard JSON parses (2026-08-05, Chat Master spec — "detail" tab
     alongside the Summary tab's tldr_summary). Mirrors append_draft_answer's
@@ -263,10 +271,29 @@ def append_detail_answer(correlation_id: str, content: str, output_intent: str |
     emr|appeal|payor_report) -- NOT a display label; Chat FE renders/
     labels it client-side. No durable-stash / get_checkpoint() integration
     here (unlike append_draft_answer) -- this isn't part of Task #29's
-    mid-turn recovery contract, just a live UI event."""
+    mid-turn recovery contract, just a live UI event.
+
+    2026-08-07 (Chat Master, confirmed via direct DB pull first — real
+    turns show sections[] populated with substantial structured content,
+    e.g. CARC appeal rules with authority citations, even when
+    display_summary was empty on the same turn): content alone was
+    under-representing what the integrator actually produced. Now also
+    carries sections[]/citations[]/takeaways[]/next_steps[] verbatim from
+    the same parsed AnswerCard -- Chat FE reuses its existing typed-section
+    card-body renderer rather than this being prose-only. Each is omitted
+    (not sent as an empty list) when not populated, matching output_intent's
+    existing omit-if-absent convention."""
     ev: dict[str, Any] = {"event": "detail_ready", "data": {"content": content}}
     if output_intent:
         ev["data"]["output_intent"] = output_intent
+    if sections:
+        ev["data"]["sections"] = sections
+    if citations:
+        ev["data"]["citations"] = citations
+    if takeaways:
+        ev["data"]["takeaways"] = takeaways
+    if next_steps:
+        ev["data"]["next_steps"] = next_steps
     with _lock:
         if correlation_id in _progress:
             _progress[correlation_id]["events"].append(ev)

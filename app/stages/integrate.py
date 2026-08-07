@@ -657,15 +657,38 @@ def run_integrate(
                 # mirroring append_draft_answer's draft_ready pattern, so
                 # Chat FE can render the detail tab without waiting for the
                 # full "completed" payload.
+                #
+                # 2026-08-07 (Chat Master follow-up): confirmed via direct
+                # DB pull that sections[] is genuinely rich on real turns
+                # (e.g. an appeals turn with detailed CARC rule citations)
+                # even when display_summary was completely empty on that
+                # SAME turn -- the original display_summary-only guard
+                # would have skipped detail_ready entirely for turns just
+                # like that one, hiding real content the integrator DID
+                # produce. Now fires whenever EITHER has content, and
+                # carries sections[]/citations[]/takeaways[]/next_steps[]
+                # verbatim so Chat FE can reuse its existing typed-section
+                # card-body renderer instead of prose-only.
                 _detail = _parsed.get("display_summary")
                 _oi = _parsed.get("output_intent")
                 _tldr = _parsed.get("tldr_summary")
-                if isinstance(_detail, str) and _detail.strip():
+                _detail_sections = _parsed.get("sections")
+                _detail_citations = _parsed.get("citations")
+                _detail_takeaways = _parsed.get("takeaways")
+                _detail_next_steps = _parsed.get("next_steps")
+                _has_detail_prose = isinstance(_detail, str) and _detail.strip()
+                _has_detail_sections = isinstance(_detail_sections, list) and bool(_detail_sections)
+                if _has_detail_prose or _has_detail_sections:
                     try:
                         from app.storage.progress import append_detail_answer
                         append_detail_answer(
-                            ctx.correlation_id, _detail,
+                            ctx.correlation_id,
+                            _detail if _has_detail_prose else "",
                             output_intent=_oi if isinstance(_oi, str) else None,
+                            sections=_detail_sections if _has_detail_sections else None,
+                            citations=_detail_citations if isinstance(_detail_citations, list) and _detail_citations else None,
+                            takeaways=_detail_takeaways if isinstance(_detail_takeaways, list) and _detail_takeaways else None,
+                            next_steps=_detail_next_steps if isinstance(_detail_next_steps, list) and _detail_next_steps else None,
                         )
                     except Exception:
                         logger.debug(

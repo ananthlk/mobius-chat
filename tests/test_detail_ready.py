@@ -65,6 +65,48 @@ def test_append_detail_answer_omits_output_intent_when_absent():
             _progress.pop(cid, None)
 
 
+def test_append_detail_answer_carries_sections_citations_takeaways_next_steps():
+    cid = "detail-event-test-3"
+    with _lock:
+        _progress[cid] = {"events": []}
+    try:
+        with patch("app.storage.progress._publish_progress_event"):
+            append_detail_answer(
+                cid, "content",
+                sections=[{"label": "S", "format": "bullets", "intent": "process", "bullets": ["x"]}],
+                citations=[{"claim": "c", "doc_title": "d", "locator": "p.1", "snippet": "s"}],
+                takeaways=["t1"],
+                next_steps=["Submit within 90 days"],
+            )
+        with _lock:
+            data = _progress[cid]["events"][0]["data"]
+        assert data["sections"][0]["label"] == "S"
+        assert data["citations"][0]["claim"] == "c"
+        assert data["takeaways"] == ["t1"]
+        assert data["next_steps"] == ["Submit within 90 days"]
+    finally:
+        with _lock:
+            _progress.pop(cid, None)
+
+
+def test_append_detail_answer_omits_empty_lists():
+    cid = "detail-event-test-4"
+    with _lock:
+        _progress[cid] = {"events": []}
+    try:
+        with patch("app.storage.progress._publish_progress_event"):
+            append_detail_answer(cid, "content", sections=[], citations=None, takeaways=[], next_steps=None)
+        with _lock:
+            data = _progress[cid]["events"][0]["data"]
+        assert "sections" not in data
+        assert "citations" not in data
+        assert "takeaways" not in data
+        assert "next_steps" not in data
+    finally:
+        with _lock:
+            _progress.pop(cid, None)
+
+
 def test_run_integrate_fires_detail_ready_from_display_summary():
     """End-to-end through run_integrate(): when the integrator's AnswerCard
     JSON includes display_summary + output_intent, detail_ready fires with
@@ -92,8 +134,8 @@ def test_run_integrate_fires_detail_ready_from_display_summary():
 
 
 def test_run_integrate_skips_detail_ready_when_display_summary_absent():
-    """Legacy/fallback AnswerCards without display_summary must not fire
-    detail_ready with garbage -- silently skip."""
+    """Legacy/fallback AnswerCards without display_summary AND without
+    sections must not fire detail_ready with garbage -- silently skip."""
     ctx = _make_ctx()
     card = {"mode": "FACTUAL", "direct_answer": "backup", "sections": []}
 
@@ -103,6 +145,79 @@ def test_run_integrate_skips_detail_ready_when_display_summary_absent():
         run_integrate(ctx)
 
     mock_detail.assert_not_called()
+
+
+def test_run_integrate_fires_detail_ready_from_sections_even_when_display_summary_empty():
+    """2026-08-07 regression guard: the exact real-world case that
+    prompted this fix -- a turn with rich sections[] (CARC appeal rules)
+    but a completely empty display_summary. detail_ready must still
+    fire, carrying the sections, with an empty content string rather
+    than being silently skipped."""
+    ctx = _make_ctx()
+    card = {
+        "mode": "FACTUAL",
+        "direct_answer": "backup",
+        "sections": [
+            {"label": "Required Documents", "format": "bullets", "intent": "requirements",
+             "bullets": ["Proof of no Medicare coverage", "Proof of Sunshine Health coverage"]},
+        ],
+    }
+
+    with patch("app.stages.integrate.format_response") as mock_format, \
+         patch("app.storage.progress.append_detail_answer") as mock_detail:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    mock_detail.assert_called_once()
+    args, kwargs = mock_detail.call_args
+    assert args[1] == ""  # no prose content, but must not be skipped
+    assert kwargs.get("sections") == card["sections"]
+
+
+def test_run_integrate_passes_citations_takeaways_next_steps_when_present():
+    ctx = _make_ctx()
+    card = {
+        "mode": "FACTUAL",
+        "direct_answer": "backup",
+        "sections": [],
+        "display_summary": "the full answer",
+        "citations": [{"claim": "x", "doc_title": "y", "locator": "p.1", "snippet": "z"}],
+        "takeaways": ["remember this"],
+        "next_steps": ["Submit the appeal within 90 days"],
+    }
+
+    with patch("app.stages.integrate.format_response") as mock_format, \
+         patch("app.storage.progress.append_detail_answer") as mock_detail:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    _, kwargs = mock_detail.call_args
+    assert kwargs.get("citations") == card["citations"]
+    assert kwargs.get("takeaways") == card["takeaways"]
+    assert kwargs.get("next_steps") == card["next_steps"]
+
+
+def test_run_integrate_omits_empty_citations_takeaways_next_steps():
+    ctx = _make_ctx()
+    card = {
+        "mode": "FACTUAL",
+        "direct_answer": "backup",
+        "sections": [],
+        "display_summary": "the full answer",
+        "citations": [],
+        "takeaways": [],
+        "next_steps": [],
+    }
+
+    with patch("app.stages.integrate.format_response") as mock_format, \
+         patch("app.storage.progress.append_detail_answer") as mock_detail:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    _, kwargs = mock_detail.call_args
+    assert kwargs.get("citations") is None
+    assert kwargs.get("takeaways") is None
+    assert kwargs.get("next_steps") is None
 
 
 def test_run_integrate_preserves_tldr_summary_in_client_payload():
