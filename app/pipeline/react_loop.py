@@ -1258,6 +1258,13 @@ def _execute_tool(
             "chosen_slot": _chosen_slot,
             "rag_phase": _rag_phase,
             "call_number": _rag_call_number,
+            # 2026-08-07 (Task #41(a)): RAG's own Observer verdict/reason
+            # for the chosen slot -- e.g. verdict="SATISFIED",
+            # reason="vector_filled_to_capacity". More authoritative than
+            # the dispatch_path/chosen_slot/status equality heuristic
+            # gap_status uses -- surfaced in [Evidence Ledger] below.
+            "observer_final_reason": _corpus_telemetry.get("observer_final_reason"),
+            "observer_final_verdict": _corpus_telemetry.get("observer_final_verdict"),
         }]
 
         if not success:

@@ -410,6 +410,7 @@ REACT_CRITICAL_RULES_TEXT = """CRITICAL RULES:
     - **Result was the REFRAMED call and still empty**: this is a genuine gap, not a phrasing problem. STOP calling rag on this question — go to SHAPE 2 below.
     - **citable_required was never True and the result is weak**: you get ONE reframe with a materially different query (same materiality bar as above), then stop.
     - **Materiality gate for any reframe**: before re-asking, ask — does this query change the actual matched terms, or is it a cosmetic reword that will hit the same BM25/vector results? If cosmetic, don't re-fire.
+    - **observer_final_reason overrides materiality when present**: when the [Evidence Ledger] shows an observer_final_reason indicating a structural/capacity limit (e.g. "...filled_to_capacity"), that's RAG's own agent telling you the search genuinely maxed out its candidates — a materially different query won't change that. Skip the reframe and go to SHAPE 2, even if gap_status alone still reads "progressing."
     - **Hard limit, enforced**: 3 rag calls per question, no more. The pipeline itself refuses a 4th call and returns a terminal signal — don't rely on remembering this, but don't try it either.
 1c. **Show your reasoning, not just your move.** Starting round 2, every "thought" must read as three explicit beats, in order:
     (1) LEARNED — what the last tool result actually told you: cite the real signal (status, chunk count, whether it was citability-gated) — never "still gathering information" or other content-free filler.
@@ -1003,6 +1004,31 @@ def build_reasoning_context(
                 "before concluding the corpus doesn't have it, or switch to a materially "
                 "different approach.",
             ])
+            # 2026-08-07 (Task #41(a), Chat Master directive): RAG's own
+            # Observer agent's verdict/reason for the most recent call —
+            # more authoritative than gap_status's dispatch_path-equality
+            # heuristic, since it's RAG explaining WHY it stopped, not
+            # this file inferring it from repeated fields. Confirmed live:
+            # reason="vector_filled_to_capacity" means the search found
+            # plenty of candidates and hit a ranking/volume cap — a
+            # STRUCTURAL limit, not a vocabulary gap, so reframing with
+            # different terms is unlikely to help even on gap_status=
+            # "progressing" (which only compares the last 2 calls and
+            # could still miss this). Absent on responses that predate
+            # this field or don't set it — omitted rather than shown as
+            # "None" to avoid implying a signal that isn't really there.
+            _latest_observer_reason = _ledger_history[-1].get("observer_final_reason")
+            _latest_observer_verdict = _ledger_history[-1].get("observer_final_verdict")
+            if _latest_observer_reason or _latest_observer_verdict:
+                _ledger_lines.append(
+                    f"observer_final_verdict: {_latest_observer_verdict!r}, "
+                    f"observer_final_reason: {_latest_observer_reason!r} — this is RAG's own "
+                    "Observer explaining why the last call stopped, more authoritative than "
+                    "gap_status alone. A reason indicating a structural/capacity limit (e.g. "
+                    "\"...filled_to_capacity\") means reframing with different terms won't help — "
+                    "that's not a vocabulary gap, treat it the same as gap_status=\"stagnant\" "
+                    "regardless of what gap_status itself says."
+                )
         if _exhausted:
             _ledger_lines.extend([
                 f"exhausted_tools: {_exhausted}",

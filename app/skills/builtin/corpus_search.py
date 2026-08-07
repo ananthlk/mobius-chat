@@ -657,6 +657,24 @@ def _run(call: SkillCall) -> SkillEnvelope:
     # whatever the new response actually gives us, not a reconstruction of
     # the old shape. Phase 2 re-wires the diagnostics panel against
     # traces[]/routing_keys/grounding_markers properly.
+    # 2026-08-07 (Task #41(a), Chat Master directive) -- Phase 2 of the
+    # comment above: routing_keys.observer_final_reasons/verdicts are
+    # RAG's own Observer agent explaining WHY it stopped searching a slot
+    # (e.g. "vector_filled_to_capacity" -- a structural/capacity limit,
+    # not "nothing was found"). Confirmed live via a real captured
+    # response (contract.routing_keys.observer_final_reasons =
+    # {"direct_answer": "vector_filled_to_capacity"}). Keyed by slot_id
+    # in the raw response; pulled down to the CHOSEN slot's value here
+    # since that's the slot react's reasoning actually cares about --
+    # react_loop.py's gap_status heuristic (dispatch_path/chosen_slot/
+    # status equality across the last 2 calls) is a coarse proxy for
+    # "reframing won't help"; this is RAG's own authoritative answer to
+    # that exact question, previously captured by RAG but never
+    # extracted here.
+    _routing_keys = contract.get("routing_keys") or {}
+    _chosen_slot_for_observer = contract.get("chosen_slot")
+    _observer_reasons_by_slot = _routing_keys.get("observer_final_reasons") or {}
+    _observer_verdicts_by_slot = _routing_keys.get("observer_final_verdicts") or {}
     telemetry: dict[str, Any] = {
         "chosen_slot": contract.get("chosen_slot"),
         "score": contract.get("score"),
@@ -667,6 +685,14 @@ def _run(call: SkillCall) -> SkillEnvelope:
         "allocator_override": resp.get("allocator_override"),
         "authority_requirement": resp.get("authority_requirement"),
         "n_chunks": len(chunks),
+        "observer_final_reason": (
+            _observer_reasons_by_slot.get(_chosen_slot_for_observer)
+            if isinstance(_observer_reasons_by_slot, dict) else None
+        ),
+        "observer_final_verdict": (
+            _observer_verdicts_by_slot.get(_chosen_slot_for_observer)
+            if isinstance(_observer_verdicts_by_slot, dict) else None
+        ),
         # narrative_full_REDACTED (mobius-rag 1fc9194): same retrieval narrative with the raw-query
         # echo lines stripped, so it IS safe to persist. Unlike narrative_full (which is stashed on
         # an ephemeral ctx attr and never enters this dict), the redacted variant CAN ride the
