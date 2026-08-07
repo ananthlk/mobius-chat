@@ -297,6 +297,30 @@ def _format_context(chunks: list[dict[str, Any]]) -> str:
         header = f"[{i}] CERTIFIED ANSWER — {doc}" if is_fact_store else f"[{i}] {doc}"
         if isinstance(page, int):
             header += f" (p.{page})"
+        # 2026-08-07 (Chat Architecture, confidence-calibration finding):
+        # authority level and confidence were computed per-chunk (this
+        # file's SourceRef.extra) but never reached the TEXT the reasoning
+        # LLM actually reads -- confirmed live: a rank-1/12,
+        # authority=contract_source_of_truth chunk that explicitly stated
+        # the answer still got treated as possibly-unauthoritative,
+        # because nothing in this function distinguished it from a
+        # random provider-manual paragraph. Only fact-store chunks got
+        # any authority signal (the CERTIFIED ANSWER header above,
+        # unchanged). Every other chunk now gets the same real signal —
+        # authority tier when RAG set one, confidence label derived the
+        # same way the citation UI already does (_derive_confidence_label)
+        # — so the model can calibrate from an actual field instead of
+        # guessing at source quality from prose alone.
+        if not is_fact_store:
+            _authority = (c.get("authority") or "").strip()
+            _confidence = _derive_confidence_label(c.get("rerank_score"))
+            _tier_bits = []
+            if _authority:
+                _tier_bits.append(f"authority={_authority}")
+            if _confidence != "abstain":
+                _tier_bits.append(f"confidence={_confidence}")
+            if _tier_bits:
+                header += f" [{', '.join(_tier_bits)}]"
         if is_fact_store:
             header += "\n(This is a verified, authoritative fact from the certified fact store — trust it over general search results.)"
         parts.append(f"{header}\n{text}")

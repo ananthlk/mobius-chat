@@ -476,3 +476,62 @@ def test_fact_store_flag_survives_end_to_end_through_run():
     env = _run_with_response("q", {"chunks": [fact_store_chunk]})
     assert "CERTIFIED ANSWER" in env.text
     assert "68069" in env.text
+
+
+# ── Authority/confidence signal in the reasoning-facing text (2026-08-07) ──
+#
+# Chat Architecture finding, live turn: a rank-1/12,
+# authority=contract_source_of_truth chunk that explicitly stated the
+# answer (timely filing deadline) still got treated by react as possibly
+# unauthoritative -- confirmed the root cause was _format_context() itself:
+# authority/confidence were computed per-chunk (SourceRef.extra, used only
+# for citation display) but never reached the TEXT the reasoning LLM
+# actually reads. Only fact-store chunks got any authority signal at all.
+
+
+def test_non_fact_store_chunk_surfaces_authority_and_confidence():
+    text = _format_context([_BASE_CHUNK])
+    assert "authority=high" in text
+    assert "confidence=high" in text  # rerank_score=0.62 -> "high" per _derive_confidence_label
+
+
+def test_authority_omitted_when_not_set():
+    chunk = {**_BASE_CHUNK, "authority": None}
+    text = _format_context([chunk])
+    assert "authority=" not in text
+
+
+def test_confidence_omitted_when_abstain():
+    """rerank_score=None derives to "abstain" -- not useful signal, must
+    not clutter every chunk's header with a label that just says
+    "unknown"."""
+    chunk = {**_BASE_CHUNK, "rerank_score": None}
+    text = _format_context([chunk])
+    assert "confidence=" not in text
+
+
+def test_low_authority_chunk_labeled_accordingly_not_hidden():
+    """The point isn't to only flag high-authority chunks -- a
+    low/medium-authority chunk should say so too, so the model can weigh
+    it down relative to a contract_source_of_truth chunk in the same
+    result set, not just silently trust everything uniformly."""
+    chunk = {**_BASE_CHUNK, "authority": "low", "rerank_score": 0.2}
+    text = _format_context([chunk])
+    assert "authority=low" in text
+    assert "confidence=low" in text
+
+
+def test_fact_store_chunk_does_not_get_redundant_tier_tag():
+    """Fact-store chunks already carry the CERTIFIED ANSWER header +
+    trust note -- an additional bracketed authority/confidence tag would
+    be redundant noise on top of an already-maximally-trusted signal."""
+    fact_store_chunk = {**_BASE_CHUNK, "filler_strategy": "fact_store", "text": "68069", "document_name": "fact_ab4"}
+    text = _format_context([fact_store_chunk])
+    assert "authority=" not in text
+    assert "confidence=" not in text
+
+
+def test_authority_and_confidence_survive_end_to_end_through_run():
+    env = _run_with_response("q", {"chunks": [_BASE_CHUNK]})
+    assert "authority=high" in env.text
+    assert "confidence=high" in env.text
