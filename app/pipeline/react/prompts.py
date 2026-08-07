@@ -765,6 +765,15 @@ def build_reasoning_context(
         if guidance:
             parts.append(guidance)
 
+    # Anchor the model on the current user question FIRST — before context,
+    # tool results, and prior turns. With 14k+ token system prompts, gemini-flash
+    # tends to anchor on the most-recent token cluster, which at round 1 is the
+    # tail of the manifest. Placing the question early ensures it's the primary
+    # signal the model reasons against.
+    _q_early = (getattr(ctx, "effective_message", None) or ctx.message or "").strip()
+    if _q_early:
+        parts.append(f"Current user question: {_q_early}")
+
     active = (ctx.merged_state or {}).get("active") or {}
     j = jurisdiction_summary(active)
     if j:
