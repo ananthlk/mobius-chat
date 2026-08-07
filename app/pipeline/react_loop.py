@@ -3254,10 +3254,8 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         )
 
         decision = _parse_react_decision_json(decision_raw)
+
         if decision is None:
-            preview = (decision_raw or "")[:320].replace("\n", " ")
-            logger.warning("ReAct parse failure (stage=%s): %s", f"react_{rn}", preview)
-            emit("  Could not parse model decision — stopping.")
             # Parse-failure prose fallback: the LLM produced plain prose
             # instead of JSON. Trust it as a synthesised final answer ONLY
             # on a guidance round (round >= 80% of max) — model synthesising
@@ -3292,6 +3290,65 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 and len(raw_prose) >= 40
                 and not _TOOL_CALL_RE.search(raw_prose)
             )
+
+            # 2026-08-07 (Chat Master, live-query finding — Ananth's
+            # screenshot, cid 50fda638): a parse failure on a NON-guidance
+            # round used to fall straight to the last-tool-output fallback
+            # below, even when the tool's raw result was machine JSON never
+            # meant for a user (e.g. appeals_validate_claim's {"raw_text":
+            # "...", "rules_validated": 4}) -- confirmed live: round 7 of 10
+            # wrote a genuinely good, complete prose answer that just wasn't
+            # JSON-wrapped, but wasn't a guidance round yet, so the prose
+            # fallback below didn't trust it either, and the raw
+            # validate-claim JSON blob shipped as the user-facing answer
+            # (score 0.50, degraded card).
+            #
+            # Gated on NOT already being the guidance-round-trusted-prose
+            # case: when it IS that case, retrying would just burn an LLM
+            # call for a response we were already going to accept unchanged
+            # (confirmed regression risk: test_react_parse_fallback.py's
+            # copilot round-3 case, where guidance-round prose must ship
+            # byte-for-byte identical to before this fix). The retry exists
+            # for the case that check does NOT cover.
+            if not (_prose_looks_like_answer and is_guidance_round(iteration, max_it)):
+                preview = raw_prose[:320].replace("\n", " ")
+                logger.warning("ReAct parse failure (stage=%s): %s", f"react_{rn}", preview)
+                emit("  Could not parse model decision — retrying with format correction…")
+                _retry_context = (
+                    reasoning_context
+                    + "\n\n---\nYOUR PREVIOUS RESPONSE COULD NOT BE PARSED AS JSON. "
+                    "Respond with ONLY a single valid JSON object matching the schema above "
+                    "— no prose before or after the JSON, no markdown code fences. If you "
+                    "were about to give your final answer, put that exact content in the "
+                    "\"answer\" field of the final-answer shape (is_complete=true, tool=null)."
+                )
+                decision_raw_retry = _call_llm_json(
+                    reasoning_system, _retry_context, ctx=ctx, stage=f"react_{rn}_retry",
+                    composition_id=_reasoning_composition_id, composition_hash=_reasoning_composition_hash,
+                    reasoning_depth=_bandit_reasoning_depth, latency_budget_ms=_bandit_latency_budget_ms,
+                )
+                decision = _parse_react_decision_json(decision_raw_retry)
+                # Always adopt the retry's text, success or not -- it's the
+                # more recent, "final" attempt. If it also failed, re-derive
+                # the prose-fallback signal from what the model just wrote
+                # (its second try), not the stale first attempt.
+                decision_raw = decision_raw_retry
+                if decision is not None:
+                    emit("  Format-correction retry succeeded.")
+                else:
+                    logger.warning(
+                        "ReAct parse failure PERSISTED after retry (stage=%s): %s",
+                        f"react_{rn}", (decision_raw or "")[:320].replace("\n", " "),
+                    )
+                    raw_prose = (decision_raw or "").strip()
+                    _prose_looks_like_answer = (
+                        raw_prose
+                        and len(raw_prose) >= 40
+                        and not _TOOL_CALL_RE.search(raw_prose)
+                    )
+
+        if decision is None:
+            emit("  Could not parse model decision — stopping.")
             if _prose_looks_like_answer and is_guidance_round(iteration, max_it):
                 logger.info(
                     "[parse-fallback] guidance round %d prose answer len=%d (cid=%s)",
@@ -3321,20 +3378,34 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 last_tr = best_tr
                 last_res = (last_tr.get("result") or "").strip()
                 last_sum = (last_tr.get("result_summary") or "").strip()
-                usable = last_res if len(last_res) >= 40 else last_sum
+                # 2026-08-07 (Chat Master, cid 50fda638 finding): several
+                # tools (appeals_validate_claim, appeals_find_carc,
+                # appeals_get_playbook, lookup_authoritative_sources) return
+                # "result" as _json.dumps(...) -- machine JSON meant for the
+                # integrator to interpret, never meant to be shown to a user
+                # directly. Confirmed live: appeals_validate_claim's raw
+                # {"raw_text": "...", "rules_validated": 4} shipped as the
+                # user-facing answer when this fallback fired. A result_summary
+                # (human prose) is still safe to use raw; the JSON-shaped
+                # "result" is not -- skip this fallback for it entirely
+                # rather than guess at a repair, so it falls through to the
+                # honest-escalate path below instead of showing raw JSON.
+                _res_is_raw_json = bool(last_res) and last_res[:1] in ("{", "[") and not last_sum
+                last_res_for_fallback = "" if _res_is_raw_json else last_res
+                usable = last_res_for_fallback if len(last_res_for_fallback) >= 40 else last_sum
                 if usable and (len(usable) >= 40 or (last_sum and last_tr.get("success"))):
                     emit("  Using the last tool output as the answer.")
                     lt_sig = final_signal
                     if last_tr.get("success"):
-                        body = last_res
-                        if last_sum and last_res and len(last_res) > len(last_sum) + 80:
-                            body = compose_mobius_tool_envelope(last_sum, last_res)
+                        body = last_res_for_fallback
+                        if last_sum and last_res_for_fallback and len(last_res_for_fallback) > len(last_sum) + 80:
+                            body = compose_mobius_tool_envelope(last_sum, last_res_for_fallback)
                         _finalize_response(ctx, body, all_sources, lt_sig, last_tr.get("tool") or last_tool, emitter)
                     else:
                         # Short failures (e.g. "No URL") still beat a generic escalate.
                         _finalize_response(
                             ctx,
-                            last_res or last_sum,
+                            last_res_for_fallback or last_sum,
                             all_sources,
                             RETRIEVAL_SIGNAL_NO_SOURCES,
                             last_tr.get("tool") or last_tool,
