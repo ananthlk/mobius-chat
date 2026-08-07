@@ -26,7 +26,6 @@ from app.pipeline.context import PipelineContext
 from app.pipeline.react_loop import (
     _FAST_MODE_MIN_CHARS,
     _FAST_MODE_MIN_CHUNKS,
-    _FAST_MODE_MIN_SCORE,
     _all_chunk_stats,
     _build_fast_mode_hedge,
     run_react,
@@ -97,6 +96,24 @@ class TestRichEvidenceKeepsCurrentBehavior:
         assert ctx.final_message == _RICH_CHUNKS.strip()
         assert getattr(ctx, "react_unfinished_reason", None) is None
 
+    def test_rich_chunk_count_and_chars_ship_directly_even_with_zero_score(self):
+        """2026-08-07 (Ananth, directly, live finding): score no longer
+        gates the early-exit. A 15-chunk, 11,685-char turn with
+        top_score=0.00 (rerank_score simply not populated for those
+        chunks) is substantial evidence regardless -- must ship
+        directly, not fall into the hedge. This was the exact live
+        regression: fast mode hedged while agentic mode, given the SAME
+        evidence, produced a fuller answer."""
+        ctx = _run_fast_mode(_RICH_CHUNKS, [{"rerank_score": None}, {"rerank_score": None}])
+        assert ctx.final_message == _RICH_CHUNKS.strip()
+        assert getattr(ctx, "react_unfinished_reason", None) is None
+
+    def test_rich_chunk_count_and_chars_ship_directly_with_no_sources_at_all(self):
+        """Same case, but sources=[] entirely (not just unscored) --
+        max(..., default=0.0) must not accidentally read as "thin"."""
+        ctx = _run_fast_mode(_RICH_CHUNKS, [])
+        assert ctx.final_message == _RICH_CHUNKS.strip()
+
 
 class TestThinEvidenceGetsHonestHedge:
     def test_thin_chunk_count_triggers_hedge(self):
@@ -105,11 +122,6 @@ class TestThinEvidenceGetsHonestHedge:
         assert ctx.final_message != _THIN_CHUNKS
         assert "Found 2 relevant passage" in ctx.final_message
         assert "Think mode" in ctx.final_message
-
-    def test_thin_score_triggers_hedge_even_with_enough_chunks_and_chars(self):
-        """Rich chunk count/chars but low relevance score -- must still hedge."""
-        ctx = _run_fast_mode(_RICH_CHUNKS, [{"rerank_score": 0.1}, {"rerank_score": 0.05}])
-        assert "Found 3 relevant passage" in ctx.final_message
 
     def test_hedge_path_sets_no_path_forward_for_suggest_escalate(self):
         """Reuses the EXISTING suggest_escalate signal (integrate.py reads
@@ -128,10 +140,11 @@ class TestThinEvidenceGetsHonestHedge:
 
 
 class TestThresholdConstantsAreTheApprovedShape:
-    def test_all_three_signals_exist(self):
+    def test_count_and_chars_thresholds_exist(self):
+        """Score is deliberately NOT among these anymore -- decoupled
+        2026-08-07 after the live zero-score false positive."""
         assert _FAST_MODE_MIN_CHUNKS >= 1
         assert _FAST_MODE_MIN_CHARS >= 1
-        assert 0.0 < _FAST_MODE_MIN_SCORE < 1.0
 
 
 class TestNonChunkedToolResultsBypassTheHedge:

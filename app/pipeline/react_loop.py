@@ -307,13 +307,19 @@ def _all_chunk_stats(raw: str) -> tuple[int, int]:
 # neither branch below adds a full reasoning round, so latency is
 # unchanged either way; (2) never fabricate -- thin evidence gets an
 # honest, code-constructed hedge instead of a confident-looking raw dump.
-# All three signals must pass for the rich-evidence (current, unchanged)
-# path; failing any one routes to the hedge. _FAST_MODE_MIN_SCORE reuses
-# corpus_search.py's _derive_confidence_label "medium" cutoff (0.35) --
-# an already-calibrated threshold in this codebase, not a new guess.
+# Both count and chars must pass for the rich-evidence (current,
+# unchanged) path; failing either routes to the hedge.
+#
+# _FAST_MODE_MIN_SCORE removed from the gate 2026-08-07 (Ananth, directly,
+# live finding): it used to be AND'd in alongside count/chars -- a 15-chunk,
+# 11,685-char turn (well past both volume thresholds) still fell into the
+# hedge path because rerank_score wasn't populated for those chunks
+# (top_score computed as 0.00). Zero score isn't the same as thin evidence;
+# a substantial corpus is substantial regardless of whether a score field
+# happens to be populated. Score is still computed and logged for
+# diagnostics on both paths, just no longer decides the branch.
 _FAST_MODE_MIN_CHUNKS = 3
 _FAST_MODE_MIN_CHARS = 500
-_FAST_MODE_MIN_SCORE = 0.35
 
 
 def _build_fast_mode_hedge(raw: str, chunk_count: int) -> str:
@@ -4302,10 +4308,23 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 (float(s.get("rerank_score") or 0.0) for s in _sources_for_score),
                 default=0.0,
             )
+            # 2026-08-07 (Ananth, directly, live finding): score used to
+            # be AND'd into the gate alongside chunk count/chars -- a
+            # turn with 15 chunks / 11,685 chars (well past both
+            # thresholds) still fell into the hedge path because
+            # rerank_score wasn't populated for those chunks (top_score
+            # computed as 0.00, well under _FAST_MODE_MIN_SCORE). Zero
+            # score is not the same as thin evidence -- a 15-chunk corpus
+            # is substantial regardless of whether a score field happens
+            # to be populated, and agentic mode on the SAME evidence gave
+            # a fuller answer, confirming the volume was genuinely there.
+            # Score no longer gates the early-exit decision at all; only
+            # count/chars (the actual "is there enough here" question)
+            # decide it now. _top_score is still computed and logged
+            # below for diagnostics on both paths.
             _rich_evidence = (
                 _chunk_count >= _FAST_MODE_MIN_CHUNKS
                 and _total_chars >= _FAST_MODE_MIN_CHARS
-                and _top_score >= _FAST_MODE_MIN_SCORE
             )
             if _rich_evidence:
                 emit("  ⚡ Fast mode: using first corpus answer.")
