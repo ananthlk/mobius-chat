@@ -2043,18 +2043,39 @@ def _execute_tool(
                         pb = {"message": f"No playbook for {payor}. Default FL Medicaid: 60 days, certified mail."}
                         found = False
                 result_data = {"found": found, **pb}
-                if found:
-                    days = pb.get("deadline_appeal_days","?")
-                    method = pb.get("submission_method","")
-                    emit(f"✓ {payor} playbook: {days}d deadline · {method}")
+                # 2026-08-07 (Ananth, directly, live-query finding): this used
+                # to report success=True + signal=None whenever the HTTP call
+                # succeeded, even when the fetched playbook had neither a
+                # deadline nor a submission method -- indistinguishable from a
+                # real hit to ReactRetryGuard._is_zero_result (only fires on
+                # signal=="no_sources"), so consecutive_failures_per_tool never
+                # incremented and the tool-exhaustion block never fired.
+                # Confirmed live: 7 consecutive appeals_get_playbook calls, all
+                # "found" but content-empty ("?d deadline · "), burned rounds
+                # 2-9 of a 10-round budget with zero loop-detection -- the
+                # retry-guard machinery that should have caught this already
+                # exists, it just never saw a failure signal. Mirrors
+                # appeals_find_carc's existing pattern (n>0 -> None else
+                # RETRIEVAL_SIGNAL_NO_SOURCES) immediately above -- this
+                # handler had just never adopted it.
+                days = pb.get("deadline_appeal_days") if found else None
+                method = (pb.get("submission_method") or "").strip() if found else ""
+                usable = found and (days is not None or bool(method))
+                if usable:
+                    emit(f"✓ {payor} playbook: {days if days is not None else '?'}d deadline · {method}")
+                elif found:
+                    emit(f"⚠ {payor} playbook found but has no deadline/method data")
                 else:
                     emit(f"✓ No playbook for {payor} — using FL defaults")
                 return {
                     "tool": tool, "success": found,
                     "result": _json.dumps(result_data),
-                    "signal": None,
+                    "signal": None if usable else RETRIEVAL_SIGNAL_NO_SOURCES,
                     "sources": [],
-                    "section_hint": {"section_format": "appeals_playbook", "label": "Appeal playbook", "data": result_data},
+                    "section_hint": (
+                        {"section_format": "appeals_playbook", "label": "Appeal playbook", "data": result_data}
+                        if usable else None
+                    ),
                 }
 
             if tool == "appeals_validate_claim":
