@@ -3462,6 +3462,210 @@ body {
   .ac-fmt-condition-then { justify-self: start; }
 }
 
+/* ─── Appeals typed sections (appeals_rules / appeals_playbook) ─────────────────
+   Rendered from Appeals Agent pre_built_sections. The appeal_argument is the field the
+   coordinator acts on — it gets the violet highlight; everything else is supporting detail. */
+.ac-appeals-rules, .ac-appeals-playbook {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0.25rem 0 0.5rem;
+}
+.ac-appeals-head, .ac-appeals-playbook-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.15rem;
+}
+.ac-appeals-carc, .ac-appeals-playbook-payor {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #fff;
+  background: var(--mobius-violet, #7c3aed);
+  padding: 0.11rem 0.42rem;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.ac-appeals-carc-title, .ac-appeals-playbook-group {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-primary, #111827);
+}
+.ac-appeals-archetype {
+  font-size: 0.6rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--mobius-violet, #7c3aed);
+  background: rgba(124, 58, 237, 0.08);
+  border: 1px solid rgba(124, 58, 237, 0.25);
+  padding: 0.08rem 0.4rem;
+  border-radius: 10px;
+}
+.ac-appeals-empty, .ac-appeals-playbook-empty {
+  font-size: 0.78rem;
+  font-style: italic;
+  color: var(--text-tertiary, #9ca3af);
+  padding: 0.3rem 0;
+}
+
+/* Rule row — collapsed summary + expandable body */
+.ac-appeals-rule {
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 6px;
+  background: rgba(0,0,0,0.012);
+  overflow: hidden;
+}
+.ac-appeals-rule-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.4rem 0.55rem;
+  cursor: pointer;
+  list-style: none;
+  font-size: 0.78rem;
+}
+.ac-appeals-rule-summary::-webkit-details-marker { display: none; }
+.ac-appeals-rule-summary::before {
+  content: "▸";
+  color: var(--text-tertiary, #9ca3af);
+  font-size: 0.7rem;
+  transition: transform 0.12s ease;
+}
+.ac-appeals-rule[open] > .ac-appeals-rule-summary::before { transform: rotate(90deg); }
+.ac-appeals-rule-id {
+  font-size: 0.6rem;
+  font-weight: 700;
+  font-family: var(--mono, ui-monospace, monospace);
+  color: var(--text-secondary, #6b7280);
+  background: rgba(0,0,0,0.05);
+  padding: 0.05rem 0.32rem;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.ac-appeals-rule-name {
+  font-weight: 600;
+  color: var(--text-primary, #111827);
+  white-space: nowrap;
+}
+.ac-appeals-rule-trigger-brief {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-tertiary, #9ca3af);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ac-appeals-rule[open] > .ac-appeals-rule-summary .ac-appeals-rule-trigger-brief { display: none; }
+.ac-appeals-rule-body {
+  padding: 0.15rem 0.6rem 0.55rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+.ac-appeals-field { display: flex; flex-direction: column; gap: 0.15rem; }
+.ac-appeals-field-label, .ac-appeals-argument-label, .ac-appeals-authority-label,
+.ac-appeals-docs-label, .ac-appeals-levels-label {
+  align-self: flex-start;
+  font-size: 0.58rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-tertiary, #9ca3af);
+}
+.ac-appeals-field-value { color: var(--text-secondary, #374151); }
+
+/* appeal_argument — THE key field. Violet left-rail + tint, quietly emphatic. */
+.ac-appeals-argument {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.4rem 0.55rem;
+  border-radius: 5px;
+  background: rgba(124, 58, 237, 0.07);
+  border-left: 3px solid var(--mobius-violet, #7c3aed);
+}
+.ac-appeals-argument-label { color: var(--mobius-violet, #7c3aed); }
+.ac-appeals-argument-value {
+  font-weight: 550;
+  color: var(--text-primary, #111827);
+}
+.ac-appeals-statement {
+  font-size: 0.73rem;
+  color: var(--text-tertiary, #9ca3af);
+  font-style: italic;
+  padding-left: 0.55rem;
+  border-left: 2px solid var(--border, #e5e7eb);
+}
+.ac-appeals-requires { margin: 0; padding-left: 1.05rem; color: var(--text-secondary, #374151); }
+.ac-appeals-requires li { margin: 0.05rem 0; }
+.ac-appeals-authority { display: flex; align-items: baseline; gap: 0.35rem; flex-wrap: wrap; }
+.ac-appeals-authority-value { font-size: 0.73rem; color: var(--text-secondary, #6b7280); }
+.ac-appeals-variants { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.ac-appeals-variant-pill {
+  font-size: 0.66rem;
+  color: var(--text-secondary, #4b5563);
+  background: rgba(0,0,0,0.04);
+  border: 1px solid var(--border, #e5e7eb);
+  padding: 0.08rem 0.42rem;
+  border-radius: 10px;
+}
+
+/* Playbook */
+.ac-appeals-playbook-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+.ac-appeals-deadline {
+  font-size: 0.66rem;
+  font-weight: 700;
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.13);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  padding: 0.1rem 0.45rem;
+  border-radius: 4px;
+}
+.ac-appeals-method {
+  font-size: 0.7rem;
+  color: var(--text-secondary, #4b5563);
+  background: rgba(0,0,0,0.04);
+  padding: 0.1rem 0.45rem;
+  border-radius: 4px;
+}
+.ac-appeals-portal {
+  font-size: 0.73rem;
+  font-weight: 600;
+  color: var(--mobius-violet, #7c3aed);
+  text-decoration: none;
+}
+.ac-appeals-portal:hover { text-decoration: underline; }
+.ac-appeals-docs, .ac-appeals-levels { display: flex; flex-direction: column; gap: 0.2rem; margin-top: 0.15rem; }
+.ac-appeals-docs-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.12rem; }
+.ac-appeals-doc { display: flex; align-items: baseline; gap: 0.4rem; font-size: 0.76rem; }
+.ac-appeals-doc-mark { font-size: 0.55rem; }
+.ac-appeals-doc--required .ac-appeals-doc-mark { color: var(--mobius-violet, #7c3aed); }
+.ac-appeals-doc--optional { color: var(--text-tertiary, #9ca3af); }
+.ac-appeals-doc--optional .ac-appeals-doc-mark { color: var(--text-tertiary, #9ca3af); }
+.ac-appeals-levels-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.ac-appeals-level { display: flex; align-items: baseline; gap: 0.4rem; font-size: 0.76rem; }
+.ac-appeals-level-name { font-weight: 600; color: var(--text-primary, #111827); }
+.ac-appeals-level-deadline {
+  font-size: 0.6rem;
+  font-weight: 700;
+  color: var(--text-tertiary, #9ca3af);
+  background: rgba(0,0,0,0.04);
+  padding: 0.03rem 0.3rem;
+  border-radius: 3px;
+}
+
 /* ─── Citations (Details tab) ───────────────────────────────────────────────── */
 .ac-citations-list {
   display: flex;

@@ -14,7 +14,46 @@ export function isSectionIntent(s: unknown): s is SectionIntent {
 }
 
 /** AnswerCard JSON from consolidator (legacy FACTUAL/CANONICAL/BLENDED + RECITAL; v2 = no mode) */
-export type SectionFormat = "bullets" | "table" | "steps" | "stats" | "bars" | "conditions";
+export type SectionFormat =
+  | "bullets" | "table" | "steps" | "stats" | "bars" | "conditions"
+  // Appeals Agent typed sections (2026-08-06). Emitted as pre_built_sections from the
+  // appeals_lookup_rules / appeals_get_playbook MCP tools; copied verbatim into sections[]
+  // by the integrator. `data` is the tool output as-is — see AppealsRulesData/AppealsPlaybookData.
+  | "appeals_rules" | "appeals_playbook";
+
+/** data payload for a `format: "appeals_rules"` section — appeals_lookup_rules output, verbatim. */
+export interface AppealsRuleVariant { payor?: string; note?: string }
+export interface AppealsRule {
+  rule_id?: string;
+  rule_name?: string;
+  rule_statement?: string;
+  triggers_when?: string;
+  appeal_argument?: string;   // the assertion to make in the letter — the highlighted key field
+  requires?: string[];
+  authority_notes?: string;
+  payor_variants?: Array<AppealsRuleVariant | string>;
+}
+export interface AppealsRulesData {
+  carc?: string;
+  carc_title?: string;
+  archetype?: string;
+  rules_found?: number;
+  rules?: AppealsRule[];
+}
+/** data payload for a `format: "appeals_playbook"` section — appeals_get_playbook output, verbatim. */
+export interface AppealsPlaybookDoc { doc?: string; required?: boolean }
+export interface AppealsPlaybookLevel { level?: number | string; name?: string; deadline_days?: number }
+export interface AppealsPlaybookData {
+  found?: boolean;
+  message?: string;           // shown when found === false (no empty card)
+  payor?: string;
+  carc_group?: string;
+  deadline_appeal_days?: number;
+  submission_method?: string;
+  portal_url?: string;
+  docs_required?: AppealsPlaybookDoc[];
+  appeal_levels?: AppealsPlaybookLevel[];
+}
 export interface SectionDataItem {
   label?: string;
   value?: string;
@@ -139,7 +178,7 @@ export function tryParseAnswerCard(message: string): AnswerCard | null {
       // sections default to [] when absent — a v2 summary-only card is valid (anchored on direct_answer).
       const rawSections = Array.isArray(data.sections)
         ? (data.sections as Array<Record<string, unknown>>).slice(0, MAX_SECTIONS) : [];
-      const VALID_FORMATS: SectionFormat[] = ["bullets", "table", "steps", "stats", "bars", "conditions"];
+      const VALID_FORMATS: SectionFormat[] = ["bullets", "table", "steps", "stats", "bars", "conditions", "appeals_rules", "appeals_playbook"];
       const sections: AnswerCardSection[] = rawSections.map((sec) => ({
         intent: isSectionIntent(sec.intent) ? sec.intent as SectionIntent : "process",
         label: typeof sec.label === "string" ? sec.label : "",

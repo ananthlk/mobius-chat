@@ -4,7 +4,10 @@
 // app-state dependency (opening the task dialog) is INJECTED via opts.onCreateTask — no
 // reach-back into app.ts. See docs/bubble-backend-contract.md (the FE half of the pair).
 
-import type { AnswerCard, AnswerCardSection } from "../answer-card";
+import type {
+  AnswerCard, AnswerCardSection,
+  AppealsRulesData, AppealsRule, AppealsPlaybookData,
+} from "../answer-card";
 import { splitSectionsByVisibility } from "../answer-card";
 import { TAB_ORDER, type TabKey } from "../card-render-model";
 import {
@@ -142,6 +145,16 @@ function _renderSectionBody(sec: AnswerCardSection, body: HTMLElement): void {
     return;
   }
 
+  if (fmt === "appeals_rules") {
+    _renderAppealsRules(sec, body);
+    return;
+  }
+
+  if (fmt === "appeals_playbook") {
+    _renderAppealsPlaybook(sec, body);
+    return;
+  }
+
   // Default: bullets
   const bullets = (sec.bullets ?? []).slice(0, MAX_BULLETS_PER_SECTION);
   bullets.forEach((b) => {
@@ -157,6 +170,254 @@ function _renderSectionBody(sec: AnswerCardSection, body: HTMLElement): void {
     more.setAttribute("aria-label", "Show more bullets");
     body.appendChild(more);
   }
+}
+
+// ── Appeals typed sections (Appeals Agent, 2026-08-06) ──────────────────────────────
+// Rendered from pre_built_sections emitted by appeals_lookup_rules / appeals_get_playbook.
+// `sec.data` is the tool output verbatim; SectionData's type is too narrow for it, so we
+// re-cast through unknown to the appeals shapes. All text goes in via textContent (never
+// innerHTML) — appeals data is model/tool-authored and must not be trusted as markup.
+
+function _chip(text: string, cls: string): HTMLElement {
+  const el = document.createElement("span");
+  el.className = cls;
+  el.textContent = text;
+  return el;
+}
+
+function _renderAppealsRules(sec: AnswerCardSection, body: HTMLElement): void {
+  const data = (sec.data as unknown as AppealsRulesData) ?? {};
+  const wrap = document.createElement("div");
+  wrap.className = "ac-appeals-rules";
+
+  // Header: CARC badge + title + archetype chip.
+  if (data.carc || data.carc_title || data.archetype) {
+    const head = document.createElement("div");
+    head.className = "ac-appeals-head";
+    if (data.carc) head.appendChild(_chip(`CARC ${data.carc}`, "ac-appeals-carc"));
+    if (data.carc_title) {
+      const t = document.createElement("span");
+      t.className = "ac-appeals-carc-title";
+      t.textContent = data.carc_title;
+      head.appendChild(t);
+    }
+    if (data.archetype) head.appendChild(_chip(data.archetype, "ac-appeals-archetype"));
+    wrap.appendChild(head);
+  }
+
+  const rules = Array.isArray(data.rules) ? data.rules : [];
+  if (rules.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "ac-appeals-empty";
+    empty.textContent = "No appeal rules on file for this CARC.";
+    wrap.appendChild(empty);
+    body.appendChild(wrap);
+    return;
+  }
+
+  rules.forEach((rule: AppealsRule) => {
+    const det = document.createElement("details");
+    det.className = "ac-appeals-rule";
+
+    // Collapsed row: rule_id chip | rule_name | triggers_when (1 line, truncated by CSS).
+    const sum = document.createElement("summary");
+    sum.className = "ac-appeals-rule-summary";
+    if (rule.rule_id) sum.appendChild(_chip(rule.rule_id, "ac-appeals-rule-id"));
+    const name = document.createElement("span");
+    name.className = "ac-appeals-rule-name";
+    name.textContent = rule.rule_name || "Appeal rule";
+    sum.appendChild(name);
+    if (rule.triggers_when) {
+      const trig = document.createElement("span");
+      trig.className = "ac-appeals-rule-trigger-brief";
+      trig.textContent = rule.triggers_when;
+      sum.appendChild(trig);
+    }
+    det.appendChild(sum);
+
+    // Expanded body.
+    const expand = document.createElement("div");
+    expand.className = "ac-appeals-rule-body";
+
+    if (rule.triggers_when) {
+      const row = document.createElement("div");
+      row.className = "ac-appeals-field ac-appeals-field--trigger";
+      const lbl = _chip("Applies when", "ac-appeals-field-label");
+      const val = document.createElement("div");
+      val.className = "ac-appeals-field-value";
+      val.textContent = rule.triggers_when;
+      row.appendChild(lbl); row.appendChild(val);
+      expand.appendChild(row);
+    }
+
+    // appeal_argument — the assertion to make in the letter. THE key field: highlighted.
+    if (rule.appeal_argument) {
+      const arg = document.createElement("div");
+      arg.className = "ac-appeals-argument";
+      const lbl = _chip("Appeal argument", "ac-appeals-argument-label");
+      const val = document.createElement("div");
+      val.className = "ac-appeals-argument-value";
+      val.textContent = rule.appeal_argument;
+      arg.appendChild(lbl); arg.appendChild(val);
+      expand.appendChild(arg);
+    }
+
+    // rule_statement — secondary legal principle, muted, below the argument.
+    if (rule.rule_statement) {
+      const st = document.createElement("div");
+      st.className = "ac-appeals-statement";
+      st.textContent = rule.rule_statement;
+      expand.appendChild(st);
+    }
+
+    // requires list.
+    const requires = Array.isArray(rule.requires) ? rule.requires : [];
+    if (requires.length) {
+      const row = document.createElement("div");
+      row.className = "ac-appeals-field ac-appeals-field--requires";
+      row.appendChild(_chip("Requires", "ac-appeals-field-label"));
+      const ul = document.createElement("ul");
+      ul.className = "ac-appeals-requires";
+      requires.forEach((r) => {
+        const li = document.createElement("li");
+        li.textContent = r;
+        ul.appendChild(li);
+      });
+      row.appendChild(ul);
+      expand.appendChild(row);
+    }
+
+    // authority tag.
+    if (rule.authority_notes) {
+      const auth = document.createElement("div");
+      auth.className = "ac-appeals-authority";
+      auth.appendChild(_chip("Authority", "ac-appeals-authority-label"));
+      const val = document.createElement("span");
+      val.className = "ac-appeals-authority-value";
+      val.textContent = rule.authority_notes;
+      auth.appendChild(val);
+      expand.appendChild(auth);
+    }
+
+    // payor variant pills.
+    const variants = Array.isArray(rule.payor_variants) ? rule.payor_variants : [];
+    if (variants.length) {
+      const pills = document.createElement("div");
+      pills.className = "ac-appeals-variants";
+      variants.forEach((v) => {
+        const label = typeof v === "string"
+          ? v
+          : [v.payor, v.note].filter(Boolean).join(" — ");
+        if (label) pills.appendChild(_chip(label, "ac-appeals-variant-pill"));
+      });
+      if (pills.childElementCount) expand.appendChild(pills);
+    }
+
+    det.appendChild(expand);
+    wrap.appendChild(det);
+  });
+
+  body.appendChild(wrap);
+}
+
+function _renderAppealsPlaybook(sec: AnswerCardSection, body: HTMLElement): void {
+  const data = (sec.data as unknown as AppealsPlaybookData) ?? {};
+  const wrap = document.createElement("div");
+  wrap.className = "ac-appeals-playbook";
+
+  // No playbook on file → soft empty state, not an empty card.
+  if (data.found === false) {
+    const empty = document.createElement("div");
+    empty.className = "ac-appeals-playbook-empty";
+    empty.textContent = data.message || "No appeal playbook on file for this payor.";
+    wrap.appendChild(empty);
+    body.appendChild(wrap);
+    return;
+  }
+
+  // Header line: payor + carc_group.
+  if (data.payor || data.carc_group) {
+    const head = document.createElement("div");
+    head.className = "ac-appeals-playbook-head";
+    if (data.payor) head.appendChild(_chip(data.payor, "ac-appeals-playbook-payor"));
+    if (data.carc_group) {
+      const g = document.createElement("span");
+      g.className = "ac-appeals-playbook-group";
+      g.textContent = data.carc_group;
+      head.appendChild(g);
+    }
+    wrap.appendChild(head);
+  }
+
+  // Meta row: deadline badge · submission method · portal link.
+  const meta = document.createElement("div");
+  meta.className = "ac-appeals-playbook-meta";
+  if (typeof data.deadline_appeal_days === "number") {
+    meta.appendChild(_chip(`${data.deadline_appeal_days}-day deadline`, "ac-appeals-deadline"));
+  }
+  if (data.submission_method) {
+    meta.appendChild(_chip(data.submission_method, "ac-appeals-method"));
+  }
+  if (data.portal_url) {
+    const a = document.createElement("a");
+    a.className = "ac-appeals-portal";
+    a.href = data.portal_url;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.textContent = "Submission portal";
+    meta.appendChild(a);
+  }
+  if (meta.childElementCount) wrap.appendChild(meta);
+
+  // Docs checklist (required vs optional).
+  const docs = Array.isArray(data.docs_required) ? data.docs_required : [];
+  if (docs.length) {
+    const dl = document.createElement("div");
+    dl.className = "ac-appeals-docs";
+    dl.appendChild(_chip("Documents", "ac-appeals-docs-label"));
+    const ul = document.createElement("ul");
+    ul.className = "ac-appeals-docs-list";
+    docs.forEach((d) => {
+      const li = document.createElement("li");
+      li.className = d.required === false ? "ac-appeals-doc ac-appeals-doc--optional" : "ac-appeals-doc ac-appeals-doc--required";
+      const mark = document.createElement("span");
+      mark.className = "ac-appeals-doc-mark";
+      mark.textContent = d.required === false ? "○" : "●";
+      const txt = document.createElement("span");
+      txt.className = "ac-appeals-doc-text";
+      txt.textContent = (d.doc || "") + (d.required === false ? " (optional)" : "");
+      li.appendChild(mark); li.appendChild(txt);
+      ul.appendChild(li);
+    });
+    dl.appendChild(ul);
+    wrap.appendChild(dl);
+  }
+
+  // Appeal levels ladder.
+  const levels = Array.isArray(data.appeal_levels) ? data.appeal_levels : [];
+  if (levels.length) {
+    const ladder = document.createElement("div");
+    ladder.className = "ac-appeals-levels";
+    ladder.appendChild(_chip("Appeal levels", "ac-appeals-levels-label"));
+    const ol = document.createElement("ol");
+    ol.className = "ac-appeals-levels-list";
+    levels.forEach((lv) => {
+      const li = document.createElement("li");
+      li.className = "ac-appeals-level";
+      const name = document.createElement("span");
+      name.className = "ac-appeals-level-name";
+      name.textContent = lv.name || (lv.level != null ? `Level ${lv.level}` : "Level");
+      li.appendChild(name);
+      if (typeof lv.deadline_days === "number") {
+        li.appendChild(_chip(`${lv.deadline_days}d`, "ac-appeals-level-deadline"));
+      }
+      ol.appendChild(li);
+    });
+    ladder.appendChild(ol);
+    wrap.appendChild(ladder);
+  }
+
+  body.appendChild(wrap);
 }
 
 function renderOneSection(sec: AnswerCardSection): HTMLElement {

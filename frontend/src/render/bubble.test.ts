@@ -68,6 +68,92 @@ describe("renderAnswerCard — DOM output (§1.4 tabbed bubble + §1.2 visibilit
   });
 });
 
+describe("Appeals typed sections (appeals_rules / appeals_playbook)", () => {
+  const appealsCard: AnswerCard = {
+    direct_answer: "Here's the appeal path for CARC 197.",
+    sections: [
+      {
+        label: "Appeal rules", visibility: "primary", format: "appeals_rules", bullets: [],
+        // data is passed verbatim from the tool — shape is AppealsRulesData, not SectionData.
+        data: {
+          carc: "197", carc_title: "Precert absent", archetype: "authorization",
+          rules_found: 1,
+          rules: [{
+            rule_id: "R-197-a", rule_name: "Retro-auth window",
+            rule_statement: "Plans must honor retro-auth within 30 days.",
+            triggers_when: "Service was medically urgent and auth was obtained within 30 days.",
+            appeal_argument: "Auth was obtained retroactively within the plan's 30-day window; deny is improper.",
+            requires: ["Auth confirmation", "Urgency note"],
+            authority_notes: "FL 59G-1.010",
+            payor_variants: [{ payor: "Sunshine", note: "14-day window" }, "Humana"],
+          }],
+        } as unknown as AnswerCard["sections"][number]["data"],
+      },
+    ],
+  };
+
+  it("renders the CARC badge, archetype chip, and the rule row", () => {
+    const el = renderAnswerCard(appealsCard);
+    const wrap = el.querySelector(".ac-appeals-rules")!;
+    expect(wrap).not.toBeNull();
+    expect(wrap.querySelector(".ac-appeals-carc")?.textContent).toContain("197");
+    expect(wrap.querySelector(".ac-appeals-archetype")?.textContent).toContain("authorization");
+    expect(wrap.querySelector(".ac-appeals-rule-id")?.textContent).toContain("R-197-a");
+  });
+
+  it("highlights appeal_argument as the key field and mutes rule_statement", () => {
+    const el = renderAnswerCard(appealsCard);
+    // appeal_argument sits in the highlighted block
+    const arg = el.querySelector(".ac-appeals-argument-value");
+    expect(arg?.textContent).toContain("retroactively");
+    // rule_statement renders muted, separate from the argument block
+    const stmt = el.querySelector(".ac-appeals-statement");
+    expect(stmt?.textContent).toContain("30 days");
+    // payor variants become pills (object + string forms both handled)
+    const pills = Array.from(el.querySelectorAll(".ac-appeals-variant-pill")).map((p) => p.textContent);
+    expect(pills.some((p) => p?.includes("Sunshine"))).toBe(true);
+    expect(pills.some((p) => p === "Humana")).toBe(true);
+  });
+
+  it("playbook: found:false renders the soft empty state, not a bare card", () => {
+    const el = renderAnswerCard({
+      direct_answer: "No playbook.",
+      sections: [{
+        label: "Appeal playbook", visibility: "primary", format: "appeals_playbook", bullets: [],
+        data: { found: false, message: "No playbook on file for Aetna." } as unknown as AnswerCard["sections"][number]["data"],
+      }],
+    });
+    const empty = el.querySelector(".ac-appeals-playbook-empty");
+    expect(empty?.textContent).toContain("No playbook on file for Aetna.");
+    // no docs/levels scaffolding when empty
+    expect(el.querySelector(".ac-appeals-docs")).toBeNull();
+  });
+
+  it("playbook: renders deadline, method, docs checklist, and levels ladder", () => {
+    const el = renderAnswerCard({
+      direct_answer: "Playbook for Humana.",
+      sections: [{
+        label: "Appeal playbook", visibility: "primary", format: "appeals_playbook", bullets: [],
+        data: {
+          found: true, payor: "Humana", carc_group: "auth",
+          deadline_appeal_days: 60, submission_method: "Provider portal",
+          portal_url: "https://example.test/appeals",
+          docs_required: [{ doc: "Auth letter", required: true }, { doc: "Chart notes", required: false }],
+          appeal_levels: [{ level: 1, name: "Reconsideration", deadline_days: 30 }, { level: 2, name: "Peer review" }],
+        } as unknown as AnswerCard["sections"][number]["data"],
+      }],
+    });
+    expect(el.querySelector(".ac-appeals-deadline")?.textContent).toContain("60");
+    expect(el.querySelector(".ac-appeals-method")?.textContent).toContain("portal");
+    const docs = Array.from(el.querySelectorAll(".ac-appeals-doc")).map((d) => d.textContent);
+    expect(docs.some((d) => d?.includes("Auth letter"))).toBe(true);
+    expect(docs.some((d) => d?.includes("optional"))).toBe(true);
+    const levels = Array.from(el.querySelectorAll(".ac-appeals-level-name")).map((l) => l.textContent);
+    expect(levels).toContain("Reconsideration");
+    expect(levels).toContain("Peer review");
+  });
+});
+
 describe("Task #10 — output_intent (Diagnostics telemetry, NOT on the card face)", () => {
   it("formatOutputIntentLabel returns the canonical value for known intents", () => {
     for (const intent of ["read", "report", "email", "sms", "emr", "appeal", "payor_report"]) {

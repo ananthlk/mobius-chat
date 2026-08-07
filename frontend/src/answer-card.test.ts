@@ -117,6 +117,24 @@ describe("tryParseAnswerCard — AC-FE-1 (mode optional, min-valid anchor, both 
     expect(tryParseAnswerCard(json({ direct_answer: "hi" }))!.suggest_escalate).toBeUndefined();
     expect(tryParseAnswerCard(json({ direct_answer: "hi", suggest_escalate: false as unknown as true }))!.suggest_escalate).toBeUndefined();
   });
+
+  // Appeals typed formats must survive VALID_FORMATS — if they don't, the parser silently
+  // rewrites them to "bullets" and the appeals renderer never fires (same class as the
+  // output_intent-drop bug). `data` must pass through verbatim (it's not SectionData-shaped).
+  it("appeals_rules / appeals_playbook formats survive the VALID_FORMATS filter", () => {
+    const card = tryParseAnswerCard(json({
+      direct_answer: "appeal path",
+      sections: [
+        { label: "Appeal rules", format: "appeals_rules", data: { carc: "197", rules: [{ rule_id: "R-1" }] } },
+        { label: "Appeal playbook", format: "appeals_playbook", data: { found: true, payor: "Humana" } },
+      ],
+    }));
+    expect(card!.sections[0].format).toBe("appeals_rules");
+    expect(card!.sections[1].format).toBe("appeals_playbook");
+    // data survives verbatim (cast-through, not narrowed away)
+    expect((card!.sections[0].data as unknown as { carc: string }).carc).toBe("197");
+    expect((card!.sections[1].data as unknown as { payor: string }).payor).toBe("Humana");
+  });
 });
 
 describe("splitSectionsByVisibility — AC-FE-2 / §5 discriminator / §1.2 fallback", () => {
