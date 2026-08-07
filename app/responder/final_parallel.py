@@ -153,12 +153,17 @@ def format_response_parallel(
     logger.info("[parallel] consolidator_type=%s score=%.2f", consolidator_type, canonical_score)
 
     # ── Build the 3 system prompts ──
-    if consolidator_type == "factual":
-        mode_suffix = "Mode: FACTUAL — set mode='FACTUAL'; 2–3 sections, direct_answer=one operative fact.\n"
-    elif consolidator_type == "canonical":
+    # FACTUAL/BLENDED collapsed into one unified "answer" path (2026-08-07 architecture
+    # directive) -- CANONICAL alone stays distinct. mode value stays 'FACTUAL' (see
+    # final.py's choose_consolidator_type docstring for why it wasn't renamed).
+    if consolidator_type == "canonical":
         mode_suffix = "Mode: CANONICAL — set mode='CANONICAL'; 2–4 sections, direct_answer=2–4 sentences.\n"
     else:
-        mode_suffix = "Mode: BLENDED — set mode='BLENDED'; 2–4 sections, direct_answer=1–3 sentences with specifics.\n"
+        mode_suffix = (
+            "Mode: FACTUAL — set mode='FACTUAL'; 2–4 sections (requirements/definitions "
+            "visible by default, others behind 'Show details'), direct_answer=1–3 sentences "
+            "with specifics when the corpus supports them.\n"
+        )
 
     core_system = cfg.prompts.integrator_parallel_core_system + mode_suffix
     critic_system = cfg.prompts.integrator_parallel_critic_system

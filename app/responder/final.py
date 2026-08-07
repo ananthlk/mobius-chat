@@ -17,7 +17,8 @@ from app.trace_log import trace_entered
 
 logger = logging.getLogger(__name__)
 
-ConsolidatorType = str  # "factual" | "canonical" | "blended"
+ConsolidatorType = str  # "answer" | "canonical" -- FACTUAL/BLENDED collapsed into one
+# unified "answer" path (2026-08-07 architecture directive); CANONICAL stays distinct.
 
 
 def _emit(emitter: Callable[[str], None] | None, msg: str) -> None:
@@ -48,12 +49,13 @@ def choose_consolidator_type(
     factual_max: float,
     canonical_min: float,
 ) -> ConsolidatorType:
-    """Map blended canonical score to factual | canonical | blended."""
-    if canonical_score < factual_max:
-        return "factual"
+    """Map blended canonical score to answer | canonical. factual_max is accepted for
+    call-site compatibility but no longer used -- FACTUAL/BLENDED collapsed into one
+    unified 'answer' path (2026-08-07 architecture directive); CANONICAL alone stays
+    distinct on a real corpus-confidence threshold."""
     if canonical_score > canonical_min:
         return "canonical"
-    return "blended"
+    return "answer"
 
 
 def _build_consolidator_input_json(
@@ -392,11 +394,12 @@ def format_response(
             f"  → Building answer card ({consolidator_type} mode, score {canonical_score:.2f})…",
         )
 
-        if consolidator_type == "factual":
-            prompt_system = cfg.prompts.integrator_factual_system
-        elif consolidator_type == "canonical":
+        if consolidator_type == "canonical":
             prompt_system = cfg.prompts.integrator_canonical_system
         else:
+            # unified "answer" path (FACTUAL/BLENDED collapsed) -- legacy hardcoded
+            # fallback only; MOBIUS_PROMPT_SOURCE=composition (live in dev) resolves
+            # module.enricher.answer below instead.
             prompt_system = cfg.prompts.integrator_blended_system
 
         # v2 modular-prompt path (MOBIUS_PROMPT_SOURCE=composition): resolve the
@@ -410,8 +413,7 @@ def format_response(
             try:
                 from app.services.prompt_manager import resolve_composition_sync
                 _mk = {
-                    "factual": "integrator_enricher_factual",
-                    "blended": "integrator_enricher_blended",
+                    "answer": "integrator_enricher_answer",
                 }.get(consolidator_type)
                 if _mk:
                     _rc = resolve_composition_sync(

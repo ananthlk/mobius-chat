@@ -71,6 +71,33 @@ _ENRICHER_FACTUAL = (
     "list it. Add one followup question only if the user must clarify to get a definitive answer."
 )
 
+# 2026-08-07 (architecture directive, via Chat Master/Ananth): FACTUAL and BLENDED
+# collapse into one unified path -- mode-specific branching between them was causing
+# real bugs (early exits, bleed, display gaps). CANONICAL and RECITAL stay distinct
+# (legitimate architectural reasons -- different corpus-confidence regime / verbatim
+# rendering contract respectively). This is a genuinely NEW merged instruction, not a
+# faithful slice of chat_config (unlike the @enricher: parts above) -- inline body.
+# mode value stays 'FACTUAL' (see routing collapse in final.py/final_parallel.py):
+# reused rather than renamed to keep the ~8 existing fallback/validator sites (which
+# already treat "FACTUAL" as the safe default) and Chat FE's mode switch unchanged --
+# the schema/output shape isn't changing, only the routing condition is removed, so a
+# rename would touch every consumer for zero functional gain.
+_ENRICHER_ANSWER = (
+    "Mode-specific rules for FACTUAL:\n"
+    "- Set mode = 'FACTUAL'.\n"
+    "- sections: 2–4 sections, each with 3–6 substantive bullets (8–25 words each) when the "
+    "source material supports it. No stub bullets. Intent must be one of: process, requirements, "
+    "definitions, exceptions, references. 'requirements' and 'definitions' sections are visible "
+    "by default; 'process', 'exceptions', 'references' are behind 'Show details'.\n"
+    "- direct_answer: the single operative fact, in 1–3 sentences. Include specifics inline when "
+    "sources supply them (codes, numbers, criteria names, page refs) -- do not retreat to a "
+    "framework-name-only one-liner when the corpus supports more. If the corpus only supports one "
+    "fact, one sentence is enough -- do not pad.\n"
+    "- Provide concrete criteria as bullets in 'requirements'; code definitions in 'definitions'.\n"
+    "- required_variables: if the answer depends on an unknown (service code, plan subtype), "
+    "list it. Add one followup question only if the user must clarify to get a definitive answer."
+)
+
 BLOCK_SPECS: list[BlockSpec] = [
     # The enricher blocks are a FAITHFUL, byte-preserving decomposition of the live
     # chat_config integrator_{factual,blended,canonical}_system prompts (single source
@@ -83,6 +110,10 @@ BLOCK_SPECS: list[BlockSpec] = [
               "@enricher:schema", owner="llm-agent"),
     BlockSpec("module.enricher.factual", "static", "system", "@enricher:factual", owner="llm-agent"),
     BlockSpec("module.enricher.blended", "static", "system", "@enricher:blended", owner="llm-agent"),
+    # Unified FACTUAL+BLENDED path (2026-08-07 architecture directive) -- supersedes
+    # the two block/composition pairs above, which are left seeded (for history/
+    # rollback) but no longer referenced by any live composition.
+    BlockSpec("module.enricher.answer", "static", "system", _ENRICHER_ANSWER, owner="llm-agent"),
     BlockSpec("hipaa_context", "conditional", "system",
               "HIPAA: never surface or invent a patient identifier (name, MRN, DOB, address). "
               "Never fabricate a clinical fact. If PHI is required to answer and none is grounded, "
@@ -107,6 +138,13 @@ COMPOSITIONS: dict[str, list[str]] = {
         "module.enricher",
         "enricher.answercard_schema_and_rules",
         "module.enricher.blended",
+        "hipaa_context",
+        "forced_json",
+    ],
+    "integrator_enricher_answer": [
+        "module.enricher",
+        "enricher.answercard_schema_and_rules",
+        "module.enricher.answer",
         "hipaa_context",
         "forced_json",
     ],
