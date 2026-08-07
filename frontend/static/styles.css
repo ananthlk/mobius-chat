@@ -2251,8 +2251,8 @@ body {
   border-left: 3px solid var(--accent);
   background: rgba(0, 0, 0, 0.02);
   box-shadow: none;
-  max-height: 65vh;
-  overflow-y: auto;
+  /* No max-height clip (Ananth/Chat Master 2026-08-07): the tabbed card holds the Answer tab's
+     full sections[]; a 65vh cap cut them off. Cards expand to content; the conversation scrolls. */
 }
 .answer-card--canonical .answer-card-bubble,
 .answer-card--blended .answer-card-bubble {
@@ -2260,8 +2260,7 @@ body {
   border-radius: var(--radius-sm);
   border-left: 3px solid var(--mobius-violet, #7c3aed);
   background: rgba(0, 0, 0, 0.02);
-  max-height: 65vh;
-  overflow-y: auto;
+  /* No max-height clip — see the factual rule above. */
 }
 /* Lead: status line, not paragraph – smaller, muted, single line */
 .answer-card-direct {
