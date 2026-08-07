@@ -405,13 +405,12 @@ def _compose_manifest(allowed: frozenset[str] | None = None) -> str:
         # FL Medicaid data routing gate removed 2026-08-04 -- see the
         # module-level comment above _RETRIEVAL_METHODOLOGY_PRIMER's
         # former neighbor for why (dangling MCP-tool promises).
+        # Appeals tools — MUST BE CHECKED FIRST before rag or any other tool.
+        # Any message containing a CARC code number (e.g. "CARC 22", "CARC 29")
+        # or describing a denial/appeal workflow MUST use these tools.
+        _router_block("appeals_find_carc", _APPEALS_BLOCK),
         # Retrieval methodology primer — describes the single rag() entry point.
         _RETRIEVAL_METHODOLOGY_PRIMER if _allow("rag") else "",
-        # Appeals tools — MUST BE CHECKED FIRST. Any message containing a CARC
-        # code number (e.g. "CARC 22", "CARC 29") or describing an insurance
-        # denial/appeal workflow MUST use these tools, NOT rag or product_help_search.
-        # Do NOT route denial/appeal/CARC queries to any other tool.
-        _router_block("appeals_find_carc", _APPEALS_BLOCK),
         # rag: the ONE retrieval tool. Replaces search_corpus + payor_lookup +
         # lookup_authoritative_sources + google_search. RAG's router picks
         # strategy internally; callers pass query only.
