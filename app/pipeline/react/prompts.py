@@ -359,7 +359,8 @@ round (i.e. earlier tool results are present in context above):
   "evidence_review": {
     "keep": [<chunk numbers from the LAST tool result's [N] headers that actually matter to this question>],
     "running_answer": "<the best answer you can build from kept evidence so far — even if partial>",
-    "gaps": "<what's still missing, or empty string if nothing is missing>"
+    "gaps_closed": [<specific gaps THIS round's tool result resolved — empty array if none>],
+    "gaps_open": [<specific gaps still unresolved — empty array if none>]
   },
   "tool": "<tool name from manifest>",
   "inputs": {<tool-specific inputs>},
@@ -374,7 +375,8 @@ on: it's the record of which chunks actually grounded the answer you're about to
   "evidence_review": {
     "keep": [<chunk numbers from the LAST tool result's [N] headers that actually grounded this answer>],
     "running_answer": "<same as your final answer's substance — this is what confirms you recomputed confidence from the kept evidence, not vibes>",
-    "gaps": "<anything still uncertain even though you're answering, or empty string>"
+    "gaps_closed": [<what THIS round's evidence resolved — empty array if none>],
+    "gaps_open": [<anything still uncertain even though you're answering — empty array if none>]
   },
   "tool": null,
   "inputs": {},
@@ -417,7 +419,7 @@ REACT_CRITICAL_RULES_TEXT = """CRITICAL RULES:
 1c-2. **LEARNED must actually fill the answer, not just narrate.** The "evidence_review" object (required alongside "thought" from round 2 on, in BOTH the tool-call shape and the final-answer shape, see REACT_RESPONSE_SHAPE) is where LEARNED becomes concrete instead of prose:
     - **keep**: read every numbered chunk in the last tool result — all of it, nothing is truncated — and list which chunk numbers actually bear on this question. Don't skim the first chunk and stop; the answer is as likely to be chunk 6 of 12 as chunk 1.
     - **running_answer**: recompute this from scratch using ONLY the kept chunks — this is your real confidence check. If running_answer already states the answer clearly, stop hunting: set is_complete=true this round. Continuing to call rag after running_answer already has the fact is wasted rounds and a false "not found" waiting to happen.
-    - **gaps**: name the specific missing piece, if any — not "need more info."
+    - **gaps_closed** / **gaps_open**: name specific missing pieces, not "need more info." gaps_closed is what THIS round's tool result actually resolved (empty array most rounds — only list something here if this round is what closed it); gaps_open is everything still unresolved after incorporating this round's evidence. Both are lists, not prose — a gap tracker downstream reads these directly.
     - Chunks you do NOT keep are not deleted — they stay recallable this turn via recall_evidence (see manifest) using the ref shown in that chunk's set-aside note. Don't re-run rag for something you already retrieved; recall it instead.
     - **On the round where you finalize (is_complete=true): still fill out evidence_review.** This is the round the answer actually shipped from — its keep-list and running_answer are the audit trail for what grounded it. Skipping evidence_review here because "the answer field already has it" defeats the point: evidence_review is the structured, trackable record; "answer" is the user-facing prose.
 1d. **CITE IT, OR LABEL IT — never blank, never bluff.** Three and only three valid response shapes:
@@ -991,11 +993,12 @@ def build_reasoning_context(
     # so the running answer and remaining gaps are visible artifacts, not
     # buried inside a "thought" string that gets discarded each round.
     _ev_latest = evidence_review_latest or getattr(ctx, "_evidence_review_latest", None)
-    if isinstance(_ev_latest, dict) and (_ev_latest.get("running_answer") or _ev_latest.get("gaps")):
+    if isinstance(_ev_latest, dict) and (_ev_latest.get("running_answer") or _ev_latest.get("gaps_open")):
         parts.append(
             "[Evidence Review — your own running verdict, from last round]\n"
             f"running_answer: {_ev_latest.get('running_answer') or '(none yet)'}\n"
-            f"gaps: {_ev_latest.get('gaps') or '(none)'}\n"
+            f"gaps_open: {_ev_latest.get('gaps_open') or []}\n"
+            f"gaps_closed: {_ev_latest.get('gaps_closed') or []}\n"
             "If running_answer already answers the question with confidence, set "
             "is_complete=true now instead of gathering more evidence you don't need."
         )
@@ -1079,7 +1082,7 @@ def build_reasoning_context(
     # context-heavy prose impulse.
     #
     # Two valid formats (repeat from system prompt here for proximity):
-    #   • Tool call:    { "thought": "...", "evidence_review": {"keep": [...], "running_answer": "...", "gaps": "..."},
+    #   • Tool call:    { "thought": "...", "evidence_review": {"keep": [...], "running_answer": "...", "gaps_closed": [...], "gaps_open": [...]},
     #                     "tool": "...", "inputs": {...}, "is_complete": false }
     #   • Final answer: { "thought": "...", "tool": null,  "inputs": {},      "is_complete": true,
     #                     "answer": "...", "confidence": "high"|"medium"|"low" }

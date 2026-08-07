@@ -3364,6 +3364,11 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         # round's keep-list, running_answer, and gaps is independently
         # visible in chat_progress_events, not just baked into an LLM
         # prompt string that only this process ever reads.
+        def _as_str_list(v: Any) -> list[str]:
+            if not isinstance(v, list):
+                return []
+            return [str(x).strip() for x in v if str(x).strip()]
+
         _evidence_review = decision.get("evidence_review")
         if not isinstance(_evidence_review, dict):
             _evidence_review = None
@@ -3377,7 +3382,8 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     except (TypeError, ValueError):
                         continue
             _running_answer = str(_evidence_review.get("running_answer") or "").strip()
-            _gaps = str(_evidence_review.get("gaps") or "").strip()
+            _gaps_closed = _as_str_list(_evidence_review.get("gaps_closed"))
+            _gaps_open = _as_str_list(_evidence_review.get("gaps_open"))
 
             if tool_results and _keep:
                 _last_call_idx = len(tool_results)
@@ -3392,35 +3398,51 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
 
             if _running_answer:
                 emit(f"  Running answer: {_running_answer}")
-            if _gaps:
-                emit(f"  Gaps remaining: {_gaps}")
+            if _gaps_closed:
+                emit(f"  Gaps closed: {_gaps_closed}")
+            if _gaps_open:
+                emit(f"  Gaps open: {_gaps_open}")
 
-            if _running_answer or _gaps:
+            if _running_answer or _gaps_open or _gaps_closed:
                 ctx._evidence_review_latest = {  # type: ignore[attr-defined]
-                    "round": rn, "running_answer": _running_answer, "gaps": _gaps,
+                    "round": rn, "running_answer": _running_answer,
+                    "gaps_closed": _gaps_closed, "gaps_open": _gaps_open,
                 }
 
-        # 2026-08-07 (Task #58, "factory model" directive) -- the actual
-        # gap Chat Master identified: evidence_review already computes real
-        # per-round enrichment (LEARNED, running_answer recomputed from
-        # kept evidence, gaps), it just wasn't PERSISTED past the current
-        # round (ctx._evidence_review_latest gets overwritten every round)
-        # or PAIRED to the tool call/round that produced it. This closes
-        # that gap by writing it onto the SAME dict ctx.react_trace_rounds
-        # already appended for this round (line ~3146, before the LLM
-        # call) -- mutated here now that thought/tool/inputs/evidence_review
-        # are known, rather than a second parallel structure.
-        # Note: today's "gaps" is one free-text field, not split into
-        # closed/open lists -- that split would need a further prompts.py
-        # schema change not made here; flagged, not fabricated.
+        # 2026-08-07 (Task #58, "factory model" directive, schema approved
+        # by coordinator) -- this IS the EvidenceLedger (task #48): gap
+        # tracking and tool-output enrichment are the same mechanism.
+        # Written onto the SAME dict ctx.react_trace_rounds already
+        # appended for this round (line ~3146, before the LLM call) --
+        # mutated here now that thought/tool/inputs/evidence_review are
+        # known, rather than a second parallel structure.
+        #
+        # raw_result_ref is a POINTER into ctx.tool_outputs
+        # ({tool_name, call_index}), not a copy of the payload -- keeps
+        # the trace lean, avoids duplicating tool output twice in ctx.
+        # call_index is 1-based, counting occurrences of that tool_name
+        # in tool_results up to and including the entry this round is
+        # enriching (i.e. "the Nth call to this tool this turn") -- the
+        # most literal addressable meaning available given tool_outputs
+        # itself is typed/deduped per family (e.g. appeals.playbook
+        # collapses repeated calls to the winning one), not a flat
+        # indexable list per tool name.
+        _raw_result_ref: dict | None = None
+        if tool_results:
+            _ref_tool = tool_results[-1].get("tool")
+            _call_index = sum(1 for _t in tool_results if _t.get("tool") == _ref_tool)
+            _raw_result_ref = {"tool_name": _ref_tool, "call_index": _call_index}
+
         if ctx.react_trace_rounds and ctx.react_trace_rounds[-1].get("round") == rn:
             ctx.react_trace_rounds[-1].update({
                 "tool": tool,
                 "inputs": inputs,
+                "raw_result_ref": _raw_result_ref,
                 "enrichment": {
                     "learned": thought,
                     "running_answer": _evidence_review.get("running_answer") if _evidence_review else "",
-                    "gaps": _evidence_review.get("gaps") if _evidence_review else "",
+                    "gaps_closed": _as_str_list(_evidence_review.get("gaps_closed")) if _evidence_review else [],
+                    "gaps_open": _as_str_list(_evidence_review.get("gaps_open")) if _evidence_review else [],
                 } if (thought or _evidence_review) else None,
             })
 

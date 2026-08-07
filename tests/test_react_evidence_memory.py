@@ -130,15 +130,20 @@ class TestEvidenceReviewInReasoningContext:
         ctx = _make_ctx()
         out = build_reasoning_context(
             ctx, [], 2,
-            evidence_review_latest={"running_answer": "180 days for initial claims", "gaps": "corrected claim window"},
+            evidence_review_latest={
+                "running_answer": "180 days for initial claims",
+                "gaps_open": ["corrected claim window"],
+                "gaps_closed": ["initial filing deadline"],
+            },
         )
         assert "180 days for initial claims" in out
         assert "corrected claim window" in out
+        assert "initial filing deadline" in out
         assert "[Evidence Review" in out
 
     def test_falls_back_to_ctx_attribute_when_not_passed(self):
         ctx = _make_ctx()
-        ctx._evidence_review_latest = {"running_answer": "found it", "gaps": ""}
+        ctx._evidence_review_latest = {"running_answer": "found it", "gaps_open": [], "gaps_closed": []}
         out = build_reasoning_context(ctx, [], 2)
         assert "found it" in out
 
@@ -153,7 +158,8 @@ class TestResponseShapeDocumentsEvidenceReview:
         from app.pipeline.react.prompts import REACT_RESPONSE_SHAPE_TEXT
         assert '"keep"' in REACT_RESPONSE_SHAPE_TEXT
         assert '"running_answer"' in REACT_RESPONSE_SHAPE_TEXT
-        assert '"gaps"' in REACT_RESPONSE_SHAPE_TEXT
+        assert '"gaps_closed"' in REACT_RESPONSE_SHAPE_TEXT
+        assert '"gaps_open"' in REACT_RESPONSE_SHAPE_TEXT
 
     def test_manifest_documents_recall_evidence(self):
         from app.pipeline.tool_manifest import get_tool_manifest

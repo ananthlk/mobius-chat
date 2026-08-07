@@ -255,7 +255,7 @@ class TestEnrichmentPairedToRoundEndToEnd:
                 return '{"thought": "Try rag first.", "tool": "rag", "inputs": {"query": "timely filing"}, "is_complete": false}'
             return (
                 '{"thought": "Found it.", '
-                '"evidence_review": {"keep": [1], "running_answer": "180 days", "gaps": ""}, '
+                '"evidence_review": {"keep": [1], "running_answer": "180 days", "gaps_closed": ["timely filing window"], "gaps_open": []}, '
                 '"tool": null, "inputs": {}, "is_complete": true, '
                 '"answer": "180 days.", "sources": [], "confidence": "high"}'
             )
@@ -275,6 +275,12 @@ class TestEnrichmentPairedToRoundEndToEnd:
         # the enrichment that was reasoned in that same round, not round 1's.
         round_2_entries = [r for r in ctx.reasoning_trace if r.get("round") == 2]
         assert round_2_entries, "expected a trace entry for round 2"
-        enrichment = round_2_entries[0]["enrichment"]
+        entry = round_2_entries[0]
+        enrichment = entry["enrichment"]
         assert enrichment["running_answer"] == "180 days"
         assert enrichment["learned"] == "Found it."
+        assert enrichment["gaps_closed"] == ["timely filing window"]
+        assert enrichment["gaps_open"] == []
+        # raw_result_ref is a pointer into ctx.tool_outputs, not a copy --
+        # this round enriched the 1st (only) rag call this turn.
+        assert entry["raw_result_ref"] == {"tool_name": "rag", "call_index": 1}
