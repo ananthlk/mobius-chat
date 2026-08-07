@@ -7,20 +7,25 @@ first rag call returned verbatim -- confirmed live (cid d288d009) as
 the same fabrication mechanism #65 fixed for the normal reasoning path.
 
 Ananth's principles, current shape:
-1. Always stream something fast -- the thin-evidence path adds ONE
-   lightweight synthesis call (not a full reasoning round: no tool-call
-   decision schema, no evidence_review) -- materially faster than
-   agentic's multi-round path on the same evidence, even though it's no
-   longer literally zero-LLM-calls. ("one pass instead of two rounds")
+1. Always stream something fast -- BOTH early-exit paths (rich and
+   thin) add ONE lightweight synthesis call (not a full reasoning
+   round: no tool-call decision schema, no evidence_review) --
+   materially faster than agentic's multi-round path on the same
+   evidence, even though it's no longer literally zero-LLM-calls.
+   ("one pass instead of two rounds")
 2. Never fabricate -- the synthesis call is citation-disciplined
    (state only what's literally in the evidence, say what's missing
    rather than guess) -- same spirit as rule 1c-2's citation-discipline
-   rule from #65. Falls back to the pure code-constructed excerpt
-   (_build_fast_mode_hedge) if the synthesis call itself fails.
+   rule from #65. Falls back to a safe default if the synthesis call
+   itself fails: the code-constructed excerpt (_build_fast_mode_hedge)
+   on the thin path, the raw text itself on the rich path.
 3. "Always let ReAct summarize, even on early exit" (2026-08-07,
-   Ananth, directly, a grace rule): thin evidence still gets a real
-   best-effort answer, not just "I couldn't find enough" -- the hedge
-   and suggest_escalate accompany the summary, they don't replace it.
+   Ananth, directly, a grace rule): react_draft on the Summary tab
+   must ALWAYS be a synthesized, human-readable answer, never raw
+   chunk text -- on EITHER early-exit path. First shipped for thin
+   evidence only; extended to rich evidence after a live finding that
+   the rich path still shipped a raw "[1] Doc...[2] Doc..." dump to
+   Summary while the Answer tab (integrator) looked correct.
 """
 from __future__ import annotations
 
@@ -103,29 +108,51 @@ class TestBuildFastModeHedge:
         assert hedge.strip()
 
 
-class TestRichEvidenceKeepsCurrentBehavior:
-    def test_rich_evidence_ships_raw_dump_fast_no_second_round(self):
-        ctx = _run_fast_mode(_RICH_CHUNKS, [{"rerank_score": 0.6}, {"rerank_score": 0.5}])
-        assert ctx.final_message == _RICH_CHUNKS.strip()
+class TestRichEvidenceAlsoGetsSynthesized:
+    """2026-08-07 (Ananth, directly, live finding): the grace rule
+    applies to BOTH early-exit paths, not just thin evidence. The rich
+    path used to ship _raw_text verbatim -- confirmed live as the raw
+    "[1] Sunshine Provider Manual...[2] Provider_Manual.pdf..." dump
+    appearing on the Summary tab while the Answer tab (integrator, which
+    DOES synthesize from ctx) looked correct. react_draft must always be
+    a synthesized, human-readable answer, never raw chunk text -- on
+    EITHER early-exit path."""
+
+    def test_rich_evidence_ships_synthesized_answer_not_raw_dump(self):
+        ctx = _run_fast_mode(
+            _RICH_CHUNKS, [{"rerank_score": 0.6}, {"rerank_score": 0.5}],
+            synthesis_response="Sunshine Health offers several care management programs.",
+        )
+        assert ctx.final_message == "Sunshine Health offers several care management programs."
+        assert ctx.final_message != _RICH_CHUNKS.strip()
         assert getattr(ctx, "react_unfinished_reason", None) is None
 
-    def test_rich_chunk_count_and_chars_ship_directly_even_with_zero_score(self):
-        """2026-08-07 (Ananth, directly, live finding): score no longer
-        gates the early-exit. A 15-chunk, 11,685-char turn with
-        top_score=0.00 (rerank_score simply not populated for those
-        chunks) is substantial evidence regardless -- must ship
-        directly, not fall into the hedge/synthesis path. This was the
-        exact live regression: fast mode hedged while agentic mode,
+    def test_rich_chunk_count_and_chars_still_synthesize_with_zero_score(self):
+        """2026-08-07 (Ananth, directly, live finding): score doesn't
+        gate the early-exit branch choice (rich vs. thin), but the rich
+        branch itself must still synthesize -- this was the exact live
+        regression: fast mode hedged/dumped raw text while agentic mode,
         given the SAME evidence, produced a fuller answer."""
-        ctx = _run_fast_mode(_RICH_CHUNKS, [{"rerank_score": None}, {"rerank_score": None}])
+        ctx = _run_fast_mode(
+            _RICH_CHUNKS, [{"rerank_score": None}, {"rerank_score": None}],
+            synthesis_response="A synthesized answer despite zero score.",
+        )
+        assert ctx.final_message == "A synthesized answer despite zero score."
+
+    def test_rich_synthesis_failure_falls_back_to_raw_text_not_thin_hedge(self):
+        """Rich evidence is still substantial evidence even unsynthesized
+        -- falls back to the raw text itself, NOT the thin-path's
+        code-constructed excerpt hedge (that would be a worse answer
+        than the raw dump for a case with plenty of real content)."""
+        ctx = _run_fast_mode(_RICH_CHUNKS, [], synthesis_response=None)
         assert ctx.final_message == _RICH_CHUNKS.strip()
         assert getattr(ctx, "react_unfinished_reason", None) is None
 
-    def test_rich_chunk_count_and_chars_ship_directly_with_no_sources_at_all(self):
-        """Same case, but sources=[] entirely (not just unscored) --
-        max(..., default=0.0) must not accidentally read as "thin"."""
-        ctx = _run_fast_mode(_RICH_CHUNKS, [])
-        assert ctx.final_message == _RICH_CHUNKS.strip()
+    def test_rich_path_does_not_set_no_path_forward(self):
+        """Rich evidence, even when the synthesis call fails, is not a
+        "stalled" turn -- must not trigger suggest_escalate."""
+        ctx = _run_fast_mode(_RICH_CHUNKS, [{"rerank_score": 0.6}])
+        assert getattr(ctx, "react_unfinished_reason", None) is None
 
 
 class TestThinEvidenceGetsSynthesizedAnswer:

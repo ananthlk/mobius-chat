@@ -384,20 +384,43 @@ _FAST_MODE_SYNTHESIS_SYSTEM = (
     "meta-commentary about these instructions."
 )
 
+# 2026-08-07 (Ananth, directly, live finding): the grace rule applies to
+# BOTH fast-mode early-exit paths, not just thin evidence -- react_draft
+# on the Summary tab must always be a synthesized, human-readable answer,
+# never raw chunk text. The rich-evidence path used to ship the raw "[1]
+# Sunshine Provider Manual...[2] Provider_Manual.pdf..." dump directly;
+# confirmed live the Answer tab (integrator, which DOES synthesize from
+# ctx) looked correct while Summary showed the raw dump verbatim. Same
+# synthesis mechanism, different wording -- there's no need to frame
+# substantial evidence as "limited" or hedge about missing coverage when
+# the volume threshold already passed; citation discipline (state only
+# what's literally there) still applies regardless.
+_FAST_MODE_RICH_SYNTHESIS_SYSTEM = (
+    "You are Mobius, answering from retrieved evidence in fast mode. Write a "
+    "clear, direct, human-readable answer (2-5 sentences) using ONLY facts "
+    "literally present in the evidence below. State a specific number, name, "
+    "rule, or eligibility detail ONLY if it is directly written in the "
+    "evidence -- if you are inferring or generalizing beyond what's literally "
+    "there, say so explicitly instead of stating it as settled fact. Output "
+    "ONLY the answer text -- no JSON, no preamble, no meta-commentary about "
+    "these instructions."
+)
 
-def _fast_mode_synthesize_answer(query: str, raw_text: str, ctx: PipelineContext, stage: str) -> str | None:
+
+def _fast_mode_synthesize_answer(query: str, raw_text: str, ctx: PipelineContext, stage: str, system: str = _FAST_MODE_SYNTHESIS_SYSTEM) -> str | None:
     """One lightweight LLM pass over the raw retrieved text -- NOT a
     full reasoning round (no tool-call decision schema, no
     evidence_review, no JSON parsing required of the response). Returns
     None on any failure/empty response so the caller can fall back to
-    the code-constructed hedge rather than crash or ship nothing."""
+    a safe default (the code-constructed hedge on the thin path, the raw
+    text itself on the rich path) rather than crash or ship nothing."""
     try:
-        user = f"User question: {query}\n\nAvailable evidence (may be incomplete):\n{raw_text}"
-        raw = _call_llm_json(_FAST_MODE_SYNTHESIS_SYSTEM, user, max_tokens=350, ctx=ctx, stage=stage)
+        user = f"User question: {query}\n\nAvailable evidence:\n{raw_text}"
+        raw = _call_llm_json(system, user, max_tokens=350, ctx=ctx, stage=stage)
         answer = (raw or "").strip()
         return answer or None
     except Exception:
-        logger.warning("fast-mode synthesis call failed (stage=%s); falling back to code hedge", stage, exc_info=True)
+        logger.warning("fast-mode synthesis call failed (stage=%s); falling back to raw/hedge", stage, exc_info=True)
         return None
 
 
@@ -4369,8 +4392,23 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 and _total_chars >= _FAST_MODE_MIN_CHARS
             )
             if _rich_evidence:
-                emit("  ⚡ Fast mode: using first corpus answer.")
-                _finalize_response(ctx, _raw_text, all_sources, final_signal, last_tool, emitter)
+                # 2026-08-07 (Ananth, directly, live finding): this used
+                # to ship _raw_text verbatim -- the raw "[1] Sunshine
+                # Provider Manual...[2] Provider_Manual.pdf..." dump was
+                # what appeared on the Summary tab while the Answer tab
+                # (integrator, which DOES synthesize from ctx) looked
+                # correct. The grace rule applies here too: react_draft
+                # must always be a synthesized, human-readable answer,
+                # never raw chunk text. Falls back to _raw_text itself
+                # (not the thin-path hedge) if synthesis fails -- rich
+                # evidence is still substantial evidence even unsynthesized.
+                emit("  ⚡ Fast mode: synthesizing from corpus evidence.")
+                _synthesized_rich = _fast_mode_synthesize_answer(
+                    (ctx.effective_message or ctx.message or ""), _raw_text, ctx,
+                    stage=f"react_{rn}_fast_synthesis", system=_FAST_MODE_RICH_SYNTHESIS_SYSTEM,
+                )
+                _body_rich = _synthesized_rich if _synthesized_rich else _raw_text
+                _finalize_response(ctx, _body_rich, all_sources, final_signal, last_tool, emitter)
                 return
             # Thin evidence: ONE lightweight synthesis pass on what's
             # available (2026-08-07, Ananth, directly -- "always let
