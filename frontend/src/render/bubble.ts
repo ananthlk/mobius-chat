@@ -537,9 +537,14 @@ export function renderAnswerCard(
   // (Chat Master 2026-08-05). It is surfaced only as a Diagnostics telemetry row (see
   // formatOutputIntentLabel + the Diagnostics tab). Nothing renders on the card face.
 
+  // Summary content (the prominent answer above the tabs). Ananth ruling 2026-08-07: Summary is
+  // ReAct's synthesis. On the LIVE path react_draft streams into .ac-summary-prose; on the NON-
+  // streaming/reload render there's no stream, so prefer the persisted card.react_draft (60091bd)
+  // and fall back to direct_answer only when it's absent (older turns / non-ReAct paths).
   const direct = document.createElement("div");
   direct.className = "answer-card-direct";
-  direct.innerHTML = simpleMarkdownToHtml(card.direct_answer);
+  const _summaryText = (card.react_draft ?? "").trim() || card.direct_answer;
+  direct.innerHTML = simpleMarkdownToHtml(_summaryText);
   bubble.appendChild(direct);
 
   if (opts?.showConfidenceBadge !== false && !opts?.suppressConfidenceForAdminQcFail) {

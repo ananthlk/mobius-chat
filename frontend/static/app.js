@@ -1938,6 +1938,7 @@ function tryParseAnswerCard(message) {
         display_summary: typeof data.display_summary === "string" ? data.display_summary : void 0,
         // Answer-tab lead; positive filter, copy through explicitly (same class as the output_intent-drop bug).
         tldr_summary: typeof data.tldr_summary === "string" ? data.tldr_summary : void 0,
+        react_draft: typeof data.react_draft === "string" ? data.react_draft : void 0,
         // Escalation hint — copied through explicitly (parseOne is a positive filter). Backend
         // sends it only when true (absent otherwise), so a strict true check is correct.
         suggest_escalate: data.suggest_escalate === true ? true : void 0
@@ -2735,7 +2736,8 @@ function renderAnswerCard(card, isError, opts) {
   }
   const direct = document.createElement("div");
   direct.className = "answer-card-direct";
-  direct.innerHTML = simpleMarkdownToHtml(card.direct_answer);
+  const _summaryText = (card.react_draft ?? "").trim() || card.direct_answer;
+  direct.innerHTML = simpleMarkdownToHtml(_summaryText);
   bubble.appendChild(direct);
   if (opts?.showConfidenceBadge !== false && !opts?.suppressConfidenceForAdminQcFail) {
     bubble.appendChild(

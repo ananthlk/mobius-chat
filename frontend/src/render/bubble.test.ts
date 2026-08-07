@@ -112,6 +112,15 @@ describe("Answer tab (Ananth 2026-08-07 — Summary=react_draft, Answer=display_
     expect(noTldr.querySelector(".ac-answer-tldr")).toBeNull();
   });
 
+  it("Summary (the prominent answer) shows react_draft when present, else direct_answer (reload, 60091bd)", () => {
+    const withDraft = renderAnswerCard({ ...card, direct_answer: "INTEGRATOR_LINE", react_draft: "REACT_SYNTHESIS_LINE" });
+    expect(withDraft.querySelector(".answer-card-direct")?.textContent).toContain("REACT_SYNTHESIS_LINE");
+    expect(withDraft.querySelector(".answer-card-direct")?.textContent).not.toContain("INTEGRATOR_LINE");
+    // absent react_draft → falls back to direct_answer (older turns)
+    const noDraft = renderAnswerCard({ ...card, direct_answer: "INTEGRATOR_LINE" });
+    expect(noDraft.querySelector(".answer-card-direct")?.textContent).toContain("INTEGRATOR_LINE");
+  });
+
   it("shows NO Answer tab when there is neither display_summary NOR sections", () => {
     const el = renderAnswerCard({ direct_answer: "Just a sentence." });
     const tabs = Array.from(el.querySelectorAll(".ac-tab")).map((t) => t.textContent ?? "");

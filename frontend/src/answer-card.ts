@@ -104,6 +104,9 @@ export interface AnswerCard {
   // 2-4 sentence verdict (integrator card JSON). Leads the Answer tab above display_summary;
   // hidden when empty. Distinct from display_summary (prose lead) and thread_summary (sidebar).
   tldr_summary?: string;
+  // ReAct's own synthesis, persisted into the card JSON (integrate.py, 2026-08-07) so the Summary
+  // tab shows it on history reload the same way the live path shows the draft_ready stream.
+  react_draft?: string;
   // Backend escalation hint (Task: Try-with-Think-mode). true when the answer was quality-flagged
   // and re-running in Think/agentic mode is suggested; ABSENT otherwise (never false). Suppressed
   // server-side when the request was already agentic. Drives the "⚡ Try with Think mode" button.
@@ -209,6 +212,7 @@ export function tryParseAnswerCard(message: string): AnswerCard | null {
         display_summary: typeof data.display_summary === "string" ? data.display_summary : undefined,
         // Answer-tab lead; positive filter, copy through explicitly (same class as the output_intent-drop bug).
         tldr_summary: typeof data.tldr_summary === "string" ? data.tldr_summary : undefined,
+        react_draft: typeof data.react_draft === "string" ? data.react_draft : undefined,
         // Escalation hint — copied through explicitly (parseOne is a positive filter). Backend
         // sends it only when true (absent otherwise), so a strict true check is correct.
         suggest_escalate: data.suggest_escalate === true ? true : undefined,
