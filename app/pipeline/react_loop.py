@@ -281,6 +281,67 @@ def _kept_chunk_stats(raw: str, keep: list[int]) -> tuple[int, int]:
     return (count, chars)
 
 
+def _all_chunk_stats(raw: str) -> tuple[int, int]:
+    """(count, total_text_chars) for EVERY chunk in `raw`, unfiltered --
+    the fast-mode round-1 early exit runs before any evidence_review
+    "keep" decision exists, so there's no keep-list to filter by yet.
+    Returns (0, 0) for non-chunked results."""
+    blocks = _extract_chunk_blocks(raw)
+    if not blocks:
+        return (0, 0)
+    count = 0
+    chars = 0
+    for _chunk_num, block in blocks:
+        count += 1
+        _header, _, text = block.partition("\n")
+        chars += len(text.strip())
+    return (count, chars)
+
+
+# 2026-08-07 (Chat Master relaying Ananth's UX contract, Task #65 follow-up
+# on fast/"quick" mode): the round-1 early exit used to ship whatever the
+# first rag call returned verbatim, rich or thin, as react_draft --
+# confirmed live as the same fabrication mechanism as d288d009 (no
+# reasoning round, no evidence_review, nothing to hedge with). Fix keeps
+# BOTH halves of Ananth's contract: (1) always stream something fast --
+# neither branch below adds a full reasoning round, so latency is
+# unchanged either way; (2) never fabricate -- thin evidence gets an
+# honest, code-constructed hedge instead of a confident-looking raw dump.
+# All three signals must pass for the rich-evidence (current, unchanged)
+# path; failing any one routes to the hedge. _FAST_MODE_MIN_SCORE reuses
+# corpus_search.py's _derive_confidence_label "medium" cutoff (0.35) --
+# an already-calibrated threshold in this codebase, not a new guess.
+_FAST_MODE_MIN_CHUNKS = 3
+_FAST_MODE_MIN_CHARS = 500
+_FAST_MODE_MIN_SCORE = 0.35
+
+
+def _build_fast_mode_hedge(raw: str, chunk_count: int) -> str:
+    """Short, honest react_draft for the thin-evidence fast-mode path --
+    constructed from the ACTUAL retrieved text (a literal excerpt), never
+    an LLM call, so it carries zero fabrication risk of its own. That's
+    the whole point: a quick LLM "summarize this" pass could still
+    hallucinate past what the excerpt supports, defeating the fix."""
+    blocks = _extract_chunk_blocks(raw)
+    snippet = ""
+    if blocks:
+        _header, _, text = blocks[0][1].partition("\n")
+        snippet = text.strip()[:280]
+        if len(text.strip()) > 280:
+            snippet = snippet.rstrip() + "…"
+    if not snippet:
+        return (
+            "Limited sources available on this topic — I couldn't confirm specific "
+            "details. For a more complete answer, try Think mode."
+        )
+    plural = "s" if chunk_count != 1 else ""
+    return (
+        f"Limited sources available on this topic ({chunk_count} passage{plural} found). "
+        f"Here's what I found: {snippet} I cannot confirm further details beyond this. "
+        "For a more complete answer, try Think mode."
+    )
+
+
 from app.state.jurisdiction import rag_filters_from_active
 
 # ---------------------------------------------------------------------------
@@ -4150,20 +4211,51 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         # Fast mode early exit: if round 1 returns a usable result, skip the
         # second LLM reasoning pass. Round 2 is still available as fallback when
         # round 1 fails or returns nothing (complex / multi-hop questions).
+        #
+        # 2026-08-07 (Chat Master relaying Ananth's UX contract, Task #65
+        # follow-up): this used to ship round 1's raw result unconditionally
+        # -- confirmed live (cid d288d009) as the same fabrication mechanism
+        # #65 fixed for the normal reasoning path: no evidence_review ran
+        # here at all, so a raw, mismatched chunk dump shipped as a
+        # confident-looking answer. Neither branch below adds a reasoning
+        # round -- latency is unchanged either way, per Ananth's "always
+        # stream something fast" requirement.
         if (
             mode_label == "quick"
             and rn == 1
             and result.get("success")
             and len((result.get("result") or "").strip()) >= 30
         ):
-            emit("  ⚡ Fast mode: using first corpus answer.")
+            _raw_text = (result.get("result") or "").strip()
+            _chunk_count, _total_chars = _all_chunk_stats(_raw_text)
+            _sources_for_score = result.get("sources") or []
+            _top_score = max(
+                (float(s.get("rerank_score") or 0.0) for s in _sources_for_score),
+                default=0.0,
+            )
+            _rich_evidence = (
+                _chunk_count >= _FAST_MODE_MIN_CHUNKS
+                and _total_chars >= _FAST_MODE_MIN_CHARS
+                and _top_score >= _FAST_MODE_MIN_SCORE
+            )
+            if _rich_evidence:
+                emit("  ⚡ Fast mode: using first corpus answer.")
+                _finalize_response(ctx, _raw_text, all_sources, final_signal, last_tool, emitter)
+                return
+            # Thin evidence: honest hedge instead of the raw dump, same
+            # latency budget (no LLM call here either — see
+            # _build_fast_mode_hedge). react_unfinished_reason="no_path_forward"
+            # is the EXISTING signal integrate.py's suggest_escalate check
+            # already reads (app/stages/integrate.py:1090-1096) — reusing
+            # it, not duplicating the "Try with Think mode" wiring.
+            emit(
+                f"  ⚡ Fast mode: evidence too thin ({_chunk_count} chunks, {_total_chars} chars, "
+                f"top score {_top_score:.2f}) — honest hedge, suggesting Think mode."
+            )
+            ctx.react_unfinished_reason = "no_path_forward"
             _finalize_response(
-                ctx,
-                (result.get("result") or "").strip(),
-                all_sources,
-                final_signal,
-                last_tool,
-                emitter,
+                ctx, _build_fast_mode_hedge(_raw_text, _chunk_count),
+                all_sources, final_signal, last_tool, emitter,
             )
             return
 
