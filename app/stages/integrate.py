@@ -1086,19 +1086,6 @@ def run_integrate(
             # tune only against evidence of false positives there.
             _groundedness_passed = getattr(ctx, "react_groundedness_passed", None)
             _react_draft = getattr(ctx, "react_draft", None)
-            # 2026-08-07 (Task #68 diagnostic): react_draft/suggest_escalate reportedly
-            # not persisting for quick-mode turns despite draft_ready firing correctly
-            # live -- logging the actual ctx state at the exact read point rather than
-            # guessing further, since static analysis of the write site
-            # (orchestrator.py:708, mode-agnostic) and this read site both look correct
-            # in isolation, and a direct reproduction with react_draft manually set on
-            # ctx persists correctly. If ctx.react_draft is genuinely absent here on a
-            # confirmed quick-mode turn, the gap is upstream of this file.
-            logger.info(
-                "[react_draft] mode=%s present=%s len=%d correlation_id=%s",
-                getattr(ctx, "chat_mode", None), _react_draft is not None,
-                len((_react_draft or "")), getattr(ctx, "correlation_id", "?"),
-            )
             _evidence_empty = not (_react_draft or "").strip() or len((_react_draft or "").strip()) < 50
             _stalled = (
                 getattr(ctx, "react_unfinished_reason", None) == "no_path_forward"
@@ -1194,8 +1181,14 @@ def run_integrate(
                                 if not sec.get("label") and sec.get("title"):
                                     sec["label"] = sec.get("title", "")
                                 sections_out.append(sec)
+                            # Task #68: merge, don't replace -- inner_parsed is a fresh
+                            # parse of nested/bled JSON found INSIDE parsed["direct_answer"];
+                            # it never carries backend-injected fields (react_draft,
+                            # suggest_escalate) that were added to the OUTER parsed dict
+                            # above. inner_parsed's own keys still win on overlap (it's the
+                            # corrected/nested content), but parsed's unique keys survive.
                             display_message = _answer_card_json_for_client(
-                                mode, inner_da, sections_out, extra_from=inner_parsed
+                                mode, inner_da, sections_out, extra_from={**parsed, **inner_parsed}
                             )
                         else:
                             # Case 2: inner has resolutions; extract from first resolution
@@ -1211,17 +1204,22 @@ def run_integrate(
                                         if not sec.get("label") and sec.get("title"):
                                             sec["label"] = sec.get("title", "")
                                         sections_out.append(sec)
+                                    # Task #68: same merge as above -- res is nested inside
+                                    # inner_parsed, further from parsed's backend-injected
+                                    # fields, so this branch is the most likely to have
+                                    # silently dropped react_draft/suggest_escalate.
+                                    _res_extra = res if isinstance(res, dict) else inner_parsed
                                     display_message = _answer_card_json_for_client(
                                         mode,
                                         res["direct_answer"],
                                         sections_out,
-                                        extra_from=res if isinstance(res, dict) else inner_parsed,
+                                        extra_from={**parsed, **_res_extra},
                                     )
                                 elif isinstance(first.get("resolution"), str):
                                     # resolution is plain text (schema: "answer text")
                                     mode = inner_parsed.get("mode") if inner_parsed.get("mode") in ("FACTUAL", "CANONICAL", "BLENDED", "RECITAL") else "FACTUAL"
                                     display_message = _answer_card_json_for_client(
-                                        mode, first["resolution"], [], extra_from=inner_parsed
+                                        mode, first["resolution"], [], extra_from={**parsed, **inner_parsed}
                                     )
                     except (json.JSONDecodeError, TypeError, ValueError):
                         pass
@@ -1250,11 +1248,15 @@ def run_integrate(
                                 if not sec.get("label") and sec.get("title"):
                                     sec["label"] = sec.get("title", "")
                                 sections_out.append(sec)
+                            # Task #68: same merge -- res is nested inside the top-level
+                            # "resolutions" list, not the outer parsed dict where
+                            # react_draft/suggest_escalate were injected.
+                            _res_extra = res if isinstance(res, dict) else {}
                             display_message = _answer_card_json_for_client(
                                 mode,
                                 res["direct_answer"],
                                 sections_out,
-                                extra_from=res if isinstance(res, dict) else parsed,
+                                extra_from={**parsed, **_res_extra},
                             )
             override = parsed.get("source_confidence_override")
             if override and str(override).strip() in (
