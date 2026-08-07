@@ -37,8 +37,10 @@ export interface AppealsRulesData {
   carc?: string;
   carc_title?: string;
   archetype?: string;
+  payor?: string;
   rules_found?: number;
   rules?: AppealsRule[];
+  admin_url?: string;   // deep link to the appeals rules-library admin page (footer chip)
 }
 /** data payload for a `format: "appeals_playbook"` section — appeals_get_playbook output, verbatim. */
 export interface AppealsPlaybookDoc { doc?: string; required?: boolean }

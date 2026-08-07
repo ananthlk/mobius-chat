@@ -115,6 +115,33 @@ describe("Appeals typed sections (appeals_rules / appeals_playbook)", () => {
     expect(pills.some((p) => p === "Humana")).toBe(true);
   });
 
+  it("renders the admin deep-link footer when admin_url is a safe http(s) URL", () => {
+    const withAdmin: AnswerCard = {
+      ...appealsCard,
+      sections: [{
+        ...appealsCard.sections[0],
+        data: { ...(appealsCard.sections[0].data as object), admin_url: "https://appeals.test/admin/rules-library" } as unknown as AnswerCard["sections"][number]["data"],
+      }],
+    };
+    const el = renderAnswerCard(withAdmin);
+    const link = el.querySelector(".ac-appeals-admin-link") as HTMLAnchorElement | null;
+    expect(link).not.toBeNull();
+    expect(link!.getAttribute("href")).toBe("https://appeals.test/admin/rules-library");
+    expect(link!.getAttribute("rel")).toContain("noopener");
+  });
+
+  it("drops a non-http admin_url (javascript: is never rendered as a link)", () => {
+    const evil: AnswerCard = {
+      ...appealsCard,
+      sections: [{
+        ...appealsCard.sections[0],
+        data: { ...(appealsCard.sections[0].data as object), admin_url: "javascript:alert(1)" } as unknown as AnswerCard["sections"][number]["data"],
+      }],
+    };
+    const el = renderAnswerCard(evil);
+    expect(el.querySelector(".ac-appeals-admin-link")).toBeNull();
+  });
+
   it("playbook: found:false renders the soft empty state, not a bare card", () => {
     const el = renderAnswerCard({
       direct_answer: "No playbook.",

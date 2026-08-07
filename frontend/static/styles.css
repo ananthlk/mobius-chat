@@ -3616,6 +3616,20 @@ body {
   border-radius: 10px;
 }
 
+/* Admin deep-link footer */
+.ac-appeals-admin {
+  margin-top: 0.15rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--border, #e5e7eb);
+}
+.ac-appeals-admin-link {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--mobius-violet, #7c3aed);
+  text-decoration: none;
+}
+.ac-appeals-admin-link:hover { text-decoration: underline; }
+
 /* Playbook */
 .ac-appeals-playbook-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
 .ac-appeals-deadline {

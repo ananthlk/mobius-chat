@@ -2399,6 +2399,16 @@ function _chip(text, cls) {
   el2.textContent = text;
   return el2;
 }
+function _safeHttpUrl(url) {
+  if (typeof url !== "string" || !url.trim())
+    return null;
+  try {
+    const u = new URL(url.trim());
+    return u.protocol === "http:" || u.protocol === "https:" ? u.href : null;
+  } catch {
+    return null;
+  }
+}
 function _renderAppealsRules(sec, body) {
   const data = sec.data ?? {};
   const wrap = document.createElement("div");
@@ -2515,6 +2525,19 @@ function _renderAppealsRules(sec, body) {
     det.appendChild(expand);
     wrap.appendChild(det);
   });
+  const adminUrl = _safeHttpUrl(data.admin_url);
+  if (adminUrl) {
+    const footer = document.createElement("div");
+    footer.className = "ac-appeals-admin";
+    const a = document.createElement("a");
+    a.className = "ac-appeals-admin-link";
+    a.href = adminUrl;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.textContent = "\u270F Edit rules in Admin \u2192";
+    footer.appendChild(a);
+    wrap.appendChild(footer);
+  }
   body.appendChild(wrap);
 }
 function _renderAppealsPlaybook(sec, body) {
@@ -2550,10 +2573,11 @@ function _renderAppealsPlaybook(sec, body) {
   if (data.submission_method) {
     meta.appendChild(_chip(data.submission_method, "ac-appeals-method"));
   }
-  if (data.portal_url) {
+  const portalUrl = _safeHttpUrl(data.portal_url);
+  if (portalUrl) {
     const a = document.createElement("a");
     a.className = "ac-appeals-portal";
-    a.href = data.portal_url;
+    a.href = portalUrl;
     a.target = "_blank";
     a.rel = "noopener noreferrer";
     a.textContent = "Submission portal";

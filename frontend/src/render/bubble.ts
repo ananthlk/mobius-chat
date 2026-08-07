@@ -185,6 +185,17 @@ function _chip(text: string, cls: string): HTMLElement {
   return el;
 }
 
+/** Only http(s) URLs are honored for tool-authored links — never javascript:/data: etc. */
+function _safeHttpUrl(url: unknown): string | null {
+  if (typeof url !== "string" || !url.trim()) return null;
+  try {
+    const u = new URL(url.trim());
+    return (u.protocol === "http:" || u.protocol === "https:") ? u.href : null;
+  } catch {
+    return null;
+  }
+}
+
 function _renderAppealsRules(sec: AnswerCardSection, body: HTMLElement): void {
   const data = (sec.data as unknown as AppealsRulesData) ?? {};
   const wrap = document.createElement("div");
@@ -317,6 +328,21 @@ function _renderAppealsRules(sec: AnswerCardSection, body: HTMLElement): void {
     wrap.appendChild(det);
   });
 
+  // Footer: deep link to the appeals rules-library admin page (scheme-guarded).
+  const adminUrl = _safeHttpUrl(data.admin_url);
+  if (adminUrl) {
+    const footer = document.createElement("div");
+    footer.className = "ac-appeals-admin";
+    const a = document.createElement("a");
+    a.className = "ac-appeals-admin-link";
+    a.href = adminUrl;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.textContent = "✏ Edit rules in Admin →";
+    footer.appendChild(a);
+    wrap.appendChild(footer);
+  }
+
   body.appendChild(wrap);
 }
 
@@ -358,10 +384,11 @@ function _renderAppealsPlaybook(sec: AnswerCardSection, body: HTMLElement): void
   if (data.submission_method) {
     meta.appendChild(_chip(data.submission_method, "ac-appeals-method"));
   }
-  if (data.portal_url) {
+  const portalUrl = _safeHttpUrl(data.portal_url);
+  if (portalUrl) {
     const a = document.createElement("a");
     a.className = "ac-appeals-portal";
-    a.href = data.portal_url;
+    a.href = portalUrl;
     a.target = "_blank";
     a.rel = "noopener noreferrer";
     a.textContent = "Submission portal";
