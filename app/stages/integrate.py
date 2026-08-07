@@ -1108,11 +1108,6 @@ def run_integrate(
             # tune only against evidence of false positives there.
             _groundedness_passed = getattr(ctx, "react_groundedness_passed", None)
             _react_draft = getattr(ctx, "react_draft", None)
-            logger.info(
-                "[react_draft] present=%s len=%d correlation_id=%s",
-                _react_draft is not None, len((_react_draft or "")),
-                getattr(ctx, "correlation_id", "?"),
-            )
             _evidence_empty = not (_react_draft or "").strip() or len((_react_draft or "").strip()) < 50
             _stalled = (
                 getattr(ctx, "react_unfinished_reason", None) == "no_path_forward"
