@@ -1086,6 +1086,19 @@ def run_integrate(
             # tune only against evidence of false positives there.
             _groundedness_passed = getattr(ctx, "react_groundedness_passed", None)
             _react_draft = getattr(ctx, "react_draft", None)
+            # 2026-08-07 (Task #68 diagnostic): react_draft/suggest_escalate reportedly
+            # not persisting for quick-mode turns despite draft_ready firing correctly
+            # live -- logging the actual ctx state at the exact read point rather than
+            # guessing further, since static analysis of the write site
+            # (orchestrator.py:708, mode-agnostic) and this read site both look correct
+            # in isolation, and a direct reproduction with react_draft manually set on
+            # ctx persists correctly. If ctx.react_draft is genuinely absent here on a
+            # confirmed quick-mode turn, the gap is upstream of this file.
+            logger.info(
+                "[react_draft] mode=%s present=%s len=%d correlation_id=%s",
+                getattr(ctx, "chat_mode", None), _react_draft is not None,
+                len((_react_draft or "")), getattr(ctx, "correlation_id", "?"),
+            )
             _evidence_empty = not (_react_draft or "").strip() or len((_react_draft or "").strip()) < 50
             _stalled = (
                 getattr(ctx, "react_unfinished_reason", None) == "no_path_forward"
