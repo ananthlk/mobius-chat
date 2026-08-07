@@ -2355,7 +2355,23 @@ def _finalize_response(
     # name integrate.py could read the FULL set from. ctx.rag_chunks is that
     # name: a plain alias, not new data collection, so integrate.py can
     # choose how much of it to use instead of being hard-capped upstream.
-    ctx.rag_chunks = list(ctx.sources)
+    # 2026-08-07 (Task #58, schema approved by coordinator) -- field names
+    # renamed from SourceRef.to_dict()'s shape to the approved contract
+    # (authority->authority_level, confidence_label->confidence,
+    # rerank_score->score). Still the full unified pool, uncapped -- no
+    # top-7 slicing here, that's integrate.py's consumption-layer choice.
+    ctx.rag_chunks = [
+        {
+            "index": s.get("index"),
+            "text": s.get("text", ""),
+            "document_name": s.get("document_name", ""),
+            "authority_level": s.get("authority"),
+            "confidence": s.get("confidence_label"),
+            "score": s.get("rerank_score") if s.get("rerank_score") is not None else s.get("original_score"),
+            "filler_strategy": s.get("filler_strategy"),
+        }
+        for s in ctx.sources
+    ]
     ctx.retrieval_signals = [final_signal] if final_signal else [RETRIEVAL_SIGNAL_NO_SOURCES]
     # Quick mode: flag long answers so the mini container shows "Full answer →" link
     if react_chat_mode_label(getattr(ctx, "chat_mode", None)) == "quick":
@@ -2376,37 +2392,127 @@ def _finalize_response(
     # it stays in sync with every append inside the loop — no need to pass it here.
     _all_tr = list(getattr(ctx, "react_tool_results", None) or []) + list(getattr(ctx, "seed_tool_results", None) or [])
     _all_hints: list[dict] = []
+    _hinted_tr_ids: set[int] = set()
     for _tr in _all_tr:
+        _had_hint = False
         if _tr.get("section_hint"):
             _all_hints.append(_tr["section_hint"])
+            _had_hint = True
         if _tr.get("section_hints"):
             _all_hints.extend(_tr["section_hints"])
+            _had_hint = True
+        if _had_hint:
+            _hinted_tr_ids.add(id(_tr))
     if _all_hints:
         ctx.tool_section_hints = _all_hints
 
-    # 2026-08-07 (Task #58, Chat Architecture directive, Ananth's ruling on
-    # envelope taxonomy) -- "typed tool outputs, grouped by tool: appeals
-    # tools, analytics/financial, lookup_authoritative_sources." rag is
-    # deliberately excluded here -- that's ctx.rag_chunks' unified pool,
-    # above. Unlike tool_section_hints (a curated/extracted subset for
-    # rendering), this is the RAW result string exactly as the tool
-    # returned it, so the enricher isn't limited to whatever a section_hint
-    # happened to extract. Keyed by tool name -> LIST, not a single dict:
-    # the exact live case motivating this (appeals_get_playbook called 7x
-    # in one turn, see the zero-result fix earlier today) would silently
-    # lose every call but the last under a single-value dict.
-    _tool_outputs: dict[str, list[dict]] = {}
+    # 2026-08-07 (Task #58, schema approved by coordinator) -- typed tool
+    # outputs, grouped by tool family, not a flat dict[name, raw-string].
+    # rag is excluded -- that's ctx.rag_chunks' job. No-duplicate rule: a
+    # call whose section_hint already carries this data (_hinted_tr_ids,
+    # built above) is skipped here so the enricher doesn't receive the
+    # same content twice through two different channels.
+    #
+    # Field names/shapes below are grounded in live calls to the appeals
+    # API (curl'd directly, not guessed): /rules/{carc} returns rule_id/
+    # rule_name/rule_statement/appeal_argument/authority exactly matching
+    # the approved contract. appeals_find_carc nests rules per-candidate
+    # (matches[i].rules); appeals_lookup_rules has them top-level -- both
+    # feed the same unified "rules" list. "validation" is a 4th key beyond
+    # the 3 named in the approved schema (letter/rules/playbook) --
+    # appeals_validate_claim's recommendation+confidence output has nowhere
+    # else to go and dropping it would contradict the entire point of this
+    # task (integrator needs ALL collected information); flagged in the
+    # commit/report rather than silently fit into an existing key.
+    _appeals_letter: dict | None = None
+    _appeals_rules: list[dict] = []
+    _appeals_playbook: dict | None = None
+    _appeals_validation: dict | None = None
+    _authoritative_sources: list = []
+    _analytics: list = []
+
+    def _parse_json_result(raw: str) -> Any:
+        try:
+            return json.loads(raw) if raw else None
+        except (TypeError, ValueError):
+            return None
+
     for _tr in _all_tr:
-        _t = _tr.get("tool")
-        if not _t or _t in ("rag", "search_corpus"):
+        if id(_tr) in _hinted_tr_ids:
             continue
-        _tool_outputs.setdefault(_t, []).append({
-            "success": _tr.get("success", False),
-            "result": _tr.get("result", ""),
-            "result_summary": _tr.get("result_summary"),
-        })
+        _t = _tr.get("tool")
+        if not _t or _t in ("rag", "search_corpus") or not _tr.get("success"):
+            continue
+        _raw = _tr.get("result") or ""
+
+        if _t == "appeals_assemble_letter":
+            # Sourced from ctx.recital when present (already the verbatim
+            # text, set by the dispatch handler) rather than re-parsing
+            # _raw, which is plain letter text here, not JSON.
+            _rec = getattr(ctx, "recital", None)
+            if isinstance(_rec, dict) and _rec.get("text"):
+                _appeals_letter = {
+                    "verbatim": _rec["text"],
+                    "document_id": _rec.get("document_id"),
+                    "section": _rec.get("section"),
+                }
+        elif _t in ("appeals_find_carc", "appeals_lookup_rules"):
+            _parsed = _parse_json_result(_raw)
+            if isinstance(_parsed, dict):
+                if isinstance(_parsed.get("rules"), list):
+                    _appeals_rules.extend(_parsed["rules"])
+                for _m in (_parsed.get("matches") or []):
+                    if isinstance(_m, dict) and isinstance(_m.get("rules"), list):
+                        _appeals_rules.extend(_m["rules"])
+        elif _t == "appeals_get_playbook":
+            _parsed = _parse_json_result(_raw)
+            if isinstance(_parsed, dict) and _parsed.get("found"):
+                _candidate = {k: v for k, v in _parsed.items() if k != "found"}
+                # Later usable calls win over earlier empty ones -- "usable"
+                # (has a deadline or method) always beats a found-but-empty
+                # result, matching the zero-result fix's own definition.
+                _usable = bool(_candidate.get("deadline_appeal_days") is not None or _candidate.get("submission_method"))
+                if _appeals_playbook is None or _usable:
+                    _appeals_playbook = _candidate
+        elif _t == "appeals_validate_claim":
+            _parsed = _parse_json_result(_raw)
+            if isinstance(_parsed, dict):
+                _appeals_validation = _parsed
+        elif _t == "lookup_authoritative_sources":
+            _parsed = _parse_json_result(_raw)
+            if isinstance(_parsed, dict) and isinstance(_parsed.get("sources"), list):
+                _authoritative_sources.extend(_parsed["sources"])
+
+    _appeals: dict[str, Any] = {}
+    if _appeals_letter is not None:
+        _appeals["letter"] = _appeals_letter
+    if _appeals_rules:
+        _appeals["rules"] = _appeals_rules
+    if _appeals_playbook is not None:
+        _appeals["playbook"] = _appeals_playbook
+    if _appeals_validation is not None:
+        _appeals["validation"] = _appeals_validation
+
+    _tool_outputs: dict[str, Any] = {}
+    if _appeals:
+        _tool_outputs["appeals"] = _appeals
+    if _analytics:
+        _tool_outputs["analytics"] = _analytics
+    if _authoritative_sources:
+        _tool_outputs["authoritative_sources"] = _authoritative_sources
     if _tool_outputs:
         ctx.tool_outputs = _tool_outputs
+
+    # 2026-08-07 (Task #58, schema approved by coordinator) -- reasoning_trace
+    # is an alias of react_trace_rounds under the approved name, not a
+    # rename: react_trace_rounds also feeds the existing react_trace
+    # diagnostics panel below and shouldn't be disturbed. Uncapped here --
+    # LLM Agent's stated preference is to receive everything and do their
+    # own round-selection/capping at the prompt-construction layer, same
+    # principle as the result-field truncation rule.
+    _reasoning_trace = getattr(ctx, "react_trace_rounds", None)
+    if _reasoning_trace:
+        ctx.reasoning_trace = list(_reasoning_trace)
 
     # react_trace diagnostics panel (2026-07-31) — one per turn, same
     # "diagnostic-only, doesn't affect the answer" tier as retrieval_trace.
@@ -3293,6 +3399,30 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 ctx._evidence_review_latest = {  # type: ignore[attr-defined]
                     "round": rn, "running_answer": _running_answer, "gaps": _gaps,
                 }
+
+        # 2026-08-07 (Task #58, "factory model" directive) -- the actual
+        # gap Chat Master identified: evidence_review already computes real
+        # per-round enrichment (LEARNED, running_answer recomputed from
+        # kept evidence, gaps), it just wasn't PERSISTED past the current
+        # round (ctx._evidence_review_latest gets overwritten every round)
+        # or PAIRED to the tool call/round that produced it. This closes
+        # that gap by writing it onto the SAME dict ctx.react_trace_rounds
+        # already appended for this round (line ~3146, before the LLM
+        # call) -- mutated here now that thought/tool/inputs/evidence_review
+        # are known, rather than a second parallel structure.
+        # Note: today's "gaps" is one free-text field, not split into
+        # closed/open lists -- that split would need a further prompts.py
+        # schema change not made here; flagged, not fabricated.
+        if ctx.react_trace_rounds and ctx.react_trace_rounds[-1].get("round") == rn:
+            ctx.react_trace_rounds[-1].update({
+                "tool": tool,
+                "inputs": inputs,
+                "enrichment": {
+                    "learned": thought,
+                    "running_answer": _evidence_review.get("running_answer") if _evidence_review else "",
+                    "gaps": _evidence_review.get("gaps") if _evidence_review else "",
+                } if (thought or _evidence_review) else None,
+            })
 
         # Task mode: no tool calls ever. If the LLM tried to call a tool
         # despite the task-mode system prompt, finalize immediately.

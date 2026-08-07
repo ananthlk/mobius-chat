@@ -1,21 +1,31 @@
-"""ctx.rag_chunks + ctx.tool_outputs (2026-08-07, Task #58, Chat
-Architecture directive, Ananth's ruling on envelope taxonomy).
+"""ctx.rag_chunks + ctx.tool_outputs + ctx.reasoning_trace (2026-08-07,
+Task #58, schema approved by coordinator, Ananth's ruling on envelope
+taxonomy + "factory model" inline enrichment).
 
-Two types only: (1) ctx.rag_chunks -- unified pool of every rag chunk
-retrieved this turn, all filler arms merged, full per-chunk metadata
-(authority/confidence/score/source/filler_strategy) -- an alias for the
-already-full ctx.sources, exposed under a stable name so integrate.py
-isn't limited to whatever top-N slice it happens to take. (2)
-ctx.tool_outputs -- raw results from every non-rag tool call this turn,
-keyed by tool name -> LIST (not a single value; a tool called more than
-once in one turn, like appeals_get_playbook in the live COB trace, must
-not lose every call but the last).
+ctx.rag_chunks: unified pool of every rag chunk retrieved this turn, all
+filler arms merged, renamed to the approved field contract (authority ->
+authority_level, confidence_label -> confidence, rerank_score -> score).
+Full pool, uncapped -- integrate.py's top-N slicing is a downstream
+consumption choice, not baked in here.
+
+ctx.tool_outputs: typed, grouped by tool FAMILY (appeals: letter/rules/
+playbook/validation; analytics; authoritative_sources) -- not a flat
+dict[tool_name, raw-string]. rag excluded (that's rag_chunks' job). A
+call whose section_hint already carries equivalent data is skipped here
+(no-duplicate rule) so the enricher doesn't see the same content twice.
+
+ctx.reasoning_trace: alias of ctx.react_trace_rounds, now carrying
+tool/inputs/enrichment (learned/running_answer/gaps) per round -- the
+gap Chat Master identified: evidence_review already computed real
+per-round interpretation, it just wasn't persisted past the current
+round or paired to the tool call that produced it.
 
 Same test pattern as test_section_hint_pipeline.py: SimpleNamespace ctx,
 call _finalize_response directly, assert on the ctx fields it sets.
 """
 from __future__ import annotations
 
+import json
 import types
 
 from app.pipeline.react_loop import _finalize_response
@@ -51,12 +61,16 @@ def _chunk(doc="Sunshine Provider Manual", authority="authoritative", rerank=0.6
 
 
 class TestRagChunksUnifiedPool:
-    def test_rag_chunks_mirrors_full_deduped_sources(self):
-        chunks = [_chunk(doc="Doc A"), _chunk(doc="Doc B", strategy="fact_store")]
+    def test_rag_chunks_renamed_field_contract(self):
+        chunks = [_chunk(doc="Doc A", authority="contract_source_of_truth", rerank=0.9, strategy="vector_rerank")]
         ctx = _make_ctx()
         _finalize_response(ctx, "answer", chunks, "corpus_only", "rag", None)
-        assert ctx.rag_chunks == ctx.sources
-        assert len(ctx.rag_chunks) == 2
+        c = ctx.rag_chunks[0]
+        assert c["authority_level"] == "contract_source_of_truth"
+        assert c["confidence"] == "high"
+        assert c["score"] == 0.9
+        assert c["filler_strategy"] == "vector_rerank"
+        assert c["document_name"] == "Doc A"
 
     def test_rag_chunks_not_capped_to_seven(self):
         """The whole point: integrate.py's source_texts caps at 7 for
@@ -66,14 +80,6 @@ class TestRagChunksUnifiedPool:
         ctx = _make_ctx()
         _finalize_response(ctx, "answer", chunks, "corpus_only", "rag", None)
         assert len(ctx.rag_chunks) == 12
-
-    def test_rag_chunks_carries_per_chunk_metadata(self):
-        chunks = [_chunk(doc="Doc A", authority="contract_source_of_truth", rerank=0.9, strategy="vector_rerank")]
-        ctx = _make_ctx()
-        _finalize_response(ctx, "answer", chunks, "corpus_only", "rag", None)
-        c = ctx.rag_chunks[0]
-        assert c["authority"] == "contract_source_of_truth"
-        assert c["filler_strategy"] == "vector_rerank"
 
     def test_no_arm_separation_all_fillers_in_one_list(self):
         """Different filler_strategy values (a/b/c/d/s equivalents) land
@@ -91,50 +97,86 @@ class TestRagChunksUnifiedPool:
         assert ctx.rag_chunks == []
 
 
-class TestToolOutputsGroupedByTool:
-    def test_non_rag_tool_output_captured(self):
+class TestToolOutputsTypedByFamily:
+    def test_appeals_rules_from_lookup_rules(self):
+        rule = {"rule_id": "COB.R001", "rule_name": "Payor of Last Resort", "rule_statement": "...",
+                "appeal_argument": "...", "authority": {"state": None, "federal": None, "clinical": None}}
         ctx = _make_ctx(react_tool_results=[
-            {"tool": "appeals_find_carc", "success": True, "result": '{"carc": "22"}'},
+            {"tool": "appeals_lookup_rules", "success": True, "result": json.dumps({"carc": 22, "rules": [rule]})},
+        ])
+        _finalize_response(ctx, "answer", [], "no_sources", "appeals_lookup_rules", None)
+        assert ctx.tool_outputs["appeals"]["rules"] == [rule]
+
+    def test_appeals_rules_unified_from_find_carc_nested_matches(self):
+        """appeals_find_carc nests rules per-candidate (matches[i].rules)
+        -- must still land in the SAME unified rules list as
+        appeals_lookup_rules' top-level rules."""
+        rule = {"rule_id": "COB.R002", "rule_name": "x", "rule_statement": "y", "appeal_argument": "z", "authority": {}}
+        ctx = _make_ctx(react_tool_results=[
+            {"tool": "appeals_find_carc", "success": True,
+             "result": json.dumps({"matches": [{"carc": 22, "rules": [rule]}], "top_carc": 22})},
         ])
         _finalize_response(ctx, "answer", [], "no_sources", "appeals_find_carc", None)
-        assert ctx.tool_outputs["appeals_find_carc"] == [
-            {"success": True, "result": '{"carc": "22"}', "result_summary": None},
-        ]
+        assert ctx.tool_outputs["appeals"]["rules"] == [rule]
+
+    def test_appeals_letter_sourced_from_recital_not_raw_result(self):
+        """appeals_assemble_letter's raw result is plain letter TEXT, not
+        JSON, when successful -- must come from ctx.recital (already the
+        verbatim text the dispatch handler set), not a JSON re-parse."""
+        ctx = _make_ctx(
+            react_tool_results=[{"tool": "appeals_assemble_letter", "success": True, "result": "Dear Sunshine Health,..."}],
+            recital={"verbatim": True, "text": "Dear Sunshine Health,..."},
+        )
+        _finalize_response(ctx, "answer", [], "no_sources", "appeals_assemble_letter", None)
+        assert ctx.tool_outputs["appeals"]["letter"]["verbatim"] == "Dear Sunshine Health,..."
+
+    def test_appeals_playbook_usable_call_wins_over_empty_ones(self):
+        """The exact live COB trace: 7 appeals_get_playbook calls, most
+        found-but-empty (the zero-result fix's own definition), one
+        (if any) with real data. The usable one must win regardless of
+        call order."""
+        empty = json.dumps({"found": True})
+        usable = json.dumps({"found": True, "deadline_appeal_days": 90, "submission_method": "provider portal"})
+        ctx = _make_ctx(react_tool_results=[
+            {"tool": "appeals_get_playbook", "success": True, "result": empty},
+            {"tool": "appeals_get_playbook", "success": True, "result": usable},
+            {"tool": "appeals_get_playbook", "success": True, "result": empty},
+        ])
+        _finalize_response(ctx, "answer", [], "no_sources", "appeals_get_playbook", None)
+        assert ctx.tool_outputs["appeals"]["playbook"]["deadline_appeal_days"] == 90
+
+    def test_appeals_playbook_not_found_produces_no_playbook_key(self):
+        ctx = _make_ctx(react_tool_results=[
+            {"tool": "appeals_get_playbook", "success": True, "result": json.dumps({"found": False, "message": "no playbook"})},
+        ])
+        _finalize_response(ctx, "answer", [], "no_sources", "appeals_get_playbook", None)
+        assert "playbook" not in getattr(ctx, "tool_outputs", {}).get("appeals", {})
+
+    def test_appeals_validation_is_a_fourth_key_not_dropped(self):
+        """appeals_validate_claim doesn't fit letter/rules/playbook --
+        must not be silently discarded (that would contradict the whole
+        point of this task: integrator needs ALL collected information)."""
+        ctx = _make_ctx(react_tool_results=[
+            {"tool": "appeals_validate_claim", "success": True, "result": json.dumps({"action": "appeal", "confidence": "high"})},
+        ])
+        _finalize_response(ctx, "answer", [], "no_sources", "appeals_validate_claim", None)
+        assert ctx.tool_outputs["appeals"]["validation"] == {"action": "appeal", "confidence": "high"}
+
+    def test_authoritative_sources_captured(self):
+        ctx = _make_ctx(react_tool_results=[
+            {"tool": "lookup_authoritative_sources", "success": True,
+             "result": json.dumps({"sources": [{"url": "https://sunshinehealth.com/manual.pdf"}]})},
+        ])
+        _finalize_response(ctx, "answer", [], "no_sources", "lookup_authoritative_sources", None)
+        assert ctx.tool_outputs["authoritative_sources"] == [{"url": "https://sunshinehealth.com/manual.pdf"}]
 
     def test_rag_excluded_lives_in_rag_chunks_instead(self):
         ctx = _make_ctx(react_tool_results=[
             {"tool": "rag", "success": True, "result": "[1] Doc A\ntext"},
-            {"tool": "appeals_find_carc", "success": True, "result": "{}"},
+            {"tool": "appeals_lookup_rules", "success": True, "result": json.dumps({"rules": []})},
         ])
-        _finalize_response(ctx, "answer", [], "no_sources", "appeals_find_carc", None)
-        assert "rag" not in ctx.tool_outputs
-        assert "appeals_find_carc" in ctx.tool_outputs
-
-    def test_repeated_calls_to_same_tool_all_preserved_not_overwritten(self):
-        """The exact live regression this schema fixes: appeals_get_playbook
-        called 7x in the COB trace -- a single-value dict would keep only
-        the last call and lose the other 6."""
-        ctx = _make_ctx(react_tool_results=[
-            {"tool": "appeals_get_playbook", "success": True, "result": '{"attempt": 1}'},
-            {"tool": "appeals_get_playbook", "success": False, "result": '{"attempt": 2}'},
-            {"tool": "appeals_get_playbook", "success": True, "result": '{"attempt": 3}'},
-        ])
-        _finalize_response(ctx, "answer", [], "no_sources", "appeals_get_playbook", None)
-        assert len(ctx.tool_outputs["appeals_get_playbook"]) == 3
-        assert [o["result"] for o in ctx.tool_outputs["appeals_get_playbook"]] == [
-            '{"attempt": 1}', '{"attempt": 2}', '{"attempt": 3}',
-        ]
-
-    def test_multiple_distinct_tools_each_get_their_own_key(self):
-        ctx = _make_ctx(react_tool_results=[
-            {"tool": "appeals_find_carc", "success": True, "result": "{}"},
-            {"tool": "appeals_get_playbook", "success": True, "result": "{}"},
-            {"tool": "lookup_authoritative_sources", "success": True, "result": "{}"},
-        ])
-        _finalize_response(ctx, "answer", [], "no_sources", "appeals_find_carc", None)
-        assert set(ctx.tool_outputs.keys()) == {
-            "appeals_find_carc", "appeals_get_playbook", "lookup_authoritative_sources",
-        }
+        _finalize_response(ctx, "answer", [], "no_sources", "appeals_lookup_rules", None)
+        assert "rag" not in getattr(ctx, "tool_outputs", {})
 
     def test_no_tool_outputs_attribute_when_only_rag_called(self):
         ctx = _make_ctx(react_tool_results=[
@@ -143,13 +185,96 @@ class TestToolOutputsGroupedByTool:
         _finalize_response(ctx, "answer", [], "no_sources", "rag", None)
         assert getattr(ctx, "tool_outputs", None) is None
 
+    def test_no_duplicate_when_section_hint_already_present(self):
+        """A call whose section_hint already carries this data must be
+        skipped from tool_outputs -- the enricher shouldn't see the same
+        rules content twice through two different channels."""
+        hint = {"section_format": "appeals_rules", "label": "Appeal rules", "data": {"rules": ["already-hinted"]}}
+        ctx = _make_ctx(react_tool_results=[
+            {"tool": "appeals_lookup_rules", "success": True, "result": json.dumps({"rules": [{"rule_id": "X"}]}),
+             "section_hint": hint},
+        ])
+        _finalize_response(ctx, "answer", [], "no_sources", "appeals_lookup_rules", None)
+        assert "appeals" not in getattr(ctx, "tool_outputs", {})
+
+    def test_failed_calls_excluded(self):
+        ctx = _make_ctx(react_tool_results=[
+            {"tool": "appeals_lookup_rules", "success": False, "result": json.dumps({"rules": [{"rule_id": "X"}]})},
+        ])
+        _finalize_response(ctx, "answer", [], "no_sources", "appeals_lookup_rules", None)
+        assert getattr(ctx, "tool_outputs", None) is None
+
     def test_includes_seed_tool_results_too(self):
         """Mirrors tool_section_hints' own behavior -- seed_tool_results
         (carried context from an earlier turn) count the same as this
         turn's react_tool_results."""
         ctx = _make_ctx(
-            react_tool_results=[{"tool": "appeals_find_carc", "success": True, "result": "{}"}],
-            seed_tool_results=[{"tool": "appeals_get_playbook", "success": True, "result": "{}"}],
+            react_tool_results=[{"tool": "appeals_lookup_rules", "success": True, "result": json.dumps({"rules": [{"rule_id": "A"}]})}],
+            seed_tool_results=[{"tool": "appeals_validate_claim", "success": True, "result": json.dumps({"action": "appeal"})}],
         )
-        _finalize_response(ctx, "answer", [], "no_sources", "appeals_find_carc", None)
-        assert set(ctx.tool_outputs.keys()) == {"appeals_find_carc", "appeals_get_playbook"}
+        _finalize_response(ctx, "answer", [], "no_sources", "appeals_lookup_rules", None)
+        assert ctx.tool_outputs["appeals"]["rules"] == [{"rule_id": "A"}]
+        assert ctx.tool_outputs["appeals"]["validation"] == {"action": "appeal"}
+
+
+class TestReasoningTraceAlias:
+    def test_reasoning_trace_mirrors_react_trace_rounds(self):
+        ctx = _make_ctx(react_trace_rounds=[{"round": 1, "directive": "explore"}])
+        _finalize_response(ctx, "answer", [], "no_sources", "rag", None)
+        assert ctx.reasoning_trace == [{"round": 1, "directive": "explore"}]
+
+    def test_absent_when_no_rounds(self):
+        ctx = _make_ctx(react_trace_rounds=[])
+        _finalize_response(ctx, "answer", [], "no_sources", "rag", None)
+        assert getattr(ctx, "reasoning_trace", None) is None
+
+
+class TestEnrichmentPairedToRoundEndToEnd:
+    """Confirms the actual mutation inside run_react's round loop, not
+    just the finalize-time alias: each round's ctx.react_trace_rounds
+    entry gets tool/inputs/enrichment written onto it once that round's
+    decision (including evidence_review) is parsed -- not a separate,
+    disconnected structure."""
+
+    def test_evidence_review_lands_on_the_same_round_it_was_reasoned_in(self):
+        from unittest.mock import patch
+        from app.pipeline.context import PipelineContext
+        from app.pipeline.react_loop import run_react
+
+        ctx = PipelineContext(correlation_id="react-enrich", thread_id=None, message="timely filing deadline?")
+        ctx.merged_state = {}
+        ctx.last_turns = []
+        ctx.effective_message = ctx.message
+
+        reason_count = 0
+
+        def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+            nonlocal reason_count
+            reason_count += 1
+            if reason_count == 1:
+                return '{"thought": "Try rag first.", "tool": "rag", "inputs": {"query": "timely filing"}, "is_complete": false}'
+            return (
+                '{"thought": "Found it.", '
+                '"evidence_review": {"keep": [1], "running_answer": "180 days", "gaps": ""}, '
+                '"tool": null, "inputs": {}, "is_complete": true, '
+                '"answer": "180 days.", "sources": [], "confidence": "high"}'
+            )
+
+        with patch("app.pipeline.react.critic.critic_enabled", return_value=False), \
+             patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm):
+            with patch("app.pipeline.react_loop._execute_tool") as mock_execute:
+                mock_execute.return_value = {
+                    "tool": "rag", "success": True,
+                    "result": "[1] Doc A\n180 calendar days from date of service.",
+                    "signal": "corpus_only", "sources": [], "usage": None,
+                }
+                run_react(ctx, emitter=None)
+
+        assert ctx.final_message == "180 days."
+        # Round 2 is the finalizing round -- its trace entry must carry
+        # the enrichment that was reasoned in that same round, not round 1's.
+        round_2_entries = [r for r in ctx.reasoning_trace if r.get("round") == 2]
+        assert round_2_entries, "expected a trace entry for round 2"
+        enrichment = round_2_entries[0]["enrichment"]
+        assert enrichment["running_answer"] == "180 days"
+        assert enrichment["learned"] == "Found it."
