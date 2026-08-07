@@ -1979,11 +1979,34 @@ def _execute_tool(
                 letter = result.get("letter_draft") or result.get("letter") or ""
                 wc = len(letter.split()) if letter else 0
                 emit(f"✓ Letter assembled ({wc} words)")
+                if letter:
+                    # RECITAL verbatim passthrough (Chat Architecture, 2026-08-06,
+                    # LLM Agent coordinating the enricher side). Root cause: a
+                    # fully-assembled legal letter was flowing through TWO lossy
+                    # paraphrase passes -- react's own "write an answer" LLM step,
+                    # then the integrator's enricher LLM step -- either of which
+                    # can silently drop or reword content that must survive
+                    # verbatim. `ctx.recital` reuses the SAME mechanism the
+                    # skill-registry dispatch path already sets from
+                    # env.extra["recital"] (see the `if _skill_registry.has(tool)`
+                    # branch above) -- integrate.py's existing post-process step
+                    # reads it, sets mode="RECITAL", and injects recital.verbatim
+                    # into the final card regardless of what the enricher's LLM
+                    # call produces for direct_answer/sections. `is_terminal`
+                    # (below) stops react's OWN reasoning from getting a chance
+                    # to paraphrase it into a prose "answer" first -- it's the
+                    # same flag `refuse` sets, but WITHOUT react_bypass_integrate:
+                    # refuse skips the integrator entirely (a bare status string,
+                    # no AnswerCard); this needs the integrator to still run and
+                    # build a real card (citations, next_steps, mode=RECITAL
+                    # chrome) around the untouched letter.
+                    ctx.recital = {"verbatim": True, "text": letter}  # type: ignore[attr-defined]
                 return {
                     "tool": tool, "success": bool(letter),
-                    "result": _json.dumps({**result, "letter": letter, "letter_word_count": wc}),
+                    "result": letter or _json.dumps(result),
                     "signal": None if letter else RETRIEVAL_SIGNAL_NO_SOURCES,
                     "sources": [],
+                    "is_terminal": bool(letter),
                 }
 
         except Exception as _exc:
@@ -3645,8 +3668,24 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         # still works for any remaining tool that returns a final answer.
 
         if result.get("is_terminal"):
-            emit("  Stopping (refuse).")
-            _finalize_response(ctx, "", [], RETRIEVAL_SIGNAL_NO_SOURCES, last_tool, emitter)
+            # Generalized 2026-08-06 for appeals_assemble_letter's RECITAL
+            # passthrough (was hardcoded to refuse's empty-string case only
+            # -- confirmed dead for any other tool since refuse ALSO sets
+            # react_bypass_integrate, which exits the loop earlier at the
+            # §5b bypass check above, so this branch was unreachable before
+            # today). Uses the tool's own result text as the final answer
+            # instead of assuming "nothing to show" -- correct for refuse
+            # too (result="reason") if it's ever reached this path, and
+            # required for appeals_assemble_letter (result=the letter).
+            emit(f"  Stopping ({last_tool or 'terminal result'}).")
+            _finalize_response(
+                ctx,
+                (result.get("result") or "").strip(),
+                [],
+                result.get("signal") or RETRIEVAL_SIGNAL_NO_SOURCES,
+                last_tool,
+                emitter,
+            )
             return
 
         # 2026-04-18 disconnect: the dual-finalize early exit was tuned

@@ -103,6 +103,110 @@ def test_execute_tool_refuse_result_carries_reason():
     assert r["result"] == "PHI or clinical guidance"
 
 
+class TestAppealsAssembleLetterRecitalPassthrough:
+    """2026-08-06, Chat Architecture spec: a fully-assembled legal appeal
+    letter was flowing through two lossy paraphrase passes (react's own
+    "write an answer" step, then the integrator's enricher) -- either
+    could silently drop or reword content that must survive verbatim.
+    Fix: ctx.recital (the same mechanism the skill-registry dispatch path
+    already sets from env.extra["recital"]) + is_terminal=True (same flag
+    refuse sets, but WITHOUT react_bypass_integrate -- refuse skips the
+    integrator entirely; this needs the integrator to still run and build
+    a real card around the untouched letter)."""
+
+    def _ctx(self) -> PipelineContext:
+        ctx = PipelineContext(correlation_id="c", thread_id=None, message="Assemble an appeal letter for CARC 16")
+        ctx.effective_message = ctx.message
+        ctx.merged_state = {}
+        return ctx
+
+    def test_successful_letter_sets_recital_verbatim(self):
+        ctx = self._ctx()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"letter_draft": "Dear Sunshine Health,\n\nThis is our formal appeal..."}
+        mock_resp.raise_for_status.return_value = None
+        with patch("httpx.Client") as MockClient:
+            MockClient.return_value.__enter__.return_value.post.return_value = mock_resp
+            _execute_tool("appeals_assemble_letter", {"carc": "16", "payor": "Sunshine Health"}, ctx, None)
+        assert getattr(ctx, "recital", None) == {
+            "verbatim": True,
+            "text": "Dear Sunshine Health,\n\nThis is our formal appeal...",
+        }
+
+    def test_successful_letter_result_is_plain_text_not_json(self):
+        """result['result'] must be the plain letter (it becomes
+        ctx.final_message via the is_terminal handler) -- not the
+        JSON-encoded blob, which would show raw JSON as the answer."""
+        ctx = self._ctx()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"letter_draft": "Dear Sunshine Health, this is our appeal."}
+        mock_resp.raise_for_status.return_value = None
+        with patch("httpx.Client") as MockClient:
+            MockClient.return_value.__enter__.return_value.post.return_value = mock_resp
+            r = _execute_tool("appeals_assemble_letter", {"carc": "16"}, ctx, None)
+        assert r["result"] == "Dear Sunshine Health, this is our appeal."
+        assert not r["result"].strip().startswith("{")
+
+    def test_successful_letter_is_terminal_without_bypass_integrate(self):
+        """is_terminal=True (stops react's own reasoning from paraphrasing
+        it) but react_bypass_integrate is NOT set (unlike refuse) -- the
+        integrator must still run so the card gets built around the
+        recital.verbatim text."""
+        ctx = self._ctx()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"letter_draft": "Dear Sunshine Health, this is our appeal."}
+        mock_resp.raise_for_status.return_value = None
+        with patch("httpx.Client") as MockClient:
+            MockClient.return_value.__enter__.return_value.post.return_value = mock_resp
+            r = _execute_tool("appeals_assemble_letter", {"carc": "16"}, ctx, None)
+        assert r.get("is_terminal") is True
+        assert getattr(ctx, "react_bypass_integrate", False) is False
+
+    def test_empty_letter_does_not_set_recital_or_terminal(self):
+        """A failed/empty assembly must not falsely claim terminal-verbatim
+        status -- falls through to normal failure handling instead."""
+        ctx = self._ctx()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"letter_draft": ""}
+        mock_resp.raise_for_status.return_value = None
+        with patch("httpx.Client") as MockClient:
+            MockClient.return_value.__enter__.return_value.post.return_value = mock_resp
+            r = _execute_tool("appeals_assemble_letter", {"carc": "16"}, ctx, None)
+        assert getattr(ctx, "recital", None) is None
+        assert not r.get("is_terminal")
+        assert r["success"] is False
+
+    def test_missing_carc_fails_before_any_http_call(self):
+        ctx = self._ctx()
+        with patch("httpx.Client") as MockClient:
+            r = _execute_tool("appeals_assemble_letter", {}, ctx, None)
+        MockClient.assert_not_called()
+        assert r["success"] is False
+        assert "carc is required" in r["result"]
+        assert getattr(ctx, "recital", None) is None
+
+
+class TestIsTerminalHandlerGeneralized:
+    """2026-08-06: the is_terminal handler in run_react()'s main loop was
+    hardcoded to an empty-string final_answer, written only for refuse's
+    "nothing to show" case -- and unreachable even for refuse, since
+    refuse ALSO sets react_bypass_integrate, which exits the loop earlier
+    at the §5b bypass check. Generalized to use the tool's own result
+    text so appeals_assemble_letter's terminal result (the letter itself)
+    reaches _finalize_response instead of being silently discarded."""
+
+    def test_refuse_result_shape_is_compatible_with_generalized_handler(self):
+        """Confirms refuse's own result carries real text in 'result' --
+        if this path is ever reached (e.g. a future refactor drops
+        react_bypass_integrate from refuse), the generalized handler uses
+        the reason text, not an empty string, which is strictly better."""
+        ctx = PipelineContext(correlation_id="c", thread_id=None, message="Is member 12345 eligible?")
+        ctx.effective_message = ctx.message
+        r = _execute_tool("refuse", {"reason": "PHI or clinical guidance"}, ctx, None)
+        assert r.get("is_terminal") is True
+        assert r.get("result") == "PHI or clinical guidance"
+
+
 def test_finalize_response_sets_plan_answers_and_answer_set():
     """_finalize_response sets ctx.plan, ctx.answers, ctx.answer_set for integrate."""
     ctx = PipelineContext(correlation_id="c", thread_id=None, message="What is PA?")
