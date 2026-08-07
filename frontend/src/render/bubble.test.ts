@@ -70,16 +70,25 @@ describe("renderAnswerCard — DOM output (§1.4 tabbed bubble + §1.2 visibilit
 });
 
 describe("Answer tab (Ananth 2026-08-07 — Summary=react_draft, Answer=display_summary, mode-labeled)", () => {
-  it("renders an Answer tab with the mode label and display_summary when display_summary is present", () => {
-    const el = renderAnswerCard({ ...card, mode: "BLENDED", display_summary: "The blended final answer, in full." });
+  it("renders an Answer tab with the CANONICAL badge and display_summary when present", () => {
+    const el = renderAnswerCard({ ...card, mode: "CANONICAL", display_summary: "The authoritative final answer, in full." });
     // Answer tab button exists, positioned after Summary
     const tabs = Array.from(el.querySelectorAll(".ac-tab")).map((t) => t.textContent ?? "");
     expect(tabs.some((t) => t.includes("Answer"))).toBe(true);
-    // panel carries the mode label + the display_summary body
+    // panel carries the mode badge (CANONICAL signals authoritative content) + the display_summary body
     const panel = el.querySelector(".ac-tab-panel--answer")!;
     expect(panel).not.toBeNull();
-    expect(panel.querySelector(".ac-answer-mode-label")?.textContent).toBe("BLENDED");
-    expect(panel.querySelector(".ac-answer-envelope-body")?.textContent).toContain("blended final answer");
+    expect(panel.querySelector(".ac-answer-mode-label")?.textContent).toBe("CANONICAL");
+    expect(panel.querySelector(".ac-answer-envelope-body")?.textContent).toContain("authoritative final answer");
+  });
+
+  it("renders NO mode badge for FACTUAL/BLENDED (default path — nothing to signal; Chat Master 2026-08-07)", () => {
+    const factual = renderAnswerCard({ ...card, mode: "FACTUAL", display_summary: "A factual answer." });
+    expect(factual.querySelector(".ac-tab-panel--answer .ac-answer-mode-label")).toBeNull();
+    const blended = renderAnswerCard({ ...card, mode: "BLENDED", display_summary: "A blended answer." });
+    expect(blended.querySelector(".ac-tab-panel--answer .ac-answer-mode-label")).toBeNull();
+    // but the Answer tab + body still render
+    expect(factual.querySelector(".ac-tab-panel--answer .ac-answer-envelope-body")?.textContent).toContain("factual answer");
   });
 
   it("keeps display_summary OUT of the Summary panel (Summary is react_draft's surface, not the envelope)", () => {

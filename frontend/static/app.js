@@ -2797,7 +2797,7 @@ function renderAnswerCard(card, isError, opts) {
   answerPanelEl.setAttribute("hidden", "");
   if (hasAnswerEnvelope) {
     const modeLabel = (card.mode ?? "").trim().toUpperCase();
-    if (modeLabel) {
+    if (modeLabel === "CANONICAL" || modeLabel === "RECITAL") {
       const lbl = document.createElement("div");
       lbl.className = "ac-answer-mode-label ac-answer-mode-label--" + modeLabel.toLowerCase();
       lbl.textContent = modeLabel;

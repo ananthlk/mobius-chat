@@ -619,9 +619,12 @@ export function renderAnswerCard(
   answerPanelEl.setAttribute("role", "tabpanel");
   answerPanelEl.setAttribute("hidden", "");
   if (hasAnswerEnvelope) {
-    // Mode label — the envelope type, shown inside the tab content (not the tab name).
+    // Mode label — only for envelopes that signal something REAL to the user (Chat Master
+    // 2026-08-07): CANONICAL = authoritative policy content, RECITAL = verbatim legal document.
+    // FACTUAL (now the default path, post FACTUAL/BLENDED merge) and BLENDED carry no badge —
+    // they don't tell the user anything meaningful.
     const modeLabel = (card.mode ?? "").trim().toUpperCase();
-    if (modeLabel) {
+    if (modeLabel === "CANONICAL" || modeLabel === "RECITAL") {
       const lbl = document.createElement("div");
       lbl.className = "ac-answer-mode-label ac-answer-mode-label--" + modeLabel.toLowerCase();
       lbl.textContent = modeLabel;
