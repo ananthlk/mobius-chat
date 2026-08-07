@@ -242,6 +242,45 @@ def _prune_kept_chunks(raw: str, keep: list[int], call_idx: int) -> str:
     return out
 
 
+# 2026-08-07 (Chat Master, Task #65, live-query finding, cid d288d009):
+# fabrication-on-sparse-corpus. 2 kept chunks, 401 chars total, none
+# containing MMA/LTC/Comprehensive -- react_draft still stated "For
+# Comprehensive program members (MMA and Long-Term Care)..." cited as
+# [4]. evidence_review's running_answer had no signal distinguishing
+# "genuinely confident, well-supported" from "thin evidence, extrapolated
+# past what it supports" -- both look like ordinary prose. LLM Agent's
+# refinement: the trigger isn't zero evidence (an empty corpus already
+# hedges correctly, "could not be found") -- it's specifically the
+# middle case, SOME plausible-looking evidence that doesn't actually
+# cover the question's specific claims. A count/char threshold is a
+# coarse proxy for that middle case, not a semantic detector -- it can't
+# know whether 3 kept chunks genuinely answer the question or not, but
+# it CAN flag "this round has very little to work with," which is
+# exactly the condition under which a model should hedge rather than
+# extrapolate.
+_SPARSE_EVIDENCE_CHUNK_THRESHOLD = 3
+_SPARSE_EVIDENCE_CHAR_THRESHOLD = 500
+
+
+def _kept_chunk_stats(raw: str, keep: list[int]) -> tuple[int, int]:
+    """(count, total_text_chars) for the chunks in `keep`, measuring only
+    the chunk TEXT (not the "[N] Doc Name" header) -- header length isn't
+    evidence. Returns (0, 0) for non-chunked results or an empty keep list."""
+    blocks = _extract_chunk_blocks(raw)
+    if not blocks or not keep:
+        return (0, 0)
+    keep_set = set(keep)
+    count = 0
+    chars = 0
+    for chunk_num, block in blocks:
+        if chunk_num not in keep_set:
+            continue
+        count += 1
+        _header, _, text = block.partition("\n")
+        chars += len(text.strip())
+    return (count, chars)
+
+
 from app.state.jurisdiction import rag_filters_from_active
 
 # ---------------------------------------------------------------------------
@@ -3457,6 +3496,21 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             _gaps_closed = _as_str_list(_evidence_review.get("gaps_closed"))
             _gaps_open = _as_str_list(_evidence_review.get("gaps_open"))
 
+            # 2026-08-07 (Chat Master, Task #65): stats computed from the
+            # ORIGINAL raw text (before pruning overwrites it with the
+            # set-aside note) so they reflect what was actually kept, not
+            # a post-pruning string that's already been rewritten.
+            _kept_count, _kept_chars = (0, 0)
+            if tool_results:
+                _kept_count, _kept_chars = _kept_chunk_stats(
+                    tool_results[-1].get("result") or "", _keep,
+                )
+            _sparse_evidence = (
+                bool(_keep)
+                and (_kept_count < _SPARSE_EVIDENCE_CHUNK_THRESHOLD
+                     or _kept_chars < _SPARSE_EVIDENCE_CHAR_THRESHOLD)
+            )
+
             if tool_results and _keep:
                 _last_call_idx = len(tool_results)
                 _before_len = len((tool_results[-1].get("result") or ""))
@@ -3465,6 +3519,8 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 )
                 _after_len = len(tool_results[-1]["result"])
                 emit(f"  Evidence review: keeping chunks {_keep} from call {_last_call_idx} ({_before_len}→{_after_len} chars)")
+                if _sparse_evidence:
+                    emit(f"  ⚠ Thin evidence: {_kept_count} chunk(s), {_kept_chars} chars — hedge required")
             elif tool_results:
                 emit("  Evidence review: no chunks marked relevant from the last result")
 
@@ -3479,6 +3535,8 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 ctx._evidence_review_latest = {  # type: ignore[attr-defined]
                     "round": rn, "running_answer": _running_answer,
                     "gaps_closed": _gaps_closed, "gaps_open": _gaps_open,
+                    "sparse_evidence": _sparse_evidence,
+                    "kept_chunk_count": _kept_count, "kept_chunk_chars": _kept_chars,
                 }
 
         # 2026-08-07 (Task #58, "factory model" directive, schema approved

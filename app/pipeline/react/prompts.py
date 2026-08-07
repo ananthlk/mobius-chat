@@ -419,6 +419,7 @@ REACT_CRITICAL_RULES_TEXT = """CRITICAL RULES:
 1c-2. **LEARNED must actually fill the answer, not just narrate.** The "evidence_review" object (required alongside "thought" from round 2 on, in BOTH the tool-call shape and the final-answer shape, see REACT_RESPONSE_SHAPE) is where LEARNED becomes concrete instead of prose:
     - **keep**: read every numbered chunk in the last tool result — all of it, nothing is truncated — and list which chunk numbers actually bear on this question. Don't skim the first chunk and stop; the answer is as likely to be chunk 6 of 12 as chunk 1.
     - **running_answer**: recompute this from scratch using ONLY the kept chunks — this is your real confidence check. If running_answer already states the answer clearly, stop hunting: set is_complete=true this round. Continuing to call rag after running_answer already has the fact is wasted rounds and a false "not found" waiting to happen.
+    - **Citation discipline — state only what the chunk text literally says.** Cite a chunk ONLY for claims that chunk's own text actually contains, verbatim or near-verbatim — never attribute a specific number, name, program, rule, or eligibility detail to a citation unless that chunk states it. This holds even on a rich-corpus turn with plenty of evidence: a fabricated citation is wrong regardless of how much OTHER evidence you have. If you're generalizing or inferring beyond what a chunk literally states, don't attach that chunk's citation to the inferred part — say it's an inference, or leave it uncited. (2026-08-07, Chat Master/LLM Agent, live finding: react_draft cited chunk [4] for "Comprehensive program members (MMA and Long-Term Care)" when the kept chunks — 2 of them, 401 chars total — never mentioned MMA, LTC, or Comprehensive at all.)
     - **gaps_closed** / **gaps_open**: name specific missing pieces, not "need more info." gaps_closed is what THIS round's tool result actually resolved (empty array most rounds — only list something here if this round is what closed it); gaps_open is everything still unresolved after incorporating this round's evidence. Both are lists, not prose — a gap tracker downstream reads these directly.
     - Chunks you do NOT keep are not deleted — they stay recallable this turn via recall_evidence (see manifest) using the ref shown in that chunk's set-aside note. Don't re-run rag for something you already retrieved; recall it instead.
     - **On the round where you finalize (is_complete=true): still fill out evidence_review.** This is the round the answer actually shipped from — its keep-list and running_answer are the audit trail for what grounded it. Skipping evidence_review here because "the answer field already has it" defeats the point: evidence_review is the structured, trackable record; "answer" is the user-facing prose.
@@ -1017,14 +1018,41 @@ def build_reasoning_context(
     # buried inside a "thought" string that gets discarded each round.
     _ev_latest = evidence_review_latest or getattr(ctx, "_evidence_review_latest", None)
     if isinstance(_ev_latest, dict) and (_ev_latest.get("running_answer") or _ev_latest.get("gaps_open")):
-        parts.append(
-            "[Evidence Review — your own running verdict, from last round]\n"
-            f"running_answer: {_ev_latest.get('running_answer') or '(none yet)'}\n"
-            f"gaps_open: {_ev_latest.get('gaps_open') or []}\n"
-            f"gaps_closed: {_ev_latest.get('gaps_closed') or []}\n"
+        _ev_lines = [
+            "[Evidence Review — your own running verdict, from last round]",
+            f"running_answer: {_ev_latest.get('running_answer') or '(none yet)'}",
+            f"gaps_open: {_ev_latest.get('gaps_open') or []}",
+            f"gaps_closed: {_ev_latest.get('gaps_closed') or []}",
+        ]
+        # 2026-08-07 (Chat Master, Task #65, live-query finding, cid
+        # d288d009): code-computed, not a self-report -- react cannot be
+        # trusted to notice its own evidence is thin (confirmed live: 2
+        # kept chunks, 401 chars, none containing the question's key
+        # terms, and running_answer still stated specifics confidently,
+        # cited to a chunk that didn't say them). The trigger isn't zero
+        # evidence -- an empty corpus already hedges correctly ("could
+        # not be found"). It's specifically the middle case: some
+        # plausible-looking evidence that doesn't cover the SPECIFIC
+        # claims being made. This block makes that condition an explicit,
+        # unavoidable instruction for the round, not something react has
+        # to self-diagnose.
+        if _ev_latest.get("sparse_evidence"):
+            _ev_lines.append(
+                f"EVIDENCE IS THIN: only {_ev_latest.get('kept_chunk_count', 0)} chunk(s), "
+                f"{_ev_latest.get('kept_chunk_chars', 0)} chars kept. Your running_answer (and "
+                "final answer, if you finalize this round) MUST hedge explicitly: state only "
+                "facts that are literally present in the kept chunk text, and say plainly what "
+                "you cannot confirm — \"Limited sources available; here's what I found: [X]. "
+                "I cannot confirm [Y].\" Do NOT state specific numbers, names, or eligibility "
+                "rules unless they are actually written in the kept chunks. If the question "
+                "asks for more than the kept evidence supports, say so instead of filling the "
+                "gap with a plausible-sounding guess."
+            )
+        _ev_lines.append(
             "If running_answer already answers the question with confidence, set "
             "is_complete=true now instead of gathering more evidence you don't need."
         )
+        parts.append("\n".join(_ev_lines))
     if getattr(ctx, "_google_search_tried_this_turn", False):
         parts.append(
             "google_search has already been tried this turn and returned no "
