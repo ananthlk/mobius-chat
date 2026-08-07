@@ -531,15 +531,14 @@ def _build_tool_outputs_for_prompt(tool_outputs: dict | None) -> dict:
 
 def _build_reasoning_ledger(react_trace_rounds: list[dict] | None) -> list[dict]:
     """Flattens ctx.react_trace_rounds[].enrichment into the formatter's
-    primary reasoning input (Task #58, factory model). Under the factory
-    model react enriches inline per round (learned/running_answer/gaps);
-    the enricher formats from this rather than re-deriving it from raw
-    evidence. As shipped (react_loop.py, 2026-08-07), gaps is ONE free-text
-    field, not split into gaps_closed/gaps_open -- that split was the
-    originally proposed shape but wasn't built (flagged by ReAct as a
-    follow-up, not fabricated here). Rounds without an enrichment key are
-    skipped, not padded, so the ledger degrades gracefully to empty
-    (react_draft-only) rather than erroring."""
+    primary reasoning input (Task #58/#48, factory model + EvidenceLedger,
+    final shape per react_loop.py commit 42fb8ad). Under the factory model
+    react enriches inline per round (learned/running_answer/gaps_closed/
+    gaps_open); the enricher formats from this rather than re-deriving it
+    from raw evidence. gaps_closed/gaps_open are lists (a same-day interim
+    shape had gaps as one free-text field -- superseded, don't reintroduce).
+    Rounds without an enrichment key are skipped, not padded, so the ledger
+    degrades gracefully to empty (react_draft-only) rather than erroring."""
     out = []
     for r in (react_trace_rounds or []):
         if not isinstance(r, dict):
@@ -548,10 +547,14 @@ def _build_reasoning_ledger(react_trace_rounds: list[dict] | None) -> list[dict]
         if not isinstance(enr, dict):
             continue
         entry: dict = {"round": r.get("round"), "tool": r.get("tool")}
-        for k in ("learned", "running_answer", "gaps"):
+        for k in ("learned", "running_answer"):
             v = enr.get(k)
             if v:
                 entry[k] = str(v)[:500]
+        for k in ("gaps_closed", "gaps_open"):
+            v = enr.get(k)
+            if v:
+                entry[k] = [str(g)[:200] for g in v][:5]
         if len(entry) > 2:  # more than just round/tool
             out.append(entry)
     return out

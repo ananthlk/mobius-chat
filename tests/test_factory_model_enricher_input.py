@@ -139,12 +139,12 @@ class TestBuildReasoningLedger:
         assert _build_reasoning_ledger(rounds) == []
 
     def test_extracts_enrichment_fields(self):
-        """gaps is ONE free-text field as actually shipped (react_loop.py,
-        2026-08-07) -- not split into gaps_closed/gaps_open lists (that was
-        the originally proposed shape, flagged by ReAct as unbuilt)."""
+        """gaps_closed/gaps_open are lists -- final shape per react_loop.py
+        commit 42fb8ad. An interim same-day shape had one free-text "gaps"
+        field; superseded, don't reintroduce."""
         rounds = [{
             "round": 2, "tool": "appeals_find_carc",
-            "enrichment": {"learned": "CARC 22 is a COB denial", "running_answer": "File a COB dispute", "gaps": "EOB on file?"},
+            "enrichment": {"learned": "CARC 22 is a COB denial", "running_answer": "File a COB dispute", "gaps_closed": ["carc meaning"], "gaps_open": ["EOB on file?"]},
         }]
         out = _build_reasoning_ledger(rounds)
         assert len(out) == 1
@@ -153,14 +153,19 @@ class TestBuildReasoningLedger:
         assert entry["tool"] == "appeals_find_carc"
         assert entry["learned"] == "CARC 22 is a COB denial"
         assert entry["running_answer"] == "File a COB dispute"
-        assert entry["gaps"] == "EOB on file?"
+        assert entry["gaps_closed"] == ["carc meaning"]
+        assert entry["gaps_open"] == ["EOB on file?"]
 
-    def test_truncates_long_learned_running_answer_and_gaps(self):
-        rounds = [{"round": 1, "enrichment": {"learned": "x" * 1000, "running_answer": "y" * 1000, "gaps": "z" * 1000}}]
+    def test_truncates_long_learned_and_running_answer(self):
+        rounds = [{"round": 1, "enrichment": {"learned": "x" * 1000, "running_answer": "y" * 1000}}]
         out = _build_reasoning_ledger(rounds)
         assert len(out[0]["learned"]) <= 500
         assert len(out[0]["running_answer"]) <= 500
-        assert len(out[0]["gaps"]) <= 500
+
+    def test_caps_gaps_lists_at_five(self):
+        rounds = [{"round": 1, "enrichment": {"gaps_open": [f"gap {i}" for i in range(10)]}}]
+        out = _build_reasoning_ledger(rounds)
+        assert len(out[0]["gaps_open"]) == 5
 
     def test_multiple_rounds_preserved_in_order(self):
         rounds = [
