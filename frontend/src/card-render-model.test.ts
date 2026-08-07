@@ -19,9 +19,15 @@ describe("§1.4 field→tab map (AC-FE-8)", () => {
     expect(SLOT_TO_TAB.tasks).toBe("tasks");
     expect(SLOT_TO_TAB.diagnostics).toBe("diagnostics");
   });
-  it("Diagnostics is tab 6 (present in TAB_ORDER)", () => {
+  it("Diagnostics is the last tab (present in TAB_ORDER)", () => {
     expect(TAB_ORDER).toContain("diagnostics");
-    expect(TAB_ORDER.indexOf("diagnostics")).toBe(5);
+    expect(TAB_ORDER.indexOf("diagnostics")).toBe(TAB_ORDER.length - 1);
+  });
+  it("Answer sits between Summary and Sources/Citations (Ananth 2026-08-07)", () => {
+    expect(TAB_ORDER.indexOf("answer")).toBe(1);
+    expect(TAB_ORDER.indexOf("answer")).toBeGreaterThan(TAB_ORDER.indexOf("summary"));
+    expect(TAB_ORDER.indexOf("answer")).toBeLessThan(TAB_ORDER.indexOf("citations"));
+    expect(SLOT_TO_TAB.answer_body).toBe("answer");
   });
   it("every slot maps to a real tab", () => {
     for (const slot of SLOT_KEYS) expect(TAB_ORDER).toContain(SLOT_TO_TAB[slot]);

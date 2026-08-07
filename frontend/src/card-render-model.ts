@@ -7,8 +7,11 @@
 // merged card) but the model is defined for N phases so the future progressive path
 // (N>2, post-ReAct migration) is proven before it ramps. legacy single-paint = N=1.
 
-/** The tabs of the answer bubble, in fixed display order (§1.4). */
-export const TAB_ORDER = ["summary", "citations", "corrections", "follow-up", "tasks", "diagnostics"] as const;
+/** The tabs of the answer bubble, in fixed display order (§1.4).
+ *  "answer" (Ananth ruling 2026-08-07, supersedes ruling b): Summary = react_draft (ReAct's own
+ *  synthesis); Answer = the integrator envelope output (display_summary), mode-labeled. Two
+ *  distinct real surfaces — Summary is what ReAct produced, Answer is what the integrator produced. */
+export const TAB_ORDER = ["summary", "answer", "citations", "corrections", "follow-up", "tasks", "diagnostics"] as const;
 export type TabKey = (typeof TAB_ORDER)[number];
 
 /**
@@ -17,6 +20,7 @@ export type TabKey = (typeof TAB_ORDER)[number];
  */
 export const SLOT_KEYS = [
   "summary_answer", // A: direct_answer (the streamed anchor)
+  "answer_body",    // B: display_summary — integrator envelope output, renders in the Answer tab
   "sections",       // A: typed section bodies
   "takeaways",      // B: review, renders in Summary
   "gaps",           // B: review, renders in Summary — UX ruling 2026-07-26 (supersedes Corrections)
@@ -32,6 +36,7 @@ export type SlotKey = (typeof SLOT_KEYS)[number];
 /** §1.4 field→tab map. gaps→Summary per the UX ruling (2026-07-26). */
 export const SLOT_TO_TAB: Readonly<Record<SlotKey, TabKey>> = {
   summary_answer: "summary",
+  answer_body: "answer",
   sections: "summary",
   takeaways: "summary",
   gaps: "summary",

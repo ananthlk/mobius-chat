@@ -620,6 +620,32 @@ export function renderAnswerCard(
     answerPanel.appendChild(note);
   }
 
+  // Answer tab (Ananth ruling 2026-08-07): the integrator envelope output (display_summary),
+  // labeled by which envelope produced it (card.mode: FACTUAL/BLENDED/CANONICAL/RECITAL). This is
+  // the "final answer" surface, distinct from Summary (react_draft). The panel element is ALWAYS
+  // built (so the streaming completed-fill panel-swap has a target); the tab BUTTON appears only
+  // when display_summary is present (see TAB_DOM below).
+  const _displaySummary = (card.display_summary ?? "").trim();
+  const hasAnswerEnvelope = _displaySummary.length > 0;
+  const answerPanelEl = document.createElement("div");
+  answerPanelEl.className = "ac-tab-panel ac-tab-panel--answer";
+  answerPanelEl.setAttribute("role", "tabpanel");
+  answerPanelEl.setAttribute("hidden", "");
+  if (hasAnswerEnvelope) {
+    // Mode label — the envelope type, shown inside the tab content (not the tab name).
+    const modeLabel = (card.mode ?? "").trim().toUpperCase();
+    if (modeLabel) {
+      const lbl = document.createElement("div");
+      lbl.className = "ac-answer-mode-label ac-answer-mode-label--" + modeLabel.toLowerCase();
+      lbl.textContent = modeLabel;
+      answerPanelEl.appendChild(lbl);
+    }
+    const body = document.createElement("div");
+    body.className = "ac-answer-envelope-body";
+    body.innerHTML = simpleMarkdownToHtml(_displaySummary);
+    answerPanelEl.appendChild(body);
+  }
+
   // Tab data — pull from opts
   const _corrections = opts?.corrections ?? [];
   const _nextStepQuestions = opts?.nextQuestions ?? [];
@@ -629,7 +655,7 @@ export function renderAnswerCard(
   const hasCorrections = _corrections.length > 0;
   const hasNextSteps = _nextStepQuestions.length > 0;
   const hasTasks = _nextStepTasks.length > 0;
-  const showTabBar = hasCitations || hasCorrections || hasNextSteps || hasTasks;
+  const showTabBar = hasAnswerEnvelope || hasCitations || hasCorrections || hasNextSteps || hasTasks;
 
   // Citations panel
   const citationsPanel = document.createElement("div");
@@ -823,6 +849,9 @@ export function renderAnswerCard(
     // is reserved here and injected by the admin/QA path when present.
     const TAB_DOM: Partial<Record<TabKey, { label: string; panelKey: string; count: number | undefined }>> = {
       "summary": { label: "Summary", panelKey: "summary", count: undefined },
+      // Answer tab — only listed when display_summary exists (count=undefined → no badge, always
+      // visible like Summary). Omitted otherwise so the bar has no empty Answer button.
+      ...(hasAnswerEnvelope ? { "answer": { label: "Answer", panelKey: "answer", count: undefined } } : {}),
       // Chat Master ruling (b) 2026-08-06: the Citations tab is repurposed into a consolidated
       // "Sources" tab — reference chips (here) + source excerpts (snippets, here) + a collapsible
       // narrative_full_redacted section injected post-render (app.ts completed handler).
@@ -842,6 +871,7 @@ export function renderAnswerCard(
   }
 
   bubble.appendChild(answerPanel);
+  bubble.appendChild(answerPanelEl);
   bubble.appendChild(citationsPanel);
   bubble.appendChild(correctionsPanel);
   bubble.appendChild(nextStepsPanel);

@@ -3462,6 +3462,32 @@ body {
   .ac-fmt-condition-then { justify-self: start; }
 }
 
+/* ─── Answer tab (integrator envelope output, mode-labeled) ─────────────────────
+   Ananth 2026-08-07: Summary = react_draft, Answer = display_summary labeled by envelope. */
+.ac-answer-mode-label {
+  display: inline-block;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #fff;
+  background: var(--mobius-violet, #7c3aed);
+  padding: 0.11rem 0.5rem;
+  border-radius: 4px;
+  margin-bottom: 0.5rem;
+}
+/* Per-envelope tint — FACTUAL is the neutral default (violet); the others shade distinctly. */
+.ac-answer-mode-label--blended { background: #2563eb; }      /* blue — blended synthesis */
+.ac-answer-mode-label--canonical { background: #0f766e; }    /* teal — canonical/authoritative */
+.ac-answer-mode-label--recital { background: #92400e; }      /* amber-brown — verbatim recital */
+.ac-answer-envelope-body {
+  font-size: 0.86rem;
+  line-height: 1.55;
+  color: var(--text-primary, #111827);
+}
+.ac-answer-envelope-body p { margin: 0 0 0.6rem; }
+.ac-answer-envelope-body p:last-child { margin-bottom: 0; }
+
 /* ─── Appeals typed sections (appeals_rules / appeals_playbook) ─────────────────
    Rendered from Appeals Agent pre_built_sections. The appeal_argument is the field the
    coordinator acts on — it gets the violet highlight; everything else is supporting detail. */

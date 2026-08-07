@@ -2241,7 +2241,7 @@ function renderQcAuditBadge(_qc) {
 }
 
 // src/card-render-model.ts
-var TAB_ORDER = ["summary", "citations", "corrections", "follow-up", "tasks", "diagnostics"];
+var TAB_ORDER = ["summary", "answer", "citations", "corrections", "follow-up", "tasks", "diagnostics"];
 
 // src/render/bubble.ts
 var MAX_BULLETS_PER_SECTION = 4;
@@ -2759,6 +2759,25 @@ function renderAnswerCard(card, isError, opts) {
     note.textContent = card.confidence_note;
     answerPanel.appendChild(note);
   }
+  const _displaySummary = (card.display_summary ?? "").trim();
+  const hasAnswerEnvelope = _displaySummary.length > 0;
+  const answerPanelEl = document.createElement("div");
+  answerPanelEl.className = "ac-tab-panel ac-tab-panel--answer";
+  answerPanelEl.setAttribute("role", "tabpanel");
+  answerPanelEl.setAttribute("hidden", "");
+  if (hasAnswerEnvelope) {
+    const modeLabel = (card.mode ?? "").trim().toUpperCase();
+    if (modeLabel) {
+      const lbl = document.createElement("div");
+      lbl.className = "ac-answer-mode-label ac-answer-mode-label--" + modeLabel.toLowerCase();
+      lbl.textContent = modeLabel;
+      answerPanelEl.appendChild(lbl);
+    }
+    const body = document.createElement("div");
+    body.className = "ac-answer-envelope-body";
+    body.innerHTML = simpleMarkdownToHtml(_displaySummary);
+    answerPanelEl.appendChild(body);
+  }
   const _corrections = opts?.corrections ?? [];
   const _nextStepQuestions = opts?.nextQuestions ?? [];
   const _nextStepTasks = opts?.nextStepTasks ?? [];
@@ -2766,7 +2785,7 @@ function renderAnswerCard(card, isError, opts) {
   const hasCorrections = _corrections.length > 0;
   const hasNextSteps = _nextStepQuestions.length > 0;
   const hasTasks = _nextStepTasks.length > 0;
-  const showTabBar = hasCitations || hasCorrections || hasNextSteps || hasTasks;
+  const showTabBar = hasAnswerEnvelope || hasCitations || hasCorrections || hasNextSteps || hasTasks;
   const citationsPanel = document.createElement("div");
   citationsPanel.className = "ac-tab-panel ac-tab-panel--citations";
   citationsPanel.setAttribute("role", "tabpanel");
@@ -2945,6 +2964,9 @@ function renderAnswerCard(card, isError, opts) {
     };
     const TAB_DOM = {
       "summary": { label: "Summary", panelKey: "summary", count: void 0 },
+      // Answer tab — only listed when display_summary exists (count=undefined → no badge, always
+      // visible like Summary). Omitted otherwise so the bar has no empty Answer button.
+      ...hasAnswerEnvelope ? { "answer": { label: "Answer", panelKey: "answer", count: void 0 } } : {},
       // Chat Master ruling (b) 2026-08-06: the Citations tab is repurposed into a consolidated
       // "Sources" tab — reference chips (here) + source excerpts (snippets, here) + a collapsible
       // narrative_full_redacted section injected post-render (app.ts completed handler).
@@ -2964,6 +2986,7 @@ function renderAnswerCard(card, isError, opts) {
     bubble.appendChild(tabBar);
   }
   bubble.appendChild(answerPanel);
+  bubble.appendChild(answerPanelEl);
   bubble.appendChild(citationsPanel);
   bubble.appendChild(correctionsPanel);
   bubble.appendChild(nextStepsPanel);
@@ -8673,7 +8696,6 @@ function _updateBanditAttribution(correlationId) {
     return;
   document.querySelectorAll(`.bandit-attribution[data-bandit-attr-cid="${correlationId}"]`).forEach((wrap) => _fillBanditAttributionBody(correlationId, wrap));
 }
-var _detailAnswers = /* @__PURE__ */ new Map();
 function _reconcileQaAndBanditFromPoll(turnWrap, d) {
   const cid = (d.correlation_id || turnWrap.getAttribute("data-correlation-id") || "").trim();
   const qc = d.qc_audit;
@@ -11275,10 +11297,8 @@ function run() {
           } else if (ev === "detail_ready") {
             const _dContent = typeof data.content === "string" ? data.content : "";
             const _dIntent = typeof data.output_intent === "string" ? data.output_intent : "";
-            if (correlationId && _dContent.trim()) {
-              _detailAnswers.set(correlationId, { content: _dContent, outputIntent: _dIntent });
-              if (onDetailReady)
-                onDetailReady(_dContent, _dIntent);
+            if (correlationId && _dContent.trim() && onDetailReady) {
+              onDetailReady(_dContent, _dIntent);
             }
           } else if (ev === "message" && data.chunk != null && !draftEmitted && onStreamingMessage) {
             messageSoFar += String(data.chunk);
@@ -11956,6 +11976,7 @@ ${message}`;
         return btn;
       };
       streamTabBar.appendChild(_mkStreamBtn("Summary", "summary", true));
+      streamTabBar.appendChild(_mkStreamBtn("Answer", "answer", false));
       streamTabBar.appendChild(_mkStreamBtn("Sources", "citations", false));
       streamTabBar.appendChild(_mkStreamBtn("Corrections", "corrections", false));
       streamTabBar.appendChild(_mkStreamBtn("Follow-up", "next-steps", false));
@@ -11987,7 +12008,7 @@ ${message}`;
       }, 3e3);
       bubble.dataset.statusInterval = String(_statusInterval);
       bubble.appendChild(summaryPanel);
-      ["citations", "corrections", "next-steps", "tasks"].forEach((p) => {
+      ["answer", "citations", "corrections", "next-steps", "tasks"].forEach((p) => {
         const panel = document.createElement("div");
         panel.className = `ac-tab-panel ac-tab-panel--${p}`;
         panel.setAttribute("role", "tabpanel");
@@ -12044,14 +12065,12 @@ ${message}`;
       const _ds = (content ?? "").trim();
       if (!_ds)
         return;
-      if (draftStreamCancel) {
-        draftStreamCancel();
-        draftStreamCancel = null;
-      }
-      const prose = messageWrapEl?.querySelector(".ac-summary-prose");
-      if (prose) {
-        prose.innerHTML = simpleMarkdownToHtml(_ds);
-        scrollToBottom(messagesEl);
+      const answerBody = messageWrapEl?.querySelector(".ac-tab-panel--answer");
+      if (answerBody && !(answerBody.textContent ?? "").trim()) {
+        const body = document.createElement("div");
+        body.className = "ac-answer-envelope-body";
+        body.innerHTML = simpleMarkdownToHtml(_ds);
+        answerBody.appendChild(body);
       }
     }
     {
@@ -12239,7 +12258,7 @@ ${message}`;
                   existingSummaryPanel.appendChild(child);
                 });
               }
-              ["citations", "corrections", "next-steps", "tasks"].forEach((panelName) => {
+              ["answer", "citations", "corrections", "next-steps", "tasks"].forEach((panelName) => {
                 const existing = existingBubble.querySelector(`.ac-tab-panel--${panelName}`);
                 const rendered = renderedBubble.querySelector(`.ac-tab-panel--${panelName}`);
                 if (existing && rendered)
@@ -12338,17 +12357,12 @@ ${message}`;
         }
       }
       {
-        const _dsCid = _detailAnswers.has(activeCorrelationId) ? activeCorrelationId : _detailAnswers.has(cidForTurn) ? cidForTurn : "";
-        const _ds = _dsCid ? (_detailAnswers.get(_dsCid)?.content || "").trim() : "";
-        if (_ds) {
-          const _cb = turnWrap.querySelector(".answer-card-bubble");
-          const _html = simpleMarkdownToHtml(_ds);
-          const _prose = _cb?.querySelector(".ac-summary-prose");
-          const _direct = _cb?.querySelector(".answer-card-direct");
-          if (_prose)
-            _prose.innerHTML = _html;
-          if (_direct)
-            _direct.innerHTML = _html;
+        const _cb = turnWrap.querySelector(".answer-card-bubble");
+        const _answerPanel = _cb?.querySelector(".ac-tab-panel--answer");
+        const _answerEmpty = !_answerPanel || !(_answerPanel.textContent ?? "").trim();
+        if (_answerEmpty) {
+          _cb?.querySelector('.ac-tab[data-panel="answer"]')?.remove();
+          _answerPanel?.remove();
         }
       }
       {

@@ -6988,11 +6988,11 @@ function _updateBanditAttribution(correlationId: string): void {
     .forEach((wrap) => _fillBanditAttributionBody(correlationId, wrap));
 }
 
-// Detailed-answer tab (Chat Master 2026-08-05, LLM Agent detail_ready rev 00661). The event
-// fires just before "completed" carrying {content, output_intent}; we stash it per turn and
-// inject a tab (named via the client-side label map below) into the finalized card.
-interface DetailAnswer { content: string; outputIntent: string }
-const _detailAnswers = new Map<string, DetailAnswer>();
+// detail_ready (LLM Agent, rev 00661) carries {content=display_summary, output_intent} just
+// before "completed". As of Ananth's 2026-08-07 ruling, display_summary feeds the Answer tab
+// (via onDetailReady → the .ac-tab-panel--answer pre-fill, then the completed panel-swap), so
+// no per-turn stash is needed — the content also rides the card (card.display_summary) for the
+// non-streaming/reload render.
 
 /** Poll-side reconcile for the QA panel + bandit checkmark (live-test fix, 2026-08-05).
  *  Two failures this repairs, both rooted in post-run adjudication finishing AFTER the turn
@@ -10162,9 +10162,8 @@ function run(): void {
             // correlation_id (completed handler re-applies it), and swap the live card immediately.
             const _dContent = typeof data.content === "string" ? data.content : "";
             const _dIntent = typeof data.output_intent === "string" ? data.output_intent : "";
-            if (correlationId && _dContent.trim()) {
-              _detailAnswers.set(correlationId, { content: _dContent, outputIntent: _dIntent });
-              if (onDetailReady) onDetailReady(_dContent, _dIntent);
+            if (correlationId && _dContent.trim() && onDetailReady) {
+              onDetailReady(_dContent, _dIntent);
             }
           } else if (ev === "message" && data.chunk != null && !draftEmitted && onStreamingMessage) {
             messageSoFar += String(data.chunk);
@@ -10937,6 +10936,10 @@ function run(): void {
         return btn;
       };
       streamTabBar.appendChild(_mkStreamBtn("Summary", "summary", true));
+      // Answer tab (Ananth 2026-08-07): shown during streaming; the completed handler swaps the
+      // whole tab bar for the fully-built one (which lists Answer only when display_summary exists),
+      // so a display_summary-less turn ends up without an Answer button.
+      streamTabBar.appendChild(_mkStreamBtn("Answer", "answer", false));
       streamTabBar.appendChild(_mkStreamBtn("Sources", "citations", false));
       streamTabBar.appendChild(_mkStreamBtn("Corrections", "corrections", false));
       streamTabBar.appendChild(_mkStreamBtn("Follow-up", "next-steps", false));
@@ -10975,7 +10978,7 @@ function run(): void {
       bubble.appendChild(summaryPanel);
 
       // Empty placeholder panels — filled in-place on completed
-      (["citations", "corrections", "next-steps", "tasks"] as const).forEach((p) => {
+      (["answer", "citations", "corrections", "next-steps", "tasks"] as const).forEach((p) => {
         const panel = document.createElement("div");
         panel.className = `ac-tab-panel ac-tab-panel--${p}`;
         panel.setAttribute("role", "tabpanel");
@@ -11041,18 +11044,19 @@ function run(): void {
       (payload as Record<string, unknown>).phi_override = true;
     }
     function onDetailReady(content: string, _outputIntent: string): void {
-      // display_summary → primary Summary (Chat Master ruling (b), 2026-08-06). Swap the live
-      // streaming card's summary prose to the rich final answer, replacing the fast direct_answer/
-      // draft placeholder. No-op if there's no streaming card yet (non-streaming turn) — the
-      // completed handler applies it then. Same tab, same position, swap in place.
+      // Ananth ruling 2026-08-07 (supersedes ruling b): display_summary is the ANSWER tab's
+      // content, NOT Summary. Summary keeps the streamed react_draft. So detail_ready must NOT
+      // touch the Summary prose and must NOT cancel the draft word-stream (that stream IS the
+      // react_draft filling Summary). Pre-fill the Answer panel body for immediate content; the
+      // completed handler then swaps in the fully-built Answer panel (mode label + display_summary).
       const _ds = (content ?? "").trim();
       if (!_ds) return;
-      // Stop any in-flight draft word-stream so it can't overwrite the swap.
-      if (draftStreamCancel) { draftStreamCancel(); draftStreamCancel = null; }
-      const prose = messageWrapEl?.querySelector(".ac-summary-prose") as HTMLElement | null;
-      if (prose) {
-        prose.innerHTML = simpleMarkdownToHtml(_ds);
-        scrollToBottom(messagesEl);
+      const answerBody = messageWrapEl?.querySelector(".ac-tab-panel--answer") as HTMLElement | null;
+      if (answerBody && !(answerBody.textContent ?? "").trim()) {
+        const body = document.createElement("div");
+        body.className = "ac-answer-envelope-body";
+        body.innerHTML = simpleMarkdownToHtml(_ds);
+        answerBody.appendChild(body);
       }
     }
     // 2026-04-27: include the model_profile dropdown selection in the
@@ -11297,8 +11301,10 @@ function run(): void {
                   });
                 }
 
-                // Swap Citations, Corrections, Follow-up, Tasks panels in-place
-                (["citations", "corrections", "next-steps", "tasks"] as const).forEach((panelName) => {
+                // Swap Answer, Citations, Corrections, Follow-up, Tasks panels in-place. Answer
+                // carries display_summary + mode label (built by renderAnswerCard); Summary keeps
+                // the streamed react_draft untouched (Ananth 2026-08-07 — supersedes ruling b).
+                (["answer", "citations", "corrections", "next-steps", "tasks"] as const).forEach((panelName) => {
                   const existing = existingBubble.querySelector(`.ac-tab-panel--${panelName}`) as HTMLElement | null;
                   const rendered = renderedBubble.querySelector(`.ac-tab-panel--${panelName}`) as HTMLElement | null;
                   if (existing && rendered) existingBubble.replaceChild(rendered, existing);
@@ -11415,26 +11421,18 @@ function run(): void {
           }
         }
 
-        // display_summary → PRIMARY Summary (Chat Master ruling (b), 2026-08-06). The rich final
-        // answer (detail_ready content) replaces direct_answer as the Summary's main text — shown
-        // by default, not behind a tab. onDetailReady already swapped the live streaming card's
-        // prose; re-apply here so the fresh non-streaming render (renderAnswerCard's
-        // .answer-card-direct) and any missed live swap also land it. direct_answer stays the fast
-        // loading placeholder. (The old template-named detail tab is retired; the Detail tab is
-        // being repurposed for source provenance separately.)
+        // display_summary → ANSWER tab (Ananth ruling 2026-08-07, supersedes ruling b). Summary now
+        // keeps the streamed react_draft; the integrator's display_summary lives in the mode-labeled
+        // Answer tab, built by renderAnswerCard and swapped in via the panel-swap loop above (streaming
+        // path) or present directly (fresh render). No Summary swap here anymore. For a display_summary-
+        // less turn, drop the streaming Answer button so no empty tab lingers.
         {
-          const _dsCid = _detailAnswers.has(activeCorrelationId)
-            ? activeCorrelationId
-            : (_detailAnswers.has(cidForTurn) ? cidForTurn : "");
-          const _ds = _dsCid ? (_detailAnswers.get(_dsCid)?.content || "").trim() : "";
-          if (_ds) {
-            const _cb = turnWrap.querySelector(".answer-card-bubble") as HTMLElement | null;
-            const _html = simpleMarkdownToHtml(_ds);
-            // Streaming card uses .ac-summary-prose; fresh render uses .answer-card-direct.
-            const _prose = _cb?.querySelector(".ac-summary-prose") as HTMLElement | null;
-            const _direct = _cb?.querySelector(".answer-card-direct") as HTMLElement | null;
-            if (_prose) _prose.innerHTML = _html;
-            if (_direct) _direct.innerHTML = _html;
+          const _cb = turnWrap.querySelector(".answer-card-bubble") as HTMLElement | null;
+          const _answerPanel = _cb?.querySelector(".ac-tab-panel--answer") as HTMLElement | null;
+          const _answerEmpty = !_answerPanel || !(_answerPanel.textContent ?? "").trim();
+          if (_answerEmpty) {
+            _cb?.querySelector('.ac-tab[data-panel="answer"]')?.remove();
+            _answerPanel?.remove();
           }
         }
 

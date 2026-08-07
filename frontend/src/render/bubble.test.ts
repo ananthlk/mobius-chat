@@ -68,6 +68,38 @@ describe("renderAnswerCard — DOM output (§1.4 tabbed bubble + §1.2 visibilit
   });
 });
 
+describe("Answer tab (Ananth 2026-08-07 — Summary=react_draft, Answer=display_summary, mode-labeled)", () => {
+  it("renders an Answer tab with the mode label and display_summary when display_summary is present", () => {
+    const el = renderAnswerCard({ ...card, mode: "BLENDED", display_summary: "The blended final answer, in full." });
+    // Answer tab button exists, positioned after Summary
+    const tabs = Array.from(el.querySelectorAll(".ac-tab")).map((t) => t.textContent ?? "");
+    expect(tabs.some((t) => t.includes("Answer"))).toBe(true);
+    // panel carries the mode label + the display_summary body
+    const panel = el.querySelector(".ac-tab-panel--answer")!;
+    expect(panel).not.toBeNull();
+    expect(panel.querySelector(".ac-answer-mode-label")?.textContent).toBe("BLENDED");
+    expect(panel.querySelector(".ac-answer-envelope-body")?.textContent).toContain("blended final answer");
+  });
+
+  it("keeps display_summary OUT of the Summary panel (Summary is react_draft's surface, not the envelope)", () => {
+    const el = renderAnswerCard({ ...card, mode: "FACTUAL", display_summary: "ENVELOPE_ONLY_TEXT_XYZ" });
+    const summary = el.querySelector(".ac-tab-panel--summary")!;
+    expect(summary.textContent ?? "").not.toContain("ENVELOPE_ONLY_TEXT_XYZ");
+    // it IS in the Answer panel
+    expect(el.querySelector(".ac-tab-panel--answer")?.textContent).toContain("ENVELOPE_ONLY_TEXT_XYZ");
+  });
+
+  it("shows NO Answer tab when display_summary is absent", () => {
+    const el = renderAnswerCard(card); // base card has no display_summary
+    const tabs = Array.from(el.querySelectorAll(".ac-tab")).map((t) => t.textContent ?? "");
+    expect(tabs.some((t) => t.includes("Answer"))).toBe(false);
+    // the panel element is still built (empty, hidden) so the streaming panel-swap has a target
+    const panel = el.querySelector(".ac-tab-panel--answer");
+    expect(panel).not.toBeNull();
+    expect((panel?.textContent ?? "").trim()).toBe("");
+  });
+});
+
 describe("Appeals typed sections (appeals_rules / appeals_playbook)", () => {
   const appealsCard: AnswerCard = {
     direct_answer: "Here's the appeal path for CARC 197.",
