@@ -115,6 +115,22 @@ rag(query)
     lookup_authoritative_sources is the only way to tell them apart.
   Returns: numbered passages [1]…[N] with page citations and confidence."""
 
+_RECALL_EVIDENCE_BLOCK = """\
+recall_evidence(refs)
+  Pulls back the full original text of a chunk you set aside in an
+    earlier round's evidence_review "keep" list — purely local, no new
+    retrieval, no rag budget spent, instant.
+  Every rag result you see is complete and never truncated — evidence_review
+    is YOUR OWN decision about which chunks matter, not something imposed
+    on you. A chunk you don't keep is not deleted: the set-aside note left
+    in that round's tool result gives its ref (format "call.chunk", e.g.
+    "2.4" = tool call 2, chunk 4). Use recall_evidence with that ref if a
+    later round realizes the chunk is actually relevant.
+  Inputs: {"refs": ["2.4", "1.2"]}
+  Do NOT use this to look up chunks you have not already retrieved this
+    turn — it only recalls what an earlier rag call in THIS turn already
+    returned. For anything new, call rag."""
+
 # Kept for back-compat dispatch; no longer rendered in the planner manifest.
 _SEARCH_CORPUS_BLOCK = ""  # retired UI name — backend routes to rag
 
@@ -362,6 +378,7 @@ def _auto_discovered_block(allowed: frozenset[str] | None = None) -> str:
 # variable that carries its manifest text.
 _ROUTER_OWNED_BLOCKS: dict[str, str] = {
     "rag": "_RAG_BLOCK",
+    "recall_evidence": "_RECALL_EVIDENCE_BLOCK",
     "search_corpus": "_SEARCH_CORPUS_BLOCK",  # back-compat alias, empty block
     "healthcare_npi_lookup": "_HEALTHCARE_NPI_LOOKUP_BLOCK",
     "search_uploaded_document": "_SEARCH_UPLOADED_DOCUMENT_BLOCK",
@@ -419,6 +436,10 @@ def _compose_manifest(allowed: frozenset[str] | None = None) -> str:
         # lookup_authoritative_sources + google_search. RAG's router picks
         # strategy internally; callers pass query only.
         _router_block("rag", _RAG_BLOCK),
+        # recall_evidence — pull back a chunk react itself set aside this
+        # turn. Placed immediately after rag since it only makes sense in
+        # that context.
+        _router_block("recall_evidence", _RECALL_EVIDENCE_BLOCK),
         # payor_readiness — payer registry status (authority parent, AHCA state).
         # Not a search tool; kept as a direct registry accessor.
         _registry_block("payor_readiness"),

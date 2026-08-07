@@ -155,6 +155,93 @@ def _attach_result_summary(
     return out
 
 
+# ── Evidence memory (2026-08-07, Ananth, directly) ──────────────────────────
+#
+# Companion to build_reasoning_context's no-truncation fix: once every
+# chunk of every rag call is fully visible every round, context grows
+# every round too. react now actively curates via evidence_review
+# ("keep": [chunk numbers]) instead of us silently deciding for it. What
+# it doesn't keep is NOT deleted -- it's stashed here so a later round
+# can pull a set-aside chunk back up (recall_evidence) without spending
+# one of the 3 rag-call budget slots re-querying for something already
+# retrieved. Regex, not a structured chunk list, because the only stable
+# contract between corpus_search's _format_context and this file is the
+# "[N] header\ntext" shape already rendered into tool_results[i]["result"]
+# -- reparsing that is simpler than threading a second, parallel
+# structured chunk list through the whole tool-dispatch path.
+_CHUNK_HEADER_RE = re.compile(r"^\[(\d+)\]\s", re.MULTILINE)
+
+
+def _extract_chunk_blocks(raw: str) -> list[tuple[int, str]]:
+    """Split rag-formatted text into (chunk_number, full_block) pairs.
+
+    Returns [] for text that isn't chunk-numbered (e.g. NPPES prose) --
+    callers must treat that as "nothing to prune/store", not an error."""
+    if not raw:
+        return []
+    matches = list(_CHUNK_HEADER_RE.finditer(raw))
+    if not matches:
+        return []
+    blocks = []
+    for idx, m in enumerate(matches):
+        start = m.start()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(raw)
+        try:
+            chunk_num = int(m.group(1))
+        except ValueError:
+            continue
+        blocks.append((chunk_num, raw[start:end].rstrip()))
+    return blocks
+
+
+def _store_evidence_memory(ctx: PipelineContext, call_idx: int, raw: str) -> None:
+    """Snapshot every chunk of a rag result into ctx._evidence_memory
+    BEFORE any pruning happens, so recall_evidence can always retrieve
+    the original text regardless of what a later evidence_review discards."""
+    blocks = _extract_chunk_blocks(raw)
+    if not blocks:
+        return
+    memory: list[dict] = getattr(ctx, "_evidence_memory", None)  # type: ignore[assignment]
+    if memory is None:
+        memory = []
+        ctx._evidence_memory = memory  # type: ignore[attr-defined]
+    for chunk_num, block in blocks:
+        header, _, text = block.partition("\n")
+        memory.append({
+            "call": call_idx, "chunk": chunk_num,
+            "header": header.strip(), "text": text.strip(),
+        })
+
+
+def _prune_kept_chunks(raw: str, keep: list[int], call_idx: int) -> str:
+    """Rewrite a rag result to only the chunks react's evidence_review
+    marked relevant. Chunks left out get a short set-aside note carrying
+    their recall_evidence ref ("<call_idx>.<chunk_num>") instead of
+    silently vanishing. Falls back to the untouched original when the
+    text isn't chunk-numbered, or when keep matches nothing real (a bad
+    "keep" list must never destroy evidence)."""
+    blocks = _extract_chunk_blocks(raw)
+    if not blocks:
+        return raw
+    keep_set = set(keep)
+    kept, set_aside = [], []
+    for chunk_num, block in blocks:
+        if chunk_num in keep_set:
+            kept.append(block)
+        else:
+            set_aside.append(f"{call_idx}.{chunk_num}")
+    if not kept:
+        return raw
+    out = "\n\n".join(kept)
+    if set_aside:
+        out += (
+            f"\n\n[{len(set_aside)} chunk(s) reviewed and set aside as not relevant to this "
+            f"question: refs {set_aside}. Still available — call recall_evidence with these "
+            "refs if a later round needs one of them; do not re-run rag for this.]"
+        )
+    return out
+
+
 from app.state.jurisdiction import rag_filters_from_active
 
 # ---------------------------------------------------------------------------
@@ -601,6 +688,39 @@ def _execute_tool(
             "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
             "sources": [],
             "is_terminal": True,
+        }
+
+    # ── Evidence recall (2026-08-07, Ananth, directly) ─────────────────
+    # Purely local — no HTTP, no rag-budget spend. Looks up chunks a
+    # prior round's evidence_review set aside (see _store_evidence_memory
+    # / _prune_kept_chunks above) instead of re-querying rag for
+    # information already retrieved this turn.
+    if tool == "recall_evidence":
+        refs_in = inputs.get("refs") or []
+        if not isinstance(refs_in, list):
+            refs_in = [refs_in]
+        refs = [str(r).strip() for r in refs_in if str(r).strip()]
+        memory: list[dict] = getattr(ctx, "_evidence_memory", None) or []
+        found, missing = [], []
+        for ref in refs:
+            rec = next((m for m in memory if f"{m['call']}.{m['chunk']}" == ref), None)
+            if rec:
+                found.append(f"[{ref}] {rec['header']}\n{rec['text']}")
+            else:
+                missing.append(ref)
+        if found:
+            result_text = "\n\n".join(found)
+            if missing:
+                result_text += f"\n\n[Not found: {missing} — refs are \"call.chunk\", e.g. \"2.4\".]"
+            emit(f"✓ Recalled {len(found)} chunk(s) from evidence memory")
+            return {"tool": "recall_evidence", "success": True, "result": result_text, "signal": None, "sources": []}
+        emit("⊘ No matching chunks in evidence memory for the given refs")
+        return {
+            "tool": "recall_evidence",
+            "success": False,
+            "result": f"No chunks found for refs {refs}. Refs are \"call.chunk\" (e.g. \"2.4\") from an earlier evidence_review set-aside note.",
+            "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
+            "sources": [],
         }
 
     # ── Curator tools (Phase 13.5) ───────────────────────────────────
@@ -3071,6 +3191,50 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         is_complete = decision.get("is_complete", False)
         thought = (decision.get("thought") or "").strip()
 
+        # ── Evidence review (2026-08-07, Ananth, directly) ─────────────
+        # react's own keep/discard verdict on the last tool result, plus
+        # its recomputed running answer and remaining gaps -- emitted as
+        # its own distinct progress lines (not folded into the "thought"
+        # line above) specifically so this is trackable telemetry: every
+        # round's keep-list, running_answer, and gaps is independently
+        # visible in chat_progress_events, not just baked into an LLM
+        # prompt string that only this process ever reads.
+        _evidence_review = decision.get("evidence_review")
+        if not isinstance(_evidence_review, dict):
+            _evidence_review = None
+        if _evidence_review:
+            _keep_raw = _evidence_review.get("keep")
+            _keep: list[int] = []
+            if isinstance(_keep_raw, list):
+                for _k in _keep_raw:
+                    try:
+                        _keep.append(int(_k))
+                    except (TypeError, ValueError):
+                        continue
+            _running_answer = str(_evidence_review.get("running_answer") or "").strip()
+            _gaps = str(_evidence_review.get("gaps") or "").strip()
+
+            if tool_results and _keep:
+                _last_call_idx = len(tool_results)
+                _before_len = len((tool_results[-1].get("result") or ""))
+                tool_results[-1]["result"] = _prune_kept_chunks(
+                    tool_results[-1].get("result") or "", _keep, _last_call_idx,
+                )
+                _after_len = len(tool_results[-1]["result"])
+                emit(f"  Evidence review: keeping chunks {_keep} from call {_last_call_idx} ({_before_len}→{_after_len} chars)")
+            elif tool_results:
+                emit("  Evidence review: no chunks marked relevant from the last result")
+
+            if _running_answer:
+                emit(f"  Running answer: {_running_answer}")
+            if _gaps:
+                emit(f"  Gaps remaining: {_gaps}")
+
+            if _running_answer or _gaps:
+                ctx._evidence_review_latest = {  # type: ignore[attr-defined]
+                    "round": rn, "running_answer": _running_answer, "gaps": _gaps,
+                }
+
         # Task mode: no tool calls ever. If the LLM tried to call a tool
         # despite the task-mode system prompt, finalize immediately.
         # We cannot rely on setting is_complete=True + tool=None because the
@@ -3589,6 +3753,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         if result.get("section_hints"):
             tr_entry["section_hints"] = result["section_hints"]
         tool_results.append(tr_entry)
+        _store_evidence_memory(ctx, len(tool_results), tr_entry.get("result") or "")
         _checkpoint_best_evidence(ctx, tool_results)
 
         # §5b bypass: if the tool marked ctx.react_bypass_integrate, exit the

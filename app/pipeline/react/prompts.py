@@ -352,9 +352,15 @@ REACT_IDENTITY_TEXT = (
 REACT_RESPONSE_SHAPE_TEXT = """Your response each round MUST be a single JSON object — nothing before `{`, nothing after `}`.
 Two valid shapes:
 
-Tool call (need more evidence):
+Tool call (need more evidence) — include "evidence_review" whenever this is NOT your first
+round (i.e. earlier tool results are present in context above):
 {
   "thought": "<why you chose this tool — one sentence>",
+  "evidence_review": {
+    "keep": [<chunk numbers from the LAST tool result's [N] headers that actually matter to this question>],
+    "running_answer": "<the best answer you can build from kept evidence so far — even if partial>",
+    "gaps": "<what's still missing, or empty string if nothing is missing>"
+  },
   "tool": "<tool name from manifest>",
   "inputs": {<tool-specific inputs>},
   "is_complete": false
@@ -401,6 +407,11 @@ REACT_CRITICAL_RULES_TEXT = """CRITICAL RULES:
     (2) RESTRATEGIZE — what concretely changes about your next move because of that (relax, reframe with new terms, switch tool, or stop) — not "try again" alone.
     (3) NEXT — which tool you're calling now and why it's the right one given (1) and (2).
     If your thought could be pasted unedited onto a different round of a different question, you have not actually reasoned from the result — rewrite it.
+1c-2. **LEARNED must actually fill the answer, not just narrate.** The "evidence_review" object (required alongside "thought" from round 2 on, see REACT_RESPONSE_SHAPE) is where LEARNED becomes concrete instead of prose:
+    - **keep**: read every numbered chunk in the last tool result — all of it, nothing is truncated — and list which chunk numbers actually bear on this question. Don't skim the first chunk and stop; the answer is as likely to be chunk 6 of 12 as chunk 1.
+    - **running_answer**: recompute this from scratch using ONLY the kept chunks — this is your real confidence check. If running_answer already states the answer clearly, stop hunting: set is_complete=true this round. Continuing to call rag after running_answer already has the fact is wasted rounds and a false "not found" waiting to happen.
+    - **gaps**: name the specific missing piece, if any — not "need more info."
+    - Chunks you do NOT keep are not deleted — they stay recallable this turn via recall_evidence (see manifest) using the ref shown in that chunk's set-aside note. Don't re-run rag for something you already retrieved; recall it instead.
 1d. **CITE IT, OR LABEL IT — never blank, never bluff.** Three and only three valid response shapes:
 
     SHAPE 1 — GROUNDED (rag returned usable content, even partial):
@@ -688,6 +699,7 @@ def build_reasoning_context(
     max_iterations: int | None = None,
     gap_status: str | None = None,
     rag_call_history: list[dict] | None = None,
+    evidence_review_latest: dict | None = None,
 ) -> str:
     """Build the context the model reasons over each iteration.
 
@@ -965,6 +977,20 @@ def build_reasoning_context(
             "before concluding the corpus doesn't have it, or switch to a materially "
             "different approach."
         )
+    # 2026-08-07 (Ananth, directly): react's own accumulated verdict on the
+    # evidence so far, code-carried from the last round's evidence_review
+    # (see rule 1c/REACT_RESPONSE_SHAPE_TEXT) — displayed unconditionally
+    # so the running answer and remaining gaps are visible artifacts, not
+    # buried inside a "thought" string that gets discarded each round.
+    _ev_latest = evidence_review_latest or getattr(ctx, "_evidence_review_latest", None)
+    if isinstance(_ev_latest, dict) and (_ev_latest.get("running_answer") or _ev_latest.get("gaps")):
+        parts.append(
+            "[Evidence Review — your own running verdict, from last round]\n"
+            f"running_answer: {_ev_latest.get('running_answer') or '(none yet)'}\n"
+            f"gaps: {_ev_latest.get('gaps') or '(none)'}\n"
+            "If running_answer already answers the question with confidence, set "
+            "is_complete=true now instead of gathering more evidence you don't need."
+        )
     if getattr(ctx, "_google_search_tried_this_turn", False):
         parts.append(
             "google_search has already been tried this turn and returned no "
@@ -1003,27 +1029,31 @@ def build_reasoning_context(
     if tool_results:
         parts.append(f"\nIteration {iteration} — tools called this turn:")
         parts.append(
-            "When **Summary** is present, treat it as the canonical short grounding; "
-            "**Result** may be long markdown for the user — do not re-run the same tool if Summary already answers the ask."
+            "When **Summary** is present, treat it as a quick orientation, but the full "
+            "**Result** below it is the actual evidence — read all of it before deciding "
+            "you lack information. Do not re-run the same tool if Result already answers the ask."
         )
+        # 2026-08-07 (Ananth, directly, live-query finding): this used to
+        # cap every tool result to a 320-head + 400-tail slice of the raw
+        # string once it exceeded 600 chars. For rag specifically (which
+        # never sets result_summary), that meant only chunk 1 and the tail
+        # of the last chunk of a multi-chunk corpus_search response ever
+        # reached react -- confirmed live: a 7.8k-char, 7-chunk result had
+        # its one chunk containing the literal answer (authority=
+        # authoritative, ranked #4) sliced out of the middle and silently
+        # dropped, so round 3 concluded "cannot answer" over evidence it
+        # never actually saw. No tool gets a length cap now -- if a result
+        # is expensive enough to warrant trimming, that's a per-tool
+        # decision the skill itself makes (result_summary), not a blind
+        # string slice applied uniformly after the fact.
         for r in tool_results:
             raw = r.get("result") or ""
             summ = (r.get("result_summary") or "").strip()
+            result_bits = []
             if summ:
-                result_preview = (
-                    f"[Summary for reasoning]\n{summ}\n\n"
-                    f"[Full markdown length: {len(raw)} chars — included in Result; do not assume truncation means failure.]"
-                )
-            else:
-                # For long results (e.g. credentialing), show head + tail so completion messages are visible
-                max_len = 600
-                if len(raw) > max_len:
-                    head_len, tail_len = 320, 400
-                    result_preview = (
-                        raw[:head_len] + "\n... [truncated] ...\n" + raw[-tail_len:]
-                    )
-                else:
-                    result_preview = raw
+                result_bits.append(f"[Summary]\n{summ}")
+            result_bits.append(f"[Full result — {len(raw)} chars, complete, not truncated]\n{raw}")
+            result_preview = "\n\n".join(result_bits)
             parts.append(
                 f"Tool: {r.get('tool', '')}\n"
                 f"Result: {result_preview}\n"
@@ -1041,7 +1071,8 @@ def build_reasoning_context(
     # context-heavy prose impulse.
     #
     # Two valid formats (repeat from system prompt here for proximity):
-    #   • Tool call:    { "thought": "...", "tool": "...", "inputs": {...},   "is_complete": false }
+    #   • Tool call:    { "thought": "...", "evidence_review": {"keep": [...], "running_answer": "...", "gaps": "..."},
+    #                     "tool": "...", "inputs": {...}, "is_complete": false }
     #   • Final answer: { "thought": "...", "tool": null,  "inputs": {},      "is_complete": true,
     #                     "answer": "...", "confidence": "high"|"medium"|"low" }
     #
@@ -1052,7 +1083,8 @@ def build_reasoning_context(
         "---\n"
         "RESPOND IN JSON — your entire response must be a single JSON object "
         "starting with `{` and ending with `}`. No text before `{`, no text after `}`.\n"
-        "  • Need another tool → set is_complete=false with the tool name and inputs.\n"
+        "  • Need another tool → set is_complete=false with the tool name and inputs, and "
+        "include evidence_review if any tool result is present above.\n"
         "  • Have the answer  → set is_complete=true, tool=null, and put the full "
         "answer in the \"answer\" field.\n"
         "Prose responses cannot be parsed and will be discarded."
