@@ -11417,6 +11417,15 @@ function run(): void {
             turnWrap.appendChild(
               renderAssistantMessage(contentToShow, false, { variant: "warn" })
             );
+          } else if (data.response_source === "stub" && data.llm_error) {
+            // Tech error (LLM timeout / exception): show a retryable error state, not a
+            // query-failure card. "Try again" re-submits the original query unchanged.
+            turnWrap.appendChild(
+              renderFailedTurn(
+                { message: "Something went wrong on our end.", error_code: "llm_error", retryable: true },
+                () => sendMessage(message)
+              )
+            );
           } else {
             turnWrap.appendChild(
               renderAssistantContent(contentToShow, !!data.llm_error, {

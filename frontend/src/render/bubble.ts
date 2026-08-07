@@ -156,18 +156,40 @@ function _renderSectionBody(sec: AnswerCardSection, body: HTMLElement): void {
   }
 
   // Default: bullets
-  const bullets = (sec.bullets ?? []).slice(0, MAX_BULLETS_PER_SECTION);
-  bullets.forEach((b) => {
+  const allBullets = sec.bullets ?? [];
+  const visibleBullets = allBullets.slice(0, MAX_BULLETS_PER_SECTION);
+  const hiddenBullets = allBullets.slice(MAX_BULLETS_PER_SECTION);
+
+  visibleBullets.forEach((b) => {
     const li = document.createElement("div");
     li.className = "answer-card-bullet";
     li.textContent = b;
     body.appendChild(li);
   });
-  if (bullets.length < (sec.bullets?.length ?? 0)) {
-    const more = document.createElement("div");
+
+  if (hiddenBullets.length > 0) {
+    const overflow = document.createElement("div");
+    overflow.className = "answer-card-bullets-overflow";
+    overflow.style.display = "none";
+    hiddenBullets.forEach((b) => {
+      const li = document.createElement("div");
+      li.className = "answer-card-bullet";
+      li.textContent = b;
+      overflow.appendChild(li);
+    });
+    body.appendChild(overflow);
+
+    const more = document.createElement("button");
+    more.type = "button";
     more.className = "answer-card-more";
-    more.textContent = "Show more";
     more.setAttribute("aria-label", "Show more bullets");
+    more.textContent = `Show ${hiddenBullets.length} more`;
+    let expanded = false;
+    more.addEventListener("click", () => {
+      expanded = !expanded;
+      overflow.style.display = expanded ? "" : "none";
+      more.textContent = expanded ? "Show less" : `Show ${hiddenBullets.length} more`;
+    });
     body.appendChild(more);
   }
 }
