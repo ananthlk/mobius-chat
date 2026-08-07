@@ -58,6 +58,40 @@ def choose_consolidator_type(
     return "answer"
 
 
+def _appeals_rules_table_data(hint_data: dict) -> dict | None:
+    """Converts an appeals_rules section_hint's nested rule structure
+    (matches[].rules[] from appeals_find_carc, or flat rules[] from
+    appeals_lookup_rules) into a clean table {headers, rows} -- one row per
+    rule, stripping the deeply-nested sub_rules/authority_tags/facts noise
+    that isn't useful for display (2026-08-07, Task #60). Was previously
+    passed through as format='appeals_rules' + raw nested data, relying on
+    the enricher LLM to preserve that non-standard format string verbatim
+    (a schema-instruction carve-out for this exact case) -- confirmed via a
+    live card (a796845a) that instruction doesn't reliably hold: the model
+    still wrote format='bullets' with the data blob orphaned underneath,
+    rendering nothing. format='table' is a real schema-enum value, so there
+    is no format-fidelity risk left to rely on the model for."""
+    rule_groups = hint_data.get("matches") or [hint_data]
+    rows: list[list[str]] = []
+    for group in rule_groups:
+        if not isinstance(group, dict):
+            continue
+        for rule in (group.get("rules") or []):
+            if not isinstance(rule, dict):
+                continue
+            authority = rule.get("authority") or {}
+            authority_bits = [v for v in (authority.get("state"), authority.get("federal"), authority.get("clinical")) if v]
+            rows.append([
+                str(rule.get("rule_name") or rule.get("rule_id") or ""),
+                str(rule.get("rule_statement") or ""),
+                str(rule.get("appeal_argument") or ""),
+                ", ".join(authority_bits) or "—",
+            ])
+    if not rows:
+        return None
+    return {"headers": ["Rule", "Statement", "Appeal Argument", "Authority"], "rows": rows}
+
+
 def _build_consolidator_input_json(
     plan: Plan,
     stub_answers: list[str],
@@ -173,11 +207,23 @@ def _build_consolidator_input_json(
                 if items:
                     section["data"] = {"items": items}
                     pre_built.append(section)
+            elif fmt == "appeals_rules" and isinstance(h.get("data"), dict):
+                # Task #60: real table format + clean row data, not a custom
+                # format string the model has to preserve verbatim.
+                table_data = _appeals_rules_table_data(h["data"])
+                if table_data:
+                    rows = table_data["rows"]
+                    if len(rows) > _MAX_ROWS:
+                        table_data = {**table_data, "rows": rows[:_MAX_ROWS], "truncated": len(rows) - _MAX_ROWS}
+                    section["format"] = "table"
+                    section["data"] = table_data
+                    section["visibility"] = "primary"
+                    pre_built.append(section)
             elif h.get("data") is not None:
-                # Generic pass-through for custom formats (e.g. appeals_rules,
-                # appeals_playbook) — data blob is owned by the frontend renderer.
-                # visibility:primary ensures it renders in the Summary tab, not
-                # tucked behind "Show details".
+                # Generic pass-through for other custom formats (e.g.
+                # appeals_playbook) — data blob is owned by the frontend
+                # renderer. visibility:primary ensures it renders in the
+                # Summary tab, not tucked behind "Show details".
                 section["data"] = h["data"]
                 section["visibility"] = "primary"
                 pre_built.append(section)
