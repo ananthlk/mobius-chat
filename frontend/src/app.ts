@@ -698,6 +698,8 @@ import {
 import type { AnswerCard, AnswerCardSection } from "./answer-card";
 // §1.4 tabbed-bubble field→tab map + §2.1 additive-merge contract (unit-tested via vitest).
 import { TAB_ORDER, type TabKey } from "./card-render-model";
+// Appeals tool progress labels — FE owns the UX envelope; adapter passes raw fields (Chat Master 2026-08-07).
+import { formatAppealsToolProgress, type ToolProgressSignal } from "./appeals-tool-labels";
 import {
   QcAuditInfo, FollowupLineNormalized,
   simpleMarkdownToHtml, simpleMarkdownToHtmlInner, rosterStepMarkdownToHtml,
@@ -10139,8 +10141,14 @@ function run(): void {
           const parsed = JSON.parse(e.data as string) as { event: string; data?: unknown };
           const ev = parsed.event;
           const data = (parsed.data ?? {}) as Record<string, unknown>;
-          if (ev === "thinking" && data.line != null && onThinking) {
-            onThinking(String(data.line));
+          if (ev === "thinking" && onThinking && (data.tool_progress || data.line != null)) {
+            // Appeals tools (Chat Master 2026-08-07): the adapter emits a raw `tool_progress`
+            // signal ({tool_name, phase, success, inputs, result}); the FE formats the label.
+            // Falls back to the plain `line` string for every other tool (adapter still formats those).
+            const _tp = data.tool_progress as ToolProgressSignal | undefined;
+            const _appealsLabel = _tp ? formatAppealsToolProgress(_tp) : null;
+            if (_appealsLabel) onThinking(_appealsLabel);
+            else if (data.line != null) onThinking(String(data.line));
           } else if (ev === "quality_audit" && data.line != null && onThinking) {
             onThinking(String(data.line));
           } else if (ev === "bandit_reward_persisted") {

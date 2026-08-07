@@ -1994,6 +1994,75 @@ function tryParseAnswerCard(message) {
   return null;
 }
 
+// src/appeals-tool-labels.ts
+var _s = (o, k) => {
+  const v = o?.[k];
+  return v == null ? "" : String(v);
+};
+var _n = (o, k) => {
+  const v = o?.[k];
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+};
+function formatAppealsToolProgress(sig) {
+  if (!sig || typeof sig.tool_name !== "string")
+    return null;
+  const { tool_name, phase } = sig;
+  const inputs = sig.inputs ?? {};
+  const result = sig.result ?? {};
+  if (phase === "before") {
+    switch (tool_name) {
+      case "appeals_find_carc":
+        return "\u25CC Identifying denial code from description\u2026";
+      case "appeals_lookup_rules": {
+        const carc = _s(inputs, "carc");
+        return carc ? `\u25CC Looking up CARC ${carc} rules\u2026` : "\u25CC Looking up appeal rules\u2026";
+      }
+      case "appeals_get_playbook": {
+        const payor = _s(inputs, "payor");
+        return payor ? `\u25CC Checking playbook for ${payor}\u2026` : "\u25CC Checking appeal playbook\u2026";
+      }
+      default:
+        return null;
+    }
+  }
+  if (phase === "after") {
+    switch (tool_name) {
+      case "appeals_lookup_rules": {
+        const n = _n(result, "rules_found");
+        const title = _s(result, "carc_title") || `CARC ${_s(inputs, "carc")}`.trim();
+        if (n != null)
+          return `\u2713 ${n} rule${n !== 1 ? "s" : ""} for ${title || "this denial"}`;
+        const carc = _s(inputs, "carc");
+        return carc ? `\u2713 Rules loaded for CARC ${carc}` : "\u2713 Appeal rules loaded";
+      }
+      case "appeals_get_playbook": {
+        const found = result["found"] === true;
+        if (found) {
+          const days = _n(result, "deadline_appeal_days");
+          const method = _s(result, "submission_method");
+          if (days != null)
+            return `\u2713 Playbook: ${days}d deadline${method ? `, ${method}` : ""}`;
+          const payor = _s(inputs, "payor");
+          return payor ? `\u2713 Playbook loaded for ${payor}` : "\u2713 Playbook loaded";
+        }
+        return "\u2713 No playbook \u2014 using FL Medicaid defaults";
+      }
+      case "appeals_find_carc": {
+        const top = _s(result, "top_carc");
+        const matches = Array.isArray(result["matches"]) ? result["matches"] : [];
+        if (top && matches.length > 0) {
+          const title = _s(matches[0], "title");
+          return title ? `\u2713 Likely CARC ${top} \u2014 ${title}` : `\u2713 Likely CARC ${top}`;
+        }
+        return "\u2713 Denial code search complete";
+      }
+      default:
+        return null;
+    }
+  }
+  return null;
+}
+
 // src/ui-helpers.ts
 function simpleMarkdownToHtml(text) {
   const s = (text ?? "").trim();
@@ -11249,8 +11318,13 @@ function run() {
           const parsed = JSON.parse(e.data);
           const ev = parsed.event;
           const data = parsed.data ?? {};
-          if (ev === "thinking" && data.line != null && onThinking) {
-            onThinking(String(data.line));
+          if (ev === "thinking" && onThinking && (data.tool_progress || data.line != null)) {
+            const _tp = data.tool_progress;
+            const _appealsLabel = _tp ? formatAppealsToolProgress(_tp) : null;
+            if (_appealsLabel)
+              onThinking(_appealsLabel);
+            else if (data.line != null)
+              onThinking(String(data.line));
           } else if (ev === "quality_audit" && data.line != null && onThinking) {
             onThinking(String(data.line));
           } else if (ev === "bandit_reward_persisted") {
