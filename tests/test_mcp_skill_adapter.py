@@ -282,6 +282,136 @@ class TestMcpHandlerDispatch:
         assert spec.handler.__name__ == "_mcp_handler_mcp_test_named"
 
 
+# ── Structured tool_progress event (appeals discovery tools) ─────────
+
+
+class TestStructuredToolProgressEvent:
+    """2026-08-07, Chat Architecture spec: appeals_find_carc/
+    appeals_lookup_rules/appeals_get_playbook additionally emit a
+    dedicated tool_progress SSE event (publish_tool_progress_event) with
+    raw structured data, alongside the existing formatted-string emit
+    (unchanged, still fires — backward-safe per Chat FE's FE fallback).
+    Every other MCP tool is untouched: no structured event, string-only,
+    same as before."""
+
+    def _call_with_ctx(self, correlation_id: str | None):
+        class _Ctx:
+            pass
+        ctx = _Ctx()
+        if correlation_id is not None:
+            ctx.correlation_id = correlation_id
+        return ctx
+
+    def test_structured_tool_emits_before_and_after_progress_events(self, adapter_cleanup):
+        registered = register_mcp_skills(tools=[
+            {"name": "appeals_lookup_rules", "description": "Lookup CARC rules."},
+        ])
+        adapter_cleanup.extend(registered)
+        ctx = self._call_with_ctx("cid-123")
+
+        with patch("app.skills.mcp_adapter.call_mcp_tool") as mock_mcp, \
+             patch("app.storage.progress.publish_tool_progress_event") as mock_publish:
+            mock_mcp.return_value = ('{"rules_found": 2, "carc_title": "Timely Filing"}', True)
+            registry.dispatch(SkillCall(
+                name="appeals_lookup_rules",
+                inputs={"carc": "16"},
+                question="x",
+                pipeline_ctx=ctx,
+            ))
+
+        assert mock_publish.call_count == 2
+        before_call, after_call = mock_publish.call_args_list
+        assert before_call.args[:3] == ("cid-123", "appeals_lookup_rules", "before")
+        assert before_call.kwargs["inputs"] == {"carc": "16"}
+        assert after_call.args[:3] == ("cid-123", "appeals_lookup_rules", "after")
+        assert after_call.kwargs["success"] is True
+        assert after_call.kwargs["result"] == {"rules_found": 2, "carc_title": "Timely Filing"}
+        assert after_call.kwargs["inputs"] == {"carc": "16"}
+        assert after_call.kwargs["note"]  # formatted-string fallback still populated
+
+    def test_non_structured_tool_never_calls_publish(self, adapter_cleanup):
+        """Every OTHER MCP tool must not touch the new event at all —
+        only the 3 named appeals discovery tools opt in."""
+        registered = register_mcp_skills(tools=[
+            {"name": "get_org_profile", "description": "Org profile."},
+        ])
+        adapter_cleanup.extend(registered)
+        ctx = self._call_with_ctx("cid-123")
+
+        with patch("app.skills.mcp_adapter.call_mcp_tool") as mock_mcp, \
+             patch("app.storage.progress.publish_tool_progress_event") as mock_publish:
+            mock_mcp.return_value = ("profile text", True)
+            registry.dispatch(SkillCall(
+                name="get_org_profile", inputs={"org_slug": "x"}, question="x", pipeline_ctx=ctx,
+            ))
+
+        mock_publish.assert_not_called()
+
+    def test_structured_tool_still_emits_formatted_string_too(self, adapter_cleanup):
+        """Backward-safe: the existing call.emitter(<formatted string>)
+        path is untouched — Chat FE's FE falls back to it until the
+        structured reader lands."""
+        registered = register_mcp_skills(tools=[
+            {"name": "appeals_get_playbook", "description": "Get playbook."},
+        ])
+        adapter_cleanup.extend(registered)
+        ctx = self._call_with_ctx("cid-123")
+        emitted: list[str] = []
+
+        with patch("app.skills.mcp_adapter.call_mcp_tool") as mock_mcp, \
+             patch("app.storage.progress.publish_tool_progress_event"):
+            mock_mcp.return_value = ('{"found": true, "deadline_appeal_days": 90}', True)
+            registry.dispatch(SkillCall(
+                name="appeals_get_playbook", inputs={"payor": "Sunshine"}, question="x",
+                pipeline_ctx=ctx, emitter=emitted.append,
+            ))
+
+        assert any("Checking playbook" in e for e in emitted)
+        assert any(e.startswith("✓") for e in emitted)
+
+    def test_no_correlation_id_skips_structured_event_without_crashing(self, adapter_cleanup):
+        """No pipeline_ctx / no correlation_id (e.g. a test harness or a
+        caller that doesn't thread ctx through) must degrade gracefully
+        -- string emit still fires, structured event silently skipped,
+        no exception."""
+        registered = register_mcp_skills(tools=[
+            {"name": "appeals_find_carc", "description": "Find CARC."},
+        ])
+        adapter_cleanup.extend(registered)
+
+        with patch("app.skills.mcp_adapter.call_mcp_tool") as mock_mcp, \
+             patch("app.storage.progress.publish_tool_progress_event") as mock_publish:
+            mock_mcp.return_value = ('{"top_carc": "16"}', True)
+            env = registry.dispatch(SkillCall(
+                name="appeals_find_carc", inputs={}, question="x",
+            ))
+
+        assert isinstance(env, SkillEnvelope)
+        mock_publish.assert_not_called()
+
+    def test_malformed_json_result_falls_back_to_empty_dict(self, adapter_cleanup):
+        """MCP returned non-JSON text -- result stays {} rather than
+        crashing the handler; note still carries the formatted fallback
+        for consumers that aren't reading structured fields."""
+        registered = register_mcp_skills(tools=[
+            {"name": "appeals_lookup_rules", "description": "Lookup CARC rules."},
+        ])
+        adapter_cleanup.extend(registered)
+        ctx = self._call_with_ctx("cid-123")
+
+        with patch("app.skills.mcp_adapter.call_mcp_tool") as mock_mcp, \
+             patch("app.storage.progress.publish_tool_progress_event") as mock_publish:
+            mock_mcp.return_value = ("Rules loaded, plain text, not JSON", True)
+            env = registry.dispatch(SkillCall(
+                name="appeals_lookup_rules", inputs={"carc": "16"}, question="x", pipeline_ctx=ctx,
+            ))
+
+        assert isinstance(env, SkillEnvelope)
+        after_call = mock_publish.call_args_list[1]
+        assert after_call.kwargs["result"] == {}
+        assert after_call.kwargs["note"]
+
+
 # ── Integration: planner manifest picks up adapter-registered skills ─
 
 

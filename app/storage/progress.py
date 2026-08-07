@@ -542,6 +542,58 @@ def publish_bandit_reward_event(
     _publish_progress_event(correlation_id, ev)
 
 
+def publish_tool_progress_event(
+    correlation_id: str,
+    tool_name: str,
+    phase: str,
+    *,
+    success: bool | None = None,
+    inputs: dict[str, Any] | None = None,
+    result: dict[str, Any] | None = None,
+    note: str = "",
+) -> None:
+    """Emit a dedicated tool_progress SSE event for tools whose raw result
+    carries structured data the FE wants to format itself, rather than a
+    pre-formatted string (2026-08-07, Chat Architecture spec — appeals
+    discovery tools: appeals_find_carc/appeals_lookup_rules/
+    appeals_get_playbook).
+
+    Same dedicated-event pattern as ``publish_bandit_reward_event`` --
+    deliberately NOT folded into the plain ``thinking`` line list.
+    ``append_thinking`` reduces every entry to ``{line, ts}`` and drops
+    anything else (Chat FE confirmed this while building the FE read
+    side, commit 12610b3) -- structured ``inputs``/``result`` data would
+    be silently lost if this rode the same channel as bare thinking
+    lines. ``note`` carries the equivalent human-readable fallback
+    string for any consumer that isn't reading the structured fields yet
+    (mirrors the existing formatted-string emit mcp_adapter.py's
+    ``_mcp_before_label``/``_mcp_after_label`` produce today for every
+    OTHER tool -- unchanged, this is additive for the 3 discovery tools
+    only).
+
+    ``phase``: "before" | "after". ``result`` is the tool's raw response
+    dict, unparsed strings not expected -- the caller (mcp_adapter.py)
+    owns turning whatever the appeals service returns into a plain dict
+    before calling this.
+    """
+    ts, ts_readable = _event_ts()
+    data: dict[str, Any] = {
+        "tool_name": tool_name,
+        "phase": phase,
+        "success": success,
+        "inputs": inputs or {},
+        "result": result or {},
+        "note": note,
+        "ts": ts,
+        "ts_readable": ts_readable,
+    }
+    ev: dict[str, Any] = {"event": "tool_progress", "data": data}
+    with _lock:
+        if correlation_id in _progress:
+            _progress[correlation_id]["events"].append(ev)
+    _publish_progress_event(correlation_id, ev)
+
+
 def get_progress_events_from_db(correlation_id: str, after_id: int = 0) -> list[tuple[int, dict[str, Any]]]:
     """Poll chat_progress_events for this correlation_id. Returns [(id, {event, data}), ...] for API stream.
     Used when worker runs in separate process (Redis queue); worker persists events to DB.

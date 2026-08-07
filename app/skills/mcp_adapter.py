@@ -54,6 +54,17 @@ from app.skills.registry import (
     register,
 )
 
+# Tools whose raw result carries structured data the FE formats itself
+# (2026-08-07, Chat Architecture spec, appeals discovery tools) rather than
+# a pre-formatted string. Every other MCP tool keeps its existing
+# formatted-string-only emit via _mcp_before_label/_mcp_after_label,
+# unchanged. Backward-safe by design: the formatted-string emit ALSO still
+# fires for these three (Chat FE's FE falls back to it until/unless the
+# structured event has a reader) -- this is additive, not a replacement.
+_STRUCTURED_PROGRESS_TOOLS = frozenset({
+    "appeals_find_carc", "appeals_lookup_rules", "appeals_get_playbook",
+})
+
 logger = logging.getLogger(__name__)
 
 
@@ -194,11 +205,42 @@ def _make_mcp_handler(tool_name: str):
 
     def _run(call: SkillCall) -> SkillEnvelope:
         _inputs = call.inputs or {}
+        _before_note = _mcp_before_label(tool_name, _inputs)
         if call.emitter:
-            call.emitter(_mcp_before_label(tool_name, _inputs))
+            call.emitter(_before_note)
+        _correlation_id = None
+        if tool_name in _STRUCTURED_PROGRESS_TOOLS:
+            _correlation_id = getattr(getattr(call, "pipeline_ctx", None), "correlation_id", None)
+            if _correlation_id:
+                try:
+                    from app.storage.progress import publish_tool_progress_event
+                    publish_tool_progress_event(
+                        _correlation_id, tool_name, "before",
+                        inputs=_inputs, note=_before_note,
+                    )
+                except Exception:
+                    logger.debug("publish_tool_progress_event (before) failed for %s", tool_name, exc_info=True)
         text, success = call_mcp_tool(tool_name, _inputs)
+        _after_note = _mcp_after_label(tool_name, _inputs, text, success)
         if call.emitter:
-            call.emitter(_mcp_after_label(tool_name, _inputs, text, success))
+            call.emitter(_after_note)
+        if _correlation_id:
+            _result: dict[str, Any] = {}
+            if text:
+                try:
+                    _parsed_result = json.loads(text)
+                    if isinstance(_parsed_result, dict):
+                        _result = _parsed_result
+                except (json.JSONDecodeError, ValueError):
+                    pass  # non-JSON text — result stays {}, note still carries the formatted fallback
+            try:
+                from app.storage.progress import publish_tool_progress_event
+                publish_tool_progress_event(
+                    _correlation_id, tool_name, "after",
+                    success=success, inputs=_inputs, result=_result, note=_after_note,
+                )
+            except Exception:
+                logger.debug("publish_tool_progress_event (after) failed for %s", tool_name, exc_info=True)
 
         # Structured response: {"text": "...", "extra": {...}}
         # MCP tools can optionally return this JSON shape to pass out-of-band
