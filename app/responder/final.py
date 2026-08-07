@@ -137,7 +137,7 @@ def _build_consolidator_input_json(
                 continue
             section: dict = {
                 "intent": "process",
-                "label": h.get("section_title") or "Data",
+                "label": h.get("label") or h.get("section_title") or "Data",
                 "format": fmt,
             }
             if fmt == "table":
@@ -154,6 +154,14 @@ def _build_consolidator_input_json(
                 if items:
                     section["data"] = {"items": items}
                     pre_built.append(section)
+            elif h.get("data") is not None:
+                # Generic pass-through for custom formats (e.g. appeals_rules,
+                # appeals_playbook) — data blob is owned by the frontend renderer.
+                # visibility:primary ensures it renders in the Summary tab, not
+                # tucked behind "Show details".
+                section["data"] = h["data"]
+                section["visibility"] = "primary"
+                pre_built.append(section)
         if pre_built:
             payload["pre_built_sections"] = pre_built
     return json.dumps(payload, indent=2)
