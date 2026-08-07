@@ -11318,13 +11318,15 @@ function run() {
           const parsed = JSON.parse(e.data);
           const ev = parsed.event;
           const data = parsed.data ?? {};
-          if (ev === "thinking" && onThinking && (data.tool_progress || data.line != null)) {
-            const _tp = data.tool_progress;
-            const _appealsLabel = _tp ? formatAppealsToolProgress(_tp) : null;
-            if (_appealsLabel)
-              onThinking(_appealsLabel);
-            else if (data.line != null)
-              onThinking(String(data.line));
+          if (ev === "thinking" && data.line != null && onThinking) {
+            onThinking(String(data.line));
+          } else if (ev === "tool_progress" && onThinking) {
+            const _label = formatAppealsToolProgress(data);
+            const _note = typeof data.line === "string" ? data.line : typeof data.note === "string" ? data.note : null;
+            if (_label)
+              onThinking(_label);
+            else if (_note)
+              onThinking(_note);
           } else if (ev === "quality_audit" && data.line != null && onThinking) {
             onThinking(String(data.line));
           } else if (ev === "bandit_reward_persisted") {

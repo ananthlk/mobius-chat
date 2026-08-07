@@ -10141,14 +10141,19 @@ function run(): void {
           const parsed = JSON.parse(e.data as string) as { event: string; data?: unknown };
           const ev = parsed.event;
           const data = (parsed.data ?? {}) as Record<string, unknown>;
-          if (ev === "thinking" && onThinking && (data.tool_progress || data.line != null)) {
-            // Appeals tools (Chat Master 2026-08-07): the adapter emits a raw `tool_progress`
-            // signal ({tool_name, phase, success, inputs, result}); the FE formats the label.
-            // Falls back to the plain `line` string for every other tool (adapter still formats those).
-            const _tp = data.tool_progress as ToolProgressSignal | undefined;
-            const _appealsLabel = _tp ? formatAppealsToolProgress(_tp) : null;
-            if (_appealsLabel) onThinking(_appealsLabel);
-            else if (data.line != null) onThinking(String(data.line));
+          if (ev === "thinking" && data.line != null && onThinking) {
+            onThinking(String(data.line));
+          } else if (ev === "tool_progress" && onThinking) {
+            // Appeals tools (Chat Master 2026-08-07): a dedicated structured progress event —
+            // mirrors quality_audit / bandit_reward_persisted (progress.py reduces plain `thinking`
+            // events to {line}, so structured fields ride their own event). `data` IS the signal
+            // ({tool_name, phase, success, inputs, result}); the FE formats the label. Non-appeals
+            // tools / missing formatter fall back to the adapter's `note`/`line` string.
+            const _label = formatAppealsToolProgress(data as unknown as ToolProgressSignal);
+            const _note = typeof data.line === "string" ? data.line
+              : (typeof data.note === "string" ? data.note : null);
+            if (_label) onThinking(_label);
+            else if (_note) onThinking(_note);
           } else if (ev === "quality_audit" && data.line != null && onThinking) {
             onThinking(String(data.line));
           } else if (ev === "bandit_reward_persisted") {
