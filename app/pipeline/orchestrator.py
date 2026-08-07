@@ -411,11 +411,21 @@ def _should_suggest_confirm_authoritative(
     the button that got us here). 50-char floor matches integrate.py's
     own evidence_empty check — not a new threshold, reusing the
     established "not literally empty" bar so the two signals stay
-    consistent with each other."""
+    consistent with each other.
+
+    n_chunks > 0 gate added 2026-08-07 after a live false positive: the
+    all-rounds-failed error path ("Every attempt to answer this hit an
+    error...") still has a citable_required=False entry in
+    rag_call_history from an earlier failed attempt, and that refusal
+    text is well over 50 chars -- without this gate the CTA suggested
+    "confirm from authoritative sources" on a turn that never actually
+    retrieved anything to confirm. Requiring real chunks is a more
+    robust signal than trying to enumerate every failure-message shape."""
     last_rag_call = rag_call_history[-1] if rag_call_history else None
     return bool(
         last_rag_call
         and not last_rag_call.get("citable_required")
+        and (last_rag_call.get("n_chunks") or 0) > 0
         and force_citable_required is not True
         and len((final_message or "").strip()) >= 50
     )

@@ -40,6 +40,17 @@ class TestShouldSuggestConfirmAuthoritative:
     def test_does_not_suggest_when_no_rag_call_happened(self):
         assert _should_suggest_confirm_authoritative([], None, "a real answer with enough length to pass the floor") is False
 
+    def test_does_not_suggest_on_the_all_rounds_failed_error_path(self):
+        """Live false positive, caught on the first deployed test:
+        react_loop.py's all-rounds-failed error refusal ("Every attempt
+        to answer this hit an error...") is 71 chars (passes the length
+        floor) and can have a citable_required=False entry from an
+        earlier failed attempt -- but n_chunks=0, nothing was actually
+        retrieved to confirm. Must not suggest the CTA on this path."""
+        history = [{"citable_required": False, "n_chunks": 0}]
+        error_text = "Every attempt to answer this hit an error. Please try again or rephrase."
+        assert _should_suggest_confirm_authoritative(history, None, error_text) is False
+
     def test_does_not_suggest_below_the_length_floor(self):
         """Matches integrate.py's evidence_empty 50-char floor."""
         history = [{"citable_required": False, "n_chunks": 5}]
