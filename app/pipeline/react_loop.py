@@ -1779,6 +1779,217 @@ def _execute_tool(
                 _tr["section_hint"] = _hint  # singular key
         return _tr
 
+    # ── Appeals Agent — direct HTTP dispatch ─────────────────────────────
+    # These 5 tools bypass MCP and call the appeals REST API directly so
+    # the router treats them as Tier 1 (same weight as rag).
+    if tool in {
+        "appeals_find_carc", "appeals_lookup_rules", "appeals_get_playbook",
+        "appeals_validate_claim", "appeals_assemble_letter",
+    }:
+        import json as _json
+        import os as _os
+
+        _appeals_base = (
+            _os.environ.get("APPEALS_AGENT_URL", "")
+            or "https://mobius-appeals-prototype-ortabkknqa-uc.a.run.app"
+        ).rstrip("/")
+
+        def _appeals_get(path: str, **params):
+            with httpx.Client(timeout=30.0) as _c:
+                _r = _c.get(f"{_appeals_base}{path}", params={k: v for k, v in params.items() if v is not None})
+                _r.raise_for_status()
+                return _r.json()
+
+        def _appeals_post(path: str, body: dict):
+            with httpx.Client(timeout=120.0) as _c:
+                _r = _c.post(f"{_appeals_base}{path}", json=body)
+                _r.raise_for_status()
+                return _r.json()
+
+        def _no_src():
+            return {"tool": tool, "success": False, "result": f"[{tool}] failed", "signal": RETRIEVAL_SIGNAL_NO_SOURCES, "sources": []}
+
+        try:
+            if tool == "appeals_find_carc":
+                desc = (inputs.get("denial_description") or "").strip()
+                payor = (inputs.get("payor") or "").strip()
+                emit(f"◌ Identifying denial code from: {desc[:60]}…")
+                all_carcs = _appeals_get("/carc")
+                desc_lower = desc.lower()
+                _KEYWORD_HINTS = [
+                    (["cob","coordination","secondary","primary insurance","other insurance","medicare primary"], "cob_secondary_payor"),
+                    (["timely","filing","late","deadline","past deadline","time limit"], "timely_filing"),
+                    (["auth","authorization","prior auth","pre-auth","not authorized","not approved"], "auth_required"),
+                    (["missing","documentation","records","not on file","incomplete","no referral"], "missing_information"),
+                    (["duplicate","already paid","previously processed","same claim"], "duplicate"),
+                    (["not covered","exclusion","not a covered"], "not_covered"),
+                    (["eligibility","not eligible","not enrolled","member not","no coverage"], "eligibility"),
+                    (["coding","unbundling","modifier","cpt","hcpcs","procedure code"], "coding_mismatch"),
+                    (["bundled","inclusive","component","included in"], "bundled_service"),
+                    (["fee schedule","rate","allowed amount","maximum allowable"], "fee_schedule"),
+                    (["medical necessity","not medically necessary","experimental"], "medical_necessity"),
+                    (["referral","referral not","no referral","referral required"], "referral"),
+                    (["provider type","not credentialed","out of network","not participating"], "provider_type"),
+                    (["deductible","copay","coinsurance","cost share"], "cost_share"),
+                ]
+                arch_scores: dict[str, int] = {}
+                for kws, arch in _KEYWORD_HINTS:
+                    score = sum(1 for kw in kws if kw in desc_lower)
+                    if score: arch_scores[arch] = arch_scores.get(arch, 0) + score
+                scored = []
+                for entry in all_carcs:
+                    c = entry.get("carc", 0)
+                    title_lower = (entry.get("title") or "").lower()
+                    s = arch_scores.get(entry.get("archetype",""), 0)*2 + sum(1 for w in desc_lower.split() if len(w)>3 and w in title_lower)
+                    if s > 0: scored.append((s, entry))
+                scored.sort(key=lambda x: -x[0])
+                matches = []
+                for _, entry in scored[:4]:
+                    try:
+                        rd = _appeals_get(f"/rules/{entry['carc']}")
+                        rules = rd.get("rules", []) if isinstance(rd, dict) else rd
+                    except Exception:
+                        rules = []
+                    matches.append({
+                        "carc": entry["carc"], "title": entry.get("title",""),
+                        "archetype": entry.get("archetype",""), "rule_count": len(rules), "rules": rules,
+                    })
+                top = matches[0] if matches else {}
+                result_data = {
+                    "matches": matches, "top_carc": top.get("carc"),
+                    "top_archetype": top.get("archetype",""),
+                    "suggestion": (
+                        f"Most likely CARC {top.get('carc')} ({top.get('title','')}). "
+                        f"Each rule's appeal_argument is the assertion to make in the letter."
+                    ) if top else "Could not identify CARC — check the EOB for the exact code.",
+                }
+                emit(f"✓ Likely CARC {top.get('carc')} — {top.get('title','')[:50]}" if top else "⊘ Could not identify denial code")
+                return {
+                    "tool": tool, "success": bool(matches),
+                    "result": _json.dumps(result_data),
+                    "signal": None if matches else RETRIEVAL_SIGNAL_NO_SOURCES,
+                    "sources": [],
+                    "section_hint": {"section_format": "appeals_rules", "label": "Appeal rules",
+                                     "data": {**result_data, "admin_url": f"{_appeals_base}/admin/rules-library"}} if matches else None,
+                }
+
+            if tool == "appeals_lookup_rules":
+                carc = inputs.get("carc") or inputs.get("code")
+                payor = (inputs.get("payor") or "").strip() or None
+                if not carc:
+                    return {**_no_src(), "result": "[appeals_lookup_rules] carc is required"}
+                emit(f"◌ Looking up CARC {carc} rules…")
+                data = _appeals_get(f"/rules/{carc}", payor=payor)
+                rules = data.get("rules", []) if isinstance(data, dict) else data
+                n = len(rules)
+                carc_info = _appeals_get(f"/carc-config/{carc}")
+                result_data = {
+                    "carc": carc,
+                    "carc_title": carc_info.get("title", f"CARC {carc}") if isinstance(carc_info, dict) else f"CARC {carc}",
+                    "archetype": carc_info.get("archetype", "") if isinstance(carc_info, dict) else "",
+                    "payor": payor or "all",
+                    "rules_found": n,
+                    "rules": rules,
+                }
+                emit(f"✓ {n} rule{'s' if n!=1 else ''} for CARC {carc}")
+                return {
+                    "tool": tool, "success": n > 0,
+                    "result": _json.dumps(result_data),
+                    "signal": None if n > 0 else RETRIEVAL_SIGNAL_NO_SOURCES,
+                    "sources": [],
+                    "section_hint": {"section_format": "appeals_rules", "label": "Appeal rules", "data": {**result_data, "admin_url": f"{_appeals_base}/admin/rules-library"}} if n > 0 else None,
+                }
+
+            if tool == "appeals_get_playbook":
+                payor = (inputs.get("payor") or "").strip()
+                carc_group = (inputs.get("carc_group") or "").strip()
+                carc = inputs.get("carc") or 0
+                lookup = carc_group or str(carc) if carc else carc_group
+                if not payor or not lookup:
+                    return {**_no_src(), "result": "[appeals_get_playbook] payor and (carc_group or carc) are required"}
+                emit(f"◌ Checking {payor} playbook…")
+                try:
+                    pb = _appeals_get(f"/playbook/{payor}/{lookup}")
+                    found = True
+                except httpx.HTTPStatusError as _e:
+                    if _e.response.status_code == 404 and carc and carc_group:
+                        try:
+                            pb = _appeals_get(f"/playbook/{payor}/{carc}")
+                            found = True
+                        except Exception:
+                            pb = {"message": f"No playbook for {payor}. Default FL Medicaid: 60 days, certified mail."}
+                            found = False
+                    else:
+                        pb = {"message": f"No playbook for {payor}. Default FL Medicaid: 60 days, certified mail."}
+                        found = False
+                result_data = {"found": found, **pb}
+                if found:
+                    days = pb.get("deadline_appeal_days","?")
+                    method = pb.get("submission_method","")
+                    emit(f"✓ {payor} playbook: {days}d deadline · {method}")
+                else:
+                    emit(f"✓ No playbook for {payor} — using FL defaults")
+                return {
+                    "tool": tool, "success": found,
+                    "result": _json.dumps(result_data),
+                    "signal": None,
+                    "sources": [],
+                    "section_hint": {"section_format": "appeals_playbook", "label": "Appeal playbook", "data": result_data},
+                }
+
+            if tool == "appeals_validate_claim":
+                carc = inputs.get("carc")
+                if not carc:
+                    return {**_no_src(), "result": "[appeals_validate_claim] carc is required"}
+                emit(f"◌ Running AI recommendation for CARC {carc}…")
+                try:
+                    rules_raw = _appeals_get(f"/rules/{carc}")
+                    rules = rules_raw.get("rules", [])[:8] if isinstance(rules_raw, dict) else rules_raw[:8]
+                except Exception:
+                    rules = []
+                body = {
+                    "carc": carc, "payor": inputs.get("payor") or "", "amount": inputs.get("amount") or "",
+                    "dos": inputs.get("dos") or "",
+                    "inv_signals": inputs.get("inv_signals") or {},
+                    "rules": [{"rule_id": r.get("rule_id",""), "rule_name": r.get("rule_name",""),
+                               "rule_statement": r.get("rule_statement",""), "triggers_when": r.get("triggers_when",""),
+                               "appeal_argument": r.get("appeal_argument","")} for r in rules],
+                }
+                result = _appeals_post("/validate-rules", body)
+                action = result.get("action", "appeal")
+                conf = result.get("confidence", "medium")
+                emit(f"✓ Recommendation: {action} ({conf})")
+                return {
+                    "tool": tool, "success": True,
+                    "result": _json.dumps(result),
+                    "signal": None,
+                    "sources": [],
+                }
+
+            if tool == "appeals_assemble_letter":
+                carc = inputs.get("carc")
+                if not carc:
+                    return {**_no_src(), "result": "[appeals_assemble_letter] carc is required"}
+                emit(f"◌ Assembling appeal letter for CARC {carc} / {inputs.get('payor','?')} — takes 30–90s…")
+                body = {k: inputs.get(k) for k in [
+                    "carc","payor","amount","dos","denial_date","carc_group",
+                    "action_items","inv_signals","action_path","session_id",
+                ] if inputs.get(k) is not None}
+                result = _appeals_post("/assemble", body)
+                letter = result.get("letter_draft") or result.get("letter") or ""
+                wc = len(letter.split()) if letter else 0
+                emit(f"✓ Letter assembled ({wc} words)")
+                return {
+                    "tool": tool, "success": bool(letter),
+                    "result": _json.dumps({**result, "letter": letter, "letter_word_count": wc}),
+                    "signal": None if letter else RETRIEVAL_SIGNAL_NO_SOURCES,
+                    "sources": [],
+                }
+
+        except Exception as _exc:
+            emit(f"⊘ {tool} error: {_exc}")
+            return {**_no_src(), "result": f"[{tool}] Error: {_exc}"}
+
     return {
         "tool": tool,
         "success": False,
