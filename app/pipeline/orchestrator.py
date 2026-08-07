@@ -397,6 +397,30 @@ def _invoke_cache_assist(ctx, *, chat_mode_hint: str | None, emitter) -> None:
         ctx.seed_tool_results.append(tr_entry)
 
 
+def _should_suggest_confirm_authoritative(
+    rag_call_history: list[dict],
+    force_citable_required: bool | None,
+    final_message: str | None,
+) -> bool:
+    """2026-08-07 (Task #41(a) follow-up, Chat Master directive): "confirm
+    from authoritative sources" CTA — suggested when the turn's most
+    recent rag call answered from the broad "any" net (citable_required
+    was False, chat's default for most queries per react_loop.py's
+    keyword heuristic) rather than citable-only sources, AND this turn
+    wasn't ALREADY a forced-authoritative re-submit (no point suggesting
+    the button that got us here). 50-char floor matches integrate.py's
+    own evidence_empty check — not a new threshold, reusing the
+    established "not literally empty" bar so the two signals stay
+    consistent with each other."""
+    last_rag_call = rag_call_history[-1] if rag_call_history else None
+    return bool(
+        last_rag_call
+        and not last_rag_call.get("citable_required")
+        and force_citable_required is not True
+        and len((final_message or "").strip()) >= 50
+    )
+
+
 def run_pipeline(
     correlation_id: str,
     message: str,
@@ -404,6 +428,7 @@ def run_pipeline(
     t0_start: float | None = None,
     use_react_override: bool | None = None,
     chat_mode: str | None = None,
+    force_citable_required: bool | None = None,
     user_id: str | None = None,
     system_context: str | None = None,
     cache_assist: bool | None = None,
@@ -630,6 +655,14 @@ def run_pipeline(
             ctx.chat_mode = _normalize_chat_mode(prev_mode if isinstance(prev_mode, str) else None)
         ctx.merged_state = {**(ctx.merged_state or {}), "last_chat_mode": ctx.chat_mode}
 
+        # 2026-08-07 (Task #41(a) follow-up, Chat Master directive) --
+        # "confirm from authoritative sources" CTA re-submit path. None
+        # (all normal traffic) leaves react_loop.py's existing
+        # _citable_required(query) keyword heuristic untouched; True
+        # forces citable_required regardless of what that heuristic
+        # would have picked -- the whole point of the button.
+        ctx.force_citable_required = force_citable_required
+
         # Resolve allowed tools: mode default ∩ user subscriptions ∩ request policy.
         # ctx.allowed_tools is None (no filter) or list[str] (explicit allow-list).
         # The ReAct loop and tool_manifest consume this to filter what the planner sees.
@@ -715,10 +748,17 @@ def run_pipeline(
                 # Think mode" button doesn't have to wait for the
                 # integrator's slower completed-card event.
                 _draft_suggest_escalate = getattr(ctx, "react_unfinished_reason", None) == "no_path_forward"
+                _cta_confirm_authoritative = _should_suggest_confirm_authoritative(
+                    rag_call_history=getattr(ctx, "_rag_call_history", None) or [],
+                    force_citable_required=getattr(ctx, "force_citable_required", None),
+                    final_message=ctx.final_message,
+                )
                 append_draft_answer(
                     ctx.correlation_id, ctx.final_message, mode_hint=_mode_hint,
                     suggest_escalate=_draft_suggest_escalate,
+                    cta_confirm_authoritative=_cta_confirm_authoritative,
                 )
+                ctx.cta_confirm_authoritative = _cta_confirm_authoritative
             updates = {}
             if getattr(ctx, "failed_query", None):
                 updates["last_failed_query"] = ctx.failed_query

@@ -710,6 +710,42 @@ def _citable_required(query: str) -> bool:
     return any(term in q for term in _CITABLE_TERMS)
 
 
+def _compute_baseline_citable_and_relax_eligible(
+    rag_history: list[dict],
+    rag_call_number: int,
+    force_citable_required: bool | None,
+    query: str,
+) -> tuple[bool, bool]:
+    """(baseline_citable, relax_eligible) for this rag call.
+
+    2026-08-07 (Task #41(a) follow-up, "confirm from authoritative
+    sources" CTA re-submit): force_citable_required overrides the
+    keyword heuristic outright and ALSO disables relax-eligibility --
+    the whole point of the button is a guarantee of citable-only
+    sources for this turn; silently relaxing away from that on an
+    empty result would defeat what the user explicitly asked for. An
+    honest "nothing authoritative found" is the correct outcome here,
+    not a quiet fallback to non-authoritative sources.
+
+    Extracted as a pure function (2026-08-07) specifically so this
+    decision is unit-testable without needing a full run_react()
+    integration test that mocks deep enough to bypass it entirely."""
+    baseline_citable = (
+        force_citable_required if force_citable_required is not None
+        else _citable_required(query)
+    )
+    prior_rag_call = rag_history[-1] if rag_history else None
+    relax_eligible = bool(
+        force_citable_required is None
+        and rag_call_number == 2
+        and baseline_citable
+        and prior_rag_call is not None
+        and prior_rag_call.get("citable_required")
+        and prior_rag_call.get("n_chunks") == 0
+    )
+    return baseline_citable, relax_eligible
+
+
 def _compute_gap_status(rag_call_history: list[dict]) -> str:
     """EvidenceLedger phase 1 (Task #48, Chat Architecture spec,
     2026-08-06) -- mechanical, code-only detection of whether the last
@@ -932,15 +968,11 @@ def _execute_tool(
         # See react/prompts.py rule 1b for the LLM-facing protocol.
         _rag_history: list[dict] = list(getattr(ctx, "_rag_call_history", []))
         _rag_call_number = len(_rag_history) + 1
-        _baseline_citable = _citable_required(query)
-        _prior_rag_call = _rag_history[-1] if _rag_history else None
-        _relax_eligible = (
-            _rag_call_number == 2
-            and _baseline_citable
-            and _prior_rag_call is not None
-            and _prior_rag_call.get("citable_required")
-            and _prior_rag_call.get("n_chunks") == 0
+        _force_citable = getattr(ctx, "force_citable_required", None)
+        _baseline_citable, _relax_eligible = _compute_baseline_citable_and_relax_eligible(
+            _rag_history, _rag_call_number, _force_citable, query,
         )
+        _prior_rag_call = _rag_history[-1] if _rag_history else None
         _reframe_eligible = (
             _rag_call_number == 3
             and _prior_rag_call is not None

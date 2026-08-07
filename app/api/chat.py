@@ -86,6 +86,15 @@ class ChatRequest(BaseModel):
     chat_mode: Literal["copilot", "agentic", "quick", "task"] | None = None
     """copilot: registry-first, 3 rounds. agentic: web escalation, 6 rounds. quick: mini-container, 2 rounds, brief answers. task: skips integrator, returns raw_text."""
 
+    force_citable_required: bool | None = None
+    """Per-request override for react's citable_required decision (2026-08-07,
+    Task #41(a) follow-up — "confirm from authoritative sources" CTA). Normally
+    react derives citable_required from a keyword heuristic on the query text
+    (app/pipeline/react_loop.py:_citable_required); the button re-submits the
+    SAME message with this set to True so rag is forced into citable-only
+    mode regardless of what the keyword rule would have picked. None (the
+    default, all normal traffic) leaves the existing heuristic untouched."""
+
     model_profile: str | None = None
     """Per-turn override for the model-profile selection.
 
@@ -298,6 +307,8 @@ def post_chat(
         payload["use_react"] = body.use_react
     if body.chat_mode is not None:
         payload["chat_mode"] = body.chat_mode
+    if body.force_citable_required is not None:
+        payload["force_citable_required"] = bool(body.force_citable_required)
     if user_id:
         payload["user_id"] = user_id
     if body.system_context:

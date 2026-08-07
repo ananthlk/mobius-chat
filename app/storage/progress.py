@@ -229,7 +229,7 @@ def append_message_chunk(correlation_id: str, chunk: str) -> None:
 
 def append_draft_answer(
     correlation_id: str, text: str, mode_hint: str | None = None,
-    suggest_escalate: bool = False,
+    suggest_escalate: bool = False, cta_confirm_authoritative: bool = False,
 ) -> None:
     """Emit the raw ReAct answer before the integrator runs so the frontend can render it immediately.
     Fires a draft_ready SSE event; the completed event fills in remaining panels in-place.
@@ -259,6 +259,12 @@ def append_draft_answer(
         ev["data"]["mode_hint"] = mode_hint
     if suggest_escalate:
         ev["data"]["suggest_escalate"] = True
+    if cta_confirm_authoritative:
+        # 2026-08-07 (Task #41(a) follow-up, Chat Master directive):
+        # "confirm from authoritative sources" CTA -- same draft-time
+        # pattern as suggest_escalate above, streamed with the draft
+        # rather than waiting for the completed card.
+        ev["data"]["cta_confirm_authoritative"] = True
     with _lock:
         if correlation_id in _progress:
             _progress[correlation_id]["events"].append(ev)

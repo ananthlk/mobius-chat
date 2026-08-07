@@ -210,6 +210,19 @@ class PipelineContext:
     # UI chat mode (POST /chat chat_mode): copilot | agentic | quick | task
     chat_mode: str = "copilot"
 
+    # Per-request override for react's citable_required decision (POST /chat
+    # force_citable_required) -- 2026-08-07, Task #41(a) follow-up, "confirm
+    # from authoritative sources" CTA re-submit. None (all normal traffic)
+    # leaves react_loop.py's keyword heuristic untouched.
+    force_citable_required: bool | None = None
+
+    # Computed in orchestrator.py right after run_react() returns: True when
+    # this turn's rag answer came from the broad "any" net (citable_required
+    # was False) rather than citable-only sources -- drives the "confirm
+    # from authoritative sources" CTA on both the draft_ready event and the
+    # completed card.
+    cta_confirm_authoritative: bool = False
+
     # Tool policy: resolved in orchestrator from mode default + user subscriptions.
     # None  = no filter (all tools visible to the planner).
     # []    = no tools (task mode default, or user disabled everything).
