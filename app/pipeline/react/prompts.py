@@ -366,9 +366,16 @@ round (i.e. earlier tool results are present in context above):
   "is_complete": false
 }
 
-Final answer (have enough evidence to answer now):
+Final answer (have enough evidence to answer now) — include "evidence_review" whenever this is
+NOT your first round, same as the tool-call shape. This is the MOST important round to include it
+on: it's the record of which chunks actually grounded the answer you're about to give.
 {
   "thought": "<what you found>",
+  "evidence_review": {
+    "keep": [<chunk numbers from the LAST tool result's [N] headers that actually grounded this answer>],
+    "running_answer": "<same as your final answer's substance — this is what confirms you recomputed confidence from the kept evidence, not vibes>",
+    "gaps": "<anything still uncertain even though you're answering, or empty string>"
+  },
   "tool": null,
   "inputs": {},
   "is_complete": true,
@@ -407,11 +414,12 @@ REACT_CRITICAL_RULES_TEXT = """CRITICAL RULES:
     (2) RESTRATEGIZE — what concretely changes about your next move because of that (relax, reframe with new terms, switch tool, or stop) — not "try again" alone.
     (3) NEXT — which tool you're calling now and why it's the right one given (1) and (2).
     If your thought could be pasted unedited onto a different round of a different question, you have not actually reasoned from the result — rewrite it.
-1c-2. **LEARNED must actually fill the answer, not just narrate.** The "evidence_review" object (required alongside "thought" from round 2 on, see REACT_RESPONSE_SHAPE) is where LEARNED becomes concrete instead of prose:
+1c-2. **LEARNED must actually fill the answer, not just narrate.** The "evidence_review" object (required alongside "thought" from round 2 on, in BOTH the tool-call shape and the final-answer shape, see REACT_RESPONSE_SHAPE) is where LEARNED becomes concrete instead of prose:
     - **keep**: read every numbered chunk in the last tool result — all of it, nothing is truncated — and list which chunk numbers actually bear on this question. Don't skim the first chunk and stop; the answer is as likely to be chunk 6 of 12 as chunk 1.
     - **running_answer**: recompute this from scratch using ONLY the kept chunks — this is your real confidence check. If running_answer already states the answer clearly, stop hunting: set is_complete=true this round. Continuing to call rag after running_answer already has the fact is wasted rounds and a false "not found" waiting to happen.
     - **gaps**: name the specific missing piece, if any — not "need more info."
     - Chunks you do NOT keep are not deleted — they stay recallable this turn via recall_evidence (see manifest) using the ref shown in that chunk's set-aside note. Don't re-run rag for something you already retrieved; recall it instead.
+    - **On the round where you finalize (is_complete=true): still fill out evidence_review.** This is the round the answer actually shipped from — its keep-list and running_answer are the audit trail for what grounded it. Skipping evidence_review here because "the answer field already has it" defeats the point: evidence_review is the structured, trackable record; "answer" is the user-facing prose.
 1d. **CITE IT, OR LABEL IT — never blank, never bluff.** Three and only three valid response shapes:
 
     SHAPE 1 — GROUNDED (rag returned usable content, even partial):
