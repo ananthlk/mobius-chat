@@ -331,14 +331,27 @@ def _emit_integrator_chunks(text: str, message_chunk_callback: Callable[[str], N
 
 
 def _fallback_message(plan: Plan, stub_answers: list[str]) -> str:
-    """Simple concatenation without internal labels or repeated questions. Plain paragraphs."""
+    """Exception-path fallback (the integrator LLM call itself failed/timed
+    out) -- returns a valid minimal AnswerCard JSON string, not raw text.
+    2026-08-07: this used to return plain joined paragraphs, no card
+    structure at all. On a tool-heavy turn, stub_answers can hold a tool's
+    raw JSON result verbatim (e.g. appeals_validate_claim's output) -- with
+    no wrapping, that raw tool JSON leaked to the user as if it were the
+    answer (surfaced by a genuine Vertex gemini-2.5-pro timeout, not a bug
+    in the caller). Wrapping here means the downstream AnswerCard validator
+    accepts it as-is (valid mode/direct_answer/sections) instead of further
+    replacing it with a generic try-again stub -- one fallback layer, not two
+    diverging ones."""
+    from app.communication.json_display_sanitize import DEFAULT_BLEED_FALLBACK
+
     parts: list[str] = []
     _subs = getattr(plan, "subquestions", None) or []
     _stub = stub_answers if stub_answers is not None else []
     for i, sq in enumerate(_subs):
         ans = _stub[i] if i < len(_stub) else "[No answer yet]"
         parts.append(ans.strip())
-    return "\n\n".join(p for p in parts if p)
+    text = "\n\n".join(p for p in parts if p) or DEFAULT_BLEED_FALLBACK
+    return json.dumps({"mode": "FACTUAL", "direct_answer": text, "sections": []})
 
 
 def format_response(
