@@ -560,6 +560,28 @@ def _build_reasoning_ledger(react_trace_rounds: list[dict] | None) -> list[dict]
     return out
 
 
+def _backend_extras_for_stub(ctx: PipelineContext) -> dict[str, Any]:
+    """react_draft/suggest_escalate for a stub/fallback card built OUTSIDE the normal
+    `if isinstance(parsed, dict):` block (Task #68) -- total JSON parse failure or
+    AnswerCard-validation failure both replace display_message wholesale, bypassing
+    the injection that block normally does. Same condition logic as that block,
+    factored out so a stub never silently drops these backend-computed fields
+    the way the bleed-detection branches did before this fix."""
+    extra: dict[str, Any] = {}
+    react_draft = getattr(ctx, "react_draft", None)
+    if react_draft and react_draft.strip():
+        extra["react_draft"] = react_draft
+    evidence_empty = not (react_draft or "").strip() or len((react_draft or "").strip()) < 50
+    stalled = (
+        getattr(ctx, "react_unfinished_reason", None) == "no_path_forward"
+        or getattr(ctx, "react_groundedness_passed", None) is False
+        or evidence_empty
+    )
+    if stalled and getattr(ctx, "chat_mode", None) != "agentic":
+        extra["suggest_escalate"] = True
+    return extra
+
+
 def _default_source_confidence(
     retrieval_signals: list[str],
     all_sources: list[dict],
@@ -1086,6 +1108,11 @@ def run_integrate(
             # tune only against evidence of false positives there.
             _groundedness_passed = getattr(ctx, "react_groundedness_passed", None)
             _react_draft = getattr(ctx, "react_draft", None)
+            logger.info(
+                "[react_draft] present=%s len=%d correlation_id=%s",
+                _react_draft is not None, len((_react_draft or "")),
+                getattr(ctx, "correlation_id", "?"),
+            )
             _evidence_empty = not (_react_draft or "").strip() or len((_react_draft or "").strip()) < 50
             _stalled = (
                 getattr(ctx, "react_unfinished_reason", None) == "no_path_forward"
@@ -1094,6 +1121,16 @@ def run_integrate(
             )
             if _stalled and getattr(ctx, "chat_mode", None) != "agentic":
                 parsed["suggest_escalate"] = True
+
+            # cta_confirm_authoritative (2026-08-07, Task #41(a) follow-up,
+            # Chat Master directive) -- same additive pattern as
+            # suggest_escalate above: computed once in orchestrator.py right
+            # after run_react() returns (so the draft_ready event already
+            # carries it with zero added latency), read here unchanged so
+            # the completed card carries it too, for reload / history and
+            # any FE path that only reads the persisted card.
+            if getattr(ctx, "cta_confirm_authoritative", False):
+                parsed["cta_confirm_authoritative"] = True
 
             # react_draft persistence (2026-08-07, Chat FE / Ananth's ruling:
             # Summary tab = react_draft, always, including on history reload).
@@ -1296,26 +1333,37 @@ def run_integrate(
             "Integrate: could not parse final_message as JSON; sending try-again stub. raw (truncated): %s",
             _raw_truncated,
         )
+        # Task #68: this stub is built OUTSIDE the `if isinstance(parsed, dict):` block
+        # (parsed was never successfully computed -- that's why we're in this except
+        # clause), so the react_draft/suggest_escalate injection that block normally
+        # does never ran. See _backend_extras_for_stub.
+        _stub_extra = _backend_extras_for_stub(ctx)
         _recital_text = (_recital_ctx or {}).get("text") if _recital_ctx else None
         if _recital_text:
             display_message = json.dumps({
                 "mode": "RECITAL",
                 "direct_answer": "From the Mobius founding essay:",
                 "recital": {"verbatim": _recital_text},
+                **_stub_extra,
             })
         else:
             display_message = json.dumps({
                 "mode": "FACTUAL",
                 "direct_answer": FALLBACK_TRY_AGAIN,
                 "sections": [],
+                **_stub_extra,
             })
 
     # If we never produced valid AnswerCard JSON, show try-again so the card always formats
     def _recital_fallback_card() -> str:
+        # Task #68: same principle as the except-clause stub above -- this replaces
+        # display_message WHOLESALE when validation fails, so it must not silently
+        # drop react_draft/suggest_escalate either. See _backend_extras_for_stub.
+        _stub_extra = _backend_extras_for_stub(ctx)
         _rt = (_recital_ctx or {}).get("text") if _recital_ctx else None
         if _rt:
-            return json.dumps({"mode": "RECITAL", "direct_answer": "From the Mobius founding essay:", "recital": {"verbatim": _rt}})
-        return json.dumps({"mode": "FACTUAL", "direct_answer": FALLBACK_TRY_AGAIN, "sections": []})
+            return json.dumps({"mode": "RECITAL", "direct_answer": "From the Mobius founding essay:", "recital": {"verbatim": _rt}, **_stub_extra})
+        return json.dumps({"mode": "FACTUAL", "direct_answer": FALLBACK_TRY_AGAIN, "sections": [], **_stub_extra})
 
     try:
         check = json.loads(display_message) if display_message else {}

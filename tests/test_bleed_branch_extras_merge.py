@@ -160,3 +160,54 @@ def test_normal_non_bleed_card_still_gets_react_draft():
 
     payload = json.loads(ctx.response_payload["message"])
     assert payload.get("react_draft") == "normal path hedge"
+
+
+def test_react_draft_survives_total_json_parse_failure_stub():
+    """A total parse failure (final_message isn't valid JSON at all) must
+    still carry react_draft/suggest_escalate -- this stub is built OUTSIDE
+    the if isinstance(parsed, dict) block entirely, so the normal injection
+    never runs there."""
+    ctx = _make_ctx(react_draft="Limited sources available for this query.")
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = ("not valid json at all { broken", None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert payload.get("react_draft") == "Limited sources available for this query."
+
+
+def test_react_draft_survives_answercard_validation_failure_stub():
+    """A structurally-invalid AnswerCard (missing required keys) gets
+    replaced wholesale by _recital_fallback_card() -- must still carry
+    react_draft/suggest_escalate."""
+    ctx = _make_ctx(react_draft="Hedge text for validation-failure case.")
+    # Missing "sections" -- fails the AnswerCard validator in run_integrate.
+    card = {"mode": "FACTUAL", "direct_answer": "x"}
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert payload.get("react_draft") == "Hedge text for validation-failure case."
+
+
+def test_suggest_escalate_survives_total_parse_failure_stub():
+    ctx = _make_ctx(react_draft="x", react_unfinished_reason="no_path_forward", chat_mode="quick")
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = ("not valid json { broken", None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert payload.get("suggest_escalate") is True
+
+
+def test_backend_extras_omitted_when_react_draft_absent():
+    """Regression guard: no react_draft on ctx -> stub cards must not
+    fabricate one."""
+    ctx = _make_ctx()
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = ("not valid json { broken", None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert "react_draft" not in payload
