@@ -211,3 +211,46 @@ def test_backend_extras_omitted_when_react_draft_absent():
 
     payload = json.loads(ctx.response_payload["message"])
     assert "react_draft" not in payload
+
+
+def test_ctx_final_message_matches_response_payload_message():
+    """Task #68's TRUE root cause: ctx.final_message was set (at the RECITAL
+    post-process step) BEFORE react_draft/suggest_escalate injection, bleed-
+    branch handling, and stub construction all ran on a SEPARATE local
+    variable (display_message) that only ever reached
+    ctx.response_payload["message"] (the live API response), never
+    ctx.final_message (what orchestrator.py's main save_turn call site
+    persists). Every fixup in this file was invisible to the DB column the
+    whole time. This is the actual regression test for the bug -- the two
+    must be identical after run_integrate returns."""
+    ctx = _make_ctx(react_draft="Verifying persisted value matches served value.")
+    card = {"mode": "FACTUAL", "direct_answer": "A normal answer.", "sections": []}
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    assert ctx.final_message == ctx.response_payload["message"]
+    persisted = json.loads(ctx.final_message)
+    assert persisted.get("react_draft") == "Verifying persisted value matches served value."
+
+
+def test_ctx_final_message_matches_response_payload_on_bleed_branch():
+    ctx = _make_ctx(react_draft="hedge for bleed sync check")
+    inner = {"mode": "FACTUAL", "direct_answer": "Nested answer.", "sections": []}
+    card = {"mode": "FACTUAL", "direct_answer": json.dumps(inner), "sections": []}
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    assert ctx.final_message == ctx.response_payload["message"]
+    assert json.loads(ctx.final_message).get("react_draft") == "hedge for bleed sync check"
+
+
+def test_ctx_final_message_matches_response_payload_on_stub_path():
+    ctx = _make_ctx(react_draft="hedge for stub sync check")
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = ("not valid json { broken", None)
+        run_integrate(ctx)
+
+    assert ctx.final_message == ctx.response_payload["message"]
+    assert json.loads(ctx.final_message).get("react_draft") == "hedge for stub sync check"

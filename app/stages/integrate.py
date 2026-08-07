@@ -1478,6 +1478,17 @@ def run_integrate(
         "router_by_stage": router_by_stage[:40] if router_by_stage else [],
     }
 
+    # Task #68 (final root cause): ctx.final_message was set way earlier (right
+    # after the RECITAL post-process block, before react_draft/suggest_escalate
+    # injection, bleed-branch handling, and stub/fallback construction all ran)
+    # -- it's the PRE-processing value. persistence.save_turn's main success
+    # path (orchestrator.py) persists ctx.final_message, not display_message /
+    # ctx.response_payload["message"] -- so every fixup made to display_message
+    # in this function was silently invisible to the DB column the whole time,
+    # only ever reaching the live API response. Re-sync here so persisted and
+    # served are the same value again.
+    ctx.final_message = display_message
+
     payload = {
         "status": "completed",
         "correlation_id": ctx.correlation_id,
