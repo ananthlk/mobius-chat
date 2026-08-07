@@ -205,11 +205,15 @@ _APPEALS_TOOLS: frozenset[str] = frozenset({
 })
 
 _APPEALS_BLOCK = """\
-⚠ APPEALS TOOLS — CHECK THESE FIRST for any denial/appeal/CARC query.
-If the user message contains "CARC" followed by a number, or mentions
-"denial", "appeal", "timely filing", "COB", "prior auth", "not covered",
-"duplicate claim", "member not eligible" — use ONE of these tools immediately.
-Do NOT route to rag, product_help_search, or any other tool for these queries.
+⚠ APPEALS TOOLS — HIGHEST PRIORITY. Use these for ANY denial or appeal question.
+TRIGGER WORDS that mean use appeals tools (NOT rag, NOT product_help_search):
+  • "CARC" followed by a number (e.g. "CARC 22", "CARC 29", "CARC 4")
+  • "denial", "denied", "CO-22", "CO22", "COB denial"
+  • "appeal", "appeal argument", "appeal letter"
+  • "timely filing", "prior auth", "not covered", "member not eligible"
+  • "what documents do we need", "what is our argument"
+These are billing/claims questions — NOT Mobius product questions. Do not
+route to product_help_search (which only answers about the Mobius app UI).
 
 appeals_find_carc(denial_description, payor?)
   Identifies the CARC denial code(s) from a plain-English description of
