@@ -193,6 +193,67 @@ _REGISTRY_ORDER: tuple[str, ...] = (
     "web_scrape",
 )
 
+# Appeals tools are router-owned (dispatched directly in react_loop.py).
+# Listing them here suppresses them from the auto-discovered MCP section
+# so they don't appear twice in the manifest.
+_APPEALS_TOOLS: frozenset[str] = frozenset({
+    "appeals_find_carc",
+    "appeals_lookup_rules",
+    "appeals_get_playbook",
+    "appeals_validate_claim",
+    "appeals_assemble_letter",
+})
+
+_APPEALS_BLOCK = """\
+⚠ APPEALS TOOLS — CHECK THESE FIRST for any denial/appeal/CARC query.
+If the user message contains "CARC" followed by a number, or mentions
+"denial", "appeal", "timely filing", "COB", "prior auth", "not covered",
+"duplicate claim", "member not eligible" — use ONE of these tools immediately.
+Do NOT route to rag, product_help_search, or any other tool for these queries.
+
+appeals_find_carc(denial_description, payor?)
+  Identifies the CARC denial code(s) from a plain-English description of
+    a denial and immediately loads all applicable appeal rules.
+  USE when: user describes a denial without a CARC number ("COB denial",
+    "timely filing", "prior auth not obtained", "duplicate claim",
+    "member not eligible", "patient has other insurance").
+  Returns: top matching CARCs, their titles, and rules with appeal_argument.
+
+appeals_lookup_rules(carc, payor?, inv_signals?)
+  Loads all structured appeal rules for a specific CARC denial code.
+  USE when: user supplies a CARC number ("CARC 22", "CARC 29", etc.) and
+    asks how to appeal, what the argument is, or what rules apply.
+  Use for: "how do I appeal CARC 22", "COB appeal argument",
+    "rules for CARC 29 timely filing denial from Sunshine Health."
+  Returns: list of rules with appeal_argument, triggers_when, requires.
+
+appeals_get_playbook(payor, carc_group?, carc?)
+  Retrieves the payor-specific appeal playbook: filing deadline,
+    submission method (portal/fax/mail), required documents, portal
+    URL, and escalation ladder (internal → external → fair hearing).
+  PREFER THIS over rag when the user asks how to submit an appeal,
+    what the deadline is, or what documents to gather for a specific
+    payor.
+  Pass either carc (integer) or carc_group (archetype slug) — not
+    required to know both.
+  Returns: deadline_appeal_days, submission_method, portal_url, fax,
+    docs_required, appeal_levels, notes.
+
+appeals_validate_claim(carc, payor?, amount?, dos?, inv_signals?)
+  Runs the AI recommendation engine: returns the recommended action
+    (appeal / resubmit / dispute / escalate), confidence, rationale,
+    and a list of action items the provider must complete.
+  Use after appeals_lookup_rules when the user wants a verdict on
+    whether to appeal and what steps to take first.
+
+appeals_assemble_letter(carc, payor?, amount?, dos?, denial_date?,
+                        carc_group?, action_items?, action_path?)
+  Generates a complete, attorney-quality FL Medicaid appeal letter via
+    a 5-agent pipeline (30–90 seconds). Use only when the user
+    explicitly asks to draft or generate the appeal letter.
+  Returns: letter text (ready to send), QA status, docs checklist,
+    submission instructions, next steps."""
+
 
 # ── Curator tools (Phase 13.5) — surface URLs we know about even ─────
 # when they aren't in the indexed corpus yet.
@@ -281,7 +342,7 @@ def _auto_discovered_block(allowed: frozenset[str] | None = None) -> str:
     curated = frozenset(_REGISTRY_ORDER)
     render = tuple(sorted(
         n for n in mcp_names
-        if n in visible and n not in curated
+        if n in visible and n not in curated and n not in _APPEALS_TOOLS
         and (allowed is None or n in allowed)
     ))
     if not render:
@@ -304,6 +365,12 @@ _ROUTER_OWNED_BLOCKS: dict[str, str] = {
     # Curator tools aren't in the registry either
     "lookup_authoritative_sources": "_LOOKUP_AUTHORITATIVE_SOURCES_BLOCK",
     "ingest_url": "_INGEST_URL_BLOCK",
+    # Appeals tools — dispatched directly in react_loop.py
+    "appeals_find_carc": "_APPEALS_BLOCK",
+    "appeals_lookup_rules": "_APPEALS_BLOCK",
+    "appeals_get_playbook": "_APPEALS_BLOCK",
+    "appeals_validate_claim": "_APPEALS_BLOCK",
+    "appeals_assemble_letter": "_APPEALS_BLOCK",
 }
 
 
@@ -340,6 +407,11 @@ def _compose_manifest(allowed: frozenset[str] | None = None) -> str:
         # former neighbor for why (dangling MCP-tool promises).
         # Retrieval methodology primer — describes the single rag() entry point.
         _RETRIEVAL_METHODOLOGY_PRIMER if _allow("rag") else "",
+        # Appeals tools — MUST BE CHECKED FIRST. Any message containing a CARC
+        # code number (e.g. "CARC 22", "CARC 29") or describing an insurance
+        # denial/appeal workflow MUST use these tools, NOT rag or product_help_search.
+        # Do NOT route denial/appeal/CARC queries to any other tool.
+        _router_block("appeals_find_carc", _APPEALS_BLOCK),
         # rag: the ONE retrieval tool. Replaces search_corpus + payor_lookup +
         # lookup_authoritative_sources + google_search. RAG's router picks
         # strategy internally; callers pass query only.
