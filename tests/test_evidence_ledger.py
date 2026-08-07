@@ -120,3 +120,53 @@ class TestEvidenceLedgerRendering:
             gap_status="stagnant", rag_call_history=history,
         )
         assert "lookup_authoritative_sources" in out
+
+
+class TestExhaustedToolsInLedger:
+    """2026-08-07, Chat Master #41(b), live-query finding: a COB-
+    reconsideration turn that only ever called appeals_* tools (never
+    rag) never rendered [Evidence Ledger] at all -- the block was gated
+    on rag_call_history alone. Rounds 5 and 6 both re-attempted an
+    already-exhausted appeals_get_playbook because the exhaustion signal
+    only existed as a paragraph tacked onto the end of reasoning_context
+    (failure_hint_for_prompt), not in the block the model is explicitly
+    instructed to read every round."""
+
+    def test_ledger_renders_on_exhausted_tools_alone_no_rag_history(self):
+        """The exact live gap: zero rag calls this turn (appeals-only
+        turn), but a tool is exhausted -- the Ledger must still render."""
+        out = build_reasoning_context(
+            _make_ctx(), [], 5, max_iterations=10,
+            gap_status="fresh", rag_call_history=[],
+            exhausted_tools=["appeals_get_playbook"],
+        )
+        assert "[Evidence Ledger]" in out
+        assert "exhausted_tools: ['appeals_get_playbook']" in out
+        assert "do NOT call them again" in out
+
+    def test_no_ledger_when_neither_history_nor_exhausted(self):
+        out = build_reasoning_context(
+            _make_ctx(), [], 1, max_iterations=10,
+            gap_status="fresh", rag_call_history=[], exhausted_tools=[],
+        )
+        assert "[Evidence Ledger]" not in out
+
+    def test_both_rag_history_and_exhausted_tools_coexist_in_one_block(self):
+        history = [_call(), _call()]
+        out = build_reasoning_context(
+            _make_ctx(), [], 3, max_iterations=10,
+            gap_status="progressing", rag_call_history=history,
+            exhausted_tools=["appeals_get_playbook"],
+        )
+        # One [Evidence Ledger] header, not two separate blocks.
+        assert out.count("[Evidence Ledger]") == 1
+        assert "gap_status:" in out
+        assert "exhausted_tools: ['appeals_get_playbook']" in out
+
+    def test_multiple_exhausted_tools_all_listed(self):
+        out = build_reasoning_context(
+            _make_ctx(), [], 6, max_iterations=10,
+            exhausted_tools=["appeals_get_playbook", "web_scrape"],
+        )
+        assert "appeals_get_playbook" in out
+        assert "web_scrape" in out

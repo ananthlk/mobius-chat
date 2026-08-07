@@ -3199,6 +3199,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             max_iterations=(None if _pp_suppress_guidance else max_it),
             gap_status=_gap_status,
             rag_call_history=_ledger_history,
+            exhausted_tools=retry_guard.exhausted_tools(),
         )
         # Directive text appended to context — NOT a composition/system-
         # prompt block (see governor.py's module docstring for why).

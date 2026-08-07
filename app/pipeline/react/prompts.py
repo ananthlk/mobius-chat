@@ -710,6 +710,7 @@ def build_reasoning_context(
     gap_status: str | None = None,
     rag_call_history: list[dict] | None = None,
     evidence_review_latest: dict | None = None,
+    exhausted_tools: list[str] | None = None,
 ) -> str:
     """Build the context the model reasons over each iteration.
 
@@ -965,28 +966,50 @@ def build_reasoning_context(
         rag_call_history if rag_call_history is not None
         else list(getattr(ctx, "_rag_call_history", []))
     )
-    if _ledger_history:
-        _strategy_tried = [
-            "citable retrieval" if h.get("citable_required") else "relaxed retrieval"
-            for h in _ledger_history
-        ]
-        _tool_tried = ["rag" for _ in _ledger_history]
-        _dispatch_path_history = [h.get("dispatch_path") or "n/a" for h in _ledger_history]
-        parts.append(
-            "[Evidence Ledger]\n"
-            f"round: {iteration}\n"
-            f"strategy_tried: {_strategy_tried}\n"
-            f"tool_tried: {_tool_tried}\n"
-            f"dispatch_path_history: {_dispatch_path_history}\n"
-            f"gap_status: \"{gap_status or 'progressing'}\"\n"
-            "When gap_status is \"stagnant\": the last two rag calls converged on the same "
-            "internal strategy and outcome — calling rag again with the same or similar "
-            "query will not surface new information. A real content gap (the fact isn't "
-            "documented anywhere) looks identical to a source gap (a document exists but "
-            "isn't indexed yet) from rag's output alone — consider lookup_authoritative_sources "
-            "before concluding the corpus doesn't have it, or switch to a materially "
-            "different approach."
-        )
+    # 2026-08-07 (Chat Master, #41(b), live-query finding): this block used
+    # to render ONLY when _ledger_history was non-empty -- i.e. only on
+    # turns that called rag. Confirmed live: a COB-reconsideration turn
+    # that only ever called appeals_* tools never rendered [Evidence
+    # Ledger] AT ALL, not just "missing the exhausted-tools line" -- the
+    # whole block was invisible for the entire turn. exhausted_tools now
+    # renders independently of rag history so appeals-only (or any
+    # non-rag) turns still get this signal in the one block the model is
+    # explicitly instructed (rule 1c-2) to read every round -- previously
+    # the only place this appeared was a paragraph tacked onto the end of
+    # reasoning_context via failure_hint_for_prompt(), which existed but
+    # wasn't prominent enough: rounds 5 and 6 of the live turn both
+    # re-attempted appeals_get_playbook after it was already exhausted.
+    _exhausted = list(exhausted_tools or [])
+    if _ledger_history or _exhausted:
+        _ledger_lines = ["[Evidence Ledger]", f"round: {iteration}"]
+        if _ledger_history:
+            _strategy_tried = [
+                "citable retrieval" if h.get("citable_required") else "relaxed retrieval"
+                for h in _ledger_history
+            ]
+            _tool_tried = ["rag" for _ in _ledger_history]
+            _dispatch_path_history = [h.get("dispatch_path") or "n/a" for h in _ledger_history]
+            _ledger_lines.extend([
+                f"strategy_tried: {_strategy_tried}",
+                f"tool_tried: {_tool_tried}",
+                f"dispatch_path_history: {_dispatch_path_history}",
+                f"gap_status: \"{gap_status or 'progressing'}\"",
+                "When gap_status is \"stagnant\": the last two rag calls converged on the same "
+                "internal strategy and outcome — calling rag again with the same or similar "
+                "query will not surface new information. A real content gap (the fact isn't "
+                "documented anywhere) looks identical to a source gap (a document exists but "
+                "isn't indexed yet) from rag's output alone — consider lookup_authoritative_sources "
+                "before concluding the corpus doesn't have it, or switch to a materially "
+                "different approach.",
+            ])
+        if _exhausted:
+            _ledger_lines.extend([
+                f"exhausted_tools: {_exhausted}",
+                "These tools have failed repeatedly this turn with no new evidence since — "
+                "do NOT call them again, re-phrasing the inputs will not help. Pick a "
+                "genuinely different tool, or finalize with what you already have.",
+            ])
+        parts.append("\n".join(_ledger_lines))
     # 2026-08-07 (Ananth, directly): react's own accumulated verdict on the
     # evidence so far, code-carried from the last round's evidence_review
     # (see rule 1c/REACT_RESPONSE_SHAPE_TEXT) — displayed unconditionally

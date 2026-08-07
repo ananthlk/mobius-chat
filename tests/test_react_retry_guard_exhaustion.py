@@ -176,6 +176,48 @@ class TestFailureHintMentionsExhaustedTool:
         assert "search_corpus" in hint  # the normal failure line is still there
 
 
+class TestExhaustedToolsAccessor:
+    """2026-08-07, Chat Master #41(b): a reusable list, shared by
+    failure_hint_for_prompt() and the [Evidence Ledger] block in
+    build_reasoning_context(), so both surfaces always agree on exactly
+    which tools are exhausted."""
+
+    def test_empty_when_nothing_exhausted(self):
+        g = ReactRetryGuard()
+        assert g.exhausted_tools() == []
+
+    def test_lists_exhausted_tool_by_name(self):
+        g = ReactRetryGuard()
+        for i in range(_TOOL_EXHAUSTION_THRESHOLD):
+            g.record_result(
+                tool="appeals_get_playbook", inputs={"carc": 22, "attempt": i},
+                result=_fail_result(), round=i + 1, results_count_before=0,
+            )
+        assert g.exhausted_tools() == ["appeals_get_playbook"]
+
+    def test_sorted_and_deduped_across_multiple_tools(self):
+        g = ReactRetryGuard()
+        for tool in ("web_scrape", "appeals_get_playbook"):
+            for i in range(_TOOL_EXHAUSTION_THRESHOLD):
+                g.record_result(
+                    tool=tool, inputs={"attempt": i}, result=_fail_result(),
+                    round=i + 1, results_count_before=0,
+                )
+        assert g.exhausted_tools() == ["appeals_get_playbook", "web_scrape"]
+
+    def test_matches_failure_hint_for_prompt_exactly(self):
+        """Both surfaces must agree -- exhausted_tools() isn't a second,
+        independently-computed source of truth."""
+        g = ReactRetryGuard()
+        for i in range(_TOOL_EXHAUSTION_THRESHOLD):
+            g.record_result(
+                tool="appeals_get_playbook", inputs={"attempt": i},
+                result=_fail_result(), round=i + 1, results_count_before=0,
+            )
+        for name in g.exhausted_tools():
+            assert name in g.failure_hint_for_prompt()
+
+
 class TestBackwardCompatibilityWithPhase07:
     """The exact-signature block from Phase 0.7 must still work unchanged."""
 

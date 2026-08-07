@@ -209,6 +209,28 @@ class ReactRetryGuard:
         "breadth," corpus-then-web (2 different strategies) is."""
         return self.successful_attempts == 0 and len(self.distinct_tools_failed()) >= min_distinct_tools
 
+    def exhausted_tools(self) -> list[str]:
+        """Tool names that have hit the consecutive-failure threshold —
+        sorted, deduped. Shared by failure_hint_for_prompt() (below) and
+        the [Evidence Ledger] block in build_reasoning_context(), so both
+        surfaces always agree on exactly which tools are exhausted.
+
+        2026-08-07 (Chat Master, #41(b), live-query finding): the
+        "Exhausted tools" line existed in failure_hint_for_prompt() already
+        and WAS being appended to reasoning_context -- but as a paragraph
+        tacked onto the end of the prompt, not inside the [Evidence Ledger]
+        block the model is explicitly instructed (rule 1c-2) to read every
+        round. Confirmed live: rounds 5 and 6 of a 10-round turn both
+        re-attempted appeals_get_playbook after it was already exhausted at
+        round 4. Moving it into the Ledger, a block with an existing
+        established read-every-round contract, is the fix -- not inventing
+        a new signal that didn't exist before.
+        """
+        return sorted(
+            t for t, n in self.consecutive_failures_per_tool.items()
+            if n >= _TOOL_EXHAUSTION_THRESHOLD
+        )
+
     def failure_hint_for_prompt(self) -> str:
         """Human-readable list of already-failed attempts for the reasoning prompt.
 
@@ -224,13 +246,10 @@ class ReactRetryGuard:
             lines.append(f"  - round {fa.round}: {fa.tool} [{code}]")
         # Phase 0.19: call out exhausted tools explicitly so the planner knows
         # re-phrasing the inputs won't help — it must pick a different tool.
-        exhausted = [
-            t for t, n in self.consecutive_failures_per_tool.items()
-            if n >= _TOOL_EXHAUSTION_THRESHOLD
-        ]
+        exhausted = self.exhausted_tools()
         if exhausted:
             lines.append(
-                f"Exhausted tools (pick a DIFFERENT tool, not a re-phrased query): {', '.join(sorted(exhausted))}"
+                f"Exhausted tools (pick a DIFFERENT tool, not a re-phrased query): {', '.join(exhausted)}"
             )
         return "\n".join(lines)
 
