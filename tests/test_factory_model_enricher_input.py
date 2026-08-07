@@ -84,44 +84,48 @@ class TestBuildRagChunks:
 
 
 class TestBuildToolOutputsForPrompt:
+    """Shape is typed-by-family as actually shipped in react_loop.py:
+    {"appeals": {"letter":..., "rules":[...], "playbook":..., "validation":...},
+    "analytics": [...], "authoritative_sources": [...]} -- NOT raw per-tool-call
+    records (an earlier same-day commit had that shape; superseded)."""
+
     def test_empty_or_none_returns_empty_dict(self):
         assert _build_tool_outputs_for_prompt(None) == {}
         assert _build_tool_outputs_for_prompt({}) == {}
 
-    def test_passes_through_small_result_unmodified(self):
-        out = _build_tool_outputs_for_prompt({"appeals_find_carc": [{"success": True, "result": "short", "result_summary": "s"}]})
-        assert out["appeals_find_carc"] == [{"success": True, "result": "short", "result_summary": "s"}]
+    def test_passes_through_small_appeals_family_unmodified(self):
+        appeals = {"letter": None, "rules": [{"rule_id": "X.1", "rule_statement": "s"}]}
+        out = _build_tool_outputs_for_prompt({"appeals": appeals})
+        assert out["appeals"]["rules"] == [{"rule_id": "X.1", "rule_statement": "s"}]
 
-    def test_truncates_long_result_with_explicit_marker(self):
-        long_result = "x" * 2000
-        out = _build_tool_outputs_for_prompt({"appeals_lookup_rules": [{"success": True, "result": long_result}]})
-        result = out["appeals_lookup_rules"][0]["result"]
-        assert len(result) < 2000
-        assert "truncated" in result
+    def test_truncates_long_nested_string_with_explicit_marker(self):
+        appeals = {"letter": {"verbatim": "x" * 2000}}
+        out = _build_tool_outputs_for_prompt({"appeals": appeals})
+        verbatim = out["appeals"]["letter"]["verbatim"]
+        assert len(verbatim) < 2000
+        assert "truncated" in verbatim
 
-    def test_preserves_all_calls_when_under_ten(self):
-        calls = [{"success": True, "result": f"call {i}"} for i in range(7)]
-        out = _build_tool_outputs_for_prompt({"appeals_get_playbook": calls})
-        assert len(out["appeals_get_playbook"]) == 7
+    def test_caps_long_lists_with_explicit_marker(self):
+        appeals = {"rules": [{"rule_id": f"R.{i}"} for i in range(30)]}
+        out = _build_tool_outputs_for_prompt({"appeals": appeals})
+        rules = out["appeals"]["rules"]
+        assert len(rules) == 21  # 20 items + 1 truncation marker string
+        assert "truncated" in rules[-1]
 
-    def test_caps_calls_per_tool_at_ten_with_note(self):
-        calls = [{"success": True, "result": f"call {i}"} for i in range(15)]
-        out = _build_tool_outputs_for_prompt({"appeals_get_playbook": calls})
-        entries = out["appeals_get_playbook"]
-        assert len(entries) == 11  # 10 calls + 1 omission note
-        assert "note" in entries[-1]
-        assert "5 more" in entries[-1]["note"]
-
-    def test_multiple_tools_each_processed(self):
+    def test_multiple_families_each_processed(self):
         out = _build_tool_outputs_for_prompt({
-            "appeals_find_carc": [{"success": True, "result": "a"}],
-            "lookup_authoritative_sources": [{"success": True, "result": "b"}],
+            "appeals": {"rules": [{"rule_id": "X.1"}]},
+            "authoritative_sources": [{"title": "Payor Manual"}],
         })
-        assert set(out.keys()) == {"appeals_find_carc", "lookup_authoritative_sources"}
+        assert set(out.keys()) == {"appeals", "authoritative_sources"}
 
-    def test_ignores_non_list_values(self):
-        out = _build_tool_outputs_for_prompt({"weird_tool": "not a list"})
-        assert out == {}
+    def test_skips_none_valued_families(self):
+        out = _build_tool_outputs_for_prompt({"appeals": {"rules": [{"rule_id": "X.1"}]}, "analytics": None})
+        assert "analytics" not in out
+        assert "appeals" in out
+
+    def test_non_dict_or_empty_tool_outputs_returns_empty(self):
+        assert _build_tool_outputs_for_prompt("not a dict") == {}
 
 
 class TestBuildReasoningLedger:

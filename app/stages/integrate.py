@@ -490,39 +490,43 @@ def _build_rag_chunks(
     return chunks
 
 
-def _build_tool_outputs_for_prompt(tool_outputs: dict | None) -> dict[str, list[dict]]:
-    """Caps ctx.tool_outputs for the prompt (Task #58, factory model). Same
-    cap-at-consumption principle as _build_rag_chunks -- ctx.tool_outputs
-    itself is uncapped (list-valued per tool specifically so a tool called
-    many times in one turn, e.g. appeals_get_playbook 7x in the live COB
-    trace, doesn't lose calls). Per-entry result text is capped with an
-    explicit truncation marker (never silent); calls per tool capped at 10 as
-    a pathological-loop guard, not a normal-case limit."""
-    if not tool_outputs:
+def _cap_nested_strings(obj: Any, max_len: int = 1200, max_list: int = 20) -> Any:
+    """Recursively caps string leaves (with an explicit truncation marker,
+    never silent) and list lengths in an arbitrarily-nested dict/list
+    structure. Used for ctx.tool_outputs, whose per-family nested shape
+    (Task #58) has already changed twice in one day -- a generic byte-budget
+    cap that works regardless of the exact nested structure is safer than
+    hand-rolled per-field logic that would silently miss whatever field gets
+    added next."""
+    if isinstance(obj, str):
+        if len(obj) > max_len:
+            return obj[:max_len] + f"...[+{len(obj) - max_len} chars truncated]"
+        return obj
+    if isinstance(obj, dict):
+        return {k: _cap_nested_strings(v, max_len, max_list) for k, v in obj.items()}
+    if isinstance(obj, list):
+        capped = [_cap_nested_strings(v, max_len, max_list) for v in obj[:max_list]]
+        if len(obj) > max_list:
+            capped.append(f"[+{len(obj) - max_list} more items truncated]")
+        return capped
+    return obj
+
+
+def _build_tool_outputs_for_prompt(tool_outputs: dict | None) -> dict:
+    """Caps ctx.tool_outputs for the prompt (Task #58, factory model). Shape
+    is typed-by-family as shipped in react_loop.py: {"appeals": {"letter":
+    {...}|absent, "rules": [...]|absent, "playbook": {...}|absent,
+    "validation": {...}|absent}, "analytics": [...], "authoritative_sources":
+    [...]} -- NOT raw per-tool-call records (an earlier same-day commit had
+    that shape; superseded). Caps via _cap_nested_strings rather than
+    per-field logic, since the nested shape is still evolving."""
+    if not isinstance(tool_outputs, dict) or not tool_outputs:
         return {}
-    _RESULT_CHARS = 1200
-    _MAX_CALLS_PER_TOOL = 10
-    out: dict[str, list[dict]] = {}
-    for tool_name, calls in tool_outputs.items():
-        if not isinstance(calls, list):
-            continue
-        capped_calls = []
-        for c in calls[:_MAX_CALLS_PER_TOOL]:
-            if not isinstance(c, dict):
-                continue
-            result = c.get("result") or ""
-            if len(result) > _RESULT_CHARS:
-                result = result[:_RESULT_CHARS] + f"...[+{len(result) - _RESULT_CHARS} chars truncated]"
-            capped_calls.append({
-                "success": c.get("success", False),
-                "result": result,
-                "result_summary": c.get("result_summary"),
-            })
-        if len(calls) > _MAX_CALLS_PER_TOOL:
-            capped_calls.append({"note": f"[+{len(calls) - _MAX_CALLS_PER_TOOL} more {tool_name} calls omitted]"})
-        if capped_calls:
-            out[tool_name] = capped_calls
-    return out
+    return {
+        family: _cap_nested_strings(content)
+        for family, content in tool_outputs.items()
+        if content is not None
+    }
 
 
 def _build_reasoning_ledger(react_trace_rounds: list[dict] | None) -> list[dict]:
