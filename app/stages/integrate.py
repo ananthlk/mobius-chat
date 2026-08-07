@@ -628,6 +628,30 @@ def run_integrate(
                 if _recital_ctx.get("section"):
                     _rec_field["section"] = _recital_ctx["section"]
                 _fm_parsed["recital"] = _rec_field
+                # 2026-08-07 (Chat Master, RECITAL bleed hardening): the
+                # BLENDED-hardcode override documented above is confirmed,
+                # not hypothetical -- this whole block exists BECAUSE the
+                # model sometimes ignores the recital instruction and
+                # produces a normal synthesized card anyway. Forcing
+                # mode=RECITAL alone doesn't remove what the model already
+                # wrote in that case -- a paraphrased/wrong version of the
+                # verbatim content (e.g. an appeal letter) could still sit
+                # in sections[]/direct_answer/display_summary right next
+                # to the correct recital.verbatim. Belt (prompt already
+                # says "Do NOT include sections[]. Do NOT paraphrase") +
+                # suspenders (this structural clear) -- the verbatim field
+                # is authoritative once mode is force-set here, so any
+                # synthesized content alongside it is always wrong by
+                # definition and must not render.
+                _fm_parsed["sections"] = []
+                # direct_answer's presence (not its content) is required by
+                # the AnswerCard validator below with no RECITAL exemption --
+                # popping the key entirely trips that check and destroys the
+                # whole card (including the correct recital.verbatim) via the
+                # try-again-stub fallback. Overwrite with a safe, non-bleeding
+                # placeholder instead of removing the key.
+                _fm_parsed["direct_answer"] = "See the verbatim text below."
+                _fm_parsed.pop("display_summary", None)
                 final_message = json.dumps(_fm_parsed)
                 logger.info("[recital] post-process upgrade → mode=RECITAL injected into integrator card")
         except (json.JSONDecodeError, TypeError):

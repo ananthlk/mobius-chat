@@ -607,3 +607,72 @@ def test_react_draft_omitted_when_blank():
 
     payload = json.loads(ctx.response_payload["message"])
     assert "react_draft" not in payload
+
+
+# ── RECITAL bleed hardening (2026-08-07, Chat Master) ──────────────────────
+
+
+def test_recital_override_clears_sections_direct_answer_display_summary():
+    """The core fix: when ctx.recital.verbatim forces mode=RECITAL, any
+    sections[]/direct_answer/display_summary the model wrote (e.g. via
+    the documented BLENDED-hardcode override) must be wiped -- the
+    verbatim field is authoritative, anything else alongside it is
+    always wrong by definition."""
+    ctx = _make_ctx()
+    ctx.recital = {"verbatim": True, "text": "Dear Sunshine Health, this is our formal appeal..."}
+    card = {
+        "mode": "BLENDED",  # model ignored the recital instruction, hardcode won
+        "direct_answer": "Here is a summary of the appeal letter we drafted for you.",
+        "sections": [{"label": "Appeal Summary", "format": "bullets", "intent": "process", "bullets": ["paraphrased content"]}],
+        "display_summary": "This is a paraphrased version of the letter, not verbatim.",
+    }
+
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert payload["mode"] == "RECITAL"
+    assert payload["recital"]["verbatim"] == "Dear Sunshine Health, this is our formal appeal..."
+    assert payload["sections"] == []
+    # direct_answer's key must stay present (the AnswerCard validator
+    # requires it unconditionally, with no RECITAL exemption) but its
+    # content must not be the model's paraphrased/bled text.
+    assert payload["direct_answer"] != "Here is a summary of the appeal letter we drafted for you."
+    assert "display_summary" not in payload
+
+
+def test_recital_override_noop_when_no_recital_context():
+    """Regression guard: normal turns (no ctx.recital) must be completely
+    unaffected by this change."""
+    ctx = _make_ctx()
+    card = {
+        "mode": "FACTUAL",
+        "direct_answer": "A normal answer.",
+        "sections": [{"label": "S", "format": "bullets", "intent": "process", "bullets": ["x"]}],
+        "display_summary": "A normal detailed answer.",
+    }
+
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert payload["mode"] == "FACTUAL"
+    assert payload["direct_answer"] == "A normal answer."
+    assert payload["sections"]
+    assert payload["display_summary"] == "A normal detailed answer."
+
+
+def test_recital_override_preserves_document_id_and_section():
+    ctx = _make_ctx()
+    ctx.recital = {"verbatim": True, "text": "verbatim text", "document_id": "doc-123", "section": "sec-4"}
+    card = {"mode": "FACTUAL", "direct_answer": "x", "sections": []}
+
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert payload["recital"]["document_id"] == "doc-123"
+    assert payload["recital"]["section"] == "sec-4"
