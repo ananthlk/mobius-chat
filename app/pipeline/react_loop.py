@@ -943,13 +943,48 @@ def _should_bypass_on_clarify(
 # skip Call A's LLM call entirely and structure react_draft deterministically
 # (see app.responder.deterministic_format). Built entirely from ctx fields
 # ReAct already sets every turn -- no new ReAct instrumentation needed.
+def _looks_like_raw_structured_blob(text: str) -> bool:
+    """True when text is raw JSON, not prose -- e.g. a non-rag tool's
+    (appeals_find_carc, etc.) structured output shipped verbatim as
+    react_draft by the fast-mode chunk_count==0 branch, which explicitly
+    skips synthesis for non-rag tools ("Non-rag tools already gate their
+    own quality via success"). Found live (2026-08-08, Chat Master report,
+    "tell me more about how best to appeal for COB denials?"): a raw
+    {"matches": [...], "rules": [...]} blob sailed through the
+    deterministic pass (regex has no way to reformat JSON into prose),
+    landed in direct_answer, and the existing bleed-detector downstream
+    caught it and replaced the whole card with the generic "I had trouble
+    formatting the answer" fallback -- losing the real appeals content the
+    user asked for. A cheap, deliberately narrow check (starts with {/[ and
+    actually parses) -- real prose essentially never satisfies this, so
+    false positives on genuine synthesized answers are not a concern."""
+    t = (text or "").strip()
+    if not t or t[0] not in "{[":
+        return False
+    try:
+        json.loads(t)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
 def _is_sufficient_for_deterministic_pass(ctx: PipelineContext) -> bool:
     """True when react's answer needs no further LLM enhancement:
     - quick-mode round-1 early exit (the existing fast-mode-exit path), OR
     - a short, clean run: <=3 rounds, no open gaps on the last round, no
       unfinished-reason flag, and a substantive (>=200 char) react_draft.
     Approved formula (Chat Master, Task #76) -- do not loosen without a new
-    ruling, this gates whether an LLM call runs at all."""
+    ruling, this gates whether an LLM call runs at all. One narrow
+    exception added after a live incident: react_draft must look like
+    prose, not a raw JSON blob (see _looks_like_raw_structured_blob) --
+    the deterministic pass can't reformat structured data into an answer,
+    only an LLM (full Call A) can, so raw-JSON react_draft always routes
+    to needs_enhancement regardless of which branch below would otherwise
+    say sufficient."""
+    react_draft = getattr(ctx, "react_draft", None) or ""
+    if _looks_like_raw_structured_blob(react_draft):
+        return False
+
     chat_mode = getattr(ctx, "chat_mode", None)
     rounds_used = getattr(ctx, "react_rounds_used", None) or 0
 
@@ -969,7 +1004,6 @@ def _is_sufficient_for_deterministic_pass(ctx: PipelineContext) -> bool:
         if gaps_open:
             return False
 
-    react_draft = getattr(ctx, "react_draft", None) or ""
     if len(react_draft.strip()) < 200:
         return False
 

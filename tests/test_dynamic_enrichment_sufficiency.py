@@ -8,8 +8,13 @@ Built entirely from ctx fields ReAct already sets -- no new ReAct changes.
 """
 from __future__ import annotations
 
+import json
+
 from app.pipeline.context import PipelineContext
-from app.pipeline.react_loop import _is_sufficient_for_deterministic_pass
+from app.pipeline.react_loop import (
+    _is_sufficient_for_deterministic_pass,
+    _looks_like_raw_structured_blob,
+)
 
 _LONG_DRAFT = "x" * 200
 _SHORT_DRAFT = "too short"
@@ -102,4 +107,65 @@ class TestGeneralRule:
             react_unfinished_reason=None,
             react_trace_rounds=[{"round": 1, "tool": "search_corpus"}],
         )
+        assert _is_sufficient_for_deterministic_pass(ctx) is True
+
+
+# ── Raw structured-data guard (2026-08-08, Chat Master live incident) ──────
+# "tell me more about how best to appeal for COB denials?" -- quick mode,
+# round 1 exit, react_draft was the appeals_find_carc tool's raw JSON
+# (chunk_count==0 branch ships non-rag tool output unsynthesized). The
+# deterministic pass has no way to reformat JSON into prose; it sailed
+# through, the existing bleed-detector caught it downstream, and replaced
+# the whole card with the generic "I had trouble formatting the answer"
+# fallback -- losing the real answer entirely.
+
+_RAW_JSON_DRAFT = json.dumps({
+    "matches": [{"carc": 22, "title": "Coordination of Benefits", "rules": [
+        {"rule_id": "COB.R001", "rule_statement": "Medicaid is always the payor of last resort."},
+    ]}],
+})
+
+
+class TestRawStructuredBlobGuard:
+    def test_raw_json_object_detected(self):
+        assert _looks_like_raw_structured_blob(_RAW_JSON_DRAFT) is True
+
+    def test_raw_json_array_detected(self):
+        assert _looks_like_raw_structured_blob(json.dumps([{"a": 1}, {"b": 2}])) is True
+
+    def test_prose_not_detected(self):
+        assert _looks_like_raw_structured_blob(
+            "Sunshine Health requires initial claims within 180 days of service."
+        ) is False
+
+    def test_prose_starting_with_brace_but_not_valid_json_not_detected(self):
+        """A stray leading brace in real prose (rare, but not impossible)
+        must not false-positive -- only text that actually PARSES as JSON
+        counts."""
+        assert _looks_like_raw_structured_blob("{this is not json, just a sentence}") is False
+
+    def test_empty_and_none_not_detected(self):
+        assert _looks_like_raw_structured_blob("") is False
+        assert _looks_like_raw_structured_blob(None) is False
+
+    def test_quick_mode_round_1_with_raw_json_draft_is_not_sufficient(self):
+        """The exact failure mode: quick-mode round-1 exit (normally an
+        unconditional True) must NOT be sufficient when react_draft is raw
+        JSON -- needs full Call A to actually synthesize an answer."""
+        ctx = _make_ctx(chat_mode="quick", react_rounds_used=1, react_draft=_RAW_JSON_DRAFT)
+        assert _is_sufficient_for_deterministic_pass(ctx) is False
+
+    def test_general_rule_with_raw_json_draft_is_not_sufficient(self):
+        long_json_draft = json.dumps({"data": "x" * 250})
+        ctx = _make_ctx(
+            chat_mode="copilot", react_rounds_used=2, react_draft=long_json_draft,
+            react_unfinished_reason=None,
+        )
+        assert _is_sufficient_for_deterministic_pass(ctx) is False
+
+    def test_quick_mode_round_1_with_real_prose_still_sufficient(self):
+        """Regression guard: the fix must not break the common, correct
+        case -- quick-mode round-1 with genuine synthesized prose stays
+        sufficient."""
+        ctx = _make_ctx(chat_mode="quick", react_rounds_used=1, react_draft="A real synthesized answer.")
         assert _is_sufficient_for_deterministic_pass(ctx) is True
