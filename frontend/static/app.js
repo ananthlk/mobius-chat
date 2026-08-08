@@ -1994,6 +1994,27 @@ function tryParseAnswerCard(message) {
   }
   return null;
 }
+function buildPartialCard(part, payload) {
+  if (part === "core") {
+    const sections = Array.isArray(payload.sections) ? payload.sections : [];
+    const ds = typeof payload.display_summary === "string" ? payload.display_summary : "";
+    if (sections.length === 0 && !ds.trim())
+      return null;
+    return tryParseAnswerCard(JSON.stringify({
+      direct_answer: typeof payload.direct_answer === "string" && payload.direct_answer.trim() ? payload.direct_answer : "\u2026",
+      mode: typeof payload.mode === "string" ? payload.mode : void 0,
+      sections,
+      display_summary: ds || void 0
+    }));
+  }
+  if (part === "citations") {
+    const citations = Array.isArray(payload.citations) ? payload.citations : [];
+    if (citations.length === 0)
+      return null;
+    return tryParseAnswerCard(JSON.stringify({ direct_answer: "\u2026", citations }));
+  }
+  return null;
+}
 
 // src/appeals-tool-labels.ts
 var _s = (o, k) => {
@@ -11308,7 +11329,7 @@ function run() {
       poll();
     });
   }
-  function streamResponse(correlationId, onThinking, onStreamingMessage, onDraftReady, onDetailReady) {
+  function streamResponse(correlationId, onThinking, onStreamingMessage, onDraftReady, onDetailReady, onIntegratorPartial) {
     if (typeof EventSource === "undefined") {
       return pollResponse(correlationId, onThinking, onStreamingMessage);
     }
@@ -11365,6 +11386,11 @@ function run() {
             if (correlationId && _dContent.trim() && onDetailReady) {
               onDetailReady(_dContent, _dIntent);
             }
+          } else if (ev === "integrator_partial" && onIntegratorPartial) {
+            const _part = typeof data.part === "string" ? data.part : "";
+            const _payload = data.data && typeof data.data === "object" ? data.data : data;
+            if (_part)
+              onIntegratorPartial(_part, _payload);
           } else if (ev === "message" && data.chunk != null && !draftEmitted && onStreamingMessage) {
             messageSoFar += String(data.chunk);
             onStreamingMessage(messageSoFar);
@@ -12138,6 +12164,39 @@ ${message}`;
         answerBody.appendChild(body);
       }
     }
+    function onIntegratorPartial(part, payload2) {
+      const bubble = messageWrapEl?.querySelector(".answer-card-bubble");
+      if (!bubble)
+        return;
+      const transplant = (panelKey, rendered) => {
+        const live = bubble.querySelector(`.ac-tab-panel--${panelKey}`);
+        const fresh = rendered.querySelector(`.ac-tab-panel--${panelKey}`);
+        if (!live || !fresh)
+          return;
+        if ((live.textContent ?? "").trim())
+          return;
+        bubble.replaceChild(fresh, live);
+        bubble.querySelector(`.ac-tab[data-panel="${panelKey}"]`)?.removeAttribute("data-empty");
+      };
+      try {
+        if (part === "enrichment") {
+          const nq = normalizeFollowupLineList(payload2.next_questions_for_user, true);
+          if (!nq.length)
+            return;
+          transplant("next-steps", renderAnswerCard({ direct_answer: "\u2026", sections: [] }, false, {
+            nextQuestions: nq,
+            onFollowupClick: (q) => sendMessage(q)
+          }));
+        } else {
+          const card = buildPartialCard(part, payload2);
+          if (!card)
+            return;
+          const rendered = renderAnswerCard(card, false, { onFollowupClick: (q) => sendMessage(q) });
+          transplant(part === "core" ? "answer" : "citations", rendered);
+        }
+      } catch {
+      }
+    }
     {
       const sel = document.getElementById("modelProfileSelect");
       const v = (sel && sel.value || "").trim();
@@ -12166,7 +12225,7 @@ ${message}`;
         onRequestCorrelationId();
       }
       addThinkingLineAndScroll("Request sent. Waiting for worker\u2026");
-      return streamResponse(data.correlation_id, addThinkingLineAndScroll, onStreamingMessage, onDraftReady, onDetailReady);
+      return streamResponse(data.correlation_id, addThinkingLineAndScroll, onStreamingMessage, onDraftReady, onDetailReady, onIntegratorPartial);
     }).then(
       (data) => (
         // Refresh profile before admin-gated UI. Otherwise the first reply can render while

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { tryParseAnswerCard, splitSectionsByVisibility, type AnswerCard, type AnswerCardSection } from "./answer-card";
+import { tryParseAnswerCard, splitSectionsByVisibility, buildPartialCard, type AnswerCard, type AnswerCardSection } from "./answer-card";
 
 const json = (o: unknown) => JSON.stringify(o);
 const sec = (over: Partial<AnswerCardSection> = {}): Record<string, unknown> => ({
@@ -134,6 +134,46 @@ describe("tryParseAnswerCard — AC-FE-1 (mode optional, min-valid anchor, both 
     // data survives verbatim (cast-through, not narrowed away)
     expect((card!.sections[0].data as unknown as { carc: string }).carc).toBe("197");
     expect((card!.sections[1].data as unknown as { payor: string }).payor).toBe("Humana");
+  });
+});
+
+describe("buildPartialCard — parallel integrator progressive streaming (#74)", () => {
+  it("core: sections survive normalization (format preserved, incl. appeals_*)", () => {
+    const card = buildPartialCard("core", {
+      mode: "FACTUAL",
+      direct_answer: "ignored placeholder is fine",
+      sections: [
+        { label: "Rates", format: "table", data: { headers: ["Code"], rows: [["H0031"]] } },
+        { label: "Appeal rules", format: "appeals_rules", data: { carc: "22", rules: [{ rule_id: "R1" }] } },
+      ],
+    });
+    expect(card).not.toBeNull();
+    expect(card!.sections).toHaveLength(2);
+    expect(card!.sections[0].format).toBe("table");
+    expect(card!.sections[1].format).toBe("appeals_rules");   // not rewritten to bullets
+    expect(card!.mode).toBe("FACTUAL");
+  });
+
+  it("citations: builds a card carrying the citations", () => {
+    const card = buildPartialCard("citations", {
+      citations: [{ id: "1", doc_title: "AHCA Handbook", locator: "§59G", snippet: "parity" }],
+    });
+    expect(card).not.toBeNull();
+    expect(card!.citations).toHaveLength(1);
+    expect(card!.citations![0].doc_title).toBe("AHCA Handbook");
+  });
+
+  it("returns null when the part carries nothing renderable", () => {
+    expect(buildPartialCard("core", {})).toBeNull();                    // no sections, no display_summary
+    expect(buildPartialCard("citations", { citations: [] })).toBeNull(); // empty citations
+    expect(buildPartialCard("enrichment", { next_questions_for_user: ["q"] })).toBeNull(); // not card-shaped here
+    expect(buildPartialCard("bogus", { sections: [] })).toBeNull();
+  });
+
+  it("core with only display_summary (no sections) still builds (fires the Answer tab)", () => {
+    const card = buildPartialCard("core", { display_summary: "The verdict.", mode: "CANONICAL" });
+    expect(card).not.toBeNull();
+    expect(card!.display_summary).toBe("The verdict.");
   });
 });
 

@@ -131,7 +131,7 @@ describe("Answer tab (Ananth 2026-08-07 — Summary=react_draft, Answer=display_
   });
 
   it("shows NO Answer tab when there is neither display_summary NOR sections", () => {
-    const el = renderAnswerCard({ direct_answer: "Just a sentence." });
+    const el = renderAnswerCard({ direct_answer: "Just a sentence.", sections: [] });
     const tabs = Array.from(el.querySelectorAll(".ac-tab")).map((t) => t.textContent ?? "");
     expect(tabs.some((t) => t.includes("Answer"))).toBe(false);
     // the panel element is still built (empty, hidden) so the streaming panel-swap has a target

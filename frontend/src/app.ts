@@ -694,6 +694,7 @@ interface RosterUploadResponse {
 // AnswerCard types + pure parse/visibility logic live in ./answer-card (unit-tested via vitest).
 import {
   tryParseAnswerCard,
+  buildPartialCard,
 } from "./answer-card";
 import type { AnswerCard, AnswerCardSection } from "./answer-card";
 // §1.4 tabbed-bubble field→tab map + §2.1 additive-merge contract (unit-tested via vitest).
@@ -10101,7 +10102,8 @@ function run(): void {
     onThinking: ((line: string) => void) | null,
     onStreamingMessage: ((text: string) => void) | null,
     onDraftReady?: ((text: string, modeHint?: string) => void) | null,
-    onDetailReady?: ((content: string, outputIntent: string) => void) | null
+    onDetailReady?: ((content: string, outputIntent: string) => void) | null,
+    onIntegratorPartial?: ((part: string, payload: Record<string, unknown>) => void) | null
   ): Promise<ChatResponse> {
     if (typeof EventSource === "undefined") {
       return pollResponse(correlationId, onThinking, onStreamingMessage);
@@ -10177,6 +10179,16 @@ function run(): void {
             if (correlationId && _dContent.trim() && onDetailReady) {
               onDetailReady(_dContent, _dIntent);
             }
+          } else if (ev === "integrator_partial" && onIntegratorPartial) {
+            // Parallel integrator (#74): each of the 3 concurrent calls emits its part the moment
+            // it resolves (enrichment ~3s, citations ~5-8s, core ~9-12s) so tabs populate ahead of
+            // "completed". `data` is {part, data:{...fields}} per spec; some emitters spread fields
+            // directly onto `data` — accept BOTH: nested `data.data`, else `data` minus `part`.
+            const _part = typeof data.part === "string" ? data.part : "";
+            const _payload = (data.data && typeof data.data === "object")
+              ? (data.data as Record<string, unknown>)
+              : (data as Record<string, unknown>);
+            if (_part) onIntegratorPartial(_part, _payload);
           } else if (ev === "message" && data.chunk != null && !draftEmitted && onStreamingMessage) {
             messageSoFar += String(data.chunk);
             onStreamingMessage(messageSoFar);
@@ -11071,6 +11083,40 @@ function run(): void {
         answerBody.appendChild(body);
       }
     }
+    // Parallel integrator progressive streaming (#74, SPEC_PARALLEL_INTEGRATOR_STREAMING). Each
+    // `integrator_partial` part fills its tab the moment that call resolves, ahead of "completed".
+    // STRICTLY ADDITIVE: fill a panel ONLY if it's still empty, and only un-hide its tab button —
+    // never fight onDetailReady, an earlier partial, or the authoritative completed render (which
+    // reconciles everything via renderAnswerCard + panel swap). Best-effort: any error is swallowed
+    // because completed is the source of truth. core→Answer(sections), citations→Sources, enrichment
+    // →Follow-up — the three tabs Ananth wants "streaming as completed" for perceived progress.
+    function onIntegratorPartial(part: string, payload: Record<string, unknown>): void {
+      const bubble = messageWrapEl?.querySelector(".answer-card-bubble") as HTMLElement | null;
+      if (!bubble) return;
+      // Swap the rendered panel into the live shell iff the live panel is still empty; un-hide the tab.
+      const transplant = (panelKey: string, rendered: HTMLElement): void => {
+        const live = bubble.querySelector(`.ac-tab-panel--${panelKey}`) as HTMLElement | null;
+        const fresh = rendered.querySelector(`.ac-tab-panel--${panelKey}`) as HTMLElement | null;
+        if (!live || !fresh) return;
+        if ((live.textContent ?? "").trim()) return;          // already filled — leave it
+        bubble.replaceChild(fresh, live);
+        (bubble.querySelector(`.ac-tab[data-panel="${panelKey}"]`) as HTMLElement | null)?.removeAttribute("data-empty");
+      };
+      try {
+        if (part === "enrichment") {
+          const nq = normalizeFollowupLineList(payload.next_questions_for_user, true);
+          if (!nq.length) return;
+          transplant("next-steps", renderAnswerCard({ direct_answer: "…", sections: [] }, false, {
+            nextQuestions: nq, onFollowupClick: (q) => sendMessage(q),
+          }));
+        } else {
+          const card = buildPartialCard(part, payload);   // core | citations
+          if (!card) return;
+          const rendered = renderAnswerCard(card, false, { onFollowupClick: (q) => sendMessage(q) });
+          transplant(part === "core" ? "answer" : "citations", rendered);
+        }
+      } catch { /* additive best-effort — completed reconciles */ }
+    }
     // 2026-04-27: include the model_profile dropdown selection in the
     // request payload. Previously the dropdown only POSTed to
     // /chat/admin/model-profile which sets a per-instance global —
@@ -11111,7 +11157,7 @@ function run(): void {
           onRequestCorrelationId();
         }
         addThinkingLineAndScroll("Request sent. Waiting for worker…");
-        return streamResponse(data.correlation_id, addThinkingLineAndScroll, onStreamingMessage, onDraftReady, onDetailReady);
+        return streamResponse(data.correlation_id, addThinkingLineAndScroll, onStreamingMessage, onDraftReady, onDetailReady, onIntegratorPartial);
       })
       .then((data) =>
         // Refresh profile before admin-gated UI. Otherwise the first reply can render while

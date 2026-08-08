@@ -268,6 +268,36 @@ export function tryParseAnswerCard(message: string): AnswerCard | null {
 }
 
 /**
+ * Parallel-integrator progressive streaming (SPEC_PARALLEL_INTEGRATOR_STREAMING, #74): build a
+ * synthetic AnswerCard from ONE `integrator_partial` part so the shared renderer can fill that
+ * part's panel early (before "completed"). Runs the fields through tryParseAnswerCard so sections
+ * get the same format/bullets normalization as a full card — a partial must render identically to
+ * the final. Returns null when the part carries nothing renderable (caller skips). `enrichment`
+ * (next_questions_for_user) is NOT handled here — those ride renderAnswerCard's opts.nextQuestions,
+ * not a card field. A placeholder direct_answer satisfies tryParseAnswerCard's min-valid anchor;
+ * the caller transplants only the target panel, never the direct answer, so it never surfaces.
+ */
+export function buildPartialCard(part: string, payload: Record<string, unknown>): AnswerCard | null {
+  if (part === "core") {
+    const sections = Array.isArray(payload.sections) ? payload.sections : [];
+    const ds = typeof payload.display_summary === "string" ? payload.display_summary : "";
+    if (sections.length === 0 && !ds.trim()) return null;
+    return tryParseAnswerCard(JSON.stringify({
+      direct_answer: (typeof payload.direct_answer === "string" && payload.direct_answer.trim()) ? payload.direct_answer : "…",
+      mode: typeof payload.mode === "string" ? payload.mode : undefined,
+      sections,
+      display_summary: ds || undefined,
+    }));
+  }
+  if (part === "citations") {
+    const citations = Array.isArray(payload.citations) ? payload.citations : [];
+    if (citations.length === 0) return null;
+    return tryParseAnswerCard(JSON.stringify({ direct_answer: "…", citations }));
+  }
+  return null;
+}
+
+/**
  * Decide which sections lead (visible) vs tuck behind "Show details" (hidden).
  *
  * §5 discriminator — single source of truth, read by one renderer so legacy and v2
