@@ -2306,8 +2306,9 @@ body {
   color: var(--text-primary, #111827);
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 40vh;
-  overflow-y: auto;
+  /* No max-height clip (Ananth 2026-08-07): the full retrieval trace is inside a collapsed
+     <details> the user opts into — when expanded, show the WHOLE trace, not a 40vh window that
+     read as truncated. */
 }
 /* Sources tab (ruling b) — collapsible narrative_full_redacted under the citations. */
 .ac-sources-narrative { margin: 0.55rem 0 0.1rem; border-top: 1px solid var(--border, #e5e7eb); padding-top: 0.5rem; }
@@ -3024,8 +3025,10 @@ body {
 /* Diagnostics panel: compact, scrollable, slightly muted background */
 .ac-tab-panel--diagnostics {
   padding: 0.25rem 0;
-  max-height: 55vh;
-  overflow-y: auto;
+  /* No max-height clip (Ananth 2026-08-07): the diagnostics tab now holds the module trace +
+     reason card + full retrieval trace + QA + bandit + HIPAA — a 55vh cap cut the lower sections
+     off ("trace/telemetry truncated"). Sections default-collapse, so the tab stays manageable;
+     expand to see everything in full. The conversation scrolls. */
 }
 /* "Try with Think mode" escalation button — a prominent CTA under a quality-flagged answer. */
 .ac-escalate {
