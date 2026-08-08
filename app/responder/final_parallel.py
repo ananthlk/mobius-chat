@@ -258,15 +258,7 @@ def format_response_parallel(
             # headroom on top of whatever thinking silently uses. Widened well past
             # the pre-today values (Call A was 4096) rather than guessing at a
             # minimal restore -- correctness over the latency optimization for now.
-            # 2026-08-08 (Ananth's ruling, "maximize both" -- comprehensive final on
-            # both FACTUAL/CANONICAL, uncapped section/bullet counts): Call A's prompt
-            # now explicitly asks for a fuller pass than react_draft, covering every
-            # grounded sub-part rather than a same-size reformat. 4096 was sized for
-            # truncation-safety on a terse formatter's output, not a deliberately
-            # longer comprehensive one -- widened further so real multi-section
-            # answers have room. latency_budget_ms nudged up to match; this is a soft
-            # candidate filter (never a request timeout), not a hard SLA change.
-            fut_a = pool.submit(_call_llm, prompt_a, "integrator_a", 8192, **shared_kwargs, latency_budget_ms=4000, reasoning_depth="fast")
+            fut_a = pool.submit(_call_llm, prompt_a, "integrator_a", 4096, **shared_kwargs, latency_budget_ms=3000, reasoning_depth="fast")
             fut_b = pool.submit(_call_llm, prompt_b, "integrator_critic", 3072, **shared_kwargs, latency_budget_ms=2000, reasoning_depth="fast")
             fut_c = pool.submit(_call_llm, prompt_c, "integrator_enrichment", 2048, **shared_kwargs, latency_budget_ms=1500, reasoning_depth="fast")
             # Wait for all three; collect results even if some fail. Each

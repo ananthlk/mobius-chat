@@ -240,7 +240,7 @@ class TestFormatResponseParallelStreamsPartials:
             mock_cfg.return_value.prompts = _mock_cfg_prompts()
             format_response_parallel(plan, ["answer"], user_message="What is X?", correlation_id="cid-123")
 
-        assert seen_budgets["integrator_a"] == 4000
+        assert seen_budgets["integrator_a"] == 3000
         assert seen_budgets["integrator_critic"] == 2000
         assert seen_budgets["integrator_enrichment"] == 1500
 
