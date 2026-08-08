@@ -1740,18 +1740,24 @@ function sanitizeDisplayMessage(raw: string): string {
 // ~fast, long text capped ~this window. Renders raw text through simpleMarkdownToHtml each step.
 const CARD_STREAM_TARGET_MS = 8500;
 const CARD_STREAM_STEP_MS = 45;
-function _streamMarkdownInto(el: HTMLElement, text: string): (() => void) {
+function _streamMarkdownInto(el: HTMLElement, text: string, onDone?: () => void): (() => void) {
   const words = (text ?? "").split(" ");
   const steps = Math.max(1, Math.round(CARD_STREAM_TARGET_MS / CARD_STREAM_STEP_MS));
   const wordsPerStep = Math.max(1, Math.ceil(words.length / steps));
   let wi = 0;
-  let cancelled = false;
-  const finish = () => { cancelled = true; el.innerHTML = simpleMarkdownToHtml(text); };
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    el.innerHTML = simpleMarkdownToHtml(text);
+    onDone?.();
+  };
   const step = () => {
-    if (cancelled) return;
+    if (done) return;
     wi = Math.min(wi + wordsPerStep, words.length);
     el.innerHTML = simpleMarkdownToHtml(words.slice(0, wi).join(" "));
     if (wi < words.length) window.setTimeout(step, CARD_STREAM_STEP_MS);
+    else finish();
   };
   step();
   return finish;
@@ -11551,11 +11557,28 @@ function run(): void {
                     // the react_draft collapsed to "▸ First pass" below it. react_draft == the streamed
                     // draft, so nothing is lost; this makes the answer the star, draft out of the way.
                     existingSummaryPanel.replaceChildren(...Array.from(renderedSummaryPanel.children));
-                    // Stream the final's prose lead at the SAME pace as the draft, so the answer flows
-                    // in consistently rather than snapping in all at once (Ananth 2026-08-07).
-                    const _finalBody = existingSummaryPanel.querySelector(".ac-answer-final .ac-answer-envelope-body") as HTMLElement | null;
+                    // Two-fold motion (Ananth 2026-08-07): the First pass sits at the TOP, opens with
+                    // the draft, then SLOWLY COLLAPSES as the final answer streams in below it. The
+                    // final's sections stay hidden until the prose lead finishes so they never appear
+                    // before the top of the answer.
+                    const _fp = existingSummaryPanel.querySelector(".ac-first-pass") as HTMLElement | null;
+                    const _finalWrap = existingSummaryPanel.querySelector(".ac-answer-final") as HTMLElement | null;
+                    const _finalBody = _finalWrap?.querySelector(".ac-answer-envelope-body") as HTMLElement | null;
                     const _leadText = (fullCard?.display_summary ?? "").trim() || (fullCard?.direct_answer ?? "").trim();
-                    if (_finalBody && _leadText) _streamMarkdownInto(_finalBody, _leadText);
+                    if (_fp) _fp.classList.add("ac-first-pass--open");   // draft visible at top first
+                    const _hiddenSections = Array.from(_finalWrap?.querySelectorAll(".answer-card-section") ?? []) as HTMLElement[];
+                    _hiddenSections.forEach((s) => { s.style.display = "none"; });
+                    if (_finalBody && _leadText) {
+                      _finalBody.innerHTML = "";
+                      window.setTimeout(() => {
+                        if (_fp) _fp.classList.remove("ac-first-pass--open");   // fold 1: slow collapse
+                        _streamMarkdownInto(_finalBody, _leadText, () => {      // fold 2: stream, then sections
+                          _hiddenSections.forEach((s) => { s.style.display = ""; });
+                        });
+                      }, 450);
+                    } else {
+                      _hiddenSections.forEach((s) => { s.style.display = ""; });
+                    }
                   } else {
                     // Draft-only (no final this turn): keep the streamed prose. If it's empty (a raw
                     // draft was suppressed), fill the headless case from the rendered draft line.

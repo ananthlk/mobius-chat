@@ -668,20 +668,24 @@ export function renderAnswerCard(
     // Final at the TOP of the panel (the star), above meta/confidence.
     answerPanel.insertBefore(answerWrap, answerPanel.firstChild);
 
-    // The react_draft demotes to a collapsed "First pass" right below the final — de-emphasized,
-    // available for transparency but out of the way (Ananth: "move the thing down").
+    // The react_draft demotes to a collapsible "First pass" ABOVE the final (Ananth 2026-08-07:
+    // "move the first pass up… slowly collapse that as the final answer starts to flow in"). A
+    // custom collapsible (not <details>) so the body max-height can ANIMATE closed on the live
+    // path. Collapsed by default on reload; the streaming path opens it then animates it shut.
     if (_reactDraft) {
-      const fp = document.createElement("details");
+      const fp = document.createElement("div");
       fp.className = "ac-first-pass";
-      const sum = document.createElement("summary");
+      const sum = document.createElement("button");
+      sum.type = "button";
       sum.className = "ac-first-pass-summary";
       sum.textContent = "First pass";
+      sum.addEventListener("click", () => fp.classList.toggle("ac-first-pass--open"));
       const fpBody = document.createElement("div");
       fpBody.className = "ac-first-pass-body";
       fpBody.innerHTML = simpleMarkdownToHtml(_reactDraft);
       fp.appendChild(sum);
       fp.appendChild(fpBody);
-      answerWrap.insertAdjacentElement("afterend", fp);
+      answerPanel.insertBefore(fp, answerWrap);   // First pass ABOVE the final
     }
   }
 
