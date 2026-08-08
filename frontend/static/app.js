@@ -3042,16 +3042,21 @@ function renderAnswerCard(card, isError, opts) {
       return btn;
     };
     const TAB_DOM = {
-      "summary": { label: "Summary", panelKey: "summary", count: void 0 },
+      // "Draft" = react_draft (ReAct's first pass). Renamed from "Summary" (Ananth 2026-08-07) —
+      // the panel key stays "summary" (react_draft streams into .ac-summary-prose); only the label
+      // changes. The integrator's "Answer" (below) is the comprehensive final.
+      "summary": { label: "Draft", panelKey: "summary", count: void 0 },
       // Answer tab — only listed when display_summary exists (count=undefined → no badge, always
-      // visible like Summary). Omitted otherwise so the bar has no empty Answer button.
+      // visible like Draft). Omitted otherwise so the bar has no empty Answer button.
       ...hasAnswerEnvelope ? { "answer": { label: "Answer", panelKey: "answer", count: void 0 } } : {},
       // Chat Master ruling (b) 2026-08-06: the Citations tab is repurposed into a consolidated
       // "Sources" tab — reference chips (here) + source excerpts (snippets, here) + a collapsible
       // narrative_full_redacted section injected post-render (app.ts completed handler).
       "citations": { label: "Sources", panelKey: "citations", count: (card.citations ?? []).length },
       "corrections": { label: "Corrections", panelKey: "corrections", count: _corrections.length },
-      "follow-up": { label: "Follow-up", panelKey: "next-steps", count: _nextStepQuestions.length },
+      // Follow-up tab dropped (Ananth 2026-08-07): follow-up questions render as suggestion chips
+      // below the bubble, so a tab duplicated them. Tasks tab is being migrated to the feedback
+      // panel (a badge + accept/reject modal) in a follow-up build; kept here until that lands.
       "tasks": { label: "Tasks", panelKey: "tasks", count: _nextStepTasks.length }
     };
     let firstTab = true;
@@ -12220,11 +12225,10 @@ ${message}`;
         });
         return btn;
       };
-      streamTabBar.appendChild(_mkStreamBtn("Summary", "summary", true));
+      streamTabBar.appendChild(_mkStreamBtn("Draft", "summary", true));
       streamTabBar.appendChild(_mkStreamBtn("Answer", "answer", false));
       streamTabBar.appendChild(_mkStreamBtn("Sources", "citations", false));
       streamTabBar.appendChild(_mkStreamBtn("Corrections", "corrections", false));
-      streamTabBar.appendChild(_mkStreamBtn("Follow-up", "next-steps", false));
       streamTabBar.appendChild(_mkStreamBtn("Tasks", "tasks", false));
       bubble.appendChild(streamTabBar);
       const summaryPanel = document.createElement("div");

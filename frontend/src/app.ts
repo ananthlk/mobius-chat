@@ -11139,14 +11139,15 @@ function run(): void {
         });
         return btn;
       };
-      streamTabBar.appendChild(_mkStreamBtn("Summary", "summary", true));
+      // "Draft" = react_draft streaming (renamed from Summary, Ananth 2026-08-07). Follow-up tab
+      // dropped (chips handle it). Tasks kept until its feedback-panel migration lands.
+      streamTabBar.appendChild(_mkStreamBtn("Draft", "summary", true));
       // Answer tab (Ananth 2026-08-07): shown during streaming; the completed handler swaps the
       // whole tab bar for the fully-built one (which lists Answer only when display_summary exists),
       // so a display_summary-less turn ends up without an Answer button.
       streamTabBar.appendChild(_mkStreamBtn("Answer", "answer", false));
       streamTabBar.appendChild(_mkStreamBtn("Sources", "citations", false));
       streamTabBar.appendChild(_mkStreamBtn("Corrections", "corrections", false));
-      streamTabBar.appendChild(_mkStreamBtn("Follow-up", "next-steps", false));
       streamTabBar.appendChild(_mkStreamBtn("Tasks", "tasks", false));
       bubble.appendChild(streamTabBar);
 

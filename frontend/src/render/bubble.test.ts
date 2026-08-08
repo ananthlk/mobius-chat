@@ -37,10 +37,14 @@ describe("renderAnswerCard — DOM output (§1.4 tabbed bubble + §1.2 visibilit
     expect(el.querySelector(".answer-card-show-details")).toBeNull();
   });
 
-  it("renders a tab bar with Summary + a Sources tab (Citations repurposed → 'Sources', ruling b)", () => {
+  it("renders a tab bar with a Draft tab (renamed from Summary) + a Sources tab (ruling b)", () => {
     const el = renderAnswerCard(card);
     const tabs = Array.from(el.querySelectorAll(".ac-tab")).map((t) => t.textContent ?? "");
-    expect(tabs.some((t) => t.includes("Summary"))).toBe(true);
+    // "Summary" renamed to "Draft" (Ananth 2026-08-07) — panel key stays "summary".
+    expect(tabs.some((t) => t.includes("Draft"))).toBe(true);
+    expect(tabs.some((t) => t === "Summary")).toBe(false);
+    // Follow-up tab dropped (chips handle it)
+    expect(tabs.some((t) => t.includes("Follow-up"))).toBe(false);
     // The Citations tab was consolidated into "Sources" (label change; panel key stays citations).
     expect(tabs.some((t) => t.includes("Sources"))).toBe(true);
     expect(tabs.some((t) => t.includes("Citations"))).toBe(false);
