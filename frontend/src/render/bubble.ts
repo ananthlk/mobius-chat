@@ -559,15 +559,23 @@ export function renderAnswerCard(
   // (Chat Master 2026-08-05). It is surfaced only as a Diagnostics telemetry row (see
   // formatOutputIntentLabel + the Diagnostics tab). Nothing renders on the card face.
 
-  // Summary content (the prominent answer above the tabs). Ananth ruling 2026-08-07: Summary is
-  // ReAct's synthesis. On the LIVE path react_draft streams into .ac-summary-prose; on the NON-
-  // streaming/reload render there's no stream, so prefer the persisted card.react_draft (60091bd)
-  // and fall back to direct_answer only when it's absent (older turns / non-ReAct paths).
-  const direct = document.createElement("div");
-  direct.className = "answer-card-direct";
-  const _summaryText = (card.react_draft ?? "").trim() || card.direct_answer;
-  direct.innerHTML = simpleMarkdownToHtml(_summaryText);
-  bubble.appendChild(direct);
+  // Unified draft→answer (Ananth 2026-08-07). The integrator's final is the star; the react_draft
+  // demotes to a collapsed "First pass" once the final lands. Compute the final's presence up front.
+  const _displaySummary = (card.display_summary ?? "").trim();
+  const _tldrSummary = (card.tldr_summary ?? "").trim();
+  const _answerSections = card.sections ?? [];
+  const hasAnswerEnvelope = _displaySummary.length > 0 || _answerSections.length > 0;
+  const _reactDraft = (card.react_draft ?? "").trim();
+
+  // Draft headline above the tabs — ONLY in the draft-only state (no final yet). Once the final
+  // exists it's the star (rendered in .ac-answer-final in the panel) and the draft demotes to a
+  // collapsed "First pass" below it, so no prominent draft line here.
+  if (!hasAnswerEnvelope) {
+    const direct = document.createElement("div");
+    direct.className = "answer-card-direct";
+    direct.innerHTML = simpleMarkdownToHtml(_reactDraft || card.direct_answer);
+    bubble.appendChild(direct);
+  }
 
   if (opts?.showConfidenceBadge !== false && !opts?.suppressConfidenceForAdminQcFail) {
     bubble.appendChild(
@@ -624,15 +632,10 @@ export function renderAnswerCard(
     answerPanel.appendChild(note);
   }
 
-  // Unified draft→answer view (Ananth 2026-08-07: "answer is still showing in a different tab").
-  // The integrator's final (mode badge → tldr → display_summary → sections[]) is rendered into the
-  // SAME default panel as the draft, NOT a separate Answer tab. On the streaming path the draft
-  // streams into .ac-summary-prose (above); the completed panel-swap appends this answer content
-  // below it, so the answer flows into one view. sections[] live here (integrator output).
-  const _displaySummary = (card.display_summary ?? "").trim();
-  const _tldrSummary = (card.tldr_summary ?? "").trim();
-  const _answerSections = card.sections ?? [];
-  const hasAnswerEnvelope = _displaySummary.length > 0 || _answerSections.length > 0;
+  // Unified draft→answer view (Ananth 2026-08-07). The integrator's final is the STAR: it renders at
+  // the TOP of the default panel (.ac-answer-final), and the react_draft demotes to a collapsed
+  // "First pass" right below it. No separate Answer tab. (_displaySummary/_answerSections/
+  // hasAnswerEnvelope/_reactDraft computed above.)
   if (hasAnswerEnvelope) {
     const answerWrap = document.createElement("div");
     answerWrap.className = "ac-answer-final";
@@ -651,14 +654,35 @@ export function renderAnswerCard(
       tldr.innerHTML = simpleMarkdownToHtml(_tldrSummary);
       answerWrap.appendChild(tldr);
     }
-    if (_displaySummary) {
+    // Prose lead: display_summary (the fuller integrator prose) when present, else direct_answer
+    // (so a sections-only turn with no display_summary — appeals-shaped — still leads with its
+    // answer line rather than dropping it).
+    const _lead = _displaySummary || (card.direct_answer ?? "").trim();
+    if (_lead) {
       const body = document.createElement("div");
       body.className = "ac-answer-envelope-body";
-      body.innerHTML = simpleMarkdownToHtml(_displaySummary);
+      body.innerHTML = simpleMarkdownToHtml(_lead);
       answerWrap.appendChild(body);
     }
     _answerSections.slice(0, MAX_SECTIONS).forEach((sec) => answerWrap.appendChild(renderOneSection(sec)));
-    answerPanel.appendChild(answerWrap);
+    // Final at the TOP of the panel (the star), above meta/confidence.
+    answerPanel.insertBefore(answerWrap, answerPanel.firstChild);
+
+    // The react_draft demotes to a collapsed "First pass" right below the final — de-emphasized,
+    // available for transparency but out of the way (Ananth: "move the thing down").
+    if (_reactDraft) {
+      const fp = document.createElement("details");
+      fp.className = "ac-first-pass";
+      const sum = document.createElement("summary");
+      sum.className = "ac-first-pass-summary";
+      sum.textContent = "First pass";
+      const fpBody = document.createElement("div");
+      fpBody.className = "ac-first-pass-body";
+      fpBody.innerHTML = simpleMarkdownToHtml(_reactDraft);
+      fp.appendChild(sum);
+      fp.appendChild(fpBody);
+      answerWrap.insertAdjacentElement("afterend", fp);
+    }
   }
 
   // Tab data — pull from opts

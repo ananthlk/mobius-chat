@@ -16,10 +16,11 @@ const card: AnswerCard = {
 };
 
 describe("renderAnswerCard — DOM output (§1.4 tabbed bubble + §1.2 visibility)", () => {
-  it("renders the direct answer and a v2 (no-mode) card class", () => {
+  it("renders the direct answer (in the inline final) and a v2 (no-mode) card class", () => {
     const el = renderAnswerCard(card);
     expect(el.className).toContain("answer-card--v2");
-    expect(el.querySelector(".answer-card-direct")?.textContent).toContain("parity");
+    // card has sections → the final is inline; direct_answer leads .ac-answer-final (no display_summary here).
+    expect(el.querySelector(".ac-answer-final")?.textContent).toContain("parity");
   });
 
   it("sections render inline in the default panel (.ac-answer-final), NOT a separate Answer tab (unified view, Ananth 2026-08-07)", () => {
@@ -119,13 +120,17 @@ describe("Unified draft→answer view (Ananth 2026-08-07 — answer inline in th
     expect(noTldr.querySelector(".ac-answer-tldr")).toBeNull();
   });
 
-  it("Summary (the prominent answer) shows react_draft when present, else direct_answer (reload, 60091bd)", () => {
-    const withDraft = renderAnswerCard({ ...card, direct_answer: "INTEGRATOR_LINE", react_draft: "REACT_SYNTHESIS_LINE" });
-    expect(withDraft.querySelector(".answer-card-direct")?.textContent).toContain("REACT_SYNTHESIS_LINE");
-    expect(withDraft.querySelector(".answer-card-direct")?.textContent).not.toContain("INTEGRATOR_LINE");
-    // absent react_draft → falls back to direct_answer (older turns)
-    const noDraft = renderAnswerCard({ ...card, direct_answer: "INTEGRATOR_LINE" });
-    expect(noDraft.querySelector(".answer-card-direct")?.textContent).toContain("INTEGRATOR_LINE");
+  it("demotes react_draft to a collapsed 'First pass' when the final exists; shows it as the headline when draft-only", () => {
+    // Final present (sections) → the final leads inline; react_draft demotes to the collapsed First pass.
+    const withFinal = renderAnswerCard({ ...card, direct_answer: "INTEGRATOR_LINE", react_draft: "REACT_SYNTHESIS_LINE" });
+    expect(withFinal.querySelector(".ac-first-pass-body")?.textContent).toContain("REACT_SYNTHESIS_LINE");
+    expect(withFinal.querySelector(".ac-answer-final")?.textContent).toContain("INTEGRATOR_LINE");
+    expect(withFinal.querySelector(".answer-card-direct")).toBeNull(); // no prominent draft headline once the final exists
+    // Draft-only (no final) → react_draft IS the headline.
+    const draftOnly = renderAnswerCard({ direct_answer: "INTEGRATOR_LINE", react_draft: "REACT_SYNTHESIS_LINE", sections: [] });
+    expect(draftOnly.querySelector(".answer-card-direct")?.textContent).toContain("REACT_SYNTHESIS_LINE");
+    expect(draftOnly.querySelector(".answer-card-direct")?.textContent).not.toContain("INTEGRATOR_LINE");
+    expect(draftOnly.querySelector(".ac-first-pass")).toBeNull(); // no First pass when there's no final to demote under
   });
 
   it("renders no .ac-answer-final and no Answer tab when there is neither display_summary NOR sections", () => {

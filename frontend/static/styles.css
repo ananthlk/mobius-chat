@@ -3490,6 +3490,34 @@ body {
   border-top: 1px solid var(--border, #e5e7eb);
 }
 .ac-answer-final:first-child { margin-top: 0; padding-top: 0; border-top: none; }
+/* The react_draft demoted to a collapsed "First pass" below the final — muted + out of the way. */
+.ac-first-pass { margin-top: 0.6rem; }
+.ac-first-pass-summary {
+  cursor: pointer;
+  list-style: none;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-tertiary, #9ca3af);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.ac-first-pass-summary::-webkit-details-marker { display: none; }
+.ac-first-pass-summary::before {
+  content: "▸";
+  font-size: 0.66rem;
+  transition: transform 0.12s ease;
+}
+.ac-first-pass[open] > .ac-first-pass-summary::before { transform: rotate(90deg); }
+.ac-first-pass-summary:hover { color: var(--text-secondary, #6b7280); }
+.ac-first-pass-body {
+  margin-top: 0.35rem;
+  padding-left: 0.6rem;
+  border-left: 2px solid var(--border, #e5e7eb);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--text-tertiary, #9ca3af);
+}
 .ac-answer-tldr {
   font-size: 0.9rem;
   font-weight: 550;

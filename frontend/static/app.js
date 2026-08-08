@@ -2774,11 +2774,17 @@ function renderAnswerCard(card, isError, opts) {
     wrap.appendChild(bubble);
     return wrap;
   }
-  const direct = document.createElement("div");
-  direct.className = "answer-card-direct";
-  const _summaryText = (card.react_draft ?? "").trim() || card.direct_answer;
-  direct.innerHTML = simpleMarkdownToHtml(_summaryText);
-  bubble.appendChild(direct);
+  const _displaySummary = (card.display_summary ?? "").trim();
+  const _tldrSummary = (card.tldr_summary ?? "").trim();
+  const _answerSections = card.sections ?? [];
+  const hasAnswerEnvelope = _displaySummary.length > 0 || _answerSections.length > 0;
+  const _reactDraft = (card.react_draft ?? "").trim();
+  if (!hasAnswerEnvelope) {
+    const direct = document.createElement("div");
+    direct.className = "answer-card-direct";
+    direct.innerHTML = simpleMarkdownToHtml(_reactDraft || card.direct_answer);
+    bubble.appendChild(direct);
+  }
   if (opts?.showConfidenceBadge !== false && !opts?.suppressConfidenceForAdminQcFail) {
     bubble.appendChild(
       renderConfidenceBadge((opts?.sourceConfidenceStrip ?? "").trim() || "informational_only")
@@ -2827,10 +2833,6 @@ function renderAnswerCard(card, isError, opts) {
     note.textContent = card.confidence_note;
     answerPanel.appendChild(note);
   }
-  const _displaySummary = (card.display_summary ?? "").trim();
-  const _tldrSummary = (card.tldr_summary ?? "").trim();
-  const _answerSections = card.sections ?? [];
-  const hasAnswerEnvelope = _displaySummary.length > 0 || _answerSections.length > 0;
   if (hasAnswerEnvelope) {
     const answerWrap = document.createElement("div");
     answerWrap.className = "ac-answer-final";
@@ -2847,14 +2849,28 @@ function renderAnswerCard(card, isError, opts) {
       tldr.innerHTML = simpleMarkdownToHtml(_tldrSummary);
       answerWrap.appendChild(tldr);
     }
-    if (_displaySummary) {
+    const _lead = _displaySummary || (card.direct_answer ?? "").trim();
+    if (_lead) {
       const body = document.createElement("div");
       body.className = "ac-answer-envelope-body";
-      body.innerHTML = simpleMarkdownToHtml(_displaySummary);
+      body.innerHTML = simpleMarkdownToHtml(_lead);
       answerWrap.appendChild(body);
     }
     _answerSections.slice(0, MAX_SECTIONS).forEach((sec) => answerWrap.appendChild(renderOneSection(sec)));
-    answerPanel.appendChild(answerWrap);
+    answerPanel.insertBefore(answerWrap, answerPanel.firstChild);
+    if (_reactDraft) {
+      const fp = document.createElement("details");
+      fp.className = "ac-first-pass";
+      const sum = document.createElement("summary");
+      sum.className = "ac-first-pass-summary";
+      sum.textContent = "First pass";
+      const fpBody = document.createElement("div");
+      fpBody.className = "ac-first-pass-body";
+      fpBody.innerHTML = simpleMarkdownToHtml(_reactDraft);
+      fp.appendChild(sum);
+      fp.appendChild(fpBody);
+      answerWrap.insertAdjacentElement("afterend", fp);
+    }
   }
   const _corrections = opts?.corrections ?? [];
   const _nextStepQuestions = opts?.nextQuestions ?? [];
@@ -12513,14 +12529,19 @@ ${message}`;
               const existingSummaryPanel = existingBubble.querySelector(".ac-tab-panel--summary");
               const renderedSummaryPanel = renderedBubble.querySelector(".ac-tab-panel--summary");
               if (existingSummaryPanel && renderedSummaryPanel) {
-                const streamedProse = existingSummaryPanel.querySelector(".ac-summary-prose");
-                const renderedDirect = renderedBubble.querySelector(".answer-card-direct");
-                if (streamedProse && renderedDirect && !(streamedProse.textContent ?? "").trim()) {
-                  streamedProse.innerHTML = renderedDirect.innerHTML;
+                const renderedHasFinal = !!renderedSummaryPanel.querySelector(".ac-answer-final");
+                if (renderedHasFinal) {
+                  existingSummaryPanel.replaceChildren(...Array.from(renderedSummaryPanel.children));
+                } else {
+                  const streamedProse = existingSummaryPanel.querySelector(".ac-summary-prose");
+                  const renderedDirect = renderedBubble.querySelector(".answer-card-direct");
+                  if (streamedProse && renderedDirect && !(streamedProse.textContent ?? "").trim()) {
+                    streamedProse.innerHTML = renderedDirect.innerHTML;
+                  }
+                  Array.from(renderedSummaryPanel.children).forEach((child) => {
+                    existingSummaryPanel.appendChild(child);
+                  });
                 }
-                Array.from(renderedSummaryPanel.children).forEach((child) => {
-                  existingSummaryPanel.appendChild(child);
-                });
               }
               ["citations", "corrections", "next-steps", "tasks"].forEach((panelName) => {
                 const existing = existingBubble.querySelector(`.ac-tab-panel--${panelName}`);

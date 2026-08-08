@@ -11522,17 +11522,25 @@ function run(): void {
                 const existingSummaryPanel = existingBubble.querySelector(".ac-tab-panel--summary") as HTMLElement | null;
                 const renderedSummaryPanel = renderedBubble.querySelector(".ac-tab-panel--summary") as HTMLElement | null;
                 if (existingSummaryPanel && renderedSummaryPanel) {
-                  // The streamed prose normally IS the direct answer. If it's empty (a raw draft was
-                  // suppressed, so nothing streamed), the tab card would be headless — pull the clean
-                  // direct answer from the rendered card into the prose so it reads correctly.
-                  const streamedProse = existingSummaryPanel.querySelector(".ac-summary-prose") as HTMLElement | null;
-                  const renderedDirect = renderedBubble.querySelector(".answer-card-direct") as HTMLElement | null;
-                  if (streamedProse && renderedDirect && !(streamedProse.textContent ?? "").trim()) {
-                    streamedProse.innerHTML = renderedDirect.innerHTML;
+                  const renderedHasFinal = !!renderedSummaryPanel.querySelector(".ac-answer-final");
+                  if (renderedHasFinal) {
+                    // Final landed → DEMOTE (Ananth 2026-08-07): replace the streamed draft wholesale
+                    // with the rendered demoted structure — the final at the top (.ac-answer-final),
+                    // the react_draft collapsed to "▸ First pass" below it. react_draft == the streamed
+                    // draft, so nothing is lost; this makes the answer the star, draft out of the way.
+                    existingSummaryPanel.replaceChildren(...Array.from(renderedSummaryPanel.children));
+                  } else {
+                    // Draft-only (no final this turn): keep the streamed prose. If it's empty (a raw
+                    // draft was suppressed), fill the headless case from the rendered draft line.
+                    const streamedProse = existingSummaryPanel.querySelector(".ac-summary-prose") as HTMLElement | null;
+                    const renderedDirect = renderedBubble.querySelector(".answer-card-direct") as HTMLElement | null;
+                    if (streamedProse && renderedDirect && !(streamedProse.textContent ?? "").trim()) {
+                      streamedProse.innerHTML = renderedDirect.innerHTML;
+                    }
+                    Array.from(renderedSummaryPanel.children).forEach((child) => {
+                      existingSummaryPanel.appendChild(child);
+                    });
                   }
-                  Array.from(renderedSummaryPanel.children).forEach((child) => {
-                    existingSummaryPanel.appendChild(child);
-                  });
                 }
 
                 // Swap Answer, Citations, Corrections, Follow-up, Tasks panels in-place. Answer
