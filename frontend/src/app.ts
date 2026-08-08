@@ -11558,9 +11558,40 @@ function run(): void {
                   if (renderedHasFinal) {
                     // Final landed → DEMOTE (Ananth 2026-08-07): replace the streamed draft wholesale
                     // with the rendered demoted structure — the final at the top (.ac-answer-final),
-                    // the react_draft collapsed to "▸ First pass" below it. react_draft == the streamed
-                    // draft, so nothing is lost; this makes the answer the star, draft out of the way.
+                    // the react_draft collapsed to "▸ First pass" below it.
+                    // Capture the streamed draft BEFORE the swap. renderAnswerCard builds the First pass
+                    // only when the final card JSON still carries react_draft/reasoning_trace — which is
+                    // NOT guaranteed (the integrator can drop react_draft from the persisted card). When
+                    // it does, replaceChildren below would discard the draft the user just watched stream
+                    // in. So we retain it: if the rendered structure has no First pass, synthesize one
+                    // from the captured stream so the draft always collapses underneath the final rather
+                    // than vanishing (Chat Master 2026-08-08 regression).
+                    const _streamedDraftHTML =
+                      (existingSummaryPanel.querySelector(".ac-summary-prose") as HTMLElement | null)?.innerHTML ?? "";
                     existingSummaryPanel.replaceChildren(...Array.from(renderedSummaryPanel.children));
+                    if (!existingSummaryPanel.querySelector(".ac-first-pass") && _streamedDraftHTML.trim()) {
+                      const _finalForFp = existingSummaryPanel.querySelector(".ac-answer-final");
+                      const fp = document.createElement("div");
+                      fp.className = "ac-first-pass";
+                      const sum = document.createElement("button");
+                      sum.type = "button";
+                      sum.className = "ac-first-pass-summary";
+                      sum.textContent = "First pass";
+                      const body = document.createElement("div");
+                      body.className = "ac-first-pass-body";
+                      body.innerHTML = _streamedDraftHTML;
+                      // MEASURED-height toggle, same as renderAnswerCard's First pass.
+                      sum.addEventListener("click", () => {
+                        const opening = !fp.classList.contains("ac-first-pass--open");
+                        fp.classList.toggle("ac-first-pass--open");
+                        body.style.maxHeight = opening ? body.scrollHeight + "px" : "0px";
+                      });
+                      fp.appendChild(sum);
+                      fp.appendChild(body);
+                      // Above the final (the star sits at top of the panel, First pass just under it).
+                      if (_finalForFp) existingSummaryPanel.insertBefore(fp, _finalForFp);
+                      else existingSummaryPanel.insertBefore(fp, existingSummaryPanel.firstChild);
+                    }
                     // Two-fold motion (Ananth 2026-08-07): the First pass sits at the TOP, opens with
                     // the draft, then SLOWLY COLLAPSES as the final answer streams in below it. The
                     // final's sections stay hidden until the prose lead finishes so they never appear
