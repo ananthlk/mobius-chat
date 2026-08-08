@@ -9538,6 +9538,13 @@ function run(): void {
     diagPanel.setAttribute("role", "tabpanel");
     diagPanel.setAttribute("hidden", "");
 
+    // Consistent diagnostics order (Ananth 2026-08-07): HIPAA · React · RAG telemetry · RAG trace ·
+    // other tool · QA/adjudicator · bandit. Each section builds into a bucket; buckets flush in this
+    // fixed order just before the tab button is wired (below), so the order never drifts with which
+    // sections happen to be present.
+    const _diag: Record<"hipaa" | "react" | "ragTel" | "ragTrace" | "tool" | "qa" | "bandit", HTMLElement[]> =
+      { hipaa: [], react: [], ragTel: [], ragTrace: [], tool: [], qa: [], bandit: [] };
+
     // Section 0: output_intent telemetry (Task #10) — an internal classification signal, not a
     // user-facing label (Chat Master 2026-08-05). A single muted "Output intent · <value>" row,
     // shown only when the enricher sent a known value.
@@ -9553,7 +9560,7 @@ function run(): void {
       oiVal.textContent = _oi;
       oiRow.appendChild(oiKey);
       oiRow.appendChild(oiVal);
-      diagPanel.appendChild(oiRow);
+      _diag.tool.push(oiRow);
     }
 
     // Section 1: LLM performance breakdown
@@ -9571,21 +9578,21 @@ function run(): void {
           routingFeedback: opts.routingFeedback as { rating: string; comment?: string | null } | null,
         }
       );
-      diagPanel.appendChild(perfEl);
+      _diag.tool.push(perfEl);
     }
 
-    // Section 2 (primary): 8-stage pipeline module trace (replicates trace_explorer.html).
+    // RAG telemetry: 8-stage pipeline module trace (replicates trace_explorer.html).
     const moduleTraceEl = renderModuleTrace(
       opts.thinkingLog as ReadonlyArray<unknown> | null | undefined
     );
-    if (moduleTraceEl) diagPanel.appendChild(moduleTraceEl);
+    if (moduleTraceEl) _diag.ragTel.push(moduleTraceEl);
 
-    // Section 2b: legacy reason→act→observe card (kept until the module trace's detail panels
+    // RAG telemetry: legacy reason→act→observe card (kept until the module trace's detail panels
     // reach parity via Retriever's field map).
     const traceEl = renderDiagnosticsCard(
       opts.thinkingLog as ReadonlyArray<unknown> | null | undefined
     );
-    if (traceEl) diagPanel.appendChild(traceEl);
+    if (traceEl) _diag.ragTel.push(traceEl);
 
     // Section 2a: Full retrieval trace (task #43/#44). Expandable, default collapsed. PLAIN-TEXT
     // (already has --- section headers) — NO markdown. Prefer the LIVE full narrative_full (from
@@ -9616,7 +9623,7 @@ function run(): void {
       nfPre.textContent = _nf; // textContent — never innerHTML, never logged
       nfWrap.appendChild(nfSum);
       nfWrap.appendChild(nfPre);
-      diagPanel.appendChild(nfWrap);
+      _diag.ragTrace.push(nfWrap);
     }
 
     // Section 2b: React loop trace (governor directive/reason per round,
@@ -9624,16 +9631,16 @@ function run(): void {
     const reactTraceEl = renderReactTraceCard(
       opts.thinkingLog as ReadonlyArray<unknown> | null | undefined
     );
-    if (reactTraceEl) diagPanel.appendChild(reactTraceEl);
+    if (reactTraceEl) _diag.react.push(reactTraceEl);
 
-    // Section 2c: QA verdicts (Task #22) — full adjudication breakdown (verdict + flags +
+    // QA/adjudicator: QA verdicts (Task #22) — full adjudication breakdown (verdict + flags +
     // rubric score, bandit reward tracking, collapsed raw self-report).
     const qaVerdictsEl = renderQaVerdictsPanel(opts.qc, opts.correlationId);
-    if (qaVerdictsEl) diagPanel.appendChild(qaVerdictsEl);
+    if (qaVerdictsEl) _diag.qa.push(qaVerdictsEl);
 
-    // Section 2d: Bandit reward attribution (Task #34) — per-stage quality_score from the
+    // Bandit: reward attribution (Task #34) — per-stage quality_score from the
     // bandit_reward_persisted SSE events, accumulated live in the post-completion window.
-    if (opts.correlationId) diagPanel.appendChild(renderBanditAttribution(opts.correlationId));
+    if (opts.correlationId) _diag.bandit.push(renderBanditAttribution(opts.correlationId));
 
     // Section 3: HIPAA gate audit (if this turn followed an instant-RAG upload)
     if (opts.hipaaDiagnostics) {
@@ -9730,7 +9737,7 @@ function run(): void {
 
       hipaaSection.appendChild(header);
       hipaaSection.appendChild(body);
-      diagPanel.appendChild(hipaaSection);
+      _diag.hipaa.push(hipaaSection);
     }
 
     // Section 4: PHI message gate verdict
@@ -9768,8 +9775,13 @@ function run(): void {
         labelParts.push(`<span class="diag-phi-msg-pills">${pills}</span>`);
       }
       row.innerHTML = labelParts.join("");
-      diagPanel.appendChild(row);
+      _diag.hipaa.push(row);
     }
+
+    // Flush buckets in the fixed order (Ananth 2026-08-07): HIPAA → React → RAG telemetry →
+    // RAG trace → other tool → QA/adjudicator → bandit.
+    (["hipaa", "react", "ragTel", "ragTrace", "tool", "qa", "bandit"] as const)
+      .forEach((k) => _diag[k].forEach((el) => diagPanel.appendChild(el)));
 
     // Wire tab button into the tab bar
     const tabBar = bubble.querySelector(".ac-tab-bar") as HTMLElement | null;
@@ -11610,38 +11622,9 @@ function run(): void {
           }
         }
 
-        // Sources tab (Chat Master ruling (b), 2026-08-06): the repurposed Citations→"Sources" tab
-        // gets a collapsible retrieval narrative. Use narrative_full_REDACTED (query-echo stripped,
-        // persist-safe) from the retrieval_trace envelope in thinking_log — so it's present on
-        // history/replay too. Show when present, hide when absent (RAG-gated: non-retrieval turns
-        // have no retrieval_trace → nothing appended). The full live narrative_full stays in the
-        // admin Diagnostics "Full retrieval trace", not this user-facing tab. Plain-text, never logged.
-        {
-          let _redacted = "";
-          const _tl2 = Array.isArray(data.thinking_log) ? data.thinking_log : [];
-          for (const _e of _tl2) {
-            if (_e && typeof _e === "object" && (_e as { signal?: string }).signal === "retrieval_trace") {
-              const _r = ((_e as { data?: Record<string, unknown> }).data || {}).narrative_full_redacted;
-              if (typeof _r === "string" && _r.trim()) { _redacted = _r.trim(); break; }
-            }
-          }
-          if (_redacted) {
-            const _srcPanel = turnWrap.querySelector(".ac-tab-panel--citations") as HTMLElement | null;
-            if (_srcPanel && !_srcPanel.querySelector(".ac-sources-narrative")) {
-              const _det = document.createElement("details");
-              _det.className = "ac-sources-narrative";
-              const _sum = document.createElement("summary");
-              _sum.className = "ac-sources-narrative-summary";
-              _sum.textContent = "Retrieval trace";
-              const _pre = document.createElement("pre");
-              _pre.className = "ac-sources-narrative-pre";
-              _pre.textContent = _redacted; // plain text — never innerHTML, never logged
-              _det.appendChild(_sum);
-              _det.appendChild(_pre);
-              _srcPanel.appendChild(_det);
-            }
-          }
-        }
+        // Sources tab: citations ONLY (Ananth 2026-08-07). The retrieval trace was removed from
+        // this user-facing tab — it lives solely in Diagnostics ("Full retrieval trace" + the
+        // module trace). Keeps Sources clean: just the cited documents.
 
         // "Try with Think mode" escalation button (suggest_escalate). Synchronous — read the flag
         // off the completed AnswerCard and render immediately. Placed at the end of the Summary

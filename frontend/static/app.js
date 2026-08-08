@@ -10884,6 +10884,7 @@ function run() {
     diagPanel.className = "ac-tab-panel ac-tab-panel--diagnostics";
     diagPanel.setAttribute("role", "tabpanel");
     diagPanel.setAttribute("hidden", "");
+    const _diag = { hipaa: [], react: [], ragTel: [], ragTrace: [], tool: [], qa: [], bandit: [] };
     const _oi = formatOutputIntentLabel(opts.outputIntent ?? void 0);
     if (_oi) {
       const oiRow = document.createElement("div");
@@ -10896,7 +10897,7 @@ function run() {
       oiVal.textContent = _oi;
       oiRow.appendChild(oiKey);
       oiRow.appendChild(oiVal);
-      diagPanel.appendChild(oiRow);
+      _diag.tool.push(oiRow);
     }
     if (opts.insightRows.length > 0) {
       const perfEl = renderLlmPerformance(
@@ -10912,18 +10913,18 @@ function run() {
           routingFeedback: opts.routingFeedback
         }
       );
-      diagPanel.appendChild(perfEl);
+      _diag.tool.push(perfEl);
     }
     const moduleTraceEl = renderModuleTrace(
       opts.thinkingLog
     );
     if (moduleTraceEl)
-      diagPanel.appendChild(moduleTraceEl);
+      _diag.ragTel.push(moduleTraceEl);
     const traceEl = renderDiagnosticsCard(
       opts.thinkingLog
     );
     if (traceEl)
-      diagPanel.appendChild(traceEl);
+      _diag.ragTel.push(traceEl);
     let _nf = typeof opts.narrativeFull === "string" ? opts.narrativeFull.trim() : "";
     let _nfRedacted = false;
     if (!_nf) {
@@ -10950,18 +10951,18 @@ function run() {
       nfPre.textContent = _nf;
       nfWrap.appendChild(nfSum);
       nfWrap.appendChild(nfPre);
-      diagPanel.appendChild(nfWrap);
+      _diag.ragTrace.push(nfWrap);
     }
     const reactTraceEl = renderReactTraceCard(
       opts.thinkingLog
     );
     if (reactTraceEl)
-      diagPanel.appendChild(reactTraceEl);
+      _diag.react.push(reactTraceEl);
     const qaVerdictsEl = renderQaVerdictsPanel(opts.qc, opts.correlationId);
     if (qaVerdictsEl)
-      diagPanel.appendChild(qaVerdictsEl);
+      _diag.qa.push(qaVerdictsEl);
     if (opts.correlationId)
-      diagPanel.appendChild(renderBanditAttribution(opts.correlationId));
+      _diag.bandit.push(renderBanditAttribution(opts.correlationId));
     if (opts.hipaaDiagnostics) {
       const hd = opts.hipaaDiagnostics;
       const hipaaSection = document.createElement("div");
@@ -11046,7 +11047,7 @@ function run() {
       }
       hipaaSection.appendChild(header);
       hipaaSection.appendChild(body);
-      diagPanel.appendChild(hipaaSection);
+      _diag.hipaa.push(hipaaSection);
     }
     if (opts.msgPhiGate) {
       const mg = opts.msgPhiGate;
@@ -11078,8 +11079,9 @@ function run() {
         labelParts.push(`<span class="diag-phi-msg-pills">${pills}</span>`);
       }
       row.innerHTML = labelParts.join("");
-      diagPanel.appendChild(row);
+      _diag.hipaa.push(row);
     }
+    ["hipaa", "react", "ragTel", "ragTrace", "tool", "qa", "bandit"].forEach((k) => _diag[k].forEach((el2) => diagPanel.appendChild(el2)));
     const tabBar = bubble.querySelector(".ac-tab-bar");
     if (tabBar) {
       const diagBtn = document.createElement("button");
@@ -12595,35 +12597,6 @@ ${message}`;
         if (_answerEmpty) {
           _cb?.querySelector('.ac-tab[data-panel="answer"]')?.remove();
           _answerPanel?.remove();
-        }
-      }
-      {
-        let _redacted = "";
-        const _tl2 = Array.isArray(data.thinking_log) ? data.thinking_log : [];
-        for (const _e of _tl2) {
-          if (_e && typeof _e === "object" && _e.signal === "retrieval_trace") {
-            const _r = (_e.data || {}).narrative_full_redacted;
-            if (typeof _r === "string" && _r.trim()) {
-              _redacted = _r.trim();
-              break;
-            }
-          }
-        }
-        if (_redacted) {
-          const _srcPanel = turnWrap.querySelector(".ac-tab-panel--citations");
-          if (_srcPanel && !_srcPanel.querySelector(".ac-sources-narrative")) {
-            const _det = document.createElement("details");
-            _det.className = "ac-sources-narrative";
-            const _sum = document.createElement("summary");
-            _sum.className = "ac-sources-narrative-summary";
-            _sum.textContent = "Retrieval trace";
-            const _pre = document.createElement("pre");
-            _pre.className = "ac-sources-narrative-pre";
-            _pre.textContent = _redacted;
-            _det.appendChild(_sum);
-            _det.appendChild(_pre);
-            _srcPanel.appendChild(_det);
-          }
         }
       }
       {
