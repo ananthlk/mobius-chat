@@ -1954,7 +1954,9 @@ function tryParseAnswerCard(message) {
           document_name: typeof s?.document_name === "string" ? s.document_name : void 0,
           doc_title: typeof s?.doc_title === "string" ? s.doc_title : void 0,
           locator: typeof s?.locator === "string" ? s.locator : void 0,
-          snippet: typeof s?.snippet === "string" ? s.snippet : void 0
+          snippet: typeof s?.snippet === "string" ? s.snippet : void 0,
+          document_id: typeof s?.document_id === "string" ? s.document_id : void 0,
+          page_number: typeof s?.page_number === "number" ? s.page_number : void 0
         })) : void 0,
         // Escalation hint — copied through explicitly (parseOne is a positive filter). Backend
         // sends it only when true (absent otherwise), so a strict true check is correct.
@@ -2846,7 +2848,7 @@ function applyCitationFootnotes(container, sources) {
     node.parentNode?.replaceChild(frag, node);
   }
 }
-function renderSourcesList(sources) {
+function renderSourcesList(sources, onSourceClick) {
   if (!sources || sources.length === 0)
     return null;
   const wrap = document.createElement("div");
@@ -2861,6 +2863,20 @@ function renderSourcesList(sources) {
     const li = document.createElement("li");
     li.className = "ac-source-item";
     li.setAttribute("data-cite-src", String(i + 1));
+    const clickable = !!(src.document_id && onSourceClick);
+    if (clickable) {
+      li.classList.add("ac-source-item--clickable");
+      li.setAttribute("role", "button");
+      li.setAttribute("tabindex", "0");
+      const open = () => onSourceClick(src.document_id, src.page_number ?? null, src.snippet ?? null);
+      li.addEventListener("click", open);
+      li.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          open();
+        }
+      });
+    }
     const title = document.createElement("span");
     title.className = "ac-source-title";
     title.textContent = src.document_name || src.doc_title || `Source ${i + 1}`;
@@ -3039,7 +3055,7 @@ function renderAnswerCard(card, isError, opts) {
     _answerSections.slice(0, MAX_SECTIONS).forEach((sec) => answerWrap.appendChild(renderOneSection(sec)));
     if (hasSources) {
       applyCitationFootnotes(answerWrap, _sources);
-      const srcList = renderSourcesList(_sources);
+      const srcList = renderSourcesList(_sources, opts?.onSourceClick);
       if (srcList)
         answerWrap.appendChild(srcList);
     }
@@ -4468,7 +4484,7 @@ function renderAssistantContent(body, isError, opts) {
     return renderFailedTurn(failed, opts?.onRetry);
   const card = tryParseAnswerCard(body);
   if (card)
-    return renderAnswerCard(card, isError, { ...opts, nextQuestions: opts?.nextQuestions, onCreateTask: openCreateTaskDialog });
+    return renderAnswerCard(card, isError, { ...opts, nextQuestions: opts?.nextQuestions, onCreateTask: openCreateTaskDialog, onSourceClick: (docId, page, cite) => openDocReaderPanel(docId, page, cite) });
   const trimmed = (body ?? "").trim();
   if (trimmed.startsWith("{") && trimmed.length > 10) {
     const errWrap = document.createElement("div");
@@ -12716,7 +12732,8 @@ ${message}`;
               suppressConfidenceForAdminQcFail: suppressConf,
               corrections: _extractedCorrections,
               nextStepTasks: _extractedNextStepTasks,
-              onCreateTask: openCreateTaskDialog
+              onCreateTask: openCreateTaskDialog,
+              onSourceClick: (docId, page, cite) => openDocReaderPanel(docId, page, cite)
             });
             const renderedBubble = renderedCard.querySelector(".answer-card-bubble");
             if (renderedBubble) {
@@ -12724,6 +12741,15 @@ ${message}`;
               const renderedTabBar = renderedBubble.querySelector(".ac-tab-bar");
               if (streamingTabBar && renderedTabBar) {
                 existingBubble.replaceChild(renderedTabBar, streamingTabBar);
+              } else if (streamingTabBar && !renderedTabBar) {
+                streamingTabBar.remove();
+              }
+              if (Array.isArray(fullCard?.sources) && fullCard.sources.length > 0) {
+                existingBubble.querySelector('.ac-tab[data-panel="citations"]')?.remove();
+                existingBubble.querySelector(".ac-tab-panel--citations")?.remove();
+                const bar = existingBubble.querySelector(".ac-tab-bar");
+                if (bar && !bar.querySelector('.ac-tab:not([data-empty="1"])'))
+                  bar.remove();
               }
               const existingSummaryPanel = existingBubble.querySelector(".ac-tab-panel--summary");
               const renderedSummaryPanel = renderedBubble.querySelector(".ac-tab-panel--summary");

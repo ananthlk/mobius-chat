@@ -1932,7 +1932,7 @@ function renderAssistantContent(
   const failed = parseFailedTurn(body);
   if (failed) return renderFailedTurn(failed, opts?.onRetry);
   const card = tryParseAnswerCard(body);
-  if (card) return renderAnswerCard(card, isError, { ...opts, nextQuestions: opts?.nextQuestions, onCreateTask: openCreateTaskDialog });
+  if (card) return renderAnswerCard(card, isError, { ...opts, nextQuestions: opts?.nextQuestions, onCreateTask: openCreateTaskDialog, onSourceClick: (docId, page, cite) => openDocReaderPanel(docId, page, cite) });
   const trimmed = (body ?? "").trim();
   if (trimmed.startsWith("{") && trimmed.length > 10) {
     const errWrap = document.createElement("div");
@@ -11535,6 +11535,7 @@ function run(): void {
                 corrections: _extractedCorrections,
                 nextStepTasks: _extractedNextStepTasks,
                 onCreateTask: openCreateTaskDialog,
+                onSourceClick: (docId, page, cite) => openDocReaderPanel(docId, page, cite),
               });
               const renderedBubble = renderedCard.querySelector(".answer-card-bubble");
 
@@ -11542,11 +11543,28 @@ function run(): void {
                 // (Task #10 output_intent no longer renders on the card face — it's a Diagnostics
                 // telemetry row now, see _injectDiagnosticsTab. Chat Master 2026-08-05.)
 
-                // Swap streaming tab bar with fully-built one (count badges, correct empty state)
+                // Swap streaming tab bar with fully-built one (count badges, correct empty state).
+                // renderAnswerCard is authoritative on whether there IS a tab bar: when it built one,
+                // replace; when it built NONE (e.g. inline footnotes suppressed the only tab and there
+                // are no tasks), the stale streaming bar must be REMOVED — leaving it in place is what
+                // let the streaming shell's "Sources" tab survive next to the inline sources list
+                // (double-listing, Ananth 2026-08-08).
                 const streamingTabBar = existingBubble.querySelector(".ac-tab-bar");
                 const renderedTabBar = renderedBubble.querySelector(".ac-tab-bar");
                 if (streamingTabBar && renderedTabBar) {
                   existingBubble.replaceChild(renderedTabBar, streamingTabBar);
+                } else if (streamingTabBar && !renderedTabBar) {
+                  streamingTabBar.remove();
+                }
+                // Belt-and-suspenders: when inline footnotes are present (card.sources), the numbered
+                // bottom list REPLACES the Sources tab. Remove any lingering citations tab + panel and
+                // drop the bar if that empties it — guards against onIntegratorPartial('citations')
+                // un-hiding the tab regardless of which tab bar ended up live.
+                if (Array.isArray(fullCard?.sources) && fullCard!.sources!.length > 0) {
+                  existingBubble.querySelector('.ac-tab[data-panel="citations"]')?.remove();
+                  existingBubble.querySelector(".ac-tab-panel--citations")?.remove();
+                  const bar = existingBubble.querySelector(".ac-tab-bar") as HTMLElement | null;
+                  if (bar && !bar.querySelector('.ac-tab:not([data-empty="1"])')) bar.remove();
                 }
 
                 // Summary panel: keep streaming prose, append sections/meta/confidence from rendered card.

@@ -128,7 +128,12 @@ export interface AnswerCard {
   // at merge time (NOT the critic's citations[], which is a deduped subset and doesn't align 1:1 to
   // marker positions). When present, the FE renders [N] as superscript footnotes → this numbered
   // bottom list and drops the separate Sources tab. Absent → legacy citations[] behavior unchanged.
-  sources?: Array<{ document_name?: string; doc_title?: string; locator?: string; snippet?: string }>;
+  // document_id + page_number (LLM Agent a914260) make each source clickable → openDocReaderPanel
+  // opens that doc section. document_name/locator/snippet are the display fields.
+  sources?: Array<{
+    document_name?: string; doc_title?: string; locator?: string; snippet?: string;
+    document_id?: string; page_number?: number | null;
+  }>;
   // Backend escalation hint (Task: Try-with-Think-mode). true when the answer was quality-flagged
   // and re-running in Think/agentic mode is suggested; ABSENT otherwise (never false). Suppressed
   // server-side when the request was already agentic. Drives the "⚡ Try with Think mode" button.
@@ -254,6 +259,8 @@ export function tryParseAnswerCard(message: string): AnswerCard | null {
               doc_title: typeof s?.doc_title === "string" ? s.doc_title : undefined,
               locator: typeof s?.locator === "string" ? s.locator : undefined,
               snippet: typeof s?.snippet === "string" ? s.snippet : undefined,
+              document_id: typeof s?.document_id === "string" ? s.document_id : undefined,
+              page_number: typeof s?.page_number === "number" ? s.page_number : undefined,
             }))
           : undefined,
         // Escalation hint — copied through explicitly (parseOne is a positive filter). Backend

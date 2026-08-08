@@ -3632,6 +3632,26 @@ body {
 .ac-source-item--flash {
   background: rgba(124, 58, 237, 0.14);
 }
+.ac-source-item--clickable {
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.ac-source-item--clickable .ac-source-title {
+  color: var(--mobius-violet, #7c3aed);
+  text-decoration: underline;
+  text-decoration-color: rgba(124, 58, 237, 0.35);
+  text-underline-offset: 2px;
+}
+.ac-source-item--clickable:hover {
+  background: rgba(124, 58, 237, 0.08);
+}
+.ac-source-item--clickable:hover .ac-source-title {
+  text-decoration-color: var(--mobius-violet, #7c3aed);
+}
+.ac-source-item--clickable:focus-visible {
+  outline: 2px solid var(--mobius-violet, #7c3aed);
+  outline-offset: 1px;
+}
 .ac-answer-tldr {
   font-size: 0.9rem;
   font-weight: 550;

@@ -602,7 +602,11 @@ export function applyCitationFootnotes(
 // (Ananth 2026-08-08: "map it to the sources in the bottom… remove the separate citations too").
 // Positional: sources[i] is footnote i+1. Returns null when there's nothing to show.
 export function renderSourcesList(
-  sources: ReadonlyArray<{ document_name?: string; doc_title?: string; locator?: string; snippet?: string }>,
+  sources: ReadonlyArray<{
+    document_name?: string; doc_title?: string; locator?: string; snippet?: string;
+    document_id?: string; page_number?: number | null;
+  }>,
+  onSourceClick?: (documentId: string, pageNumber?: number | null, citeText?: string | null) => void,
 ): HTMLElement | null {
   if (!sources || sources.length === 0) return null;
   const wrap = document.createElement("div");
@@ -617,6 +621,19 @@ export function renderSourcesList(
     const li = document.createElement("li");
     li.className = "ac-source-item";
     li.setAttribute("data-cite-src", String(i + 1));
+    // Clickable → open the doc-reader at the cited section, when we have a document_id and a wired
+    // handler (LLM Agent a914260 adds document_id + page_number to each source).
+    const clickable = !!(src.document_id && onSourceClick);
+    if (clickable) {
+      li.classList.add("ac-source-item--clickable");
+      li.setAttribute("role", "button");
+      li.setAttribute("tabindex", "0");
+      const open = () => onSourceClick!(src.document_id!, src.page_number ?? null, src.snippet ?? null);
+      li.addEventListener("click", open);
+      li.addEventListener("keydown", (e) => {
+        if ((e as KeyboardEvent).key === "Enter" || (e as KeyboardEvent).key === " ") { e.preventDefault(); open(); }
+      });
+    }
     const title = document.createElement("span");
     title.className = "ac-source-title";
     title.textContent = src.document_name || src.doc_title || `Source ${i + 1}`;
@@ -694,6 +711,9 @@ export function renderAnswerCard(
     nextStepTasks?: Array<{ text: string; taskType: string }>;
     /** Injected: open the create-task dialog. Keeps this renderer free of app.ts state. */
     onCreateTask?: (o: { title: string; excerpt: string; sourceModule: string; onCreated?: () => void }) => void;
+    /** Injected: open the doc-reader for a citation source (Task #34). Keeps this renderer free of
+     * app.ts state — app.ts wires it to openDocReaderPanel(document_id, page_number, snippet). */
+    onSourceClick?: (documentId: string, pageNumber?: number | null, citeText?: string | null) => void;
   }
 ): HTMLElement {
   const wrap = document.createElement("div");
@@ -870,7 +890,7 @@ export function renderAnswerCard(
     // legacy Sources-tab path is untouched when the integrator hasn't emitted card.sources yet.
     if (hasSources) {
       applyCitationFootnotes(answerWrap, _sources);
-      const srcList = renderSourcesList(_sources);
+      const srcList = renderSourcesList(_sources, opts?.onSourceClick);
       if (srcList) answerWrap.appendChild(srcList);
     }
     // Final at the TOP of the panel (the star), above meta/confidence.

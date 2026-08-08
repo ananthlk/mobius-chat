@@ -290,6 +290,35 @@ describe("renderSourcesList — numbered bottom list (Task #34)", () => {
   it("returns null for an empty sources array", () => {
     expect(renderSourcesList([])).toBeNull();
   });
+
+  it("makes an item clickable → calls onSourceClick(document_id, page_number, snippet)", () => {
+    const calls: Array<[string, number | null | undefined, string | null | undefined]> = [];
+    const list = renderSourcesList(
+      [{ document_name: "Handbook", locator: "§59G", snippet: "parity", document_id: "doc-42", page_number: 7 }],
+      (id, page, cite) => calls.push([id, page, cite]),
+    )!;
+    const item = list.querySelector(".ac-source-item") as HTMLElement;
+    expect(item.classList.contains("ac-source-item--clickable")).toBe(true);
+    expect(item.getAttribute("role")).toBe("button");
+    item.click();
+    expect(calls).toEqual([["doc-42", 7, "parity"]]);
+  });
+
+  it("is NOT clickable without a document_id (nothing to open)", () => {
+    const list = renderSourcesList(
+      [{ document_name: "Handbook", locator: "§59G" }],
+      () => { throw new Error("should not be called"); },
+    )!;
+    const item = list.querySelector(".ac-source-item") as HTMLElement;
+    expect(item.classList.contains("ac-source-item--clickable")).toBe(false);
+    item.click(); // no handler wired → no throw
+  });
+
+  it("is NOT clickable without an onSourceClick handler", () => {
+    const list = renderSourcesList([{ document_name: "Handbook", document_id: "doc-1" }])!;
+    const item = list.querySelector(".ac-source-item") as HTMLElement;
+    expect(item.classList.contains("ac-source-item--clickable")).toBe(false);
+  });
 });
 
 describe("renderAnswerCard — inline footnotes end-to-end (Task #34)", () => {
@@ -322,6 +351,34 @@ describe("renderAnswerCard — inline footnotes end-to-end (Task #34)", () => {
     );
     expect(srcTab).not.toBeUndefined();
     expect(srcTab!.getAttribute("data-empty")).toBeNull();
+  });
+
+  it("builds NO tab bar when footnote sources suppress the only tab (no tasks) — the double-listing guard", () => {
+    // card has citations but no tasks; with sources present, showCitationsTab=false and hasTasks=false
+    // → showTabBar=false → renderAnswerCard emits no .ac-tab-bar at all. This is what lets the completed
+    // handler drop the stale streaming Sources tab (it has nothing to swap in).
+    const el = renderAnswerCard({
+      ...card,
+      display_summary: "Yes [1].",
+      sources: [{ document_name: "Handbook", locator: "§59G", document_id: "d1", page_number: 3 }],
+    });
+    expect(el.querySelector(".ac-tab-bar")).toBeNull();
+    expect(el.querySelector(".ac-sources-list")).not.toBeNull();
+  });
+
+  it("wires source clicks through renderAnswerCard opts.onSourceClick", () => {
+    const calls: string[] = [];
+    const el = renderAnswerCard(
+      {
+        ...card,
+        display_summary: "Yes [1].",
+        sources: [{ document_name: "Handbook", document_id: "d9", page_number: 2, snippet: "s" }],
+      },
+      false,
+      { onSourceClick: (id) => calls.push(id) },
+    );
+    (el.querySelector(".ac-source-item--clickable") as HTMLElement).click();
+    expect(calls).toEqual(["d9"]);
   });
 });
 
