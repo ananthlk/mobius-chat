@@ -292,16 +292,15 @@ SET_ENV_VARS=(
     # from -- flip back to "sequential" or remove the line entirely if the
     # ramp ever needs to change again.
     "MOBIUS_INTEGRATOR_MODE=parallel"
-    # Task #76 dynamic enrichment (2026-08-08, Chat Master ruling): skip Call A's
-    # LLM call on a sufficient react answer (deterministic regex formatting
-    # instead), Call B/C run as fire-and-forget background jobs. Canary: ~28%
-    # latency reduction (n=2 vs n=6). 10% ramp: 30-min window showed ~60% on a
-    # thin n=2 sample, no quality regression. 2hr organic check at 10% only
-    # accumulated n=3 (dev traffic too low for the original n=20 threshold to
-    # be meaningful) -- Chat Master's call: 5 clean turns across canary+organic
-    # is sufficient signal since the mechanism itself is verified, ramping to
-    # 50% now rather than waiting on a threshold dev traffic can't reach.
-    "MOBIUS_DYNAMIC_ENRICHMENT_PCT=50"
+    # Task #76 dynamic enrichment (2026-08-08, Chat Master ruling, CLOSED at
+    # 100%): skip Call A's LLM call on a sufficient react answer (deterministic
+    # regex formatting instead), Call B/C run as fire-and-forget background
+    # jobs. Canary ~28% latency reduction; 10%/50% ramp windows showed no
+    # quality regression across n=6 clean turns total (dev traffic too sparse
+    # for a larger organic sample at any threshold) -- Chat Master's call:
+    # mechanism fully verified, B/C background confirmed correct, ramping
+    # straight to 100% rather than waiting on organic volume dev can't produce.
+    "MOBIUS_DYNAMIC_ENRICHMENT_PCT=100"
 )
 
 # Secrets → Cloud Run mounts each as an env var. ``name:latest`` pins
