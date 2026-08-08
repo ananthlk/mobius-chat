@@ -254,3 +254,60 @@ def test_ctx_final_message_matches_response_payload_on_stub_path():
 
     assert ctx.final_message == ctx.response_payload["message"]
     assert json.loads(ctx.final_message).get("react_draft") == "hedge for stub sync check"
+
+
+# ── cta_confirm_authoritative persistence gap (2026-08-08) ─────────────────
+# Found verifying Task #41(a)'s "confirm from authoritative sources" CTA
+# live: draft_ready's SSE payload (built directly from append_draft_answer,
+# not through _answer_card_json_for_client) correctly carried
+# cta_confirm_authoritative=True, but the SAME turn's persisted chat_turns
+# row had it silently dropped. Root cause: _ANSWER_CARD_ENVELOPE_KEYS is a
+# positive-filter allowlist (same class of bug this file's react_draft/
+# suggest_escalate tests already cover) and cta_confirm_authoritative was
+# never added to it when Task #41(a) shipped -- the field was set on
+# `parsed` (integrate.py ~line 1141) but _answer_card_json_for_client only
+# copies keys present in the allowlist tuple.
+
+def test_cta_confirm_authoritative_survives_normal_path():
+    ctx = _make_ctx(cta_confirm_authoritative=True)
+    card = {"mode": "FACTUAL", "direct_answer": "A normal, broad-net answer.", "sections": []}
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert payload.get("cta_confirm_authoritative") is True
+
+
+def test_cta_confirm_authoritative_survives_bleed_branch():
+    ctx = _make_ctx(cta_confirm_authoritative=True)
+    inner = {"mode": "FACTUAL", "direct_answer": "Nested answer.", "sections": []}
+    card = {"mode": "FACTUAL", "direct_answer": json.dumps(inner), "sections": []}
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert payload.get("cta_confirm_authoritative") is True
+
+
+def test_cta_confirm_authoritative_survives_total_parse_failure_stub():
+    ctx = _make_ctx(cta_confirm_authoritative=True)
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = ("not valid json { broken", None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert payload.get("cta_confirm_authoritative") is True
+
+
+def test_cta_confirm_authoritative_omitted_when_absent():
+    """Regression guard: absent/False on ctx -> never fabricated on the card."""
+    ctx = _make_ctx()
+    card = {"mode": "FACTUAL", "direct_answer": "A normal answer.", "sections": []}
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert "cta_confirm_authoritative" not in payload

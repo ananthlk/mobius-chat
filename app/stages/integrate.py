@@ -89,6 +89,18 @@ _ANSWER_CARD_ENVELOPE_KEYS = (
     # reads card.react_draft on reload the same way it reads
     # card.direct_answer today.
     "react_draft",
+    # 2026-08-08: "confirm from authoritative sources" CTA (Task #41(a)
+    # follow-up). Injected into `parsed` in run_integrate (same mechanism
+    # as suggest_escalate) but this allowlist entry was never added when
+    # that shipped — draft_ready's SSE payload (built directly from
+    # append_draft_answer, not through this allowlist) carried it fine,
+    # so the button worked on the LIVE stream but silently vanished from
+    # every PERSISTED card (reload / history / any FE path reading the
+    # saved card instead of the stream). Found 2026-08-08 verifying the
+    # CTA end-to-end: draft_ready event had cta_confirm_authoritative=True,
+    # the saved chat_turns row had it dropped. Same failure class this
+    # allowlist's own comments already warn about (output_intent, react_draft).
+    "cta_confirm_authoritative",
 )
 
 
@@ -579,6 +591,8 @@ def _backend_extras_for_stub(ctx: PipelineContext) -> dict[str, Any]:
     )
     if stalled and getattr(ctx, "chat_mode", None) != "agentic":
         extra["suggest_escalate"] = True
+    if getattr(ctx, "cta_confirm_authoritative", False):
+        extra["cta_confirm_authoritative"] = True
     return extra
 
 
