@@ -2901,7 +2901,7 @@ function renderAnswerCard(card, isError, opts) {
     }
     _answerSections.slice(0, MAX_SECTIONS).forEach((sec) => answerWrap.appendChild(renderOneSection(sec)));
     answerPanel.insertBefore(answerWrap, answerPanel.firstChild);
-    const _rdRounds = (card.reasoning_trace ?? []).map((r, i) => ({ n: typeof r?.round === "number" ? r.round : i + 1, ans: (r?.enrichment?.running_answer ?? "").trim() })).filter((r) => r.ans.length > 0);
+    const _rdRounds = (card.reasoning_trace ?? []).map((r, i) => ({ n: typeof r?.round === "number" ? r.round : i + 1, ans: (r?.running_answer ?? "").trim() })).filter((r) => r.ans.length > 0);
     if (_reactDraft || _rdRounds.length > 0) {
       const fp = document.createElement("div");
       fp.className = "ac-first-pass";

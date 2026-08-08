@@ -722,8 +722,11 @@ export function renderAnswerCard(
     // the per-round reasoning ledger is present (card.reasoning_trace, ReAct Task #58), show the
     // PROGRESSION — rd-1 → rd-last — one step per round whose running_answer moved the answer; else
     // fall back to the single react_draft. Custom collapsible so the body max-height can ANIMATE.
+    // FLAT shape (running_answer is a direct sibling of round — the ledger is flattened server-side,
+    // no "enrichment" wrapper). Filter to non-empty running_answer as defense; the backend already
+    // skips empty-content rounds, so this is usually a no-op.
     const _rdRounds = (card.reasoning_trace ?? [])
-      .map((r, i) => ({ n: typeof r?.round === "number" ? r.round : i + 1, ans: (r?.enrichment?.running_answer ?? "").trim() }))
+      .map((r, i) => ({ n: typeof r?.round === "number" ? r.round : i + 1, ans: (r?.running_answer ?? "").trim() }))
       .filter((r) => r.ans.length > 0);
     if (_reactDraft || _rdRounds.length > 0) {
       const fp = document.createElement("div");

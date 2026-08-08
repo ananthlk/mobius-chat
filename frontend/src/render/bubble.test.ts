@@ -137,10 +137,12 @@ describe("Unified draft→answer view (Ananth 2026-08-07 — answer inline in th
     const el = renderAnswerCard({
       ...card,
       react_draft: "final draft",
+      // FLAT shape — running_answer is a direct sibling of round (matches the backend's
+      // _build_reasoning_ledger output), NOT nested under "enrichment".
       reasoning_trace: [
-        { round: 1, enrichment: { running_answer: "Round 1 answer so far." } },
-        { round: 2, enrichment: { running_answer: "" } },            // empty → filtered out
-        { round: 3, enrichment: { running_answer: "Round 3 refined answer." } },
+        { round: 1, running_answer: "Round 1 answer so far." },
+        { round: 2, running_answer: "" },            // empty → filtered out
+        { round: 3, running_answer: "Round 3 refined answer." },
       ],
     });
     const steps = Array.from(el.querySelectorAll(".ac-rd-step"));
