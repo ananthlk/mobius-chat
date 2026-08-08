@@ -280,6 +280,18 @@ SET_ENV_VARS=(
     # secrets from. Cloud Run sets GOOGLE_CLOUD_PROJECT automatically,
     # but CHAT_GCP_PROJECT wins if set — useful during debugging.
     "CHAT_GCP_PROJECT=${GCP_PROJECT}"
+    # Parallel integrator at 100% (2026-08-08, Ananth's ruling — staged
+    # ramp discussion closed, called straight to 100%). Previously applied
+    # as a manual `gcloud run services update --update-env-vars` override,
+    # which SET_ENV_VARS being an authoritative (not incremental) allowlist
+    # silently wiped on every subsequent deploy -- confirmed live twice the
+    # same day (a fast-model-routing deploy, then the truncation-fix
+    # deploy, each one reverting to 0%-gated sequential without anyone
+    # touching this setting directly). Hardcoded here, not read from
+    # deploy/${ENV_LABEL}.env, so there's exactly one place this can drift
+    # from -- flip back to "sequential" or remove the line entirely if the
+    # ramp ever needs to change again.
+    "MOBIUS_INTEGRATOR_MODE=parallel"
 )
 
 # Secrets → Cloud Run mounts each as an env var. ``name:latest`` pins
