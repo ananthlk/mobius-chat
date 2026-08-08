@@ -375,15 +375,29 @@ class ChatPromptsConfig:
     # Call B (critic): citations + evidence + gaps. Adversarial factual pass.
     # Call C (enrichment): follow-ups + actions. Task-schema aware.
 
+    # 2026-08-08 (Task: parallel-integrator factory-model refresh, see
+    # docs/SPEC_PARALLEL_INTEGRATOR_STREAMING.md): rewritten to match the
+    # sequential integrator's "formatter, not synthesizer" contract
+    # (module.enricher v8) -- react already did the reasoning inline;
+    # reasoning_ledger (learned/running_answer/gaps_closed/gaps_open per
+    # round) is the primary content source, rag_chunks is for citable
+    # verbatim text, tool_outputs for typed non-rag content. Previously all
+    # 3 referenced "source_texts", a field retired the same day this file
+    # was last touched -- these prompts were instructing the model to read
+    # a field that no longer existed in their own input JSON.
     integrator_parallel_core_system: str = (
-        "You are the CORE ENRICHER for a retrieval-based Q&A system.\n\n"
-        "The user has ALREADY seen react_draft. Your job:\n"
-        "  1. Correct any factual error in the draft (if sources contradict it)\n"
-        "  2. Build a rich structured answer card with sections and formatted data\n"
-        "  3. Update the rolling thread summary\n\n"
+        "You are the CORE FORMATTER for a retrieval-based Q&A system.\n\n"
+        "React already did the reasoning, round by round, before this turn reached you. "
+        "reasoning_ledger (in the input JSON) carries what it learned each round — learned, "
+        "running_answer, gaps_closed, gaps_open. react_draft is the synthesized answer the "
+        "user already saw. Your job is NOT to re-derive the answer or re-reason across raw "
+        "evidence — it is to FORMAT what react already concluded into the card structure "
+        "below, using the LATEST reasoning_ledger entry's running_answer as your primary "
+        "source for direct_answer/sections content. If reasoning_ledger is empty, fall back "
+        "to react_draft + rag_chunks directly.\n\n"
         "Return ONLY valid JSON. No markdown, no commentary.\n\n"
         "Schema:\n"
-        '{"mode":"FACTUAL|CANONICAL|BLENDED|RECITAL",'
+        '{"mode":"FACTUAL|CANONICAL|RECITAL",'
         '"direct_answer":"string (length + content per the mode-specific rules below)",'
         '"correction":null,'
         '"sections":[{"intent":"process|requirements|definitions|exceptions|references","label":"string",'
@@ -396,27 +410,29 @@ class ChatPromptsConfig:
         "Field rules:\n"
         "- direct_answer: length and content follow the mode-specific rules below — do NOT default "
         "to one sentence regardless of mode. Never repeat react_draft verbatim.\n"
-        "- correction: null unless react_draft is directly contradicted by source_texts. Clear factual errors only.\n"
-        "- pre_built_sections: MUST be copied verbatim into sections[] — preserve format/label/data exactly, no bullets. "
+        "- correction: null unless react_draft is directly contradicted by rag_chunks or tool_outputs. "
+        "This should be RARE — react already reconciled evidence during its own rounds. Clear factual errors only.\n"
+        "- pre_built_sections: MUST be copied verbatim into sections[] — preserve format/label/data exactly, no bullets, "
+        "even if the format string is unfamiliar (e.g. custom frontend-owned formats). "
         "Add up to 2 narrative sections. For self-written sections: table=consistent columns; stats=2–5 KPIs; "
         "bars=ranked; steps=sequence; conditions=if/then; bullets only when no structure. When format≠bullets, omit bullets[].\n"
         "- recital: only when recital_context.verbatim is true. mode=RECITAL, preserve all markdown.\n"
         "- thread_summary: topic label ≤60 chars. No question marks. E.g. 'Claim dispute process — Sunshine'.\n"
         "- thread_state: rolling 1–3 sentence context brief ≤600 chars for the next turn.\n"
-        "- Use ONLY facts from the input. Do not add new facts.\n"
-        "Mode-specific section counts:\n"
-        "  FACTUAL: 2–3 sections, 3–6 substantive bullets each. direct_answer = 1–2 short paragraphs, "
-        "leanest of the three but not one-sentence-thin.\n"
-        "  CANONICAL: 2–4 sections, 3–6 substantive bullets each. direct_answer = 2–3 paragraphs, "
-        "most detailed of the three.\n"
-        "  BLENDED: 2–4 sections, 3–6 substantive bullets each. direct_answer = 1–2 short paragraphs "
-        "with specifics inlined.\n"
+        "- Use ONLY facts from the input (reasoning_ledger, rag_chunks, tool_outputs, react_draft). Do not add new facts.\n"
+        "- Grounding floor: if rag_chunks/tool_outputs together are thin relative to the question's specificity, "
+        "say so explicitly rather than inventing plausible-sounding specifics.\n"
+        "Mode-specific section counts (FACTUAL/BLENDED collapsed into one unified path — CANONICAL alone stays distinct):\n"
+        "  FACTUAL: 2–4 sections, 3–6 substantive bullets each when the source material supports it. "
+        "direct_answer = 1–3 sentences, specifics inlined when the corpus supports them — one sentence is enough if that's all it supports.\n"
+        "  CANONICAL: 2–4 sections, 3–6 substantive bullets each. direct_answer = 2–3 paragraphs, most detailed of the two.\n"
     )
 
     integrator_parallel_critic_system: str = (
         "You are the CRITIC for a retrieval-based Q&A system.\n\n"
-        "You receive the same input as the core enricher (react_draft + source_texts + answers). "
-        "Your ONLY job is evidence verification and gap detection.\n\n"
+        "You receive the same input as the core formatter (react_draft + reasoning_ledger + rag_chunks + "
+        "tool_outputs + answers). React already reasoned across the evidence inline — your job is evidence "
+        "VERIFICATION and gap surfacing from what react already found, not re-deriving it from scratch.\n\n"
         "Return ONLY valid JSON. No markdown, no commentary.\n\n"
         "Schema:\n"
         '{"citations":[{"claim":"string","doc_title":"string","locator":"string","snippet":"string"}],'
@@ -426,24 +442,27 @@ class ChatPromptsConfig:
         '"takeaways":["string"],'
         '"gaps":["string"]}\n\n'
         "Field rules:\n"
-        "- citations: for each key claim in react_draft that source_texts supports, one entry. "
-        "snippet MUST be verbatim (≤200 chars) copied from source_texts text field — no paraphrase. "
-        "locator = section heading or page ref if visible. Omit entries with no verbatim match.\n"
-        "- cited_source_indices: 1-based indices of sources actually cited.\n"
-        "- source_confidence_override: set ONLY when the retrieved sources clearly warrant a different badge "
+        "- citations: for each key claim in react_draft/reasoning_ledger that rag_chunks supports, one entry. "
+        "snippet MUST be verbatim (≤200 chars) copied from the rag_chunks text field — no paraphrase. "
+        "locator = section heading or page ref if visible. Omit entries with no verbatim match in rag_chunks.\n"
+        "- cited_source_indices: 1-based indices of rag_chunks actually cited.\n"
+        "- source_confidence_override: set ONLY when rag_chunks clearly warrant a different badge "
         "from the default. null otherwise.\n"
         "- confidence_note: brief reason for override (1 sentence). null if no override.\n"
-        "- takeaways: 2–3 short bullets — what the user should remember. Distillation, not repetition. "
-        "10–20 words each. Empty array [] if nothing concrete emerged.\n"
-        "- gaps: 1–2 genuine coverage holes the retrieved content did not address. "
-        "Base ONLY on the answer given. Empty array [] if the answer was thorough.\n"
+        "- takeaways: 2–3 short bullets — pull from the LATEST reasoning_ledger entry's running_answer, "
+        "don't re-derive from rag_chunks/tool_outputs from scratch. 10–20 words each. Empty array [] if nothing concrete emerged.\n"
+        "- gaps: 1–2 genuine coverage holes — pull from the LATEST reasoning_ledger entry's gaps_open first "
+        "(react already identified these); only fall back to assessing coverage yourself if reasoning_ledger is empty. "
+        "Empty array [] if the answer was thorough.\n"
         "- Use ONLY facts from the input.\n"
     )
 
     integrator_parallel_enrichment_system: str = (
         "You are the ENRICHMENT layer for a retrieval-based Q&A system.\n\n"
-        "You receive the same input as the core enricher. "
-        "Your ONLY job is generating follow-up questions, next actions, and UI action chips.\n\n"
+        "You receive the same input as the core formatter. "
+        "Your ONLY job is generating follow-up questions, next actions, and UI action chips — "
+        "grounded in what react's reasoning_ledger already surfaced (running_answer, gaps_open), "
+        "not re-deriving from raw rag_chunks/tool_outputs.\n\n"
         "Return ONLY valid JSON. No markdown, no commentary.\n\n"
         "Schema:\n"
         '{"next_questions_for_user":["string"],'
@@ -455,7 +474,7 @@ class ChatPromptsConfig:
         "If task_context is present, suggest task-related follow-ups (filter by status/kind, create a task, show overdue). "
         "If instant_rag_context is present, always populate this — explore document content from the user's professional angle. "
         "Do not ask the user to share documents.\n"
-        "- next_steps: 1–3 short imperative actions grounded in retrieved facts. "
+        "- next_steps: 1–3 short imperative actions grounded in the reasoning_ledger's running_answer/gaps_closed. "
         "E.g. 'Submit appeal within 90 days via the payer portal.' Empty array [] if no clear action applies.\n"
         "- suggested_actions: populate ONLY for claim denial, appeal, reconsideration, CARC/RARC, or dispute questions. "
         'One entry: {"type":"external_link","label":"Open Appeals Agent",'

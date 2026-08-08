@@ -336,6 +336,29 @@ def append_detail_answer(
     _publish_progress_event(correlation_id, ev)
 
 
+def append_integrator_partial(correlation_id: str, part: str, data: dict[str, Any]) -> None:
+    """Progressive parallel-integrator streaming (2026-08-08, see
+    docs/SPEC_PARALLEL_INTEGRATOR_STREAMING.md). The parallel integrator runs 3
+    concurrent LLM calls (core/critic/enrichment) but previously waited for
+    as_completed() to yield all three before parsing/emitting anything -- so the
+    client saw nothing until the SLOWEST call finished, no better perceived
+    latency than the sequential path despite the wall-clock win from running
+    concurrently. This fires the moment EACH call completes, independently, so
+    Chat FE can render tabs incrementally (Ananth: "I want these tabs to be
+    streaming as completed so that we can make the feeling that this real
+    progress").
+
+    ``part``: "core" | "citations" | "enrichment" -- one event type,
+    part-discriminated, rather than three distinct event names, so the client
+    needs only one listener + switch. ``data`` is that call's own field subset
+    verbatim (see the spec doc for the exact shape per part)."""
+    ev: dict[str, Any] = {"event": "integrator_partial", "data": {"part": part, **data}}
+    with _lock:
+        if correlation_id in _progress:
+            _progress[correlation_id]["events"].append(ev)
+    _publish_progress_event(correlation_id, ev)
+
+
 def append_evidence_checkpoint(correlation_id: str, text: str) -> None:
     """Task #33 (2026-08-05): the silent, no-SSE counterpart to
     append_draft_answer(), for react_loop.py's mid-loop

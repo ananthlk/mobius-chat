@@ -41,6 +41,7 @@ def _call_llm(
     thread_id: str | None,
     phi_detected: bool,
     mode: str | None,
+    latency_budget_ms: int | None = None,
 ) -> tuple[str, dict[str, Any]]:
     from app.services.llm_manager import generate_sync
     return generate_sync(
@@ -52,6 +53,7 @@ def _call_llm(
         thread_id=thread_id,
         phi_detected=phi_detected,
         mode=mode,
+        latency_budget_ms=latency_budget_ms,
     )
 
 
@@ -209,18 +211,51 @@ def format_response_parallel(
         if emitter and msg:
             emitter(msg)
 
+    def _emit_partial(part: str, data: dict[str, Any]) -> None:
+        # Task: progressive streaming (docs/SPEC_PARALLEL_INTEGRATOR_STREAMING.md)
+        # -- fires the moment EACH call completes, not after all three, so the
+        # client can render tabs incrementally instead of blocking on the
+        # slowest call. Never let a progress-emit failure break the turn.
+        if not correlation_id or not data:
+            return
+        try:
+            from app.storage.progress import append_integrator_partial
+            append_integrator_partial(correlation_id, part, data)
+        except Exception as e:
+            logger.debug("[parallel] partial emit failed (part=%s): %s", part, e)
+
     try:
         _e("◌ Drafting answer — running 3 parallel LLM passes…")
         with ThreadPoolExecutor(max_workers=3) as pool:
-            fut_a = pool.submit(_call_llm, prompt_a, "integrator_a", 4096, **shared_kwargs)
-            fut_b = pool.submit(_call_llm, prompt_b, "integrator_critic", 1024, **shared_kwargs)
-            fut_c = pool.submit(_call_llm, prompt_c, "integrator_enrichment", 512, **shared_kwargs)
-            # Wait for all three; collect results even if some fail
+            # latency_budget_ms: hard pre-filter in ModelRouter.select(), trims
+            # candidates to those whose tracked ema_latency_ms fits the budget
+            # before the Thompson draw runs (built earlier this session,
+            # previously unused). Preferred over hardcoding a model name --
+            # self-corrects if the fastest model today degrades or a faster one
+            # becomes available. max_tokens on Call A reduced from 4096: under
+            # the factory model react already did the reasoning, so Call A is
+            # formatting a pre-structured answer, not generating one from
+            # scratch -- its real output should be much smaller than the old
+            # "full synthesis from raw sources" budget assumed.
+            fut_a = pool.submit(_call_llm, prompt_a, "integrator_a", 2048, **shared_kwargs, latency_budget_ms=3000)
+            fut_b = pool.submit(_call_llm, prompt_b, "integrator_critic", 1024, **shared_kwargs, latency_budget_ms=2000)
+            fut_c = pool.submit(_call_llm, prompt_c, "integrator_enrichment", 512, **shared_kwargs, latency_budget_ms=1500)
+            # Wait for all three; collect results even if some fail. Each
+            # branch now parses + emits its OWN partial the moment it lands,
+            # rather than waiting for the other two (see _emit_partial above).
             for fut in as_completed([fut_a, fut_b, fut_c]):
                 if fut is fut_a:
                     try:
                         text_a, usage_a = fut.result()
                         _e("  ✓ Core draft ready")
+                        _card_a = _parse_answer_card(text_a)
+                        if _card_a:
+                            _partial_a = {
+                                k: v for k, v in _card_a.items()
+                                if k in ("mode", "direct_answer", "sections", "thread_summary", "correction")
+                                and v is not None
+                            }
+                            _emit_partial("core", _partial_a)
                     except Exception as e:
                         logger.warning("[parallel:A] call failed: %s", e)
                         _e("  ⚠ Core draft failed — using fallback")
@@ -228,12 +263,24 @@ def format_response_parallel(
                     try:
                         text_b, usage_b = fut.result()
                         _e("  ✓ Critic pass done")
+                        _critic_partial = _parse_json_response(text_b, "B")
+                        if _critic_partial:
+                            _emit_partial("citations", {
+                                k: v for k, v in _critic_partial.items()
+                                if k in ("citations", "cited_source_indices", "source_confidence_override", "confidence_note", "takeaways", "gaps")
+                            })
                     except Exception as e:
                         logger.warning("[parallel:B] call failed: %s", e)
                 else:
                     try:
                         text_c, usage_c = fut.result()
                         _e("  ✓ Enrichment pass done")
+                        _enrich_partial = _parse_json_response(text_c, "C")
+                        if _enrich_partial:
+                            _emit_partial("enrichment", {
+                                k: v for k, v in _enrich_partial.items()
+                                if k in ("next_questions_for_user", "next_steps", "suggested_actions")
+                            })
                     except Exception as e:
                         logger.warning("[parallel:C] call failed: %s", e)
     except Exception as e:
