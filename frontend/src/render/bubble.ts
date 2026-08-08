@@ -750,8 +750,7 @@ export function renderAnswerCard(
   const _nextStepTasks = opts?.nextStepTasks ?? [];
 
   const hasCitations = Array.isArray(card.citations) && card.citations.length > 0;
-  const hasCorrections = _corrections.length > 0;   // corrections render INLINE now, not as a tab
-  const hasTasks = _nextStepTasks.length > 0;
+  const hasTasks = _nextStepTasks.length > 0;   // corrections render INLINE now (no tab)
   // Tab bar shows for SECONDARY surfaces only — the answer is inline in the default panel, and
   // corrections are inline redlines (no tab), so only Sources + Tasks drive the bar (Ananth 2026-08-07).
   const showTabBar = hasCitations || hasTasks;
@@ -785,11 +784,17 @@ export function renderAnswerCard(
   }
 
   // Corrections are now INLINE redlines in the answer prose (Ananth 2026-08-07) — no Corrections
-  // tab, panel, or callout. For the non-streaming/reload render, apply them here; the streaming
-  // path applies them post-stream (app.ts). Only lands where the corrected text matches verbatim.
-  if (hasCorrections) {
+  // tab, panel, or callout. The primary source is card.correction ({original, corrected} from the
+  // integrator); envelope correction blocks (opts.corrections) are folded in too. For the non-
+  // streaming/reload render, apply here; the streaming path applies post-stream (app.ts). Only
+  // lands where the corrected text matches verbatim.
+  const _redlineCorrs = [
+    ...(card.correction ? [card.correction] : []),
+    ..._corrections.filter((c) => c.original && c.corrected),
+  ];
+  if (_redlineCorrs.length > 0) {
     const _finalEl = answerPanel.querySelector(".ac-answer-final") as HTMLElement | null;
-    if (_finalEl) applyInlineCorrections(_finalEl, _corrections);
+    if (_finalEl) applyInlineCorrections(_finalEl, _redlineCorrs);
   }
 
   // Follow-up panel — suggested questions the user can ask next

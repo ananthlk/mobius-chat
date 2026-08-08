@@ -1939,6 +1939,13 @@ function tryParseAnswerCard(message) {
         // Answer-tab lead; positive filter, copy through explicitly (same class as the output_intent-drop bug).
         tldr_summary: typeof data.tldr_summary === "string" ? data.tldr_summary : void 0,
         react_draft: typeof data.react_draft === "string" ? data.react_draft : void 0,
+        correction: (() => {
+          const c = data.correction;
+          if (c && typeof c === "object" && typeof c.original === "string" && typeof c.corrected === "string" && c.original.trim() && c.corrected.trim()) {
+            return { original: c.original, corrected: c.corrected };
+          }
+          return void 0;
+        })(),
         // Escalation hint — copied through explicitly (parseOne is a positive filter). Backend
         // sends it only when true (absent otherwise), so a strict true check is correct.
         suggest_escalate: data.suggest_escalate === true ? true : void 0
@@ -2917,7 +2924,6 @@ function renderAnswerCard(card, isError, opts) {
   const _nextStepQuestions = opts?.nextQuestions ?? [];
   const _nextStepTasks = opts?.nextStepTasks ?? [];
   const hasCitations = Array.isArray(card.citations) && card.citations.length > 0;
-  const hasCorrections = _corrections.length > 0;
   const hasTasks = _nextStepTasks.length > 0;
   const showTabBar = hasCitations || hasTasks;
   const citationsPanel = document.createElement("div");
@@ -2949,10 +2955,14 @@ function renderAnswerCard(card, isError, opts) {
     });
     citationsPanel.appendChild(citList);
   }
-  if (hasCorrections) {
+  const _redlineCorrs = [
+    ...card.correction ? [card.correction] : [],
+    ..._corrections.filter((c) => c.original && c.corrected)
+  ];
+  if (_redlineCorrs.length > 0) {
     const _finalEl = answerPanel.querySelector(".ac-answer-final");
     if (_finalEl)
-      applyInlineCorrections(_finalEl, _corrections);
+      applyInlineCorrections(_finalEl, _redlineCorrs);
   }
   const nextStepsPanel = document.createElement("div");
   nextStepsPanel.className = "ac-tab-panel ac-tab-panel--next-steps";
@@ -12577,8 +12587,12 @@ ${message}`;
                         _fpBody.style.maxHeight = "0px";
                       }
                       _streamMarkdownInto(_finalBody, _leadText, () => {
-                        if (_finalWrap && _extractedCorrections.length)
-                          applyInlineCorrections(_finalWrap, _extractedCorrections);
+                        const _redlineCorrs = [
+                          ...fullCard?.correction ? [fullCard.correction] : [],
+                          ..._extractedCorrections.filter((c) => c.original && c.corrected)
+                        ];
+                        if (_finalWrap && _redlineCorrs.length)
+                          applyInlineCorrections(_finalWrap, _redlineCorrs);
                         _hiddenSections.forEach((s, i) => {
                           window.setTimeout(() => {
                             s.style.display = "";

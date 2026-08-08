@@ -107,6 +107,10 @@ export interface AnswerCard {
   // ReAct's own synthesis, persisted into the card JSON (integrate.py, 2026-08-07) so the Summary
   // tab shows it on history reload the same way the live path shows the draft_ready stream.
   react_draft?: string;
+  // Factual correction from the integrator (chat_config.py): a specific wrong claim from the draft
+  // and its accurate replacement. null/absent unless the critic flagged a direct contradiction.
+  // Rendered as an INLINE redline in the answer (Ananth 2026-08-07), not a tab.
+  correction?: { original: string; corrected: string };
   // Backend escalation hint (Task: Try-with-Think-mode). true when the answer was quality-flagged
   // and re-running in Think/agentic mode is suggested; ABSENT otherwise (never false). Suppressed
   // server-side when the request was already agentic. Drives the "⚡ Try with Think mode" button.
@@ -213,6 +217,14 @@ export function tryParseAnswerCard(message: string): AnswerCard | null {
         // Answer-tab lead; positive filter, copy through explicitly (same class as the output_intent-drop bug).
         tldr_summary: typeof data.tldr_summary === "string" ? data.tldr_summary : undefined,
         react_draft: typeof data.react_draft === "string" ? data.react_draft : undefined,
+        correction: (() => {
+          const c = data.correction as Record<string, unknown> | null | undefined;
+          if (c && typeof c === "object" && typeof c.original === "string" && typeof c.corrected === "string"
+              && c.original.trim() && c.corrected.trim()) {
+            return { original: c.original as string, corrected: c.corrected as string };
+          }
+          return undefined;
+        })(),
         // Escalation hint — copied through explicitly (parseOne is a positive filter). Backend
         // sends it only when true (absent otherwise), so a strict true check is correct.
         suggest_escalate: data.suggest_escalate === true ? true : undefined,

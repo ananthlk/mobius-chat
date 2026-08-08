@@ -11587,7 +11587,12 @@ function run(): void {
                         _streamMarkdownInto(_finalBody, _leadText, () => {      // fold 2: stream, then sections
                           // Inline corrections: redline {original→corrected} into the final answer
                           // (prose + sections, even hidden) once the prose has streamed (Ananth 2026-08-07).
-                          if (_finalWrap && _extractedCorrections.length) applyInlineCorrections(_finalWrap, _extractedCorrections);
+                          // Primary source = card.correction; envelope correction blocks folded in.
+                          const _redlineCorrs = [
+                            ...(fullCard?.correction ? [fullCard.correction] : []),
+                            ..._extractedCorrections.filter((c) => c.original && c.corrected),
+                          ];
+                          if (_finalWrap && _redlineCorrs.length) applyInlineCorrections(_finalWrap, _redlineCorrs);
                           // Sections stream in one-by-one (staggered fade-up), not all at once.
                           _hiddenSections.forEach((s, i) => {
                             window.setTimeout(() => {
