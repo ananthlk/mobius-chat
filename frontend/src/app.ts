@@ -11204,6 +11204,14 @@ function run(): void {
         draftStreamCancel = null;
       } else {
         const words = text.split(" ");
+        // Deliberate, duration-targeted pacing (Ananth 2026-08-07): the draft used to stream at
+        // 5 words/18ms — near-instant, so it finished long before the answer and left an awkward
+        // gap. Pace it to ~a fixed wall-clock window so it reads as a live "first pass" still
+        // flowing when the final answer lands, seamless. Short drafts ~2.5s, long ones ~5s.
+        const DRAFT_STREAM_TARGET_MS = 5000;
+        const DRAFT_STREAM_STEP_MS = 40;
+        const _steps = Math.max(1, Math.round(DRAFT_STREAM_TARGET_MS / DRAFT_STREAM_STEP_MS));
+        const wordsPerStep = Math.max(1, Math.ceil(words.length / _steps));
         let wi = 0;
         let cancelled = false;
         draftStreamCancel = () => {
@@ -11214,10 +11222,10 @@ function run(): void {
         };
         const streamStep = () => {
           if (cancelled) return;
-          wi = Math.min(wi + 5, words.length);
+          wi = Math.min(wi + wordsPerStep, words.length);
           prose.innerHTML = simpleMarkdownToHtml(words.slice(0, wi).join(" "));
           scrollToBottom(messagesEl);
-          if (wi < words.length) window.setTimeout(streamStep, 18);
+          if (wi < words.length) window.setTimeout(streamStep, DRAFT_STREAM_STEP_MS);
           else { draftStreamCancel = null; cursor.remove(); }
         };
         streamStep();

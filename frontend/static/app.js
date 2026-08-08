@@ -12273,6 +12273,10 @@ ${message}`;
         draftStreamCancel = null;
       } else {
         const words = text.split(" ");
+        const DRAFT_STREAM_TARGET_MS = 5e3;
+        const DRAFT_STREAM_STEP_MS = 40;
+        const _steps = Math.max(1, Math.round(DRAFT_STREAM_TARGET_MS / DRAFT_STREAM_STEP_MS));
+        const wordsPerStep = Math.max(1, Math.ceil(words.length / _steps));
         let wi = 0;
         let cancelled = false;
         draftStreamCancel = () => {
@@ -12284,11 +12288,11 @@ ${message}`;
         const streamStep = () => {
           if (cancelled)
             return;
-          wi = Math.min(wi + 5, words.length);
+          wi = Math.min(wi + wordsPerStep, words.length);
           prose.innerHTML = simpleMarkdownToHtml(words.slice(0, wi).join(" "));
           scrollToBottom(messagesEl);
           if (wi < words.length)
-            window.setTimeout(streamStep, 18);
+            window.setTimeout(streamStep, DRAFT_STREAM_STEP_MS);
           else {
             draftStreamCancel = null;
             cursor.remove();
