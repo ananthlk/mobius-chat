@@ -8490,6 +8490,91 @@ function _dcDecideSection(data, routing, chainArr) {
     body.appendChild(_dcLeaf("bandit", "gray", "not built \xB7 loop open"));
   });
 }
+function renderModuleTrace(thinkingLog) {
+  if (!Array.isArray(thinkingLog) || thinkingLog.length === 0)
+    return null;
+  let data = null;
+  for (const entry of thinkingLog) {
+    if (entry && typeof entry === "object" && entry.signal === "retrieval_trace") {
+      data = entry.data ?? {};
+    }
+  }
+  if (!data)
+    return null;
+  const lat = data.latency_ms && typeof data.latency_ms === "object" ? data.latency_ms : {};
+  const ms = (k) => typeof lat[k] === "number" ? Math.round(lat[k]) : null;
+  const numOf = (...vs) => {
+    for (const v of vs)
+      if (typeof v === "number")
+        return v;
+    return null;
+  };
+  const strOf = (...vs) => {
+    for (const v of vs)
+      if (typeof v === "string" && v.trim())
+        return v.trim();
+    return null;
+  };
+  const poolCandidates = numOf(data.pool_candidates, data.candidates, data.n_candidates, data.candidate_count);
+  const dispatchPath = strOf(data.dispatch_path, data.allocator);
+  const chosenSlot = strOf(data.chosen_slot);
+  let occupancy = strOf(data.occupancy);
+  if (!occupancy && typeof data.n_chunks === "number")
+    occupancy = `occupancy ${data.n_chunks}`;
+  const stages = [
+    { n: 1, name: "Gate", ms: ms("gate_ms"), extra: null },
+    { n: 2, name: "Reformat", ms: ms("reformat_ms"), extra: null },
+    { n: 3, name: "Structure", ms: ms("structure_ms"), extra: null },
+    { n: 4, name: "Slots", ms: ms("slots_ms"), extra: null },
+    { n: 5, name: "Pool", ms: ms("pool_ms"), extra: poolCandidates != null ? `${poolCandidates} candidates` : null },
+    { n: 6, name: "Router", ms: ms("router_ms"), extra: dispatchPath },
+    { n: 7, name: chosenSlot ? `Filler \u2014 slot ${chosenSlot}` : "Filler", ms: ms("fillers_ms"), extra: occupancy },
+    { n: 8, name: "Synthesis", ms: ms("synthesis_ms"), extra: null }
+  ];
+  if (!stages.some((s) => s.ms != null || s.extra))
+    return null;
+  const wrap = document.createElement("div");
+  wrap.className = "module-trace";
+  for (const st of stages) {
+    const row = document.createElement("details");
+    row.className = "mt-row";
+    const hdr = document.createElement("summary");
+    hdr.className = "mt-row-hdr";
+    const badge = document.createElement("span");
+    badge.className = "mt-badge";
+    badge.textContent = String(st.n);
+    const name = document.createElement("span");
+    name.className = "mt-name";
+    name.textContent = st.name;
+    const metric = document.createElement("span");
+    metric.className = "mt-metric";
+    const parts = [];
+    if (st.ms != null)
+      parts.push(`${st.ms} ms`);
+    if (st.extra)
+      parts.push(st.extra);
+    metric.textContent = parts.join(" \xB7 ") || "\u2014";
+    hdr.appendChild(badge);
+    hdr.appendChild(name);
+    hdr.appendChild(metric);
+    row.appendChild(hdr);
+    const body = document.createElement("div");
+    body.className = "mt-body";
+    if (st.ms != null)
+      _dcKV(body, "duration", `${st.ms} ms`);
+    if (st.extra)
+      _dcKV(body, "detail", st.extra);
+    if (st.ms == null && !st.extra) {
+      const none = document.createElement("div");
+      none.className = "mt-body-empty";
+      none.textContent = "no telemetry for this stage";
+      body.appendChild(none);
+    }
+    row.appendChild(body);
+    wrap.appendChild(row);
+  }
+  return wrap;
+}
 function renderDiagnosticsCard(thinkingLog) {
   if (!Array.isArray(thinkingLog) || thinkingLog.length === 0)
     return null;
@@ -10829,6 +10914,11 @@ function run() {
       );
       diagPanel.appendChild(perfEl);
     }
+    const moduleTraceEl = renderModuleTrace(
+      opts.thinkingLog
+    );
+    if (moduleTraceEl)
+      diagPanel.appendChild(moduleTraceEl);
     const traceEl = renderDiagnosticsCard(
       opts.thinkingLog
     );

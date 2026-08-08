@@ -6658,6 +6658,90 @@ function _dcDecideSection(data: any, routing: any, chainArr: string[]): HTMLElem
   });
 }
 
+/**
+ * 8-stage pipeline module trace (Ananth 2026-08, replicating trace_explorer.html). One badge-
+ * numbered, expandable row per pipeline stage — Gate · Reformat · Structure · Slots · Pool ·
+ * Router · Filler · Synthesis. Timing per stage comes from the `latency_ms` per-stage dict
+ * (gate_ms/reformat_ms/…/synthesis_ms) that rides the retrieval_trace telemetry envelope; the
+ * right-side metric adds a stage-specific figure (Pool candidates, Router allocator, Filler
+ * occupancy) when the field is present, else just the ms. Fields not yet plumbed to Chat's FE are
+ * read defensively and simply omitted — the row still shows its timing. Detail-panel enrichment
+ * (per-stage narrative / routing_keys) lands once Retriever confirms the field→stage map.
+ */
+function renderModuleTrace(thinkingLog: ReadonlyArray<unknown> | null | undefined): HTMLElement | null {
+  if (!Array.isArray(thinkingLog) || thinkingLog.length === 0) return null;
+  let data: any = null;
+  for (const entry of thinkingLog) {
+    if (entry && typeof entry === "object" && (entry as any).signal === "retrieval_trace") {
+      data = ((entry as any).data) ?? {};   // last retrieval_trace wins (final round)
+    }
+  }
+  if (!data) return null;
+  const lat = (data.latency_ms && typeof data.latency_ms === "object") ? data.latency_ms as Record<string, unknown> : {};
+  const ms = (k: string): number | null => (typeof lat[k] === "number" ? Math.round(lat[k] as number) : null);
+  const numOf = (...vs: unknown[]): number | null => { for (const v of vs) if (typeof v === "number") return v; return null; };
+  const strOf = (...vs: unknown[]): string | null => { for (const v of vs) if (typeof v === "string" && v.trim()) return v.trim(); return null; };
+
+  const poolCandidates = numOf(data.pool_candidates, data.candidates, data.n_candidates, data.candidate_count);
+  const dispatchPath = strOf(data.dispatch_path, data.allocator);
+  const chosenSlot = strOf(data.chosen_slot);
+  // Filler occupancy — "occupancy 11/10" style. Try a flat field, else derive from n_chunks + a cap.
+  let occupancy = strOf(data.occupancy);
+  if (!occupancy && typeof data.n_chunks === "number") occupancy = `occupancy ${data.n_chunks}`;
+
+  const stages: Array<{ n: number; name: string; ms: number | null; extra: string | null }> = [
+    { n: 1, name: "Gate",      ms: ms("gate_ms"),      extra: null },
+    { n: 2, name: "Reformat",  ms: ms("reformat_ms"),  extra: null },
+    { n: 3, name: "Structure", ms: ms("structure_ms"), extra: null },
+    { n: 4, name: "Slots",     ms: ms("slots_ms"),     extra: null },
+    { n: 5, name: "Pool",      ms: ms("pool_ms"),      extra: poolCandidates != null ? `${poolCandidates} candidates` : null },
+    { n: 6, name: "Router",    ms: ms("router_ms"),    extra: dispatchPath },
+    { n: 7, name: chosenSlot ? `Filler — slot ${chosenSlot}` : "Filler", ms: ms("fillers_ms"), extra: occupancy },
+    { n: 8, name: "Synthesis", ms: ms("synthesis_ms"), extra: null },
+  ];
+  // Nothing to show if not a single stage carried timing (non-RAG turn / legacy telemetry).
+  if (!stages.some((s) => s.ms != null || s.extra)) return null;
+
+  const wrap = document.createElement("div");
+  wrap.className = "module-trace";
+  for (const st of stages) {
+    const row = document.createElement("details");
+    row.className = "mt-row";
+    const hdr = document.createElement("summary");
+    hdr.className = "mt-row-hdr";
+    const badge = document.createElement("span");
+    badge.className = "mt-badge";
+    badge.textContent = String(st.n);
+    const name = document.createElement("span");
+    name.className = "mt-name";
+    name.textContent = st.name;
+    const metric = document.createElement("span");
+    metric.className = "mt-metric";
+    const parts: string[] = [];
+    if (st.ms != null) parts.push(`${st.ms} ms`);
+    if (st.extra) parts.push(st.extra);
+    metric.textContent = parts.join(" · ") || "—";
+    hdr.appendChild(badge);
+    hdr.appendChild(name);
+    hdr.appendChild(metric);
+    row.appendChild(hdr);
+    // Expanded detail — for now the stage's own timing (per-stage narrative/routing_keys land next).
+    const body = document.createElement("div");
+    body.className = "mt-body";
+    if (st.ms != null) _dcKV(body, "duration", `${st.ms} ms`);
+    if (st.extra) _dcKV(body, "detail", st.extra);
+    if (st.ms == null && !st.extra) {
+      const none = document.createElement("div");
+      none.className = "mt-body-empty";
+      none.textContent = "no telemetry for this stage";
+      body.appendChild(none);
+    }
+    row.appendChild(body);
+    wrap.appendChild(row);
+  }
+  return wrap;
+}
+
 /** Canonical reason→act→observe→decide diagnostics card. Replaces the old
  *  raw PARSER/ROUTER/RERANKING/THEMES dump for ALL strategies. */
 function renderDiagnosticsCard(
@@ -9490,7 +9574,14 @@ function run(): void {
       diagPanel.appendChild(perfEl);
     }
 
-    // Section 2: RAG retrieval trace
+    // Section 2 (primary): 8-stage pipeline module trace (replicates trace_explorer.html).
+    const moduleTraceEl = renderModuleTrace(
+      opts.thinkingLog as ReadonlyArray<unknown> | null | undefined
+    );
+    if (moduleTraceEl) diagPanel.appendChild(moduleTraceEl);
+
+    // Section 2b: legacy reason→act→observe card (kept until the module trace's detail panels
+    // reach parity via Retriever's field map).
     const traceEl = renderDiagnosticsCard(
       opts.thinkingLog as ReadonlyArray<unknown> | null | undefined
     );

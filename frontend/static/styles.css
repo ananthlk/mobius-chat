@@ -10201,6 +10201,61 @@ body.landing-state .composer-landing-chips {
 .dc-dot--gray { background: var(--mobius-border, rgba(150,150,150,0.40)); }
 
 /* Section accordion (top-level: REASON / ACT / OBSERVE / DECIDE) */
+/* ─── 8-stage pipeline module trace (replicates trace_explorer.html) ─────────── */
+.module-trace { display: flex; flex-direction: column; gap: 0.4rem; margin: 0.3rem 0 0.6rem; }
+.mt-row {
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+  background: rgba(0,0,0,0.015);
+  overflow: hidden;
+}
+.mt-row-hdr {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.6rem 0.85rem;
+  cursor: pointer;
+  list-style: none;
+  font-size: 0.85rem;
+}
+.mt-row-hdr::-webkit-details-marker { display: none; }
+.mt-row-hdr::before {
+  content: "▸";
+  color: var(--text-tertiary, #9ca3af);
+  font-size: 0.72rem;
+  transition: transform 0.12s ease;
+}
+.mt-row[open] > .mt-row-hdr::before { transform: rotate(90deg); }
+.mt-badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.5rem;
+  height: 1.5rem;
+  padding: 0 0.35rem;
+  border-radius: 6px;
+  background: #5b8fd9;
+  color: #fff;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+.mt-name { flex: 1 1 auto; font-weight: 700; color: var(--text-primary, #111827); }
+.mt-metric {
+  flex: 0 0 auto;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.78rem;
+  color: var(--text-tertiary, #6b7280);
+  white-space: nowrap;
+}
+.mt-body {
+  padding: 0.15rem 0.85rem 0.6rem 2.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.mt-body-empty { font-size: 0.76rem; font-style: italic; color: var(--text-tertiary, #9ca3af); }
+
 .dc-section { border-top: 1px solid var(--mobius-border, rgba(255,255,255,0.07)); }
 .dc-section:first-child { border-top: none; }
 .dc-section-hdr {
