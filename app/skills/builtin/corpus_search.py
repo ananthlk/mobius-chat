@@ -700,6 +700,17 @@ def _run(call: SkillCall) -> SkillEnvelope:
         # survive into history/replay (Chat Master ruling option (b), 2026-08-06). The FE shows the
         # full live narrative on fresh turns and falls back to this redacted one on history reload.
         "narrative_full_redacted": (contract.get("traces") or {}).get("narrative_full_redacted"),
+        # module_trace (Retriever mobius-rag-00554-nxn, 2026-08-07): ordered per-stage summary
+        # rows [{n,stage,ms,candidates?,dispatch_path?,slot?,theme?,occupancy?,capacity?}] for the
+        # Chat Diagnostics "RAG telemetry" 8-stage accordion. Rides the telemetry dict →
+        # make_retrieval_trace → thinking_log so the FE (renderModuleTrace) reads it live + on
+        # history. Read defensively across the likely contract locations.
+        "module_trace": (
+            resp.get("module_trace")
+            or contract.get("module_trace")
+            or (contract.get("traces") or {}).get("module_trace")
+            or (contract.get("routing_keys") or {}).get("module_trace")
+        ),
     }
 
     # Always emit the retrieval_trace envelope, even on zero hits — the
