@@ -54,14 +54,17 @@ def test_returns_none_on_exception_not_raises():
     assert result is None
 
 
-def test_max_tokens_stays_350():
-    """Regression guard: the fast-model signals are additive -- must not
-    accidentally change the existing max_tokens budget."""
+def test_max_tokens_has_real_headroom():
+    """2026-08-08: widened from 350 to 2048 after live truncation (mid-word/
+    mid-number cutoffs on gemini-2.5-flash -- the installed SDK exposes no
+    thinking_config to control Gemini 2.5's default thinking-token
+    consumption directly, so max_tokens needs real headroom for the
+    visible answer on top of whatever thinking uses)."""
     ctx = _make_ctx()
     with patch("app.pipeline.react_loop._call_llm_json") as mock_call:
         mock_call.return_value = "x"
         _fast_mode_synthesize_answer("What is X?", "raw evidence text", ctx, stage="react_1_fast_synthesis")
-    assert mock_call.call_args.kwargs.get("max_tokens") == 350
+    assert mock_call.call_args.kwargs.get("max_tokens") == 2048
 
 
 # ── Streaming (Chat Master addendum, same commit) ──────────────────────────

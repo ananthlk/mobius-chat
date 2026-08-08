@@ -447,8 +447,16 @@ def _fast_mode_synthesize_answer(query: str, raw_text: str, ctx: PipelineContext
     take down the actual synthesized answer."""
     try:
         user = f"User question: {query}\n\nAvailable evidence:\n{raw_text}"
+        # 2026-08-08 (live truncation, Ananth watching): max_tokens=350 was too
+        # tight -- confirmed truncation mid-word/mid-number ("...it is 36" instead
+        # of "365") on gemini-2.5-flash. The installed vertexai SDK exposes no
+        # thinking_config/thinking_budget param to control it directly (checked:
+        # GenerationConfig.__init__ has no such field), so Gemini 2.5's default
+        # thinking behavior can consume output-token budget invisibly, leaving too
+        # little room for the visible answer when max_tokens is this small.
+        # Widened with real headroom rather than guessing at a minimal bump.
         raw = _call_llm_json(
-            system, user, max_tokens=350, ctx=ctx, stage=stage,
+            system, user, max_tokens=2048, ctx=ctx, stage=stage,
             reasoning_depth="fast", latency_budget_ms=2000,
         )
         answer = (raw or "").strip()

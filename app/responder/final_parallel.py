@@ -246,9 +246,21 @@ def format_response_parallel(
             # that integrator calls have a hard latency constraint... so it routes to
             # Flash-class models rather than Pro" -- this is that awareness signal,
             # distinct from hardcoding a model name.
-            fut_a = pool.submit(_call_llm, prompt_a, "integrator_a", 2048, **shared_kwargs, latency_budget_ms=3000, reasoning_depth="fast")
-            fut_b = pool.submit(_call_llm, prompt_b, "integrator_critic", 1024, **shared_kwargs, latency_budget_ms=2000, reasoning_depth="fast")
-            fut_c = pool.submit(_call_llm, prompt_c, "integrator_enrichment", 512, **shared_kwargs, latency_budget_ms=1500, reasoning_depth="fast")
+            # 2026-08-08 (live truncation, Ananth watching): the smaller max_tokens
+            # values (2048/1024/512) were sized on the wrong assumption -- that the
+            # full budget goes to visible output. Confirmed live: gemini-2.5-flash
+            # calls were landing at a fraction of their budget with mid-word/
+            # mid-number cutoffs (integrator_critic averaging 40 tokens from a
+            # 1024 budget, integrator_enrichment 19 from 512). The installed
+            # vertexai SDK has no thinking_config/thinking_budget param (checked:
+            # GenerationConfig.__init__ has no such field) to control Gemini 2.5's
+            # default thinking-token consumption directly, so max_tokens needs real
+            # headroom on top of whatever thinking silently uses. Widened well past
+            # the pre-today values (Call A was 4096) rather than guessing at a
+            # minimal restore -- correctness over the latency optimization for now.
+            fut_a = pool.submit(_call_llm, prompt_a, "integrator_a", 4096, **shared_kwargs, latency_budget_ms=3000, reasoning_depth="fast")
+            fut_b = pool.submit(_call_llm, prompt_b, "integrator_critic", 3072, **shared_kwargs, latency_budget_ms=2000, reasoning_depth="fast")
+            fut_c = pool.submit(_call_llm, prompt_c, "integrator_enrichment", 2048, **shared_kwargs, latency_budget_ms=1500, reasoning_depth="fast")
             # Wait for all three; collect results even if some fail. Each
             # branch now parses + emits its OWN partial the moment it lands,
             # rather than waiting for the other two (see _emit_partial above).
