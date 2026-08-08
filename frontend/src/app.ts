@@ -6718,9 +6718,12 @@ function renderModuleTrace(thinkingLog: ReadonlyArray<unknown> | null | undefine
   // Nothing to show if not a single stage carried timing (non-RAG turn / legacy telemetry).
   if (!stages.some((s) => s.ms != null || s.extra)) return null;
 
-  const wrap = document.createElement("div");
-  wrap.className = "module-trace";
+  // The 8-stage accordion (each stage row is itself expandable).
+  const acc = document.createElement("div");
+  acc.className = "module-trace";
+  let totalMs = 0;
   for (const st of stages) {
+    if (st.ms != null) totalMs += st.ms;
     const row = document.createElement("details");
     row.className = "mt-row";
     const hdr = document.createElement("summary");
@@ -6733,6 +6736,8 @@ function renderModuleTrace(thinkingLog: ReadonlyArray<unknown> | null | undefine
     name.textContent = st.name;
     const metric = document.createElement("span");
     metric.className = "mt-metric";
+    // Show ALL metrics for the stage, not just duration (Ananth 2026-08-07): ms + candidates +
+    // dispatch_path + occupancy, whichever the entry carries.
     const parts: string[] = [];
     if (st.ms != null) parts.push(`${st.ms} ms`);
     if (st.extra) parts.push(st.extra);
@@ -6741,11 +6746,12 @@ function renderModuleTrace(thinkingLog: ReadonlyArray<unknown> | null | undefine
     hdr.appendChild(name);
     hdr.appendChild(metric);
     row.appendChild(hdr);
-    // Expanded detail — for now the stage's own timing (per-stage narrative/routing_keys land next).
+    // Expanded detail — one KV per metric the stage carries (full per-stage detail is phase 2,
+    // gated on Retriever exposing the admin-only detailed_trace to production).
     const body = document.createElement("div");
     body.className = "mt-body";
     if (st.ms != null) _dcKV(body, "duration", `${st.ms} ms`);
-    if (st.extra) _dcKV(body, "detail", st.extra);
+    if (st.extra) st.extra.split(" · ").forEach((p) => _dcKV(body, "metric", p));
     if (st.ms == null && !st.extra) {
       const none = document.createElement("div");
       none.className = "mt-body-empty";
@@ -6753,8 +6759,45 @@ function renderModuleTrace(thinkingLog: ReadonlyArray<unknown> | null | undefine
       body.appendChild(none);
     }
     row.appendChild(body);
-    wrap.appendChild(row);
+    acc.appendChild(row);
   }
+
+  // Wrap the 8 stages under a single collapsible "RAG telemetry" section, styled like the other
+  // diagnostics sections (React / QA / Adjudicator) — a preview header + chevron, default collapsed.
+  const wrap = document.createElement("div");
+  wrap.className = "llm-performance module-trace-section collapsed";
+  const preview = document.createElement("div");
+  preview.className = "llm-performance-preview";
+  preview.setAttribute("role", "button");
+  preview.setAttribute("tabindex", "0");
+  preview.setAttribute("aria-expanded", "false");
+  const titleEl = document.createElement("span");
+  titleEl.className = "llm-performance-title";
+  titleEl.textContent = "RAG telemetry";
+  const oneline = document.createElement("span");
+  oneline.className = "llm-performance-oneline";
+  oneline.textContent = `${stages.length} stages${totalMs > 0 ? " · " + totalMs + " ms" : ""}`;
+  const chev = document.createElement("span");
+  chev.className = "llm-performance-chevron";
+  chev.setAttribute("aria-hidden", "true");
+  chev.textContent = "▼";
+  preview.appendChild(titleEl);
+  preview.appendChild(oneline);
+  preview.appendChild(chev);
+  const secBody = document.createElement("div");
+  secBody.className = "llm-performance-body";
+  secBody.appendChild(acc);
+  wrap.appendChild(preview);
+  wrap.appendChild(secBody);
+  const toggle = () => {
+    const collapsed = wrap.classList.toggle("collapsed");
+    preview.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    chev.textContent = collapsed ? "▼" : "▲";
+  };
+  preview.addEventListener("click", toggle);
+  preview.addEventListener("keydown", (e: KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+  });
   return wrap;
 }
 
@@ -9597,18 +9640,20 @@ function run(): void {
       _diag.tool.push(perfEl);
     }
 
-    // RAG telemetry: 8-stage pipeline module trace (replicates trace_explorer.html).
+    // RAG telemetry: the 8-stage pipeline module trace (collapsible "RAG telemetry" section,
+    // replicates trace_explorer.html). Falls back to the legacy reason→act→observe card only when
+    // there's no module/latency telemetry — so there's never two competing RAG sections.
     const moduleTraceEl = renderModuleTrace(
       opts.thinkingLog as ReadonlyArray<unknown> | null | undefined
     );
-    if (moduleTraceEl) _diag.ragTel.push(moduleTraceEl);
-
-    // RAG telemetry: legacy reason→act→observe card (kept until the module trace's detail panels
-    // reach parity via Retriever's field map).
-    const traceEl = renderDiagnosticsCard(
-      opts.thinkingLog as ReadonlyArray<unknown> | null | undefined
-    );
-    if (traceEl) _diag.ragTel.push(traceEl);
+    if (moduleTraceEl) {
+      _diag.ragTel.push(moduleTraceEl);
+    } else {
+      const traceEl = renderDiagnosticsCard(
+        opts.thinkingLog as ReadonlyArray<unknown> | null | undefined
+      );
+      if (traceEl) _diag.ragTel.push(traceEl);
+    }
 
     // Section 2a: Full retrieval trace (task #43/#44). Expandable, default collapsed. PLAIN-TEXT
     // (already has --- section headers) — NO markdown. Prefer the LIVE full narrative_full (from

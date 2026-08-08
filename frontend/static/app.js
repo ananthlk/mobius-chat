@@ -8542,9 +8542,12 @@ function renderModuleTrace(thinkingLog) {
   }
   if (!stages.some((s) => s.ms != null || s.extra))
     return null;
-  const wrap = document.createElement("div");
-  wrap.className = "module-trace";
+  const acc = document.createElement("div");
+  acc.className = "module-trace";
+  let totalMs = 0;
   for (const st of stages) {
+    if (st.ms != null)
+      totalMs += st.ms;
     const row = document.createElement("details");
     row.className = "mt-row";
     const hdr = document.createElement("summary");
@@ -8572,7 +8575,7 @@ function renderModuleTrace(thinkingLog) {
     if (st.ms != null)
       _dcKV(body, "duration", `${st.ms} ms`);
     if (st.extra)
-      _dcKV(body, "detail", st.extra);
+      st.extra.split(" \xB7 ").forEach((p) => _dcKV(body, "metric", p));
     if (st.ms == null && !st.extra) {
       const none = document.createElement("div");
       none.className = "mt-body-empty";
@@ -8580,8 +8583,45 @@ function renderModuleTrace(thinkingLog) {
       body.appendChild(none);
     }
     row.appendChild(body);
-    wrap.appendChild(row);
+    acc.appendChild(row);
   }
+  const wrap = document.createElement("div");
+  wrap.className = "llm-performance module-trace-section collapsed";
+  const preview = document.createElement("div");
+  preview.className = "llm-performance-preview";
+  preview.setAttribute("role", "button");
+  preview.setAttribute("tabindex", "0");
+  preview.setAttribute("aria-expanded", "false");
+  const titleEl = document.createElement("span");
+  titleEl.className = "llm-performance-title";
+  titleEl.textContent = "RAG telemetry";
+  const oneline = document.createElement("span");
+  oneline.className = "llm-performance-oneline";
+  oneline.textContent = `${stages.length} stages${totalMs > 0 ? " \xB7 " + totalMs + " ms" : ""}`;
+  const chev = document.createElement("span");
+  chev.className = "llm-performance-chevron";
+  chev.setAttribute("aria-hidden", "true");
+  chev.textContent = "\u25BC";
+  preview.appendChild(titleEl);
+  preview.appendChild(oneline);
+  preview.appendChild(chev);
+  const secBody = document.createElement("div");
+  secBody.className = "llm-performance-body";
+  secBody.appendChild(acc);
+  wrap.appendChild(preview);
+  wrap.appendChild(secBody);
+  const toggle = () => {
+    const collapsed = wrap.classList.toggle("collapsed");
+    preview.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    chev.textContent = collapsed ? "\u25BC" : "\u25B2";
+  };
+  preview.addEventListener("click", toggle);
+  preview.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      toggle();
+    }
+  });
   return wrap;
 }
 function renderDiagnosticsCard(thinkingLog) {
@@ -10927,13 +10967,15 @@ function run() {
     const moduleTraceEl = renderModuleTrace(
       opts.thinkingLog
     );
-    if (moduleTraceEl)
+    if (moduleTraceEl) {
       _diag.ragTel.push(moduleTraceEl);
-    const traceEl = renderDiagnosticsCard(
-      opts.thinkingLog
-    );
-    if (traceEl)
-      _diag.ragTel.push(traceEl);
+    } else {
+      const traceEl = renderDiagnosticsCard(
+        opts.thinkingLog
+      );
+      if (traceEl)
+        _diag.ragTel.push(traceEl);
+    }
     let _nf = typeof opts.narrativeFull === "string" ? opts.narrativeFull.trim() : "";
     let _nfRedacted = false;
     if (!_nf) {
