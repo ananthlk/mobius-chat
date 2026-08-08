@@ -92,8 +92,12 @@ def _react_block_specs() -> list[BlockSpec]:
         # matching v1's content exactly (bodies are append-only — can't
         # un-write v2), not a reactivation of v1 itself, to keep the
         # version history forward-only and auditable.
+        # v4 (2026-08-08, Ananth directly): running_answer schema-example
+        # hints now note "**Bold** the key fact" -- same formatting-for-
+        # readability fix as react.critical_rules v2 below, applied to the
+        # inline JSON-shape examples the model sees at generation time.
         BlockSpec("react.response_shape", "static", "system", react_prompts.REACT_RESPONSE_SHAPE_TEXT,
-                  owner="react-agent", version=3),
+                  owner="react-agent", version=4),
         # react.output_intent_instruction (v1/v2/v3) REMOVED from the
         # composition (2026-07-30 revert, see react.response_shape's note
         # above) — no longer a member of any active composition. Its
@@ -113,8 +117,13 @@ def _react_block_specs() -> list[BlockSpec]:
         # react.output_intent_instruction for v3's reorder; that block is
         # now removed, so critical_rules is last-before-user_profile again,
         # same as the original Phase A layout).
+        # v2 (2026-08-08, Ananth directly): the running_answer bullet (rule
+        # 1c-2) now instructs bolding the key fact + a 1-3 sentence cap, so
+        # the per-round progression (card.reasoning_trace, Chat FE feature)
+        # and the Summary tab render as scannable markdown instead of a
+        # dense unformatted paragraph.
         BlockSpec("react.critical_rules", "static", "system", react_prompts.REACT_CRITICAL_RULES_TEXT + "\n",
-                  owner="chat-architecture"),
+                  owner="chat-architecture", version=2),
         # Shared with critic.audit (Chat Architecture ruling, 2026-07-29): one
         # block_key, member of both react_* and critic_audit compositions.
         BlockSpec("react.user_profile", "derived", "system", "{{ user_profile_text }}",

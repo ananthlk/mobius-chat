@@ -358,7 +358,7 @@ round (i.e. earlier tool results are present in context above):
   "thought": "<why you chose this tool — one sentence>",
   "evidence_review": {
     "keep": [<chunk numbers from the LAST tool result's [N] headers that actually matter to this question>],
-    "running_answer": "<the best answer you can build from kept evidence so far — even if partial>",
+    "running_answer": "<the best answer you can build from kept evidence so far — even if partial. **Bold** the key fact.>",
     "gaps_closed": [<specific gaps THIS round's tool result resolved — empty array if none>],
     "gaps_open": [<specific gaps still unresolved — empty array if none>]
   },
@@ -374,7 +374,7 @@ on: it's the record of which chunks actually grounded the answer you're about to
   "thought": "<what you found>",
   "evidence_review": {
     "keep": [<chunk numbers from the LAST tool result's [N] headers that actually grounded this answer>],
-    "running_answer": "<same as your final answer's substance — this is what confirms you recomputed confidence from the kept evidence, not vibes>",
+    "running_answer": "<same as your final answer's substance — this is what confirms you recomputed confidence from the kept evidence, not vibes. **Bold** the key fact.>",
     "gaps_closed": [<what THIS round's evidence resolved — empty array if none>],
     "gaps_open": [<anything still uncertain even though you're answering — empty array if none>]
   },
@@ -419,7 +419,7 @@ REACT_CRITICAL_RULES_TEXT = """CRITICAL RULES:
     If your thought could be pasted unedited onto a different round of a different question, you have not actually reasoned from the result — rewrite it.
 1c-2. **LEARNED must actually fill the answer, not just narrate.** The "evidence_review" object (required alongside "thought" from round 2 on, in BOTH the tool-call shape and the final-answer shape, see REACT_RESPONSE_SHAPE) is where LEARNED becomes concrete instead of prose:
     - **keep**: read every numbered chunk in the last tool result — all of it, nothing is truncated — and list which chunk numbers actually bear on this question. Don't skim the first chunk and stop; the answer is as likely to be chunk 6 of 12 as chunk 1.
-    - **running_answer**: recompute this from scratch using ONLY the kept chunks — this is your real confidence check. If running_answer already states the answer clearly, stop hunting: set is_complete=true this round. Continuing to call rag after running_answer already has the fact is wasted rounds and a false "not found" waiting to happen.
+    - **running_answer**: recompute this from scratch using ONLY the kept chunks — this is your real confidence check. Write it as you'd want it displayed: lead with the key fact, use **bold** for the specific number/name/deadline that answers the question, keep it to 1-3 sentences — no raw JSON, no unformatted wall of text. If running_answer already states the answer clearly, stop hunting: set is_complete=true this round. Continuing to call rag after running_answer already has the fact is wasted rounds and a false "not found" waiting to happen.
     - **Citation discipline — state only what the chunk text literally says.** Cite a chunk ONLY for claims that chunk's own text actually contains, verbatim or near-verbatim — never attribute a specific number, name, program, rule, or eligibility detail to a citation unless that chunk states it. This holds even on a rich-corpus turn with plenty of evidence: a fabricated citation is wrong regardless of how much OTHER evidence you have. If you're generalizing or inferring beyond what a chunk literally states, don't attach that chunk's citation to the inferred part — say it's an inference, or leave it uncited. (2026-08-07, Chat Master/LLM Agent, live finding: react_draft cited chunk [4] for "Comprehensive program members (MMA and Long-Term Care)" when the kept chunks — 2 of them, 401 chars total — never mentioned MMA, LTC, or Comprehensive at all.)
     - **gaps_closed** / **gaps_open**: name specific missing pieces, not "need more info." gaps_closed is what THIS round's tool result actually resolved (empty array most rounds — only list something here if this round is what closed it); gaps_open is everything still unresolved after incorporating this round's evidence. Both are lists, not prose — a gap tracker downstream reads these directly.
     - Chunks you do NOT keep are not deleted — they stay recallable this turn via recall_evidence (see manifest) using the ref shown in that chunk's set-aside note. Don't re-run rag for something you already retrieved; recall it instead.

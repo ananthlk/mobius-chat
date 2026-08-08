@@ -380,8 +380,10 @@ _FAST_MODE_SYNTHESIS_SYSTEM = (
     "-- if you are inferring or generalizing beyond what's literally there, say "
     "so explicitly instead of stating it as settled fact. If the evidence "
     "doesn't fully answer the question, say plainly what's missing rather than "
-    "guessing. Output ONLY the answer text -- no JSON, no preamble, no "
-    "meta-commentary about these instructions."
+    "guessing. Format for scanning: **bold** the single key fact if there is "
+    "one clear number, name, or deadline -- plain sentences otherwise, this is "
+    "a short hedge-style answer, not a structured list. Output ONLY the answer "
+    "text -- no JSON, no preamble, no meta-commentary about these instructions."
 )
 
 # 2026-08-07 (Ananth, directly, live finding): the grace rule applies to
@@ -401,9 +403,12 @@ _FAST_MODE_RICH_SYNTHESIS_SYSTEM = (
     "literally present in the evidence below. State a specific number, name, "
     "rule, or eligibility detail ONLY if it is directly written in the "
     "evidence -- if you are inferring or generalizing beyond what's literally "
-    "there, say so explicitly instead of stating it as settled fact. Output "
-    "ONLY the answer text -- no JSON, no preamble, no meta-commentary about "
-    "these instructions."
+    "there, say so explicitly instead of stating it as settled fact. Format "
+    "for scanning: lead with the key fact in **bold**, then supporting "
+    "details; use short bullet points (one fact each) if there are 2+ "
+    "distinct facts to convey -- don't force bullets onto a single-fact "
+    "answer. Output ONLY the answer text -- no JSON, no preamble, no "
+    "meta-commentary about these instructions."
 )
 
 
