@@ -321,8 +321,8 @@ describe("renderSourcesList — numbered bottom list (Task #34)", () => {
   });
 });
 
-describe("renderAnswerCard — inline footnotes end-to-end (Task #34)", () => {
-  it("footnotes the prose, appends the bottom list, and suppresses the Sources tab", () => {
+describe("renderAnswerCard — sources live in the Sources tab only (Chat Master 2026-08-08 revert)", () => {
+  it("does NOT render sources inline even when card.sources is present", () => {
     const el = renderAnswerCard({
       ...card,
       display_summary: "Yes, reimbursed at parity [1] under the state plan [2].",
@@ -331,54 +331,28 @@ describe("renderAnswerCard — inline footnotes end-to-end (Task #34)", () => {
         { document_name: "Provider Bulletin", locator: "p. 12" },
       ],
     });
-    // Footnotes in the prose lead.
-    expect(el.querySelectorAll(".ac-cite-ref").length).toBe(2);
-    // Bottom list present.
-    expect(el.querySelector(".ac-sources-list")).not.toBeNull();
-    expect(el.querySelectorAll(".ac-source-item").length).toBe(2);
-    // The legacy Sources tab is suppressed (data-empty) even though citations[] exists.
-    const srcTab = Array.from(el.querySelectorAll(".ac-tab")).find(
-      (t) => t.getAttribute("data-panel") === "citations",
-    );
-    // Either absent or marked empty — never a live Sources tab.
-    expect(srcTab == null || srcTab.getAttribute("data-empty") === "1").toBe(true);
+    // No inline footnote superscripts, no inline bottom list.
+    expect(el.querySelectorAll(".ac-cite-ref").length).toBe(0);
+    expect(el.querySelector(".ac-sources-list")).toBeNull();
+    expect(el.querySelectorAll(".ac-source-item").length).toBe(0);
+    // The literal [N] markers stay as plain text in the prose (not rewritten).
+    expect(el.textContent).toContain("[1]");
   });
 
-  it("keeps the legacy Sources tab when there are no footnote sources", () => {
-    const el = renderAnswerCard({ ...card, display_summary: "Yes, at parity." });
-    const srcTab = Array.from(el.querySelectorAll(".ac-tab")).find(
-      (t) => t.getAttribute("data-panel") === "citations",
-    );
-    expect(srcTab).not.toBeUndefined();
-    expect(srcTab!.getAttribute("data-empty")).toBeNull();
-  });
-
-  it("builds NO tab bar when footnote sources suppress the only tab (no tasks) — the double-listing guard", () => {
-    // card has citations but no tasks; with sources present, showCitationsTab=false and hasTasks=false
-    // → showTabBar=false → renderAnswerCard emits no .ac-tab-bar at all. This is what lets the completed
-    // handler drop the stale streaming Sources tab (it has nothing to swap in).
-    const el = renderAnswerCard({
+  it("keeps the Sources tab live whenever citations exist (with OR without card.sources)", () => {
+    const withSources = renderAnswerCard({
       ...card,
       display_summary: "Yes [1].",
       sources: [{ document_name: "Handbook", locator: "§59G", document_id: "d1", page_number: 3 }],
     });
-    expect(el.querySelector(".ac-tab-bar")).toBeNull();
-    expect(el.querySelector(".ac-sources-list")).not.toBeNull();
-  });
-
-  it("wires source clicks through renderAnswerCard opts.onSourceClick", () => {
-    const calls: string[] = [];
-    const el = renderAnswerCard(
-      {
-        ...card,
-        display_summary: "Yes [1].",
-        sources: [{ document_name: "Handbook", document_id: "d9", page_number: 2, snippet: "s" }],
-      },
-      false,
-      { onSourceClick: (id) => calls.push(id) },
-    );
-    (el.querySelector(".ac-source-item--clickable") as HTMLElement).click();
-    expect(calls).toEqual(["d9"]);
+    const withoutSources = renderAnswerCard({ ...card, display_summary: "Yes, at parity." });
+    for (const el of [withSources, withoutSources]) {
+      const srcTab = Array.from(el.querySelectorAll(".ac-tab")).find(
+        (t) => t.getAttribute("data-panel") === "citations",
+      );
+      expect(srcTab).not.toBeUndefined();          // Sources tab present
+      expect(srcTab!.getAttribute("data-empty")).toBeNull();   // and live (not suppressed)
+    }
   });
 });
 

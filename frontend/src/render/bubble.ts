@@ -782,10 +782,6 @@ export function renderAnswerCard(
   const _answerSections = card.sections ?? [];
   const hasAnswerEnvelope = _displaySummary.length > 0 || _answerSections.length > 0;
   const _reactDraft = (card.react_draft ?? "").trim();
-  // Inline-footnote sources (Task #34). When present, [N] markers in the prose become superscripts
-  // and a numbered bottom list replaces the separate Sources tab.
-  const _sources = Array.isArray(card.sources) ? card.sources : [];
-  const hasSources = _sources.length > 0;
 
   // Draft headline above the tabs — ONLY in the draft-only state (no final yet). Once the final
   // exists it's the star (rendered in .ac-answer-final in the panel) and the draft demotes to a
@@ -885,14 +881,9 @@ export function renderAnswerCard(
       answerWrap.appendChild(body);
     }
     _answerSections.slice(0, MAX_SECTIONS).forEach((sec) => answerWrap.appendChild(renderOneSection(sec)));
-    // Inline citation footnotes: rewrite [N] markers in the final prose (lead + sections) into
-    // superscripts, then append the numbered bottom list they jump to. Guarded on hasSources so the
-    // legacy Sources-tab path is untouched when the integrator hasn't emitted card.sources yet.
-    if (hasSources) {
-      applyCitationFootnotes(answerWrap, _sources);
-      const srcList = renderSourcesList(_sources, opts?.onSourceClick);
-      if (srcList) answerWrap.appendChild(srcList);
-    }
+    // Sources are NOT rendered inline (Chat Master 2026-08-08) — they live in the Sources tab only.
+    // (applyCitationFootnotes / renderSourcesList remain exported + tested for potential reuse, but
+    // the answer card body no longer calls them; _sources/hasSources stay parsed but unrendered here.)
     // Final at the TOP of the panel (the star), above meta/confidence.
     answerPanel.insertBefore(answerWrap, answerPanel.firstChild);
 
@@ -959,10 +950,10 @@ export function renderAnswerCard(
   const _nextStepTasks = opts?.nextStepTasks ?? [];
 
   const hasCitations = Array.isArray(card.citations) && card.citations.length > 0;
-  // When the integrator emits card.sources (inline footnotes), the numbered bottom list REPLACES the
-  // Sources tab (Ananth 2026-08-08). Fall back to the legacy citations tab only when there are no
-  // footnote sources, so nothing regresses until the integrator emit lands.
-  const showCitationsTab = hasCitations && !hasSources;
+  // Sources render ONLY in the Sources tab (Chat Master 2026-08-08, ratified by Ananth "work with
+  // chat master"). The earlier inline-footnote design (bottom list replacing the tab) is reverted:
+  // the tab shows whenever there are citations, and nothing sources-related renders inline.
+  const showCitationsTab = hasCitations;
   const hasTasks = _nextStepTasks.length > 0;   // corrections render INLINE now (no tab)
   // Tab bar shows for SECONDARY surfaces only — the answer is inline in the default panel, and
   // corrections are inline redlines (no tab), so only Sources + Tasks drive the bar (Ananth 2026-08-07).
@@ -1128,8 +1119,7 @@ export function renderAnswerCard(
       // Chat Master ruling (b) 2026-08-06: the Citations tab is repurposed into a consolidated
       // "Sources" tab — reference chips (here) + source excerpts (snippets, here) + a collapsible
       // narrative_full_redacted section injected post-render (app.ts completed handler).
-      // Suppressed when inline footnotes are present (hasSources) — count:0 → data-empty hides it.
-      "citations": { label: "Sources", panelKey: "citations", count: showCitationsTab ? (card.citations ?? []).length : 0 },
+      "citations": { label: "Sources", panelKey: "citations", count: (card.citations ?? []).length },
       // Corrections tab removed (Ananth 2026-08-07) — corrections are inline redlines in the answer.
       // Follow-up tab dropped (Ananth 2026-08-07): follow-up questions render as suggestion chips
       // below the bubble, so a tab duplicated them. Tasks tab is being migrated to the feedback

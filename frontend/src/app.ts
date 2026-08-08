@@ -706,7 +706,7 @@ import {
   simpleMarkdownToHtml, simpleMarkdownToHtmlInner, rosterStepMarkdownToHtml,
   CONFIDENCE_BADGE_MAP, renderConfidenceBadge, createQcSampleShieldSvg, renderQcAuditBadge,
 } from "./ui-helpers";
-import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, applyCitationFootnotes, retainStreamedDraftAsFirstPass } from "./render/bubble";
+import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, retainStreamedDraftAsFirstPass } from "./render/bubble";
 
 /** Insert QC badge into an already-rendered assistant turn (late eval webhook). */
 function applyQcAuditToTurn(turnWrap: HTMLElement, qc: QcAuditInfo | undefined): void {
@@ -11567,16 +11567,6 @@ function run(): void {
                 } else if (streamingTabBar && !renderedTabBar) {
                   streamingTabBar.remove();
                 }
-                // Belt-and-suspenders: when inline footnotes are present (card.sources), the numbered
-                // bottom list REPLACES the Sources tab. Remove any lingering citations tab + panel and
-                // drop the bar if that empties it — guards against onIntegratorPartial('citations')
-                // un-hiding the tab regardless of which tab bar ended up live.
-                if (Array.isArray(fullCard?.sources) && fullCard!.sources!.length > 0) {
-                  existingBubble.querySelector('.ac-tab[data-panel="citations"]')?.remove();
-                  existingBubble.querySelector(".ac-tab-panel--citations")?.remove();
-                  const bar = existingBubble.querySelector(".ac-tab-bar") as HTMLElement | null;
-                  if (bar && !bar.querySelector('.ac-tab:not([data-empty="1"])')) bar.remove();
-                }
 
                 // Summary panel: keep streaming prose, append sections/meta/confidence from rendered card.
                 // mkTab now uses querySelector (not closure ref), so existingSummaryPanel can stay in place.
@@ -11650,12 +11640,6 @@ function run(): void {
                             ..._extractedCorrections.filter((c) => c.original && c.corrected),
                           ];
                           if (_finalWrap && _redlineCorrs.length) applyInlineCorrections(_finalWrap, _redlineCorrs);
-                          // Inline citation footnotes (Task #34): re-streaming the lead replaced the
-                          // footnote-processed prose renderAnswerCard built with raw text carrying [N]
-                          // markers, so re-run on the lead. Sections keep the footnotes they already
-                          // got (not re-streamed); the bottom Sources list survived the panel swap.
-                          const _srcs = Array.isArray(fullCard?.sources) ? fullCard!.sources! : [];
-                          if (_finalBody && _srcs.length) applyCitationFootnotes(_finalBody, _srcs);
                           // Sections stream in one-by-one (staggered fade-up), not all at once.
                           _hiddenSections.forEach((s, i) => {
                             window.setTimeout(() => {

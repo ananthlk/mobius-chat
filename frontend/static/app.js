@@ -2786,118 +2786,6 @@ function applyInlineCorrections(container, corrections) {
     target.parentNode?.replaceChild(frag, target);
   }
 }
-function applyCitationFootnotes(container, sources) {
-  if (!sources || sources.length === 0)
-    return;
-  const MARKER = /\[(\d+)\]/g;
-  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
-  const textNodes = [];
-  while (walker.nextNode()) {
-    const t = walker.currentNode;
-    if (t.parentElement?.closest(".ac-cite-ref, code, pre"))
-      continue;
-    if (t.nodeValue && MARKER.test(t.nodeValue))
-      textNodes.push(t);
-  }
-  for (const node of textNodes) {
-    const text = node.nodeValue ?? "";
-    MARKER.lastIndex = 0;
-    let last = 0;
-    let m;
-    const frag = document.createDocumentFragment();
-    let touched = false;
-    while ((m = MARKER.exec(text)) !== null) {
-      const n = parseInt(m[1], 10);
-      const src = n >= 1 && n <= sources.length ? sources[n - 1] : void 0;
-      if (m.index > last)
-        frag.appendChild(document.createTextNode(text.slice(last, m.index)));
-      if (src) {
-        const sup = document.createElement("sup");
-        sup.className = "ac-cite-ref";
-        sup.setAttribute("data-cite-ref", String(n));
-        sup.setAttribute("role", "button");
-        sup.setAttribute("tabindex", "0");
-        const label = src.document_name || src.doc_title || `Source ${n}`;
-        sup.title = src.locator ? `${label} \xB7 ${src.locator}` : label;
-        sup.textContent = String(n);
-        const jump = () => {
-          const bubble = sup.closest(".answer-card-bubble") ?? container;
-          const li = bubble.querySelector(`[data-cite-src="${n}"]`);
-          if (li) {
-            li.scrollIntoView({ behavior: "smooth", block: "center" });
-            li.classList.add("ac-source-item--flash");
-            setTimeout(() => li.classList.remove("ac-source-item--flash"), 1400);
-          }
-        };
-        sup.addEventListener("click", jump);
-        sup.addEventListener("keydown", (e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            jump();
-          }
-        });
-        frag.appendChild(sup);
-      }
-      last = m.index + m[0].length;
-      touched = true;
-    }
-    if (!touched)
-      continue;
-    if (last < text.length)
-      frag.appendChild(document.createTextNode(text.slice(last)));
-    node.parentNode?.replaceChild(frag, node);
-  }
-}
-function renderSourcesList(sources, onSourceClick) {
-  if (!sources || sources.length === 0)
-    return null;
-  const wrap = document.createElement("div");
-  wrap.className = "ac-sources-footnotes";
-  const heading = document.createElement("div");
-  heading.className = "ac-sources-footnotes-heading";
-  heading.textContent = "Sources";
-  wrap.appendChild(heading);
-  const ol = document.createElement("ol");
-  ol.className = "ac-sources-list";
-  sources.forEach((src, i) => {
-    const li = document.createElement("li");
-    li.className = "ac-source-item";
-    li.setAttribute("data-cite-src", String(i + 1));
-    const clickable = !!(src.document_id && onSourceClick);
-    if (clickable) {
-      li.classList.add("ac-source-item--clickable");
-      li.setAttribute("role", "button");
-      li.setAttribute("tabindex", "0");
-      const open = () => onSourceClick(src.document_id, src.page_number ?? null, src.snippet ?? null);
-      li.addEventListener("click", open);
-      li.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          open();
-        }
-      });
-    }
-    const title = document.createElement("span");
-    title.className = "ac-source-title";
-    title.textContent = src.document_name || src.doc_title || `Source ${i + 1}`;
-    li.appendChild(title);
-    if (src.locator) {
-      const loc = document.createElement("span");
-      loc.className = "ac-source-locator";
-      loc.textContent = src.locator;
-      li.appendChild(loc);
-    }
-    if (src.snippet) {
-      const snip = document.createElement("span");
-      snip.className = "ac-source-snippet";
-      snip.textContent = src.snippet;
-      li.appendChild(snip);
-    }
-    ol.appendChild(li);
-  });
-  wrap.appendChild(ol);
-  return wrap;
-}
 function retainStreamedDraftAsFirstPass(panel, streamedDraftHTML) {
   if (panel.querySelector(".ac-first-pass"))
     return null;
@@ -2973,8 +2861,6 @@ function renderAnswerCard(card, isError, opts) {
   const _answerSections = card.sections ?? [];
   const hasAnswerEnvelope = _displaySummary.length > 0 || _answerSections.length > 0;
   const _reactDraft = (card.react_draft ?? "").trim();
-  const _sources = Array.isArray(card.sources) ? card.sources : [];
-  const hasSources = _sources.length > 0;
   if (!hasAnswerEnvelope) {
     const direct = document.createElement("div");
     direct.className = "answer-card-direct";
@@ -3053,12 +2939,6 @@ function renderAnswerCard(card, isError, opts) {
       answerWrap.appendChild(body);
     }
     _answerSections.slice(0, MAX_SECTIONS).forEach((sec) => answerWrap.appendChild(renderOneSection(sec)));
-    if (hasSources) {
-      applyCitationFootnotes(answerWrap, _sources);
-      const srcList = renderSourcesList(_sources, opts?.onSourceClick);
-      if (srcList)
-        answerWrap.appendChild(srcList);
-    }
     answerPanel.insertBefore(answerWrap, answerPanel.firstChild);
     const _rdRounds = (card.reasoning_trace ?? []).map((r, i) => ({
       n: typeof r?.round === "number" ? r.round : i + 1,
@@ -3105,7 +2985,7 @@ function renderAnswerCard(card, isError, opts) {
   const _nextStepQuestions = opts?.nextQuestions ?? [];
   const _nextStepTasks = opts?.nextStepTasks ?? [];
   const hasCitations = Array.isArray(card.citations) && card.citations.length > 0;
-  const showCitationsTab = hasCitations && !hasSources;
+  const showCitationsTab = hasCitations;
   const hasTasks = _nextStepTasks.length > 0;
   const showTabBar = showCitationsTab || hasTasks;
   const citationsPanel = document.createElement("div");
@@ -3255,8 +3135,7 @@ function renderAnswerCard(card, isError, opts) {
       // Chat Master ruling (b) 2026-08-06: the Citations tab is repurposed into a consolidated
       // "Sources" tab — reference chips (here) + source excerpts (snippets, here) + a collapsible
       // narrative_full_redacted section injected post-render (app.ts completed handler).
-      // Suppressed when inline footnotes are present (hasSources) — count:0 → data-empty hides it.
-      "citations": { label: "Sources", panelKey: "citations", count: showCitationsTab ? (card.citations ?? []).length : 0 },
+      "citations": { label: "Sources", panelKey: "citations", count: (card.citations ?? []).length },
       // Corrections tab removed (Ananth 2026-08-07) — corrections are inline redlines in the answer.
       // Follow-up tab dropped (Ananth 2026-08-07): follow-up questions render as suggestion chips
       // below the bubble, so a tab duplicated them. Tasks tab is being migrated to the feedback
@@ -12756,13 +12635,6 @@ ${message}`;
               } else if (streamingTabBar && !renderedTabBar) {
                 streamingTabBar.remove();
               }
-              if (Array.isArray(fullCard?.sources) && fullCard.sources.length > 0) {
-                existingBubble.querySelector('.ac-tab[data-panel="citations"]')?.remove();
-                existingBubble.querySelector(".ac-tab-panel--citations")?.remove();
-                const bar = existingBubble.querySelector(".ac-tab-bar");
-                if (bar && !bar.querySelector('.ac-tab:not([data-empty="1"])'))
-                  bar.remove();
-              }
               const existingSummaryPanel = existingBubble.querySelector(".ac-tab-panel--summary");
               const renderedSummaryPanel = renderedBubble.querySelector(".ac-tab-panel--summary");
               if (existingSummaryPanel && renderedSummaryPanel) {
@@ -12813,9 +12685,6 @@ ${message}`;
                           ];
                           if (_finalWrap && _redlineCorrs.length)
                             applyInlineCorrections(_finalWrap, _redlineCorrs);
-                          const _srcs = Array.isArray(fullCard?.sources) ? fullCard.sources : [];
-                          if (_finalBody && _srcs.length)
-                            applyCitationFootnotes(_finalBody, _srcs);
                           _hiddenSections.forEach((s, i) => {
                             window.setTimeout(() => {
                               s.style.display = "";
