@@ -292,6 +292,15 @@ SET_ENV_VARS=(
     # from -- flip back to "sequential" or remove the line entirely if the
     # ramp ever needs to change again.
     "MOBIUS_INTEGRATOR_MODE=parallel"
+    # Task #76 dynamic enrichment (2026-08-08, Chat Master ruling): skip Call A's
+    # LLM call on a sufficient react answer (deterministic regex formatting
+    # instead), Call B/C run as fire-and-forget background jobs. Canaried at
+    # 100% (real numbers: ~28% latency reduction on turns that hit the
+    # sufficient path, n=2 vs n=6 baseline -- see chat session 2026-08-08),
+    # ramping to 10% now. Same hardcode-not-env-file reasoning as
+    # MOBIUS_INTEGRATOR_MODE above -- one place, no silent-wipe risk from a
+    # manual override on the next deploy.
+    "MOBIUS_DYNAMIC_ENRICHMENT_PCT=10"
 )
 
 # Secrets → Cloud Run mounts each as an env var. ``name:latest`` pins
