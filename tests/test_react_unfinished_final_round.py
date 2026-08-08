@@ -189,3 +189,112 @@ def test_noncompliant_model_falls_back_to_legacy_generic_string_exactly():
         run_react(ctx, emitter=None)
 
     assert ctx.final_message == _GENERIC_FALLBACK
+
+
+class TestRecoveryBeforeGenericFallback:
+    """2026-08-08 (Ananth, directly, live finding): a real turn ran 5
+    rounds of genuinely useful rag results (multidisciplinary-team/care-
+    coordination content, confirmed relevant), then round 6's decision
+    failed to parse -- even after the format-correction retry -- and the
+    turn shipped the generic "I wasn't able to find..." boilerplate
+    despite the Answer tab's own integrator synthesizing a detailed,
+    accurate answer from the SAME evidence seconds later. "It should
+    probably provide the basic answer it has" -- before falling to the
+    generic string, the loop now tries the last round's own
+    running_answer, then a quick recovery synthesis over what was
+    actually retrieved (all_sources, NOT ctx.rag_chunks -- that field
+    doesn't exist yet at this point in the function, it's only set
+    inside the _finalize_response call this fallback is building the
+    body for).
+
+    Agentic mode (not copilot) throughout, failing at round 2 of 10 --
+    copilot's final round IS a guidance round (is_guidance_round(2,3) is
+    already true), so the EARLIER prose-trust fallback intercepts any
+    long-enough non-tool-call text before this code ever runs, which
+    isn't what these tests are exercising. Tool results use
+    chunk-numbered "[1] Doc\\ntext" formatting, matching real rag output
+    -- that's what makes the earlier "use the last successful tool
+    result" fallback correctly skip them too (the raw-JSON guard treats
+    a leading "[" as machine-shaped, unsafe to dump directly), so
+    execution actually reaches the code under test here rather than
+    stopping at an earlier fallback layer."""
+
+    def test_uses_running_answer_when_available(self):
+        """Round 1 sets evidence_review with a real running_answer; round
+        2 fails to parse twice (both the original attempt and the
+        format-correction retry) -- the running_answer must be used, not
+        the generic string."""
+        def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+            if stage == "react_1":
+                return (
+                    '{"thought": "found something", '
+                    '"evidence_review": {"keep": [1], "running_answer": "Care coordination teams develop service plans for medically complex children.", "gaps_closed": [], "gaps_open": ["general policy scope"]}, '
+                    '"tool": "rag", "inputs": {"query": "y"}, "is_complete": false}'
+                )
+            # react_2 (this test's failing round) and its retry: both unparseable.
+            return "not valid json, and the retry after this will also fail"
+
+        ctx = _make_ctx("agentic")
+        rag_result = {
+            "tool": "rag", "success": True,
+            "result": "[1] Provider Manual\nCare coordination teams convene to develop service plans.",
+            "signal": "corpus_only", "sources": [], "usage": None,
+        }
+        with patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm), \
+             patch("app.pipeline.react_loop._execute_tool_with_retry", return_value=rag_result):
+            run_react(ctx, emitter=None)
+
+        assert "Care coordination teams develop service plans for medically complex children." in ctx.final_message
+        assert "wasn't fully confident" in ctx.final_message
+        assert ctx.final_message != _GENERIC_FALLBACK
+
+    def test_falls_back_to_recovery_synthesis_when_no_running_answer(self):
+        """No evidence_review ever set (older-style tool-call rounds), but
+        real chunks WERE retrieved -- a recovery synthesis call should
+        produce the fallback body instead of the generic string."""
+        def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+            if stage == "react_1":
+                return '{"thought": "search", "tool": "rag", "inputs": {"query": "x"}, "is_complete": false}'
+            if stage == "react_2" or stage.startswith("react_2_retry"):
+                return "not valid json, retry also fails"
+            if "recovery_synthesis" in stage:
+                return "Real recovered answer from the retrieved chunks."
+            raise AssertionError(f"unexpected stage {stage}")
+
+        ctx = _make_ctx("agentic")
+        rag_result = {
+            "tool": "rag", "success": True,
+            "result": "[1] Provider Manual\nCare coordination teams convene to develop service plans.",
+            "signal": "corpus_only",
+            "sources": [{"index": 1, "document_name": "Provider Manual", "text": "Care coordination teams convene to develop service plans."}],
+            "usage": None,
+        }
+        with patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm), \
+             patch("app.pipeline.react_loop._execute_tool_with_retry", return_value=rag_result):
+            run_react(ctx, emitter=None)
+
+        assert "Real recovered answer from the retrieved chunks." in ctx.final_message
+        assert "wasn't fully confident" in ctx.final_message
+        assert ctx.final_message != _GENERIC_FALLBACK
+
+    def test_falls_to_generic_when_nothing_recoverable(self):
+        """No evidence_review, no real sources retrieved at all (the
+        existing _SEARCH_RESULT fixture has no [N]-formatted chunks and
+        no populated sources list, so the earlier "use last tool output"
+        fallback catches it directly instead) -- so this test forces a
+        genuinely empty case by making the tool itself fail."""
+        def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+            if stage == "react_1":
+                return '{"thought": "search", "tool": "rag", "inputs": {"query": "x"}, "is_complete": false}'
+            return "not valid json, retry also fails"
+
+        ctx = _make_ctx("agentic")
+        empty_result = {
+            "tool": "rag", "success": False, "result": "",
+            "signal": "no_sources", "sources": [], "usage": None,
+        }
+        with patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm), \
+             patch("app.pipeline.react_loop._execute_tool_with_retry", return_value=empty_result):
+            run_react(ctx, emitter=None)
+
+        assert ctx.final_message == _GENERIC_FALLBACK
