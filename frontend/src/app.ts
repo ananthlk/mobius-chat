@@ -1748,16 +1748,27 @@ function _streamMarkdownInto(el: HTMLElement, text: string, onDone?: () => void)
   const wordsPerStep = Math.max(1, Math.ceil(words.length / steps));
   let wi = 0;
   let done = false;
+  // Resilience (2026-08-08): a markdown-render throw here must NEVER leave `el` empty. This runs
+  // AFTER the caller cleared the target (the demote path clears the final body before streaming),
+  // so a throw with no fallback wipes the answer permanently and skips onDone (which reveals the
+  // sections) — the "draft displayed and everything vanished" bug. Fall back to plain text and
+  // always fire onDone.
   const finish = () => {
     if (done) return;
     done = true;
-    el.innerHTML = simpleMarkdownToHtml(text);
-    onDone?.();
+    try { el.innerHTML = simpleMarkdownToHtml(text); }
+    catch { el.textContent = text; }        // never leave the answer blank
+    try { onDone?.(); } catch { /* onDone side-effects (redlines/section reveal) are best-effort */ }
   };
   const step = () => {
     if (done) return;
-    wi = Math.min(wi + wordsPerStep, words.length);
-    el.innerHTML = simpleMarkdownToHtml(words.slice(0, wi).join(" "));
+    try {
+      wi = Math.min(wi + wordsPerStep, words.length);
+      el.innerHTML = simpleMarkdownToHtml(words.slice(0, wi).join(" "));
+    } catch {
+      finish();                              // bail to full content + onDone; don't strand it empty
+      return;
+    }
     if (wi < words.length) window.setTimeout(step, CARD_STREAM_STEP_MS);
     else finish();
   };
@@ -11604,8 +11615,25 @@ function run(): void {
                     const _hiddenSections = Array.from(_finalWrap?.querySelectorAll(".answer-card-section") ?? []) as HTMLElement[];
                     _hiddenSections.forEach((s) => { s.style.display = "none"; });
                     if (_finalBody && _leadText) {
+                      // Capture the already-rendered lead BEFORE clearing so we can never end up with a
+                      // permanently blank answer: if the streamed re-fill throws, gets throttled, or the
+                      // node detaches, a safety timer restores this HTML and reveals the sections. This is
+                      // the backstop for "draft displayed and everything vanished" (Ananth 2026-08-08).
+                      const _leadRenderedHTML = _finalBody.innerHTML;
+                      const _revealAllSections = () => _hiddenSections.forEach((s) => { s.style.display = ""; });
+                      window.setTimeout(() => {
+                        // Safety net: if streaming never populated the lead, restore the rendered HTML and
+                        // show the sections so the answer is visible no matter what happened above.
+                        if (_finalBody && !(_finalBody.textContent ?? "").trim()) {
+                          _finalBody.innerHTML = _leadRenderedHTML;
+                          _revealAllSections();
+                        } else if (_hiddenSections.some((s) => s.style.display === "none")) {
+                          _revealAllSections();
+                        }
+                      }, CARD_STREAM_TARGET_MS + 4000);
                       _finalBody.innerHTML = "";
                       window.setTimeout(() => {
+                       try {
                         // Fold 1: collapse from the real height → 0 (smooth, proportional to content).
                         if (_fp && _fpBody) {
                           _fpBody.style.maxHeight = _fpBody.scrollHeight + "px";
@@ -11636,6 +11664,12 @@ function run(): void {
                             }, i * 400);
                           });
                         });
+                       } catch {
+                        // Any failure in the animate/stream path must not strand a blank answer: restore
+                        // the rendered lead and reveal the sections immediately.
+                        if (_finalBody) _finalBody.innerHTML = _leadRenderedHTML;
+                        _revealAllSections();
+                       }
                       }, 450);
                     } else {
                       _hiddenSections.forEach((s) => { s.style.display = ""; });

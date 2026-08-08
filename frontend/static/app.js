@@ -4350,14 +4350,26 @@ function _streamMarkdownInto(el2, text, onDone) {
     if (done)
       return;
     done = true;
-    el2.innerHTML = simpleMarkdownToHtml(text);
-    onDone?.();
+    try {
+      el2.innerHTML = simpleMarkdownToHtml(text);
+    } catch {
+      el2.textContent = text;
+    }
+    try {
+      onDone?.();
+    } catch {
+    }
   };
   const step = () => {
     if (done)
       return;
-    wi = Math.min(wi + wordsPerStep, words.length);
-    el2.innerHTML = simpleMarkdownToHtml(words.slice(0, wi).join(" "));
+    try {
+      wi = Math.min(wi + wordsPerStep, words.length);
+      el2.innerHTML = simpleMarkdownToHtml(words.slice(0, wi).join(" "));
+    } catch {
+      finish();
+      return;
+    }
     if (wi < words.length)
       window.setTimeout(step, CARD_STREAM_STEP_MS);
     else
@@ -12773,31 +12785,49 @@ ${message}`;
                     s.style.display = "none";
                   });
                   if (_finalBody && _leadText) {
+                    const _leadRenderedHTML = _finalBody.innerHTML;
+                    const _revealAllSections = () => _hiddenSections.forEach((s) => {
+                      s.style.display = "";
+                    });
+                    window.setTimeout(() => {
+                      if (_finalBody && !(_finalBody.textContent ?? "").trim()) {
+                        _finalBody.innerHTML = _leadRenderedHTML;
+                        _revealAllSections();
+                      } else if (_hiddenSections.some((s) => s.style.display === "none")) {
+                        _revealAllSections();
+                      }
+                    }, CARD_STREAM_TARGET_MS + 4e3);
                     _finalBody.innerHTML = "";
                     window.setTimeout(() => {
-                      if (_fp && _fpBody) {
-                        _fpBody.style.maxHeight = _fpBody.scrollHeight + "px";
-                        void _fpBody.offsetHeight;
-                        _fp.classList.remove("ac-first-pass--open");
-                        _fpBody.style.maxHeight = "0px";
-                      }
-                      _streamMarkdownInto(_finalBody, _leadText, () => {
-                        const _redlineCorrs = [
-                          ...fullCard?.correction ? [fullCard.correction] : [],
-                          ..._extractedCorrections.filter((c) => c.original && c.corrected)
-                        ];
-                        if (_finalWrap && _redlineCorrs.length)
-                          applyInlineCorrections(_finalWrap, _redlineCorrs);
-                        const _srcs = Array.isArray(fullCard?.sources) ? fullCard.sources : [];
-                        if (_finalBody && _srcs.length)
-                          applyCitationFootnotes(_finalBody, _srcs);
-                        _hiddenSections.forEach((s, i) => {
-                          window.setTimeout(() => {
-                            s.style.display = "";
-                            s.classList.add("ac-section-reveal");
-                          }, i * 400);
+                      try {
+                        if (_fp && _fpBody) {
+                          _fpBody.style.maxHeight = _fpBody.scrollHeight + "px";
+                          void _fpBody.offsetHeight;
+                          _fp.classList.remove("ac-first-pass--open");
+                          _fpBody.style.maxHeight = "0px";
+                        }
+                        _streamMarkdownInto(_finalBody, _leadText, () => {
+                          const _redlineCorrs = [
+                            ...fullCard?.correction ? [fullCard.correction] : [],
+                            ..._extractedCorrections.filter((c) => c.original && c.corrected)
+                          ];
+                          if (_finalWrap && _redlineCorrs.length)
+                            applyInlineCorrections(_finalWrap, _redlineCorrs);
+                          const _srcs = Array.isArray(fullCard?.sources) ? fullCard.sources : [];
+                          if (_finalBody && _srcs.length)
+                            applyCitationFootnotes(_finalBody, _srcs);
+                          _hiddenSections.forEach((s, i) => {
+                            window.setTimeout(() => {
+                              s.style.display = "";
+                              s.classList.add("ac-section-reveal");
+                            }, i * 400);
+                          });
                         });
-                      });
+                      } catch {
+                        if (_finalBody)
+                          _finalBody.innerHTML = _leadRenderedHTML;
+                        _revealAllSections();
+                      }
                     }, 450);
                   } else {
                     _hiddenSections.forEach((s) => {
