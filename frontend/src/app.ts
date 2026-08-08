@@ -1738,8 +1738,10 @@ function sanitizeDisplayMessage(raw: string): string {
 // Paced text streaming shared by the draft AND the final answer (Ananth 2026-08-07: stream the
 // answer at the same speed as the draft so it feels consistent). Duration-targeted: short text
 // ~fast, long text capped ~this window. Renders raw text through simpleMarkdownToHtml each step.
-const CARD_STREAM_TARGET_MS = 8500;
-const CARD_STREAM_STEP_MS = 45;
+// Deliberate pace for BOTH the draft and the final (Ananth 2026-08-07: "slow both… user is not
+// going to read it this fast either" — and a slower stream buys the pipeline time). Duration-target.
+const CARD_STREAM_TARGET_MS = 14000;
+const CARD_STREAM_STEP_MS = 50;
 function _streamMarkdownInto(el: HTMLElement, text: string, onDone?: () => void): (() => void) {
   const words = (text ?? "").split(" ");
   const steps = Math.max(1, Math.round(CARD_STREAM_TARGET_MS / CARD_STREAM_STEP_MS));
@@ -11573,7 +11575,13 @@ function run(): void {
                       window.setTimeout(() => {
                         if (_fp) _fp.classList.remove("ac-first-pass--open");   // fold 1: slow collapse
                         _streamMarkdownInto(_finalBody, _leadText, () => {      // fold 2: stream, then sections
-                          _hiddenSections.forEach((s) => { s.style.display = ""; });
+                          // Sections stream in one-by-one (staggered fade-up), not all at once.
+                          _hiddenSections.forEach((s, i) => {
+                            window.setTimeout(() => {
+                              s.style.display = "";
+                              s.classList.add("ac-section-reveal");
+                            }, i * 400);
+                          });
                         });
                       }, 450);
                     } else {

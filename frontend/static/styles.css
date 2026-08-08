@@ -3522,9 +3522,18 @@ body {
   font-size: 0.82rem;
   line-height: 1.5;
   color: var(--text-tertiary, #9ca3af);
-  transition: max-height 0.7s ease, opacity 0.5s ease, margin-top 0.7s ease;
+  /* Slow, deliberate collapse (Ananth 2026-08-07) so the user can follow the first pass folding away. */
+  transition: max-height 1.7s ease, opacity 1.1s ease, margin-top 1.7s ease;
 }
 .ac-first-pass--open .ac-first-pass-body { max-height: 60vh; opacity: 1; margin-top: 0.35rem; }
+
+/* Sections stream in one-by-one after the prose (Ananth 2026-08-07: "the last section needs to
+   stream in too… too fast") — a staggered fade-up per section, applied in JS with a delay. */
+@keyframes ac-section-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.ac-section-reveal { animation: ac-section-in 0.55s ease both; }
 .ac-answer-tldr {
   font-size: 0.9rem;
   font-weight: 550;
