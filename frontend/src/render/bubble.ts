@@ -639,6 +639,43 @@ export function renderSourcesList(
   return wrap;
 }
 
+// Retain the streamed draft as a "First pass" when the integrator final lands (Chat Master 2026-08-08
+// regression). On final-land the completed handler replaces the streamed draft wholesale with
+// renderAnswerCard's demoted structure — but that structure only contains a First pass when the final
+// card JSON still carried react_draft/reasoning_trace, which the integrator can drop. When it's
+// missing, this synthesizes a First pass from the captured streamed-draft HTML and inserts it above
+// .ac-answer-final, so the draft always collapses underneath the final rather than vanishing. No-op
+// when a First pass already exists (react_draft survived) or when there's no captured draft. Returns
+// the synthesized element (for the caller's open/collapse animation) or null.
+export function retainStreamedDraftAsFirstPass(
+  panel: HTMLElement,
+  streamedDraftHTML: string,
+): HTMLElement | null {
+  if (panel.querySelector(".ac-first-pass")) return null;      // final already carried the draft
+  if (!streamedDraftHTML.trim()) return null;                   // nothing streamed to retain
+  const finalWrap = panel.querySelector(".ac-answer-final");
+  const fp = document.createElement("div");
+  fp.className = "ac-first-pass";
+  const sum = document.createElement("button");
+  sum.type = "button";
+  sum.className = "ac-first-pass-summary";
+  sum.textContent = "First pass";
+  const body = document.createElement("div");
+  body.className = "ac-first-pass-body";
+  body.innerHTML = streamedDraftHTML;
+  // MEASURED-height toggle, identical to renderAnswerCard's First pass.
+  sum.addEventListener("click", () => {
+    const opening = !fp.classList.contains("ac-first-pass--open");
+    fp.classList.toggle("ac-first-pass--open");
+    body.style.maxHeight = opening ? body.scrollHeight + "px" : "0px";
+  });
+  fp.appendChild(sum);
+  fp.appendChild(body);
+  if (finalWrap) panel.insertBefore(fp, finalWrap);
+  else panel.insertBefore(fp, panel.firstChild);
+  return fp;
+}
+
 export function renderAnswerCard(
   card: AnswerCard,
   isError?: boolean,

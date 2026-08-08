@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
-import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, applyCitationFootnotes, renderSourcesList } from "./bubble";
+import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, applyCitationFootnotes, renderSourcesList, retainStreamedDraftAsFirstPass } from "./bubble";
 import type { AnswerCard } from "../answer-card";
 
 // A v2 (no-mode) card: primary section leads, detail tucks; citations light up their tab.
@@ -322,6 +322,60 @@ describe("renderAnswerCard — inline footnotes end-to-end (Task #34)", () => {
     );
     expect(srcTab).not.toBeUndefined();
     expect(srcTab!.getAttribute("data-empty")).toBeNull();
+  });
+});
+
+describe("retainStreamedDraftAsFirstPass — draft persists on final-land (Chat Master 2026-08-08)", () => {
+  // Simulate the completed handler's post-swap panel: the rendered final is present, but the card
+  // dropped react_draft so renderAnswerCard built NO First pass. The streamed draft must be retained.
+  function panelWithFinalNoFirstPass(): HTMLElement {
+    const panel = document.createElement("div");
+    panel.className = "ac-tab-panel--summary";
+    const finalWrap = document.createElement("div");
+    finalWrap.className = "ac-answer-final";
+    finalWrap.innerHTML = "<div class='ac-answer-envelope-body'>The final answer.</div>";
+    panel.appendChild(finalWrap);
+    return panel;
+  }
+
+  it("synthesizes a First pass from the streamed draft when the final carried none", () => {
+    const panel = panelWithFinalNoFirstPass();
+    const fp = retainStreamedDraftAsFirstPass(panel, "<p>the streamed draft text</p>");
+    expect(fp).not.toBeNull();
+    const rendered = panel.querySelector(".ac-first-pass");
+    expect(rendered).not.toBeNull();
+    expect(rendered!.querySelector(".ac-first-pass-summary")?.textContent).toBe("First pass");
+    expect(rendered!.querySelector(".ac-first-pass-body")?.textContent).toContain("the streamed draft text");
+    // Inserted ABOVE the final (draft collapses underneath the star).
+    expect(panel.firstElementChild).toBe(rendered);
+  });
+
+  it("is a no-op when the rendered card already built a First pass (react_draft survived)", () => {
+    const panel = panelWithFinalNoFirstPass();
+    const existing = document.createElement("div");
+    existing.className = "ac-first-pass";
+    existing.innerHTML = "<div class='ac-first-pass-body'>already here</div>";
+    panel.insertBefore(existing, panel.firstChild);
+    const fp = retainStreamedDraftAsFirstPass(panel, "<p>would-be draft</p>");
+    expect(fp).toBeNull();
+    expect(panel.querySelectorAll(".ac-first-pass").length).toBe(1);
+    expect(panel.querySelector(".ac-first-pass-body")?.textContent).toBe("already here");
+  });
+
+  it("is a no-op when there is no streamed draft to retain", () => {
+    const panel = panelWithFinalNoFirstPass();
+    expect(retainStreamedDraftAsFirstPass(panel, "   ")).toBeNull();
+    expect(panel.querySelector(".ac-first-pass")).toBeNull();
+  });
+
+  it("toggles open/closed on click (measured height)", () => {
+    const panel = panelWithFinalNoFirstPass();
+    const fp = retainStreamedDraftAsFirstPass(panel, "<p>draft</p>")!;
+    const btn = fp.querySelector(".ac-first-pass-summary") as HTMLButtonElement;
+    btn.click();
+    expect(fp.classList.contains("ac-first-pass--open")).toBe(true);
+    btn.click();
+    expect(fp.classList.contains("ac-first-pass--open")).toBe(false);
   });
 });
 

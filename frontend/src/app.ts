@@ -706,7 +706,7 @@ import {
   simpleMarkdownToHtml, simpleMarkdownToHtmlInner, rosterStepMarkdownToHtml,
   CONFIDENCE_BADGE_MAP, renderConfidenceBadge, createQcSampleShieldSvg, renderQcAuditBadge,
 } from "./ui-helpers";
-import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, applyCitationFootnotes } from "./render/bubble";
+import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, applyCitationFootnotes, retainStreamedDraftAsFirstPass } from "./render/bubble";
 
 /** Insert QC badge into an already-rendered assistant turn (late eval webhook). */
 function applyQcAuditToTurn(turnWrap: HTMLElement, qc: QcAuditInfo | undefined): void {
@@ -11569,29 +11569,9 @@ function run(): void {
                     const _streamedDraftHTML =
                       (existingSummaryPanel.querySelector(".ac-summary-prose") as HTMLElement | null)?.innerHTML ?? "";
                     existingSummaryPanel.replaceChildren(...Array.from(renderedSummaryPanel.children));
-                    if (!existingSummaryPanel.querySelector(".ac-first-pass") && _streamedDraftHTML.trim()) {
-                      const _finalForFp = existingSummaryPanel.querySelector(".ac-answer-final");
-                      const fp = document.createElement("div");
-                      fp.className = "ac-first-pass";
-                      const sum = document.createElement("button");
-                      sum.type = "button";
-                      sum.className = "ac-first-pass-summary";
-                      sum.textContent = "First pass";
-                      const body = document.createElement("div");
-                      body.className = "ac-first-pass-body";
-                      body.innerHTML = _streamedDraftHTML;
-                      // MEASURED-height toggle, same as renderAnswerCard's First pass.
-                      sum.addEventListener("click", () => {
-                        const opening = !fp.classList.contains("ac-first-pass--open");
-                        fp.classList.toggle("ac-first-pass--open");
-                        body.style.maxHeight = opening ? body.scrollHeight + "px" : "0px";
-                      });
-                      fp.appendChild(sum);
-                      fp.appendChild(body);
-                      // Above the final (the star sits at top of the panel, First pass just under it).
-                      if (_finalForFp) existingSummaryPanel.insertBefore(fp, _finalForFp);
-                      else existingSummaryPanel.insertBefore(fp, existingSummaryPanel.firstChild);
-                    }
+                    // Synthesize a First pass from the captured stream when the rendered card didn't
+                    // carry one (extracted + unit-tested in bubble.ts as a regression guard).
+                    retainStreamedDraftAsFirstPass(existingSummaryPanel, _streamedDraftHTML);
                     // Two-fold motion (Ananth 2026-08-07): the First pass sits at the TOP, opens with
                     // the draft, then SLOWLY COLLAPSES as the final answer streams in below it. The
                     // final's sections stay hidden until the prose lead finishes so they never appear

@@ -2882,6 +2882,34 @@ function renderSourcesList(sources) {
   wrap.appendChild(ol);
   return wrap;
 }
+function retainStreamedDraftAsFirstPass(panel, streamedDraftHTML) {
+  if (panel.querySelector(".ac-first-pass"))
+    return null;
+  if (!streamedDraftHTML.trim())
+    return null;
+  const finalWrap = panel.querySelector(".ac-answer-final");
+  const fp = document.createElement("div");
+  fp.className = "ac-first-pass";
+  const sum = document.createElement("button");
+  sum.type = "button";
+  sum.className = "ac-first-pass-summary";
+  sum.textContent = "First pass";
+  const body = document.createElement("div");
+  body.className = "ac-first-pass-body";
+  body.innerHTML = streamedDraftHTML;
+  sum.addEventListener("click", () => {
+    const opening = !fp.classList.contains("ac-first-pass--open");
+    fp.classList.toggle("ac-first-pass--open");
+    body.style.maxHeight = opening ? body.scrollHeight + "px" : "0px";
+  });
+  fp.appendChild(sum);
+  fp.appendChild(body);
+  if (finalWrap)
+    panel.insertBefore(fp, finalWrap);
+  else
+    panel.insertBefore(fp, panel.firstChild);
+  return fp;
+}
 function renderAnswerCard(card, isError, opts) {
   const wrap = document.createElement("div");
   wrap.className = "message message--assistant answer-card answer-card--" + // v2 cards carry no mode → a stable "v2" modifier class (legacy keeps factual/canonical/blended/recital).
@@ -12704,29 +12732,7 @@ ${message}`;
                 if (renderedHasFinal) {
                   const _streamedDraftHTML = existingSummaryPanel.querySelector(".ac-summary-prose")?.innerHTML ?? "";
                   existingSummaryPanel.replaceChildren(...Array.from(renderedSummaryPanel.children));
-                  if (!existingSummaryPanel.querySelector(".ac-first-pass") && _streamedDraftHTML.trim()) {
-                    const _finalForFp = existingSummaryPanel.querySelector(".ac-answer-final");
-                    const fp = document.createElement("div");
-                    fp.className = "ac-first-pass";
-                    const sum = document.createElement("button");
-                    sum.type = "button";
-                    sum.className = "ac-first-pass-summary";
-                    sum.textContent = "First pass";
-                    const body2 = document.createElement("div");
-                    body2.className = "ac-first-pass-body";
-                    body2.innerHTML = _streamedDraftHTML;
-                    sum.addEventListener("click", () => {
-                      const opening = !fp.classList.contains("ac-first-pass--open");
-                      fp.classList.toggle("ac-first-pass--open");
-                      body2.style.maxHeight = opening ? body2.scrollHeight + "px" : "0px";
-                    });
-                    fp.appendChild(sum);
-                    fp.appendChild(body2);
-                    if (_finalForFp)
-                      existingSummaryPanel.insertBefore(fp, _finalForFp);
-                    else
-                      existingSummaryPanel.insertBefore(fp, existingSummaryPanel.firstChild);
-                  }
+                  retainStreamedDraftAsFirstPass(existingSummaryPanel, _streamedDraftHTML);
                   const _fp = existingSummaryPanel.querySelector(".ac-first-pass");
                   const _fpBody = _fp?.querySelector(".ac-first-pass-body");
                   const _finalWrap = existingSummaryPanel.querySelector(".ac-answer-final");
