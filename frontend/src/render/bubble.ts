@@ -529,6 +529,116 @@ export function applyInlineCorrections(
   }
 }
 
+// Inline citation footnotes (Task #34, Ananth 2026-08-08). The integrator emits inline `[N]` markers
+// in the answer prose where N is the 1-based rag_chunks index the fact came from (LLM Agent's merge
+// step in final_parallel.py), and a positionally-aligned card.sources[] built from that chunk's
+// metadata. This walks the rendered prose's TEXT NODES, replaces each `[N]` with a superscript
+// footnote that jumps to the matching bottom-list entry, and DROPS a marker whose N has no source
+// (rather than showing a dead ref). Runs post-render (and post-stream, from app.ts) exactly like
+// applyInlineCorrections — same text-node-walk so it never breaks the markdown structure. Guarded on
+// sources.length by the caller; a no-op when no marker matches, so it's safe to call unconditionally.
+export function applyCitationFootnotes(
+  container: HTMLElement,
+  sources: ReadonlyArray<{ document_name?: string; doc_title?: string; locator?: string }>,
+): void {
+  if (!sources || sources.length === 0) return;
+  const MARKER = /\[(\d+)\]/g;
+  // Snapshot text nodes first — mutating during the walk invalidates the TreeWalker.
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  const textNodes: Text[] = [];
+  while (walker.nextNode()) {
+    const t = walker.currentNode as Text;
+    // Don't re-process inside an existing footnote, and don't touch code/pre (a literal [3] there
+    // is content, not a citation).
+    if (t.parentElement?.closest(".ac-cite-ref, code, pre")) continue;
+    if (t.nodeValue && MARKER.test(t.nodeValue)) textNodes.push(t);
+  }
+  for (const node of textNodes) {
+    const text = node.nodeValue ?? "";
+    MARKER.lastIndex = 0;
+    let last = 0;
+    let m: RegExpExecArray | null;
+    const frag = document.createDocumentFragment();
+    let touched = false;
+    while ((m = MARKER.exec(text)) !== null) {
+      const n = parseInt(m[1], 10);
+      const src = n >= 1 && n <= sources.length ? sources[n - 1] : undefined;
+      if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+      if (src) {
+        const sup = document.createElement("sup");
+        sup.className = "ac-cite-ref";
+        sup.setAttribute("data-cite-ref", String(n));
+        sup.setAttribute("role", "button");
+        sup.setAttribute("tabindex", "0");
+        const label = src.document_name || src.doc_title || `Source ${n}`;
+        sup.title = src.locator ? `${label} · ${src.locator}` : label;
+        sup.textContent = String(n);
+        const jump = () => {
+          const bubble = sup.closest(".answer-card-bubble") ?? container;
+          const li = bubble.querySelector(`[data-cite-src="${n}"]`) as HTMLElement | null;
+          if (li) {
+            li.scrollIntoView({ behavior: "smooth", block: "center" });
+            li.classList.add("ac-source-item--flash");
+            setTimeout(() => li.classList.remove("ac-source-item--flash"), 1400);
+          }
+        };
+        sup.addEventListener("click", jump);
+        sup.addEventListener("keydown", (e) => {
+          if ((e as KeyboardEvent).key === "Enter" || (e as KeyboardEvent).key === " ") { e.preventDefault(); jump(); }
+        });
+        frag.appendChild(sup);
+      }
+      // else: unmatched N → drop the marker silently (nothing appended for the [N] itself).
+      last = m.index + m[0].length;
+      touched = true;
+    }
+    if (!touched) continue;
+    if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+    node.parentNode?.replaceChild(frag, node);
+  }
+}
+
+// The numbered bottom sources list that the footnotes jump to. Replaces the separate Sources tab
+// (Ananth 2026-08-08: "map it to the sources in the bottom… remove the separate citations too").
+// Positional: sources[i] is footnote i+1. Returns null when there's nothing to show.
+export function renderSourcesList(
+  sources: ReadonlyArray<{ document_name?: string; doc_title?: string; locator?: string; snippet?: string }>,
+): HTMLElement | null {
+  if (!sources || sources.length === 0) return null;
+  const wrap = document.createElement("div");
+  wrap.className = "ac-sources-footnotes";
+  const heading = document.createElement("div");
+  heading.className = "ac-sources-footnotes-heading";
+  heading.textContent = "Sources";
+  wrap.appendChild(heading);
+  const ol = document.createElement("ol");
+  ol.className = "ac-sources-list";
+  sources.forEach((src, i) => {
+    const li = document.createElement("li");
+    li.className = "ac-source-item";
+    li.setAttribute("data-cite-src", String(i + 1));
+    const title = document.createElement("span");
+    title.className = "ac-source-title";
+    title.textContent = src.document_name || src.doc_title || `Source ${i + 1}`;
+    li.appendChild(title);
+    if (src.locator) {
+      const loc = document.createElement("span");
+      loc.className = "ac-source-locator";
+      loc.textContent = src.locator;
+      li.appendChild(loc);
+    }
+    if (src.snippet) {
+      const snip = document.createElement("span");
+      snip.className = "ac-source-snippet";
+      snip.textContent = src.snippet;
+      li.appendChild(snip);
+    }
+    ol.appendChild(li);
+  });
+  wrap.appendChild(ol);
+  return wrap;
+}
+
 export function renderAnswerCard(
   card: AnswerCard,
   isError?: boolean,
@@ -615,6 +725,10 @@ export function renderAnswerCard(
   const _answerSections = card.sections ?? [];
   const hasAnswerEnvelope = _displaySummary.length > 0 || _answerSections.length > 0;
   const _reactDraft = (card.react_draft ?? "").trim();
+  // Inline-footnote sources (Task #34). When present, [N] markers in the prose become superscripts
+  // and a numbered bottom list replaces the separate Sources tab.
+  const _sources = Array.isArray(card.sources) ? card.sources : [];
+  const hasSources = _sources.length > 0;
 
   // Draft headline above the tabs — ONLY in the draft-only state (no final yet). Once the final
   // exists it's the star (rendered in .ac-answer-final in the panel) and the draft demotes to a
@@ -714,6 +828,14 @@ export function renderAnswerCard(
       answerWrap.appendChild(body);
     }
     _answerSections.slice(0, MAX_SECTIONS).forEach((sec) => answerWrap.appendChild(renderOneSection(sec)));
+    // Inline citation footnotes: rewrite [N] markers in the final prose (lead + sections) into
+    // superscripts, then append the numbered bottom list they jump to. Guarded on hasSources so the
+    // legacy Sources-tab path is untouched when the integrator hasn't emitted card.sources yet.
+    if (hasSources) {
+      applyCitationFootnotes(answerWrap, _sources);
+      const srcList = renderSourcesList(_sources);
+      if (srcList) answerWrap.appendChild(srcList);
+    }
     // Final at the TOP of the panel (the star), above meta/confidence.
     answerPanel.insertBefore(answerWrap, answerPanel.firstChild);
 
@@ -780,10 +902,14 @@ export function renderAnswerCard(
   const _nextStepTasks = opts?.nextStepTasks ?? [];
 
   const hasCitations = Array.isArray(card.citations) && card.citations.length > 0;
+  // When the integrator emits card.sources (inline footnotes), the numbered bottom list REPLACES the
+  // Sources tab (Ananth 2026-08-08). Fall back to the legacy citations tab only when there are no
+  // footnote sources, so nothing regresses until the integrator emit lands.
+  const showCitationsTab = hasCitations && !hasSources;
   const hasTasks = _nextStepTasks.length > 0;   // corrections render INLINE now (no tab)
   // Tab bar shows for SECONDARY surfaces only — the answer is inline in the default panel, and
   // corrections are inline redlines (no tab), so only Sources + Tasks drive the bar (Ananth 2026-08-07).
-  const showTabBar = hasCitations || hasTasks;
+  const showTabBar = showCitationsTab || hasTasks;
 
   // Citations panel
   const citationsPanel = document.createElement("div");
@@ -945,7 +1071,8 @@ export function renderAnswerCard(
       // Chat Master ruling (b) 2026-08-06: the Citations tab is repurposed into a consolidated
       // "Sources" tab — reference chips (here) + source excerpts (snippets, here) + a collapsible
       // narrative_full_redacted section injected post-render (app.ts completed handler).
-      "citations": { label: "Sources", panelKey: "citations", count: (card.citations ?? []).length },
+      // Suppressed when inline footnotes are present (hasSources) — count:0 → data-empty hides it.
+      "citations": { label: "Sources", panelKey: "citations", count: showCitationsTab ? (card.citations ?? []).length : 0 },
       // Corrections tab removed (Ananth 2026-08-07) — corrections are inline redlines in the answer.
       // Follow-up tab dropped (Ananth 2026-08-07): follow-up questions render as suggestion chips
       // below the bubble, so a tab duplicated them. Tasks tab is being migrated to the feedback

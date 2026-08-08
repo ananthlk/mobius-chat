@@ -3567,6 +3567,71 @@ body {
   border-radius: 3px;
   padding: 0 0.15rem;
 }
+/* Inline citation footnotes (Task #34) — [N] markers become superscripts that jump to the bottom
+   numbered Sources list, replacing the separate Sources tab. */
+.ac-cite-ref {
+  cursor: pointer;
+  color: var(--mobius-violet, #7c3aed);
+  font-weight: 600;
+  font-size: 0.62em;
+  line-height: 0;
+  padding: 0 0.05em;
+  vertical-align: super;
+  user-select: none;
+  transition: color 0.12s ease;
+}
+.ac-cite-ref::before { content: "["; }
+.ac-cite-ref::after { content: "]"; }
+.ac-cite-ref:hover,
+.ac-cite-ref:focus-visible {
+  color: var(--mobius-indigo, #4f46e5);
+  outline: none;
+  text-decoration: underline;
+}
+.ac-sources-footnotes {
+  margin-top: 1rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--border-subtle, rgba(0, 0, 0, 0.08));
+}
+.ac-sources-footnotes-heading {
+  font-size: 0.7rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-tertiary, #6b7280);
+  margin-bottom: 0.4rem;
+}
+.ac-sources-list {
+  margin: 0;
+  padding-left: 1.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.ac-source-item {
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--text-secondary, #374151);
+  border-radius: 4px;
+  padding: 0.1rem 0.25rem;
+  transition: background 0.3s ease;
+}
+.ac-source-item::marker {
+  color: var(--mobius-violet, #7c3aed);
+  font-weight: 600;
+}
+.ac-source-title { font-weight: 600; color: var(--text-primary, #111827); }
+.ac-source-locator { color: var(--text-tertiary, #6b7280); margin-left: 0.35rem; }
+.ac-source-snippet {
+  display: block;
+  color: var(--text-tertiary, #6b7280);
+  font-size: 0.75rem;
+  margin-top: 0.1rem;
+  opacity: 0.85;
+}
+.ac-source-item--flash {
+  background: rgba(124, 58, 237, 0.14);
+}
 .ac-answer-tldr {
   font-size: 0.9rem;
   font-weight: 550;

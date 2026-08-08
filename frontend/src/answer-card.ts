@@ -122,6 +122,13 @@ export interface AnswerCard {
   // and its accurate replacement. null/absent unless the critic flagged a direct contradiction.
   // Rendered as an INLINE redline in the answer (Ananth 2026-08-07), not a tab.
   correction?: { original: string; corrected: string };
+  // Inline-footnote sources (integrator merge step, final_parallel.py — LLM Agent 2026-08-08).
+  // POSITIONALLY numbered: the prose carries inline [N] markers where N is the rag_chunks 1-based
+  // index the fact came from; sources[N-1] is that chunk's provenance. Built from rag_chunks metadata
+  // at merge time (NOT the critic's citations[], which is a deduped subset and doesn't align 1:1 to
+  // marker positions). When present, the FE renders [N] as superscript footnotes → this numbered
+  // bottom list and drops the separate Sources tab. Absent → legacy citations[] behavior unchanged.
+  sources?: Array<{ document_name?: string; doc_title?: string; locator?: string; snippet?: string }>;
   // Backend escalation hint (Task: Try-with-Think-mode). true when the answer was quality-flagged
   // and re-running in Think/agentic mode is suggested; ABSENT otherwise (never false). Suppressed
   // server-side when the request was already agentic. Drives the "⚡ Try with Think mode" button.
@@ -238,6 +245,17 @@ export function tryParseAnswerCard(message: string): AnswerCard | null {
           }
           return undefined;
         })(),
+        // Inline-footnote sources — positive filter, copy through explicitly (same class as the
+        // output_intent/reasoning_trace drop bugs). Only keep well-formed entries so a bad row
+        // can't shift the positional [N]→sources[N-1] mapping.
+        sources: Array.isArray(data.sources)
+          ? (data.sources as Array<Record<string, unknown>>).map((s) => ({
+              document_name: typeof s?.document_name === "string" ? s.document_name : undefined,
+              doc_title: typeof s?.doc_title === "string" ? s.doc_title : undefined,
+              locator: typeof s?.locator === "string" ? s.locator : undefined,
+              snippet: typeof s?.snippet === "string" ? s.snippet : undefined,
+            }))
+          : undefined,
         // Escalation hint — copied through explicitly (parseOne is a positive filter). Backend
         // sends it only when true (absent otherwise), so a strict true check is correct.
         suggest_escalate: data.suggest_escalate === true ? true : undefined,

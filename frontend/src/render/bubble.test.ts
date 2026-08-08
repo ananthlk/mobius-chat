@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
-import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections } from "./bubble";
+import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, applyCitationFootnotes, renderSourcesList } from "./bubble";
 import type { AnswerCard } from "../answer-card";
 
 // A v2 (no-mode) card: primary section leads, detail tucks; citations light up their tab.
@@ -212,6 +212,116 @@ describe("applyInlineCorrections — inline redline in the answer (Ananth 2026-0
     applyInlineCorrections(el, corr);
     applyInlineCorrections(el, corr);
     expect(el.querySelectorAll(".ac-redline").length).toBe(1);
+  });
+});
+
+describe("applyCitationFootnotes — inline [N] markers → superscript refs (Task #34)", () => {
+  const sources = [
+    { document_name: "AHCA Handbook", locator: "§59G-4" },
+    { document_name: "Provider Bulletin", locator: "p. 12" },
+  ];
+
+  it("replaces [N] with a superscript ref carrying the marker number", () => {
+    const el = document.createElement("div");
+    el.innerHTML = "<p>Telehealth is reimbursed at parity [1] under the state plan [2].</p>";
+    applyCitationFootnotes(el, sources);
+    const refs = el.querySelectorAll(".ac-cite-ref");
+    expect(refs.length).toBe(2);
+    expect(refs[0].textContent).toBe("1");
+    expect(refs[0].getAttribute("data-cite-ref")).toBe("1");
+    expect(refs[1].textContent).toBe("2");
+    // The literal bracket text is gone (rendered via CSS ::before/::after now).
+    expect(el.textContent).not.toContain("[1]");
+    expect(el.textContent).not.toContain("[2]");
+  });
+
+  it("drops a marker whose N has no matching source (no dead ref)", () => {
+    const el = document.createElement("div");
+    el.innerHTML = "<p>A claim with an out-of-range marker [5] and a valid one [1].</p>";
+    applyCitationFootnotes(el, sources);
+    const refs = el.querySelectorAll(".ac-cite-ref");
+    expect(refs.length).toBe(1);
+    expect(refs[0].textContent).toBe("1");
+    expect(el.textContent).not.toContain("[5]");
+    expect(el.textContent).not.toContain("5");
+  });
+
+  it("is a no-op when there are no sources", () => {
+    const el = document.createElement("div");
+    el.innerHTML = "<p>Plain text with [1] left intact.</p>";
+    applyCitationFootnotes(el, []);
+    expect(el.querySelector(".ac-cite-ref")).toBeNull();
+    expect(el.textContent).toContain("[1]");
+  });
+
+  it("does not re-process an existing footnote ref (idempotent)", () => {
+    const el = document.createElement("div");
+    el.innerHTML = "<p>Parity [1] applies.</p>";
+    applyCitationFootnotes(el, sources);
+    applyCitationFootnotes(el, sources);
+    expect(el.querySelectorAll(".ac-cite-ref").length).toBe(1);
+  });
+
+  it("leaves bracketed numbers inside code/pre untouched", () => {
+    const el = document.createElement("div");
+    el.innerHTML = "<p>See <code>arr[1]</code> here [1].</p>";
+    applyCitationFootnotes(el, sources);
+    expect(el.querySelector("code")?.textContent).toBe("arr[1]");
+    expect(el.querySelectorAll(".ac-cite-ref").length).toBe(1);
+  });
+});
+
+describe("renderSourcesList — numbered bottom list (Task #34)", () => {
+  it("builds an ordered list positionally aligned to the [N] markers", () => {
+    const list = renderSourcesList([
+      { document_name: "AHCA Handbook", locator: "§59G-4", snippet: "reimbursed at parity" },
+      { document_name: "Provider Bulletin", locator: "p. 12" },
+    ])!;
+    const items = list.querySelectorAll(".ac-source-item");
+    expect(items.length).toBe(2);
+    expect(items[0].getAttribute("data-cite-src")).toBe("1");
+    expect(items[0].querySelector(".ac-source-title")?.textContent).toBe("AHCA Handbook");
+    expect(items[0].querySelector(".ac-source-locator")?.textContent).toBe("§59G-4");
+    expect(items[0].querySelector(".ac-source-snippet")?.textContent).toBe("reimbursed at parity");
+    expect(items[1].getAttribute("data-cite-src")).toBe("2");
+    expect(items[1].querySelector(".ac-source-snippet")).toBeNull();
+  });
+
+  it("returns null for an empty sources array", () => {
+    expect(renderSourcesList([])).toBeNull();
+  });
+});
+
+describe("renderAnswerCard — inline footnotes end-to-end (Task #34)", () => {
+  it("footnotes the prose, appends the bottom list, and suppresses the Sources tab", () => {
+    const el = renderAnswerCard({
+      ...card,
+      display_summary: "Yes, reimbursed at parity [1] under the state plan [2].",
+      sources: [
+        { document_name: "AHCA Handbook", locator: "§59G-4" },
+        { document_name: "Provider Bulletin", locator: "p. 12" },
+      ],
+    });
+    // Footnotes in the prose lead.
+    expect(el.querySelectorAll(".ac-cite-ref").length).toBe(2);
+    // Bottom list present.
+    expect(el.querySelector(".ac-sources-list")).not.toBeNull();
+    expect(el.querySelectorAll(".ac-source-item").length).toBe(2);
+    // The legacy Sources tab is suppressed (data-empty) even though citations[] exists.
+    const srcTab = Array.from(el.querySelectorAll(".ac-tab")).find(
+      (t) => t.getAttribute("data-panel") === "citations",
+    );
+    // Either absent or marked empty — never a live Sources tab.
+    expect(srcTab == null || srcTab.getAttribute("data-empty") === "1").toBe(true);
+  });
+
+  it("keeps the legacy Sources tab when there are no footnote sources", () => {
+    const el = renderAnswerCard({ ...card, display_summary: "Yes, at parity." });
+    const srcTab = Array.from(el.querySelectorAll(".ac-tab")).find(
+      (t) => t.getAttribute("data-panel") === "citations",
+    );
+    expect(srcTab).not.toBeUndefined();
+    expect(srcTab!.getAttribute("data-empty")).toBeNull();
   });
 });
 
