@@ -672,6 +672,13 @@ def _run(call: SkillCall) -> SkillEnvelope:
     # that exact question, previously captured by RAG but never
     # extracted here.
     _routing_keys = contract.get("routing_keys") or {}
+    # clarify_questions (Retriever, 2026-08-08): populated when RAG's own posture
+    # classification is CLARIFY/CLARIFY_REPHRASE -- the corpus genuinely can't answer
+    # without the user disambiguating first (not the same thing as "nothing found").
+    # Empty list otherwise. Chat Master directive: react must treat this as terminal
+    # (stop searching, surface the question) rather than reframing/retrying against a
+    # gap that more search won't close.
+    _clarify_questions = _routing_keys.get("clarify_questions") or []
     _chosen_slot_for_observer = contract.get("chosen_slot")
     _observer_reasons_by_slot = _routing_keys.get("observer_final_reasons") or {}
     _observer_verdicts_by_slot = _routing_keys.get("observer_final_verdicts") or {}
@@ -711,6 +718,7 @@ def _run(call: SkillCall) -> SkillEnvelope:
             or (contract.get("traces") or {}).get("module_trace")
             or (contract.get("routing_keys") or {}).get("module_trace")
         ),
+        "clarify_questions": _clarify_questions,
     }
 
     # Always emit the retrieval_trace envelope, even on zero hits — the
@@ -749,7 +757,9 @@ def _run(call: SkillCall) -> SkillEnvelope:
     # otherwise-good results.
     if not chunks:
         if call.emitter:
-            if status and status not in (None, "ok", "partial"):
+            if _clarify_questions:
+                call.emitter("↓ Need clarification before searching further.")
+            elif status and status not in (None, "ok", "partial"):
                 call.emitter(f"↓ Retrieval status={status} — nothing usable found.")
             else:
                 call.emitter("↓ Nothing matched in our materials.")
@@ -761,6 +771,7 @@ def _run(call: SkillCall) -> SkillEnvelope:
                 "pipeline_trace": telemetry,
                 "skill_call_ms": elapsed_ms,
                 "search_id": search_id,
+                "clarify_questions": _clarify_questions,
             },
         )
 

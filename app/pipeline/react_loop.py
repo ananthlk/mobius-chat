@@ -1403,6 +1403,40 @@ def _execute_tool(
             s.get("filler_strategy") == "fact_store" for s in (corpus_sources or [])
         )
 
+        # clarify_questions terminal signal (2026-08-08, Chat Master directive):
+        # Retriever's routing_keys.clarify_questions is populated when its own
+        # posture classification is CLARIFY/CLARIFY_REPHRASE -- the corpus
+        # genuinely cannot answer without the user disambiguating first. This is
+        # a DIFFERENT signal from "nothing found" (status=no_retrieval with an
+        # empty clarify_questions still goes through the normal relax/reframe
+        # protocol below) -- more searching won't close a disambiguation gap, so
+        # treat it as terminal exactly like the "refuse" tool above: stop the
+        # loop immediately (react_bypass_integrate skips the integrator entirely
+        # -- orchestrator.py emits ctx.final_message as a plain message, no
+        # answer-card chrome), don't fall through to relax/reframe or the
+        # google_search fallback.
+        _clarify_questions = _corpus_telemetry.get("clarify_questions") or []
+        if _status == "no_retrieval" and _clarify_questions:
+            _clarify_text = (
+                _clarify_questions[0] if len(_clarify_questions) == 1
+                else "\n".join(f"- {q}" for q in _clarify_questions)
+            )
+            emit(f"  ↓ Needs clarification: {_clarify_text}")
+            ctx.react_bypass_integrate = True
+            ctx.final_message = _clarify_text
+            ctx.plan = _make_react_plan(ctx)
+            ctx.sources = []
+            ctx.retrieval_signals = [RETRIEVAL_SIGNAL_NO_SOURCES]
+            ctx.answer_set = {}
+            return {
+                "tool": "search_corpus",
+                "success": False,
+                "result": _clarify_text,
+                "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
+                "sources": [],
+                "clarify_questions": _clarify_questions,
+            }
+
         ctx._rag_call_history = _rag_history + [{  # type: ignore[attr-defined]
             "citable_required": _effective_citable,
             "n_chunks": _n_chunks,
@@ -4624,5 +4658,48 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             )
         honest = "\n\n".join(parts) if parts else _generic_fallback
     else:
-        honest = _generic_fallback
+        # 2026-08-08 (Ananth, directly, live finding): a parse failure here
+        # (decision is None -- both the original attempt and the format-
+        # correction retry failed) used to fall straight to the generic
+        # "I wasn't able to find..." boilerplate, discarding whatever real
+        # evidence react actually accumulated across EARLIER rounds that
+        # DID parse successfully. Confirmed live: 5 rounds of real rag
+        # results (genuinely relevant multidisciplinary-team/care-
+        # coordination content), round 6's decision failed to parse twice,
+        # and the boilerplate shipped even though the Answer tab's own
+        # integrator synthesized a detailed, accurate answer from the SAME
+        # ctx.rag_chunks seconds later. "It should probably provide the
+        # basic answer it has" -- try the last round's own running_answer
+        # first (it's exactly "the best answer built so far"), then a
+        # quick recovery synthesis over what was actually retrieved,
+        # before resorting to the boilerplate.
+        _ev_latest = getattr(ctx, "_evidence_review_latest", None)
+        _fallback_running_answer = (
+            (_ev_latest or {}).get("running_answer", "").strip()
+            if isinstance(_ev_latest, dict) else ""
+        )
+        _low_confidence_caveat = (
+            "\n\n_I wasn't fully confident in this answer and couldn't complete "
+            "my usual verification — treat it as a starting point, not a final word._"
+        )
+        if _fallback_running_answer:
+            honest = _fallback_running_answer + _low_confidence_caveat
+        else:
+            # ctx.rag_chunks doesn't exist yet -- it's only set INSIDE
+            # _finalize_response, which is the call we're building `honest`
+            # for. all_sources is the same underlying data (SourceRef.to_dict()
+            # shape: document_name/text/index), already accumulated across
+            # every round's tool call and in scope right here.
+            _fallback_evidence_text = "\n\n".join(
+                f"[{s.get('index')}] {s.get('document_name', '')}\n{s.get('text', '')}"
+                for s in (all_sources or []) if s.get("text")
+            )
+            _synth = (
+                _fast_mode_synthesize_answer(
+                    (ctx.effective_message or ctx.message or ""),
+                    _fallback_evidence_text, ctx, stage=f"react_{rn}_recovery_synthesis",
+                )
+                if _fallback_evidence_text else None
+            )
+            honest = (_synth + _low_confidence_caveat) if _synth else _generic_fallback
     _finalize_response(ctx, honest, all_sources, RETRIEVAL_SIGNAL_NO_SOURCES, last_tool, emitter)
