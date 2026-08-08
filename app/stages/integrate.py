@@ -713,9 +713,15 @@ def run_integrate(
 
     active = (ctx.merged_state or {}).get("active")
     jurisdiction_summary = None
+    user_perspective = None
     if active:
         j = get_jurisdiction_from_active(active)
         jurisdiction_summary = jurisdiction_to_summary(j) or None
+        # 2026-08-08 (Ananth, directly): "quick glance" role-aware emphasis --
+        # provider_office vs patient, so Call A can pick which facts (deadline,
+        # cost, next step) matter most to THIS reader and bold/hero-card/table
+        # those specifically, not just format generically.
+        user_perspective = (j.get("perspective") or "").strip() or None
 
     _cfg_sha = get_config_sha() or None
     _integ_stage = integrator_llm_stage(ctx)
@@ -776,6 +782,7 @@ def run_integrate(
         retrieval_metadata=retrieval_metadata,
         rag_chunks=rag_chunks or None,
         jurisdiction_summary=jurisdiction_summary,
+        user_perspective=user_perspective,
         user_provided_context=getattr(ctx, "user_provided_context", None),
         workflow_selection_ui=_workflow_selection_ui,
         correlation_id=ctx.correlation_id,

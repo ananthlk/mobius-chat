@@ -99,6 +99,7 @@ def _build_consolidator_input_json(
     *,
     retrieval_metadata: dict | None = None,
     jurisdiction_summary: str | None = None,
+    user_perspective: str | None = None,
     user_provided_context: str | None = None,
     workflow_selection_ui: dict[str, Any] | None = None,
     previous_thread_summary: str | None = None,
@@ -142,6 +143,14 @@ def _build_consolidator_input_json(
         payload["rag_chunks"] = rag_chunks
     if jurisdiction_summary and jurisdiction_summary.strip():
         payload["jurisdiction_summary"] = jurisdiction_summary.strip()
+    # 2026-08-08 (Ananth, directly): "quick glance" role-aware emphasis --
+    # provider_office/patient, from active.user_role via get_jurisdiction_
+    # from_active's perspective field (jurisdiction.py). Distinct from
+    # jurisdiction_summary (payer/state/program, WHAT the answer is about)
+    # -- this is WHO's reading it, so Call A can pick which facts to
+    # bold/hero-card/table as the priority for that reader.
+    if user_perspective and user_perspective.strip():
+        payload["user_perspective"] = user_perspective.strip()
     if user_provided_context and user_provided_context.strip():
         payload["user_provided_context"] = user_provided_context.strip()
     if workflow_selection_ui:
@@ -409,6 +418,7 @@ def format_response(
     *,
     retrieval_metadata: dict | None = None,
     jurisdiction_summary: str | None = None,
+    user_perspective: str | None = None,
     user_provided_context: str | None = None,
     workflow_selection_ui: dict[str, Any] | None = None,
     correlation_id: str | None = None,
@@ -448,6 +458,7 @@ def format_response(
             retrieval_metadata=retrieval_metadata,
             rag_chunks=rag_chunks,
             jurisdiction_summary=jurisdiction_summary,
+            user_perspective=user_perspective,
             user_provided_context=user_provided_context,
             workflow_selection_ui=workflow_selection_ui,
             previous_thread_summary=previous_thread_summary,

@@ -10,6 +10,7 @@ import pytest
 
 from app.pipeline.context import PipelineContext
 from app.planner.schemas import Plan, SubQuestion
+from app.responder.final import _build_consolidator_input_json
 from app.responder.final_parallel import _parse_json_response, format_response_parallel
 
 
@@ -191,6 +192,55 @@ def _mock_prompts():
     mock_prompts.integrator_parallel_enrichment_system = "enrichment sys"
     mock_prompts.integrator_user_template = "Input:\n{consolidator_input_json}\n\nReturn JSON."
     return mock_prompts
+
+
+class TestUserPerspective:
+    """2026-08-08, Ananth directly: role-aware "quick glance" emphasis.
+    user_perspective (provider_office/patient, from active.user_role via
+    jurisdiction.perspective) rides the consolidator input JSON so Call A can
+    pick which facts to bold/hero-card/lead with for that reader."""
+
+    def test_included_when_present(self):
+        raw = _build_consolidator_input_json(
+            _make_plan(), [], "What is X?", user_perspective="provider_office",
+        )
+        payload = json.loads(raw)
+        assert payload.get("user_perspective") == "provider_office"
+
+    def test_omitted_when_absent(self):
+        raw = _build_consolidator_input_json(_make_plan(), [], "What is X?")
+        payload = json.loads(raw)
+        assert "user_perspective" not in payload
+
+    def test_omitted_when_blank(self):
+        raw = _build_consolidator_input_json(
+            _make_plan(), [], "What is X?", user_perspective="   ",
+        )
+        payload = json.loads(raw)
+        assert "user_perspective" not in payload
+
+    def test_reaches_call_a_prompt_via_format_response_parallel(self):
+        """End-to-end: format_response_parallel must actually pass
+        user_perspective through to the consolidator input, not just accept
+        it as a dead kwarg."""
+        plan = _make_plan()
+        captured = {}
+
+        def fake(prompt, stage="integrator_a", max_tokens=4096, **kw):
+            if stage == "integrator_a":
+                captured["prompt"] = prompt
+            return _fake_generate_sync(prompt, stage, max_tokens, **kw)
+
+        with (
+            patch("app.responder.final_parallel._call_llm", side_effect=fake),
+            patch("app.responder.final_parallel.get_chat_config") as mock_cfg,
+        ):
+            mock_cfg.return_value.prompts = _mock_prompts()
+            format_response_parallel(
+                plan, ["answer"], user_message="What is X?", user_perspective="patient",
+            )
+
+        assert '"user_perspective": "patient"' in captured["prompt"]
 
 
 class TestCorrectionMerge:
