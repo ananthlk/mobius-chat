@@ -6677,28 +6677,44 @@ function renderModuleTrace(thinkingLog: ReadonlyArray<unknown> | null | undefine
     }
   }
   if (!data) return null;
-  const lat = (data.latency_ms && typeof data.latency_ms === "object") ? data.latency_ms as Record<string, unknown> : {};
-  const ms = (k: string): number | null => (typeof lat[k] === "number" ? Math.round(lat[k] as number) : null);
-  const numOf = (...vs: unknown[]): number | null => { for (const v of vs) if (typeof v === "number") return v; return null; };
-  const strOf = (...vs: unknown[]): string | null => { for (const v of vs) if (typeof v === "string" && v.trim()) return v.trim(); return null; };
 
-  const poolCandidates = numOf(data.pool_candidates, data.candidates, data.n_candidates, data.candidate_count);
-  const dispatchPath = strOf(data.dispatch_path, data.allocator);
-  const chosenSlot = strOf(data.chosen_slot);
-  // Filler occupancy — "occupancy 11/10" style. Try a flat field, else derive from n_chunks + a cap.
-  let occupancy = strOf(data.occupancy);
-  if (!occupancy && typeof data.n_chunks === "number") occupancy = `occupancy ${data.n_chunks}`;
-
-  const stages: Array<{ n: number; name: string; ms: number | null; extra: string | null }> = [
-    { n: 1, name: "Gate",      ms: ms("gate_ms"),      extra: null },
-    { n: 2, name: "Reformat",  ms: ms("reformat_ms"),  extra: null },
-    { n: 3, name: "Structure", ms: ms("structure_ms"), extra: null },
-    { n: 4, name: "Slots",     ms: ms("slots_ms"),     extra: null },
-    { n: 5, name: "Pool",      ms: ms("pool_ms"),      extra: poolCandidates != null ? `${poolCandidates} candidates` : null },
-    { n: 6, name: "Router",    ms: ms("router_ms"),    extra: dispatchPath },
-    { n: 7, name: chosenSlot ? `Filler — slot ${chosenSlot}` : "Filler", ms: ms("fillers_ms"), extra: occupancy },
-    { n: 8, name: "Synthesis", ms: ms("synthesis_ms"), extra: null },
-  ];
+  // Preferred source (Retriever's purpose-built summary field): data.module_trace, an ORDERED
+  // array of stage entries — one per stage, but Pool repeats per rewritten query (FAN_OUT) and
+  // Filler repeats per slot, so it's a flat list, not a fixed 8. Each entry:
+  //   { n, stage, ms?, candidates?, dispatch_path?, slot?, theme?, occupancy?, capacity? }
+  // Fallback (until that field ships): derive the fixed 8 from the latency_ms per-stage dict.
+  type Stg = { n: number; name: string; ms: number | null; extra: string | null };
+  let stages: Stg[];
+  const mt = Array.isArray((data as any).module_trace) ? (data as any).module_trace as any[] : null;
+  if (mt && mt.length) {
+    stages = mt.map((e, i) => {
+      const stage = typeof e.stage === "string" ? e.stage : "Stage";
+      const name = e.slot ? `${stage} — slot ${e.slot}` : (e.theme ? `${stage} — ${e.theme}` : stage);
+      const parts: string[] = [];
+      if (typeof e.candidates === "number") parts.push(`${e.candidates} candidates`);
+      if (typeof e.dispatch_path === "string" && e.dispatch_path) parts.push(e.dispatch_path);
+      if (typeof e.occupancy === "number") parts.push(`occupancy ${e.occupancy}${typeof e.capacity === "number" ? "/" + e.capacity : ""}`);
+      return { n: typeof e.n === "number" ? e.n : i + 1, name, ms: typeof e.ms === "number" ? Math.round(e.ms) : null, extra: parts.join(" · ") || null };
+    });
+  } else {
+    const lat = (data.latency_ms && typeof data.latency_ms === "object") ? data.latency_ms as Record<string, unknown> : {};
+    const ms = (k: string): number | null => (typeof lat[k] === "number" ? Math.round(lat[k] as number) : null);
+    const strOf = (...vs: unknown[]): string | null => { for (const v of vs) if (typeof v === "string" && v.trim()) return v.trim(); return null; };
+    const dispatchPath = strOf(data.dispatch_path, data.allocator);
+    const chosenSlot = strOf(data.chosen_slot);
+    stages = [
+      { n: 1, name: "Gate",      ms: ms("gate_ms"),      extra: null },
+      { n: 2, name: "Reformat",  ms: ms("reformat_ms"),  extra: null },
+      // Structure has no separate timing in production (only slots_ms) — show "—" rather than
+      // reuse slots_ms and double-count (Retriever confirmed, contract.py).
+      { n: 3, name: "Structure", ms: null,               extra: null },
+      { n: 4, name: "Slots",     ms: ms("slots_ms"),     extra: null },
+      { n: 5, name: "Pool",      ms: ms("pool_ms"),      extra: null },
+      { n: 6, name: "Router",    ms: ms("router_ms"),    extra: dispatchPath },
+      { n: 7, name: chosenSlot ? `Filler — slot ${chosenSlot}` : "Filler", ms: ms("fillers_ms"), extra: null },
+      { n: 8, name: "Synthesis", ms: ms("synthesis_ms"), extra: null },
+    ];
+  }
   // Nothing to show if not a single stage carried timing (non-RAG turn / legacy telemetry).
   if (!stages.some((s) => s.ms != null || s.extra)) return null;
 

@@ -8501,36 +8501,45 @@ function renderModuleTrace(thinkingLog) {
   }
   if (!data)
     return null;
-  const lat = data.latency_ms && typeof data.latency_ms === "object" ? data.latency_ms : {};
-  const ms = (k) => typeof lat[k] === "number" ? Math.round(lat[k]) : null;
-  const numOf = (...vs) => {
-    for (const v of vs)
-      if (typeof v === "number")
-        return v;
-    return null;
-  };
-  const strOf = (...vs) => {
-    for (const v of vs)
-      if (typeof v === "string" && v.trim())
-        return v.trim();
-    return null;
-  };
-  const poolCandidates = numOf(data.pool_candidates, data.candidates, data.n_candidates, data.candidate_count);
-  const dispatchPath = strOf(data.dispatch_path, data.allocator);
-  const chosenSlot = strOf(data.chosen_slot);
-  let occupancy = strOf(data.occupancy);
-  if (!occupancy && typeof data.n_chunks === "number")
-    occupancy = `occupancy ${data.n_chunks}`;
-  const stages = [
-    { n: 1, name: "Gate", ms: ms("gate_ms"), extra: null },
-    { n: 2, name: "Reformat", ms: ms("reformat_ms"), extra: null },
-    { n: 3, name: "Structure", ms: ms("structure_ms"), extra: null },
-    { n: 4, name: "Slots", ms: ms("slots_ms"), extra: null },
-    { n: 5, name: "Pool", ms: ms("pool_ms"), extra: poolCandidates != null ? `${poolCandidates} candidates` : null },
-    { n: 6, name: "Router", ms: ms("router_ms"), extra: dispatchPath },
-    { n: 7, name: chosenSlot ? `Filler \u2014 slot ${chosenSlot}` : "Filler", ms: ms("fillers_ms"), extra: occupancy },
-    { n: 8, name: "Synthesis", ms: ms("synthesis_ms"), extra: null }
-  ];
+  let stages;
+  const mt = Array.isArray(data.module_trace) ? data.module_trace : null;
+  if (mt && mt.length) {
+    stages = mt.map((e, i) => {
+      const stage = typeof e.stage === "string" ? e.stage : "Stage";
+      const name = e.slot ? `${stage} \u2014 slot ${e.slot}` : e.theme ? `${stage} \u2014 ${e.theme}` : stage;
+      const parts = [];
+      if (typeof e.candidates === "number")
+        parts.push(`${e.candidates} candidates`);
+      if (typeof e.dispatch_path === "string" && e.dispatch_path)
+        parts.push(e.dispatch_path);
+      if (typeof e.occupancy === "number")
+        parts.push(`occupancy ${e.occupancy}${typeof e.capacity === "number" ? "/" + e.capacity : ""}`);
+      return { n: typeof e.n === "number" ? e.n : i + 1, name, ms: typeof e.ms === "number" ? Math.round(e.ms) : null, extra: parts.join(" \xB7 ") || null };
+    });
+  } else {
+    const lat = data.latency_ms && typeof data.latency_ms === "object" ? data.latency_ms : {};
+    const ms = (k) => typeof lat[k] === "number" ? Math.round(lat[k]) : null;
+    const strOf = (...vs) => {
+      for (const v of vs)
+        if (typeof v === "string" && v.trim())
+          return v.trim();
+      return null;
+    };
+    const dispatchPath = strOf(data.dispatch_path, data.allocator);
+    const chosenSlot = strOf(data.chosen_slot);
+    stages = [
+      { n: 1, name: "Gate", ms: ms("gate_ms"), extra: null },
+      { n: 2, name: "Reformat", ms: ms("reformat_ms"), extra: null },
+      // Structure has no separate timing in production (only slots_ms) — show "—" rather than
+      // reuse slots_ms and double-count (Retriever confirmed, contract.py).
+      { n: 3, name: "Structure", ms: null, extra: null },
+      { n: 4, name: "Slots", ms: ms("slots_ms"), extra: null },
+      { n: 5, name: "Pool", ms: ms("pool_ms"), extra: null },
+      { n: 6, name: "Router", ms: ms("router_ms"), extra: dispatchPath },
+      { n: 7, name: chosenSlot ? `Filler \u2014 slot ${chosenSlot}` : "Filler", ms: ms("fillers_ms"), extra: null },
+      { n: 8, name: "Synthesis", ms: ms("synthesis_ms"), extra: null }
+    ];
+  }
   if (!stages.some((s) => s.ms != null || s.extra))
     return null;
   const wrap = document.createElement("div");
