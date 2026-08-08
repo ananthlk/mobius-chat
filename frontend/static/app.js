@@ -1939,6 +1939,7 @@ function tryParseAnswerCard(message) {
         // Answer-tab lead; positive filter, copy through explicitly (same class as the output_intent-drop bug).
         tldr_summary: typeof data.tldr_summary === "string" ? data.tldr_summary : void 0,
         react_draft: typeof data.react_draft === "string" ? data.react_draft : void 0,
+        reasoning_trace: Array.isArray(data.reasoning_trace) ? data.reasoning_trace : void 0,
         correction: (() => {
           const c = data.correction;
           if (c && typeof c === "object" && typeof c.original === "string" && typeof c.corrected === "string" && c.original.trim() && c.corrected.trim()) {
@@ -2900,16 +2901,33 @@ function renderAnswerCard(card, isError, opts) {
     }
     _answerSections.slice(0, MAX_SECTIONS).forEach((sec) => answerWrap.appendChild(renderOneSection(sec)));
     answerPanel.insertBefore(answerWrap, answerPanel.firstChild);
-    if (_reactDraft) {
+    const _rdRounds = (card.reasoning_trace ?? []).map((r, i) => ({ n: typeof r?.round === "number" ? r.round : i + 1, ans: (r?.enrichment?.running_answer ?? "").trim() })).filter((r) => r.ans.length > 0);
+    if (_reactDraft || _rdRounds.length > 0) {
       const fp = document.createElement("div");
       fp.className = "ac-first-pass";
       const sum = document.createElement("button");
       sum.type = "button";
       sum.className = "ac-first-pass-summary";
-      sum.textContent = "First pass";
+      sum.textContent = _rdRounds.length > 1 ? `First pass \xB7 ${_rdRounds.length} rounds` : "First pass";
       const fpBody = document.createElement("div");
       fpBody.className = "ac-first-pass-body";
-      fpBody.innerHTML = simpleMarkdownToHtml(_reactDraft);
+      if (_rdRounds.length > 0) {
+        _rdRounds.forEach((r) => {
+          const step = document.createElement("div");
+          step.className = "ac-rd-step";
+          const lbl = document.createElement("span");
+          lbl.className = "ac-rd-label";
+          lbl.textContent = "rd-" + r.n;
+          const ans = document.createElement("div");
+          ans.className = "ac-rd-answer";
+          ans.innerHTML = simpleMarkdownToHtml(r.ans);
+          step.appendChild(lbl);
+          step.appendChild(ans);
+          fpBody.appendChild(step);
+        });
+      } else {
+        fpBody.innerHTML = simpleMarkdownToHtml(_reactDraft);
+      }
       sum.addEventListener("click", () => {
         const opening = !fp.classList.contains("ac-first-pass--open");
         fp.classList.toggle("ac-first-pass--open");

@@ -717,22 +717,42 @@ export function renderAnswerCard(
     // Final at the TOP of the panel (the star), above meta/confidence.
     answerPanel.insertBefore(answerWrap, answerPanel.firstChild);
 
-    // The react_draft demotes to a collapsible "First pass" ABOVE the final (Ananth 2026-08-07:
-    // "move the first pass up… slowly collapse that as the final answer starts to flow in"). A
-    // custom collapsible (not <details>) so the body max-height can ANIMATE closed on the live
-    // path. Collapsed by default on reload; the streaming path opens it then animates it shut.
-    if (_reactDraft) {
+    // The react work demotes to a collapsible "First pass" ABOVE the final (Ananth 2026-08-07:
+    // "move the first pass up… slowly collapse that as the final answer starts to flow in"). When
+    // the per-round reasoning ledger is present (card.reasoning_trace, ReAct Task #58), show the
+    // PROGRESSION — rd-1 → rd-last — one step per round whose running_answer moved the answer; else
+    // fall back to the single react_draft. Custom collapsible so the body max-height can ANIMATE.
+    const _rdRounds = (card.reasoning_trace ?? [])
+      .map((r, i) => ({ n: typeof r?.round === "number" ? r.round : i + 1, ans: (r?.enrichment?.running_answer ?? "").trim() }))
+      .filter((r) => r.ans.length > 0);
+    if (_reactDraft || _rdRounds.length > 0) {
       const fp = document.createElement("div");
       fp.className = "ac-first-pass";
       const sum = document.createElement("button");
       sum.type = "button";
       sum.className = "ac-first-pass-summary";
-      sum.textContent = "First pass";
+      sum.textContent = _rdRounds.length > 1 ? `First pass · ${_rdRounds.length} rounds` : "First pass";
       const fpBody = document.createElement("div");
       fpBody.className = "ac-first-pass-body";
-      fpBody.innerHTML = simpleMarkdownToHtml(_reactDraft);
-      // Toggle via MEASURED max-height (not a fixed 60vh) so open/close animates smoothly and in
-      // proportion to the actual draft height — no dead time collapsing empty space.
+      if (_rdRounds.length > 0) {
+        _rdRounds.forEach((r) => {
+          const step = document.createElement("div");
+          step.className = "ac-rd-step";
+          const lbl = document.createElement("span");
+          lbl.className = "ac-rd-label";
+          lbl.textContent = "rd-" + r.n;
+          const ans = document.createElement("div");
+          ans.className = "ac-rd-answer";
+          ans.innerHTML = simpleMarkdownToHtml(r.ans);
+          step.appendChild(lbl);
+          step.appendChild(ans);
+          fpBody.appendChild(step);
+        });
+      } else {
+        fpBody.innerHTML = simpleMarkdownToHtml(_reactDraft);
+      }
+      // Toggle via MEASURED max-height (not a fixed cap) so open/close animates smoothly and in
+      // proportion to the actual content height — no dead time collapsing empty space.
       sum.addEventListener("click", () => {
         const opening = !fp.classList.contains("ac-first-pass--open");
         fp.classList.toggle("ac-first-pass--open");

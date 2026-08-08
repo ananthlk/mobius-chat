@@ -3525,6 +3525,22 @@ body {
 }
 /* max-height is set INLINE (measured scrollHeight) for a smooth, content-proportional collapse. */
 .ac-first-pass--open .ac-first-pass-body { opacity: 1; margin-top: 0.35rem; }
+/* Per-round reasoning progression inside First pass (rd-1 → rd-last, ReAct Task #58). */
+.ac-rd-step { margin-bottom: 0.55rem; }
+.ac-rd-step:last-child { margin-bottom: 0; }
+.ac-rd-label {
+  display: inline-block;
+  font-size: 0.56rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-tertiary, #9ca3af);
+  background: rgba(0,0,0,0.05);
+  padding: 0.05rem 0.35rem;
+  border-radius: 3px;
+  margin-bottom: 0.2rem;
+}
+.ac-rd-answer { font-size: 0.82rem; line-height: 1.5; color: var(--text-tertiary, #9ca3af); }
 
 /* Sections stream in one-by-one after the prose (Ananth 2026-08-07: "the last section needs to
    stream in too… too fast") — a staggered fade-up per section, applied in JS with a delay. */

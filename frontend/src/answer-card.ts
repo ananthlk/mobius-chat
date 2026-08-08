@@ -107,6 +107,14 @@ export interface AnswerCard {
   // ReAct's own synthesis, persisted into the card JSON (integrate.py, 2026-08-07) so the Summary
   // tab shows it on history reload the same way the live path shows the draft_ready stream.
   react_draft?: string;
+  // Per-round react reasoning ledger (ctx.reasoning_trace, ReAct Task #58) — one entry per round,
+  // in order. The FE shows the progression (rd-1 → rd-last) in the collapsible "First pass",
+  // filtering to rounds whose enrichment.running_answer is non-empty (= "this round moved the
+  // answer"). Rides card JSON via integrate.py's allowlist, same as react_draft.
+  reasoning_trace?: Array<{
+    round?: number;
+    enrichment?: { running_answer?: string; learned?: string; gaps_open?: string[] };
+  }>;
   // Factual correction from the integrator (chat_config.py): a specific wrong claim from the draft
   // and its accurate replacement. null/absent unless the critic flagged a direct contradiction.
   // Rendered as an INLINE redline in the answer (Ananth 2026-08-07), not a tab.
@@ -217,6 +225,8 @@ export function tryParseAnswerCard(message: string): AnswerCard | null {
         // Answer-tab lead; positive filter, copy through explicitly (same class as the output_intent-drop bug).
         tldr_summary: typeof data.tldr_summary === "string" ? data.tldr_summary : undefined,
         react_draft: typeof data.react_draft === "string" ? data.react_draft : undefined,
+        reasoning_trace: Array.isArray(data.reasoning_trace)
+          ? (data.reasoning_trace as AnswerCard["reasoning_trace"]) : undefined,
         correction: (() => {
           const c = data.correction as Record<string, unknown> | null | undefined;
           if (c && typeof c === "object" && typeof c.original === "string" && typeof c.corrected === "string"

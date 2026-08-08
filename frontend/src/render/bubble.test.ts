@@ -133,6 +133,32 @@ describe("Unified draft→answer view (Ananth 2026-08-07 — answer inline in th
     expect(draftOnly.querySelector(".ac-first-pass")).toBeNull(); // no First pass when there's no final to demote under
   });
 
+  it("renders the reasoning progression (rd-1 → rd-last) from card.reasoning_trace, filtering empty rounds", () => {
+    const el = renderAnswerCard({
+      ...card,
+      react_draft: "final draft",
+      reasoning_trace: [
+        { round: 1, enrichment: { running_answer: "Round 1 answer so far." } },
+        { round: 2, enrichment: { running_answer: "" } },            // empty → filtered out
+        { round: 3, enrichment: { running_answer: "Round 3 refined answer." } },
+      ],
+    });
+    const steps = Array.from(el.querySelectorAll(".ac-rd-step"));
+    expect(steps.length).toBe(2); // round 2 (empty running_answer) filtered
+    const labels = Array.from(el.querySelectorAll(".ac-rd-label")).map((l) => l.textContent);
+    expect(labels).toEqual(["rd-1", "rd-3"]);
+    expect(el.querySelector(".ac-first-pass-body")?.textContent).toContain("Round 1 answer so far");
+    expect(el.querySelector(".ac-first-pass-body")?.textContent).toContain("Round 3 refined answer");
+    // summary reflects the round count
+    expect(el.querySelector(".ac-first-pass-summary")?.textContent).toContain("2 rounds");
+  });
+
+  it("falls back to the single react_draft First pass when no reasoning_trace", () => {
+    const el = renderAnswerCard({ ...card, react_draft: "just the draft" });
+    expect(el.querySelectorAll(".ac-rd-step").length).toBe(0);
+    expect(el.querySelector(".ac-first-pass-body")?.textContent).toContain("just the draft");
+  });
+
   it("renders no .ac-answer-final and no Answer tab when there is neither display_summary NOR sections", () => {
     const el = renderAnswerCard({ direct_answer: "Just a sentence.", sections: [] });
     const tabs = Array.from(el.querySelectorAll(".ac-tab")).map((t) => t.textContent ?? "");
