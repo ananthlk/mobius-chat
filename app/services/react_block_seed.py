@@ -122,8 +122,18 @@ def _react_block_specs() -> list[BlockSpec]:
         # the per-round progression (card.reasoning_trace, Chat FE feature)
         # and the Summary tab render as scannable markdown instead of a
         # dense unformatted paragraph.
+        # v3 (2026-08-08, Task #77 CI-guard finding): v2 was seeded from a
+        # read of REACT_CRITICAL_RULES_TEXT taken BEFORE a concurrent commit
+        # (a6f5dfb, Observer verdict/reason for the reframe decision, #41a)
+        # landed in this shared checkout -- `git add` by filename picked up
+        # that growth when this file was committed, but the DB seed was
+        # never regenerated against the post-growth content, so v2's DB row
+        # silently mismatched the v2 Python source from the moment it
+        # shipped. test_prompt_block_seed_drift.py (Task #77) caught it same
+        # day. v3 is a plain re-seed at the CURRENT content, read fresh
+        # immediately before this commit -- no wording change of its own.
         BlockSpec("react.critical_rules", "static", "system", react_prompts.REACT_CRITICAL_RULES_TEXT + "\n",
-                  owner="chat-architecture", version=2),
+                  owner="chat-architecture", version=3),
         # Shared with critic.audit (Chat Architecture ruling, 2026-07-29): one
         # block_key, member of both react_* and critic_audit compositions.
         BlockSpec("react.user_profile", "derived", "system", "{{ user_profile_text }}",
