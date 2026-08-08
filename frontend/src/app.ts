@@ -1735,6 +1735,28 @@ function sanitizeDisplayMessage(raw: string): string {
   return s;
 }
 
+// Paced text streaming shared by the draft AND the final answer (Ananth 2026-08-07: stream the
+// answer at the same speed as the draft so it feels consistent). Duration-targeted: short text
+// ~fast, long text capped ~this window. Renders raw text through simpleMarkdownToHtml each step.
+const CARD_STREAM_TARGET_MS = 8500;
+const CARD_STREAM_STEP_MS = 45;
+function _streamMarkdownInto(el: HTMLElement, text: string): (() => void) {
+  const words = (text ?? "").split(" ");
+  const steps = Math.max(1, Math.round(CARD_STREAM_TARGET_MS / CARD_STREAM_STEP_MS));
+  const wordsPerStep = Math.max(1, Math.ceil(words.length / steps));
+  let wi = 0;
+  let cancelled = false;
+  const finish = () => { cancelled = true; el.innerHTML = simpleMarkdownToHtml(text); };
+  const step = () => {
+    if (cancelled) return;
+    wi = Math.min(wi + wordsPerStep, words.length);
+    el.innerHTML = simpleMarkdownToHtml(words.slice(0, wi).join(" "));
+    if (wi < words.length) window.setTimeout(step, CARD_STREAM_STEP_MS);
+  };
+  step();
+  return finish;
+}
+
 function isAllowedOpenHref(href: string): boolean {
   const t = href.trim();
   if (!t || t.toLowerCase().startsWith("javascript:")) return false;
@@ -11206,9 +11228,9 @@ function run(): void {
         // 5 words/18ms — near-instant, so it finished long before the answer and left an awkward
         // gap. Pace it to ~a fixed wall-clock window so it reads as a live "first pass" still
         // flowing when the final answer lands, seamless. Short drafts ~2.5s, long ones ~5s.
-        const DRAFT_STREAM_TARGET_MS = 8500;
-        const DRAFT_STREAM_STEP_MS = 45;
-        const _steps = Math.max(1, Math.round(DRAFT_STREAM_TARGET_MS / DRAFT_STREAM_STEP_MS));
+        // Shared pacing so the draft and the final answer stream at the SAME speed (Ananth 2026-08-07).
+        const DRAFT_STREAM_STEP_MS = CARD_STREAM_STEP_MS;
+        const _steps = Math.max(1, Math.round(CARD_STREAM_TARGET_MS / DRAFT_STREAM_STEP_MS));
         const wordsPerStep = Math.max(1, Math.ceil(words.length / _steps));
         let wi = 0;
         let cancelled = false;
@@ -11529,6 +11551,11 @@ function run(): void {
                     // the react_draft collapsed to "▸ First pass" below it. react_draft == the streamed
                     // draft, so nothing is lost; this makes the answer the star, draft out of the way.
                     existingSummaryPanel.replaceChildren(...Array.from(renderedSummaryPanel.children));
+                    // Stream the final's prose lead at the SAME pace as the draft, so the answer flows
+                    // in consistently rather than snapping in all at once (Ananth 2026-08-07).
+                    const _finalBody = existingSummaryPanel.querySelector(".ac-answer-final .ac-answer-envelope-body") as HTMLElement | null;
+                    const _leadText = (fullCard?.display_summary ?? "").trim() || (fullCard?.direct_answer ?? "").trim();
+                    if (_finalBody && _leadText) _streamMarkdownInto(_finalBody, _leadText);
                   } else {
                     // Draft-only (no final this turn): keep the streamed prose. If it's empty (a raw
                     // draft was suppressed), fill the headless case from the rendered draft line.

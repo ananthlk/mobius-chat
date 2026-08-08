@@ -4149,6 +4149,29 @@ function sanitizeDisplayMessage(raw) {
   }
   return s;
 }
+var CARD_STREAM_TARGET_MS = 8500;
+var CARD_STREAM_STEP_MS = 45;
+function _streamMarkdownInto(el2, text) {
+  const words = (text ?? "").split(" ");
+  const steps = Math.max(1, Math.round(CARD_STREAM_TARGET_MS / CARD_STREAM_STEP_MS));
+  const wordsPerStep = Math.max(1, Math.ceil(words.length / steps));
+  let wi = 0;
+  let cancelled = false;
+  const finish = () => {
+    cancelled = true;
+    el2.innerHTML = simpleMarkdownToHtml(text);
+  };
+  const step = () => {
+    if (cancelled)
+      return;
+    wi = Math.min(wi + wordsPerStep, words.length);
+    el2.innerHTML = simpleMarkdownToHtml(words.slice(0, wi).join(" "));
+    if (wi < words.length)
+      window.setTimeout(step, CARD_STREAM_STEP_MS);
+  };
+  step();
+  return finish;
+}
 function isAllowedOpenHref(href) {
   const t = href.trim();
   if (!t || t.toLowerCase().startsWith("javascript:"))
@@ -12285,9 +12308,8 @@ ${message}`;
         draftStreamCancel = null;
       } else {
         const words = text.split(" ");
-        const DRAFT_STREAM_TARGET_MS = 8500;
-        const DRAFT_STREAM_STEP_MS = 45;
-        const _steps = Math.max(1, Math.round(DRAFT_STREAM_TARGET_MS / DRAFT_STREAM_STEP_MS));
+        const DRAFT_STREAM_STEP_MS = CARD_STREAM_STEP_MS;
+        const _steps = Math.max(1, Math.round(CARD_STREAM_TARGET_MS / DRAFT_STREAM_STEP_MS));
         const wordsPerStep = Math.max(1, Math.ceil(words.length / _steps));
         let wi = 0;
         let cancelled = false;
@@ -12532,6 +12554,10 @@ ${message}`;
                 const renderedHasFinal = !!renderedSummaryPanel.querySelector(".ac-answer-final");
                 if (renderedHasFinal) {
                   existingSummaryPanel.replaceChildren(...Array.from(renderedSummaryPanel.children));
+                  const _finalBody = existingSummaryPanel.querySelector(".ac-answer-final .ac-answer-envelope-body");
+                  const _leadText = (fullCard?.display_summary ?? "").trim() || (fullCard?.direct_answer ?? "").trim();
+                  if (_finalBody && _leadText)
+                    _streamMarkdownInto(_finalBody, _leadText);
                 } else {
                   const streamedProse = existingSummaryPanel.querySelector(".ac-summary-prose");
                   const renderedDirect = renderedBubble.querySelector(".answer-card-direct");
