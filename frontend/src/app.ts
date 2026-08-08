@@ -6383,7 +6383,23 @@ function _dcReasonSection(data: any, routing: any): HTMLElement {
     _dcKV(body, "score", score);
     _dcKV(body, "status", status);
     if (data.attempt_count != null) _dcKV(body, "attempt_count", String(data.attempt_count));
-    if (data.latency_ms != null) _dcKV(body, "latency_ms", `${data.latency_ms}ms`);
+    // latency_ms in the new pipeline (corpus_search.py) is the per-STAGE dict
+    // {gate_ms,reformat_ms,slots_ms,pool_ms,router_ms,fillers_ms,synthesis_ms,total_ms}, not a
+    // number — rendering it directly gave "[object Object]ms" (Retriever/Ananth 2026-08). Show
+    // total as the headline + a per-stage breakdown; still handle a bare number (legacy turns).
+    if (data.latency_ms != null) {
+      const _lat = data.latency_ms;
+      if (typeof _lat === "number") {
+        _dcKV(body, "latency_ms", `${Math.round(_lat)}ms`);
+      } else if (typeof _lat === "object") {
+        const _total = (_lat as Record<string, unknown>).total_ms;
+        if (typeof _total === "number") _dcKV(body, "latency_ms", `${Math.round(_total)}ms`);
+        const _parts = Object.entries(_lat as Record<string, unknown>)
+          .filter(([k, v]) => k !== "total_ms" && typeof v === "number" && (v as number) > 0)
+          .map(([k, v]) => `${k.replace(/_ms$/, "")} ${Math.round(v as number)}`);
+        if (_parts.length) _dcKV(body, "latency breakdown (ms)", _parts.join(" · "));
+      }
+    }
     if (data.allocator_override != null) _dcKV(body, "allocator_override", String(data.allocator_override));
     if (data.authority_requirement != null) _dcKV(body, "authority_requirement", String(data.authority_requirement));
     // Backward-compat: a pre-cutover turn may still carry routing.scores — show the scorer if so.

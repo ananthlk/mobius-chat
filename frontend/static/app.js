@@ -8210,8 +8210,19 @@ function _dcReasonSection(data, routing) {
     _dcKV(body, "status", status);
     if (data.attempt_count != null)
       _dcKV(body, "attempt_count", String(data.attempt_count));
-    if (data.latency_ms != null)
-      _dcKV(body, "latency_ms", `${data.latency_ms}ms`);
+    if (data.latency_ms != null) {
+      const _lat = data.latency_ms;
+      if (typeof _lat === "number") {
+        _dcKV(body, "latency_ms", `${Math.round(_lat)}ms`);
+      } else if (typeof _lat === "object") {
+        const _total = _lat.total_ms;
+        if (typeof _total === "number")
+          _dcKV(body, "latency_ms", `${Math.round(_total)}ms`);
+        const _parts = Object.entries(_lat).filter(([k, v]) => k !== "total_ms" && typeof v === "number" && v > 0).map(([k, v]) => `${k.replace(/_ms$/, "")} ${Math.round(v)}`);
+        if (_parts.length)
+          _dcKV(body, "latency breakdown (ms)", _parts.join(" \xB7 "));
+      }
+    }
     if (data.allocator_override != null)
       _dcKV(body, "allocator_override", String(data.allocator_override));
     if (data.authority_requirement != null)
