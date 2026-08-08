@@ -311,3 +311,190 @@ def test_cta_confirm_authoritative_omitted_when_absent():
 
     payload = json.loads(ctx.response_payload["message"])
     assert "cta_confirm_authoritative" not in payload
+
+
+# ── reasoning_trace (2026-08-08, Chat FE stepped-progression view) ─────────
+# Chat FE agent asked for the per-round react ledger (rd-1 -> rd-N running_
+# answer) to render a collapsed-by-default progression in the chat bubble.
+# ctx.react_trace_rounds already carries this (built 2026-08-07 for Task
+# #58); the only gap was that nothing threaded it onto the client-facing
+# card. Reuses _build_reasoning_ledger (already computed for the enricher's
+# own prompt input) rather than exposing raw ctx.reasoning_trace, so the FE
+# gets the same capped/flattened round/running_answer/learned/gaps_open
+# shape and internal fields (composition_id, raw_result_ref, inputs) never
+# reach the wire. Same three-layer coverage (normal/bleed/stub) as
+# react_draft/cta_confirm_authoritative above, since it rides the identical
+# mechanism.
+
+_SAMPLE_TRACE_ROUNDS = [
+    {"round": 1, "tool": "search_corpus", "enrichment": {
+        "learned": "Found the Florida Medicaid page.",
+        "running_answer": "Eligibility requires FL residency and income limits.",
+        "gaps_closed": [], "gaps_open": ["exact income threshold"],
+    }},
+    {"round": 2, "tool": "search_corpus", "enrichment": {
+        "learned": "Confirmed the FPL threshold.",
+        "running_answer": "Eligibility requires FL residency, US citizenship, and income under 138% FPL.",
+        "gaps_closed": ["exact income threshold"], "gaps_open": [],
+    }},
+]
+
+
+def test_reasoning_trace_survives_normal_path():
+    ctx = _make_ctx(react_trace_rounds=_SAMPLE_TRACE_ROUNDS)
+    card = {"mode": "FACTUAL", "direct_answer": "A normal, non-bled answer.", "sections": []}
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    trace = payload.get("reasoning_trace")
+    assert trace is not None
+    assert [r["round"] for r in trace] == [1, 2]
+    assert trace[0]["running_answer"] == "Eligibility requires FL residency and income limits."
+    assert trace[1]["gaps_closed"] == ["exact income threshold"]
+    # Internal-only fields must not leak onto the client card.
+    assert "composition_id" not in trace[0]
+    assert "raw_result_ref" not in trace[0]
+
+
+def test_reasoning_trace_survives_bleed_branch():
+    ctx = _make_ctx(react_trace_rounds=_SAMPLE_TRACE_ROUNDS)
+    inner = {"mode": "FACTUAL", "direct_answer": "Nested answer.", "sections": []}
+    card = {"mode": "FACTUAL", "direct_answer": json.dumps(inner), "sections": []}
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert len(payload.get("reasoning_trace") or []) == 2
+
+
+def test_reasoning_trace_survives_total_parse_failure_stub():
+    ctx = _make_ctx(react_trace_rounds=_SAMPLE_TRACE_ROUNDS)
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = ("not valid json { broken", None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert len(payload.get("reasoning_trace") or []) == 2
+
+
+def test_reasoning_trace_omitted_when_absent():
+    """Regression guard: no react_trace_rounds on ctx -> never fabricated."""
+    ctx = _make_ctx()
+    card = {"mode": "FACTUAL", "direct_answer": "A normal answer.", "sections": []}
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert "reasoning_trace" not in payload
+
+
+def test_reasoning_trace_omitted_when_rounds_have_no_enrichment():
+    """Rounds that never ran an evidence_review (pure tool-dispatch, no
+    running_answer yet) are skipped by _build_reasoning_ledger, not padded
+    -- an all-skipped list means the ledger is empty and the key is omitted
+    entirely rather than shipping an empty array."""
+    ctx = _make_ctx(react_trace_rounds=[{"round": 1, "tool": "search_corpus"}])
+    card = {"mode": "FACTUAL", "direct_answer": "A normal answer.", "sections": []}
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert "reasoning_trace" not in payload
+
+
+# ── reasoning_trace persistence (2026-08-08, Chat FE stepped-progression view) ─
+# Same allowlist-injection pattern as react_draft/cta_confirm_authoritative.
+# Built from ctx.react_trace_rounds via _build_reasoning_ledger (the SAME
+# function that already builds the enricher's own reasoning_ledger prompt
+# input) -- flat per-round entries {round, tool, learned, running_answer,
+# gaps_closed, gaps_open}, NOT nested under an "enrichment" key. Rounds with
+# no enrichment content are skipped, not padded.
+
+_TRACE_ROUNDS = [
+    {"round": 1, "tool": "search_corpus", "enrichment": {
+        "learned": "Corpus mentions Sunshine Health filing windows.",
+        "running_answer": "Filing deadline is likely 180 days.",
+        "gaps_closed": [], "gaps_open": ["resubmission window"],
+    }},
+    {"round": 2, "tool": "search_corpus", "enrichment": {
+        "learned": "Resubmission window is 90 days.",
+        "running_answer": "Initial 180 days, resubmission 90 days.",
+        "gaps_closed": ["resubmission window"], "gaps_open": [],
+    }},
+]
+
+
+def test_reasoning_trace_survives_normal_path():
+    ctx = _make_ctx(react_trace_rounds=_TRACE_ROUNDS)
+    card = {"mode": "FACTUAL", "direct_answer": "A normal answer.", "sections": []}
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    trace = payload.get("reasoning_trace")
+    assert trace is not None and len(trace) == 2
+    assert trace[0]["round"] == 1
+    assert trace[0]["running_answer"] == "Filing deadline is likely 180 days."
+    assert "enrichment" not in trace[0], "flat shape, not nested under enrichment"
+    assert trace[1]["gaps_closed"] == ["resubmission window"]
+
+
+def test_reasoning_trace_survives_bleed_branch():
+    ctx = _make_ctx(react_trace_rounds=_TRACE_ROUNDS)
+    inner = {"mode": "FACTUAL", "direct_answer": "Nested answer.", "sections": []}
+    card = {"mode": "FACTUAL", "direct_answer": json.dumps(inner), "sections": []}
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert payload.get("reasoning_trace") is not None
+    assert len(payload["reasoning_trace"]) == 2
+
+
+def test_reasoning_trace_survives_total_parse_failure_stub():
+    ctx = _make_ctx(react_trace_rounds=_TRACE_ROUNDS)
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = ("not valid json { broken", None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert payload.get("reasoning_trace") is not None
+    assert len(payload["reasoning_trace"]) == 2
+
+
+def test_reasoning_trace_omitted_when_no_rounds():
+    """Regression guard: no react_trace_rounds on ctx -> key absent, not []."""
+    ctx = _make_ctx()
+    card = {"mode": "FACTUAL", "direct_answer": "A normal answer.", "sections": []}
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert "reasoning_trace" not in payload
+
+
+def test_reasoning_trace_skips_rounds_without_enrichment():
+    """A round the LLM never enriched (e.g. is_complete on round 1) is
+    skipped, not padded with an empty entry."""
+    rounds = [
+        {"round": 1, "tool": "search_corpus"},  # no "enrichment" key at all
+        _TRACE_ROUNDS[0],
+    ]
+    ctx = _make_ctx(react_trace_rounds=rounds)
+    card = {"mode": "FACTUAL", "direct_answer": "A normal answer.", "sections": []}
+    with patch("app.stages.integrate.format_response") as mock_format:
+        mock_format.return_value = (json.dumps(card), None)
+        run_integrate(ctx)
+
+    payload = json.loads(ctx.response_payload["message"])
+    assert len(payload["reasoning_trace"]) == 1
+    assert payload["reasoning_trace"][0]["round"] == 1
+    assert payload["reasoning_trace"][0]["running_answer"] == "Filing deadline is likely 180 days."

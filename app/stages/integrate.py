@@ -89,6 +89,15 @@ _ANSWER_CARD_ENVELOPE_KEYS = (
     # reads card.react_draft on reload the same way it reads
     # card.direct_answer today.
     "react_draft",
+    # 2026-08-08: react's own per-round reasoning progression (rd-1 -> rd-N
+    # running_answer), for the Chat FE stepped-progression view (Chat FE
+    # agent request, Chat Master authorized). Reuses the already-computed
+    # `reasoning_ledger` (capped/flattened per-round shape built by
+    # _build_reasoning_ledger for the enricher's own prompt input, Task
+    # #58) rather than exposing the raw uncapped ctx.reasoning_trace --
+    # the FE only needs round/running_answer/learned/gaps_open, not
+    # internal fields like composition_id/raw_result_ref/inputs.
+    "reasoning_trace",
     # 2026-08-08: "confirm from authoritative sources" CTA (Task #41(a)
     # follow-up). Injected into `parsed` in run_integrate (same mechanism
     # as suggest_escalate) but this allowlist entry was never added when
@@ -593,6 +602,9 @@ def _backend_extras_for_stub(ctx: PipelineContext) -> dict[str, Any]:
         extra["suggest_escalate"] = True
     if getattr(ctx, "cta_confirm_authoritative", False):
         extra["cta_confirm_authoritative"] = True
+    _stub_reasoning_ledger = _build_reasoning_ledger(getattr(ctx, "react_trace_rounds", None))
+    if _stub_reasoning_ledger:
+        extra["reasoning_trace"] = _stub_reasoning_ledger
     return extra
 
 
@@ -1157,6 +1169,15 @@ def run_integrate(
             # card.direct_answer today, just a different key.
             if _react_draft and _react_draft.strip():
                 parsed["react_draft"] = _react_draft
+
+            # reasoning_trace (2026-08-08, Chat FE progression view) — same
+            # additive/persistence pattern as react_draft above. Reuses the
+            # reasoning_ledger already computed at the top of this function
+            # (for the enricher's own prompt input) so the FE gets the exact
+            # same round/running_answer/learned/gaps_open shape without a
+            # second computation or exposing raw ctx.reasoning_trace.
+            if reasoning_ledger:
+                parsed["reasoning_trace"] = reasoning_ledger
 
             # Layer 2 appeals integration — inject suggested_actions if LLM omitted it.
             # The LLM is instructed to populate this for denial/appeal queries, but may
