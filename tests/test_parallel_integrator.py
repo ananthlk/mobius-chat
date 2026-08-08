@@ -182,6 +182,131 @@ class TestFormatResponseParallel:
         assert "direct_answer" in card
 
 
+def _mock_prompts():
+    mock_prompts = MagicMock()
+    mock_prompts.consolidator_factual_max = 0.4
+    mock_prompts.consolidator_canonical_min = 0.6
+    mock_prompts.integrator_parallel_core_system = "core sys"
+    mock_prompts.integrator_parallel_critic_system = "critic sys"
+    mock_prompts.integrator_parallel_enrichment_system = "enrichment sys"
+    mock_prompts.integrator_user_template = "Input:\n{consolidator_input_json}\n\nReturn JSON."
+    return mock_prompts
+
+
+class TestCorrectionMerge:
+    """2026-08-08, Chat FE: inline redline {original, corrected} -- Chat Master
+    directive. Critic (Call B) is the evidence-verification pass, so it's the
+    right place to detect react_draft/Call A claims that rag_chunks/
+    tool_outputs actually contradict."""
+
+    def test_critic_correction_merged_into_card(self):
+        plan = _make_plan()
+
+        def fake(prompt, stage="integrator_a", max_tokens=4096, **kw):
+            if stage == "integrator_critic":
+                return (json.dumps({
+                    "citations": [], "cited_source_indices": [], "takeaways": [], "gaps": [],
+                    "correction": {"original": "180 days", "corrected": "90 days"},
+                }), {"stage": stage, "model": "m", "input_tokens": 1, "output_tokens": 1, "latency_ms": 1})
+            return _fake_generate_sync(prompt, stage, max_tokens, **kw)
+
+        with (
+            patch("app.responder.final_parallel._call_llm", side_effect=fake),
+            patch("app.responder.final_parallel.get_chat_config") as mock_cfg,
+        ):
+            mock_cfg.return_value.prompts = _mock_prompts()
+            result_json, _ = format_response_parallel(plan, ["answer"], user_message="What is X?")
+
+        card = json.loads(result_json)
+        assert card["correction"] == {"original": "180 days", "corrected": "90 days"}
+
+    def test_critic_null_correction_does_not_add_key(self):
+        plan = _make_plan()
+        with (
+            patch("app.responder.final_parallel._call_llm", side_effect=_fake_generate_sync),
+            patch("app.responder.final_parallel.get_chat_config") as mock_cfg,
+        ):
+            mock_cfg.return_value.prompts = _mock_prompts()
+            result_json, _ = format_response_parallel(plan, ["answer"], user_message="What is X?")
+
+        card = json.loads(result_json)
+        assert "correction" not in card
+
+    def test_critic_null_correction_does_not_erase_call_a_correction(self):
+        """Call A's own (rare, self-detected) correction survives when
+        critic finds nothing -- a critic null must not silently overwrite it."""
+        plan = _make_plan()
+        core_with_correction = json.dumps({
+            "mode": "FACTUAL",
+            "direct_answer": "X is a test answer.",
+            "sections": [],
+            "correction": {"original": "wrong claim", "corrected": "right claim"},
+        })
+
+        def fake(prompt, stage="integrator_a", max_tokens=4096, **kw):
+            if stage == "integrator_a":
+                return (core_with_correction, {"stage": stage, "model": "m", "input_tokens": 1, "output_tokens": 1, "latency_ms": 1})
+            return _fake_generate_sync(prompt, stage, max_tokens, **kw)
+
+        with (
+            patch("app.responder.final_parallel._call_llm", side_effect=fake),
+            patch("app.responder.final_parallel.get_chat_config") as mock_cfg,
+        ):
+            mock_cfg.return_value.prompts = _mock_prompts()
+            result_json, _ = format_response_parallel(plan, ["answer"], user_message="What is X?")
+
+        card = json.loads(result_json)
+        assert card["correction"] == {"original": "wrong claim", "corrected": "right claim"}
+
+    def test_malformed_critic_correction_ignored(self):
+        """A correction dict missing original/corrected is dropped, not
+        passed through half-formed to the frontend redline."""
+        plan = _make_plan()
+
+        def fake(prompt, stage="integrator_a", max_tokens=4096, **kw):
+            if stage == "integrator_critic":
+                return (json.dumps({
+                    "citations": [], "cited_source_indices": [], "takeaways": [], "gaps": [],
+                    "correction": {"original": "180 days"},
+                }), {"stage": stage, "model": "m", "input_tokens": 1, "output_tokens": 1, "latency_ms": 1})
+            return _fake_generate_sync(prompt, stage, max_tokens, **kw)
+
+        with (
+            patch("app.responder.final_parallel._call_llm", side_effect=fake),
+            patch("app.responder.final_parallel.get_chat_config") as mock_cfg,
+        ):
+            mock_cfg.return_value.prompts = _mock_prompts()
+            result_json, _ = format_response_parallel(plan, ["answer"], user_message="What is X?")
+
+        card = json.loads(result_json)
+        assert "correction" not in card
+
+    def test_correction_reaches_full_card_via_integrate_stage(self):
+        """End-to-end: run_integrate (the real allowlist-copy path) must
+        still carry correction through, same as react_draft/suggest_escalate/
+        cta_confirm_authoritative did before this -- correction IS in
+        _ANSWER_CARD_ENVELOPE_KEYS, confirming the plumbing survives the
+        same allowlist-copy mechanism that dropped those other fields
+        before they were added to it."""
+        from app.stages.integrate import run_integrate
+
+        ctx = _make_ctx()
+        card_with_correction = json.dumps({
+            "mode": "FACTUAL", "direct_answer": "X is a test answer.", "sections": [],
+            "correction": {"original": "180 days", "corrected": "90 days"},
+        })
+
+        with (
+            patch.dict(os.environ, {"MOBIUS_INTEGRATOR_MODE": "parallel"}),
+            patch("app.stages.integrate.format_response_parallel") as mock_par,
+        ):
+            mock_par.return_value = (card_with_correction, [{"stage": "integrator_a", "model": "m", "input_tokens": 0, "output_tokens": 0}])
+            run_integrate(ctx)
+
+        payload = json.loads(ctx.response_payload["message"])
+        assert payload.get("correction") == {"original": "180 days", "corrected": "90 days"}
+
+
 # ── Integration test: A/B routing in integrate.py ────────────────────────────
 
 class TestIntegratorModeRouting:

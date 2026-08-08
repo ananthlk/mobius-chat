@@ -464,7 +464,8 @@ class ChatPromptsConfig:
         '"source_confidence_override":"approved_authoritative|approved_informational|proceed_with_caution|augmented_with_google|informational_only|no_sources|null",'
         '"confidence_note":"string|null",'
         '"takeaways":["string"],'
-        '"gaps":["string"]}\n\n'
+        '"gaps":["string"],'
+        '"correction":{"original":"string","corrected":"string"}|null}\n\n'
         "Field rules:\n"
         "- citations: for each key claim in react_draft/reasoning_ledger that rag_chunks supports, one entry. "
         "snippet MUST be verbatim (≤200 chars) copied from the rag_chunks text field — no paraphrase. "
@@ -478,6 +479,15 @@ class ChatPromptsConfig:
         "- gaps: 1–2 genuine coverage holes — pull from the LATEST reasoning_ledger entry's gaps_open first "
         "(react already identified these); only fall back to assessing coverage yourself if reasoning_ledger is empty. "
         "Empty array [] if the answer was thorough.\n"
+        "- correction: this is YOUR core job, not a rare edge case — you are the evidence-verification pass, "
+        "specifically checking every factual claim in react_draft/reasoning_ledger against rag_chunks/tool_outputs. "
+        "Set correction when you find a claim that rag_chunks/tool_outputs DIRECTLY CONTRADICTS (a wrong number, "
+        "a wrong deadline, a wrong code, a wrong named entity) — not a stylistic disagreement, not a missing "
+        "detail (that's gaps' job), an actual factual error. original = the exact wrong claim as it reads in "
+        "react_draft. corrected = the accurate replacement, worded so it can be inserted VERBATIM into the "
+        "final answer's prose in place of the wrong claim — the frontend redlines original and inserts corrected "
+        "inline, so corrected must read as a complete, grammatical replacement fragment, not a note about the "
+        "error. null when nothing you checked was actually contradicted — most turns, this is null.\n"
         "- Use ONLY facts from the input.\n"
     )
 

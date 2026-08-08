@@ -288,7 +288,7 @@ def format_response_parallel(
                         if _critic_partial:
                             _emit_partial("citations", {
                                 k: v for k, v in _critic_partial.items()
-                                if k in ("citations", "cited_source_indices", "source_confidence_override", "confidence_note", "takeaways", "gaps")
+                                if k in ("citations", "cited_source_indices", "source_confidence_override", "confidence_note", "takeaways", "gaps", "correction")
                             })
                     except Exception as e:
                         logger.warning("[parallel:B] call failed: %s", e)
@@ -363,6 +363,19 @@ def format_response_parallel(
         gaps = critic.get("gaps")
         if isinstance(gaps, list):
             card["gaps"] = gaps
+        # correction (2026-08-08, Chat FE: inline redline needs {original,
+        # corrected} -- Chat Master directive): critic is the evidence-
+        # verification pass, the right place to catch react_draft/Call A
+        # claims that rag_chunks/tool_outputs actually contradict. Only
+        # overwrite Call A's own (rare, self-detected) correction when
+        # critic found a real one -- a critic null must not silently erase
+        # something Call A already flagged.
+        correction = critic.get("correction")
+        if isinstance(correction, dict) and correction.get("original") and correction.get("corrected"):
+            card["correction"] = {
+                "original": str(correction["original"]),
+                "corrected": str(correction["corrected"]),
+            }
 
     # ── Merge call C (enrichment) ──
     enrich = _parse_json_response(text_c, "C")
