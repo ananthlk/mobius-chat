@@ -3541,6 +3541,7 @@ body {
   margin-bottom: 0.2rem;
 }
 .ac-rd-answer { font-size: 0.82rem; line-height: 1.5; color: var(--text-tertiary, #9ca3af); }
+.ac-rd-thought { font-style: italic; opacity: 0.85; }   /* reasoning (learned), not an answer-so-far */
 
 /* Sections stream in one-by-one after the prose (Ananth 2026-08-07: "the last section needs to
    stream in too… too fast") — a staggered fade-up per section, applied in JS with a delay. */

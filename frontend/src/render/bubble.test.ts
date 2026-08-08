@@ -155,6 +155,22 @@ describe("Unified draft→answer view (Ananth 2026-08-07 — answer inline in th
     expect(el.querySelector(".ac-first-pass-summary")?.textContent).toContain("2 rounds");
   });
 
+  it("shows a round's `learned` (as a muted thought) when it has no running_answer", () => {
+    const el = renderAnswerCard({
+      ...card,
+      react_draft: "final draft",
+      reasoning_trace: [
+        { round: 1, tool: "search_corpus", learned: "Need to check the filing window." } as unknown as NonNullable<AnswerCard["reasoning_trace"]>[number],
+        { round: 2, running_answer: "Filed within 180 days." },
+      ],
+    });
+    const steps = Array.from(el.querySelectorAll(".ac-rd-step"));
+    expect(steps.length).toBe(2);
+    // round 1 = thought (learned, muted); round 2 = answer-so-far
+    expect(el.querySelector(".ac-rd-thought")?.textContent).toContain("Need to check the filing window");
+    expect(el.querySelector(".ac-rd-answer:not(.ac-rd-thought)")?.textContent).toContain("Filed within 180 days");
+  });
+
   it("falls back to the single react_draft First pass when no reasoning_trace", () => {
     const el = renderAnswerCard({ ...card, react_draft: "just the draft" });
     expect(el.querySelectorAll(".ac-rd-step").length).toBe(0);

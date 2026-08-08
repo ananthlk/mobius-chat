@@ -722,11 +722,16 @@ export function renderAnswerCard(
     // the per-round reasoning ledger is present (card.reasoning_trace, ReAct Task #58), show the
     // PROGRESSION — rd-1 → rd-last — one step per round whose running_answer moved the answer; else
     // fall back to the single react_draft. Custom collapsible so the body max-height can ANIMATE.
-    // FLAT shape (running_answer is a direct sibling of round — the ledger is flattened server-side,
-    // no "enrichment" wrapper). Filter to non-empty running_answer as defense; the backend already
-    // skips empty-content rounds, so this is usually a no-op.
+    // FLAT shape (running_answer/learned are direct siblings of round — the ledger is flattened
+    // server-side, no "enrichment" wrapper). Show each round's answer-so-far (running_answer) when
+    // present, else its reasoning (learned) — so simple turns (a tool round with only `learned`,
+    // no synthesis) still populate a progression rather than falling back to the single draft.
     const _rdRounds = (card.reasoning_trace ?? [])
-      .map((r, i) => ({ n: typeof r?.round === "number" ? r.round : i + 1, ans: (r?.running_answer ?? "").trim() }))
+      .map((r, i) => ({
+        n: typeof r?.round === "number" ? r.round : i + 1,
+        ans: (r?.running_answer ?? "").trim() || (r?.learned ?? "").trim(),
+        isThought: !((r?.running_answer ?? "").trim()) && !!(r?.learned ?? "").trim(),
+      }))
       .filter((r) => r.ans.length > 0);
     if (_reactDraft || _rdRounds.length > 0) {
       const fp = document.createElement("div");
@@ -745,7 +750,9 @@ export function renderAnswerCard(
           lbl.className = "ac-rd-label";
           lbl.textContent = "rd-" + r.n;
           const ans = document.createElement("div");
-          ans.className = "ac-rd-answer";
+          // Thought-only rounds (learned, no running_answer) render muted/italic to distinguish
+          // reasoning from an actual answer-so-far.
+          ans.className = "ac-rd-answer" + (r.isThought ? " ac-rd-thought" : "");
           ans.innerHTML = simpleMarkdownToHtml(r.ans);
           step.appendChild(lbl);
           step.appendChild(ans);

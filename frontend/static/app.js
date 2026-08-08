@@ -2901,7 +2901,11 @@ function renderAnswerCard(card, isError, opts) {
     }
     _answerSections.slice(0, MAX_SECTIONS).forEach((sec) => answerWrap.appendChild(renderOneSection(sec)));
     answerPanel.insertBefore(answerWrap, answerPanel.firstChild);
-    const _rdRounds = (card.reasoning_trace ?? []).map((r, i) => ({ n: typeof r?.round === "number" ? r.round : i + 1, ans: (r?.running_answer ?? "").trim() })).filter((r) => r.ans.length > 0);
+    const _rdRounds = (card.reasoning_trace ?? []).map((r, i) => ({
+      n: typeof r?.round === "number" ? r.round : i + 1,
+      ans: (r?.running_answer ?? "").trim() || (r?.learned ?? "").trim(),
+      isThought: !(r?.running_answer ?? "").trim() && !!(r?.learned ?? "").trim()
+    })).filter((r) => r.ans.length > 0);
     if (_reactDraft || _rdRounds.length > 0) {
       const fp = document.createElement("div");
       fp.className = "ac-first-pass";
@@ -2919,7 +2923,7 @@ function renderAnswerCard(card, isError, opts) {
           lbl.className = "ac-rd-label";
           lbl.textContent = "rd-" + r.n;
           const ans = document.createElement("div");
-          ans.className = "ac-rd-answer";
+          ans.className = "ac-rd-answer" + (r.isThought ? " ac-rd-thought" : "");
           ans.innerHTML = simpleMarkdownToHtml(r.ans);
           step.appendChild(lbl);
           step.appendChild(ans);
