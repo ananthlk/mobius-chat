@@ -706,7 +706,7 @@ import {
   simpleMarkdownToHtml, simpleMarkdownToHtmlInner, rosterStepMarkdownToHtml,
   CONFIDENCE_BADGE_MAP, renderConfidenceBadge, createQcSampleShieldSvg, renderQcAuditBadge,
 } from "./ui-helpers";
-import { renderAnswerCard, formatOutputIntentLabel } from "./render/bubble";
+import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections } from "./render/bubble";
 
 /** Insert QC badge into an already-rendered assistant turn (late eval webhook). */
 function applyQcAuditToTurn(turnWrap: HTMLElement, qc: QcAuditInfo | undefined): void {
@@ -11175,7 +11175,7 @@ function run(): void {
       // No Answer tab (Ananth 2026-08-07) — the integrator's final flows into the DEFAULT panel,
       // below the draft, not a separate tab (unified draft→answer view).
       streamTabBar.appendChild(_mkStreamBtn("Sources", "citations", false));
-      streamTabBar.appendChild(_mkStreamBtn("Corrections", "corrections", false));
+      // No Corrections tab (Ananth 2026-08-07) — corrections render as inline redlines in the answer.
       streamTabBar.appendChild(_mkStreamBtn("Tasks", "tasks", false));
       bubble.appendChild(streamTabBar);
 
@@ -11462,7 +11462,7 @@ function run(): void {
           }
 
           // Extract corrections and next-step tasks from envelope blocks
-          const _extractedCorrections: Array<{ label: string; text: string }> = [];
+          const _extractedCorrections: Array<{ label: string; text: string; original?: string; corrected?: string }> = [];
           const _extractedNextStepTasks: Array<{ text: string; taskType: string }> = [];
           if (useEnvelope) {
             for (const _eb of (envCandidate as AssistantEnvelope).blocks || []) {
@@ -11478,7 +11478,9 @@ function run(): void {
                 const _cb = _eb as { original: string; corrected: string };
                 const _orig = (_cb.original || "").trim();
                 const _fixed = (_cb.corrected || "").trim();
-                if (_orig && _fixed) _extractedCorrections.push({ label: "Correction", text: _orig + " → " + _fixed });
+                // Keep original+corrected separate so the FE can render an inline redline in the
+                // answer (Ananth 2026-08-07), not just the collapsed "original → corrected" text.
+                if (_orig && _fixed) _extractedCorrections.push({ label: "Correction", text: _orig + " → " + _fixed, original: _orig, corrected: _fixed });
               } else if (_ebt === "next_steps") {
                 const _cb = _eb as { items: unknown[] };
                 normalizeFollowupLineList(_cb.items || [], false).forEach((item) => {
@@ -11583,6 +11585,9 @@ function run(): void {
                           _fpBody.style.maxHeight = "0px";
                         }
                         _streamMarkdownInto(_finalBody, _leadText, () => {      // fold 2: stream, then sections
+                          // Inline corrections: redline {original→corrected} into the final answer
+                          // (prose + sections, even hidden) once the prose has streamed (Ananth 2026-08-07).
+                          if (_finalWrap && _extractedCorrections.length) applyInlineCorrections(_finalWrap, _extractedCorrections);
                           // Sections stream in one-by-one (staggered fade-up), not all at once.
                           _hiddenSections.forEach((s, i) => {
                             window.setTimeout(() => {

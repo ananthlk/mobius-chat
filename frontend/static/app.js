@@ -2288,26 +2288,17 @@ function renderQcAuditBadge(_qc) {
   const row = document.createElement("div");
   row.className = "qc-audit-badge-row";
   const badge = document.createElement("span");
-  badge.className = "qc-audit-badge qc-audit-badge--neutral";
-  badge.setAttribute(
-    "aria-label",
-    "This reply was checked by an automated quality review. It does not change your answer."
-  );
+  badge.className = "qc-audit-badge qc-audit-badge--neutral qc-audit-badge--icon";
+  const _tip = "Quality review completed \u2014 does not change your answer";
+  badge.setAttribute("aria-label", _tip);
+  badge.setAttribute("title", _tip);
   const iconEl = document.createElement("span");
   iconEl.className = "qc-audit-badge-icon";
   iconEl.setAttribute("aria-hidden", "true");
   iconEl.appendChild(createQcSampleShieldSvg());
-  const labelEl = document.createElement("span");
-  labelEl.className = "qc-audit-badge-label";
-  labelEl.textContent = "Quality review completed";
   badge.appendChild(iconEl);
-  badge.appendChild(labelEl);
   row.appendChild(badge);
   wrap.appendChild(row);
-  const foot = document.createElement("p");
-  foot.className = "qc-audit-badge-footnote";
-  foot.textContent = "Does not change your answer.";
-  wrap.appendChild(foot);
   return wrap;
 }
 
@@ -2732,6 +2723,50 @@ function renderOneSection(sec) {
   _renderSectionBody(sec, sectionEl);
   return sectionEl;
 }
+function applyInlineCorrections(container, corrections) {
+  for (const c of corrections) {
+    const orig = (c.original ?? "").trim();
+    const corr = (c.corrected ?? "").trim();
+    if (!corr)
+      continue;
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    let target = null;
+    while (walker.nextNode()) {
+      const t = walker.currentNode;
+      if (t.parentElement?.closest(".ac-redline"))
+        continue;
+      if (t.nodeValue && t.nodeValue.includes(corr)) {
+        target = t;
+        break;
+      }
+    }
+    if (!target || !target.nodeValue)
+      continue;
+    const idx = target.nodeValue.indexOf(corr);
+    const before = target.nodeValue.slice(0, idx);
+    const after = target.nodeValue.slice(idx + corr.length);
+    const frag = document.createDocumentFragment();
+    if (before)
+      frag.appendChild(document.createTextNode(before));
+    const rl = document.createElement("span");
+    rl.className = "ac-redline";
+    if (orig) {
+      const del = document.createElement("del");
+      del.className = "ac-redline-del";
+      del.textContent = orig;
+      rl.appendChild(del);
+      rl.appendChild(document.createTextNode(" "));
+    }
+    const ins = document.createElement("ins");
+    ins.className = "ac-redline-ins";
+    ins.textContent = corr;
+    rl.appendChild(ins);
+    frag.appendChild(rl);
+    if (after)
+      frag.appendChild(document.createTextNode(after));
+    target.parentNode?.replaceChild(frag, target);
+  }
+}
 function renderAnswerCard(card, isError, opts) {
   const wrap = document.createElement("div");
   wrap.className = "message message--assistant answer-card answer-card--" + // v2 cards carry no mode → a stable "v2" modifier class (legacy keeps factual/canonical/blended/recital).
@@ -2859,17 +2894,23 @@ function renderAnswerCard(card, isError, opts) {
     _answerSections.slice(0, MAX_SECTIONS).forEach((sec) => answerWrap.appendChild(renderOneSection(sec)));
     answerPanel.insertBefore(answerWrap, answerPanel.firstChild);
     if (_reactDraft) {
-      const fp = document.createElement("details");
+      const fp = document.createElement("div");
       fp.className = "ac-first-pass";
-      const sum = document.createElement("summary");
+      const sum = document.createElement("button");
+      sum.type = "button";
       sum.className = "ac-first-pass-summary";
       sum.textContent = "First pass";
       const fpBody = document.createElement("div");
       fpBody.className = "ac-first-pass-body";
       fpBody.innerHTML = simpleMarkdownToHtml(_reactDraft);
+      sum.addEventListener("click", () => {
+        const opening = !fp.classList.contains("ac-first-pass--open");
+        fp.classList.toggle("ac-first-pass--open");
+        fpBody.style.maxHeight = opening ? fpBody.scrollHeight + "px" : "0px";
+      });
       fp.appendChild(sum);
       fp.appendChild(fpBody);
-      answerWrap.insertAdjacentElement("afterend", fp);
+      answerPanel.insertBefore(fp, answerWrap);
     }
   }
   const _corrections = opts?.corrections ?? [];
@@ -2878,7 +2919,7 @@ function renderAnswerCard(card, isError, opts) {
   const hasCitations = Array.isArray(card.citations) && card.citations.length > 0;
   const hasCorrections = _corrections.length > 0;
   const hasTasks = _nextStepTasks.length > 0;
-  const showTabBar = hasCitations || hasCorrections || hasTasks;
+  const showTabBar = hasCitations || hasTasks;
   const citationsPanel = document.createElement("div");
   citationsPanel.className = "ac-tab-panel ac-tab-panel--citations";
   citationsPanel.setAttribute("role", "tabpanel");
@@ -2908,54 +2949,10 @@ function renderAnswerCard(card, isError, opts) {
     });
     citationsPanel.appendChild(citList);
   }
-  const correctionsPanel = document.createElement("div");
-  correctionsPanel.className = "ac-tab-panel ac-tab-panel--corrections";
-  correctionsPanel.setAttribute("role", "tabpanel");
-  correctionsPanel.setAttribute("hidden", "");
   if (hasCorrections) {
-    const corrList = document.createElement("div");
-    corrList.className = "ac-correction-list";
-    _corrections.forEach(({ label, text }) => {
-      const row = document.createElement("div");
-      row.className = "ac-correction-row";
-      const lbl = document.createElement("div");
-      lbl.className = "ac-correction-label";
-      lbl.textContent = label;
-      row.appendChild(lbl);
-      row.appendChild(document.createTextNode(text));
-      corrList.appendChild(row);
-    });
-    correctionsPanel.appendChild(corrList);
-    const corrCallout = document.createElement("div");
-    corrCallout.className = "ac-answer-correction-callout";
-    const corrIcon = document.createElement("span");
-    corrIcon.className = "ac-answer-correction-icon";
-    corrIcon.textContent = "\u26A0";
-    corrIcon.setAttribute("aria-hidden", "true");
-    const corrBody = document.createElement("div");
-    const corrLbl = document.createElement("div");
-    corrLbl.className = "ac-answer-correction-callout-label";
-    corrLbl.textContent = _corrections[0].label;
-    const corrP = document.createElement("p");
-    corrP.className = "ac-answer-correction-callout-text";
-    corrP.appendChild(document.createTextNode(
-      _corrections.length === 1 ? _corrections[0].text.slice(0, 120) + (_corrections[0].text.length > 120 ? "\u2026" : "") + " \u2014 " : `${_corrections.length} corrections noted \u2014 `
-    ));
-    const corrTabLink = document.createElement("button");
-    corrTabLink.type = "button";
-    corrTabLink.className = "ac-correction-tab-link";
-    corrTabLink.textContent = "see Corrections tab";
-    corrTabLink.addEventListener("click", () => {
-      const liveBubble = corrTabLink.closest(".answer-card-bubble") ?? bubble;
-      liveBubble.querySelector('[data-panel="corrections"]')?.click();
-    });
-    corrP.appendChild(corrTabLink);
-    corrP.appendChild(document.createTextNode(" for details."));
-    corrBody.appendChild(corrLbl);
-    corrBody.appendChild(corrP);
-    corrCallout.appendChild(corrIcon);
-    corrCallout.appendChild(corrBody);
-    answerPanel.appendChild(corrCallout);
+    const _finalEl = answerPanel.querySelector(".ac-answer-final");
+    if (_finalEl)
+      applyInlineCorrections(_finalEl, _corrections);
   }
   const nextStepsPanel = document.createElement("div");
   nextStepsPanel.className = "ac-tab-panel ac-tab-panel--next-steps";
@@ -3067,7 +3064,7 @@ function renderAnswerCard(card, isError, opts) {
       // "Sources" tab — reference chips (here) + source excerpts (snippets, here) + a collapsible
       // narrative_full_redacted section injected post-render (app.ts completed handler).
       "citations": { label: "Sources", panelKey: "citations", count: (card.citations ?? []).length },
-      "corrections": { label: "Corrections", panelKey: "corrections", count: _corrections.length },
+      // Corrections tab removed (Ananth 2026-08-07) — corrections are inline redlines in the answer.
       // Follow-up tab dropped (Ananth 2026-08-07): follow-up questions render as suggestion chips
       // below the bubble, so a tab duplicated them. Tasks tab is being migrated to the feedback
       // panel (a badge + accept/reject modal) in a follow-up build; kept here until that lands.
@@ -3085,7 +3082,6 @@ function renderAnswerCard(card, isError, opts) {
   }
   bubble.appendChild(answerPanel);
   bubble.appendChild(citationsPanel);
-  bubble.appendChild(correctionsPanel);
   bubble.appendChild(nextStepsPanel);
   bubble.appendChild(tasksPanel);
   if (card.suggested_actions && card.suggested_actions.length > 0) {
@@ -4149,25 +4145,30 @@ function sanitizeDisplayMessage(raw) {
   }
   return s;
 }
-var CARD_STREAM_TARGET_MS = 8500;
-var CARD_STREAM_STEP_MS = 45;
-function _streamMarkdownInto(el2, text) {
+var CARD_STREAM_TARGET_MS = 14e3;
+var CARD_STREAM_STEP_MS = 50;
+function _streamMarkdownInto(el2, text, onDone) {
   const words = (text ?? "").split(" ");
   const steps = Math.max(1, Math.round(CARD_STREAM_TARGET_MS / CARD_STREAM_STEP_MS));
   const wordsPerStep = Math.max(1, Math.ceil(words.length / steps));
   let wi = 0;
-  let cancelled = false;
+  let done = false;
   const finish = () => {
-    cancelled = true;
+    if (done)
+      return;
+    done = true;
     el2.innerHTML = simpleMarkdownToHtml(text);
+    onDone?.();
   };
   const step = () => {
-    if (cancelled)
+    if (done)
       return;
     wi = Math.min(wi + wordsPerStep, words.length);
     el2.innerHTML = simpleMarkdownToHtml(words.slice(0, wi).join(" "));
     if (wi < words.length)
       window.setTimeout(step, CARD_STREAM_STEP_MS);
+    else
+      finish();
   };
   step();
   return finish;
@@ -12263,7 +12264,6 @@ ${message}`;
       };
       streamTabBar.appendChild(_mkStreamBtn("Answer", "summary", true));
       streamTabBar.appendChild(_mkStreamBtn("Sources", "citations", false));
-      streamTabBar.appendChild(_mkStreamBtn("Corrections", "corrections", false));
       streamTabBar.appendChild(_mkStreamBtn("Tasks", "tasks", false));
       bubble.appendChild(streamTabBar);
       const summaryPanel = document.createElement("div");
@@ -12488,7 +12488,7 @@ ${message}`;
               const _orig = (_cb.original || "").trim();
               const _fixed = (_cb.corrected || "").trim();
               if (_orig && _fixed)
-                _extractedCorrections.push({ label: "Correction", text: _orig + " \u2192 " + _fixed });
+                _extractedCorrections.push({ label: "Correction", text: _orig + " \u2192 " + _fixed, original: _orig, corrected: _fixed });
             } else if (_ebt === "next_steps") {
               const _cb = _eb;
               normalizeFollowupLineList(_cb.items || [], false).forEach((item) => {
@@ -12554,10 +12554,44 @@ ${message}`;
                 const renderedHasFinal = !!renderedSummaryPanel.querySelector(".ac-answer-final");
                 if (renderedHasFinal) {
                   existingSummaryPanel.replaceChildren(...Array.from(renderedSummaryPanel.children));
-                  const _finalBody = existingSummaryPanel.querySelector(".ac-answer-final .ac-answer-envelope-body");
+                  const _fp = existingSummaryPanel.querySelector(".ac-first-pass");
+                  const _fpBody = _fp?.querySelector(".ac-first-pass-body");
+                  const _finalWrap = existingSummaryPanel.querySelector(".ac-answer-final");
+                  const _finalBody = _finalWrap?.querySelector(".ac-answer-envelope-body");
                   const _leadText = (fullCard?.display_summary ?? "").trim() || (fullCard?.direct_answer ?? "").trim();
-                  if (_finalBody && _leadText)
-                    _streamMarkdownInto(_finalBody, _leadText);
+                  if (_fp && _fpBody) {
+                    _fp.classList.add("ac-first-pass--open");
+                    _fpBody.style.maxHeight = _fpBody.scrollHeight + "px";
+                  }
+                  const _hiddenSections = Array.from(_finalWrap?.querySelectorAll(".answer-card-section") ?? []);
+                  _hiddenSections.forEach((s) => {
+                    s.style.display = "none";
+                  });
+                  if (_finalBody && _leadText) {
+                    _finalBody.innerHTML = "";
+                    window.setTimeout(() => {
+                      if (_fp && _fpBody) {
+                        _fpBody.style.maxHeight = _fpBody.scrollHeight + "px";
+                        void _fpBody.offsetHeight;
+                        _fp.classList.remove("ac-first-pass--open");
+                        _fpBody.style.maxHeight = "0px";
+                      }
+                      _streamMarkdownInto(_finalBody, _leadText, () => {
+                        if (_finalWrap && _extractedCorrections.length)
+                          applyInlineCorrections(_finalWrap, _extractedCorrections);
+                        _hiddenSections.forEach((s, i) => {
+                          window.setTimeout(() => {
+                            s.style.display = "";
+                            s.classList.add("ac-section-reveal");
+                          }, i * 400);
+                        });
+                      });
+                    }, 450);
+                  } else {
+                    _hiddenSections.forEach((s) => {
+                      s.style.display = "";
+                    });
+                  }
                 } else {
                   const streamedProse = existingSummaryPanel.querySelector(".ac-summary-prose");
                   const renderedDirect = renderedBubble.querySelector(".answer-card-direct");

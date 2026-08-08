@@ -480,6 +480,55 @@ function renderOneSection(sec: AnswerCardSection): HTMLElement {
   return sectionEl;
 }
 
+/**
+ * Inline corrections (Ananth 2026-08-07): render each {original, corrected} pair as a redline IN
+ * the answer prose — strike the original, insert the corrected in a distinct colour — instead of a
+ * separate Corrections tab. Walks the container's text nodes, finds the FIRST node containing the
+ * `corrected` string, and splits it into  [before] <del>original</del> <ins>corrected</ins> [after].
+ * Exact-substring match only (facts/dates/numbers match cleanly); a correction whose corrected text
+ * isn't found verbatim is skipped rather than misplaced. Never uses innerHTML — text nodes only.
+ */
+export function applyInlineCorrections(
+  container: HTMLElement,
+  corrections: ReadonlyArray<{ original?: string; corrected?: string }>,
+): void {
+  for (const c of corrections) {
+    const orig = (c.original ?? "").trim();
+    const corr = (c.corrected ?? "").trim();
+    if (!corr) continue;
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    let target: Text | null = null;
+    while (walker.nextNode()) {
+      const t = walker.currentNode as Text;
+      // Don't double-apply inside an existing redline.
+      if (t.parentElement?.closest(".ac-redline")) continue;
+      if (t.nodeValue && t.nodeValue.includes(corr)) { target = t; break; }
+    }
+    if (!target || !target.nodeValue) continue;
+    const idx = target.nodeValue.indexOf(corr);
+    const before = target.nodeValue.slice(0, idx);
+    const after = target.nodeValue.slice(idx + corr.length);
+    const frag = document.createDocumentFragment();
+    if (before) frag.appendChild(document.createTextNode(before));
+    const rl = document.createElement("span");
+    rl.className = "ac-redline";
+    if (orig) {
+      const del = document.createElement("del");
+      del.className = "ac-redline-del";
+      del.textContent = orig;
+      rl.appendChild(del);
+      rl.appendChild(document.createTextNode(" "));
+    }
+    const ins = document.createElement("ins");
+    ins.className = "ac-redline-ins";
+    ins.textContent = corr;
+    rl.appendChild(ins);
+    frag.appendChild(rl);
+    if (after) frag.appendChild(document.createTextNode(after));
+    target.parentNode?.replaceChild(frag, target);
+  }
+}
+
 export function renderAnswerCard(
   card: AnswerCard,
   isError?: boolean,
@@ -493,7 +542,7 @@ export function renderAnswerCard(
     /** When true (admin + QA fail), omit source confidence badge */
     suppressConfidenceForAdminQcFail?: boolean;
     /** Corrections rows — from envelope callout/correction blocks */
-    corrections?: Array<{ label: string; text: string }>;
+    corrections?: Array<{ label: string; text: string; original?: string; corrected?: string }>;
     /** Suggested task items for the Next Steps tab */
     nextStepTasks?: Array<{ text: string; taskType: string }>;
     /** Injected: open the create-task dialog. Keeps this renderer free of app.ts state. */
@@ -701,11 +750,11 @@ export function renderAnswerCard(
   const _nextStepTasks = opts?.nextStepTasks ?? [];
 
   const hasCitations = Array.isArray(card.citations) && card.citations.length > 0;
-  const hasCorrections = _corrections.length > 0;
+  const hasCorrections = _corrections.length > 0;   // corrections render INLINE now, not as a tab
   const hasTasks = _nextStepTasks.length > 0;
-  // Tab bar shows for SECONDARY surfaces only — the answer is now inline in the default panel, not a
-  // tab, so hasAnswerEnvelope no longer forces the bar (Ananth 2026-08-07). Follow-up dropped.
-  const showTabBar = hasCitations || hasCorrections || hasTasks;
+  // Tab bar shows for SECONDARY surfaces only — the answer is inline in the default panel, and
+  // corrections are inline redlines (no tab), so only Sources + Tasks drive the bar (Ananth 2026-08-07).
+  const showTabBar = hasCitations || hasTasks;
 
   // Citations panel
   const citationsPanel = document.createElement("div");
@@ -735,49 +784,12 @@ export function renderAnswerCard(
     citationsPanel.appendChild(citList);
   }
 
-  // Corrections panel
-  const correctionsPanel = document.createElement("div");
-  correctionsPanel.className = "ac-tab-panel ac-tab-panel--corrections";
-  correctionsPanel.setAttribute("role", "tabpanel");
-  correctionsPanel.setAttribute("hidden", "");
+  // Corrections are now INLINE redlines in the answer prose (Ananth 2026-08-07) — no Corrections
+  // tab, panel, or callout. For the non-streaming/reload render, apply them here; the streaming
+  // path applies them post-stream (app.ts). Only lands where the corrected text matches verbatim.
   if (hasCorrections) {
-    const corrList = document.createElement("div");
-    corrList.className = "ac-correction-list";
-    _corrections.forEach(({ label, text }) => {
-      const row = document.createElement("div");
-      row.className = "ac-correction-row";
-      const lbl = document.createElement("div");
-      lbl.className = "ac-correction-label";
-      lbl.textContent = label;
-      row.appendChild(lbl);
-      row.appendChild(document.createTextNode(text));
-      corrList.appendChild(row);
-    });
-    correctionsPanel.appendChild(corrList);
-    // Subtle inline note pointing to the Corrections tab (Ananth 2026-08-07: "make it more subtle
-    // but still available"). One quiet line — icon + count + link — not a big warning box.
-    const corrCallout = document.createElement("div");
-    corrCallout.className = "ac-answer-correction-callout";
-    const corrIcon = document.createElement("span");
-    corrIcon.className = "ac-answer-correction-icon";
-    corrIcon.textContent = "⚠";
-    corrIcon.setAttribute("aria-hidden", "true");
-    const corrText = document.createElement("span");
-    corrText.className = "ac-answer-correction-callout-text";
-    corrText.textContent = (_corrections.length === 1 ? "1 correction" : `${_corrections.length} corrections`) + " · ";
-    const corrTabLink = document.createElement("button");
-    corrTabLink.type = "button";
-    corrTabLink.className = "ac-correction-tab-link";
-    corrTabLink.textContent = "see Corrections tab";
-    corrTabLink.addEventListener("click", () => {
-      // Traverse live DOM — bubble may be the transplant target
-      const liveBubble = corrTabLink.closest(".answer-card-bubble") ?? bubble;
-      (liveBubble.querySelector('[data-panel="corrections"]') as HTMLElement | null)?.click();
-    });
-    corrCallout.appendChild(corrIcon);
-    corrCallout.appendChild(corrText);
-    corrCallout.appendChild(corrTabLink);
-    answerPanel.appendChild(corrCallout);
+    const _finalEl = answerPanel.querySelector(".ac-answer-final") as HTMLElement | null;
+    if (_finalEl) applyInlineCorrections(_finalEl, _corrections);
   }
 
   // Follow-up panel — suggested questions the user can ask next
@@ -899,7 +911,7 @@ export function renderAnswerCard(
       // "Sources" tab — reference chips (here) + source excerpts (snippets, here) + a collapsible
       // narrative_full_redacted section injected post-render (app.ts completed handler).
       "citations": { label: "Sources", panelKey: "citations", count: (card.citations ?? []).length },
-      "corrections": { label: "Corrections", panelKey: "corrections", count: _corrections.length },
+      // Corrections tab removed (Ananth 2026-08-07) — corrections are inline redlines in the answer.
       // Follow-up tab dropped (Ananth 2026-08-07): follow-up questions render as suggestion chips
       // below the bubble, so a tab duplicated them. Tasks tab is being migrated to the feedback
       // panel (a badge + accept/reject modal) in a follow-up build; kept here until that lands.
@@ -917,7 +929,6 @@ export function renderAnswerCard(
 
   bubble.appendChild(answerPanel);
   bubble.appendChild(citationsPanel);
-  bubble.appendChild(correctionsPanel);
   bubble.appendChild(nextStepsPanel);
   bubble.appendChild(tasksPanel);
 

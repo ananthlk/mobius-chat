@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
-import { renderAnswerCard, formatOutputIntentLabel } from "./bubble";
+import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections } from "./bubble";
 import type { AnswerCard } from "../answer-card";
 
 // A v2 (no-mode) card: primary section leads, detail tucks; citations light up their tab.
@@ -139,6 +139,35 @@ describe("Unified draft→answer view (Ananth 2026-08-07 — answer inline in th
     expect(tabs.some((t) => t.includes("Answer"))).toBe(false);
     // No inline final block when there's nothing from the integrator.
     expect(el.querySelector(".ac-answer-final")).toBeNull();
+  });
+});
+
+describe("applyInlineCorrections — inline redline in the answer (Ananth 2026-08-07)", () => {
+  it("redlines the corrected text: strikes original, inserts corrected, in place", () => {
+    const el = document.createElement("div");
+    el.innerHTML = "<p>The initial filing deadline is 180 days from the date of service.</p>";
+    applyInlineCorrections(el, [{ original: "365 days", corrected: "180 days" }]);
+    expect(el.querySelector(".ac-redline-del")?.textContent).toBe("365 days");
+    expect(el.querySelector(".ac-redline-ins")?.textContent).toBe("180 days");
+    expect(el.textContent).toContain("180 days");
+    expect(el.textContent).toContain("365 days");
+  });
+
+  it("skips gracefully when the corrected text isn't found verbatim (no misplacement)", () => {
+    const el = document.createElement("div");
+    el.innerHTML = "<p>Something entirely unrelated to the correction.</p>";
+    applyInlineCorrections(el, [{ original: "365 days", corrected: "180 days" }]);
+    expect(el.querySelector(".ac-redline")).toBeNull();
+    expect(el.textContent).toContain("unrelated");
+  });
+
+  it("does not double-apply inside an existing redline", () => {
+    const el = document.createElement("div");
+    el.innerHTML = "<p>Filed within 180 days.</p>";
+    const corr = [{ original: "365 days", corrected: "180 days" }];
+    applyInlineCorrections(el, corr);
+    applyInlineCorrections(el, corr);
+    expect(el.querySelectorAll(".ac-redline").length).toBe(1);
   });
 });
 
