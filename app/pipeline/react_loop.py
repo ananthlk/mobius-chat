@@ -831,6 +831,108 @@ def _citable_required(query: str) -> bool:
     return any(term in q for term in _CITABLE_TERMS)
 
 
+# ── clarify_questions false-positive guard (2026-08-08, Chat Master directive) ──
+#
+# Retriever's routing_keys.clarify_questions occasionally fires CLARIFY on a
+# specific, well-formed query -- a classifier false positive, not a genuine
+# ambiguity. Two independent filters before the terminal bypass is allowed to
+# fire; both must pass:
+#
+# 1. Specificity: the clarify text must actually NAME the ambiguity (a payer,
+#    a code, a date, a plan) -- generic boilerplate like "Could you clarify
+#    what topic this relates to?" names nothing and is itself the tell that
+#    the classifier failed, not a real signal to relay to the user.
+# 2. Context resolution: if chat's own carried-forward jurisdiction (state/
+#    payor, from ctx.merged_state["active"]) already appears in the query
+#    text, whatever RAG thinks is ambiguous is something chat already knows
+#    -- don't stop and ask the user something chat can already answer for
+#    itself.
+#
+# Deliberately keyword/substring heuristics, not new inference -- same
+# "checked concretely, no existing signal already does this" bar as
+# _citable_required above.
+_GENERIC_CLARIFY_PATTERNS = (
+    "clarify what topic",
+    "clarify your question",
+    "what topic this relates",
+    "more details",
+    "more information",
+    "what you mean",
+    "what you're asking",
+    "what you are asking",
+    "please specify",
+    "please clarify",
+    "could you clarify",
+    "can you clarify",
+    "what would you like to know",
+    "rephrase your question",
+)
+
+_CLARIFY_SPECIFICITY_TERMS = (
+    "payer", "payor", "plan", "code", "date", "service", "provider",
+    "member", "policy", "authorization", "form", "diagnosis", "cpt",
+    "hcpcs", "icd", "state", "program", "carrier", "network",
+)
+
+
+def _is_specific_clarify_question(question: str) -> bool:
+    """A real clarify signal names the actual ambiguity; a classifier
+    false-positive is generic boilerplate. Reject if it matches a known
+    generic template, or has no domain-specific term AND no digit/proper-
+    noun-shaped token to anchor it to something concrete."""
+    q = (question or "").strip()
+    if not q:
+        return False
+    ql = q.lower()
+    if any(pat in ql for pat in _GENERIC_CLARIFY_PATTERNS):
+        return False
+    if any(term in ql for term in _CLARIFY_SPECIFICITY_TERMS):
+        return True
+    if any(ch.isdigit() for ch in q):
+        return True
+    # A capitalized multi-word token run (e.g. a payer/org name) mid-sentence
+    # is a reasonable proxy for "names something specific" without a full NER pass.
+    words = q.split()
+    return any(w[0].isupper() for w in words[1:] if w and w[0].isalpha())
+
+
+def _clarify_context_already_resolves(query: str, active: dict | None) -> bool:
+    """True when chat's own carried-forward jurisdiction (state/payor) is
+    already present in the query text -- RAG's clarify signal is asking
+    about something chat already has an answer for, so it should be
+    advisory, not terminal."""
+    if not active:
+        return False
+    try:
+        from app.state.jurisdiction import get_jurisdiction_from_active
+        jurisdiction = get_jurisdiction_from_active(active)
+    except Exception:
+        return False
+    ql = (query or "").lower()
+    known_terms = [
+        str(t).strip() for t in (jurisdiction.get("state"), jurisdiction.get("payor"))
+        if t and str(t).strip()
+    ]
+    return any(term.lower() in ql for term in known_terms)
+
+
+def _should_bypass_on_clarify(
+    clarify_questions: list[str],
+    query: str,
+    active: dict | None,
+) -> bool:
+    """Both filters must pass for the terminal clarify bypass to fire.
+    False means: treat clarify_questions as advisory -- continue the
+    search rather than stopping the loop."""
+    if not clarify_questions:
+        return False
+    if not any(_is_specific_clarify_question(q) for q in clarify_questions):
+        return False
+    if _clarify_context_already_resolves(query, active):
+        return False
+    return True
+
+
 def _compute_baseline_citable_and_relax_eligible(
     rag_history: list[dict],
     rag_call_number: int,
@@ -1415,27 +1517,79 @@ def _execute_tool(
         # -- orchestrator.py emits ctx.final_message as a plain message, no
         # answer-card chrome), don't fall through to relax/reframe or the
         # google_search fallback.
+        #
+        # 2026-08-08 follow-up (Chat Master, false-positive guard): the RAG
+        # classifier occasionally fires CLARIFY on a specific, well-formed
+        # query. _should_bypass_on_clarify gates the terminal stop on two
+        # checks (see its docstring): the clarify text must actually name the
+        # ambiguity, AND chat's own carried-forward jurisdiction must not
+        # already resolve it. When either check fails, treat clarify_questions
+        # as advisory -- attempt ONE immediate fallback search with
+        # citable_required forced off rather than stopping the turn on what's
+        # likely a classifier miss.
         _clarify_questions = _corpus_telemetry.get("clarify_questions") or []
         if _status == "no_retrieval" and _clarify_questions:
-            _clarify_text = (
-                _clarify_questions[0] if len(_clarify_questions) == 1
-                else "\n".join(f"- {q}" for q in _clarify_questions)
-            )
-            emit(f"  ↓ Needs clarification: {_clarify_text}")
-            ctx.react_bypass_integrate = True
-            ctx.final_message = _clarify_text
-            ctx.plan = _make_react_plan(ctx)
-            ctx.sources = []
-            ctx.retrieval_signals = [RETRIEVAL_SIGNAL_NO_SOURCES]
-            ctx.answer_set = {}
-            return {
-                "tool": "search_corpus",
-                "success": False,
-                "result": _clarify_text,
-                "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
-                "sources": [],
-                "clarify_questions": _clarify_questions,
-            }
+            if _should_bypass_on_clarify(_clarify_questions, query, active):
+                _clarify_text = (
+                    _clarify_questions[0] if len(_clarify_questions) == 1
+                    else "\n".join(f"- {q}" for q in _clarify_questions)
+                )
+                emit(f"  ↓ Needs clarification: {_clarify_text}")
+                ctx.react_bypass_integrate = True
+                ctx.final_message = _clarify_text
+                ctx.plan = _make_react_plan(ctx)
+                ctx.sources = []
+                ctx.retrieval_signals = [RETRIEVAL_SIGNAL_NO_SOURCES]
+                ctx.answer_set = {}
+                return {
+                    "tool": "search_corpus",
+                    "success": False,
+                    "result": _clarify_text,
+                    "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
+                    "sources": [],
+                    "clarify_questions": _clarify_questions,
+                }
+
+            emit("  ↓ clarify signal looked advisory — retrying with citable_required off…")
+            try:
+                from app.skills.registry import SkillCall, dispatch as _skill_dispatch
+                _fallback_env = _skill_dispatch(
+                    SkillCall(
+                        name="search_corpus",
+                        inputs={
+                            "query": query,
+                            **({"include_document_ids": rag_overrides.get("include_document_ids")}
+                               if rag_overrides.get("include_document_ids") else {}),
+                            # citable_required deliberately omitted -- False.
+                        },
+                        question=query,
+                        user_message=ctx.message,
+                        thread_id=ctx.thread_id,
+                        active_context=active,
+                        mode=getattr(ctx, "chat_mode", "copilot") or "copilot",
+                        emitter=emitter,
+                        pipeline_ctx=ctx,
+                    )
+                )
+                _fallback_sources = [s.to_dict() for s in (_fallback_env.sources or [])]
+                if _fallback_sources or (_fallback_env.text or "").strip():
+                    corpus_answer = _fallback_env.text or ""
+                    corpus_sources = _fallback_sources
+                    corpus_signal = _fallback_env.signal or corpus_signal
+                    _corpus_telemetry = (_fallback_env.extra or {}).get("pipeline_trace") or _corpus_telemetry
+                    _status = _corpus_telemetry.get("status")
+                    _dispatch_path = _corpus_telemetry.get("dispatch_path")
+                    _chosen_slot = _corpus_telemetry.get("chosen_slot")
+                    _n_chunks = _corpus_telemetry.get("n_chunks", len(corpus_sources or []))
+                    merged_sources = list(corpus_sources or [])
+                    merged_result = corpus_answer or ""
+                    success = bool(merged_result and len(merged_result.strip()) > 80)
+                    merged_signal = corpus_signal
+            except Exception as _e:
+                logger.warning("[clarify-fallback] non-citable retry failed: %s", _e)
+            # Fall through to the normal success/reframe handling below with
+            # whichever result (fallback or original empty) is now current --
+            # no second bypass, no infinite retry, exactly one fallback attempt.
 
         ctx._rag_call_history = _rag_history + [{  # type: ignore[attr-defined]
             "citable_required": _effective_citable,
