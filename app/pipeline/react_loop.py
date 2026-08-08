@@ -413,10 +413,27 @@ def _fast_mode_synthesize_answer(query: str, raw_text: str, ctx: PipelineContext
     evidence_review, no JSON parsing required of the response). Returns
     None on any failure/empty response so the caller can fall back to
     a safe default (the code-constructed hedge on the thin path, the raw
-    text itself on the rich path) rather than crash or ship nothing."""
+    text itself on the rich path) rather than crash or ship nothing.
+
+    reasoning_depth="fast" + latency_budget_ms (2026-08-08, Chat Master:
+    "same pattern you used for the parallel integrator... there's no
+    reason to run it on Pro"): confirmed live this session -- a real
+    turn's trace showed this exact call landing on Gemini Pro at 12.61s
+    for a single lightweight max_tokens=350 synthesis pass. Same two
+    signals as final_parallel.py's Call A/B/C: latency_budget_ms is the
+    hard pre-filter (ModelRouter.select() trims candidates whose
+    ema_latency_ms exceeds it), reasoning_depth="fast" is the
+    complementary soft bias among whatever survives. 2000ms budget --
+    slightly more headroom than the parallel integrator's smallest call
+    (Call C, 1500ms/512 tokens) since this call's max_tokens=350 is
+    comparable but the fast/thin-evidence path can't budget-check first
+    the way the parallel path's own verification batch did."""
     try:
         user = f"User question: {query}\n\nAvailable evidence:\n{raw_text}"
-        raw = _call_llm_json(system, user, max_tokens=350, ctx=ctx, stage=stage)
+        raw = _call_llm_json(
+            system, user, max_tokens=350, ctx=ctx, stage=stage,
+            reasoning_depth="fast", latency_budget_ms=2000,
+        )
         answer = (raw or "").strip()
         return answer or None
     except Exception:
