@@ -11564,16 +11564,24 @@ function run(): void {
                     // final's sections stay hidden until the prose lead finishes so they never appear
                     // before the top of the answer.
                     const _fp = existingSummaryPanel.querySelector(".ac-first-pass") as HTMLElement | null;
+                    const _fpBody = _fp?.querySelector(".ac-first-pass-body") as HTMLElement | null;
                     const _finalWrap = existingSummaryPanel.querySelector(".ac-answer-final") as HTMLElement | null;
                     const _finalBody = _finalWrap?.querySelector(".ac-answer-envelope-body") as HTMLElement | null;
                     const _leadText = (fullCard?.display_summary ?? "").trim() || (fullCard?.direct_answer ?? "").trim();
-                    if (_fp) _fp.classList.add("ac-first-pass--open");   // draft visible at top first
+                    // Open the first pass at its MEASURED height (draft visible at top first).
+                    if (_fp && _fpBody) { _fp.classList.add("ac-first-pass--open"); _fpBody.style.maxHeight = _fpBody.scrollHeight + "px"; }
                     const _hiddenSections = Array.from(_finalWrap?.querySelectorAll(".answer-card-section") ?? []) as HTMLElement[];
                     _hiddenSections.forEach((s) => { s.style.display = "none"; });
                     if (_finalBody && _leadText) {
                       _finalBody.innerHTML = "";
                       window.setTimeout(() => {
-                        if (_fp) _fp.classList.remove("ac-first-pass--open");   // fold 1: slow collapse
+                        // Fold 1: collapse from the real height → 0 (smooth, proportional to content).
+                        if (_fp && _fpBody) {
+                          _fpBody.style.maxHeight = _fpBody.scrollHeight + "px";
+                          void _fpBody.offsetHeight;               // force reflow so the transition runs
+                          _fp.classList.remove("ac-first-pass--open");
+                          _fpBody.style.maxHeight = "0px";
+                        }
                         _streamMarkdownInto(_finalBody, _leadText, () => {      // fold 2: stream, then sections
                           // Sections stream in one-by-one (staggered fade-up), not all at once.
                           _hiddenSections.forEach((s, i) => {

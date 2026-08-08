@@ -259,31 +259,21 @@ export function renderQcAuditBadge(_qc: QcAuditInfo): HTMLElement {
   const row = document.createElement("div");
   row.className = "qc-audit-badge-row";
 
+  // Compact icon-only badge (Ananth 2026-08-07): a small shield icon with a tooltip, instead of
+  // the verbose "Quality review completed / Does not change your answer" label + footnote.
   const badge = document.createElement("span");
-  badge.className = "qc-audit-badge qc-audit-badge--neutral";
-  badge.setAttribute(
-    "aria-label",
-    "This reply was checked by an automated quality review. It does not change your answer."
-  );
+  badge.className = "qc-audit-badge qc-audit-badge--neutral qc-audit-badge--icon";
+  const _tip = "Quality review completed — does not change your answer";
+  badge.setAttribute("aria-label", _tip);
+  badge.setAttribute("title", _tip);
 
   const iconEl = document.createElement("span");
   iconEl.className = "qc-audit-badge-icon";
   iconEl.setAttribute("aria-hidden", "true");
   iconEl.appendChild(createQcSampleShieldSvg());
 
-  const labelEl = document.createElement("span");
-  labelEl.className = "qc-audit-badge-label";
-  labelEl.textContent = "Quality review completed";
-
   badge.appendChild(iconEl);
-  badge.appendChild(labelEl);
   row.appendChild(badge);
   wrap.appendChild(row);
-
-  const foot = document.createElement("p");
-  foot.className = "qc-audit-badge-footnote";
-  foot.textContent = "Does not change your answer.";
-
-  wrap.appendChild(foot);
   return wrap;
 }

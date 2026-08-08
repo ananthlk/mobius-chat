@@ -3110,18 +3110,16 @@ body {
 }
 
 /* Inline correction callout inside the Answer panel — visible without tab switch */
+/* Subtle inline note (Ananth 2026-08-07): a quiet one-liner, not a boxed warning. No fill/border —
+   just a small muted line with the amber icon + a link to the Corrections tab. */
 .ac-answer-correction-callout {
   display: flex;
-  gap: 0.5rem;
-  align-items: flex-start;
-  margin-top: 0.75rem;
-  padding: 0.5rem 0.625rem;
-  background: rgba(217,119,6,0.055);
-  border: 1px solid rgba(217,119,6,0.18);
-  border-left: 3px solid #d97706;
-  border-radius: 0 6px 6px 0;
-  font-size: 0.75rem;
+  gap: 0.35rem;
+  align-items: baseline;
+  margin-top: 0.5rem;
+  font-size: 0.72rem;
   line-height: 1.4;
+  color: var(--text-tertiary, #9ca3af);
 }
 .ac-answer-correction-icon {
   flex-shrink: 0;
@@ -3525,7 +3523,8 @@ body {
   /* Slow, deliberate collapse (Ananth 2026-08-07) so the user can follow the first pass folding away. */
   transition: max-height 1.7s ease, opacity 1.1s ease, margin-top 1.7s ease;
 }
-.ac-first-pass--open .ac-first-pass-body { max-height: 60vh; opacity: 1; margin-top: 0.35rem; }
+/* max-height is set INLINE (measured scrollHeight) for a smooth, content-proportional collapse. */
+.ac-first-pass--open .ac-first-pass-body { opacity: 1; margin-top: 0.35rem; }
 
 /* Sections stream in one-by-one after the prose (Ananth 2026-08-07: "the last section needs to
    stream in too… too fast") — a staggered fade-up per section, applied in JS with a delay. */
@@ -3840,6 +3839,9 @@ body {
   background: transparent;
   color: var(--thinking-muted);
 }
+/* Icon-only compact QC badge (Ananth 2026-08-07) — a small shield with a tooltip, no label. */
+.qc-audit-badge--icon { cursor: help; }
+.qc-audit-badge--icon .qc-audit-badge-icon { opacity: 0.85; }
 .qc-audit-badge-icon {
   display: inline-flex;
   align-items: center;

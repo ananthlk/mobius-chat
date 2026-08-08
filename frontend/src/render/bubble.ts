@@ -679,10 +679,16 @@ export function renderAnswerCard(
       sum.type = "button";
       sum.className = "ac-first-pass-summary";
       sum.textContent = "First pass";
-      sum.addEventListener("click", () => fp.classList.toggle("ac-first-pass--open"));
       const fpBody = document.createElement("div");
       fpBody.className = "ac-first-pass-body";
       fpBody.innerHTML = simpleMarkdownToHtml(_reactDraft);
+      // Toggle via MEASURED max-height (not a fixed 60vh) so open/close animates smoothly and in
+      // proportion to the actual draft height — no dead time collapsing empty space.
+      sum.addEventListener("click", () => {
+        const opening = !fp.classList.contains("ac-first-pass--open");
+        fp.classList.toggle("ac-first-pass--open");
+        fpBody.style.maxHeight = opening ? fpBody.scrollHeight + "px" : "0px";
+      });
       fp.appendChild(sum);
       fp.appendChild(fpBody);
       answerPanel.insertBefore(fp, answerWrap);   // First pass ABOVE the final
@@ -748,24 +754,17 @@ export function renderAnswerCard(
       corrList.appendChild(row);
     });
     correctionsPanel.appendChild(corrList);
-    // Inline callout in the Answer panel — one-sentence summary pointing to the tab
+    // Subtle inline note pointing to the Corrections tab (Ananth 2026-08-07: "make it more subtle
+    // but still available"). One quiet line — icon + count + link — not a big warning box.
     const corrCallout = document.createElement("div");
     corrCallout.className = "ac-answer-correction-callout";
     const corrIcon = document.createElement("span");
     corrIcon.className = "ac-answer-correction-icon";
     corrIcon.textContent = "⚠";
     corrIcon.setAttribute("aria-hidden", "true");
-    const corrBody = document.createElement("div");
-    const corrLbl = document.createElement("div");
-    corrLbl.className = "ac-answer-correction-callout-label";
-    corrLbl.textContent = _corrections[0].label;
-    const corrP = document.createElement("p");
-    corrP.className = "ac-answer-correction-callout-text";
-    corrP.appendChild(document.createTextNode(
-      _corrections.length === 1
-        ? _corrections[0].text.slice(0, 120) + (_corrections[0].text.length > 120 ? "…" : "") + " — "
-        : `${_corrections.length} corrections noted — `
-    ));
+    const corrText = document.createElement("span");
+    corrText.className = "ac-answer-correction-callout-text";
+    corrText.textContent = (_corrections.length === 1 ? "1 correction" : `${_corrections.length} corrections`) + " · ";
     const corrTabLink = document.createElement("button");
     corrTabLink.type = "button";
     corrTabLink.className = "ac-correction-tab-link";
@@ -775,12 +774,9 @@ export function renderAnswerCard(
       const liveBubble = corrTabLink.closest(".answer-card-bubble") ?? bubble;
       (liveBubble.querySelector('[data-panel="corrections"]') as HTMLElement | null)?.click();
     });
-    corrP.appendChild(corrTabLink);
-    corrP.appendChild(document.createTextNode(" for details."));
-    corrBody.appendChild(corrLbl);
-    corrBody.appendChild(corrP);
     corrCallout.appendChild(corrIcon);
-    corrCallout.appendChild(corrBody);
+    corrCallout.appendChild(corrText);
+    corrCallout.appendChild(corrTabLink);
     answerPanel.appendChild(corrCallout);
   }
 
