@@ -42,6 +42,7 @@ def _call_llm(
     phi_detected: bool,
     mode: str | None,
     latency_budget_ms: int | None = None,
+    reasoning_depth: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     from app.services.llm_manager import generate_sync
     return generate_sync(
@@ -54,6 +55,7 @@ def _call_llm(
         phi_detected=phi_detected,
         mode=mode,
         latency_budget_ms=latency_budget_ms,
+        reasoning_depth=reasoning_depth,
     )
 
 
@@ -237,9 +239,16 @@ def format_response_parallel(
             # formatting a pre-structured answer, not generating one from
             # scratch -- its real output should be much smaller than the old
             # "full synthesis from raw sources" budget assumed.
-            fut_a = pool.submit(_call_llm, prompt_a, "integrator_a", 2048, **shared_kwargs, latency_budget_ms=3000)
-            fut_b = pool.submit(_call_llm, prompt_b, "integrator_critic", 1024, **shared_kwargs, latency_budget_ms=2000)
-            fut_c = pool.submit(_call_llm, prompt_c, "integrator_enrichment", 512, **shared_kwargs, latency_budget_ms=1500)
+            # reasoning_depth="fast" is a SOFT complement to latency_budget_ms's hard
+            # filter -- biases the bandit's weight table toward latency among whatever
+            # candidates survive the hard filter, rather than just constraining the
+            # candidate pool. Task (Ananth, via Chat Master): "the bandit should know
+            # that integrator calls have a hard latency constraint... so it routes to
+            # Flash-class models rather than Pro" -- this is that awareness signal,
+            # distinct from hardcoding a model name.
+            fut_a = pool.submit(_call_llm, prompt_a, "integrator_a", 2048, **shared_kwargs, latency_budget_ms=3000, reasoning_depth="fast")
+            fut_b = pool.submit(_call_llm, prompt_b, "integrator_critic", 1024, **shared_kwargs, latency_budget_ms=2000, reasoning_depth="fast")
+            fut_c = pool.submit(_call_llm, prompt_c, "integrator_enrichment", 512, **shared_kwargs, latency_budget_ms=1500, reasoning_depth="fast")
             # Wait for all three; collect results even if some fail. Each
             # branch now parses + emits its OWN partial the moment it lands,
             # rather than waiting for the other two (see _emit_partial above).

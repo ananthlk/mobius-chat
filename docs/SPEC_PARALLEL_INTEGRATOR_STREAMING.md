@@ -44,8 +44,8 @@ now correctly named against the real input shape.
 
 ## 2. Latency approach
 
-Ananth's steer: model choice is one lever, not the only one. Two changes, applied
-together, both already-built mechanisms — no new infrastructure:
+Ananth's steer: model choice is one lever, not the only one. Three changes,
+applied together, all already-built mechanisms — no new infrastructure:
 
 **a) `latency_budget_ms` hard pre-filter** (`ModelRouter.select()`, built earlier
 this session, previously unused pending this exact decision). Trims model
@@ -57,6 +57,17 @@ today degrades or a faster one becomes available — a hardcoded pin does neithe
 Values: Call A 3000ms, Call B 2000ms, Call C 1500ms (loosely tracking each call's
 existing relative share of the 12.5/5.5/3.0s split, compressed toward the 1-3s
 target).
+
+**a.1) `reasoning_depth="fast"`** (same `ModelRouter.select()`, complementary to
+(a) not redundant with it): a SOFT signal, distinct from the hard filter above —
+it swaps in the fast/normal/thinking bandit weight table (`bandit_weights.py`)
+that blends quality/reliability/latency/cost, biasing the Thompson draw toward
+latency-favoring candidates among whatever survives the hard filter. Ananth's
+follow-up ask, explicitly: "the bandit should know that integrator calls have a
+hard latency constraint... so it routes to Flash-class models rather than Pro"
+— (a) constrains WHICH candidates are eligible, (a.1) then biases WHICH of those
+wins the draw, so both the elimination and the preference layers point the same
+direction rather than relying on the hard filter alone.
 
 **b) Tighter `max_tokens`.** Call A's 4096-token budget was sized for the OLD
 "full synthesis from raw sources" job. Under the factory model, react already did

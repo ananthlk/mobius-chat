@@ -243,3 +243,26 @@ class TestFormatResponseParallelStreamsPartials:
         assert seen_budgets["integrator_a"] == 3000
         assert seen_budgets["integrator_critic"] == 2000
         assert seen_budgets["integrator_enrichment"] == 1500
+
+    def test_reasoning_depth_fast_passed_to_each_call(self):
+        """reasoning_depth="fast" is the complementary soft signal to
+        latency_budget_ms -- confirms it reaches all 3 calls (Ananth's
+        follow-up: "the bandit should know... so it can optimize
+        accordingly", not just be hard-filtered)."""
+        plan = Plan(subquestions=[SubQuestion(id="sq1", text="What is X?", kind="non_patient")])
+        seen_depths = {}
+
+        def capture(prompt, stage, max_tokens, **kwargs):
+            seen_depths[stage] = kwargs.get("reasoning_depth")
+            return _fake_generate_sync(prompt, stage, max_tokens, **kwargs)
+
+        with (
+            patch("app.responder.final_parallel._call_llm", side_effect=capture),
+            patch("app.responder.final_parallel.get_chat_config") as mock_cfg,
+        ):
+            mock_cfg.return_value.prompts = _mock_cfg_prompts()
+            format_response_parallel(plan, ["answer"], user_message="What is X?", correlation_id="cid-123")
+
+        assert seen_depths["integrator_a"] == "fast"
+        assert seen_depths["integrator_critic"] == "fast"
+        assert seen_depths["integrator_enrichment"] == "fast"
