@@ -421,3 +421,26 @@ class PostgresPersistence(PersistencePort):
         if err:
             msg = err.get("message", "") if isinstance(err, dict) else str(err)
             logger.debug("append_progress_event: %s", msg)
+
+    def patch_turn_card(self, correlation_id: str, patch: dict[str, Any]) -> None:
+        """Single-statement jsonb merge -- no read-modify-write race against
+        a concurrent write to the same row. `patch`'s keys win on overlap
+        with the existing card (`||` is right-biased). Best-effort: logs
+        and returns on any failure, never raises (Task #76 background
+        enrichment done-callback must not crash on a late/failed patch)."""
+        if not patch:
+            return
+        try:
+            result = db_execute(
+                "UPDATE chat_turns SET final_message = "
+                "(COALESCE(final_message, '{}')::jsonb || CAST(:patch AS jsonb))::text "
+                "WHERE correlation_id = :cid",
+                "chat",
+                params={"cid": correlation_id, "patch": json.dumps(patch)},
+            )
+            err = result.get("error") if isinstance(result, dict) else None
+            if err:
+                msg = err.get("message", "") if isinstance(err, dict) else str(err)
+                logger.warning("patch_turn_card(%s): %s", correlation_id[:8], msg)
+        except Exception:
+            logger.warning("patch_turn_card(%s) failed", correlation_id[:8], exc_info=True)

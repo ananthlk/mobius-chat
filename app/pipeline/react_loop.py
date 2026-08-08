@@ -933,6 +933,44 @@ def _should_bypass_on_clarify(
     return True
 
 
+# ── Dynamic enrichment sufficiency (Task #76, 2026-08-08, Chat Master ruling) ──
+# Whether react's own answer is already good enough that the integrator can
+# skip Call A's LLM call entirely and structure react_draft deterministically
+# (see app.responder.deterministic_format). Built entirely from ctx fields
+# ReAct already sets every turn -- no new ReAct instrumentation needed.
+def _is_sufficient_for_deterministic_pass(ctx: PipelineContext) -> bool:
+    """True when react's answer needs no further LLM enhancement:
+    - quick-mode round-1 early exit (the existing fast-mode-exit path), OR
+    - a short, clean run: <=3 rounds, no open gaps on the last round, no
+      unfinished-reason flag, and a substantive (>=200 char) react_draft.
+    Approved formula (Chat Master, Task #76) -- do not loosen without a new
+    ruling, this gates whether an LLM call runs at all."""
+    chat_mode = getattr(ctx, "chat_mode", None)
+    rounds_used = getattr(ctx, "react_rounds_used", None) or 0
+
+    if chat_mode == "quick" and rounds_used == 1:
+        return True
+
+    if getattr(ctx, "react_unfinished_reason", None) is not None:
+        return False
+    if rounds_used > 3:
+        return False
+
+    trace_rounds = getattr(ctx, "react_trace_rounds", None) or []
+    if trace_rounds:
+        last = trace_rounds[-1]
+        enr = last.get("enrichment") if isinstance(last, dict) else None
+        gaps_open = (enr or {}).get("gaps_open") or []
+        if gaps_open:
+            return False
+
+    react_draft = getattr(ctx, "react_draft", None) or ""
+    if len(react_draft.strip()) < 200:
+        return False
+
+    return True
+
+
 def _compute_baseline_citable_and_relax_eligible(
     rag_history: list[dict],
     rag_call_number: int,

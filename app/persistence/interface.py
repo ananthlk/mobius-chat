@@ -81,3 +81,17 @@ class PersistencePort(ABC):
     @abstractmethod
     def append_progress_event(self, correlation_id: str, event_type: str, event_data: dict[str, Any]) -> None:
         pass
+
+    def patch_turn_card(self, correlation_id: str, patch: dict[str, Any]) -> None:
+        """Merge `patch` keys into the persisted card's final_message JSON,
+        in place, without a read-modify-write race (single-statement jsonb
+        merge at the DB layer). Task #76 (2026-08-08): the dynamic-
+        enrichment background path (citations/takeaways/gaps/next_steps
+        from Call B/C, landing after the SSE response already closed) uses
+        this to update the ALREADY-persisted turn once those calls finish.
+        Best-effort: never raises into the caller's done-callback, logs and
+        drops on failure -- background enrichment landing late-and-silently
+        is an acceptable degradation, crashing the callback is not.
+        Default no-op (memory/test backends) -- concrete subclasses
+        (PostgresPersistence) implement the real merge."""
+        pass

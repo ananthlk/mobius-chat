@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from typing import Any
 
 from app.chat_config import get_chat_config
@@ -394,3 +395,134 @@ def format_response_parallel(
 
     usages = [u for u in [usage_a, usage_b, usage_c] if u is not None]
     return (json.dumps(card), usages)
+
+
+# ── Task #76 (2026-08-08, Chat Master ruling): dynamic-enrichment background
+# critic/enrichment ──
+#
+# When react's own answer is already sufficient (see react_loop.py's
+# _is_sufficient_for_deterministic_pass), the integrator skips Call A's LLM
+# call and structures react_draft deterministically instead (see
+# deterministic_format.py) -- but Call B (citations/takeaways/gaps) and
+# Call C (next_steps/suggested_actions) still run, "always run, but as
+# fire-and-forget background jobs. Results populate diagnostics/sources tabs
+# when they land, never block the Answer tab."
+#
+# A per-request `with ThreadPoolExecutor(...) as pool:` (the pattern
+# format_response_parallel uses above) does NOT achieve this -- __exit__
+# calls shutdown(wait=True), so the `with` block itself blocks the caller
+# until B/C finish regardless of whether their results are read. This needs
+# a executor that OUTLIVES the request: module-level, persistent, never
+# shut down. Best-effort by design (Chat Master approved) -- a Cloud Run
+# instance recycle mid-call means that turn's citations/next_steps just
+# never land; --no-cpu-throttling on this service (already in deploy.sh)
+# keeps background threads running post-response, which is what makes
+# best-effort viable at all here rather than pure luck.
+_dynamic_enrich_executor: ThreadPoolExecutor | None = None
+_dynamic_enrich_executor_lock = threading.Lock()
+
+
+def _get_dynamic_enrich_executor() -> ThreadPoolExecutor:
+    global _dynamic_enrich_executor
+    if _dynamic_enrich_executor is None:
+        with _dynamic_enrich_executor_lock:
+            if _dynamic_enrich_executor is None:
+                _dynamic_enrich_executor = ThreadPoolExecutor(
+                    max_workers=8, thread_name_prefix="dyn-enrich-bg",
+                )
+    return _dynamic_enrich_executor
+
+
+def run_bc_background(
+    consolidator_input_json: str,
+    correlation_id: str,
+    shared_kwargs: dict,
+) -> None:
+    """Fire-and-forget critic+enrichment calls for the dynamic-enrichment
+    sufficient-answer path. Submits to the PERSISTENT background executor
+    (not request-scoped) and returns immediately -- does not block the
+    caller, does not wait for B/C. Each call patches the already-persisted
+    chat_turns row via PersistencePort.patch_turn_card when it lands, and
+    fires the existing integrator_partial progress event (same shape the
+    live parallel-integrator streaming path already uses) for a still-open
+    SSE connection to pick up."""
+    cfg = get_chat_config()
+    critic_system = cfg.prompts.integrator_parallel_critic_system
+    enrichment_system = cfg.prompts.integrator_parallel_enrichment_system
+    user_tmpl = cfg.prompts.integrator_user_template
+
+    prompt_b = f"{critic_system}\n\n{user_tmpl.format(consolidator_input_json=consolidator_input_json)}"
+    prompt_c = f"{enrichment_system}\n\n{user_tmpl.format(consolidator_input_json=consolidator_input_json)}"
+
+    def _patch_and_emit(part: str, patch: dict) -> None:
+        if not patch:
+            return
+        try:
+            from app.persistence import get_persistence
+            get_persistence().patch_turn_card(correlation_id, patch)
+        except Exception:
+            logger.warning("[dyn-enrich-bg:%s] patch_turn_card failed for cid=%s", part, correlation_id[:8], exc_info=True)
+        try:
+            from app.storage.progress import append_integrator_partial
+            append_integrator_partial(correlation_id, part, patch)
+        except Exception:
+            logger.warning("[dyn-enrich-bg:%s] progress event failed for cid=%s", part, correlation_id[:8], exc_info=True)
+
+    def _on_critic_done(fut: Future) -> None:
+        try:
+            text_b, _usage_b = fut.result()
+        except Exception as e:
+            logger.warning("[dyn-enrich-bg:critic] call failed for cid=%s: %s", correlation_id[:8], e)
+            return
+        critic = _parse_json_response(text_b, "dyn-enrich-bg-critic")
+        if not critic:
+            return
+        patch: dict = {}
+        if isinstance(critic.get("citations"), list):
+            patch["citations"] = critic["citations"]
+        indices = critic.get("cited_source_indices")
+        if isinstance(indices, list):
+            patch["cited_source_indices"] = [int(x) for x in indices if isinstance(x, (int, float))]
+        if critic.get("confidence_note") and isinstance(critic["confidence_note"], str):
+            patch["confidence_note"] = critic["confidence_note"]
+        if isinstance(critic.get("takeaways"), list):
+            patch["takeaways"] = critic["takeaways"]
+        if isinstance(critic.get("gaps"), list):
+            patch["gaps"] = critic["gaps"]
+        correction = critic.get("correction")
+        if isinstance(correction, dict) and correction.get("original") and correction.get("corrected"):
+            patch["correction"] = {
+                "original": str(correction["original"]),
+                "corrected": str(correction["corrected"]),
+            }
+        _patch_and_emit("citations", patch)
+
+    def _on_enrichment_done(fut: Future) -> None:
+        try:
+            text_c, _usage_c = fut.result()
+        except Exception as e:
+            logger.warning("[dyn-enrich-bg:enrichment] call failed for cid=%s: %s", correlation_id[:8], e)
+            return
+        enrich = _parse_json_response(text_c, "dyn-enrich-bg-enrichment")
+        if not enrich:
+            return
+        patch = {}
+        if isinstance(enrich.get("next_questions_for_user"), list):
+            patch["next_questions_for_user"] = enrich["next_questions_for_user"]
+        if isinstance(enrich.get("next_steps"), list):
+            patch["next_steps"] = enrich["next_steps"]
+        if isinstance(enrich.get("suggested_actions"), list):
+            patch["suggested_actions"] = enrich["suggested_actions"]
+        _patch_and_emit("enrichment", patch)
+
+    executor = _get_dynamic_enrich_executor()
+    fut_b = executor.submit(
+        _call_llm, prompt_b, "integrator_critic", 3072, **shared_kwargs,
+        latency_budget_ms=2000, reasoning_depth="fast",
+    )
+    fut_b.add_done_callback(_on_critic_done)
+    fut_c = executor.submit(
+        _call_llm, prompt_c, "integrator_enrichment", 2048, **shared_kwargs,
+        latency_budget_ms=1500, reasoning_depth="fast",
+    )
+    fut_c.add_done_callback(_on_enrichment_done)

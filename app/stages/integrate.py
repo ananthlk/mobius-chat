@@ -24,8 +24,10 @@ from app.communication.json_display_sanitize import (
 )
 from app.communication.gate import send_to_user
 from app.pipeline.context import PipelineContext
+from app.pipeline.react_loop import _is_sufficient_for_deterministic_pass
 from app.responder import format_response
-from app.responder.final_parallel import format_response_parallel
+from app.responder.final import _build_consolidator_input_json
+from app.responder.final_parallel import format_response_parallel, run_bc_background
 from app.services.cost_model import compute_cost
 from app.services.model_registry import integrator_llm_stage, per_call_router_composite
 from app.state.jurisdiction import get_jurisdiction_from_active, jurisdiction_to_summary
@@ -421,6 +423,21 @@ def _pick_integrator_mode() -> str:
     return "parallel" if random.random() * 100 < pct else "sequential"
 
 
+def _dynamic_enrichment_enabled() -> bool:
+    """Task #76 (2026-08-08, Chat Master ruling) gate. MOBIUS_DYNAMIC_ENRICHMENT_PCT
+    0-100 samples per-turn; unset/0 = fully off (canary default). Only
+    consulted on the parallel path -- the sequential path is untouched by
+    this feature. Only takes effect when the sufficiency check also passes
+    (app.pipeline.react_loop._is_sufficient_for_deterministic_pass); this
+    gate alone does not skip Call A."""
+    import random
+    try:
+        pct = float(os.environ.get("MOBIUS_DYNAMIC_ENRICHMENT_PCT") or "0")
+    except ValueError:
+        pct = 0.0
+    return random.random() * 100 < pct
+
+
 def _appeals_hint_pseudo_sources(tool_section_hints: list[dict] | None) -> list[dict]:
     """Appeals tools (appeals_find_carc/appeals_lookup_rules) return sources=[] --
     their rule text only reaches the card via pre_built_sections (a copy-verbatim
@@ -804,7 +821,60 @@ def run_integrate(
     integrator_usage: dict | None = None
     integrator_usages: list[dict] = []
 
-    if _integ_path == "parallel":
+    # Task #76 (2026-08-08, Chat Master ruling, canary at MOBIUS_DYNAMIC_ENRICHMENT_PCT,
+    # default 0): when react's own answer is already sufficient, skip Call A's LLM
+    # call entirely and structure react_draft deterministically (regex only, no
+    # synthesis) -- Call B/C still run, but as fire-and-forget background jobs that
+    # patch the persisted card when they land, never blocking this response. Only
+    # consulted on the parallel path; sequential is untouched by this feature.
+    _dyn_enrich_used = False
+    if (
+        _integ_path == "parallel"
+        and _dynamic_enrichment_enabled()
+        and _is_sufficient_for_deterministic_pass(ctx)
+    ):
+        from app.responder.deterministic_format import deterministic_format
+        _dyn_enrich_used = True
+        _det_card = deterministic_format(getattr(ctx, "react_draft", None))
+        final_message = json.dumps(_det_card)
+        integrator_usages = []
+        integrator_usage = None
+        logger.info(
+            "[integrate] dynamic-enrichment: sufficient answer, skipped Call A "
+            "(cid=%s, rounds_used=%s)",
+            ctx.correlation_id[:8], getattr(ctx, "react_rounds_used", None),
+        )
+        try:
+            _bc_input_json = _build_consolidator_input_json(
+                plan, answers, ctx.message,
+                retrieval_metadata=retrieval_metadata,
+                rag_chunks=rag_chunks or None,
+                jurisdiction_summary=jurisdiction_summary,
+                user_perspective=user_perspective,
+                user_provided_context=getattr(ctx, "user_provided_context", None),
+                previous_thread_summary=getattr(ctx, "previous_thread_summary", None),
+                react_draft=getattr(ctx, "react_draft", None),
+                tool_outputs=tool_outputs or None,
+                reasoning_ledger=reasoning_ledger or None,
+                task_context=_task_ctx,
+                instant_rag_context=_instant_rag_ctx,
+                recital_context=_recital_ctx,
+                tool_section_hints=getattr(ctx, "tool_section_hints", None) or None,
+            )
+            run_bc_background(
+                _bc_input_json, ctx.correlation_id,
+                dict(
+                    config_sha=_cfg_sha, correlation_id=ctx.correlation_id,
+                    thread_id=ctx.thread_id, phi_detected=False,
+                    mode=getattr(ctx, "chat_mode", None),
+                ),
+            )
+        except Exception:
+            logger.warning(
+                "[integrate] dynamic-enrichment: failed to launch background B/C for cid=%s",
+                ctx.correlation_id[:8], exc_info=True,
+            )
+    elif _integ_path == "parallel":
         final_message, integrator_usages = format_response_parallel(
             plan, answers, user_message=ctx.message,
             llm_stage="integrator_a",
