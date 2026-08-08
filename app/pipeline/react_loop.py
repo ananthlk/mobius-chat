@@ -427,7 +427,24 @@ def _fast_mode_synthesize_answer(query: str, raw_text: str, ctx: PipelineContext
     slightly more headroom than the parallel integrator's smallest call
     (Call C, 1500ms/512 tokens) since this call's max_tokens=350 is
     comparable but the fast/thin-evidence path can't budget-check first
-    the way the parallel path's own verification batch did."""
+    the way the parallel path's own verification batch did.
+
+    Streaming (2026-08-08, Chat Master addendum, shipped in the same
+    commit as the fast-model signals above): "stream its output the same
+    way the regular exit path does... check how the regular exit path
+    streams and match that pattern." That path is final.py's
+    _emit_integrator_chunks -- generate()/_call_llm_json() aren't
+    token-streaming APIs (the complete response comes back in one piece),
+    so "streaming" there means the SAME thing it means here: chunk the
+    complete text and emit each piece via the "message" SSE event
+    (append_message_chunk), reusing _emit_integrator_chunks directly
+    rather than re-implementing its chunk-size math. The FE only renders
+    "message" chunks before draft_ready fires (app.ts:
+    `!draftEmitted && onStreamingMessage`) and this call always completes
+    before orchestrator.py's append_draft_answer, so ordering is safe --
+    no double-render, same guarantee format_response's own chunking
+    already relies on. Streaming is cosmetic -- a failure here must never
+    take down the actual synthesized answer."""
     try:
         user = f"User question: {query}\n\nAvailable evidence:\n{raw_text}"
         raw = _call_llm_json(
@@ -435,7 +452,15 @@ def _fast_mode_synthesize_answer(query: str, raw_text: str, ctx: PipelineContext
             reasoning_depth="fast", latency_budget_ms=2000,
         )
         answer = (raw or "").strip()
-        return answer or None
+        if not answer:
+            return None
+        try:
+            from app.responder.final import _emit_integrator_chunks
+            from app.storage.progress import append_message_chunk
+            _emit_integrator_chunks(answer, lambda chunk: append_message_chunk(ctx.correlation_id, chunk))
+        except Exception:
+            logger.debug("fast-mode synthesis streaming failed (stage=%s); answer still returned", stage, exc_info=True)
+        return answer
     except Exception:
         logger.warning("fast-mode synthesis call failed (stage=%s); falling back to raw/hedge", stage, exc_info=True)
         return None

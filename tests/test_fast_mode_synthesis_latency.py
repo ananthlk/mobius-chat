@@ -62,3 +62,67 @@ def test_max_tokens_stays_350():
         mock_call.return_value = "x"
         _fast_mode_synthesize_answer("What is X?", "raw evidence text", ctx, stage="react_1_fast_synthesis")
     assert mock_call.call_args.kwargs.get("max_tokens") == 350
+
+
+# ── Streaming (Chat Master addendum, same commit) ──────────────────────────
+# "stream its output the same way the regular exit path does" -- reuses
+# final.py's _emit_integrator_chunks directly (same chunking as
+# format_response's own streaming) rather than re-implementing it, piping
+# each chunk to append_message_chunk keyed on ctx.correlation_id.
+
+def test_streams_answer_via_message_chunks():
+    ctx = _make_ctx()
+    with (
+        patch("app.pipeline.react_loop._call_llm_json") as mock_call,
+        patch("app.responder.final._emit_integrator_chunks") as mock_chunks,
+    ):
+        mock_call.return_value = "Synthesized answer text."
+        result = _fast_mode_synthesize_answer("What is X?", "raw evidence text", ctx, stage="react_1_fast_synthesis")
+
+    assert result == "Synthesized answer text."
+    mock_chunks.assert_called_once()
+    streamed_text = mock_chunks.call_args.args[0]
+    assert streamed_text == "Synthesized answer text."
+
+
+def test_streaming_callback_forwards_to_append_message_chunk():
+    ctx = _make_ctx()
+    with (
+        patch("app.pipeline.react_loop._call_llm_json") as mock_call,
+        patch("app.storage.progress.append_message_chunk") as mock_append,
+    ):
+        mock_call.return_value = "A longer synthesized answer for chunking."
+        _fast_mode_synthesize_answer("What is X?", "raw evidence text", ctx, stage="react_1_fast_synthesis")
+
+    assert mock_append.called
+    # every call keyed on this turn's correlation_id
+    for call in mock_append.call_args_list:
+        assert call.args[0] == ctx.correlation_id
+    # chunks concatenate back to the full answer
+    rebuilt = "".join(call.args[1] for call in mock_append.call_args_list)
+    assert rebuilt == "A longer synthesized answer for chunking."
+
+
+def test_streaming_failure_does_not_break_answer_return():
+    """Streaming is cosmetic -- if append_message_chunk/_emit_integrator_chunks
+    itself raises, the synthesized answer must still come back."""
+    ctx = _make_ctx()
+    with (
+        patch("app.pipeline.react_loop._call_llm_json") as mock_call,
+        patch("app.responder.final._emit_integrator_chunks", side_effect=RuntimeError("boom")),
+    ):
+        mock_call.return_value = "Synthesized answer."
+        result = _fast_mode_synthesize_answer("What is X?", "raw evidence text", ctx, stage="react_1_fast_synthesis")
+    assert result == "Synthesized answer."
+
+
+def test_no_streaming_when_answer_empty():
+    ctx = _make_ctx()
+    with (
+        patch("app.pipeline.react_loop._call_llm_json") as mock_call,
+        patch("app.responder.final._emit_integrator_chunks") as mock_chunks,
+    ):
+        mock_call.return_value = ""
+        result = _fast_mode_synthesize_answer("What is X?", "raw evidence text", ctx, stage="react_1_fast_synthesis")
+    assert result is None
+    mock_chunks.assert_not_called()
