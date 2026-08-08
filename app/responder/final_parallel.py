@@ -345,6 +345,25 @@ def format_response_parallel(
     card["direct_answer"] = display_txt
     _emit_integrator_chunks(display_txt, message_chunk_callback)
 
+    # ── Inline citation footnotes (2026-08-08, Chat FE + Ananth) ──
+    # card.sources[]: positionally aligned to the SAME rag_chunks list Call A
+    # saw (1-based marker [N] in the prose -> sources[N-1]) -- built here, not
+    # from the critic's citations[] (which is a deduped/curated subset that
+    # wouldn't align to marker positions). Both Call A and the critic read the
+    # same rag_chunks input, so a marker anchored to that shared, stable index
+    # sidesteps the concurrency problem (same fix as correction's verbatim-
+    # match requirement). Chat FE renders these as clickable superscripts +
+    # a numbered bottom list, drops any marker with no corresponding entry.
+    if rag_chunks:
+        card["sources"] = [
+            {
+                "document_name": c.get("document_name") or c.get("doc_title") or "",
+                "locator": (f"p. {c['page_number']}" if c.get("page_number") else None),
+                "snippet": (c.get("text") or "")[:300] or None,
+            }
+            for c in rag_chunks
+        ]
+
     # ── Merge call B (critic) ──
     critic = _parse_json_response(text_b, "B")
     if critic:

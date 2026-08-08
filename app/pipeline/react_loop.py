@@ -2866,6 +2866,11 @@ def _finalize_response(
             "confidence": s.get("confidence_label"),
             "score": s.get("rerank_score") if s.get("rerank_score") is not None else s.get("original_score"),
             "filler_strategy": s.get("filler_strategy"),
+            # 2026-08-08 (Chat FE, inline [N] citation footnotes): already on
+            # SourceRef, just never copied through here -- card.sources[] (the
+            # FE's numbered bottom list) is built positionally from THIS list,
+            # so it needs page_number/locator same as document_name.
+            "page_number": s.get("page_number"),
         }
         for s in ctx.sources
     ]

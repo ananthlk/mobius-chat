@@ -243,6 +243,100 @@ class TestUserPerspective:
         assert '"user_perspective": "patient"' in captured["prompt"]
 
 
+class TestSourcesForInlineCitations:
+    """2026-08-08, Chat FE inline [N] citation footnotes. card.sources[] is
+    built positionally from the SAME rag_chunks list Call A saw -- 1st
+    rag_chunks entry = sources[0] = marker [1] -- NOT keyed by rag_chunks'
+    own (possibly stale/duplicated after multi-round dedup) 'index' field."""
+
+    def test_sources_built_positionally_from_rag_chunks(self):
+        plan = _make_plan()
+        rag_chunks = [
+            {"index": 1, "document_name": "policy_a.pdf", "page_number": 4, "text": "Initial filing is 180 days from date of service."},
+            {"index": 1, "document_name": "policy_b.pdf", "page_number": 2, "text": "Resubmission window is 90 days."},
+        ]
+        with (
+            patch("app.responder.final_parallel._call_llm", side_effect=_fake_generate_sync),
+            patch("app.responder.final_parallel.get_chat_config") as mock_cfg,
+        ):
+            mock_cfg.return_value.prompts = _mock_prompts()
+            result_json, _ = format_response_parallel(
+                plan, ["answer"], user_message="What is X?", rag_chunks=rag_chunks,
+            )
+
+        card = json.loads(result_json)
+        assert len(card["sources"]) == 2
+        # positional, not keyed by the (duplicate) "index" field above
+        assert card["sources"][0]["document_name"] == "policy_a.pdf"
+        assert card["sources"][0]["locator"] == "p. 4"
+        assert card["sources"][1]["document_name"] == "policy_b.pdf"
+        assert card["sources"][1]["locator"] == "p. 2"
+
+    def test_snippet_truncated_and_present(self):
+        plan = _make_plan()
+        rag_chunks = [{"document_name": "doc.pdf", "text": "x" * 500}]
+        with (
+            patch("app.responder.final_parallel._call_llm", side_effect=_fake_generate_sync),
+            patch("app.responder.final_parallel.get_chat_config") as mock_cfg,
+        ):
+            mock_cfg.return_value.prompts = _mock_prompts()
+            result_json, _ = format_response_parallel(
+                plan, ["answer"], user_message="What is X?", rag_chunks=rag_chunks,
+            )
+
+        card = json.loads(result_json)
+        assert len(card["sources"][0]["snippet"]) == 300
+
+    def test_no_rag_chunks_no_sources_key(self):
+        plan = _make_plan()
+        with (
+            patch("app.responder.final_parallel._call_llm", side_effect=_fake_generate_sync),
+            patch("app.responder.final_parallel.get_chat_config") as mock_cfg,
+        ):
+            mock_cfg.return_value.prompts = _mock_prompts()
+            result_json, _ = format_response_parallel(plan, ["answer"], user_message="What is X?")
+
+        card = json.loads(result_json)
+        assert "sources" not in card
+
+    def test_missing_page_number_gives_null_locator(self):
+        plan = _make_plan()
+        rag_chunks = [{"document_name": "doc.pdf", "text": "x"}]
+        with (
+            patch("app.responder.final_parallel._call_llm", side_effect=_fake_generate_sync),
+            patch("app.responder.final_parallel.get_chat_config") as mock_cfg,
+        ):
+            mock_cfg.return_value.prompts = _mock_prompts()
+            result_json, _ = format_response_parallel(
+                plan, ["answer"], user_message="What is X?", rag_chunks=rag_chunks,
+            )
+
+        card = json.loads(result_json)
+        assert card["sources"][0]["locator"] is None
+
+    def test_sources_reaches_full_card_via_integrate_stage(self):
+        """End-to-end: run_integrate must carry sources through the same
+        allowlist-copy mechanism as correction/reasoning_trace/
+        cta_confirm_authoritative -- added to the allowlist FIRST this time."""
+        from app.stages.integrate import run_integrate
+
+        ctx = _make_ctx()
+        card_with_sources = json.dumps({
+            "mode": "FACTUAL", "direct_answer": "180 days [1].", "sections": [],
+            "sources": [{"document_name": "policy.pdf", "locator": "p. 4", "snippet": "..."}],
+        })
+
+        with (
+            patch.dict(os.environ, {"MOBIUS_INTEGRATOR_MODE": "parallel"}),
+            patch("app.stages.integrate.format_response_parallel") as mock_par,
+        ):
+            mock_par.return_value = (card_with_sources, [{"stage": "integrator_a", "model": "m", "input_tokens": 0, "output_tokens": 0}])
+            run_integrate(ctx)
+
+        payload = json.loads(ctx.response_payload["message"])
+        assert payload.get("sources") == [{"document_name": "policy.pdf", "locator": "p. 4", "snippet": "..."}]
+
+
 class TestCorrectionMerge:
     """2026-08-08, Chat FE: inline redline {original, corrected} -- Chat Master
     directive. Critic (Call B) is the evidence-verification pass, so it's the

@@ -112,6 +112,12 @@ _ANSWER_CARD_ENVELOPE_KEYS = (
     # the saved chat_turns row had it dropped. Same failure class this
     # allowlist's own comments already warn about (output_intent, react_draft).
     "cta_confirm_authoritative",
+    # 2026-08-08 (Chat FE, inline [N] citation footnotes): rag_chunks-indexed
+    # sources list, built in final_parallel.py so it's positionally aligned to
+    # the same rag_chunks Call A saw when it wrote [N] markers. Added to the
+    # allowlist FIRST this time (not after-the-fact like cta_confirm_authoritative
+    # above) -- same failure class, learned the lesson.
+    "sources",
 )
 
 
