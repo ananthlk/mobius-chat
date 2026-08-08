@@ -314,6 +314,25 @@ class TestSourcesForInlineCitations:
         card = json.loads(result_json)
         assert card["sources"][0]["locator"] is None
 
+    def test_document_id_and_raw_page_number_carried_for_doc_reader_deep_link(self):
+        """openDocReaderPanel(documentId, pageNumber, citeText) (app.ts:4160)
+        needs the RAW document_id + page_number, not just the "p. N" display
+        locator string."""
+        plan = _make_plan()
+        rag_chunks = [{"document_name": "doc.pdf", "document_id": "doc-abc-123", "page_number": 7, "text": "x"}]
+        with (
+            patch("app.responder.final_parallel._call_llm", side_effect=_fake_generate_sync),
+            patch("app.responder.final_parallel.get_chat_config") as mock_cfg,
+        ):
+            mock_cfg.return_value.prompts = _mock_prompts()
+            result_json, _ = format_response_parallel(
+                plan, ["answer"], user_message="What is X?", rag_chunks=rag_chunks,
+            )
+
+        card = json.loads(result_json)
+        assert card["sources"][0]["document_id"] == "doc-abc-123"
+        assert card["sources"][0]["page_number"] == 7
+
     def test_sources_reaches_full_card_via_integrate_stage(self):
         """End-to-end: run_integrate must carry sources through the same
         allowlist-copy mechanism as correction/reasoning_trace/

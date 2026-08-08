@@ -2869,8 +2869,13 @@ def _finalize_response(
             # 2026-08-08 (Chat FE, inline [N] citation footnotes): already on
             # SourceRef, just never copied through here -- card.sources[] (the
             # FE's numbered bottom list) is built positionally from THIS list,
-            # so it needs page_number/locator same as document_name.
+            # so it needs page_number/locator same as document_name. document_id
+            # is what openDocReaderPanel(documentId, pageNumber, citeText)
+            # (app.ts:4160, existing doc-reader panel infra) needs to open the
+            # actual section -- same two fields the existing Sources-tab click
+            # handler already passes it (app.ts:7736), just not on THIS list yet.
             "page_number": s.get("page_number"),
+            "document_id": s.get("document_id"),
         }
         for s in ctx.sources
     ]

@@ -360,6 +360,12 @@ def format_response_parallel(
                 "document_name": c.get("document_name") or c.get("doc_title") or "",
                 "locator": (f"p. {c['page_number']}" if c.get("page_number") else None),
                 "snippet": (c.get("text") or "")[:300] or None,
+                # document_id + page_number (raw, not the "p. N" locator string)
+                # are exactly openDocReaderPanel's own two positional args
+                # (app.ts:4160) -- lets Chat FE wire click-to-open without a
+                # second lookup or a new backend field.
+                "document_id": c.get("document_id"),
+                "page_number": c.get("page_number"),
             }
             for c in rag_chunks
         ]
