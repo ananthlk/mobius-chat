@@ -3482,6 +3482,14 @@ body {
 .ac-answer-mode-label--blended { background: #2563eb; }      /* blue — blended synthesis */
 .ac-answer-mode-label--canonical { background: #0f766e; }    /* teal — canonical/authoritative */
 .ac-answer-mode-label--recital { background: #92400e; }      /* amber-brown — verbatim recital */
+/* Unified draft→answer view (Ananth 2026-08-07): the integrator's final renders inline in the
+   default panel, below the draft. A quiet top divider separates it from the draft above. */
+.ac-answer-final {
+  margin-top: 0.7rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--border, #e5e7eb);
+}
+.ac-answer-final:first-child { margin-top: 0; padding-top: 0; border-top: none; }
 .ac-answer-tldr {
   font-size: 0.9rem;
   font-weight: 550;

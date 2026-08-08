@@ -624,51 +624,41 @@ export function renderAnswerCard(
     answerPanel.appendChild(note);
   }
 
-  // Answer tab (Ananth ruling 2026-08-07; scope widened by Chat Master 2026-08-07): the integrator
-  // envelope output, the "final answer" surface distinct from Summary (react_draft). It's a
-  // near-full-card view of what the integrator produced, mode-labeled:
-  //   mode badge → tldr_summary (verdict) → display_summary (prose lead) → sections[] (typed detail).
-  // sections[] live HERE (integrator output), NOT in Summary. Fires when EITHER display_summary OR
-  // sections[] has content — appeals turns carry rich sections[] with an EMPTY display_summary
-  // (Chat Master, cid 4d9456e2). Citations/takeaways/next-steps keep their own dedicated tabs.
-  // Panel element is ALWAYS built (streaming panel-swap target); the tab BUTTON only when content.
+  // Unified draft→answer view (Ananth 2026-08-07: "answer is still showing in a different tab").
+  // The integrator's final (mode badge → tldr → display_summary → sections[]) is rendered into the
+  // SAME default panel as the draft, NOT a separate Answer tab. On the streaming path the draft
+  // streams into .ac-summary-prose (above); the completed panel-swap appends this answer content
+  // below it, so the answer flows into one view. sections[] live here (integrator output).
   const _displaySummary = (card.display_summary ?? "").trim();
   const _tldrSummary = (card.tldr_summary ?? "").trim();
   const _answerSections = card.sections ?? [];
   const hasAnswerEnvelope = _displaySummary.length > 0 || _answerSections.length > 0;
-  const answerPanelEl = document.createElement("div");
-  answerPanelEl.className = "ac-tab-panel ac-tab-panel--answer";
-  answerPanelEl.setAttribute("role", "tabpanel");
-  answerPanelEl.setAttribute("hidden", "");
   if (hasAnswerEnvelope) {
-    // Mode label — only for envelopes that signal something REAL to the user (Chat Master
-    // 2026-08-07): CANONICAL = authoritative policy content, RECITAL = verbatim legal document.
-    // FACTUAL (now the default path, post FACTUAL/BLENDED merge) and BLENDED carry no badge —
-    // they don't tell the user anything meaningful.
+    const answerWrap = document.createElement("div");
+    answerWrap.className = "ac-answer-final";
+    // Mode badge — only CANONICAL (authoritative policy) / RECITAL (verbatim legal); FACTUAL/BLENDED
+    // are the default path and signal nothing (Chat Master 2026-08-07).
     const modeLabel = (card.mode ?? "").trim().toUpperCase();
     if (modeLabel === "CANONICAL" || modeLabel === "RECITAL") {
       const lbl = document.createElement("div");
       lbl.className = "ac-answer-mode-label ac-answer-mode-label--" + modeLabel.toLowerCase();
       lbl.textContent = modeLabel;
-      answerPanelEl.appendChild(lbl);
+      answerWrap.appendChild(lbl);
     }
-    // tldr_summary — 2-4 sentence verdict; hidden when empty.
     if (_tldrSummary) {
       const tldr = document.createElement("div");
       tldr.className = "ac-answer-tldr";
       tldr.innerHTML = simpleMarkdownToHtml(_tldrSummary);
-      answerPanelEl.appendChild(tldr);
+      answerWrap.appendChild(tldr);
     }
-    // display_summary — prose lead; hidden when empty (appeals turns lead with sections).
     if (_displaySummary) {
       const body = document.createElement("div");
       body.className = "ac-answer-envelope-body";
       body.innerHTML = simpleMarkdownToHtml(_displaySummary);
-      answerPanelEl.appendChild(body);
+      answerWrap.appendChild(body);
     }
-    // sections[] — typed structured detail (table/stats/bars/steps/bullets/appeals_*), rendered
-    // flat (no Summary-style show-details collapse; the Summary/Answer split IS the disclosure).
-    _answerSections.slice(0, MAX_SECTIONS).forEach((sec) => answerPanelEl.appendChild(renderOneSection(sec)));
+    _answerSections.slice(0, MAX_SECTIONS).forEach((sec) => answerWrap.appendChild(renderOneSection(sec)));
+    answerPanel.appendChild(answerWrap);
   }
 
   // Tab data — pull from opts
@@ -678,9 +668,10 @@ export function renderAnswerCard(
 
   const hasCitations = Array.isArray(card.citations) && card.citations.length > 0;
   const hasCorrections = _corrections.length > 0;
-  const hasNextSteps = _nextStepQuestions.length > 0;
   const hasTasks = _nextStepTasks.length > 0;
-  const showTabBar = hasAnswerEnvelope || hasCitations || hasCorrections || hasNextSteps || hasTasks;
+  // Tab bar shows for SECONDARY surfaces only — the answer is now inline in the default panel, not a
+  // tab, so hasAnswerEnvelope no longer forces the bar (Ananth 2026-08-07). Follow-up dropped.
+  const showTabBar = hasCitations || hasCorrections || hasTasks;
 
   // Citations panel
   const citationsPanel = document.createElement("div");
@@ -873,13 +864,13 @@ export function renderAnswerCard(
     // TAB_ORDER keeps the bar consistent with the field→tab map; the Diagnostics slot (tab 6)
     // is reserved here and injected by the admin/QA path when present.
     const TAB_DOM: Partial<Record<TabKey, { label: string; panelKey: string; count: number | undefined }>> = {
-      // "Draft" = react_draft (ReAct's first pass). Renamed from "Summary" (Ananth 2026-08-07) —
-      // the panel key stays "summary" (react_draft streams into .ac-summary-prose); only the label
-      // changes. The integrator's "Answer" (below) is the comprehensive final.
-      "summary": { label: "Draft", panelKey: "summary", count: undefined },
+      // Unified draft→answer view (Ananth 2026-08-07): the default panel holds the whole flow — the
+      // draft streams in, then the integrator's final flows in below it (.ac-answer-final). Labeled
+      // "Answer" since the final is the star; the panel key stays "summary".
+      "summary": { label: "Answer", panelKey: "summary", count: undefined },
       // Answer tab — only listed when display_summary exists (count=undefined → no badge, always
       // visible like Draft). Omitted otherwise so the bar has no empty Answer button.
-      ...(hasAnswerEnvelope ? { "answer": { label: "Answer", panelKey: "answer", count: undefined } } : {}),
+      // No "answer" tab — the answer is inline in the default panel now (Ananth 2026-08-07).
       // Chat Master ruling (b) 2026-08-06: the Citations tab is repurposed into a consolidated
       // "Sources" tab — reference chips (here) + source excerpts (snippets, here) + a collapsible
       // narrative_full_redacted section injected post-render (app.ts completed handler).
@@ -901,7 +892,6 @@ export function renderAnswerCard(
   }
 
   bubble.appendChild(answerPanel);
-  bubble.appendChild(answerPanelEl);
   bubble.appendChild(citationsPanel);
   bubble.appendChild(correctionsPanel);
   bubble.appendChild(nextStepsPanel);

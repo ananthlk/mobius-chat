@@ -22,27 +22,26 @@ describe("renderAnswerCard — DOM output (§1.4 tabbed bubble + §1.2 visibilit
     expect(el.querySelector(".answer-card-direct")?.textContent).toContain("parity");
   });
 
-  it("sections render in the Answer tab (integrator output), NOT in Summary (Ananth 2026-08-07)", () => {
+  it("sections render inline in the default panel (.ac-answer-final), NOT a separate Answer tab (unified view, Ananth 2026-08-07)", () => {
     const el = renderAnswerCard(card);
-    // Summary is ReAct's synthesis — the integrator's section labels are NOT stacked into it.
-    const summary = el.querySelector(".ac-tab-panel--summary")!;
-    const summaryText = summary.textContent ?? "";
-    expect(summaryText).not.toContain("Covered codes");
-    expect(summaryText).not.toContain("Exceptions");
-    // All sections live in the Answer panel, rendered flat (no Show-details collapse anymore).
-    const answer = el.querySelector(".ac-tab-panel--answer")!;
+    // No separate Answer PANEL — the integrator's final flows into the default (summary) panel.
+    expect(el.querySelector(".ac-tab-panel--answer")).toBeNull();
+    // Sections live in .ac-answer-final inside the default (summary) panel.
+    const answer = el.querySelector(".ac-tab-panel--summary .ac-answer-final")!;
+    expect(answer).not.toBeNull();
     expect(answer.textContent).toContain("Covered codes");
     expect(answer.textContent).toContain("Documentation");
     expect(answer.textContent).toContain("Exceptions");
     expect(el.querySelector(".answer-card-show-details")).toBeNull();
   });
 
-  it("renders a tab bar with a Draft tab (renamed from Summary) + a Sources tab (ruling b)", () => {
+  it("primary tab is 'Answer' (unified default panel); Summary/Draft/Follow-up gone; Sources present", () => {
     const el = renderAnswerCard(card);
     const tabs = Array.from(el.querySelectorAll(".ac-tab")).map((t) => t.textContent ?? "");
-    // "Summary" renamed to "Draft" (Ananth 2026-08-07) — panel key stays "summary".
-    expect(tabs.some((t) => t.includes("Draft"))).toBe(true);
-    expect(tabs.some((t) => t === "Summary")).toBe(false);
+    // The default panel is now labeled "Answer" (holds the draft→final flow); no separate answer panel.
+    expect(tabs.some((t) => t.includes("Answer"))).toBe(true);
+    expect(el.querySelector(".ac-tab-panel--answer")).toBeNull();
+    expect(tabs.some((t) => t === "Summary" || t === "Draft")).toBe(false);
     // Follow-up tab dropped (chips handle it)
     expect(tabs.some((t) => t.includes("Follow-up"))).toBe(false);
     // The Citations tab was consolidated into "Sources" (label change; panel key stays citations).
@@ -73,54 +72,49 @@ describe("renderAnswerCard — DOM output (§1.4 tabbed bubble + §1.2 visibilit
   });
 });
 
-describe("Answer tab (Ananth 2026-08-07 — Summary=react_draft, Answer=display_summary, mode-labeled)", () => {
-  it("renders an Answer tab with the CANONICAL badge and display_summary when present", () => {
+describe("Unified draft→answer view (Ananth 2026-08-07 — answer inline in the default panel, no Answer tab)", () => {
+  it("renders the integrator final inline in .ac-answer-final with the CANONICAL badge + display_summary", () => {
     const el = renderAnswerCard({ ...card, mode: "CANONICAL", display_summary: "The authoritative final answer, in full." });
-    // Answer tab button exists, positioned after Summary
-    const tabs = Array.from(el.querySelectorAll(".ac-tab")).map((t) => t.textContent ?? "");
-    expect(tabs.some((t) => t.includes("Answer"))).toBe(true);
-    // panel carries the mode badge (CANONICAL signals authoritative content) + the display_summary body
-    const panel = el.querySelector(".ac-tab-panel--answer")!;
-    expect(panel).not.toBeNull();
-    expect(panel.querySelector(".ac-answer-mode-label")?.textContent).toBe("CANONICAL");
-    expect(panel.querySelector(".ac-answer-envelope-body")?.textContent).toContain("authoritative final answer");
+    // No separate Answer PANEL (the default tab labeled "Answer" holds it inline).
+    expect(el.querySelector(".ac-tab-panel--answer")).toBeNull();
+    // The final is inline in the default panel: badge + display_summary body.
+    const final = el.querySelector(".ac-tab-panel--summary .ac-answer-final")!;
+    expect(final).not.toBeNull();
+    expect(final.querySelector(".ac-answer-mode-label")?.textContent).toBe("CANONICAL");
+    expect(final.querySelector(".ac-answer-envelope-body")?.textContent).toContain("authoritative final answer");
   });
 
   it("renders NO mode badge for FACTUAL/BLENDED (default path — nothing to signal; Chat Master 2026-08-07)", () => {
     const factual = renderAnswerCard({ ...card, mode: "FACTUAL", display_summary: "A factual answer." });
-    expect(factual.querySelector(".ac-tab-panel--answer .ac-answer-mode-label")).toBeNull();
+    expect(factual.querySelector(".ac-answer-final .ac-answer-mode-label")).toBeNull();
     const blended = renderAnswerCard({ ...card, mode: "BLENDED", display_summary: "A blended answer." });
-    expect(blended.querySelector(".ac-tab-panel--answer .ac-answer-mode-label")).toBeNull();
-    // but the Answer tab + body still render
-    expect(factual.querySelector(".ac-tab-panel--answer .ac-answer-envelope-body")?.textContent).toContain("factual answer");
+    expect(blended.querySelector(".ac-answer-final .ac-answer-mode-label")).toBeNull();
+    // but the final body still renders inline
+    expect(factual.querySelector(".ac-answer-final .ac-answer-envelope-body")?.textContent).toContain("factual answer");
   });
 
-  it("keeps display_summary OUT of the Summary panel (Summary is react_draft's surface, not the envelope)", () => {
-    const el = renderAnswerCard({ ...card, mode: "FACTUAL", display_summary: "ENVELOPE_ONLY_TEXT_XYZ" });
-    const summary = el.querySelector(".ac-tab-panel--summary")!;
-    expect(summary.textContent ?? "").not.toContain("ENVELOPE_ONLY_TEXT_XYZ");
-    // it IS in the Answer panel
-    expect(el.querySelector(".ac-tab-panel--answer")?.textContent).toContain("ENVELOPE_ONLY_TEXT_XYZ");
+  it("display_summary now renders IN the default panel (unified view supersedes the react_draft-only Summary)", () => {
+    const el = renderAnswerCard({ ...card, mode: "FACTUAL", display_summary: "ENVELOPE_TEXT_XYZ" });
+    // The answer flows into the same default panel now (no separate Answer tab).
+    expect(el.querySelector(".ac-tab-panel--summary .ac-answer-final")?.textContent).toContain("ENVELOPE_TEXT_XYZ");
+    expect(el.querySelector(".ac-tab-panel--answer")).toBeNull();
   });
 
-  it("fires the Answer tab on sections[] even when display_summary is EMPTY (appeals turn, cid 4d9456e2)", () => {
-    // Real appeals turns lead with rich sections[] and an empty display_summary — the Answer tab
-    // must still render (guard is display_summary OR sections).
+  it("renders sections inline even when display_summary is EMPTY (appeals turn, cid 4d9456e2)", () => {
     const el = renderAnswerCard({
       direct_answer: "Here's the appeal path.",
       mode: "FACTUAL",
       sections: [{ label: "CARC 22 rules", visibility: "primary", format: "bullets", bullets: ["Coordinate benefits first"] }],
     });
-    const tabs = Array.from(el.querySelectorAll(".ac-tab")).map((t) => t.textContent ?? "");
-    expect(tabs.some((t) => t.includes("Answer"))).toBe(true);
-    const answer = el.querySelector(".ac-tab-panel--answer")!;
-    expect(answer.textContent).toContain("CARC 22 rules");
-    expect(answer.textContent).toContain("Coordinate benefits first");
+    expect(el.querySelector(".ac-tab-panel--answer")).toBeNull();
+    const final = el.querySelector(".ac-answer-final")!;
+    expect(final.textContent).toContain("CARC 22 rules");
+    expect(final.textContent).toContain("Coordinate benefits first");
   });
 
-  it("renders tldr_summary as the Answer lead when present; hides it when empty", () => {
+  it("renders tldr_summary as the final lead when present; hides it when empty", () => {
     const withTldr = renderAnswerCard({ ...card, mode: "BLENDED", tldr_summary: "Two-sentence verdict here." });
-    expect(withTldr.querySelector(".ac-answer-tldr")?.textContent).toContain("verdict");
+    expect(withTldr.querySelector(".ac-answer-final .ac-answer-tldr")?.textContent).toContain("verdict");
     const noTldr = renderAnswerCard({ ...card, mode: "BLENDED", display_summary: "prose" });
     expect(noTldr.querySelector(".ac-answer-tldr")).toBeNull();
   });
@@ -134,14 +128,12 @@ describe("Answer tab (Ananth 2026-08-07 — Summary=react_draft, Answer=display_
     expect(noDraft.querySelector(".answer-card-direct")?.textContent).toContain("INTEGRATOR_LINE");
   });
 
-  it("shows NO Answer tab when there is neither display_summary NOR sections", () => {
+  it("renders no .ac-answer-final and no Answer tab when there is neither display_summary NOR sections", () => {
     const el = renderAnswerCard({ direct_answer: "Just a sentence.", sections: [] });
     const tabs = Array.from(el.querySelectorAll(".ac-tab")).map((t) => t.textContent ?? "");
     expect(tabs.some((t) => t.includes("Answer"))).toBe(false);
-    // the panel element is still built (empty, hidden) so the streaming panel-swap has a target
-    const panel = el.querySelector(".ac-tab-panel--answer");
-    expect(panel).not.toBeNull();
-    expect((panel?.textContent ?? "").trim()).toBe("");
+    // No inline final block when there's nothing from the integrator.
+    expect(el.querySelector(".ac-answer-final")).toBeNull();
   });
 });
 

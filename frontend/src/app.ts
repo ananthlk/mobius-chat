@@ -11139,13 +11139,11 @@ function run(): void {
         });
         return btn;
       };
-      // "Draft" = react_draft streaming (renamed from Summary, Ananth 2026-08-07). Follow-up tab
-      // dropped (chips handle it). Tasks kept until its feedback-panel migration lands.
-      streamTabBar.appendChild(_mkStreamBtn("Draft", "summary", true));
-      // Answer tab (Ananth 2026-08-07): shown during streaming; the completed handler swaps the
-      // whole tab bar for the fully-built one (which lists Answer only when display_summary exists),
-      // so a display_summary-less turn ends up without an Answer button.
-      streamTabBar.appendChild(_mkStreamBtn("Answer", "answer", false));
+      // Unified draft→answer default panel, labeled "Answer" (Ananth 2026-08-07): the draft streams
+      // here, then the final flows in below it. Follow-up dropped (chips). Tasks kept until migration.
+      streamTabBar.appendChild(_mkStreamBtn("Answer", "summary", true));
+      // No Answer tab (Ananth 2026-08-07) — the integrator's final flows into the DEFAULT panel,
+      // below the draft, not a separate tab (unified draft→answer view).
       streamTabBar.appendChild(_mkStreamBtn("Sources", "citations", false));
       streamTabBar.appendChild(_mkStreamBtn("Corrections", "corrections", false));
       streamTabBar.appendChild(_mkStreamBtn("Tasks", "tasks", false));
@@ -11183,7 +11181,7 @@ function run(): void {
       bubble.appendChild(summaryPanel);
 
       // Empty placeholder panels — filled in-place on completed
-      (["answer", "citations", "corrections", "next-steps", "tasks"] as const).forEach((p) => {
+      (["citations", "corrections", "next-steps", "tasks"] as const).forEach((p) => {
         const panel = document.createElement("div");
         panel.className = `ac-tab-panel ac-tab-panel--${p}`;
         panel.setAttribute("role", "tabpanel");
@@ -11208,8 +11206,8 @@ function run(): void {
         // 5 words/18ms — near-instant, so it finished long before the answer and left an awkward
         // gap. Pace it to ~a fixed wall-clock window so it reads as a live "first pass" still
         // flowing when the final answer lands, seamless. Short drafts ~2.5s, long ones ~5s.
-        const DRAFT_STREAM_TARGET_MS = 5000;
-        const DRAFT_STREAM_STEP_MS = 40;
+        const DRAFT_STREAM_TARGET_MS = 8500;
+        const DRAFT_STREAM_STEP_MS = 45;
         const _steps = Math.max(1, Math.round(DRAFT_STREAM_TARGET_MS / DRAFT_STREAM_STEP_MS));
         const wordsPerStep = Math.max(1, Math.ceil(words.length / _steps));
         let wi = 0;
@@ -11256,21 +11254,12 @@ function run(): void {
     if (opts?.phi_override) {
       (payload as Record<string, unknown>).phi_override = true;
     }
-    function onDetailReady(content: string, _outputIntent: string): void {
-      // Ananth ruling 2026-08-07 (supersedes ruling b): display_summary is the ANSWER tab's
-      // content, NOT Summary. Summary keeps the streamed react_draft. So detail_ready must NOT
-      // touch the Summary prose and must NOT cancel the draft word-stream (that stream IS the
-      // react_draft filling Summary). Pre-fill the Answer panel body for immediate content; the
-      // completed handler then swaps in the fully-built Answer panel (mode label + display_summary).
-      const _ds = (content ?? "").trim();
-      if (!_ds) return;
-      const answerBody = messageWrapEl?.querySelector(".ac-tab-panel--answer") as HTMLElement | null;
-      if (answerBody && !(answerBody.textContent ?? "").trim()) {
-        const body = document.createElement("div");
-        body.className = "ac-answer-envelope-body";
-        body.innerHTML = simpleMarkdownToHtml(_ds);
-        answerBody.appendChild(body);
-      }
+    function onDetailReady(_content: string, _outputIntent: string): void {
+      // Unified draft→answer view (Ananth 2026-08-07): there's no separate Answer panel to pre-fill
+      // anymore — the integrator's final flows into the default panel (below the streamed draft) via
+      // the completed handler's summary panel-swap. detail_ready is a no-op on the FE now; the draft
+      // keeps streaming (that stream IS the react_draft), and the answer lands ~1s later at completed.
+      /* no-op */
     }
     // Parallel integrator progressive streaming (#74, SPEC_PARALLEL_INTEGRATOR_STREAMING). Each
     // `integrator_partial` part fills its tab the moment that call resolves, ahead of "completed".
@@ -11292,18 +11281,16 @@ function run(): void {
         (bubble.querySelector(`.ac-tab[data-panel="${panelKey}"]`) as HTMLElement | null)?.removeAttribute("data-empty");
       };
       try {
-        if (part === "enrichment") {
-          const nq = normalizeFollowupLineList(payload.next_questions_for_user, true);
-          if (!nq.length) return;
-          transplant("next-steps", renderAnswerCard({ direct_answer: "…", sections: [] }, false, {
-            nextQuestions: nq, onFollowupClick: (q) => sendMessage(q),
-          }));
-        } else {
-          const card = buildPartialCard(part, payload);   // core | citations
+        if (part === "citations") {
+          const card = buildPartialCard(part, payload);
           if (!card) return;
           const rendered = renderAnswerCard(card, false, { onFollowupClick: (q) => sendMessage(q) });
-          transplant(part === "core" ? "answer" : "citations", rendered);
+          transplant("citations", rendered);
         }
+        // Unified view (Ananth 2026-08-07): "core" (the integrator answer) no longer has a separate
+        // Answer panel to pre-fill — it flows into the default summary panel at completed. "enrichment"
+        // (follow-ups) renders as chips below the bubble, not a tab. Both are no-ops here now; the
+        // completed handler is the single reconcile for the answer + chips.
       } catch { /* additive best-effort — completed reconciles */ }
     }
     // 2026-04-27: include the model_profile dropdown selection in the
@@ -11551,7 +11538,7 @@ function run(): void {
                 // Swap Answer, Citations, Corrections, Follow-up, Tasks panels in-place. Answer
                 // carries display_summary + mode label (built by renderAnswerCard); Summary keeps
                 // the streamed react_draft untouched (Ananth 2026-08-07 — supersedes ruling b).
-                (["answer", "citations", "corrections", "next-steps", "tasks"] as const).forEach((panelName) => {
+                (["citations", "corrections", "next-steps", "tasks"] as const).forEach((panelName) => {
                   const existing = existingBubble.querySelector(`.ac-tab-panel--${panelName}`) as HTMLElement | null;
                   const rendered = renderedBubble.querySelector(`.ac-tab-panel--${panelName}`) as HTMLElement | null;
                   if (existing && rendered) existingBubble.replaceChild(rendered, existing);
@@ -11677,20 +11664,10 @@ function run(): void {
           }
         }
 
-        // display_summary → ANSWER tab (Ananth ruling 2026-08-07, supersedes ruling b). Summary now
-        // keeps the streamed react_draft; the integrator's display_summary lives in the mode-labeled
-        // Answer tab, built by renderAnswerCard and swapped in via the panel-swap loop above (streaming
-        // path) or present directly (fresh render). No Summary swap here anymore. For a display_summary-
-        // less turn, drop the streaming Answer button so no empty tab lingers.
-        {
-          const _cb = turnWrap.querySelector(".answer-card-bubble") as HTMLElement | null;
-          const _answerPanel = _cb?.querySelector(".ac-tab-panel--answer") as HTMLElement | null;
-          const _answerEmpty = !_answerPanel || !(_answerPanel.textContent ?? "").trim();
-          if (_answerEmpty) {
-            _cb?.querySelector('.ac-tab[data-panel="answer"]')?.remove();
-            _answerPanel?.remove();
-          }
-        }
+        // Unified draft→answer view (Ananth 2026-08-07): no separate Answer tab/panel anymore. The
+        // integrator's final (display_summary + sections) is rendered INTO the default summary panel
+        // by renderAnswerCard (.ac-answer-final) and flows in below the streamed draft via the summary
+        // panel-swap above. Nothing to clean up here.
 
         // Sources tab: citations ONLY (Ananth 2026-08-07). The retrieval trace was removed from
         // this user-facing tab — it lives solely in Diagnostics ("Full retrieval trace" + the

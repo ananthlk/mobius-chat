@@ -2831,40 +2831,38 @@ function renderAnswerCard(card, isError, opts) {
   const _tldrSummary = (card.tldr_summary ?? "").trim();
   const _answerSections = card.sections ?? [];
   const hasAnswerEnvelope = _displaySummary.length > 0 || _answerSections.length > 0;
-  const answerPanelEl = document.createElement("div");
-  answerPanelEl.className = "ac-tab-panel ac-tab-panel--answer";
-  answerPanelEl.setAttribute("role", "tabpanel");
-  answerPanelEl.setAttribute("hidden", "");
   if (hasAnswerEnvelope) {
+    const answerWrap = document.createElement("div");
+    answerWrap.className = "ac-answer-final";
     const modeLabel = (card.mode ?? "").trim().toUpperCase();
     if (modeLabel === "CANONICAL" || modeLabel === "RECITAL") {
       const lbl = document.createElement("div");
       lbl.className = "ac-answer-mode-label ac-answer-mode-label--" + modeLabel.toLowerCase();
       lbl.textContent = modeLabel;
-      answerPanelEl.appendChild(lbl);
+      answerWrap.appendChild(lbl);
     }
     if (_tldrSummary) {
       const tldr = document.createElement("div");
       tldr.className = "ac-answer-tldr";
       tldr.innerHTML = simpleMarkdownToHtml(_tldrSummary);
-      answerPanelEl.appendChild(tldr);
+      answerWrap.appendChild(tldr);
     }
     if (_displaySummary) {
       const body = document.createElement("div");
       body.className = "ac-answer-envelope-body";
       body.innerHTML = simpleMarkdownToHtml(_displaySummary);
-      answerPanelEl.appendChild(body);
+      answerWrap.appendChild(body);
     }
-    _answerSections.slice(0, MAX_SECTIONS).forEach((sec) => answerPanelEl.appendChild(renderOneSection(sec)));
+    _answerSections.slice(0, MAX_SECTIONS).forEach((sec) => answerWrap.appendChild(renderOneSection(sec)));
+    answerPanel.appendChild(answerWrap);
   }
   const _corrections = opts?.corrections ?? [];
   const _nextStepQuestions = opts?.nextQuestions ?? [];
   const _nextStepTasks = opts?.nextStepTasks ?? [];
   const hasCitations = Array.isArray(card.citations) && card.citations.length > 0;
   const hasCorrections = _corrections.length > 0;
-  const hasNextSteps = _nextStepQuestions.length > 0;
   const hasTasks = _nextStepTasks.length > 0;
-  const showTabBar = hasAnswerEnvelope || hasCitations || hasCorrections || hasNextSteps || hasTasks;
+  const showTabBar = hasCitations || hasCorrections || hasTasks;
   const citationsPanel = document.createElement("div");
   citationsPanel.className = "ac-tab-panel ac-tab-panel--citations";
   citationsPanel.setAttribute("role", "tabpanel");
@@ -3042,13 +3040,13 @@ function renderAnswerCard(card, isError, opts) {
       return btn;
     };
     const TAB_DOM = {
-      // "Draft" = react_draft (ReAct's first pass). Renamed from "Summary" (Ananth 2026-08-07) —
-      // the panel key stays "summary" (react_draft streams into .ac-summary-prose); only the label
-      // changes. The integrator's "Answer" (below) is the comprehensive final.
-      "summary": { label: "Draft", panelKey: "summary", count: void 0 },
+      // Unified draft→answer view (Ananth 2026-08-07): the default panel holds the whole flow — the
+      // draft streams in, then the integrator's final flows in below it (.ac-answer-final). Labeled
+      // "Answer" since the final is the star; the panel key stays "summary".
+      "summary": { label: "Answer", panelKey: "summary", count: void 0 },
       // Answer tab — only listed when display_summary exists (count=undefined → no badge, always
       // visible like Draft). Omitted otherwise so the bar has no empty Answer button.
-      ...hasAnswerEnvelope ? { "answer": { label: "Answer", panelKey: "answer", count: void 0 } } : {},
+      // No "answer" tab — the answer is inline in the default panel now (Ananth 2026-08-07).
       // Chat Master ruling (b) 2026-08-06: the Citations tab is repurposed into a consolidated
       // "Sources" tab — reference chips (here) + source excerpts (snippets, here) + a collapsible
       // narrative_full_redacted section injected post-render (app.ts completed handler).
@@ -3070,7 +3068,6 @@ function renderAnswerCard(card, isError, opts) {
     bubble.appendChild(tabBar);
   }
   bubble.appendChild(answerPanel);
-  bubble.appendChild(answerPanelEl);
   bubble.appendChild(citationsPanel);
   bubble.appendChild(correctionsPanel);
   bubble.appendChild(nextStepsPanel);
@@ -12225,8 +12222,7 @@ ${message}`;
         });
         return btn;
       };
-      streamTabBar.appendChild(_mkStreamBtn("Draft", "summary", true));
-      streamTabBar.appendChild(_mkStreamBtn("Answer", "answer", false));
+      streamTabBar.appendChild(_mkStreamBtn("Answer", "summary", true));
       streamTabBar.appendChild(_mkStreamBtn("Sources", "citations", false));
       streamTabBar.appendChild(_mkStreamBtn("Corrections", "corrections", false));
       streamTabBar.appendChild(_mkStreamBtn("Tasks", "tasks", false));
@@ -12257,7 +12253,7 @@ ${message}`;
       }, 3e3);
       bubble.dataset.statusInterval = String(_statusInterval);
       bubble.appendChild(summaryPanel);
-      ["answer", "citations", "corrections", "next-steps", "tasks"].forEach((p) => {
+      ["citations", "corrections", "next-steps", "tasks"].forEach((p) => {
         const panel = document.createElement("div");
         panel.className = `ac-tab-panel ac-tab-panel--${p}`;
         panel.setAttribute("role", "tabpanel");
@@ -12273,8 +12269,8 @@ ${message}`;
         draftStreamCancel = null;
       } else {
         const words = text.split(" ");
-        const DRAFT_STREAM_TARGET_MS = 5e3;
-        const DRAFT_STREAM_STEP_MS = 40;
+        const DRAFT_STREAM_TARGET_MS = 8500;
+        const DRAFT_STREAM_STEP_MS = 45;
         const _steps = Math.max(1, Math.round(DRAFT_STREAM_TARGET_MS / DRAFT_STREAM_STEP_MS));
         const wordsPerStep = Math.max(1, Math.ceil(words.length / _steps));
         let wi = 0;
@@ -12314,17 +12310,7 @@ ${message}`;
     if (opts?.phi_override) {
       payload.phi_override = true;
     }
-    function onDetailReady(content, _outputIntent) {
-      const _ds = (content ?? "").trim();
-      if (!_ds)
-        return;
-      const answerBody = messageWrapEl?.querySelector(".ac-tab-panel--answer");
-      if (answerBody && !(answerBody.textContent ?? "").trim()) {
-        const body = document.createElement("div");
-        body.className = "ac-answer-envelope-body";
-        body.innerHTML = simpleMarkdownToHtml(_ds);
-        answerBody.appendChild(body);
-      }
+    function onDetailReady(_content, _outputIntent) {
     }
     function onIntegratorPartial(part, payload2) {
       const bubble = messageWrapEl?.querySelector(".answer-card-bubble");
@@ -12341,20 +12327,12 @@ ${message}`;
         bubble.querySelector(`.ac-tab[data-panel="${panelKey}"]`)?.removeAttribute("data-empty");
       };
       try {
-        if (part === "enrichment") {
-          const nq = normalizeFollowupLineList(payload2.next_questions_for_user, true);
-          if (!nq.length)
-            return;
-          transplant("next-steps", renderAnswerCard({ direct_answer: "\u2026", sections: [] }, false, {
-            nextQuestions: nq,
-            onFollowupClick: (q) => sendMessage(q)
-          }));
-        } else {
+        if (part === "citations") {
           const card = buildPartialCard(part, payload2);
           if (!card)
             return;
           const rendered = renderAnswerCard(card, false, { onFollowupClick: (q) => sendMessage(q) });
-          transplant(part === "core" ? "answer" : "citations", rendered);
+          transplant("citations", rendered);
         }
       } catch {
       }
@@ -12544,7 +12522,7 @@ ${message}`;
                   existingSummaryPanel.appendChild(child);
                 });
               }
-              ["answer", "citations", "corrections", "next-steps", "tasks"].forEach((panelName) => {
+              ["citations", "corrections", "next-steps", "tasks"].forEach((panelName) => {
                 const existing = existingBubble.querySelector(`.ac-tab-panel--${panelName}`);
                 const rendered = renderedBubble.querySelector(`.ac-tab-panel--${panelName}`);
                 if (existing && rendered)
@@ -12647,15 +12625,6 @@ ${message}`;
               suppressConfidenceForAdminQcFail: suppressConf
             })
           );
-        }
-      }
-      {
-        const _cb = turnWrap.querySelector(".answer-card-bubble");
-        const _answerPanel = _cb?.querySelector(".ac-tab-panel--answer");
-        const _answerEmpty = !_answerPanel || !(_answerPanel.textContent ?? "").trim();
-        if (_answerEmpty) {
-          _cb?.querySelector('.ac-tab[data-panel="answer"]')?.remove();
-          _answerPanel?.remove();
         }
       }
       {
