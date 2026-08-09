@@ -11599,7 +11599,11 @@ function run(): void {
                     const _fpBody = _fp?.querySelector(".ac-first-pass-body") as HTMLElement | null;
                     const _finalWrap = existingSummaryPanel.querySelector(".ac-answer-final") as HTMLElement | null;
                     const _finalBody = _finalWrap?.querySelector(".ac-answer-envelope-body") as HTMLElement | null;
-                    const _leadText = (fullCard?.display_summary ?? "").trim() || (fullCard?.direct_answer ?? "").trim();
+                    // Strip raw [N] citation markers before re-streaming the lead — the rendered card
+                    // strips them via stripCitationMarkers(), but the streamed re-fill uses this raw
+                    // text, so it must be stripped too or the markers flash back in (Chat Master 2026-08-08).
+                    const _leadText = ((fullCard?.display_summary ?? "").trim() || (fullCard?.direct_answer ?? "").trim())
+                      .replace(/\s?\[\d+\]/g, "").replace(/ {2,}/g, " ");
                     // Open the first pass at its MEASURED height (draft visible at top first).
                     if (_fp && _fpBody) { _fp.classList.add("ac-first-pass--open"); _fpBody.style.maxHeight = _fpBody.scrollHeight + "px"; }
                     const _hiddenSections = Array.from(_finalWrap?.querySelectorAll(".answer-card-section") ?? []) as HTMLElement[];

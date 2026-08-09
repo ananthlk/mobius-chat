@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
-import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, applyCitationFootnotes, renderSourcesList, retainStreamedDraftAsFirstPass } from "./bubble";
+import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, applyCitationFootnotes, renderSourcesList, retainStreamedDraftAsFirstPass, stripCitationMarkers } from "./bubble";
 import type { AnswerCard } from "../answer-card";
 
 // A v2 (no-mode) card: primary section leads, detail tucks; citations light up their tab.
@@ -335,8 +335,10 @@ describe("renderAnswerCard — sources live in the Sources tab only (Chat Master
     expect(el.querySelectorAll(".ac-cite-ref").length).toBe(0);
     expect(el.querySelector(".ac-sources-list")).toBeNull();
     expect(el.querySelectorAll(".ac-source-item").length).toBe(0);
-    // The literal [N] markers stay as plain text in the prose (not rewritten).
-    expect(el.textContent).toContain("[1]");
+    // Raw [N] markers are stripped from the prose (Chat Master: "looks unprofessional").
+    expect(el.textContent).not.toContain("[1]");
+    expect(el.textContent).not.toContain("[2]");
+    expect(el.textContent).toContain("reimbursed at parity");
   });
 
   it("keeps the Sources tab live whenever citations exist (with OR without card.sources)", () => {
@@ -353,6 +355,31 @@ describe("renderAnswerCard — sources live in the Sources tab only (Chat Master
       expect(srcTab).not.toBeUndefined();          // Sources tab present
       expect(srcTab!.getAttribute("data-empty")).toBeNull();   // and live (not suppressed)
     }
+  });
+});
+
+describe("stripCitationMarkers — removes raw [N] litter from prose (Chat Master 2026-08-08)", () => {
+  it("deletes [N] markers and tidies the leftover space", () => {
+    const el = document.createElement("div");
+    el.innerHTML = "<p>Parity applies [1] under the plan [2].</p>";
+    stripCitationMarkers(el);
+    expect(el.textContent).toBe("Parity applies under the plan.");
+  });
+
+  it("leaves bracketed numbers inside code, pre, and table cells alone", () => {
+    const el = document.createElement("div");
+    el.innerHTML = "<p>See [1].</p><pre>arr[2]</pre><table><tr><td>row [3]</td></tr></table>";
+    stripCitationMarkers(el);
+    expect(el.querySelector("p")?.textContent).toBe("See.");
+    expect(el.querySelector("pre")?.textContent).toBe("arr[2]");
+    expect(el.querySelector("td")?.textContent).toBe("row [3]");
+  });
+
+  it("is a no-op on prose with no markers", () => {
+    const el = document.createElement("div");
+    el.innerHTML = "<p>No markers here.</p>";
+    stripCitationMarkers(el);
+    expect(el.textContent).toBe("No markers here.");
   });
 });
 

@@ -2786,6 +2786,20 @@ function applyInlineCorrections(container, corrections) {
     target.parentNode?.replaceChild(frag, target);
   }
 }
+function stripCitationMarkers(container) {
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) {
+    const t = walker.currentNode;
+    if (t.parentElement?.closest("code, pre, table"))
+      continue;
+    if (t.nodeValue && /\[\d+\]/.test(t.nodeValue))
+      nodes.push(t);
+  }
+  for (const n of nodes) {
+    n.nodeValue = (n.nodeValue ?? "").replace(/\s?\[\d+\]/g, "").replace(/ {2,}/g, " ");
+  }
+}
 function retainStreamedDraftAsFirstPass(panel, streamedDraftHTML) {
   if (panel.querySelector(".ac-first-pass"))
     return null;
@@ -2939,6 +2953,7 @@ function renderAnswerCard(card, isError, opts) {
       answerWrap.appendChild(body);
     }
     _answerSections.slice(0, MAX_SECTIONS).forEach((sec) => answerWrap.appendChild(renderOneSection(sec)));
+    stripCitationMarkers(answerWrap);
     answerPanel.insertBefore(answerWrap, answerPanel.firstChild);
     const _rdRounds = (card.reasoning_trace ?? []).map((r, i) => ({
       n: typeof r?.round === "number" ? r.round : i + 1,
@@ -12647,7 +12662,7 @@ ${message}`;
                   const _fpBody = _fp?.querySelector(".ac-first-pass-body");
                   const _finalWrap = existingSummaryPanel.querySelector(".ac-answer-final");
                   const _finalBody = _finalWrap?.querySelector(".ac-answer-envelope-body");
-                  const _leadText = (fullCard?.display_summary ?? "").trim() || (fullCard?.direct_answer ?? "").trim();
+                  const _leadText = ((fullCard?.display_summary ?? "").trim() || (fullCard?.direct_answer ?? "").trim()).replace(/\s?\[\d+\]/g, "").replace(/ {2,}/g, " ");
                   if (_fp && _fpBody) {
                     _fp.classList.add("ac-first-pass--open");
                     _fpBody.style.maxHeight = _fpBody.scrollHeight + "px";

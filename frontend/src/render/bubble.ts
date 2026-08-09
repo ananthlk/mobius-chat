@@ -598,6 +598,24 @@ export function applyCitationFootnotes(
   }
 }
 
+// Remove raw `[N]` citation markers from rendered prose (Chat Master 2026-08-08). The integrator can
+// leave `[N]` tokens in the answer text; with the inline footnote list removed, they map to nothing
+// and read as litter ("looks unprofessional"). Walks text nodes and deletes `[N]`, skipping code/pre
+// (a literal [3] there is content) and table cells (could be real data). Collapses the leftover
+// double-space. Idempotent and safe to call on already-clean prose.
+export function stripCitationMarkers(container: HTMLElement): void {
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  while (walker.nextNode()) {
+    const t = walker.currentNode as Text;
+    if (t.parentElement?.closest("code, pre, table")) continue;
+    if (t.nodeValue && /\[\d+\]/.test(t.nodeValue)) nodes.push(t);
+  }
+  for (const n of nodes) {
+    n.nodeValue = (n.nodeValue ?? "").replace(/\s?\[\d+\]/g, "").replace(/ {2,}/g, " ");
+  }
+}
+
 // The numbered bottom sources list that the footnotes jump to. Replaces the separate Sources tab
 // (Ananth 2026-08-08: "map it to the sources in the bottom… remove the separate citations too").
 // Positional: sources[i] is footnote i+1. Returns null when there's nothing to show.
@@ -883,7 +901,9 @@ export function renderAnswerCard(
     _answerSections.slice(0, MAX_SECTIONS).forEach((sec) => answerWrap.appendChild(renderOneSection(sec)));
     // Sources are NOT rendered inline (Chat Master 2026-08-08) — they live in the Sources tab only.
     // (applyCitationFootnotes / renderSourcesList remain exported + tested for potential reuse, but
-    // the answer card body no longer calls them; _sources/hasSources stay parsed but unrendered here.)
+    // the answer card body no longer calls them.) Strip any raw [N] citation markers the integrator
+    // left in the prose — with no footnote list to map to, they're just unprofessional litter.
+    stripCitationMarkers(answerWrap);
     // Final at the TOP of the panel (the star), above meta/confidence.
     answerPanel.insertBefore(answerWrap, answerPanel.firstChild);
 
