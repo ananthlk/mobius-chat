@@ -4151,80 +4151,106 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                             _pp_critic_system = _pp_resolved_critic.system_prompt
                             _pp_critic_comp_id = _pp_resolved_critic.composition_id
                             _pp_critic_comp_hash = _pp_resolved_critic.composition_hash
-                    _pp_critic_raw = _call_llm_json(
-                        _pp_critic_system,
-                        _pp_build_critic_msg(
-                            question=ctx.effective_message or ctx.message or "",
-                            draft_answer=answer, sources=all_sources, tool_results=tool_results,
-                        ),
-                        ctx=ctx, stage="critique", max_tokens=1200,
-                        composition_id=_pp_critic_comp_id, composition_hash=_pp_critic_comp_hash,
-                    )
-                    _pp_critique = _pp_parse_critic(_pp_critic_raw)
-                    _pp_groundedness_passed = not _pp_critique.has_blocking_issues
-                    # react_trace diagnostics: record that the mandatory floor
-                    # actually ran + its verdict, distinct from the separate
-                    # (optional) critic_enabled()-gated path below.
-                    ctx.react_groundedness_floor_ran = True
-                    ctx.react_groundedness_passed = _pp_groundedness_passed
-                    if groundedness_heuristic_enabled():
-                        ctx.react_groundedness_score = compute_groundedness_heuristic(_pp_critique.issues)
+                    # 2026-08-08 (Chat Master ruling, Chat FE-reported P0):
+                    # a provider-side latency spike on this call used to
+                    # propagate as an UNCAUGHT exception mid-round -- no
+                    # graceful path to a terminal event, the turn just died
+                    # silently until the FE's own 90s watchdog fired.
+                    # LLM_TIMEOUT_SECONDS (60s, llm_provider.py) already caps
+                    # the call itself; the gap was that reaching it had no
+                    # handler here. Ruling: the mandatory floor stays
+                    # mandatory for normal operation, but a provider
+                    # infrastructure failure (timeout or any other exception)
+                    # is a SEPARATE failure mode that must never kill a turn
+                    # -- degrade to the same behavior as confidence_bar being
+                    # below threshold (skip the floor, fall through to the
+                    # optional critic_enabled() path below unchanged).
+                    try:
+                        _pp_critic_raw = _call_llm_json(
+                            _pp_critic_system,
+                            _pp_build_critic_msg(
+                                question=ctx.effective_message or ctx.message or "",
+                                draft_answer=answer, sources=all_sources, tool_results=tool_results,
+                            ),
+                            ctx=ctx, stage="critique", max_tokens=1200,
+                            composition_id=_pp_critic_comp_id, composition_hash=_pp_critic_comp_hash,
+                        )
+                        _pp_critique = _pp_parse_critic(_pp_critic_raw)
+                        _pp_groundedness_passed = not _pp_critique.has_blocking_issues
+                        # react_trace diagnostics: record that the mandatory floor
+                        # actually ran + its verdict, distinct from the separate
+                        # (optional) critic_enabled()-gated path below.
+                        ctx.react_groundedness_floor_ran = True
+                        ctx.react_groundedness_passed = _pp_groundedness_passed
+                        if groundedness_heuristic_enabled():
+                            ctx.react_groundedness_score = compute_groundedness_heuristic(_pp_critique.issues)
 
-                    _pp_elapsed_s = _pp_time_mod.monotonic() - _pp_turn_start
-                    _pp_post_state = RoundState(
-                        proposes_complete=True,
-                        self_reported_confidence=decision.get("confidence"),
-                        # The existing critic_enabled()-gated path below is
-                        # separate and unmerged with this dedicated floor —
-                        # its verdict isn't folded in here.
-                        critic_verdict=None,
-                        groundedness_passed=_pp_groundedness_passed,
-                        elapsed_s=_pp_elapsed_s,
-                        base_rounds_remaining=max_it - rn,
-                        extension_rounds_available=_pp_contract.max_extension_rounds - _pp_extension_rounds_used,
-                    )
-                    _pp_directive, _pp_reason = evaluate(_pp_contract, _pp_post_state)
-                    # Telemetry marker (Chat Architecture clarification,
-                    # 2026-07-30): distinguishes a verified-clean "complete"
-                    # from a budget-forced "finalize" for anything downstream
-                    # that tracks turn quality — content is unaffected either way.
-                    ctx.product_promise_directive = _pp_directive
+                        _pp_elapsed_s = _pp_time_mod.monotonic() - _pp_turn_start
+                        _pp_post_state = RoundState(
+                            proposes_complete=True,
+                            self_reported_confidence=decision.get("confidence"),
+                            # The existing critic_enabled()-gated path below is
+                            # separate and unmerged with this dedicated floor —
+                            # its verdict isn't folded in here.
+                            critic_verdict=None,
+                            groundedness_passed=_pp_groundedness_passed,
+                            elapsed_s=_pp_elapsed_s,
+                            base_rounds_remaining=max_it - rn,
+                            extension_rounds_available=_pp_contract.max_extension_rounds - _pp_extension_rounds_used,
+                        )
+                        _pp_directive, _pp_reason = evaluate(_pp_contract, _pp_post_state)
+                        # Telemetry marker (Chat Architecture clarification,
+                        # 2026-07-30): distinguishes a verified-clean "complete"
+                        # from a budget-forced "finalize" for anything downstream
+                        # that tracks turn quality — content is unaffected either way.
+                        ctx.product_promise_directive = _pp_directive
 
-                    if _pp_directive == "extend":
-                        _pp_extension_rounds_used += 1
-                        max_it += 1
-                        tool_results.append({
-                            "tool": "_product_promise_groundedness",
-                            "success": False,
-                            "result": _pp_format_critique_obs(_pp_critique.high_severity_issues),
-                        })
-                        continue
+                        if _pp_directive == "extend":
+                            _pp_extension_rounds_used += 1
+                            max_it += 1
+                            tool_results.append({
+                                "tool": "_product_promise_groundedness",
+                                "success": False,
+                                "result": _pp_format_critique_obs(_pp_critique.high_severity_issues),
+                            })
+                            continue
 
-                    logger.info("[react] product_promise directive=%s round=%d reason=%s", _pp_directive, rn, _pp_reason)
+                        logger.info("[react] product_promise directive=%s round=%d reason=%s", _pp_directive, rn, _pp_reason)
 
-                    if _pp_directive == "finalize":
-                        # Same "Groundedness notice" ship-with-warning
-                        # content as the existing critic_enabled() path
-                        # below — no content swap, directive="finalize" is
-                        # the only new signal (see the marker above).
-                        warning_lines = [
-                            "", "---",
-                            "⚠ **Groundedness notice:** the following claims in this "
-                            "answer could not be verified against the retrieved sources:",
-                        ]
-                        for i, issue in enumerate(_pp_critique.high_severity_issues, 1):
-                            claim_preview = issue.claim
-                            if len(claim_preview) > 150:
-                                claim_preview = claim_preview[:150].rstrip() + "…"
-                            warning_lines.append(f"  {i}. {claim_preview}")
-                        warning_lines.append("Verify these specifically before acting on them.")
-                        answer = answer.rstrip() + "\n" + "\n".join(warning_lines)
-                        _finalize_response(ctx, answer, all_sources, final_signal, last_tool, emitter)
-                        return
-                    # directive == "complete": fall through to the existing
-                    # logic below unchanged (which may still independently
-                    # run the optional critic_enabled() path — intentional,
-                    # per Chat Architecture: that path stays untouched).
+                        if _pp_directive == "finalize":
+                            # Same "Groundedness notice" ship-with-warning
+                            # content as the existing critic_enabled() path
+                            # below — no content swap, directive="finalize" is
+                            # the only new signal (see the marker above).
+                            warning_lines = [
+                                "", "---",
+                                "⚠ **Groundedness notice:** the following claims in this "
+                                "answer could not be verified against the retrieved sources:",
+                            ]
+                            for i, issue in enumerate(_pp_critique.high_severity_issues, 1):
+                                claim_preview = issue.claim
+                                if len(claim_preview) > 150:
+                                    claim_preview = claim_preview[:150].rstrip() + "…"
+                                warning_lines.append(f"  {i}. {claim_preview}")
+                            warning_lines.append("Verify these specifically before acting on them.")
+                            answer = answer.rstrip() + "\n" + "\n".join(warning_lines)
+                            _finalize_response(ctx, answer, all_sources, final_signal, last_tool, emitter)
+                            return
+                        # directive == "complete": fall through to the existing
+                        # logic below unchanged (which may still independently
+                        # run the optional critic_enabled() path — intentional,
+                        # per Chat Architecture: that path stays untouched).
+                    except Exception as _pp_critic_exc:
+                        logger.warning(
+                            "[react] product_promise groundedness floor failed (%s) — "
+                            "degrading to non-blocking, proceeding with self-reported "
+                            "confidence (cid=%s, round=%d)",
+                            _pp_critic_exc, (ctx.correlation_id or "")[:8], rn,
+                        )
+                        ctx.react_groundedness_floor_ran = False
+                        # No directive set, no tool_results/continue/return —
+                        # falls through exactly like the confidence_bar-below-
+                        # threshold case below.
                 elif _pp_enabled and _pp_contract is not None:
                     # confidence_bar == "low" (quick mode): trust the
                     # self-reported completion as today, no added critic
@@ -4367,105 +4393,122 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                             _critic_system = _resolved_critic.system_prompt
                             _critic_composition_id = _resolved_critic.composition_id
                             _critic_composition_hash = _resolved_critic.composition_hash
-                    critic_raw = _call_llm_json(
-                        _critic_system,
-                        build_critic_user_message(
-                            question=ctx.effective_message or ctx.message or "",
-                            draft_answer=answer,
-                            sources=all_sources,
-                            tool_results=tool_results,
-                        ),
-                        ctx=ctx,
-                        stage="critique",
-                        max_tokens=1200,
-                        composition_id=_critic_composition_id,
-                        composition_hash=_critic_composition_hash,
-                    )
-                    critique = parse_critic_response(critic_raw)
-                    if groundedness_heuristic_enabled():
-                        ctx.react_groundedness_score = compute_groundedness_heuristic(critique.issues)
-
-                    if critique.has_blocking_issues and rounds_remaining > 0:
-                        # Inject the critique + keep going. Planner sees
-                        # the flagged claims next round and either finds
-                        # evidence or revises.
-                        high = critique.high_severity_issues
-                        if _emit_env:
-                            _emit_env(make_critic_flagged(
-                                correlation_id=cid,
-                                round=rn,
-                                total_issues=len(critique.issues),
-                                high_severity=len(high),
-                                flagged_claims=[i.claim for i in high],
-                                rounds_remaining=rounds_remaining,
-                                thread_id=tid,
-                                user_id=uid,
-                            ).to_dict())
-                        # Track that this turn had a retry, so when a
-                        # later round is approved we can emit
-                        # critic_approved_after_retry (promoted) vs.
-                        # plain critic_approved (chat-side only).
-                        _critic_retries_this_turn += 1
-                        tool_results.append({
-                            "tool": "_critic",
-                            "success": False,
-                            "result": format_critique_as_observation(high),
-                        })
-                        # Round counter increments via `continue`; the
-                        # reasoning_context builder will pick up the new
-                        # synthetic observation on the next pass.
-                        continue
-
-                    if critique.has_blocking_issues and rounds_remaining == 0:
-                        # Last round — ship anyway, but annotate so the
-                        # reader sees this answer is suspect. Honest
-                        # degradation beats silent hallucination.
-                        warning_lines = [
-                            "",
-                            "---",
-                            "⚠ **Groundedness notice:** the following claims in this "
-                            "answer could not be verified against the retrieved sources:",
-                        ]
-                        for i, issue in enumerate(critique.high_severity_issues, 1):
-                            claim_preview = issue.claim
-                            if len(claim_preview) > 150:
-                                claim_preview = claim_preview[:150].rstrip() + "…"
-                            warning_lines.append(f"  {i}. {claim_preview}")
-                        warning_lines.append(
-                            "Verify these specifically before acting on them."
+                    # 2026-08-08 (Chat Master ruling, same P0 as the
+                    # mandatory floor above): degrade to non-blocking on any
+                    # provider infrastructure failure rather than let it
+                    # propagate uncaught mid-round. This path is currently
+                    # dormant (MOBIUS_REACT_CRITIC=0), but gets the same
+                    # defensive fix for whenever it's turned on.
+                    try:
+                        critic_raw = _call_llm_json(
+                            _critic_system,
+                            build_critic_user_message(
+                                question=ctx.effective_message or ctx.message or "",
+                                draft_answer=answer,
+                                sources=all_sources,
+                                tool_results=tool_results,
+                            ),
+                            ctx=ctx,
+                            stage="critique",
+                            max_tokens=1200,
+                            composition_id=_critic_composition_id,
+                            composition_hash=_critic_composition_hash,
                         )
-                        answer = answer.rstrip() + "\n" + "\n".join(warning_lines)
-                        if _emit_env:
-                            _emit_env(make_rounds_exhausted_with_warning(
-                                correlation_id=cid,
-                                round=rn,
-                                unresolved_claims=[i.claim for i in critique.high_severity_issues],
-                                thread_id=tid,
-                                user_id=uid,
-                            ).to_dict())
-                    else:
-                        # Critic approved. If this turn had any
-                        # previous retries, this is a self-correction
-                        # worth promoting to task-manager analytics.
-                        # First-try approvals are the common case and
-                        # stay chat-side-only.
-                        if _emit_env:
-                            if _critic_retries_this_turn > 0:
-                                _emit_env(make_critic_approved_after_retry(
+                        critique = parse_critic_response(critic_raw)
+                        if groundedness_heuristic_enabled():
+                            ctx.react_groundedness_score = compute_groundedness_heuristic(critique.issues)
+
+                        if critique.has_blocking_issues and rounds_remaining > 0:
+                            # Inject the critique + keep going. Planner sees
+                            # the flagged claims next round and either finds
+                            # evidence or revises.
+                            high = critique.high_severity_issues
+                            if _emit_env:
+                                _emit_env(make_critic_flagged(
                                     correlation_id=cid,
                                     round=rn,
-                                    retry_count=_critic_retries_this_turn,
-                                    issues_resolved=[i.claim for i in critique.issues],
+                                    total_issues=len(critique.issues),
+                                    high_severity=len(high),
+                                    flagged_claims=[i.claim for i in high],
+                                    rounds_remaining=rounds_remaining,
                                     thread_id=tid,
                                     user_id=uid,
                                 ).to_dict())
-                            else:
-                                _emit_env(make_critic_approved(
+                            # Track that this turn had a retry, so when a
+                            # later round is approved we can emit
+                            # critic_approved_after_retry (promoted) vs.
+                            # plain critic_approved (chat-side only).
+                            _critic_retries_this_turn += 1
+                            tool_results.append({
+                                "tool": "_critic",
+                                "success": False,
+                                "result": format_critique_as_observation(high),
+                            })
+                            # Round counter increments via `continue`; the
+                            # reasoning_context builder will pick up the new
+                            # synthetic observation on the next pass.
+                            continue
+
+                        if critique.has_blocking_issues and rounds_remaining == 0:
+                            # Last round — ship anyway, but annotate so the
+                            # reader sees this answer is suspect. Honest
+                            # degradation beats silent hallucination.
+                            warning_lines = [
+                                "",
+                                "---",
+                                "⚠ **Groundedness notice:** the following claims in this "
+                                "answer could not be verified against the retrieved sources:",
+                            ]
+                            for i, issue in enumerate(critique.high_severity_issues, 1):
+                                claim_preview = issue.claim
+                                if len(claim_preview) > 150:
+                                    claim_preview = claim_preview[:150].rstrip() + "…"
+                                warning_lines.append(f"  {i}. {claim_preview}")
+                            warning_lines.append(
+                                "Verify these specifically before acting on them."
+                            )
+                            answer = answer.rstrip() + "\n" + "\n".join(warning_lines)
+                            if _emit_env:
+                                _emit_env(make_rounds_exhausted_with_warning(
                                     correlation_id=cid,
                                     round=rn,
+                                    unresolved_claims=[i.claim for i in critique.high_severity_issues],
                                     thread_id=tid,
                                     user_id=uid,
                                 ).to_dict())
+                        else:
+                            # Critic approved. If this turn had any
+                            # previous retries, this is a self-correction
+                            # worth promoting to task-manager analytics.
+                            # First-try approvals are the common case and
+                            # stay chat-side-only.
+                            if _emit_env:
+                                if _critic_retries_this_turn > 0:
+                                    _emit_env(make_critic_approved_after_retry(
+                                        correlation_id=cid,
+                                        round=rn,
+                                        retry_count=_critic_retries_this_turn,
+                                        issues_resolved=[i.claim for i in critique.issues],
+                                        thread_id=tid,
+                                        user_id=uid,
+                                    ).to_dict())
+                                else:
+                                    _emit_env(make_critic_approved(
+                                        correlation_id=cid,
+                                        round=rn,
+                                        thread_id=tid,
+                                        user_id=uid,
+                                    ).to_dict())
+                    except Exception as _critic_exc:
+                        logger.warning(
+                            "[react] optional critic pass failed (%s) — "
+                            "degrading to non-blocking, shipping the draft "
+                            "unaudited (cid=%s, round=%d)",
+                            _critic_exc, (ctx.correlation_id or "")[:8], rn,
+                        )
+                        # No warning appended, no retry — falls through to
+                        # the unconditional finalize below exactly like the
+                        # "critic approved" case.
 
                 emit("  Synthesizing answer…")
                 ctx.react_last_tool = last_tool
