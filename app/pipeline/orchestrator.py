@@ -847,9 +847,15 @@ def run_pipeline(
         # raw_text directly from the completed SSE event and the poll
         # endpoint — it does not need an AnswerCard envelope.
         if ctx.chat_mode == "task":
+            from app.communication.assistant_envelope import build_assistant_envelope_v1, resolve_tool_fired
             ctx.response_payload = {
                 "raw_text": ctx.final_message or "",
                 "status": "completed",
+                "assistant_envelope": build_assistant_envelope_v1(
+                    answer_card=None, ui_blocks_raw=[], tool_fired=resolve_tool_fired(ctx),
+                    response_sources=[], next_steps=[], next_questions_for_user=[],
+                    roster_report_final_md=None, has_roster_pdf=False,
+                ),
             }
             _publish_completed(ctx, t0)
             return
@@ -859,9 +865,15 @@ def run_pipeline(
         # markdown without an LLM integrator round-trip or answer-card chrome
         # (confidence badge, sources block, etc.).
         if getattr(ctx, "react_bypass_integrate", False):
+            from app.communication.assistant_envelope import build_assistant_envelope_v1, resolve_tool_fired
             ctx.response_payload = {
                 "raw_text": ctx.final_message or "",
                 "status": "completed",
+                "assistant_envelope": build_assistant_envelope_v1(
+                    answer_card=None, ui_blocks_raw=[], tool_fired=resolve_tool_fired(ctx),
+                    response_sources=[], next_steps=[], next_questions_for_user=[],
+                    roster_report_final_md=None, has_roster_pdf=False,
+                ),
             }
             _publish_completed(ctx, t0)
             return
@@ -1057,6 +1069,15 @@ def _publish_pursuit_ended(correlation_id: str, ctx: PipelineContext, t0_start: 
 
 def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) -> None:
     """Build and publish clarification or refinement response."""
+    from app.communication.assistant_envelope import build_assistant_envelope_v1, resolve_tool_fired
+
+    def _minimal_envelope() -> dict:
+        return build_assistant_envelope_v1(
+            answer_card=None, ui_blocks_raw=[], tool_fired=resolve_tool_fired(ctx),
+            response_sources=[], next_steps=[], next_questions_for_user=[],
+            roster_report_final_md=None, has_roster_pdf=False,
+        )
+
     duration_ms = int((time.perf_counter() - t0_start) * 1000)
     try:
         config_sha = get_config_sha() or None
@@ -1097,6 +1118,7 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
             "source_confidence_strip": None,
             "cited_source_indices": [],
             "thread_id": ctx.thread_id,
+            "assistant_envelope": _minimal_envelope(),
         }
         persistence = get_persistence()
         try:
@@ -1174,6 +1196,7 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
             "source_confidence_strip": None,
             "cited_source_indices": [],
             "thread_id": ctx.thread_id,
+            "assistant_envelope": _minimal_envelope(),
         }
     else:
         formatted = format_refinement_ask(
@@ -1197,6 +1220,7 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
             "source_confidence_strip": None,
             "cited_source_indices": [],
             "thread_id": ctx.thread_id,
+            "assistant_envelope": _minimal_envelope(),
         }
 
     persistence = get_persistence()
@@ -1684,6 +1708,15 @@ def _publish_failed(
         "partial_message": _partial_content,
         "checkpoint_kind": _checkpoint_kind,
     }
+    try:
+        from app.communication.assistant_envelope import build_assistant_envelope_v1
+        response_payload["assistant_envelope"] = build_assistant_envelope_v1(
+            answer_card=None, ui_blocks_raw=[], tool_fired="",
+            response_sources=[], next_steps=[], next_questions_for_user=[],
+            roster_report_final_md=None, has_roster_pdf=False,
+        )
+    except Exception:  # pragma: no cover -- must not fail an already-failing turn
+        pass
     try:
         if try_finalize(correlation_id):
             store_response(correlation_id, response_payload)

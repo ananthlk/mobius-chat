@@ -7,7 +7,12 @@ from unittest.mock import patch
 import pytest
 
 from app.pipeline.context import PipelineContext
-from app.pipeline.orchestrator import run_pipeline, _publish_failed, _emit_model_summary
+from app.pipeline.orchestrator import (
+    run_pipeline,
+    _publish_failed,
+    _publish_clarification_or_refinement,
+    _emit_model_summary,
+)
 
 USE_REACT = os.environ.get("MOBIUS_USE_REACT", "").lower() in ("1", "true", "yes")
 
@@ -62,6 +67,47 @@ def test_publish_failed_produces_structured_payload():
     assert isinstance(env, dict) and env.get("signal") == "turn_failed"
     assert env.get("data", {}).get("error_class") == "ValueError"
     assert payload_keys.issubset(payload.keys())
+
+
+def test_publish_failed_includes_assistant_envelope():
+    """Ananth ruling (2026-08-09): early-exit turns must emit
+    assistant_envelope so the FE renders a typed UX envelope, not a plain
+    bubble -- same call as integrate.py's full-answer path, wired minimally
+    at this early-exit site too."""
+    with patch("app.pipeline.orchestrator.get_queue") as mock_q:
+        with patch("app.pipeline.orchestrator.store_response"):
+            _publish_failed(
+                "test-cid-envelope",
+                "test message",
+                None,
+                ["chunk1"],
+                ValueError("test error"),
+            )
+    payload = mock_q.return_value.publish_response.call_args[0][1]
+    env = payload.get("assistant_envelope")
+    assert isinstance(env, dict)
+    assert "blocks" in env
+
+
+def test_publish_failed_envelope_failure_does_not_break_the_failure_response():
+    """Building the envelope must never take down the already-failing
+    turn's response -- wrapped in its own try/except."""
+    with patch("app.pipeline.orchestrator.get_queue") as mock_q:
+        with patch("app.pipeline.orchestrator.store_response"):
+            with patch(
+                "app.communication.assistant_envelope.build_assistant_envelope_v1",
+                side_effect=RuntimeError("boom"),
+            ):
+                _publish_failed(
+                    "test-cid-envelope-fail",
+                    "test message",
+                    None,
+                    ["chunk1"],
+                    ValueError("test error"),
+                )
+    mock_q.return_value.publish_response.assert_called_once()
+    payload = mock_q.return_value.publish_response.call_args[0][1]
+    assert payload["status"] == "failed"
 
 
 def test_publish_failed_handles_none_thinking_chunks():
@@ -212,3 +258,61 @@ def test_fire_rag_grade_callbacks_noop_when_no_final_answer():
     with patch("urllib.request.urlopen") as mock_urlopen:
         _fire_rag_grade_callbacks(ctx)
     mock_urlopen.assert_not_called()
+
+
+# ── assistant_envelope on early-exit publish paths (Ananth ruling, 2026-08-09) ──
+# 6 anchors in orchestrator.py were rendering as plain bubbles instead of typed
+# UX envelopes because they never called build_assistant_envelope_v1() (the
+# full-answer path at integrate.py:1711 already did). Minimal fix: wire the
+# same call at each early-exit site. Covers the 3 branches of
+# _publish_clarification_or_refinement + _publish_failed directly-testable
+# here; the other 2 (ReAct task-mode reply, status-only bypass, both inside
+# run_pipeline's react branch) are verified live post-deploy instead --
+# mocking the full pipeline just to reach those two lines isn't worth the
+# fixture weight for a change this mechanical.
+
+def _publish_and_capture(ctx: PipelineContext) -> dict:
+    with patch("app.pipeline.orchestrator.get_persistence") as mock_persist:
+        mock_persist.return_value.save_turn_with_messages = lambda **kw: None
+        mock_persist.return_value.save_turn = lambda **kw: None
+        with patch("app.pipeline.orchestrator.get_queue") as mock_q:
+            with patch("app.pipeline.orchestrator.store_response"):
+                with patch("app.pipeline.orchestrator.save_state_full"):
+                    with patch("app.pipeline.orchestrator.register_open_slots"):
+                        _publish_clarification_or_refinement(ctx, 0.0)
+    mock_q.return_value.publish_response.assert_called_once()
+    return mock_q.return_value.publish_response.call_args[0][1]
+
+
+def test_route_clarification_includes_assistant_envelope():
+    ctx = PipelineContext(correlation_id="c-route", thread_id="t", message="m")
+    ctx.needs_route_clarification = True
+    ctx.route_clarification_choices = [{"id": "web", "label": "Web"}, {"id": "rag", "label": "Policy materials"}]
+
+    payload = _publish_and_capture(ctx)
+    assert payload["status"] == "clarification"
+    env = payload.get("assistant_envelope")
+    assert isinstance(env, dict) and "blocks" in env
+
+
+def test_slot_clarification_includes_assistant_envelope():
+    ctx = PipelineContext(correlation_id="c-slot", thread_id="t", message="m")
+    ctx.needs_clarification = True
+    ctx.clarification_message = "Which state?"
+    ctx.missing_slots = ["jurisdiction"]
+
+    payload = _publish_and_capture(ctx)
+    assert payload["status"] == "clarification"
+    env = payload.get("assistant_envelope")
+    assert isinstance(env, dict) and "blocks" in env
+
+
+def test_refinement_ask_includes_assistant_envelope():
+    ctx = PipelineContext(correlation_id="c-refine", thread_id="t", message="m")
+    ctx.needs_clarification = False
+    ctx.refinement_suggestions = ["Try being more specific about the payer."]
+
+    payload = _publish_and_capture(ctx)
+    assert payload["status"] == "refinement_ask"
+    env = payload.get("assistant_envelope")
+    assert isinstance(env, dict) and "blocks" in env
