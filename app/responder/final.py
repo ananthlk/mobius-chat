@@ -89,7 +89,18 @@ def _appeals_rules_table_data(hint_data: dict) -> dict | None:
             ])
     if not rows:
         return None
-    return {"headers": ["Rule", "Statement", "Appeal Argument", "Authority"], "rows": rows}
+    headers = ["Rule", "Statement", "Appeal Argument", "Authority"]
+    # Drop columns that are empty for EVERY row — an all-"—" Authority column
+    # is pure width cost on a card that already wraps badly (Ananth screenshot
+    # review 2026-08-10, CARC 197 × FL Medicaid). Never drop the first column.
+    keep = [
+        i for i in range(len(headers))
+        if i == 0 or any((r[i] or "").strip() not in ("", "—") for r in rows)
+    ]
+    if len(keep) < len(headers):
+        headers = [headers[i] for i in keep]
+        rows = [[r[i] for i in keep] for r in rows]
+    return {"headers": headers, "rows": rows}
 
 
 def _build_consolidator_input_json(
