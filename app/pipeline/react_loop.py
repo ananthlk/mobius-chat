@@ -2621,8 +2621,14 @@ def _execute_tool(
                                     for i, q in enumerate(
                                         [q for q in _q_list if not q.get("parent_question_id")])
                                 ]
-                    except Exception:
-                        pass  # questions are optional; card degrades cleanly
+                    except Exception as _q_exc:
+                        # questions are optional; card degrades cleanly — but
+                        # NEVER silently (Chat FE observed intermittent
+                        # enrichment absence; this log is the diagnostic).
+                        logger.warning(
+                            "[appeals-enrich] questions fetch failed carc=%s payor=%s cid=%s: %s",
+                            locals().get("_q_carc", carc), payor,
+                            getattr(ctx, "correlation_id", "?"), _q_exc)
                     from urllib.parse import quote as _urlquote
                     result_data.setdefault(
                         "admin_url",
