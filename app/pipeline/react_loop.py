@@ -2620,9 +2620,23 @@ def _execute_tool(
                                 # informs with statements, the workbench asks
                                 # questions. Emit guidance[] when authored;
                                 # questions[] stays for backward compat.
+                                def _detail_for(_stmt: str, _man: str) -> str | None:
+                                    # manual_guidance often restates the
+                                    # statement almost verbatim (observed on
+                                    # thin-payor-fact CARCs like 22) — drop it
+                                    # rather than render the same sentence twice.
+                                    _m = (_man or "").strip()
+                                    if not _m:
+                                        return None
+                                    _a, _b = _stmt.lower()[:60], _m.lower()[:60]
+                                    if _a and (_a in _m.lower() or _b in _stmt.lower()):
+                                        return None
+                                    return _m[:140]
+
                                 _guid = [
                                     {"n": i + 1, "text": (q.get("guidance_statement") or "").strip(),
-                                     "detail": (q.get("manual_guidance") or "")[:140] or None}
+                                     "detail": _detail_for(q.get("guidance_statement") or "",
+                                                           q.get("manual_guidance") or "")}
                                     for i, q in enumerate(_tops)
                                     if (q.get("guidance_statement") or "").strip()
                                 ]
@@ -2641,6 +2655,17 @@ def _execute_tool(
                             "[appeals-enrich] questions fetch failed carc=%s payor=%s cid=%s: %s",
                             locals().get("_q_carc", carc), payor,
                             getattr(ctx, "correlation_id", "?"), _q_exc)
+                    # Card section 1 — "what is this denial": human title for
+                    # the CARC so the card leads with meaning, not codes.
+                    try:
+                        _cfg_carc = carc or (pb.get("carc_codes") or [0])[0]
+                        if _cfg_carc:
+                            _cfg = _appeals_get(f"/carc-config/{_cfg_carc}")
+                            if _cfg.get("title"):
+                                result_data.setdefault("description", _cfg["title"])
+                    except Exception as _d_exc:
+                        logger.warning("[appeals-enrich] carc-config failed carc=%s: %s",
+                                       carc, _d_exc)
                     from urllib.parse import quote as _urlquote
                     result_data.setdefault(
                         "admin_url",
