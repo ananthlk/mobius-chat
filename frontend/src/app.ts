@@ -11460,6 +11460,17 @@ function run(): void {
         const envelopeHasPipelineGate =
           useEnvelope &&
           envBlocks.some((b) => (b as { type?: string }).type === "pipeline_human_gate");
+        // Does the envelope carry actual TURN CONTENT, or is it just chrome (tool_attribution/sources)?
+        // Early-exit paths (clarification/refinement/error/bypass) now emit an envelope (backend
+        // 29434d0), but build_assistant_envelope_v1 only adds content blocks (direct_answer/callout/…)
+        // when there's an answer_card — so those envelopes are CONTENTLESS. Rendering a contentless
+        // envelope as the turn drops the real message (error text, clarification question) and its
+        // retry affordance — the "blank Research card on a model error" regression (Ananth 2026-08-08).
+        // So the non-streaming path only treats the envelope AS the turn when it has ≥1 content block;
+        // otherwise it falls through to the message/error renderers below.
+        const CHROME_BLOCK_TYPES = new Set(["tool_attribution", "sources"]);
+        const envelopeHasContent =
+          useEnvelope && envBlocks.some((b) => !CHROME_BLOCK_TYPES.has((b as { type?: string }).type || ""));
 
         if (isStreamingCard && messageWrapEl) {
           // In-place fill: streaming card shell already in DOM — no transplant needed.
@@ -11763,7 +11774,9 @@ function run(): void {
           window.setTimeout(() => turnWrap.classList.remove("turn-meta-revealing"), 1200);
         } else {
           if (messageWrapEl) messageWrapEl.remove();
-          if (useEnvelope) {
+          // Render the envelope AS the turn only when it carries content (not a contentless early-exit
+          // envelope of just tool_attribution/sources — that would drop the real message + retry).
+          if (envelopeHasContent) {
             turnWrap.appendChild(
               renderAssistantFromEnvelope(envCandidate as AssistantEnvelope, {
                 onFollowupClick: (q) => sendMessage(q),
