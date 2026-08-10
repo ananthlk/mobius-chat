@@ -747,6 +747,49 @@ describe("Appeals typed sections (appeals_rules / appeals_playbook)", () => {
   });
 });
 
+describe("Enricher fast-path shapes render (LLM Agent's exact deterministic_format() output, task #35)", () => {
+  // These are the LITERAL section payloads deterministic_format.py emits on the bypass path.
+  // Rendering them through the real renderer proves the FE handles exactly what the backend sends,
+  // closing the loop without a flaky live cid (natural bypass+shape turns are hard to force).
+  const renderSec = (sec: unknown) => renderAnswerCard({
+    direct_answer: "Answer.",
+    sections: [{ visibility: "primary", ...(sec as object) } as AnswerCard["sections"][number]],
+  });
+
+  it("bullets → .answer-card-bullet rows", () => {
+    const el = renderSec({ format: "bullets", label: "Key Points", bullets: ["Completed claim form", "Proof of timely filing", "Cover letter explaining the delay"] });
+    const bullets = Array.from(el.querySelectorAll(".answer-card-bullet")).map((b) => b.textContent);
+    expect(bullets).toContain("Completed claim form");
+    expect(bullets).toContain("Proof of timely filing");
+  });
+
+  it("steps → ol.ac-fmt-steps ordered list", () => {
+    const el = renderSec({ format: "steps", label: "Steps", data: { items: [{ label: "Gather your documentation" }, { label: "Complete the appeal form" }, { label: "Submit via the provider portal" }] } });
+    const ol = el.querySelector("ol.ac-fmt-steps");
+    expect(ol).not.toBeNull();
+    const steps = Array.from(ol!.querySelectorAll("li.ac-fmt-step")).map((s) => s.textContent);
+    expect(steps).toEqual(["Gather your documentation", "Complete the appeal form", "Submit via the provider portal"]);
+  });
+
+  it("stats → .ac-fmt-stat-tile tiles (value + label)", () => {
+    const el = renderSec({ format: "stats", label: "Key Facts", data: { items: [{ label: "Initial filing", value: "180 days" }, { label: "Resubmission", value: "90 days" }, { label: "Copay", value: "$25" }] } });
+    const tiles = Array.from(el.querySelectorAll(".ac-fmt-stat-tile"));
+    expect(tiles.length).toBe(3);
+    expect(tiles[0].querySelector(".ac-fmt-stat-value")?.textContent).toBe("180 days");
+    expect(tiles[0].querySelector(".ac-fmt-stat-label")?.textContent).toBe("Initial filing");
+  });
+
+  it("table → table.ac-fmt-table with headers + rows", () => {
+    const el = renderSec({ format: "table", label: "Details", data: { headers: ["Code", "Description", "Rate"], rows: [["90834", "Individual therapy", "$85.00"], ["90837", "Extended therapy", "$120.00"]] } });
+    const tbl = el.querySelector("table.ac-fmt-table");
+    expect(tbl).not.toBeNull();
+    expect(Array.from(tbl!.querySelectorAll("thead th")).map((t) => t.textContent)).toEqual(["Code", "Description", "Rate"]);
+    expect(tbl!.querySelector("tbody")?.textContent).toContain("Individual therapy");
+    // wide/many-column tables get the horizontal-scroll wrapper (no body overflow)
+    expect(el.querySelector(".ac-fmt-table-scroll")).not.toBeNull();
+  });
+});
+
 describe("Task #10 — output_intent (Diagnostics telemetry, NOT on the card face)", () => {
   it("formatOutputIntentLabel returns the canonical value for known intents", () => {
     for (const intent of ["read", "report", "email", "sms", "emr", "appeal", "payor_report"]) {
