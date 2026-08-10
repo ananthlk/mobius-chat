@@ -368,6 +368,10 @@ function _renderAppealsRules(sec: AnswerCardSection, body: HTMLElement): void {
   body.appendChild(wrap);
 }
 
+// Playbook card (Appeals Phase −1 §3, contract locked with Appeals Agent 2026-08-08). Row-based
+// layout: ⏱ deadlines · 🎯 strategy (+ optional levels ladder) · numbered canonical questions ·
+// 📎 docs · 📤 submit · admin edit chip. Every field is optional and OMITTED when absent — questions
+// (W2) and review_status (W1) land later, so the card renders deadlines/strategy/docs-only meanwhile.
 function _renderAppealsPlaybook(sec: AnswerCardSection, body: HTMLElement): void {
   const data = (sec.data as unknown as AppealsPlaybookData) ?? {};
   const wrap = document.createElement("div");
@@ -383,71 +387,66 @@ function _renderAppealsPlaybook(sec: AnswerCardSection, body: HTMLElement): void
     return;
   }
 
-  // Header line: payor + carc_group.
-  if (data.payor || data.carc_group) {
-    const head = document.createElement("div");
-    head.className = "ac-appeals-playbook-head";
-    if (data.payor) head.appendChild(_chip(data.payor, "ac-appeals-playbook-payor"));
-    if (data.carc_group) {
-      const g = document.createElement("span");
-      g.className = "ac-appeals-playbook-group";
-      g.textContent = data.carc_group;
-      head.appendChild(g);
+  // One icon + body row (the §3 "qrow"): icon can be an emoji or a step number.
+  const mkRow = (icon: string, label: string | null, value: string): HTMLElement => {
+    const row = document.createElement("div");
+    row.className = "ac-pb-row";
+    const ic = document.createElement("span");
+    ic.className = "ac-pb-row-icon";
+    ic.textContent = icon;
+    const bd = document.createElement("span");
+    bd.className = "ac-pb-row-body";
+    if (label) {
+      const b = document.createElement("b");
+      b.className = "ac-pb-row-label";
+      b.textContent = label + " ";
+      bd.appendChild(b);
     }
-    wrap.appendChild(head);
-  }
+    bd.appendChild(document.createTextNode(value));
+    row.appendChild(ic); row.appendChild(bd);
+    return row;
+  };
 
-  // Meta row: deadline badge · submission method · portal link.
-  const meta = document.createElement("div");
-  meta.className = "ac-appeals-playbook-meta";
-  if (typeof data.deadline_appeal_days === "number") {
-    meta.appendChild(_chip(`${data.deadline_appeal_days}-day deadline`, "ac-appeals-deadline"));
+  // Header: "📘 CARC {carc} × {payor} — Playbook" + REVIEWED/GENERATED badge (ONLY when review_status
+  // is present — absence omits the badge, never defaults to GENERATED).
+  const head = document.createElement("div");
+  head.className = "ac-appeals-playbook-head";
+  const title = document.createElement("b");
+  title.className = "ac-appeals-playbook-title";
+  const parts = ["📘"];
+  if (data.carc) parts.push(`CARC ${data.carc}`);
+  if (data.payor) parts.push((data.carc ? "× " : "") + data.payor);
+  title.textContent = parts.join(" ") + " — Playbook";
+  head.appendChild(title);
+  if (data.review_status === "reviewed" || data.review_status === "generated") {
+    const badge = document.createElement("span");
+    badge.className = "ac-pb-badge ac-pb-badge--" + data.review_status;
+    badge.textContent = data.review_status === "reviewed" ? "REVIEWED" : "GENERATED";
+    head.appendChild(badge);
   }
-  if (data.submission_method) {
-    meta.appendChild(_chip(data.submission_method, "ac-appeals-method"));
-  }
-  const portalUrl = _safeHttpUrl(data.portal_url);
-  if (portalUrl) {
-    const a = document.createElement("a");
-    a.className = "ac-appeals-portal";
-    a.href = portalUrl;
-    a.target = "_blank";
-    a.rel = "noopener noreferrer";
-    a.textContent = "Submission portal";
-    meta.appendChild(a);
-  }
-  if (meta.childElementCount) wrap.appendChild(meta);
+  wrap.appendChild(head);
 
-  // Docs checklist (required vs optional).
-  const docs = Array.isArray(data.docs_required) ? data.docs_required : [];
-  if (docs.length) {
-    const dl = document.createElement("div");
-    dl.className = "ac-appeals-docs";
-    dl.appendChild(_chip("Documents", "ac-appeals-docs-label"));
-    const ul = document.createElement("ul");
-    ul.className = "ac-appeals-docs-list";
-    docs.forEach((d) => {
-      const li = document.createElement("li");
-      li.className = d.required === false ? "ac-appeals-doc ac-appeals-doc--optional" : "ac-appeals-doc ac-appeals-doc--required";
-      const mark = document.createElement("span");
-      mark.className = "ac-appeals-doc-mark";
-      mark.textContent = d.required === false ? "○" : "●";
-      const txt = document.createElement("span");
-      txt.className = "ac-appeals-doc-text";
-      txt.textContent = (d.doc || "") + (d.required === false ? " (optional)" : "");
-      li.appendChild(mark); li.appendChild(txt);
-      ul.appendChild(li);
-    });
-    dl.appendChild(ul);
-    wrap.appendChild(dl);
-  }
+  const rows = document.createElement("div");
+  rows.className = "ac-appeals-playbook-rows";
 
-  // Appeal levels ladder.
+  // ⏱ Deadlines: appeal Nd from denial · resubmit Nd from DOS (note).
+  const dParts: string[] = [];
+  if (typeof data.deadline_appeal_days === "number") dParts.push(`appeal ${data.deadline_appeal_days}d from denial`);
+  if (typeof data.deadline_resubmit_days === "number") {
+    dParts.push(`resubmit ${data.deadline_resubmit_days}d from DOS${data.deadline_resubmit_note ? ` (${data.deadline_resubmit_note})` : ""}`);
+  }
+  if (dParts.length) rows.appendChild(mkRow("⏱", "Deadlines:", dParts.join(" · ")));
+
+  // 🎯 Strategy prose line.
+  if (data.strategy && data.strategy.trim()) rows.appendChild(mkRow("🎯", "Strategy:", data.strategy.trim()));
+
+  // Compact appeal-levels ladder below strategy (kept for multi-level payors — Appeals Agent Q2).
   const levels = Array.isArray(data.appeal_levels) ? data.appeal_levels : [];
   if (levels.length) {
-    const ladder = document.createElement("div");
-    ladder.className = "ac-appeals-levels";
-    ladder.appendChild(_chip("Appeal levels", "ac-appeals-levels-label"));
+    const ladderRow = document.createElement("div");
+    ladderRow.className = "ac-pb-row ac-pb-row--ladder";
+    const ic = document.createElement("span"); ic.className = "ac-pb-row-icon"; ic.textContent = "↳";
+    const bd = document.createElement("span"); bd.className = "ac-pb-row-body";
     const ol = document.createElement("ol");
     ol.className = "ac-appeals-levels-list";
     levels.forEach((lv) => {
@@ -457,13 +456,93 @@ function _renderAppealsPlaybook(sec: AnswerCardSection, body: HTMLElement): void
       name.className = "ac-appeals-level-name";
       name.textContent = lv.name || (lv.level != null ? `Level ${lv.level}` : "Level");
       li.appendChild(name);
-      if (typeof lv.deadline_days === "number") {
-        li.appendChild(_chip(`${lv.deadline_days}d`, "ac-appeals-level-deadline"));
-      }
+      if (typeof lv.deadline_days === "number") li.appendChild(_chip(`${lv.deadline_days}d`, "ac-appeals-level-deadline"));
       ol.appendChild(li);
     });
-    ladder.appendChild(ol);
-    wrap.appendChild(ladder);
+    bd.appendChild(ol);
+    ladderRow.appendChild(ic); ladderRow.appendChild(bd);
+    rows.appendChild(ladderRow);
+  }
+
+  // Numbered canonical questions (1., 2., 3.) — absent until W2.
+  const questions = Array.isArray(data.questions) ? data.questions : [];
+  questions.forEach((q, i) => {
+    if (!q || !q.text) return;
+    const n = typeof q.n === "number" ? q.n : i + 1;
+    const text = q.text + (q.hint ? ` (${q.hint})` : "");
+    rows.appendChild(mkRow(`${n}.`, null, text));
+  });
+
+  // 📎 Docs — keep the richer required/optional checklist.
+  const docs = Array.isArray(data.docs_required) ? data.docs_required : [];
+  if (docs.length) {
+    const docsRow = document.createElement("div");
+    docsRow.className = "ac-pb-row ac-pb-row--docs";
+    const ic = document.createElement("span"); ic.className = "ac-pb-row-icon"; ic.textContent = "📎";
+    const bd = document.createElement("span"); bd.className = "ac-pb-row-body";
+    const lbl = document.createElement("b"); lbl.className = "ac-pb-row-label"; lbl.textContent = "Docs: "; bd.appendChild(lbl);
+    const ul = document.createElement("ul");
+    ul.className = "ac-appeals-docs-list";
+    docs.forEach((d) => {
+      const li = document.createElement("li");
+      li.className = d.required === false ? "ac-appeals-doc ac-appeals-doc--optional" : "ac-appeals-doc ac-appeals-doc--required";
+      const mark = document.createElement("span"); mark.className = "ac-appeals-doc-mark"; mark.textContent = d.required === false ? "○" : "●";
+      const txt = document.createElement("span"); txt.className = "ac-appeals-doc-text"; txt.textContent = (d.doc || "") + (d.required === false ? " (optional)" : "");
+      li.appendChild(mark); li.appendChild(txt);
+      ul.appendChild(li);
+    });
+    bd.appendChild(ul);
+    docsRow.appendChild(ic); docsRow.appendChild(bd);
+    rows.appendChild(docsRow);
+  }
+
+  // 📤 Submit: method · portal link · fax.
+  const portalUrl = _safeHttpUrl(data.portal_url);
+  if (data.submission_method || portalUrl || data.fax) {
+    const subRow = document.createElement("div");
+    subRow.className = "ac-pb-row ac-pb-row--submit";
+    const ic = document.createElement("span"); ic.className = "ac-pb-row-icon"; ic.textContent = "📤";
+    const bd = document.createElement("span"); bd.className = "ac-pb-row-body";
+    const lbl = document.createElement("b"); lbl.className = "ac-pb-row-label"; lbl.textContent = "Submit: "; bd.appendChild(lbl);
+    const bits: Node[] = [];
+    if (data.submission_method) bits.push(document.createTextNode(data.submission_method));
+    if (portalUrl) {
+      const a = document.createElement("a");
+      a.className = "ac-appeals-portal"; a.href = portalUrl; a.target = "_blank"; a.rel = "noopener noreferrer";
+      a.textContent = "provider portal";
+      bits.push(a);
+    }
+    if (data.fax) bits.push(document.createTextNode(`fax ${data.fax}`));
+    bits.forEach((node, i) => { if (i) bd.appendChild(document.createTextNode(" · ")); bd.appendChild(node); });
+    subRow.appendChild(ic); subRow.appendChild(bd);
+    rows.appendChild(subRow);
+  }
+
+  if (rows.childElementCount) wrap.appendChild(rows);
+
+  // Admin edit chip — a ready admin_url, else build /admin/rules-library?carc=&payor=&tab=playbook
+  // (route confirmed W3). Same scheme-guard as appeals_rules; only renders when a valid link exists.
+  let adminHref = _safeHttpUrl(data.admin_url);
+  if (!adminHref && data.admin_edit && (data.admin_edit.carc || data.admin_edit.payor)) {
+    const qs = new URLSearchParams();
+    if (data.admin_edit.carc) qs.set("carc", data.admin_edit.carc);
+    if (data.admin_edit.payor) qs.set("payor", data.admin_edit.payor);
+    qs.set("tab", "playbook");
+    // Same-origin absolute URL so it passes the http(s) scheme guard (which rejects bare relative paths).
+    const origin = (typeof window !== "undefined" && window.location && window.location.origin) || "";
+    adminHref = _safeHttpUrl(`${origin}/admin/rules-library?${qs.toString()}`);
+  }
+  if (adminHref) {
+    const footer = document.createElement("div");
+    footer.className = "ac-appeals-admin";
+    const a = document.createElement("a");
+    a.className = "ac-appeals-admin-link";
+    a.href = adminHref;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.textContent = "✏ Edit this playbook in Admin →";
+    footer.appendChild(a);
+    wrap.appendChild(footer);
   }
 
   body.appendChild(wrap);

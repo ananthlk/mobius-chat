@@ -525,28 +525,88 @@ describe("Appeals typed sections (appeals_rules / appeals_playbook)", () => {
     expect(el.querySelector(".ac-appeals-docs")).toBeNull();
   });
 
-  it("playbook: renders deadline, method, docs checklist, and levels ladder", () => {
-    const el = renderAnswerCard({
-      direct_answer: "Playbook for Humana.",
-      sections: [{
-        label: "Appeal playbook", visibility: "primary", format: "appeals_playbook", bullets: [],
-        data: {
-          found: true, payor: "Humana", carc_group: "auth",
-          deadline_appeal_days: 60, submission_method: "Provider portal",
-          portal_url: "https://example.test/appeals",
-          docs_required: [{ doc: "Auth letter", required: true }, { doc: "Chart notes", required: false }],
-          appeal_levels: [{ level: 1, name: "Reconsideration", deadline_days: 30 }, { level: 2, name: "Peer review" }],
-        } as unknown as AnswerCard["sections"][number]["data"],
-      }],
+  const mkPlaybook = (data: Record<string, unknown>) => renderAnswerCard({
+    direct_answer: "Playbook.",
+    sections: [{
+      label: "Appeal playbook", visibility: "primary", format: "appeals_playbook", bullets: [],
+      data: data as unknown as AnswerCard["sections"][number]["data"],
+    }],
+  });
+
+  it("playbook (§3 rows): deadlines row, docs checklist, and levels ladder", () => {
+    const el = mkPlaybook({
+      found: true, payor: "Humana", carc: "197",
+      deadline_appeal_days: 60, deadline_resubmit_days: 180, deadline_resubmit_note: "365 for corrected",
+      submission_method: "Provider portal", portal_url: "https://example.test/appeals", fax: "1-866-000-0000",
+      docs_required: [{ doc: "Auth letter", required: true }, { doc: "Chart notes", required: false }],
+      appeal_levels: [{ level: 1, name: "Reconsideration", deadline_days: 30 }, { level: 2, name: "Peer review" }],
     });
-    expect(el.querySelector(".ac-appeals-deadline")?.textContent).toContain("60");
-    expect(el.querySelector(".ac-appeals-method")?.textContent).toContain("portal");
+    // Title composes CARC × payor.
+    expect(el.querySelector(".ac-appeals-playbook-title")?.textContent).toContain("CARC 197");
+    expect(el.querySelector(".ac-appeals-playbook-title")?.textContent).toContain("Humana");
+    // Deadlines row carries both appeal + resubmit (with note).
+    const rowsText = (el.querySelector(".ac-appeals-playbook-rows")?.textContent) || "";
+    expect(rowsText).toContain("appeal 60d");
+    expect(rowsText).toContain("resubmit 180d");
+    expect(rowsText).toContain("365 for corrected");
+    // Submit row: method + portal link + fax.
+    expect(rowsText).toContain("Provider portal");
+    expect(el.querySelector(".ac-appeals-portal")?.getAttribute("href")).toBe("https://example.test/appeals");
+    expect(rowsText).toContain("1-866-000-0000");
+    // Docs checklist preserved (required/optional).
     const docs = Array.from(el.querySelectorAll(".ac-appeals-doc")).map((d) => d.textContent);
     expect(docs.some((d) => d?.includes("Auth letter"))).toBe(true);
     expect(docs.some((d) => d?.includes("optional"))).toBe(true);
+    // Levels ladder.
     const levels = Array.from(el.querySelectorAll(".ac-appeals-level-name")).map((l) => l.textContent);
-    expect(levels).toContain("Reconsideration");
-    expect(levels).toContain("Peer review");
+    expect(levels).toEqual(["Reconsideration", "Peer review"]);
+  });
+
+  it("playbook: strategy line + numbered canonical questions with hints", () => {
+    const el = mkPlaybook({
+      found: true, payor: "Sunshine Health", carc: "29",
+      strategy: "resubmission with proof → formal appeal if denied again",
+      questions: [
+        { n: 1, text: "Can you prove the original submission date?", hint: "EDI ack, clearinghouse log" },
+        { text: "Is this a secondary claim?", hint: "COB resets the clock" },
+      ],
+    });
+    const rows = Array.from(el.querySelectorAll(".ac-pb-row")).map((r) => r.textContent || "");
+    expect(rows.some((r) => r.includes("Strategy:") && r.includes("formal appeal"))).toBe(true);
+    expect(rows.some((r) => /1\./.test(r) && r.includes("Can you prove") && r.includes("(EDI ack"))).toBe(true);
+    // Missing n falls back to positional index (2nd question → "2.").
+    expect(rows.some((r) => /2\./.test(r) && r.includes("secondary claim"))).toBe(true);
+  });
+
+  it("playbook: badge shows only when review_status present; omitted otherwise", () => {
+    expect(mkPlaybook({ found: true, carc: "29", review_status: "reviewed" }).querySelector(".ac-pb-badge--reviewed")?.textContent).toBe("REVIEWED");
+    expect(mkPlaybook({ found: true, carc: "29", review_status: "generated" }).querySelector(".ac-pb-badge--generated")?.textContent).toBe("GENERATED");
+    // Absent review_status → NO badge (never defaults to GENERATED).
+    expect(mkPlaybook({ found: true, carc: "29" }).querySelector(".ac-pb-badge")).toBeNull();
+  });
+
+  it("playbook: admin edit chip builds the scheme-guarded deep link to the Playbook tab", () => {
+    const el = mkPlaybook({ found: true, carc: "29", payor: "Sunshine Health", admin_edit: { carc: "29", payor: "Sunshine Health" } });
+    const link = el.querySelector(".ac-appeals-admin-link") as HTMLAnchorElement | null;
+    expect(link).not.toBeNull();
+    expect(link!.getAttribute("href")).toContain("/admin/rules-library?");
+    expect(link!.getAttribute("href")).toContain("carc=29");
+    expect(link!.getAttribute("href")).toContain("tab=playbook");
+    expect(link!.getAttribute("href")).toContain("payor=Sunshine+Health");
+  });
+
+  it("playbook: no admin chip when neither admin_url nor admin_edit is present", () => {
+    const el = mkPlaybook({ found: true, carc: "29" });
+    expect(el.querySelector(".ac-appeals-admin-link")).toBeNull();
+  });
+
+  it("playbook: degrades to deadlines/docs-only when questions + review_status absent (W1/W2 not shipped)", () => {
+    const el = mkPlaybook({ found: true, carc: "29", payor: "Sunshine Health", deadline_appeal_days: 90, docs_required: [{ doc: "Denial EOB", required: true }] });
+    expect(el.querySelector(".ac-pb-badge")).toBeNull();                 // no badge
+    expect(el.querySelectorAll(".ac-pb-row").length).toBeGreaterThan(0);  // still renders
+    expect((el.querySelector(".ac-appeals-playbook-rows")?.textContent || "")).toContain("appeal 90d");
+    // no questions rows (nothing numbered) — card is coherent without them
+    expect(el.querySelector(".ac-appeals-playbook-title")?.textContent).toContain("Playbook");
   });
 });
 

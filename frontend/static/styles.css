@@ -3841,6 +3841,32 @@ body {
 }
 .ac-appeals-admin-link:hover { text-decoration: underline; }
 
+/* Playbook card — §3 row layout (icon + body per row) */
+.ac-appeals-playbook-title { font-size: 0.82rem; font-weight: 700; color: var(--text-primary, #111827); }
+.ac-pb-badge {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 0.08rem 0.4rem;
+  border-radius: 4px;
+  margin-left: 0.5rem;
+  vertical-align: middle;
+}
+.ac-pb-badge--reviewed { color: #15803d; background: rgba(22, 163, 74, 0.12); border: 1px solid rgba(22, 163, 74, 0.3); }
+.ac-pb-badge--generated { color: #b45309; background: rgba(245, 158, 11, 0.13); border: 1px solid rgba(245, 158, 11, 0.3); }
+.ac-appeals-playbook-rows { display: flex; flex-direction: column; gap: 0.35rem; margin-top: 0.4rem; }
+.ac-pb-row { display: flex; align-items: baseline; gap: 0.5rem; font-size: 0.78rem; line-height: 1.45; }
+.ac-pb-row-icon {
+  flex: 0 0 1.3rem;
+  text-align: center;
+  font-size: 0.78rem;
+  color: var(--text-tertiary, #6b7280);
+  font-variant-numeric: tabular-nums;
+}
+.ac-pb-row-body { flex: 1 1 auto; color: var(--text-secondary, #374151); min-width: 0; }
+.ac-pb-row-label { color: var(--text-primary, #111827); font-weight: 650; }
+.ac-pb-row--ladder .ac-appeals-levels-list { margin-top: 0.1rem; }
+
 /* Playbook */
 .ac-appeals-playbook-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
 .ac-appeals-deadline {

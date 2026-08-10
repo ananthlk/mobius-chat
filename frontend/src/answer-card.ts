@@ -45,16 +45,30 @@ export interface AppealsRulesData {
 /** data payload for a `format: "appeals_playbook"` section — appeals_get_playbook output, verbatim. */
 export interface AppealsPlaybookDoc { doc?: string; required?: boolean }
 export interface AppealsPlaybookLevel { level?: number | string; name?: string; deadline_days?: number }
+// Numbered canonical question (Appeals Phase −1 W2). hint = the parenthetical cue in the mockup.
+export interface AppealsPlaybookQuestion { n?: number; text: string; hint?: string }
 export interface AppealsPlaybookData {
   found?: boolean;
   message?: string;           // shown when found === false (no empty card)
   payor?: string;
+  carc?: string;
   carc_group?: string;
+  // review_status absent until W1 → OMIT the badge (never default to GENERATED — Appeals Agent 2026-08-08).
+  review_status?: "generated" | "reviewed";
   deadline_appeal_days?: number;
+  deadline_resubmit_days?: number;
+  deadline_resubmit_note?: string;   // e.g. "365 for corrected claims"; optional (synthesized emitter-side)
+  strategy?: string;                 // the 🎯 prose line; optional (synthesized from templates/levels)
+  questions?: AppealsPlaybookQuestion[];   // absent until W2; card renders deadlines/strategy/docs-only meanwhile
   submission_method?: string;
   portal_url?: string;
+  fax?: string;
   docs_required?: AppealsPlaybookDoc[];
   appeal_levels?: AppealsPlaybookLevel[];
+  // Admin deep-link source: either a ready scheme-guarded admin_url, or {carc,payor} to build
+  // /admin/rules-library?carc=&payor=&tab=playbook (route confirmed W3). Chip is admin-gated by emission.
+  admin_url?: string;
+  admin_edit?: { carc?: string; payor?: string };
 }
 export interface SectionDataItem {
   label?: string;
