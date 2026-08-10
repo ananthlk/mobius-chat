@@ -586,6 +586,14 @@ describe("Appeals typed sections (appeals_rules / appeals_playbook)", () => {
     expect(mkPlaybook({ found: true, carc: "29" }).querySelector(".ac-pb-badge")).toBeNull();
   });
 
+  it("playbook: title uses carc_codes[] when singular carc is absent (tool emits an array)", () => {
+    expect(mkPlaybook({ found: true, payor: "Sunshine Health", carc_codes: [29, 218] })
+      .querySelector(".ac-appeals-playbook-title")?.textContent).toContain("CARC 29, 218");
+    // singular carc still wins when present
+    expect(mkPlaybook({ found: true, payor: "Sunshine Health", carc: "29", carc_codes: [29, 218] })
+      .querySelector(".ac-appeals-playbook-title")?.textContent).toContain("CARC 29 ×");
+  });
+
   it("playbook: level-0 content is labeled 'Draft — not yet reviewed', never unlabeled", () => {
     const l0 = mkPlaybook({ found: true, carc: "29", confidence_level: 0 });
     expect(l0.querySelector(".ac-pb-badge--generated")?.textContent).toBe("GENERATED");

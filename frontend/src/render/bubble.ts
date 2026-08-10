@@ -428,9 +428,13 @@ function _renderAppealsPlaybook(sec: AnswerCardSection, body: HTMLElement): void
   head.className = "ac-appeals-playbook-head";
   const title = document.createElement("b");
   title.className = "ac-appeals-playbook-title";
+  // CARC label: prefer the singular `carc`, else join `carc_codes` (the tool emits an array).
+  const _carcLabel = data.carc
+    ? String(data.carc)
+    : (Array.isArray(data.carc_codes) && data.carc_codes.length ? data.carc_codes.join(", ") : "");
   const parts = ["📘"];
-  if (data.carc) parts.push(`CARC ${data.carc}`);
-  if (data.payor) parts.push((data.carc ? "× " : "") + data.payor);
+  if (_carcLabel) parts.push(`CARC ${_carcLabel}`);
+  if (data.payor) parts.push((_carcLabel ? "× " : "") + data.payor);
   title.textContent = parts.join(" ") + " — Playbook";
   head.appendChild(title);
   // Confidence ladder badge (Ananth 2026-08-08). Absent → no badge. 0=generated…3=validated.

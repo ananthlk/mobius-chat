@@ -2681,11 +2681,12 @@ function _renderAppealsPlaybook(sec, body) {
   head.className = "ac-appeals-playbook-head";
   const title = document.createElement("b");
   title.className = "ac-appeals-playbook-title";
+  const _carcLabel = data.carc ? String(data.carc) : Array.isArray(data.carc_codes) && data.carc_codes.length ? data.carc_codes.join(", ") : "";
   const parts = ["\u{1F4D8}"];
-  if (data.carc)
-    parts.push(`CARC ${data.carc}`);
+  if (_carcLabel)
+    parts.push(`CARC ${_carcLabel}`);
   if (data.payor)
-    parts.push((data.carc ? "\xD7 " : "") + data.payor);
+    parts.push((_carcLabel ? "\xD7 " : "") + data.payor);
   title.textContent = parts.join(" ") + " \u2014 Playbook";
   head.appendChild(title);
   const CONF_BADGE = {
