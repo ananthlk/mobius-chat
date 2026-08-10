@@ -53,8 +53,10 @@ export interface AppealsPlaybookData {
   payor?: string;
   carc?: string;
   carc_group?: string;
-  // review_status absent until W1 → OMIT the badge (never default to GENERATED — Appeals Agent 2026-08-08).
-  review_status?: "generated" | "reviewed";
+  // Confidence ladder (Ananth 2026-08-08, replaces binary review_status): 0 generated · 1 reviewed ·
+  // 2 published · 3 validated (outcome-proven). Absent → OMIT the badge. At level 0 the card also
+  // carries a visible "draft — not yet reviewed" label (chat may show L0 for info, never unlabeled).
+  confidence_level?: 0 | 1 | 2 | 3;
   deadline_appeal_days?: number;
   deadline_resubmit_days?: number;
   deadline_resubmit_note?: string;   // e.g. "365 for corrected claims"; optional (synthesized emitter-side)

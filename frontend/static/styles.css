@@ -3852,8 +3852,21 @@ body {
   margin-left: 0.5rem;
   vertical-align: middle;
 }
-.ac-pb-badge--reviewed { color: #15803d; background: rgba(22, 163, 74, 0.12); border: 1px solid rgba(22, 163, 74, 0.3); }
 .ac-pb-badge--generated { color: #b45309; background: rgba(245, 158, 11, 0.13); border: 1px solid rgba(245, 158, 11, 0.3); }
+.ac-pb-badge--reviewed  { color: #15803d; background: rgba(22, 163, 74, 0.12); border: 1px solid rgba(22, 163, 74, 0.3); }
+.ac-pb-badge--published { color: #0f766e; background: rgba(13, 148, 136, 0.12); border: 1px solid rgba(13, 148, 136, 0.32); }
+/* Validated = outcome-proven, strongest treatment: filled violet, not just outlined. */
+.ac-pb-badge--validated { color: #fff; background: var(--mobius-violet, #7c3aed); border: 1px solid var(--mobius-violet, #7c3aed); }
+.ac-pb-draft-label {
+  font-size: 0.68rem;
+  font-weight: 650;
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.1);
+  border-left: 2px solid rgba(245, 158, 11, 0.5);
+  padding: 0.2rem 0.5rem;
+  border-radius: 0 4px 4px 0;
+  margin-top: 0.35rem;
+}
 .ac-appeals-playbook-rows { display: flex; flex-direction: column; gap: 0.35rem; margin-top: 0.4rem; }
 .ac-pb-row { display: flex; align-items: baseline; gap: 0.5rem; font-size: 0.78rem; line-height: 1.45; }
 .ac-pb-row-icon {

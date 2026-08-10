@@ -578,11 +578,21 @@ describe("Appeals typed sections (appeals_rules / appeals_playbook)", () => {
     expect(rows.some((r) => /2\./.test(r) && r.includes("secondary claim"))).toBe(true);
   });
 
-  it("playbook: badge shows only when review_status present; omitted otherwise", () => {
-    expect(mkPlaybook({ found: true, carc: "29", review_status: "reviewed" }).querySelector(".ac-pb-badge--reviewed")?.textContent).toBe("REVIEWED");
-    expect(mkPlaybook({ found: true, carc: "29", review_status: "generated" }).querySelector(".ac-pb-badge--generated")?.textContent).toBe("GENERATED");
-    // Absent review_status → NO badge (never defaults to GENERATED).
+  it("playbook: confidence_level drives the badge; absent → omitted", () => {
+    expect(mkPlaybook({ found: true, carc: "29", confidence_level: 1 }).querySelector(".ac-pb-badge--reviewed")?.textContent).toBe("REVIEWED");
+    expect(mkPlaybook({ found: true, carc: "29", confidence_level: 2 }).querySelector(".ac-pb-badge--published")?.textContent).toBe("PUBLISHED");
+    expect(mkPlaybook({ found: true, carc: "29", confidence_level: 3 }).querySelector(".ac-pb-badge--validated")?.textContent).toBe("VALIDATED");
+    // Absent confidence_level → NO badge (never defaults to GENERATED).
     expect(mkPlaybook({ found: true, carc: "29" }).querySelector(".ac-pb-badge")).toBeNull();
+  });
+
+  it("playbook: level-0 content is labeled 'Draft — not yet reviewed', never unlabeled", () => {
+    const l0 = mkPlaybook({ found: true, carc: "29", confidence_level: 0 });
+    expect(l0.querySelector(".ac-pb-badge--generated")?.textContent).toBe("GENERATED");
+    expect(l0.querySelector(".ac-pb-draft-label")?.textContent).toContain("Draft");
+    // Higher levels carry NO draft label.
+    expect(mkPlaybook({ found: true, carc: "29", confidence_level: 2 }).querySelector(".ac-pb-draft-label")).toBeNull();
+    expect(mkPlaybook({ found: true, carc: "29" }).querySelector(".ac-pb-draft-label")).toBeNull();
   });
 
   it("playbook: admin edit chip builds the scheme-guarded deep link to the Playbook tab", () => {

@@ -418,13 +418,28 @@ function _renderAppealsPlaybook(sec: AnswerCardSection, body: HTMLElement): void
   if (data.payor) parts.push((data.carc ? "× " : "") + data.payor);
   title.textContent = parts.join(" ") + " — Playbook";
   head.appendChild(title);
-  if (data.review_status === "reviewed" || data.review_status === "generated") {
+  // Confidence ladder badge (Ananth 2026-08-08). Absent → no badge. 0=generated…3=validated.
+  const CONF_BADGE: Record<number, [string, string]> = {
+    0: ["GENERATED", "generated"], 1: ["REVIEWED", "reviewed"], 2: ["PUBLISHED", "published"], 3: ["VALIDATED", "validated"],
+  };
+  const cl = data.confidence_level;
+  if (typeof cl === "number" && CONF_BADGE[cl]) {
+    const [label, cls] = CONF_BADGE[cl];
     const badge = document.createElement("span");
-    badge.className = "ac-pb-badge ac-pb-badge--" + data.review_status;
-    badge.textContent = data.review_status === "reviewed" ? "REVIEWED" : "GENERATED";
+    badge.className = "ac-pb-badge ac-pb-badge--" + cls;
+    badge.textContent = label;
     head.appendChild(badge);
   }
   wrap.appendChild(head);
+
+  // Level-0 (generated, unreviewed) content may be shown for informational asks, but NEVER unlabeled
+  // (Appeals Agent 2026-08-08) — an explicit draft banner rides the card.
+  if (cl === 0) {
+    const draft = document.createElement("div");
+    draft.className = "ac-pb-draft-label";
+    draft.textContent = "⚠ Draft — not yet reviewed";
+    wrap.appendChild(draft);
+  }
 
   const rows = document.createElement("div");
   rows.className = "ac-appeals-playbook-rows";
