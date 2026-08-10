@@ -6,7 +6,7 @@
 
 import type {
   AnswerCard, AnswerCardSection,
-  AppealsRulesData, AppealsRule, AppealsPlaybookData,
+  AppealsRulesData, AppealsRule, AppealsPlaybookData, AppealsPlaybookLevel,
 } from "../answer-card";
 import { MAX_SECTIONS } from "../answer-card";
 import { TAB_ORDER, type TabKey } from "../card-render-model";
@@ -743,6 +743,155 @@ export function renderModeBadge(mode: unknown): HTMLElement | null {
   lbl.className = "ac-answer-mode-label ac-answer-mode-label--" + m.toLowerCase();
   lbl.textContent = m;
   return lbl;
+}
+
+/** first_pass block: the react draft + per-round reasoning progression, collapsed by default. */
+export interface EnvFirstPassBlock {
+  type: "first_pass";
+  draft_markdown?: string;
+  trace_rounds?: Array<{ round?: number; running_answer?: string; learned?: string; gaps_open?: unknown }>;
+  collapsed_default?: boolean;
+}
+
+/**
+ * first_pass — the collapsible "First pass" that sits ABOVE the final answer. Mirrors the
+ * progression renderer inside renderAnswerCard EXACTLY (rd-1 → rd-last, running_answer else
+ * learned, thought-only rounds muted) so the envelope path and the card path are pixel-identical.
+ * trace_rounds is card.reasoning_trace verbatim (LLM Agent); draft_markdown is the react_draft
+ * fallback. Returns null when there's nothing to show. Always starts collapsed (matches today).
+ */
+export function renderFirstPass(block: EnvFirstPassBlock): HTMLElement | null {
+  const draft = (block.draft_markdown ?? "").trim();
+  const rounds = (block.trace_rounds ?? [])
+    .map((r, i) => ({
+      n: typeof r?.round === "number" ? r.round : i + 1,
+      ans: (r?.running_answer ?? "").trim() || (r?.learned ?? "").trim(),
+      isThought: !((r?.running_answer ?? "").trim()) && !!(r?.learned ?? "").trim(),
+    }))
+    .filter((r) => r.ans.length > 0);
+  if (!draft && rounds.length === 0) return null;
+
+  const fp = document.createElement("div");
+  fp.className = "ac-first-pass";
+  const sum = document.createElement("button");
+  sum.type = "button";
+  sum.className = "ac-first-pass-summary";
+  sum.textContent = rounds.length > 1 ? `First pass · ${rounds.length} rounds` : "First pass";
+  const fpBody = document.createElement("div");
+  fpBody.className = "ac-first-pass-body";
+  if (rounds.length > 0) {
+    rounds.forEach((r) => {
+      const step = document.createElement("div");
+      step.className = "ac-rd-step";
+      const lbl = document.createElement("span");
+      lbl.className = "ac-rd-label";
+      lbl.textContent = "rd-" + r.n;
+      const ans = document.createElement("div");
+      ans.className = "ac-rd-answer" + (r.isThought ? " ac-rd-thought" : "");
+      ans.innerHTML = simpleMarkdownToHtml(r.ans);
+      step.appendChild(lbl);
+      step.appendChild(ans);
+      fpBody.appendChild(step);
+    });
+  } else {
+    fpBody.innerHTML = simpleMarkdownToHtml(draft);
+  }
+  sum.addEventListener("click", () => {
+    const opening = !fp.classList.contains("ac-first-pass--open");
+    fp.classList.toggle("ac-first-pass--open");
+    fpBody.style.maxHeight = opening ? fpBody.scrollHeight + "px" : "0px";
+  });
+  fp.appendChild(sum);
+  fp.appendChild(fpBody);
+  return fp;
+}
+
+/** A block whose `type` steers dispatch; every other field is block-specific. */
+export interface EnvBlock { type: string; [k: string]: unknown; }
+
+export interface RenderEnvelopeOpts {
+  /** Called once per dropped off-contract block — wire to the unknown_block_type{type} counter. */
+  onUnknownBlock?: (type: string) => void;
+  /**
+   * Renderer for chrome/complex blocks the assembler doesn't handle natively (tool_attribution,
+   * action_chips, next_steps, suggested_questions, takeaways, correction, chart, document_download,
+   * task_list, credentialing_card, pipeline_human_gate, attachments). The app.ts wiring injects the
+   * existing battle-tested per-block renderer here, so those blocks render EXACTLY as they do today —
+   * no reimplementation, no drift. Return null to signal "I don't handle this either" → dropped.
+   */
+  renderExtraBlock?: (block: EnvBlock) => HTMLElement | null;
+}
+
+export interface RenderEnvelopeResult {
+  /** The Answer-tab body: every non-sources block, dispatched in backend order. */
+  answerBody: HTMLElement;
+  /** The sources block, peeled out for the caller to route into the Sources tab (null if none). */
+  sources: EnvBlock | null;
+  /** Types that were dropped as off-contract (also reported via onUnknownBlock). */
+  dropped: string[];
+}
+
+function _proseBlock(cls: string, markdown: unknown): HTMLElement {
+  const el = document.createElement("div");
+  el.className = cls;
+  el.innerHTML = simpleMarkdownToHtml(String(markdown ?? ""));
+  return el;
+}
+
+function _detailBlock(block: EnvBlock): HTMLElement {
+  const details = document.createElement("details");
+  details.className = "envelope-detail";
+  details.open = (block.collapsed_default as boolean) === false;
+  const sum = document.createElement("summary");
+  sum.textContent = "Details";
+  details.appendChild(sum);
+  const body = document.createElement("div");
+  body.className = "envelope-detail-body";
+  body.innerHTML = simpleMarkdownToHtml(String(block.markdown ?? ""));
+  details.appendChild(body);
+  return details;
+}
+
+/**
+ * renderEnvelope — the SINGLE consumer of the assistant_envelope contract (Task #36).
+ * Walks blocks in backend-given order, renders each ONCE, peels `sources` for the Sources tab,
+ * and drops any off-contract `type` (counting it via onUnknownBlock). No dual-read, no _hasTabs
+ * heuristic, no overlap: a block that isn't emitted isn't rendered, and a block that is emitted
+ * renders exactly once. New typed blocks route to the leaf renderers above (reusing the section
+ * path → zero drift); chrome/complex blocks route to the injected renderExtraBlock (reusing the
+ * existing per-block renderers → zero drift).
+ */
+export function renderEnvelope(blocks: EnvBlock[], opts: RenderEnvelopeOpts = {}): RenderEnvelopeResult {
+  const answerBody = document.createElement("div");
+  answerBody.className = "ac-answer-final";
+  let sources: EnvBlock | null = null;
+  const dropped: string[] = [];
+  const FORMAT_TYPES = new Set(["table", "stats", "bullets", "steps", "bars", "conditions", "domain_card"]);
+
+  for (const block of blocks || []) {
+    if (!block || typeof block !== "object" || typeof block.type !== "string") continue;
+    const t = block.type;
+    let el: HTMLElement | null = null;
+
+    if (t === "sources") { sources = block; continue; }        // routed to Sources tab, not the body
+    else if (t === "mode_badge") el = renderModeBadge(block.mode);
+    else if (FORMAT_TYPES.has(t)) el = renderFormatBlock(block as unknown as EnvFormatBlock);
+    else if (t === "first_pass") el = renderFirstPass(block as unknown as EnvFirstPassBlock);
+    else if (t === "direct_answer") el = _proseBlock("ac-answer-envelope-body", block.markdown);
+    else if (t === "tldr") el = _proseBlock("ac-answer-tldr", block.markdown);
+    else if (t === "markdown_report") el = _proseBlock("envelope-markdown-report", block.markdown);
+    else if (t === "detail") el = _detailBlock(block);
+    else el = opts.renderExtraBlock ? opts.renderExtraBlock(block) : null;
+
+    if (el) {
+      answerBody.appendChild(el);
+    } else if (t !== "mode_badge" && t !== "first_pass") {
+      // mode_badge/first_pass legitimately return null (nothing to show) — not a drop.
+      dropped.push(t);
+      opts.onUnknownBlock?.(t);
+    }
+  }
+  return { answerBody, sources, dropped };
 }
 
 /**

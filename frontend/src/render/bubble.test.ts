@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
-import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, applyCitationFootnotes, renderSourcesList, retainStreamedDraftAsFirstPass, stripCitationMarkers, renderFormatBlock, renderModeBadge } from "./bubble";
+import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, applyCitationFootnotes, renderSourcesList, retainStreamedDraftAsFirstPass, stripCitationMarkers, renderFormatBlock, renderModeBadge, renderFirstPass, renderEnvelope } from "./bubble";
 import type { AnswerCard } from "../answer-card";
 
 // A v2 (no-mode) card: primary section leads, detail tucks; citations light up their tab.
@@ -858,6 +858,76 @@ describe("renderEnvelope block renderers (Task #36 — single-contract, LLM Agen
     expect(renderModeBadge("FACTUAL")).toBeNull();
     expect(renderModeBadge("BLENDED")).toBeNull();
     expect(renderModeBadge(undefined)).toBeNull();
+  });
+
+  it("renderFirstPass: rd-progression from trace_rounds (mirrors card path)", () => {
+    const el = renderFirstPass({ type: "first_pass", draft_markdown: "draft", trace_rounds: [
+      { round: 1, running_answer: "first cut" },
+      { round: 2, learned: "found a gap", gaps_open: ["x"] },
+    ] });
+    expect(el).not.toBeNull();
+    expect(el!.querySelector(".ac-first-pass-summary")?.textContent).toBe("First pass · 2 rounds");
+    const steps = Array.from(el!.querySelectorAll(".ac-rd-step"));
+    expect(steps.length).toBe(2);
+    expect(steps[0].querySelector(".ac-rd-label")?.textContent).toBe("rd-1");
+    expect(steps[1].querySelector(".ac-rd-answer")?.classList.contains("ac-rd-thought")).toBe(true); // learned-only = thought
+  });
+
+  it("renderFirstPass: null when nothing to show", () => {
+    expect(renderFirstPass({ type: "first_pass" })).toBeNull();
+    expect(renderFirstPass({ type: "first_pass", draft_markdown: "  ", trace_rounds: [] })).toBeNull();
+  });
+});
+
+describe("renderEnvelope assembler (Task #36 — single consumer, order + peel + drop)", () => {
+  // The real live block order (cid d401de73): [mode_badge, tool_attribution, direct_answer, bullets, first_pass, sources]
+  it("dispatches in backend order, peels sources, renders each once", () => {
+    const chromeSeen: string[] = [];
+    const { answerBody, sources, dropped } = renderEnvelope([
+      { type: "mode_badge", mode: "CANONICAL" },
+      { type: "tool_attribution", label: "Research", icon: "search" },
+      { type: "direct_answer", markdown: "The deadline is **180 days**." },
+      { type: "bullets", label: "Key Points", items: ["File on time", "Keep proof"] },
+      { type: "first_pass", trace_rounds: [{ round: 1, running_answer: "cut" }] },
+      { type: "sources", refs: [{ n: 1 }] },
+    ], {
+      renderExtraBlock: (b) => { chromeSeen.push(b.type); const d = document.createElement("div"); d.className = "chrome-" + b.type; return d; },
+    });
+    // sources peeled out of the body, handed back for the Sources tab
+    expect(sources?.type).toBe("sources");
+    expect(answerBody.querySelector("[class*='sources']")).toBeNull();
+    // order preserved: mode badge, then chrome tool_attribution, then direct answer, then bullets, then first pass
+    const kids = Array.from(answerBody.children).map((c) => (c as HTMLElement).className);
+    expect(kids[0]).toContain("ac-answer-mode-label");     // CANONICAL badge
+    expect(kids[1]).toBe("chrome-tool_attribution");        // injected chrome, in place
+    expect(kids[2]).toBe("ac-answer-envelope-body");        // direct_answer prose
+    expect(answerBody.querySelector("strong")?.textContent).toBe("180 days"); // markdown-rendered, not raw
+    expect(kids[3]).toContain("answer-card-section");       // bullets format block
+    expect(kids[4]).toBe("ac-first-pass");                  // first pass
+    expect(chromeSeen).toEqual(["tool_attribution"]);
+    expect(dropped).toEqual([]);
+  });
+
+  it("drops off-contract blocks and counts them", () => {
+    const counted: string[] = [];
+    const { answerBody, dropped } = renderEnvelope([
+      { type: "direct_answer", markdown: "hi" },
+      { type: "wat_is_this", payload: 1 },
+      { type: "also_unknown" },
+    ], { onUnknownBlock: (t) => counted.push(t) });
+    expect(dropped).toEqual(["wat_is_this", "also_unknown"]);
+    expect(counted).toEqual(["wat_is_this", "also_unknown"]);
+    expect(answerBody.children.length).toBe(1); // only the direct_answer survived
+  });
+
+  it("mode_badge/first_pass returning null is NOT a drop", () => {
+    const counted: string[] = [];
+    const { dropped } = renderEnvelope([
+      { type: "mode_badge", mode: "FACTUAL" },   // silent, returns null
+      { type: "first_pass" },                     // nothing to show, returns null
+    ], { onUnknownBlock: (t) => counted.push(t) });
+    expect(dropped).toEqual([]);
+    expect(counted).toEqual([]);
   });
 });
 
