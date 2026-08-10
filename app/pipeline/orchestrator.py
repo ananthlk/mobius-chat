@@ -848,11 +848,13 @@ def run_pipeline(
         # endpoint — it does not need an AnswerCard envelope.
         if ctx.chat_mode == "task":
             from app.communication.assistant_envelope import build_assistant_envelope_v1, resolve_tool_fired
+            _msg = ctx.final_message or ""
             ctx.response_payload = {
-                "raw_text": ctx.final_message or "",
+                "raw_text": _msg,
                 "status": "completed",
                 "assistant_envelope": build_assistant_envelope_v1(
-                    answer_card=None, ui_blocks_raw=[], tool_fired=resolve_tool_fired(ctx),
+                    answer_card={"direct_answer": _msg} if _msg.strip() else None,
+                    ui_blocks_raw=[], tool_fired=resolve_tool_fired(ctx),
                     response_sources=[], next_steps=[], next_questions_for_user=[],
                     roster_report_final_md=None, has_roster_pdf=False,
                 ),
@@ -866,11 +868,13 @@ def run_pipeline(
         # (confidence badge, sources block, etc.).
         if getattr(ctx, "react_bypass_integrate", False):
             from app.communication.assistant_envelope import build_assistant_envelope_v1, resolve_tool_fired
+            _msg = ctx.final_message or ""
             ctx.response_payload = {
-                "raw_text": ctx.final_message or "",
+                "raw_text": _msg,
                 "status": "completed",
                 "assistant_envelope": build_assistant_envelope_v1(
-                    answer_card=None, ui_blocks_raw=[], tool_fired=resolve_tool_fired(ctx),
+                    answer_card={"direct_answer": _msg} if _msg.strip() else None,
+                    ui_blocks_raw=[], tool_fired=resolve_tool_fired(ctx),
                     response_sources=[], next_steps=[], next_questions_for_user=[],
                     roster_report_final_md=None, has_roster_pdf=False,
                 ),
@@ -1071,9 +1075,10 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
     """Build and publish clarification or refinement response."""
     from app.communication.assistant_envelope import build_assistant_envelope_v1, resolve_tool_fired
 
-    def _minimal_envelope() -> dict:
+    def _minimal_envelope(message: str = "") -> dict:
         return build_assistant_envelope_v1(
-            answer_card=None, ui_blocks_raw=[], tool_fired=resolve_tool_fired(ctx),
+            answer_card={"direct_answer": message} if message.strip() else None,
+            ui_blocks_raw=[], tool_fired=resolve_tool_fired(ctx),
             response_sources=[], next_steps=[], next_questions_for_user=[],
             roster_report_final_md=None, has_roster_pdf=False,
         )
@@ -1118,7 +1123,7 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
             "source_confidence_strip": None,
             "cited_source_indices": [],
             "thread_id": ctx.thread_id,
-            "assistant_envelope": _minimal_envelope(),
+            "assistant_envelope": _minimal_envelope(formatted),
         }
         persistence = get_persistence()
         try:
@@ -1196,7 +1201,7 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
             "source_confidence_strip": None,
             "cited_source_indices": [],
             "thread_id": ctx.thread_id,
-            "assistant_envelope": _minimal_envelope(),
+            "assistant_envelope": _minimal_envelope(formatted),
         }
     else:
         formatted = format_refinement_ask(
@@ -1220,7 +1225,7 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
             "source_confidence_strip": None,
             "cited_source_indices": [],
             "thread_id": ctx.thread_id,
-            "assistant_envelope": _minimal_envelope(),
+            "assistant_envelope": _minimal_envelope(formatted),
         }
 
     persistence = get_persistence()
@@ -1711,7 +1716,8 @@ def _publish_failed(
     try:
         from app.communication.assistant_envelope import build_assistant_envelope_v1
         response_payload["assistant_envelope"] = build_assistant_envelope_v1(
-            answer_card=None, ui_blocks_raw=[], tool_fired="",
+            answer_card={"direct_answer": _user_message} if _user_message.strip() else None,
+            ui_blocks_raw=[], tool_fired="",
             response_sources=[], next_steps=[], next_questions_for_user=[],
             roster_report_final_md=None, has_roster_pdf=False,
         )

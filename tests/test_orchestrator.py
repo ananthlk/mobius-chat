@@ -87,6 +87,12 @@ def test_publish_failed_includes_assistant_envelope():
     env = payload.get("assistant_envelope")
     assert isinstance(env, dict)
     assert "blocks" in env
+    # Chat FE regression (2026-08-10): a contentless envelope (just
+    # tool_attribution/sources) renders as an empty card client-side, so
+    # early exits must carry the message as a direct_answer content block.
+    direct_answer = next((b for b in env["blocks"] if b.get("type") == "direct_answer"), None)
+    assert direct_answer is not None
+    assert payload["message"] in direct_answer["markdown"]
 
 
 def test_publish_failed_envelope_failure_does_not_break_the_failure_response():
@@ -284,6 +290,19 @@ def _publish_and_capture(ctx: PipelineContext) -> dict:
     return mock_q.return_value.publish_response.call_args[0][1]
 
 
+def _assert_envelope_carries_message(payload: dict) -> None:
+    """Chat FE regression (2026-08-10): a contentless envelope (just
+    tool_attribution/sources) renders as an empty card client-side -- FE
+    now gates envelope-as-turn render on content, falling through to the
+    plain message renderer otherwise. So the envelope must carry the
+    turn's message as a direct_answer block, not just be present."""
+    env = payload.get("assistant_envelope")
+    assert isinstance(env, dict) and "blocks" in env
+    direct_answer = next((b for b in env["blocks"] if b.get("type") == "direct_answer"), None)
+    assert direct_answer is not None
+    assert payload["message"] in direct_answer["markdown"]
+
+
 def test_route_clarification_includes_assistant_envelope():
     ctx = PipelineContext(correlation_id="c-route", thread_id="t", message="m")
     ctx.needs_route_clarification = True
@@ -291,8 +310,7 @@ def test_route_clarification_includes_assistant_envelope():
 
     payload = _publish_and_capture(ctx)
     assert payload["status"] == "clarification"
-    env = payload.get("assistant_envelope")
-    assert isinstance(env, dict) and "blocks" in env
+    _assert_envelope_carries_message(payload)
 
 
 def test_slot_clarification_includes_assistant_envelope():
@@ -303,8 +321,7 @@ def test_slot_clarification_includes_assistant_envelope():
 
     payload = _publish_and_capture(ctx)
     assert payload["status"] == "clarification"
-    env = payload.get("assistant_envelope")
-    assert isinstance(env, dict) and "blocks" in env
+    _assert_envelope_carries_message(payload)
 
 
 def test_refinement_ask_includes_assistant_envelope():
@@ -314,5 +331,4 @@ def test_refinement_ask_includes_assistant_envelope():
 
     payload = _publish_and_capture(ctx)
     assert payload["status"] == "refinement_ask"
-    env = payload.get("assistant_envelope")
-    assert isinstance(env, dict) and "blocks" in env
+    _assert_envelope_carries_message(payload)
