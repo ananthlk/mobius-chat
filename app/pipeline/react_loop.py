@@ -2623,9 +2623,11 @@ def _execute_tool(
                                 ]
                     except Exception:
                         pass  # questions are optional; card degrades cleanly
+                    from urllib.parse import quote as _urlquote
                     result_data.setdefault(
                         "admin_url",
-                        f"{_appeals_base}/admin/rules-library?carc={carc or ''}&payor={payor}&tab=playbook")
+                        f"{_appeals_base}/admin/rules-library?carc={carc or ''}"
+                        f"&payor={_urlquote(payor)}&tab=playbook")
                 return {
                     "tool": tool, "success": found,
                     "result": _json.dumps(result_data),
