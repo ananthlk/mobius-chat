@@ -3423,6 +3423,44 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         seed_sources = s.get("sources") or []
         if isinstance(seed_sources, list):
             all_sources.extend(seed_sources)
+
+    # Deterministic appeals pre-route. A message that literally names a CARC
+    # code must not depend on planner tool choice to reach the appeals data:
+    # gemini-flash intermittently skips appeals_get_playbook on verbatim
+    # "CARC 29 denial from Sunshine Health" turns (traced cid=6af1c196 —
+    # zero appeals dispatch, prose answer, typed card never fired). Detect
+    # the CARC number + a known payor and force-execute the lookup as a
+    # virtual round-0 result, so the evidence and the appeals_playbook /
+    # appeals_rules section_hint exist regardless of round-1 tool choice.
+    # The planner still sees the result in its context and skips re-calling.
+    if not any((r.get("tool") or "").startswith("appeals_") for r in tool_results):
+        import re as _carc_re
+        _msg_for_carc = (getattr(ctx, "effective_message", None) or ctx.message or "")
+        _carc_m = _carc_re.search(r"\b(?:carc|co)[\s\-]?(\d{1,3})\b", _msg_for_carc, _carc_re.I)
+        if _carc_m:
+            _carc_num = int(_carc_m.group(1))
+            _payor_hit = None
+            for _p in ("Sunshine Health", "FL Medicaid", "Florida Medicaid",
+                       "Aetna Better Health", "Aetna"):
+                if _p.lower() in _msg_for_carc.lower():
+                    _payor_hit = "FL Medicaid" if _p == "Florida Medicaid" else _p
+                    break
+            try:
+                if _payor_hit:
+                    _pre = _execute_tool(
+                        "appeals_get_playbook",
+                        {"payor": _payor_hit, "carc": _carc_num}, ctx, emitter)
+                else:
+                    _pre = _execute_tool(
+                        "appeals_lookup_rules", {"carc": _carc_num}, ctx, emitter)
+                _pre["round_virtual"] = 0
+                tool_results.append(_pre)
+                logger.info(
+                    "[react] appeals pre-route: carc=%s payor=%s tool=%s usable_hint=%s cid=%s",
+                    _carc_num, _payor_hit, _pre.get("tool"),
+                    bool(_pre.get("section_hint")), ctx.correlation_id)
+            except Exception as _pre_exc:  # pre-route is best-effort; planner path remains
+                logger.warning("[react] appeals pre-route failed carc=%s: %s", _carc_num, _pre_exc)
     final_signal = RETRIEVAL_SIGNAL_NO_SOURCES
     last_tool: str | None = None
     # 2026-05-06: pass user_profile so splice_user_profile appends
