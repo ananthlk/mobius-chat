@@ -2724,7 +2724,7 @@ function _renderAppealsPlaybook(sec, body) {
     rows.appendChild(mkRow("\u{1F3AF}", "Strategy:", data.strategy.trim()));
   const levels = Array.isArray(data.appeal_levels) ? data.appeal_levels : [];
   if (levels.length) {
-    const LADDER_CAP = 4;
+    const LADDER_CAP = 3;
     const ladderRow = document.createElement("div");
     ladderRow.className = "ac-pb-row ac-pb-row--ladder";
     const ic = document.createElement("span");

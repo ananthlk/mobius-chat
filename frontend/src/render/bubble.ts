@@ -480,7 +480,9 @@ function _renderAppealsPlaybook(sec: AnswerCardSection, body: HTMLElement): void
   // toggle so chat stays scannable (the full ladder is workbench territory).
   const levels = Array.isArray(data.appeal_levels) ? data.appeal_levels : [];
   if (levels.length) {
-    const LADDER_CAP = 4;
+    // Cap at 3 (Appeals Agent 2026-08-08): Internal → Peer-to-Peer → External are the triage-actionable
+    // levels; Fair Hearing / Claim Dispute / AHCA-CMS are escalation-later, workbench territory.
+    const LADDER_CAP = 3;
     const ladderRow = document.createElement("div");
     ladderRow.className = "ac-pb-row ac-pb-row--ladder";
     const ic = document.createElement("span"); ic.className = "ac-pb-row-icon"; ic.textContent = "↳";

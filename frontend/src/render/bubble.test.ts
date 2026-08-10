@@ -656,19 +656,19 @@ describe("Appeals typed sections (appeals_rules / appeals_playbook)", () => {
     expect(docTexts.slice(0, -1).every((t) => !t?.includes("optional"))).toBe(true);
   });
 
-  it("playbook: appeal ladder caps at 4 with a '+N more' toggle", () => {
+  it("playbook: appeal ladder caps at 3 with a '+N more' toggle", () => {
     const el = mkPlaybook({
       found: true, carc: "29",
       appeal_levels: [1, 2, 3, 4, 5, 6].map((n) => ({ level: n, name: `Level ${n}`, deadline_days: 90 })),
     });
-    // 4 visible in the primary list
+    // 3 visible in the primary list (triage-actionable levels)
     const primary = el.querySelector(".ac-appeals-levels-list:not(.ac-appeals-levels-extra)");
-    expect(primary?.querySelectorAll(".ac-appeals-level").length).toBe(4);
+    expect(primary?.querySelectorAll(".ac-appeals-level").length).toBe(3);
     const more = el.querySelector(".ac-appeals-levels-more") as HTMLButtonElement | null;
-    expect(more?.textContent).toBe("+2 more");
+    expect(more?.textContent).toBe("+3 more");
     // extra levels exist but hidden until toggled
     const extra = el.querySelector(".ac-appeals-levels-extra") as HTMLElement | null;
-    expect(extra?.querySelectorAll(".ac-appeals-level").length).toBe(2);
+    expect(extra?.querySelectorAll(".ac-appeals-level").length).toBe(3);
     expect(extra?.style.display).toBe("none");
     more!.click();
     expect(extra!.style.display).toBe("");
