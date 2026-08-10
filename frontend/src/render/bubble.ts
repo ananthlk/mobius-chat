@@ -682,6 +682,69 @@ function renderOneSection(sec: AnswerCardSection): HTMLElement {
   return sectionEl;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// renderEnvelope — the SINGLE consumer for the assistant_envelope contract.
+// (Task #36, Chat Master ratified 2026-08-10.) The envelope is the COMPLETE render
+// source for a completed turn; tryParseAnswerCard is retired from the render path.
+// Each block renders once, in backend-given order. Off-contract types are dropped and
+// counted (unknown_block_type{type}) — no silent overlap, no dual-read.
+//
+// Block shapes are LLM Agent's real emissions (build_assistant_envelope_v1), verified
+// against live dev payloads: typed-format arrays sit at the block TOP LEVEL
+// ({type, items|headers/rows, label?}); only domain_card nests {variant, data}.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The typed-format + domain blocks that carry answer BODY structure. */
+export interface EnvFormatBlock {
+  type: "table" | "stats" | "bullets" | "steps" | "bars" | "conditions" | "domain_card";
+  label?: string;
+  items?: unknown[];         // stats/steps/bars/conditions: SectionDataItem[]; bullets: string[]
+  headers?: string[];        // table
+  rows?: string[][];         // table
+  variant?: string;          // domain_card discriminator (appeals_playbook)
+  data?: unknown;            // domain_card: opaque passthrough (AppealsPlaybookData)
+}
+
+/**
+ * Bridge a typed-format envelope block onto the existing section renderer. The block
+ * shape is the section shape with its arrays hoisted to the top level, so we lower it
+ * back into an AnswerCardSection and reuse renderOneSection / _renderSectionBody — the
+ * SAME code path that renders card sections today, so zero visual drift during migration.
+ * bullets.items (string[]) maps to sec.bullets; every other format's items/headers/rows
+ * map into sec.data; domain_card's opaque data passes straight through by `variant`.
+ */
+export function renderFormatBlock(block: EnvFormatBlock): HTMLElement {
+  const isDomain = block.type === "domain_card";
+  const isBullets = block.type === "bullets";
+  const section: AnswerCardSection = {
+    label: block.label ?? "",
+    format: (isDomain ? block.variant : block.type) as AnswerCardSection["format"],
+    visibility: "primary",
+    bullets: isBullets ? ((block.items as string[]) ?? []) : [],
+    data: isDomain
+      ? (block.data as AnswerCardSection["data"])
+      : ({ items: block.items, headers: block.headers, rows: block.rows } as AnswerCardSection["data"]),
+  };
+  return renderOneSection(section);
+}
+
+/**
+ * mode_badge — content-shape mode (Chat Master ruling 2026-08-10). LLM Agent emits the
+ * card's `mode` verbatim: FACTUAL | CANONICAL | BLENDED | RECITAL. Only CANONICAL
+ * (authoritative policy) and RECITAL (verbatim legal) warrant a badge; FACTUAL/BLENDED are
+ * the default path and render nothing (same rule as the in-card badge, Aug 7). Returns null
+ * when there's nothing to show — the reasoning-depth pill (quick/normal/think) is a separate
+ * future signal, NOT this block.
+ */
+export function renderModeBadge(mode: unknown): HTMLElement | null {
+  const m = String(mode ?? "").trim().toUpperCase();
+  if (m !== "CANONICAL" && m !== "RECITAL") return null;
+  const lbl = document.createElement("div");
+  lbl.className = "ac-answer-mode-label ac-answer-mode-label--" + m.toLowerCase();
+  lbl.textContent = m;
+  return lbl;
+}
+
 /**
  * Inline corrections (Ananth 2026-08-07): render each {original, corrected} pair as a redline IN
  * the answer prose — strike the original, insert the corrected in a distinct colour — instead of a

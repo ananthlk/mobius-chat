@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
-import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, applyCitationFootnotes, renderSourcesList, retainStreamedDraftAsFirstPass, stripCitationMarkers } from "./bubble";
+import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, applyCitationFootnotes, renderSourcesList, retainStreamedDraftAsFirstPass, stripCitationMarkers, renderFormatBlock, renderModeBadge } from "./bubble";
 import type { AnswerCard } from "../answer-card";
 
 // A v2 (no-mode) card: primary section leads, detail tucks; citations light up their tab.
@@ -795,6 +795,69 @@ describe("Enricher fast-path shapes render (LLM Agent's exact deterministic_form
     expect(tbl!.querySelector("tbody")?.textContent).toContain("Individual therapy");
     // wide/many-column tables get the horizontal-scroll wrapper (no body overflow)
     expect(el.querySelector(".ac-fmt-table-scroll")).not.toBeNull();
+  });
+});
+
+describe("renderEnvelope block renderers (Task #36 — single-contract, LLM Agent's real block shapes)", () => {
+  // These call the envelope-block leaf renderers DIRECTLY with the exact top-level shapes
+  // build_assistant_envelope_v1 emits (verified live: cid e5f721cc). No card, no dual-read.
+
+  it("renderFormatBlock: table → table.ac-fmt-table (headers/rows at block top level)", () => {
+    const el = renderFormatBlock({ type: "table", label: "Deadlines", headers: ["Payor", "Days"], rows: [["Sunshine", "180"], ["Humana", "90"]] });
+    const tbl = el.querySelector("table.ac-fmt-table");
+    expect(tbl).not.toBeNull();
+    expect(Array.from(tbl!.querySelectorAll("thead th")).map((t) => t.textContent)).toEqual(["Payor", "Days"]);
+    expect(tbl!.querySelector("tbody")?.textContent).toContain("Sunshine");
+  });
+
+  it("renderFormatBlock: stats → tiles (items at block top level, unified item shape)", () => {
+    const el = renderFormatBlock({ type: "stats", label: "Facts", items: [{ label: "Initial", value: "180 days" }, { label: "Resubmit", value: "90 days", note: "with note" }] });
+    const tiles = Array.from(el.querySelectorAll(".ac-fmt-stat-tile"));
+    expect(tiles.length).toBe(2);
+    expect(tiles[0].querySelector(".ac-fmt-stat-value")?.textContent).toBe("180 days");
+    expect(tiles[1].querySelector(".ac-fmt-stat-note")?.textContent).toBe("with note");
+  });
+
+  it("renderFormatBlock: bullets → .answer-card-bullet with inline markdown (items = string[])", () => {
+    const el = renderFormatBlock({ type: "bullets", label: "Points", items: ["File within **90 days**", "Use the `portal`"] });
+    const rows = Array.from(el.querySelectorAll(".answer-card-bullet"));
+    expect(rows.length).toBe(2);
+    expect(rows[0].querySelector("strong")?.textContent).toBe("90 days");
+    expect(rows[0].textContent).not.toContain("**");
+  });
+
+  it("renderFormatBlock: bars → weighted fill (item.weight 0-1, not max)", () => {
+    const el = renderFormatBlock({ type: "bars", label: "Mix", items: [{ label: "Denials", weight: 0.75 }, { label: "Paid", weight: 0.25 }] });
+    const fills = Array.from(el.querySelectorAll(".ac-fmt-bar-fill")) as HTMLElement[];
+    expect(fills[0].style.width).toBe("75%");
+    expect(fills[1].style.width).toBe("25%");
+  });
+
+  it("renderFormatBlock: conditions → if/then rows (condition/result keys)", () => {
+    const el = renderFormatBlock({ type: "conditions", label: "Rules", items: [{ condition: "Late filing", result: "Denied CO-29" }] });
+    expect(el.querySelector(".ac-fmt-condition-if")?.textContent).toBe("Late filing");
+    expect(el.querySelector(".ac-fmt-condition-then")?.textContent).toBe("Denied CO-29");
+  });
+
+  it("renderFormatBlock: steps → ordered list (items with label)", () => {
+    const el = renderFormatBlock({ type: "steps", label: "How", items: [{ label: "Gather docs" }, { label: "Submit" }] });
+    const steps = Array.from(el.querySelectorAll("li.ac-fmt-step")).map((s) => s.textContent);
+    expect(steps).toEqual(["Gather docs", "Submit"]);
+  });
+
+  it("renderFormatBlock: domain_card variant=appeals_playbook → appeals renderer (nested data passthrough)", () => {
+    const el = renderFormatBlock({ type: "domain_card", variant: "appeals_playbook", data: { payor: "Sunshine", carc_codes: ["29"], deadline_appeal_days: 90, strategy: "Prove timely filing" } });
+    // reuses the appeals playbook renderer (its root class), proving verbatim data passthrough by variant
+    expect(el.querySelector(".ac-appeals-playbook, .answer-card-section--appeals_playbook")).not.toBeNull();
+    expect(el.textContent).toContain("Sunshine");
+  });
+
+  it("renderModeBadge: CANONICAL/RECITAL show, FACTUAL/BLENDED silent (Chat Master 2026-08-10)", () => {
+    expect(renderModeBadge("CANONICAL")?.textContent).toBe("CANONICAL");
+    expect(renderModeBadge("RECITAL")?.textContent).toBe("RECITAL");
+    expect(renderModeBadge("FACTUAL")).toBeNull();
+    expect(renderModeBadge("BLENDED")).toBeNull();
+    expect(renderModeBadge(undefined)).toBeNull();
   });
 });
 
