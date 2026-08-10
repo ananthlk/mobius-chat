@@ -47,6 +47,9 @@ export interface AppealsPlaybookDoc { doc?: string; required?: boolean }
 export interface AppealsPlaybookLevel { level?: number | string; name?: string; deadline_days?: number }
 // Numbered canonical question (Appeals Phase −1 W2). hint = the parenthetical cue in the mockup.
 export interface AppealsPlaybookQuestion { n?: number; text: string; hint?: string }
+// Guidance statements (Ananth 2026-08-08: chat informs, workbench interrogates) — declarative
+// insights with the answer in them, not interrogatives. Preferred over questions[] when present.
+export interface AppealsPlaybookGuidance { n?: number; text: string; detail?: string }
 export interface AppealsPlaybookData {
   found?: boolean;
   message?: string;           // shown when found === false (no empty card)
@@ -63,6 +66,7 @@ export interface AppealsPlaybookData {
   deadline_resubmit_note?: string;   // e.g. "365 for corrected claims"; optional (synthesized emitter-side)
   strategy?: string;                 // the 🎯 prose line; optional (synthesized from templates/levels)
   questions?: AppealsPlaybookQuestion[];   // absent until W2; card renders deadlines/strategy/docs-only meanwhile
+  guidance?: AppealsPlaybookGuidance[];    // preferred over questions[] when present (statements, not interrogatives)
   submission_method?: string;
   portal_url?: string;
   fax?: string;

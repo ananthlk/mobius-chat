@@ -622,6 +622,59 @@ describe("Appeals typed sections (appeals_rules / appeals_playbook)", () => {
     expect(rowsHtml).toContain("&lt;script&gt;");
   });
 
+  it("playbook: guidance[] renders as statements and is preferred over questions[]", () => {
+    const el = mkPlaybook({
+      found: true, carc: "29",
+      questions: [{ n: 1, text: "What is the filing limit?" }],
+      guidance: [
+        { text: "Sunshine's filing limit is **180 days** from DOS", detail: "90 days for appeals" },
+        { text: "You can still succeed if the claim was submitted on time" },
+      ],
+    });
+    const gRows = Array.from(el.querySelectorAll(".ac-pb-row--guidance"));
+    expect(gRows.length).toBe(2);
+    expect(el.querySelector(".ac-pb-guide-text")?.querySelector("strong")?.textContent).toBe("180 days");
+    expect(el.querySelector(".ac-pb-guide-detail")?.textContent).toContain("90 days for appeals");
+    // questions[] is NOT rendered when guidance[] is present (no interrogative rows)
+    expect(el.textContent).not.toContain("What is the filing limit?");
+  });
+
+  it("playbook: falls back to questions[] when guidance[] is absent", () => {
+    const el = mkPlaybook({ found: true, carc: "29", questions: [{ n: 1, text: "Prove the submission date?" }] });
+    expect(el.querySelector(".ac-pb-row--guidance")).toBeNull();
+    expect(el.textContent).toContain("Prove the submission date?");
+  });
+
+  it("playbook: docs sort required-first regardless of emit order", () => {
+    const el = mkPlaybook({
+      found: true, carc: "29",
+      docs_required: [{ doc: "Medical records", required: false }, { doc: "Denial EOB", required: true }, { doc: "Original claim", required: true }],
+    });
+    const docTexts = Array.from(el.querySelectorAll(".ac-appeals-doc-text")).map((d) => d.textContent);
+    // required items come before the optional one
+    expect(docTexts[docTexts.length - 1]).toContain("optional");
+    expect(docTexts.slice(0, -1).every((t) => !t?.includes("optional"))).toBe(true);
+  });
+
+  it("playbook: appeal ladder caps at 4 with a '+N more' toggle", () => {
+    const el = mkPlaybook({
+      found: true, carc: "29",
+      appeal_levels: [1, 2, 3, 4, 5, 6].map((n) => ({ level: n, name: `Level ${n}`, deadline_days: 90 })),
+    });
+    // 4 visible in the primary list
+    const primary = el.querySelector(".ac-appeals-levels-list:not(.ac-appeals-levels-extra)");
+    expect(primary?.querySelectorAll(".ac-appeals-level").length).toBe(4);
+    const more = el.querySelector(".ac-appeals-levels-more") as HTMLButtonElement | null;
+    expect(more?.textContent).toBe("+2 more");
+    // extra levels exist but hidden until toggled
+    const extra = el.querySelector(".ac-appeals-levels-extra") as HTMLElement | null;
+    expect(extra?.querySelectorAll(".ac-appeals-level").length).toBe(2);
+    expect(extra?.style.display).toBe("none");
+    more!.click();
+    expect(extra!.style.display).toBe("");
+    expect(more!.textContent).toBe("Show fewer");
+  });
+
   it("playbook: mail_address renders in the Submit row", () => {
     const el = mkPlaybook({ found: true, carc: "29", submission_method: "Provider portal", fax: "1-833-000-0000", mail_address: "PO Box 3070, Farmington MO 63640" });
     const rowsText = el.querySelector(".ac-appeals-playbook-rows")?.textContent || "";

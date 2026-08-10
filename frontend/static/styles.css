@@ -3919,6 +3919,7 @@ body {
   flex-direction: column;
   gap: 0.15rem;
 }
+/* Each level: name left, deadline pill right-aligned — scans as a ladder, not a wall. */
 .ac-appeals-level { display: flex; align-items: baseline; gap: 0.4rem; font-size: 0.76rem; }
 .ac-appeals-level-name { font-weight: 600; color: var(--text-primary, #111827); }
 .ac-appeals-level-deadline {
@@ -3928,7 +3929,24 @@ body {
   background: rgba(0,0,0,0.04);
   padding: 0.03rem 0.3rem;
   border-radius: 3px;
+  margin-left: auto;   /* push the deadline to the right edge */
 }
+.ac-appeals-levels-more {
+  background: none;
+  border: none;
+  padding: 0.1rem 0;
+  margin-top: 0.1rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--mobius-violet, #7c3aed);
+  cursor: pointer;
+}
+.ac-appeals-levels-more:hover { text-decoration: underline; }
+
+/* Guidance statements (💡): declarative insight, muted detail sub-line. */
+.ac-pb-row--guidance .ac-pb-row-body { display: flex; flex-direction: column; gap: 0.05rem; }
+.ac-pb-guide-text { color: var(--text-primary, #111827); }
+.ac-pb-guide-detail { font-size: 0.72rem; color: var(--text-tertiary, #6b7280); line-height: 1.4; }
 
 /* ─── Citations (Details tab) ───────────────────────────────────────────────── */
 .ac-citations-list {

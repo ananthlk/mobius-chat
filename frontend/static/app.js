@@ -2724,6 +2724,7 @@ function _renderAppealsPlaybook(sec, body) {
     rows.appendChild(mkRow("\u{1F3AF}", "Strategy:", data.strategy.trim()));
   const levels = Array.isArray(data.appeal_levels) ? data.appeal_levels : [];
   if (levels.length) {
+    const LADDER_CAP = 4;
     const ladderRow = document.createElement("div");
     ladderRow.className = "ac-pb-row ac-pb-row--ladder";
     const ic = document.createElement("span");
@@ -2733,7 +2734,7 @@ function _renderAppealsPlaybook(sec, body) {
     bd.className = "ac-pb-row-body";
     const ol = document.createElement("ol");
     ol.className = "ac-appeals-levels-list";
-    levels.forEach((lv) => {
+    const mkLevel = (lv) => {
       const li = document.createElement("li");
       li.className = "ac-appeals-level";
       const name = document.createElement("span");
@@ -2742,22 +2743,69 @@ function _renderAppealsPlaybook(sec, body) {
       li.appendChild(name);
       if (typeof lv.deadline_days === "number")
         li.appendChild(_chip(`${lv.deadline_days}d`, "ac-appeals-level-deadline"));
-      ol.appendChild(li);
-    });
+      return li;
+    };
+    levels.slice(0, LADDER_CAP).forEach((lv) => ol.appendChild(mkLevel(lv)));
     bd.appendChild(ol);
+    if (levels.length > LADDER_CAP) {
+      const extra = document.createElement("ol");
+      extra.className = "ac-appeals-levels-list ac-appeals-levels-extra";
+      extra.style.display = "none";
+      extra.setAttribute("start", String(LADDER_CAP + 1));
+      levels.slice(LADDER_CAP).forEach((lv) => extra.appendChild(mkLevel(lv)));
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "ac-appeals-levels-more";
+      toggle.textContent = `+${levels.length - LADDER_CAP} more`;
+      toggle.addEventListener("click", () => {
+        const open = extra.style.display === "none";
+        extra.style.display = open ? "" : "none";
+        toggle.textContent = open ? "Show fewer" : `+${levels.length - LADDER_CAP} more`;
+      });
+      bd.appendChild(extra);
+      bd.appendChild(toggle);
+    }
     ladderRow.appendChild(ic);
     ladderRow.appendChild(bd);
     rows.appendChild(ladderRow);
   }
-  const questions = Array.isArray(data.questions) ? data.questions : [];
-  questions.forEach((q, i) => {
-    if (!q || !q.text)
-      return;
-    const n = typeof q.n === "number" ? q.n : i + 1;
-    const text = q.text + (q.hint ? ` (${q.hint})` : "");
-    rows.appendChild(mkRow(`${n}.`, null, text));
-  });
-  const docs = Array.isArray(data.docs_required) ? data.docs_required : [];
+  const guidance = Array.isArray(data.guidance) ? data.guidance : [];
+  if (guidance.length) {
+    guidance.forEach((g) => {
+      if (!g || !g.text)
+        return;
+      const row = document.createElement("div");
+      row.className = "ac-pb-row ac-pb-row--guidance";
+      const ic = document.createElement("span");
+      ic.className = "ac-pb-row-icon";
+      ic.textContent = "\u{1F4A1}";
+      const bd = document.createElement("span");
+      bd.className = "ac-pb-row-body";
+      const t = document.createElement("span");
+      t.className = "ac-pb-guide-text";
+      t.innerHTML = _inlineMd(g.text);
+      bd.appendChild(t);
+      if (g.detail && g.detail.trim()) {
+        const d = document.createElement("span");
+        d.className = "ac-pb-guide-detail";
+        d.innerHTML = _inlineMd(g.detail);
+        bd.appendChild(d);
+      }
+      row.appendChild(ic);
+      row.appendChild(bd);
+      rows.appendChild(row);
+    });
+  } else {
+    const questions = Array.isArray(data.questions) ? data.questions : [];
+    questions.forEach((q, i) => {
+      if (!q || !q.text)
+        return;
+      const n = typeof q.n === "number" ? q.n : i + 1;
+      const text = q.text + (q.hint ? ` (${q.hint})` : "");
+      rows.appendChild(mkRow(`${n}.`, null, text));
+    });
+  }
+  const docs = (Array.isArray(data.docs_required) ? [...data.docs_required] : []).sort((a, b) => (a?.required === false ? 1 : 0) - (b?.required === false ? 1 : 0));
   if (docs.length) {
     const docsRow = document.createElement("div");
     docsRow.className = "ac-pb-row ac-pb-row--docs";
