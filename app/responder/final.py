@@ -186,13 +186,29 @@ def _build_consolidator_input_json(
     # for data that has explicit structure. The LLM must include these sections verbatim
     # and may add 1-2 additional narrative sections around them.
     if tool_section_hints:
-        # Cap rows per table hint — uncapped rate tables (2000+ HCPCS rows) blow
-        # up the integrator prompt past Vertex AI's per-minute TPM limit (observed
-        # 473K char prompt → 429). pre_built_sections is what the LLM actually
-        # copies verbatim; tool_section_hints is dropped from the payload to avoid
-        # sending the same data twice.
-        _MAX_ROWS = 200
-        pre_built: list[dict] = []
+        pre_built = build_pre_built_sections(tool_section_hints)
+        if pre_built:
+            payload["pre_built_sections"] = pre_built
+    return json.dumps(payload, indent=2)
+
+
+def build_pre_built_sections(tool_section_hints: list[dict] | None) -> list[dict]:
+    """Convert tool section_hints into typed AnswerCard sections.
+
+    Shared by (a) the consolidator payload builder — the LLM is asked to copy
+    these verbatim — and (b) the post-parse guarantee in format_response,
+    which re-injects any section the integrator dropped and attaches them to
+    fallback cards. Typed sections must never depend on the LLM's mood
+    (traced live: appeals_playbook hint collected but absent from the final
+    card when the integrator fell back, cid=2803928f)."""
+    if not tool_section_hints:
+        return []
+    # Cap rows per table hint — uncapped rate tables (2000+ HCPCS rows) blow
+    # up the integrator prompt past Vertex AI's per-minute TPM limit (observed
+    # 473K char prompt → 429).
+    _MAX_ROWS = 200
+    pre_built: list[dict] = []
+    if True:
         for h in tool_section_hints:
             fmt = h.get("section_format", "")
             if not fmt or fmt == "bullets":
@@ -236,9 +252,39 @@ def _build_consolidator_input_json(
                 section["data"] = h["data"]
                 section["visibility"] = "primary"
                 pre_built.append(section)
-        if pre_built:
-            payload["pre_built_sections"] = pre_built
-    return json.dumps(payload, indent=2)
+    return pre_built
+
+
+def ensure_pre_built_sections(card: dict, tool_section_hints: list[dict] | None) -> dict:
+    """Post-parse guarantee: every pre-built typed section is present in
+    card['sections'] — re-inject any the integrator dropped (matched by
+    format+label). Mutates and returns the card dict."""
+    expected = build_pre_built_sections(tool_section_hints)
+    if not expected:
+        return card
+    sections = card.get("sections")
+    if not isinstance(sections, list):
+        sections = []
+        card["sections"] = sections
+    present = {((s.get("format") or ""), (s.get("label") or "")) for s in sections if isinstance(s, dict)}
+    present_fmts = {f for f, _ in present}
+    injected = 0
+    for sec in expected:
+        key = (sec.get("format") or "", sec.get("label") or "")
+        # match on exact (format,label), or format alone for custom formats
+        # (labels can drift when the LLM copies) — table/stats/bars are generic
+        # so those require the label match.
+        fmt = sec.get("format") or ""
+        if key in present:
+            continue
+        if fmt not in ("table", "stats", "bars", "bullets") and fmt in present_fmts:
+            continue
+        sections.append(sec)
+        injected += 1
+    if injected:
+        logger.info("[pre-built-guarantee] injected %d dropped typed section(s): %s",
+                    injected, [s.get("format") for s in expected])
+    return card
 
 
 def _extract_json_from_text(text: str) -> str:
@@ -602,6 +648,9 @@ def format_response(
                 if not display_txt.strip():
                     display_txt = DEFAULT_BLEED_FALLBACK
                 parsed["direct_answer"] = display_txt
+                # Guarantee typed sections survive the integrator (it drops
+                # them nondeterministically; traced cid=2803928f).
+                parsed = ensure_pre_built_sections(parsed, tool_section_hints)
                 _emit_integrator_chunks(display_txt, message_chunk_callback)
                 # Emit canonical JSON so frontend receives clean JSON (no markdown fence)
                 return (json.dumps(parsed), usage)
@@ -613,6 +662,10 @@ def format_response(
             )
             visible = extract_user_visible_text_from_integrator_raw(text)
             minimal = build_minimal_answer_card_preserving_metadata(visible, text)
+            # Fallback cards keep their typed sections too — the data came from
+            # tools, not the integrator, so an integrator failure must not
+            # discard it.
+            minimal = ensure_pre_built_sections(minimal, tool_section_hints)
             _emit_integrator_chunks(visible, message_chunk_callback)
             return (json.dumps(minimal), usage)
     except Exception as e:
