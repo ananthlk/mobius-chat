@@ -66,6 +66,7 @@ export interface AppealsPlaybookData {
   submission_method?: string;
   portal_url?: string;
   fax?: string;
+  mail_address?: string;   // paper submission channel (Appeals Agent ruled decision-relevant in chat)
   docs_required?: AppealsPlaybookDoc[];
   appeal_levels?: AppealsPlaybookLevel[];
   // Admin deep-link source: either a ready scheme-guarded admin_url, or {carc,payor} to build

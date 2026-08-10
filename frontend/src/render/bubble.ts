@@ -531,9 +531,9 @@ function _renderAppealsPlaybook(sec: AnswerCardSection, body: HTMLElement): void
     rows.appendChild(docsRow);
   }
 
-  // 📤 Submit: method · portal link · fax.
+  // 📤 Submit: method · portal link · fax · mail address.
   const portalUrl = _safeHttpUrl(data.portal_url);
-  if (data.submission_method || portalUrl || data.fax) {
+  if (data.submission_method || portalUrl || data.fax || data.mail_address) {
     const subRow = document.createElement("div");
     subRow.className = "ac-pb-row ac-pb-row--submit";
     const ic = document.createElement("span"); ic.className = "ac-pb-row-icon"; ic.textContent = "📤";
@@ -548,6 +548,7 @@ function _renderAppealsPlaybook(sec: AnswerCardSection, body: HTMLElement): void
       bits.push(a);
     }
     if (data.fax) bits.push(document.createTextNode(`fax ${data.fax}`));
+    if (data.mail_address) bits.push(document.createTextNode(`mail ${data.mail_address}`));
     bits.forEach((node, i) => { if (i) bd.appendChild(document.createTextNode(" · ")); bd.appendChild(node); });
     subRow.appendChild(ic); subRow.appendChild(bd);
     rows.appendChild(subRow);
@@ -558,6 +559,17 @@ function _renderAppealsPlaybook(sec: AnswerCardSection, body: HTMLElement): void
   // Admin edit chip — a ready admin_url, else build /admin/rules-library?carc=&payor=&tab=playbook
   // (route confirmed W3). Same scheme-guard as appeals_rules; only renders when a valid link exists.
   let adminHref = _safeHttpUrl(data.admin_url);
+  if (adminHref) {
+    // admin_url is CROSS-ORIGIN (the appeals workbench). Beyond the https scheme guard, allowlist the
+    // host so a bad/spoofed playbook record can't point the chip at an arbitrary site — only same-origin
+    // or the mobius-appeals service host is allowed (Appeals Agent 2026-08-08).
+    try {
+      const u = new URL(adminHref);
+      const sameOrigin = typeof window !== "undefined" && !!window.location && u.origin === window.location.origin;
+      const isAppealsHost = /(^|\.)mobius-appeals[\w.-]*\.run\.app$/i.test(u.hostname);
+      if (!sameOrigin && !isAppealsHost) adminHref = null;
+    } catch { adminHref = null; }
+  }
   if (!adminHref && data.admin_edit && (data.admin_edit.carc || data.admin_edit.payor)) {
     const qs = new URLSearchParams();
     if (data.admin_edit.carc) qs.set("carc", data.admin_edit.carc);

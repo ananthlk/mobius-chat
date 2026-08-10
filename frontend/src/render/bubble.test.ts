@@ -622,6 +622,22 @@ describe("Appeals typed sections (appeals_rules / appeals_playbook)", () => {
     expect(rowsHtml).toContain("&lt;script&gt;");
   });
 
+  it("playbook: mail_address renders in the Submit row", () => {
+    const el = mkPlaybook({ found: true, carc: "29", submission_method: "Provider portal", fax: "1-833-000-0000", mail_address: "PO Box 3070, Farmington MO 63640" });
+    const rowsText = el.querySelector(".ac-appeals-playbook-rows")?.textContent || "";
+    expect(rowsText).toContain("mail PO Box 3070, Farmington MO 63640");
+    expect(rowsText).toContain("fax 1-833-000-0000");
+  });
+
+  it("playbook: admin chip allows the appeals-service host, rejects an arbitrary https host", () => {
+    // Cross-origin appeals host → allowed.
+    const ok = mkPlaybook({ found: true, carc: "29", admin_url: "https://mobius-appeals-prototype-xyz.a.run.app/admin/rules-library?carc=29&tab=playbook" });
+    expect((ok.querySelector(".ac-appeals-admin-link") as HTMLAnchorElement | null)?.getAttribute("href")).toContain("mobius-appeals");
+    // Arbitrary https host → chip suppressed (not rendered to an off-allowlist site).
+    const evil = mkPlaybook({ found: true, carc: "29", admin_url: "https://evil.example.com/steal?carc=29" });
+    expect(evil.querySelector(".ac-appeals-admin-link")).toBeNull();
+  });
+
   it("playbook: admin edit chip builds the scheme-guarded deep link to the Playbook tab", () => {
     const el = mkPlaybook({ found: true, carc: "29", payor: "Sunshine Health", admin_edit: { carc: "29", payor: "Sunshine Health" } });
     const link = el.querySelector(".ac-appeals-admin-link") as HTMLAnchorElement | null;

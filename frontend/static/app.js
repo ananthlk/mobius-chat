@@ -2791,7 +2791,7 @@ function _renderAppealsPlaybook(sec, body) {
     rows.appendChild(docsRow);
   }
   const portalUrl = _safeHttpUrl(data.portal_url);
-  if (data.submission_method || portalUrl || data.fax) {
+  if (data.submission_method || portalUrl || data.fax || data.mail_address) {
     const subRow = document.createElement("div");
     subRow.className = "ac-pb-row ac-pb-row--submit";
     const ic = document.createElement("span");
@@ -2820,6 +2820,8 @@ function _renderAppealsPlaybook(sec, body) {
     }
     if (data.fax)
       bits.push(document.createTextNode(`fax ${data.fax}`));
+    if (data.mail_address)
+      bits.push(document.createTextNode(`mail ${data.mail_address}`));
     bits.forEach((node, i) => {
       if (i)
         bd.appendChild(document.createTextNode(" \xB7 "));
@@ -2832,6 +2834,17 @@ function _renderAppealsPlaybook(sec, body) {
   if (rows.childElementCount)
     wrap.appendChild(rows);
   let adminHref = _safeHttpUrl(data.admin_url);
+  if (adminHref) {
+    try {
+      const u = new URL(adminHref);
+      const sameOrigin = typeof window !== "undefined" && !!window.location && u.origin === window.location.origin;
+      const isAppealsHost = /(^|\.)mobius-appeals[\w.-]*\.run\.app$/i.test(u.hostname);
+      if (!sameOrigin && !isAppealsHost)
+        adminHref = null;
+    } catch {
+      adminHref = null;
+    }
+  }
   if (!adminHref && data.admin_edit && (data.admin_edit.carc || data.admin_edit.payor)) {
     const qs = new URLSearchParams();
     if (data.admin_edit.carc)
