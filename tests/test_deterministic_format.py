@@ -233,3 +233,90 @@ class TestSteps:
         result = deterministic_format(draft)
         assert len(result["sections"]) == 1
         assert result["sections"][0]["format"] == "steps"
+
+
+class TestRawExcerptGuard:
+    """react's thin-evidence fast-mode hedge (_build_fast_mode_hedge) ships a
+    literal retrieved-chunk excerpt verbatim -- deliberately NOT synthesized,
+    to avoid the appearance of confident synthesis when evidence is thin.
+    Real policy text inside that excerpt can have genuine Label: Value
+    lines; promoting those into a "Key Facts" stats card would misrepresent
+    an unvetted excerpt as something structured with confidence. Same
+    defensive posture as react_loop.py's _looks_like_raw_structured_blob
+    guarding the JSON case (2026-08-10, ReAct agent's real-sample audit)."""
+
+    def test_excerpt_with_label_value_shape_not_promoted(self):
+        draft = (
+            "[1] Sunshine Provider Manual [authority=authoritative]\n"
+            "Initial filing: 180 days\n"
+            "Resubmission: 90 days\n"
+            "Copay: $25\n"
+        )
+        result = deterministic_format(draft)
+        assert result["sections"] == []
+        # Still bolds key facts -- only structural promotion is suppressed.
+        assert "**180 days**" in result["direct_answer"]
+
+    def test_excerpt_with_bullet_shape_not_promoted(self):
+        draft = (
+            "[2] Sunshine Appeals Guide [authority=authoritative]\n"
+            "- Submit within 90 days\n"
+            "- Include cover letter\n"
+            "- Attach medical records\n"
+        )
+        result = deterministic_format(draft)
+        assert result["sections"] == []
+
+    def test_normal_prose_with_bracket_not_excerpt(self):
+        """The guard only fires on a citation marker at the very START of
+        the draft -- an inline [N] citation elsewhere in normal synthesized
+        prose must not suppress structuring."""
+        draft = "Initial filing: 180 days\nResubmission: 90 days [1]\nCopay: $25\n"
+        result = deterministic_format(draft)
+        assert len(result["sections"]) == 1
+        assert result["sections"][0]["format"] == "stats"
+
+
+class TestRealSampleShapes:
+    """Real react_draft samples from dev (ReAct agent's 2026-08-10 audit,
+    400 unique turns over 14 days) -- regression coverage for the exact
+    shapes seen in production, not just synthetic fixtures."""
+
+    def test_real_bullet_sample_with_three_space_indent(self):
+        """Real sample cid=438f3da7 -- bullets used '*   text' (3 spaces
+        after the marker), not just '* text'. \\s+ already covers this but
+        pin it down with the literal real-world formatting."""
+        draft = (
+            "Hey Genius! For a timely filing denial from Sunshine Health, "
+            "the most likely CARC is 29 ('The time limit for filing has expired').\n\n"
+            "Your appeal playbook is now available in the structured card above, "
+            "detailing the submission method, deadlines, required documents, and escalation steps.\n\n"
+            "To help you prepare, here are some key questions to consider:\n"
+            "*   What is the Sunshine Health timely filing limit for this specific service type and date of service?\n"
+            "*   What was the original submission date of this claim to Sunshine Health?\n"
+            "*   Are there any documented circumstances that would extend the timely filing limit for this claim?\n"
+        )
+        result = deterministic_format(draft)
+        assert len(result["sections"]) == 1
+        sec = result["sections"][0]
+        assert sec["format"] == "bullets"
+        assert len(sec["bullets"]) == 3
+
+    def test_real_pipe_table_sample_with_br_tags_in_cells(self):
+        """Real sample cid=65ed12e2 -- markdown table with <br>-joined
+        sub-bullets inside cells, the one real pipe-table instance ReAct
+        found in 400 sampled turns."""
+        draft = (
+            "| Topic | Requirement / Process | Deadline | Details & Contact Information |\n"
+            "| :--- | :--- | :--- | :--- |\n"
+            "| Filing COB Claims | Submit the claim after receiving the primary payer's EOP. "
+            "Ensure all COB data is correct. | Within 90 days from the date of the primary payer's EOP. | "
+            "Electronic Claims (837s):<br>Institutional (837I): COB data must be in loop 2300.<br>more detail here |\n"
+        )
+        result = deterministic_format(draft)
+        assert len(result["sections"]) == 1
+        sec = result["sections"][0]
+        assert sec["format"] == "table"
+        assert sec["data"]["headers"] == ["Topic", "Requirement / Process", "Deadline", "Details & Contact Information"]
+        assert len(sec["data"]["rows"]) == 1
+        assert "<br>" in sec["data"]["rows"][0][3]

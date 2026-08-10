@@ -167,6 +167,22 @@ def _extract_steps(text: str) -> list[str]:
     return best if len(best) >= 2 else []
 
 
+_RAW_EXCERPT_RE = re.compile(r"^\[\d+\]\s")
+
+
+def _looks_like_raw_excerpt(text: str) -> bool:
+    """react's thin-evidence fast-mode hedge (_build_fast_mode_hedge) ships a
+    literal retrieved-chunk excerpt verbatim, not synthesized prose, exactly
+    to avoid the appearance of confident synthesis when evidence is thin.
+    Real policy text often has genuine "Label: Value" lines -- promoting
+    those into a "Key Facts" stats card would misrepresent an unvetted
+    excerpt as something we structured with confidence. Same defensive
+    posture as _looks_like_raw_structured_blob (react_loop.py) guarding the
+    JSON case -- this guards the plain-text excerpt case (2026-08-10, ReAct
+    agent's real-sample audit)."""
+    return bool(_RAW_EXCERPT_RE.match((text or "").strip()))
+
+
 def deterministic_format(react_draft: str | None) -> dict[str, Any]:
     """Structure react_draft into an AnswerCard-shaped dict with regex only.
     No LLM call. Returns {mode, direct_answer, sections}."""
@@ -176,6 +192,9 @@ def deterministic_format(react_draft: str | None) -> dict[str, Any]:
 
     bolded = bold_key_facts(text)
     sections: list[dict[str, Any]] = []
+
+    if _looks_like_raw_excerpt(text):
+        return {"mode": "FACTUAL", "direct_answer": bolded, "sections": sections}
 
     # Priority order: most structurally specific/unambiguous pattern first.
     # Only one section is emitted per draft -- the rest of the text stays as
