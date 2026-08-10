@@ -2614,12 +2614,24 @@ def _execute_tool(
                         if _q_carc:
                             _qs = _appeals_get(f"/questions/{_q_carc}", payor=payor, min_level=0)
                             _q_list = (_qs.get("questions") or [])[:5]
-                            if _q_list:
+                            _tops = [q for q in _q_list if not q.get("parent_question_id")]
+                            if _tops:
+                                # Guidance statements (Ananth 2026-08-10): chat
+                                # informs with statements, the workbench asks
+                                # questions. Emit guidance[] when authored;
+                                # questions[] stays for backward compat.
+                                _guid = [
+                                    {"n": i + 1, "text": (q.get("guidance_statement") or "").strip(),
+                                     "detail": (q.get("manual_guidance") or "")[:140] or None}
+                                    for i, q in enumerate(_tops)
+                                    if (q.get("guidance_statement") or "").strip()
+                                ]
+                                if _guid:
+                                    result_data["guidance"] = _guid
                                 result_data["questions"] = [
                                     {"n": i + 1, "text": q.get("question_text", ""),
                                      "hint": (q.get("manual_guidance") or "")[:140] or None}
-                                    for i, q in enumerate(
-                                        [q for q in _q_list if not q.get("parent_question_id")])
+                                    for i, q in enumerate(_tops)
                                 ]
                     except Exception as _q_exc:
                         # questions are optional; card degrades cleanly — but
