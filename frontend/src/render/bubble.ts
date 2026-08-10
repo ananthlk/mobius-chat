@@ -460,8 +460,29 @@ function _renderAppealsPlaybook(sec: AnswerCardSection, body: HTMLElement): void
     wrap.appendChild(draft);
   }
 
-  const rows = document.createElement("div");
-  rows.className = "ac-appeals-playbook-rows";
+  // Grouped into labeled sections so the card reads as a document (Ananth 2026-08-08).
+  // Description lead — plain-language "what is this denial" — right under the title.
+  if (data.description && data.description.trim()) {
+    const desc = document.createElement("div");
+    desc.className = "ac-pb-description";
+    desc.innerHTML = _inlineMd(data.description.trim());
+    wrap.appendChild(desc);
+  }
+  // mkSection returns the section's row BODY; its heading + wrapper are body.parentElement.
+  const mkSection = (label: string): HTMLElement => {
+    const section = document.createElement("div");
+    section.className = "ac-pb-section";
+    const h = document.createElement("div");
+    h.className = "ac-pb-section-heading";
+    h.textContent = label;
+    section.appendChild(h);
+    const b = document.createElement("div");
+    b.className = "ac-appeals-playbook-rows";
+    section.appendChild(b);
+    return b;
+  };
+  // Section 1 — Deadlines & Appeal Strategy: deadlines · strategy · appeal-levels ladder · 💡 guidance.
+  const rows = mkSection("Deadlines & Appeal Strategy");
 
   // ⏱ Deadlines: appeal Nd from denial · resubmit Nd from DOS (note).
   const dParts: string[] = [];
@@ -555,11 +576,15 @@ function _renderAppealsPlaybook(sec: AnswerCardSection, body: HTMLElement): void
     });
   }
 
-  // 📎 Docs — required/optional checklist, REQUIRED sorted first regardless of emit order (Ananth
-  // formatting note: optional was appearing above required). Stable within each group.
+  // Close the Deadlines & Appeal Strategy section (deadlines/strategy/ladder/guidance are in it).
+  if (rows.childElementCount) wrap.appendChild(rows.parentElement as HTMLElement);
+
+  // Section 2 — Documentation: required/optional checklist, REQUIRED sorted first regardless of emit
+  // order (Ananth: optional was appearing above required). Stable within each group.
   const docs = (Array.isArray(data.docs_required) ? [...data.docs_required] : [])
     .sort((a, b) => (a?.required === false ? 1 : 0) - (b?.required === false ? 1 : 0));
   if (docs.length) {
+    const docsBody = mkSection("Documentation");
     const docsRow = document.createElement("div");
     docsRow.className = "ac-pb-row ac-pb-row--docs";
     const ic = document.createElement("span"); ic.className = "ac-pb-row-icon"; ic.textContent = "📎";
@@ -578,12 +603,14 @@ function _renderAppealsPlaybook(sec: AnswerCardSection, body: HTMLElement): void
     });
     bd.appendChild(ul);
     docsRow.appendChild(ic); docsRow.appendChild(bd);
-    rows.appendChild(docsRow);
+    docsBody.appendChild(docsRow);
+    wrap.appendChild(docsBody.parentElement as HTMLElement);
   }
 
-  // 📤 Submit: method · portal link · fax · mail address.
+  // Section 3 — Submission: method · portal link · fax · mail address.
   const portalUrl = _safeHttpUrl(data.portal_url);
   if (data.submission_method || portalUrl || data.fax || data.mail_address) {
+    const subBody = mkSection("Submission");
     const subRow = document.createElement("div");
     subRow.className = "ac-pb-row ac-pb-row--submit";
     const ic = document.createElement("span"); ic.className = "ac-pb-row-icon"; ic.textContent = "📤";
@@ -601,10 +628,9 @@ function _renderAppealsPlaybook(sec: AnswerCardSection, body: HTMLElement): void
     if (data.mail_address) bits.push(document.createTextNode(`mail ${data.mail_address}`));
     bits.forEach((node, i) => { if (i) bd.appendChild(document.createTextNode(" · ")); bd.appendChild(node); });
     subRow.appendChild(ic); subRow.appendChild(bd);
-    rows.appendChild(subRow);
+    subBody.appendChild(subRow);
+    wrap.appendChild(subBody.parentElement as HTMLElement);
   }
-
-  if (rows.childElementCount) wrap.appendChild(rows);
 
   // Admin edit chip — a ready admin_url, else build /admin/rules-library?carc=&payor=&tab=playbook
   // (route confirmed W3). Same scheme-guard as appeals_rules; only renders when a valid link exists.

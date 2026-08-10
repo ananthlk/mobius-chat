@@ -545,7 +545,7 @@ describe("Appeals typed sections (appeals_rules / appeals_playbook)", () => {
     expect(el.querySelector(".ac-appeals-playbook-title")?.textContent).toContain("CARC 197");
     expect(el.querySelector(".ac-appeals-playbook-title")?.textContent).toContain("Humana");
     // Deadlines row carries both appeal + resubmit (with note).
-    const rowsText = (el.querySelector(".ac-appeals-playbook-rows")?.textContent) || "";
+    const rowsText = (el.querySelector(".ac-appeals-playbook")?.textContent) || "";
     expect(rowsText).toContain("appeal 60d");
     expect(rowsText).toContain("resubmit 180d");
     expect(rowsText).toContain("365 for corrected");
@@ -614,12 +614,43 @@ describe("Appeals typed sections (appeals_rules / appeals_playbook)", () => {
     // **bold** → <strong>, not raw asterisks.
     expect(el.querySelector(".ac-appeals-doc-text")?.querySelector("strong")?.textContent).toBe("Claim Adjustment Request Form");
     expect(el.querySelector(".ac-appeals-doc-text")?.textContent).not.toContain("**");
-    const rowsHtml = el.querySelector(".ac-appeals-playbook-rows")?.innerHTML || "";
+    const rowsHtml = el.querySelector(".ac-appeals-playbook")?.innerHTML || "";
     expect(rowsHtml).toContain("<strong>proof of timely filing</strong>");   // strategy
     expect(rowsHtml).toContain("<code>EDI 277</code>");                       // question
     // HTML is escaped — no live script tag injected from LLM content.
     expect(el.querySelector("script")).toBeNull();
     expect(rowsHtml).toContain("&lt;script&gt;");
+  });
+
+  it("playbook: renders as labeled sections with a description lead (Ananth 2026-08-08)", () => {
+    const el = mkPlaybook({
+      found: true, carc: "22", payor: "Sunshine Health",
+      description: "Coordination of Benefits — this care may be covered by another payer.",
+      deadline_appeal_days: 90,
+      guidance: [{ text: "You may still appeal within the window." }],
+      docs_required: [{ doc: "Denial EOB", required: true }],
+      submission_method: "Provider portal", fax: "1-833-000-0000",
+    });
+    // Description lead under the title
+    expect(el.querySelector(".ac-pb-description")?.textContent).toContain("Coordination of Benefits");
+    // Labeled sections
+    const headings = Array.from(el.querySelectorAll(".ac-pb-section-heading")).map((h) => h.textContent);
+    expect(headings).toEqual(["Deadlines & Appeal Strategy", "Documentation", "Submission"]);
+    // Guidance lives in the Deadlines & Appeal Strategy section (not floating)
+    const stratSection = el.querySelector(".ac-pb-section");
+    expect(stratSection?.querySelector(".ac-pb-row--guidance")).not.toBeNull();
+    expect(stratSection?.querySelector('.ac-pb-row-icon')?.textContent).toBe("⏱");   // deadlines first
+    // Docs in the Documentation section, submit in Submission
+    const docSection = Array.from(el.querySelectorAll(".ac-pb-section")).find((s) => s.querySelector(".ac-pb-section-heading")?.textContent === "Documentation");
+    expect(docSection?.querySelector(".ac-appeals-doc")).not.toBeNull();
+  });
+
+  it("playbook: omits a section entirely when it has no content (no docs → no Documentation heading)", () => {
+    const el = mkPlaybook({ found: true, carc: "22", deadline_appeal_days: 90, submission_method: "portal" });
+    const headings = Array.from(el.querySelectorAll(".ac-pb-section-heading")).map((h) => h.textContent);
+    expect(headings).not.toContain("Documentation");   // no docs_required → section omitted
+    expect(headings).toContain("Deadlines & Appeal Strategy");
+    expect(headings).toContain("Submission");
   });
 
   it("playbook: guidance[] renders as statements and is preferred over questions[]", () => {
@@ -677,7 +708,7 @@ describe("Appeals typed sections (appeals_rules / appeals_playbook)", () => {
 
   it("playbook: mail_address renders in the Submit row", () => {
     const el = mkPlaybook({ found: true, carc: "29", submission_method: "Provider portal", fax: "1-833-000-0000", mail_address: "PO Box 3070, Farmington MO 63640" });
-    const rowsText = el.querySelector(".ac-appeals-playbook-rows")?.textContent || "";
+    const rowsText = el.querySelector(".ac-appeals-playbook")?.textContent || "";
     expect(rowsText).toContain("mail PO Box 3070, Farmington MO 63640");
     expect(rowsText).toContain("fax 1-833-000-0000");
   });
@@ -710,7 +741,7 @@ describe("Appeals typed sections (appeals_rules / appeals_playbook)", () => {
     const el = mkPlaybook({ found: true, carc: "29", payor: "Sunshine Health", deadline_appeal_days: 90, docs_required: [{ doc: "Denial EOB", required: true }] });
     expect(el.querySelector(".ac-pb-badge")).toBeNull();                 // no badge
     expect(el.querySelectorAll(".ac-pb-row").length).toBeGreaterThan(0);  // still renders
-    expect((el.querySelector(".ac-appeals-playbook-rows")?.textContent || "")).toContain("appeal 90d");
+    expect((el.querySelector(".ac-appeals-playbook")?.textContent || "")).toContain("appeal 90d");
     // no questions rows (nothing numbered) — card is coherent without them
     expect(el.querySelector(".ac-appeals-playbook-title")?.textContent).toContain("Playbook");
   });

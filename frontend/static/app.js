@@ -2710,8 +2710,25 @@ function _renderAppealsPlaybook(sec, body) {
     draft.textContent = "\u26A0 Draft \u2014 not yet reviewed";
     wrap.appendChild(draft);
   }
-  const rows = document.createElement("div");
-  rows.className = "ac-appeals-playbook-rows";
+  if (data.description && data.description.trim()) {
+    const desc = document.createElement("div");
+    desc.className = "ac-pb-description";
+    desc.innerHTML = _inlineMd(data.description.trim());
+    wrap.appendChild(desc);
+  }
+  const mkSection = (label) => {
+    const section = document.createElement("div");
+    section.className = "ac-pb-section";
+    const h = document.createElement("div");
+    h.className = "ac-pb-section-heading";
+    h.textContent = label;
+    section.appendChild(h);
+    const b = document.createElement("div");
+    b.className = "ac-appeals-playbook-rows";
+    section.appendChild(b);
+    return b;
+  };
+  const rows = mkSection("Deadlines & Appeal Strategy");
   const dParts = [];
   if (typeof data.deadline_appeal_days === "number")
     dParts.push(`appeal ${data.deadline_appeal_days}d from denial`);
@@ -2805,8 +2822,11 @@ function _renderAppealsPlaybook(sec, body) {
       rows.appendChild(mkRow(`${n}.`, null, text));
     });
   }
+  if (rows.childElementCount)
+    wrap.appendChild(rows.parentElement);
   const docs = (Array.isArray(data.docs_required) ? [...data.docs_required] : []).sort((a, b) => (a?.required === false ? 1 : 0) - (b?.required === false ? 1 : 0));
   if (docs.length) {
+    const docsBody = mkSection("Documentation");
     const docsRow = document.createElement("div");
     docsRow.className = "ac-pb-row ac-pb-row--docs";
     const ic = document.createElement("span");
@@ -2836,10 +2856,12 @@ function _renderAppealsPlaybook(sec, body) {
     bd.appendChild(ul);
     docsRow.appendChild(ic);
     docsRow.appendChild(bd);
-    rows.appendChild(docsRow);
+    docsBody.appendChild(docsRow);
+    wrap.appendChild(docsBody.parentElement);
   }
   const portalUrl = _safeHttpUrl(data.portal_url);
   if (data.submission_method || portalUrl || data.fax || data.mail_address) {
+    const subBody = mkSection("Submission");
     const subRow = document.createElement("div");
     subRow.className = "ac-pb-row ac-pb-row--submit";
     const ic = document.createElement("span");
@@ -2877,10 +2899,9 @@ function _renderAppealsPlaybook(sec, body) {
     });
     subRow.appendChild(ic);
     subRow.appendChild(bd);
-    rows.appendChild(subRow);
+    subBody.appendChild(subRow);
+    wrap.appendChild(subBody.parentElement);
   }
-  if (rows.childElementCount)
-    wrap.appendChild(rows);
   let adminHref = _safeHttpUrl(data.admin_url);
   if (adminHref) {
     try {

@@ -3868,6 +3868,25 @@ body {
   margin-top: 0.35rem;
 }
 .ac-appeals-playbook-rows { display: flex; flex-direction: column; gap: 0.35rem; margin-top: 0.4rem; }
+/* Sectioned card (Ananth 2026-08-08) — reads as a document: description lead + labeled sections. */
+.ac-pb-description {
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--text-secondary, #374151);
+  margin: 0.35rem 0 0.2rem;
+}
+.ac-pb-section { margin-top: 0.65rem; }
+.ac-pb-section:first-of-type { margin-top: 0.5rem; }
+.ac-pb-section-heading {
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-tertiary, #6b7280);
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid var(--border-subtle, rgba(0, 0, 0, 0.07));
+}
+.ac-pb-section .ac-appeals-playbook-rows { margin-top: 0.3rem; }
 .ac-pb-row { display: flex; align-items: baseline; gap: 0.5rem; font-size: 0.78rem; line-height: 1.45; }
 .ac-pb-row-icon {
   flex: 0 0 1.3rem;

@@ -55,6 +55,7 @@ export interface AppealsPlaybookData {
   message?: string;           // shown when found === false (no empty card)
   payor?: string;
   carc?: string;
+  description?: string;   // plain-language "what is this denial" (CARC catalog) — renders as the card lead
   carc_codes?: Array<string | number>;   // tool emits an array (a playbook can span CARCs, e.g. [29,218])
   carc_group?: string;
   // Confidence ladder (Ananth 2026-08-08, replaces binary review_status): 0 generated · 1 reviewed ·
