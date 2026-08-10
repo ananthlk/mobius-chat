@@ -26,7 +26,7 @@ from app.communication.gate import send_to_user
 from app.pipeline.context import PipelineContext
 from app.pipeline.react_loop import _is_sufficient_for_deterministic_pass
 from app.responder import format_response
-from app.responder.final import _build_consolidator_input_json
+from app.responder.final import _build_consolidator_input_json, ensure_pre_built_sections
 from app.responder.final_parallel import format_response_parallel, run_bc_background
 from app.services.cost_model import compute_cost
 from app.services.model_registry import integrator_llm_stage, per_call_router_composite
@@ -842,6 +842,10 @@ def run_integrate(
         from app.responder.deterministic_format import deterministic_format
         _dyn_enrich_used = True
         _det_card = deterministic_format(getattr(ctx, "react_draft", None))
+        # Same guarantee as the LLM paths -- tool-derived typed sections
+        # (deterministic, not LLM-composed) must survive regardless of which
+        # integrator path produced the card (traced cid=2803928f).
+        _det_card = ensure_pre_built_sections(_det_card, getattr(ctx, "tool_section_hints", None))
         final_message = json.dumps(_det_card)
         integrator_usages = []
         integrator_usage = None

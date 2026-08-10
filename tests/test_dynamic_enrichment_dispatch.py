@@ -131,3 +131,33 @@ def test_background_bc_launch_failure_does_not_break_the_response():
     assert ctx.response_payload is not None
     payload = json.loads(ctx.response_payload["message"])
     assert "180 days" in payload["direct_answer"]
+
+
+def test_deterministic_pass_still_carries_tool_derived_typed_sections():
+    """Chat FE trace (2026-08-10, cid=2803928f): deterministic_format only
+    reformats react_draft's prose -- it has no notion of tool_section_hints,
+    so a typed section (e.g. appeals_playbook) landed by a tool call was
+    silently dropped whenever the turn took this fast path. Must carry the
+    same ensure_pre_built_sections guarantee as both LLM paths."""
+    ctx = _make_ctx(
+        chat_mode="copilot", react_rounds_used=2, react_draft=_LONG_DRAFT,
+        react_unfinished_reason=None,
+        tool_section_hints=[{
+            "section_format": "appeals_playbook",
+            "section_title": "Playbook",
+            "data": {"deadline": "90d", "channel": "portal"},
+        }],
+    )
+    with (
+        patch.dict(os.environ, {"MOBIUS_INTEGRATOR_MODE": "parallel", "MOBIUS_DYNAMIC_ENRICHMENT_PCT": "100"}),
+        patch("app.stages.integrate.format_response_parallel") as mock_par,
+        patch("app.stages.integrate.run_bc_background"),
+    ):
+        run_integrate(ctx)
+
+    mock_par.assert_not_called()
+    payload = json.loads(ctx.response_payload["message"])
+    sections = payload.get("sections") or []
+    matched = [s for s in sections if s.get("format") == "appeals_playbook"]
+    assert matched, f"typed section missing from deterministic-pass card: {sections}"
+    assert matched[0]["data"] == {"deadline": "90d", "channel": "portal"}

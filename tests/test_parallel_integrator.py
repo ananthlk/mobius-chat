@@ -470,6 +470,68 @@ class TestCorrectionMerge:
         assert payload.get("correction") == {"original": "180 days", "corrected": "90 days"}
 
 
+class TestPreBuiltSectionsSurviveParallel:
+    """Chat FE trace (2026-08-10, cid=2803928f): the parallel path never
+    called ensure_pre_built_sections -- deterministic tool-derived sections
+    (e.g. appeals_playbook) silently vanished whenever the integrator's own
+    JSON didn't happen to reproduce them verbatim. final.py's sequential-path
+    fix for this exact symptom never got ported when parallel became the
+    default integrator mode (MOBIUS_INTEGRATOR_MODE=parallel)."""
+
+    def test_dropped_typed_section_reinjected(self):
+        plan = _make_plan()
+        hints = [{
+            "section_format": "appeals_playbook",
+            "section_title": "Playbook",
+            "data": {"deadline": "90d", "channel": "portal"},
+        }]
+        with (
+            patch("app.responder.final_parallel._call_llm", side_effect=_fake_generate_sync),
+            patch("app.responder.final_parallel.get_chat_config") as mock_cfg,
+        ):
+            mock_cfg.return_value.prompts = _mock_prompts()
+            result_json, _ = format_response_parallel(
+                plan, ["answer"], user_message="What is X?", tool_section_hints=hints,
+            )
+        card = json.loads(result_json)
+        sections = card.get("sections") or []
+        matched = [s for s in sections if s.get("format") == "appeals_playbook"]
+        assert matched, f"typed section missing from parallel-path card: {sections}"
+        assert matched[0]["data"] == {"deadline": "90d", "channel": "portal"}
+
+    def test_parse_failure_fallback_still_carries_typed_section(self):
+        """Even when Call A's output fails to parse (fallback card path),
+        tool-derived sections must not be lost -- same guarantee final.py
+        gives its fallback cards."""
+        plan = _make_plan()
+        hints = [{
+            "section_format": "appeals_playbook",
+            "section_title": "Playbook",
+            "data": {"deadline": "90d"},
+        }]
+
+        def fake_broken(prompt, stage="integrator_a", max_tokens=4096, **kw):
+            if stage == "integrator_a":
+                return (
+                    "not valid json {{{",
+                    {"stage": stage, "model": "m", "input_tokens": 0, "output_tokens": 0, "latency_ms": 1},
+                )
+            return _fake_generate_sync(prompt, stage, max_tokens, **kw)
+
+        with (
+            patch("app.responder.final_parallel._call_llm", side_effect=fake_broken),
+            patch("app.responder.final_parallel.get_chat_config") as mock_cfg,
+        ):
+            mock_cfg.return_value.prompts = _mock_prompts()
+            result_json, _ = format_response_parallel(
+                plan, ["answer"], user_message="What is X?", tool_section_hints=hints,
+            )
+        card = json.loads(result_json)
+        sections = card.get("sections") or []
+        matched = [s for s in sections if s.get("format") == "appeals_playbook"]
+        assert matched, f"typed section missing from fallback card: {sections}"
+
+
 # ── Integration test: A/B routing in integrate.py ────────────────────────────
 
 class TestIntegratorModeRouting:

@@ -27,6 +27,7 @@ from app.responder.final import (
     _parse_answer_card,
     blended_canonical_score,
     choose_consolidator_type,
+    ensure_pre_built_sections,
 )
 from app.services.usage import LLMUsageDict
 
@@ -329,6 +330,7 @@ def format_response_parallel(
             visible = DEFAULT_BLEED_FALLBACK
         _emit_integrator_chunks(visible, message_chunk_callback)
         card = build_minimal_answer_card_preserving_metadata(visible, text_a or "")
+        card = ensure_pre_built_sections(card, tool_section_hints)
         usages = [u for u in [usage_a, usage_b, usage_c] if u is not None]
         return (json.dumps(card), usages)
 
@@ -417,6 +419,12 @@ def format_response_parallel(
         sa = enrich.get("suggested_actions")
         if isinstance(sa, list):
             card["suggested_actions"] = sa
+
+    # Guarantee typed tool-derived sections survive the integrator -- it drops
+    # them nondeterministically (traced cid=2803928f, same root cause as
+    # final.py's sequential-path fix; this is the parallel-path counterpart,
+    # missing since MOBIUS_INTEGRATOR_MODE=parallel became the default).
+    card = ensure_pre_built_sections(card, tool_section_hints)
 
     usages = [u for u in [usage_a, usage_b, usage_c] if u is not None]
     return (json.dumps(card), usages)
