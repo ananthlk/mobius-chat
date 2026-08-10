@@ -103,3 +103,133 @@ class TestDeterministicFormat:
         result = deterministic_format(draft)
         assert "**180 days**" in result["direct_answer"]
         assert "**90 days**" in result["direct_answer"]
+
+    def test_five_short_pairs_promoted_to_table_not_stats(self):
+        """FE's stats-tile cap is 4 -- 5 short pairs must route to table,
+        not overflow a stats section past its render cap."""
+        draft = "\n".join(f"Level {i}: {i * 10} days" for i in range(1, 6))
+        result = deterministic_format(draft)
+        assert len(result["sections"]) == 1
+        sec = result["sections"][0]
+        assert sec["format"] == "table"
+        assert len(sec["data"]["rows"]) == 5
+
+
+class TestMarkdownTable:
+    def test_pipe_table_detected(self):
+        draft = (
+            "Here is the fee schedule:\n\n"
+            "| Code | Description | Rate |\n"
+            "| --- | --- | --- |\n"
+            "| 90834 | Individual therapy | $85.00 |\n"
+            "| 90837 | Extended therapy | $120.00 |\n"
+        )
+        result = deterministic_format(draft)
+        assert len(result["sections"]) == 1
+        sec = result["sections"][0]
+        assert sec["format"] == "table"
+        assert sec["data"]["headers"] == ["Code", "Description", "Rate"]
+        assert sec["data"]["rows"] == [
+            ["90834", "Individual therapy", "$85.00"],
+            ["90837", "Extended therapy", "$120.00"],
+        ]
+
+    def test_no_table_no_section(self):
+        draft = "This has a | pipe | character but no real table structure."
+        result = deterministic_format(draft)
+        assert result["sections"] == []
+
+    def test_table_takes_priority_over_label_value_pairs(self):
+        """A draft with both shapes present should not double-emit --
+        table (most structurally specific) wins."""
+        draft = (
+            "Deadline: 180 days\n\n"
+            "| Code | Rate |\n"
+            "| --- | --- |\n"
+            "| 90834 | $85.00 |\n"
+        )
+        result = deterministic_format(draft)
+        assert len(result["sections"]) == 1
+        assert result["sections"][0]["format"] == "table"
+        assert result["sections"][0]["data"]["headers"] == ["Code", "Rate"]
+
+
+class TestBullets:
+    def test_three_bullets_detected(self):
+        draft = (
+            "You'll need the following:\n"
+            "- Completed claim form\n"
+            "- Proof of timely filing\n"
+            "- Cover letter explaining the delay\n"
+        )
+        result = deterministic_format(draft)
+        assert len(result["sections"]) == 1
+        sec = result["sections"][0]
+        assert sec["format"] == "bullets"
+        assert sec["bullets"] == [
+            "Completed claim form",
+            "Proof of timely filing",
+            "Cover letter explaining the delay",
+        ]
+        assert "data" not in sec
+
+    def test_asterisk_bullets_detected(self):
+        draft = "* First item\n* Second item\n* Third item\n"
+        result = deterministic_format(draft)
+        assert result["sections"][0]["format"] == "bullets"
+
+    def test_two_bullets_not_promoted(self):
+        """Fewer than 3 isn't confidently a list -- could be a stray dash
+        in prose."""
+        draft = "- Only one\n- Also this\n"
+        result = deterministic_format(draft)
+        assert result["sections"] == []
+
+    def test_bullets_take_priority_over_label_value_pairs(self):
+        draft = (
+            "Deadline: 180 days\n"
+            "- First requirement\n"
+            "- Second requirement\n"
+            "- Third requirement\n"
+        )
+        result = deterministic_format(draft)
+        assert len(result["sections"]) == 1
+        assert result["sections"][0]["format"] == "bullets"
+
+
+class TestSteps:
+    def test_step_prefixed_lines_detected(self):
+        draft = (
+            "Step 1: Gather your documentation\n"
+            "Step 2: Complete the appeal form\n"
+            "Step 3: Submit via the provider portal\n"
+        )
+        result = deterministic_format(draft)
+        assert len(result["sections"]) == 1
+        sec = result["sections"][0]
+        assert sec["format"] == "steps"
+        assert sec["data"]["items"] == [
+            {"label": "Gather your documentation"},
+            {"label": "Complete the appeal form"},
+            {"label": "Submit via the provider portal"},
+        ]
+
+    def test_numbered_lines_detected(self):
+        draft = "1. Gather documentation\n2. Complete the form\n3. Submit it\n"
+        result = deterministic_format(draft)
+        assert result["sections"][0]["format"] == "steps"
+
+    def test_single_step_not_promoted(self):
+        draft = "Step 1: Just do this one thing."
+        result = deterministic_format(draft)
+        assert result["sections"] == []
+
+    def test_steps_take_priority_over_label_value_pairs_but_not_bullets(self):
+        draft = (
+            "Deadline: 180 days\n"
+            "Step 1: Gather documentation\n"
+            "Step 2: Submit the form\n"
+        )
+        result = deterministic_format(draft)
+        assert len(result["sections"]) == 1
+        assert result["sections"][0]["format"] == "steps"

@@ -8,12 +8,30 @@ ruling: NO LLM fallback on this path. If the deterministic pass can't
 confidently structure the content, it passes react_draft through as-is
 (bolded, no sections) rather than guessing.
 
-Two things this does, matching bad3d7b's presentation-enforcement rules
-without an LLM:
+2026-08-10 (Ananth via Chat FE, ReAct agreed no upstream shape signal exists
+to reuse instead): the fast path only ever emitted plain prose beyond the
+narrow label:value case, unlike the integrator which can pick table/stats/
+bullets. Extended to detect the shapes react_draft's own formatting rules
+already tend to produce (REACT_FORMAT_RULES_TEXT asks for bold-lead +
+bullets) -- this is pattern-matching structure already in the text, not new
+classification. Section vocabulary/data shapes locked with Chat FE
+(bubble.ts _renderSectionBody) so these render with zero FE changes.
+
+Things this does, matching bad3d7b's presentation-enforcement rules without
+an LLM:
 1. Bold key facts (money, percentages, durations, dates) via regex.
-2. Promote obvious "Label: Value" line pairs into a stats/table section --
-   the "hero card" treatment -- when the source text already has that shape.
-"""
+2. Markdown pipe-table -> format:"table".
+3. 3+ consecutive markdown bullet lines -> format:"bullets" (top-level
+   sec["bullets"], not sec["data"] -- FE reads that field name specifically).
+4. 2+ consecutive numbered "Step N:" / "N." lines -> format:"steps".
+5. "Label: Value" line pairs -> format:"stats" (<=4 pairs) or "table" (5+) --
+   count-based split per Chat FE (stats tiles cap at 4 on the FE side).
+
+Checked in priority order (most structurally specific first) so a draft
+matching more than one pattern doesn't emit redundant/conflicting sections;
+only the first confident match is used, the rest of the text stays as bolded
+prose in direct_answer either way (sections are additive, never a rewrite of
+direct_answer -- same as the original label:value behavior)."""
 from __future__ import annotations
 
 import re
@@ -76,6 +94,79 @@ def _extract_label_value_pairs(text: str) -> list[tuple[str, str]]:
     return pairs
 
 
+_MD_TABLE_ROW_RE = re.compile(r"^\|(.+)\|$")
+_MD_TABLE_SEP_RE = re.compile(r"^\|[\s:|-]+\|$")
+
+
+def _extract_markdown_table(text: str) -> dict[str, Any] | None:
+    """A markdown pipe table (header row, `---` separator, 1+ data rows) --
+    react_draft can contain this verbatim when the tool output already had
+    tabular shape. Returns {headers, rows} or None if no confident table."""
+    lines = [ln.strip() for ln in (text or "").split("\n")]
+    for i in range(len(lines) - 2):
+        header_m = _MD_TABLE_ROW_RE.match(lines[i])
+        if not header_m or not _MD_TABLE_SEP_RE.match(lines[i + 1]):
+            continue
+        headers = [c.strip() for c in header_m.group(1).split("|")]
+        rows: list[list[str]] = []
+        j = i + 2
+        while j < len(lines):
+            row_m = _MD_TABLE_ROW_RE.match(lines[j])
+            if not row_m:
+                break
+            rows.append([c.strip() for c in row_m.group(1).split("|")])
+            j += 1
+        if rows:
+            return {"headers": headers, "rows": rows}
+    return None
+
+
+_BULLET_LINE_RE = re.compile(r"^[-*]\s+(.+)$")
+
+
+def _extract_bullets(text: str) -> list[str]:
+    """3+ consecutive markdown bullet lines -- fewer isn't confidently a
+    list (could be one stray dash in prose)."""
+    lines = [ln.strip() for ln in (text or "").split("\n")]
+    best: list[str] = []
+    current: list[str] = []
+    for ln in lines:
+        m = _BULLET_LINE_RE.match(ln)
+        if m:
+            current.append(m.group(1).strip())
+        else:
+            if len(current) > len(best):
+                best = current
+            current = []
+    if len(current) > len(best):
+        best = current
+    return best if len(best) >= 3 else []
+
+
+_STEP_LINE_RE = re.compile(
+    r"^(?:Step\s+\d+\s*[:.]\s*|\d+[.)]\s+)(.+)$", re.IGNORECASE,
+)
+
+
+def _extract_steps(text: str) -> list[str]:
+    """2+ consecutive numbered "Step N:" or "N." lines -- an ordered
+    procedure, distinct from a plain bullet list (order matters)."""
+    lines = [ln.strip() for ln in (text or "").split("\n")]
+    best: list[str] = []
+    current: list[str] = []
+    for ln in lines:
+        m = _STEP_LINE_RE.match(ln)
+        if m:
+            current.append(m.group(1).strip())
+        else:
+            if len(current) > len(best):
+                best = current
+            current = []
+    if len(current) > len(best):
+        best = current
+    return best if len(best) >= 2 else []
+
+
 def deterministic_format(react_draft: str | None) -> dict[str, Any]:
     """Structure react_draft into an AnswerCard-shaped dict with regex only.
     No LLM call. Returns {mode, direct_answer, sections}."""
@@ -84,15 +175,46 @@ def deterministic_format(react_draft: str | None) -> dict[str, Any]:
         return {"mode": "FACTUAL", "direct_answer": "", "sections": []}
 
     bolded = bold_key_facts(text)
-    pairs = _extract_label_value_pairs(text)
     sections: list[dict[str, Any]] = []
 
+    # Priority order: most structurally specific/unambiguous pattern first.
+    # Only one section is emitted per draft -- the rest of the text stays as
+    # bolded prose in direct_answer regardless (sections are additive).
+    md_table = _extract_markdown_table(text)
+    bullets = _extract_bullets(text)
+    steps = _extract_steps(text)
+    pairs = _extract_label_value_pairs(text)
+
+    if md_table:
+        sections.append({
+            "intent": "process",
+            "label": "Details",
+            "format": "table",
+            "data": md_table,
+        })
+    elif bullets:
+        sections.append({
+            "intent": "process",
+            "label": "Key Points",
+            "format": "bullets",
+            "bullets": bullets,
+        })
+    elif steps:
+        sections.append({
+            "intent": "process",
+            "label": "Steps",
+            "format": "steps",
+            "data": {"items": [{"label": s} for s in steps]},
+        })
     # 2-6 pairs is the "this is confidently structured" band -- fewer than 2
     # isn't a real pattern (one line matching the regex by coincidence), more
     # than 6 usually means the regex is over-matching prose sentences that
-    # happen to contain a colon, not real label:value notes.
-    if 2 <= len(pairs) <= 6:
-        if all(len(v) <= 30 for _, v in pairs):
+    # happen to contain a colon, not real label:value notes. Within that
+    # band: stats tiles need BOTH short values (a tile isn't a sentence) AND
+    # <=4 pairs (the FE's stats-tile cap) -- either long values or 5+ pairs
+    # goes to a table instead.
+    elif 2 <= len(pairs) <= 6:
+        if len(pairs) <= 4 and all(len(v) <= 30 for _, v in pairs):
             sections.append({
                 "intent": "process",
                 "label": "Key Facts",
