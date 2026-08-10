@@ -136,7 +136,7 @@ def process_one(correlation_id: str, payload: dict) -> None:
     # way out within a few minutes even without forced cancellation.
     # The main user-visible symptom (infinite polling) is fixed.
 
-    def _publish_deadline_failure() -> None:
+    def _publish_terminal_failure(error_code: str, user_message: str, extra: dict | None = None) -> None:
         # Task #29 (mid-turn truncation recovery, 2026-08-05),
         # docs/MIDTURN_TRUNCATION_RECOVERY_SPEC.md §1/§2/§6.
         #
@@ -160,8 +160,8 @@ def process_one(correlation_id: str, payload: dict) -> None:
             from app.storage.progress import try_finalize
             if not try_finalize(correlation_id):
                 logger.info(
-                    "deadline-failure publish skipped for %s -- already finalized elsewhere",
-                    correlation_id[:8] if correlation_id else "",
+                    "%s publish skipped for %s -- already finalized elsewhere",
+                    error_code, correlation_id[:8] if correlation_id else "",
                 )
                 return
         except Exception as _fin_err:
@@ -180,28 +180,56 @@ def process_one(correlation_id: str, payload: dict) -> None:
                 thread_id=thread_id,
             )
             promote(env.to_dict())
-        except Exception:  # pragma: no cover — defensive, must not mask the deadline failure
+        except Exception:  # pragma: no cover — defensive, must not mask the terminal failure
             pass
 
         try:
             from app.queue import get_queue
-            get_queue().publish_response(
-                correlation_id,
-                {
-                    "status": "failed",
-                    "message": (
-                        "This is taking longer than expected. Please try again — "
-                        "if it keeps happening, rephrase your question or try a narrower scope."
-                    ),
-                    "error": "turn_deadline_exceeded",
-                    "deadline_s": deadline_s,
-                    "was_truncated": was_truncated,
-                    "partial_message": partial_message,
-                    "checkpoint_kind": checkpoint_kind,
-                },
-            )
+            payload = {
+                "status": "failed",
+                "message": user_message,
+                "error": error_code,
+                "was_truncated": was_truncated,
+                "partial_message": partial_message,
+                "checkpoint_kind": checkpoint_kind,
+            }
+            if extra:
+                payload.update(extra)
+            get_queue().publish_response(correlation_id, payload)
         except Exception as _pub_err:
-            logger.exception("Failed to publish deadline-exceeded response: %s", _pub_err)
+            logger.exception("Failed to publish %s response: %s", error_code, _pub_err)
+
+    def _publish_deadline_failure() -> None:
+        _publish_terminal_failure(
+            "turn_deadline_exceeded",
+            (
+                "This is taking longer than expected. Please try again — "
+                "if it keeps happening, rephrase your question or try a narrower scope."
+            ),
+            {"deadline_s": deadline_s},
+        )
+
+    def _publish_unhandled_exception_failure(exc: BaseException) -> None:
+        # 2026-08-10 (Task #78): a turn can go silent forever if an
+        # exception escapes run_pipeline() outside the specific branches
+        # that already call _publish_failed (route/slot clarification,
+        # refinement, the explicit error/content-filtered path) --
+        # neither deadline path had a catch-all here, so the exception
+        # propagated to the queue consumer's own blanket except, which
+        # only logs. No response is ever published, so the client polls
+        # GET /chat/response forever with no terminal status (root-caused
+        # live: cid ca219529, silent after react round-1 preflight, no
+        # crash log, no deadline_exceeded log -- the pipeline thread
+        # finished/died quickly via an uncaught exception, well inside
+        # the 300s deadline, so the deadline path never even engaged).
+        logger.exception(
+            "unhandled_pipeline_exception correlation_id=%s: %s",
+            correlation_id, exc,
+        )
+        _publish_terminal_failure(
+            "unhandled_pipeline_exception",
+            "Something went wrong processing your message. Please try again.",
+        )
 
     def _run_pipeline() -> None:
         from app.services.model_profile import profile_override
@@ -233,6 +261,8 @@ def process_one(correlation_id: str, payload: dict) -> None:
                 correlation_id, deadline_s,
             )
             _publish_deadline_failure()
+        except Exception as e:  # noqa: BLE001 — last-resort publish, see _publish_unhandled_exception_failure
+            _publish_unhandled_exception_failure(e)
         finally:
             signal.alarm(0)
             if prev_handler is not None:
@@ -284,10 +314,14 @@ def process_one(correlation_id: str, payload: dict) -> None:
             # won't hold the process open, and the next turn starts
             # right away.
             return
-        # Pipeline finished within deadline — propagate any exception
-        # so the queue consumer logs it normally (matches legacy path
-        # 1 behavior).
+        # Pipeline finished within deadline. Publish a terminal failure on
+        # any exception (Task #78 -- previously this only re-raised, and
+        # the queue consumer's blanket except only logs, never publishes,
+        # leaving the turn stuck at "processing" forever from the client's
+        # view) -- then still re-raise so the consumer's own log line
+        # fires too, matching legacy path 1 behavior.
         if exc_holder:
+            _publish_unhandled_exception_failure(exc_holder[0])
             raise exc_holder[0]
 
 
