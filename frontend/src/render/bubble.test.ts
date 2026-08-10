@@ -595,6 +595,25 @@ describe("Appeals typed sections (appeals_rules / appeals_playbook)", () => {
     expect(mkPlaybook({ found: true, carc: "29" }).querySelector(".ac-pb-draft-label")).toBeNull();
   });
 
+  it("playbook: renders inline markdown in LLM-authored fields, escaping HTML", () => {
+    const el = mkPlaybook({
+      found: true, carc: "29",
+      strategy: "resubmit with **proof of timely filing**",
+      docs_required: [{ doc: "the **Claim Adjustment Request Form**", required: true }],
+      questions: [{ n: 1, text: "Do you have the `EDI 277` ack?", hint: "clearinghouse log" }],
+      submission_method: "provider portal <script>alert(1)</script>",
+    });
+    // **bold** → <strong>, not raw asterisks.
+    expect(el.querySelector(".ac-appeals-doc-text")?.querySelector("strong")?.textContent).toBe("Claim Adjustment Request Form");
+    expect(el.querySelector(".ac-appeals-doc-text")?.textContent).not.toContain("**");
+    const rowsHtml = el.querySelector(".ac-appeals-playbook-rows")?.innerHTML || "";
+    expect(rowsHtml).toContain("<strong>proof of timely filing</strong>");   // strategy
+    expect(rowsHtml).toContain("<code>EDI 277</code>");                       // question
+    // HTML is escaped — no live script tag injected from LLM content.
+    expect(el.querySelector("script")).toBeNull();
+    expect(rowsHtml).toContain("&lt;script&gt;");
+  });
+
   it("playbook: admin edit chip builds the scheme-guarded deep link to the Playbook tab", () => {
     const el = mkPlaybook({ found: true, carc: "29", payor: "Sunshine Health", admin_edit: { carc: "29", payor: "Sunshine Health" } });
     const link = el.querySelector(".ac-appeals-admin-link") as HTMLAnchorElement | null;

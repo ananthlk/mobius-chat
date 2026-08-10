@@ -372,6 +372,18 @@ function _renderAppealsRules(sec: AnswerCardSection, body: HTMLElement): void {
 // layout: ⏱ deadlines · 🎯 strategy (+ optional levels ladder) · numbered canonical questions ·
 // 📎 docs · 📤 submit · admin edit chip. Every field is optional and OMITTED when absent — questions
 // (W2) and review_status (W1) land later, so the card renders deadlines/strategy/docs-only meanwhile.
+// Inline-only markdown for playbook content (Appeals Agent 2026-08-08 bug: LLM-authored strings
+// carry **bold**/`code` markup that textContent showed raw). Escapes HTML FIRST (safe for generated
+// content), then applies ONLY inline formatting — no <p>/<br>/<li> block elements that would break
+// the flex rows. simpleMarkdownToHtmlInner is unsuitable here: it still wraps in <p> and doesn't escape.
+function _inlineMd(text: unknown): string {
+  const esc = String(text ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return esc
+    .replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/`([^`]+?)`/g, "<code>$1</code>")
+    .replace(/(^|[^*])\*([^*\n]+?)\*(?!\*)/g, "$1<em>$2</em>");
+}
+
 function _renderAppealsPlaybook(sec: AnswerCardSection, body: HTMLElement): void {
   const data = (sec.data as unknown as AppealsPlaybookData) ?? {};
   const wrap = document.createElement("div");
@@ -402,7 +414,10 @@ function _renderAppealsPlaybook(sec: AnswerCardSection, body: HTMLElement): void
       b.textContent = label + " ";
       bd.appendChild(b);
     }
-    bd.appendChild(document.createTextNode(value));
+    // Value is LLM-authored → render inline markdown (escaped) so **bold**/`code` don't show raw.
+    const val = document.createElement("span");
+    val.innerHTML = _inlineMd(value);
+    bd.appendChild(val);
     row.appendChild(ic); row.appendChild(bd);
     return row;
   };
@@ -502,7 +517,8 @@ function _renderAppealsPlaybook(sec: AnswerCardSection, body: HTMLElement): void
       const li = document.createElement("li");
       li.className = d.required === false ? "ac-appeals-doc ac-appeals-doc--optional" : "ac-appeals-doc ac-appeals-doc--required";
       const mark = document.createElement("span"); mark.className = "ac-appeals-doc-mark"; mark.textContent = d.required === false ? "○" : "●";
-      const txt = document.createElement("span"); txt.className = "ac-appeals-doc-text"; txt.textContent = (d.doc || "") + (d.required === false ? " (optional)" : "");
+      const txt = document.createElement("span"); txt.className = "ac-appeals-doc-text";
+      txt.innerHTML = _inlineMd(d.doc || "") + (d.required === false ? " (optional)" : "");
       li.appendChild(mark); li.appendChild(txt);
       ul.appendChild(li);
     });
@@ -520,7 +536,7 @@ function _renderAppealsPlaybook(sec: AnswerCardSection, body: HTMLElement): void
     const bd = document.createElement("span"); bd.className = "ac-pb-row-body";
     const lbl = document.createElement("b"); lbl.className = "ac-pb-row-label"; lbl.textContent = "Submit: "; bd.appendChild(lbl);
     const bits: Node[] = [];
-    if (data.submission_method) bits.push(document.createTextNode(data.submission_method));
+    if (data.submission_method) { const m = document.createElement("span"); m.innerHTML = _inlineMd(data.submission_method); bits.push(m); }
     if (portalUrl) {
       const a = document.createElement("a");
       a.className = "ac-appeals-portal"; a.href = portalUrl; a.target = "_blank"; a.rel = "noopener noreferrer";
