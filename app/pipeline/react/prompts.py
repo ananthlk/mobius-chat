@@ -799,6 +799,26 @@ def build_reasoning_context(
     if _q_early:
         parts.append(f"Current user question: {_q_early}")
 
+    # A typed card is already being rendered for this turn from tool data
+    # (section_hint → pre_built_sections). The draft must not duplicate what
+    # the card shows — the user sees BOTH, and restating deadlines/portal/fax/
+    # forms/levels reads as stutter (Ananth screenshot review 2026-08-10).
+    _card_hints = [
+        (r.get("section_hint") or {}).get("section_format")
+        for r in (tool_results or [])
+        if isinstance(r, dict) and r.get("section_hint")
+    ]
+    if any(_card_hints):
+        parts.append(
+            "A structured card is ALREADY being displayed to the user with this turn's "
+            f"tool data ({', '.join(sorted({h for h in _card_hints if h}))}). Your answer "
+            "must NOT restate what that card shows — no repeating deadlines, day counts, "
+            "portal URLs, fax/phone numbers, form names, appeal levels, or document lists. "
+            "Write a short lead-in naming what the card contains, then add only what the "
+            "card cannot: why it matters for THIS claim, urgency, the single next action, "
+            "or a caveat. Repeating card contents is a formatting error."
+        )
+
     active = (ctx.merged_state or {}).get("active") or {}
     j = jurisdiction_summary(active)
     if j:
