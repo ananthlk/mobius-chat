@@ -2603,6 +2603,29 @@ def _execute_tool(
                     emit(f"⚠ {payor} playbook found but has no deadline/method data")
                 else:
                     emit(f"✓ No playbook for {payor} — using FL defaults")
+                # Golden-answer enrichment (W3.5 gate): attach the canonical
+                # questions for this CARC×payor plus the admin deep link, so
+                # the FE card renders the full contract (questions preview,
+                # confidence badge, admin chip). All optional fields per the
+                # locked AppealsPlaybookData contract — absent on error.
+                if usable:
+                    try:
+                        _q_carc = carc or (pb.get("carc_codes") or [0])[0]
+                        if _q_carc:
+                            _qs = _appeals_get(f"/questions/{_q_carc}", payor=payor, min_level=0)
+                            _q_list = (_qs.get("questions") or [])[:5]
+                            if _q_list:
+                                result_data["questions"] = [
+                                    {"n": i + 1, "text": q.get("question_text", ""),
+                                     "hint": (q.get("manual_guidance") or "")[:140] or None}
+                                    for i, q in enumerate(
+                                        [q for q in _q_list if not q.get("parent_question_id")])
+                                ]
+                    except Exception:
+                        pass  # questions are optional; card degrades cleanly
+                    result_data.setdefault(
+                        "admin_url",
+                        f"{_appeals_base}/admin/rules-library?carc={carc or ''}&payor={payor}&tab=playbook")
                 return {
                     "tool": tool, "success": found,
                     "result": _json.dumps(result_data),
