@@ -2640,6 +2640,10 @@ function _renderAppealsRules(sec, body) {
   }
   body.appendChild(wrap);
 }
+function _inlineMd(text) {
+  const esc = String(text ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return esc.replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>").replace(/`([^`]+?)`/g, "<code>$1</code>").replace(/(^|[^*])\*([^*\n]+?)\*(?!\*)/g, "$1<em>$2</em>");
+}
 function _renderAppealsPlaybook(sec, body) {
   const data = sec.data ?? {};
   const wrap = document.createElement("div");
@@ -2652,44 +2656,119 @@ function _renderAppealsPlaybook(sec, body) {
     body.appendChild(wrap);
     return;
   }
-  if (data.payor || data.carc_group) {
-    const head = document.createElement("div");
-    head.className = "ac-appeals-playbook-head";
-    if (data.payor)
-      head.appendChild(_chip(data.payor, "ac-appeals-playbook-payor"));
-    if (data.carc_group) {
-      const g = document.createElement("span");
-      g.className = "ac-appeals-playbook-group";
-      g.textContent = data.carc_group;
-      head.appendChild(g);
+  const mkRow = (icon, label, value) => {
+    const row = document.createElement("div");
+    row.className = "ac-pb-row";
+    const ic = document.createElement("span");
+    ic.className = "ac-pb-row-icon";
+    ic.textContent = icon;
+    const bd = document.createElement("span");
+    bd.className = "ac-pb-row-body";
+    if (label) {
+      const b = document.createElement("b");
+      b.className = "ac-pb-row-label";
+      b.textContent = label + " ";
+      bd.appendChild(b);
     }
-    wrap.appendChild(head);
+    const val = document.createElement("span");
+    val.innerHTML = _inlineMd(value);
+    bd.appendChild(val);
+    row.appendChild(ic);
+    row.appendChild(bd);
+    return row;
+  };
+  const head = document.createElement("div");
+  head.className = "ac-appeals-playbook-head";
+  const title = document.createElement("b");
+  title.className = "ac-appeals-playbook-title";
+  const parts = ["\u{1F4D8}"];
+  if (data.carc)
+    parts.push(`CARC ${data.carc}`);
+  if (data.payor)
+    parts.push((data.carc ? "\xD7 " : "") + data.payor);
+  title.textContent = parts.join(" ") + " \u2014 Playbook";
+  head.appendChild(title);
+  const CONF_BADGE = {
+    0: ["GENERATED", "generated"],
+    1: ["REVIEWED", "reviewed"],
+    2: ["PUBLISHED", "published"],
+    3: ["VALIDATED", "validated"]
+  };
+  const cl = data.confidence_level;
+  if (typeof cl === "number" && CONF_BADGE[cl]) {
+    const [label, cls] = CONF_BADGE[cl];
+    const badge = document.createElement("span");
+    badge.className = "ac-pb-badge ac-pb-badge--" + cls;
+    badge.textContent = label;
+    head.appendChild(badge);
   }
-  const meta = document.createElement("div");
-  meta.className = "ac-appeals-playbook-meta";
-  if (typeof data.deadline_appeal_days === "number") {
-    meta.appendChild(_chip(`${data.deadline_appeal_days}-day deadline`, "ac-appeals-deadline"));
+  wrap.appendChild(head);
+  if (cl === 0) {
+    const draft = document.createElement("div");
+    draft.className = "ac-pb-draft-label";
+    draft.textContent = "\u26A0 Draft \u2014 not yet reviewed";
+    wrap.appendChild(draft);
   }
-  if (data.submission_method) {
-    meta.appendChild(_chip(data.submission_method, "ac-appeals-method"));
+  const rows = document.createElement("div");
+  rows.className = "ac-appeals-playbook-rows";
+  const dParts = [];
+  if (typeof data.deadline_appeal_days === "number")
+    dParts.push(`appeal ${data.deadline_appeal_days}d from denial`);
+  if (typeof data.deadline_resubmit_days === "number") {
+    dParts.push(`resubmit ${data.deadline_resubmit_days}d from DOS${data.deadline_resubmit_note ? ` (${data.deadline_resubmit_note})` : ""}`);
   }
-  const portalUrl = _safeHttpUrl(data.portal_url);
-  if (portalUrl) {
-    const a = document.createElement("a");
-    a.className = "ac-appeals-portal";
-    a.href = portalUrl;
-    a.target = "_blank";
-    a.rel = "noopener noreferrer";
-    a.textContent = "Submission portal";
-    meta.appendChild(a);
+  if (dParts.length)
+    rows.appendChild(mkRow("\u23F1", "Deadlines:", dParts.join(" \xB7 ")));
+  if (data.strategy && data.strategy.trim())
+    rows.appendChild(mkRow("\u{1F3AF}", "Strategy:", data.strategy.trim()));
+  const levels = Array.isArray(data.appeal_levels) ? data.appeal_levels : [];
+  if (levels.length) {
+    const ladderRow = document.createElement("div");
+    ladderRow.className = "ac-pb-row ac-pb-row--ladder";
+    const ic = document.createElement("span");
+    ic.className = "ac-pb-row-icon";
+    ic.textContent = "\u21B3";
+    const bd = document.createElement("span");
+    bd.className = "ac-pb-row-body";
+    const ol = document.createElement("ol");
+    ol.className = "ac-appeals-levels-list";
+    levels.forEach((lv) => {
+      const li = document.createElement("li");
+      li.className = "ac-appeals-level";
+      const name = document.createElement("span");
+      name.className = "ac-appeals-level-name";
+      name.textContent = lv.name || (lv.level != null ? `Level ${lv.level}` : "Level");
+      li.appendChild(name);
+      if (typeof lv.deadline_days === "number")
+        li.appendChild(_chip(`${lv.deadline_days}d`, "ac-appeals-level-deadline"));
+      ol.appendChild(li);
+    });
+    bd.appendChild(ol);
+    ladderRow.appendChild(ic);
+    ladderRow.appendChild(bd);
+    rows.appendChild(ladderRow);
   }
-  if (meta.childElementCount)
-    wrap.appendChild(meta);
+  const questions = Array.isArray(data.questions) ? data.questions : [];
+  questions.forEach((q, i) => {
+    if (!q || !q.text)
+      return;
+    const n = typeof q.n === "number" ? q.n : i + 1;
+    const text = q.text + (q.hint ? ` (${q.hint})` : "");
+    rows.appendChild(mkRow(`${n}.`, null, text));
+  });
   const docs = Array.isArray(data.docs_required) ? data.docs_required : [];
   if (docs.length) {
-    const dl = document.createElement("div");
-    dl.className = "ac-appeals-docs";
-    dl.appendChild(_chip("Documents", "ac-appeals-docs-label"));
+    const docsRow = document.createElement("div");
+    docsRow.className = "ac-pb-row ac-pb-row--docs";
+    const ic = document.createElement("span");
+    ic.className = "ac-pb-row-icon";
+    ic.textContent = "\u{1F4CE}";
+    const bd = document.createElement("span");
+    bd.className = "ac-pb-row-body";
+    const lbl = document.createElement("b");
+    lbl.className = "ac-pb-row-label";
+    lbl.textContent = "Docs: ";
+    bd.appendChild(lbl);
     const ul = document.createElement("ul");
     ul.className = "ac-appeals-docs-list";
     docs.forEach((d) => {
@@ -2700,35 +2779,79 @@ function _renderAppealsPlaybook(sec, body) {
       mark.textContent = d.required === false ? "\u25CB" : "\u25CF";
       const txt = document.createElement("span");
       txt.className = "ac-appeals-doc-text";
-      txt.textContent = (d.doc || "") + (d.required === false ? " (optional)" : "");
+      txt.innerHTML = _inlineMd(d.doc || "") + (d.required === false ? " (optional)" : "");
       li.appendChild(mark);
       li.appendChild(txt);
       ul.appendChild(li);
     });
-    dl.appendChild(ul);
-    wrap.appendChild(dl);
+    bd.appendChild(ul);
+    docsRow.appendChild(ic);
+    docsRow.appendChild(bd);
+    rows.appendChild(docsRow);
   }
-  const levels = Array.isArray(data.appeal_levels) ? data.appeal_levels : [];
-  if (levels.length) {
-    const ladder = document.createElement("div");
-    ladder.className = "ac-appeals-levels";
-    ladder.appendChild(_chip("Appeal levels", "ac-appeals-levels-label"));
-    const ol = document.createElement("ol");
-    ol.className = "ac-appeals-levels-list";
-    levels.forEach((lv) => {
-      const li = document.createElement("li");
-      li.className = "ac-appeals-level";
-      const name = document.createElement("span");
-      name.className = "ac-appeals-level-name";
-      name.textContent = lv.name || (lv.level != null ? `Level ${lv.level}` : "Level");
-      li.appendChild(name);
-      if (typeof lv.deadline_days === "number") {
-        li.appendChild(_chip(`${lv.deadline_days}d`, "ac-appeals-level-deadline"));
-      }
-      ol.appendChild(li);
+  const portalUrl = _safeHttpUrl(data.portal_url);
+  if (data.submission_method || portalUrl || data.fax) {
+    const subRow = document.createElement("div");
+    subRow.className = "ac-pb-row ac-pb-row--submit";
+    const ic = document.createElement("span");
+    ic.className = "ac-pb-row-icon";
+    ic.textContent = "\u{1F4E4}";
+    const bd = document.createElement("span");
+    bd.className = "ac-pb-row-body";
+    const lbl = document.createElement("b");
+    lbl.className = "ac-pb-row-label";
+    lbl.textContent = "Submit: ";
+    bd.appendChild(lbl);
+    const bits = [];
+    if (data.submission_method) {
+      const m = document.createElement("span");
+      m.innerHTML = _inlineMd(data.submission_method);
+      bits.push(m);
+    }
+    if (portalUrl) {
+      const a = document.createElement("a");
+      a.className = "ac-appeals-portal";
+      a.href = portalUrl;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.textContent = "provider portal";
+      bits.push(a);
+    }
+    if (data.fax)
+      bits.push(document.createTextNode(`fax ${data.fax}`));
+    bits.forEach((node, i) => {
+      if (i)
+        bd.appendChild(document.createTextNode(" \xB7 "));
+      bd.appendChild(node);
     });
-    ladder.appendChild(ol);
-    wrap.appendChild(ladder);
+    subRow.appendChild(ic);
+    subRow.appendChild(bd);
+    rows.appendChild(subRow);
+  }
+  if (rows.childElementCount)
+    wrap.appendChild(rows);
+  let adminHref = _safeHttpUrl(data.admin_url);
+  if (!adminHref && data.admin_edit && (data.admin_edit.carc || data.admin_edit.payor)) {
+    const qs = new URLSearchParams();
+    if (data.admin_edit.carc)
+      qs.set("carc", data.admin_edit.carc);
+    if (data.admin_edit.payor)
+      qs.set("payor", data.admin_edit.payor);
+    qs.set("tab", "playbook");
+    const origin = typeof window !== "undefined" && window.location && window.location.origin || "";
+    adminHref = _safeHttpUrl(`${origin}/admin/rules-library?${qs.toString()}`);
+  }
+  if (adminHref) {
+    const footer = document.createElement("div");
+    footer.className = "ac-appeals-admin";
+    const a = document.createElement("a");
+    a.className = "ac-appeals-admin-link";
+    a.href = adminHref;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.textContent = "\u270F Edit this playbook in Admin \u2192";
+    footer.appendChild(a);
+    wrap.appendChild(footer);
   }
   body.appendChild(wrap);
 }
@@ -12562,6 +12685,8 @@ ${message}`;
       const envSourcesBlock = envBlocks.find((b) => b.type === "sources");
       const envelopeHasSources = useEnvelope && Array.isArray(envSourcesBlock?.refs) && envSourcesBlock.refs.length > 0;
       const envelopeHasPipelineGate = useEnvelope && envBlocks.some((b) => b.type === "pipeline_human_gate");
+      const CHROME_BLOCK_TYPES = /* @__PURE__ */ new Set(["tool_attribution", "sources"]);
+      const envelopeHasContent = useEnvelope && envBlocks.some((b) => !CHROME_BLOCK_TYPES.has(b.type || ""));
       if (isStreamingCard && messageWrapEl) {
         messageWrapEl.classList.remove("is-streaming");
         const existingBubble = messageWrapEl.querySelector(".answer-card-bubble");
@@ -12796,7 +12921,7 @@ ${message}`;
       } else {
         if (messageWrapEl)
           messageWrapEl.remove();
-        if (useEnvelope) {
+        if (envelopeHasContent) {
           turnWrap.appendChild(
             renderAssistantFromEnvelope(envCandidate, {
               onFollowupClick: (q) => sendMessage(q),
