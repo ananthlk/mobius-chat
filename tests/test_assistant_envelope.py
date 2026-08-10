@@ -174,7 +174,8 @@ def test_build_envelope_minimal():
     )
     assert env["version"] == ENVELOPE_VERSION
     types = [b["type"] for b in env["blocks"]]
-    assert types[0] == "tool_attribution"
+    assert types[0] == "mode_badge"
+    assert types[1] == "tool_attribution"
     assert "direct_answer" in types
     assert "sources" in types
     assert "next_steps" in types
@@ -245,6 +246,205 @@ def test_build_envelope_pipeline_human_gate_after_tool_attribution():
         pipeline_human_gate=gate,
     )
     blocks = env["blocks"]
-    assert blocks[0].get("type") == "tool_attribution"
-    assert blocks[1].get("type") == "pipeline_human_gate"
-    assert blocks[1].get("gate", {}).get("run_id") == gate["run_id"]
+    assert blocks[0].get("type") == "mode_badge"
+    assert blocks[1].get("type") == "tool_attribution"
+    assert blocks[2].get("type") == "pipeline_human_gate"
+    assert blocks[2].get("gate", {}).get("run_id") == gate["run_id"]
+
+
+# ── Full collapse (2026-08-10, Chat Master spec, Ananth-approved) ──────────
+# The envelope becomes the COMPLETE render source, replacing the FE's
+# dual-read of the raw AnswerCard JSON alongside the envelope (the
+# triple-print mechanism). Adds typed section blocks, tldr, first_pass,
+# mode_badge, and moves correction to the end of block ordering.
+
+def _minimal_kwargs(**overrides):
+    base = dict(
+        ui_blocks_raw=None,
+        tool_fired="search_corpus",
+        response_sources=[],
+        next_steps=[],
+        next_questions_for_user=[],
+        roster_report_final_md=None,
+        has_roster_pdf=False,
+    )
+    base.update(overrides)
+    return base
+
+
+class TestModeBadge:
+    def test_mode_badge_from_card_mode(self):
+        env = build_assistant_envelope_v1(
+            answer_card={"mode": "CANONICAL", "direct_answer": "Hi", "sections": []},
+            **_minimal_kwargs(),
+        )
+        badge = next(b for b in env["blocks"] if b["type"] == "mode_badge")
+        assert badge["mode"] == "CANONICAL"
+
+    def test_no_mode_badge_when_answer_card_none(self):
+        env = build_assistant_envelope_v1(answer_card=None, **_minimal_kwargs())
+        assert not any(b["type"] == "mode_badge" for b in env["blocks"])
+
+
+class TestTldrAndFirstPass:
+    def test_tldr_block_from_tldr_summary(self):
+        env = build_assistant_envelope_v1(
+            answer_card={"mode": "FACTUAL", "direct_answer": "Hi", "sections": [], "tldr_summary": "Short version."},
+            **_minimal_kwargs(),
+        )
+        tldr = next(b for b in env["blocks"] if b["type"] == "tldr")
+        assert tldr["markdown"] == "Short version."
+
+    def test_no_tldr_block_when_absent(self):
+        env = build_assistant_envelope_v1(
+            answer_card={"mode": "FACTUAL", "direct_answer": "Hi", "sections": []},
+            **_minimal_kwargs(),
+        )
+        assert not any(b["type"] == "tldr" for b in env["blocks"])
+
+    def test_first_pass_from_react_draft_and_reasoning_trace(self):
+        env = build_assistant_envelope_v1(
+            answer_card={
+                "mode": "FACTUAL", "direct_answer": "Hi", "sections": [],
+                "react_draft": "Raw draft text.",
+                "reasoning_trace": [{"round": 1, "running_answer": "..."}],
+            },
+            **_minimal_kwargs(),
+        )
+        fp = next(b for b in env["blocks"] if b["type"] == "first_pass")
+        assert fp["draft_markdown"] == "Raw draft text."
+        assert fp["trace_rounds"] == [{"round": 1, "running_answer": "..."}]
+        assert fp["collapsed_default"] is True
+
+    def test_no_first_pass_when_both_absent(self):
+        env = build_assistant_envelope_v1(
+            answer_card={"mode": "FACTUAL", "direct_answer": "Hi", "sections": []},
+            **_minimal_kwargs(),
+        )
+        assert not any(b["type"] == "first_pass" for b in env["blocks"])
+
+
+class TestTypedSectionBlocks:
+    def test_table_section_becomes_table_block(self):
+        env = build_assistant_envelope_v1(
+            answer_card={
+                "mode": "FACTUAL", "direct_answer": "Hi",
+                "sections": [{"format": "table", "label": "Rates", "data": {"headers": ["Code", "Rate"], "rows": [["90834", "$85"]]}}],
+            },
+            **_minimal_kwargs(),
+        )
+        tb = next(b for b in env["blocks"] if b["type"] == "table")
+        assert tb["headers"] == ["Code", "Rate"]
+        assert tb["rows"] == [["90834", "$85"]]
+        assert tb["label"] == "Rates"
+
+    def test_stats_section_becomes_stats_block(self):
+        env = build_assistant_envelope_v1(
+            answer_card={
+                "mode": "FACTUAL", "direct_answer": "Hi",
+                "sections": [{"format": "stats", "data": {"items": [{"label": "Deadline", "value": "180 days"}]}}],
+            },
+            **_minimal_kwargs(),
+        )
+        sb = next(b for b in env["blocks"] if b["type"] == "stats")
+        assert sb["items"] == [{"label": "Deadline", "value": "180 days"}]
+
+    def test_bullets_section_from_top_level_bullets_key(self):
+        env = build_assistant_envelope_v1(
+            answer_card={
+                "mode": "FACTUAL", "direct_answer": "Hi",
+                "sections": [{"format": "bullets", "bullets": ["A", "B"]}],
+            },
+            **_minimal_kwargs(),
+        )
+        bb = next(b for b in env["blocks"] if b["type"] == "bullets")
+        assert bb["items"] == ["A", "B"]
+
+    def test_steps_section_becomes_steps_block(self):
+        env = build_assistant_envelope_v1(
+            answer_card={
+                "mode": "FACTUAL", "direct_answer": "Hi",
+                "sections": [{"format": "steps", "data": {"items": [{"label": "Do this first"}]}}],
+            },
+            **_minimal_kwargs(),
+        )
+        sb = next(b for b in env["blocks"] if b["type"] == "steps")
+        assert sb["items"] == [{"label": "Do this first"}]
+
+    def test_bars_and_conditions_pass_through_items(self):
+        env = build_assistant_envelope_v1(
+            answer_card={
+                "mode": "FACTUAL", "direct_answer": "Hi",
+                "sections": [
+                    {"format": "bars", "data": {"items": [{"label": "X", "weight": 0.5}]}},
+                    {"format": "conditions", "data": {"items": [{"condition": "if A", "result": "then B"}]}},
+                ],
+            },
+            **_minimal_kwargs(),
+        )
+        types = [b["type"] for b in env["blocks"]]
+        assert "bars" in types and "conditions" in types
+
+    def test_appeals_playbook_becomes_domain_card(self):
+        env = build_assistant_envelope_v1(
+            answer_card={
+                "mode": "FACTUAL", "direct_answer": "Hi",
+                "sections": [{"format": "appeals_playbook", "data": {"deadline": "90d"}}],
+            },
+            **_minimal_kwargs(),
+        )
+        dc = next(b for b in env["blocks"] if b["type"] == "domain_card")
+        assert dc["variant"] == "appeals_playbook"
+        assert dc["data"] == {"deadline": "90d"}
+
+    def test_sections_render_in_order(self):
+        env = build_assistant_envelope_v1(
+            answer_card={
+                "mode": "FACTUAL", "direct_answer": "Hi",
+                "sections": [
+                    {"format": "stats", "data": {"items": [{"label": "A", "value": "1"}]}},
+                    {"format": "bullets", "bullets": ["X"]},
+                ],
+            },
+            **_minimal_kwargs(),
+        )
+        section_types = [b["type"] for b in env["blocks"] if b["type"] in ("stats", "bullets")]
+        assert section_types == ["stats", "bullets"]
+
+    def test_malformed_typed_section_dropped_not_crashed(self):
+        """A table section missing headers/rows can't be trusted -- dropped,
+        not guessed at, and must not raise."""
+        env = build_assistant_envelope_v1(
+            answer_card={
+                "mode": "FACTUAL", "direct_answer": "Hi",
+                "sections": [{"format": "table", "data": {"headers": ["A"]}}],
+            },
+            **_minimal_kwargs(),
+        )
+        assert not any(b["type"] == "table" for b in env["blocks"])
+
+    def test_unrecognized_format_falls_back_to_detail(self):
+        env = build_assistant_envelope_v1(
+            answer_card={
+                "mode": "FACTUAL", "direct_answer": "Hi",
+                "sections": [{"format": "nonsense_format_xyz", "label": "Odd", "body": "Some prose."}],
+            },
+            **_minimal_kwargs(),
+        )
+        assert not any(b["type"] == "nonsense_format_xyz" for b in env["blocks"])
+        detail = next(b for b in env["blocks"] if b["type"] == "detail")
+        assert "Some prose." in detail["markdown"]
+
+
+class TestCorrectionOrderedLast:
+    def test_correction_is_the_final_block(self):
+        env = build_assistant_envelope_v1(
+            answer_card={
+                "mode": "FACTUAL", "direct_answer": "Hi", "sections": [],
+                "correction": {"original": "90 days", "corrected": "180 days"},
+            },
+            **_minimal_kwargs(),
+        )
+        assert env["blocks"][-1]["type"] == "correction"
+        assert env["blocks"][-1]["original"] == "90 days"
+        assert env["blocks"][-1]["corrected"] == "180 days"

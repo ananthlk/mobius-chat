@@ -147,20 +147,75 @@ def _section_prose_fields(sec: dict[str, Any]) -> list[str]:
     return out
 
 
-def _sections_to_detail_markdown(sections: list[Any]) -> str:
+def _section_fallback_markdown(sec: dict[str, Any]) -> str:
+    """A section with no recognized format (missing, or not one of the typed
+    formats _section_to_typed_block handles) -- e.g. legacy/untyped
+    sections with just bullets/body prose and no explicit "format" key.
+    Genuinely free-form, so it belongs in detail per Chat Master's spec
+    ("detail... only when there is genuinely free-form extended content
+    that isn't a typed section") -- not silently dropped."""
     parts: list[str] = []
-    for sec in sections or []:
-        if not isinstance(sec, dict):
-            continue
-        label = (sec.get("label") or sec.get("title") or "").strip()
-        if label:
-            parts.append(f"**{label}**")
-        for line in _section_list_lines(sec):
-            parts.append(f"- {line}")
-        for para in _section_prose_fields(sec):
-            parts.append(para)
-        parts.append("")
+    label = (sec.get("label") or sec.get("title") or "").strip()
+    if label:
+        parts.append(f"**{label}**")
+    for line in _section_list_lines(sec):
+        parts.append(f"- {line}")
+    for para in _section_prose_fields(sec):
+        parts.append(para)
     return "\n".join(parts).strip()
+
+
+_DOMAIN_CARD_FORMATS = ("appeals_playbook", "appeals_rules")
+
+
+def _section_to_typed_block(sec: Any) -> dict[str, Any] | None:
+    """card.sections[] -> one typed envelope block, per Chat Master's
+    2026-08-10 full-collapse spec. Replaces _sections_to_detail_markdown on
+    the sections path -- that converter never read sec["data"] at all, so
+    every structured format (table/stats/steps/bars/conditions, all of
+    which nest their content under "data" per chat_config.py's own prompt
+    schema) silently lost its structure the moment it reached the envelope.
+    None on anything unrecognized or malformed -- never guess a shape."""
+    if not isinstance(sec, dict):
+        return None
+    fmt = (sec.get("format") or "").strip().lower()
+    label = sec.get("label") or sec.get("title")
+    label = label.strip() if isinstance(label, str) and label.strip() else None
+    data = sec.get("data")
+    data = data if isinstance(data, dict) else {}
+
+    if fmt == "table":
+        headers, rows = data.get("headers"), data.get("rows")
+        if not isinstance(headers, list) or not isinstance(rows, list):
+            return None
+        out: dict[str, Any] = {"type": "table", "headers": headers, "rows": rows}
+    elif fmt in ("stats", "steps", "bars", "conditions"):
+        items = data.get("items")
+        if not isinstance(items, list) or not items:
+            return None
+        out = {"type": fmt, "items": items}
+    elif fmt == "bullets":
+        # Legacy LLM-authored bullets sections vary the key
+        # (bullets/items/points/lines, all flat string lists) -- the
+        # deterministic-format detector uses "bullets" specifically, tool
+        # output and older LLM cards use the others. Same tolerance
+        # _sections_to_detail_markdown already had, kept here.
+        items = _section_list_lines(sec) or [
+            str(x).strip() for x in (data.get("items") or []) if isinstance(x, str) and str(x).strip()
+        ]
+        if not items:
+            return None
+        out = {"type": "bullets", "items": items}
+    elif fmt in _DOMAIN_CARD_FORMATS:
+        if not data:
+            return None
+        out = {"type": "domain_card", "variant": fmt, "data": data}
+    else:
+        return None
+
+    if label:
+        out["label"] = label
+    return out
 
 
 def _resolutions_to_detail_markdown(resolutions: list[Any]) -> str:
@@ -423,8 +478,23 @@ def build_assistant_envelope_v1(
     pipeline_human_gate: dict[str, Any] | None = None,
     credentialing_card_data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Merge authoritative data with validated LLM ui_blocks."""
+    """Merge authoritative data with validated LLM ui_blocks.
+
+    2026-08-10 full-collapse (Chat Master spec, Ananth-approved): the
+    envelope is now the COMPLETE render source, not chrome-only alongside a
+    separately-parsed AnswerCard -- that dual-read was the triple-print
+    mechanism (direct_answer/display_summary and sections rendered from
+    both the raw card JSON and the envelope independently). Ordering below
+    is deliberate and owned by the backend; FE renders blocks top-to-bottom
+    in list order, no client-side reordering.
+    """
     blocks: list[dict[str, Any]] = []
+
+    if answer_card:
+        _mode = answer_card.get("mode")
+        if isinstance(_mode, str) and _mode.strip():
+            blocks.append({"type": "mode_badge", "mode": _mode.strip()})
+
     blocks.append(tool_attribution_block(tool_fired))
 
     if isinstance(pipeline_human_gate, dict) and (pipeline_human_gate.get("run_id") or "").strip():
@@ -441,19 +511,42 @@ def build_assistant_envelope_v1(
         if _cc:
             blocks.append(_cc)
 
-    if answer_card:
-        # Correction block — shown before the draft text so the user sees the fix prominently.
-        _corr = answer_card.get("correction")
-        if isinstance(_corr, dict):
-            _orig = (_corr.get("original") or "").strip()
-            _fixed = (_corr.get("corrected") or "").strip()
-            if _orig and _fixed:
-                blocks.append({"type": "correction", "original": _orig[:2000], "corrected": _fixed[:2000]})
-
     if answer_card and isinstance(answer_card.get("direct_answer"), str):
         da = answer_card["direct_answer"].strip()
         if da:
             blocks.append({"type": "direct_answer", "markdown": da[:50000]})
+
+        # Typed sections, in sections[] order -- replaces
+        # _sections_to_detail_markdown, which never read sec["data"] and so
+        # silently dropped every structured format's actual content. A
+        # section with no recognized format (missing "format", or legacy/
+        # untyped shapes) falls back into the detail block below instead of
+        # being dropped -- still genuinely free-form content.
+        secs = answer_card.get("sections")
+        _section_fallback_parts: list[str] = []
+        if isinstance(secs, list):
+            for sec in secs:
+                tb = _section_to_typed_block(sec)
+                if tb:
+                    blocks.append(tb)
+                elif isinstance(sec, dict):
+                    fb = _section_fallback_markdown(sec)
+                    if fb:
+                        _section_fallback_parts.append(fb)
+
+        _tldr = answer_card.get("tldr_summary")
+        if isinstance(_tldr, str) and _tldr.strip():
+            blocks.append({"type": "tldr", "markdown": _tldr.strip()[:4000]})
+
+        _draft = answer_card.get("react_draft")
+        _trace = answer_card.get("reasoning_trace")
+        if (isinstance(_draft, str) and _draft.strip()) or isinstance(_trace, list):
+            fp: dict[str, Any] = {"type": "first_pass", "collapsed_default": True}
+            if isinstance(_draft, str) and _draft.strip():
+                fp["draft_markdown"] = _draft.strip()[:20000]
+            if isinstance(_trace, list) and _trace:
+                fp["trace_rounds"] = _trace
+            blocks.append(fp)
 
         # Takeaways block — distilled bullets, shown after the draft answer.
         _tw = answer_card.get("takeaways")
@@ -470,13 +563,13 @@ def build_assistant_envelope_v1(
                 blocks.append({"type": "callout", "variant": "info",
                                 "body": "**Sources did not cover:**\n\n" + "\n".join(f"- {g}" for g in _gap_lines)})
 
-        secs = answer_card.get("sections")
-        section_md = ""
-        if isinstance(secs, list) and secs:
-            section_md = _sections_to_detail_markdown(secs)
+        # detail is no longer the sections catch-all -- only genuinely
+        # free-form content that isn't a typed section (resolutions,
+        # confidence note, citations, required variables) lands here.
+        section_fallback_md = "\n\n".join(_section_fallback_parts)
         resolution_md = _resolutions_to_detail_markdown(resolutions or [])
         supplemental = _supplemental_detail_markdown(answer_card)
-        detail_parts = [p for p in (section_md, resolution_md, supplemental) if p]
+        detail_parts = [p for p in (section_fallback_md, resolution_md, supplemental) if p]
         if detail_parts:
             combined_detail = "\n\n".join(detail_parts)
             blocks.append({"type": "detail", "markdown": combined_detail, "collapsed_default": True})
@@ -561,5 +654,13 @@ def build_assistant_envelope_v1(
         blocks.append({"type": "markdown_report", "markdown": md})
     if has_roster_pdf:
         blocks.append({"type": "attachments", "has_pdf": True})
+
+    if answer_card:
+        _corr = answer_card.get("correction")
+        if isinstance(_corr, dict):
+            _orig = (_corr.get("original") or "").strip()
+            _fixed = (_corr.get("corrected") or "").strip()
+            if _orig and _fixed:
+                blocks.append({"type": "correction", "original": _orig[:2000], "corrected": _fixed[:2000]})
 
     return {"version": ENVELOPE_VERSION, "blocks": blocks}
