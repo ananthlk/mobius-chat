@@ -763,6 +763,14 @@ describe("Enricher fast-path shapes render (LLM Agent's exact deterministic_form
     expect(bullets).toContain("Proof of timely filing");
   });
 
+  it("bullets render inline markdown (not raw **)", () => {
+    const el = renderSec({ format: "bullets", label: "Key Points", bullets: ["File within **90 days** of denial", "Use the `provider portal`"] });
+    const rows = Array.from(el.querySelectorAll(".answer-card-bullet"));
+    expect(rows[0].querySelector("strong")?.textContent).toBe("90 days");
+    expect(rows[0].textContent).not.toContain("**");
+    expect(rows[1].querySelector("code")?.textContent).toBe("provider portal");
+  });
+
   it("steps → ol.ac-fmt-steps ordered list", () => {
     const el = renderSec({ format: "steps", label: "Steps", data: { items: [{ label: "Gather your documentation" }, { label: "Complete the appeal form" }, { label: "Submit via the provider portal" }] } });
     const ol = el.querySelector("ol.ac-fmt-steps");

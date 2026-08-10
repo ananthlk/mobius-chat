@@ -2465,7 +2465,7 @@ function _renderSectionBody(sec, body) {
   visibleBullets.forEach((b) => {
     const li = document.createElement("div");
     li.className = "answer-card-bullet";
-    li.textContent = b;
+    li.innerHTML = _inlineMd(b);
     body.appendChild(li);
   });
   if (hiddenBullets.length > 0) {
@@ -2475,7 +2475,7 @@ function _renderSectionBody(sec, body) {
     hiddenBullets.forEach((b) => {
       const li = document.createElement("div");
       li.className = "answer-card-bullet";
-      li.textContent = b;
+      li.innerHTML = _inlineMd(b);
       overflow.appendChild(li);
     });
     body.appendChild(overflow);

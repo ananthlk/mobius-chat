@@ -163,7 +163,7 @@ function _renderSectionBody(sec: AnswerCardSection, body: HTMLElement): void {
   visibleBullets.forEach((b) => {
     const li = document.createElement("div");
     li.className = "answer-card-bullet";
-    li.textContent = b;
+    li.innerHTML = _inlineMd(b);   // render inline markdown (was textContent → raw ** bug; Chat Master ratified)
     body.appendChild(li);
   });
 
@@ -174,7 +174,7 @@ function _renderSectionBody(sec: AnswerCardSection, body: HTMLElement): void {
     hiddenBullets.forEach((b) => {
       const li = document.createElement("div");
       li.className = "answer-card-bullet";
-      li.textContent = b;
+      li.innerHTML = _inlineMd(b);
       overflow.appendChild(li);
     });
     body.appendChild(overflow);
