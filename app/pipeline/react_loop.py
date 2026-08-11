@@ -2655,6 +2655,30 @@ def _execute_tool(
                             "[appeals-enrich] questions fetch failed carc=%s payor=%s cid=%s: %s",
                             locals().get("_q_carc", carc), payor,
                             getattr(ctx, "correlation_id", "?"), _q_exc)
+                    # Don't advertise a submission channel we can't point to.
+                    # Several playbooks carry submission_method="portal" with an
+                    # EMPTY portal_url (e.g. CARC 151 x Sunshine) — the card then
+                    # tells a biller to use a portal it can't link (Ananth review
+                    # 2026-08-10). Drop unsupported channels from the claim.
+                    _sm = (result_data.get("submission_method") or "").strip()
+                    if _sm:
+                        _have = {
+                            "portal": bool((result_data.get("portal_url") or "").strip()),
+                            "fax": bool((result_data.get("fax") or "").strip()),
+                            "mail": bool((result_data.get("mail_address") or "").strip()),
+                        }
+                        _kept = [
+                            _p for _p in
+                            (_x.strip() for _x in re.split(r"[,/;|]| or | and ", _sm))
+                            if _p and _have.get(_p.lower(), True)
+                        ]
+                        _new_sm = ", ".join(_kept)
+                        if _new_sm != _sm:
+                            result_data["submission_method"] = _new_sm
+                            logger.info(
+                                "[appeals-enrich] pruned unsupported submission channels "
+                                "%r -> %r (carc=%s payor=%s)", _sm, _new_sm, carc, payor)
+
                     # Card section 1 — "what is this denial": human title for
                     # the CARC so the card leads with meaning, not codes.
                     try:
