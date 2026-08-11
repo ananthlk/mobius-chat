@@ -914,6 +914,17 @@ describe("renderEnvelope block renderers (Task #36 — single-contract, LLM Agen
     expect(rows[0].textContent).not.toContain("**");
   });
 
+  it("renderFormatBlock: table/stats/conditions cells render inline markdown (not raw **)", () => {
+    const t = renderFormatBlock({ type: "table", headers: ["**Provider**"], rows: [["**Participating**"]] });
+    expect(t.querySelector("th strong")?.textContent).toBe("Provider");
+    expect(t.querySelector("td strong")?.textContent).toBe("Participating");
+    expect(t.textContent).not.toContain("**");
+    const s = renderFormatBlock({ type: "stats", items: [{ label: "**Days**", value: "**180**" }] });
+    expect(s.querySelector(".ac-fmt-stat-value strong")?.textContent).toBe("180");
+    const c = renderFormatBlock({ type: "conditions", items: [{ condition: "**late**", result: "**deny**" }] });
+    expect(c.querySelector(".ac-fmt-condition-if strong")?.textContent).toBe("late");
+  });
+
   it("renderFormatBlock: bars → weighted fill (item.weight 0-1, not max)", () => {
     const el = renderFormatBlock({ type: "bars", label: "Mix", items: [{ label: "Denials", weight: 0.75 }, { label: "Paid", weight: 0.25 }] });
     const fills = Array.from(el.querySelectorAll(".ac-fmt-bar-fill")) as HTMLElement[];

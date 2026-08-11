@@ -41,11 +41,11 @@ function _renderSectionBody(sec: AnswerCardSection, body: HTMLElement): void {
     tbl.className = "ac-fmt-table";
     const thead = tbl.createTHead();
     const hRow = thead.insertRow();
-    data.headers.forEach((h) => { const th = document.createElement("th"); th.textContent = h; hRow.appendChild(th); });
+    data.headers.forEach((h) => { const th = document.createElement("th"); th.innerHTML = _inlineMd(h); hRow.appendChild(th); });
     const tbody = tbl.createTBody();
     data.rows.forEach((row) => {
       const tr = tbody.insertRow();
-      row.forEach((cell) => { const td = tr.insertCell(); td.textContent = cell; });
+      row.forEach((cell) => { const td = tr.insertCell(); td.innerHTML = _inlineMd(cell); });
     });
     // Scroll wrapper: on narrow widths the table scrolls horizontally instead of crushing
     // its columns (§1.3 "tables scroll horizontally on mobile, no body overflow").
@@ -62,7 +62,7 @@ function _renderSectionBody(sec: AnswerCardSection, body: HTMLElement): void {
     data.items.forEach((item) => {
       const li = document.createElement("li");
       li.className = "ac-fmt-step";
-      li.textContent = typeof item === "string" ? item : (item.label ?? "");
+      li.innerHTML = _inlineMd(typeof item === "string" ? item : (item.label ?? ""));
       ol.appendChild(li);
     });
     body.appendChild(ol);
@@ -77,16 +77,16 @@ function _renderSectionBody(sec: AnswerCardSection, body: HTMLElement): void {
       tile.className = "ac-fmt-stat-tile";
       const val = document.createElement("div");
       val.className = "ac-fmt-stat-value";
-      val.textContent = item.value ?? "";
+      val.innerHTML = _inlineMd(item.value ?? "");
       const lbl = document.createElement("div");
       lbl.className = "ac-fmt-stat-label";
-      lbl.textContent = item.label ?? "";
+      lbl.innerHTML = _inlineMd(item.label ?? "");
       tile.appendChild(val);
       tile.appendChild(lbl);
       if (item.note) {
         const note = document.createElement("div");
         note.className = "ac-fmt-stat-note";
-        note.textContent = item.note;
+        note.innerHTML = _inlineMd(item.note);
         tile.appendChild(note);
       }
       grid.appendChild(tile);
@@ -103,7 +103,7 @@ function _renderSectionBody(sec: AnswerCardSection, body: HTMLElement): void {
       row.className = "ac-fmt-bar-row";
       const lbl = document.createElement("div");
       lbl.className = "ac-fmt-bar-label";
-      lbl.textContent = item.label ?? "";
+      lbl.innerHTML = _inlineMd(item.label ?? "");
       const track = document.createElement("div");
       track.className = "ac-fmt-bar-track";
       const fill = document.createElement("div");
@@ -116,7 +116,7 @@ function _renderSectionBody(sec: AnswerCardSection, body: HTMLElement): void {
       if (item.note) {
         const note = document.createElement("div");
         note.className = "ac-fmt-bar-note";
-        note.textContent = item.note;
+        note.innerHTML = _inlineMd(item.note);
         row.appendChild(note);
       }
       list.appendChild(row);
@@ -133,10 +133,10 @@ function _renderSectionBody(sec: AnswerCardSection, body: HTMLElement): void {
       row.className = "ac-fmt-condition-row";
       const cond = document.createElement("div");
       cond.className = "ac-fmt-condition-if";
-      cond.textContent = item.condition ?? "";
+      cond.innerHTML = _inlineMd(item.condition ?? "");
       const result = document.createElement("div");
       result.className = "ac-fmt-condition-then";
-      result.textContent = item.result ?? "";
+      result.innerHTML = _inlineMd(item.result ?? "");
       row.appendChild(cond);
       row.appendChild(result);
       list.appendChild(row);
