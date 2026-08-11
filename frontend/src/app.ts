@@ -11427,8 +11427,13 @@ function run(): void {
         if (nextQuestions.length === 0) {
           const card = tryParseAnswerCard(body || "");
           if (card?.followups?.length) {
+            // Only render a followup that carries a real question/reason. NEVER fall back to the raw
+            // `field` slot name — that surfaces an internal signal (e.g. "jurisdiction") as user-facing
+            // clarify text even when there's no actual clarification to ask (Retriever bug 2026-08-10:
+            // clarify_low_confidence with clarify_questions=[] was showing "jurisdiction" wording). A
+            // slot name is not a question; a followup without question/reason renders nothing.
             nextQuestions = card.followups
-              .map((f) => (f.question || f.reason || f.field || "").trim())
+              .map((f) => (f.question || f.reason || "").trim())
               .filter(Boolean)
               .map((text) => ({ text, clickable: true }));
           }

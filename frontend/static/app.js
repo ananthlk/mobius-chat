@@ -12831,7 +12831,7 @@ ${message}`;
       if (nextQuestions.length === 0) {
         const card = tryParseAnswerCard(body || "");
         if (card?.followups?.length) {
-          nextQuestions = card.followups.map((f) => (f.question || f.reason || f.field || "").trim()).filter(Boolean).map((text) => ({ text, clickable: true }));
+          nextQuestions = card.followups.map((f) => (f.question || f.reason || "").trim()).filter(Boolean).map((text) => ({ text, clickable: true }));
         }
       }
       const reportMd = data.roster_report_final_md && typeof data.roster_report_final_md === "string" ? data.roster_report_final_md.trim() : "";
