@@ -2754,12 +2754,27 @@ function _renderAppealsPlaybook(sec, body) {
     const mkLevel = (lv) => {
       const li = document.createElement("li");
       li.className = "ac-appeals-level";
+      const head2 = document.createElement("span");
+      head2.className = "ac-appeals-level-head";
       const name = document.createElement("span");
       name.className = "ac-appeals-level-name";
       name.textContent = lv.name || (lv.level != null ? `Level ${lv.level}` : "Level");
-      li.appendChild(name);
+      head2.appendChild(name);
+      if (lv.submission && lv.submission.trim()) {
+        const via = document.createElement("span");
+        via.className = "ac-appeals-level-via";
+        via.textContent = "\xB7 " + lv.submission.trim();
+        head2.appendChild(via);
+      }
       if (typeof lv.deadline_days === "number")
-        li.appendChild(_chip(`${lv.deadline_days}d`, "ac-appeals-level-deadline"));
+        head2.appendChild(_chip(`${lv.deadline_days}d`, "ac-appeals-level-deadline"));
+      li.appendChild(head2);
+      if (lv.notes && lv.notes.trim()) {
+        const note = document.createElement("span");
+        note.className = "ac-appeals-level-note";
+        note.innerHTML = _inlineMd(lv.notes);
+        li.appendChild(note);
+      }
       return li;
     };
     levels.slice(0, LADDER_CAP).forEach((lv) => ol.appendChild(mkLevel(lv)));
@@ -2846,11 +2861,38 @@ function _renderAppealsPlaybook(sec, body) {
       const mark = document.createElement("span");
       mark.className = "ac-appeals-doc-mark";
       mark.textContent = d.required === false ? "\u25CB" : "\u25CF";
-      const txt = document.createElement("span");
-      txt.className = "ac-appeals-doc-text";
-      txt.innerHTML = _inlineMd(d.doc || "") + (d.required === false ? " (optional)" : "");
+      const head2 = document.createElement("span");
+      head2.className = "ac-appeals-doc-head";
+      const optSuffix = d.required === false ? " (optional)" : "";
+      const docUrl = _safeHttpUrl(d.url);
+      if (docUrl) {
+        const a = document.createElement("a");
+        a.className = "ac-appeals-doc-link";
+        a.href = docUrl;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.innerHTML = _inlineMd(d.doc || "Form");
+        const dl = document.createElement("span");
+        dl.className = "ac-appeals-doc-dl";
+        dl.textContent = " \u2B07";
+        a.appendChild(dl);
+        head2.appendChild(a);
+        if (optSuffix)
+          head2.appendChild(document.createTextNode(optSuffix));
+      } else {
+        const txt = document.createElement("span");
+        txt.className = "ac-appeals-doc-text";
+        txt.innerHTML = _inlineMd(d.doc || "") + optSuffix;
+        head2.appendChild(txt);
+      }
       li.appendChild(mark);
-      li.appendChild(txt);
+      li.appendChild(head2);
+      if (d.notes && d.notes.trim()) {
+        const note = document.createElement("span");
+        note.className = "ac-appeals-doc-note";
+        note.innerHTML = _inlineMd(d.notes);
+        li.appendChild(note);
+      }
       ul.appendChild(li);
     });
     bd.appendChild(ul);

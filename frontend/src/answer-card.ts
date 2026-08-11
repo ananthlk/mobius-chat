@@ -43,8 +43,11 @@ export interface AppealsRulesData {
   admin_url?: string;   // deep link to the appeals rules-library admin page (footer chip)
 }
 /** data payload for a `format: "appeals_playbook"` section — appeals_get_playbook output, verbatim. */
-export interface AppealsPlaybookDoc { doc?: string; required?: boolean }
-export interface AppealsPlaybookLevel { level?: number | string; name?: string; deadline_days?: number }
+// url = payor's downloadable form (renders as a ⬇ link when non-empty; most rows are ""). notes =
+// per-doc gathering guidance ("include claim + auth number") — muted sub-line. (Appeals Agent 2026-08-10.)
+export interface AppealsPlaybookDoc { doc?: string; required?: boolean; url?: string; notes?: string }
+// submission = how to file THIS level ("Mail or Fax"); notes = per-level detail. (Appeals Agent 2026-08-10.)
+export interface AppealsPlaybookLevel { level?: number | string; name?: string; deadline_days?: number; submission?: string; notes?: string }
 // Numbered canonical question (Appeals Phase −1 W2). hint = the parenthetical cue in the mockup.
 export interface AppealsPlaybookQuestion { n?: number; text: string; hint?: string }
 // Guidance statements (Ananth 2026-08-08: chat informs, workbench interrogates) — declarative

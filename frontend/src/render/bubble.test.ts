@@ -562,6 +562,45 @@ describe("Appeals typed sections (appeals_rules / appeals_playbook)", () => {
     expect(levels).toEqual(["Reconsideration", "Peer review"]);
   });
 
+  it("playbook: downloadable form → ⬇ link when url present, plain text when empty (Appeals 2026-08-10)", () => {
+    const el = mkPlaybook({
+      found: true, carc: "151",
+      docs_required: [
+        { doc: "Claim Adjustment Request Form", url: "https://www.sunshinehealth.com/content/dam/centene/Sunshine/pdfs/Provider-Dispute-Form.pdf", required: true },
+        { doc: "Medical records", url: "", required: true },
+      ],
+    });
+    const link = el.querySelector(".ac-appeals-doc-link") as HTMLAnchorElement;
+    expect(link).not.toBeNull();
+    expect(link.getAttribute("href")).toContain("Provider-Dispute-Form.pdf");
+    expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(link.querySelector(".ac-appeals-doc-dl")?.textContent).toContain("⬇");
+    // empty url → NO link, plain text row survives
+    const plain = Array.from(el.querySelectorAll(".ac-appeals-doc")).find((d) => d.textContent?.includes("Medical records"));
+    expect(plain?.querySelector("a")).toBeNull();
+  });
+
+  it("playbook: per-doc notes render as a muted sub-line (Appeals 2026-08-10)", () => {
+    const el = mkPlaybook({
+      found: true, carc: "151",
+      docs_required: [{ doc: "Claim Adjustment Request Form", required: true, notes: "Must include claim number and auth number if applicable" }],
+    });
+    expect(el.querySelector(".ac-appeals-doc-note")?.textContent).toContain("claim number and auth number");
+  });
+
+  it("playbook: ladder shows per-level submission inline + notes sub-line (Appeals 2026-08-10)", () => {
+    const el = mkPlaybook({
+      found: true, carc: "151",
+      appeal_levels: [
+        { level: 1, name: "Internal Appeal", deadline_days: 90, submission: "Mail or Fax", notes: "Provider appeal — file within deadline from EOP/denial date." },
+      ],
+    });
+    const lvl = el.querySelector(".ac-appeals-level")!;
+    expect(lvl.querySelector(".ac-appeals-level-via")?.textContent).toContain("Mail or Fax");
+    expect(lvl.querySelector(".ac-appeals-level-deadline")?.textContent).toBe("90d");
+    expect(lvl.querySelector(".ac-appeals-level-note")?.textContent).toContain("from EOP/denial date");
+  });
+
   it("playbook: strategy line + numbered canonical questions with hints", () => {
     const el = mkPlaybook({
       found: true, payor: "Sunshine Health", carc: "29",

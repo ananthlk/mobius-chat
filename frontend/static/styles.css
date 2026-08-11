@@ -3926,11 +3926,18 @@ body {
 .ac-appeals-portal:hover { text-decoration: underline; }
 .ac-appeals-docs, .ac-appeals-levels { display: flex; flex-direction: column; gap: 0.2rem; margin-top: 0.15rem; }
 .ac-appeals-docs-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.12rem; }
-.ac-appeals-doc { display: flex; align-items: baseline; gap: 0.4rem; font-size: 0.76rem; }
+.ac-appeals-doc { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.15rem 0.4rem; font-size: 0.76rem; }
+.ac-appeals-doc-head { display: inline-flex; align-items: baseline; gap: 0.25rem; }
 .ac-appeals-doc-mark { font-size: 0.55rem; }
 .ac-appeals-doc--required .ac-appeals-doc-mark { color: var(--mobius-violet, #7c3aed); }
 .ac-appeals-doc--optional { color: var(--text-tertiary, #9ca3af); }
 .ac-appeals-doc--optional .ac-appeals-doc-mark { color: var(--text-tertiary, #9ca3af); }
+/* Downloadable payor form: violet link + ⬇ affordance (Appeals Agent 2026-08-10). */
+.ac-appeals-doc-link { color: var(--mobius-violet, #7c3aed); font-weight: 600; text-decoration: none; }
+.ac-appeals-doc-link:hover { text-decoration: underline; }
+.ac-appeals-doc-dl { font-size: 0.7rem; opacity: 0.85; }
+/* Per-doc gathering note: full-width muted sub-line under the doc (wraps below the mark). */
+.ac-appeals-doc-note { flex-basis: 100%; padding-left: 0.95rem; font-size: 0.72rem; color: var(--text-tertiary, #6b7280); line-height: 1.4; }
 .ac-appeals-levels-list {
   margin: 0;
   padding-left: 1.1rem;
@@ -3938,9 +3945,13 @@ body {
   flex-direction: column;
   gap: 0.15rem;
 }
-/* Each level: name left, deadline pill right-aligned — scans as a ladder, not a wall. */
-.ac-appeals-level { display: flex; align-items: baseline; gap: 0.4rem; font-size: 0.76rem; }
+/* Each level: head row (name + via + deadline pill), optional muted note sub-line below. */
+.ac-appeals-level { display: flex; flex-direction: column; gap: 0.05rem; font-size: 0.76rem; }
+.ac-appeals-level-head { display: flex; align-items: baseline; gap: 0.35rem; }
 .ac-appeals-level-name { font-weight: 600; color: var(--text-primary, #111827); }
+/* "· Mail or Fax" — how to file THIS level, muted, next to the name. */
+.ac-appeals-level-via { font-size: 0.72rem; color: var(--text-tertiary, #6b7280); }
+.ac-appeals-level-note { font-size: 0.72rem; color: var(--text-tertiary, #6b7280); line-height: 1.4; }
 .ac-appeals-level-deadline {
   font-size: 0.6rem;
   font-weight: 700;

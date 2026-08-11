@@ -513,11 +513,26 @@ function _renderAppealsPlaybook(sec: AnswerCardSection, body: HTMLElement): void
     const mkLevel = (lv: AppealsPlaybookLevel): HTMLElement => {
       const li = document.createElement("li");
       li.className = "ac-appeals-level";
+      const head = document.createElement("span");
+      head.className = "ac-appeals-level-head";
       const name = document.createElement("span");
       name.className = "ac-appeals-level-name";
       name.textContent = lv.name || (lv.level != null ? `Level ${lv.level}` : "Level");
-      li.appendChild(name);
-      if (typeof lv.deadline_days === "number") li.appendChild(_chip(`${lv.deadline_days}d`, "ac-appeals-level-deadline"));
+      head.appendChild(name);
+      // How to file THIS level, inline next to the name (Appeals Agent 2026-08-10) — answers
+      // "how do I file this one", not just its name. Deadline pill stays right-aligned after it.
+      if (lv.submission && lv.submission.trim()) {
+        const via = document.createElement("span"); via.className = "ac-appeals-level-via";
+        via.textContent = "· " + lv.submission.trim();
+        head.appendChild(via);
+      }
+      if (typeof lv.deadline_days === "number") head.appendChild(_chip(`${lv.deadline_days}d`, "ac-appeals-level-deadline"));
+      li.appendChild(head);
+      if (lv.notes && lv.notes.trim()) {
+        const note = document.createElement("span"); note.className = "ac-appeals-level-note";
+        note.innerHTML = _inlineMd(lv.notes);
+        li.appendChild(note);
+      }
       return li;
     };
     levels.slice(0, LADDER_CAP).forEach((lv) => ol.appendChild(mkLevel(lv)));
@@ -596,9 +611,33 @@ function _renderAppealsPlaybook(sec: AnswerCardSection, body: HTMLElement): void
       const li = document.createElement("li");
       li.className = d.required === false ? "ac-appeals-doc ac-appeals-doc--optional" : "ac-appeals-doc ac-appeals-doc--required";
       const mark = document.createElement("span"); mark.className = "ac-appeals-doc-mark"; mark.textContent = d.required === false ? "○" : "●";
-      const txt = document.createElement("span"); txt.className = "ac-appeals-doc-text";
-      txt.innerHTML = _inlineMd(d.doc || "") + (d.required === false ? " (optional)" : "");
-      li.appendChild(mark); li.appendChild(txt);
+      const head = document.createElement("span"); head.className = "ac-appeals-doc-head";
+      // Downloadable payor form (Appeals Agent 2026-08-10): render the doc name as a ⬇ link when a
+      // valid http(s) url is present — stops the biller googling for the form — else plain text.
+      // Same scheme-guard as admin_url; https auto-encodes.
+      const optSuffix = d.required === false ? " (optional)" : "";
+      const docUrl = _safeHttpUrl(d.url);
+      if (docUrl) {
+        const a = document.createElement("a");
+        a.className = "ac-appeals-doc-link"; a.href = docUrl; a.target = "_blank"; a.rel = "noopener noreferrer";
+        a.innerHTML = _inlineMd(d.doc || "Form");
+        const dl = document.createElement("span"); dl.className = "ac-appeals-doc-dl"; dl.textContent = " ⬇";
+        a.appendChild(dl);
+        head.appendChild(a);
+        if (optSuffix) head.appendChild(document.createTextNode(optSuffix));
+      } else {
+        const txt = document.createElement("span"); txt.className = "ac-appeals-doc-text";
+        txt.innerHTML = _inlineMd(d.doc || "") + optSuffix;
+        head.appendChild(txt);
+      }
+      li.appendChild(mark); li.appendChild(head);
+      // Per-doc gathering guidance (Appeals Agent 2026-08-10) — muted sub-line, same treatment as
+      // guidance `detail`. This is what a biller needs while working the checklist.
+      if (d.notes && d.notes.trim()) {
+        const note = document.createElement("span"); note.className = "ac-appeals-doc-note";
+        note.innerHTML = _inlineMd(d.notes);
+        li.appendChild(note);
+      }
       ul.appendChild(li);
     });
     bd.appendChild(ul);
