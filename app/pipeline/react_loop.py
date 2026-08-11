@@ -968,21 +968,52 @@ def _looks_like_raw_structured_blob(text: str) -> bool:
         return False
 
 
+_EXPLICIT_FORMAT_REQUEST_RE = re.compile(
+    r"\bas\s+an?\s+table\b"
+    r"|\bin\s+(?:a\s+)?table(?:\s+format)?\b"
+    r"|\btable\s+format\b"
+    r"|\bas\s+(?:a\s+)?(?:list|bullet\s*points?|steps?)\b"
+    r"|\bin\s+bullet\s*points?\b",
+    re.IGNORECASE,
+)
+
+
+def _requests_explicit_presentation_format(message: str) -> bool:
+    """True when the user's own words name a specific presentation format
+    ("as a table", "in bullet points", etc). deterministic_format has zero
+    visibility into the user's original question -- it only regex-matches
+    react_draft's already-written structure -- so it can never honor an
+    explicit format request the draft's prose doesn't happen to already
+    satisfy. Rather than teach the zero-LLM classifier natural-language
+    intent detection, route these turns to full Call A instead, where the
+    integrator prompt is now explicitly instructed to honor the request
+    (chat_config.py PRESENTATION rules, 2026-08-11 fix -- found live: QC
+    audit flagged "provided the correct data but failed to follow the
+    user's explicit instruction to format it as a table")."""
+    return bool(_EXPLICIT_FORMAT_REQUEST_RE.search(message or ""))
+
+
 def _is_sufficient_for_deterministic_pass(ctx: PipelineContext) -> bool:
     """True when react's answer needs no further LLM enhancement:
     - quick-mode round-1 early exit (the existing fast-mode-exit path), OR
     - a short, clean run: <=3 rounds, no open gaps on the last round, no
       unfinished-reason flag, and a substantive (>=200 char) react_draft.
     Approved formula (Chat Master, Task #76) -- do not loosen without a new
-    ruling, this gates whether an LLM call runs at all. One narrow
-    exception added after a live incident: react_draft must look like
-    prose, not a raw JSON blob (see _looks_like_raw_structured_blob) --
-    the deterministic pass can't reformat structured data into an answer,
-    only an LLM (full Call A) can, so raw-JSON react_draft always routes
-    to needs_enhancement regardless of which branch below would otherwise
-    say sufficient."""
+    ruling, this gates whether an LLM call runs at all. Two narrow
+    exceptions added after live incidents, checked before either branch
+    below: react_draft must look like prose, not a raw JSON blob (see
+    _looks_like_raw_structured_blob) -- the deterministic pass can't
+    reformat structured data into an answer; and the user's message must
+    not explicitly request a specific presentation format (see
+    _requests_explicit_presentation_format) -- the deterministic pass has
+    no visibility into the user's own words, only react_draft's already-
+    written structure. Both exceptions route to needs_enhancement (full
+    Call A) regardless of which branch below would otherwise say
+    sufficient -- only an LLM can satisfy either case."""
     react_draft = getattr(ctx, "react_draft", None) or ""
     if _looks_like_raw_structured_blob(react_draft):
+        return False
+    if _requests_explicit_presentation_format(getattr(ctx, "message", None) or ""):
         return False
 
     chat_mode = getattr(ctx, "chat_mode", None)

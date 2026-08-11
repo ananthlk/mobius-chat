@@ -14,6 +14,7 @@ from app.pipeline.context import PipelineContext
 from app.pipeline.react_loop import (
     _is_sufficient_for_deterministic_pass,
     _looks_like_raw_structured_blob,
+    _requests_explicit_presentation_format,
 )
 
 _LONG_DRAFT = "x" * 200
@@ -168,4 +169,64 @@ class TestRawStructuredBlobGuard:
         case -- quick-mode round-1 with genuine synthesized prose stays
         sufficient."""
         ctx = _make_ctx(chat_mode="quick", react_rounds_used=1, react_draft="A real synthesized answer.")
+        assert _is_sufficient_for_deterministic_pass(ctx) is True
+
+
+# ── Explicit user format request guard (2026-08-11, Chat FE QC audit) ──────
+# "provided the correct data but failed to follow the user's explicit
+# instruction to format it as a table" -- deterministic_format only regex-
+# matches react_draft's already-written structure, it has zero visibility
+# into what the user actually asked for, so it can never honor an explicit
+# format request the draft's prose doesn't already happen to satisfy.
+# Routes these turns to full Call A instead, where the integrator prompt is
+# now explicitly instructed to honor the request.
+
+class TestExplicitFormatRequestDetection:
+    def test_as_a_table_detected(self):
+        assert _requests_explicit_presentation_format("Can you show that as a table?") is True
+
+    def test_in_table_format_detected(self):
+        assert _requests_explicit_presentation_format("Give me the rates in table format.") is True
+
+    def test_bullet_points_detected(self):
+        assert _requests_explicit_presentation_format("List the requirements in bullet points.") is True
+
+    def test_as_steps_detected(self):
+        assert _requests_explicit_presentation_format("Walk me through this as steps.") is True
+
+    def test_plain_question_not_detected(self):
+        assert _requests_explicit_presentation_format("What is the timely filing deadline?") is False
+
+    def test_empty_and_none_not_detected(self):
+        assert _requests_explicit_presentation_format("") is False
+        assert _requests_explicit_presentation_format(None) is False
+
+
+class TestExplicitFormatRequestOverridesSufficiency:
+    def test_quick_mode_round_1_with_table_request_is_not_sufficient(self):
+        """The exact reported failure mode: quick-mode round-1 (normally
+        an unconditional True) must NOT be sufficient when the user
+        explicitly asked for a table -- needs full Call A to actually
+        honor the format request."""
+        ctx = _make_ctx(
+            message="Show the appeal levels as a table.",
+            chat_mode="quick", react_rounds_used=1, react_draft="A real synthesized answer.",
+        )
+        assert _is_sufficient_for_deterministic_pass(ctx) is False
+
+    def test_general_rule_with_table_request_is_not_sufficient(self):
+        ctx = _make_ctx(
+            message="Can you put this in a table?",
+            chat_mode="copilot", react_rounds_used=2, react_draft=_LONG_DRAFT,
+            react_unfinished_reason=None,
+        )
+        assert _is_sufficient_for_deterministic_pass(ctx) is False
+
+    def test_plain_question_still_sufficient(self):
+        """Regression guard: the fix must not affect turns with no
+        explicit format request."""
+        ctx = _make_ctx(
+            message="What is the timely filing deadline?",
+            chat_mode="quick", react_rounds_used=1, react_draft="A real synthesized answer.",
+        )
         assert _is_sufficient_for_deterministic_pass(ctx) is True
