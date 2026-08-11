@@ -13053,9 +13053,31 @@ ${message}`;
           const _suppressedChrome = new Set(
             _hasTabs ? ["tool_attribution", "detail", "callout", "correction", "next_steps"] : []
           );
+          const CARD_OWNED_CONTENT = /* @__PURE__ */ new Set([
+            "table",
+            "stats",
+            "bullets",
+            "steps",
+            "bars",
+            "conditions",
+            "domain_card",
+            "detail",
+            "markdown_report",
+            "takeaways",
+            "tldr",
+            "first_pass",
+            "mode_badge",
+            "callout",
+            "correction",
+            "direct_answer"
+          ]);
           const toolBlocks = envCandidate.blocks.filter((b) => {
             const bt = b.type;
-            return bt !== "direct_answer" && bt !== "sources" && !_suppressedChrome.has(bt);
+            if (bt === "direct_answer" || bt === "sources")
+              return false;
+            if (fullCard && CARD_OWNED_CONTENT.has(bt))
+              return false;
+            return !_suppressedChrome.has(bt);
           });
           if (toolBlocks.length > 0) {
             const toolEnv = { ...envCandidate, blocks: toolBlocks };

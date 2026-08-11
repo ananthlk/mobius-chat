@@ -11747,9 +11747,24 @@ function run(): void {
             const _suppressedChrome = new Set(
               _hasTabs ? ["tool_attribution", "detail", "callout", "correction", "next_steps"] : []
             );
+            // DUAL-READ GUARD (Ananth 2026-08-10 "cards are duplicated"): when the answer card
+            // rendered the body above (fullCard present), renderAnswerCard already drew the prose,
+            // EVERY typed section (table/stats/…), and citations. The envelope carries the SAME
+            // content as blocks — so re-rendering any card-owned content block here double-prints it
+            // (the visible duplicate table). Suppress all card-owned content; let ONLY genuinely
+            // additive envelope widgets through. (When there's no card, the old behavior stands so a
+            // card-less turn still renders its envelope content.) The renderEnvelope cutover retires
+            // this whole second path — until then this stops the duplication at the source.
+            const CARD_OWNED_CONTENT = new Set([
+              "table", "stats", "bullets", "steps", "bars", "conditions", "domain_card",
+              "detail", "markdown_report", "takeaways", "tldr", "first_pass", "mode_badge",
+              "callout", "correction", "direct_answer",
+            ]);
             const toolBlocks = (envCandidate as AssistantEnvelope).blocks.filter((b) => {
               const bt = (b as EnvelopeBlock).type;
-              return bt !== "direct_answer" && bt !== "sources" && !_suppressedChrome.has(bt);
+              if (bt === "direct_answer" || bt === "sources") return false;
+              if (fullCard && CARD_OWNED_CONTENT.has(bt)) return false;   // card already rendered it
+              return !_suppressedChrome.has(bt);
             });
             if (toolBlocks.length > 0) {
               const toolEnv: AssistantEnvelope = { ...(envCandidate as AssistantEnvelope), blocks: toolBlocks };
