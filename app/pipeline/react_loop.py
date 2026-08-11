@@ -1388,6 +1388,13 @@ def _execute_tool(
                             **({"include_document_ids": rag_overrides.get("include_document_ids")}
                                if rag_overrides.get("include_document_ids") else {}),
                             **({"citable_required": True} if _effective_citable else {}),
+                            # call_number=1 (2026-08-08, Chat Master directive):
+                            # RAG's own turn-floor -- always sent explicitly on
+                            # the first dispatch so the escalation loop below
+                            # (call_number 2, 3 on terminal_action=
+                            # clarify_low_confidence) is a clean continuation,
+                            # not a mid-sequence jump.
+                            "call_number": 1,
                         },
                         question=query,
                         user_message=ctx.message,
@@ -1668,6 +1675,82 @@ def _execute_tool(
             # whichever result (fallback or original empty) is now current --
             # no second bypass, no infinite retry, exactly one fallback attempt.
 
+        # ── call_number escalation on low-confidence terminal_action ──────
+        # (2026-08-08, Chat Master directive, Retriever-confirmed live
+        # contract). A DIFFERENT signal from clarify_questions/no_retrieval
+        # above -- chunks came back (this is not "nothing found"), just
+        # under RAG's own confidence bar for the chosen slot. RAG's own
+        # call_number turn-floor unlocks wider retrieval arms (c/d) at
+        # call_number>=2, with a correspondingly higher confidence bar --
+        # escalating doesn't guarantee a clean solve, but materially
+        # improves the odds (Retriever's live test: lb95 0.463 @ call 1 ->
+        # 0.702 @ call 3, thinking mode). Reuses the SAME 3-call ceiling as
+        # the relax/reframe protocol above (not a second independent budget
+        # stacked on top) -- at most 2 additional calls here, same query,
+        # no citable_required/query changes (a different escalation axis
+        # from relax/reframe entirely, so both can coexist in one round).
+        _low_confidence_call_number = 1
+        while (
+            _corpus_telemetry.get("terminal_action") == "clarify_low_confidence"
+            and _low_confidence_call_number < 3
+        ):
+            _low_confidence_call_number += 1
+            emit(
+                f"  ↓ Low confidence (call {_low_confidence_call_number - 1}) — "
+                f"escalating to call {_low_confidence_call_number}…"
+            )
+            try:
+                from app.skills.registry import SkillCall, dispatch as _skill_dispatch
+                _lc_env = _skill_dispatch(
+                    SkillCall(
+                        name="search_corpus",
+                        inputs={
+                            "query": query,
+                            **({"include_document_ids": rag_overrides.get("include_document_ids")}
+                               if rag_overrides.get("include_document_ids") else {}),
+                            **({"citable_required": True} if _effective_citable else {}),
+                            "call_number": _low_confidence_call_number,
+                        },
+                        question=query,
+                        user_message=ctx.message,
+                        thread_id=ctx.thread_id,
+                        active_context=active,
+                        mode=getattr(ctx, "chat_mode", "copilot") or "copilot",
+                        emitter=emitter,
+                        pipeline_ctx=ctx,
+                    )
+                )
+                corpus_answer = _lc_env.text or ""
+                corpus_sources = [s.to_dict() for s in (_lc_env.sources or [])]
+                corpus_signal = _lc_env.signal or corpus_signal
+                _corpus_telemetry = (_lc_env.extra or {}).get("pipeline_trace") or _corpus_telemetry
+                _status = _corpus_telemetry.get("status")
+                _dispatch_path = _corpus_telemetry.get("dispatch_path")
+                _chosen_slot = _corpus_telemetry.get("chosen_slot")
+                _n_chunks = _corpus_telemetry.get("n_chunks", len(corpus_sources or []))
+                merged_sources = list(corpus_sources or [])
+                merged_result = corpus_answer or ""
+                success = bool(merged_result and len(merged_result.strip()) > 80)
+                merged_signal = corpus_signal
+            except Exception as _e:
+                logger.warning(
+                    "[low-confidence-escalation] call %d failed: %s", _low_confidence_call_number, _e,
+                )
+                break  # don't loop on a transport failure -- exhaust honestly below
+
+        _low_confidence_exhausted = (
+            _low_confidence_call_number >= 3
+            and _corpus_telemetry.get("terminal_action") == "clarify_low_confidence"
+        )
+        if _low_confidence_exhausted:
+            emit("  ↓ Still under the confidence bar after 3 calls — answering honestly with what's been found.")
+            # Forced, code-driven signal (same pattern as the fast-mode
+            # thin-evidence hedge) rather than waiting on the model's own
+            # self-report -- matches the spec: no silent stop, no extra
+            # round spent hoping for a better synthesis from material RAG
+            # itself has already flagged as under-confident.
+            ctx.react_unfinished_reason = "no_path_forward"
+
         ctx._rag_call_history = _rag_history + [{  # type: ignore[attr-defined]
             "citable_required": _effective_citable,
             "n_chunks": _n_chunks,
@@ -1685,7 +1768,30 @@ def _execute_tool(
             "observer_final_verdict": _corpus_telemetry.get("observer_final_verdict"),
         }]
 
-        if not success:
+        if _low_confidence_exhausted:
+            # Independent of `success` -- a low-confidence result can still
+            # be >80 chars (content and confidence are different axes), so
+            # this can't ride the `if not success:` gate below. Takes
+            # priority over the citable_required relax/reframe narrative
+            # since it's a genuinely different signal (RAG's own confidence
+            # bar, not "empty result").
+            _lc_bar = _corpus_telemetry.get("routing_verdict_adjusted_bar")
+            _lc_lb = _corpus_telemetry.get("chosen_slot_lb")
+            _lc_detail = (
+                f" (confidence {_lc_lb:.2f} vs required bar {_lc_bar:.2f})"
+                if isinstance(_lc_lb, (int, float)) and isinstance(_lc_bar, (int, float))
+                else ""
+            )
+            merged_result = (
+                (merged_result or "")
+                + "\n\n[Retrieval signal for reframe]\n"
+                + f"RAG call {_low_confidence_call_number}/3: still under the confidence bar{_lc_detail} "
+                "after escalating call_number to unlock wider retrieval arms. This is a genuine "
+                "low-confidence gap, not a phrasing problem -- this was your last rag call for this "
+                "question. Answer honestly now using what was actually retrieved (rule 1d, SHAPE 2/3) "
+                "-- do not present this material with more confidence than RAG itself has in it."
+            )
+        elif not success:
             _reframe_lines: list[str] = [
                 f"RAG signal (call {_rag_call_number}/3): status={_status or 'unknown'}, "
                 f"citable_required={_effective_citable}, chunks={_n_chunks}, "

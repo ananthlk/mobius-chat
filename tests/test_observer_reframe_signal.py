@@ -141,6 +141,136 @@ class TestCorpusSearchExtractsObserverFields:
         assert env.extra["pipeline_trace"]["observer_final_verdict"] == "EXHAUSTED"
 
 
+class TestCorpusSearchCallNumberAndTerminalAction:
+    """2026-08-09, Chat Master directive, Retriever-confirmed live contract:
+    routing_keys.terminal_action=="clarify_low_confidence" means chunks
+    came back but under RAG's own confidence bar for the chosen slot --
+    react_loop.py escalates call_number rather than accepting the response
+    as terminal. call_number is chat's own signal to RAG (not extracted
+    FROM the response), threaded input->_post_skill->request body."""
+
+    def test_terminal_action_extracted_into_telemetry(self):
+        env = _run_with_response("q", {
+            "chosen_slot": "direct_answer",
+            "chunks": [_BASE_CHUNK],
+            "routing_keys": {"terminal_action": "clarify_low_confidence"},
+        })
+        assert env.extra["pipeline_trace"]["terminal_action"] == "clarify_low_confidence"
+
+    def test_terminal_action_absent_when_routing_keys_missing(self):
+        env = _run_with_response("q", {"chosen_slot": "direct_answer", "chunks": [_BASE_CHUNK]})
+        assert env.extra["pipeline_trace"]["terminal_action"] is None
+
+    def test_routing_verdict_outcome_and_bar_extracted(self):
+        env = _run_with_response("q", {
+            "chosen_slot": "direct_answer",
+            "chunks": [_BASE_CHUNK],
+            "routing_keys": {
+                "terminal_action": "clarify_low_confidence",
+                "routing_verdict": {
+                    "outcome": "partial_infeasible",
+                    "adjusted_bar": 0.7225,
+                    "slots": {"direct_answer": {"status": "UNDER_CONFIDENT", "lb": 0.4633}},
+                },
+            },
+        })
+        trace = env.extra["pipeline_trace"]
+        assert trace["routing_verdict_outcome"] == "partial_infeasible"
+        assert trace["routing_verdict_adjusted_bar"] == 0.7225
+        assert trace["chosen_slot_lb"] == 0.4633
+
+    def test_chosen_slot_lb_pulls_only_the_chosen_slots_entry(self):
+        """Same 'pull down to the chosen slot' discipline as
+        observer_final_reason above -- other slots' lb must not leak in."""
+        env = _run_with_response("q", {
+            "chosen_slot": "direct_answer",
+            "chunks": [_BASE_CHUNK],
+            "routing_keys": {
+                "routing_verdict": {
+                    "slots": {
+                        "direct_answer": {"lb": 0.4633},
+                        "context_section": {"lb": 0.91},
+                    },
+                },
+            },
+        })
+        assert env.extra["pipeline_trace"]["chosen_slot_lb"] == 0.4633
+
+    def test_zero_chunk_early_return_still_carries_terminal_action(self):
+        env = _run_with_response("q", {
+            "chosen_slot": "direct_answer",
+            "chunks": [],
+            "routing_keys": {"terminal_action": "clarify_low_confidence"},
+        })
+        assert env.extra["pipeline_trace"]["terminal_action"] == "clarify_low_confidence"
+
+
+class TestCallNumberSentToRag:
+    def test_call_number_included_in_request_body_when_provided(self):
+        captured_bodies = []
+
+        def _urlopen(req, timeout=None):
+            captured_bodies.append(json.loads(req.data.decode()))
+            resp = MagicMock()
+            resp.read.return_value = json.dumps({
+                "contract": {
+                    "query": "q", "chosen_slot": None, "score": None,
+                    "chunks": [], "answer_text": None, "thinking": None,
+                    "traces": {}, "routing_keys": {}, "grounding_markers": {},
+                    "latency_ms": {}, "attempt_count": 1, "status": "ok",
+                },
+                "latency_ms": {}, "dispatch_path": "greedy",
+                "allocator_override": None, "authority_requirement": None,
+                "strategies_per_slot": [],
+            }).encode()
+            resp.__enter__ = lambda self: resp
+            resp.__exit__ = lambda self, *a: None
+            return resp
+
+        from app.skills.builtin.corpus_search import _run
+        call = _make_call("q", {"call_number": 2})
+        with patch.dict("os.environ", {"RAG_API_URL": "https://mobius-rag-ortabkknqa-uc.a.run.app"}), \
+             patch("urllib.request.urlopen", side_effect=_urlopen), \
+             patch("app.skills.builtin.corpus_search._persist_retrieval_run"), \
+             patch("app.skills.builtin.corpus_search._emit_retrieval_trace_envelope"):
+            _run(call)
+
+        assert captured_bodies[0]["call_number"] == 2
+
+    def test_call_number_omitted_from_body_when_not_provided(self):
+        """No default fabricated here -- omitted entirely lets RAG's own
+        server-side default apply for any dispatch site not yet updated."""
+        captured_bodies = []
+
+        def _urlopen(req, timeout=None):
+            captured_bodies.append(json.loads(req.data.decode()))
+            resp = MagicMock()
+            resp.read.return_value = json.dumps({
+                "contract": {
+                    "query": "q", "chosen_slot": None, "score": None,
+                    "chunks": [], "answer_text": None, "thinking": None,
+                    "traces": {}, "routing_keys": {}, "grounding_markers": {},
+                    "latency_ms": {}, "attempt_count": 1, "status": "ok",
+                },
+                "latency_ms": {}, "dispatch_path": "greedy",
+                "allocator_override": None, "authority_requirement": None,
+                "strategies_per_slot": [],
+            }).encode()
+            resp.__enter__ = lambda self: resp
+            resp.__exit__ = lambda self, *a: None
+            return resp
+
+        from app.skills.builtin.corpus_search import _run
+        call = _make_call("q")
+        with patch.dict("os.environ", {"RAG_API_URL": "https://mobius-rag-ortabkknqa-uc.a.run.app"}), \
+             patch("urllib.request.urlopen", side_effect=_urlopen), \
+             patch("app.skills.builtin.corpus_search._persist_retrieval_run"), \
+             patch("app.skills.builtin.corpus_search._emit_retrieval_trace_envelope"):
+            _run(call)
+
+        assert "call_number" not in captured_bodies[0]
+
+
 def _make_ctx() -> PipelineContext:
     ctx = PipelineContext(correlation_id="observer-test", thread_id=None, message="does it matter")
     ctx.effective_message = ctx.message

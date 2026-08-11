@@ -169,6 +169,7 @@ def _post_skill(
     token_budget_for_retrieval: int | None,
     citable_required: bool,
     caller_id: str | None,
+    call_number: int | None = None,
 ) -> dict[str, Any]:
     """POST to rag's production /api/retriever/answer endpoint (Phase 1
     cutover, 2026-08-06 — see module docstring).
@@ -210,6 +211,16 @@ def _post_skill(
         body["token_budget_for_retrieval"] = int(token_budget_for_retrieval)
     if citable_required:
         body["citable_required"] = True
+    # call_number (2026-08-08, Chat Master directive, Retriever-confirmed
+    # live contract): RAG's own turn-floor -- c/d retrieval arms only
+    # unlock at call_number>=2, with a correspondingly higher confidence
+    # bar. react_loop.py escalates this on routing_keys.terminal_action==
+    # "clarify_low_confidence" (see _run() below for the extraction).
+    # Omitted (not defaulted to 1) when the caller doesn't supply it, so
+    # RAG's own server-side default applies to any dispatch site that
+    # hasn't been updated to pass it explicitly.
+    if call_number is not None:
+        body["call_number"] = int(call_number)
     # correlation_id (2026-08-06, spec amendment): the grading-callback gap
     # flagged earlier -- RAG's PATCH /observe/decisions/{id}/grade filters
     # WHERE correlation_id = :cid on the DB column. routing_keys.decision_id
@@ -569,6 +580,15 @@ def _run(call: SkillCall) -> SkillEnvelope:
             token_budget_for_retrieval = int(token_budget_for_retrieval)
         except (TypeError, ValueError):
             token_budget_for_retrieval = None
+    # call_number (2026-08-08): passthrough only, no inference here --
+    # react_loop.py owns the escalation decision (1/2/3). See _post_skill's
+    # docstring for what it unlocks server-side.
+    call_number = inputs.get("call_number")
+    if call_number is not None:
+        try:
+            call_number = int(call_number)
+        except (TypeError, ValueError):
+            call_number = None
 
     base_url = _resolve_base_url()
     if not base_url:
@@ -602,6 +622,7 @@ def _run(call: SkillCall) -> SkillEnvelope:
             token_budget_for_retrieval=token_budget_for_retrieval,
             citable_required=citable_required,
             caller_id=caller_id,
+            call_number=call_number,
         )
     except urllib.error.HTTPError as e:
         body = ""
@@ -679,7 +700,22 @@ def _run(call: SkillCall) -> SkillEnvelope:
     # (stop searching, surface the question) rather than reframing/retrying against a
     # gap that more search won't close.
     _clarify_questions = _routing_keys.get("clarify_questions") or []
+    # terminal_action (2026-08-08, Chat Master directive, Retriever-
+    # confirmed live): "clarify_low_confidence" means chunks came back
+    # (this is NOT the same signal as clarify_questions/no_retrieval --
+    # a slot can be filled but under the router's confidence bar) and
+    # react_loop.py should escalate call_number rather than accept the
+    # response as terminal. routing_verdict carries the diagnostic detail
+    # (outcome/adjusted_bar/per-slot lb) surfaced here too so react's
+    # reframe-signal text can cite real numbers instead of a bare label.
+    _terminal_action = _routing_keys.get("terminal_action")
+    _routing_verdict = _routing_keys.get("routing_verdict") or {}
     _chosen_slot_for_observer = contract.get("chosen_slot")
+    _rv_slots = _routing_verdict.get("slots") or {}
+    _rv_chosen_slot_info = (
+        _rv_slots.get(_chosen_slot_for_observer)
+        if isinstance(_rv_slots, dict) else None
+    ) or {}
     _observer_reasons_by_slot = _routing_keys.get("observer_final_reasons") or {}
     _observer_verdicts_by_slot = _routing_keys.get("observer_final_verdicts") or {}
     telemetry: dict[str, Any] = {
@@ -719,6 +755,11 @@ def _run(call: SkillCall) -> SkillEnvelope:
             or (contract.get("routing_keys") or {}).get("module_trace")
         ),
         "clarify_questions": _clarify_questions,
+        "terminal_action": _terminal_action,
+        "routing_verdict_outcome": _routing_verdict.get("outcome"),
+        "routing_verdict_adjusted_bar": _routing_verdict.get("adjusted_bar"),
+        "chosen_slot_lb": _rv_chosen_slot_info.get("lb"),
+        "call_number": call_number,
     }
 
     # Always emit the retrieval_trace envelope, even on zero hits — the
