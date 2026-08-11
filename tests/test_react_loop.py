@@ -206,6 +206,72 @@ class TestIsTerminalHandlerGeneralized:
         assert r.get("is_terminal") is True
         assert r.get("result") == "PHI or clinical guidance"
 
+    def test_multi_round_sources_survive_into_a_later_is_terminal_finalize(self):
+        """2026-08-09, Chat Master directive: closes an untested interaction
+        found while fixing the is_terminal handler's hardcoded sources=[]
+        (was: refuse/appeals_assemble_letter never had their own sources,
+        so the bug was invisible for them in isolation -- but all_sources
+        accumulates across the WHOLE turn, not just the terminal round).
+        Round 1 calls search_corpus and gets real citable chunks; round 2
+        calls appeals_assemble_letter, which hits is_terminal with its OWN
+        sources=[] (RECITAL rides ctx.recital, not citations) -- the round
+        1 corpus sources must still reach the final card instead of being
+        silently dropped, since is_terminal's _finalize_response call now
+        uses all_sources (accumulated) rather than a hardcoded []."""
+        ctx = PipelineContext(
+            correlation_id="c", thread_id=None,
+            message="Appeal a timely filing denial and cite the policy",
+        )
+        ctx.merged_state = {}
+        ctx.last_turns = []
+        ctx.effective_message = ctx.message
+
+        reason_count = 0
+
+        def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+            nonlocal reason_count
+            reason_count += 1
+            if reason_count == 1:
+                return '{"thought": "Find the timely filing policy first.", "tool": "search_corpus", "inputs": {"query": "timely filing policy"}, "is_complete": false}'
+            return '{"thought": "Now assemble the letter.", "tool": "appeals_assemble_letter", "inputs": {"carc": "29", "payor": "Sunshine Health"}, "is_complete": false}'
+
+        _round1_source = {"document_name": "Provider Manual", "index": 1, "text": "Timely filing is 180 days."}
+
+        def fake_execute(tool, inputs, ctx, round_num, emit_fn, tool_emitter, skip_retry=False):
+            # Mocks _execute_tool_with_retry (not _execute_tool) -- the
+            # wrapper run_react actually calls. Going through the real
+            # wrapper here would hit its own unrelated lazy import of
+            # app.communication.error_emit, which fails in this dev sandbox
+            # (ModuleNotFoundError: mobius_contracts -- the same pre-existing
+            # env gap tracked elsewhere in this suite, unrelated to this
+            # test's actual subject) even on the success path this test
+            # exercises. Mocking at this level sidesteps that import
+            # entirely while still exercising the real is_terminal handler
+            # in run_react's own loop body.
+            if tool == "search_corpus":
+                return {
+                    "tool": "search_corpus", "success": True,
+                    "result": "Timely filing is 180 days from date of service.",
+                    "signal": "corpus_only", "sources": [_round1_source], "usage": None,
+                }
+            if tool == "appeals_assemble_letter":
+                return {
+                    "tool": "appeals_assemble_letter", "success": True,
+                    "result": "Dear Sunshine Health, this is our formal appeal...",
+                    "signal": None, "sources": [], "is_terminal": True,
+                }
+            raise AssertionError(f"unexpected tool call: {tool}")
+
+        with patch("app.pipeline.react.critic.critic_enabled", return_value=False), \
+             patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm), \
+             patch("app.pipeline.react_loop._execute_tool_with_retry", side_effect=fake_execute):
+            run_react(ctx, emitter=None)
+
+        assert ctx.final_message == "Dear Sunshine Health, this is our formal appeal..."
+        assert getattr(ctx, "react_bypass_integrate", False) is False  # integrator still runs
+        assert ctx.sources, "round 1's corpus source must survive onto the final card, not be dropped"
+        assert any(s.get("document_name") == "Provider Manual" for s in ctx.sources)
+
 
 def test_finalize_response_sets_plan_answers_and_answer_set():
     """_finalize_response sets ctx.plan, ctx.answers, ctx.answer_set for integrate."""
