@@ -3030,6 +3030,70 @@ function renderOneSection(sec) {
   _renderSectionBody(sec, sectionEl);
   return sectionEl;
 }
+function envelopeToAnswerCard(blocks, base) {
+  if (!Array.isArray(blocks) || blocks.length === 0)
+    return base ?? null;
+  const FORMAT_TYPES = /* @__PURE__ */ new Set(["table", "stats", "bullets", "steps", "bars", "conditions"]);
+  const body = {};
+  const sections = [];
+  let hasBody = false;
+  for (const b of blocks) {
+    if (!b || typeof b.type !== "string")
+      continue;
+    const t = b.type;
+    const blk = b;
+    if (t === "mode_badge") {
+      const m = String(blk.mode ?? "").trim().toUpperCase();
+      if (m === "FACTUAL" || m === "CANONICAL" || m === "BLENDED" || m === "RECITAL")
+        body.mode = m;
+    } else if (t === "direct_answer") {
+      const md = String(blk.markdown ?? "").trim();
+      if (md) {
+        body.display_summary = md;
+        body.direct_answer = md;
+        hasBody = true;
+      }
+    } else if (t === "tldr") {
+      const md = String(blk.markdown ?? "").trim();
+      if (md)
+        body.tldr_summary = md;
+    } else if (t === "first_pass") {
+      if (blk.draft_markdown)
+        body.react_draft = String(blk.draft_markdown);
+      if (Array.isArray(blk.trace_rounds))
+        body.reasoning_trace = blk.trace_rounds;
+    } else if (FORMAT_TYPES.has(t)) {
+      const isBullets = t === "bullets";
+      sections.push({
+        label: blk.label ?? "",
+        format: t,
+        visibility: "primary",
+        bullets: isBullets ? blk.items ?? [] : [],
+        data: isBullets ? void 0 : { items: blk.items, headers: blk.headers, rows: blk.rows }
+      });
+      hasBody = true;
+    } else if (t === "domain_card") {
+      sections.push({
+        label: blk.label ?? "",
+        format: blk.variant,
+        visibility: "primary",
+        bullets: [],
+        data: blk.data
+      });
+      hasBody = true;
+    } else if (t === "suggested_questions") {
+      const items = blk.items;
+      if (Array.isArray(items) && items.length) {
+        body.followups = items.map((q) => ({ question: typeof q === "string" ? q : String(q?.question ?? q?.text ?? ""), reason: "", field: "" })).filter((f) => f.question);
+      }
+    }
+  }
+  if (sections.length)
+    body.sections = sections;
+  if (!hasBody && !base)
+    return null;
+  return { ...base ?? { direct_answer: "", sections: [] }, ...body };
+}
 function applyInlineCorrections(container, corrections) {
   for (const c of corrections) {
     const orig = (c.original ?? "").trim();
@@ -12887,7 +12951,8 @@ ${message}`;
             }
           }
         }
-        const fullCard = tryParseAnswerCard(fullMessage);
+        const _msgCard = tryParseAnswerCard(fullMessage);
+        const fullCard = useEnvelope && envelopeHasContent ? envelopeToAnswerCard(envBlocks, _msgCard) : _msgCard;
         const _isRecitalShell = !!existingBubble?.querySelector(".recital-prose");
         if (fullCard && existingBubble) {
           messageWrapEl.classList.remove("answer-card--blended");

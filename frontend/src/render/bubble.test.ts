@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
-import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, applyCitationFootnotes, renderSourcesList, retainStreamedDraftAsFirstPass, stripCitationMarkers, renderFormatBlock, renderModeBadge, renderFirstPass, renderEnvelope } from "./bubble";
+import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, applyCitationFootnotes, renderSourcesList, retainStreamedDraftAsFirstPass, stripCitationMarkers, renderFormatBlock, renderModeBadge, renderFirstPass, renderEnvelope, envelopeToAnswerCard } from "./bubble";
 import type { AnswerCard } from "../answer-card";
 
 // A v2 (no-mode) card: primary section leads, detail tucks; citations light up their tab.
@@ -988,6 +988,80 @@ describe("renderEnvelope block renderers (Task #36 — single-contract, LLM Agen
   it("renderFirstPass: null when nothing to show", () => {
     expect(renderFirstPass({ type: "first_pass" })).toBeNull();
     expect(renderFirstPass({ type: "first_pass", draft_markdown: "  ", trace_rounds: [] })).toBeNull();
+  });
+});
+
+describe("envelopeToAnswerCard (Task #36 cutover — envelope is the single source)", () => {
+  // The real live block shape (cid 31a418cb): a full-table turn.
+  const ENV = [
+    { type: "mode_badge", mode: "FACTUAL" },
+    { type: "tool_attribution", label: "Research", icon: "search" },
+    { type: "direct_answer", markdown: "Sunshine Health requires filing within **180 days**." },
+    { type: "table", label: "Sunshine Health Timely Filing Deadlines", headers: ["Filing Type", "Deadline"], rows: [["Initial", "180 days"], ["Corrected", "90 days"]] },
+    { type: "first_pass", draft_markdown: "draft", trace_rounds: [{ round: 1, running_answer: "cut" }] },
+    { type: "takeaways", items: ["a", "b"] },
+    { type: "sources", refs: [{ index: 1 }] },
+    { type: "suggested_questions", items: ["What about Humana?"] },
+  ];
+
+  it("maps blocks → AnswerCard body fields (mode/prose/section/first-pass/followups)", () => {
+    const card = envelopeToAnswerCard(ENV)!;
+    expect(card).not.toBeNull();
+    expect(card.mode).toBe("FACTUAL");
+    expect(card.display_summary).toContain("180 days");
+    expect(card.direct_answer).toContain("180 days");
+    expect(card.sections.length).toBe(1);
+    expect(card.sections[0].format).toBe("table");
+    expect(card.sections[0].label).toBe("Sunshine Health Timely Filing Deadlines");
+    expect((card.sections[0].data as { rows: string[][] }).rows.length).toBe(2);
+    expect(card.react_draft).toBe("draft");
+    expect(card.reasoning_trace?.length).toBe(1);
+    expect(card.followups?.[0].question).toBe("What about Humana?");
+  });
+
+  it("round-trips through renderAnswerCard — the derived card renders the table once", () => {
+    const card = envelopeToAnswerCard(ENV)!;
+    const el = renderAnswerCard(card);
+    const tables = el.querySelectorAll(".answer-card-section--table table");
+    expect(tables.length).toBe(1);
+    expect(el.querySelector(".ac-fmt-table tbody")?.textContent).toContain("180 days");
+  });
+
+  it("returns null when the envelope carries no body content (→ caller falls back to message card)", () => {
+    expect(envelopeToAnswerCard([{ type: "tool_attribution", label: "x" }, { type: "sources", refs: [] }])).toBeNull();
+    expect(envelopeToAnswerCard([])).toBeNull();
+  });
+
+  it("bullets block → bullets section (items on sec.bullets, not data)", () => {
+    const card = envelopeToAnswerCard([{ type: "direct_answer", markdown: "hi" }, { type: "bullets", label: "Points", items: ["one", "two"] }])!;
+    const sec = card.sections.find((s) => s.format === "bullets")!;
+    expect(sec.bullets).toEqual(["one", "two"]);
+  });
+
+  it("MERGE: envelope wins on body, base keeps card-only fields (suggest_escalate/output_intent)", () => {
+    // base = message card with a stale/empty table section + card-only fields the envelope can't carry
+    const base = {
+      direct_answer: "old", display_summary: "old",
+      sections: [{ label: "Deadlines", format: "table", visibility: "primary", bullets: [], data: { headers: ["A"], rows: [] } }],
+      suggest_escalate: true, output_intent: "read", correction: { original: "x", corrected: "y" },
+    } as unknown as Parameters<typeof renderAnswerCard>[0];
+    const env = [
+      { type: "direct_answer", markdown: "new answer" },
+      { type: "table", label: "Deadlines", headers: ["Payor", "Days"], rows: [["Sunshine", "180"]] },
+    ];
+    const merged = envelopeToAnswerCard(env, base)!;
+    // envelope body wins
+    expect(merged.display_summary).toBe("new answer");
+    expect((merged.sections[0].data as { rows: string[][] }).rows.length).toBe(1); // the FULL table, not the empty base one
+    // card-only fields survive
+    expect(merged.suggest_escalate).toBe(true);
+    expect(merged.output_intent).toBe("read");
+    expect(merged.correction?.corrected).toBe("y");
+  });
+
+  it("MERGE: empty envelope + base → returns base unchanged (fallback safety)", () => {
+    const base = { direct_answer: "keep", sections: [] } as unknown as Parameters<typeof renderAnswerCard>[0];
+    expect(envelopeToAnswerCard([{ type: "tool_attribution", label: "x" }], base)?.direct_answer).toBe("keep");
   });
 });
 

@@ -706,7 +706,7 @@ import {
   simpleMarkdownToHtml, simpleMarkdownToHtmlInner, rosterStepMarkdownToHtml,
   CONFIDENCE_BADGE_MAP, renderConfidenceBadge, createQcSampleShieldSvg, renderQcAuditBadge,
 } from "./ui-helpers";
-import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, retainStreamedDraftAsFirstPass } from "./render/bubble";
+import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, retainStreamedDraftAsFirstPass, envelopeToAnswerCard } from "./render/bubble";
 
 /** Insert QC badge into an already-rendered assistant turn (late eval webhook). */
 function applyQcAuditToTurn(turnWrap: HTMLElement, qc: QcAuditInfo | undefined): void {
@@ -11517,7 +11517,18 @@ function run(): void {
             }
           }
 
-          const fullCard = tryParseAnswerCard(fullMessage);
+          // SINGLE-CONTRACT CUTOVER (Task #36, Chat Master ratified): the assistant_envelope is the
+          // authoritative source for the answer BODY. Parse the message card as the base (it still
+          // carries card-JSON-only fields — suggest_escalate, output_intent, recital, correction), then
+          // let the envelope's typed blocks win on every body field they provide. This kills the
+          // dual-read at the source: the card the shell renders now EQUALS the envelope, so the
+          // content-aware guard below suppresses the envelope's second render with nothing left to
+          // diverge — no duplicate table, no dropped table. Falls back to the pure message card when
+          // there's no content-bearing envelope.
+          const _msgCard = tryParseAnswerCard(fullMessage);
+          const fullCard = (useEnvelope && envelopeHasContent)
+            ? envelopeToAnswerCard(envBlocks, _msgCard)
+            : _msgCard;
           const _isRecitalShell = !!existingBubble?.querySelector(".recital-prose");
           if (fullCard && existingBubble) {
             // Update the mode class (was placeholder --blended or --recital; confirm correct mode)

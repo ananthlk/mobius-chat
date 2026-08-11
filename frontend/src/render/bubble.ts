@@ -994,6 +994,81 @@ export function renderEnvelope(blocks: EnvBlock[], opts: RenderEnvelopeOpts = {}
 }
 
 /**
+ * envelopeToAnswerCard — the single-contract cutover (Task #36). Maps the assistant_envelope's typed
+ * blocks into the AnswerCard render model so the EXISTING renderAnswerCard shell (tabs/panels/chrome/
+ * actions) renders the envelope directly — no second parse of the message-JSON card, no dual-read.
+ * The envelope becomes the single source of truth; the message card becomes a fallback only.
+ *
+ * Only maps the fields that drive the answer BODY + Sources tab (mode / prose / tldr / typed sections /
+ * first-pass / citations / followups). Chrome + additive widgets (next_steps, corrections, action_chips,
+ * document_download, task_list, …) keep flowing through the completed-handler's existing opts extraction
+ * and the additive tool-blocks path — this function does not need to carry them. Returns null when the
+ * envelope has no renderable body content (caller then falls back to tryParseAnswerCard).
+ */
+export function envelopeToAnswerCard(blocks: EnvBlock[], base?: AnswerCard | null): AnswerCard | null {
+  if (!Array.isArray(blocks) || blocks.length === 0) return base ?? null;
+  const FORMAT_TYPES = new Set(["table", "stats", "bullets", "steps", "bars", "conditions"]);
+  // Body fields the envelope owns. Collected first, then merged over `base` so card-JSON-only fields
+  // (suggest_escalate → Think-mode button, output_intent, recital, correction, citations/sources) survive.
+  const body: Partial<AnswerCard> = {};
+  const sections: AnswerCardSection[] = [];
+  let hasBody = false;
+
+  for (const b of blocks) {
+    if (!b || typeof b.type !== "string") continue;
+    const t = b.type;
+    const blk = b as Record<string, unknown>;
+    if (t === "mode_badge") {
+      const m = String(blk.mode ?? "").trim().toUpperCase();
+      if (m === "FACTUAL" || m === "CANONICAL" || m === "BLENDED" || m === "RECITAL") body.mode = m;
+    } else if (t === "direct_answer") {
+      const md = String(blk.markdown ?? "").trim();
+      if (md) { body.display_summary = md; body.direct_answer = md; hasBody = true; }
+    } else if (t === "tldr") {
+      const md = String(blk.markdown ?? "").trim();
+      if (md) body.tldr_summary = md;
+    } else if (t === "first_pass") {
+      if (blk.draft_markdown) body.react_draft = String(blk.draft_markdown);
+      if (Array.isArray(blk.trace_rounds)) body.reasoning_trace = blk.trace_rounds as AnswerCard["reasoning_trace"];
+    } else if (FORMAT_TYPES.has(t)) {
+      const isBullets = t === "bullets";
+      sections.push({
+        label: (blk.label as string) ?? "",
+        format: t as AnswerCardSection["format"],
+        visibility: "primary",
+        bullets: isBullets ? ((blk.items as string[]) ?? []) : [],
+        data: isBullets ? undefined : ({ items: blk.items, headers: blk.headers, rows: blk.rows } as AnswerCardSection["data"]),
+      });
+      hasBody = true;
+    } else if (t === "domain_card") {
+      sections.push({
+        label: (blk.label as string) ?? "",
+        format: blk.variant as AnswerCardSection["format"],
+        visibility: "primary",
+        bullets: [],
+        data: blk.data as AnswerCardSection["data"],
+      });
+      hasBody = true;
+    } else if (t === "suggested_questions") {
+      const items = blk.items;
+      if (Array.isArray(items) && items.length) {
+        body.followups = items
+          .map((q) => ({ question: typeof q === "string" ? q : String((q as Record<string, unknown>)?.question ?? (q as Record<string, unknown>)?.text ?? ""), reason: "", field: "" }))
+          .filter((f) => f.question);
+      }
+    }
+    // NOTE: `sources` intentionally NOT mapped — the Sources surface is driven by top-level
+    // ChatResponse `data.sources` + the Fix-2b Sources→card work; mapping it here would double-count.
+  }
+  if (sections.length) body.sections = sections;
+  if (!hasBody && !base) return null;
+
+  // Merge: message card is the base (keeps card-only fields), the envelope wins on every body field
+  // it actually provides. This is the single-contract cutover WITHOUT losing card-JSON-only extras.
+  return { ...(base ?? { direct_answer: "", sections: [] }), ...body };
+}
+
+/**
  * Inline corrections (Ananth 2026-08-07): render each {original, corrected} pair as a redline IN
  * the answer prose — strike the original, insert the corrected in a distinct colour — instead of a
  * separate Corrections tab. Walks the container's text nodes, finds the FIRST node containing the
