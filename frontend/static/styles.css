@@ -4023,6 +4023,14 @@ body {
   color: var(--text-secondary, #374151);
   margin: 0.35rem 0 0.2rem;
 }
+/* "Usually a documentation gap rather than a coverage denial…" — the is-this-worth-fighting read,
+   muted, directly under the description (Appeals Agent 2026-08-10). */
+.ac-pb-usually-means {
+  font-size: 0.76rem;
+  line-height: 1.45;
+  color: var(--text-tertiary, #6b7280);
+  margin: 0 0 0.25rem;
+}
 .ac-pb-section { margin-top: 0.65rem; }
 .ac-pb-section:first-of-type { margin-top: 0.5rem; }
 .ac-pb-section-heading {

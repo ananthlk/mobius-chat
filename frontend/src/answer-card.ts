@@ -59,6 +59,7 @@ export interface AppealsPlaybookData {
   payor?: string;
   carc?: string;
   description?: string;   // plain-language "what is this denial" (CARC catalog) — renders as the card lead
+  what_it_usually_means?: string;   // "is this worth fighting" read — muted line right under description (Appeals Agent 2026-08-10, optional)
   carc_codes?: Array<string | number>;   // tool emits an array (a playbook can span CARCs, e.g. [29,218])
   carc_group?: string;
   // Confidence ladder (Ananth 2026-08-08, replaces binary review_status): 0 generated · 1 reviewed ·

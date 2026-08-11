@@ -602,6 +602,19 @@ describe("Appeals typed sections (appeals_rules / appeals_playbook)", () => {
     expect(lvl.querySelector(".ac-appeals-level-note")?.textContent).toContain("from EOP/denial date");
   });
 
+  it("playbook: what_it_usually_means renders as a muted line under the description (Appeals 2026-08-10)", () => {
+    const el = mkPlaybook({
+      found: true, carc: "151",
+      description: "The payer is paying for fewer units than you billed.",
+      what_it_usually_means: "Usually a documentation gap rather than a coverage denial.",
+    });
+    const wtum = el.querySelector(".ac-pb-usually-means");
+    expect(wtum?.textContent).toContain("documentation gap");
+    // absent → omitted
+    const el2 = mkPlaybook({ found: true, carc: "151", description: "x" });
+    expect(el2.querySelector(".ac-pb-usually-means")).toBeNull();
+  });
+
   it("playbook: Submit row is field-driven — renders fax+mail when submission_method+portal empty (Appeals guard 2026-08-10)", () => {
     // CARC 151 × Sunshine: submission_method pruned to "", portal_url empty, but real fax + mail.
     const el = mkPlaybook({

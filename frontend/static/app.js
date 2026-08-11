@@ -2716,6 +2716,12 @@ function _renderAppealsPlaybook(sec, body) {
     desc.innerHTML = _inlineMd(data.description.trim());
     wrap.appendChild(desc);
   }
+  if (data.what_it_usually_means && data.what_it_usually_means.trim()) {
+    const wtum = document.createElement("div");
+    wtum.className = "ac-pb-usually-means";
+    wtum.innerHTML = _inlineMd(data.what_it_usually_means.trim());
+    wrap.appendChild(wtum);
+  }
   const mkSection = (label) => {
     const section = document.createElement("div");
     section.className = "ac-pb-section";

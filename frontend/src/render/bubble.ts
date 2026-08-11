@@ -468,6 +468,14 @@ function _renderAppealsPlaybook(sec: AnswerCardSection, body: HTMLElement): void
     desc.innerHTML = _inlineMd(data.description.trim());
     wrap.appendChild(desc);
   }
+  // "Is this worth fighting" read — muted second line directly under the description (Appeals Agent
+  // 2026-08-10). Optional; absent on some CARCs → omitted. Same muted treatment as guidance detail.
+  if (data.what_it_usually_means && data.what_it_usually_means.trim()) {
+    const wtum = document.createElement("div");
+    wtum.className = "ac-pb-usually-means";
+    wtum.innerHTML = _inlineMd(data.what_it_usually_means.trim());
+    wrap.appendChild(wtum);
+  }
   // mkSection returns the section's row BODY; its heading + wrapper are body.parentElement.
   const mkSection = (label: string): HTMLElement => {
     const section = document.createElement("div");
