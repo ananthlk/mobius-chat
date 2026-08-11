@@ -563,6 +563,21 @@ def build_assistant_envelope_v1(
                 blocks.append({"type": "callout", "variant": "info",
                                 "body": "**Sources did not cover:**\n\n" + "\n".join(f"- {g}" for g in _gap_lines)})
 
+        # incomplete_coverage / "Continue gathering" (2026-08-11, Task #84,
+        # Chat Master) -- react self-reported real partial progress on a
+        # multi-item question (e.g. found 2 of 4 payors) before exhausting
+        # its round budget. Distinct from suggest_escalate (genuinely
+        # stalled, suggests a different mode entirely) -- this is "more of
+        # the same search would likely finish the job," so the callout
+        # names what's true and the chip below offers to keep going with
+        # the SAME approach, not a different one.
+        if answer_card.get("incomplete_coverage"):
+            _ic_summary = (answer_card.get("incomplete_coverage_summary") or "").strip()
+            _ic_body = "**Partial answer — more information may be available.**"
+            if _ic_summary:
+                _ic_body += f"\n\n{_ic_summary}"
+            blocks.append({"type": "callout", "variant": "info", "body": _ic_body})
+
         # detail is no longer the sections catch-all -- only genuinely
         # free-form content that isn't a typed section (resolutions,
         # confidence note, citations, required variables) lands here.
@@ -576,16 +591,24 @@ def build_assistant_envelope_v1(
 
         # Layer 2 appeals integration — pass action chips through the envelope.
         _sa = answer_card.get("suggested_actions")
+        _chips: list[dict[str, Any]] = []
         if isinstance(_sa, list) and _sa:
-            valid_chips = [
+            _chips.extend(
                 a for a in _sa
                 if isinstance(a, dict)
                 and a.get("type") == "external_link"
                 and isinstance(a.get("label"), str)
                 and isinstance(a.get("url"), str)
-            ]
-            if valid_chips:
-                blocks.append({"type": "action_chips", "chips": valid_chips})
+            )
+        # continue_search chip (Task #84): FE resubmits the SAME turn with
+        # is_continuation=True (Task #83's full-context path) + an extended
+        # round budget -- not a link, an in-app resubmit action, so it's a
+        # distinct chip "type" from external_link within the same block
+        # rather than a new block type.
+        if answer_card.get("incomplete_coverage"):
+            _chips.append({"type": "continue_search", "label": "Continue gathering"})
+        if _chips:
+            blocks.append({"type": "action_chips", "chips": _chips})
 
     seen_types: set[str] = set()
     for raw in (ui_blocks_raw or [])[:MAX_UI_BLOCKS]:

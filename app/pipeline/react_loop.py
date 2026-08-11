@@ -61,9 +61,14 @@ _REACT_FINAL_ROUND_INSTRUCTION = (
     "  \"unfinished_reason\": one of \"need_more_time\" (you have a "
     "promising lead but ran out of rounds — more searching would likely "
     "help), \"need_more_info\" (you're missing a specific fact, document, "
-    "or clarification only the user can supply), or \"no_path_forward\" "
+    "or clarification only the user can supply), \"no_path_forward\" "
     "(you've exhausted the available tools/angles and the information is "
-    "likely not reachable this way),\n"
+    "likely not reachable this way), or \"incomplete_coverage\" (the "
+    "question asked about MULTIPLE distinct items — payors, plans, "
+    "documents, codes — and you found real information for SOME but not "
+    "all of them before running out of rounds; more searching would "
+    "likely close the remaining gaps, distinct from no_path_forward "
+    "which means nothing panned out at all),\n"
     "  \"unfinished_summary\": 1-2 sentences on what you checked and what, "
     "if anything, you found — specific to this question, not generic,\n"
     "  \"unblock_ask\" (only when unfinished_reason is \"need_more_info\"): "
@@ -5272,7 +5277,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         "You may want to contact the payer directly or provide a link to their documentation."
     )
     _uf_reason = decision.get("unfinished_reason") if decision else None
-    if _uf_reason in ("need_more_time", "need_more_info", "no_path_forward"):
+    if _uf_reason in ("need_more_time", "need_more_info", "no_path_forward", "incomplete_coverage"):
         _uf_summary = (decision.get("unfinished_summary") or "").strip()
         _uf_unblock = (decision.get("unblock_ask") or "").strip()
         # react_trace diagnostics: record the self-report regardless of
@@ -5289,6 +5294,16 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             )
         elif _uf_reason == "need_more_info" and _uf_unblock:
             parts.append(f"To help me find this: {_uf_unblock}")
+        elif _uf_reason == "incomplete_coverage":
+            # Task #84 (2026-08-11, Chat Master): distinct from
+            # no_path_forward -- real partial progress, not a dead end.
+            # The envelope's continue_search action chip (assistant_envelope.py)
+            # is the actual "Continue gathering" affordance; this text just
+            # explains why the answer is partial in the meantime.
+            parts.append(
+                "This covers what I found before running out of search rounds — "
+                "there may be more. Use \"Continue gathering\" for a deeper search."
+            )
         else:
             # no_path_forward, OR need_more_time with no higher mode tier
             # left to offer, OR need_more_info without a specific enough

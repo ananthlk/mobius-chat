@@ -118,6 +118,15 @@ _ANSWER_CARD_ENVELOPE_KEYS = (
     # allowlist FIRST this time (not after-the-fact like cta_confirm_authoritative
     # above) -- same failure class, learned the lesson.
     "sources",
+    # 2026-08-11 (Task #84, Chat Master): "Continue gathering" signal --
+    # react self-reported unfinished_reason="incomplete_coverage" (found
+    # SOME but not all of what a multi-item question asked for, e.g. 2 of
+    # 4 payors, before exhausting its round budget). Backend-computed
+    # (ctx.react_unfinished_reason/ctx.react_unfinished_summary), never
+    # LLM-produced by the integrator itself. Added to the allowlist FIRST,
+    # same lesson as sources above.
+    "incomplete_coverage",
+    "incomplete_coverage_summary",
 )
 
 
@@ -625,6 +634,11 @@ def _backend_extras_for_stub(ctx: PipelineContext) -> dict[str, Any]:
         extra["suggest_escalate"] = True
     if getattr(ctx, "cta_confirm_authoritative", False):
         extra["cta_confirm_authoritative"] = True
+    if getattr(ctx, "react_unfinished_reason", None) == "incomplete_coverage":
+        extra["incomplete_coverage"] = True
+        _ic_summary = getattr(ctx, "react_unfinished_summary", None)
+        if _ic_summary:
+            extra["incomplete_coverage_summary"] = _ic_summary
     _stub_reasoning_ledger = _build_reasoning_ledger(getattr(ctx, "react_trace_rounds", None))
     if _stub_reasoning_ledger:
         extra["reasoning_trace"] = _stub_reasoning_ledger
@@ -1239,6 +1253,20 @@ def run_integrate(
             # any FE path that only reads the persisted card.
             if getattr(ctx, "cta_confirm_authoritative", False):
                 parsed["cta_confirm_authoritative"] = True
+
+            # incomplete_coverage / "Continue gathering" (2026-08-11, Task #84,
+            # Chat Master) -- same additive pattern as suggest_escalate/
+            # cta_confirm_authoritative above. Distinct signal: react found
+            # real partial progress (some but not all of a multi-item
+            # question) rather than stalling entirely, so the framing and
+            # the action offered (resubmit with is_continuation=True + an
+            # extended round budget, Task #83) are both different from the
+            # escalate-to-Think-mode suggestion.
+            if getattr(ctx, "react_unfinished_reason", None) == "incomplete_coverage":
+                parsed["incomplete_coverage"] = True
+                _ic_summary = getattr(ctx, "react_unfinished_summary", None)
+                if _ic_summary:
+                    parsed["incomplete_coverage_summary"] = _ic_summary
 
             # react_draft persistence (2026-08-07, Chat FE / Ananth's ruling:
             # Summary tab = react_draft, always, including on history reload).
