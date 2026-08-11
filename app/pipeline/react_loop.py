@@ -2751,12 +2751,21 @@ def _execute_tool(
                     return {**_no_src(), "result": "[appeals_get_playbook] payor and (carc_group or carc) are required"}
                 emit(f"◌ Checking {payor} playbook…")
                 try:
-                    pb = _appeals_get(f"/playbook/{payor}/{lookup}")
+                    # P0-0(d): the GUARDED read. Chat declares its audience —
+                    # provider — from its own context; it is never inferred.
+                    # Member-party actions (an enrollee fair-hearing rung in a
+                    # provider ladder) are invisible unless they carry a consent
+                    # artifact. Undeclared audience serves nothing. Reading the
+                    # unguarded /playbook here is what let a member remedy render
+                    # as rung 4 of a provider ladder in live customer output.
+                    pb = _appeals_get(f"/playbook-guarded/{payor}/{lookup}",
+                                      audience="provider")
                     found = True
                 except httpx.HTTPStatusError as _e:
                     if _e.response.status_code == 404 and carc and carc_group:
                         try:
-                            pb = _appeals_get(f"/playbook/{payor}/{carc}")
+                            pb = _appeals_get(f"/playbook-guarded/{payor}/{carc}",
+                                              audience="provider")
                             found = True
                         except Exception:
                             pb = {"message": f"No playbook for {payor}. Default FL Medicaid: 60 days, certified mail."}
