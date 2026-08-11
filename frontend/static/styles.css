@@ -3683,6 +3683,64 @@ body {
   margin: 0.25rem 0 0.5rem;
 }
 
+/* EVERY structured card type renders as an elevated card (Ananth 2026-08-10: "this card treatment
+   should be standard for any card type… RAG is also a card… an accordion of cards"). Neutral
+   elevation for data cards; the appeals-agent cards below add brand prominence on top as the
+   authoritative agent artifact. The LLM summary/prose above stays flat — it's the synthesis layer. */
+.answer-card-section--table,
+.answer-card-section--stats,
+.answer-card-section--steps,
+.answer-card-section--bars,
+.answer-card-section--conditions {
+  border: 1px solid rgba(17, 24, 39, 0.10);
+  border-radius: 12px;
+  background: var(--card-bg, #fff);
+  padding: 0.7rem 0.9rem 0.8rem;
+  margin: 0.6rem 0;
+  box-shadow: 0 1px 2px rgba(17, 24, 39, 0.05);
+}
+/* The section label becomes the card HEADER — a compact uppercase eyebrow, consistent across types. */
+.answer-card-section--table > .answer-card-section-label,
+.answer-card-section--stats > .answer-card-section-label,
+.answer-card-section--steps > .answer-card-section-label,
+.answer-card-section--bars > .answer-card-section-label,
+.answer-card-section--conditions > .answer-card-section-label {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-tertiary, #6b7280);
+  margin-bottom: 0.45rem;
+}
+@media (prefers-color-scheme: dark) {
+  .answer-card-section--table,
+  .answer-card-section--stats,
+  .answer-card-section--steps,
+  .answer-card-section--bars,
+  .answer-card-section--conditions {
+    border-color: rgba(255, 255, 255, 0.12);
+    background: var(--card-bg, #1e1e2e);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  }
+}
+:root[data-theme="dark"] .answer-card-section--table,
+:root[data-theme="dark"] .answer-card-section--stats,
+:root[data-theme="dark"] .answer-card-section--steps,
+:root[data-theme="dark"] .answer-card-section--bars,
+:root[data-theme="dark"] .answer-card-section--conditions {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: var(--card-bg, #1e1e2e);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+:root[data-theme="light"] .answer-card-section--table,
+:root[data-theme="light"] .answer-card-section--stats,
+:root[data-theme="light"] .answer-card-section--steps,
+:root[data-theme="light"] .answer-card-section--bars,
+:root[data-theme="light"] .answer-card-section--conditions {
+  border-color: rgba(17, 24, 39, 0.10);
+  background: var(--card-bg, #fff);
+}
+
 /* The appeals playbook/rules are the AUTHORITATIVE structured artifact from the appeals agent —
    render the section as an ELEVATED, brand-accented card so it reads as clearly distinct from, and
    more prominent than, the LLM narration around it (Ananth 2026-08-10: "llm generated vs the card
