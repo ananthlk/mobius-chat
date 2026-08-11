@@ -2691,6 +2691,30 @@ def _execute_tool(
                         logger.warning("[appeals-enrich] carc-config failed carc=%s: %s",
                                        carc, _d_exc)
                     from urllib.parse import quote as _urlquote
+
+                    # Mode chooser — "start a new appeal in the Appeals Agent"
+                    # is now standard on every playbook card (Ananth 2026-08-10).
+                    # Ordered essentials -> copilot -> agentic (escalation ladder
+                    # AND build order). Self-serve is live today: it hands off to
+                    # the workbench with claim context prefilled. Copilot/agentic
+                    # render visible-but-disabled with honest reasons until the
+                    # assessment engine (M1) and data integrations exist.
+                    _case_q = "&".join(
+                        f"{_k}={_urlquote(str(_v))}"
+                        for _k, _v in (("carc", carc or ""), ("payor", payor),
+                                       ("src", "chat"), ("mode", "self_serve"))
+                        if _v not in ("", None)
+                    )
+                    result_data.setdefault("modes", [
+                        {"mode": "self_serve", "available": True,
+                         "action": {"kind": "case_link",
+                                    "url": f"{_appeals_base}/?{_case_q}"}},
+                        {"mode": "copilot", "available": False,
+                         "reason": "Guided assessment is in build — coming soon"},
+                        {"mode": "agentic", "available": False,
+                         "reason": "Needs claims-data integration for your org"},
+                    ])
+
                     result_data.setdefault(
                         "admin_url",
                         f"{_appeals_base}/admin/rules-library?carc={carc or ''}"
