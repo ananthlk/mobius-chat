@@ -243,3 +243,46 @@ def test_headline_falls_back_to_static_label_when_governor_off():
 
     assert seen_headlines
     assert any("Scoping — interpret" in h for h in seen_headlines)
+
+
+def test_rag_call_rounds_threaded_into_the_trace_envelope():
+    """2026-08-09, Chat Master directive, add-on to #80: the trace
+    envelope's data must carry whatever ctx._rag_call_rounds holds --
+    _execute_tool_with_retry is mocked in this file's harness (so the
+    real accumulation logic, covered in test_react_low_confidence_
+    escalation.py, never runs here), so pre-setting ctx._rag_call_rounds
+    directly isolates the WIRING (make_react_trace's call site reads and
+    threads it through) from the accumulation logic itself."""
+    def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+        if stage == "react_1":
+            return '{"thought": "search", "tool": "search_corpus", "inputs": {"query": "x"}, "is_complete": false}'
+        return '{"thought": "done", "tool": null, "inputs": {}, "is_complete": true, "answer": "a real answer here", "confidence": "high"}'
+
+    ctx = _make_ctx("copilot")
+    ctx._rag_call_rounds = [
+        {"round_n": 1, "query": "x", "terminal_action": "clarify_low_confidence", "module_trace": [{"stage": "route"}], "latency_ms": {"total_ms": 300}},
+        {"round_n": 2, "query": "x", "terminal_action": None, "module_trace": [{"stage": "route"}], "latency_ms": {"total_ms": 450}},
+    ]
+    with patch.dict("os.environ", {"MOBIUS_PRODUCT_PROMISE_ENABLED": "", "MOBIUS_REACT_CRITIC": ""}), \
+         patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm), \
+         patch("app.pipeline.react_loop._execute_tool_with_retry", return_value=_SEARCH_RESULT):
+        run_react(ctx, emitter=None)
+
+    data = _trace_entries(ctx)[0]["data"]
+    assert len(data["rag_call_rounds"]) == 2
+    assert data["rag_call_rounds"][0]["round_n"] == 1
+    assert data["rag_call_rounds"][1]["terminal_action"] is None
+
+
+def test_rag_call_rounds_defaults_to_empty_list_when_absent():
+    def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+        return '{"thought": "done", "tool": null, "inputs": {}, "is_complete": true, "answer": "a real answer here", "confidence": "high"}'
+
+    ctx = _make_ctx("copilot")
+    with patch.dict("os.environ", {"MOBIUS_PRODUCT_PROMISE_ENABLED": ""}), \
+         patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm), \
+         patch("app.pipeline.react_loop._execute_tool_with_retry", return_value=_SEARCH_RESULT):
+        run_react(ctx, emitter=None)
+
+    data = _trace_entries(ctx)[0]["data"]
+    assert data["rag_call_rounds"] == []

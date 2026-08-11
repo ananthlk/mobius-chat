@@ -41,6 +41,8 @@ def _env_for(
     text: str = _LONG_TEXT,
     adjusted_bar: float | None = None,
     chosen_slot_lb: float | None = None,
+    module_trace: list | None = None,
+    latency_ms: dict | None = None,
 ) -> MagicMock:
     env = MagicMock()
     env.text = text
@@ -55,6 +57,8 @@ def _env_for(
             "routing_verdict_outcome": "partial_infeasible" if terminal_action else "satisfied",
             "routing_verdict_adjusted_bar": adjusted_bar,
             "chosen_slot_lb": chosen_slot_lb,
+            "module_trace": module_trace,
+            "latency_ms": latency_ms,
         }
     }
     return env
@@ -229,3 +233,59 @@ def test_query_and_citable_required_unchanged_across_escalation_calls():
 
     queries = [c.inputs["query"] for c in calls]
     assert len(set(queries)) == 1, "escalation must reuse the exact same query, not reframe it"
+
+
+class TestRagCallRoundsDiagnostics:
+    """2026-08-09, Chat Master directive, add-on to #80: ctx._rag_call_rounds
+    accumulates one entry per ACTUAL RAG HTTP call this turn (not per
+    search_corpus tool invocation) so Chat FE can render collapsible
+    "Round 1/2/3" blocks in the Diagnostics panel. Separate accumulator
+    from ctx._rag_call_history (load-bearing for relax/reframe decisions) --
+    purely additive, must never affect the escalation logic itself."""
+
+    def test_single_call_produces_one_round_record(self):
+        calls, fake_dispatch = _sequenced_dispatch([_env_for(None, module_trace=[{"stage": "route"}], latency_ms={"total_ms": 420})])
+        ctx = _make_ctx()
+        with patch("app.skills.registry.dispatch", side_effect=fake_dispatch):
+            _execute_tool("rag", {"query": ctx.message}, ctx, emitter=None)
+
+        rounds = ctx._rag_call_rounds
+        assert len(rounds) == 1
+        assert rounds[0]["round_n"] == 1
+        assert rounds[0]["query"] == ctx.message
+        assert rounds[0]["module_trace"] == [{"stage": "route"}]
+        assert rounds[0]["latency_ms"] == {"total_ms": 420}
+        assert rounds[0]["terminal_action"] is None
+
+    def test_escalation_produces_one_record_per_actual_call(self):
+        calls, fake_dispatch = _sequenced_dispatch([
+            _env_for("clarify_low_confidence", latency_ms={"total_ms": 300}),
+            _env_for("clarify_low_confidence", latency_ms={"total_ms": 450}),
+            _env_for(None, latency_ms={"total_ms": 600}),
+        ])
+        ctx = _make_ctx()
+        with patch("app.skills.registry.dispatch", side_effect=fake_dispatch):
+            _execute_tool("rag", {"query": ctx.message}, ctx, emitter=None)
+
+        rounds = ctx._rag_call_rounds
+        assert len(rounds) == 3
+        assert [r["round_n"] for r in rounds] == [1, 2, 3]
+        assert [r["terminal_action"] for r in rounds] == ["clarify_low_confidence", "clarify_low_confidence", None]
+        assert [r["latency_ms"]["total_ms"] for r in rounds] == [300, 450, 600]
+
+    def test_rag_call_history_unaffected_by_the_new_accumulator(self):
+        """The existing, load-bearing accumulator must keep its own
+        pre-existing shape and count -- this is a genuinely separate list,
+        not a rename."""
+        calls, fake_dispatch = _sequenced_dispatch([
+            _env_for("clarify_low_confidence"),
+            _env_for(None),
+        ])
+        ctx = _make_ctx()
+        with patch("app.skills.registry.dispatch", side_effect=fake_dispatch):
+            _execute_tool("rag", {"query": ctx.message}, ctx, emitter=None)
+
+        assert len(ctx._rag_call_history) == 1  # one summary entry per TOOL invocation
+        assert len(ctx._rag_call_rounds) == 2   # two entries per ACTUAL rag call
+        assert "round_n" not in ctx._rag_call_history[0]
+        assert "module_trace" not in ctx._rag_call_history[0]

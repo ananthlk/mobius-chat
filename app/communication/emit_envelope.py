@@ -330,6 +330,7 @@ def make_react_trace(
     total_elapsed_s: float | None = None,
     hard_ceiling_s: float | None = None,
     groundedness_score: float | None = None,
+    rag_call_rounds: list[dict[str, Any]] | None = None,
     thread_id: str | None = None,
 ) -> EmitEnvelope:
     """React-loop trace emitted once per turn (2026-07-31).
@@ -347,6 +348,12 @@ def make_react_trace(
     ``directive``/``reason`` are None per-round when the governor is off
     (MOBIUS_PRODUCT_PROMISE_ENABLED=false) — agent_role/composition_id
     still populate either way.
+
+    ``rag_call_rounds`` (2026-08-09): one dict per actual RAG HTTP call
+    this turn (not per ReAct round — see the data-dict comment for why
+    these differ), e.g. {"round_n": 2, "query": "...",
+    "terminal_action": "clarify_low_confidence", "module_trace": [...],
+    "latency_ms": {...}}.
 
     Diagnostic-only: ``report_to_task_manager=False``, same tier as
     ``critic_approved``/``retrieval_trace`` — useful for debugging turn
@@ -379,6 +386,17 @@ def make_react_trace(
             "total_elapsed_s": total_elapsed_s,
             "hard_ceiling_s": hard_ceiling_s,
             "groundedness_score": groundedness_score,
+            # rag_call_rounds (2026-08-09, Chat Master directive, add-on to
+            # #80): one entry per ACTUAL RAG HTTP call this turn (primary +
+            # clarify-fallback + low-confidence escalation retries), in
+            # temporal order -- {round_n, query, terminal_action,
+            # module_trace, latency_ms}. Chat FE renders these as
+            # collapsible "Round 1/2/3" blocks. Separate from `rounds`
+            # above, which is react's OWN reasoning-round ledger (one entry
+            # per ReAct planner round, not per underlying RAG call -- a
+            # single ReAct round can make 1-3 RAG calls via this
+            # escalation, so the two lists don't have a 1:1 relationship).
+            "rag_call_rounds": rag_call_rounds or [],
         },
         note=note,
         thread_id=thread_id,

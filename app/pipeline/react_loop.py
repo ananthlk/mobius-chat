@@ -1464,6 +1464,36 @@ def _execute_tool(
                 )
                 return ("", [], None, "no_sources")
 
+        # rag_call_rounds diagnostics (2026-08-09, Chat Master directive,
+        # add-on to #80): one entry per ACTUAL RAG HTTP call made during
+        # this search_corpus invocation (primary + clarify-fallback +
+        # low-confidence escalation retries), in temporal order -- Chat
+        # FE renders these as collapsible "Round 1/2/3" blocks in the
+        # Diagnostics panel. Deliberately a SEPARATE accumulator from
+        # ctx._rag_call_history (which tracks one summary entry per
+        # search_corpus TOOL invocation, spans multiple ReAct rounds, and
+        # is load-bearing for the citable_required relax/reframe decision
+        # logic) -- reusing/renaming that array risks that logic; this is
+        # purely additive, diagnostics-only, same tier as react_trace.
+        # query is the same for every call in one invocation (this
+        # mechanism never rewrites the query text -- only citable_required/
+        # call_number vary), so it's captured once per record for clarity
+        # even though it doesn't change across rounds here.
+        _rag_round_seq = 0
+
+        def _record_rag_round(telemetry: dict) -> None:
+            nonlocal _rag_round_seq
+            _rag_round_seq += 1
+            if not isinstance(getattr(ctx, "_rag_call_rounds", None), list):
+                ctx._rag_call_rounds = []  # type: ignore[attr-defined]
+            ctx._rag_call_rounds.append({  # type: ignore[attr-defined]
+                "round_n": _rag_round_seq,
+                "query": query,
+                "terminal_action": telemetry.get("terminal_action"),
+                "module_trace": telemetry.get("module_trace"),
+                "latency_ms": telemetry.get("latency_ms"),
+            })
+
         _workers = 1 + len(upload_candidates)
         with _cf.ThreadPoolExecutor(max_workers=_workers) as pool:
             corpus_future = pool.submit(_run_corpus)
@@ -1482,6 +1512,7 @@ def _execute_tool(
                 corpus_answer, corpus_sources, corpus_usage, corpus_signal, _corpus_golden_explicit, _corpus_telemetry = (
                     "", [], None, "no_sources", False, {},
                 )
+            _record_rag_round(_corpus_telemetry)
             upload_results = [(u, f.result()) for u, f in upload_futures]
 
         # Merge: the integrator downstream doesn't care that two tools ran;
@@ -1656,6 +1687,7 @@ def _execute_tool(
                     )
                 )
                 _fallback_sources = [s.to_dict() for s in (_fallback_env.sources or [])]
+                _record_rag_round((_fallback_env.extra or {}).get("pipeline_trace") or {})
                 if _fallback_sources or (_fallback_env.text or "").strip():
                     corpus_answer = _fallback_env.text or ""
                     corpus_sources = _fallback_sources
@@ -1724,6 +1756,7 @@ def _execute_tool(
                 corpus_sources = [s.to_dict() for s in (_lc_env.sources or [])]
                 corpus_signal = _lc_env.signal or corpus_signal
                 _corpus_telemetry = (_lc_env.extra or {}).get("pipeline_trace") or _corpus_telemetry
+                _record_rag_round(_corpus_telemetry)
                 _status = _corpus_telemetry.get("status")
                 _dispatch_path = _corpus_telemetry.get("dispatch_path")
                 _chosen_slot = _corpus_telemetry.get("chosen_slot")
@@ -3338,6 +3371,7 @@ def _finalize_response(
                 total_elapsed_s=round(_rt_elapsed, 1) if _rt_elapsed is not None else None,
                 hard_ceiling_s=getattr(ctx, "react_hard_ceiling_s", None),
                 groundedness_score=getattr(ctx, "react_groundedness_score", None),
+                rag_call_rounds=getattr(ctx, "_rag_call_rounds", None),
                 thread_id=ctx.thread_id,
             )
             chunks = getattr(ctx, "thinking_chunks", None)
