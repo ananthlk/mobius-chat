@@ -117,57 +117,84 @@ def test_escalates_once_then_resolves():
 def test_escalates_through_all_three_calls_then_hedges():
     """All 3 calls stay low-confidence -- exactly 3 dispatch calls
     (call_number 1, 2, 3), then a forced honest-hedge signal, no 4th
-    call."""
+    call. Chat Master clarification (2026-08-09): the exhaustion answer is
+    produced by a DEDICATED synthesis pass (bypassing the model's own next
+    round entirely, same distrust-marginal-self-report rationale as the
+    fast-mode thin-evidence path), not a reframe-signal instruction hoping
+    the model complies. is_terminal=True skips the model's decision for
+    this round but still routes through the normal finalize/integrator
+    pipeline (real sources preserved, not react_bypass_integrate's
+    plain-message short-circuit)."""
     calls, fake_dispatch = _sequenced_dispatch([
         _env_for("clarify_low_confidence"),
         _env_for("clarify_low_confidence"),
         _env_for("clarify_low_confidence", adjusted_bar=0.7225, chosen_slot_lb=0.7018),
     ])
     ctx = _make_ctx()
-    with patch("app.skills.registry.dispatch", side_effect=fake_dispatch):
+
+    def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+        return "Prior auth timeframes are unclear from what's available -- best guidance found says 72 hours for urgent requests, but this isn't confirmed."
+
+    with patch("app.skills.registry.dispatch", side_effect=fake_dispatch), \
+         patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm):
         result = _execute_tool("rag", {"query": ctx.message}, ctx, emitter=None)
 
     assert len(calls) == 3
     assert [c.inputs["call_number"] for c in calls] == [1, 2, 3]
     assert ctx.react_unfinished_reason == "no_path_forward"
-    assert "[Retrieval signal for reframe]" in result["result"]
-    assert "confidence bar" in result["result"]
-    assert "rule 1d" in result["result"]
-    # Real numbers cited when routing_verdict supplies them.
-    assert "0.70" in result["result"]
-    assert "0.72" in result["result"]
+    assert result["is_terminal"] is True
+    assert result["success"] is True
+    assert result["sources"] == []  # matches this test's _env_for (no sources), still wired through
+    assert "72 hours" in result["result"]
+    assert "Think mode" in result["result"]
 
 
-def test_hedge_gracefully_omits_numbers_when_not_supplied():
+def test_exhaustion_falls_back_to_code_hedge_when_synthesis_fails():
+    """Zero-fabrication-risk fallback: if the dedicated synthesis call
+    itself fails or returns nothing usable, ship the pure code-constructed
+    excerpt hedge -- never an LLM call that could itself hallucinate past
+    what's literally in the low-confidence evidence."""
     calls, fake_dispatch = _sequenced_dispatch([
         _env_for("clarify_low_confidence"),
         _env_for("clarify_low_confidence"),
-        _env_for("clarify_low_confidence"),  # no adjusted_bar/chosen_slot_lb
+        _env_for("clarify_low_confidence"),
     ])
     ctx = _make_ctx()
-    with patch("app.skills.registry.dispatch", side_effect=fake_dispatch):
+
+    def failing_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+        raise RuntimeError("simulated provider failure")
+
+    with patch("app.skills.registry.dispatch", side_effect=fake_dispatch), \
+         patch("app.pipeline.react_loop._call_llm_json", side_effect=failing_llm):
         result = _execute_tool("rag", {"query": ctx.message}, ctx, emitter=None)
 
     assert ctx.react_unfinished_reason == "no_path_forward"
-    assert "confidence bar" in result["result"]
-    assert "None" not in result["result"]  # no raw None leaking into user/model-facing text
+    assert result["is_terminal"] is True
+    assert result["result"]  # code-constructed hedge, non-empty
+    assert "None" not in result["result"]  # no raw None leaking into user-facing text
 
 
-def test_success_true_does_not_suppress_the_hedge():
-    """A low-confidence result can still be >80 chars (content and
-    confidence are different axes) -- the hedge must fire even when the
-    generic `if not success:` gate wouldn't have caught it."""
+def test_exhaustion_is_terminal_skips_next_round_but_not_the_integrator():
+    """Distinguishes this from react_bypass_integrate (clarify_questions/
+    refuse): is_terminal routes through the normal finalize pipeline, so
+    real (if under-confident) sources survive as citations rather than
+    being discarded like the plain-message bypass path."""
     calls, fake_dispatch = _sequenced_dispatch([
         _env_for("clarify_low_confidence"),
         _env_for("clarify_low_confidence"),
         _env_for("clarify_low_confidence"),
     ])
     ctx = _make_ctx()
-    with patch("app.skills.registry.dispatch", side_effect=fake_dispatch):
+
+    def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+        return "Best-effort honest answer from limited evidence."
+
+    with patch("app.skills.registry.dispatch", side_effect=fake_dispatch), \
+         patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm):
         result = _execute_tool("rag", {"query": ctx.message}, ctx, emitter=None)
 
-    assert result["success"] is True  # >80 chars, real content
-    assert ctx.react_unfinished_reason == "no_path_forward"  # hedge still forced
+    assert result["is_terminal"] is True
+    assert getattr(ctx, "react_bypass_integrate", False) is False  # NOT the clarify_questions mechanism
 
 
 def test_transport_failure_mid_escalation_breaks_loop_without_crashing():

@@ -1742,14 +1742,6 @@ def _execute_tool(
             _low_confidence_call_number >= 3
             and _corpus_telemetry.get("terminal_action") == "clarify_low_confidence"
         )
-        if _low_confidence_exhausted:
-            emit("  ↓ Still under the confidence bar after 3 calls — answering honestly with what's been found.")
-            # Forced, code-driven signal (same pattern as the fast-mode
-            # thin-evidence hedge) rather than waiting on the model's own
-            # self-report -- matches the spec: no silent stop, no extra
-            # round spent hoping for a better synthesis from material RAG
-            # itself has already flagged as under-confident.
-            ctx.react_unfinished_reason = "no_path_forward"
 
         ctx._rag_call_history = _rag_history + [{  # type: ignore[attr-defined]
             "citable_required": _effective_citable,
@@ -1769,29 +1761,48 @@ def _execute_tool(
         }]
 
         if _low_confidence_exhausted:
-            # Independent of `success` -- a low-confidence result can still
-            # be >80 chars (content and confidence are different axes), so
-            # this can't ride the `if not success:` gate below. Takes
-            # priority over the citable_required relax/reframe narrative
-            # since it's a genuinely different signal (RAG's own confidence
-            # bar, not "empty result").
-            _lc_bar = _corpus_telemetry.get("routing_verdict_adjusted_bar")
-            _lc_lb = _corpus_telemetry.get("chosen_slot_lb")
-            _lc_detail = (
-                f" (confidence {_lc_lb:.2f} vs required bar {_lc_bar:.2f})"
-                if isinstance(_lc_lb, (int, float)) and isinstance(_lc_bar, (int, float))
-                else ""
+            # Chat Master ruling (2026-08-09, clarifying step 4): don't
+            # trust the model's NEXT round to reliably self-report marginal
+            # evidence -- "it doesn't reliably self-report... it
+            # extrapolates" (the same #65/#69 fabrication-on-sparse-corpus
+            # failure mode). Mirrors the fast-mode thin-evidence path
+            # above: one dedicated lightweight synthesis pass explicitly
+            # instructed to hedge (_FAST_MODE_SYNTHESIS_SYSTEM already says
+            # "if inferring beyond what's literally there, say so
+            # explicitly"), falling back to the pure code-constructed
+            # excerpt hedge if that call itself fails -- zero fabrication
+            # risk either way, no reliance on the model complying with a
+            # reframe-signal instruction on some future round.
+            # is_terminal=True (the same generalized mechanism refuse/
+            # appeals_assemble_letter use) skips the model's decision for
+            # THIS round entirely, but still runs through the normal
+            # _finalize_response/integrator pipeline -- unlike
+            # react_bypass_integrate, this IS a real answer, just hedged,
+            # and gets the same citation/formatting polish any other
+            # completion gets.
+            emit("  ↓ Still under the confidence bar after 3 calls — synthesizing an honest, hedged answer.")
+            _lc_synthesized = _fast_mode_synthesize_answer(
+                query, merged_result or "", ctx, stage="react_low_confidence_synthesis",
             )
-            merged_result = (
-                (merged_result or "")
-                + "\n\n[Retrieval signal for reframe]\n"
-                + f"RAG call {_low_confidence_call_number}/3: still under the confidence bar{_lc_detail} "
-                "after escalating call_number to unlock wider retrieval arms. This is a genuine "
-                "low-confidence gap, not a phrasing problem -- this was your last rag call for this "
-                "question. Answer honestly now using what was actually retrieved (rule 1d, SHAPE 2/3) "
-                "-- do not present this material with more confidence than RAG itself has in it."
-            )
-        elif not success:
+            if _lc_synthesized:
+                _lc_body = f"{_lc_synthesized}\n\nFor a more complete, verified answer, try Think mode."
+            else:
+                _lc_body = _build_fast_mode_hedge(merged_result or "", _n_chunks)
+            ctx.react_unfinished_reason = "no_path_forward"
+            return {
+                "tool": "search_corpus",
+                "success": True,
+                "result": _lc_body,
+                "signal": merged_signal,
+                "sources": merged_sources,
+                "is_terminal": True,
+                "rag_phase": _rag_phase,
+                "rag_call_number": _rag_call_number,
+                "status": _status,
+                "n_chunks": _n_chunks,
+            }
+
+        if not success:
             _reframe_lines: list[str] = [
                 f"RAG signal (call {_rag_call_number}/3): status={_status or 'unknown'}, "
                 f"citable_required={_effective_citable}, chunks={_n_chunks}, "
@@ -5098,11 +5109,19 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             # instead of assuming "nothing to show" -- correct for refuse
             # too (result="reason") if it's ever reached this path, and
             # required for appeals_assemble_letter (result=the letter).
+            # 2026-08-09: all_sources, not a hardcoded [] -- it's already
+            # been extended with this result's own sources (see the
+            # unconditional extend above, before this check), same as
+            # every other _finalize_response call site in this loop. The
+            # low-confidence-escalation exhaustion path (search_corpus)
+            # needs its real (if under-confident) chunks to survive as
+            # citations -- refuse/appeals_assemble_letter never had
+            # sources to begin with, so this is a no-op for them.
             emit(f"  Stopping ({last_tool or 'terminal result'}).")
             _finalize_response(
                 ctx,
                 (result.get("result") or "").strip(),
-                [],
+                all_sources,
                 result.get("signal") or RETRIEVAL_SIGNAL_NO_SOURCES,
                 last_tool,
                 emitter,
