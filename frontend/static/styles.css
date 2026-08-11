@@ -3682,6 +3682,69 @@ body {
   gap: 0.4rem;
   margin: 0.25rem 0 0.5rem;
 }
+
+/* The appeals playbook/rules are the AUTHORITATIVE structured artifact from the appeals agent —
+   render the section as an ELEVATED, brand-accented card so it reads as clearly distinct from, and
+   more prominent than, the LLM narration around it (Ananth 2026-08-10: "llm generated vs the card
+   from the agent is not differentiated… get the appeals card more prominent"). */
+.answer-card-section--appeals_playbook,
+.answer-card-section--appeals_rules {
+  border: 1px solid rgba(124, 58, 237, 0.22);
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, rgba(124, 58, 237, 0.05) 0%, rgba(124, 58, 237, 0.015) 100%),
+    var(--card-bg, #fff);
+  padding: 0.55rem 1rem 0.9rem;
+  margin: 0.8rem 0 0.65rem;
+  box-shadow: 0 1px 2px rgba(17, 24, 39, 0.05), 0 6px 18px rgba(124, 58, 237, 0.08);
+}
+/* Agent attribution eyebrow — signals "this came from the appeals agent", the counterpart to the
+   conversational LLM prose above it. Sits at the very top of the elevated card. */
+.answer-card-section--appeals_playbook::before,
+.answer-card-section--appeals_rules::before {
+  content: "APPEALS AGENT";
+  display: block;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  color: var(--mobius-violet, #7c3aed);
+  opacity: 0.75;
+  margin-bottom: 0.35rem;
+}
+/* The card carries its own 📘 title header (CARC × payor) — the generic section label is redundant. */
+.answer-card-section--appeals_playbook > .answer-card-section-label,
+.answer-card-section--appeals_rules > .answer-card-section-label {
+  display: none;
+}
+@media (prefers-color-scheme: dark) {
+  .answer-card-section--appeals_playbook,
+  .answer-card-section--appeals_rules {
+    border-color: rgba(139, 92, 246, 0.42);
+    background:
+      linear-gradient(180deg, rgba(139, 92, 246, 0.15) 0%, rgba(139, 92, 246, 0.05) 100%),
+      var(--card-bg, #1e1e2e);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 18px rgba(0, 0, 0, 0.25);
+  }
+  .answer-card-section--appeals_playbook::before,
+  .answer-card-section--appeals_rules::before { color: #a78bfa; opacity: 0.9; }
+}
+:root[data-theme="dark"] .answer-card-section--appeals_playbook,
+:root[data-theme="dark"] .answer-card-section--appeals_rules {
+  border-color: rgba(139, 92, 246, 0.42);
+  background:
+    linear-gradient(180deg, rgba(139, 92, 246, 0.15) 0%, rgba(139, 92, 246, 0.05) 100%),
+    var(--card-bg, #1e1e2e);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 18px rgba(0, 0, 0, 0.25);
+}
+:root[data-theme="dark"] .answer-card-section--appeals_playbook::before,
+:root[data-theme="dark"] .answer-card-section--appeals_rules::before { color: #a78bfa; opacity: 0.9; }
+:root[data-theme="light"] .answer-card-section--appeals_playbook,
+:root[data-theme="light"] .answer-card-section--appeals_rules {
+  border-color: rgba(124, 58, 237, 0.22);
+  background:
+    linear-gradient(180deg, rgba(124, 58, 237, 0.05) 0%, rgba(124, 58, 237, 0.015) 100%),
+    var(--card-bg, #fff);
+}
 .ac-appeals-head, .ac-appeals-playbook-head {
   display: flex;
   align-items: baseline;
