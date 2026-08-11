@@ -2681,14 +2681,29 @@ def _execute_tool(
 
                     # Card section 1 — "what is this denial": human title for
                     # the CARC so the card leads with meaning, not codes.
+                    # Prefer the authored PLAIN-LANGUAGE description over the
+                    # official CARC title — the title is payer jargon restated
+                    # ("Information submitted does not support this many/
+                    # frequency of services") and tells a biller nothing
+                    # (Ananth review 2026-08-10). Title stays as fallback.
                     try:
                         _cfg_carc = carc or (pb.get("carc_codes") or [0])[0]
                         if _cfg_carc:
-                            _cfg = _appeals_get(f"/carc-config/{_cfg_carc}")
-                            if _cfg.get("title"):
-                                result_data.setdefault("description", _cfg["title"])
+                            try:
+                                _cd = _appeals_get(f"/carc-description/{_cfg_carc}")
+                            except Exception:
+                                _cd = {}
+                            if (_cd.get("plain_description") or "").strip():
+                                result_data.setdefault("description", _cd["plain_description"])
+                                if (_cd.get("what_it_usually_means") or "").strip():
+                                    result_data.setdefault(
+                                        "what_it_usually_means", _cd["what_it_usually_means"])
+                            else:
+                                _cfg = _appeals_get(f"/carc-config/{_cfg_carc}")
+                                if _cfg.get("title"):
+                                    result_data.setdefault("description", _cfg["title"])
                     except Exception as _d_exc:
-                        logger.warning("[appeals-enrich] carc-config failed carc=%s: %s",
+                        logger.warning("[appeals-enrich] carc description failed carc=%s: %s",
                                        carc, _d_exc)
                     from urllib.parse import quote as _urlquote
 
