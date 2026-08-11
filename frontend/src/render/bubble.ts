@@ -655,8 +655,11 @@ function _renderAppealsPlaybook(sec: AnswerCardSection, body: HTMLElement): void
     const ic = document.createElement("span"); ic.className = "ac-pb-row-icon"; ic.textContent = "📤";
     const bd = document.createElement("span"); bd.className = "ac-pb-row-body";
     const lbl = document.createElement("b"); lbl.className = "ac-pb-row-label"; lbl.textContent = "Submit: "; bd.appendChild(lbl);
+    // Build the row from the CONCRETE channels only (portal link / fax / mail) — each rendered only
+    // when populated. submission_method is treated as a label at most: shown ONLY as a fallback when
+    // no concrete channel exists, never as a channel bit (Appeals Agent 2026-08-10 — the method string
+    // can claim "portal" while portal_url is empty; don't advertise a channel we can't point to).
     const bits: Node[] = [];
-    if (data.submission_method) { const m = document.createElement("span"); m.innerHTML = _inlineMd(data.submission_method); bits.push(m); }
     if (portalUrl) {
       const a = document.createElement("a");
       a.className = "ac-appeals-portal"; a.href = portalUrl; a.target = "_blank"; a.rel = "noopener noreferrer";
@@ -665,6 +668,9 @@ function _renderAppealsPlaybook(sec: AnswerCardSection, body: HTMLElement): void
     }
     if (data.fax) bits.push(document.createTextNode(`fax ${data.fax}`));
     if (data.mail_address) bits.push(document.createTextNode(`mail ${data.mail_address}`));
+    if (bits.length === 0 && data.submission_method) {
+      const m = document.createElement("span"); m.innerHTML = _inlineMd(data.submission_method); bits.push(m);
+    }
     bits.forEach((node, i) => { if (i) bd.appendChild(document.createTextNode(" · ")); bd.appendChild(node); });
     subRow.appendChild(ic); subRow.appendChild(bd);
     subBody.appendChild(subRow);

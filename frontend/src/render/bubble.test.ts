@@ -549,9 +549,10 @@ describe("Appeals typed sections (appeals_rules / appeals_playbook)", () => {
     expect(rowsText).toContain("appeal 60d");
     expect(rowsText).toContain("resubmit 180d");
     expect(rowsText).toContain("365 for corrected");
-    // Submit row: method + portal link + fax.
-    expect(rowsText).toContain("Provider portal");
+    // Submit row: concrete channels only — portal LINK + fax. submission_method ("Provider portal")
+    // is NOT rendered as a separate bit when a real portal_url exists (Appeals guard 2026-08-10).
     expect(el.querySelector(".ac-appeals-portal")?.getAttribute("href")).toBe("https://example.test/appeals");
+    expect(el.querySelector(".ac-appeals-portal")?.textContent).toBe("provider portal");
     expect(rowsText).toContain("1-866-000-0000");
     // Docs checklist preserved (required/optional).
     const docs = Array.from(el.querySelectorAll(".ac-appeals-doc")).map((d) => d.textContent);
@@ -599,6 +600,24 @@ describe("Appeals typed sections (appeals_rules / appeals_playbook)", () => {
     expect(lvl.querySelector(".ac-appeals-level-via")?.textContent).toContain("Mail or Fax");
     expect(lvl.querySelector(".ac-appeals-level-deadline")?.textContent).toBe("90d");
     expect(lvl.querySelector(".ac-appeals-level-note")?.textContent).toContain("from EOP/denial date");
+  });
+
+  it("playbook: Submit row is field-driven — renders fax+mail when submission_method+portal empty (Appeals guard 2026-08-10)", () => {
+    // CARC 151 × Sunshine: submission_method pruned to "", portal_url empty, but real fax + mail.
+    const el = mkPlaybook({
+      found: true, carc: "151", payor: "Sunshine Health",
+      submission_method: "", portal_url: "", fax: "1-833-504-0580", mail_address: "PO Box 3070, Farmington MO 63640",
+    });
+    const submitText = Array.from(el.querySelectorAll(".ac-pb-row--submit")).map((r) => r.textContent).join(" ");
+    expect(submitText).toContain("1-833-504-0580");   // fax survives
+    expect(submitText).toContain("PO Box 3070");        // mail survives
+    expect(submitText).not.toContain("portal");         // no phantom portal channel
+    expect(el.querySelector(".ac-appeals-portal")).toBeNull();
+  });
+
+  it("playbook: submission_method shows only as fallback when no concrete channel exists", () => {
+    const el = mkPlaybook({ found: true, carc: "151", submission_method: "Contact provider services", portal_url: "", fax: "", mail_address: "" });
+    expect(el.querySelector(".ac-pb-row--submit")?.textContent).toContain("Contact provider services");
   });
 
   it("playbook: strategy line + numbered canonical questions with hints", () => {

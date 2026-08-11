@@ -2916,11 +2916,6 @@ function _renderAppealsPlaybook(sec, body) {
     lbl.textContent = "Submit: ";
     bd.appendChild(lbl);
     const bits = [];
-    if (data.submission_method) {
-      const m = document.createElement("span");
-      m.innerHTML = _inlineMd(data.submission_method);
-      bits.push(m);
-    }
     if (portalUrl) {
       const a = document.createElement("a");
       a.className = "ac-appeals-portal";
@@ -2934,6 +2929,11 @@ function _renderAppealsPlaybook(sec, body) {
       bits.push(document.createTextNode(`fax ${data.fax}`));
     if (data.mail_address)
       bits.push(document.createTextNode(`mail ${data.mail_address}`));
+    if (bits.length === 0 && data.submission_method) {
+      const m = document.createElement("span");
+      m.innerHTML = _inlineMd(data.submission_method);
+      bits.push(m);
+    }
     bits.forEach((node, i) => {
       if (i)
         bd.appendChild(document.createTextNode(" \xB7 "));
