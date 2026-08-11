@@ -65,6 +65,9 @@ def process_one(correlation_id: str, payload: dict) -> None:
     force_citable_required = payload.get("force_citable_required")
     if force_citable_required is not None and not isinstance(force_citable_required, bool):
         force_citable_required = None
+    is_continuation = payload.get("is_continuation")
+    if not isinstance(is_continuation, bool):
+        is_continuation = False
     # Phase 2d completion (2026-04-19): user_id comes from POST /chat's
     # require_user dependency, forwarded through the queue so the
     # worker can stamp it on chat_turns for audit attribution. None
@@ -242,6 +245,7 @@ def process_one(correlation_id: str, payload: dict) -> None:
                 use_react_override=use_react,
                 chat_mode=chat_mode,
                 force_citable_required=force_citable_required,
+                is_continuation=is_continuation,
                 user_id=user_id,
                 system_context=system_context,
                 cache_assist=cache_assist,

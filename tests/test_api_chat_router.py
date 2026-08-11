@@ -132,6 +132,35 @@ class TestPostChat:
             client.post("/chat", json={"message": "x", "chat_mode": "agentic"})
         assert captured["payload"]["chat_mode"] == "agentic"
 
+    def test_is_continuation_forwarded_when_true(self, client):
+        """Task #83 (2026-08-11): a continuation resubmit forwards
+        is_continuation through to the queue payload, same pattern as
+        force_citable_required."""
+        captured: dict = {}
+
+        def fake_publish(cid, payload):
+            captured["payload"] = payload
+
+        fake_queue = MagicMock()
+        fake_queue.publish_request.side_effect = fake_publish
+        with patch("app.api.chat.get_queue", return_value=fake_queue), \
+             patch("app.api.chat.ensure_thread", return_value="t"):
+            client.post("/chat", json={"message": "x", "is_continuation": True})
+        assert captured["payload"]["is_continuation"] is True
+
+    def test_is_continuation_omitted_when_none(self, client):
+        captured: dict = {}
+
+        def fake_publish(cid, payload):
+            captured["payload"] = payload
+
+        fake_queue = MagicMock()
+        fake_queue.publish_request.side_effect = fake_publish
+        with patch("app.api.chat.get_queue", return_value=fake_queue), \
+             patch("app.api.chat.ensure_thread", return_value="t"):
+            client.post("/chat", json={"message": "x"})
+        assert "is_continuation" not in captured["payload"]
+
     def test_unknown_chat_mode_422(self, client):
         """ChatRequest uses Literal["copilot", "agentic", "quick"] — a
         typo'd value should 422, not silently coerce. Pydantic enforces

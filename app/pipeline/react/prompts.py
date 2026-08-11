@@ -919,7 +919,28 @@ def build_reasoning_context(
         )
         is_transform = any(t in msg_lower for t in _TRANSFORM_TRIGGERS)
 
-        if is_transform:
+        if getattr(ctx, "is_continuation", False):
+            # Task #83 (2026-08-11, Chat Master): an explicit continuation
+            # resubmit (think-mode escalation, or the "Continue gathering"
+            # chip, Task #84) needs the model building on what it actually
+            # already found -- e.g. a table it already assembled -- not a
+            # 400-char pronoun-resolution snippet or a keyword-guessed
+            # transform intent. Same budget transform_previous_answer
+            # already uses for the same reason (full prior substance,
+            # bounded so it doesn't blow the prompt budget).
+            from app.skills.builtin.transform_previous import (
+                _PREVIOUS_ANSWER_CHAR_BUDGET as _CONTINUATION_PREVIEW,
+            )
+            MOST_RECENT_PREVIEW = _CONTINUATION_PREVIEW
+            OLDER_PREVIEW = 200
+            preamble = (
+                "Recent conversation (the FIRST 'Assistant:' below is the "
+                "MOST RECENT answer, shown in full — this is a CONTINUATION "
+                "of that answer, not a fresh question. Build on what you "
+                "already found; do not restart research on ground you've "
+                "already covered.):\n"
+            )
+        elif is_transform:
             MOST_RECENT_PREVIEW = 3000
             OLDER_PREVIEW = 200
             preamble = (

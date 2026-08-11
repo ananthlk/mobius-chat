@@ -216,6 +216,12 @@ class PipelineContext:
     # leaves react_loop.py's keyword heuristic untouched.
     force_citable_required: bool | None = None
 
+    # Task #83 (2026-08-11, Chat Master): True when this request is a
+    # continuation resubmit (think-mode escalation, or the "Continue
+    # gathering" chip from an incomplete_coverage exit, Task #84) — see
+    # ChatRequest.is_continuation in app/api/chat.py for the full contract.
+    is_continuation: bool = False
+
     # Computed in orchestrator.py right after run_react() returns: True when
     # this turn's rag answer came from the broad "any" net (citable_required
     # was False) rather than citable-only sources -- drives the "confirm

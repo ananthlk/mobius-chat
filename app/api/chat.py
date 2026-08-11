@@ -155,6 +155,18 @@ class ChatRequest(BaseModel):
     explicitly proceeding. The backend still re-runs /message-check
     authoritatively and logs the override before dispatching."""
 
+    is_continuation: bool | None = None
+    """Task #83 (2026-08-11, Chat Master): set True when this request is a
+    continuation resubmit of a prior turn (think-mode escalation, or the
+    "Continue gathering" chip from incomplete_coverage exits, Task #84) —
+    the SAME message/thread resubmitted expecting the model to build on
+    what it already found, not start fresh. When True, build_reasoning_context
+    uses the full ~12k-char prior-assistant-content budget (same path
+    transform_previous_answer already uses) instead of the 400-char compact
+    preview normal follow-ups get — a continuation needs the actual prior
+    substance (e.g. a table it already assembled), not a pronoun-resolution
+    snippet. None/False (the default) leaves existing behavior untouched."""
+
 
 class ChatResponse(BaseModel):
     correlation_id: str
@@ -309,6 +321,8 @@ def post_chat(
         payload["chat_mode"] = body.chat_mode
     if body.force_citable_required is not None:
         payload["force_citable_required"] = bool(body.force_citable_required)
+    if body.is_continuation is not None:
+        payload["is_continuation"] = bool(body.is_continuation)
     if user_id:
         payload["user_id"] = user_id
     if body.system_context:

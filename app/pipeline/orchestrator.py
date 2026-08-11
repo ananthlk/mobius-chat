@@ -444,6 +444,7 @@ def run_pipeline(
     cache_assist: bool | None = None,
     user_profile: dict | None = None,
     phi_gate_verdict: dict | None = None,
+    is_continuation: bool = False,
 ) -> None:
     """Run the full pipeline: state_load -> classify -> plan -> clarify -> [resolve -> integrate] | early_exit.
 
@@ -477,6 +478,7 @@ def run_pipeline(
         system_context=_sys_ctx,
         cache_assist_override=cache_assist,
         user_profile=user_profile if isinstance(user_profile, dict) and user_profile else None,
+        is_continuation=bool(is_continuation),
     )
     _detect_and_resolve_retry(ctx)
 
