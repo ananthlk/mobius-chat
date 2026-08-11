@@ -2980,9 +2980,43 @@ function _renderAppealsPlaybook(sec, body) {
   }
   body.appendChild(wrap);
 }
+var COLLAPSIBLE_CARD_FORMATS = /* @__PURE__ */ new Set(["table", "stats", "steps", "bars", "conditions"]);
 function renderOneSection(sec) {
+  const fmt = sec.format ?? "bullets";
   const sectionEl = document.createElement("div");
-  sectionEl.className = `answer-card-section answer-card-section--${sec.format ?? "bullets"}`;
+  sectionEl.className = `answer-card-section answer-card-section--${fmt}`;
+  if (COLLAPSIBLE_CARD_FORMATS.has(fmt) && (sec.label || "").trim()) {
+    const header = document.createElement("button");
+    header.type = "button";
+    header.className = "answer-card-section-label ac-card-toggle";
+    const lblText = document.createElement("span");
+    lblText.className = "ac-card-toggle-text";
+    lblText.textContent = sec.label || "";
+    const chev = document.createElement("span");
+    chev.className = "ac-card-chevron";
+    chev.setAttribute("aria-hidden", "true");
+    chev.textContent = "\u25BE";
+    header.appendChild(lblText);
+    header.appendChild(chev);
+    const body = document.createElement("div");
+    body.className = "ac-card-body";
+    _renderSectionBody(sec, body);
+    const startCollapsed = sec.visibility === "detail";
+    header.setAttribute("aria-expanded", startCollapsed ? "false" : "true");
+    if (startCollapsed) {
+      sectionEl.classList.add("ac-card--collapsed");
+      body.style.maxHeight = "0px";
+    }
+    header.addEventListener("click", () => {
+      const collapsing = !sectionEl.classList.contains("ac-card--collapsed");
+      sectionEl.classList.toggle("ac-card--collapsed");
+      header.setAttribute("aria-expanded", collapsing ? "false" : "true");
+      body.style.maxHeight = collapsing ? "0px" : body.scrollHeight + "px";
+    });
+    sectionEl.appendChild(header);
+    sectionEl.appendChild(body);
+    return sectionEl;
+  }
   const labelEl = document.createElement("div");
   labelEl.className = "answer-card-section-label";
   labelEl.textContent = sec.label || "";

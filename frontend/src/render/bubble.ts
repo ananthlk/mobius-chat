@@ -716,9 +716,55 @@ function _renderAppealsPlaybook(sec: AnswerCardSection, body: HTMLElement): void
   body.appendChild(wrap);
 }
 
+// Elevated card types that participate in the accordion (Ananth 2026-08-10 "accordion of cards which
+// can be collapsed and expanded"). Bullets stay flat (answer-body continuation); appeals cards keep
+// their own header/structure and render expanded (the star of the turn).
+const COLLAPSIBLE_CARD_FORMATS = new Set(["table", "stats", "steps", "bars", "conditions"]);
+
 function renderOneSection(sec: AnswerCardSection): HTMLElement {
+  const fmt = sec.format ?? "bullets";
   const sectionEl = document.createElement("div");
-  sectionEl.className = `answer-card-section answer-card-section--${sec.format ?? "bullets"}`;
+  sectionEl.className = `answer-card-section answer-card-section--${fmt}`;
+
+  // Accordion card: elevated structured card with a clickable header (label + chevron) that collapses
+  // the body. Opens expanded unless the backend marked the section visibility "detail" (→ collapsed,
+  // one click away). Animates via measured max-height, same mechanism as First pass.
+  if (COLLAPSIBLE_CARD_FORMATS.has(fmt) && (sec.label || "").trim()) {
+    const header = document.createElement("button");
+    header.type = "button";
+    header.className = "answer-card-section-label ac-card-toggle";
+    const lblText = document.createElement("span");
+    lblText.className = "ac-card-toggle-text";
+    lblText.textContent = sec.label || "";
+    const chev = document.createElement("span");
+    chev.className = "ac-card-chevron";
+    chev.setAttribute("aria-hidden", "true");
+    chev.textContent = "▾";
+    header.appendChild(lblText);
+    header.appendChild(chev);
+
+    const body = document.createElement("div");
+    body.className = "ac-card-body";
+    _renderSectionBody(sec, body);
+
+    const startCollapsed = sec.visibility === "detail";
+    header.setAttribute("aria-expanded", startCollapsed ? "false" : "true");
+    if (startCollapsed) {
+      sectionEl.classList.add("ac-card--collapsed");
+      body.style.maxHeight = "0px";
+    }
+    header.addEventListener("click", () => {
+      const collapsing = !sectionEl.classList.contains("ac-card--collapsed");
+      sectionEl.classList.toggle("ac-card--collapsed");
+      header.setAttribute("aria-expanded", collapsing ? "false" : "true");
+      body.style.maxHeight = collapsing ? "0px" : body.scrollHeight + "px";
+    });
+
+    sectionEl.appendChild(header);
+    sectionEl.appendChild(body);
+    return sectionEl;
+  }
+
   const labelEl = document.createElement("div");
   labelEl.className = "answer-card-section-label";
   labelEl.textContent = sec.label || "";

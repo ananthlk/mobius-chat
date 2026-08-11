@@ -3712,6 +3712,33 @@ body {
   color: var(--text-tertiary, #6b7280);
   margin-bottom: 0.45rem;
 }
+/* Accordion card header: the label becomes a full-width toggle button with a chevron. */
+.ac-card-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+.ac-card-chevron {
+  font-size: 0.7rem;
+  line-height: 1;
+  color: var(--text-tertiary, #9ca3af);
+  transition: transform 0.18s ease;
+  flex: none;
+}
+.ac-card--collapsed .ac-card-chevron { transform: rotate(-90deg); }
+.ac-card-toggle:hover .ac-card-chevron { color: var(--mobius-violet, #7c3aed); }
+.ac-card-toggle:focus-visible { outline: 2px solid var(--mobius-violet, #7c3aed); outline-offset: 2px; border-radius: 4px; }
+/* Collapsible body: measured max-height animation (JS sets the px value; collapsed = 0). */
+.ac-card-body { overflow: hidden; transition: max-height 0.22s ease; }
+.ac-card--collapsed > .ac-card-body { max-height: 0 !important; }
 @media (prefers-color-scheme: dark) {
   .answer-card-section--table,
   .answer-card-section--stats,

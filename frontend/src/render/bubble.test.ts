@@ -854,6 +854,36 @@ describe("Enricher fast-path shapes render (LLM Agent's exact deterministic_form
     // wide/many-column tables get the horizontal-scroll wrapper (no body overflow)
     expect(el.querySelector(".ac-fmt-table-scroll")).not.toBeNull();
   });
+
+  // Accordion cards (Ananth 2026-08-10): elevated structured cards collapse/expand.
+  it("structured card → collapsible header (button + chevron) wrapping a body", () => {
+    const el = renderSec({ format: "stats", label: "Key Facts", data: { items: [{ label: "Initial", value: "180 days" }] } });
+    const sec = el.querySelector(".answer-card-section--stats")!;
+    const toggle = sec.querySelector("button.ac-card-toggle");
+    expect(toggle).not.toBeNull();
+    expect(toggle!.getAttribute("aria-expanded")).toBe("true");   // primary default = expanded
+    expect(toggle!.querySelector(".ac-card-chevron")).not.toBeNull();
+    // body wraps the actual content (tiles live inside .ac-card-body)
+    expect(sec.querySelector(".ac-card-body .ac-fmt-stat-tile")).not.toBeNull();
+    expect(sec.classList.contains("ac-card--collapsed")).toBe(false);
+  });
+
+  it("visibility:detail card starts collapsed; click expands", () => {
+    const el = renderSec({ format: "table", label: "Appendix", visibility: "detail", data: { headers: ["A"], rows: [["1"]] } });
+    const sec = el.querySelector(".answer-card-section--table")!;
+    expect(sec.classList.contains("ac-card--collapsed")).toBe(true);
+    const toggle = sec.querySelector("button.ac-card-toggle") as HTMLButtonElement;
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    toggle.click();
+    expect(sec.classList.contains("ac-card--collapsed")).toBe(false);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("bullets stay FLAT (no accordion toggle — answer-body continuation)", () => {
+    const el = renderSec({ format: "bullets", label: "Points", bullets: ["one", "two"] });
+    expect(el.querySelector(".ac-card-toggle")).toBeNull();
+    expect(el.querySelector(".answer-card-bullet")).not.toBeNull();
+  });
 });
 
 describe("renderEnvelope block renderers (Task #36 — single-contract, LLM Agent's real block shapes)", () => {
