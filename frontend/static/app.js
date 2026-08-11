@@ -13059,30 +13059,28 @@ ${message}`;
           const _suppressedChrome = new Set(
             _hasTabs ? ["tool_attribution", "detail", "callout", "correction", "next_steps"] : []
           );
-          const CARD_OWNED_CONTENT = /* @__PURE__ */ new Set([
-            "table",
-            "stats",
-            "bullets",
-            "steps",
-            "bars",
-            "conditions",
-            "domain_card",
-            "detail",
-            "markdown_report",
-            "takeaways",
-            "tldr",
-            "first_pass",
-            "mode_badge",
-            "callout",
-            "correction",
-            "direct_answer"
-          ]);
+          const cardFormatsRendered = /* @__PURE__ */ new Set();
+          for (const s of fullCard?.sections ?? []) {
+            const d = s.data ?? {};
+            const nonEmpty = Array.isArray(d.rows) && d.rows.length > 0 || Array.isArray(d.items) && d.items.length > 0 || Array.isArray(s.bullets) && s.bullets.length > 0 || typeof s.format === "string" && s.format.startsWith("appeals");
+            if (nonEmpty && s.format)
+              cardFormatsRendered.add(s.format);
+          }
+          const FORMAT_BLOCK_TYPES = /* @__PURE__ */ new Set(["table", "stats", "bullets", "steps", "bars", "conditions", "domain_card"]);
+          const CARD_PROSE_CHROME = /* @__PURE__ */ new Set(["detail", "markdown_report", "takeaways", "tldr", "first_pass", "mode_badge", "callout", "correction"]);
           const toolBlocks = envCandidate.blocks.filter((b) => {
             const bt = b.type;
             if (bt === "direct_answer" || bt === "sources")
               return false;
-            if (fullCard && CARD_OWNED_CONTENT.has(bt))
-              return false;
+            if (fullCard) {
+              if (CARD_PROSE_CHROME.has(bt))
+                return false;
+              if (FORMAT_BLOCK_TYPES.has(bt)) {
+                const rendered = bt === "domain_card" ? cardFormatsRendered.has("appeals_playbook") || cardFormatsRendered.has("appeals_rules") : cardFormatsRendered.has(bt);
+                if (rendered)
+                  return false;
+              }
+            }
             return !_suppressedChrome.has(bt);
           });
           if (toolBlocks.length > 0) {

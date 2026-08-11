@@ -11752,23 +11752,40 @@ function run(): void {
             const _suppressedChrome = new Set(
               _hasTabs ? ["tool_attribution", "detail", "callout", "correction", "next_steps"] : []
             );
-            // DUAL-READ GUARD (Ananth 2026-08-10 "cards are duplicated"): when the answer card
-            // rendered the body above (fullCard present), renderAnswerCard already drew the prose,
-            // EVERY typed section (table/stats/…), and citations. The envelope carries the SAME
-            // content as blocks — so re-rendering any card-owned content block here double-prints it
-            // (the visible duplicate table). Suppress all card-owned content; let ONLY genuinely
-            // additive envelope widgets through. (When there's no card, the old behavior stands so a
-            // card-less turn still renders its envelope content.) The renderEnvelope cutover retires
-            // this whole second path — until then this stops the duplication at the source.
-            const CARD_OWNED_CONTENT = new Set([
-              "table", "stats", "bullets", "steps", "bars", "conditions", "domain_card",
-              "detail", "markdown_report", "takeaways", "tldr", "first_pass", "mode_badge",
-              "callout", "correction", "direct_answer",
-            ]);
+            // DUAL-READ GUARD (Ananth 2026-08-10 "cards are duplicated"): when the card rendered the
+            // body above (fullCard present), the envelope carries the SAME content as blocks, so
+            // re-rendering a card-owned block double-prints it (the duplicate table). BUT suppression
+            // must be CONTENT-AWARE: a card section can carry a label with EMPTY data while the real
+            // rows live only in the envelope block — suppressing by type then drops the only copy
+            // ("the react had the table but the final is missing it", Ananth 2026-08-10). So: prose/
+            // chrome the card always draws → always suppress; typed FORMAT blocks → suppress ONLY when
+            // the card actually rendered a NON-EMPTY section of that format. The renderEnvelope cutover
+            // retires this whole second path; until then this dedups without ever dropping content.
+            const cardFormatsRendered = new Set<string>();
+            for (const s of (fullCard?.sections ?? [])) {
+              const d = (s.data ?? {}) as { rows?: unknown[]; items?: unknown[] };
+              const nonEmpty =
+                (Array.isArray(d.rows) && d.rows.length > 0) ||
+                (Array.isArray(d.items) && d.items.length > 0) ||
+                (Array.isArray(s.bullets) && s.bullets.length > 0) ||
+                (typeof s.format === "string" && s.format.startsWith("appeals"));
+              if (nonEmpty && s.format) cardFormatsRendered.add(s.format);
+            }
+            const FORMAT_BLOCK_TYPES = new Set(["table", "stats", "bullets", "steps", "bars", "conditions", "domain_card"]);
+            const CARD_PROSE_CHROME = new Set(["detail", "markdown_report", "takeaways", "tldr", "first_pass", "mode_badge", "callout", "correction"]);
             const toolBlocks = (envCandidate as AssistantEnvelope).blocks.filter((b) => {
               const bt = (b as EnvelopeBlock).type;
               if (bt === "direct_answer" || bt === "sources") return false;
-              if (fullCard && CARD_OWNED_CONTENT.has(bt)) return false;   // card already rendered it
+              if (fullCard) {
+                if (CARD_PROSE_CHROME.has(bt)) return false;                 // card always draws prose/chrome
+                if (FORMAT_BLOCK_TYPES.has(bt)) {
+                  const rendered = bt === "domain_card"
+                    ? (cardFormatsRendered.has("appeals_playbook") || cardFormatsRendered.has("appeals_rules"))
+                    : cardFormatsRendered.has(bt);
+                  if (rendered) return false;   // card drew this format non-empty → drop the dup
+                  // else the card's section was empty/absent → KEEP the envelope block (don't lose data)
+                }
+              }
               return !_suppressedChrome.has(bt);
             });
             if (toolBlocks.length > 0) {
