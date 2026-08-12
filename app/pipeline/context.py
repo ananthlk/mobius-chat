@@ -222,6 +222,16 @@ class PipelineContext:
     # ChatRequest.is_continuation in app/api/chat.py for the full contract.
     is_continuation: bool = False
 
+    # Task #86 (2026-08-11, Chat Master): side-channel signal set by
+    # answer_non_patient (non_patient_rag.py) when the RAG-answering LLM
+    # call fails with a RECOVERABLE error (rate_limit/timeout/provider_error)
+    # after generate_sync's own retry+fallback machinery is exhausted.
+    # Holds the classified ErrorEnvelope (mobius_contracts.envelopes) so
+    # react_loop.py can escalate to a genuine failure instead of silently
+    # completing the turn with degraded content -- see answer_non_patient's
+    # docstring for the full incident this fixes.
+    llm_provider_exhausted: Any = None
+
     # Computed in orchestrator.py right after run_react() returns: True when
     # this turn's rag answer came from the broad "any" net (citable_required
     # was False) rather than citable-only sources -- drives the "confirm

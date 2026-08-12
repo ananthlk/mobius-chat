@@ -1469,6 +1469,7 @@ def _execute_tool(
                     phi_detected=False,
                     config_sha=_get_config_sha() or None,
                     mode=getattr(ctx, "chat_mode", None),
+                    pipeline_ctx=ctx,
                 ) + (False, {})  # no golden, no telemetry on legacy fallback
             # Map SkillEnvelope → 6-tuple; 5th element carries golden_explicit so
             # the fact-store fast-exit (short certified facts, empty sources) can
@@ -4984,6 +4985,30 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             tool or "search_corpus", inputs, ctx, rn, emit, emitter,
             skip_retry=(mode_label == "quick"),
         )
+
+        # Task #86 (2026-08-11, Chat Master): checked here, immediately
+        # after the tool call returns and BEFORE retry_guard.record_result
+        # -- if a tool's underlying LLM call hit a recoverable error
+        # (rate_limit/timeout/provider_error) that survived generate_sync's
+        # own retry+fallback machinery, retrying more ReAct rounds against
+        # the same exhausted provider is pointless. Raising here (not
+        # inside _execute_tool/_execute_tool_with_retry, which already
+        # catch and reclassify any exception into a typed tool-failure
+        # result the retry guard would just record and shrug off) is what
+        # actually escapes run_react() cleanly to orchestrator.py's
+        # try/except around it (line ~745), which calls _publish_failed --
+        # the same handler that correctly computes retryable=True and the
+        # honest "quota limit" copy. Previously this signal didn't exist,
+        # so the turn just kept going and completed with degraded content,
+        # a stale tool-attribution label, and no retry affordance.
+        _llm_exhausted = getattr(ctx, "llm_provider_exhausted", None)
+        if _llm_exhausted is not None:
+            emit("  ⊘ Answering model is temporarily unavailable — stopping this turn.")
+            raise RuntimeError(
+                getattr(_llm_exhausted, "internal_detail", None)
+                or "LLM provider exhausted (recoverable error)"
+            )
+
         last_tool = result.get("tool")
         _append_tool_llm_usage(ctx, str(last_tool or tool or ""), result)
         retry_guard.record_result(

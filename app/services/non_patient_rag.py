@@ -139,9 +139,24 @@ def answer_non_patient(
     phi_detected: bool = False,
     config_sha: str | None = None,
     mode: str | None = None,
+    pipeline_ctx: Any = None,
 ) -> tuple[str, list[dict], dict[str, Any] | None, str]:
     """Answer a non-patient subquestion: RAG (blend of hierarchical + factual or single path) then LLM.
-    Returns (answer_text, sources, llm_usage, retrieval_signal). retrieval_signal: corpus_only | corpus_plus_google | google_only | no_sources."""
+    Returns (answer_text, sources, llm_usage, retrieval_signal). retrieval_signal: corpus_only | corpus_plus_google | google_only | no_sources.
+
+    ``pipeline_ctx`` (Task #86, 2026-08-11, Chat Master): optional
+    PipelineContext. When the answering LLM call fails with a RECOVERABLE
+    error (rate_limit/timeout/provider_error) after generate_sync's own
+    retry+fallback machinery is exhausted, this function still returns a
+    degraded-but-valid tuple (unchanged, existing callers rely on that
+    contract) -- but ALSO stamps ``pipeline_ctx.llm_provider_exhausted``
+    with the classified ErrorEnvelope as a side-channel signal. Callers
+    that care (react_loop.py) check it and escalate to a genuine failure
+    instead of silently completing a turn with "[rate_limit]" as its
+    answer -- previously this shipped a completed card reading "The model
+    is temporarily busy — trying another option" with no retry button and
+    a stale tool-attribution label, because nothing downstream knew the
+    turn had actually failed."""
     from app.chat_config import get_chat_config
     from app.services.doc_assembly import RETRIEVAL_SIGNAL_NO_SOURCES
     from app.services.retrieval_emit_adapter import wrap_emitter_for_user
@@ -388,6 +403,17 @@ def answer_non_patient(
         # It is NOT a user-facing bubble on its own — still gate it behind the envelope.
         answer = f"[{env.error_code}]"
         _emit(emitter, f"I couldn’t answer this part — {env.user_facing_message.lower()}")
+        # Task #86 (2026-08-11, Chat Master): a RECOVERABLE error surviving
+        # generate_sync's own retry+fallback machinery means the answering
+        # LLM is genuinely unavailable right now -- degrading to
+        # "[rate_limit]" as if this were a normal thin-evidence turn hides
+        # that from everything downstream. Side-channel signal only (this
+        # function's return contract is unchanged for other callers).
+        if pipeline_ctx is not None and env.is_recoverable:
+            try:
+                pipeline_ctx.llm_provider_exhausted = env
+            except Exception:  # pragma: no cover — defensive, must not mask the real error
+                pass
 
     # Format response: answer + sources section
     if sources:
