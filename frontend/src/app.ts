@@ -6905,7 +6905,9 @@ function renderRagCallRounds(thinkingLog: ReadonlyArray<unknown> | null | undefi
   });
 
   const wrap = document.createElement("div");
-  wrap.className = "llm-performance module-trace-section collapsed";
+  // --rounds marker: this is the persisted-data multi-call view; the completion re-fetch upgrades the
+  // SSE-time single trace into this once chat_turns.thinking_log lands (rag_call_rounds isn't SSE-pushed).
+  wrap.className = "llm-performance module-trace-section module-trace-section--rounds collapsed";
   const preview = document.createElement("div");
   preview.className = "llm-performance-preview";
   preview.setAttribute("role", "button");
@@ -6928,6 +6930,23 @@ function renderRagCallRounds(thinkingLog: ReadonlyArray<unknown> | null | undefi
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
   });
   return wrap;
+}
+
+/**
+ * Upgrade the RAG telemetry panel from the PERSISTED thinking_log on completion (Chat Master/LLM Agent
+ * 2026-08-10): rag_call_rounds is written to chat_turns.thinking_log but is NOT SSE-pushed, so the
+ * live-stream render only ever gets the single module_trace. Once GET /chat/response returns the
+ * persisted log (with rag_call_rounds), swap the single-trace section for the multi-call "Call N" view.
+ * Idempotent — skips once the --rounds view is already in place, so repeated qc polls don't rebuild it.
+ */
+function mergeRagCallRoundsFromPoll(turnWrap: HTMLElement, d: { thinking_log?: unknown }): void {
+  if (turnWrap.querySelector(".module-trace-section--rounds")) return;   // already upgraded
+  const tl = d?.thinking_log;
+  if (!Array.isArray(tl)) return;
+  const rounds = renderRagCallRounds(tl as ReadonlyArray<unknown>);      // null unless persisted log has rag_call_rounds
+  if (!rounds) return;
+  const existing = turnWrap.querySelector(".module-trace-section");
+  if (existing?.parentElement) existing.parentElement.replaceChild(rounds, existing);
 }
 
 /** Canonical reason→act→observe→decide diagnostics card. Replaces the old
@@ -12041,6 +12060,7 @@ function run(): void {
                 mergeTechnicalPanels(turnWrap, d);
                 mergeLlmPerformanceRoutingHydrate(turnWrap, d);
                 _reconcileQaAndBanditFromPoll(turnWrap, d);
+                mergeRagCallRoundsFromPoll(turnWrap, d);
               })
               .catch(() => {});
           };

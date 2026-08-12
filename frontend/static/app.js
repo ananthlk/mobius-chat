@@ -9211,7 +9211,7 @@ function renderRagCallRounds(thinkingLog) {
     acc.appendChild(row);
   });
   const wrap = document.createElement("div");
-  wrap.className = "llm-performance module-trace-section collapsed";
+  wrap.className = "llm-performance module-trace-section module-trace-section--rounds collapsed";
   const preview = document.createElement("div");
   preview.className = "llm-performance-preview";
   preview.setAttribute("role", "button");
@@ -9248,6 +9248,19 @@ function renderRagCallRounds(thinkingLog) {
     }
   });
   return wrap;
+}
+function mergeRagCallRoundsFromPoll(turnWrap, d) {
+  if (turnWrap.querySelector(".module-trace-section--rounds"))
+    return;
+  const tl = d?.thinking_log;
+  if (!Array.isArray(tl))
+    return;
+  const rounds = renderRagCallRounds(tl);
+  if (!rounds)
+    return;
+  const existing = turnWrap.querySelector(".module-trace-section");
+  if (existing?.parentElement)
+    existing.parentElement.replaceChild(rounds, existing);
 }
 function renderDiagnosticsCard(thinkingLog) {
   if (!Array.isArray(thinkingLog) || thinkingLog.length === 0)
@@ -13396,6 +13409,7 @@ ${message}`;
             mergeTechnicalPanels(turnWrap, d);
             mergeLlmPerformanceRoutingHydrate(turnWrap, d);
             _reconcileQaAndBanditFromPoll(turnWrap, d);
+            mergeRagCallRoundsFromPoll(turnWrap, d);
           }).catch(() => {
           });
         };
