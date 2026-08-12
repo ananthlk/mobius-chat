@@ -10120,7 +10120,7 @@ function renderAssistantFromEnvelope(envelope, opts) {
         const tr = document.createElement("tr");
         for (const h of b.headers) {
           const th = document.createElement("th");
-          th.textContent = h;
+          th.innerHTML = _inlineMd(h);
           tr.appendChild(th);
         }
         thead.appendChild(tr);
@@ -10131,7 +10131,7 @@ function renderAssistantFromEnvelope(envelope, opts) {
         const tr = document.createElement("tr");
         for (const c of row) {
           const td = document.createElement("td");
-          td.textContent = c;
+          td.innerHTML = _inlineMd(c);
           tr.appendChild(td);
         }
         tbody.appendChild(tr);

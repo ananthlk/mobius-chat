@@ -706,7 +706,7 @@ import {
   simpleMarkdownToHtml, simpleMarkdownToHtmlInner, rosterStepMarkdownToHtml,
   CONFIDENCE_BADGE_MAP, renderConfidenceBadge, createQcSampleShieldSvg, renderQcAuditBadge,
 } from "./ui-helpers";
-import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, retainStreamedDraftAsFirstPass, envelopeToAnswerCard } from "./render/bubble";
+import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, retainStreamedDraftAsFirstPass, envelopeToAnswerCard, _inlineMd } from "./render/bubble";
 
 /** Insert QC badge into an already-rendered assistant turn (late eval webhook). */
 function applyQcAuditToTurn(turnWrap: HTMLElement, qc: QcAuditInfo | undefined): void {
@@ -8093,7 +8093,7 @@ function renderAssistantFromEnvelope(
         const tr = document.createElement("tr");
         for (const h of b.headers) {
           const th = document.createElement("th");
-          th.textContent = h;
+          th.innerHTML = _inlineMd(h);   // LLM-authored cells carry **bold**/`code` — render inline md (was raw)
           tr.appendChild(th);
         }
         thead.appendChild(tr);
@@ -8104,7 +8104,7 @@ function renderAssistantFromEnvelope(
         const tr = document.createElement("tr");
         for (const c of row) {
           const td = document.createElement("td");
-          td.textContent = c;
+          td.innerHTML = _inlineMd(c);
           tr.appendChild(td);
         }
         tbody.appendChild(tr);

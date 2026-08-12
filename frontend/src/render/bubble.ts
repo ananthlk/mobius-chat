@@ -376,7 +376,7 @@ function _renderAppealsRules(sec: AnswerCardSection, body: HTMLElement): void {
 // carry **bold**/`code` markup that textContent showed raw). Escapes HTML FIRST (safe for generated
 // content), then applies ONLY inline formatting — no <p>/<br>/<li> block elements that would break
 // the flex rows. simpleMarkdownToHtmlInner is unsuitable here: it still wraps in <p> and doesn't escape.
-function _inlineMd(text: unknown): string {
+export function _inlineMd(text: unknown): string {
   const esc = String(text ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   return esc
     .replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>")
