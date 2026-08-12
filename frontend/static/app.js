@@ -2987,8 +2987,21 @@ function _renderAppealsPlaybook(sec, body) {
   body.appendChild(wrap);
 }
 var COLLAPSIBLE_CARD_FORMATS = /* @__PURE__ */ new Set(["table", "stats", "steps", "bars", "conditions"]);
+function _sectionHasContent(sec) {
+  const fmt = sec.format ?? "bullets";
+  if (fmt === "appeals_playbook" || fmt === "appeals_rules")
+    return true;
+  const d = sec.data ?? {};
+  if (fmt === "table")
+    return Array.isArray(d.rows) && d.rows.length > 0;
+  if (fmt === "stats" || fmt === "steps" || fmt === "bars" || fmt === "conditions")
+    return Array.isArray(d.items) && d.items.length > 0;
+  return Array.isArray(sec.bullets) && sec.bullets.length > 0;
+}
 function renderOneSection(sec) {
   const fmt = sec.format ?? "bullets";
+  if (!_sectionHasContent(sec))
+    return null;
   const sectionEl = document.createElement("div");
   sectionEl.className = `answer-card-section answer-card-section--${fmt}`;
   if (COLLAPSIBLE_CARD_FORMATS.has(fmt) && (sec.label || "").trim()) {
@@ -3088,8 +3101,17 @@ function envelopeToAnswerCard(blocks, base) {
       }
     }
   }
-  if (sections.length)
-    body.sections = sections;
+  if (sections.length) {
+    const baseByLabel = /* @__PURE__ */ new Map();
+    for (const s of base?.sections ?? [])
+      baseByLabel.set((s.label ?? "").trim(), s);
+    body.sections = sections.map((es) => {
+      if (_sectionHasContent(es))
+        return es;
+      const bs = baseByLabel.get((es.label ?? "").trim());
+      return bs && _sectionHasContent(bs) ? bs : es;
+    });
+  }
   if (!hasBody && !base)
     return null;
   return { ...base ?? { direct_answer: "", sections: [] }, ...body };
@@ -3304,7 +3326,11 @@ function renderAnswerCard(card, isError, opts) {
       body.innerHTML = simpleMarkdownToHtml(_lead);
       answerWrap.appendChild(body);
     }
-    _answerSections.slice(0, MAX_SECTIONS).forEach((sec) => answerWrap.appendChild(renderOneSection(sec)));
+    _answerSections.slice(0, MAX_SECTIONS).forEach((sec) => {
+      const el2 = renderOneSection(sec);
+      if (el2)
+        answerWrap.appendChild(el2);
+    });
     stripCitationMarkers(answerWrap);
     answerPanel.insertBefore(answerWrap, answerPanel.firstChild);
     const _rdRounds = (card.reasoning_trace ?? []).map((r, i) => ({

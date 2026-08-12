@@ -729,8 +729,25 @@ function _renderAppealsPlaybook(sec: AnswerCardSection, body: HTMLElement): void
 // their own header/structure and render expanded (the star of the turn).
 const COLLAPSIBLE_CARD_FORMATS = new Set(["table", "stats", "steps", "bars", "conditions"]);
 
-function renderOneSection(sec: AnswerCardSection): HTMLElement {
+/**
+ * Does a section carry anything renderable? A plain-format section (table/stats/…) whose data is
+ * empty would render a bare TITLE with nothing under it — the "dangling section header" (Chat Master
+ * 2026-08-10, "Overview of Covered Services" heading with no content). appeals_/domain sections render
+ * their own empty state (found:false → soft message), so they always count as content.
+ */
+function _sectionHasContent(sec: AnswerCardSection): boolean {
   const fmt = sec.format ?? "bullets";
+  if (fmt === "appeals_playbook" || fmt === "appeals_rules") return true;
+  const d = (sec.data ?? {}) as { rows?: unknown[]; items?: unknown[] };
+  if (fmt === "table") return Array.isArray(d.rows) && d.rows.length > 0;
+  if (fmt === "stats" || fmt === "steps" || fmt === "bars" || fmt === "conditions") return Array.isArray(d.items) && d.items.length > 0;
+  return Array.isArray(sec.bullets) && sec.bullets.length > 0; // bullets (default)
+}
+
+function renderOneSection(sec: AnswerCardSection): HTMLElement | null {
+  const fmt = sec.format ?? "bullets";
+  // Never render a section that is just a title with no body — drop it entirely (no dangling header).
+  if (!_sectionHasContent(sec)) return null;
   const sectionEl = document.createElement("div");
   sectionEl.className = `answer-card-section answer-card-section--${fmt}`;
 
@@ -812,7 +829,7 @@ export interface EnvFormatBlock {
  * bullets.items (string[]) maps to sec.bullets; every other format's items/headers/rows
  * map into sec.data; domain_card's opaque data passes straight through by `variant`.
  */
-export function renderFormatBlock(block: EnvFormatBlock): HTMLElement {
+export function renderFormatBlock(block: EnvFormatBlock): HTMLElement | null {
   const isDomain = block.type === "domain_card";
   const isBullets = block.type === "bullets";
   const section: AnswerCardSection = {
@@ -824,7 +841,7 @@ export function renderFormatBlock(block: EnvFormatBlock): HTMLElement {
       ? (block.data as AnswerCardSection["data"])
       : ({ items: block.items, headers: block.headers, rows: block.rows } as AnswerCardSection["data"]),
   };
-  return renderOneSection(section);
+  return renderOneSection(section);   // null when the block has no renderable content (no dangling header)
 }
 
 /**
@@ -1060,7 +1077,20 @@ export function envelopeToAnswerCard(blocks: EnvBlock[], base?: AnswerCard | nul
     // NOTE: `sources` intentionally NOT mapped — the Sources surface is driven by top-level
     // ChatResponse `data.sources` + the Fix-2b Sources→card work; mapping it here would double-count.
   }
-  if (sections.length) body.sections = sections;
+  if (sections.length) {
+    // Section merge, per-label, prefer-non-empty (Chat Master 2026-08-10 dangling-header): the envelope
+    // is authoritative, BUT if its version of a section is EMPTY while the base card's same-label
+    // section has content, keep the base's — don't let an empty envelope block wipe real card content
+    // (the inverse of the missing-table case). Card sections the envelope omitted entirely are dropped
+    // (envelope owns the section list). Empty-in-both sections get render-suppressed downstream anyway.
+    const baseByLabel = new Map<string, AnswerCardSection>();
+    for (const s of (base?.sections ?? [])) baseByLabel.set((s.label ?? "").trim(), s);
+    body.sections = sections.map((es) => {
+      if (_sectionHasContent(es)) return es;
+      const bs = baseByLabel.get((es.label ?? "").trim());
+      return bs && _sectionHasContent(bs) ? bs : es;
+    });
+  }
   if (!hasBody && !base) return null;
 
   // Merge: message card is the base (keeps card-only fields), the envelope wins on every body field
@@ -1486,7 +1516,7 @@ export function renderAnswerCard(
       body.innerHTML = simpleMarkdownToHtml(_lead);
       answerWrap.appendChild(body);
     }
-    _answerSections.slice(0, MAX_SECTIONS).forEach((sec) => answerWrap.appendChild(renderOneSection(sec)));
+    _answerSections.slice(0, MAX_SECTIONS).forEach((sec) => { const el = renderOneSection(sec); if (el) answerWrap.appendChild(el); });
     // Sources are NOT rendered inline (Chat Master 2026-08-08) — they live in the Sources tab only.
     // (applyCitationFootnotes / renderSourcesList remain exported + tested for potential reuse, but
     // the answer card body no longer calls them.) Strip any raw [N] citation markers the integrator

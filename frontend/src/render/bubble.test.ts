@@ -1063,6 +1063,40 @@ describe("envelopeToAnswerCard (Task #36 cutover — envelope is the single sour
     const base = { direct_answer: "keep", sections: [] } as unknown as Parameters<typeof renderAnswerCard>[0];
     expect(envelopeToAnswerCard([{ type: "tool_attribution", label: "x" }], base)?.direct_answer).toBe("keep");
   });
+
+  it("MERGE: empty envelope section does NOT wipe a content-full base section (dangling-header guard)", () => {
+    // base card has a real "Overview" bullets section; envelope emits the same section but EMPTY.
+    const base = {
+      direct_answer: "d", sections: [
+        { label: "Overview of Covered Services", format: "bullets", visibility: "primary", bullets: ["Behavioral health", "Primary care", "Pharmacy"] },
+      ],
+    } as unknown as Parameters<typeof renderAnswerCard>[0];
+    const env = [
+      { type: "direct_answer", markdown: "d" },
+      { type: "bullets", label: "Overview of Covered Services", items: [] }, // empty envelope block
+    ];
+    const merged = envelopeToAnswerCard(env, base)!;
+    const sec = merged.sections.find((s) => s.label === "Overview of Covered Services")!;
+    expect(sec.bullets).toEqual(["Behavioral health", "Primary care", "Pharmacy"]); // base content survives
+  });
+});
+
+describe("empty sections render nothing (dangling-header fix, Chat Master 2026-08-10)", () => {
+  it("renderFormatBlock returns null for a title-only block (no rows/items)", () => {
+    expect(renderFormatBlock({ type: "table", label: "Overview of Covered Services", headers: ["A"], rows: [] })).toBeNull();
+    expect(renderFormatBlock({ type: "bullets", label: "Empty", items: [] })).toBeNull();
+    expect(renderFormatBlock({ type: "stats", label: "Empty", items: [] })).toBeNull();
+  });
+  it("renderFormatBlock still renders when there IS content", () => {
+    expect(renderFormatBlock({ type: "table", label: "T", headers: ["A"], rows: [["1"]] })).not.toBeNull();
+  });
+  it("a card with an empty section renders no dangling header", () => {
+    const card = { direct_answer: "answer", sections: [
+      { label: "Overview of Covered Services", format: "bullets", visibility: "primary", bullets: [] },
+    ] } as unknown as Parameters<typeof renderAnswerCard>[0];
+    const el = renderAnswerCard(card);
+    expect(el.textContent).not.toContain("Overview of Covered Services");
+  });
 });
 
 describe("renderEnvelope assembler (Task #36 — single consumer, order + peel + drop)", () => {
