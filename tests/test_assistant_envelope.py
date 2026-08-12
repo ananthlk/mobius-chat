@@ -423,6 +423,49 @@ class TestTypedSectionBlocks:
         )
         assert not any(b["type"] == "table" for b in env["blocks"])
 
+    def test_table_row_with_wrong_cell_count_dropped_keeps_valid_rows(self):
+        """2026-08-12 live finding (cid=997193e2): the model generated a
+        syntactically valid but structurally malformed row (2 cells
+        against a 4-column header, e.g. ["Sunshine Health", "**18"]) --
+        must be dropped while valid rows survive, not shipped broken."""
+        env = build_assistant_envelope_v1(
+            answer_card={
+                "mode": "FACTUAL", "direct_answer": "Hi",
+                "sections": [{
+                    "format": "table",
+                    "data": {
+                        "headers": ["Payer", "Participating", "Non-Participating", "COB"],
+                        "rows": [
+                            ["Sunshine Health", "**18"],  # malformed -- 2 cells, not 4
+                            ["Aetna", "180 days", "365 days", "90 days"],  # valid
+                        ],
+                    },
+                }],
+            },
+            **_minimal_kwargs(),
+        )
+        tb = next(b for b in env["blocks"] if b["type"] == "table")
+        assert tb["rows"] == [["Aetna", "180 days", "365 days", "90 days"]]
+
+    def test_table_with_all_rows_malformed_drops_whole_section(self):
+        """If every row is malformed, drop the section entirely -- a
+        table with zero valid rows isn't a table, and direct_answer/
+        react_draft already carries the same info in prose."""
+        env = build_assistant_envelope_v1(
+            answer_card={
+                "mode": "FACTUAL", "direct_answer": "Hi",
+                "sections": [{
+                    "format": "table",
+                    "data": {
+                        "headers": ["Payer", "Deadline"],
+                        "rows": [["Sunshine Health", "**18", "extra"], ["Aetna"]],
+                    },
+                }],
+            },
+            **_minimal_kwargs(),
+        )
+        assert not any(b["type"] == "table" for b in env["blocks"])
+
     def test_unrecognized_format_falls_back_to_detail(self):
         env = build_assistant_envelope_v1(
             answer_card={

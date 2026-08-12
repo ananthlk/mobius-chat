@@ -188,7 +188,23 @@ def _section_to_typed_block(sec: Any) -> dict[str, Any] | None:
         headers, rows = data.get("headers"), data.get("rows")
         if not isinstance(headers, list) or not isinstance(rows, list):
             return None
-        out: dict[str, Any] = {"type": "table", "headers": headers, "rows": rows}
+        # 2026-08-12 (Chat Master, live finding cid=997193e2): the model
+        # (gemini-2.5-flash) generated a syntactically valid but
+        # structurally malformed table -- one row with 2 cells against a
+        # 4-column header ("Sunshine Health", "**18") -- and nothing
+        # caught it before it shipped to the user as a visibly broken
+        # cell. This is a genuine model-generation defect, not a token/
+        # length truncation (completion_valid=true, well under max_tokens).
+        # Cheap structural check: a row's cell count must match the header
+        # count. Drop malformed rows, keep valid ones -- a partial table
+        # with correct rows beats a table with a garbled cell. If every
+        # row is malformed, drop the section entirely; direct_answer/
+        # react_draft already carries the same information in prose as
+        # the safe fallback.
+        valid_rows = [r for r in rows if isinstance(r, list) and len(r) == len(headers)]
+        if not valid_rows:
+            return None
+        out: dict[str, Any] = {"type": "table", "headers": headers, "rows": valid_rows}
     elif fmt in ("stats", "steps", "bars", "conditions"):
         items = data.get("items")
         if not isinstance(items, list) or not items:
