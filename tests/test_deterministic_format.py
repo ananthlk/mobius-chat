@@ -305,7 +305,13 @@ class TestRealSampleShapes:
     def test_real_pipe_table_sample_with_br_tags_in_cells(self):
         """Real sample cid=65ed12e2 -- markdown table with <br>-joined
         sub-bullets inside cells, the one real pipe-table instance ReAct
-        found in 400 sampled turns."""
+        found in 400 sampled turns.
+
+        2026-08-12 update (live finding, Chat Master/Ananth, cid=c60f9981):
+        raw <br> tags ship unrendered to the user -- the cell is a plain
+        string in the typed table block, not HTML. Must be replaced with
+        a plain-text separator, not preserved verbatim as this test
+        originally asserted."""
         draft = (
             "| Topic | Requirement / Process | Deadline | Details & Contact Information |\n"
             "| :--- | :--- | :--- | :--- |\n"
@@ -319,4 +325,33 @@ class TestRealSampleShapes:
         assert sec["format"] == "table"
         assert sec["data"]["headers"] == ["Topic", "Requirement / Process", "Deadline", "Details & Contact Information"]
         assert len(sec["data"]["rows"]) == 1
-        assert "<br>" in sec["data"]["rows"][0][3]
+        assert "<br>" not in sec["data"]["rows"][0][3]
+        assert "Electronic Claims (837s):; Institutional (837I): COB data must be in loop 2300.; more detail here" == sec["data"]["rows"][0][3]
+
+    def test_real_transposed_table_sample_br_stripped(self):
+        """Real sample cid=c60f9981 -- the exact live-reported bug: a
+        multi-value cell using <br> to separate Participating/Non-
+        Participating values. Confirmed via llm_calls this went through
+        the deterministic fast path (no integrator_a call), so this
+        parser is the correct fix site."""
+        draft = (
+            "| Scenario | Sunshine Health | Aetna |\n"
+            "| :--- | :--- | :--- |\n"
+            "| Initial Claims | 180 days | **Participating:** 180 days <br> **Non-Participating:** 365 days |\n"
+        )
+        result = deterministic_format(draft)
+        sec = result["sections"][0]
+        cell = sec["data"]["rows"][0][2]
+        assert "<br>" not in cell
+        assert "**Participating:** 180 days; **Non-Participating:** 365 days" == cell
+
+    def test_self_closing_br_variant_also_stripped(self):
+        draft = (
+            "| A | B |\n"
+            "| :--- | :--- |\n"
+            "| x | one<br/>two<br />three |\n"
+        )
+        result = deterministic_format(draft)
+        cell = result["sections"][0]["data"]["rows"][0][1]
+        assert "<br" not in cell
+        assert cell == "one; two; three"

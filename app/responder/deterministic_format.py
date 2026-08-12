@@ -96,6 +96,23 @@ def _extract_label_value_pairs(text: str) -> list[tuple[str, str]]:
 
 _MD_TABLE_ROW_RE = re.compile(r"^\|(.+)\|$")
 _MD_TABLE_SEP_RE = re.compile(r"^\|[\s:|-]+\|$")
+_HTML_BR_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
+
+
+def _clean_table_cell(cell: str) -> str:
+    """Markdown table cells can't contain a real newline, so a model
+    writing a multi-value cell (e.g. "Participating: 180 days <br>
+    Non-Participating: 365 days") reaches for literal HTML <br> as the
+    only separator markdown syntax allows -- but this cell ships as a
+    plain string in the typed table block, not through an HTML renderer,
+    so the tag shows up raw and unrendered to the user (live finding,
+    2026-08-12, Chat Master/Ananth). Replace with a plain-text separator
+    that reads correctly regardless of whether the cell renderer supports
+    embedded newlines."""
+    parts = _HTML_BR_RE.split(cell)
+    if len(parts) == 1:
+        return cell.strip()
+    return "; ".join(p.strip() for p in parts if p.strip())
 
 
 def _extract_markdown_table(text: str) -> dict[str, Any] | None:
@@ -107,14 +124,14 @@ def _extract_markdown_table(text: str) -> dict[str, Any] | None:
         header_m = _MD_TABLE_ROW_RE.match(lines[i])
         if not header_m or not _MD_TABLE_SEP_RE.match(lines[i + 1]):
             continue
-        headers = [c.strip() for c in header_m.group(1).split("|")]
+        headers = [_clean_table_cell(c) for c in header_m.group(1).split("|")]
         rows: list[list[str]] = []
         j = i + 2
         while j < len(lines):
             row_m = _MD_TABLE_ROW_RE.match(lines[j])
             if not row_m:
                 break
-            rows.append([c.strip() for c in row_m.group(1).split("|")])
+            rows.append([_clean_table_cell(c) for c in row_m.group(1).split("|")])
             j += 1
         if rows:
             return {"headers": headers, "rows": rows}
