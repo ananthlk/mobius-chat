@@ -342,6 +342,108 @@ class TestBuildCriticUserMessage:
         assert "(page" not in msg  # no page annotation when unset
 
 
+class TestBuildCriticUserMessagePriorTurnContext:
+    """2026-08-12, Chat Master directive (Task #89), Retriever-traced live
+    incident (cid 997193e2): the critic previously had zero visibility
+    into last_turns/previous_thread_summary/last_turn_sources -- all
+    already available to the planner (build_reasoning_context) and how it
+    legitimately answers with carried-forward facts. A correctly carried-
+    forward claim (never re-searched this turn) had no evidence behind it
+    and was reliably flagged as unsupported. Ruling: thread the evidence
+    in, don't exempt carried-forward claims from audit."""
+
+    def test_absent_by_default_no_new_section(self):
+        """Backward compat: callers that don't pass the new params (e.g.
+        a single-turn conversation) get byte-identical output to before --
+        no empty/dangling section header."""
+        msg = build_critic_user_message(question="q", draft_answer="d", sources=[])
+        assert "Prior turn context" not in msg
+
+    def test_last_turn_sources_numbered_separately_from_this_turn_sources(self):
+        msg = build_critic_user_message(
+            question="q", draft_answer="d",
+            sources=[{"document_name": "This Turn Doc", "page": 1, "text": "this turn text"}],
+            last_turn_sources=[{"document_name": "Sunshine Manual", "page": 12, "text": "180 days for participating providers"}],
+        )
+        assert "Prior turn context and sources (also counts as grounding for carried-forward facts)" in msg
+        assert "[prior-1] Sunshine Manual (page 12)" in msg
+        assert "180 days for participating providers" in msg
+        # This-turn sources keep their own [1]/[2]... numbering, unchanged.
+        assert "[1] This Turn Doc (page 1)" in msg
+
+    def test_previous_thread_summary_included_and_capped(self):
+        msg = build_critic_user_message(
+            question="q", draft_answer="d", sources=[],
+            previous_thread_summary="Sunshine Health timely filing is 180 days for participating providers.",
+        )
+        assert "Rolling thread summary" in msg
+        assert "Sunshine Health timely filing is 180 days" in msg
+
+    def test_previous_thread_summary_capped_at_600_chars(self):
+        msg = build_critic_user_message(
+            question="q", draft_answer="d", sources=[],
+            previous_thread_summary="X" * 1000,
+        )
+        assert msg.count("X") == 600
+
+    def test_last_turns_rendered_as_user_assistant_pairs(self):
+        msg = build_critic_user_message(
+            question="q", draft_answer="d", sources=[],
+            last_turns=[{
+                "user_content": "What's Sunshine Health's timely filing deadline?",
+                "assistant_content": "Sunshine Health requires claims within 180 days for participating providers.",
+            }],
+        )
+        assert "Recent conversation" in msg
+        assert "User: What's Sunshine Health's timely filing deadline?" in msg
+        assert "Assistant: Sunshine Health requires claims within 180 days" in msg
+
+    def test_last_turns_caps_at_three_most_recent(self):
+        turns = [
+            {"user_content": f"question {i}", "assistant_content": f"answer {i}"}
+            for i in range(5)
+        ]
+        msg = build_critic_user_message(question="q", draft_answer="d", sources=[], last_turns=turns)
+        assert "question 0" in msg
+        assert "question 1" in msg
+        assert "question 2" in msg
+        assert "question 3" not in msg
+        assert "question 4" not in msg
+
+    def test_all_three_signals_present_together(self):
+        """The exact shape of the traced incident: carried-forward fact
+        backed by both a prior-turn source AND the conversation history
+        that referenced it."""
+        msg = build_critic_user_message(
+            question="Compare timely filing for Sunshine Health, Aetna, and Molina",
+            draft_answer="Sunshine Health: 180 days. Aetna: 180 days. Molina: 180 days.",
+            sources=[{"document_name": "Aetna Manual", "page": 4, "text": "Aetna: 180 days participating"}],
+            last_turn_sources=[{"document_name": "Sunshine Manual", "page": 12, "text": "Sunshine: 180 days participating"}],
+            previous_thread_summary="User asked about Sunshine Health timely filing; answered 180 days.",
+            last_turns=[{"user_content": "Sunshine Health timely filing?", "assistant_content": "180 days for participating providers."}],
+        )
+        assert "[prior-1] Sunshine Manual" in msg
+        assert "Rolling thread summary" in msg
+        assert "Recent conversation" in msg
+        assert "[1] Aetna Manual" in msg  # this-turn source still present, unaffected
+
+    def test_section_header_appears_before_your_task(self):
+        """Ordering matters for how the model reads the prompt --
+        evidence sections (including this new one) must all precede the
+        task instructions, not interleave after them."""
+        msg = build_critic_user_message(
+            question="q", draft_answer="d", sources=[],
+            previous_thread_summary="summary text",
+        )
+        assert msg.index("Prior turn context") < msg.index("## Your task")
+
+
+class TestCriticSystemPromptMentionsPriorTurnEvidence:
+    def test_rule_1_names_all_evidence_sections(self):
+        assert "Prior turn context" in CRITIC_SYSTEM_PROMPT
+        assert "carried-forward" in CRITIC_SYSTEM_PROMPT.lower()
+
+
 # ── Observation formatter ─────────────────────────────────────────────
 
 

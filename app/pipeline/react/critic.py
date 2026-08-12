@@ -313,13 +313,18 @@ CRITIC_SYSTEM_PROMPT = """\
 You are auditing a DRAFT ANSWER against RETRIEVED SOURCES.
 
 Your ONLY job: for each factual claim in the draft, decide whether at
-least one retrieved source supports it.
+least one piece of evidence provided below supports it.
 
 Rules:
-  1. Use the sources as your evidence. Do NOT consult your own
-     knowledge of the topic. "I know the correct phone number is X"
-     is NOT a valid reason — only "no source contains this phone
-     number" counts.
+  1. Use the provided evidence as your grounding. Do NOT consult your
+     own knowledge of the topic. "I know the correct phone number is X"
+     is NOT a valid reason — only "no evidence contains this phone
+     number" counts. Evidence includes EVERY labeled section below —
+     Retrieved sources, Tool outputs, AND Prior turn context and
+     sources (2026-08-12: carried-forward facts from earlier in the
+     conversation are real, valid grounding — a claim correctly
+     recalled from a prior turn is NOT unsupported just because it
+     wasn't re-fetched this turn).
   2. Honest hedges are CORRECT. If the draft says "I couldn't find
      specific X" or "the full policy was not available", that's the
      desired behavior, not an issue.
@@ -370,6 +375,9 @@ def build_critic_user_message(
     draft_answer: str,
     sources: list[dict[str, Any]],
     tool_results: list[dict[str, Any]] | None = None,
+    last_turns: list[dict[str, Any]] | None = None,
+    previous_thread_summary: str | None = None,
+    last_turn_sources: list[dict[str, Any]] | None = None,
 ) -> str:
     """Format the audit request. The critic sees:
 
@@ -379,6 +387,22 @@ def build_critic_user_message(
       - Recent tool output text (web scrapes, healthcare queries, etc.)
         — these are ALSO sources, even though they aren't in the
         ``sources`` list passed to the integrator
+      - Prior turn context and sources (2026-08-12, Chat Master directive,
+        Task #89, Retriever-traced live incident) — ``last_turns``/
+        ``previous_thread_summary``/``last_turn_sources`` are ALREADY
+        available to the planner (``build_reasoning_context``) and are
+        how it legitimately answers with carried-forward facts on
+        multi-turn follow-ups. Before this, the critic had none of it —
+        only this turn's ``sources``/``tool_results`` — so any correctly
+        carried-forward fact (never re-searched this turn) had zero
+        evidence behind it and was reliably flagged as unsupported,
+        wasting a round re-fetching something already known. Confirmed
+        live via cid 997193e2 (round 4 rejected a correctly carried-
+        forward Sunshine Health fact from round 1/prior turn). Ruling:
+        thread the evidence in — do NOT exempt carried-forward claims
+        from audit, that would let a genuine prior-turn hallucination
+        propagate unchecked. The mandatory floor stays mandatory either
+        way; this just gives it the evidence it was missing.
 
     Source text is **not truncated** here — the critic needs the full
     context to judge whether a claim is supported. Callers upstream
@@ -423,6 +447,40 @@ def build_critic_user_message(
                 lines.append(f"### {tool}")
                 lines.append(result)
                 lines.append("")
+
+    # Prior turn context and sources (also counts as grounding for
+    # carried-forward facts) -- see the docstring above for the incident
+    # this closes. Same three signals the planner already reads
+    # (build_reasoning_context), so a claim the model legitimately carried
+    # forward from conversation history has real evidence behind it here
+    # too, instead of reading as unsupported by construction.
+    _has_prior_context = bool(last_turns) or bool((previous_thread_summary or "").strip()) or bool(last_turn_sources)
+    if _has_prior_context:
+        lines.append("## Prior turn context and sources (also counts as grounding for carried-forward facts)")
+        if last_turn_sources:
+            for i, src in enumerate(last_turn_sources, 1):
+                name = (src.get("document_name") or "unknown").strip()
+                page = src.get("page")
+                header = f"[prior-{i}] {name}"
+                if page:
+                    header += f" (page {page})"
+                lines.append(header)
+                text = (src.get("text") or src.get("content") or "").strip()
+                lines.append(text if text else "(source had no text extractable)")
+                lines.append("")
+        if previous_thread_summary and previous_thread_summary.strip():
+            lines.append("### Rolling thread summary")
+            lines.append(previous_thread_summary.strip()[:600])
+            lines.append("")
+        if last_turns:
+            lines.append("### Recent conversation")
+            for turn in list(last_turns)[:3]:
+                user_q = turn.get("user_content") or turn.get("message") or ""
+                assistant_a = (turn.get("assistant_content") or "")[:600]
+                if user_q:
+                    lines.append(f"User: {user_q}")
+                    lines.append(f"Assistant: {assistant_a}")
+            lines.append("")
 
     lines.append("## Your task")
     lines.append(

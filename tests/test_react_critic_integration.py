@@ -395,3 +395,54 @@ class TestRunReactCriticIntegration:
         # Emit trail shows the exhaustion signal:
         trail = "\n".join(emit_lines)
         assert "rounds exhausted" in trail.lower() or "unresolved claim" in trail.lower()
+
+
+class TestCriticReceivesPriorTurnContext:
+    """2026-08-12, Chat Master directive (Task #89): the wiring, not just
+    build_critic_user_message's own unit behavior (test_react_critic.py) --
+    confirms ctx.last_turns/previous_thread_summary/last_turn_sources
+    actually reach the real critic call inside a real (scripted) run_react
+    execution, on the LIVE mandatory-floor path (Product Promise governor,
+    not the dormant critic_enabled() gate this file otherwise tests)."""
+
+    def test_mandatory_floor_critic_call_includes_prior_turn_evidence(self, monkeypatch):
+        from app.pipeline.react_loop import run_react
+
+        monkeypatch.delenv("MOBIUS_REACT_CRITIC", raising=False)
+        monkeypatch.setenv("MOBIUS_PRODUCT_PROMISE_ENABLED", "1")
+
+        captured_critic_user_messages: list[str] = []
+
+        def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+            if stage == "react_1":
+                return '{"thought": "search", "tool": "search_corpus", "inputs": {"query": "Aetna timely filing"}, "is_complete": false}'
+            if stage == "critique":
+                captured_critic_user_messages.append(user)
+                return '{"grounded": true, "issues": []}'
+            return (
+                '{"thought": "done", "tool": null, "inputs": {}, "is_complete": true, '
+                '"answer": "Sunshine Health: 180 days. Aetna: 180 days.", "confidence": "high"}'
+            )
+
+        ctx = _make_ctx("Compare timely filing for Sunshine Health and Aetna")
+        ctx.chat_mode = "copilot"
+        ctx.last_turns = [{
+            "user_content": "Sunshine Health timely filing deadline?",
+            "assistant_content": "Sunshine Health requires claims within 180 days for participating providers.",
+        }]
+        ctx.previous_thread_summary = "User previously asked about Sunshine Health; answered 180 days."
+        ctx.last_turn_sources = [{
+            "document_name": "Sunshine Provider Manual", "page": 12,
+            "text": "Initial claims must be filed within 180 days for participating providers.",
+        }]
+
+        with patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm), \
+             patch("app.pipeline.react_loop._execute_tool_with_retry", return_value=_SEARCH_CORPUS_RESULT):
+            run_react(ctx, emitter=None)
+
+        assert captured_critic_user_messages, "critique stage never fired -- mandatory floor didn't run"
+        critic_msg = captured_critic_user_messages[0]
+        assert "Prior turn context and sources" in critic_msg
+        assert "Sunshine Provider Manual" in critic_msg
+        assert "Sunshine Health requires claims within 180 days" in critic_msg
+        assert "User previously asked about Sunshine Health" in critic_msg

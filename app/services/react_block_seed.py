@@ -140,8 +140,17 @@ def _react_block_specs() -> list[BlockSpec]:
                   condition="has_user_profile", owner="user-manager"),
         BlockSpec("react.no_tools_body", "static", "system", react_prompts.REACT_NO_TOOLS_PROMPT,
                   owner="react-agent"),
+        # v2 (2026-08-12, Chat Master directive, Task #89): rule 1 now
+        # explicitly names ALL labeled evidence sections (Retrieved
+        # sources, Tool outputs, Prior turn context and sources) as valid
+        # grounding, not just the first section literally titled
+        # "sources" -- closes the false-negative where a correctly
+        # carried-forward fact (build_critic_user_message's new prior-
+        # turn section) got flagged as unsupported. build_critic_user_
+        # message's own body is plain Python, not a block (see the NOTE
+        # below) -- only this system-prompt constant needed a version bump.
         BlockSpec("critic.audit_rules", "static", "system", react_critic.CRITIC_SYSTEM_PROMPT,
-                  owner="react-agent"),
+                  owner="react-agent", version=2),
     ]
     # NOTE: critic's user-turn message (build_critic_user_message() output) is
     # deliberately NOT a block. prompt_compositions has no per-composition
