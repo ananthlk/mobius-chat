@@ -289,3 +289,133 @@ class TestRagCallRoundsDiagnostics:
         assert len(ctx._rag_call_rounds) == 2   # two entries per ACTUAL rag call
         assert "round_n" not in ctx._rag_call_history[0]
         assert "module_trace" not in ctx._rag_call_history[0]
+
+
+class TestMultiEntitySlotPriority:
+    """2026-08-12, Chat Master directive -- live incident: a 3-way payer
+    comparison burned its whole 3-call budget escalating/retrying on one
+    entity before a later entity ever got a first search. A retry on
+    entity 1 must never consume entity 2's unspent slot. Gating rule
+    (see _execute_tool's open_gaps docstring): retries (escalation or
+    clarify-fallback) only fire when len(open_gaps) <= 1 -- 0 (round 1,
+    no evidence_review yet) or 1 (this IS the last outstanding gap, safe
+    to spend extra budget) allow it; 2+ (another gap has had zero
+    attempts) blocks it."""
+
+    def test_escalation_blocked_when_multiple_gaps_still_open(self):
+        calls, fake_dispatch = _sequenced_dispatch([_env_for("clarify_low_confidence")])
+        ctx = _make_ctx()
+        with patch("app.skills.registry.dispatch", side_effect=fake_dispatch):
+            result = _execute_tool(
+                "rag", {"query": ctx.message}, ctx, emitter=None,
+                open_gaps=["Aetna timely filing deadline", "Molina timely filing deadline"],
+            )
+
+        assert len(calls) == 1  # no escalation calls fired
+        assert result.get("is_terminal") is not True  # not the exhaustion path either
+        assert getattr(ctx, "react_unfinished_reason", None) is None
+
+    def test_escalation_allowed_when_zero_gaps_open(self):
+        """Round 1: no evidence_review has run yet, open_gaps is empty --
+        always allowed, matches 'slot 1 always available'."""
+        calls, fake_dispatch = _sequenced_dispatch([
+            _env_for("clarify_low_confidence"),
+            _env_for("clarify_low_confidence"),
+            _env_for("clarify_low_confidence"),
+        ])
+        ctx = _make_ctx()
+
+        def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+            return "Best-effort honest answer."
+
+        with patch("app.skills.registry.dispatch", side_effect=fake_dispatch), \
+             patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm):
+            _execute_tool("rag", {"query": ctx.message}, ctx, emitter=None, open_gaps=[])
+
+        assert len(calls) == 3  # full escalation ran
+
+    def test_escalation_allowed_when_exactly_one_gap_open(self):
+        """This IS the last outstanding gap -- nothing else is waiting on
+        the budget, so it's safe to spend extra calls perfecting it."""
+        calls, fake_dispatch = _sequenced_dispatch([
+            _env_for("clarify_low_confidence"),
+            _env_for("clarify_low_confidence"),
+            _env_for("clarify_low_confidence"),
+        ])
+        ctx = _make_ctx()
+
+        def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+            return "Best-effort honest answer."
+
+        with patch("app.skills.registry.dispatch", side_effect=fake_dispatch), \
+             patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm):
+            _execute_tool(
+                "rag", {"query": ctx.message}, ctx, emitter=None,
+                open_gaps=["Molina timely filing deadline"],
+            )
+
+        assert len(calls) == 3  # full escalation ran, only one gap so nothing else waiting
+
+    def test_gap_blocked_result_still_usable_not_a_dead_end(self):
+        """Blocking escalation isn't a failure state -- the call's own
+        result (even if low-confidence) must still flow through normally
+        so the round loop can move on to the next gap."""
+        calls, fake_dispatch = _sequenced_dispatch([_env_for("clarify_low_confidence", text=_LONG_TEXT)])
+        ctx = _make_ctx()
+        with patch("app.skills.registry.dispatch", side_effect=fake_dispatch):
+            result = _execute_tool(
+                "rag", {"query": ctx.message}, ctx, emitter=None,
+                open_gaps=["Aetna", "Molina"],
+            )
+
+        assert result["success"] is True  # >80 chars, real content -- not thrown away
+        assert result["sources"] == []
+
+    def test_clarify_fallback_blocked_when_multiple_gaps_still_open(self):
+        """Same gate applied to the OTHER automatic same-round retry
+        (clarify_questions advisory fallback, not just low-confidence
+        escalation) -- both are same-round budget spends that must
+        respect entity priority."""
+        def fake_dispatch(call):
+            env = MagicMock()
+            env.text = ""
+            env.sources = []
+            env.signal = "no_sources"
+            env.extra = {
+                "pipeline_trace": {
+                    "status": "no_retrieval", "n_chunks": 0,
+                    "dispatch_path": "a", "chosen_slot": None,
+                    "clarify_questions": ["What service type?"],
+                    "terminal_action": None,
+                }
+            }
+            return env
+
+        ctx = _make_ctx()
+        with patch("app.skills.registry.dispatch", side_effect=fake_dispatch) as mock_dispatch:
+            _execute_tool(
+                "rag", {"query": ctx.message}, ctx, emitter=None,
+                open_gaps=["Aetna timely filing deadline", "Molina timely filing deadline"],
+            )
+
+        assert mock_dispatch.call_count == 1  # no fallback retry fired
+
+    def test_default_open_gaps_none_never_blocks(self):
+        """Existing callers that don't pass open_gaps at all (default
+        None) must see zero behavior change -- regression guard for every
+        pre-#85 test in this file and elsewhere."""
+        calls, fake_dispatch = _sequenced_dispatch([
+            _env_for("clarify_low_confidence"),
+            _env_for("clarify_low_confidence"),
+            _env_for("clarify_low_confidence"),
+        ])
+        ctx = _make_ctx()
+
+        def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+            return "Best-effort honest answer."
+
+        with patch("app.skills.registry.dispatch", side_effect=fake_dispatch), \
+             patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm):
+            _execute_tool("rag", {"query": ctx.message}, ctx, emitter=None)  # no open_gaps kwarg
+
+        assert len(calls) == 3

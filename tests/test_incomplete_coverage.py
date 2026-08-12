@@ -205,7 +205,7 @@ class TestGracefulCompletionWithGapsDetection:
                 '"gaps_closed": [], "gaps_open": ["timely filing deadline for Molina"]}}'
             )
 
-        def fake_execute(tool, inputs, ctx, round_num, emit_fn, tool_emitter, skip_retry=False):
+        def fake_execute(tool, inputs, ctx, round_num, emit_fn, tool_emitter, skip_retry=False, open_gaps=None):
             return {
                 "tool": "search_corpus", "success": True,
                 "result": "Sunshine: 180 days.", "signal": "corpus_only",
@@ -243,7 +243,7 @@ class TestGracefulCompletionWithGapsDetection:
                 '"evidence_review": {"running_answer": "Fully covered.", "gaps_closed": [], "gaps_open": []}}'
             )
 
-        def fake_execute(tool, inputs, ctx, round_num, emit_fn, tool_emitter, skip_retry=False):
+        def fake_execute(tool, inputs, ctx, round_num, emit_fn, tool_emitter, skip_retry=False, open_gaps=None):
             return {
                 "tool": "search_corpus", "success": True,
                 "result": "Timely filing is 180 days.", "signal": "corpus_only",

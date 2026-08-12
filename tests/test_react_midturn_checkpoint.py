@@ -124,7 +124,7 @@ def test_checkpoint_fires_once_per_round_in_a_real_turn():
 
     round_n = {"n": 0}
 
-    def fake_exec_retry(tool, inputs, ctx, rn, emit, tool_emitter, skip_retry=False):
+    def fake_exec_retry(tool, inputs, ctx, rn, emit, tool_emitter, skip_retry=False, open_gaps=None):
         round_n["n"] += 1
         return {
             "tool": "search_corpus", "success": True,

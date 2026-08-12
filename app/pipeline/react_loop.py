@@ -1116,8 +1116,30 @@ def _execute_tool(
     inputs: dict,
     ctx: PipelineContext,
     emitter=None,
+    open_gaps: list[str] | None = None,
 ) -> dict:
-    """Execute a tool and return standardized result dict."""
+    """Execute a tool and return standardized result dict.
+
+    ``open_gaps`` (2026-08-12, Chat Master directive, #85 forcing
+    incident): gaps_open as of the LAST evidence_review, i.e. the state
+    BEFORE this round's own search runs -- optional, defaults to None
+    (every caller except the main round loop passes nothing, which is
+    correct: virtual round-0 pre-routes and other non-search_corpus
+    dispatches have no concept of gaps). search_corpus's automatic,
+    same-round retry mechanisms (low-confidence call_number escalation,
+    clarify-fallback) use this to decide whether it's safe to spend MORE
+    of the turn's 3-call budget perfecting the CURRENT search, or whether
+    another entity/sub-question is still completely unaddressed and
+    should get first claim on the remaining budget instead. Gating rule:
+    retry allowed only when ``len(open_gaps) <= 1`` -- 0 means no
+    evidence_review has run yet (round 1, always allowed); 1 means the
+    open gap is presumably what THIS round's query already targets, so
+    after this call nothing else is outstanding; 2+ means at least one
+    OTHER gap has had zero attempts and must not be starved by a retry
+    on this one. A retry on entity 1 must never consume entity 2's
+    unspent slot (2026-08-12 live incident: a 3-way payer comparison
+    burned its whole budget escalating entity 2's confidence before
+    entity 3 ever got a first search)."""
     # Normalize alias → canonical before any dispatch logic runs.
     tool = _normalize_tool_name(tool)
     active = (ctx.merged_state or {}).get("active") or {}
@@ -1702,47 +1724,62 @@ def _execute_tool(
                     "clarify_questions": _clarify_questions,
                 }
 
-            emit("  ↓ clarify signal looked advisory — retrying with citable_required off…")
-            try:
-                from app.skills.registry import SkillCall, dispatch as _skill_dispatch
-                _fallback_env = _skill_dispatch(
-                    SkillCall(
-                        name="search_corpus",
-                        inputs={
-                            "query": query,
-                            **({"include_document_ids": rag_overrides.get("include_document_ids")}
-                               if rag_overrides.get("include_document_ids") else {}),
-                            # citable_required deliberately omitted -- False.
-                        },
-                        question=query,
-                        user_message=ctx.message,
-                        thread_id=ctx.thread_id,
-                        active_context=active,
-                        mode=getattr(ctx, "chat_mode", "copilot") or "copilot",
-                        emitter=emitter,
-                        pipeline_ctx=ctx,
-                    )
+            # Multi-entity slot priority (2026-08-12, Chat Master directive):
+            # a fallback retry on THIS gap must not consume another,
+            # completely-unaddressed gap's slot. len(open_gaps) <= 1 means
+            # either no other gap exists yet (round 1) or this IS the last
+            # one (nothing else is waiting) -- safe to spend the extra call.
+            # 2+ means another entity/sub-question hasn't had a first
+            # attempt at all; skip the fallback and let the round loop move
+            # to it next, same as falling through to the empty-result path.
+            if len(open_gaps or []) > 1:
+                emit(
+                    f"  ↓ clarify signal looked advisory, but {len(open_gaps)} other gaps "
+                    "still unaddressed — skipping retry, moving on."
                 )
-                _fallback_sources = [s.to_dict() for s in (_fallback_env.sources or [])]
-                _record_rag_round((_fallback_env.extra or {}).get("pipeline_trace") or {})
-                if _fallback_sources or (_fallback_env.text or "").strip():
-                    corpus_answer = _fallback_env.text or ""
-                    corpus_sources = _fallback_sources
-                    corpus_signal = _fallback_env.signal or corpus_signal
-                    _corpus_telemetry = (_fallback_env.extra or {}).get("pipeline_trace") or _corpus_telemetry
-                    _status = _corpus_telemetry.get("status")
-                    _dispatch_path = _corpus_telemetry.get("dispatch_path")
-                    _chosen_slot = _corpus_telemetry.get("chosen_slot")
-                    _n_chunks = _corpus_telemetry.get("n_chunks", len(corpus_sources or []))
-                    merged_sources = list(corpus_sources or [])
-                    merged_result = corpus_answer or ""
-                    success = bool(merged_result and len(merged_result.strip()) > 80)
-                    merged_signal = corpus_signal
-            except Exception as _e:
-                logger.warning("[clarify-fallback] non-citable retry failed: %s", _e)
+            else:
+                emit("  ↓ clarify signal looked advisory — retrying with citable_required off…")
+                try:
+                    from app.skills.registry import SkillCall, dispatch as _skill_dispatch
+                    _fallback_env = _skill_dispatch(
+                        SkillCall(
+                            name="search_corpus",
+                            inputs={
+                                "query": query,
+                                **({"include_document_ids": rag_overrides.get("include_document_ids")}
+                                   if rag_overrides.get("include_document_ids") else {}),
+                                # citable_required deliberately omitted -- False.
+                            },
+                            question=query,
+                            user_message=ctx.message,
+                            thread_id=ctx.thread_id,
+                            active_context=active,
+                            mode=getattr(ctx, "chat_mode", "copilot") or "copilot",
+                            emitter=emitter,
+                            pipeline_ctx=ctx,
+                        )
+                    )
+                    _fallback_sources = [s.to_dict() for s in (_fallback_env.sources or [])]
+                    _record_rag_round((_fallback_env.extra or {}).get("pipeline_trace") or {})
+                    if _fallback_sources or (_fallback_env.text or "").strip():
+                        corpus_answer = _fallback_env.text or ""
+                        corpus_sources = _fallback_sources
+                        corpus_signal = _fallback_env.signal or corpus_signal
+                        _corpus_telemetry = (_fallback_env.extra or {}).get("pipeline_trace") or _corpus_telemetry
+                        _status = _corpus_telemetry.get("status")
+                        _dispatch_path = _corpus_telemetry.get("dispatch_path")
+                        _chosen_slot = _corpus_telemetry.get("chosen_slot")
+                        _n_chunks = _corpus_telemetry.get("n_chunks", len(corpus_sources or []))
+                        merged_sources = list(corpus_sources or [])
+                        merged_result = corpus_answer or ""
+                        success = bool(merged_result and len(merged_result.strip()) > 80)
+                        merged_signal = corpus_signal
+                except Exception as _e:
+                    logger.warning("[clarify-fallback] non-citable retry failed: %s", _e)
             # Fall through to the normal success/reframe handling below with
-            # whichever result (fallback or original empty) is now current --
-            # no second bypass, no infinite retry, exactly one fallback attempt.
+            # whichever result (fallback, gap-priority skip, or original
+            # empty) is now current -- no second bypass, no infinite retry,
+            # exactly one fallback attempt when it does fire.
 
         # ── call_number escalation on low-confidence terminal_action ──────
         # (2026-08-08, Chat Master directive, Retriever-confirmed live
@@ -1758,9 +1795,22 @@ def _execute_tool(
         # stacked on top) -- at most 2 additional calls here, same query,
         # no citable_required/query changes (a different escalation axis
         # from relax/reframe entirely, so both can coexist in one round).
+        # Multi-entity slot priority (2026-08-12, Chat Master directive):
+        # same gate as the clarify-fallback above -- escalating confidence
+        # on THIS entity must wait until every entity/sub-question has had
+        # at least one attempt. len(open_gaps) <= 1 means nothing else is
+        # outstanding after this call; 2+ means another gap hasn't been
+        # searched at all yet and gets priority over polishing this one.
+        _lc_gap_priority_blocked = len(open_gaps or []) > 1
+        if _lc_gap_priority_blocked and _corpus_telemetry.get("terminal_action") == "clarify_low_confidence":
+            emit(
+                f"  ↓ Low confidence, but {len(open_gaps)} other gaps still unaddressed — "
+                "not escalating, moving on."
+            )
         _low_confidence_call_number = 1
         while (
-            _corpus_telemetry.get("terminal_action") == "clarify_low_confidence"
+            not _lc_gap_priority_blocked
+            and _corpus_telemetry.get("terminal_action") == "clarify_low_confidence"
             and _low_confidence_call_number < 3
         ):
             _low_confidence_call_number += 1
@@ -3499,6 +3549,7 @@ def _execute_tool_with_retry(
     emit_fn,
     tool_emitter,
     skip_retry: bool = False,
+    open_gaps: list[str] | None = None,
 ) -> dict:
     """Run ``_execute_tool`` with a single auto-retry on recoverable errors.
 
@@ -3517,6 +3568,9 @@ def _execute_tool_with_retry(
         skip_retry: when True, return the first result without sleeping or
             retrying. Used by fast/quick mode to avoid adding latency on
             transient errors.
+        open_gaps: passthrough to ``_execute_tool`` (see its docstring) --
+            gaps_open as of the last evidence_review, for search_corpus's
+            multi-entity slot-priority gating.
 
     Rules:
     - Max 1 retry per call (no spirals).
@@ -3529,7 +3583,7 @@ def _execute_tool_with_retry(
 
     def _run_once() -> dict:
         try:
-            return _execute_tool(tool, inputs, ctx, tool_emitter)
+            return _execute_tool(tool, inputs, ctx, tool_emitter, open_gaps=open_gaps)
         except Exception as exc:
             r = tool_result_from_exception(exc, tool=tool, round=round_num)
             emit_fn(f"  ⊘ {r['result']}")
@@ -3887,6 +3941,17 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
     # promoting to task-manager analytics. First-try approvals stay
     # chat-side-only (too common to warrant promotion).
     _critic_retries_this_turn = 0
+
+    # Multi-entity slot priority (2026-08-12, Chat Master directive, #85
+    # forcing incident): gaps_open as of the LAST evidence_review, threaded
+    # into each round's tool dispatch so search_corpus's retry mechanisms
+    # (low-confidence escalation, clarify-fallback) know whether OTHER
+    # entities/sub-questions are still completely unaddressed before
+    # spending extra budget perfecting the CURRENT one. Persists across
+    # rounds (not reset each iteration) so a round with no fresh
+    # evidence_review still has the last-known state rather than nothing.
+    # See _execute_tool's "open_gaps" docstring for the exact gating rule.
+    _gaps_open: list[str] = []
 
     # Sprint A.1 commit 3: emit a structured signal at the transition
     # round (first round where guidance mode activates). The planner's
@@ -5005,6 +5070,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         result = _execute_tool_with_retry(
             tool or "search_corpus", inputs, ctx, rn, emit, emitter,
             skip_retry=(mode_label == "quick"),
+            open_gaps=_gaps_open,
         )
 
         # Task #86 (2026-08-11, Chat Master): checked here, immediately

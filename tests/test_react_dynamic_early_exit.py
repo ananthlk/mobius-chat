@@ -80,7 +80,7 @@ def test_agentic_stops_at_round_3_not_round_10_when_structurally_exhausted():
             )
         raise AssertionError(f"should not reach {stage} — the offramp should have let the loop stop at round 3")
 
-    def fake_exec_retry(tool, inputs, ctx, rn, emit, tool_emitter, skip_retry=False):
+    def fake_exec_retry(tool, inputs, ctx, rn, emit, tool_emitter, skip_retry=False, open_gaps=None):
         return _CORPUS_FAIL if tool == "search_corpus" else _WEB_FAIL
 
     ctx = _make_ctx("agentic")
@@ -107,7 +107,7 @@ def test_offramp_text_absent_before_two_distinct_failures():
             return '{"thought": "try corpus", "tool": "search_corpus", "inputs": {"query": "x"}, "is_complete": false}'
         return '{"thought": "try web", "tool": "web_scrape", "inputs": {"url": "https://x"}, "is_complete": false}'
 
-    def fake_exec_retry(tool, inputs, ctx, rn, emit, tool_emitter, skip_retry=False):
+    def fake_exec_retry(tool, inputs, ctx, rn, emit, tool_emitter, skip_retry=False, open_gaps=None):
         return _CORPUS_FAIL if tool == "search_corpus" else _WEB_FAIL
 
     ctx = _make_ctx("agentic")
@@ -153,7 +153,7 @@ def test_offramp_does_not_force_a_stop_model_can_keep_going():
         # keeps trying (a different query each time) instead of using it.
         return f'{{"thought": "trying again", "tool": "search_corpus", "inputs": {{"query": "attempt {n}"}}, "is_complete": false}}'
 
-    def fake_exec_retry(tool, inputs, ctx, rn, emit, tool_emitter, skip_retry=False):
+    def fake_exec_retry(tool, inputs, ctx, rn, emit, tool_emitter, skip_retry=False, open_gaps=None):
         return _CORPUS_FAIL if tool == "search_corpus" else _WEB_FAIL
 
     ctx = _make_ctx("copilot")  # 3 rounds — offramp legal from round 3, which is also the mechanical last round here
@@ -185,7 +185,7 @@ def test_no_offramp_when_something_already_succeeded():
 
     call_n = {"n": 0}
 
-    def fake_exec_retry(tool, inputs, ctx, rn, emit, tool_emitter, skip_retry=False):
+    def fake_exec_retry(tool, inputs, ctx, rn, emit, tool_emitter, skip_retry=False, open_gaps=None):
         call_n["n"] += 1
         if tool == "search_corpus":
             return _SEARCH_SUCCESS  # succeeds — no structural exhaustion possible after this

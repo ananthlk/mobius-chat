@@ -237,7 +237,7 @@ class TestIsTerminalHandlerGeneralized:
 
         _round1_source = {"document_name": "Provider Manual", "index": 1, "text": "Timely filing is 180 days."}
 
-        def fake_execute(tool, inputs, ctx, round_num, emit_fn, tool_emitter, skip_retry=False):
+        def fake_execute(tool, inputs, ctx, round_num, emit_fn, tool_emitter, skip_retry=False, open_gaps=None):
             # Mocks _execute_tool_with_retry (not _execute_tool) -- the
             # wrapper run_react actually calls. Going through the real
             # wrapper here would hit its own unrelated lazy import of
@@ -247,7 +247,9 @@ class TestIsTerminalHandlerGeneralized:
             # test's actual subject) even on the success path this test
             # exercises. Mocking at this level sidesteps that import
             # entirely while still exercising the real is_terminal handler
-            # in run_react's own loop body.
+            # in run_react's own loop body. open_gaps accepted (2026-08-12,
+            # #85 slot-priority) so the round loop's new kwarg doesn't
+            # break this mock's signature -- not this test's subject.
             if tool == "search_corpus":
                 return {
                     "tool": "search_corpus", "success": True,
@@ -271,6 +273,74 @@ class TestIsTerminalHandlerGeneralized:
         assert getattr(ctx, "react_bypass_integrate", False) is False  # integrator still runs
         assert ctx.sources, "round 1's corpus source must survive onto the final card, not be dropped"
         assert any(s.get("document_name") == "Provider Manual" for s in ctx.sources)
+
+
+class TestOpenGapsThreadedFromEvidenceReview:
+    """2026-08-12, Chat Master directive (#85 forcing incident): the round
+    loop's own gaps_open (from the model's evidence_review) must actually
+    reach _execute_tool_with_retry's open_gaps kwarg, round over round --
+    the search_corpus-level gating (test_react_low_confidence_escalation.py)
+    is only correct if the value it receives is real. Verifies the WIRING,
+    not the gating logic itself."""
+
+    def test_gaps_open_reflects_the_real_evidence_review_by_round(self):
+        ctx = PipelineContext(
+            correlation_id="c", thread_id=None,
+            message="Compare timely filing deadlines for Sunshine Health, Aetna, and Molina",
+        )
+        ctx.merged_state = {}
+        ctx.last_turns = []
+        ctx.effective_message = ctx.message
+
+        reason_count = 0
+
+        def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+            nonlocal reason_count
+            reason_count += 1
+            if reason_count == 1:
+                # Round 1: no evidence_review yet (first round never
+                # includes one per the schema).
+                return '{"thought": "Search Aetna first.", "tool": "search_corpus", "inputs": {"query": "Aetna timely filing"}, "is_complete": false}'
+            if reason_count == 2:
+                # Round 2: audits round 1's Aetna result, reports Molina
+                # (and, deliberately, a stale/incomplete Sunshine gap) as
+                # still open, then dispatches round 2's OWN search.
+                return (
+                    '{"thought": "Got Aetna, now Molina.", '
+                    '"evidence_review": {"keep": [1], "running_answer": "Aetna: 180 days.", '
+                    '"gaps_closed": ["Aetna timely filing"], "gaps_open": ["Molina timely filing", "Sunshine confirmation"]}, '
+                    '"tool": "search_corpus", "inputs": {"query": "Molina timely filing"}, "is_complete": false}'
+                )
+            return (
+                '{"thought": "Have everything now.", '
+                '"evidence_review": {"keep": [1], "running_answer": "All three gathered.", '
+                '"gaps_closed": ["Molina timely filing", "Sunshine confirmation"], "gaps_open": []}, '
+                '"tool": null, "inputs": {}, "is_complete": true, "answer": "Comparison ready.", "confidence": "high"}'
+            )
+
+        captured_open_gaps: list[list[str] | None] = []
+
+        def fake_execute(tool, inputs, ctx, round_num, emit_fn, tool_emitter, skip_retry=False, open_gaps=None):
+            captured_open_gaps.append(list(open_gaps) if open_gaps is not None else None)
+            return {
+                "tool": "search_corpus", "success": True,
+                "result": f"Real result for: {inputs.get('query')}",
+                "signal": "corpus_only", "sources": [], "usage": None,
+            }
+
+        with patch("app.pipeline.react.critic.critic_enabled", return_value=False), \
+             patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm), \
+             patch("app.pipeline.react_loop._execute_tool_with_retry", side_effect=fake_execute):
+            run_react(ctx, emitter=None)
+
+        assert len(captured_open_gaps) == 2, "two search_corpus dispatches expected (rounds 1 and 2)"
+        # Round 1's dispatch: no evidence_review has run yet -- empty.
+        assert captured_open_gaps[0] == []
+        # Round 2's dispatch: reflects round 2's OWN evidence_review
+        # (auditing round 1's result), captured BEFORE round 2's own
+        # search runs -- exactly the "state as of the last audit" the
+        # gating logic depends on.
+        assert captured_open_gaps[1] == ["Molina timely filing", "Sunshine confirmation"]
 
 
 def test_finalize_response_sets_plan_answers_and_answer_set():

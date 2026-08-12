@@ -148,7 +148,7 @@ class TestReactLoopEscalatesOnSignal:
         class _FakeEnv:
             internal_detail = "429 Resource exhausted: simulated"
 
-        def fake_execute(tool, inputs, ctx, round_num, emit_fn, tool_emitter, skip_retry=False):
+        def fake_execute(tool, inputs, ctx, round_num, emit_fn, tool_emitter, skip_retry=False, open_gaps=None):
             # Simulates what answer_non_patient does inside the real tool call.
             ctx.llm_provider_exhausted = _FakeEnv()
             return {
@@ -172,7 +172,7 @@ class TestReactLoopEscalatesOnSignal:
 
         ctx = self._make_ctx()
 
-        def fake_execute(tool, inputs, ctx, round_num, emit_fn, tool_emitter, skip_retry=False):
+        def fake_execute(tool, inputs, ctx, round_num, emit_fn, tool_emitter, skip_retry=False, open_gaps=None):
             return {
                 "tool": "search_corpus", "success": True,
                 "result": "Timely filing is 180 days.", "signal": "corpus_only",
