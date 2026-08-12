@@ -94,6 +94,13 @@ class PipelineContext:
     """Last turn messages for context (user + assistant)."""
     last_turn_sources: list[dict] = field(default_factory=list)
     """Sources (document_id, document_name) from previous turns for continuity."""
+    prior_resolved_entities: list[dict] = field(default_factory=list)
+    """{gap_text, react_draft, turn_index} from gaps_closed across the last
+    ~8 turns (2026-08-12, Task #90) -- reaches further back than
+    last_turns/last_turn_sources' ~3-turn window for a targeted lookup on
+    long multi-entity comparison threads. Loaded by state_load, gated on
+    ctx.is_continuation. Rendered by build_reasoning_context via a
+    keyword-overlap match against the current query."""
     context_pack: str = ""
     """Context string passed to parser (from route_context + build_context_pack)."""
     previous_thread_summary: str | None = None

@@ -102,6 +102,45 @@ def test_state_load_returns_none_when_no_summaries(monkeypatch):
     assert ctx.previous_thread_summary is None
 
 
+def test_state_load_loads_prior_resolved_entities_when_continuation(monkeypatch):
+    """2026-08-12, Chat Master directive, Task #90: gated on
+    ctx.is_continuation -- a fresh turn has nothing prior to resolve, so
+    the (extra) DB query only fires on continuation turns."""
+    from app.stages import state_load as sl
+
+    monkeypatch.setattr(sl, "get_state", lambda tid: {"active": {}})
+    monkeypatch.setattr(sl, "save_state_full", lambda tid, st: None)
+    monkeypatch.setattr(sl, "get_last_turn_sources", lambda tid: [])
+    monkeypatch.setattr(sl, "get_thread_rolling_summary", lambda tid: None)
+    monkeypatch.setattr(sl, "get_last_turn_messages", lambda tid: [])
+    fake_entities = [{"gap_text": "Molina deadline", "react_draft": "180 days", "turn_index": 2}]
+    monkeypatch.setattr(sl, "get_prior_resolved_entities", lambda tid, **kw: fake_entities)
+
+    ctx = _make_ctx()
+    ctx.is_continuation = True
+    sl.run_state_load(ctx)
+    assert ctx.prior_resolved_entities == fake_entities
+
+
+def test_state_load_skips_prior_resolved_entities_on_fresh_turn(monkeypatch):
+    from app.stages import state_load as sl
+
+    monkeypatch.setattr(sl, "get_state", lambda tid: {"active": {}})
+    monkeypatch.setattr(sl, "save_state_full", lambda tid, st: None)
+    monkeypatch.setattr(sl, "get_last_turn_sources", lambda tid: [])
+    monkeypatch.setattr(sl, "get_thread_rolling_summary", lambda tid: None)
+    monkeypatch.setattr(sl, "get_last_turn_messages", lambda tid: [])
+
+    def _should_not_be_called(tid, **kw):
+        raise AssertionError("get_prior_resolved_entities must not be called on a fresh turn")
+    monkeypatch.setattr(sl, "get_prior_resolved_entities", _should_not_be_called)
+
+    ctx = _make_ctx()
+    ctx.is_continuation = False
+    sl.run_state_load(ctx)  # must not raise
+    assert ctx.prior_resolved_entities == []
+
+
 def test_state_load_handles_empty_thread(monkeypatch):
     """No thread_id → state_load early-exits and previous_thread_summary
     stays None (default from the dataclass)."""

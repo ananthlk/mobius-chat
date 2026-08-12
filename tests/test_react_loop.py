@@ -74,6 +74,99 @@ def test_build_reasoning_context_includes_tool_results_after_act():
     assert "No relevant" in out or "Iteration" in out
 
 
+class TestPriorResolvedEntitiesRendering:
+    """2026-08-12, Chat Master directive, Task #90: build_reasoning_context
+    renders ctx.prior_resolved_entities via a keyword-overlap match
+    against the current query -- reaches further back than last_turns'
+    ~3-turn window for a targeted lookup on longer multi-entity threads."""
+
+    def _ctx(self, message: str, prior_resolved_entities: list[dict]) -> PipelineContext:
+        ctx = PipelineContext(correlation_id="c", thread_id="t1", message=message)
+        ctx.effective_message = ctx.message
+        ctx.last_turns = []
+        ctx.prior_resolved_entities = prior_resolved_entities
+        return ctx
+
+    def test_matched_entity_rendered_with_react_draft(self):
+        ctx = self._ctx(
+            "Now compare that to Aetna and Molina",
+            [{"gap_text": "Molina's timely filing deadlines", "react_draft": "Molina: 180 days.", "turn_index": 2}],
+        )
+        out = build_reasoning_context(ctx, [], 1)
+        assert "Previously resolved (this thread)" in out
+        assert "Molina's timely filing deadlines" in out
+        assert "Molina: 180 days." in out
+        assert "Use these directly" in out
+
+    def test_unrelated_entity_not_rendered(self):
+        """Keyword overlap must actually filter -- an entity with zero
+        token overlap against the current query must not appear."""
+        ctx = self._ctx(
+            "What is Molina's appeal process?",
+            [{"gap_text": "Sunshine Health provider directory update", "react_draft": "Directory updated Q3.", "turn_index": 5}],
+        )
+        out = build_reasoning_context(ctx, [], 1)
+        assert "Previously resolved" not in out
+        assert "Directory updated Q3." not in out
+
+    def test_empty_prior_resolved_entities_no_section(self):
+        ctx = self._ctx("Any question", [])
+        out = build_reasoning_context(ctx, [], 1)
+        assert "Previously resolved" not in out
+
+    def test_matches_capped_at_five(self):
+        entities = [
+            {"gap_text": f"Aetna deadline variant {i}", "react_draft": f"draft {i}", "turn_index": i}
+            for i in range(8)
+        ]
+        ctx = self._ctx("Tell me about Aetna deadline", entities)
+        out = build_reasoning_context(ctx, [], 1)
+        assert out.count("draft 0") + out.count("draft 1") + out.count("draft 2") + \
+               out.count("draft 3") + out.count("draft 4") == 5
+        assert "draft 7" not in out
+
+    def test_malformed_entries_skipped_not_crash(self):
+        ctx = self._ctx("Aetna deadline", ["not a dict", None, 42])
+        out = build_reasoning_context(ctx, [], 1)  # must not raise
+        assert "Previously resolved" not in out
+
+    def test_react_draft_capped_at_400_chars(self):
+        ctx = self._ctx(
+            "Aetna deadline question",
+            [{"gap_text": "Aetna deadline", "react_draft": "X" * 1000, "turn_index": 0}],
+        )
+        out = build_reasoning_context(ctx, [], 1)
+        assert out.count("X") == 400
+
+
+class TestOverlapTokens:
+    def test_stopwords_and_punctuation_stripped(self):
+        from app.pipeline.react.prompts import _overlap_tokens
+        tokens = _overlap_tokens("What is the deadline for Aetna's claims, please?")
+        assert "aetna" in tokens or "aetnas" in tokens
+        assert "claims" in tokens
+        assert "the" not in tokens
+        assert "is" not in tokens
+        assert "for" not in tokens
+        assert "please" not in tokens
+
+    def test_short_tokens_dropped(self):
+        from app.pipeline.react.prompts import _overlap_tokens
+        tokens = _overlap_tokens("PA is due in CA by TX")
+        assert "pa" not in tokens  # 2 chars, dropped
+        assert "ca" not in tokens
+        assert "tx" not in tokens
+
+    def test_case_insensitive(self):
+        from app.pipeline.react.prompts import _overlap_tokens
+        assert _overlap_tokens("MOLINA") == _overlap_tokens("molina")
+
+    def test_empty_string_returns_empty_set(self):
+        from app.pipeline.react.prompts import _overlap_tokens
+        assert _overlap_tokens("") == set()
+        assert _overlap_tokens(None) == set()
+
+
 def test_execute_tool_refuse_returns_terminal():
     """refuse tool returns is_terminal=True and does not run RAG/tools."""
     ctx = PipelineContext(correlation_id="c", thread_id=None, message="Is member 12345 eligible?")

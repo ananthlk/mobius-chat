@@ -14,7 +14,7 @@ from app.storage.threads import (
     get_thread_rolling_summary,
     save_state_full,
 )
-from app.storage.turns import get_last_turn_sources
+from app.storage.turns import get_last_turn_sources, get_prior_resolved_entities
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +61,15 @@ def run_state_load(
     ctx.report_run_id = (merged.get("active") or {}).get("report_run_id")
     ctx.last_turns = get_last_turn_messages(ctx.thread_id)
     ctx.last_turn_sources = get_last_turn_sources(ctx.thread_id)
+    # prior_resolved_entities (2026-08-12, Chat Master directive, Task #90):
+    # gated on is_continuation -- a fresh turn has nothing prior to
+    # resolve, and the query would be pure overhead. last_turns/
+    # last_turn_sources above already cover the last ~3 turns adequately
+    # (#89); this reaches further back (8 turns) for a targeted lookup,
+    # not a wider blanket window.
+    ctx.prior_resolved_entities = (
+        get_prior_resolved_entities(ctx.thread_id) if ctx.is_continuation else []
+    )
     # Rolling rich context for the integrator. Prefer the canonical
     # per-thread brief (chat_threads.summary_long), updated in place each
     # turn; fall back to the latest non-null per-turn context_summary for

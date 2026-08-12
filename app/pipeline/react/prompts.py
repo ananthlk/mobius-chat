@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
 
 from app.pipeline.context import PipelineContext
@@ -701,6 +702,32 @@ def _call_llm_json(
     return raw
 
 
+# ── Prior-resolved-entities keyword overlap (2026-08-12, Task #90) ────────
+# Deliberately a small, self-contained stopword list rather than an NLP
+# dependency -- this is a best-effort heuristic (Chat Master: "fine, gap
+# text carries enough signal"), not a precision-critical matcher. Tokens
+# <=2 chars are dropped too (initials/units add noise, not signal).
+_OVERLAP_STOPWORDS = frozenset({
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "and", "or", "but", "if", "of", "in", "on", "at", "to", "for", "with",
+    "about", "against", "between", "into", "through", "during", "before",
+    "after", "from", "up", "down", "this", "that", "these", "those", "it",
+    "its", "what", "which", "who", "whom", "when", "where", "why", "how",
+    "do", "does", "did", "doing", "have", "has", "had", "having", "will",
+    "would", "should", "could", "can", "may", "might", "must", "not",
+    "compare", "comparing", "deadline", "deadlines", "please", "also",
+})
+_OVERLAP_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def _overlap_tokens(text: str) -> set[str]:
+    """Lowercase, strip punctuation, drop stopwords/short tokens -- for
+    best-effort keyword-overlap matching between a query and a prior
+    turn's free-text gap description. Not a precise index lookup."""
+    words = _OVERLAP_WORD_RE.findall((text or "").lower())
+    return {w for w in words if len(w) > 2 and w not in _OVERLAP_STOPWORDS}
+
+
 # ── Reasoning-context builder ─────────────────────────────────────────────
 
 
@@ -990,6 +1017,42 @@ def build_reasoning_context(
             "primary continuity signal; do NOT re-summarize):\n"
             + _prev_summary[:600]
         )
+
+    # ── Previously resolved (this thread) (2026-08-12, Chat Master
+    # directive, Task #90) ────────────────────────────────────────────
+    # last_turns/previous_thread_summary above cover the last ~3 turns
+    # adequately (confirmed live, Task #89) -- this reaches further back
+    # (ctx.prior_resolved_entities, up to 8 turns, gated on
+    # ctx.is_continuation in state_load.py) for a TARGETED lookup on
+    # longer multi-entity threads, e.g. picking up Aetna's resolved
+    # facts from turn 2 on turn 6 without loading the whole window.
+    # gap_text is free-text model prose ("Molina's timely filing
+    # deadlines"), not a structured entity ID -- matching against the
+    # current query is a best-effort keyword-overlap heuristic
+    # (stopwords + punctuation stripped both sides), not a precise
+    # index lookup. Deliberately NOT deduped across turns -- a more
+    # recent resolution of the same entity should be visible alongside
+    # an older one, not silently hidden.
+    _prior_entities = getattr(ctx, "prior_resolved_entities", None) or []
+    if _prior_entities:
+        _query_for_match = (getattr(ctx, "effective_message", None) or ctx.message or "")
+        _query_tokens = _overlap_tokens(_query_for_match)
+        _matched_entities = [
+            e for e in _prior_entities
+            if isinstance(e, dict) and _query_tokens & _overlap_tokens(str(e.get("gap_text") or ""))
+        ]
+        if _matched_entities:
+            _resolved_lines = [
+                "Previously resolved (this thread) — facts settled on earlier turns, "
+                "matched to this question by keyword overlap with what was resolved. "
+                "Use these directly; do NOT re-search for them:"
+            ]
+            for e in _matched_entities[:5]:  # cap -- best-effort, not exhaustive
+                _resolved_lines.append(
+                    f"- (turn -{e.get('turn_index', '?')}) resolved \"{e.get('gap_text')}\": "
+                    + str(e.get("react_draft") or "")[:400]
+                )
+            parts.append("\n".join(_resolved_lines))
 
     # ── Evidence Ledger (2026-08-06, Task #48, Chat Architecture spec) ───
     # Code-computed by the caller (react_loop.py, from ctx._rag_call_history)

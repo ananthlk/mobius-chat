@@ -370,6 +370,75 @@ def get_last_turn_sources(thread_id: str, limit_turns: int = 2) -> list[dict[str
     return out
 
 
+def get_prior_resolved_entities(thread_id: str, limit_turns: int = 8) -> list[dict[str, Any]]:
+    """Return {gap_text, react_draft, turn_index} for every gaps_closed
+    entry across the last N turns in this thread (2026-08-12, Chat Master
+    directive, Task #90).
+
+    Both fields are already durably persisted per-turn -- no new
+    persistence work, this is a read-only lookup:
+      - final_message.react_draft (2026-08-07 ruling, Summary tab)
+      - final_message.reasoning_trace[].gaps_closed (Task #58/#80's
+        per-round EvidenceLedger, already flows into the persisted card)
+
+    Purpose: on a multi-turn comparison thread (e.g. "compare timely
+    filing for Sunshine Health, Aetna, and Molina" spread across several
+    turns), build_reasoning_context needs to pick up an entity resolved
+    several turns back -- last_turns/previous_thread_summary already
+    cover the last ~3 turns adequately (see #89), this is specifically
+    for reaching further back without loading the whole window.
+
+    gap_text is free-text model prose ("Molina's timely filing
+    deadlines"), not a structured entity ID -- the caller is expected to
+    do a keyword-overlap match against the current query, not an exact
+    match. turn_index is 0 for the most recent turn, increasing with
+    age. Deliberately does NOT dedupe across turns -- if the same entity
+    was resolved twice (e.g. corrected on a later turn), the caller sees
+    both and the more-recent one naturally sorts first."""
+    if not (thread_id or "").strip():
+        return []
+    result = db_query(
+        """
+        SELECT
+            final_message::jsonb->>'react_draft' AS react_draft,
+            final_message::jsonb->'reasoning_trace' AS reasoning_trace
+        FROM chat_turns
+        WHERE thread_id = :thread_id AND final_message IS NOT NULL AND final_message != ''
+        ORDER BY created_at DESC
+        LIMIT :lim
+        """,
+        _DB,
+        params={"thread_id": thread_id.strip(), "lim": max(1, min(limit_turns, 20))},
+    )
+    if _err_code(result) is not None:
+        logger.warning("Failed to get prior resolved entities: %s", _err_message(result))
+        return []
+
+    out: list[dict[str, Any]] = []
+    for turn_index, row in enumerate(_rows_as_dicts(result)):
+        react_draft = (row.get("react_draft") or "").strip()
+        if not react_draft:
+            continue
+        rounds = _decode_jsonb(row.get("reasoning_trace"))
+        if not isinstance(rounds, list):
+            continue
+        for rnd in rounds:
+            if not isinstance(rnd, dict):
+                continue
+            gaps_closed = rnd.get("gaps_closed")
+            if not isinstance(gaps_closed, list):
+                continue
+            for gap in gaps_closed:
+                gap_text = str(gap or "").strip()
+                if gap_text:
+                    out.append({
+                        "gap_text": gap_text,
+                        "react_draft": react_draft,
+                        "turn_index": turn_index,
+                    })
+    return out
+
+
 def get_last_turn_question(thread_id: str) -> str | None:
     """Return the most recent turn's raw question text for this thread, or
     None if there isn't one (new thread, or DB error -- never raises).
