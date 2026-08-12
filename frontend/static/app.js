@@ -9143,6 +9143,112 @@ function renderModuleTrace(thinkingLog) {
   });
   return wrap;
 }
+function renderRagCallRounds(thinkingLog) {
+  if (!Array.isArray(thinkingLog))
+    return null;
+  let rounds = null;
+  for (const entry of thinkingLog) {
+    const dd = entry && typeof entry === "object" ? entry.data : null;
+    const rr = dd && typeof dd === "object" ? dd.rag_call_rounds : null;
+    if (Array.isArray(rr) && rr.length)
+      rounds = rr;
+  }
+  if (!rounds || !rounds.length)
+    return null;
+  const acc = document.createElement("div");
+  acc.className = "module-trace";
+  let grandTotal = 0;
+  rounds.forEach((r, i) => {
+    const n = typeof r.round_n === "number" ? r.round_n : i + 1;
+    const query = String(r.query ?? "").trim();
+    const outcome = String(r.terminal_action ?? "").trim();
+    const lat = r.latency_ms && typeof r.latency_ms === "object" ? r.latency_ms : {};
+    const total = typeof lat.total_ms === "number" ? Math.round(lat.total_ms) : null;
+    if (total != null)
+      grandTotal += total;
+    const mt = Array.isArray(r.module_trace) ? r.module_trace : [];
+    const row = document.createElement("details");
+    row.className = "mt-row";
+    const hdr = document.createElement("summary");
+    hdr.className = "mt-row-hdr";
+    const badge = document.createElement("span");
+    badge.className = "mt-badge";
+    badge.textContent = String(i + 1);
+    const name = document.createElement("span");
+    name.className = "mt-name";
+    name.textContent = query ? `Call ${i + 1} \xB7 \u201C${query}\u201D` : `Round ${n}`;
+    const metric = document.createElement("span");
+    metric.className = "mt-metric";
+    const hp = [];
+    if (outcome)
+      hp.push(outcome);
+    if (total != null)
+      hp.push(`${total} ms`);
+    metric.textContent = hp.join(" \xB7 ") || "\u2014";
+    hdr.appendChild(badge);
+    hdr.appendChild(name);
+    hdr.appendChild(metric);
+    row.appendChild(hdr);
+    const body = document.createElement("div");
+    body.className = "mt-body";
+    if (query)
+      _dcKV(body, "query", query);
+    _dcKV(body, "round", String(n));
+    _dcKV(body, "terminal_action", outcome || "\u2014");
+    mt.forEach((e) => {
+      const stage = typeof e.stage === "string" ? e.stage : "stage";
+      const label = e.slot ? `${stage} \u2014 slot ${e.slot}` : e.theme ? `${stage} \u2014 ${e.theme}` : stage;
+      const bits = [];
+      if (typeof e.ms === "number")
+        bits.push(`${Math.round(e.ms)} ms`);
+      if (typeof e.candidates === "number")
+        bits.push(`${e.candidates} cand`);
+      if (typeof e.dispatch_path === "string" && e.dispatch_path)
+        bits.push(e.dispatch_path);
+      _dcKV(body, String(label), bits.join(" \xB7 ") || "\u2014");
+    });
+    row.appendChild(body);
+    acc.appendChild(row);
+  });
+  const wrap = document.createElement("div");
+  wrap.className = "llm-performance module-trace-section collapsed";
+  const preview = document.createElement("div");
+  preview.className = "llm-performance-preview";
+  preview.setAttribute("role", "button");
+  preview.setAttribute("tabindex", "0");
+  preview.setAttribute("aria-expanded", "false");
+  const titleEl = document.createElement("span");
+  titleEl.className = "llm-performance-title";
+  titleEl.textContent = "RAG telemetry";
+  const oneline = document.createElement("span");
+  oneline.className = "llm-performance-oneline";
+  oneline.textContent = `${rounds.length} call${rounds.length === 1 ? "" : "s"}${grandTotal > 0 ? " \xB7 " + grandTotal + " ms" : ""}`;
+  const chev = document.createElement("span");
+  chev.className = "llm-performance-chevron";
+  chev.setAttribute("aria-hidden", "true");
+  chev.textContent = "\u25BC";
+  preview.appendChild(titleEl);
+  preview.appendChild(oneline);
+  preview.appendChild(chev);
+  const secBody = document.createElement("div");
+  secBody.className = "llm-performance-body";
+  secBody.appendChild(acc);
+  wrap.appendChild(preview);
+  wrap.appendChild(secBody);
+  const toggle = () => {
+    const collapsed = wrap.classList.toggle("collapsed");
+    preview.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    chev.textContent = collapsed ? "\u25BC" : "\u25B2";
+  };
+  preview.addEventListener("click", toggle);
+  preview.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      toggle();
+    }
+  });
+  return wrap;
+}
 function renderDiagnosticsCard(thinkingLog) {
   if (!Array.isArray(thinkingLog) || thinkingLog.length === 0)
     return null;
@@ -11483,7 +11589,9 @@ function run() {
       );
       _diag.tool.push(perfEl);
     }
-    const moduleTraceEl = renderModuleTrace(
+    const moduleTraceEl = renderRagCallRounds(
+      opts.thinkingLog
+    ) ?? renderModuleTrace(
       opts.thinkingLog
     );
     if (moduleTraceEl) {
