@@ -4474,6 +4474,27 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
 
         if is_complete or not tool:
             answer = decision.get("answer", "")
+
+            # Task #84/#87 follow-up (2026-08-12, Chat Master, live finding
+            # cid=843e0dd0): incomplete_coverage was only ever checked on
+            # the is_complete=false exhausted-iterations fallback -- but
+            # the model completing NORMALLY (is_complete=true) on the final
+            # round with an acknowledged-but-unresolved gap is the MORE
+            # common case (a multi-payor question where it found 2 of 3 and
+            # just answers with what it has, gap narrated only in prose)
+            # and was completely invisible to this signal. gaps_open is
+            # already computed fresh every round (evidence_review above) --
+            # the robust anchor is "still non-empty on the last round
+            # available", independent of is_complete, not the model's own
+            # free-text choice of self-report format under competing
+            # end-of-turn instructions (guidance-mode's "synthesize from
+            # what you have" nudges toward is_complete=true, which used to
+            # mean this signal never fired at all).
+            _final_round_gaps_open = _as_str_list((decision.get("evidence_review") or {}).get("gaps_open"))
+            if answer and rn >= max_it and _final_round_gaps_open and not getattr(ctx, "react_unfinished_reason", None):
+                ctx.react_unfinished_reason = "incomplete_coverage"
+                ctx.react_unfinished_summary = "Still missing: " + "; ".join(_final_round_gaps_open[:4])
+
             # Product-feedback (docs/feedback-agent-spec.md §6): honor the
             # planner's offer_feedback ONLY when a cadence signal was actually
             # injected this turn — the eligibility ceiling lives in code, so the

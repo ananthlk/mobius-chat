@@ -158,3 +158,132 @@ class TestEnvelopeCalloutAndChip:
         )
         callout = next(b for b in env["blocks"] if b["type"] == "callout")
         assert "Partial answer" in callout["body"]
+
+
+# ── Detection follow-up (2026-08-12, Chat Master, live finding cid=843e0dd0) ──
+# incomplete_coverage was only ever checked on the is_complete=false
+# exhausted-iterations fallback -- but the model completing NORMALLY
+# (is_complete=true) on the final round with an acknowledged-but-unresolved
+# gap (e.g. "found Sunshine and Aetna, couldn't reach Molina within the
+# given rounds") is the MORE common case and was completely invisible to
+# this signal. Fixed by deriving it from gaps_open non-empty on the final
+# round, independent of is_complete, using the same reasoning-ledger data
+# already flowing through evidence_review every round.
+
+class TestGracefulCompletionWithGapsDetection:
+    def _make_ctx(self) -> PipelineContext:
+        ctx = PipelineContext(
+            correlation_id="c-graceful-gap", thread_id=None,
+            message="What are the timely filing deadlines for Sunshine, Aetna, and Molina?",
+        )
+        ctx.effective_message = ctx.message
+        ctx.merged_state = {}
+        ctx.last_turns = []
+        ctx.chat_mode = "quick"  # REACT_MAX_ROUNDS_QUICK = 2 -- round 2 is the final round
+        return ctx
+
+    def test_is_complete_true_with_unresolved_gaps_sets_incomplete_coverage(self):
+        """The exact live scenario: round 2 (final) answers normally with
+        is_complete=true, but evidence_review.gaps_open still lists an
+        unreached payor. Must set ctx.react_unfinished_reason, not stay
+        silent the way it did on the real turn."""
+        from app.pipeline.react_loop import run_react
+
+        ctx = self._make_ctx()
+        call_count = 0
+
+        def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return '{"thought": "Search Sunshine first.", "tool": "search_corpus", "inputs": {"query": "Sunshine timely filing"}, "is_complete": false}'
+            return (
+                '{"thought": "Found Sunshine, ran out of rounds for Molina.", '
+                '"tool": null, "is_complete": true, '
+                '"answer": "Sunshine: 180 days.", '
+                '"evidence_review": {"running_answer": "Sunshine covered.", '
+                '"gaps_closed": [], "gaps_open": ["timely filing deadline for Molina"]}}'
+            )
+
+        def fake_execute(tool, inputs, ctx, round_num, emit_fn, tool_emitter, skip_retry=False):
+            return {
+                "tool": "search_corpus", "success": True,
+                "result": "Sunshine: 180 days.", "signal": "corpus_only",
+                "sources": [{"document_name": "Manual", "index": 1, "text": "180 days"}],
+                "usage": None,
+            }
+
+        with patch("app.pipeline.react.critic.critic_enabled", return_value=False), \
+             patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm), \
+             patch("app.pipeline.react_loop._execute_tool_with_retry", side_effect=fake_execute):
+            run_react(ctx, emitter=None)
+
+        assert ctx.react_unfinished_reason == "incomplete_coverage"
+        assert "Molina" in (ctx.react_unfinished_summary or "")
+        # The turn still completes normally with the partial answer --
+        # this signal is additive metadata, not a failure/retry path.
+        assert "Sunshine" in ctx.final_message
+
+    def test_is_complete_true_with_no_gaps_does_not_set_signal(self):
+        """Regression guard: a genuinely complete answer (no unresolved
+        gaps) on the final round must not be flagged as partial."""
+        from app.pipeline.react_loop import run_react
+
+        ctx = self._make_ctx()
+        call_count = 0
+
+        def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return '{"thought": "Search first.", "tool": "search_corpus", "inputs": {"query": "timely filing"}, "is_complete": false}'
+            return (
+                '{"thought": "Fully answered.", "tool": null, "is_complete": true, '
+                '"answer": "Timely filing is 180 days.", '
+                '"evidence_review": {"running_answer": "Fully covered.", "gaps_closed": [], "gaps_open": []}}'
+            )
+
+        def fake_execute(tool, inputs, ctx, round_num, emit_fn, tool_emitter, skip_retry=False):
+            return {
+                "tool": "search_corpus", "success": True,
+                "result": "Timely filing is 180 days.", "signal": "corpus_only",
+                "sources": [{"document_name": "Manual", "index": 1, "text": "180 days"}],
+                "usage": None,
+            }
+
+        with patch("app.pipeline.react.critic.critic_enabled", return_value=False), \
+             patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm), \
+             patch("app.pipeline.react_loop._execute_tool_with_retry", side_effect=fake_execute):
+            run_react(ctx, emitter=None)
+
+        assert getattr(ctx, "react_unfinished_reason", None) is None
+
+    def test_gaps_open_on_non_final_round_does_not_set_signal(self):
+        """Regression guard: gaps_open is normal mid-turn state (round 1
+        of N almost always has open gaps) -- only the FINAL round's
+        unresolved gaps mean anything. Uses copilot mode (3 rounds) and
+        completes early on round 1 with is_complete=true + gaps_open set,
+        which must NOT trigger the signal since round 1 != max_it."""
+        from app.pipeline.react_loop import run_react
+
+        ctx = PipelineContext(
+            correlation_id="c-early-gaps", thread_id=None,
+            message="What is the timely filing deadline?",
+        )
+        ctx.effective_message = ctx.message
+        ctx.merged_state = {}
+        ctx.last_turns = []
+        ctx.chat_mode = "copilot"  # REACT_MAX_ROUNDS_COPILOT = 3
+
+        def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+            return (
+                '{"thought": "Answering early with an open gap noted.", "tool": null, "is_complete": true, '
+                '"answer": "Sunshine is 180 days.", '
+                '"evidence_review": {"running_answer": "Partial.", "gaps_closed": [], "gaps_open": ["Aetna deadline"]}}'
+            )
+
+        with patch("app.pipeline.react.critic.critic_enabled", return_value=False), \
+             patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm):
+            run_react(ctx, emitter=None)
+
+        assert getattr(ctx, "react_unfinished_reason", None) is None
