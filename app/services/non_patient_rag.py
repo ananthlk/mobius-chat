@@ -288,6 +288,21 @@ def answer_non_patient(
                 "Retrieval failed [%s]: %s", env.error_code, env.internal_detail, exc_info=True
             )
             _emit(emitter, f"{env.user_facing_message} Answering without our materials.")
+            # Task #87 (2026-08-12, Chat Master): same shape as the
+            # RAG-answering fix (Task #86) -- a RECOVERABLE error here
+            # (rate_limit/timeout/provider_error on the retrieval
+            # infrastructure itself) surviving means retrieval is
+            # genuinely unavailable right now, not "no matches found."
+            # Side-channel signal only; this function's return contract
+            # (still falls through to answer with empty chunks) is
+            # unchanged for other callers. Non-recoverable cases (a
+            # genuine retrieval miss) are NOT signaled -- that's a normal
+            # "answer without materials" degrade, not a provider outage.
+            if pipeline_ctx is not None and env.is_recoverable:
+                try:
+                    pipeline_ctx.llm_provider_exhausted = env
+                except Exception:  # pragma: no cover — defensive, must not mask the real error
+                    pass
     else:
         _emit(emitter, "I don’t have access to our materials right now; I’ll answer from what I know.")
         logger.info("RAG: database_url not set; skipping RAG")

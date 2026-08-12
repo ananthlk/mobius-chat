@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import sys
 import types
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -92,6 +92,40 @@ class TestAnswerNonPatientSignalsRecoverableErrors:
                 from app.services.non_patient_rag import answer_non_patient
                 answer, sources, usage, signal = answer_non_patient(question="hi")
         assert isinstance(answer, str)
+
+    def _mock_rag_config(self):
+        fake_rag = MagicMock()
+        fake_rag.database_url = "postgresql://fake"
+        fake_rag.top_k = 5
+        fake_rag.filter_payer = None
+        fake_cfg = MagicMock()
+        fake_cfg.rag = fake_rag
+        return patch("app.chat_config.get_chat_config", return_value=fake_cfg)
+
+    def test_recoverable_retrieval_failure_sets_signal(self):
+        """Task #87: the retrieval-layer catch (non_patient_rag.py:286) has
+        the same shape as the RAG-answering catch #86 fixed -- a
+        recoverable error on the retrieval infrastructure itself must
+        signal the same way, not just silently 'answer without materials.'"""
+        ctx = PipelineContext(correlation_id="c", thread_id=None, message="hi")
+        with self._stub_error_emit(error_code="rate_limit", is_recoverable=True):
+            with self._mock_rag_config():
+                with patch("app.services.retriever_backend.retrieve_for_chat", side_effect=RuntimeError("429 retrieval rate limited")):
+                    from app.services.non_patient_rag import answer_non_patient
+                    answer_non_patient(question="hi", pipeline_ctx=ctx)
+        assert ctx.llm_provider_exhausted is not None
+        assert ctx.llm_provider_exhausted.error_code == "rate_limit"
+
+    def test_non_recoverable_retrieval_failure_does_not_set_signal(self):
+        """A genuine 'no matches' / non-recoverable retrieval issue stays
+        a normal soft-degrade -- must not trigger the hard-stop escalation."""
+        ctx = PipelineContext(correlation_id="c", thread_id=None, message="hi")
+        with self._stub_error_emit(error_code="internal_error", is_recoverable=False):
+            with self._mock_rag_config():
+                with patch("app.services.retriever_backend.retrieve_for_chat", side_effect=RuntimeError("boom")):
+                    from app.services.non_patient_rag import answer_non_patient
+                    answer_non_patient(question="hi", pipeline_ctx=ctx)
+        assert ctx.llm_provider_exhausted is None
 
 
 class TestReactLoopEscalatesOnSignal:
