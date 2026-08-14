@@ -3417,7 +3417,21 @@ body {
   color: var(--sidebar-text);
   vertical-align: top;
   font-variant-numeric: tabular-nums;
+  /* Wrap long text at WORD boundaries; only split a word if it alone overflows its column — never
+     the mid-word char-break ("Informat​ion") that table-layout:auto produces when it over-compresses
+     a column (Ananth 2026-08-11). */
+  overflow-wrap: break-word;
+  word-break: normal;
+  line-height: 1.4;
 }
+/* Label/key column (e.g. RULE, Service Line, Payer): a min-width floor stops table-layout:auto from
+   crushing the short-content first column to feed long prose columns, so its multi-word labels wrap
+   cleanly at spaces instead of breaking mid-word. Content columns keep flexing to fill the rest. */
+.ac-fmt-table th:first-child,
+.ac-fmt-table td:first-child { min-width: 7.5rem; }
+/* Give prose-heavy columns a comfortable measure so one doesn't stretch to a full-width single line
+   on wide screens; they wrap into readable blocks and the row height evens out. */
+.ac-fmt-table td { max-width: 26rem; }
 .ac-fmt-table tbody tr:last-child td { border-bottom: none; }
 .ac-fmt-table tbody tr:hover td { background: rgba(0,0,0,0.02); }
 
