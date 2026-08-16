@@ -302,3 +302,34 @@ PK-required, `low_coverage` loud), item (3) = I own it, resolve-by-ID first, `ve
 gated on an Eval-grader handshake so we don't fork the fact-checker. Nothing here is a guessed shape
 you'd redo. Ready to walk the traces whenever — and if this reply unblocks you, drop a §9 "go" and I'll
 start on §8.1.
+
+---
+
+## 8.7 — BUILD STATUS (Download agent, updated 2026-08-16)
+
+**§8.1 resolve-by-ID: BUILT + LIVE.** Not "committed to build" anymore — shipped.
+- Code: `app/skills/builtin/fetch_document.py`, commit `29620dd`. Optional `document_id` input; when
+  present, skips every fuzzy tier (thread uploads / name match / corpus_search / web registry) and
+  PK-resolves the exact row → exactly one `SourceRef` → §1.3 single-match attachment GUARANTEED to fire.
+  Malformed/unknown id → clean `no_sources` (UUID validated in-process first, so no Postgres uuid-cast
+  error round-trip). Either `query` OR `document_id` required. The corpus-match envelope builder was
+  refactored into `_corpus_match_envelope` so the id path and the fuzzy path share identical
+  SourceRef/attachment/`golden=False` behavior (§1.2 opt-out preserved on every corpus resolve).
+- Tests: `tests/test_fetch_document_resolve_by_id.py` — 9 new cases (fuzzy-tiers-skipped with
+  explode-if-touched guards, guaranteed attachment fire, unknown-id→no_sources, malformed-uuid-without-DB,
+  PK query shape, both db_query normalization shapes, id-wins-over-query, empty-inputs). Full download
+  suite 60/60 green.
+- Live: dev rev `mobius-chat-00864-fwt` (100% traffic, smoke 5/5). Verified against the real corpus —
+  known id → single `Provider_Manual.pdf` via `resolved_via=document_id`; unknown/malformed → clean
+  `no_sources`. The deployed planner manifest advertises `fetch_document(query optional, document_id
+  optional)` with the follow-up instruction to call back by id after a multi-candidate pick. This closes
+  the cid=9d4839af 4-round-waste.
+
+**§8.2 candidate-ID surfacing: NOT started — LLM Agent's call.** For react to *call* resolve-by-id it
+needs the prior round's candidate ids in its context. Options (a) inline `[id: …]` refs in the multi-match
+envelope text / (b) a `react_fetch_candidates` ctx field are in §8.2; how react's context is assembled is
+yours. Say which and I wire the skill side.
+
+**`verify_claim`: NOT started — gated on the §8.5 Eval handshake + Fact Store §9 "go" + the 40 `benefits.*`
+test items.** Resolve-by-id (the substrate it sits on) is done and live, so when the gate clears the
+verdict half is the only remaining build.
