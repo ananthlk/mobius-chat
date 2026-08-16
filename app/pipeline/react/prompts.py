@@ -412,7 +412,7 @@ REACT_CRITICAL_RULES_TEXT = """CRITICAL RULES:
     - **citable_required was never True and the result is weak**: you get ONE reframe with a materially different query (same materiality bar as above), then stop.
     - **Materiality gate for any reframe**: before re-asking, ask — does this query change the actual matched terms, or is it a cosmetic reword that will hit the same BM25/vector results? If cosmetic, don't re-fire.
     - **observer_final_reason overrides materiality when present**: when the [Evidence Ledger] shows an observer_final_reason indicating a structural/capacity limit (e.g. "...filled_to_capacity"), that's RAG's own agent telling you the search genuinely maxed out its candidates — a materially different query won't change that. Skip the reframe and go to SHAPE 2, even if gap_status alone still reads "progressing."
-    - **Hard limit, enforced**: 3 rag calls per question, no more. The pipeline itself refuses a 4th call and returns a terminal signal — don't rely on remembering this, but don't try it either.
+    - **Hard limit, enforced**: {{ rag_call_ceiling }} rag calls per question, no more. The pipeline itself refuses a call past this and returns a terminal signal — don't rely on remembering this, but don't try it either.
 1c. **Show your reasoning, not just your move.** Starting round 2, every "thought" must read as three explicit beats, in order:
     (1) LEARNED — what the last tool result actually told you: cite the real signal (status, chunk count, whether it was citability-gated) — never "still gathering information" or other content-free filler.
     (2) RESTRATEGIZE — what concretely changes about your next move because of that (relax, reframe with new terms, switch tool, or stop) — not "try again" alone.
@@ -495,7 +495,17 @@ def _react_reasoning_system(
         mode = "copilot"
     _env = _react_jinja_env()
     mode_block = _env.from_string(_REACT_MODE_BLOCK_TEMPLATES[mode]).render(max_iterations=max_iterations)
-    critical_rules_rendered = _env.from_string(REACT_CRITICAL_RULES_TEXT).render(max_iterations=max_iterations)
+    # Mirrored by hand from react_loop.py's _RAG_CALL_CEILING (2026-08-16,
+    # Ananth's call): agentic gets a raised rag-call ceiling (RAG's own
+    # per-slot latency allowance for chat.thinking makes extra calls
+    # affordable here in a way it isn't for other modes). The LLM-facing
+    # text must say the real number -- telling it "3, no more" when the
+    # pipeline actually allows 6 would make it stop early and waste the
+    # budget this override exists to grant.
+    _rag_call_ceiling = 6 if mode == "agentic" else 3
+    critical_rules_rendered = _env.from_string(REACT_CRITICAL_RULES_TEXT).render(
+        max_iterations=max_iterations, rag_call_ceiling=_rag_call_ceiling,
+    )
     _base_prompt_text = f"""
 {REACT_IDENTITY_TEXT}
 {mode_block}
@@ -578,6 +588,13 @@ def resolve_react_system_prompt_v2(
             rendered_profile = (user_profile.get("rendered_prompt") or "").strip()
         has_user_profile = bool(_personalization_enabled() and rendered_profile)
 
+        # Mirrored by hand from _react_reasoning_system's own computation
+        # above (2026-08-16) -- react.critical_rules (v4) needs this same
+        # var on the v2 composition path too, or agentic turns routed
+        # through composition would render the literal "{{ rag_call_ceiling
+        # }}" instead of the real number.
+        rag_call_ceiling = 6 if mode == "agentic" else 3
+
         rc = resolve_composition_sync(
             f"react.{agent_role}",
             conditions={"has_user_profile": has_user_profile},
@@ -586,6 +603,7 @@ def resolve_react_system_prompt_v2(
                 "tool_manifest_text": tool_manifest_text,
                 "user_profile_text": rendered_profile,
                 "max_iterations": max_iterations,
+                "rag_call_ceiling": rag_call_ceiling,
             },
         )
         if rc and rc.system_prompt.strip():

@@ -132,8 +132,15 @@ def _react_block_specs() -> list[BlockSpec]:
         # shipped. test_prompt_block_seed_drift.py (Task #77) caught it same
         # day. v3 is a plain re-seed at the CURRENT content, read fresh
         # immediately before this commit -- no wording change of its own.
+        # v4 (2026-08-16, Ananth's call via Retriever): rule 1b's hard-limit
+        # line is now parameterized on {{ rag_call_ceiling }} (was a literal
+        # "3") so agentic mode's raised rag-call ceiling (react_loop.py's
+        # _RAG_CALL_CEILING) is reflected in the LLM-facing text instead of
+        # silently telling it the wrong number. This block now needs TWO
+        # Jinja vars in template_vars every render, not one -- see the
+        # resolve_react_system_prompt_v2 call site for the matching update.
         BlockSpec("react.critical_rules", "static", "system", react_prompts.REACT_CRITICAL_RULES_TEXT + "\n",
-                  owner="chat-architecture", version=3),
+                  owner="chat-architecture", version=4),
         # Shared with critic.audit (Chat Architecture ruling, 2026-07-29): one
         # block_key, member of both react_* and critic_audit compositions.
         BlockSpec("react.user_profile", "derived", "system", "{{ user_profile_text }}",

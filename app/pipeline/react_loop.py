@@ -1318,12 +1318,28 @@ def _execute_tool(
         #   call 3 (ONLY after a real call-2 relax): citable_required
         #     restored, expects a materially reformulated query built from
         #     what call 2 surfaced.
-        #   call 4+: HARD STOP below — "non-negotiable, no fallback to more
+        #   call 4+: HARD STOP below (except chat_mode="agentic", see
+        #     _RAG_CALL_CEILING) — "non-negotiable, no fallback to more
         #     grinding rounds" (Chat Architecture ruling, 2026-08-06). A 4th
         #     call would just repeat the same internal router escalation
         #     rag already ran on call 1 — see Retriever's design writeup
-        #     (2026-08-06) for why blind retry past this point is zero-value.
-        # See react/prompts.py rule 1b for the LLM-facing protocol.
+        #     (2026-08-06) for why blind retry past this point is zero-value
+        #     FOR real_time/interactive tiers.
+        #
+        #     MODE-SCOPED OVERRIDE (2026-08-16, Ananth's direct call, via
+        #     Retriever): agentic (chat.thinking) has real, measured headroom
+        #     the 2026-08-06 ceiling didn't have -- its own react round budget
+        #     is already 10 (round0.py), and RAG's own per-slot latency
+        #     allowance for chat.thinking (16000ms, up from real_time's
+        #     2000/4000/6000ms) means a 4th-6th rag call is genuinely
+        #     affordable time-wise here in a way it isn't for
+        #     copilot/default/quick/task. Calls past 3 fall to the existing
+        #     "repeat" phase (baseline citable_required, LLM reformulates the
+        #     query) -- no new phase choreography, just more rounds of it.
+        #     Every other mode keeps the original ceiling of 3 unchanged.
+        _RAG_CALL_CEILING = {"agentic": 6}
+        _rag_call_ceiling = _RAG_CALL_CEILING.get(getattr(ctx, "chat_mode", None), 3)
+
         _rag_history: list[dict] = list(getattr(ctx, "_rag_call_history", []))
         _rag_call_number = len(_rag_history) + 1
         _force_citable = getattr(ctx, "force_citable_required", None)
@@ -1337,20 +1353,20 @@ def _execute_tool(
             and _prior_rag_call.get("rag_phase") == "relaxed"
         )
 
-        if _rag_call_number >= 4:
-            # Hard stop — do not dispatch a 4th network call. Return
+        if _rag_call_number > _rag_call_ceiling:
+            # Hard stop — do not dispatch another network call. Return
             # immediately so the LLM gets an unambiguous terminal signal
             # instead of grinding another round for zero new information.
-            emit("  ↓ rag call budget (3) exhausted for this question — answer honestly with what's been found.")
+            emit(f"  ↓ rag call budget ({_rag_call_ceiling}) exhausted for this question — answer honestly with what's been found.")
             return {
                 "tool": "search_corpus",
                 "success": False,
                 "result": (
-                    "[RAG_BUDGET_EXHAUSTED] 3 rag calls already made for this question "
-                    "(initial, relaxed, reframed) — this is a genuine gap, not a phrasing "
-                    "problem. Do NOT call rag again. Answer honestly per SHAPE 2 (labeled "
-                    "full-miss, rule 1d) with what's been found so far, or use a different "
-                    "tool if one genuinely applies."
+                    f"[RAG_BUDGET_EXHAUSTED] {_rag_call_ceiling} rag calls already made for "
+                    "this question — this is a genuine gap, not a phrasing problem. Do NOT "
+                    "call rag again. Answer honestly per SHAPE 2 (labeled full-miss, rule 1d) "
+                    "with what's been found so far, or use a different tool if one genuinely "
+                    "applies."
                 ),
                 "signal": RETRIEVAL_SIGNAL_NO_SOURCES,
                 "sources": [],
@@ -1924,7 +1940,7 @@ def _execute_tool(
 
         if not success:
             _reframe_lines: list[str] = [
-                f"RAG signal (call {_rag_call_number}/3): status={_status or 'unknown'}, "
+                f"RAG signal (call {_rag_call_number}/{_rag_call_ceiling}): status={_status or 'unknown'}, "
                 f"citable_required={_effective_citable}, chunks={_n_chunks}, "
                 f"dispatch_path={_dispatch_path or 'n/a'}, chosen_slot={_chosen_slot or 'n/a'}."
             ]

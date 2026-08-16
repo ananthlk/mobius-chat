@@ -210,6 +210,25 @@ class TestRagRelaxThenReframeProtocol:
         assert "RAG_BUDGET_EXHAUSTED" in result4["result"]
         assert result4.get("rag_call_number") == 4
 
+    def test_agentic_mode_raises_ceiling_to_6_call_7_is_the_hard_stop(self):
+        """2026-08-16, Ananth's direct call (via Retriever): agentic
+        (chat.thinking) has real headroom the 2026-08-06 ceiling didn't
+        account for -- raised to 6 for this mode only. Every other mode
+        (default chat_mode="copilot" here) keeps the original ceiling of 3,
+        covered by test_call_4_is_a_hard_stop_no_network_dispatch above."""
+        calls, fake_dispatch = self._empty_dispatch()
+        ctx = _make_ctx("Is prior authorization required for H0036?", chat_mode="agentic")
+        query = "Is prior authorization required for H0036?"
+        with patch("app.skills.registry.dispatch", side_effect=fake_dispatch):
+            for _ in range(6):
+                _execute_tool("rag", {"query": query}, ctx, emitter=None)
+            result7 = _execute_tool("rag", {"query": query}, ctx, emitter=None)
+
+        assert len(calls) == 6, "agentic mode should allow all 6 calls through to dispatch"
+        assert result7["success"] is False
+        assert "RAG_BUDGET_EXHAUSTED" in result7["result"]
+        assert result7.get("rag_call_number") == 7
+
     def test_relax_never_triggers_when_call_1_already_had_chunks(self):
         """Control: a call 1 that returns real chunks must not relax on
         call 2 -- relax is specifically for empty citable-required results,
