@@ -1054,6 +1054,25 @@ def build_reasoning_context(
                 )
             parts.append("\n".join(_resolved_lines))
 
+    # ── Coverage check (2026-08-16, Task #104, docs/
+    # REACT_COMPLETION_CRITIC_DESIGN.md §5) ─────────────────────────────
+    # The completion-gate critic (react_loop.py, before this function
+    # runs on the NEXT round) flagged the previous completion attempt as
+    # missing sub-parts of the question. Rendered as a signal, not a
+    # forced tool call -- the model still picks its own next tool/inputs,
+    # same "backend-computed signal -> rendered section -> model decides"
+    # pattern as the prior-resolved-entities section above.
+    _cc_gaps = getattr(ctx, "completion_critic_gaps", None) or []
+    if _cc_gaps:
+        _cc_lines = [
+            "Coverage check — your last answer was reviewed and found incomplete. "
+            "Still missing: " + "; ".join(_cc_gaps[:5]),
+        ]
+        _cc_next_query = (getattr(ctx, "completion_critic_next_query", None) or "").strip()
+        if _cc_next_query:
+            _cc_lines.append(f"Suggested next search: {_cc_next_query}")
+        parts.append("\n".join(_cc_lines))
+
     # ── Evidence Ledger (2026-08-06, Task #48, Chat Architecture spec) ───
     # Code-computed by the caller (react_loop.py, from ctx._rag_call_history)
     # BEFORE this function runs — rendered here verbatim, no LLM inference.

@@ -101,6 +101,26 @@ class PipelineContext:
     long multi-entity comparison threads. Loaded by state_load, gated on
     ctx.is_continuation. Rendered by build_reasoning_context via a
     keyword-overlap match against the current query."""
+    completion_critic_ran: bool = False
+    """Whether the #104 completion-gate critic actually fired this turn
+    (chat.thinking/agentic mode, at least one completion attempt) --
+    react_trace diagnostics marker, distinct from satisfied below (a
+    critic that never ran has no verdict either way)."""
+    completion_critic_satisfied: bool | None = None
+    """Verdict from the most recent completion-gate critic call, or None
+    if it never ran this turn. See app/pipeline/react/critic.py's
+    CompletionCriticVerdict."""
+    completion_critic_gaps: list[str] = field(default_factory=list)
+    """Sub-parts the completion critic flagged as uncovered on the most
+    recent unsatisfied verdict (2026-08-16, Task #104). Rendered by
+    build_reasoning_context as a dedicated section for the next round --
+    same tier as #90's "Previously resolved" section, not a forced tool
+    call: the model still picks its own next tool/inputs, now informed by
+    this signal alongside the existing Evidence Ledger."""
+    completion_critic_next_query: str = ""
+    """The completion critic's suggested search to close its largest
+    flagged gap. A hint rendered alongside completion_critic_gaps, not a
+    directive the loop executes automatically."""
     context_pack: str = ""
     """Context string passed to parser (from route_context + build_context_pack)."""
     previous_thread_summary: str | None = None

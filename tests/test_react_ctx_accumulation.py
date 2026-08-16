@@ -284,3 +284,267 @@ class TestEnrichmentPairedToRoundEndToEnd:
         # raw_result_ref is a pointer into ctx.tool_outputs, not a copy --
         # this round enriched the 1st (only) rag call this turn.
         assert entry["raw_result_ref"] == {"tool_name": "rag", "call_index": 1}
+
+
+class TestGapsClosedFallbackSynthesis:
+    """Task #95 (2026-08-12, Chat Master directive): a round-1 fast-path
+    completion (Rule 8/11 -- "Recent conversation" already answers the
+    question, is_complete=true with no tool call) never populates
+    evidence_review at all, so #90's gaps_closed index gets nothing even
+    when the turn genuinely resolved something. _finalize_response
+    synthesizes one gaps_closed entry (= ctx.message) on the terminal
+    round when the whole trace closed with zero gaps_closed/gaps_open
+    anywhere and the answer is a real, non-hedged completion."""
+
+    def test_fires_on_round_1_fast_path_no_enrichment_at_all(self):
+        ctx = _make_ctx(
+            react_trace_rounds=[{"round": 1, "tool": None}],
+            message="What is Humana's timely filing deadline?",
+        )
+        _finalize_response(ctx, "**Humana's deadline is 180 days.**", [], "corpus_only", None, None)
+        entry = ctx.reasoning_trace[0]
+        assert entry["enrichment"]["gaps_closed"] == ["What is Humana's timely filing deadline?"]
+
+    def test_fires_when_enrichment_present_but_gaps_both_empty(self):
+        ctx = _make_ctx(
+            react_trace_rounds=[{
+                "round": 1, "tool": None,
+                "enrichment": {"learned": "reused prior answer", "running_answer": "", "gaps_closed": [], "gaps_open": []},
+            }],
+            message="Aetna's deadline?",
+        )
+        _finalize_response(ctx, "**Aetna's deadline is 180 days.**", [], "corpus_only", None, None)
+        assert ctx.reasoning_trace[0]["enrichment"]["gaps_closed"] == ["Aetna's deadline?"]
+
+    def test_excluded_when_gaps_open_present_anywhere(self):
+        """T2/Humana's actual case (Task #95's corrected finding): a
+        genuine 'not found' turn with gaps_open recorded must NOT be
+        synthesized into a false resolution."""
+        ctx = _make_ctx(
+            react_trace_rounds=[
+                {"round": 1, "tool": "rag"},
+                {"round": 2, "tool": None, "enrichment": {
+                    "learned": "not found", "running_answer": "not found", "gaps_closed": [], "gaps_open": ["Humana deadline"],
+                }},
+            ],
+            message="Humana's deadline?",
+        )
+        _finalize_response(ctx, "Not found in our materials.", [], "no_sources", None, None)
+        assert ctx.reasoning_trace[1]["enrichment"]["gaps_closed"] == []
+
+    def test_excluded_when_gaps_closed_already_present_no_duplicate(self):
+        ctx = _make_ctx(
+            react_trace_rounds=[
+                {"round": 1, "tool": "rag"},
+                {"round": 2, "tool": None, "enrichment": {
+                    "learned": "found it", "running_answer": "180 days", "gaps_closed": ["deadline"], "gaps_open": [],
+                }},
+            ],
+            message="Sunshine's deadline?",
+        )
+        _finalize_response(ctx, "180 days.", [], "corpus_only", None, None)
+        assert ctx.reasoning_trace[1]["enrichment"]["gaps_closed"] == ["deadline"]
+
+    def test_excluded_when_answer_text_reads_as_hedge(self):
+        """Backstop for a round-1 fast path that itself produces an
+        honest non-answer -- no evidence_review ever ran, so the
+        gaps_open check alone can't catch it."""
+        ctx = _make_ctx(
+            react_trace_rounds=[{"round": 1, "tool": None}],
+            message="Molina's deadline?",
+        )
+        _finalize_response(ctx, "That was not found in our materials.", [], "no_sources", None, None)
+        assert "gaps_closed" not in (ctx.reasoning_trace[0].get("enrichment") or {})
+
+    def test_excluded_when_terminal_round_made_a_tool_call(self):
+        """Defensive: a terminal round with tool set means is_complete
+        was false (schema's tool-call/final-answer shapes are mutually
+        exclusive) -- should never happen in practice by the time
+        _finalize_response runs, but the guard must not fire on it."""
+        ctx = _make_ctx(
+            react_trace_rounds=[{"round": 1, "tool": "rag"}],
+            message="Aetna's deadline?",
+        )
+        _finalize_response(ctx, "some answer", [], "corpus_only", "rag", None)
+        assert "gaps_closed" not in (ctx.reasoning_trace[0].get("enrichment") or {})
+
+    def test_excluded_when_answer_empty(self):
+        ctx = _make_ctx(react_trace_rounds=[{"round": 1, "tool": None}], message="Aetna's deadline?")
+        _finalize_response(ctx, "", [], "no_sources", None, None)
+        assert "gaps_closed" not in (ctx.reasoning_trace[0].get("enrichment") or {})
+
+    def test_excluded_when_message_empty(self):
+        ctx = _make_ctx(react_trace_rounds=[{"round": 1, "tool": None}], message="")
+        _finalize_response(ctx, "some answer", [], "corpus_only", None, None)
+        assert "gaps_closed" not in (ctx.reasoning_trace[0].get("enrichment") or {})
+
+    def test_no_crash_on_empty_react_trace_rounds(self):
+        ctx = _make_ctx(react_trace_rounds=[], message="Aetna's deadline?")
+        _finalize_response(ctx, "some answer", [], "corpus_only", None, None)
+        assert getattr(ctx, "reasoning_trace", None) is None
+
+
+class TestCompletionGateCritic:
+    """Task #104 (2026-08-16, docs/REACT_COMPLETION_CRITIC_DESIGN.md):
+    end-to-end loop-back behavior. The completion-gate critic intercepts
+    an is_complete=true round in agentic mode; when unsatisfied, it
+    extends the round budget (sharing the groundedness floor's own
+    extension-round ledger) and injects gaps/next_query for the next
+    round's context -- same trigger point as the Product Promise
+    groundedness floor, running before it."""
+
+    def test_unsatisfied_verdict_extends_and_loops_back(self, monkeypatch):
+        from unittest.mock import patch
+        from app.pipeline.context import PipelineContext
+        from app.pipeline.react_loop import run_react
+
+        monkeypatch.setenv("MOBIUS_PRODUCT_PROMISE_ENABLED", "1")
+
+        ctx = PipelineContext(correlation_id="cc-1", thread_id=None, message="CPT codes for BH, SUD, and FQHC?")
+        ctx.chat_mode = "agentic"
+        ctx.merged_state = {}
+        ctx.last_turns = []
+        ctx.effective_message = ctx.message
+
+        call_log: list[str] = []
+
+        def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+            call_log.append(stage)
+            if stage == "react_completion_critic":
+                n = call_log.count("react_completion_critic")
+                if n == 1:
+                    return (
+                        '{"satisfied": false, "uncovered": ["SUD limits", "FQHC codes"], '
+                        '"suggested_next_query": "FQHC behavioral health CPT codes"}'
+                    )
+                return '{"satisfied": true, "uncovered": [], "suggested_next_query": ""}'
+            if stage == "critique":
+                return '{"grounded": true, "issues": []}'
+            # planner rounds (react_1, react_2, react_3, ...)
+            n = sum(1 for s in call_log if s.startswith("react_") and s != "react_completion_critic")
+            if n == 1:
+                return (
+                    '{"thought": "Search first.", "tool": "rag", '
+                    '"inputs": {"query": "BH SUD FQHC CPT codes"}, "is_complete": false}'
+                )
+            if n == 2:
+                return (
+                    '{"thought": "Found BH code.", '
+                    '"evidence_review": {"keep": [1], "running_answer": "BH: 90834.", '
+                    '"gaps_closed": ["BH code"], "gaps_open": ["SUD code", "FQHC code"]}, '
+                    '"tool": null, "inputs": {}, "is_complete": true, '
+                    '"answer": "BH: 90834.", "sources": [], "confidence": "high"}'
+                )
+            return (
+                '{"thought": "Found remaining codes.", '
+                '"evidence_review": {"keep": [1], '
+                '"running_answer": "BH: 90834. SUD: 90837. FQHC: modifier codes.", '
+                '"gaps_closed": ["SUD code", "FQHC code"], "gaps_open": []}, '
+                '"tool": null, "inputs": {}, "is_complete": true, '
+                '"answer": "BH: 90834. SUD: 90837. FQHC: modifier codes.", "sources": [], "confidence": "high"}'
+            )
+
+        with patch("app.pipeline.react.critic.critic_enabled", return_value=False), \
+             patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm):
+            with patch("app.pipeline.react_loop._execute_tool") as mock_execute:
+                mock_execute.return_value = {
+                    "tool": "rag", "success": True,
+                    "result": "[1] Doc A\nBH: 90834. SUD: 90837. FQHC: modifier codes.",
+                    "signal": "corpus_only", "sources": [], "usage": None,
+                }
+                run_react(ctx, emitter=None)
+
+        assert ctx.final_message == "BH: 90834. SUD: 90837. FQHC: modifier codes."
+        assert call_log.count("react_completion_critic") == 2
+        # The extension actually happened -- three planner rounds ran
+        # (round 1 tool call, round 2 flagged incomplete by the critic,
+        # round 3 completes after the critic's forced extension).
+        planner_calls = [s for s in call_log if s.startswith("react_") and s != "react_completion_critic"]
+        assert len(planner_calls) == 3
+        assert ctx.completion_critic_ran is True
+
+    def test_satisfied_verdict_finalizes_without_extension(self, monkeypatch):
+        """Sanity check on the other branch: a satisfied verdict on the
+        first completion attempt must NOT trigger an extension -- no
+        false loop-back on an answer that already covers everything."""
+        from unittest.mock import patch
+        from app.pipeline.context import PipelineContext
+        from app.pipeline.react_loop import run_react
+
+        monkeypatch.setenv("MOBIUS_PRODUCT_PROMISE_ENABLED", "1")
+
+        ctx = PipelineContext(correlation_id="cc-2", thread_id=None, message="Aetna's timely filing deadline?")
+        ctx.chat_mode = "agentic"
+        ctx.merged_state = {}
+        ctx.last_turns = []
+        ctx.effective_message = ctx.message
+
+        call_log: list[str] = []
+
+        def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+            call_log.append(stage)
+            if stage == "react_completion_critic":
+                return '{"satisfied": true, "uncovered": [], "suggested_next_query": ""}'
+            if stage == "critique":
+                return '{"grounded": true, "issues": []}'
+            n = sum(1 for s in call_log if s.startswith("react_") and s != "react_completion_critic")
+            if n == 1:
+                return '{"thought": "Search.", "tool": "rag", "inputs": {"query": "Aetna deadline"}, "is_complete": false}'
+            return (
+                '{"thought": "Found it.", '
+                '"evidence_review": {"keep": [1], "running_answer": "180 days.", '
+                '"gaps_closed": ["deadline"], "gaps_open": []}, '
+                '"tool": null, "inputs": {}, "is_complete": true, '
+                '"answer": "180 days.", "sources": [], "confidence": "high"}'
+            )
+
+        with patch("app.pipeline.react.critic.critic_enabled", return_value=False), \
+             patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm):
+            with patch("app.pipeline.react_loop._execute_tool") as mock_execute:
+                mock_execute.return_value = {
+                    "tool": "rag", "success": True,
+                    "result": "[1] Doc A\n180 days.",
+                    "signal": "corpus_only", "sources": [], "usage": None,
+                }
+                run_react(ctx, emitter=None)
+
+        assert ctx.final_message == "180 days."
+        assert call_log.count("react_completion_critic") == 1
+        planner_calls = [s for s in call_log if s.startswith("react_") and s != "react_completion_critic"]
+        assert len(planner_calls) == 2  # no extension round
+
+    def test_skipped_outside_agentic_mode(self, monkeypatch):
+        """Copilot mode must never pay for this call -- design §1/§3 is
+        explicit: chat.thinking (agentic) only."""
+        from unittest.mock import patch
+        from app.pipeline.context import PipelineContext
+        from app.pipeline.react_loop import run_react
+
+        monkeypatch.setenv("MOBIUS_PRODUCT_PROMISE_ENABLED", "1")
+
+        ctx = PipelineContext(correlation_id="cc-3", thread_id=None, message="Aetna's timely filing deadline?")
+        ctx.chat_mode = "copilot"
+        ctx.merged_state = {}
+        ctx.last_turns = []
+        ctx.effective_message = ctx.message
+
+        call_log: list[str] = []
+
+        def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+            call_log.append(stage)
+            if stage == "critique":
+                return '{"grounded": true, "issues": []}'
+            return (
+                '{"thought": "Found it.", '
+                '"evidence_review": {"keep": [1], "running_answer": "180 days.", '
+                '"gaps_closed": ["deadline"], "gaps_open": []}, '
+                '"tool": null, "inputs": {}, "is_complete": true, '
+                '"answer": "180 days.", "sources": [], "confidence": "high"}'
+            )
+
+        with patch("app.pipeline.react.critic.critic_enabled", return_value=False), \
+             patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm):
+            run_react(ctx, emitter=None)
+
+        assert "react_completion_critic" not in call_log
+        assert ctx.completion_critic_ran is False

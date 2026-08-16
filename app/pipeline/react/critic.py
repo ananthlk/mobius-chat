@@ -659,3 +659,130 @@ def format_critique_as_observation(issues: list[CritiqueIssue]) -> str:
         "conservative answer."
     )
     return "\n".join(lines)
+
+
+# ── Completion-gate critic (Task #104, 2026-08-16 design, docs/
+# REACT_COMPLETION_CRITIC_DESIGN.md) ──────────────────────────────────
+#
+# A DIFFERENT critic from everything above this line -- CritiqueResult and
+# parse_critic_response check groundedness (are claims supported by
+# retrieved chunks); this checks COVERAGE (did the answer address every
+# sub-part the question asked for). Separate concern, separate call, only
+# runs in chat.thinking (today's "agentic") mode, once per completion
+# attempt rather than every round. See react_loop.py's completion-gate
+# hook (same trigger point as the Product Promise groundedness floor,
+# running before it) for where this gets called.
+
+COMPLETION_CRITIC_SYSTEM_PROMPT = """You check whether an answer actually covers everything a question asked for -- not whether it's well-cited (a separate check handles that).
+
+Look for:
+1. Every named entity/category in the question (e.g. "for each of: primary care, BH, SUD, FQHC" -- did the answer address all four, or only some?).
+2. The SPECIFIC thing asked for (a code, a dollar limit, a deadline) vs. just meta-information (a handbook name, a "see policy X" pointer with no actual value).
+
+Respond with JSON only, nothing else:
+{
+  "satisfied": <bool>,
+  "uncovered": [<specific missing sub-part, one string each -- empty array if satisfied>],
+  "suggested_next_query": "<a single search query that would close the largest gap, or empty string if satisfied>"
+}
+
+If the question only has one part and the answer addresses it with a real value (not just a pointer), satisfied=true. Don't invent gaps that weren't asked about -- a question with one part that's fully answered is satisfied, not incomplete."""
+
+
+def build_completion_critic_user_message(question: str, answer: str) -> str:
+    """User message for the completion-gate critic. Deliberately just
+    question + answer -- no evidence chunks, no tool history -- per the
+    design's §6.3 "lightweight" call: this runs on every completion
+    attempt in agentic mode, so it stays cheap by construction rather
+    than by discipline."""
+    return (
+        f"QUESTION:\n{(question or '').strip()}\n\n"
+        f"ANSWER:\n{(answer or '').strip()}"
+    )
+
+
+@dataclass
+class CompletionCriticVerdict:
+    """Parsed completion-critic response. ``satisfied`` is the
+    dispatcher's decision signal: if False AND rounds remain (per the
+    shared extension-round budget), run_react loops back instead of
+    finalizing."""
+
+    satisfied: bool = True
+    uncovered: list[str] = field(default_factory=list)
+    suggested_next_query: str = ""
+    raw: str = ""  # for telemetry / debugging
+
+
+def parse_completion_critic_response(raw: str) -> CompletionCriticVerdict:
+    """Parse the completion critic's JSON output.
+
+    Falls back to satisfied=True on parse failures -- same rationale as
+    parse_critic_response above: a broken critic call must never block a
+    turn from completing. Logged at WARNING so operators can tune the
+    prompt; the user still gets their answer either way.
+    """
+    raw_text = (raw or "").strip()
+    result = CompletionCriticVerdict(satisfied=True, raw=raw_text)
+
+    if not raw_text:
+        logger.warning("completion critic returned empty response; treating as satisfied")
+        return result
+
+    body = raw_text
+    if body.startswith("```"):
+        lines = body.split("\n")
+        lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        body = "\n".join(lines)
+
+    body = body.strip()
+    if not body.startswith("{"):
+        start = body.find("{")
+        end = body.rfind("}")
+        if start != -1 and end > start:
+            body = body[start : end + 1]
+
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError as e:
+        try:
+            import json_repair as _jr
+            parsed = _jr.loads(body)
+            if not isinstance(parsed, dict):
+                raise ValueError("not a dict")
+            logger.debug("completion critic JSON recovered via json_repair (original error: %s)", e)
+        except Exception:
+            logger.warning(
+                "completion critic JSON parse failed: %s; first 200 chars: %r; treating as satisfied",
+                e,
+                raw_text[:200],
+            )
+            return result
+
+    if not isinstance(parsed, dict):
+        logger.warning("completion critic returned non-dict JSON; treating as satisfied")
+        return result
+
+    satisfied = parsed.get("satisfied")
+    if isinstance(satisfied, bool):
+        result.satisfied = satisfied
+
+    raw_uncovered = parsed.get("uncovered")
+    if isinstance(raw_uncovered, list):
+        result.uncovered = [str(u).strip() for u in raw_uncovered if str(u or "").strip()]
+
+    result.suggested_next_query = str(parsed.get("suggested_next_query") or "").strip()
+
+    # Defensive: if the model reported uncovered items but forgot to set
+    # satisfied=false, flip it -- same under-following-format guard as
+    # parse_critic_response's grounded/has_blocking_issues check above.
+    if result.satisfied and result.uncovered:
+        logger.debug(
+            "completion critic reported uncovered items but satisfied=true; flipping to false. uncovered=%s",
+            result.uncovered[:4],
+        )
+        result.satisfied = False
+
+    return result

@@ -167,6 +167,45 @@ class TestOverlapTokens:
         assert _overlap_tokens(None) == set()
 
 
+class TestCompletionCriticRendering:
+    """2026-08-16, Task #104: build_reasoning_context renders
+    ctx.completion_critic_gaps/next_query as a "Coverage check" section
+    when the previous completion attempt was flagged incomplete."""
+
+    def _ctx(self, gaps: list[str], next_query: str = "") -> PipelineContext:
+        ctx = PipelineContext(correlation_id="c", thread_id="t1", message="q")
+        ctx.effective_message = ctx.message
+        ctx.last_turns = []
+        ctx.completion_critic_gaps = gaps
+        ctx.completion_critic_next_query = next_query
+        return ctx
+
+    def test_gaps_rendered_with_next_query(self):
+        ctx = self._ctx(["SUD limits", "FQHC codes"], next_query="FQHC behavioral health CPT codes")
+        out = build_reasoning_context(ctx, [], 2)
+        assert "Coverage check" in out
+        assert "SUD limits" in out
+        assert "FQHC codes" in out
+        assert "Suggested next search: FQHC behavioral health CPT codes" in out
+
+    def test_no_next_query_line_when_empty(self):
+        ctx = self._ctx(["SUD limits"], next_query="")
+        out = build_reasoning_context(ctx, [], 2)
+        assert "Coverage check" in out
+        assert "Suggested next search" not in out
+
+    def test_empty_gaps_no_section(self):
+        ctx = self._ctx([])
+        out = build_reasoning_context(ctx, [], 1)
+        assert "Coverage check" not in out
+
+    def test_gaps_capped_at_five(self):
+        ctx = self._ctx([f"gap {i}" for i in range(8)])
+        out = build_reasoning_context(ctx, [], 2)
+        assert "gap 4" in out
+        assert "gap 7" not in out
+
+
 def test_execute_tool_refuse_returns_terminal():
     """refuse tool returns is_terminal=True and does not run RAG/tools."""
     ctx = PipelineContext(correlation_id="c", thread_id=None, message="Is member 12345 eligible?")

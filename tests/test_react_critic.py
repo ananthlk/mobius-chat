@@ -668,3 +668,101 @@ class TestRunReactCriticIntegration:
         assert "hedge" in CRITIC_SYSTEM_PROMPT.lower() or \
                "honest" in CRITIC_SYSTEM_PROMPT.lower() or \
                "couldn't find" in CRITIC_SYSTEM_PROMPT
+
+
+# ── Completion-gate critic (Task #104) ─────────────────────────────────
+# A different critic from everything above -- coverage (did the answer
+# address every sub-part of the question), not groundedness (are claims
+# supported by evidence). Same defensive parsing conventions, mirrored
+# from TestParseCriticResponse above.
+
+from app.pipeline.react.critic import (  # noqa: E402
+    COMPLETION_CRITIC_SYSTEM_PROMPT,
+    CompletionCriticVerdict,
+    build_completion_critic_user_message,
+    parse_completion_critic_response,
+)
+
+
+class TestBuildCompletionCriticUserMessage:
+    def test_includes_question_and_answer(self):
+        msg = build_completion_critic_user_message(
+            question="What are the CPT codes for BH and SUD?",
+            answer="BH: 90834. SUD not addressed.",
+        )
+        assert "What are the CPT codes for BH and SUD?" in msg
+        assert "BH: 90834. SUD not addressed." in msg
+
+    def test_handles_none_and_whitespace(self):
+        msg = build_completion_critic_user_message(question=None, answer="  ")
+        assert "QUESTION:" in msg
+        assert "ANSWER:" in msg
+
+
+class TestParseCompletionCriticResponse:
+    def test_satisfied_true(self):
+        r = parse_completion_critic_response('{"satisfied": true, "uncovered": [], "suggested_next_query": ""}')
+        assert r.satisfied is True
+        assert r.uncovered == []
+
+    def test_satisfied_false_with_uncovered_and_query(self):
+        r = parse_completion_critic_response("""
+            {
+              "satisfied": false,
+              "uncovered": ["SUD limits", "FQHC codes"],
+              "suggested_next_query": "FQHC behavioral health CPT codes"
+            }
+        """)
+        assert r.satisfied is False
+        assert r.uncovered == ["SUD limits", "FQHC codes"]
+        assert r.suggested_next_query == "FQHC behavioral health CPT codes"
+
+    def test_markdown_fenced_json_is_parsed(self):
+        raw = '```json\n{"satisfied": true, "uncovered": []}\n```'
+        r = parse_completion_critic_response(raw)
+        assert r.satisfied is True
+
+    def test_json_with_surrounding_prose_is_extracted(self):
+        raw = "Here is my check:\n\n" '{"satisfied": true, "uncovered": []}\n\n' "Done."
+        r = parse_completion_critic_response(raw)
+        assert r.satisfied is True
+
+    def test_malformed_json_fails_open_to_satisfied(self):
+        """Broken critic output must never block a turn from completing."""
+        r = parse_completion_critic_response("This is not JSON at all.")
+        assert r.satisfied is True
+        assert r.raw.startswith("This is not")
+
+    def test_empty_response_fails_open(self):
+        r = parse_completion_critic_response("")
+        assert r.satisfied is True
+        r = parse_completion_critic_response("   ")
+        assert r.satisfied is True
+
+    def test_non_dict_json_fails_open(self):
+        r = parse_completion_critic_response("[1, 2, 3]")
+        assert r.satisfied is True
+
+    def test_inconsistent_satisfied_with_uncovered_is_flipped(self):
+        """Defensive: a model that lists uncovered items but forgets to
+        set satisfied=false must not ship a false 'complete' verdict."""
+        raw = '{"satisfied": true, "uncovered": ["FQHC codes"], "suggested_next_query": "FQHC CPT codes"}'
+        r = parse_completion_critic_response(raw)
+        assert r.satisfied is False
+        assert r.uncovered == ["FQHC codes"]
+
+    def test_uncovered_filters_blank_entries(self):
+        raw = '{"satisfied": false, "uncovered": ["real gap", "", "  "]}'
+        r = parse_completion_critic_response(raw)
+        assert r.uncovered == ["real gap"]
+
+
+class TestCompletionCriticSystemPromptMentionsKeyRules:
+    def test_mentions_coverage_not_groundedness(self):
+        """Locks the prompt's actual scope -- if an edit accidentally
+        turns this into a second groundedness critic, this catches it."""
+        lowered = COMPLETION_CRITIC_SYSTEM_PROMPT.lower()
+        assert "cover" in lowered
+        assert "cited" in lowered or "citation" in lowered  # explicitly excluded, named as such
+        assert "satisfied" in lowered
+        assert "uncovered" in lowered
