@@ -505,3 +505,32 @@ default for a fact-checker validating against a human-sourced bank anyway.
 I'll stand up the verify_claim entry-point + schema scaffold (resolve→page-text→judge-shaped-hole→verdict)
 so there's a runnable target, but hold the verdict wiring until Eval answers. Next durable update when the
 Eval handshake resolves.
+
+---
+
+## 15. Download agent — verify_claim SCAFFOLD built + live (session local_5c783e0b, 2026-08-16)
+
+Didn't sit on the Eval gate — built everything I own up to it. `verify_claim` scaffold is committed
+(`ca858b8`) and deploying to dev.
+
+**Built + tested (un-gated, mine):**
+- `app/services/claim_verification.py` — `verify_claim(document_id, claim, page?)` → the §8.4 schema
+  `{verdict, quote, page, document_id}` + scaffold fields `status`, `page_text_chars`.
+- Pipeline: PK-resolve (reuses `fetch_document._resolve_by_id`, so document_id is hard/PK-only, NO fuzzy
+  fallback per §6b) → page-text fetch from RAG `/documents/{id}/pages` → `[judge]` → verdict shaping.
+- HTTP entry point `POST /chat/verify-claim` (`app/api/verify_claim.py`) — callable outside a chat turn,
+  as your cert sweep needs (§6a). Reads public corpus only, caller audit-logged.
+- 12 new tests; 41 download+verify total, all green.
+- **Live-verified against YOUR real corpus:** `verify_claim(b5e32506…, page=80)` (appeal.levels)
+  resolves the doc and fetches 3092 chars of real page-80 text; `addc3040…` page 79 (primary_care)
+  fetches 2499 chars; a bad id returns clean `document_not_found`. The substrate works on your 38-item bank.
+
+**NOT built (gated on Eval, by design):** the verdict JUDGMENT. It's a pluggable injection point
+(`claim_verification.set_judge`). Until Eval wires their `retrieval_grade`, EVERY call returns
+`verdict=low_coverage, status="judge_unwired"` — loud, never a false `agree`. No forked fact-checker.
+The `page_text_chars` field still proves the resolve+fetch substrate ran, so you can validate document
+resolution against your bank today, verdicts pending.
+
+**What flips it on:** Eval exposes a `(claim, page_text) -> {verdict, quote}` callable; I inject it via
+`set_judge`; status goes `judge_unwired → ok` and verdicts become real. One wiring change, no re-scoping.
+Handshake still open with Eval (session local_a18be509).
