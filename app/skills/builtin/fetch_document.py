@@ -47,6 +47,7 @@ import os
 import re
 import urllib.parse
 import urllib.request
+import uuid
 from typing import Any
 
 from app.skills.registry import (
@@ -85,6 +86,71 @@ def _download_url(document_id: str) -> str:
 def _fallback_download_url(document_id: str) -> str:
     """PDF reconstructed from extracted page text — always available."""
     return f"{_rag_api_base()}/documents/{document_id}/download/pdf"
+
+
+# Task #106 (2026-08-16, Ananth, directly): "these models are much better...
+# if a doc is small enough to send let's add those as attachments... we
+# don't have to build parsing... just need to restrict based on the size
+# of the document as proxy for token limits." 8MB keeps real margin under
+# Vertex's ~20MB inline-request ceiling (prompt text + safety headroom for
+# a bigger document than expected) while covering the vast majority of
+# real policy/handbook PDFs, which run low-single-digit MB.
+_ATTACHMENT_MAX_BYTES = 8 * 1024 * 1024
+_ATTACHMENT_FETCH_TIMEOUT_S = 15
+
+
+def _guess_mime_type(filename: str) -> str:
+    ext = (filename or "").rsplit(".", 1)[-1].lower() if "." in (filename or "") else ""
+    return {
+        "pdf": "application/pdf",
+        "doc": "application/msword",
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "txt": "text/plain",
+    }.get(ext, "application/pdf")  # corpus documents are overwhelmingly PDF
+
+
+def _maybe_fetch_attachment(document_id: str, filename: str) -> dict[str, Any] | None:
+    """Download the document's actual bytes for a native LLM attachment,
+    when it's small enough. Reuses the same download endpoints already
+    built for the FE's download-card button (``_download_url``/
+    ``_fallback_download_url``) -- no new fetch mechanism, no parsing, the
+    model reads the raw file directly (Ananth's explicit ruling: lean on
+    the model's own document understanding instead of hand-rolled
+    extraction). Any failure (404, timeout, oversized, network error)
+    degrades silently to today's exact behavior -- a download card with no
+    attachment -- never breaks the turn over a best-effort optimization.
+    """
+    for url in (_download_url(document_id), _fallback_download_url(document_id)):
+        try:
+            req = urllib.request.Request(url, method="GET")
+            with urllib.request.urlopen(req, timeout=_ATTACHMENT_FETCH_TIMEOUT_S) as resp:
+                content_length = resp.headers.get("Content-Length")
+                if content_length and int(content_length) > _ATTACHMENT_MAX_BYTES:
+                    logger.info(
+                        "fetch_document: skipping attachment for %s (%s bytes > %s cap)",
+                        document_id, content_length, _ATTACHMENT_MAX_BYTES,
+                    )
+                    return None
+                data = resp.read(_ATTACHMENT_MAX_BYTES + 1)
+                if len(data) > _ATTACHMENT_MAX_BYTES:
+                    logger.info(
+                        "fetch_document: skipping attachment for %s (exceeded %s cap while streaming)",
+                        document_id, _ATTACHMENT_MAX_BYTES,
+                    )
+                    return None
+                if not data:
+                    continue
+                content_type = resp.headers.get("Content-Type") or _guess_mime_type(filename)
+                import base64
+                return {
+                    "mime_type": content_type.split(";")[0].strip() or _guess_mime_type(filename),
+                    "data_b64": base64.b64encode(data).decode("ascii"),
+                    "filename": filename or f"{document_id}.pdf",
+                }
+        except Exception as e:
+            logger.debug("fetch_document: attachment fetch failed for %s via %s: %s", document_id, url, e)
+            continue
+    return None
 
 
 # ── Query parsing + scoring ─────────────────────────────────────────
@@ -145,6 +211,81 @@ def _score_doc(
 # ── Postgres lookup ─────────────────────────────────────────────────
 
 
+def _normalize_db_rows(result: Any) -> list[dict[str, Any]]:
+    """Normalize db_query's two return shapes to list[dict].
+
+    db_query returns either ``{"rows": [{...}, ...]}`` (db-agent / dict
+    rows) or ``{"columns": [...], "rows": [[...], ...]}`` (direct
+    psycopg2 fallback). Shared by _fetch_candidates and _resolve_by_id.
+    """
+    if isinstance(result, dict) and result.get("error"):
+        logger.warning("fetch_document: db_query error %s", result.get("error"))
+        return []
+    if not isinstance(result, dict):
+        return []
+    raw_rows = result.get("rows") or []
+    if not raw_rows:
+        return []
+    if isinstance(raw_rows[0], dict):
+        return [r for r in raw_rows if isinstance(r, dict)]
+    cols = result.get("columns") or []
+    if not cols:
+        return []
+    return [dict(zip(cols, r)) for r in raw_rows if isinstance(r, (list, tuple)) and len(r) == len(cols)]
+
+
+_METADATA_COLUMNS = """
+    document_id::text AS document_id,
+    document_display_name,
+    document_filename,
+    document_payer,
+    document_state,
+    document_program,
+    document_authority_level,
+    updated_at
+"""
+
+
+def _resolve_by_id(document_id: str) -> dict[str, Any] | None:
+    """Deterministic single-document resolve by primary key (§8.1).
+
+    When a caller already knows WHICH document it wants — react after a
+    disambiguation round, or Fact Store with a ``source_ref.doc_id`` —
+    there's no reason to re-run fuzzy matching. Resolve the exact row by
+    PK and return its metadata in the same shape ``_fetch_candidates``
+    yields, or ``None`` when the id is malformed or unknown (the caller
+    turns that into a clean ``no_sources`` envelope — never an
+    exception, per §2's contract).
+
+    The UUID format is validated in-process first so a malformed id is a
+    quiet no-match rather than a Postgres ``invalid input syntax for
+    type uuid`` error round-trip.
+    """
+    doc_id = (document_id or "").strip()
+    if not doc_id:
+        return None
+    try:
+        uuid.UUID(doc_id)
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+    from app.db_client import db_query
+
+    sql = f"""
+        SELECT DISTINCT ON (document_id)
+            {_METADATA_COLUMNS}
+        FROM published_rag_metadata
+        WHERE document_id = %(doc_id)s
+        ORDER BY document_id, updated_at DESC
+    """
+    try:
+        rows = _normalize_db_rows(db_query(sql, "chat", params={"doc_id": doc_id}))
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning("fetch_document: resolve_by_id query failed for %s: %s", doc_id, exc)
+        return None
+    return rows[0] if rows else None
+
+
 def _fetch_candidates(query: str, *, limit: int = 30) -> list[dict[str, Any]]:
     """Pull document candidates from Postgres metadata.
 
@@ -171,37 +312,12 @@ def _fetch_candidates(query: str, *, limit: int = 30) -> list[dict[str, Any]]:
         params["patterns"] = patterns
     sql = f"""
         SELECT DISTINCT ON (document_id)
-            document_id::text AS document_id,
-            document_display_name,
-            document_filename,
-            document_payer,
-            document_state,
-            document_program,
-            document_authority_level,
-            updated_at
+            {_METADATA_COLUMNS}
         FROM published_rag_metadata
         WHERE {where}
         ORDER BY document_id, updated_at DESC
     """
-    result = db_query(sql, "chat", params=params)
-    if isinstance(result, dict) and result.get("error"):
-        logger.warning("fetch_document: db_query error %s", result.get("error"))
-        return []
-    # db_query returns one of two shapes:
-    #   { "rows": [{...}, ...] }                  (db-agent / dict rows)
-    #   { "columns": [...], "rows": [[...], ...] }  (direct psycopg2 fallback)
-    # Normalize both to list[dict].
-    if not isinstance(result, dict):
-        return []
-    raw_rows = result.get("rows") or []
-    if not raw_rows:
-        return []
-    if isinstance(raw_rows[0], dict):
-        return [r for r in raw_rows if isinstance(r, dict)]
-    cols = result.get("columns") or []
-    if not cols:
-        return []
-    return [dict(zip(cols, r)) for r in raw_rows if isinstance(r, (list, tuple)) and len(r) == len(cols)]
+    return _normalize_db_rows(db_query(sql, "chat", params=params))
 
 
 def _rank_matches(query: str, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -548,15 +664,35 @@ def _attach_download_payload(
 def _run_fetch_document(call: SkillCall) -> SkillEnvelope:
     inputs = call.inputs or {}
     query = (inputs.get("query") or call.question or "").strip()
+    document_id = (inputs.get("document_id") or "").strip()
+
+    def _e(msg: str) -> None:
+        if call.emitter and msg:
+            call.emitter(msg)
+
+    # §8.1 deterministic resolve-by-ID (2026-08-16). When the caller
+    # already knows WHICH document it wants — react after a
+    # disambiguation round, Fact Store with a source_ref.doc_id — skip
+    # every fuzzy tier and resolve the exact row by primary key. Returns
+    # exactly one card so the single-match content attachment (§1.3) is
+    # GUARANTEED, not probabilistic. A free-text query, if also present,
+    # is ignored in favor of the explicit id.
+    if document_id:
+        _e(f"◌ Resolving document by id: {document_id[:36]}…")
+        row = _resolve_by_id(document_id)
+        if not row:
+            _e("  No document with that id")
+            return SkillEnvelope(
+                text="I couldn't find a document with that id in our materials.",
+                signal="no_sources",
+            )
+        return _corpus_match_envelope(call, [row], query or document_id, "document_id", emit=_e)
+
     if not query:
         return SkillEnvelope(
             text="No document query provided.",
             signal="no_sources",
         )
-
-    def _e(msg: str) -> None:
-        if call.emitter and msg:
-            call.emitter(msg)
 
     # Tier 0: files uploaded on this thread ("send me back the file I
     # uploaded", "download my roster"). Checked first because thread
@@ -613,9 +749,41 @@ def _run_fetch_document(call: SkillCall) -> SkillEnvelope:
             signal="no_sources",
         )
 
+    return _corpus_match_envelope(call, matches, query, resolved_via, emit=_e)
+
+
+_RESOLVED_VIA_LABEL = {
+    "name_match": "name match",
+    "corpus_search": "corpus search",
+    "document_id": "id lookup",
+}
+
+
+def _corpus_match_envelope(
+    call: SkillCall,
+    matches: list[dict[str, Any]],
+    query: str,
+    resolved_via: str,
+    *,
+    emit: Any = None,
+) -> SkillEnvelope:
+    """Build the download-card envelope from ranked corpus-metadata rows.
+
+    Shared by the fuzzy query path and the deterministic resolve-by-ID
+    path (§8.1) so BOTH get identical SourceRef shape, the single-match
+    content attachment (§1.3), and the ``golden=False`` opt-out (§1.2).
+    resolve-by-ID passes a one-element ``matches`` list, which is what
+    *guarantees* the single-match attachment fires rather than merely
+    making it probable.
+    """
+    def _e(msg: str) -> None:
+        cb = emit or call.emitter
+        if cb and msg:
+            cb(msg)
+
     # Top 3 — usually 1, but if the user said "Sunshine" we may have
     # both Provider Manual and Member Handbook. Multi-match renders as
-    # a pick-list of download cards.
+    # a pick-list of download cards. (resolve-by-ID always yields 1.)
     top = matches[:3]
     sources: list[SourceRef] = []
     download_docs: list[dict[str, Any]] = []
@@ -650,12 +818,33 @@ def _run_fetch_document(call: SkillCall) -> SkillEnvelope:
             **common,
         })
 
+    if not sources:
+        # Every candidate row lacked a document_id — treat as no-match
+        # rather than emit an empty card.
+        return SkillEnvelope(
+            text="I couldn't resolve that to a downloadable document.",
+            signal="no_sources",
+        )
+
     _attach_download_payload(call, download_docs, query)
 
-    _via = "corpus search" if resolved_via == "corpus_search" else "name match"
+    _via = _RESOLVED_VIA_LABEL.get(resolved_via, resolved_via)
     _e(f"✓ Resolved {len(sources)} document(s) by {_via}")
 
+    # Task #106 (2026-08-16, Ananth, directly): a single confident match --
+    # the common case -- gets its actual bytes attached (size-permitting),
+    # not just a filename, so the NEXT reasoning round can read the real
+    # content natively instead of stopping at "here's a download link."
+    # Multi-match stays a pick-list only; attaching 2-3 documents at once
+    # to a single round isn't what this is for.
+    attachment: dict[str, Any] | None = None
     if len(sources) == 1:
+        try:
+            attachment = _maybe_fetch_attachment(sources[0].document_id or "", download_docs[0].get("filename") or "")
+        except Exception as e:
+            logger.warning("fetch_document: attachment attempt raised for %s: %s", sources[0].document_id, e)
+        if attachment:
+            _e(f"✓ Attached {sources[0].document_name} ({len(attachment['data_b64']) * 3 // 4} bytes) for this round")
         text = f"Found **{sources[0].document_name}**. Use the card below to download it."
     else:
         names = ", ".join(s.document_name for s in sources[:3])
@@ -664,16 +853,27 @@ def _run_fetch_document(call: SkillCall) -> SkillEnvelope:
             "Pick the one you want from the cards below."
         )
 
+    _extra: dict[str, Any] = {
+        "fetch_intent": True,
+        "match_count": len(sources),
+        "resolved_via": resolved_via,
+        "document_download_payload": {"documents": download_docs, "query": query},
+        # Explicit opt-out (2026-08-16, live finding cid=a337ef54): resolving
+        # WHICH document matches is not the same as having its content to
+        # answer with -- see react_loop.py's golden-inference comment for
+        # the full story. Without this, a successful resolve auto-finalized
+        # the turn on a download link before react could read the attached
+        # content (or fall back to search_corpus) in a later round.
+        "golden": False,
+    }
+    if attachment:
+        _extra["attachment"] = attachment
+
     return SkillEnvelope(
         text=text,
         signal="ok",
         sources=sources,
-        extra={
-            "fetch_intent": True,
-            "match_count": len(sources),
-            "resolved_via": resolved_via,
-            "document_download_payload": {"documents": download_docs, "query": query},
-        },
+        extra=_extra,
     )
 
 
@@ -696,6 +896,11 @@ register(
             "Do NOT use when: the user asks a question that needs an answer "
             "from the doc (use search_corpus). Do NOT use for user uploads "
             "(use search_uploaded_document or list_thread_document_uploads).\n"
+            "Follow-up: when a previous fetch_document returned MULTIPLE "
+            "candidates and the user picked one, call again with that "
+            "candidate's document_id (not the same free-text query) to "
+            "resolve it deterministically — re-sending the query just "
+            "returns the same ambiguous list.\n"
             "Returns: matched document metadata + a download URL the frontend "
             "renders as a clickable Download button."
         ),
@@ -710,8 +915,18 @@ register(
                         "are stripped before matching."
                     ),
                 },
+                "document_id": {
+                    "type": "string",
+                    "description": (
+                        "A specific document's UUID. When provided, fuzzy "
+                        "matching is skipped entirely and this exact "
+                        "document is resolved (returns exactly one result). "
+                        "Use for a follow-up after the user picks from a "
+                        "multi-candidate result, or when you already hold "
+                        "the id. Either query OR document_id is required."
+                    ),
+                },
             },
-            "required": ["query"],
         },
         handler=_run_fetch_document,
         requires_jurisdiction=False,
