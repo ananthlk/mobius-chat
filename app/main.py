@@ -2463,6 +2463,7 @@ from app.api.chat import router as _chat_router
 from app.api.credentialing import router as _credentialing_router
 from app.api.doc_reader import router as _doc_reader_router
 from app.api.download import router as _download_router
+from app.api.verify_claim import router as _verify_claim_router
 from app.api.email_thread import router as _email_thread_router
 from app.api.feedback import router as _feedback_router
 from app.api.history import router as _history_router
@@ -2480,6 +2481,7 @@ app.include_router(_training_router)          # training-mode telemetry (outcome
 app.include_router(_tasks_router)
 app.include_router(_uploads_router)  # Phase B.1c — cross-thread uploads catalog
 app.include_router(_download_router)  # upload downloads + guarded web download proxy
+app.include_router(_verify_claim_router)  # verify_claim scaffold (Fact Store cert loop; judge gated on Eval)
 app.include_router(_doc_reader_router)  # Phase 2b.1 — doc-reader proxy extracted from main.py
 app.include_router(_email_thread_router)  # POST /chat/thread/{id}/email — proxy to mobius-skills/email
 app.include_router(_admin_router)  # Dev-token minter + future ops-only endpoints
@@ -2970,6 +2972,18 @@ if _frontend.exists():
     @app.get("/auth/set-password")
     def set_password_page():
         r = FileResponse(_frontend / "set-password.html")
+        r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return r
+
+    # Platform sign-in HUB. Other Mobius surfaces (Story, credentialing,
+    # appeals, org, user-console) redirect here to authenticate — chat's
+    # origin is the only one registered with the Google OAuth client. The
+    # page ensures a session then mints a hand-off code and 302s back to
+    # the caller's `?return=` URL. See frontend/signin.html + the
+    # auth-gating spec (docs/auth-gating-and-usage-spec.md §4).
+    @app.get("/signin")
+    def signin_hub():
+        r = FileResponse(_frontend / "signin.html")
         r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return r
 
