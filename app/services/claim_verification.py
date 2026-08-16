@@ -109,16 +109,62 @@ def _run_judge(claim: str, page_text: str) -> dict[str, Any]:
 
     Deliberately NO fallback heuristic — a substring/keyword check here
     would be the exact forked fact-checker §8.5 refuses. Unwired means
-    unwired: low_coverage, never a guessed agree.
+    unwired: low_coverage, never a guessed agree. A judge that raises
+    (transient LLM/HTTP failure) also maps to low_coverage, never agree
+    (Eval §16.3: error/transient → low_coverage).
     """
     if _judge is None:
         return {"verdict": "low_coverage", "quote": "", "_unwired": True}
-    result = _judge(claim, page_text) or {}
+    try:
+        result = _judge(claim, page_text) or {}
+    except Exception as exc:
+        logger.warning("verify_claim: judge call failed (transient → low_coverage): %s", exc)
+        return {"verdict": "low_coverage", "quote": ""}
     verdict = result.get("verdict")
     if verdict not in ("agree", "contradict", "low_coverage"):
         logger.warning("verify_claim: judge returned bad verdict %r; coercing to low_coverage", verdict)
         return {"verdict": "low_coverage", "quote": str(result.get("quote") or "")}
     return {"verdict": verdict, "quote": str(result.get("quote") or "")}
+
+
+# ── Eval grader wiring (§16.4 option b) ──────────────────────────────
+# Eval ships POST /eval/grade-claim {claim, source_text, page?} ->
+# {verdict, quote, page, fact_checker_version}, wrapping the SAME locked
+# check_facts core (stage="rag_eval_adjudicate", the locked ruler — the
+# server-side fail-closed guarantee from §16.2). We inject a thin
+# pass-through client so the verdict semantics + locked ruler + version
+# stamp all stay in Eval's lane. Until EVAL_GRADE_CLAIM_URL is set, the
+# judge stays unwired (loud low_coverage) — shipping the endpoint is a
+# config flip, not a code change here.
+
+
+def _eval_grade_claim_client(url: str, timeout: int = 30) -> JudgeFn:
+    def _judge(claim: str, page_text: str) -> dict[str, Any]:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps({"claim": claim, "source_text": page_text}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8")) or {}
+        return {"verdict": payload.get("verdict"), "quote": payload.get("quote") or ""}
+    return _judge
+
+
+def configure_judge_from_env() -> bool:
+    """Wire the Eval grader if EVAL_GRADE_CLAIM_URL is set. Returns True
+    when a judge was wired. Idempotent; safe to call at import + startup."""
+    url = (os.environ.get("EVAL_GRADE_CLAIM_URL") or "").strip()
+    if not url:
+        return False
+    set_judge(_eval_grade_claim_client(url))
+    logger.info("verify_claim: judge wired to Eval grader at %s", url)
+    return True
+
+
+# Wire at import so a deploy with EVAL_GRADE_CLAIM_URL set comes up live.
+configure_judge_from_env()
 
 
 def verify_claim(document_id: str, claim: str, page: Optional[int] = None) -> dict[str, Any]:

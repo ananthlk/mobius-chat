@@ -11,6 +11,8 @@ Scaffold contract (DOWNLOAD_AGENT_CORE_REQUIREMENTS.md §8.4/§8.5):
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -144,3 +146,65 @@ def test_endpoint_reflects_injected_judge(monkeypatch):
     r = c.post("/chat/verify-claim", json={"document_id": _DOC_ID, "claim": "deadline is 60 days", "page": 80})
     assert r.json()["verdict"] == "contradict"
     assert r.json()["status"] == "ok"
+
+
+# ── Eval grader wiring (§16.4 option b) ─────────────────────────────
+
+
+def test_judge_transient_failure_maps_to_low_coverage(monkeypatch):
+    # Eval §16.3: a judge that raises (transient) → low_coverage, never agree.
+    _patch_substrate(monkeypatch)
+    def _flaky(claim, text):
+        raise RuntimeError("grader 503")
+    cv.set_judge(_flaky)
+    out = cv.verify_claim(_DOC_ID, "claim", page=80)
+    assert out["verdict"] == "low_coverage"
+    assert out["status"] == "ok"  # judge IS wired; it just failed this call
+
+
+def test_configure_judge_from_env_wires_and_unwires(monkeypatch):
+    assert cv.judge_is_wired() is False
+    monkeypatch.setenv("EVAL_GRADE_CLAIM_URL", "https://eval.example/eval/grade-claim")
+    assert cv.configure_judge_from_env() is True
+    assert cv.judge_is_wired() is True
+    # No env → no wire.
+    monkeypatch.delenv("EVAL_GRADE_CLAIM_URL")
+    cv.set_judge(None)
+    assert cv.configure_judge_from_env() is False
+
+
+def test_eval_grade_claim_client_maps_response(monkeypatch):
+    # The pass-through client POSTs {claim, source_text} and returns {verdict, quote}.
+    sent = {}
+    class _Resp:
+        def read(self): return json.dumps({"verdict": "agree", "quote": "sixty (60) calendar days", "page": 80}).encode()
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    def _fake_urlopen(req, timeout=30):
+        sent["url"] = req.full_url
+        sent["body"] = json.loads(req.data.decode())
+        return _Resp()
+    monkeypatch.setattr(cv.urllib.request, "urlopen", _fake_urlopen)
+
+    judge = cv._eval_grade_claim_client("https://eval.example/eval/grade-claim")
+    out = judge("appeal deadline is 60 days", "…within sixty (60) calendar days…")
+    assert out == {"verdict": "agree", "quote": "sixty (60) calendar days"}
+    assert sent["url"] == "https://eval.example/eval/grade-claim"
+    assert sent["body"] == {"claim": "appeal deadline is 60 days", "source_text": "…within sixty (60) calendar days…"}
+
+
+def test_end_to_end_with_eval_client_stubbed(monkeypatch):
+    # Full path: verify_claim → resolve → page-text → Eval client → mapped verdict.
+    _patch_substrate(monkeypatch)
+    class _Resp:
+        def read(self): return json.dumps({"verdict": "agree", "quote": "within sixty (60) calendar days"}).encode()
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    monkeypatch.setattr(cv.urllib.request, "urlopen", lambda req, timeout=30: _Resp())
+    cv.set_judge(cv._eval_grade_claim_client("https://eval.example/eval/grade-claim"))
+
+    out = cv.verify_claim(_DOC_ID, "enrollee plan appeal deadline is 60 calendar days", page=80)
+    assert out["verdict"] == "agree"
+    assert out["status"] == "ok"
+    assert out["quote"] == "within sixty (60) calendar days"
+    assert out["page"] == 80
