@@ -1,4 +1,25 @@
-# Batch Deploy Coordination — #95/#104/#105/#106 (2026-08-16)
+# Batch Deploy Coordination — #107 (2026-08-16)
+
+## Status: READY TO DEPLOY — #107 wall-clock guard
+
+**Commit:** `d671d7b` — `app/pipeline/react_loop.py` lines 4876–4893  
+**Change:** Wall-clock guard in critic extension gate. Before granting each extension, checks `_cc_elapsed_s + 25 < _cc_deadline_s`. If not enough headroom, skips extension and falls through to synthesis. Existing `max_extension_rounds` check untouched.
+
+## Instructions for LLM Agent: DEPLOY NOW
+
+```bash
+cd /Users/ananth/Mobius/mobius-chat
+npm run build
+scripts/deploy.sh dev
+```
+
+Record deployed revision below after deploy completes.
+
+**Deployed revision:** _pending_
+
+---
+
+# Previous batch — #95/#104/#105/#106 (2026-08-16)
 
 Written by Chat Master as durable coordination channel (direct session messages unreliable).
 
