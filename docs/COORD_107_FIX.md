@@ -53,3 +53,10 @@ Alternatively: cap max_extension_rounds to 2 (instead of 4) as a simpler fix, re
 ## Note on continuation path
 
 The continuation turn DID produce a clean answer (7/12 rounds, 211s, QA 0.8680, comparison table rendered). So the feature set is functionally working — but the first-turn cut-off is a UX regression that must be fixed before shipping think mode broadly.
+
+## Implementation
+
+**Commit:** d671d7b  
+**Branch:** main  
+**File:** `app/pipeline/react_loop.py` lines 4876–4893  
+**Change:** Inside `if not _cc_verdict.satisfied:`, compute `_cc_elapsed_s = _pp_time_mod.monotonic() - _pp_turn_start` and `_cc_deadline_s = float(os.environ.get("MOBIUS_TURN_DEADLINE_S", "120"))`. Only grant the extension (increment `_pp_extension_rounds_used`, bump `max_it`, append tool result, `continue`) when `_cc_elapsed_s + 25 < _cc_deadline_s`. When the guard fires, execution falls through to the synthesis path.
