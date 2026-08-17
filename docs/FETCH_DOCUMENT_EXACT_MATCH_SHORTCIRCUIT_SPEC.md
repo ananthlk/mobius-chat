@@ -157,6 +157,60 @@ against real dev data before calling this done, not just against a synthetic sin
 
 ---
 
+## 6. FOLLOW-UP BUG (2026-08-17, same day, live finding): attachment mime_type leaks `application/octet-stream`, breaks the turn
+
+Reopening — a live user turn on the EXACT query this spec fixed just failed outright:
+
+```
+✓ Exact match — 59G-4.150_Inpatient_Hospital_Services_Coverage_Policy_Final.pdf
+✓ Resolved 1 document(s) by exact_name_match
+✓ Attached 59G-4.150_Inpatient_Hospital_Services_Coverage_Policy_Final.pdf (226845 bytes) for this round
+Round 2/3 — ...
+✗ Turn failed at orchestrator: 400 Unable to submit request because it has a mimeType parameter
+  with value application/octet-stream, which is not supported.
+```
+
+**Root cause, confirmed by code read** — `_maybe_fetch_attachment`
+([fetch_document.py:143,146](../app/skills/builtin/fetch_document.py#L143-L146)):
+
+```python
+content_type = resp.headers.get("Content-Type") or _guess_mime_type(filename)
+...
+"mime_type": content_type.split(";")[0].strip() or _guess_mime_type(filename),
+```
+
+The `or _guess_mime_type(filename)` fallback only fires when the header is **absent**. When the download
+endpoint's `Content-Type` header is present but generic (`application/octet-stream` — common for a
+file-serving endpoint that doesn't set a specific type), that truthy-but-useless value is passed straight
+through. `_vertex_content_parts` ([llm_provider.py:417](../app/services/llm_provider.py#L417)) has its own
+fallback (`att.get("mime_type") or "application/pdf"`) but it's the same problem one layer up — the key
+IS set, just to a useless value, so that fallback never fires either. Gemini's `Part.from_data` rejects
+`application/octet-stream` outright (400).
+
+**Why this surfaced NOW, on the SAME query my earlier PASS used**: this attachment path
+(`_maybe_fetch_attachment`) isn't new — Task #106 landed it 2026-08-16. But before today's exact-match
+short-circuit, single-match resolution (and therefore this attach path) was comparatively rare — most
+"named a document" queries landed on the 3-way pick-list instead. The short-circuit means dramatically MORE
+queries now hit `_maybe_fetch_attachment`, so a latent, low-frequency bug (whichever of
+`_download_url`/`_fallback_download_url` responds with a generic Content-Type — sounds intermittent/URL-
+dependent, not query-dependent, matching why my earlier live run on this exact query happened to get a
+usable Content-Type and this one didn't) is now hit often enough to matter. Not a regression IN today's
+fix — a latent bug today's fix massively increased exposure to.
+
+**Proposed fix**: treat `application/octet-stream` (and `binary/octet-stream`) the same as "absent" —
+prefer `_guess_mime_type(filename)` whenever the header is missing OR generic:
+
+```python
+content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip()
+if not content_type or content_type in ("application/octet-stream", "binary/octet-stream"):
+    content_type = _guess_mime_type(filename)
+```
+
+`_guess_mime_type` already maps `.pdf` → `application/pdf` correctly and defaults unknown extensions to
+`application/pdf` ("corpus documents are overwhelmingly PDF") — so this closes the gap with no other
+behavior change. **Severity: turn-failing, not just degraded** — worse than the pre-fix behavior (which
+would have shown a download card, not a hard error) — worth an urgent fix, not queued behind other work.
+
 ## 5. Open / to confirm together
 1. Normalization rule for "exact" in 2b — case-insensitive + extension-stripped is proposed; confirm that's
    enough, or whether punctuation/underscore-vs-space also needs folding (the 59G-4.150 case has none of
