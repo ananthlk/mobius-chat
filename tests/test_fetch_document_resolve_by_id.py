@@ -184,6 +184,102 @@ def test_looks_like_uuid_discriminates():
     assert fd._looks_like_uuid(None) is False
 
 
+# ── reader-for-RAG: corpus-text fallback when the PDF is too big ─────
+
+
+def test_corpus_text_reader_when_whole_file_unavailable(monkeypatch):
+    # Whole-file PDF is too big / unavailable and no pages were asked for.
+    # Instead of dead-ending at a link, the doc's already-parsed corpus
+    # text is attached so react can READ it this round.
+    monkeypatch.setattr(fd, "_resolve_by_id", lambda did: dict(_ROW))
+    monkeypatch.setattr(fd, "_maybe_fetch_attachment", lambda *a, **k: None)
+    monkeypatch.setattr(
+        fd, "_fetch_corpus_text_attachment",
+        lambda doc_id, base: {"mime_type": "text/markdown", "data_b64": "eA==",
+                              "filename": f"{base}_text.md", "truncated": False})
+    # A complete text read means the planner does NOT need the size hint.
+    monkeypatch.setattr(fd, "_document_page_count", lambda did: (_ for _ in ()).throw(
+        AssertionError("page_count fetched despite a complete corpus-text read")))
+
+    env = fd._run_fetch_document(fd.SkillCall(
+        name="fetch_document", inputs={"document_id": _ROW["document_id"]},
+        question="", pipeline_ctx=SimpleNamespace()))
+
+    assert env.extra["read_mode"] == "corpus_text"
+    assert env.extra["attachment"]["mime_type"] == "text/markdown"
+    assert "page_count" not in env.extra
+    assert "read_truncated" not in env.extra
+
+
+def test_corpus_text_truncated_surfaces_page_count(monkeypatch):
+    # A doc bigger than the text cap: partial read + page_count so react
+    # can page for the rest.
+    monkeypatch.setattr(fd, "_resolve_by_id", lambda did: dict(_ROW))
+    monkeypatch.setattr(fd, "_maybe_fetch_attachment", lambda *a, **k: None)
+    monkeypatch.setattr(
+        fd, "_fetch_corpus_text_attachment",
+        lambda doc_id, base: {"mime_type": "text/markdown", "data_b64": "eA==",
+                              "filename": "x_text.md", "truncated": True})
+    monkeypatch.setattr(fd, "_document_page_count", lambda did: 261)
+
+    env = fd._run_fetch_document(fd.SkillCall(
+        name="fetch_document", inputs={"document_id": _ROW["document_id"]},
+        question="", pipeline_ctx=SimpleNamespace()))
+
+    assert env.extra["read_mode"] == "corpus_text"
+    assert env.extra["read_truncated"] is True
+    assert env.extra["page_count"] == 261
+
+
+def test_pages_take_precedence_over_corpus_text(monkeypatch):
+    # An explicit page range must use the page path, never the corpus-text
+    # or whole-file readers.
+    monkeypatch.setattr(fd, "_resolve_by_id", lambda did: dict(_ROW))
+    monkeypatch.setattr(
+        fd, "_fetch_pages_attachment",
+        lambda doc_id, pages, base: {"mime_type": "text/markdown", "data_b64": "cGFnZQ==",
+                                     "filename": f"{base}_pages.md"})
+    monkeypatch.setattr(fd, "_fetch_corpus_text_attachment", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("corpus-text reader called when pages were requested")))
+    monkeypatch.setattr(fd, "_maybe_fetch_attachment", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("whole-file attach called when pages were requested")))
+
+    env = fd._run_fetch_document(fd.SkillCall(
+        name="fetch_document", inputs={"document_id": _ROW["document_id"], "pages": "20-24"},
+        question="", pipeline_ctx=SimpleNamespace()))
+
+    assert env.extra["read_mode"] == "pages"
+    assert env.extra["attached_pages"] == "20-24"
+
+
+def test_corpus_text_assembly_orders_and_labels(monkeypatch):
+    # _fetch_corpus_text_attachment concatenates chunk text in the order
+    # the SQL returns (page, paragraph) and labels the attachment.
+    import app.db_client as db_client
+    ordered = [
+        {"text": "page1 para0", "page_number": 1, "paragraph_index": 0},
+        {"text": "page1 para1", "page_number": 1, "paragraph_index": 1},
+        {"text": "page2 para0", "page_number": 2, "paragraph_index": 0},
+    ]
+    monkeypatch.setattr(
+        db_client, "db_query",
+        lambda sql, db, params=None, max_rows=2000: {"rows": ordered})
+
+    att = fd._fetch_corpus_text_attachment("doc-x", "Foo.pdf")
+    import base64
+    body = base64.b64decode(att["data_b64"]).decode("utf-8")
+    assert body == "page1 para0\n\npage1 para1\n\npage2 para0"
+    assert att["mime_type"] == "text/markdown"
+    assert att["filename"] == "Foo_text.md"
+    assert att["truncated"] is False
+
+
+def test_corpus_text_none_when_no_chunk_text(monkeypatch):
+    import app.db_client as db_client
+    monkeypatch.setattr(db_client, "db_query", lambda *a, **k: {"rows": []})
+    assert fd._fetch_corpus_text_attachment("doc-x", "Foo.pdf") is None
+
+
 # ── _resolve_by_id unit: UUID guard + row normalization ─────────────
 
 
@@ -270,13 +366,15 @@ def test_no_pages_attached_whole_file_skips_page_count(monkeypatch):
     assert "attached_pages" not in env.extra
 
 
-def test_page_count_fetched_lazily_when_whole_file_did_not_attach(monkeypatch):
-    # Oversized/failed whole-file attach + no pages → THIS is when the planner
-    # needs the size (to request a page range next round), so page_count fires.
+def test_page_count_fetched_lazily_when_no_content_available(monkeypatch):
+    # Whole-file too big AND no corpus text (e.g. needs_ocr) AND no pages →
+    # the model has NO content, so page_count fires so react can page next.
     monkeypatch.setattr(fd, "_resolve_by_id", lambda did: dict(_ROW))
     monkeypatch.setattr(fd, "_maybe_fetch_attachment", lambda doc_id, fname: None)  # too big / failed
+    monkeypatch.setattr(fd, "_fetch_corpus_text_attachment", lambda doc_id, base: None)  # no parsed text
     monkeypatch.setattr(fd, "_document_page_count", lambda did: 261)
 
     env = fd._run_fetch_document(fd.SkillCall(name="fetch_document", inputs={"document_id": _ROW["document_id"]}, question="", pipeline_ctx=SimpleNamespace()))
     assert "attachment" not in env.extra
+    assert "read_mode" not in env.extra
     assert env.extra["page_count"] == 261

@@ -253,6 +253,62 @@ def _fetch_pages_attachment(document_id: str, pages: list[int], base_name: str) 
     }
 
 
+def _fetch_corpus_text_attachment(document_id: str, base_name: str) -> dict[str, Any] | None:
+    """Assemble the document's ALREADY-PARSED text from the corpus and
+    return it as a text/markdown attachment — the "reader for RAG".
+
+    Ingestion already parsed every PDF into ``published_rag_metadata.text``
+    chunks; that text is the machine-readable version, local to the chat
+    DB. So a large document the whole-file PDF cap (8MB) drops can still be
+    READ by the model this round — no re-download, no re-parse, and the
+    text (p90 ≈ 122KB) is a fraction of the PDF. We assemble chunks in
+    reading order and cap at ``_MAX_PAGES_TEXT_CHARS``; ``truncated`` tells
+    the caller to surface page_count so react can page for the remainder.
+
+    Returns None when the document has no chunk text (e.g. needs_ocr).
+    """
+    from app.db_client import db_query
+
+    sql = """
+        SELECT text, page_number, paragraph_index
+        FROM published_rag_metadata
+        WHERE document_id = %(doc_id)s AND text IS NOT NULL AND text <> ''
+        ORDER BY page_number NULLS FIRST, paragraph_index NULLS FIRST
+    """
+    try:
+        rows = _normalize_db_rows(
+            db_query(sql, "chat", params={"doc_id": document_id}, max_rows=2000)
+        )
+    except Exception as e:
+        logger.warning("fetch_document: corpus-text fetch failed for %s: %s", document_id, e)
+        return None
+
+    parts: list[str] = []
+    total = 0
+    truncated = False
+    for r in rows:
+        t = (r.get("text") or "").strip()
+        if not t:
+            continue
+        parts.append(t)
+        total += len(t)
+        if total >= _MAX_PAGES_TEXT_CHARS:
+            truncated = True
+            break
+    if not parts:
+        return None
+
+    import base64
+    body = ("\n\n".join(parts))[:_MAX_PAGES_TEXT_CHARS]
+    stem = (base_name.rsplit(".", 1)[0] if base_name else document_id) or document_id
+    return {
+        "mime_type": "text/markdown",
+        "data_b64": base64.b64encode(body.encode("utf-8")).decode("ascii"),
+        "filename": f"{stem}_text.md",
+        "truncated": truncated,
+    }
+
+
 # ── Query parsing + scoring ─────────────────────────────────────────
 
 
@@ -1040,6 +1096,7 @@ def _corpus_match_envelope(
     # Multi-match stays a pick-list only; attaching 2-3 documents at once
     # to a single round isn't what this is for.
     attachment: dict[str, Any] | None = None
+    read_mode: str | None = None
     if len(sources) == 1:
         doc_id = sources[0].document_id or ""
         fname = download_docs[0].get("filename") or ""
@@ -1049,26 +1106,47 @@ def _corpus_match_envelope(
                 # Targeted page-range: hand the model exactly the pages it
                 # asked for (works for large docs the whole-file cap drops).
                 attachment = _fetch_pages_attachment(doc_id, requested_pages, fname)
+                if attachment:
+                    read_mode = "pages"
             else:
                 attachment = _maybe_fetch_attachment(doc_id, fname)
+                if attachment:
+                    read_mode = "pdf"
         except Exception as e:
             logger.warning("fetch_document: attachment attempt raised for %s: %s", doc_id, e)
-        # Surface page_count LAZILY — only when the whole file did NOT attach
-        # and no pages were requested, i.e. exactly when the doc is large
-        # enough that the planner needs the size to request a page range next
-        # round. Small docs that attach fine don't pay a RAG /status
-        # round-trip for a hint nothing will use (perf fix, 2026-08-17).
-        if not requested_pages and attachment is None:
+        # Reader-for-RAG fallback (2026-08-17). The whole-file PDF was too
+        # big (>8MB) or unavailable and no specific pages were asked for —
+        # so instead of dead-ending at a download link with NO content for
+        # the model, serve the document's already-parsed corpus text. That
+        # text is local (chat DB), far smaller than the PDF, and lets react
+        # READ the doc this round. See _fetch_corpus_text_attachment.
+        if attachment is None and not requested_pages:
+            try:
+                attachment = _fetch_corpus_text_attachment(doc_id, fname)
+                if attachment:
+                    read_mode = "corpus_text"
+            except Exception as e:
+                logger.warning("fetch_document: corpus-text attempt raised for %s: %s", doc_id, e)
+        # Surface page_count LAZILY — only when the model still lacks the
+        # full content: no attachment at all, or a TRUNCATED corpus-text
+        # read (doc bigger than the text cap), i.e. exactly when the planner
+        # needs the size to request a page range next round. A whole PDF or
+        # a complete text read doesn't pay a RAG /status round-trip.
+        need_size = attachment is None or bool(attachment.get("truncated"))
+        if not requested_pages and need_size:
             try:
                 page_count = _document_page_count(doc_id)
             except Exception:
                 page_count = None
             if page_count:
                 download_docs[0]["page_count"] = page_count
-        if attachment and requested_pages:
+        if read_mode == "pages":
             _e(f"✓ Attached {sources[0].document_name} pages {pages_spec} for this round")
-        elif attachment:
+        elif read_mode == "pdf":
             _e(f"✓ Attached {sources[0].document_name} ({len(attachment['data_b64']) * 3 // 4} bytes) for this round")
+        elif read_mode == "corpus_text":
+            _trunc = " (partial — more via page range)" if attachment.get("truncated") else ""
+            _e(f"✓ Attached {sources[0].document_name} text for reading{_trunc}")
         text = f"Found **{sources[0].document_name}**. Use the card below to download it."
     else:
         names = ", ".join(s.document_name for s in sources[:3])
@@ -1085,6 +1163,11 @@ def _corpus_match_envelope(
         # Size signal so the planner can choose whole-file vs page-range next.
         **({"page_count": download_docs[0]["page_count"]} if len(sources) == 1 and download_docs and download_docs[0].get("page_count") else {}),
         **({"attached_pages": pages_spec} if attachment and _parse_page_spec(pages_spec) else {}),
+        # How the content was read this round, so react/telemetry can tell a
+        # native-PDF read from the corpus-text reader-for-RAG fallback:
+        # "pdf" | "pages" | "corpus_text". Absent when only a link was returned.
+        **({"read_mode": read_mode} if read_mode else {}),
+        **({"read_truncated": True} if attachment and attachment.get("truncated") else {}),
         # Explicit opt-out (2026-08-16, live finding cid=a337ef54): resolving
         # WHICH document matches is not the same as having its content to
         # answer with -- see react_loop.py's golden-inference comment for
@@ -1112,11 +1195,13 @@ register(
         name="fetch_document",
         description=(
             "Get you the actual SOURCE DOCUMENT behind an answer — the real "
-            "file, not fragments retrieved from it. What I do:\n"
-            "1. When there's ONE specific, identifiable document (a named "
-            "manual, a policy ID, a filename, or a document_id you already "
-            "hold) and it's small enough, I attach its actual CONTENT so you "
-            "read the real source directly.\n"
+            "file AND its readable content, not fragments retrieved from it. "
+            "What I do:\n"
+            "1. For ONE identifiable document (a named manual, a policy ID, a "
+            "filename, or a document_id you already hold) I give you its "
+            "CONTENT to read THIS round — a small file as the native document, "
+            "a large one as its already-parsed text — so you can actually read "
+            "or summarize the source, never just a link.\n"
             "2. When an answer is thin or vague because it needs the real "
             "underlying document, I locate that document — from the corpus, or "
             "from payer/agency sites Mobius knows about but hasn't ingested — "
@@ -1129,13 +1214,15 @@ register(
             "ordinary corpus retrieval is the better fit — I'm for when a "
             "single real source is the point, not an answer stitched from "
             "snippets.\n"
-            "If the document is large, ask for just the pages you need "
-            "(pages='20-24' or '20,80') instead of the whole file — the result "
-            "reports the document's page_count so you can decide.\n"
-            "Resolving it: a document_id is exact (no guessing); a name / policy "
-            "ID matches by text; several matches come back as a short pick-list "
-            "— call again with the chosen document_id to pin and attach it. "
-            "(User-uploaded files have their own tool.)"
+            "I read the whole document for you by default. If it's very large I "
+            "hand you as much of its text as fits and report page_count; ask "
+            "for just the pages you need (pages='20-24' or '20,80') to read a "
+            "specific section in full.\n"
+            "Resolving it: give a name / filename / policy ID as `query` and I "
+            "match by text; give `document_id` ONLY when you already hold the "
+            "exact UUID (no guessing). Several matches come back as a short "
+            "pick-list — call again with the chosen document_id to pin and "
+            "attach it. (User-uploaded files have their own tool.)"
         ),
         inputs_schema={
             "type": "object",
@@ -1151,12 +1238,14 @@ register(
                 "document_id": {
                     "type": "string",
                     "description": (
-                        "A specific document's UUID. When provided, fuzzy "
-                        "matching is skipped entirely and this exact "
-                        "document is resolved (returns exactly one result). "
-                        "Use for a follow-up after the user picks from a "
-                        "multi-candidate result, or when you already hold "
-                        "the id. Either query OR document_id is required."
+                        "A specific document's internal UUID (e.g. "
+                        "'06dcfff8-87d2-41be-91cc-83fcc7e574b0'). Provide ONLY "
+                        "when you already hold the exact UUID — after the user "
+                        "picks from a multi-candidate result, or from a prior "
+                        "resolve. When set, fuzzy matching is skipped and this "
+                        "exact document is resolved (one result). A "
+                        "filename/name/title is NOT a document_id — put that in "
+                        "`query`. Either query OR document_id is required."
                     ),
                 },
                 "pages": {
