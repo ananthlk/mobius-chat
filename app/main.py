@@ -2572,6 +2572,15 @@ _SKILL_LLM_ALLOWED_STAGES = frozenset({
     # eligible_stages, so non-BAA models are structurally excluded regardless
     # of phi_detected flag. Never route PHI text to a non-BAA provider.
     "phi_classify",
+    # mobius-payor fact re-verification loop (2026-08-17): periodically
+    # re-asks a payor_fact's stored `question` and diffs the reply against
+    # the stored value — same skill-llm pattern appeals-agent uses (raw LLM
+    # completion, no RAG/tools/PHI-gate; the caller is responsible for
+    # supplying whatever grounding it needs in the prompt). The diff verdict
+    # itself is graded separately via Eval's locked-ruler /api/eval/grade-claim
+    # (rag_eval_adjudicate), not here — this stage is only the "ask the
+    # question again" half.
+    "payor_fact_reverify",
 })
 
 
