@@ -623,6 +623,20 @@ def maybe_start_worker():
     except Exception as e:
         logger.warning("llm-health: failed to start refresher (non-fatal): %s", e)
 
+    # Doc-grain MV refresher (2026-08-17).
+    #
+    # published_rag_documents (migration 059) is a ~9210-row snapshot of
+    # the 1.95M-row chunk table that powers fetch_document's name-match
+    # tier ~30x faster. It's a CACHE, so a daemon thread refreshes it
+    # CONCURRENTLY (~6s, non-blocking) every ~10 min to pick up newly
+    # published docs; an advisory lock keeps just one instance doing the
+    # work. No-op if the MV is missing or CHAT_DOCGRAIN_REFRESH_DISABLED=1.
+    try:
+        from app.services.docgrain_refresh import REFRESHER as _DOCGRAIN_REFRESHER
+        _DOCGRAIN_REFRESHER.start()
+    except Exception as e:
+        logger.warning("docgrain-refresh: failed to start refresher (non-fatal): %s", e)
+
     # Vertex SDK warm-up (2026-04-28).
     #
     # The first generate_content call after a fresh worker process starts

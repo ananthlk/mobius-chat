@@ -400,46 +400,105 @@ def _resolve_by_id(document_id: str) -> dict[str, Any] | None:
     return rows[0] if rows else None
 
 
+_DOCGRAIN_VIEW = "published_rag_documents"
+# Recent-slice window for the freshness path. MUST exceed the MV refresh
+# cadence (app.services.docgrain_refresh, ~10 min) so a doc published
+# since the last refresh is always caught here until the MV catches up.
+_RECENT_WINDOW = "30 minutes"
+
+
 def _fetch_candidates(query: str, *, limit: int = 30) -> list[dict[str, Any]]:
     """Pull document candidates from Postgres metadata.
 
-    The coarse token filter MUST live in SQL: the table is chunk-grain
-    (~1.9M rows) so an unfiltered scan silently ranks an arbitrary subset
-    (this is how "Sunshine provider manual" missed Sunshine's
-    Provider_Manual.pdf). Any-token ILIKE over name/filename/payer keeps
-    recall high; the Python ranking above stays the precision layer.
+    The coarse token filter MUST live in SQL: an unfiltered scan silently
+    ranks an arbitrary subset (this is how "Sunshine provider manual"
+    missed Sunshine's Provider_Manual.pdf). Any-token ILIKE over
+    name/filename/payer keeps recall high; the Python ranking above stays
+    the precision layer.
 
-    Perf (2026-08-17): the ILIKE is served by a pg_trgm GIN index
-    (idx_prm_trgm_names). We only send tokens of length ≥ 3 to the SQL
-    filter — a trigram index can't help a 2-char pattern AND short tokens
-    like "fl"/"um"/"87" match hundreds of thousands of chunk rows, forcing
-    a seq scan (measured: "FL.UM.87" went 25s → 174ms once the 2-char
-    dot-parts were dropped; the selective 8-char "fl.um.87" stays). Short
-    tokens are still used by the Python ranker for precision, just not as
-    the coarse DB filter.
+    Perf (2026-08-17): the primary source is the DOC-GRAIN materialized
+    view ``published_rag_documents`` (~9210 rows, one per document,
+    migration 059) rather than the chunk-grain base table (~1.95M rows).
+    The trigram index (058) + ≥3-char filter only helps when tokens are
+    RARE. A real document TITLE is common words — "150"/"services"/"policy"
+    each match 100k+ chunk rows — so on the base table the ILIKE ANY +
+    DISTINCT ON dedup cost 7,302 ms (measured, 59G-4.150 title). The same
+    query over 9k doc-grain rows is ~220 ms (~30x).
+
+    Freshness: the MV is a cache refreshed every ~10 min, so a
+    just-published doc isn't in it yet. We therefore ALSO query a small
+    "recent" slice of the base table (rows with updated_at inside
+    ``_RECENT_WINDOW``), which the updated_at index serves in ~0.5 ms, and
+    MERGE it with the MV result (dedup by document_id). This closes the
+    blind spot where a brand-new doc's tokens overlap older docs already
+    in the MV — without it, the MV would return the old docs and the new
+    one would be invisible until the next refresh.
+
+    If BOTH sources come back empty the tokens matched nothing recent and
+    nothing in the 9k docs — i.e. they're selective — so a full base-table
+    scan is cheap; we do it as a last resort (also covers the MV being
+    absent when migration 059 hasn't run).
     """
     from app.db_client import db_query
 
     # Tokens are alphanumeric+dots only (see _tokenize), so no LIKE
     # metacharacter escaping is needed. ≥3 chars only — see docstring.
     patterns = [f"%{t}%" for t in _tokenize(query) if len(t) >= 3][:8]
+    ilike = (
+        "(document_display_name ILIKE ANY(%(patterns)s)"
+        " OR document_filename ILIKE ANY(%(patterns)s)"
+        " OR document_payer ILIKE ANY(%(patterns)s))"
+    )
     where = "document_id IS NOT NULL"
     params: dict[str, Any] = {}
     if patterns:
-        where += (
-            " AND (document_display_name ILIKE ANY(%(patterns)s)"
-            " OR document_filename ILIKE ANY(%(patterns)s)"
-            " OR document_payer ILIKE ANY(%(patterns)s))"
-        )
+        where += " AND " + ilike
         params["patterns"] = patterns
-    sql = f"""
+
+    by_id: dict[Any, dict[str, Any]] = {}
+
+    # Fast path: doc-grain MV (one row per document; no dedup needed).
+    try:
+        mv_sql = f"SELECT {_METADATA_COLUMNS} FROM {_DOCGRAIN_VIEW} WHERE {where}"
+        for r in _normalize_db_rows(db_query(mv_sql, "chat", params=params)):
+            by_id[r.get("document_id")] = r
+    except Exception as exc:
+        logger.warning(
+            "fetch_document: doc-grain MV query failed, base table only: %s", exc
+        )
+
+    # Freshness path: docs updated since the last MV refresh. Indexed on
+    # updated_at (~0.5 ms), so this is cheap even mid-ingestion. MV row
+    # wins on a dup (same document, identical data).
+    try:
+        recent_sql = f"""
+            SELECT DISTINCT ON (document_id)
+                {_METADATA_COLUMNS}
+            FROM published_rag_metadata
+            WHERE updated_at > now() - %(recent_window)s::interval
+              AND {where}
+            ORDER BY document_id, updated_at DESC
+        """
+        rp = dict(params, recent_window=_RECENT_WINDOW)
+        for r in _normalize_db_rows(db_query(recent_sql, "chat", params=rp)):
+            by_id.setdefault(r.get("document_id"), r)
+    except Exception as exc:
+        logger.warning("fetch_document: recent-slice query failed (non-fatal): %s", exc)
+
+    if by_id:
+        return list(by_id.values())
+
+    # Last resort: full base-table scan. Reached only when both sources
+    # were empty (selective tokens) or the MV is absent — the cheap case,
+    # not the 7s common-token case, which always returns from the MV.
+    base_sql = f"""
         SELECT DISTINCT ON (document_id)
             {_METADATA_COLUMNS}
         FROM published_rag_metadata
         WHERE {where}
         ORDER BY document_id, updated_at DESC
     """
-    return _normalize_db_rows(db_query(sql, "chat", params=params))
+    return _normalize_db_rows(db_query(base_sql, "chat", params=params))
 
 
 def _rank_matches(query: str, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
