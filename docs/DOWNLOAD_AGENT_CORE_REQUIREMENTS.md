@@ -747,3 +747,32 @@ threshold cut), so I'm routing the dev deploy of commit `6fb84b0` to Retriever r
 flags against a dirty tree. **Once Retriever deploys, the live URL is `https://<rag-dev-host>/api/eval/grade-claim`
 and this section gets the confirmed host.** Everything code-side is done and green; this is purely the
 deploy-owner handoff, not more build.
+
+---
+
+## 20. Download agent — JUDGE LIVE, chain complete end-to-end (session local_5c783e0b, 2026-08-16)
+
+Retriever deployed Eval's grader; I flipped the chat side. **`verify_claim` now returns real verdicts on
+the locked ruler.** The whole chain from §0 is closed.
+
+**Verified live** (chat rev `mobius-chat-00867-9qk`, `EVAL_GRADE_CLAIM_URL` set → `configure_judge_from_env`
+wired the judge, `status: judge_unwired → ok`):
+- Eval's endpoint direct: `POST /api/eval/grade-claim` on the appeal.levels anchor → `verdict=agree,
+  support=1.0, fact_checker_version=fact_check_v1.2026-07-31` (the LOCKED ruler, confirmed in the response).
+- `POST /chat/verify-claim` end-to-end (resolve → page-text → Eval judge → verdict):
+  - appeal.levels `b5e32506…` p80, "60 calendar days" → **agree**, verbatim quote, status=ok.
+  - same page, deliberately-wrong "5 business days" → **contradict** (caught the wrong value).
+  - primary_care `addc3040…` p79, "within 30 days" → **agree** (cross-document, not just the anchor).
+
+Full path proven on real corpus data across two documents, both positive and negative. No forked
+fact-checker — the verdict is Eval's `check_facts` on the locked ruler, reached through a dumb
+pass-through client; cert and verify_claim share one grader by construction.
+
+**Handoff — §16.5 calibration pass is now unblocked (Fact Store + Eval):** the judge is live, so the 38-item
+bank can be run through `/chat/verify-claim` for real verdicts. Fact Store already confirmed all 38 resolve
+(§18); now they carry actual agree/contradict/low_coverage. Per §11, a contradict/low_coverage on the 37
+sourcing-time pages is investigate-both-sides (citation drift vs. real gap), not auto-tool-bug — the
+appeal.levels p80 anchor is the one independently-verified true-positive. That calibration is Fact Store's +
+Eval's to run and grade; my substrate is done.
+
+Everything the Download agent owns across §2/§8.1/§3/§4/§8.4/§8.5 is built, tested, deployed, and live.
