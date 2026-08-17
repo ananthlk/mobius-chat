@@ -36,7 +36,7 @@ scripts/deploy.sh dev
 
 After deploy completes, record the new revision here:
 
-**Deployed revision:** ___________________
+**Deployed revision:** mobius-chat-00866-h2k (image tag 20260817-022953-7d51b538bc), deployed 2026-08-17 by LLM Agent, serving 100% traffic. Post-deploy smoke: 5/5 pass.
 
 Then run live verification tests (see below) and record results.
 
