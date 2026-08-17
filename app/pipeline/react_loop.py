@@ -4873,21 +4873,24 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                         if not _cc_verdict.satisfied:
                             ctx.completion_critic_gaps = _cc_verdict.uncovered
                             ctx.completion_critic_next_query = _cc_verdict.suggested_next_query
-                            _pp_extension_rounds_used += 1
-                            max_it += 1
-                            tool_results.append({
-                                "tool": "_completion_critic",
-                                "success": False,
-                                "result": (
-                                    "Coverage check found this answer incomplete. Still "
-                                    "missing: " + "; ".join(_cc_verdict.uncovered[:5])
-                                    + (
-                                        f". Suggested next search: {_cc_verdict.suggested_next_query}"
-                                        if _cc_verdict.suggested_next_query else ""
-                                    )
-                                ),
-                            })
-                            continue
+                            _cc_elapsed_s = _pp_time_mod.monotonic() - _pp_turn_start
+                            _cc_deadline_s = float(os.environ.get("MOBIUS_TURN_DEADLINE_S", "120"))
+                            if _cc_elapsed_s + 25 < _cc_deadline_s:
+                                _pp_extension_rounds_used += 1
+                                max_it += 1
+                                tool_results.append({
+                                    "tool": "_completion_critic",
+                                    "success": False,
+                                    "result": (
+                                        "Coverage check found this answer incomplete. Still "
+                                        "missing: " + "; ".join(_cc_verdict.uncovered[:5])
+                                        + (
+                                            f". Suggested next search: {_cc_verdict.suggested_next_query}"
+                                            if _cc_verdict.suggested_next_query else ""
+                                        )
+                                    ),
+                                })
+                                continue
 
                 # Product Promise governor — mandatory groundedness floor
                 # (docs/REACT_PRODUCT_PROMISE_SPEC.md), behind
