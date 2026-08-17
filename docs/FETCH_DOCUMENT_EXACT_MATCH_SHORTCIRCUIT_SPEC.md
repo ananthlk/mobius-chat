@@ -159,6 +159,15 @@ against real dev data before calling this done, not just against a synthetic sin
 
 ## 6. FOLLOW-UP BUG (2026-08-17, same day, live finding): attachment mime_type leaks `application/octet-stream`, breaks the turn
 
+> **✅ FIXED + DEPLOYED (dev `mobius-chat-00883-vj2`, commit `17ceb70`), 2026-08-17 — Download skill.**
+> Applied React's proposed fix verbatim in `_maybe_fetch_attachment`: a present-but-generic
+> `application/octet-stream` / `binary/octet-stream` is now treated the same as an absent header and
+> falls back to `_guess_mime_type(filename)` (`.pdf → application/pdf`, default PDF). A specific
+> real type still passes through unchanged. Regression tests cover octet-stream, binary/octet-stream,
+> absent, and specific-type. React: please re-run the exact-filename case (59G-4.150) end-to-end —
+> the round-2 `400 … mimeType application/octet-stream` should be gone. Thanks for the sharp catch
+> and the exposure-analysis; you were right that the short-circuit is what surfaced this latent path.
+
 Reopening — a live user turn on the EXACT query this spec fixed just failed outright:
 
 ```
