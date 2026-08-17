@@ -623,8 +623,17 @@ def _call_llm_json(
     composition_hash: str | None = None,
     reasoning_depth: str | None = None,
     latency_budget_ms: int | None = None,
+    attachments: list[dict] | None = None,
 ) -> str:
     """Call LLM and return raw string (expect JSON). When ctx is provided, uses llm_manager and appends usage to ctx.usages.
+
+    ``attachments`` (Task #106, 2026-08-16, Ananth, directly): native
+    document attachments (Gemini Part, via llm_provider's
+    _vertex_content_parts) -- react_loop.py sets this from a fetch_document
+    result when the resolved document was small enough to fetch inline
+    instead of leaving react to work from just a filename. Only threaded
+    on the ``ctx is not None`` (async ``generate``/Vertex) path, same
+    scoping as reasoning_depth/latency_budget_ms above.
 
     ``composition_id``/``composition_hash``: pass through when the caller
     resolved its system prompt via the v2 block-composition path (see
@@ -668,6 +677,7 @@ def _call_llm_json(
                     composition_hash=composition_hash,
                     reasoning_depth=reasoning_depth,
                     latency_budget_ms=latency_budget_ms,
+                    attachments=attachments,
                 )
             )
             return (raw or "").strip(), usage

@@ -91,6 +91,7 @@ async def generate(
     composition_hash: str | None = None,
     reasoning_depth: str | None = None,
     latency_budget_ms: int | None = None,
+    attachments: list[dict] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """
     Call LLM via dynamic model router, record to llm_calls.
@@ -159,9 +160,17 @@ async def generate(
     success = False
     error_type: str | None = None
 
+    # attachments only passed when present -- every non-Vertex provider's
+    # generate_with_usage(**kwargs) either ignores or blind-forwards
+    # unrecognized kwargs (e.g. Ollama forwards straight into
+    # _ollama_request), so an always-present `attachments=None` key could
+    # break providers that were never touched by this feature. Omitting
+    # the key entirely when there's nothing to attach is the identical,
+    # zero-risk behavior every non-attachment call already had.
+    _extra_kw = {"attachments": attachments} if attachments else {}
     try:
         text, usage = await provider.generate_with_usage(
-            prompt, max_tokens=max_tokens, stage=stage
+            prompt, max_tokens=max_tokens, stage=stage, **_extra_kw
         )
         success = True
     except Exception as e:

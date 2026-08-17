@@ -394,6 +394,32 @@ def _vertex_request_options():
     return kwargs
 
 
+def _vertex_content_parts(prompt: str, attachments: list[dict] | None):
+    """Task #106 (2026-08-16, Ananth, directly): "these models are much
+    better... if a doc is small enough to send let's add those as
+    attachments... we don't have to build parsing." Gemini's native
+    document understanding over a raw inline Part beats hand-rolled text
+    extraction -- when fetch_document resolved a small-enough document,
+    ship the bytes directly instead of forcing a second-class filename-
+    only reference. Returns the plain string prompt unchanged when there
+    are no attachments (today's exact behavior, no shape change) --
+    Vertex's generate_content accepts either a bare string or a list of
+    parts, so this only changes shape when attachments are present."""
+    if not attachments:
+        return prompt
+    from vertexai.generative_models import Part
+
+    parts: list = [prompt]
+    for att in attachments:
+        try:
+            import base64
+            data = base64.b64decode(att["data_b64"])
+            parts.append(Part.from_data(mime_type=att.get("mime_type") or "application/pdf", data=data))
+        except Exception as e:
+            logger.warning("[vertex] skipping malformed attachment (%s): %s", att.get("filename"), e)
+    return parts
+
+
 def _vertex_generate_sync(
     model_name: str,
     prompt: str,
@@ -401,6 +427,7 @@ def _vertex_generate_sync(
     tools: list | None = None,
     outer_timeout_s: float | None = None,
     safety_settings: list | None = None,
+    attachments: list[dict] | None = None,
 ) -> tuple[str, LLMUsageDict]:
     import os as _os
     import time as _time
@@ -470,26 +497,27 @@ def _vertex_generate_sync(
 
     def _call_sdk():
         _safety = safety_settings or []
+        _content = _vertex_content_parts(prompt, attachments)
         if tools:
             try:
                 return model.generate_content(
-                    prompt, generation_config=gen_config, tools=tools,
+                    _content, generation_config=gen_config, tools=tools,
                     safety_settings=_safety, **req_opts
                 )
             except TypeError:
                 return model.generate_content(
-                    prompt, generation_config=gen_config, tools=tools,
+                    _content, generation_config=gen_config, tools=tools,
                     safety_settings=_safety,
                 )
         else:
             try:
                 return model.generate_content(
-                    prompt, generation_config=gen_config,
+                    _content, generation_config=gen_config,
                     safety_settings=_safety, **req_opts
                 )
             except TypeError:
                 return model.generate_content(
-                    prompt, generation_config=gen_config,
+                    _content, generation_config=gen_config,
                     safety_settings=_safety,
                 )
 
@@ -711,6 +739,7 @@ class VertexAIProvider(LLMProvider):
         kw = dict(kwargs)
         stage_kw = kw.get("stage")
         max_kw = kw.get("max_tokens")
+        attachments = kw.pop("attachments", None)  # not a GenerationConfig field
         gen_config = self._generation_config(**kw)
         tools = self._tools_for_vertex_search(stage_kw)
         timeout_s = self._timeout_seconds(stage=stage_kw, max_tokens=max_kw)
@@ -718,7 +747,7 @@ class VertexAIProvider(LLMProvider):
         return await asyncio.wait_for(
             asyncio.to_thread(
                 _vertex_generate_sync, self.model_name, prompt, gen_config, tools,
-                timeout_s, safety,
+                timeout_s, safety, attachments,
             ),
             timeout=timeout_s,
         )
