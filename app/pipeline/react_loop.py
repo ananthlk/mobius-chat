@@ -4476,6 +4476,20 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         _round_attachments = getattr(ctx, "_pending_attachments", None)
         if _round_attachments:
             ctx._pending_attachments = None  # type: ignore[attr-defined]
+            # Diagnostic (2026-08-17, react §7/§9 follow-up): fetch_document's
+            # own logs confirm it resolves and attaches content correctly, but
+            # end-to-end turns still sometimes behave as if round rn+1 never
+            # saw it (model narrates "partial/OCR" content that doesn't match
+            # what was sent, or reaches for an unrelated tool). There was no
+            # logging anywhere between "ctx._pending_attachments set" and "the
+            # actual Vertex call" to confirm the handoff itself -- this closes
+            # that gap so a future repro can show definitively whether the
+            # bytes reached this call.
+            logger.info(
+                "react_loop: passing %d attachment(s) to round %d (correlation_id=%s, sizes=%s)",
+                len(_round_attachments), rn, getattr(ctx, "correlation_id", None),
+                [len(a.get("data_b64") or "") for a in _round_attachments],
+            )
         decision_raw = _call_llm_json(
             reasoning_system,
             reasoning_context,
