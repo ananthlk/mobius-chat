@@ -376,6 +376,60 @@ def test_normalize_name_folds_extension_case_separators():
     assert "4.150" in n("59G-4.150.pdf")
 
 
+# ── follow-up bug: octet-stream mime_type must not leak (spec §6) ────
+
+
+class _FakeResp:
+    def __init__(self, data: bytes, content_type: str | None):
+        self._data = data
+        self.headers = {}
+        if content_type is not None:
+            self.headers["Content-Type"] = content_type
+
+    def read(self, n=-1):
+        return self._data
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _patch_urlopen(monkeypatch, content_type):
+    import urllib.request
+    monkeypatch.setattr(
+        urllib.request, "urlopen",
+        lambda req, timeout=None: _FakeResp(b"%PDF-1.7 fake", content_type))
+
+
+def test_attachment_octet_stream_is_corrected_to_pdf(monkeypatch):
+    # RAG file endpoint returns a generic type → must NOT leak to Gemini
+    # (which 400s on application/octet-stream). Fall back to the filename.
+    _patch_urlopen(monkeypatch, "application/octet-stream")
+    att = fd._maybe_fetch_attachment("doc-x", "Provider_Manual.pdf")
+    assert att["mime_type"] == "application/pdf"
+
+
+def test_attachment_binary_octet_stream_is_corrected(monkeypatch):
+    _patch_urlopen(monkeypatch, "binary/octet-stream")
+    att = fd._maybe_fetch_attachment("doc-x", "policy.pdf")
+    assert att["mime_type"] == "application/pdf"
+
+
+def test_attachment_absent_content_type_uses_guess(monkeypatch):
+    _patch_urlopen(monkeypatch, None)
+    att = fd._maybe_fetch_attachment("doc-x", "file.pdf")
+    assert att["mime_type"] == "application/pdf"
+
+
+def test_attachment_specific_content_type_is_preserved(monkeypatch):
+    # A real, specific type from the endpoint must pass through unchanged.
+    _patch_urlopen(monkeypatch, "application/pdf; charset=binary")
+    att = fd._maybe_fetch_attachment("doc-x", "whatever.bin")
+    assert att["mime_type"] == "application/pdf"
+
+
 # ── _resolve_by_id unit: UUID guard + row normalization ─────────────
 
 

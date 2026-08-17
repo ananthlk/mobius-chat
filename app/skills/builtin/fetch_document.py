@@ -140,10 +140,20 @@ def _maybe_fetch_attachment(document_id: str, filename: str) -> dict[str, Any] |
                     return None
                 if not data:
                     continue
-                content_type = resp.headers.get("Content-Type") or _guess_mime_type(filename)
+                # Derive the mime_type from the header, but treat a GENERIC
+                # type the same as an absent one. A file-serving endpoint
+                # often returns application/octet-stream, which Gemini's
+                # Part.from_data rejects outright (400 → turn-failing). The
+                # old `header or guess` fallback only fired when the header
+                # was ABSENT, so a present-but-generic type leaked straight
+                # through. (2026-08-17, React live finding — this path fires
+                # far more often since the exact-match short-circuit landed.)
+                content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                if not content_type or content_type in ("application/octet-stream", "binary/octet-stream"):
+                    content_type = _guess_mime_type(filename)
                 import base64
                 return {
-                    "mime_type": content_type.split(";")[0].strip() or _guess_mime_type(filename),
+                    "mime_type": content_type,
                     "data_b64": base64.b64encode(data).decode("ascii"),
                     "filename": filename or f"{document_id}.pdf",
                 }
