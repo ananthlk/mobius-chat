@@ -123,6 +123,67 @@ def test_neither_query_nor_id_is_no_sources():
     assert env.signal == "no_sources"
 
 
+# ── misroute recovery: a filename dumped into document_id (2026-08-17) ──
+
+
+def test_filename_in_document_id_recovers_via_name_match(monkeypatch):
+    # The exact live bug: react passed a *.pdf filename as document_id.
+    # A non-UUID id must NOT dead-end — it falls through to the fuzzy
+    # name-match pipeline using the filename as the query.
+    filename = "59G-4.150_Inpatient_Hospital_Services_Coverage_Policy_Final.pdf"
+
+    # resolve_by_id must never be consulted for a non-UUID value.
+    monkeypatch.setattr(fd, "_resolve_by_id", lambda did: (_ for _ in ()).throw(
+        AssertionError("_resolve_by_id called for a non-UUID document_id")))
+    # No thread uploads; name-match tier returns the corpus row.
+    monkeypatch.setattr(fd, "_thread_upload_matches", lambda *a, **k: [])
+    seen = {}
+    def _fake_candidates(q, *, limit=30):
+        seen["query"] = q
+        return [dict(_ROW)]
+    monkeypatch.setattr(fd, "_fetch_candidates", _fake_candidates)
+    monkeypatch.setattr(fd, "_rank_matches", lambda q, cands: list(cands))
+    monkeypatch.setattr(fd, "_maybe_fetch_attachment", lambda *a, **k: None)
+    monkeypatch.setenv("RAG_API_BASE", "https://rag.example")
+
+    env = fd._run_fetch_document(_call(document_id=filename))
+
+    # The filename became the query and drove the name-match tier.
+    assert seen["query"] == filename
+    assert env.signal == "ok"
+    assert env.extra["resolved_via"] == "name_match"
+    assert env.sources[0].document_id == _ROW["document_id"]
+
+
+def test_explicit_query_wins_over_misrouted_filename_id(monkeypatch):
+    # If a real query is ALSO present, it takes precedence over the
+    # filename-in-id; the id value is discarded, not appended.
+    monkeypatch.setattr(fd, "_resolve_by_id", lambda did: (_ for _ in ()).throw(
+        AssertionError("_resolve_by_id called for a non-UUID document_id")))
+    monkeypatch.setattr(fd, "_thread_upload_matches", lambda *a, **k: [])
+    seen = {}
+    def _fake_candidates(q, *, limit=30):
+        seen["query"] = q
+        return [dict(_ROW)]
+    monkeypatch.setattr(fd, "_fetch_candidates", _fake_candidates)
+    monkeypatch.setattr(fd, "_rank_matches", lambda q, cands: list(cands))
+    monkeypatch.setattr(fd, "_maybe_fetch_attachment", lambda *a, **k: None)
+    monkeypatch.setenv("RAG_API_BASE", "https://rag.example")
+
+    env = fd._run_fetch_document(_call(document_id="some_file.pdf", query="sunshine provider manual"))
+
+    assert seen["query"] == "sunshine provider manual"
+    assert env.extra["resolved_via"] == "name_match"
+
+
+def test_looks_like_uuid_discriminates():
+    assert fd._looks_like_uuid(_ROW["document_id"]) is True
+    assert fd._looks_like_uuid("59G-4.150_Inpatient.pdf") is False
+    assert fd._looks_like_uuid("sunshine provider manual") is False
+    assert fd._looks_like_uuid("") is False
+    assert fd._looks_like_uuid(None) is False
+
+
 # ── _resolve_by_id unit: UUID guard + row normalization ─────────────
 
 

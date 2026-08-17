@@ -346,6 +346,20 @@ _METADATA_COLUMNS = """
 """
 
 
+def _looks_like_uuid(value: str) -> bool:
+    """True when ``value`` is a well-formed UUID (the shape of our PK).
+
+    Used to tell a genuine ``document_id`` apart from a filename/title a
+    caller misrouted into that field — nobody outside the DB knows the
+    UUID, so a non-UUID value is a name, not an id.
+    """
+    try:
+        uuid.UUID((value or "").strip())
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
 def _resolve_by_id(document_id: str) -> dict[str, Any] | None:
     """Deterministic single-document resolve by primary key (§8.1).
 
@@ -786,7 +800,7 @@ def _run_fetch_document(call: SkillCall) -> SkillEnvelope:
     # exactly one card so the single-match content attachment (§1.3) is
     # GUARANTEED, not probabilistic. A free-text query, if also present,
     # is ignored in favor of the explicit id.
-    if document_id:
+    if document_id and _looks_like_uuid(document_id):
         _e(f"◌ Resolving document by id: {document_id[:36]}…")
         row = _resolve_by_id(document_id)
         if not row:
@@ -796,6 +810,25 @@ def _run_fetch_document(call: SkillCall) -> SkillEnvelope:
                 signal="no_sources",
             )
         return _corpus_match_envelope(call, [row], query or document_id, "document_id", emit=_e, pages_spec=pages_spec)
+
+    # Defensive misroute recovery (2026-08-17). A caller — commonly the
+    # react planner — put a *filename or title* into `document_id` instead
+    # of `query`. Nobody outside the DB knows the internal UUID PK, so a
+    # human/planner sharing "Foo_Manual.pdf" always lands here. Rather than
+    # dead-end at "no document with that id", reinterpret the value as a
+    # name query and run the normal fuzzy pipeline (name-match is trigram-
+    # accelerated, so it's cheap). Logged at INFO so we can measure how
+    # often callers misroute and fix the manifest at the source.
+    if document_id and not _looks_like_uuid(document_id):
+        logger.info(
+            "fetch_document: non-UUID document_id=%r reinterpreted as name query "
+            "(misroute recovery)",
+            document_id[:120],
+        )
+        if not query:
+            query = document_id
+        _e("  That's a name, not an id — searching by name…")
+        document_id = ""  # fall through to the fuzzy tiers below
 
     if not query:
         return SkillEnvelope(
