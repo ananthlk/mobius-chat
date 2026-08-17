@@ -20,6 +20,7 @@ from typing import Any
 
 from app.chat_config import get_chat_config
 from app.planner.schemas import Plan
+from app.services.chat_mode_utils import translate_chat_mode_to_caller_mode
 from app.responder.final import (
     _build_consolidator_input_json,
     _emit_integrator_chunks,
@@ -32,6 +33,81 @@ from app.responder.final import (
 from app.services.usage import LLMUsageDict
 
 logger = logging.getLogger(__name__)
+
+# Task #102 (2026-08-16, Chat Master/Ananth ruling): Retriever's chat.thinking
+# retrieval-budget increase (structure.py's _TOKEN_BUDGET, 6000 -> 16000, same
+# day) pushed a much larger retrieved-context payload into integrator_a's
+# prompt on agentic turns. Gemini 2.5's "thinking" tokens share the same
+# max_tokens budget as the visible completion (see this file's 2026-08-08
+# comment on fut_a below) -- more input to reason through means more thinking
+# consumed before any visible output, so the flat 4096 cap started silently
+# starving integrator_a's actual answer content specifically on chat.thinking
+# turns (confirmed live: 46.7% of integrator_a calls under 250 output tokens
+# in a 48h sample). Scoped to chat.thinking only, not a blanket raise --
+# copilot/quick/task turns weren't the ones whose retrieval payload grew.
+_INTEGRATOR_A_MAX_TOKENS_DEFAULT = 4096
+_INTEGRATOR_A_MAX_TOKENS_CHAT_THINKING = 16384
+
+
+def _integrator_a_max_tokens(mode: str | None) -> int:
+    if translate_chat_mode_to_caller_mode(mode) == "chat.thinking":
+        return _INTEGRATOR_A_MAX_TOKENS_CHAT_THINKING
+    return _INTEGRATOR_A_MAX_TOKENS_DEFAULT
+
+
+# Task #106 (2026-08-16, Chat Master ruling): report-mode formatting,
+# mode-gated same pattern as #102/#103 -- chat.thinking turns tend to be
+# multi-part/multi-entity questions (the 4-payer comparisons, multi-
+# category coverage questions this session's live traces kept hitting)
+# where a flat bullet dump loses the question's own structure. Lighter
+# variant for copilot/quick/task -- those turns are usually single-
+# question, and forcing report scaffolding onto a one-fact answer would
+# be its own formatting failure (structure imposed where none is needed).
+_REPORT_MODE_INSTRUCTIONS_CHAT_THINKING = (
+    "\nSTRUCTURED REPORT MODE (chat.thinking) — this question has multiple "
+    "parts/sub-questions or compares multiple entities; the answer must read "
+    "as a structured report, not a flat bullet dump:\n"
+    "- One `##` header per distinct sub-question or entity/category the user "
+    "asked about, in the order they asked (e.g. \"## Primary Care\", "
+    "\"## Behavioral Health\", or \"## Sunshine Health\", \"## Aetna\" for a "
+    "multi-payer comparison). Put headers in direct_answer itself — this is "
+    "what makes it read as a report instead of one undifferentiated paragraph.\n"
+    "- Bullets belong INSIDE a section under its own header, never as the "
+    "top-level shape of the whole answer — if you're about to write more than "
+    "2-3 bullets back-to-back at the top level with no header grouping them, "
+    "that's the flat-dump failure this mode exists to prevent.\n"
+    "- 2+ entities compared across the same attributes (payer vs payer, "
+    "category vs category) — REQUIRED as a table (see the general table rule "
+    "above), not parallel bullet lists under separate headers. A table beats "
+    "headers-with-bullets whenever the content is genuinely tabular.\n"
+    "- Every fact appears exactly ONCE. Do not restate the same content both "
+    "inline in direct_answer AND again as a section bullet — pick the one "
+    "place it belongs (a standout single fact → direct_answer or a stats "
+    "tile; a set of comparable items → one table; a longer explanation → one "
+    "section). Duplicated content between direct_answer and sections is a "
+    "formatting failure, not thoroughness.\n"
+    "- Inline citation markers still apply per-claim inside this structure "
+    "(see the citation rule above) — headers and tables don't exempt a claim "
+    "from needing a [N] marker.\n"
+)
+_REPORT_MODE_INSTRUCTIONS_DEFAULT = (
+    "\nREPORT FORMATTING (non-thinking modes) — lighter than chat.thinking's "
+    "full report scaffolding, but the same anti-duplication rule applies:\n"
+    "- Only add section-per-topic structure (`##` headers in direct_answer) "
+    "when the question genuinely has multiple distinct parts. A single-fact "
+    "question stays a plain direct_answer — do not impose report structure "
+    "on an answer that doesn't need it.\n"
+    "- 2+ entities compared across the same attributes still REQUIRES a "
+    "table, same rule as always, regardless of mode.\n"
+    "- Every fact appears exactly once — no restating the same content in "
+    "both direct_answer and a section.\n"
+)
+
+
+def _report_mode_instructions(mode: str | None) -> str:
+    if translate_chat_mode_to_caller_mode(mode) == "chat.thinking":
+        return _REPORT_MODE_INSTRUCTIONS_CHAT_THINKING
+    return _REPORT_MODE_INSTRUCTIONS_DEFAULT
 
 
 def _call_llm(
@@ -194,6 +270,12 @@ def format_response_parallel(
     except Exception:
         pass
 
+    # Task #106: report-mode formatting, mode-gated (chat.thinking gets full
+    # report scaffolding; other modes get the lighter anti-duplication-only
+    # variant). Appended last so it reads as the most specific/current
+    # instruction, same ordering convention as the voice directive above.
+    core_system = core_system + "\n" + _report_mode_instructions(mode)
+
     user_tmpl = cfg.prompts.integrator_user_template
     prompt_a = f"{core_system}\n\n{user_tmpl.format(consolidator_input_json=consolidator_input_json)}"
     prompt_b = f"{critic_system}\n\n{user_tmpl.format(consolidator_input_json=consolidator_input_json)}"
@@ -262,7 +344,10 @@ def format_response_parallel(
             # headroom on top of whatever thinking silently uses. Widened well past
             # the pre-today values (Call A was 4096) rather than guessing at a
             # minimal restore -- correctness over the latency optimization for now.
-            fut_a = pool.submit(_call_llm, prompt_a, "integrator_a", 4096, **shared_kwargs, latency_budget_ms=3000, reasoning_depth="fast")
+            fut_a = pool.submit(
+                _call_llm, prompt_a, "integrator_a", _integrator_a_max_tokens(mode),
+                **shared_kwargs, latency_budget_ms=3000, reasoning_depth="fast",
+            )
             fut_b = pool.submit(_call_llm, prompt_b, "integrator_critic", 3072, **shared_kwargs, latency_budget_ms=2000, reasoning_depth="fast")
             fut_c = pool.submit(_call_llm, prompt_c, "integrator_enrichment", 2048, **shared_kwargs, latency_budget_ms=1500, reasoning_depth="fast")
             # Wait for all three; collect results even if some fail. Each
