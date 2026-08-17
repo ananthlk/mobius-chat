@@ -98,6 +98,7 @@ Signal = Literal[
     "healthcare_query_no_match",      # rare; kept chat-side for now
     "retrieval_trace",                # corpus_search skill telemetry — diagnostic UI panel
     "react_trace",                    # react loop telemetry (governor/critic/unfinished) — diagnostic UI panel
+    "web_trace",                      # web_scrape/crawl provenance — pages visited + robots decisions — diagnostic UI panel
     "note",                           # generic fallback — plain-text emits migrated later
 
     # ── Thinking-chain trace (2026-05-04) ──────────────────────────────
@@ -305,6 +306,59 @@ def make_retrieval_trace(
             "mode": mode,
             "k": k,
             **(telemetry or {}),
+        },
+        note=note,
+        round=round,
+        thread_id=thread_id,
+        report_to_task_manager=False,
+    )
+
+
+def make_web_trace(
+    correlation_id: str,
+    *,
+    seed_url: str,
+    mode: str,
+    visited: list[dict[str, Any]],
+    round: int | None = None,
+    thread_id: str | None = None,
+) -> EmitEnvelope:
+    """Web-scrape / crawl provenance for the Diagnostics tab (2026-08-17,
+    Ananth: "what pages were visited, robots decisions — pass it to chat
+    diagnostics"). Same diagnostic-only tier + one-panel-per-subsystem
+    pattern as make_retrieval_trace / make_react_trace; lands in
+    thinking_chunks → thinking_log (PERSISTED, turns.py) and renders as a
+    "Web" panel in the Diagnostics tab.
+
+    ``visited`` is one entry per URL the scraper touched, straight from
+    the scraper's per-URL provenance (FetchResult):
+        {url, robots: "allowed"|"disallowed"|"unchecked",
+         status: "ok"|"robots_disallowed"|"http_404"|"timeout"|…,
+         final_url?, content_type?}
+    The FE reads it directly — no reshaping — so a user can see exactly
+    which pages were fetched, which were skipped for robots, and why.
+    """
+    rows = [v for v in (visited or []) if isinstance(v, dict) and v.get("url")]
+    n = len(rows)
+    ok = sum(1 for r in rows if r.get("status") == "ok")
+    robots_blocked = sum(1 for r in rows if r.get("robots") == "disallowed" or r.get("status") == "robots_disallowed")
+    other = n - ok - robots_blocked
+    parts = [f"🌐 web: {n} page{'s' if n != 1 else ''}", f"{ok} ok"]
+    if robots_blocked:
+        parts.append(f"{robots_blocked} robots-blocked")
+    if other:
+        parts.append(f"{other} other")
+    note = " · ".join(parts)
+    step_id = f"round_{round}.web" if round is not None else "web"
+    return EmitEnvelope(
+        signal="web_trace",
+        correlation_id=correlation_id,
+        step_id=step_id,
+        data={
+            "seed_url": (seed_url or "")[:500],
+            "mode": mode,
+            "counts": {"visited": n, "ok": ok, "robots_blocked": robots_blocked, "other": other},
+            "visited": rows[:100],
         },
         note=note,
         round=round,
