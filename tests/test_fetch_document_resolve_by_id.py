@@ -192,16 +192,30 @@ def test_page_range_attaches_requested_pages(monkeypatch):
     assert captured["pages"] == [20, 21, 22, 23, 24]
     assert env.extra["attachment"]["mime_type"] == "text/markdown"
     assert env.extra["attached_pages"] == "20-24"
-    assert env.extra["page_count"] == 261
+    # page_count is fetched LAZILY — pages were requested + attached, so the
+    # size hint isn't needed and no RAG /status round-trip is paid.
+    assert "page_count" not in env.extra
 
 
-def test_no_pages_uses_whole_file_attach(monkeypatch):
+def test_no_pages_attached_whole_file_skips_page_count(monkeypatch):
+    # Small doc attaches whole → planner has the content → NO size round-trip.
     monkeypatch.setattr(fd, "_resolve_by_id", lambda did: dict(_ROW))
-    monkeypatch.setattr(fd, "_document_page_count", lambda did: 12)
-    monkeypatch.setattr(fd, "_fetch_pages_attachment", lambda *a, **k: (_ for _ in ()).throw(AssertionError("page-range called without a pages spec")))
+    monkeypatch.setattr(fd, "_document_page_count", lambda did: (_ for _ in ()).throw(AssertionError("page_count fetched when the whole file already attached")))
     monkeypatch.setattr(fd, "_maybe_fetch_attachment", lambda doc_id, fname: {"mime_type": "application/pdf", "data_b64": "eA==", "filename": fname})
 
     env = fd._run_fetch_document(fd.SkillCall(name="fetch_document", inputs={"document_id": _ROW["document_id"]}, question="", pipeline_ctx=SimpleNamespace()))
     assert env.extra["attachment"]["mime_type"] == "application/pdf"
-    assert env.extra["page_count"] == 12
+    assert "page_count" not in env.extra
     assert "attached_pages" not in env.extra
+
+
+def test_page_count_fetched_lazily_when_whole_file_did_not_attach(monkeypatch):
+    # Oversized/failed whole-file attach + no pages → THIS is when the planner
+    # needs the size (to request a page range next round), so page_count fires.
+    monkeypatch.setattr(fd, "_resolve_by_id", lambda did: dict(_ROW))
+    monkeypatch.setattr(fd, "_maybe_fetch_attachment", lambda doc_id, fname: None)  # too big / failed
+    monkeypatch.setattr(fd, "_document_page_count", lambda did: 261)
+
+    env = fd._run_fetch_document(fd.SkillCall(name="fetch_document", inputs={"document_id": _ROW["document_id"]}, question="", pipeline_ctx=SimpleNamespace()))
+    assert "attachment" not in env.extra
+    assert env.extra["page_count"] == 261

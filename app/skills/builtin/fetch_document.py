@@ -96,7 +96,7 @@ def _fallback_download_url(document_id: str) -> str:
 # a bigger document than expected) while covering the vast majority of
 # real policy/handbook PDFs, which run low-single-digit MB.
 _ATTACHMENT_MAX_BYTES = 8 * 1024 * 1024
-_ATTACHMENT_FETCH_TIMEOUT_S = 15
+_ATTACHMENT_FETCH_TIMEOUT_S = 6  # fail-fast: attachment is best-effort, must NEVER stack toward the turn's 90s deadline on a slow RAG (2026-08-17)
 
 
 def _guess_mime_type(filename: str) -> str:
@@ -194,7 +194,7 @@ def _document_page_count(document_id: str) -> int | None:
             f"{base}/documents/{urllib.parse.quote(document_id)}/status",
             headers={"Accept": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=4) as resp:  # page_count: fail-fast
             data = json.loads(resp.read().decode("utf-8")) or {}
     except Exception as e:
         logger.debug("fetch_document: page_count fetch failed for %s: %s", document_id, e)
@@ -221,7 +221,7 @@ def _fetch_pages_attachment(document_id: str, pages: list[int], base_name: str) 
             f"{base}/documents/{urllib.parse.quote(document_id)}/pages",
             headers={"Accept": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=25) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:  # page-range fetch: fail-fast
             payload = json.loads(resp.read().decode("utf-8")) or {}
     except Exception as e:
         logger.debug("fetch_document: page-range fetch failed for %s: %s", document_id, e)
@@ -944,14 +944,6 @@ def _corpus_match_envelope(
         doc_id = sources[0].document_id or ""
         fname = download_docs[0].get("filename") or ""
         requested_pages = _parse_page_spec(pages_spec)
-        # Surface the document's size so the caller can decide whole-file
-        # vs page-range on the next round (§4 / Ananth: "tell the size").
-        try:
-            page_count = _document_page_count(doc_id)
-        except Exception:
-            page_count = None
-        if page_count:
-            download_docs[0]["page_count"] = page_count
         try:
             if requested_pages:
                 # Targeted page-range: hand the model exactly the pages it
@@ -961,6 +953,18 @@ def _corpus_match_envelope(
                 attachment = _maybe_fetch_attachment(doc_id, fname)
         except Exception as e:
             logger.warning("fetch_document: attachment attempt raised for %s: %s", doc_id, e)
+        # Surface page_count LAZILY — only when the whole file did NOT attach
+        # and no pages were requested, i.e. exactly when the doc is large
+        # enough that the planner needs the size to request a page range next
+        # round. Small docs that attach fine don't pay a RAG /status
+        # round-trip for a hint nothing will use (perf fix, 2026-08-17).
+        if not requested_pages and attachment is None:
+            try:
+                page_count = _document_page_count(doc_id)
+            except Exception:
+                page_count = None
+            if page_count:
+                download_docs[0]["page_count"] = page_count
         if attachment and requested_pages:
             _e(f"✓ Attached {sources[0].document_name} pages {pages_spec} for this round")
         elif attachment:
