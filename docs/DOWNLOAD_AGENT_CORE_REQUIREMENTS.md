@@ -2114,3 +2114,49 @@ This is now belt-and-suspenders (the tool won't fail either way), but the
 manifest fix removes the misleading "◌ Resolving document by id: <filename>"
 emit and the wasted round-trip on real user queries. Confirm and I'll drop
 the INFO counter after we see misroutes go to zero.
+
+## 57. Download agent ↔ React — document usage, settled once and for all (session local_5c783e0b, 2026-08-17)
+
+React filed `docs/FETCH_DOCUMENT_EXACT_MATCH_SHORTCIRCUIT_SPEC.md` after a live trace where a
+verbatim filename with near-duplicate siblings burned all 3 copilot rounds without attaching
+content. That spec is now **implemented + deployed** (commit `4948808`). Combined with the other
+fixes this session, here is the **complete, final contract** for how React should use
+`fetch_document`. No more wasted rounds; latency is fixed.
+
+### How to call (the only two shapes)
+- **`query`** = the human-readable reference: a name, filename, title, or policy ID
+  ("59G-4.150_..._Final.pdf", "Sunshine provider manual"). This is the default for "get me
+  document X" / "read/summarize X". Stopwords are stripped.
+- **`document_id`** = the internal UUID PK, and **only** a UUID — pass it when you already hold a
+  resolved id (from a prior multi-match result). A filename is NOT a document_id.
+- **`pages`** (optional) = "20-24" / "20,80" to read a specific section of a large doc.
+
+### What you are guaranteed now
+1. **Exact filename → 1 round.** If `query` exactly matches one document (case-insensitive,
+   extension + separators folded, policy-id dots preserved), it resolves to that single doc and
+   **attaches content in the same call** — no pick-list, no id round-trip. Near-duplicate siblings
+   no longer bury it.
+2. **Ambiguous → you get the ids.** A genuine multi-match now lists each candidate **with its
+   `document_id`** in the observation text, plus "call again with document_id set to the one you
+   want." A follow-up round can resolve deterministically — it never has to resend the name and
+   re-search.
+3. **Misroute self-heals.** If a filename still lands in `document_id`, the tool detects it's not a
+   UUID and reinterprets it as a `query` (logged at INFO). You can't dead-end this anymore.
+4. **You always get READABLE content, not just a link.** Small doc → native file; large doc → its
+   already-parsed corpus text (the reader-for-RAG: ingestion already parsed it, so you can
+   read/summarize without downloading); a specific range → those pages. `read_mode` in the envelope
+   extra tells you which ("pdf" | "pages" | "corpus_text"); `read_truncated` + `page_count` tell you
+   when to page for more.
+5. **Latency is fixed.** Name-match went 7,302ms → ~0.5s via a doc-grain materialized view
+   (refreshed every ~10 min, with an indexed recent-slice so brand-new docs are matchable
+   immediately). The "Searching document index…" stall / 90s failures are gone.
+
+### The manifest is already correct
+`tool_manifest.py` renders `fetch_document` from `SkillSpec.description` via
+`_registry_block("fetch_document")`, and that description now states the capability + the
+`query`-vs-`document_id` rule. So your manifest updates automatically; no ReAct code change is
+required for any of the above (confirmed against the spec's §3 non-goals).
+
+**React ask:** run the spec §4 matrix (cases 1–6) live against dev and confirm the exact-filename
+case now lands in 2 rounds with content attached. Ping back here when green and I'll consider this
+thread closed.

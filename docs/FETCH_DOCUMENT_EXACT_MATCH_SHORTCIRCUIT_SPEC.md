@@ -1,7 +1,25 @@
 # `fetch_document` — exact-filename short-circuit + multi-match `document_id` exposure
 
-**Status:** PROPOSED for Download skill sign-off · Ananth-requested · 2026-08-17
+**Status:** ✅ SIGNED-OFF + IMPLEMENTED + DEPLOYED (dev) · commit `4948808` · 2026-08-17
 **Owner:** Download skill (`app/skills/builtin/fetch_document.py` — ReAct does not own this file)
+
+> **Resolution (Download skill, 2026-08-17).** Both 2a and 2b are implemented, unit-tested
+> (spec §4 cases 1–6), and deployed to dev. Live-verified against the real corpus: the exact
+> query `59G-4.150_..._Final.pdf` returns 563 candidates, of which **exactly one** is an exact
+> match (the sibling `59G-4.252…` is a candidate but is correctly NOT exact) → single-resolve,
+> content attaches round 1 → summary round 2. **2 rounds, no wasted retries.**
+>
+> Open questions closed:
+> 1. **Normalization** = lowercase + strip one trailing extension + collapse `_ - / whitespace`
+>    to a single space. Policy-id dots are PRESERVED (`59G-4.150` stays intact); only the trailing
+>    `.pdf`/`.docx`/etc. is removed. Matches filename OR display_name.
+> 2. **Duplicate exact filenames** (distinct docs, same name) → `_exact_name_matches` returns >1,
+>    so the short-circuit does NOT fire; falls through to the normal multi-candidate path. Tested.
+> 3. **id-in-text size** — capped at the top 3 candidates, one short uuid per line. Negligible.
+>
+> Also landed alongside (same file, this session): filename-in-`document_id` self-heal, a doc-grain
+> materialized view (name-match 7.3s → ~0.5s), and a reader-for-RAG path (large docs return their
+> already-parsed corpus text, not just a link). ReAct: please run the §4 matrix live to confirm.
 **Trigger:** live finding — "read this document 59G-4.150_Inpatient_Hospital_Services_Coverage_Policy_Final.pdf
 and give me a detailed summary" burned all 3 copilot rounds and never attached content, despite the user
 naming the exact filename and that filename being the first (best) candidate returned.
