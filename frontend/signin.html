@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sign in — Mobius</title>
+<!--
+  Platform sign-in HUB. Every other Mobius surface (Story, credentialing,
+  appeals, org, user-console) redirects here to authenticate, because chat's
+  origin is the only one registered with the Google OAuth client. Flow:
+
+    surface (no session) → /signin?return=<surface-url>
+      → here: ensure a session (existing token, or Google/email sign-in)
+      → mint a 60s single-use hand-off code (POST /api/v1/auth/handoff/mint)
+      → 302 the browser to <return>#h=<code>
+      → surface redeems the code (POST /api/v1/auth/handoff/redeem) for a session.
+
+  Open-redirect guard: `return` is validated against ALLOWED_ORIGINS below —
+  never redirect to an arbitrary URL. Keep ALLOWED_ORIGINS in sync with the
+  auth-gating spec's known-surface list (docs/auth-gating-and-usage-spec.md §4).
+  Owner of the list: User Manager Agent; this page enforces it.
+-->
+<style>
+  :root{--violet:#7c3aed;--violet-ink:#5b21b6;--ground:#faf9fc;--surface:#fff;--surface-2:#f4f2f8;--line:#e7e3ee;--ink:#1c1826;--ink-2:#5c5470;--ink-3:#8b849c;--crit:#b91c1c}
+  @media(prefers-color-scheme:dark){:root{--violet:#a78bfa;--violet-ink:#c4b5fd;--ground:#0f0d16;--surface:#17141f;--surface-2:#1e1a29;--line:#2c2739;--ink:#eceaf2;--ink-2:#a9a2ba;--ink-3:#756e88;--crit:#f87171}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ground);color:var(--ink);font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+  .card{max-width:352px;margin:13vh auto;background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:0 1px 2px rgba(28,24,38,.06),0 12px 32px -14px rgba(28,24,38,.25);padding:28px}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:700;font-size:16px;margin-bottom:20px}
+  .logo{width:24px;height:24px;border-radius:7px;background:linear-gradient(135deg,var(--violet),var(--violet-ink));display:grid;place-items:center;color:#fff;font-size:14px}
+  h1{font-size:19px;margin:0 0 4px} p.sub{font-size:13px;color:var(--ink-2);margin:0 0 18px}
+  #gbtn{margin-bottom:8px;min-height:40px}
+  .or{display:flex;align-items:center;gap:10px;color:var(--ink-3);font-size:11px;margin:8px 0 4px}
+  .or span{flex:1;height:1px;background:var(--line)}
+  label{display:block;font-size:12px;color:var(--ink-3);margin:12px 0 5px}
+  input{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:8px;background:var(--surface-2);color:var(--ink);font:inherit;font-size:14px}
+  button.primary{width:100%;margin-top:18px;padding:10px;border:0;border-radius:8px;background:var(--violet);color:#fff;font:inherit;font-weight:600;font-size:14px;cursor:pointer}
+  #err{color:var(--crit);font-size:12.5px;margin-top:12px;min-height:16px}
+  #busy{font-size:13px;color:var(--ink-2);text-align:center;margin-top:8px}
+  .hide{display:none}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="brand"><span class="logo">∞</span> Mobius</div>
+  <div id="busy">Signing you in…</div>
+  <div id="form" class="hide">
+    <h1>Sign in to continue</h1>
+    <p class="sub" id="dest"></p>
+    <div id="gbtn"></div>
+    <div class="or"><span></span>or<span></span></div>
+    <label>Email</label><input id="le" type="email" autocomplete="username" />
+    <label>Password</label><input id="lp" type="password" autocomplete="current-password" />
+    <button class="primary" id="lb">Sign in</button>
+    <div id="err"></div>
+  </div>
+</div>
+<script>
+// Known Mobius surface origins — the ONLY places we redirect back to.
+const ALLOWED_ORIGINS = [
+  "https://mobius-chat-ortabkknqa-uc.a.run.app",
+  "https://mobius-story-ui-ortabkknqa-uc.a.run.app",
+  "https://mobius-provider-roster-credentialing-ortabkknqa-uc.a.run.app",
+  "https://mobius-org-agent-ortabkknqa-uc.a.run.app",
+  "https://mobius-user-ortabkknqa-uc.a.run.app",
+  "https://mobius-rag-ortabkknqa-uc.a.run.app",
+  "https://mobius-appeals-prototype-ortabkknqa-uc.a.run.app",
+  "https://mobius-payor-ortabkknqa-uc.a.run.app",
+  location.origin
+];
+const API="/api/v1", TK="mobius.auth.accessToken";
+const $=id=>document.getElementById(id);
+const params=new URLSearchParams(location.search);
+const rawReturn=params.get("return")||"";
+
+function safeReturn(){
+  try{ const u=new URL(rawReturn, location.origin);
+    if(ALLOWED_ORIGINS.includes(u.origin)) return u.href;
+  }catch(e){}
+  return null; // reject unknown/malformed → don't redirect anywhere
+}
+const dest=safeReturn();
+
+async function mintAndGo(){
+  const token=localStorage.getItem(TK);
+  if(!token){ showForm(); return; }
+  try{
+    const r=await fetch(API+"/auth/handoff/mint",{method:"POST",headers:{Authorization:"Bearer "+token}});
+    if(r.status===401){ localStorage.removeItem(TK); showForm(); return; }
+    const d=await r.json();
+    if(!d.code){ showForm(); return; }
+    if(!dest){ location.replace("/"); return; } // no valid return → land on chat
+    const sep=dest.includes("#")?"&h=":"#h=";
+    location.replace(dest+sep+encodeURIComponent(d.code));
+  }catch(e){ showForm(); }
+}
+function showForm(){
+  $("busy").classList.add("hide"); $("form").classList.remove("hide");
+  try{ if(dest) $("dest").textContent="Continue to "+new URL(dest).hostname.replace(/-ortabkknqa.*/,"").replace(/^mobius-/,""); }catch(e){}
+  initGoogle();
+}
+async function afterAuth(d){
+  if(!d||!d.access_token){ $("err").textContent=(d&&d.detail)||"Sign-in failed."; return; }
+  localStorage.setItem(TK,d.access_token);
+  localStorage.setItem("mobius.auth.refreshToken",d.refresh_token||"");
+  if(d.user) localStorage.setItem("mobius.auth.userProfile",JSON.stringify(d.user));
+  $("form").classList.add("hide"); $("busy").classList.remove("hide"); $("busy").textContent="Redirecting…";
+  mintAndGo();
+}
+$("lb").onclick=async()=>{
+  $("err").textContent="";
+  try{
+    const r=await fetch(API+"/auth/login",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({email:$("le").value.trim(),password:$("lp").value})});
+    afterAuth(await r.json());
+  }catch(e){ $("err").textContent="Sign-in failed."; }
+};
+$("lp")&&$("lp").addEventListener("keydown",e=>{if(e.key==="Enter")$("lb").click();});
+async function initGoogle(){
+  try{
+    const cfg=await (await fetch(API+"/public-config")).json();
+    if(!cfg.google_client_id) return;
+    const s=document.createElement("script");s.src="https://accounts.google.com/gsi/client";s.async=true;
+    s.onload=()=>{
+      google.accounts.id.initialize({client_id:cfg.google_client_id,callback:async resp=>{
+        $("err").textContent="";
+        try{
+          const r=await fetch(API+"/auth/google",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id_token:resp.credential})});
+          afterAuth(await r.json());
+        }catch(e){ $("err").textContent="Google sign-in failed."; }
+      }});
+      google.accounts.id.renderButton($("gbtn"),{theme:"outline",size:"large",width:296,text:"signin_with"});
+    };
+    document.head.appendChild(s);
+  }catch(e){/* email/password still works */}
+}
+mintAndGo();
+</script>
+</body>
+</html>
