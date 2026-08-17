@@ -918,6 +918,32 @@ def integrator_llm_stage(ctx: Any) -> str:
     return "integrator"
 
 
+# Parallel integrator's 3 sub-stages (final_parallel.py integrator_a/critic/
+# enrichment futures). 2026-08-12 (Task #20, Chat Master-approved): these
+# stage names were never registered in ANY eligible_stages list, so
+# _get_candidates returned empty and every call fell through to the hard
+# fallback_no_models("gemini-2.5-flash") — a structural registration gap,
+# not the token-budget issue originally suspected. Deliberately its OWN
+# short list (NOT CORE_REASONING_STAGES) and added to only 2 models below —
+# flash (the proven incumbent, real quality history on the closely-related
+# "integrator" stage) and pro (the sole challenger, same Vertex/1M-context
+# tier, also already proven on integrator/integrator_roster). Chat Master's
+# explicit constraint: flash-biased start, don't open to the full
+# unconstrained 15-model reasoning pool — there's no per-stage prior-seeding
+# mechanism in _build_bandit_state (cold start = the model's own global
+# ema_quality-derived beta_prior), so a narrow curated candidate pool is the
+# lever, not synthetic priors. Bandit compares real flash traffic against
+# pro's benchmark prior from here; widen later only with fresh sign-off.
+PARALLEL_INTEGRATOR_STAGES = ["integrator_a", "integrator_critic", "integrator_enrichment"]
+
+# Task #104 (2026-08-16, ReAct agent design doc: docs/REACT_COMPLETION_CRITIC_
+# DESIGN.md §4). Same narrow-pool rationale as PARALLEL_INTEGRATOR_STAGES
+# above -- "fast/cheap tier — Flash-class" per the design doc, not the full
+# unconstrained reasoning pool. {flash, pro} lets the bandit compare rather
+# than hard-locking, without gambling the completion-gate's latency budget
+# (1500ms per the design doc's _call_llm_json call) on an unproven model.
+REACT_COMPLETION_CRITIC_STAGES = ["react_completion_critic"]
+
 CHEAP_STAGES = ["badge", "classifier", "critique", "vibe"]  # adjudicator removed → locked to gemini-2.5-pro (Task #25)
 PHI_SAFE_STAGES = ["phi_detector", "phi_classify"]
 
@@ -955,7 +981,7 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         # "ruler") — it appears in no other model's eligible_stages, so the
         # bandit always resolves it to gemini-2.5-pro → deterministic scoring
         # across calibration runs (drift monitor + lift comparability).
-        eligible_stages=vertex_roster_eligible_stages() + ["thread_summary", LEXICON_ANALYZE_STAGE, "rag_eval_adjudicate", "rag_fact_check", "adjudicator"],
+        eligible_stages=vertex_roster_eligible_stages() + ["thread_summary", LEXICON_ANALYZE_STAGE, "rag_eval_adjudicate", "rag_fact_check", "adjudicator"] + PARALLEL_INTEGRATOR_STAGES + REACT_COMPLETION_CRITIC_STAGES,
         spec_tokens_per_sec=100.0,
         spec_context_k=1000,
         spec_input_per_1m_usd=1.25,
@@ -976,7 +1002,7 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         # vertex candidate. Pre-fix, the router fell through to flash
         # via the hard "fallback_no_models" path; making it intentional
         # gives the bandit a real comparison vs. flash-lite + Haiku.
-        eligible_stages=vertex_roster_eligible_stages() + [ROSTER_CLEAN_STAGE, "vibe", "feedback_classify", "thread_summary", "phi_classify"] + LEXICON_FAST_STAGES + [LEXICON_ANALYZE_STAGE],
+        eligible_stages=vertex_roster_eligible_stages() + [ROSTER_CLEAN_STAGE, "vibe", "feedback_classify", "thread_summary", "phi_classify"] + LEXICON_FAST_STAGES + [LEXICON_ANALYZE_STAGE] + PARALLEL_INTEGRATOR_STAGES + REACT_COMPLETION_CRITIC_STAGES,
         spec_tokens_per_sec=300.0,
         spec_context_k=1000,
         spec_input_per_1m_usd=0.075,
