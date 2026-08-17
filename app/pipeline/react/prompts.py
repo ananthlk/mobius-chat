@@ -606,6 +606,13 @@ def resolve_react_system_prompt_v2(
                 "tool_manifest_text": tool_manifest_text,
                 "user_profile_text": rendered_profile,
                 "max_iterations": max_iterations,
+                # 2026-08-17: react.critical_rules v5 added {{ rag_call_ceiling
+                # }} (rule 1b) -- same pattern as max_iterations above, missing
+                # here meant the v2 composition path (the LIVE path under
+                # MOBIUS_PROMPT_SOURCE=composition) would render an
+                # empty/undefined value while the legacy _react_reasoning_
+                # system() path (rarely hit live) rendered it correctly.
+                "rag_call_ceiling": _rag_call_ceiling_for_mode(mode),
             },
         )
         if rc and rc.system_prompt.strip():

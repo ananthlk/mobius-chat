@@ -48,6 +48,35 @@ def test_react_reasoning_system_includes_mode_quality_bar():
     assert "precision" in ag.lower()
 
 
+class TestRagCallCeilingV2CompositionPath:
+    """2026-08-17: {{ rag_call_ceiling }} was added to REACT_CRITICAL_
+    RULES_TEXT and threaded into _react_reasoning_system's render, but
+    resolve_react_system_prompt_v2 -- the LIVE path under
+    MOBIUS_PROMPT_SOURCE=composition -- has its OWN separate template_vars
+    dict passed to resolve_composition_sync, and it didn't get the new
+    var. Caught live on dev: react.critical_rules v5's Jinja tag would
+    have rendered as an empty string (Jinja's default Undefined, not
+    strict -- no crash, just a broken-looking prompt line) via the actual
+    deployed path, even though the legacy fallback path was already
+    correct. Locks that both paths now pass it."""
+
+    def test_agentic_mode_passes_ceiling_of_six(self):
+        from app.pipeline.react.prompts import resolve_react_system_prompt_v2
+
+        with patch("app.services.prompt_manager.resolve_composition_sync", return_value=None) as mock_resolve:
+            resolve_react_system_prompt_v2(10, "agentic", None, None, "explore")
+
+        assert mock_resolve.call_args.kwargs["template_vars"]["rag_call_ceiling"] == 6
+
+    def test_copilot_mode_passes_ceiling_of_three(self):
+        from app.pipeline.react.prompts import resolve_react_system_prompt_v2
+
+        with patch("app.services.prompt_manager.resolve_composition_sync", return_value=None) as mock_resolve:
+            resolve_react_system_prompt_v2(3, "copilot", None, None, "explore")
+
+        assert mock_resolve.call_args.kwargs["template_vars"]["rag_call_ceiling"] == 3
+
+
 class TestRagCallCeilingTemplating:
     """2026-08-17: rule 1b's rag-call hard limit used to be hardcoded ("3
     rag calls... refuses a 4th call") even though #103 made the real
