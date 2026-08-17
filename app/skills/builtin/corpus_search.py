@@ -194,14 +194,15 @@ def _post_skill(
     ``authority_requirement`` (Router-internal calibrated gate; chat
     setting it separately would create two diverging governance layers).
 
-    ``caller_mode`` (resolved 2026-08-06, Chat Architecture clarification
-    — this was flagged as an open question in an earlier revision; NOT
-    the LLMManager v2 "chat.default"/"chat.copilot"/"chat.thinking" speed
-    vocabulary this docstring previously guessed at): the Router uses it
-    for strategy weighting, and the natural value is chat's own
-    quick/copilot/agentic/task ``chat_mode`` — see ``_run()``'s
-    resolution (``call.mode``, which every dispatch site already sets to
-    ``ctx.chat_mode``).
+    ``caller_mode`` (2026-08-15 correction — the 2026-08-06 note here was
+    wrong): this IS the RAG preset vocabulary ("chat.default"/"chat.copilot"/
+    "chat.thinking"), not chat's own quick/copilot/agentic/task chat_mode.
+    Sending the raw chat_mode never matched a RAG preset key and silently
+    fell through to chat.default for every turn (Chat Master/Retriever
+    live-data finding). react_loop.py now translates via
+    ``app.services.chat_mode_utils.translate_chat_mode_to_caller_mode``
+    before constructing the SkillCall — see ``_run()``'s resolution
+    (``call.mode``, already translated by the time it reaches here).
     """
     url = base_url.rstrip("/") + _ANSWER_PATH
     body: dict[str, Any] = {"query": query}
@@ -535,9 +536,10 @@ def _run(call: SkillCall) -> SkillEnvelope:
     Behavior (Phase 1 cutover, 2026-08-06 — see module docstring):
 
     1. Resolve query (input override > pipeline message), citable_required
-       (keyword-rule output from react_loop.py), caller_mode (chat's own
-       ``call.mode``/``chat_mode`` — see ``_post_skill``'s docstring),
-       token_budget_for_retrieval (passthrough when explicitly supplied).
+       (keyword-rule output from react_loop.py), caller_mode (RAG preset
+       key — ``call.mode``, already translated from ``chat_mode`` by
+       react_loop.py; see ``_post_skill``'s docstring), token_budget_for_
+       retrieval (passthrough when explicitly supplied).
     2. POST to ``{RAG_API_URL}/api/retriever/answer``.
     3. Map ``contract.chunks[]`` into ``SkillEnvelope`` + emit a reduced
        ``retrieval_trace`` envelope + persist to ``retrieval_runs``
@@ -561,14 +563,12 @@ def _run(call: SkillCall) -> SkillEnvelope:
         )
 
     citable_required = bool(inputs.get("citable_required"))
-    # caller_mode (2026-08-06, Chat Architecture clarification — resolves
-    # the open question in _post_skill's docstring): the Router uses this
-    # for strategy weighting; the natural mapping is chat's own
-    # quick/copilot/agentic/task chat_mode, not a separate vocabulary.
-    # ``call.mode`` already carries this — every react_loop.py dispatch
-    # site sets it to ``getattr(ctx, "chat_mode", "copilot") or "copilot"``
-    # (see react_loop.py's SkillCall construction), so no new plumbing is
-    # needed to reach it. inputs.get("caller_mode") still wins if an
+    # caller_mode (2026-08-15 fix — see corpus_search.py module docstring
+    # + chat_mode_utils.py): the Router uses this for strategy weighting.
+    # ``call.mode`` already carries the RAG preset key — react_loop.py
+    # translates ctx.chat_mode via translate_chat_mode_to_caller_mode()
+    # before constructing every SkillCall, so no new plumbing is needed
+    # to reach it here. inputs.get("caller_mode") still wins if an
     # explicit override is ever set there.
     caller_mode = inputs.get("caller_mode") or call.mode
     caller_mode = str(caller_mode).strip() if caller_mode else None

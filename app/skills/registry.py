@@ -155,7 +155,11 @@ class SkillCall:
     user_message: str | None = None
     thread_id: str | None = None
     active_context: dict[str, Any] | None = None
-    mode: str = "copilot"  # copilot | agentic | quick
+    # RAG caller_mode preset key (chat.default | chat.copilot | chat.thinking) --
+    # react_loop.py translates ctx.chat_mode via chat_mode_utils before
+    # constructing this (2026-08-15 caller-mode vocab fix). corpus_search.py
+    # is the only handler that reads this field.
+    mode: str = "chat.default"
     emitter: Callable[[str], None] | None = None
     pipeline_ctx: Any | None = None
     extra_out: dict[str, Any] | None = None
