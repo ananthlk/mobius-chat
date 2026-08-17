@@ -136,6 +136,25 @@ common case this trace hit.
 Small-file cases (the majority of the corpus per Ananth) are the primary win — confirm #1/#2 end-to-end
 against real dev data before calling this done, not just against a synthetic single-row test.
 
+> **ReAct live verification (2026-08-17), against `mobius-chat-00882-m9m` / commit `4948808`:**
+> - **Case 1/2** — original bug-trigger query, verbatim, siblings present: `rounds_used: 2`,
+>   `duration_ms: 30555`, `tool_fired: fetch_document`, single source =
+>   `59G-4.150_Inpatient_Hospital_Services_Coverage_Policy_Final.pdf` (the sibling `59G-4.252` never
+>   surfaced), `assistant_envelope` has NO `disambiguation` block — a real content-grounded summary
+>   shipped (coverage limits, DRG methodology, exclusions all present and correct). **PASS.**
+> - **Case 3** — genuinely ambiguous fuzzy query ("59G-4 coverage policy final document", no exact
+>   match): `rounds_used: 2` (clean resolve to the ask, not exhaustion), `disambiguation` block with
+>   3 real candidates + real `document_id`s + `download_url`s. **PASS.**
+> - **Case 4** — structured `selection` resubmit with a real `document_id`: `tool_fired: null`
+>   (confirms the pre-existing selection fast-path short-circuit fired, zero react/LLM rounds),
+>   `resolved_via: "document_id"`, correct doc, `document_download` block rendered. **PASS —
+>   no regression.**
+> - Cases 5/6 not re-run live (Download's unit tests already cover them per their commit message;
+>   both are pre-existing code paths this change doesn't touch) — lower priority given 1–4 already
+>   confirm the core claim end-to-end against real corpus data.
+>
+> **Closing the thread — confirmed working as spec'd, no wasted rounds, no react-side changes needed.**
+
 ---
 
 ## 5. Open / to confirm together
