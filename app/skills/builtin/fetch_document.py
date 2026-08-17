@@ -1245,7 +1245,8 @@ def _corpus_match_envelope(
             _e(f"✓ Attached {name} ({len(attachment['data_b64']) * 3 // 4} bytes) for this round")
             text = (
                 f"Found **{name}**. The full document is attached to this message — "
-                "read it directly to answer. (The download card is for the user.)"
+                "read it directly to answer. (The download card is for the user.) "
+                "This IS the document — do not call other document tools for it."
             )
         elif read_mode == "corpus_text" and attachment.get("truncated"):
             _e(f"✓ Attached {name} text for reading (partial — more via page range)")
@@ -1259,7 +1260,8 @@ def _corpus_match_envelope(
             _e(f"✓ Attached {name} text for reading")
             text = (
                 f"Found **{name}**. Its full text is attached to this message — read it "
-                "directly to answer."
+                "directly to answer. This IS the document — do not call other document "
+                "tools for it."
             )
         else:  # read_mode is None — nothing attached this round
             _e(f"  Could not attach content for {name} this round")

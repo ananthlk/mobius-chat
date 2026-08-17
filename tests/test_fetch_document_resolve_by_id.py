@@ -451,6 +451,18 @@ def test_text_says_read_directly_when_pdf_attached(monkeypatch):
     assert env.extra["read_mode"] == "pdf"
     assert "attached to this message" in env.text
     assert "read it directly" in env.text
+    # §10: the pdf branch (fires 100% on the exact-match case) MUST carry the
+    # same wrong-tool guardrail as the partial/none branches, or the model
+    # still misfires search_uploaded_document on a resolved doc.
+    assert "do not call other document tools" in env.text.lower()
+
+
+def test_text_guardrail_on_full_corpus_text(monkeypatch):
+    env = _resolve_with(
+        monkeypatch,
+        corpus={"mime_type": "text/markdown", "data_b64": "eA==", "truncated": False})
+    assert env.extra["read_mode"] == "corpus_text"
+    assert "do not call other document tools" in env.text.lower()
 
 
 def test_text_flags_partial_and_forbids_other_tools_when_truncated(monkeypatch):
