@@ -96,7 +96,14 @@ def _fallback_download_url(document_id: str) -> str:
 # a bigger document than expected) while covering the vast majority of
 # real policy/handbook PDFs, which run low-single-digit MB.
 _ATTACHMENT_MAX_BYTES = 8 * 1024 * 1024
-_ATTACHMENT_FETCH_TIMEOUT_S = 6  # fail-fast: attachment is best-effort, must NEVER stack toward the turn's 90s deadline on a slow RAG (2026-08-17)
+# Per-URL timeout for the whole-file attach. Raised 6→12s on 2026-08-17:
+# a 6s fail-fast was dropping the PRIMARY content path for small files under
+# transient RAG latency (React §7 — a 226KB PDF failed to attach in 2 of 3
+# runs). The doc-grain matview cut name-match from ~25s to ~0.5s, so the
+# turn budget that 6s was protecting is now freed — 12s (× up to 2 URLs) is
+# safe under the 90s deadline while giving a cold-but-working endpoint room
+# to respond instead of silently falling through to the text fallback.
+_ATTACHMENT_FETCH_TIMEOUT_S = 12
 
 
 def _guess_mime_type(filename: str) -> str:
@@ -152,14 +159,25 @@ def _maybe_fetch_attachment(document_id: str, filename: str) -> dict[str, Any] |
                 if not content_type or content_type in ("application/octet-stream", "binary/octet-stream"):
                     content_type = _guess_mime_type(filename)
                 import base64
+                logger.info(
+                    "fetch_document: attached %s (%s bytes, %s) via %s",
+                    document_id, len(data), content_type, url,
+                )
                 return {
                     "mime_type": content_type,
                     "data_b64": base64.b64encode(data).decode("ascii"),
                     "filename": filename or f"{document_id}.pdf",
                 }
         except Exception as e:
-            logger.debug("fetch_document: attachment fetch failed for %s via %s: %s", document_id, url, e)
+            # WARNING, not DEBUG: when the primary content path silently
+            # fails we lose all visibility into WHY (timeout vs 404 vs …) —
+            # exactly what blocked diagnosing React §7's 1-of-3 reliability.
+            logger.warning(
+                "fetch_document: attachment fetch failed for %s via %s: %s",
+                document_id, url, e,
+            )
             continue
+    logger.info("fetch_document: no attachment for %s (both URLs failed/empty/oversized)", document_id)
     return None
 
 
@@ -1206,14 +1224,55 @@ def _corpus_match_envelope(
                 page_count = None
             if page_count:
                 download_docs[0]["page_count"] = page_count
+        # The observation text MUST reflect what the model actually got
+        # (React §7, 2026-08-17): a single fixed "use the card to download"
+        # string regardless of read_mode made the model guess whether it had
+        # content — and guess wrong (it reached for an unrelated tool when it
+        # got only partial text). Each branch now states the content state
+        # explicitly and, for the partial/none cases, tells the model what to
+        # do next AND not to call other document tools for an already-resolved
+        # doc.
+        name = sources[0].document_name
+        pc = download_docs[0].get("page_count")
+        _sz = f" It is {pc} pages in full." if pc else ""
         if read_mode == "pages":
-            _e(f"✓ Attached {sources[0].document_name} pages {pages_spec} for this round")
+            _e(f"✓ Attached {name} pages {pages_spec} for this round")
+            text = (
+                f"Found **{name}**. Pages {pages_spec} are attached to this message "
+                "as text — read them directly to answer."
+            )
         elif read_mode == "pdf":
-            _e(f"✓ Attached {sources[0].document_name} ({len(attachment['data_b64']) * 3 // 4} bytes) for this round")
+            _e(f"✓ Attached {name} ({len(attachment['data_b64']) * 3 // 4} bytes) for this round")
+            text = (
+                f"Found **{name}**. The full document is attached to this message — "
+                "read it directly to answer. (The download card is for the user.)"
+            )
+        elif read_mode == "corpus_text" and attachment.get("truncated"):
+            _e(f"✓ Attached {name} text for reading (partial — more via page range)")
+            text = (
+                f"Found **{name}**. A PARTIAL extract of its text is attached — answer "
+                f"from what's there.{_sz} If you need more, call fetch_document again with "
+                "`pages` set to the range you want. This IS the document — do not call "
+                "other document tools for it."
+            )
         elif read_mode == "corpus_text":
-            _trunc = " (partial — more via page range)" if attachment.get("truncated") else ""
-            _e(f"✓ Attached {sources[0].document_name} text for reading{_trunc}")
-        text = f"Found **{sources[0].document_name}**. Use the card below to download it."
+            _e(f"✓ Attached {name} text for reading")
+            text = (
+                f"Found **{name}**. Its full text is attached to this message — read it "
+                "directly to answer."
+            )
+        else:  # read_mode is None — nothing attached this round
+            _e(f"  Could not attach content for {name} this round")
+            text = (
+                f"Found **{name}**, but its content could not be attached this round.{_sz} "
+                "Call fetch_document again with `pages` set to a range (e.g. pages='1-20') "
+                "to read part of it, or offer the user the download card. It is already "
+                "resolved — do not call other document tools for it."
+            )
+        logger.info(
+            "fetch_document: single-match resolved_via=%s read_mode=%s truncated=%s doc_id=%s",
+            resolved_via, read_mode, bool(attachment and attachment.get("truncated")), doc_id,
+        )
     else:
         # Multi-match: expose each candidate's document_id in the text the
         # model reads back (spec 2a). Without the ids here, a follow-up

@@ -51,8 +51,11 @@ def _guard_no_fuzzy(monkeypatch):
     monkeypatch.setattr(fd, "_fetch_candidates", _boom)
     monkeypatch.setattr(fd, "_corpus_search_resolve", _boom)
     monkeypatch.setattr(fd, "_web_registry_resolve", _boom)
-    # Attachment fetch hits RAG over HTTP — stub it out (None = no attach).
+    # The single-match content path hits RAG over HTTP and the DB — stub all
+    # three out (None = no attach) so id-path tests do no real IO.
     monkeypatch.setattr(fd, "_maybe_fetch_attachment", lambda *a, **k: None)
+    monkeypatch.setattr(fd, "_fetch_corpus_text_attachment", lambda *a, **k: None)
+    monkeypatch.setattr(fd, "_document_page_count", lambda *a, **k: None)
 
 
 def test_resolve_by_id_returns_single_card_and_skips_fuzzy(monkeypatch):
@@ -428,6 +431,46 @@ def test_attachment_specific_content_type_is_preserved(monkeypatch):
     _patch_urlopen(monkeypatch, "application/pdf; charset=binary")
     att = fd._maybe_fetch_attachment("doc-x", "whatever.bin")
     assert att["mime_type"] == "application/pdf"
+
+
+# ── §7: observation text must reflect read_mode, not a fixed string ──
+
+
+def _resolve_with(monkeypatch, *, pdf=None, corpus=None, page_count=None):
+    monkeypatch.setattr(fd, "_resolve_by_id", lambda did: dict(_ROW))
+    monkeypatch.setattr(fd, "_maybe_fetch_attachment", lambda *a, **k: pdf)
+    monkeypatch.setattr(fd, "_fetch_corpus_text_attachment", lambda *a, **k: corpus)
+    monkeypatch.setattr(fd, "_document_page_count", lambda *a, **k: page_count)
+    return fd._run_fetch_document(fd.SkillCall(
+        name="fetch_document", inputs={"document_id": _ROW["document_id"]},
+        question="", pipeline_ctx=SimpleNamespace()))
+
+
+def test_text_says_read_directly_when_pdf_attached(monkeypatch):
+    env = _resolve_with(monkeypatch, pdf={"mime_type": "application/pdf", "data_b64": "eA=="})
+    assert env.extra["read_mode"] == "pdf"
+    assert "attached to this message" in env.text
+    assert "read it directly" in env.text
+
+
+def test_text_flags_partial_and_forbids_other_tools_when_truncated(monkeypatch):
+    env = _resolve_with(
+        monkeypatch,
+        corpus={"mime_type": "text/markdown", "data_b64": "eA==", "truncated": True},
+        page_count=261)
+    assert env.extra["read_mode"] == "corpus_text"
+    assert "PARTIAL" in env.text
+    assert "261 pages" in env.text
+    assert "do not call other document tools" in env.text.lower()
+
+
+def test_text_says_no_content_and_forbids_other_tools_when_nothing_attached(monkeypatch):
+    # This is run-2's failure: model must NOT reach for search_uploaded_document.
+    env = _resolve_with(monkeypatch, pdf=None, corpus=None, page_count=261)
+    assert "read_mode" not in env.extra
+    assert "could not be attached" in env.text
+    assert "do not call other document tools" in env.text.lower()
+    assert "pages=" in env.text  # tells the model the correct next move
 
 
 # ── _resolve_by_id unit: UUID guard + row normalization ─────────────
