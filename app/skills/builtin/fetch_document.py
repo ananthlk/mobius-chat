@@ -389,18 +389,26 @@ def _resolve_by_id(document_id: str) -> dict[str, Any] | None:
 def _fetch_candidates(query: str, *, limit: int = 30) -> list[dict[str, Any]]:
     """Pull document candidates from Postgres metadata.
 
-    The coarse token filter MUST live in SQL: the table holds ~9k
-    distinct docs and ``db_query`` caps at 1000 rows, so an unfiltered
-    scan silently ranks an arbitrary UUID-ordered subset (this is how
-    "Sunshine provider manual" missed Sunshine's Provider_Manual.pdf).
-    Any-token ILIKE over name/filename/payer keeps recall high; the
-    Python ranking above stays the precision layer.
+    The coarse token filter MUST live in SQL: the table is chunk-grain
+    (~1.9M rows) so an unfiltered scan silently ranks an arbitrary subset
+    (this is how "Sunshine provider manual" missed Sunshine's
+    Provider_Manual.pdf). Any-token ILIKE over name/filename/payer keeps
+    recall high; the Python ranking above stays the precision layer.
+
+    Perf (2026-08-17): the ILIKE is served by a pg_trgm GIN index
+    (idx_prm_trgm_names). We only send tokens of length ≥ 3 to the SQL
+    filter — a trigram index can't help a 2-char pattern AND short tokens
+    like "fl"/"um"/"87" match hundreds of thousands of chunk rows, forcing
+    a seq scan (measured: "FL.UM.87" went 25s → 174ms once the 2-char
+    dot-parts were dropped; the selective 8-char "fl.um.87" stays). Short
+    tokens are still used by the Python ranker for precision, just not as
+    the coarse DB filter.
     """
     from app.db_client import db_query
 
     # Tokens are alphanumeric+dots only (see _tokenize), so no LIKE
-    # metacharacter escaping is needed.
-    patterns = [f"%{t}%" for t in _tokenize(query)[:8]]
+    # metacharacter escaping is needed. ≥3 chars only — see docstring.
+    patterns = [f"%{t}%" for t in _tokenize(query) if len(t) >= 3][:8]
     where = "document_id IS NOT NULL"
     params: dict[str, Any] = {}
     if patterns:
