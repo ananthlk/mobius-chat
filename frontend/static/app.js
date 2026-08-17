@@ -9262,6 +9262,101 @@ function mergeRagCallRoundsFromPoll(turnWrap, d) {
   if (existing?.parentElement)
     existing.parentElement.replaceChild(rounds, existing);
 }
+function renderWebTrace(thinkingLog) {
+  if (!Array.isArray(thinkingLog))
+    return null;
+  let data = null;
+  for (const entry of thinkingLog) {
+    if (entry && typeof entry === "object" && entry.signal === "web_trace") {
+      data = entry.data ?? {};
+    }
+  }
+  if (!data)
+    return null;
+  const visited = Array.isArray(data.visited) ? data.visited : [];
+  const counts = data.counts && typeof data.counts === "object" ? data.counts : {};
+  const note = typeof data.note === "string" ? data.note : "";
+  if (!visited.length && !note)
+    return null;
+  const acc = document.createElement("div");
+  acc.className = "module-trace web-trace";
+  for (const v of visited) {
+    const url = String(v.url ?? "");
+    const robots = String(v.robots ?? "unchecked");
+    const status = String(v.status ?? "");
+    const tone = status === "ok" ? "ok" : robots === "disallowed" || status === "robots_disallowed" ? "blocked" : "other";
+    const row = document.createElement("details");
+    row.className = "mt-row";
+    const hdr = document.createElement("summary");
+    hdr.className = "mt-row-hdr";
+    const badge = document.createElement("span");
+    badge.className = `wt-badge wt-badge--${tone}`;
+    badge.textContent = tone === "ok" ? "ok" : tone === "blocked" ? "robots" : status || "\u2014";
+    const name = document.createElement("span");
+    name.className = "mt-name wt-url";
+    name.textContent = url.replace(/^https?:\/\//, "");
+    name.title = url;
+    const metric = document.createElement("span");
+    metric.className = "mt-metric";
+    metric.textContent = String(v.content_type ?? status ?? "");
+    hdr.appendChild(badge);
+    hdr.appendChild(name);
+    hdr.appendChild(metric);
+    row.appendChild(hdr);
+    const body = document.createElement("div");
+    body.className = "mt-body";
+    _dcKV(body, "url", url);
+    if (v.final_url && v.final_url !== url)
+      _dcKV(body, "final_url", String(v.final_url));
+    _dcKV(body, "robots", robots);
+    _dcKV(body, "status", status);
+    if (v.content_type)
+      _dcKV(body, "content_type", String(v.content_type));
+    row.appendChild(body);
+    acc.appendChild(row);
+  }
+  const wrap = document.createElement("div");
+  wrap.className = "llm-performance module-trace-section web-trace-section collapsed";
+  const preview = document.createElement("div");
+  preview.className = "llm-performance-preview";
+  preview.setAttribute("role", "button");
+  preview.setAttribute("tabindex", "0");
+  preview.setAttribute("aria-expanded", "false");
+  const titleEl = document.createElement("span");
+  titleEl.className = "llm-performance-title";
+  titleEl.textContent = "Web";
+  const oneline = document.createElement("span");
+  oneline.className = "llm-performance-oneline";
+  const nVisited = typeof counts.visited === "number" ? counts.visited : visited.length;
+  const nOk = typeof counts.ok === "number" ? counts.ok : null;
+  const nBlocked = typeof counts.robots_blocked === "number" ? counts.robots_blocked : null;
+  oneline.textContent = note.replace(/^🌐\s*web:\s*/i, "") || `${nVisited} page${nVisited === 1 ? "" : "s"}${nOk != null ? " \xB7 " + nOk + " ok" : ""}${nBlocked ? " \xB7 " + nBlocked + " robots-blocked" : ""}`;
+  const chev = document.createElement("span");
+  chev.className = "llm-performance-chevron";
+  chev.setAttribute("aria-hidden", "true");
+  chev.textContent = "\u25BC";
+  preview.appendChild(titleEl);
+  preview.appendChild(oneline);
+  preview.appendChild(chev);
+  const secBody = document.createElement("div");
+  secBody.className = "llm-performance-body";
+  secBody.appendChild(acc);
+  wrap.appendChild(preview);
+  wrap.appendChild(secBody);
+  const toggle = () => {
+    const collapsed = wrap.classList.toggle("collapsed");
+    preview.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    chev.textContent = collapsed ? "\u25BC" : "\u25B2";
+  };
+  preview.addEventListener("click", toggle);
+  preview.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      toggle();
+    }
+  });
+  return wrap;
+}
 function renderDiagnosticsCard(thinkingLog) {
   if (!Array.isArray(thinkingLog) || thinkingLog.length === 0)
     return null;
@@ -9638,7 +9733,7 @@ function renderQaVerdictsPanel(qc, correlationId) {
     qc.adjudicator_model ? `ruler: ${qc.adjudicator_model}` : "quality ruler",
     (b) => {
       if (qc.adjudicator_model)
-        _dcKV(b, "quality ruler (judge model)", String(qc.adjudicator_model));
+        _dcKV(b, "Judge Model", String(qc.adjudicator_model));
       if (qualityScore != null)
         _dcKV(b, "quality score", scoreStr);
       Object.keys(subScores).forEach((k) => _dcKV(b, `  ${k}`, Number(subScores[k]).toFixed(2)));
@@ -9659,13 +9754,13 @@ function renderQaVerdictsPanel(qc, correlationId) {
   ));
   if (qc.adjudicator_full_response) {
     body.appendChild(_dcLeaf(
-      "Raw adjudication (debug \xB7 self-report, NOT authoritative)",
+      "Judge Self-Estimate (not graded answer-quality)",
       "gray",
       "model self-report \u2014 the authoritative score is the rubric quality score above",
       (b) => {
         const note = document.createElement("div");
         note.className = "qa-raw-note";
-        note.textContent = "Model self-report, discarded for scoring. The authoritative quality score is rubric-computed (Section 1/2) and drives the bandit reward loop.";
+        note.textContent = "Model's self-estimate of answer quality. NOT the graded quality verdict \u2014 the authoritative score is rubric-computed (Section 1) and drives the bandit reward loop.";
         b.appendChild(note);
         const pre = document.createElement("pre");
         pre.className = "qa-raw-json";
@@ -11571,7 +11666,7 @@ function run() {
     diagPanel.className = "ac-tab-panel ac-tab-panel--diagnostics";
     diagPanel.setAttribute("role", "tabpanel");
     diagPanel.setAttribute("hidden", "");
-    const _diag = { hipaa: [], react: [], ragTel: [], ragTrace: [], tool: [], qa: [], bandit: [] };
+    const _diag = { hipaa: [], react: [], ragTel: [], ragTrace: [], web: [], tool: [], qa: [], bandit: [] };
     const _oi = formatOutputIntentLabel(opts.outputIntent ?? void 0);
     if (_oi) {
       const oiRow = document.createElement("div");
@@ -11616,6 +11711,9 @@ function run() {
       if (traceEl)
         _diag.ragTel.push(traceEl);
     }
+    const webTraceEl = renderWebTrace(opts.thinkingLog);
+    if (webTraceEl)
+      _diag.web.push(webTraceEl);
     let _nf = typeof opts.narrativeFull === "string" ? opts.narrativeFull.trim() : "";
     let _nfRedacted = false;
     if (!_nf) {
@@ -11772,7 +11870,7 @@ function run() {
       row.innerHTML = labelParts.join("");
       _diag.hipaa.push(row);
     }
-    ["hipaa", "react", "ragTel", "ragTrace", "tool", "qa", "bandit"].forEach((k) => _diag[k].forEach((el2) => diagPanel.appendChild(el2)));
+    ["hipaa", "react", "ragTel", "ragTrace", "web", "tool", "qa", "bandit"].forEach((k) => _diag[k].forEach((el2) => diagPanel.appendChild(el2)));
     const tabBar = bubble.querySelector(".ac-tab-bar");
     if (tabBar) {
       const diagBtn = document.createElement("button");

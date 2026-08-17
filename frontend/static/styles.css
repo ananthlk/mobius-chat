@@ -10674,6 +10674,18 @@ body.landing-state .composer-landing-chips {
   font-weight: 700;
 }
 .mt-name { flex: 1 1 auto; font-weight: 700; color: var(--text-primary, #111827); }
+/* Web-scrape provenance (web_trace) — per-URL robots/status badge tones + truncating URL. */
+.wt-badge {
+  min-width: auto; height: 1.35rem; padding: 0 0.4rem; border-radius: 5px;
+  font-size: 0.6rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
+}
+.wt-badge--ok { background: #0f9d58; }
+.wt-badge--blocked { background: #b97a12; }
+.wt-badge--other { background: #6b7185; }
+.wt-url {
+  font-family: var(--mono, ui-monospace, monospace); font-size: 0.72rem; font-weight: 500;
+  min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .mt-metric {
   flex: 0 0 auto;
   font-family: var(--mono, ui-monospace, monospace);

@@ -6949,6 +6949,88 @@ function mergeRagCallRoundsFromPoll(turnWrap: HTMLElement, d: { thinking_log?: u
   if (existing?.parentElement) existing.parentElement.replaceChild(rounds, existing);
 }
 
+/**
+ * Web-scrape provenance panel (Download-skill Agent 2026-08-11, Ananth-requested): renders signal
+ * `web_trace` — which pages a turn's web_scrape/crawl actually visited and their robots.txt decisions.
+ * Diagnostic-only, mirrors renderModuleTrace's signal-scan + collapsible-section shape. Envelope is
+ * read directly (no reshaping): { seed_url, mode, counts:{visited,ok,robots_blocked,other},
+ * visited:[{url,robots,status,final_url,content_type}], note }. Returns null when no web_trace.
+ */
+function renderWebTrace(thinkingLog: ReadonlyArray<unknown> | null | undefined): HTMLElement | null {
+  if (!Array.isArray(thinkingLog)) return null;
+  let data: Record<string, unknown> | null = null;
+  for (const entry of thinkingLog) {
+    if (entry && typeof entry === "object" && (entry as { signal?: string }).signal === "web_trace") {
+      data = ((entry as { data?: unknown }).data as Record<string, unknown>) ?? {};   // last wins
+    }
+  }
+  if (!data) return null;
+  const visited = Array.isArray(data.visited) ? (data.visited as Array<Record<string, unknown>>) : [];
+  const counts = (data.counts && typeof data.counts === "object" ? data.counts : {}) as Record<string, unknown>;
+  const note = typeof data.note === "string" ? data.note : "";
+  if (!visited.length && !note) return null;
+
+  const acc = document.createElement("div");
+  acc.className = "module-trace web-trace";
+  for (const v of visited) {
+    const url = String(v.url ?? "");
+    const robots = String(v.robots ?? "unchecked");
+    const status = String(v.status ?? "");
+    // Tone: green ok, amber robots-blocked, grey everything else (Download-skill spec).
+    const tone = status === "ok" ? "ok"
+      : (robots === "disallowed" || status === "robots_disallowed") ? "blocked"
+      : "other";
+    const row = document.createElement("details");
+    row.className = "mt-row";
+    const hdr = document.createElement("summary"); hdr.className = "mt-row-hdr";
+    const badge = document.createElement("span");
+    badge.className = `wt-badge wt-badge--${tone}`;
+    badge.textContent = tone === "ok" ? "ok" : tone === "blocked" ? "robots" : (status || "—");
+    const name = document.createElement("span"); name.className = "mt-name wt-url";
+    name.textContent = url.replace(/^https?:\/\//, "");   // host+path; CSS ellipsis handles length
+    name.title = url;
+    const metric = document.createElement("span"); metric.className = "mt-metric";
+    metric.textContent = String(v.content_type ?? status ?? "");
+    hdr.appendChild(badge); hdr.appendChild(name); hdr.appendChild(metric);
+    row.appendChild(hdr);
+    const body = document.createElement("div"); body.className = "mt-body";
+    _dcKV(body, "url", url);
+    if (v.final_url && v.final_url !== url) _dcKV(body, "final_url", String(v.final_url));
+    _dcKV(body, "robots", robots);
+    _dcKV(body, "status", status);
+    if (v.content_type) _dcKV(body, "content_type", String(v.content_type));
+    row.appendChild(body);
+    acc.appendChild(row);
+  }
+
+  const wrap = document.createElement("div");
+  wrap.className = "llm-performance module-trace-section web-trace-section collapsed";
+  const preview = document.createElement("div");
+  preview.className = "llm-performance-preview";
+  preview.setAttribute("role", "button"); preview.setAttribute("tabindex", "0"); preview.setAttribute("aria-expanded", "false");
+  const titleEl = document.createElement("span"); titleEl.className = "llm-performance-title"; titleEl.textContent = "Web";
+  const oneline = document.createElement("span"); oneline.className = "llm-performance-oneline";
+  const nVisited = typeof counts.visited === "number" ? counts.visited : visited.length;
+  const nOk = typeof counts.ok === "number" ? counts.ok : null;
+  const nBlocked = typeof counts.robots_blocked === "number" ? counts.robots_blocked : null;
+  oneline.textContent = note.replace(/^🌐\s*web:\s*/i, "") ||
+    `${nVisited} page${nVisited === 1 ? "" : "s"}${nOk != null ? " · " + nOk + " ok" : ""}${nBlocked ? " · " + nBlocked + " robots-blocked" : ""}`;
+  const chev = document.createElement("span"); chev.className = "llm-performance-chevron"; chev.setAttribute("aria-hidden", "true"); chev.textContent = "▼";
+  preview.appendChild(titleEl); preview.appendChild(oneline); preview.appendChild(chev);
+  const secBody = document.createElement("div"); secBody.className = "llm-performance-body"; secBody.appendChild(acc);
+  wrap.appendChild(preview); wrap.appendChild(secBody);
+  const toggle = () => {
+    const collapsed = wrap.classList.toggle("collapsed");
+    preview.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    chev.textContent = collapsed ? "▼" : "▲";
+  };
+  preview.addEventListener("click", toggle);
+  preview.addEventListener("keydown", (e: KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+  });
+  return wrap;
+}
+
 /** Canonical reason→act→observe→decide diagnostics card. Replaces the old
  *  raw PARSER/ROUTER/RERANKING/THEMES dump for ALL strategies. */
 function renderDiagnosticsCard(
@@ -7400,7 +7482,7 @@ function renderQaVerdictsPanel(qc: QcAuditInfo | null | undefined, correlationId
   // SSE emit (#23, still shipping) — rendered "pending" until that data is wired in.
   body.appendChild(_dcLeaf("Bandit reward tracking", qualityScore != null ? "ok" : "gray",
     qc.adjudicator_model ? `ruler: ${qc.adjudicator_model}` : "quality ruler", (b) => {
-    if (qc.adjudicator_model) _dcKV(b, "quality ruler (judge model)", String(qc.adjudicator_model));
+    if (qc.adjudicator_model) _dcKV(b, "Judge Model", String(qc.adjudicator_model));
     if (qualityScore != null) _dcKV(b, "quality score", scoreStr);
     Object.keys(subScores).forEach((k) => _dcKV(b, `  ${k}`, Number(subScores[k]).toFixed(2)));
     // Live bandit-reward-persisted checkmark (#23) — coalesced per turn, updated as SSE events land.
@@ -7421,11 +7503,11 @@ function renderQaVerdictsPanel(qc: QcAuditInfo | null | undefined, correlationId
 
   // Section 3 — raw adjudication (debug). Explicitly non-authoritative self-report.
   if (qc.adjudicator_full_response) {
-    body.appendChild(_dcLeaf("Raw adjudication (debug · self-report, NOT authoritative)", "gray",
+    body.appendChild(_dcLeaf("Judge Self-Estimate (not graded answer-quality)", "gray",
       "model self-report — the authoritative score is the rubric quality score above", (b) => {
       const note = document.createElement("div");
       note.className = "qa-raw-note";
-      note.textContent = "Model self-report, discarded for scoring. The authoritative quality score is rubric-computed (Section 1/2) and drives the bandit reward loop.";
+      note.textContent = "Model's self-estimate of answer quality. NOT the graded quality verdict — the authoritative score is rubric-computed (Section 1) and drives the bandit reward loop.";
       b.appendChild(note);
       const pre = document.createElement("pre");
       pre.className = "qa-raw-json";
@@ -9749,8 +9831,8 @@ function run(): void {
     // other tool · QA/adjudicator · bandit. Each section builds into a bucket; buckets flush in this
     // fixed order just before the tab button is wired (below), so the order never drifts with which
     // sections happen to be present.
-    const _diag: Record<"hipaa" | "react" | "ragTel" | "ragTrace" | "tool" | "qa" | "bandit", HTMLElement[]> =
-      { hipaa: [], react: [], ragTel: [], ragTrace: [], tool: [], qa: [], bandit: [] };
+    const _diag: Record<"hipaa" | "react" | "ragTel" | "ragTrace" | "web" | "tool" | "qa" | "bandit", HTMLElement[]> =
+      { hipaa: [], react: [], ragTel: [], ragTrace: [], web: [], tool: [], qa: [], bandit: [] };
 
     // Section 0: output_intent telemetry (Task #10) — an internal classification signal, not a
     // user-facing label (Chat Master 2026-08-05). A single muted "Output intent · <value>" row,
@@ -9806,6 +9888,10 @@ function run(): void {
       );
       if (traceEl) _diag.ragTel.push(traceEl);
     }
+
+    // Web-scrape provenance panel (signal web_trace) — pages visited + robots decisions.
+    const webTraceEl = renderWebTrace(opts.thinkingLog as ReadonlyArray<unknown> | null | undefined);
+    if (webTraceEl) _diag.web.push(webTraceEl);
 
     // Section 2a: Full retrieval trace (task #43/#44). Expandable, default collapsed. PLAIN-TEXT
     // (already has --- section headers) — NO markdown. Prefer the LIVE full narrative_full (from
@@ -9993,7 +10079,7 @@ function run(): void {
 
     // Flush buckets in the fixed order (Ananth 2026-08-07): HIPAA → React → RAG telemetry →
     // RAG trace → other tool → QA/adjudicator → bandit.
-    (["hipaa", "react", "ragTel", "ragTrace", "tool", "qa", "bandit"] as const)
+    (["hipaa", "react", "ragTel", "ragTrace", "web", "tool", "qa", "bandit"] as const)
       .forEach((k) => _diag[k].forEach((el) => diagPanel.appendChild(el)));
 
     // Wire tab button into the tab bar
