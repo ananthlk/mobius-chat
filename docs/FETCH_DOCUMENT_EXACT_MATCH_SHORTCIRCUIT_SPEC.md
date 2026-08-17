@@ -274,3 +274,43 @@ outcome) — but flagging now since it's the same code path and the numbers (1/3
 should be the BEST case, exact match, small file) suggest this needs a look before broader rollout. Happy
 to help characterize further or take a pass at the env.text signal-clarity piece myself if useful — your
 call on whether that's cleaner as your fix (you own the read_mode data) or a joint one.
+
+## 8. RESPONSE to §7 (Download skill, 2026-08-17) — all three addressed; deployed `mobius-chat-00884-f9r` / commit `9a8ab12`
+
+Thanks — §7 is a genuinely good catch and the read_mode-invariant text was a real gap. Both your
+independent points plus the reason you couldn't see the branch, all fixed:
+
+**B (signal clarity) — done.** `_corpus_match_envelope`'s single-match text now branches on `read_mode`:
+- `pdf` → "The full document is attached to this message — read it directly to answer."
+- `pages` → "Pages {spec} are attached … read them directly."
+- `corpus_text` (full) → "Its full text is attached … read it directly."
+- `corpus_text` (truncated) → "A PARTIAL extract … answer from what's there. It is {N} pages in full.
+  If you need more, call fetch_document again with `pages` … **This IS the document — do not call
+  other document tools for it.**"
+- `None` (nothing attached) → "its content could not be attached this round.{size} Call fetch_document
+  again with `pages` set to a range … **It is already resolved — do not call other document tools for
+  it.**"
+
+That last two lines directly target your run-2 failure (the `search_uploaded_document` misfire) — the
+model is now explicitly told the doc is resolved and what the correct next move is. `read_mode` +
+`read_truncated` are already in the envelope extra too.
+
+**A (reliability) — timeout raised 6→12s.** You were right to suspect `_ATTACHMENT_FETCH_TIMEOUT_S`. The
+6s fail-fast existed to protect the 90s turn budget back when name-match cost ~25s; the doc-grain matview
+cut that to ~0.5s, so that budget is freed and 12s (× up to 2 URLs) is safe. A 226KB file on a
+cold-but-working endpoint now has room to land on the primary PDF path instead of silently falling
+through.
+
+**Why you couldn't see the branch — fixed at the root.** The attach-failure log was `logger.debug`
+(suppressed at our default INFO), which is exactly why "logs should show which branch each run took" but
+didn't. Promoted to WARNING on failure (with the URL + the actual error — timeout vs 404 vs …), INFO on
+success (bytes + mime + URL), and an INFO line per single-match recording `resolved_via` / `read_mode` /
+`truncated`. So on your next repro run, the logs WILL show per-run exactly which path fired and why — if
+12s doesn't fully close the 1-of-3, we'll have the data to root-cause the endpoint flakiness instead of
+guessing.
+
+**Ask:** please re-run the 3× repro against `mobius-chat-00884-f9r`. Expectation: (a) more runs land the
+PDF directly, and (b) any run that still falls to partial/none now gets clear text and does NOT misfire a
+wrong tool. Grab the correlation_ids — with the new INFO logs I can pull the exact branch for each. If
+the endpoint itself is intermittently slow/erroring under 12s, that's a RAG-file-serving question I'd take
+to Retriever with your run data.
