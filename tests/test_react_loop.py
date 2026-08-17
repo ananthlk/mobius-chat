@@ -1,4 +1,5 @@
 """Tests for ReAct loop: Reason → Act → Observe."""
+import json
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -551,6 +552,146 @@ def test_run_react_one_iteration_then_complete():
     assert ctx.plan is not None
     assert "react_main" in ctx.answer_set
     assert ctx.retrieval_signals == ["corpus_only"]
+
+
+class TestMalformedDecisionFallback:
+    """2026-08-17 (Ananth, directly, live finding): a decision with
+    tool=null AND answer="" (neither a valid tool call nor a valid final
+    answer) used to fall through past the whole is_complete/not-tool
+    block into the generic tool-dispatch code, which defaults `tool or
+    "search_corpus"` and silently fires an UNRELATED rag search on the
+    raw original query -- discarding whatever the model's own `thought`
+    said it was actually trying to do. Caught live: fetch_document
+    resolved 3 ambiguous document candidates, round 2's thought said "I
+    need to present these options to the user," but the malformed
+    decision silently became a raw rag call instead, whose own generic
+    clarify_questions fired an unrelated jurisdiction question.
+
+    Fix: skip the round (synthetic tool_results note carrying the
+    model's own thought) and continue, same pattern as the pre-existing
+    `blocked_by` retry-guard case just below -- NOT an immediate
+    finalize. An earlier version of this fix finalized immediately,
+    which broke test_noncompliant_model_falls_back_to_legacy_generic_
+    string_exactly in test_react_unfinished_final_round.py (a model that
+    never adopts the tool/answer fields at all must keep getting real
+    chances across all rounds, landing on the existing multi-round
+    exhausted-fallback message -- not short-circuit on round 1)."""
+
+    def _fake_llm_malformed_round2(self, thought: str, round3: str | None = None):
+        calls = {"n": 0}
+
+        def fake_llm(system, user, max_tokens=800, ctx=None, stage="planner", **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return (
+                    '{"thought": "Try fetch_document first.", "tool": "fetch_document", '
+                    '"inputs": {"query": "some handbook"}, "is_complete": false}'
+                )
+            if calls["n"] == 2:
+                return json.dumps({"thought": thought, "tool": None, "inputs": {}, "is_complete": False})
+            return round3 or (
+                '{"thought": "Now I have the right document.", '
+                '"evidence_review": {"keep": [1], "running_answer": "Handbook B applies.", '
+                '"gaps_closed": ["which document"], "gaps_open": []}, '
+                '"tool": null, "inputs": {}, "is_complete": true, '
+                '"answer": "Handbook B applies.", "sources": [], "confidence": "high"}'
+            )
+
+        return fake_llm, calls
+
+    def test_malformed_round_skips_and_continues_not_finalizes(self):
+        """The core fix: round 2's malformed decision must NOT trigger a
+        second (unrelated) tool execution defaulting to search_corpus --
+        it's recorded as a skipped/no-op round and the loop continues to
+        round 3, which then completes normally."""
+        ctx = PipelineContext(correlation_id="malformed-1", thread_id=None, message="Which handbook covers this?")
+        ctx.chat_mode = "agentic"
+        ctx.merged_state = {}
+        ctx.last_turns = []
+        ctx.effective_message = ctx.message
+
+        fake_llm, calls = self._fake_llm_malformed_round2(
+            "I need to present these options to the user so they can select the correct document."
+        )
+
+        with patch("app.pipeline.react.critic.critic_enabled", return_value=False), \
+             patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm):
+            with patch("app.pipeline.react_loop._execute_tool") as mock_execute:
+                mock_execute.return_value = {
+                    "tool": "fetch_document", "success": True,
+                    "result": "Resolved 3 document(s) by name match.",
+                    "signal": "no_sources", "sources": [], "usage": None,
+                }
+                run_react(ctx, emitter=None)
+
+        # Only round 1's real fetch_document call happened -- round 2 must
+        # never call _execute_tool with a defaulted "search_corpus".
+        assert mock_execute.call_count == 1
+        assert mock_execute.call_args[0][0] == "fetch_document"
+        # The loop reached round 3 and finalized normally there.
+        assert calls["n"] == 3
+        assert ctx.final_message == "Handbook B applies."
+        # The skip note carrying the thought is visible to round 3 as a
+        # tool_results entry, not silently dropped.
+        skip_entries = [t for t in ctx.react_tool_results if "didn't specify a valid tool" in (t.get("result") or "")]
+        assert len(skip_entries) == 1
+        assert "I need to present these options to the user" in skip_entries[0]["result"]
+
+    def test_malformed_round_with_no_thought_uses_generic_skip_note(self):
+        ctx = PipelineContext(correlation_id="malformed-2", thread_id=None, message="Which handbook covers this?")
+        ctx.chat_mode = "agentic"
+        ctx.merged_state = {}
+        ctx.last_turns = []
+        ctx.effective_message = ctx.message
+
+        fake_llm, calls = self._fake_llm_malformed_round2("")
+
+        with patch("app.pipeline.react.critic.critic_enabled", return_value=False), \
+             patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm):
+            with patch("app.pipeline.react_loop._execute_tool") as mock_execute:
+                mock_execute.return_value = {
+                    "tool": "fetch_document", "success": True,
+                    "result": "Resolved 3 document(s) by name match.",
+                    "signal": "no_sources", "sources": [], "usage": None,
+                }
+                run_react(ctx, emitter=None)
+
+        assert mock_execute.call_count == 1  # round 2 skipped, no search_corpus default
+        skip_entries = [t for t in ctx.react_tool_results if "didn't specify a valid tool" in (t.get("result") or "")]
+        assert len(skip_entries) == 1
+        assert ctx.final_message == "Handbook B applies."
+
+    def test_task_mode_unaffected_by_new_block(self):
+        """Task mode has its OWN, earlier, stronger guard ("Task mode: no
+        tool calls ever" -- line ~4762) that suppresses ANY tool call on
+        round 1 itself, before my new block is ever reachable. Confirms
+        my change doesn't disturb that pre-existing, separate protection
+        -- round 1's tool="fetch_document" decision gets intercepted
+        immediately (mock_execute never runs), not "round 2's malformed
+        decision" like the other two tests in this class."""
+        ctx = PipelineContext(correlation_id="malformed-3", thread_id=None, message="Which handbook covers this?")
+        ctx.merged_state = {}
+        ctx.last_turns = []
+        ctx.effective_message = ctx.message
+        ctx.chat_mode = "task"
+
+        fake_llm, calls = self._fake_llm_malformed_round2("I need to present these options to the user.")
+
+        with patch("app.pipeline.react.critic.critic_enabled", return_value=False), \
+             patch("app.pipeline.react_loop._call_llm_json", side_effect=fake_llm):
+            with patch("app.pipeline.react_loop._execute_tool") as mock_execute:
+                mock_execute.return_value = {
+                    "tool": "fetch_document", "success": True,
+                    "result": "Resolved 3 document(s) by name match.",
+                    "signal": "no_sources", "sources": [], "usage": None,
+                }
+                run_react(ctx, emitter=None)
+
+        assert mock_execute.call_count == 0
+        assert calls["n"] == 1  # never reached round 2 -- suppressed on round 1
+        # decision.get("answer") is empty for the tool-call shape, so the
+        # pre-existing task guard falls back to round 1's own thought.
+        assert ctx.final_message == "Try fetch_document first."
 
 
 def test_run_react_follow_up_from_active_context_skips_tools():

@@ -5316,6 +5316,68 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 )
                 return
 
+            # 2026-08-17 (Ananth, directly, live finding): tool=None and
+            # answer="" used to fall through past this whole block to the
+            # generic tool-dispatch fallback further down, which defaults
+            # `tool or "search_corpus"` and silently fires a REAL,
+            # UNRELATED rag search on the raw original query -- discarding
+            # whatever the model's own `thought` actually said.
+            #
+            # Caught live: fetch_document resolved 3 ambiguous document-
+            # name candidates; round 2's thought correctly said "I need
+            # to present these options to the user" -- but the decision
+            # itself was malformed (tool=null, answer=""), so instead of
+            # surfacing that reasoning, the loop silently ran rag on the
+            # raw query, which had no jurisdiction mentioned, so RAG's
+            # own generic clarify_questions fired ("Which state or
+            # jurisdiction did you mean?") -- a question totally
+            # unrelated to the actual ambiguity (document names, not
+            # jurisdiction).
+            #
+            # Fix mirrors the `blocked_by` retry-guard pattern immediately
+            # below (skip this round, record a synthetic observation
+            # carrying the model's own thought, continue) rather than
+            # finalizing immediately -- an earlier version of this fix DID
+            # finalize immediately, but that broke
+            # test_noncompliant_model_falls_back_to_legacy_generic_string_
+            # exactly (a model that NEVER adopts the tool/answer fields at
+            # all is expected to keep getting real chances across all
+            # rounds, then land on the existing polished multi-round
+            # exhausted-fallback message -- not short-circuit on round 1).
+            # Skipping (not defaulting to search_corpus) preserves that
+            # exact existing behavior for the "truly stuck" case while
+            # fixing the actual bug: a malformed round never again
+            # silently substitutes an unrelated tool call. Excludes
+            # decision.get("unfinished_reason") -- that's the legitimate
+            # structural-exhaustion/final-round offramp case handled by
+            # the block immediately below via `break`, not a malformed
+            # decision; must not be intercepted here.
+            if not tool and not decision.get("unfinished_reason"):
+                _skip_note = (
+                    f"Your last response didn't specify a valid tool or a "
+                    f"final answer. Your own reasoning was: {thought!r} -- "
+                    f"if that's actionable (e.g. multiple candidates to "
+                    f"present, or a specific next step), either answer "
+                    f"directly with is_complete=true, or call a real tool "
+                    f"from the manifest with the right inputs."
+                    if thought else
+                    "Your last response didn't specify a valid tool or a "
+                    "final answer. Either answer directly with "
+                    "is_complete=true, or call a real tool from the "
+                    "manifest with the right inputs."
+                )
+                emit(
+                    "  ↓ Model's decision was incomplete (no tool call, no "
+                    "answer) — skipping this round rather than defaulting "
+                    "to an unrelated tool call."
+                )
+                tool_results.append({
+                    "tool": tool or "unknown",
+                    "success": False,
+                    "result": _skip_note,
+                })
+                continue
+
         # Final-round self-report (see _REACT_FINAL_ROUND_INSTRUCTION) OR the
         # structural-exhaustion offramp (_REACT_STRUCTURAL_EXHAUSTION_OFFRAMP)
         # firing early: either way, the model was told it's legal to stop
