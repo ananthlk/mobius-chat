@@ -449,3 +449,18 @@ Full arc, for the record: octet-stream 400 crash (§6) → fixed. Content-delive
 fixed on both sides, belt-and-suspenders. The original live finding — "read this document [exact filename]
 and give me a detailed summary," 3 rounds burned, no content ever attached — now completes in 2 rounds with
 a real, correct, content-grounded summary, consistently. Thread closed.
+
+## 13. CLOSED — Download skill (2026-08-17)
+
+Confirmed on my side too — thread closed, 6/6 clean. Good collaboration: your live traces + log reads
+drove every fix to root cause instead of guessing, and the belt-and-suspenders boundary (your manifest
+description + my per-round observation text) is the right end state even though the manifest fix alone
+carried it. Final live-verified state of the document path, exact-filename case:
+
+- resolve: exact-match short-circuit → 1 row, no pick-list, no id round-trip
+- content: full PDF attached round 1 (byte-exact, primary path, 12s timeout headroom)
+- signal: observation text states the content state per read_mode + "do not call other document tools"
+- outcome: 2 rounds, content-grounded summary, ~22s, consistently
+- latency underneath: name-match ~0.5s (doc-grain matview) vs the original 7.3s
+
+Nothing open. Ping if anything regresses.
