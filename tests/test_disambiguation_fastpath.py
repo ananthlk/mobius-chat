@@ -338,3 +338,125 @@ class TestIntegrateDisambiguationBypass:
         disamb = next(b for b in blocks if b["type"] == "disambiguation")
         assert len(disamb["candidates"]) == 1
         assert disamb["candidates"][0]["id"] == "d1"
+
+
+class TestDocumentSelectionRouting:
+    """docs/DISAMBIGUATION_FASTPATH_CONTRACT.md §3/§5: a structured
+    `selection` resubmit routes straight to fetch_document(document_id=
+    selection.id), skipping state_load/classify/react/integrate entirely.
+    "Resolution alone is the response" (Ananth, 2026-08-17) -- no
+    synthesis round, reuses the existing react_bypass_integrate mechanism.
+    """
+
+    def test_document_selection_skips_pipeline_and_publishes_directly(self):
+        from app.pipeline.orchestrator import run_pipeline
+        from app.skills.registry import SkillEnvelope, SourceRef
+
+        fake_env = SkillEnvelope(
+            text="Here's the Molina Healthcare Provider Manual 2024.",
+            sources=[SourceRef(document_name="Molina Healthcare Provider Manual 2024", document_id="doc_abc123",
+                                source_type="document", page_number=None, index=1, text="manual.pdf",
+                                authority="corpus")],
+            signal="corpus_only",
+        )
+
+        with (
+            patch("app.skills.registry.dispatch", return_value=fake_env) as mock_dispatch,
+            patch("app.pipeline.orchestrator.get_queue") as mock_q,
+            patch("app.pipeline.orchestrator.store_response"),
+            patch("app.pipeline.react_loop.run_react") as mock_react,
+        ):
+            run_pipeline(
+                "sel-cid", "→ Molina Healthcare Provider Manual 2024", "sel-thread",
+                selection={"kind": "document", "id": "doc_abc123", "in_reply_to": "prior-cid"},
+            )
+
+        mock_react.assert_not_called()  # the whole point -- no react re-loop
+        mock_dispatch.assert_called_once()
+        call_arg = mock_dispatch.call_args[0][0]
+        assert call_arg.name == "fetch_document"
+        assert call_arg.inputs == {"document_id": "doc_abc123"}
+
+        mock_q.return_value.publish_response.assert_called_once()
+        payload = mock_q.return_value.publish_response.call_args[0][1]
+        assert payload["status"] == "completed"
+        assert payload["raw_text"] == "Here's the Molina Healthcare Provider Manual 2024."
+
+    def test_document_selection_includes_download_block(self):
+        from app.pipeline.orchestrator import run_pipeline
+        from app.skills.registry import SkillEnvelope
+
+        def fake_dispatch(call):
+            # Mirrors what fetch_document's real resolve-by-id path does:
+            # _attach_download_payload writes ctx.react_document_download_data.
+            call.pipeline_ctx.react_document_download_data = {
+                "documents": [{"document_id": "doc_abc123", "title": "Molina Manual", "download_url": "https://x/y"}],
+                "query": "doc_abc123",
+            }
+            return SkillEnvelope(text="Here's the manual.", sources=[], signal="corpus_only")
+
+        with (
+            patch("app.skills.registry.dispatch", side_effect=fake_dispatch),
+            patch("app.pipeline.orchestrator.get_queue") as mock_q,
+            patch("app.pipeline.orchestrator.store_response"),
+        ):
+            run_pipeline(
+                "sel-cid-2", "→ Molina Manual", "sel-thread-2",
+                selection={"kind": "document", "id": "doc_abc123", "in_reply_to": "prior-cid"},
+            )
+
+        payload = mock_q.return_value.publish_response.call_args[0][1]
+        blocks = payload["assistant_envelope"]["blocks"]
+        dl_blocks = [b for b in blocks if b.get("type") == "document_download"]
+        assert len(dl_blocks) == 1
+        assert dl_blocks[0]["documents"][0]["document_id"] == "doc_abc123"
+
+    def test_non_document_kind_does_not_trigger_selection_routing(self):
+        """An unrecognized/future select_kind must not trigger the
+        selection short-circuit -- it degrades to the normal pipeline.
+        Asserts on the branch condition directly (does
+        _run_document_selection get invoked?) rather than mocking out
+        the entire normal pipeline (DB/Redis/LLM), which is exercised by
+        plenty of other orchestrator tests already."""
+        from app.pipeline.orchestrator import run_pipeline
+
+        with patch("app.pipeline.orchestrator._run_document_selection") as mock_sel:
+            with patch("app.pipeline.orchestrator.get_queue"), patch("app.pipeline.orchestrator.store_response"):
+                with patch.dict(os.environ, {"MOBIUS_USE_REACT": "1"}, clear=False):
+                    with patch("app.pipeline.react_loop.run_react"):
+                        with patch("app.stages.integrate.run_integrate"):
+                            run_pipeline(
+                                "sel-cid-3", "some message", "sel-thread-3",
+                                selection={"kind": "payer", "id": "molina", "in_reply_to": "x"},
+                            )
+        mock_sel.assert_not_called()
+
+    def test_missing_id_does_not_trigger_selection_routing(self):
+        from app.pipeline.orchestrator import run_pipeline
+
+        with patch("app.pipeline.orchestrator._run_document_selection") as mock_sel:
+            with patch("app.pipeline.orchestrator.get_queue"), patch("app.pipeline.orchestrator.store_response"):
+                with patch.dict(os.environ, {"MOBIUS_USE_REACT": "1"}, clear=False):
+                    with patch("app.pipeline.react_loop.run_react"):
+                        with patch("app.stages.integrate.run_integrate"):
+                            run_pipeline(
+                                "sel-cid-4", "some message", "sel-thread-4",
+                                selection={"kind": "document", "id": "", "in_reply_to": "x"},
+                            )
+        mock_sel.assert_not_called()
+
+    def test_fetch_document_exception_publishes_failed_not_stuck(self):
+        from app.pipeline.orchestrator import run_pipeline
+
+        with (
+            patch("app.skills.registry.dispatch", side_effect=RuntimeError("boom")),
+            patch("app.pipeline.orchestrator.get_queue") as mock_q,
+            patch("app.pipeline.orchestrator.store_response"),
+        ):
+            run_pipeline(
+                "sel-cid-5", "→ some doc", "sel-thread-5",
+                selection={"kind": "document", "id": "doc_x", "in_reply_to": "prior"},
+            )
+
+        payload = mock_q.return_value.publish_response.call_args[0][1]
+        assert payload["status"] == "failed"

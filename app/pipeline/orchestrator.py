@@ -445,8 +445,15 @@ def run_pipeline(
     user_profile: dict | None = None,
     phi_gate_verdict: dict | None = None,
     is_continuation: bool = False,
+    selection: dict | None = None,
 ) -> None:
     """Run the full pipeline: state_load -> classify -> plan -> clarify -> [resolve -> integrate] | early_exit.
+
+    ``selection`` (2026-08-17): docs/DISAMBIGUATION_FASTPATH_CONTRACT.md
+    §3 structured resubmit -- {kind, id, in_reply_to}. When kind=="document"
+    with a non-empty id, short-circuits to _run_document_selection() before
+    any of state_load/classify/react/integrate run. See that function's
+    docstring for what it does and doesn't do.
 
     Publishes response (clarification, refinement, or completed) via queue.
 
@@ -551,6 +558,23 @@ def run_pipeline(
                 "[thinking:legacy] cid=%s",
                 correlation_id[:8] if correlation_id else "",
             )
+
+    # 2026-08-17 (Ananth, directly): disambiguation resubmit fast-path,
+    # docs/DISAMBIGUATION_FASTPATH_CONTRACT.md §3/§5. When the FE resubmits
+    # a structured `selection` (the user picked a candidate from a prior
+    # disambiguation card), route straight to the owning tool instead of
+    # running state_load/classify/react -- the candidate is already
+    # resolved, there's nothing left to reason about. "Resolution alone is
+    # the response" (Ananth, 2026-08-17) -- no synthesis round either;
+    # react_bypass_integrate reuses the SAME bypass the ReAct loop's own
+    # "still indexing" defer case already uses (see below, ~line 871),
+    # so this isn't a new response-shape mechanism, just a new way to
+    # reach the existing one. Kept OUTSIDE the big try/tracing block below
+    # -- this path never touches state_load/react/integrate, so none of
+    # that machinery's error handling applies; it has its own.
+    if isinstance(selection, dict) and selection.get("kind") == "document" and (selection.get("id") or "").strip():
+        _run_document_selection(ctx, selection, on_thinking, t0)
+        return
 
     # Distributed tracing span for the whole turn (Sprint 1 #11).
     # When CHAT_TRACE_ENABLED=0 this is a no-op context manager — zero
@@ -1011,6 +1035,86 @@ def run_pipeline(
                 _pipeline_span_cm.__exit__(None, None, None)
             except Exception:
                 pass
+
+
+def _run_document_selection(
+    ctx: PipelineContext, selection: dict, on_thinking, t0_start: float,
+) -> None:
+    """docs/DISAMBIGUATION_FASTPATH_CONTRACT.md §3/§5: resolve a structured
+    document selection directly -- no state_load, no classify, no react
+    loop, no integrator. "Resolution alone is the response" (Ananth,
+    2026-08-17): calls fetch_document(document_id=selection['id'])
+    deterministically (the SAME §8.1 resolve-by-id path fetch_document's
+    own multi-candidate flow already uses when the MODEL resolves an
+    ambiguity itself mid-turn), takes its SkillEnvelope text as the final
+    answer, and publishes via the SAME react_bypass_integrate mechanism
+    the ReAct loop's own "still indexing" defer case already uses (see
+    run_pipeline's post-react bypass check, ~line 885) -- not a new
+    response shape, a new way to reach the existing one.
+
+    Still injects the document_download UI block for the resolved
+    document (mirrors integrate.py's own injection, replicated here
+    since integrate.py never runs on this path) -- the user still gets
+    a download link, not just prose confirming resolution.
+
+    Defensive by construction: any failure here (fetch_document raising,
+    a malformed skill result) degrades to _publish_failed with an honest
+    message rather than a stuck turn -- there's no react retry machinery
+    on this path to fall back on.
+    """
+    from app.pipeline.react_loop import _finalize_response
+    from app.skills import registry as _skill_registry
+    from app.communication.assistant_envelope import build_assistant_envelope_v1, resolve_tool_fired
+
+    on_thinking("◌ Resolving your selection…")
+    try:
+        call = _skill_registry.SkillCall(
+            name="fetch_document",
+            inputs={"document_id": selection["id"]},
+            question=ctx.message,
+            user_message=ctx.message,
+            thread_id=ctx.thread_id,
+            active_context=None,
+            # No ctx.chat_mode carried through a structured resubmit -- the
+            # resolve-by-id path doesn't use caller_mode for anything
+            # RAG-related, so a safe default is fine (not a guess that
+            # matters here the way it does for a real retrieval call).
+            mode="chat.default",
+            emitter=on_thinking,
+            pipeline_ctx=ctx,
+            extra_out=None,
+        )
+        env = _skill_registry.dispatch(call)
+    except Exception as e:
+        logger.exception("Document selection resolve error: %s", e)
+        _publish_failed(ctx.correlation_id, ctx.message, ctx.thread_id, ctx.thinking_chunks, e, user_id=ctx.user_id)
+        return
+
+    _sources = [s.to_dict() for s in (env.sources or [])] if env.sources else []
+    _finalize_response(ctx, env.text or "", _sources, env.signal or "no_sources", "fetch_document", on_thinking)
+    ctx.react_bypass_integrate = True
+
+    _dl_data = getattr(ctx, "react_document_download_data", None)
+    _ui_blocks: list[dict] = []
+    if isinstance(_dl_data, dict) and isinstance(_dl_data.get("documents"), list) and _dl_data["documents"]:
+        _ui_blocks.append({
+            "type": "document_download",
+            "documents": _dl_data["documents"],
+            "query": _dl_data.get("query") or "",
+        })
+
+    _msg = ctx.final_message or ""
+    ctx.response_payload = {
+        "raw_text": _msg,
+        "status": "completed",
+        "assistant_envelope": build_assistant_envelope_v1(
+            answer_card={"direct_answer": _msg} if _msg.strip() else None,
+            ui_blocks_raw=_ui_blocks, tool_fired=resolve_tool_fired(ctx),
+            response_sources=[], next_steps=[], next_questions_for_user=[],
+            roster_report_final_md=None, has_roster_pdf=False,
+        ),
+    }
+    _publish_completed(ctx, t0_start)
 
 
 def _publish_pursuit_ended(correlation_id: str, ctx: PipelineContext, t0_start: float) -> None:

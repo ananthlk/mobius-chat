@@ -167,6 +167,17 @@ class ChatRequest(BaseModel):
     substance (e.g. a table it already assembled), not a pronoun-resolution
     snippet. None/False (the default) leaves existing behavior untouched."""
 
+    selection: dict | None = None
+    """docs/DISAMBIGUATION_FASTPATH_CONTRACT.md §3 — structured resubmit
+    when the user picks a candidate from a prior `disambiguation` envelope
+    block: {"kind": "document", "id": "<candidate id>", "in_reply_to":
+    "<correlation_id of the disambiguation turn>"}. When kind=="document"
+    with a non-empty id, the worker routes straight to fetch_document
+    (document_id=id), skipping state_load/classify/react/integrate
+    entirely — no re-derivation of the user's already-made choice. Any
+    other shape (missing kind/id, unrecognized kind) falls through to the
+    normal pipeline, which just answers `message` as ordinary text."""
+
 
 class ChatResponse(BaseModel):
     correlation_id: str
@@ -323,6 +334,8 @@ def post_chat(
         payload["force_citable_required"] = bool(body.force_citable_required)
     if body.is_continuation is not None:
         payload["is_continuation"] = bool(body.is_continuation)
+    if isinstance(body.selection, dict) and body.selection:
+        payload["selection"] = body.selection
     if user_id:
         payload["user_id"] = user_id
     if body.system_context:

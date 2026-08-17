@@ -115,6 +115,14 @@ def process_one(correlation_id: str, payload: dict) -> None:
     phi_gate_verdict = payload.get("phi_gate_verdict")
     if phi_gate_verdict is not None and not isinstance(phi_gate_verdict, dict):
         phi_gate_verdict = None
+    # selection (2026-08-17): docs/DISAMBIGUATION_FASTPATH_CONTRACT.md §3
+    # structured resubmit -- {kind, id, in_reply_to}. Malformed shape
+    # downgrades to None so a bad/stale FE payload falls through to the
+    # normal pipeline (which just answers the echoed message text) rather
+    # than raising.
+    selection = payload.get("selection")
+    if selection is not None and not isinstance(selection, dict):
+        selection = None
 
     deadline_s = _turn_deadline_seconds()
     is_main_thread = threading.current_thread() is threading.main_thread()
@@ -251,6 +259,7 @@ def process_one(correlation_id: str, payload: dict) -> None:
                 cache_assist=cache_assist,
                 user_profile=user_profile,
                 phi_gate_verdict=phi_gate_verdict,
+                selection=selection,
             )
 
     if is_main_thread and hasattr(signal, "SIGALRM"):
