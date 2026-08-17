@@ -117,7 +117,9 @@ from app.services.doc_assembly import (
     RETRIEVAL_SIGNAL_ROSTER_COMPLETE,
     RETRIEVAL_SIGNAL_SYSTEM_CONTEXT,
 )
+from app.services.chat_mode_utils import translate_chat_mode_to_caller_mode
 from app.services.non_patient_rag import answer_non_patient
+from app.services.retrieval_budget import compute_token_budget_for_retrieval
 from app.services.reasoning_agent import answer_reasoning
 from app.services.tool_agent import (
     REACT_TOOL_SUMMARY_KEY,
@@ -245,6 +247,34 @@ def _prune_kept_chunks(raw: str, keep: list[int], call_idx: int) -> str:
             "refs if a later round needs one of them; do not re-run rag for this.]"
         )
     return out
+
+
+def chunk_text_identity(text: str) -> str:
+    """Stable-enough key for correlating a chunk across two systems that
+    don't share a numbering scheme: react's per-round evidence_review
+    "keep" list (indexed by the [N] chunk_num baked into that round's
+    formatted tool-result text) vs. integrate.py's structured
+    ctx.rag_chunks pool (indexed by SourceRef's own "index" field, a
+    different assignment). Both carry the exact same underlying chunk
+    TEXT though, so a normalized prefix of it is what's actually
+    comparable across them. Used by both react_loop.py (writing
+    ctx.curated_chunk_ids) and integrate.py's _build_rag_chunks (reading
+    it) -- Task #105, 2026-08-16, Chat Master/Ananth ruling."""
+    return (text or "").strip()[:200]
+
+
+def _curated_ids_from_kept_blocks(raw: str, keep: list[int]) -> set[str]:
+    """Chunk-text identities for exactly the chunks this round's
+    evidence_review marked "keep" -- the set react_loop.py unions into
+    ctx.curated_chunk_ids alongside the existing _prune_kept_chunks call."""
+    keep_set = set(keep)
+    ids: set[str] = set()
+    for chunk_num, block in _extract_chunk_blocks(raw):
+        if chunk_num not in keep_set:
+            continue
+        _header, _, text = block.partition("\n")
+        ids.add(chunk_text_identity(text))
+    return ids
 
 
 # 2026-08-07 (Chat Master, Task #65, live-query finding, cid d288d009):
@@ -1111,6 +1141,16 @@ def _compute_gap_status(rag_call_history: list[dict]) -> str:
     return "stagnant" if stagnant else "progressing"
 
 
+def _rag_call_ceiling_for_mode(chat_mode: str | None) -> int:
+    """Task #103 (2026-08-16, Chat Master/Ananth ruling): 6 for chat.thinking
+    (agentic), 3 for every other mode -- see the call site's comment in
+    _execute_tool for why (Retriever's chat.thinking retrieval-budget raise
+    from #97/#102 gives that mode real room to use more corpus calls)."""
+    if translate_chat_mode_to_caller_mode(chat_mode) == "chat.thinking":
+        return 6
+    return 3
+
+
 def _execute_tool(
     tool: str,
     inputs: dict,
@@ -1301,6 +1341,17 @@ def _execute_tool(
             make_query_understood, make_strategy_selected,
             make_retrieval_complete, make_fallback_triggered,
         )
+        # Task #103 (2026-08-16, Chat Master/Ananth ruling): the 3-call
+        # ceiling below was fine when chat.thinking's own retrieval budget
+        # was the 6000-token static default -- but Retriever raised that to
+        # 16000 (#97/#102's trigger), so a chat.thinking turn now has real
+        # room to profitably use MORE than 3 corpus calls before it's
+        # actually exhausted the corpus, not just its old call allowance.
+        # Raised to 6 for chat.thinking only; every other mode keeps the
+        # original 3 (2026-08-06 Chat Architecture ruling, still binding
+        # there -- this doesn't reopen that ruling, just scopes an
+        # exception to the one mode whose retrieval budget changed).
+        _rag_call_ceiling = _rag_call_ceiling_for_mode(getattr(ctx, "chat_mode", None))
         # ── citable_required relax-then-reframe: 3-call bounded protocol ────
         # (2026-08-06, Chat Architecture spec, replacing the pre-cutover
         # mode="auto"→"d" escalation cascade.) That model assumed chat
@@ -1337,11 +1388,15 @@ def _execute_tool(
             and _prior_rag_call.get("rag_phase") == "relaxed"
         )
 
-        if _rag_call_number >= 4:
-            # Hard stop — do not dispatch a 4th network call. Return
-            # immediately so the LLM gets an unambiguous terminal signal
-            # instead of grinding another round for zero new information.
-            emit("  ↓ rag call budget (3) exhausted for this question — answer honestly with what's been found.")
+        if _rag_call_number >= _rag_call_ceiling + 1:
+            # Hard stop — do not dispatch another network call past the
+            # ceiling. Return immediately so the LLM gets an unambiguous
+            # terminal signal instead of grinding another round for zero
+            # new information.
+            emit(
+                f"  ↓ rag call budget ({_rag_call_ceiling}) exhausted for this question — "
+                "answer honestly with what's been found."
+            )
             return {
                 "tool": "search_corpus",
                 "success": False,
@@ -1453,12 +1508,13 @@ def _execute_tool(
                             # clarify_low_confidence) is a clean continuation,
                             # not a mid-sequence jump.
                             "call_number": 1,
+                            "token_budget_for_retrieval": compute_token_budget_for_retrieval(ctx),
                         },
                         question=query,
                         user_message=ctx.message,
                         thread_id=ctx.thread_id,
                         active_context=active,
-                        mode=getattr(ctx, "chat_mode", "copilot") or "copilot",
+                        mode=translate_chat_mode_to_caller_mode(getattr(ctx, "chat_mode", None)),
                         emitter=emitter,
                         pipeline_ctx=ctx,
                     )
@@ -1749,12 +1805,13 @@ def _execute_tool(
                                 **({"include_document_ids": rag_overrides.get("include_document_ids")}
                                    if rag_overrides.get("include_document_ids") else {}),
                                 # citable_required deliberately omitted -- False.
+                                "token_budget_for_retrieval": compute_token_budget_for_retrieval(ctx),
                             },
                             question=query,
                             user_message=ctx.message,
                             thread_id=ctx.thread_id,
                             active_context=active,
-                            mode=getattr(ctx, "chat_mode", "copilot") or "copilot",
+                            mode=translate_chat_mode_to_caller_mode(getattr(ctx, "chat_mode", None)),
                             emitter=emitter,
                             pipeline_ctx=ctx,
                         )
@@ -1811,7 +1868,7 @@ def _execute_tool(
         while (
             not _lc_gap_priority_blocked
             and _corpus_telemetry.get("terminal_action") == "clarify_low_confidence"
-            and _low_confidence_call_number < 3
+            and _low_confidence_call_number < _rag_call_ceiling
         ):
             _low_confidence_call_number += 1
             emit(
@@ -1829,12 +1886,13 @@ def _execute_tool(
                                if rag_overrides.get("include_document_ids") else {}),
                             **({"citable_required": True} if _effective_citable else {}),
                             "call_number": _low_confidence_call_number,
+                            "token_budget_for_retrieval": compute_token_budget_for_retrieval(ctx),
                         },
                         question=query,
                         user_message=ctx.message,
                         thread_id=ctx.thread_id,
                         active_context=active,
-                        mode=getattr(ctx, "chat_mode", "copilot") or "copilot",
+                        mode=translate_chat_mode_to_caller_mode(getattr(ctx, "chat_mode", None)),
                         emitter=emitter,
                         pipeline_ctx=ctx,
                     )
@@ -1859,7 +1917,7 @@ def _execute_tool(
                 break  # don't loop on a transport failure -- exhaust honestly below
 
         _low_confidence_exhausted = (
-            _low_confidence_call_number >= 3
+            _low_confidence_call_number >= _rag_call_ceiling
             and _corpus_telemetry.get("terminal_action") == "clarify_low_confidence"
         )
 
@@ -1924,7 +1982,7 @@ def _execute_tool(
 
         if not success:
             _reframe_lines: list[str] = [
-                f"RAG signal (call {_rag_call_number}/3): status={_status or 'unknown'}, "
+                f"RAG signal (call {_rag_call_number}/{_rag_call_ceiling}): status={_status or 'unknown'}, "
                 f"citable_required={_effective_citable}, chunks={_n_chunks}, "
                 f"dispatch_path={_dispatch_path or 'n/a'}, chosen_slot={_chosen_slot or 'n/a'}."
             ]
@@ -1996,12 +2054,15 @@ def _execute_tool(
             env = dispatch(
                 SkillCall(
                     name="search_corpus",
-                    inputs={"query": query, "mode": "recall", "k": 16},
+                    inputs={
+                        "query": query, "mode": "recall", "k": 16,
+                        "token_budget_for_retrieval": compute_token_budget_for_retrieval(ctx),
+                    },
                     question=query,
                     user_message=ctx.message,
                     thread_id=ctx.thread_id,
                     active_context=active,
-                    mode=getattr(ctx, "chat_mode", "copilot") or "copilot",
+                    mode=translate_chat_mode_to_caller_mode(getattr(ctx, "chat_mode", None)),
                     emitter=emitter,
                     pipeline_ctx=ctx,
                 )
@@ -2060,12 +2121,15 @@ def _execute_tool(
             env = dispatch(
                 SkillCall(
                     name="search_corpus",
-                    inputs={"query": query, "mode": "precision", "k": 10},
+                    inputs={
+                        "query": query, "mode": "precision", "k": 10,
+                        "token_budget_for_retrieval": compute_token_budget_for_retrieval(ctx),
+                    },
                     question=query,
                     user_message=ctx.message,
                     thread_id=ctx.thread_id,
                     active_context=active,
-                    mode=getattr(ctx, "chat_mode", "copilot") or "copilot",
+                    mode=translate_chat_mode_to_caller_mode(getattr(ctx, "chat_mode", None)),
                     emitter=emitter,
                     pipeline_ctx=ctx,
                 )
@@ -2232,10 +2296,45 @@ def _execute_tool(
         import time as _time_mod
         from app.services.instant_rag_search import lazy_rag_search
 
+        # rag_call_rounds diagnostics (2026-08-12, Task #94, Chat Master
+        # directive): the corpus path (search_corpus, above) records one
+        # entry per RAG HTTP call via _record_rag_round -> ctx._rag_call_rounds
+        # -> make_react_trace's rag_call_rounds param, which Chat FE renders
+        # as collapsible "Round N" blocks in the Diagnostics panel. This tool
+        # (search_uploaded_document) makes the same shape of repeated RAG
+        # calls (initial probe + indexing polls + deferred retries) but never
+        # wrote into that accumulator, so Instant RAG turns completed with
+        # "First pass · N rounds" but an empty Diagnostics panel -- the trace
+        # plumbing itself is fine (react_trace/thinking_log write + poll both
+        # work), only this tool's calls were invisible to it. lazy_rag_search
+        # doesn't return a pipeline_trace dict like the corpus path's
+        # RagAnswerEnvelope.extra, so module_trace here is this tool's own
+        # phase label instead of a retriever module name.
+        _instant_rag_round_seq = 0
+
+        def _record_instant_rag_round(phase: str, sig: str, n_sources: int, latency_ms: float) -> None:
+            nonlocal _instant_rag_round_seq
+            _instant_rag_round_seq += 1
+            if not isinstance(getattr(ctx, "_rag_call_rounds", None), list):
+                ctx._rag_call_rounds = []  # type: ignore[attr-defined]
+            ctx._rag_call_rounds.append({  # type: ignore[attr-defined]
+                "round_n": _instant_rag_round_seq,
+                "query": query,
+                "terminal_action": sig,
+                "module_trace": {"tool": "search_uploaded_document", "phase": phase, "sources_found": n_sources},
+                "latency_ms": latency_ms,
+            })
+
+        def _timed_lazy_rag_search(phase: str, *, emitter_fn=None):
+            _t0 = _time_mod.monotonic()
+            _answer, _sources, _usage, _signal = lazy_rag_search(
+                document_id=document_id, question=query, k=10, emitter=emitter_fn,
+            )
+            _record_instant_rag_round(phase, _signal, len(_sources), (_time_mod.monotonic() - _t0) * 1000)
+            return _answer, _sources, _usage, _signal
+
         # Initial probe (no sleep) — if doc already queryable, skip the wait.
-        answer, sources, usage, signal = lazy_rag_search(
-            document_id=document_id, question=query, k=10, emitter=None
-        )
+        answer, sources, usage, signal = _timed_lazy_rag_search("initial_probe")
 
         _poll_ran = False
         _poll_timed_out = False
@@ -2248,9 +2347,7 @@ def _execute_tool(
             while _waited < _INDEXING_POLL_MAX_S:
                 _time_mod.sleep(_INDEXING_POLL_INTERVAL_S)
                 _waited += _INDEXING_POLL_INTERVAL_S
-                answer, sources, usage, signal = lazy_rag_search(
-                    document_id=document_id, question=query, k=10, emitter=None
-                )
+                answer, sources, usage, signal = _timed_lazy_rag_search("indexing_poll")
                 if sources:
                     emit(f"  ✓ Document ready after {_waited}s — searching now…")
                     break
@@ -2261,12 +2358,7 @@ def _execute_tool(
         # if sources weren't found yet and the poll didn't already exhaust its
         # window (after a timeout another call won't help).
         if not sources and not _poll_timed_out:
-            answer, sources, usage, signal = lazy_rag_search(
-                document_id=document_id,
-                question=query,
-                k=10,
-                emitter=emitter,
-            )
+            answer, sources, usage, signal = _timed_lazy_rag_search("emitted_final", emitter_fn=emitter)
 
         success = bool(sources) and signal != RETRIEVAL_SIGNAL_NO_SOURCES
         _hint = (usage or {}).get("vector_count_hint")  # >0=indexed/query-miss, 0/None=not indexed
@@ -2292,16 +2384,30 @@ def _execute_tool(
             while _deferred_waited < _DEFERRED_MAX_S:
                 _time_mod.sleep(_DEFERRED_INTERVAL_S)
                 _deferred_waited += _DEFERRED_INTERVAL_S
+                # Deferred polling can run up to 4 min at a 3s cadence (up to
+                # ~80 ticks) -- recording every tick would flood the
+                # Diagnostics panel with near-identical noise, unlike the
+                # bounded 18s initial poll above. Only record on the same
+                # ~12s cadence as the keepalive emit, plus always the
+                # terminating tick (success or hard-cap timeout) so the
+                # panel shows real waypoints, not raw busy-polling.
+                _at_keepalive_tick = _deferred_waited % _keepalive_every == 0
+                _at_final_tick = _deferred_waited >= _DEFERRED_MAX_S
+                _t0 = _time_mod.monotonic()
                 answer, sources, usage, signal = lazy_rag_search(
                     document_id=document_id, question=query, k=10, emitter=None
                 )
+                if sources or _at_keepalive_tick or _at_final_tick:
+                    _record_instant_rag_round(
+                        "deferred_poll", signal, len(sources), (_time_mod.monotonic() - _t0) * 1000,
+                    )
                 if sources:
                     _total_wait = _INDEXING_POLL_MAX_S + _deferred_waited
                     emit(f"  ✓ Document ready after {_total_wait}s — answering now…")
                     success = True
                     _is_indexing = False
                     break
-                if _deferred_waited % _keepalive_every == 0:
+                if _at_keepalive_tick:
                     emit(f"  ⏳ Still indexing ({_INDEXING_POLL_MAX_S + _deferred_waited}s)…")
             # _is_indexing still True only if the hard cap fired — genuinely give up.
 
@@ -2592,7 +2698,7 @@ def _execute_tool(
             user_message=_question,
             thread_id=ctx.thread_id,
             active_context=active,
-            mode=getattr(ctx, "chat_mode", None) or "copilot",
+            mode=translate_chat_mode_to_caller_mode(getattr(ctx, "chat_mode", None)),
             emitter=emitter,
             pipeline_ctx=ctx,
             extra_out=None,
@@ -2621,13 +2727,30 @@ def _execute_tool(
         # the skill returned content + sources + a non-empty signal.
         # Operational skills (create_task, list_uploads, etc.) return no sources
         # and RETRIEVAL_SIGNAL_NO_SOURCES, so they never trip this gate.
+        #
+        # 2026-08-16 (Ananth, directly, live finding cid=a337ef54): explicit
+        # opt-OUT, not just opt-in. fetch_document resolves WHICH document
+        # matches and returns a download-link card -- SourceRef.text is just
+        # the filename, never real content (by design; its own registration
+        # docstring says "not the answer in it, use search_corpus for that").
+        # The plain-inference branch below can't tell "real content" from
+        # "download card" -- both look like success+sources+signal="ok" --
+        # so it was finalizing the turn on a download link with no usable
+        # answer, when react still had rounds left to actually retrieve the
+        # content. `env.extra["golden"] is False` (explicitly, not just
+        # unset/None) lets a skill say "I succeeded, but this isn't enough
+        # to answer with -- don't stop here."
         _golden_explicit = bool((env.extra or {}).get("golden"))
+        _golden_explicitly_false = (env.extra or {}).get("golden") is False
         _skill_golden = bool(
-            _golden_explicit
-            or (
-                _skill_success
-                and env.sources
-                and (env.signal or "") not in ("", RETRIEVAL_SIGNAL_NO_SOURCES)
+            not _golden_explicitly_false
+            and (
+                _golden_explicit
+                or (
+                    _skill_success
+                    and env.sources
+                    and (env.signal or "") not in ("", RETRIEVAL_SIGNAL_NO_SOURCES)
+                )
             )
         )
         _tr: dict = {
@@ -2645,6 +2768,16 @@ def _execute_tool(
         #   multi : extra.sections = [{section_format, section_title, table_headers, table_rows}, ...]
         #   single: extra.section_format / extra.table_headers / extra.table_rows (flat, legacy)
         _ex = env.extra or {}
+        # Task #106 (2026-08-16, Ananth, directly): fetch_document can now
+        # attach a small-enough document's actual bytes (env.extra
+        # ["attachment"]) instead of just a filename -- stash it for the
+        # NEXT reasoning round's LLM call (the main round loop reads
+        # ctx._pending_attachments and clears it after one use, since an
+        # attachment is only relevant to the round immediately following
+        # the fetch, not every round for the rest of the turn).
+        _attachment = _ex.get("attachment")
+        if isinstance(_attachment, dict) and _attachment.get("data_b64"):
+            ctx._pending_attachments = [_attachment]  # type: ignore[attr-defined]
 
         def _parse_hint(h: dict) -> dict:
             """Normalise one raw section-hint dict; returns {} if unusable."""
@@ -3238,6 +3371,31 @@ def _dedupe_sources(sources: list) -> list:
     return out
 
 
+# 2026-08-12 (Chat Master directive, Task #95): phrases the model is
+# instructed to use for an honest non-answer (REACT_FORMAT_RULES_TEXT: "If
+# the answer is genuinely unknown after searching, say so in ONE sentence").
+# A round-1 fast-path completion (Rule 8/11) can produce this same honest
+# hedge without ever populating evidence_review, so the gaps_open check
+# alone wouldn't catch it -- this is the text-level backstop.
+_GAPS_CLOSED_HEDGE_PHRASES = (
+    "was not found",
+    "were not found",
+    "could not find",
+    "couldn't find",
+    "not available in our materials",
+    "no information available",
+    "don't have information",
+    "do not have information",
+    "unable to find",
+    "no verified answer",
+)
+
+
+def _looks_like_gaps_hedge(answer_text: str) -> bool:
+    lowered = (answer_text or "").lower()
+    return any(phrase in lowered for phrase in _GAPS_CLOSED_HEDGE_PHRASES)
+
+
 def _finalize_response(
     ctx: PipelineContext,
     final_answer: str,
@@ -3436,6 +3594,67 @@ def _finalize_response(
     _reasoning_trace = getattr(ctx, "react_trace_rounds", None)
     if _reasoning_trace:
         ctx.reasoning_trace = list(_reasoning_trace)
+
+    # 2026-08-12 (Chat Master directive, Task #95): a round-1 fast-path
+    # completion (Rule 8/11 above -- "Recent conversation" already answers
+    # the question, so the model sets is_complete=true in round 1 without
+    # ever calling a tool) never populates evidence_review at all --
+    # REACT_RESPONSE_SHAPE_TEXT only requires it "when NOT your first
+    # round" -- so a turn that genuinely resolves something this way leaves
+    # #90's gaps_closed index nothing to pick up. Fallback: when the WHOLE
+    # trace closed with zero gaps_closed and zero gaps_open anywhere (i.e.
+    # evidence_review's gap-tracking never ran on any round) and the
+    # terminal round is a real completion (tool=None, per the schema's
+    # tool-call/final-answer shapes being mutually exclusive) with a
+    # non-empty, non-hedged answer, synthesize one gaps_closed entry on
+    # that terminal round so #90 has something to match future turns
+    # against. gap_text = ctx.message (the user's own query, not the
+    # round's "thought") -- #90 matches against FUTURE queries via
+    # keyword overlap against gap_text, and the user's own question
+    # vocabulary is the right target for that, not the model's internal
+    # reasoning prose, which is far more variable. Deliberately excludes
+    # any turn that recorded a gaps_open anywhere -- a genuine "not found"
+    # turn (Task #95's original, corrected finding: T2/Humana correctly
+    # reported gaps_open with nothing closed) must NOT be synthesized into
+    # a false resolution -- plus a text-level hedge backstop for the case
+    # where a round-1 fast path itself produces an honest non-answer
+    # without ever running evidence_review to record gaps_open.
+    _gc_rounds = getattr(ctx, "react_trace_rounds", None) or []
+    if _gc_rounds and (final_answer or "").strip():
+        _gc_any_closed = any(
+            isinstance(r, dict) and (r.get("enrichment") or {}).get("gaps_closed")
+            for r in _gc_rounds
+        )
+        _gc_any_open = any(
+            isinstance(r, dict) and (r.get("enrichment") or {}).get("gaps_open")
+            for r in _gc_rounds
+        )
+        _gc_terminal = _gc_rounds[-1]
+        # "tool" key must be explicitly PRESENT (even as None) -- a real
+        # round dict always has it by the time _finalize_response runs
+        # (set by the per-round decision.update() mutation). A round dict
+        # missing the key entirely was never processed through that path
+        # (e.g. a diagnostics-only fixture) and must not be treated as a
+        # genuine is_complete=true completion -- "tool" absent is not the
+        # same signal as "tool" explicitly None. (2026-08-16 fix: caught
+        # by TestReasoningTraceAlias.test_reasoning_trace_mirrors_react_
+        # trace_rounds regressing when the #104 suite ran the full file.)
+        _gc_terminal_is_complete = (
+            isinstance(_gc_terminal, dict) and "tool" in _gc_terminal and not _gc_terminal.get("tool")
+        )
+        if (
+            _gc_terminal_is_complete
+            and not _gc_any_closed
+            and not _gc_any_open
+            and not _looks_like_gaps_hedge(final_answer)
+        ):
+            _gc_user_query = (getattr(ctx, "message", None) or "").strip()
+            if _gc_user_query:
+                _gc_enr = _gc_terminal.get("enrichment")
+                if not isinstance(_gc_enr, dict):
+                    _gc_enr = {}
+                    _gc_terminal["enrichment"] = _gc_enr
+                _gc_enr["gaps_closed"] = [_gc_user_query]
 
     # react_trace diagnostics panel (2026-07-31) — one per turn, same
     # "diagnostic-only, doesn't affect the answer" tier as retrieval_trace.
@@ -4220,6 +4439,13 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         # in this iteration (see the react_trace block above) — reused here
         # rather than recomputed, so the same values both drive this call
         # and the diagnostics panel.
+        # Task #106: one-shot -- an attachment fetch_document set on the
+        # PREVIOUS round's tool result is consumed by THIS round's call
+        # and then cleared, so it doesn't keep re-attaching the same
+        # document (and re-paying its token cost) on every later round.
+        _round_attachments = getattr(ctx, "_pending_attachments", None)
+        if _round_attachments:
+            ctx._pending_attachments = None  # type: ignore[attr-defined]
         decision_raw = _call_llm_json(
             reasoning_system,
             reasoning_context,
@@ -4229,6 +4455,7 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             composition_hash=_reasoning_composition_hash,
             reasoning_depth=_bandit_reasoning_depth,
             latency_budget_ms=_bandit_latency_budget_ms,
+            attachments=_round_attachments,
         )
 
         decision = _parse_react_decision_json(decision_raw)
@@ -4451,10 +4678,25 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
 
             if tool_results and _keep:
                 _last_call_idx = len(tool_results)
-                _before_len = len((tool_results[-1].get("result") or ""))
+                _raw_before_prune = tool_results[-1].get("result") or ""
+                _before_len = len(_raw_before_prune)
                 tool_results[-1]["result"] = _prune_kept_chunks(
-                    tool_results[-1].get("result") or "", _keep, _last_call_idx,
+                    _raw_before_prune, _keep, _last_call_idx,
                 )
+                # Task #105 (2026-08-16, Chat Master/Ananth ruling): persist
+                # react's real per-round curation forward, not just into the
+                # transient string above (which only serves THIS round's own
+                # next-round prompt) -- a running set integrate.py's
+                # _build_rag_chunks can read from directly, so the final
+                # synthesis call gets what react already judged relevant
+                # instead of a generic top-K rerank_score re-cut of the full
+                # uncapped pool (confirmed live, cid=53a99efc: that re-cut
+                # crowded an entire payer's evidence out of the answer).
+                _curated_ids = getattr(ctx, "curated_chunk_ids", None)
+                if _curated_ids is None:
+                    _curated_ids = set()
+                    ctx.curated_chunk_ids = _curated_ids  # type: ignore[attr-defined]
+                _curated_ids.update(_curated_ids_from_kept_blocks(_raw_before_prune, _keep))
                 _after_len = len(tool_results[-1]["result"])
                 emit(f"  Evidence review: keeping chunks {_keep} from call {_last_call_idx} ({_before_len}→{_after_len} chars)")
                 if _sparse_evidence:
@@ -4571,6 +4813,82 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                     "trigger": "periodic",
                 }
             if answer:
+                # Completion-gate critic (Task #104, 2026-08-16, docs/
+                # REACT_COMPLETION_CRITIC_DESIGN.md) — chat.thinking
+                # (agentic) mode only, runs BEFORE the groundedness floor
+                # below: a coarse, cheap coverage check first, so an
+                # answer that never addressed a whole named category (e.g.
+                # missing "SUD" in a 4-category question) doesn't pay for
+                # expensive per-claim citation verification on its way to
+                # being discarded for another round anyway. Separate
+                # concern from groundedness (are claims supported by
+                # evidence) — this checks coverage (did the answer address
+                # every sub-part asked). Shares the SAME extension-round
+                # ledger (_pp_contract.max_extension_rounds /
+                # _pp_extension_rounds_used) as the groundedness floor
+                # rather than a second independent budget, per the
+                # design's §3 recommendation — two uncoordinated extension
+                # pools could compound past the mode's intended round
+                # ceiling. Gated on _pp_contract existing (not on
+                # confidence_bar, that's groundedness-specific) because
+                # that ledger is where the shared accounting lives; if the
+                # governor is off there's no ledger to share against, so
+                # this gate is skipped rather than starting its own.
+                if (
+                    _pp_enabled
+                    and _pp_contract is not None
+                    and mode_label == "agentic"
+                    and rn < max_it
+                    and (_pp_contract.max_extension_rounds - _pp_extension_rounds_used) > 0
+                ):
+                    from app.pipeline.react.critic import (
+                        COMPLETION_CRITIC_SYSTEM_PROMPT as _cc_system_prompt,
+                        build_completion_critic_user_message as _cc_build_msg,
+                        parse_completion_critic_response as _cc_parse,
+                    )
+
+                    try:
+                        _cc_raw = _call_llm_json(
+                            _cc_system_prompt,
+                            _cc_build_msg(
+                                question=ctx.effective_message or ctx.message or "",
+                                answer=answer,
+                            ),
+                            ctx=ctx, stage="react_completion_critic", max_tokens=400,
+                            reasoning_depth="fast", latency_budget_ms=1500,
+                        )
+                        _cc_verdict = _cc_parse(_cc_raw)
+                    except Exception as _cc_exc:
+                        # Same posture as the groundedness floor's own
+                        # provider-failure handling below: a completion-
+                        # gate infrastructure failure must never kill a
+                        # turn — degrade to "satisfied" (i.e. no-op) and
+                        # fall through to the existing finalize path.
+                        logger.debug("completion critic call failed: %s", _cc_exc)
+                        _cc_verdict = None
+
+                    ctx.completion_critic_ran = True
+                    if _cc_verdict is not None:
+                        ctx.completion_critic_satisfied = _cc_verdict.satisfied
+                        if not _cc_verdict.satisfied:
+                            ctx.completion_critic_gaps = _cc_verdict.uncovered
+                            ctx.completion_critic_next_query = _cc_verdict.suggested_next_query
+                            _pp_extension_rounds_used += 1
+                            max_it += 1
+                            tool_results.append({
+                                "tool": "_completion_critic",
+                                "success": False,
+                                "result": (
+                                    "Coverage check found this answer incomplete. Still "
+                                    "missing: " + "; ".join(_cc_verdict.uncovered[:5])
+                                    + (
+                                        f". Suggested next search: {_cc_verdict.suggested_next_query}"
+                                        if _cc_verdict.suggested_next_query else ""
+                                    )
+                                ),
+                            })
+                            continue
+
                 # Product Promise governor — mandatory groundedness floor
                 # (docs/REACT_PRODUCT_PROMISE_SPEC.md), behind
                 # MOBIUS_PRODUCT_PROMISE_ENABLED, confidence_bar in
