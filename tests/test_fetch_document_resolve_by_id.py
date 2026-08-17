@@ -280,6 +280,102 @@ def test_corpus_text_none_when_no_chunk_text(monkeypatch):
     assert fd._fetch_corpus_text_attachment("doc-x", "Foo.pdf") is None
 
 
+# ── exact-match short-circuit + multi-match id exposure (spec §4) ────
+
+_EXACT = {
+    "document_id": "517b8626-bb7d-4ab3-b02f-c98522b7be91",
+    "document_display_name": "59G-4.150 Inpatient Hospital Services Coverage Policy",
+    "document_filename": "59G-4.150_Inpatient_Hospital_Services_Coverage_Policy_Final.pdf",
+    "document_payer": "AHCA", "document_state": "FL", "document_program": "Medicaid",
+    "document_authority_level": "payer_manual", "updated_at": "2026-03-01T00:00:00Z",
+}
+_SIBLING = {
+    "document_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    "document_display_name": "59G-4.252 Diabetic Supply Services Coverage Policy",
+    "document_filename": "59G-4.252_Diabetic_Supply_Services_Coverage_Policy_FINAL.pdf",
+    "document_payer": "AHCA", "document_state": "FL", "document_program": "Medicaid",
+    "document_authority_level": "payer_manual", "updated_at": "2026-03-01T00:00:00Z",
+}
+
+
+def _no_io(monkeypatch):
+    # Keep _corpus_match_envelope's single-match path off the network/DB.
+    monkeypatch.setattr(fd, "_maybe_fetch_attachment", lambda *a, **k: None)
+    monkeypatch.setattr(fd, "_fetch_corpus_text_attachment", lambda *a, **k: None)
+    monkeypatch.setattr(fd, "_document_page_count", lambda *a, **k: None)
+    monkeypatch.setattr(fd, "_thread_upload_matches", lambda *a, **k: [])
+
+
+def test_exact_filename_shortcircuits_over_near_duplicate_siblings(monkeypatch):
+    # Spec case #2: user names the exact filename; a near-duplicate sibling
+    # shares tokens. Exact-match must win as a SINGLE resolve — no pick-list.
+    _no_io(monkeypatch)
+    monkeypatch.setattr(fd, "_fetch_candidates", lambda q, **k: [dict(_EXACT), dict(_SIBLING)])
+    q = "59G-4.150_Inpatient_Hospital_Services_Coverage_Policy_Final.pdf"
+
+    env = fd._run_fetch_document(_call(query=q, ctx=SimpleNamespace()))
+
+    assert env.extra["match_count"] == 1
+    assert env.extra["resolved_via"] == "exact_name_match"
+    assert env.sources[0].document_id == _EXACT["document_id"]
+    # sibling never surfaced as a candidate to the model
+    assert _SIBLING["document_id"] not in (env.text or "")
+
+
+def test_exact_match_ignores_extension_and_separators(monkeypatch):
+    _no_io(monkeypatch)
+    monkeypatch.setattr(fd, "_fetch_candidates", lambda q, **k: [dict(_EXACT), dict(_SIBLING)])
+    # No extension, spaces instead of underscores, different case.
+    env = fd._run_fetch_document(_call(
+        query="59g-4.150 inpatient hospital services coverage policy final",
+        ctx=SimpleNamespace()))
+    assert env.extra["resolved_via"] == "exact_name_match"
+    assert env.sources[0].document_id == _EXACT["document_id"]
+
+
+def test_fuzzy_multimatch_text_exposes_document_ids(monkeypatch):
+    # Spec case #3 + 2a: genuinely ambiguous (no exact match) → pick-list,
+    # but the text now carries each candidate's document_id so a follow-up
+    # round can resolve deterministically instead of re-searching the name.
+    _no_io(monkeypatch)
+    a = dict(_ROW, document_id="11111111-1111-1111-1111-111111111111",
+             document_display_name="Sunshine Provider Manual 2024", document_filename="pm_2024.pdf")
+    b = dict(_ROW, document_id="22222222-2222-2222-2222-222222222222",
+             document_display_name="Sunshine Provider Manual 2025", document_filename="pm_2025.pdf")
+    monkeypatch.setattr(fd, "_fetch_candidates", lambda q, **k: [a, b])
+
+    env = fd._run_fetch_document(_call(query="sunshine provider manual", ctx=SimpleNamespace()))
+
+    assert env.extra["match_count"] == 2
+    assert "11111111-1111-1111-1111-111111111111" in env.text
+    assert "22222222-2222-2222-2222-222222222222" in env.text
+    assert "document_id" in env.text
+
+
+def test_duplicate_exact_names_fall_through_to_disambiguation(monkeypatch):
+    # Spec open-Q2: two DISTINCT docs share an exact filename → do NOT pick
+    # one arbitrarily; fall through to the multi-candidate path.
+    _no_io(monkeypatch)
+    dup1 = dict(_EXACT, document_id="10000000-0000-0000-0000-000000000001")
+    dup2 = dict(_EXACT, document_id="20000000-0000-0000-0000-000000000002")
+    monkeypatch.setattr(fd, "_fetch_candidates", lambda q, **k: [dup1, dup2])
+    q = "59G-4.150_Inpatient_Hospital_Services_Coverage_Policy_Final.pdf"
+
+    env = fd._run_fetch_document(_call(query=q, ctx=SimpleNamespace()))
+
+    assert env.extra["match_count"] == 2
+    assert env.extra["resolved_via"] != "exact_name_match"
+
+
+def test_normalize_name_folds_extension_case_separators():
+    n = fd._normalize_name
+    assert n("59G-4.150_Inpatient_Hospital.pdf") == n("59g-4.150 inpatient hospital")
+    assert n("Provider_Manual.PDF") == "provider manual"
+    assert n("a/b-c_d.docx") == "a b c d"
+    # policy-id dots are preserved (only the trailing extension is stripped)
+    assert "4.150" in n("59G-4.150.pdf")
+
+
 # ── _resolve_by_id unit: UUID guard + row normalization ─────────────
 
 

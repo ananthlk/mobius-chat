@@ -557,6 +557,49 @@ def _fetch_candidates(query: str, *, limit: int = 30) -> list[dict[str, Any]]:
     return _normalize_db_rows(db_query(base_sql, "chat", params=params))
 
 
+def _normalize_name(s: str) -> str:
+    """Fold a filename/title for EXACT-match comparison: lowercase, drop a
+    single trailing file extension, collapse ``_ - / whitespace`` runs to
+    one space, strip. Dots are preserved (they carry meaning in policy IDs
+    like ``59G-4.150``), except the trailing extension. So the user's typed
+    ``59G-4.150_Inpatient_Hospital_Services_Coverage_Policy_Final.pdf`` and
+    the stored filename normalize to the same string.
+    """
+    s = (s or "").strip().lower()
+    s = re.sub(r"\.[a-z0-9]{1,5}$", "", s)        # strip one trailing extension
+    s = re.sub(r"[_\-/\s]+", " ", s).strip()       # collapse separators
+    return s
+
+
+def _exact_name_matches(
+    query: str, candidates: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Candidates whose normalized filename OR display_name EQUALS the
+    normalized query — deduped by document_id.
+
+    Powers the exact-filename short-circuit (spec 2b): when the user names
+    a document verbatim we resolve straight to it instead of surfacing a
+    pick-list of near-duplicate siblings that merely share tokens. Returns
+    >1 only when genuinely distinct documents share an exact name — the
+    caller then falls through to normal disambiguation rather than guessing.
+    """
+    nq = _normalize_name(query)
+    if not nq:
+        return []
+    out: list[dict[str, Any]] = []
+    seen: set[Any] = set()
+    for c in candidates:
+        did = c.get("document_id")
+        if did in seen:
+            continue
+        fn = _normalize_name(c.get("document_filename") or "")
+        dn = _normalize_name(c.get("document_display_name") or "")
+        if nq and (nq == fn or nq == dn):
+            out.append(c)
+            seen.add(did)
+    return out
+
+
 def _rank_matches(query: str, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Rank candidates by token overlap; filter below floor."""
     qtokens = _tokenize(query)
@@ -974,6 +1017,19 @@ def _run_fetch_document(call: SkillCall) -> SkillEnvelope:
             signal="tool_error",
         )
 
+    # Exact-filename short-circuit (spec 2b, 2026-08-17). When the user
+    # named a document verbatim, resolve straight to it — skip the pick-list
+    # AND the id round-trip. Routes into the same single-match path that
+    # document_id resolution uses, so content attaches in THIS call. Only
+    # fires when exactly one candidate matches exactly; duplicate exact
+    # names fall through to normal disambiguation (spec open-Q2).
+    exact = _exact_name_matches(query, candidates)
+    if len(exact) == 1:
+        _e(f"✓ Exact match — {exact[0].get('document_display_name') or exact[0].get('document_filename')}")
+        return _corpus_match_envelope(
+            call, exact, query, "exact_name_match", emit=_e, pages_spec=pages_spec
+        )
+
     matches = _rank_matches(query, candidates)
     resolved_via = "name_match"
     if not matches:
@@ -1149,10 +1205,20 @@ def _corpus_match_envelope(
             _e(f"✓ Attached {sources[0].document_name} text for reading{_trunc}")
         text = f"Found **{sources[0].document_name}**. Use the card below to download it."
     else:
-        names = ", ".join(s.document_name for s in sources[:3])
+        # Multi-match: expose each candidate's document_id in the text the
+        # model reads back (spec 2a). Without the ids here, a follow-up
+        # round knows WHICH doc it wants but has no id to send — it resends
+        # the name, re-runs the same fuzzy search, and burns rounds on a
+        # structurally-impossible retry. One short uuid per line closes that.
+        lines = [
+            f"{i}. {s.document_name} (document_id: {s.document_id})"
+            for i, s in enumerate(sources[:3], 1)
+        ]
+        more = f"\n(+{len(sources) - 3} more — narrow the name)" if len(sources) > 3 else ""
         text = (
-            f"Found {len(sources)} possible matches: {names}. "
-            "Pick the one you want from the cards below."
+            f"Found {len(sources)} possible matches:\n" + "\n".join(lines) + more
+            + "\nCall again with document_id set to the one you want, "
+            "or show the user the cards below to pick."
         )
 
     _extra: dict[str, Any] = {
