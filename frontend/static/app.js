@@ -10209,6 +10209,87 @@ function renderDocumentDownloadBlock(entries) {
   }
   return wrap;
 }
+var _DISAMBIG_KIND_ICON = {
+  document: "\u{1F4C4}",
+  payer: "\u{1F3E2}",
+  carc: "\u{1F3F7}\uFE0F",
+  provider: "\u{1F464}",
+  npi: "#\uFE0F\u20E3",
+  jurisdiction: "\u{1F4CD}",
+  org: "\u{1F3E5}"
+};
+function renderDisambiguationBlock(data, correlationId, onSelect) {
+  const wrap = document.createElement("div");
+  wrap.className = "disambig-block";
+  const kind = data.select_kind || "generic";
+  wrap.setAttribute("data-select-kind", kind);
+  const cands = Array.isArray(data.candidates) ? data.candidates : [];
+  for (const c of cands) {
+    if (!c || !c.id || !c.title)
+      continue;
+    const card = document.createElement("div");
+    card.className = "disambig-card";
+    const icon = document.createElement("div");
+    icon.className = "disambig-icon";
+    icon.textContent = _DISAMBIG_KIND_ICON[kind] || "\u2022";
+    const info = document.createElement("div");
+    info.className = "disambig-info";
+    const titleRow = document.createElement("div");
+    titleRow.className = "disambig-title";
+    const titleText = document.createElement("span");
+    titleText.textContent = c.title;
+    titleRow.appendChild(titleText);
+    if (c.badge) {
+      const b = document.createElement("span");
+      b.className = "disambig-badge";
+      b.textContent = c.badge;
+      titleRow.appendChild(b);
+    }
+    info.appendChild(titleRow);
+    const sub = (c.subtitle || "").trim() || (c.meta ? Object.entries(c.meta).filter(([k]) => k !== "download_url").map(([, v]) => v).filter(Boolean).join(" \xB7 ") : "");
+    if (sub) {
+      const s = document.createElement("div");
+      s.className = "disambig-subtitle";
+      s.textContent = sub;
+      info.appendChild(s);
+    }
+    if (c.snippet) {
+      const sn = document.createElement("div");
+      sn.className = "disambig-snippet";
+      sn.textContent = c.snippet;
+      info.appendChild(sn);
+    }
+    const actions = document.createElement("div");
+    actions.className = "disambig-actions";
+    const useBtn = document.createElement("button");
+    useBtn.type = "button";
+    useBtn.className = "disambig-use-btn";
+    useBtn.textContent = "Use this";
+    useBtn.setAttribute("aria-label", "Use " + c.title);
+    useBtn.addEventListener("click", () => {
+      useBtn.disabled = true;
+      useBtn.textContent = "\u2026";
+      onSelect({ kind, id: c.id, in_reply_to: correlationId || void 0 }, "\u2192 " + c.title);
+    });
+    actions.appendChild(useBtn);
+    const dl = c.meta?.download_url;
+    if (kind === "document" && dl) {
+      const dlBtn = document.createElement("button");
+      dlBtn.type = "button";
+      dlBtn.className = "disambig-dl-btn";
+      dlBtn.textContent = "Download";
+      dlBtn.addEventListener("click", () => {
+        void downloadDocumentFile({ document_id: c.id, title: c.title, download_url: dl }, dlBtn);
+      });
+      actions.appendChild(dlBtn);
+    }
+    card.appendChild(icon);
+    card.appendChild(info);
+    card.appendChild(actions);
+    wrap.appendChild(card);
+  }
+  return wrap;
+}
 function renderAssistantFromEnvelope(envelope, opts) {
   const outer = document.createElement("div");
   outer.className = "assistant-envelope";
@@ -10356,6 +10437,15 @@ function renderAssistantFromEnvelope(envelope, opts) {
       const b = block;
       if (Array.isArray(b.documents) && b.documents.length) {
         bubble.appendChild(renderDocumentDownloadBlock(b.documents));
+      }
+    } else if (t === "disambiguation") {
+      const b = block;
+      if (Array.isArray(b.candidates) && b.candidates.length) {
+        bubble.appendChild(renderDisambiguationBlock(
+          b,
+          opts.correlationId,
+          (sel, echo) => opts.onDisambiguationSelect?.(sel, echo)
+        ));
       }
     } else if (t === "task_list") {
       let parseDetail2 = function(raw) {
@@ -13044,6 +13134,9 @@ ${message}`;
     if (opts?.phi_override) {
       payload.phi_override = true;
     }
+    if (opts?.selection && opts.selection.kind && opts.selection.id) {
+      payload.selection = opts.selection;
+    }
     function onDetailReady(_content, _outputIntent) {
     }
     function onIntegratorPartial(part, payload2) {
@@ -13397,6 +13490,7 @@ ${message}`;
             const toolEnv = { ...envCandidate, blocks: toolBlocks };
             const toolRendered = renderAssistantFromEnvelope(toolEnv, {
               onFollowupClick: (q) => sendMessage(q),
+              onDisambiguationSelect: (sel, echo) => sendMessage(echo, { selection: sel }),
               sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || void 0,
               showConfidenceBadge: false,
               qcAudit: qcFromPayload,
@@ -13420,6 +13514,7 @@ ${message}`;
           turnWrap.appendChild(
             renderAssistantFromEnvelope(envCandidate, {
               onFollowupClick: (q) => sendMessage(q),
+              onDisambiguationSelect: (sel, echo) => sendMessage(echo, { selection: sel }),
               sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || void 0,
               showConfidenceBadge: data.status !== "clarification" && data.status !== "refinement_ask",
               qcAudit: qcFromPayload,

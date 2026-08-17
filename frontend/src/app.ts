@@ -469,6 +469,7 @@ type EnvelopeBlock =
   | { type: "markdown_report"; markdown: string }
   | { type: "attachments"; has_pdf?: boolean }
   | { type: "document_download"; documents: DocumentDownloadEntry[]; query?: string }
+  | { type: "disambiguation"; select_kind: string; query?: string; candidates: DisambiguationCandidate[] }
   | { type: "pipeline_human_gate"; version?: number; gate: CredentialingCopilotPayload & { plan_kind?: string; thread_id?: string | null } };
 
 /** Single RAG source (when backend provides sources array) */
@@ -563,6 +564,10 @@ interface SendMessageOpts {
   /** Task #29: "Continue" a truncated turn — sends the checkpointed partial_message as
    *  system_context on a fresh turn (backend Round-0 short-circuits from it). Not a resume. */
   system_context?: string;
+  /** Disambiguation select (DISAMBIGUATION_FASTPATH_CONTRACT §3): the user picked a candidate from a
+   *  `disambiguation` block. Structured — the backend routes on `kind` (document → fetch_document(id)),
+   *  `message` is display-only. `in_reply_to` = correlation_id of the disambiguation turn. */
+  selection?: { kind: string; id: string; in_reply_to?: string };
 }
 
 /** Aligned with mobius-chat/app/services/tool_agent.py roster_triggers + roster_triggers_new */
@@ -8143,6 +8148,82 @@ function renderDocumentDownloadBlock(entries: DocumentDownloadEntry[]): HTMLElem
   return wrap;
 }
 
+/** A candidate inside a `disambiguation` block (DISAMBIGUATION_FASTPATH_CONTRACT §1). */
+interface DisambiguationCandidate {
+  id: string; title: string;
+  subtitle?: string; snippet?: string;
+  meta?: Record<string, string>; badge?: string;
+  action?: { kind?: string; url?: string; prompt?: string };
+}
+interface DisambiguationBlockData {
+  select_kind: string; query?: string; candidates: DisambiguationCandidate[];
+}
+/** Per-kind leading icon (specialization); unknown kinds fall back to a neutral dot. */
+const _DISAMBIG_KIND_ICON: Record<string, string> = {
+  document: "📄", payer: "🏢", carc: "🏷️", provider: "👤", npi: "#️⃣", jurisdiction: "📍", org: "🏥",
+};
+
+/**
+ * Render a `disambiguation` envelope block — the generic "pick one to proceed" surface
+ * (DISAMBIGUATION_FASTPATH_CONTRACT). Generic base card for every select_kind; opt-in per-kind
+ * specialization decorates it (icon always; `document` adds a secondary Download when the candidate
+ * carries a download_url). "Use this" fires the STRUCTURED resubmit via onSelect (backend routes on
+ * selection.kind). `id`+`title` required per candidate; everything else optional + degrades gracefully.
+ */
+function renderDisambiguationBlock(
+  data: DisambiguationBlockData,
+  correlationId: string | null | undefined,
+  onSelect: (sel: { kind: string; id: string; in_reply_to?: string }, echo: string) => void,
+): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "disambig-block";
+  const kind = data.select_kind || "generic";
+  wrap.setAttribute("data-select-kind", kind);
+  const cands = Array.isArray(data.candidates) ? data.candidates : [];
+  for (const c of cands) {
+    if (!c || !c.id || !c.title) continue;
+    const card = document.createElement("div");
+    card.className = "disambig-card";
+
+    const icon = document.createElement("div"); icon.className = "disambig-icon";
+    icon.textContent = _DISAMBIG_KIND_ICON[kind] || "•";
+
+    const info = document.createElement("div"); info.className = "disambig-info";
+    const titleRow = document.createElement("div"); titleRow.className = "disambig-title";
+    const titleText = document.createElement("span"); titleText.textContent = c.title; titleRow.appendChild(titleText);
+    if (c.badge) { const b = document.createElement("span"); b.className = "disambig-badge"; b.textContent = c.badge; titleRow.appendChild(b); }
+    info.appendChild(titleRow);
+    // subtitle: explicit, else derived from meta values (drop the download_url plumbing field).
+    const sub = (c.subtitle || "").trim() ||
+      (c.meta ? Object.entries(c.meta).filter(([k]) => k !== "download_url").map(([, v]) => v).filter(Boolean).join(" · ") : "");
+    if (sub) { const s = document.createElement("div"); s.className = "disambig-subtitle"; s.textContent = sub; info.appendChild(s); }
+    if (c.snippet) { const sn = document.createElement("div"); sn.className = "disambig-snippet"; sn.textContent = c.snippet; info.appendChild(sn); }
+
+    const actions = document.createElement("div"); actions.className = "disambig-actions";
+    const useBtn = document.createElement("button"); useBtn.type = "button"; useBtn.className = "disambig-use-btn";
+    useBtn.textContent = "Use this"; useBtn.setAttribute("aria-label", "Use " + c.title);
+    useBtn.addEventListener("click", () => {
+      useBtn.disabled = true; useBtn.textContent = "…";
+      onSelect({ kind, id: c.id, in_reply_to: correlationId || undefined }, "→ " + c.title);
+    });
+    actions.appendChild(useBtn);
+    // document specialization: secondary Download when a download_url rode along in meta.
+    const dl = c.meta?.download_url;
+    if (kind === "document" && dl) {
+      const dlBtn = document.createElement("button"); dlBtn.type = "button"; dlBtn.className = "disambig-dl-btn";
+      dlBtn.textContent = "Download";
+      dlBtn.addEventListener("click", () => {
+        void downloadDocumentFile({ document_id: c.id, title: c.title, download_url: dl } as DocumentDownloadEntry, dlBtn);
+      });
+      actions.appendChild(dlBtn);
+    }
+
+    card.appendChild(icon); card.appendChild(info); card.appendChild(actions);
+    wrap.appendChild(card);
+  }
+  return wrap;
+}
+
 /** Render a completed turn from server assistant_envelope v1. */
 function renderAssistantFromEnvelope(
   envelope: AssistantEnvelope,
@@ -8154,6 +8235,8 @@ function renderAssistantFromEnvelope(
     correlationId?: string | null;
     suppressConfidenceForAdminQcFail?: boolean;
     threadId?: string | null;
+    /** Disambiguation "Use this" → structured resubmit (contract §3). Wraps sendMessage at the call site. */
+    onDisambiguationSelect?: (sel: { kind: string; id: string; in_reply_to?: string }, echo: string) => void;
   }
 ): HTMLElement {
   const outer = document.createElement("div");
@@ -8304,6 +8387,14 @@ function renderAssistantFromEnvelope(
       const b = block as { documents?: DocumentDownloadEntry[] };
       if (Array.isArray(b.documents) && b.documents.length) {
         bubble.appendChild(renderDocumentDownloadBlock(b.documents));
+      }
+    } else if (t === "disambiguation") {
+      const b = block as unknown as DisambiguationBlockData;
+      if (Array.isArray(b.candidates) && b.candidates.length) {
+        bubble.appendChild(renderDisambiguationBlock(
+          b, opts.correlationId,
+          (sel, echo) => opts.onDisambiguationSelect?.(sel, echo),
+        ));
       }
     } else if (t === "task_list") {
       const b = block as {
@@ -11492,6 +11583,10 @@ function run(): void {
     if (opts?.phi_override) {
       (payload as Record<string, unknown>).phi_override = true;
     }
+    if (opts?.selection && opts.selection.kind && opts.selection.id) {
+      // Structured disambiguation select — backend routes on selection.kind (contract §3).
+      (payload as Record<string, unknown>).selection = opts.selection;
+    }
     function onDetailReady(_content: string, _outputIntent: string): void {
       // Unified draft→answer view (Ananth 2026-08-07): there's no separate Answer panel to pre-fill
       // anymore — the integrator's final flows into the default panel (below the streamed draft) via
@@ -12000,6 +12095,7 @@ function run(): void {
               const toolEnv: AssistantEnvelope = { ...(envCandidate as AssistantEnvelope), blocks: toolBlocks };
               const toolRendered = renderAssistantFromEnvelope(toolEnv, {
                 onFollowupClick: (q) => sendMessage(q),
+                onDisambiguationSelect: (sel, echo) => sendMessage(echo, { selection: sel }),
                 sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || undefined,
                 showConfidenceBadge: false,
                 qcAudit: qcFromPayload,
@@ -12025,6 +12121,7 @@ function run(): void {
             turnWrap.appendChild(
               renderAssistantFromEnvelope(envCandidate as AssistantEnvelope, {
                 onFollowupClick: (q) => sendMessage(q),
+                onDisambiguationSelect: (sel, echo) => sendMessage(echo, { selection: sel }),
                 sourceConfidenceStrip: (data.source_confidence_strip ?? "").trim() || undefined,
                 showConfidenceBadge: data.status !== "clarification" && data.status !== "refinement_ask",
                 qcAudit: qcFromPayload,
