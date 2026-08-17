@@ -166,6 +166,14 @@ search_uploaded_document(upload_id optional, query)
     uploaded doc say about X", "summarize the PDF I just sent", "find the
     prior-auth rules in this manual") AND there is at least one instant_rag
     upload on the thread (see list_thread_document_uploads).
+  Do NOT use this for a document fetch_document resolved — even when
+    fetch_document's result says "attached" or "the full document is
+    attached to this message," that is a NATIVE attachment on the fetch_document
+    tool result, not an instant_rag thread upload, and this tool cannot see
+    it (it will fail with "No uploads on this thread"). If fetch_document
+    attached the document, that IS the document — read it directly from the
+    tool result and answer; do not call this tool or any other document tool
+    for it.
   upload_id: if omitted and exactly one instant_rag upload exists on the
     thread, the server auto-resolves. If multiple uploads exist, pick the
     one the user's question references (use list_thread_document_uploads

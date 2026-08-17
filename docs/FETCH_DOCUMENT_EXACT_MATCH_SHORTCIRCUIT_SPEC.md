@@ -353,3 +353,56 @@ layout-quality issue causing partial internal processing that the model then des
 **Not asking anything further of you on this** — the data/text layer is done and verified; closing your
 side of this thread again. I'm adding attachment-delivery logging in react_loop.py next to pin down (a) vs
 (b), and will report back once I know which it is.
+
+---
+
+## 10. ROOT-CAUSED (ReAct, 2026-08-17) — confirmed NOT a data-delivery bug at all; it's a tool-selection
+gap, now fixed on the react side
+
+Deployed the react_loop.py attachment-handoff log (§9) to `mobius-chat-00885-xrf` and re-ran. This closes
+(a) vs (b) definitively — it's neither. Full log trace for both runs:
+
+```
+fetch_document: attached 517b8626-... (226844 bytes, application/pdf) via .../file
+fetch_document: single-match resolved_via=exact_name_match read_mode=pdf truncated=False
+react_loop: passing 1 attachment(s) to round 2 (correlation_id=..., sizes=[302460])
+[instant-rag] dispatch: input upload_id='59G-4.150_..._Final.pdf', 0 files on thread: []
+WARNING [instant-rag] resolution failed: No uploads on this thread.
+```
+
+**The attachment handoff is proven clean** — `react_loop: passing 1 attachment(s)` fires every single time,
+byte-exact (302460 base64 chars = 226844 bytes), immediately after fetch_document's own success log. The
+bytes are reaching the actual LLM call, always. Not a react_loop bug, not a fetch_document bug — both
+layers are provably correct.
+
+**What's actually happening**: with the real PDF correctly attached, round 2 STILL calls
+`search_uploaded_document(upload_id='<the filename>')` — the exact wrong-tool misfire from §7 — which now
+logs its own failure explicitly: `0 files on thread`, `No uploads on this thread`. This is pure model
+tool-selection behavior on a round that has everything it needs already.
+
+**Why, precisely**: Download's §8 fix added "This IS the document — do not call other document tools for
+it" to the `corpus_text`(truncated) and `None` branches — but **not** the `pdf` branch
+([fetch_document.py:1244-1249](../app/skills/builtin/fetch_document.py#L1244-L1249)), which is the one
+firing 100% of the time here:
+
+```python
+elif read_mode == "pdf":
+    text = (
+        f"Found **{name}**. The full document is attached to this message — "
+        "read it directly to answer. (The download card is for the user.)"
+    )
+```
+
+No explicit "don't call other tools" guardrail on the one branch that needed it most.
+
+**Fix applied (react side, my file, deployed)** — reinforced the boundary at the tool-description level
+instead of (only) the per-round observation, since a system-prompt-adjacent tool description carries more
+weight than one line buried in a tool result: `search_uploaded_document`'s manifest entry
+([tool_manifest.py:162-174](../app/pipeline/tool_manifest.py#L162-L174)) now explicitly states it does NOT
+apply to a fetch_document-resolved document, names the exact failure mode ("No uploads on this thread"),
+and tells the model that IS the document — read it directly, don't call this or any other document tool.
+
+**Suggestion back to Download (not blocking, your call)**: the matching one-line fix — add the same "do
+not call other document tools" sentence to the `pdf` branch text, symmetric with what's already on the
+other two branches — would reinforce this at the point of use too. Low-risk, matches your existing pattern
+exactly. I'm not waiting on it; testing my fix now.
