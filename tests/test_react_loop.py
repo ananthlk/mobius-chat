@@ -48,6 +48,40 @@ def test_react_reasoning_system_includes_mode_quality_bar():
     assert "precision" in ag.lower()
 
 
+class TestRagCallCeilingTemplating:
+    """2026-08-17: rule 1b's rag-call hard limit used to be hardcoded ("3
+    rag calls... refuses a 4th call") even though #103 made the real
+    enforced ceiling mode-dependent (_rag_call_ceiling_for_mode: 6 for
+    agentic/chat.thinking, 3 otherwise) -- the PROMPT the model actually
+    reads never reflected that. Now templated via {{ rag_call_ceiling }},
+    rendered from the real per-mode function."""
+
+    def test_agentic_mode_shows_real_ceiling_of_six(self):
+        rendered = _react_reasoning_system(10, "agentic")
+        assert "6 rag calls per question" in rendered
+        assert "3 rag calls per question" not in rendered
+
+    def test_copilot_mode_shows_real_ceiling_of_three(self):
+        rendered = _react_reasoning_system(3, "copilot")
+        assert "3 rag calls per question" in rendered
+        assert "6 rag calls per question" not in rendered
+
+
+def test_react_critical_rules_teaches_real_disambiguation_mechanism():
+    """2026-08-17 (Ananth, directly, live finding): a model tried calling
+    a nonexistent "clarification options" tool across 4 rounds instead of
+    using the real mechanism (is_complete=true, tool=null, answer=<the
+    actual clarifying question>). Rule 12 makes that explicit. Locks the
+    key phrases so an edit that drops this guidance is forced to
+    acknowledge the tradeoff, same convention as the critic's own
+    system-prompt lock tests."""
+    from app.pipeline.react.prompts import REACT_CRITICAL_RULES_TEXT
+    lowered = REACT_CRITICAL_RULES_TEXT.lower()
+    assert "clarification" in lowered
+    assert "do not invent" in lowered or "don't invent" in lowered
+    assert "is_complete=true" in REACT_CRITICAL_RULES_TEXT
+
+
 def test_build_reasoning_context_includes_jurisdiction_and_message():
     """build_reasoning_context includes active jurisdiction and user message."""
     ctx = PipelineContext(

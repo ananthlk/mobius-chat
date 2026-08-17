@@ -17,6 +17,8 @@ Record deployed revision below after deploy completes.
 
 **Deployed revision:** mobius-chat-00870-qf5 (image tag 20260817-034608-db2cd22160), deployed 2026-08-17 by LLM Agent, serving 100% traffic. Post-deploy smoke: 5/5 pass.
 
+**Deployed revision:** mobius-chat-00872-lk5, deployed 2026-08-16, serving 100% traffic
+
 ---
 
 # Previous batch — #95/#104/#105/#106 (2026-08-16)

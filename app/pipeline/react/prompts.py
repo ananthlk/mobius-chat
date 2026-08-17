@@ -75,6 +75,23 @@ def react_max_iterations_for_mode(chat_mode: str | None) -> int:
     return REACT_MAX_ROUNDS_COPILOT
 
 
+def _rag_call_ceiling_for_mode(chat_mode: str | None) -> int:
+    """Task #103 (2026-08-16, Chat Master/Ananth ruling): 6 for chat.thinking
+    (agentic), 3 for every other mode -- see react_loop.py's _execute_tool
+    call site comment for why (Retriever's chat.thinking retrieval-budget
+    raise from #97/#102 gives that mode real room to use more corpus
+    calls). Lives here (not react_loop.py, which re-exports it for
+    back-compat/its own callers) so REACT_CRITICAL_RULES_TEXT's rule 1b
+    can reference the real per-mode number via {{ rag_call_ceiling }}
+    instead of a stale hardcoded one -- see _react_reasoning_system's
+    render call."""
+    from app.services.chat_mode_utils import translate_chat_mode_to_caller_mode
+
+    if translate_chat_mode_to_caller_mode(chat_mode) == "chat.thinking":
+        return 6
+    return 3
+
+
 def react_agent_role(iteration: int, max_it: int) -> str:
     """Deterministic, round-position-only phase label: 'explore' | 'synthesize' | 'draft'.
 
@@ -412,7 +429,7 @@ REACT_CRITICAL_RULES_TEXT = """CRITICAL RULES:
     - **citable_required was never True and the result is weak**: you get ONE reframe with a materially different query (same materiality bar as above), then stop.
     - **Materiality gate for any reframe**: before re-asking, ask — does this query change the actual matched terms, or is it a cosmetic reword that will hit the same BM25/vector results? If cosmetic, don't re-fire.
     - **observer_final_reason overrides materiality when present**: when the [Evidence Ledger] shows an observer_final_reason indicating a structural/capacity limit (e.g. "...filled_to_capacity"), that's RAG's own agent telling you the search genuinely maxed out its candidates — a materially different query won't change that. Skip the reframe and go to SHAPE 2, even if gap_status alone still reads "progressing."
-    - **Hard limit, enforced**: 3 rag calls per question, no more. The pipeline itself refuses a 4th call and returns a terminal signal — don't rely on remembering this, but don't try it either.
+    - **Hard limit, enforced**: {{ rag_call_ceiling }} rag calls per question, no more. The pipeline itself refuses a call past this and returns a terminal signal — don't rely on remembering this, but don't try it either.
 1c. **Show your reasoning, not just your move.** Starting round 2, every "thought" must read as three explicit beats, in order:
     (1) LEARNED — what the last tool result actually told you: cite the real signal (status, chunk count, whether it was citability-gated) — never "still gathering information" or other content-free filler.
     (2) RESTRATEGIZE — what concretely changes about your next move because of that (relax, reframe with new terms, switch tool, or stop) — not "try again" alone.
@@ -459,7 +476,8 @@ REACT_CRITICAL_RULES_TEXT = """CRITICAL RULES:
 9. Max {{ max_iterations }} reasoning rounds — if still no answer, escalate honestly with what was found.
 9b. **Credentialing / NPPES tools** often include a **Summary** in the tool trace plus long **Result** markdown. If Success is true and the Summary answers the user, set **is_complete=true** immediately — do **not** call the same tool again in a new round.
 10. If a tool result shows success (e.g. "Report stored", "Step 11 done", "report generated", "You can ask any question about it") → set is_complete=true and answer MUST confirm that the report or output was generated successfully. Do NOT say "I cannot generate" when the tool already succeeded.
-11. When "Recent conversation" is present: treat the prior assistant reply as the current answer. If the user is asking for something that answer did NOT provide (e.g. a link, URL, specific page, more detail, a number), the answer is INSUFFICIENT — do NOT set is_complete=true. Call rag or web_scrape and only set is_complete=true after you have tool results to fulfill the request."""
+11. When "Recent conversation" is present: treat the prior assistant reply as the current answer. If the user is asking for something that answer did NOT provide (e.g. a link, URL, specific page, more detail, a number), the answer is INSUFFICIENT — do NOT set is_complete=true. Call rag or web_scrape and only set is_complete=true after you have tool results to fulfill the request.
+12. **Ambiguous or insufficient tool result → ask directly, don't invent a tool.** When a tool's result signals it needs more information to proceed — multiple candidate matches (e.g. fetch_document resolved several similarly-named documents), a missing jurisdiction/payer, or any other genuine "which one do you mean" situation — and you cannot resolve it yourself from context already available in this conversation (active jurisdiction, prior turns, the user's own wording), the correct response is the SAME final-answer shape you always use: set is_complete=true, tool=null, and put the actual clarifying question in "answer" — naming the REAL candidates or REAL missing detail from the tool result, not a generic one. There is no separate "clarification options" tool or field; do NOT invent one. (2026-08-17, live finding: a model tried calling a nonexistent clarification mechanism across 4 rounds instead of just answering directly, burning rounds before falling back to an unrelated tool that produced a wrong, unrelated question.) A specific, on-topic clarifying question beats silence, a hallucinated tool call, or an unrelated tool call every time."""
 
 
 def _react_reasoning_system(
@@ -495,7 +513,9 @@ def _react_reasoning_system(
         mode = "copilot"
     _env = _react_jinja_env()
     mode_block = _env.from_string(_REACT_MODE_BLOCK_TEMPLATES[mode]).render(max_iterations=max_iterations)
-    critical_rules_rendered = _env.from_string(REACT_CRITICAL_RULES_TEXT).render(max_iterations=max_iterations)
+    critical_rules_rendered = _env.from_string(REACT_CRITICAL_RULES_TEXT).render(
+        max_iterations=max_iterations, rag_call_ceiling=_rag_call_ceiling_for_mode(mode),
+    )
     _base_prompt_text = f"""
 {REACT_IDENTITY_TEXT}
 {mode_block}

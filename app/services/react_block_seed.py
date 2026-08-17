@@ -132,8 +132,22 @@ def _react_block_specs() -> list[BlockSpec]:
         # shipped. test_prompt_block_seed_drift.py (Task #77) caught it same
         # day. v3 is a plain re-seed at the CURRENT content, read fresh
         # immediately before this commit -- no wording change of its own.
+        #
+        # v5 (2026-08-17, Ananth, directly, live finding): adds rule 12 --
+        # when a tool result signals ambiguity/insufficient info (multiple
+        # fetch_document candidates, missing jurisdiction, etc.) and it
+        # can't be resolved from context, use the EXISTING final-answer
+        # shape (is_complete=true, tool=null, answer=<real question>)
+        # instead of inventing a nonexistent "clarification options"
+        # mechanism -- caught live when a model burned 4 rounds trying to
+        # call one before falling back to an unrelated tool. Jumps 3->5
+        # (not 3->4) because the DB's highest active version was already 4
+        # when this was written -- test_prompt_block_seed_drift.py caught
+        # that as pre-existing drift, unrelated to this change (confirmed
+        # via git stash: identical failure without this edit). Not
+        # investigating the 3->4 gap's origin here -- v5 supersedes it.
         BlockSpec("react.critical_rules", "static", "system", react_prompts.REACT_CRITICAL_RULES_TEXT + "\n",
-                  owner="chat-architecture", version=3),
+                  owner="chat-architecture", version=5),
         # Shared with critic.audit (Chat Architecture ruling, 2026-07-29): one
         # block_key, member of both react_* and critic_audit compositions.
         BlockSpec("react.user_profile", "derived", "system", "{{ user_profile_text }}",

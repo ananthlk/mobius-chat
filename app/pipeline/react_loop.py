@@ -548,6 +548,7 @@ from app.pipeline.react.prompts import (  # noqa: F401 — re-exported for back-
     REACT_MAX_ROUNDS_QUICK,
     _call_llm_json,
     _get_config_sha,
+    _rag_call_ceiling_for_mode,
     _react_reasoning_system,
     _react_round_headline,
     build_reasoning_context,
@@ -1141,14 +1142,11 @@ def _compute_gap_status(rag_call_history: list[dict]) -> str:
     return "stagnant" if stagnant else "progressing"
 
 
-def _rag_call_ceiling_for_mode(chat_mode: str | None) -> int:
-    """Task #103 (2026-08-16, Chat Master/Ananth ruling): 6 for chat.thinking
-    (agentic), 3 for every other mode -- see the call site's comment in
-    _execute_tool for why (Retriever's chat.thinking retrieval-budget raise
-    from #97/#102 gives that mode real room to use more corpus calls)."""
-    if translate_chat_mode_to_caller_mode(chat_mode) == "chat.thinking":
-        return 6
-    return 3
+# _rag_call_ceiling_for_mode moved to app.pipeline.react.prompts (2026-08-17)
+# so REACT_CRITICAL_RULES_TEXT's rule 1b can reference the real per-mode
+# number via {{ rag_call_ceiling }} instead of a stale hardcoded one --
+# re-imported below (see the react.prompts import block) for this file's
+# own callers and for tests/test_rag_call_ceiling.py's existing import path.
 
 
 def _execute_tool(
