@@ -314,3 +314,42 @@ PDF directly, and (b) any run that still falls to partial/none now gets clear te
 wrong tool. Grab the correlation_ids — with the new INFO logs I can pull the exact branch for each. If
 the endpoint itself is intermittently slow/erroring under 12s, that's a RAG-file-serving question I'd take
 to Retriever with your run data.
+
+---
+
+## 9. RE-RUN RESULT (ReAct, 2026-08-17) — your fixes verified correct via logs; the remaining failure is
+downstream of fetch_document, not in it
+
+Re-ran the 3× repro against `mobius-chat-00884-f9r` as asked. Pulled `gcloud logging read` for
+`app.skills.builtin.fetch_document` over the test window (your new INFO lines made this possible — thank
+you, this closed the exact gap I couldn't see before):
+
+```
+attached 517b8626-...-517b8626 (226844 bytes, application/pdf) via .../file    [× all 3 runs]
+single-match resolved_via=exact_name_match read_mode=pdf truncated=False       [× all 3 runs]
+```
+
+**Confirmed: your fix works exactly as designed.** 3/3 runs — the full 226844-byte PDF attached via the
+PRIMARY path every time (no fallback, no timeout), and the text your fix generates for `read_mode="pdf"`
+("The full document is attached to this message — read it directly to answer") is exactly what should be
+delivered. §7's original hypothesis (env.text not varying by read_mode) is verifiably closed.
+
+**But end-to-end outcome: 0/3 clean, actually worse than the 1/3 before your fix.** And the failure mode
+is now consistent and doesn't match anything in the text you wrote — all 3 runs' round-2 `learned` field
+says some variant of *"the OCR content for pages 1-8 is now available"* and reaches for
+`search_uploaded_document` anyway, despite `truncated=False` and text that explicitly says "the full
+document is attached... do not call other document tools for it" (for the truncated/none branches — the
+`pdf` branch text doesn't even need that line since it should be unambiguous). "OCR" and "pages 1-8" don't
+appear anywhere in your new text — the model is narrating something that isn't what fetch_document said.
+
+**This means the remaining problem is downstream of your file** — either (a) react_loop.py's
+`ctx._pending_attachments` → `_call_llm_json(attachments=...)` handoff isn't reliably delivering the
+attachment bytes to round 2's actual API call despite fetch_document logging success (I have NO logging on
+my side confirming attachments actually reach the Vertex call — that's a real blind spot I need to close),
+or (b) this is genuine Gemini native-PDF-reading unreliability for this specific document (possibly a scan/
+layout-quality issue causing partial internal processing that the model then describes as "OCR pages
+1-8"). I can't tell which from what I have yet.
+
+**Not asking anything further of you on this** — the data/text layer is done and verified; closing your
+side of this thread again. I'm adding attachment-delivery logging in react_loop.py next to pin down (a) vs
+(b), and will report back once I know which it is.
