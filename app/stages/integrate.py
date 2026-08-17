@@ -24,7 +24,7 @@ from app.communication.json_display_sanitize import (
 )
 from app.communication.gate import send_to_user
 from app.pipeline.context import PipelineContext
-from app.pipeline.react_loop import _is_sufficient_for_deterministic_pass
+from app.pipeline.react_loop import _is_sufficient_for_deterministic_pass, chunk_text_identity
 from app.responder import format_response
 from app.responder.final import _build_consolidator_input_json, ensure_pre_built_sections
 from app.responder.final_parallel import format_response_parallel, run_bc_background
@@ -494,6 +494,8 @@ def _build_rag_chunks(
     all_sources: list[dict],
     tool_section_hints: list[dict] | None,
     chat_mode: str | None,
+    curated_chunk_ids: set[str] | None = None,
+    evidence_memory: list[dict] | None = None,
 ) -> list[dict]:
     """Unified RAG-chunk pool for the enricher prompt (Task #58, factory model,
     2026-08-07). ctx.rag_chunks (the upstream pool this reads from, via
@@ -510,13 +512,50 @@ def _build_rag_chunks(
     (see _appeals_hint_pseudo_sources) so citations[] isn't blind to them.
     This bridge stays until the typed tool_outputs.appeals citation channel
     (still being designed) supersedes it.
-    """
+
+    ``curated_chunk_ids``/``evidence_memory`` (Task #105, 2026-08-16, Chat
+    Master/Ananth ruling): react's evidence_review already judges chunk
+    relevance per round ("keep" list) -- a blind top-K-by-rerank_score cut
+    of the full uncapped pool ignores that judgment entirely, and can crowd
+    an entire entity's evidence out of a multi-part comparison (confirmed
+    live, cid=53a99efc: a 4-payer question, one payer's chunks never made
+    top-7, never appeared in the answer). When react curated anything this
+    turn, prefer that set -- ordered by round (earliest first, via
+    evidence_memory's call index) then rerank_score -- capped at 25 instead
+    of 7, more room since it's already relevance-filtered, not a raw
+    top-K guess. Falls back to the original top-K-by-score behavior when
+    nothing was curated (fast-path turns where evidence_review never ran)
+    or in quick mode (kept simple/cheap on purpose, per spec)."""
     is_quick = chat_mode == "quick"
     cap = 4 if is_quick else 7
     chars = 600 if is_quick else 1000
-    sorted_sources = sorted(
-        all_sources, key=lambda x: -(float(x.get("rerank_score") or x.get("match_score") or 0))
-    )
+
+    def _by_score(sources: list[dict]) -> list[dict]:
+        return sorted(
+            sources, key=lambda x: -(float(x.get("rerank_score") or x.get("match_score") or 0))
+        )
+
+    sorted_sources = _by_score(all_sources)
+    if curated_chunk_ids and not is_quick:
+        round_by_identity: dict[str, int] = {}
+        for m in (evidence_memory or []):
+            ident = chunk_text_identity(m.get("text") or "")
+            round_by_identity.setdefault(ident, m.get("call") or 0)
+
+        curated_sources = [
+            s for s in all_sources
+            if chunk_text_identity(s.get("text") or "") in curated_chunk_ids
+        ]
+        if curated_sources:
+            sorted_sources = sorted(
+                curated_sources,
+                key=lambda x: (
+                    round_by_identity.get(chunk_text_identity(x.get("text") or ""), 0),
+                    -(float(x.get("rerank_score") or x.get("match_score") or 0)),
+                ),
+            )
+            cap = 25
+
     chunks = [
         {
             "index": i + 1,
@@ -737,6 +776,8 @@ def run_integrate(
         _rag_chunks_pool = all_sources
     rag_chunks = _build_rag_chunks(
         _rag_chunks_pool, getattr(ctx, "tool_section_hints", None), getattr(ctx, "chat_mode", None),
+        curated_chunk_ids=getattr(ctx, "curated_chunk_ids", None),
+        evidence_memory=getattr(ctx, "_evidence_memory", None),
     )
     tool_outputs = _build_tool_outputs_for_prompt(getattr(ctx, "tool_outputs", None))
     reasoning_ledger = _build_reasoning_ledger(getattr(ctx, "react_trace_rounds", None))
