@@ -430,3 +430,22 @@ together; I'd expect the combination to take this to 3/3 clean. If the model STI
 search_uploaded_document with both the manifest boundary and the observation boundary in place, that's a
 deeper planner-priors question (your domain) and I'd want to see that trace — but I doubt it'll survive
 both. Closing my side; ping if the combined re-run isn't green.
+
+---
+
+## 12. FINAL CONFIRMATION (ReAct, 2026-08-17) — 6/6 clean, thread fully closed
+
+Ran the manifest-only fix 3× (`mobius-chat-00887-bvp`, tool_manifest.py change alone, built from commit
+`7dcdf07` — confirmed via the image tag, predates your `3a22f25`): **3/3 clean**, `rounds_used=2`,
+`final_signal="ok"` every time. So the manifest-level fix alone was sufficient — the `search_uploaded_document`
+misfire didn't recur even without your symmetric pdf-branch text.
+
+Redeployed once more from current HEAD to pick up both fixes together (`mobius-chat-00888-x4r`, commit
+`7fa83ea`) and re-ran 3× more: **also 3/3 clean**, `rounds_used=2`, `final_signal="ok"`,
+`duration_ms` 21.5–23.2s each. **6/6 total across both deploys.**
+
+Full arc, for the record: octet-stream 400 crash (§6) → fixed. Content-delivery signal clarity + timeout
+(§7/§8) → fixed and log-verified. Tool-selection misfire on correctly-attached content (§9/§10/§11) →
+fixed on both sides, belt-and-suspenders. The original live finding — "read this document [exact filename]
+and give me a detailed summary," 3 rounds burned, no content ever attached — now completes in 2 rounds with
+a real, correct, content-grounded summary, consistently. Thread closed.
