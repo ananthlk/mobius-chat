@@ -229,3 +229,48 @@ would have shown a download card, not a hard error) — worth an urgent fix, not
 3. Confirm 2a's id-in-text format doesn't blow up prompt size on a query that legitimately returns many
    (near the display cap of 3) candidates — should be negligible (one short uuid per line) but worth a
    glance.
+
+---
+
+## 7. FOLLOW-UP #2 (2026-08-17, same day): octet-stream crash confirmed fixed, but a deeper content-delivery
+reliability gap surfaced underneath it
+
+Re-ran the exact §6 repro (same query, same document) 3× in a row against `mobius-chat-00883-vj2` /
+commit `17ceb70` to confirm the fix. **The 400 crash is gone — 0/3 runs hit it.** But only **1 of 3** runs
+actually got usable document content to the model:
+
+| Run | correlation_id | Outcome |
+|---|---|---|
+| 1 | `6eb8758d` | No content at all — model correctly noticed and asked for more detail (3 rounds, `clarification`) |
+| 2 | `0bccefd5` | Model called `search_uploaded_document` on the resolved doc — wrong tool, meant only for real thread uploads (see [tool_manifest.py:162-171](../app/pipeline/tool_manifest.py#L162-L171): gated on "at least one instant_rag upload on the thread") — got nothing, gave up (3 rounds, `no_sources`) |
+| 3 | `5f136305` | **Clean** — 2 rounds, full correct content-grounded summary, same as my original §4 verification |
+
+**Root cause hypothesis, code-supported**: `_corpus_match_envelope`'s single-match `text`
+([fetch_document.py:1216](../app/skills/builtin/fetch_document.py#L1216)) is the SAME literal string —
+`f"Found **{name}**. Use the card below to download it."` — **regardless of `read_mode`**. Whether the
+full PDF attached (`read_mode="pdf"`), a possibly-truncated corpus-text fallback attached
+(`read_mode="corpus_text"`), or NOTHING attached at all (`read_mode=None`, both `_maybe_fetch_attachment`
+and `_fetch_corpus_text_attachment` failed), the model reads the identical sentence. It has zero explicit
+signal for which of the three actually happened — it has to infer purely from whether content shows up
+elsewhere in its context, and it infers inconsistently: run 1 correctly concluded "no content," run 2
+got SOME (likely truncated/sparse) corpus_text and, with nothing telling it that's expected/partial,
+reached for an unrelated tool instead of citing what it had or asking for more pages.
+
+Two independent things worth your read:
+1. **Why did `_maybe_fetch_attachment` (the direct PDF path, should win for a 226KB file well under the
+   8MB cap) fail in 2 of 3 runs at all**, falling through to the corpus_text reader or nothing? Its
+   `_ATTACHMENT_FETCH_TIMEOUT_S = 6` fail-fast timeout is a plausible suspect for a small file under any
+   transient latency — or it could be something else in the two `_download_url`/`_fallback_download_url`
+   calls. This is the piece I can't diagnose further from the outside; you have visibility into the
+   actual failures (logs should show which branch each run took).
+2. **Separately, regardless of #1's cause**: `env.text` not varying by `read_mode`/failure seems like a
+   real gap on its own, same spirit as this spec's original §2a (give the model the real state instead of
+   making it guess) — e.g. distinguish "full content attached, read it directly" / "partial text attached,
+   may be incomplete, cite what's there" / "couldn't retrieve content, only a download link available."
+   That alone should stop the run-2-style wrong-tool-call, even before #1 is root-caused.
+
+Not asking you to treat this as urgent-blocking the way §6 was (no crash, and 1/3 still lands the intended
+outcome) — but flagging now since it's the same code path and the numbers (1/3 success on a query that
+should be the BEST case, exact match, small file) suggest this needs a look before broader rollout. Happy
+to help characterize further or take a pass at the env.text signal-clarity piece myself if useful — your
+call on whether that's cleaner as your fix (you own the read_mode data) or a joint one.
