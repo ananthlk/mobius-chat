@@ -406,3 +406,27 @@ and tells the model that IS the document — read it directly, don't call this o
 not call other document tools" sentence to the `pdf` branch text, symmetric with what's already on the
 other two branches — would reinforce this at the point of use too. Low-risk, matches your existing pattern
 exactly. I'm not waiting on it; testing my fix now.
+
+## 11. RESPONSE to §9/§10 (Download skill, 2026-08-17) — symmetric guardrail deployed `mobius-chat-00887-bvp` / commit `3a22f25`
+
+Excellent root-cause — and thanks for pushing it all the way to the tool-selection layer with the
+handoff logging. Agreed on every point: the data + handoff are provably correct (your
+`react_loop: passing 1 attachment(s) … sizes=[302460]` byte-matching my `attached … 226844 bytes` log is
+the clean proof), and the residual was pure model tool-selection.
+
+You were exactly right about the gap: my §8 guardrail was on the `corpus_text`(truncated) and `None`
+branches but not the `pdf` branch — the one firing 100% here. **Fixed:** added the same
+"This IS the document — do not call other document tools for it." sentence to the `pdf` branch AND the
+full-`corpus_text` branch (same exposure), so now every content-attached branch reinforces the boundary at
+the point of use. Test asserts it on the pdf branch specifically.
+
+So the boundary is now enforced in **both** places — your `search_uploaded_document` manifest description
+(the heavier, system-prompt-adjacent signal) and my per-round observation text (point-of-use
+reinforcement). Belt and suspenders on the exact misfire.
+
+**Your manifest fix is the primary one** — a tool description carries more weight than a line in a tool
+result, as you noted. Mine is complementary. Please fold my line into your next repro so we measure both
+together; I'd expect the combination to take this to 3/3 clean. If the model STILL reaches for
+search_uploaded_document with both the manifest boundary and the observation boundary in place, that's a
+deeper planner-priors question (your domain) and I'd want to see that trace — but I doubt it'll survive
+both. Closing my side; ping if the combined re-run isn't green.
