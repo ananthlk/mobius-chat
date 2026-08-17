@@ -1,7 +1,7 @@
 """Builtin skill: ``fetch_document`` — resolve a corpus document by
 name / filename / policy ID and return a download link.
 
-Distinct from ``search_corpus`` (which answers a question using
+Distinct from ``rag`` / ``search_corpus`` (which answers a question using
 chunks from many docs) and ``search_uploaded_document`` (which scopes
 to a specific user upload). This skill is for the planner intent
 "the user wants the FILE itself, not the answer in it."
@@ -151,6 +151,106 @@ def _maybe_fetch_attachment(document_id: str, filename: str) -> dict[str, Any] |
             logger.debug("fetch_document: attachment fetch failed for %s via %s: %s", document_id, url, e)
             continue
     return None
+
+
+# ── Page-range extraction + doc size (§4) ───────────────────────────
+
+_MAX_PAGE_SPAN = 40            # cap pages per request (bounds fetch + attachment)
+_MAX_PAGES_TEXT_CHARS = 200_000
+
+
+def _parse_page_spec(spec: str) -> list[int]:
+    """Parse a page spec into a sorted, de-duped, capped page list.
+
+    Accepts ``"20-24"`` (range), ``"20,80"`` (list), ``"20-24,80"``
+    (mixed), or ``"20"`` (single). Returns [] on anything unparseable so
+    a bad spec degrades to no-page-range rather than an error.
+    """
+    if not spec or not isinstance(spec, str):
+        return []
+    pages: set[int] = set()
+    for part in spec.replace(" ", "").split(","):
+        if not part:
+            continue
+        if "-" in part:
+            a, _, b = part.partition("-")
+            if a.isdigit() and b.isdigit():
+                lo, hi = int(a), int(b)
+                if lo <= hi:
+                    pages.update(range(lo, hi + 1))
+        elif part.isdigit():
+            pages.add(int(part))
+    return sorted(p for p in pages if p >= 1)[:_MAX_PAGE_SPAN]
+
+
+def _document_page_count(document_id: str) -> int | None:
+    """Total page count from RAG ``/documents/{id}/status`` (cheap — no
+    full page-text fetch). Best-effort; None on any failure."""
+    base = _rag_api_base()
+    if not base or not document_id:
+        return None
+    try:
+        req = urllib.request.Request(
+            f"{base}/documents/{urllib.parse.quote(document_id)}/status",
+            headers={"Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8")) or {}
+    except Exception as e:
+        logger.debug("fetch_document: page_count fetch failed for %s: %s", document_id, e)
+        return None
+    summary = data.get("pages_summary") or {}
+    for v in (summary.get("total"), data.get("pages_extracted")):
+        if isinstance(v, int) and v > 0:
+            return v
+    return None
+
+
+def _fetch_pages_attachment(document_id: str, pages: list[int], base_name: str) -> dict[str, Any] | None:
+    """Fetch specific pages' text from RAG and return them as a
+    text/markdown attachment (same shape _maybe_fetch_attachment uses, so
+    react_loop threads it identically — no new mechanism). This is the
+    large-document answer: a 261-page handbook that exceeds the whole-file
+    attach cap can still hand the model exactly the pages it asked for."""
+    base = _rag_api_base()
+    if not base or not pages:
+        return None
+    want = set(pages)
+    try:
+        req = urllib.request.Request(
+            f"{base}/documents/{urllib.parse.quote(document_id)}/pages",
+            headers={"Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            payload = json.loads(resp.read().decode("utf-8")) or {}
+    except Exception as e:
+        logger.debug("fetch_document: page-range fetch failed for %s: %s", document_id, e)
+        return None
+    parts: list[str] = []
+    total = 0
+    for p in payload.get("pages") or []:
+        pn = p.get("page_number")
+        if pn not in want:
+            continue
+        text = (p.get("text_markdown") or p.get("text") or "").strip()
+        if not text:
+            continue
+        block = f"[page {pn}]\n{text}"
+        parts.append(block)
+        total += len(block)
+        if total >= _MAX_PAGES_TEXT_CHARS:
+            break
+    if not parts:
+        return None
+    import base64
+    body = ("\n\n".join(parts))[:_MAX_PAGES_TEXT_CHARS]
+    spec = f"{pages[0]}-{pages[-1]}" if len(pages) > 1 else str(pages[0])
+    stem = (base_name.rsplit(".", 1)[0] if base_name else document_id) or document_id
+    return {
+        "mime_type": "text/markdown",
+        "data_b64": base64.b64encode(body.encode("utf-8")).decode("ascii"),
+        "filename": f"{stem}_pages_{spec}.md",
+    }
 
 
 # ── Query parsing + scoring ─────────────────────────────────────────
@@ -665,6 +765,7 @@ def _run_fetch_document(call: SkillCall) -> SkillEnvelope:
     inputs = call.inputs or {}
     query = (inputs.get("query") or call.question or "").strip()
     document_id = (inputs.get("document_id") or "").strip()
+    pages_spec = (inputs.get("pages") or "").strip()
 
     def _e(msg: str) -> None:
         if call.emitter and msg:
@@ -686,7 +787,7 @@ def _run_fetch_document(call: SkillCall) -> SkillEnvelope:
                 text="I couldn't find a document with that id in our materials.",
                 signal="no_sources",
             )
-        return _corpus_match_envelope(call, [row], query or document_id, "document_id", emit=_e)
+        return _corpus_match_envelope(call, [row], query or document_id, "document_id", emit=_e, pages_spec=pages_spec)
 
     if not query:
         return SkillEnvelope(
@@ -749,7 +850,7 @@ def _run_fetch_document(call: SkillCall) -> SkillEnvelope:
             signal="no_sources",
         )
 
-    return _corpus_match_envelope(call, matches, query, resolved_via, emit=_e)
+    return _corpus_match_envelope(call, matches, query, resolved_via, emit=_e, pages_spec=pages_spec)
 
 
 _RESOLVED_VIA_LABEL = {
@@ -766,6 +867,7 @@ def _corpus_match_envelope(
     resolved_via: str,
     *,
     emit: Any = None,
+    pages_spec: str = "",
 ) -> SkillEnvelope:
     """Build the download-card envelope from ranked corpus-metadata rows.
 
@@ -839,11 +941,29 @@ def _corpus_match_envelope(
     # to a single round isn't what this is for.
     attachment: dict[str, Any] | None = None
     if len(sources) == 1:
+        doc_id = sources[0].document_id or ""
+        fname = download_docs[0].get("filename") or ""
+        requested_pages = _parse_page_spec(pages_spec)
+        # Surface the document's size so the caller can decide whole-file
+        # vs page-range on the next round (§4 / Ananth: "tell the size").
         try:
-            attachment = _maybe_fetch_attachment(sources[0].document_id or "", download_docs[0].get("filename") or "")
+            page_count = _document_page_count(doc_id)
+        except Exception:
+            page_count = None
+        if page_count:
+            download_docs[0]["page_count"] = page_count
+        try:
+            if requested_pages:
+                # Targeted page-range: hand the model exactly the pages it
+                # asked for (works for large docs the whole-file cap drops).
+                attachment = _fetch_pages_attachment(doc_id, requested_pages, fname)
+            else:
+                attachment = _maybe_fetch_attachment(doc_id, fname)
         except Exception as e:
-            logger.warning("fetch_document: attachment attempt raised for %s: %s", sources[0].document_id, e)
-        if attachment:
+            logger.warning("fetch_document: attachment attempt raised for %s: %s", doc_id, e)
+        if attachment and requested_pages:
+            _e(f"✓ Attached {sources[0].document_name} pages {pages_spec} for this round")
+        elif attachment:
             _e(f"✓ Attached {sources[0].document_name} ({len(attachment['data_b64']) * 3 // 4} bytes) for this round")
         text = f"Found **{sources[0].document_name}**. Use the card below to download it."
     else:
@@ -858,12 +978,15 @@ def _corpus_match_envelope(
         "match_count": len(sources),
         "resolved_via": resolved_via,
         "document_download_payload": {"documents": download_docs, "query": query},
+        # Size signal so the planner can choose whole-file vs page-range next.
+        **({"page_count": download_docs[0]["page_count"]} if len(sources) == 1 and download_docs and download_docs[0].get("page_count") else {}),
+        **({"attached_pages": pages_spec} if attachment and _parse_page_spec(pages_spec) else {}),
         # Explicit opt-out (2026-08-16, live finding cid=a337ef54): resolving
         # WHICH document matches is not the same as having its content to
         # answer with -- see react_loop.py's golden-inference comment for
         # the full story. Without this, a successful resolve auto-finalized
         # the turn on a download link before react could read the attached
-        # content (or fall back to search_corpus) in a later round.
+        # content (or fall back to rag/search_corpus) in a later round.
         "golden": False,
     }
     if attachment:
@@ -884,25 +1007,31 @@ register(
     SkillSpec(
         name="fetch_document",
         description=(
-            "Resolve a document by name / filename / policy ID and return a "
-            "download link. Use this when the user wants the FILE itself, "
-            "not the answer in it. Resolution: corpus metadata → semantic "
-            "corpus search → the curated web-source registry (sitemap-"
-            "discovered payer/agency URLs), so it also finds documents "
-            "Mobius knows exist on the web but hasn't ingested.\n"
-            "Use when: phrases like 'send me', 'give me', 'download', 'fetch', "
-            "'I need the …' followed by a document reference (display name, "
-            "filename, policy code).\n"
-            "Do NOT use when: the user asks a question that needs an answer "
-            "from the doc (use search_corpus). Do NOT use for user uploads "
-            "(use search_uploaded_document or list_thread_document_uploads).\n"
-            "Follow-up: when a previous fetch_document returned MULTIPLE "
-            "candidates and the user picked one, call again with that "
-            "candidate's document_id (not the same free-text query) to "
-            "resolve it deterministically — re-sending the query just "
-            "returns the same ambiguous list.\n"
-            "Returns: matched document metadata + a download URL the frontend "
-            "renders as a clickable Download button."
+            "Get you the actual SOURCE DOCUMENT behind an answer — the real "
+            "file, not fragments retrieved from it. What I do:\n"
+            "1. When there's ONE specific, identifiable document (a named "
+            "manual, a policy ID, a filename, or a document_id you already "
+            "hold) and it's small enough, I attach its actual CONTENT so you "
+            "read the real source directly.\n"
+            "2. When an answer is thin or vague because it needs the real "
+            "underlying document, I locate that document — from the corpus, or "
+            "from payer/agency sites Mobius knows about but hasn't ingested — "
+            "and surface it (a download link for the user + the content for "
+            "you).\n"
+            "Reach for me when you need THE document: the user asked for the "
+            "file itself ('send me…', 'download…'), or the question turns on one "
+            "specific named document you should read in full. For a broad "
+            "question answerable from passages spread across many documents, "
+            "ordinary corpus retrieval is the better fit — I'm for when a "
+            "single real source is the point, not an answer stitched from "
+            "snippets.\n"
+            "If the document is large, ask for just the pages you need "
+            "(pages='20-24' or '20,80') instead of the whole file — the result "
+            "reports the document's page_count so you can decide.\n"
+            "Resolving it: a document_id is exact (no guessing); a name / policy "
+            "ID matches by text; several matches come back as a short pick-list "
+            "— call again with the chosen document_id to pin and attach it. "
+            "(User-uploaded files have their own tool.)"
         ),
         inputs_schema={
             "type": "object",
@@ -924,6 +1053,18 @@ register(
                         "Use for a follow-up after the user picks from a "
                         "multi-candidate result, or when you already hold "
                         "the id. Either query OR document_id is required."
+                    ),
+                },
+                "pages": {
+                    "type": "string",
+                    "description": (
+                        "Optional page range/list to attach instead of the "
+                        "whole file — e.g. '20-24', '20,80', or '17'. Use this "
+                        "for a large document (the result reports page_count) "
+                        "when you only need a specific section: you get exactly "
+                        "those pages' text, which works even when the whole "
+                        "file is too big to attach. Applies to a single "
+                        "resolved match (pair with document_id for precision)."
                     ),
                 },
             },

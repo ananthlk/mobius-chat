@@ -169,3 +169,39 @@ def test_resolve_by_id_normalizes_columnar_shape(monkeypatch):
     )
     row = fd._resolve_by_id(_ROW["document_id"])
     assert row["document_filename"] == "Provider_Manual.pdf"
+
+
+# ── §4 page-range extraction + size surfacing ───────────────────────
+
+
+def test_page_range_attaches_requested_pages(monkeypatch):
+    monkeypatch.setattr(fd, "_resolve_by_id", lambda did: dict(_ROW))
+    monkeypatch.setattr(fd, "_document_page_count", lambda did: 261)
+    captured = {}
+    def _fake_pages(doc_id, pages, base_name):
+        captured["pages"] = pages
+        return {"mime_type": "text/markdown", "data_b64": "cGFnZQ==", "filename": f"{base_name}_pages.md"}
+    monkeypatch.setattr(fd, "_fetch_pages_attachment", _fake_pages)
+    # whole-file attach must NOT be called when pages requested
+    monkeypatch.setattr(fd, "_maybe_fetch_attachment", lambda *a, **k: (_ for _ in ()).throw(AssertionError("whole-file attach called for a page-range request")))
+
+    env = fd._run_fetch_document(SkillCall(
+        name="fetch_document", inputs={"document_id": _ROW["document_id"], "pages": "20-24"},
+        question="", pipeline_ctx=SimpleNamespace()))
+
+    assert captured["pages"] == [20, 21, 22, 23, 24]
+    assert env.extra["attachment"]["mime_type"] == "text/markdown"
+    assert env.extra["attached_pages"] == "20-24"
+    assert env.extra["page_count"] == 261
+
+
+def test_no_pages_uses_whole_file_attach(monkeypatch):
+    monkeypatch.setattr(fd, "_resolve_by_id", lambda did: dict(_ROW))
+    monkeypatch.setattr(fd, "_document_page_count", lambda did: 12)
+    monkeypatch.setattr(fd, "_fetch_pages_attachment", lambda *a, **k: (_ for _ in ()).throw(AssertionError("page-range called without a pages spec")))
+    monkeypatch.setattr(fd, "_maybe_fetch_attachment", lambda doc_id, fname: {"mime_type": "application/pdf", "data_b64": "eA==", "filename": fname})
+
+    env = fd._run_fetch_document(fd.SkillCall(name="fetch_document", inputs={"document_id": _ROW["document_id"]}, question="", pipeline_ctx=SimpleNamespace()))
+    assert env.extra["attachment"]["mime_type"] == "application/pdf"
+    assert env.extra["page_count"] == 12
+    assert "attached_pages" not in env.extra
