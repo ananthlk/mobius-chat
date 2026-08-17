@@ -3654,6 +3654,38 @@ def _finalize_response(
                     _gc_terminal["enrichment"] = _gc_enr
                 _gc_enr["gaps_closed"] = [_gc_user_query]
 
+    # 2026-08-17 (Ananth, directly): disambiguation fast-path detection,
+    # docs/DISAMBIGUATION_FASTPATH_CONTRACT.md. Code-computed, not model-
+    # emitted -- same lesson as everywhere else this week (the rule-12
+    # design itself came from a model hallucinating a nonexistent
+    # "clarification options" mechanism). fetch_document's own code
+    # (_attach_download_payload, app/skills/builtin/fetch_document.py)
+    # already writes ctx.react_document_download_data = {"documents":
+    # [...], "query": ...} on EVERY resolution, fuzzy or by-id -- a
+    # single confident match is exactly 1 entry; an unresolved ambiguity
+    # is >1. A subsequent resolve-by-id call (the model successfully
+    # disambiguating itself, e.g. agentic mode per rule 12) OVERWRITES
+    # this with a fresh 1-entry version, so checking its state AT
+    # FINALIZE TIME -- after the whole round loop, not right after
+    # fetch_document's own call -- correctly reflects whether the
+    # ambiguity was ever actually resolved this turn.
+    #
+    # Known best-effort limitation, documented rather than solved: if the
+    # model abandons a disambiguation path mid-turn and independently
+    # answers with real content from OTHER evidence (never re-calling
+    # fetch_document to resolve or clear the stale multi-candidate data),
+    # this would incorrectly flag a real answer as a disambiguation ask.
+    # Considered rare enough not to block on for v1 -- same tradeoff
+    # class as #90's fuzzy keyword matching.
+    _dl_data_for_flag = getattr(ctx, "react_document_download_data", None)
+    if (
+        isinstance(_dl_data_for_flag, dict)
+        and isinstance(_dl_data_for_flag.get("documents"), list)
+        and len(_dl_data_for_flag["documents"]) > 1
+        and (final_answer or "").strip()
+    ):
+        ctx.react_needs_disambiguation = True  # type: ignore[attr-defined]
+
     # react_trace diagnostics panel (2026-07-31) — one per turn, same
     # "diagnostic-only, doesn't affect the answer" tier as retrieval_trace.
     # Defensive: a bug in trace-building must never break the actual

@@ -397,6 +397,55 @@ def _validate_ui_block(block: Any, *, max_source_index: int) -> dict[str, Any] |
         if isinstance(q, str) and q.strip():
             out["query"] = q.strip()[:500]
         return out
+    if btype == "disambiguation":
+        # docs/DISAMBIGUATION_FASTPATH_CONTRACT.md §1/§2. Generic "pick one
+        # to continue" surface — sibling of document_download, not a
+        # replacement (that one stays "pick one to download"). id is
+        # domain-opaque here on purpose: the FE echoes it back in the
+        # resubmit selection, never interprets it.
+        select_kind = str(block.get("select_kind") or "").strip()
+        if not select_kind:
+            return None
+        raw_candidates = block.get("candidates")
+        if not isinstance(raw_candidates, list):
+            return None
+        safe_candidates: list[dict[str, Any]] = []
+        for c in raw_candidates[:6]:
+            if not isinstance(c, dict):
+                continue
+            cid = str(c.get("id") or "").strip()
+            title = str(c.get("title") or "").strip()
+            if not cid or not title:
+                continue
+            entry: dict[str, Any] = {"id": cid[:200], "title": title[:500]}
+            for key in ("subtitle", "snippet", "badge"):
+                v = c.get(key)
+                if isinstance(v, str) and v.strip():
+                    entry[key] = v.strip()[:500]
+            meta = c.get("meta")
+            if isinstance(meta, dict):
+                safe_meta = {
+                    str(k)[:100]: str(v)[:500]
+                    for k, v in meta.items()
+                    if isinstance(v, (str, int, float)) and str(v).strip()
+                }
+                if safe_meta:
+                    entry["meta"] = safe_meta
+            action = c.get("action")
+            if isinstance(action, dict) and str(action.get("kind") or "").strip():
+                entry["action"] = action
+            safe_candidates.append(entry)
+        if not safe_candidates:
+            return None
+        out: dict[str, Any] = {
+            "type": "disambiguation",
+            "select_kind": select_kind[:100],
+            "candidates": safe_candidates,
+        }
+        q = block.get("query")
+        if isinstance(q, str) and q.strip():
+            out["query"] = q.strip()[:500]
+        return out
     if btype == "task_list":
         tasks = block.get("tasks")
         if not isinstance(tasks, list):

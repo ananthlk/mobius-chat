@@ -882,6 +882,32 @@ def run_integrate(
     integrator_usage: dict | None = None
     integrator_usages: list[dict] = []
 
+    # 2026-08-17 (Ananth, directly): disambiguation fast-path,
+    # docs/DISAMBIGUATION_FASTPATH_CONTRACT.md. When react's own finalize
+    # detected an unresolved multi-candidate ambiguity (ctx.react_needs_
+    # disambiguation, set in react_loop.py's _finalize_response), there's
+    # nothing for Call A to synthesize and nothing for Call B/C to enrich
+    # -- the "answer" IS the candidate list, not a claim needing citations
+    # or a takeaway needing a next-step. Skip all three entirely (no
+    # run_bc_background either -- unlike the dyn-enrichment case below,
+    # there's no risk in never patching this card later, because there's
+    # nothing worth patching). Checked FIRST/exclusively (not folded into
+    # _is_sufficient_for_deterministic_pass below) so a disambiguation ask
+    # can never accidentally fall through to that check's different
+    # "sufficient real answer" semantics.
+    _disambiguation_used = False
+    if _integ_path == "parallel" and getattr(ctx, "react_needs_disambiguation", False):
+        _disambiguation_used = True
+        _disamb_answers = ctx.answers if isinstance(getattr(ctx, "answers", None), list) else []
+        _disamb_text = (_disamb_answers[0] if _disamb_answers else "") or ""
+        final_message = json.dumps({"mode": "FACTUAL", "direct_answer": _disamb_text, "sections": []})
+        integrator_usages = []
+        integrator_usage = None
+        logger.info(
+            "[integrate] disambiguation fast-path: skipped Call A/B/C (cid=%s)",
+            ctx.correlation_id[:8],
+        )
+
     # Task #76 (2026-08-08, Chat Master ruling, canary at MOBIUS_DYNAMIC_ENRICHMENT_PCT,
     # default 0): when react's own answer is already sufficient, skip Call A's LLM
     # call entirely and structure react_draft deterministically (regex only, no
@@ -890,7 +916,8 @@ def run_integrate(
     # consulted on the parallel path; sequential is untouched by this feature.
     _dyn_enrich_used = False
     if (
-        _integ_path == "parallel"
+        not _disambiguation_used
+        and _integ_path == "parallel"
         and _dynamic_enrichment_enabled()
         and _is_sufficient_for_deterministic_pass(ctx)
     ):
@@ -939,14 +966,14 @@ def run_integrate(
                 "[integrate] dynamic-enrichment: failed to launch background B/C for cid=%s",
                 ctx.correlation_id[:8], exc_info=True,
             )
-    elif _integ_path == "parallel":
+    elif not _disambiguation_used and _integ_path == "parallel":
         final_message, integrator_usages = format_response_parallel(
             plan, answers, user_message=ctx.message,
             llm_stage="integrator_a",
             **_shared_integ_kwargs,
         )
         integrator_usage = integrator_usages[0] if integrator_usages else None
-    else:
+    elif not _disambiguation_used:
         final_message, integrator_usage = format_response(
             plan, answers, user_message=ctx.message,
             llm_stage=_integ_stage,
@@ -1676,7 +1703,11 @@ def run_integrate(
     ctx.final_message = display_message
 
     payload = {
-        "status": "completed",
+        # docs/DISAMBIGUATION_FASTPATH_CONTRACT.md §2: "clarification" (not
+        # "completed") on a disambiguation turn -- reuses the FE's existing
+        # clarification handling (suppresses the confidence badge, renders
+        # as an ask rather than a confident answer).
+        "status": "clarification" if _disambiguation_used else "completed",
         "correlation_id": ctx.correlation_id,
         "message": display_message,
         "plan": plan.model_dump(),
@@ -1768,9 +1799,18 @@ def run_integrate(
             }
         ] + integrator_ui_blocks
 
-    # Inject document_download block when fetch_document attached matches
+    # Inject document_download block when fetch_document attached matches --
+    # suppressed on a disambiguation turn (docs/DISAMBIGUATION_FASTPATH_
+    # CONTRACT.md: "pure download -> document_download; choose-to-continue
+    # -> disambiguation" -- the two are semantically distinct asks; showing
+    # both for the SAME candidates would be redundant/confusing).
     _dl_data = getattr(ctx, "react_document_download_data", None)
-    if isinstance(_dl_data, dict) and isinstance(_dl_data.get("documents"), list) and _dl_data["documents"]:
+    if (
+        not _disambiguation_used
+        and isinstance(_dl_data, dict)
+        and isinstance(_dl_data.get("documents"), list)
+        and _dl_data["documents"]
+    ):
         integrator_ui_blocks = [
             {
                 "type": "document_download",
@@ -1778,6 +1818,46 @@ def run_integrate(
                 "query": _dl_data.get("query") or "",
             }
         ] + integrator_ui_blocks
+
+    # Inject disambiguation block (docs/DISAMBIGUATION_FASTPATH_CONTRACT.md
+    # §1/§4) -- the generic "pick one to continue" surface, distinct from
+    # document_download's "pick one to download" above. Candidates mapped
+    # from the SAME ctx.react_document_download_data fetch_document already
+    # writes: id/title required; meta carries payer/state/program/
+    # authority_level/download_url (download_url included per Chat FE's
+    # ask, 2026-08-17, so the "document" select_kind's specialization can
+    # offer a secondary Download button without a second round-trip).
+    # subtitle intentionally omitted -- Chat FE derives it from meta
+    # (agreed 2026-08-17). Entries missing document_id are dropped rather
+    # than sent with an empty id (the FE can't route a selection back
+    # without one).
+    if _disambiguation_used and isinstance(_dl_data, dict) and isinstance(_dl_data.get("documents"), list):
+        _disamb_candidates: list[dict[str, Any]] = []
+        for _d in _dl_data["documents"]:
+            if not isinstance(_d, dict) or not _d.get("document_id"):
+                continue
+            _meta = {
+                k: v for k, v in {
+                    "payer": _d.get("payer"),
+                    "state": _d.get("state"),
+                    "program": _d.get("program"),
+                    "authority_level": _d.get("authority_level"),
+                    "download_url": _d.get("download_url"),
+                }.items() if v
+            }
+            _candidate: dict[str, Any] = {"id": _d["document_id"], "title": _d.get("title") or "document"}
+            if _meta:
+                _candidate["meta"] = _meta
+            _disamb_candidates.append(_candidate)
+        if _disamb_candidates:
+            integrator_ui_blocks = [
+                {
+                    "type": "disambiguation",
+                    "select_kind": "document",
+                    "query": _dl_data.get("query") or "",
+                    "candidates": _disamb_candidates,
+                }
+            ] + integrator_ui_blocks
 
     _cred_card_data = getattr(ctx, "react_credentialing_card_data", None)
 
