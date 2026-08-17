@@ -477,7 +477,17 @@ REACT_CRITICAL_RULES_TEXT = """CRITICAL RULES:
 9b. **Credentialing / NPPES tools** often include a **Summary** in the tool trace plus long **Result** markdown. If Success is true and the Summary answers the user, set **is_complete=true** immediately — do **not** call the same tool again in a new round.
 10. If a tool result shows success (e.g. "Report stored", "Step 11 done", "report generated", "You can ask any question about it") → set is_complete=true and answer MUST confirm that the report or output was generated successfully. Do NOT say "I cannot generate" when the tool already succeeded.
 11. When "Recent conversation" is present: treat the prior assistant reply as the current answer. If the user is asking for something that answer did NOT provide (e.g. a link, URL, specific page, more detail, a number), the answer is INSUFFICIENT — do NOT set is_complete=true. Call rag or web_scrape and only set is_complete=true after you have tool results to fulfill the request.
-12. **Ambiguous or insufficient tool result → ask directly, don't invent a tool.** When a tool's result signals it needs more information to proceed — multiple candidate matches (e.g. fetch_document resolved several similarly-named documents), a missing jurisdiction/payer, or any other genuine "which one do you mean" situation — and you cannot resolve it yourself from context already available in this conversation (active jurisdiction, prior turns, the user's own wording), the correct response is the SAME final-answer shape you always use: set is_complete=true, tool=null, and put the actual clarifying question in "answer" — naming the REAL candidates or REAL missing detail from the tool result, not a generic one. There is no separate "clarification options" tool or field; do NOT invent one. (2026-08-17, live finding: a model tried calling a nonexistent clarification mechanism across 4 rounds instead of just answering directly, burning rounds before falling back to an unrelated tool that produced a wrong, unrelated question.) A specific, on-topic clarifying question beats silence, a hallucinated tool call, or an unrelated tool call every time."""
+12. **Ambiguous or insufficient tool result → resolve it yourself if you genuinely can, otherwise ask directly. Never invent a tool.** When a tool's result signals it needs more information to proceed — multiple candidate matches (e.g. fetch_document resolved several similarly-named documents), a missing jurisdiction/payer, or any other genuine "which one do you mean" situation:
+{%- if mode == "agentic" %}
+    - **Try to resolve it yourself first.** You have the rounds for this: compare the user's actual question (topic, entities, what they're really asking about) against each candidate. If one is a clearly better match, proceed with it — don't ask just because it wasn't a perfect string match. Note your reasoning in "thought" so the pick is auditable.
+    - **If it's still genuinely unclear** — the candidates are indistinguishable from context, or picking wrong would materially change the answer — ask the user directly (see below).
+{%- else %}
+    - **Don't spend extra rounds deliberating.** You have a small round budget ({{ max_iterations }} rounds) — if a tool's first result is ambiguous, ask the user promptly (see below) rather than trying to resolve it yourself.
+{%- endif %}
+    - **Asking the user uses the SAME final-answer shape you always use**: set is_complete=true, tool=null, and put the actual clarifying question in "answer" — naming the REAL candidates or REAL missing detail from the tool result, not a generic one. There is no separate "clarification options" tool or field; do NOT invent one.
+    - **Once you've decided to ask, ask in that SAME round** — don't spend additional rounds re-confirming a conclusion you've already reached before acting on it.
+
+    (2026-08-17, live finding: a model tried calling a nonexistent clarification mechanism across 4 rounds instead of just answering directly, burning rounds before falling back to an unrelated tool that produced a wrong, unrelated question. Separately, on a follow-up live run: the model reached "I should ask the user" in round 2 but re-derived the same conclusion for 3 more rounds before acting on it — hence the rule above.) A specific, on-topic clarifying question beats silence, a hallucinated tool call, or an unrelated tool call every time."""
 
 
 def _react_reasoning_system(
@@ -514,7 +524,7 @@ def _react_reasoning_system(
     _env = _react_jinja_env()
     mode_block = _env.from_string(_REACT_MODE_BLOCK_TEMPLATES[mode]).render(max_iterations=max_iterations)
     critical_rules_rendered = _env.from_string(REACT_CRITICAL_RULES_TEXT).render(
-        max_iterations=max_iterations, rag_call_ceiling=_rag_call_ceiling_for_mode(mode),
+        max_iterations=max_iterations, rag_call_ceiling=_rag_call_ceiling_for_mode(mode), mode=mode,
     )
     _base_prompt_text = f"""
 {REACT_IDENTITY_TEXT}
@@ -613,6 +623,10 @@ def resolve_react_system_prompt_v2(
                 # empty/undefined value while the legacy _react_reasoning_
                 # system() path (rarely hit live) rendered it correctly.
                 "rag_call_ceiling": _rag_call_ceiling_for_mode(mode),
+                # 2026-08-17: v6 adds a mode-conditional {% if mode == "agentic" %}
+                # branch in rule 12 -- same "both render paths need every var"
+                # lesson as rag_call_ceiling above, applied proactively this time.
+                "mode": mode,
             },
         )
         if rc and rc.system_prompt.strip():

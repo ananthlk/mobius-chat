@@ -146,8 +146,19 @@ def _react_block_specs() -> list[BlockSpec]:
         # that as pre-existing drift, unrelated to this change (confirmed
         # via git stash: identical failure without this edit). Not
         # investigating the 3->4 gap's origin here -- v5 supersedes it.
+        # v6 (2026-08-17, Ananth, directly): rule 12 now branches by
+        # {% if mode == "agentic" %} -- agentic is told to actually try
+        # resolving ambiguity itself first (it has the rounds), copilot/
+        # quick are told to ask promptly rather than deliberate (small
+        # round budget), and both get "act on your conclusion the SAME
+        # round you reach it" -- a live agentic run showed the model
+        # correctly deciding to ask in round 2, then re-deriving that
+        # same conclusion for 3 more rounds before acting on it in round
+        # 5. Requires "mode" in the render's template_vars on BOTH paths
+        # (resolve_react_system_prompt_v2 and _react_reasoning_system) --
+        # same lesson as v5's rag_call_ceiling miss, applied proactively.
         BlockSpec("react.critical_rules", "static", "system", react_prompts.REACT_CRITICAL_RULES_TEXT + "\n",
-                  owner="chat-architecture", version=5),
+                  owner="chat-architecture", version=6),
         # Shared with critic.audit (Chat Architecture ruling, 2026-07-29): one
         # block_key, member of both react_* and critic_audit compositions.
         BlockSpec("react.user_profile", "derived", "system", "{{ user_profile_text }}",

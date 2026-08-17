@@ -96,6 +96,46 @@ class TestRagCallCeilingTemplating:
         assert "6 rag calls per question" not in rendered
 
 
+class TestDisambiguationModeGuidance:
+    """2026-08-17 (Ananth, directly, follow-up to rule 12): a live agentic
+    run showed the model correctly deciding "I should ask the user" in
+    round 2, then spending 3 more rounds re-deriving the same conclusion
+    before finally acting on it in round 5. Rule 12 now branches by mode:
+    agentic is told to actually TRY to resolve the ambiguity itself first
+    (it has the rounds for that), copilot/quick are told to ask promptly
+    rather than deliberate (small round budget) -- and both are told to
+    act on the decision the SAME round they reach it, not re-derive it."""
+
+    def test_agentic_mode_gets_try_to_resolve_guidance(self):
+        rendered = _react_reasoning_system(10, "agentic")
+        assert "Try to resolve it yourself first" in rendered
+        assert "Don't spend extra rounds deliberating" not in rendered
+
+    def test_copilot_mode_gets_ask_promptly_guidance(self):
+        rendered = _react_reasoning_system(3, "copilot")
+        assert "Don't spend extra rounds deliberating" in rendered
+        assert "Try to resolve it yourself first" not in rendered
+
+    def test_both_modes_get_act_same_round_guidance(self):
+        """The "don't re-derive across rounds" fix applies regardless of
+        mode -- it's not a resolve-vs-ask question, it's an act-on-your-
+        own-conclusion-promptly question."""
+        for mode, max_it in (("agentic", 10), ("copilot", 3), ("quick", 2)):
+            rendered = _react_reasoning_system(max_it, mode)
+            assert "ask in that SAME round" in rendered, f"missing for mode={mode}"
+
+    def test_v2_composition_path_passes_mode(self):
+        from app.pipeline.react.prompts import resolve_react_system_prompt_v2
+
+        with patch("app.services.prompt_manager.resolve_composition_sync", return_value=None) as mock_resolve:
+            resolve_react_system_prompt_v2(10, "agentic", None, None, "explore")
+        assert mock_resolve.call_args.kwargs["template_vars"]["mode"] == "agentic"
+
+        with patch("app.services.prompt_manager.resolve_composition_sync", return_value=None) as mock_resolve:
+            resolve_react_system_prompt_v2(3, "copilot", None, None, "explore")
+        assert mock_resolve.call_args.kwargs["template_vars"]["mode"] == "copilot"
+
+
 def test_react_critical_rules_teaches_real_disambiguation_mechanism():
     """2026-08-17 (Ananth, directly, live finding): a model tried calling
     a nonexistent "clarification options" tool across 4 rounds instead of
