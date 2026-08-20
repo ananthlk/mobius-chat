@@ -604,6 +604,28 @@ def _vertex_generate_sync(
     return (text, usage)
 
 
+def _vertex_schema(node):
+    """Accept ordinary JSON Schema; hand Vertex the dialect it wants.
+
+    The Vertex SDK types are an enum keyed on OBJECT / ARRAY / STRING, so a
+    schema written the way every other tool writes one fails with a bare
+    KeyError: 'object'. Callers should not have to know that — normalise here so
+    a schema is portable, and the one place that cares about the dialect is the
+    provider that speaks it.
+    """
+    if isinstance(node, dict):
+        out = {}
+        for k, v in node.items():
+            if k == "type" and isinstance(v, str):
+                out[k] = v.upper()
+            else:
+                out[k] = _vertex_schema(v)
+        return out
+    if isinstance(node, list):
+        return [_vertex_schema(v) for v in node]
+    return node
+
+
 class VertexAIProvider(LLMProvider):
     def __init__(
         self,
@@ -692,6 +714,17 @@ class VertexAIProvider(LLMProvider):
         # llm_manager passes stage for Groq JSON mode — not a valid GenerationConfig field
         kwargs.pop("stage", None)
         cfg: dict = {"temperature": 0.1}
+        # Gemini can be CONSTRAINED to emit JSON matching a schema, rather than
+        # asked for it in the prompt and hoped for. Until now the only JSON
+        # discipline anywhere in this stack was Groq-specific and applied to the
+        # planner and react stages only (llm_provider.py:869), so every parser
+        # call on Vertex ran with no structural guarantee at all — which is why
+        # a prose-to-fact extractor kept losing whole turns to a stray newline
+        # inside a quoted string.
+        schema = kwargs.pop("response_schema", None)
+        if schema:
+            cfg["response_mime_type"] = "application/json"
+            cfg["response_schema"] = _vertex_schema(schema)
         mt = kwargs.pop("max_tokens", None)
         if mt is not None:
             cfg["max_output_tokens"] = int(mt)

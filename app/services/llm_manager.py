@@ -92,6 +92,7 @@ async def generate(
     reasoning_depth: str | None = None,
     latency_budget_ms: int | None = None,
     attachments: list[dict] | None = None,
+    response_schema: dict | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """
     Call LLM via dynamic model router, record to llm_calls.
@@ -168,6 +169,13 @@ async def generate(
     # the key entirely when there's nothing to attach is the identical,
     # zero-risk behavior every non-attachment call already had.
     _extra_kw = {"attachments": attachments} if attachments else {}
+    # Structured output, when the caller has a schema to enforce. Passed the
+    # same way attachments are — present only when asked for, so every existing
+    # call keeps its exact behaviour. Providers that cannot honour it ignore it;
+    # Vertex turns it into a real generation constraint rather than a request
+    # the prompt makes politely.
+    if response_schema:
+        _extra_kw["response_schema"] = response_schema
     try:
         text, usage = await provider.generate_with_usage(
             prompt, max_tokens=max_tokens, stage=stage, **_extra_kw
@@ -361,6 +369,7 @@ def generate_sync(
     composition_hash: str | None = None,
     reasoning_depth: str | None = None,
     latency_budget_ms: int | None = None,
+    response_schema: dict | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Sync wrapper for scripts/eval (creates one event loop).
 
@@ -389,6 +398,7 @@ def generate_sync(
                 composition_hash=composition_hash,
                 reasoning_depth=reasoning_depth,
                 latency_budget_ms=latency_budget_ms,
+                response_schema=response_schema,
             )
         )
 
