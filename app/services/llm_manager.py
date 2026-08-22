@@ -174,7 +174,12 @@ async def generate(
     # call keeps its exact behaviour. Providers that cannot honour it ignore it;
     # Vertex turns it into a real generation constraint rather than a request
     # the prompt makes politely.
-    if response_schema:
+    if response_schema and type(provider).__name__ == "VertexAIProvider":
+        # Vertex turns this into a real generation constraint. Every other
+        # provider rejects the unknown kwarg with a 400 — I claimed on adding
+        # this that they would ignore it, and they do not. A caller asking for
+        # structure gets it where it exists and plain prose elsewhere; the
+        # extractor's own retry and repair already handle the plain case.
         _extra_kw["response_schema"] = response_schema
     try:
         text, usage = await provider.generate_with_usage(
