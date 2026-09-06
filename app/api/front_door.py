@@ -35,7 +35,7 @@ import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
 
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -472,7 +472,7 @@ def auth_mode() -> str:
     return "required" if is_hosted() else "off"
 
 
-async def require_user(request: Request) -> str | None:
+async def require_user(request: Request, response: Response) -> str | None:
     """FastAPI dependency that returns the authenticated user_id.
 
     Behavior depends on :func:`auth_mode`:
@@ -492,22 +492,48 @@ async def require_user(request: Request) -> str | None:
         @router.post("/chat/tasks")
         def create_task(user_id: str | None = Depends(require_user)):
             ...
+
+    Task #108 follow-up (2026-09-06, Chat Master ruling): a token that
+    was PRESENT but failed validation (expired, tampered, malformed) is
+    a materially different situation from no token at all — under
+    ``optional`` mode both used to silently collapse to ``user_id=None``,
+    with nothing to distinguish "anonymous by choice" from "your session
+    quietly died." The request still proceeds either way (the ``optional``
+    contract is unchanged) but a real validation failure now: (1) logs at
+    WARNING with the specific reason, and (2) sets the
+    ``X-Auth-Token-Status`` response header to that reason, so the FE can
+    detect it and trigger a token refresh instead of the user silently
+    losing their own thread history.
     """
     mode = auth_mode()
     if mode == "off":
         return None
 
     from app.auth import get_user_id_from_request  # local import — optional dep
-    user_id = get_user_id_from_request(request)
+    result = get_user_id_from_request(request)
+
+    if result.failure_reason:
+        logger.warning(
+            "require_user: token present but failed validation (reason=%s path=%s)",
+            result.failure_reason, request.url.path,
+        )
+        response.headers["X-Auth-Token-Status"] = result.failure_reason
 
     if mode == "optional":
-        return user_id
+        return result.user_id
 
     # required
-    if not user_id:
+    if not result.user_id:
+        # HTTPException's headers ship on a response FastAPI builds
+        # separately from the `response` dependency object above — a
+        # header set only via `response.headers` would be dropped when
+        # this exception fires, so the failure reason is duplicated here.
+        _headers = {"WWW-Authenticate": "Bearer"}
+        if result.failure_reason:
+            _headers["X-Auth-Token-Status"] = result.failure_reason
         raise HTTPException(
             status_code=401,
             detail="Authentication required",
-            headers={"WWW-Authenticate": "Bearer"},
+            headers=_headers,
         )
-    return user_id
+    return result.user_id

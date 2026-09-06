@@ -23,6 +23,8 @@ from __future__ import annotations
 import time
 from unittest.mock import patch
 
+from app.auth import TokenCheckResult
+
 import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
@@ -506,7 +508,7 @@ class TestRequireUserDependency:
         monkeypatch.setenv("CHAT_AUTH_MODE", "required")
         client = TestClient(_app_with_require_user())
         # Stub the token decoder — we're testing the dependency, not JWT.
-        with patch("app.auth.get_user_id_from_request", return_value="u-42"):
+        with patch("app.auth.get_user_id_from_request", return_value=TokenCheckResult(user_id="u-42")):
             resp = client.get("/protected", headers={"Authorization": "Bearer good"})
         assert resp.status_code == 200
         assert resp.json() == {"user_id": "u-42"}
@@ -524,7 +526,7 @@ class TestRequireUserDependency:
     def test_optional_mode_decodes_when_present(self, monkeypatch):
         monkeypatch.setenv("CHAT_AUTH_MODE", "optional")
         client = TestClient(_app_with_require_user())
-        with patch("app.auth.get_user_id_from_request", return_value="u-1"):
+        with patch("app.auth.get_user_id_from_request", return_value=TokenCheckResult(user_id="u-1")):
             resp = client.get("/protected", headers={"Authorization": "Bearer ok"})
         assert resp.json() == {"user_id": "u-1"}
 

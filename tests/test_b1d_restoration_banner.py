@@ -25,6 +25,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
+from app.auth import TokenCheckResult
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -173,7 +175,7 @@ class TestListRecentForRestoration:
         monkeypatch.setenv("CHAT_AUTH_MODE", "required")
         from app.api import uploads as uploads_mod
 
-        with patch("app.auth.get_user_id_from_request", return_value="u-42"), \
+        with patch("app.auth.get_user_id_from_request", return_value=TokenCheckResult(user_id="u-42")), \
              patch.object(uploads_mod, "list_for_user") as list_mock:
             list_mock.return_value = [_sample_upload_row(doc_id="doc-x", user_id="u-42")]
             r = client.get(
@@ -267,7 +269,7 @@ class TestLinkUploadToThread:
         monkeypatch.setenv("CHAT_AUTH_MODE", "required")
         from app.api import uploads as uploads_mod
 
-        with patch("app.auth.get_user_id_from_request", return_value="u-attacker"), \
+        with patch("app.auth.get_user_id_from_request", return_value=TokenCheckResult(user_id="u-attacker")), \
              patch.object(uploads_mod, "get_by_document_id",
                           return_value=_sample_upload_row(user_id="u-owner")):
             r = client.post(
@@ -282,7 +284,7 @@ class TestLinkUploadToThread:
         monkeypatch.setenv("CHAT_AUTH_MODE", "required")
         from app.api import uploads as uploads_mod
 
-        with patch("app.auth.get_user_id_from_request", return_value="u-42"), \
+        with patch("app.auth.get_user_id_from_request", return_value=TokenCheckResult(user_id="u-42")), \
              patch.object(uploads_mod, "get_by_document_id",
                           return_value=_sample_upload_row(user_id="u-42")), \
              patch("app.storage.threads.ensure_thread", return_value="t-target"), \

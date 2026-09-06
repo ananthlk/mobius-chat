@@ -142,7 +142,9 @@ class TestDevTokenRoundTripValidation:
         # patch both sides to return the same value.
         with patch("app.auth.get_secret", return_value=fake_secret):
             from app.auth import get_user_id_from_token
-            assert get_user_id_from_token(token) == "alice-rt"
+            result = get_user_id_from_token(token)
+            assert result.user_id == "alice-rt"
+            assert result.failure_reason is None
 
     def test_tampered_token_rejected(self, monkeypatch):
         monkeypatch.setenv("MOBIUS_DEV_TOKEN_ENABLED", "1")
@@ -157,4 +159,6 @@ class TestDevTokenRoundTripValidation:
 
         with patch("app.auth.get_secret", return_value=fake_secret):
             from app.auth import get_user_id_from_token
-            assert get_user_id_from_token(tampered) is None
+            result = get_user_id_from_token(tampered)
+            assert result.user_id is None
+            assert result.failure_reason == "invalid_signature"
