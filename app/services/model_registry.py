@@ -697,6 +697,7 @@ COPILOT_EXCLUDED_THOMPSON_BENCHMARK_CATEGORIES: frozenset[str] = frozenset(
     {
         "frontier_reasoning",
         "frontier_reasoning_premium",
+        "frontier_apex",  # Claude Fable 5.1 — heavier/pricier than Opus, never sample in copilot
         "open_large",
     }
 )
@@ -724,6 +725,10 @@ MODEL_CATEGORIES: dict[str, str] = {
     "claude-opus-4-7":                               "frontier_reasoning_premium",
     "claude-opus-4-6":                               "frontier_reasoning_premium",
     "claude-opus-4-5-20251101":                      "frontier_reasoning_premium",
+    "claude-sonnet-5":                               "frontier_reasoning",
+    "claude-opus-5":                                 "frontier_reasoning_premium",
+    "claude-opus-4-8":                               "frontier_reasoning_premium",
+    "claude-fable-5-1":                              "frontier_apex",
     "gpt-4o":                                        "frontier_reasoning",
     "gpt-4o-mini":                                   "frontier_fast",
     "llama-3.3-70b-versatile":                       "groq_fast",
@@ -1284,6 +1289,112 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         ema_quality=0.91,
         ema_latency_ms=6000.0,
         ema_cost_usd=0.075,
+    ),
+
+    # ── ANTHROPIC — current-generation models (2026-08-17, Ananth directive:
+    # "add all available Claude models including the most advanced") ─────────
+    # Pricing here is Anthropic's current first-party API table (confirmed
+    # against the claude-api skill's cached rates, 2026-06-24) — notably
+    # CHEAPER per token than the Opus 4.5/4.6/4.7 entries above despite being
+    # newer/better models (Opus 5 is $5/$25 vs Opus 4.7's stale $15/$75 in
+    # this file) — a real price drop between generations, not a typo. Left
+    # the older entries' pricing untouched (out of scope for this pass; their
+    # ema_cost_usd feeds real cost-based routing today and shouldn't move
+    # without separately re-verifying each one against current rates).
+    #
+    # AnthropicProvider's raw request body (llm_provider.py) sends only
+    # model/max_tokens/messages — no thinking config, no forced tool_choice,
+    # no prefill — so these are drop-in compatible with zero request-building
+    # changes: omitting `thinking` runs adaptive by default on every model
+    # below (Opus 5 runs adaptive-by-default even on omission, unlike
+    # 4.7/4.8 where omission meant no thinking — doesn't matter here since
+    # none of them are sent anyway).
+    #
+    # Priors: stepped by generation/tier, same convention as the existing
+    # Opus block above (each newer release gets a higher ema_quality prior;
+    # the bandit refines from real usage, priors just break the tie toward
+    # the newer model absent contradicting evidence). eligible_stages
+    # mirrors the existing Anthropic pattern (full CORE_REASONING_STAGES,
+    # NOT the narrow flash-biased PARALLEL_INTEGRATOR_STAGES/
+    # REACT_COMPLETION_CRITIC_STAGES pools — those stay Vertex-only per
+    # Task #20/#104's explicit narrow-pool rulings, unchanged here).
+
+    "claude-sonnet-5": ModelSpec(
+        model_id="claude-sonnet-5",
+        provider="anthropic",
+        display_name="Claude Sonnet 5",
+        enabled=False,                             # enable when ANTHROPIC_API_KEY set
+        hipaa_eligible=False,                      # needs Enterprise BAA for PHI
+        eligible_stages=list(CORE_REASONING_STAGES),
+        spec_tokens_per_sec=130.0,
+        spec_context_k=1000,
+        spec_input_per_1m_usd=2.00,
+        spec_output_per_1m_usd=10.00,
+        benchmark_category="frontier_reasoning",
+        ema_quality=0.92,                          # newer generation than 4.6 (0.90)
+        ema_latency_ms=3200.0,
+        ema_cost_usd=0.012,
+    ),
+
+    "claude-opus-5": ModelSpec(
+        model_id="claude-opus-5",
+        provider="anthropic",
+        display_name="Claude Opus 5",
+        enabled=False,
+        hipaa_eligible=False,
+        eligible_stages=list(CORE_REASONING_STAGES),
+        spec_tokens_per_sec=75.0,
+        spec_context_k=1000,
+        spec_input_per_1m_usd=5.00,
+        spec_output_per_1m_usd=25.00,
+        benchmark_category="frontier_reasoning_premium",
+        ema_quality=0.96,                          # newest Opus generation in the roster
+        ema_latency_ms=5000.0,
+        ema_cost_usd=0.025,
+    ),
+
+    "claude-opus-4-8": ModelSpec(
+        model_id="claude-opus-4-8",
+        provider="anthropic",
+        display_name="Claude Opus 4.8",
+        enabled=False,
+        hipaa_eligible=False,
+        eligible_stages=list(CORE_REASONING_STAGES),
+        spec_tokens_per_sec=72.0,
+        spec_context_k=1000,
+        spec_input_per_1m_usd=5.00,
+        spec_output_per_1m_usd=25.00,
+        benchmark_category="frontier_reasoning_premium",
+        ema_quality=0.95,                          # between 4.7 (0.94) and Opus 5 (0.96)
+        ema_latency_ms=5300.0,
+        ema_cost_usd=0.025,
+    ),
+
+    # Claude Fable 5.1 — Anthropic's most capable widely released model
+    # (per the claude-api skill: "for the most demanding reasoning and
+    # long-horizon agentic work"). Priced ~2x Opus ($10/$50 vs $5/$25) —
+    # own benchmark_category rather than reusing frontier_reasoning_premium
+    # so it can be excluded from the copilot Thompson pool independently of
+    # (and even more aggressively than) the Opus tier if that's ever needed,
+    # without changing Opus's own exclusion behavior. Included in
+    # COPILOT_EXCLUDED_THOMPSON_BENCHMARK_CATEGORIES below for the same
+    # reason copilot excludes frontier_reasoning_premium — this is heavier
+    # and pricier than Opus, copilot mode should never sample it.
+    "claude-fable-5-1": ModelSpec(
+        model_id="claude-fable-5-1",
+        provider="anthropic",
+        display_name="Claude Fable 5.1",
+        enabled=False,
+        hipaa_eligible=False,
+        eligible_stages=list(CORE_REASONING_STAGES),
+        spec_tokens_per_sec=50.0,
+        spec_context_k=1000,
+        spec_input_per_1m_usd=10.00,
+        spec_output_per_1m_usd=50.00,
+        benchmark_category="frontier_apex",
+        ema_quality=0.97,                          # most capable model in the roster
+        ema_latency_ms=7000.0,
+        ema_cost_usd=0.05,
     ),
 
     # ── PERPLEXITY (live web-grounded — real citations, not self-reported) ────

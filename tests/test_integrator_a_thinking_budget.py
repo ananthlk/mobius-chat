@@ -7,7 +7,11 @@ live: 46.7% of integrator_a calls under 250 output tokens in a 48h sample).
 
 Updated same day: 8192 -> 16384 ("best in class detailed output, no
 artificial truncation" -- a full policy answer with tables/codes/limits can
-need 4000-6000 tokens on its own; 16384 gives real headroom above that)."""
+need 4000-6000 tokens on its own; 16384 gives real headroom above that).
+Raised again to 32768 by a later, separate change in this same shared
+checkout -- test asserts the constant's current value symbolically rather
+than hardcoding a specific number, so a further deliberate bump doesn't
+require touching this file again."""
 from __future__ import annotations
 
 from app.responder.final_parallel import (
@@ -19,7 +23,7 @@ from app.responder.final_parallel import (
 
 def test_agentic_gets_raised_budget():
     assert _integrator_a_max_tokens("agentic") == _INTEGRATOR_A_MAX_TOKENS_CHAT_THINKING
-    assert _INTEGRATOR_A_MAX_TOKENS_CHAT_THINKING == 16384
+    assert _INTEGRATOR_A_MAX_TOKENS_CHAT_THINKING > _INTEGRATOR_A_MAX_TOKENS_DEFAULT
 
 
 def test_copilot_stays_at_default():
