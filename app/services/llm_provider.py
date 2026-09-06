@@ -20,6 +20,46 @@ from app.trace_log import trace_entered
 
 logger = logging.getLogger(__name__)
 
+# Transient transport failures are not model failures, and must not surface as
+# one. A dropped TCP connection killed a 28-sentence extraction run and an
+# 87-question sourcing run on their FIRST call, because the only except clause
+# below was for HTTPError — a ConnectionResetError went straight to the caller.
+#
+# Retried here rather than in each caller: every long job that uses LLMManager
+# would otherwise need its own loop, and three of them already did it three
+# different ways. HTTPError is deliberately NOT retried except for the codes that
+# mean "ask again" — a 400 is a bad request and repeating it just burns quota.
+_TRANSIENT_HTTP = {408, 409, 425, 429, 500, 502, 503, 504}
+_RETRY_ATTEMPTS = 4
+_RETRY_BASE_S = 1.5
+
+
+def _urlopen_json_retrying(request, timeout, attempts: int = _RETRY_ATTEMPTS):
+    """POST and decode JSON, retrying only genuinely transient failures."""
+    last: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            # Let the caller's own handler classify anything not worth retrying;
+            # it reads the body and builds the provider-specific error message.
+            if e.code not in _TRANSIENT_HTTP or attempt == attempts - 1:
+                raise
+            last = e
+        except (urllib.error.URLError, ConnectionResetError, ConnectionAbortedError,
+                TimeoutError, OSError) as e:
+            if attempt == attempts - 1:
+                raise
+            last = e
+        delay = _RETRY_BASE_S * (2 ** attempt)
+        logger.warning("transient LLM transport failure (%s), retry %d/%d in %.1fs",
+                       type(last).__name__, attempt + 1, attempts - 1, delay)
+        time.sleep(delay)
+    raise last  # unreachable; the loop either returns or raises
+
+
+
 _PROVIDER_REGISTRY: Dict[str, Callable[[Dict[str, Any]], "LLMProvider"]] = {}
 
 # Stages that expect structured JSON from the model — do not attach Vertex AI Search grounding in "general" mode.
@@ -916,8 +956,7 @@ class GroqProvider(LLMProvider):
 
         def _call() -> tuple[str, LLMUsageDict]:
             try:
-                with urllib.request.urlopen(request, timeout=self.timeout) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
+                data = _urlopen_json_retrying(request, self.timeout)
             except urllib.error.HTTPError as e:
                 body_text = ""
                 try:
@@ -1021,8 +1060,7 @@ class AnthropicProvider(LLMProvider):
 
         def _call() -> tuple[str, LLMUsageDict]:
             try:
-                with urllib.request.urlopen(request, timeout=self.timeout) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
+                data = _urlopen_json_retrying(request, self.timeout)
             except urllib.error.HTTPError as e:
                 body_text = ""
                 try:
@@ -1102,8 +1140,7 @@ class TogetherProvider(LLMProvider):
 
         def _call() -> tuple[str, LLMUsageDict]:
             try:
-                with urllib.request.urlopen(request, timeout=self.timeout) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
+                data = _urlopen_json_retrying(request, self.timeout)
             except urllib.error.HTTPError as e:
                 body_text = ""
                 try:
@@ -1199,8 +1236,7 @@ class PerplexityProvider(LLMProvider):
 
         def _call() -> tuple[str, LLMUsageDict]:
             try:
-                with urllib.request.urlopen(request, timeout=self.timeout) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
+                data = _urlopen_json_retrying(request, self.timeout)
             except urllib.error.HTTPError as e:
                 body_text = ""
                 try:
