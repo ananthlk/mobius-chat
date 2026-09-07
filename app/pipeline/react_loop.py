@@ -2851,13 +2851,19 @@ def _execute_tool(
             mustcarry = [c for c in caveats if c.get("kind") in ("material", "blocking")]
 
             if status == "known_absent" or mustcarry:
-                # `directive` is a model instruction (imperative, never rendered to
-                # users); `text` is user-facing (declarative, safe to quote). Use
-                # directive for the instruction block so model imperatives don't leak
-                # into the provider's answer. Fall back to text/code when absent.
-                caveat_directives = "\n".join(
-                    f"  [{c.get('kind','').upper()}] {c.get('directive') or c.get('text') or c.get('code','')}"
+                # `text` is user-facing (declarative, safe to quote verbatim).
+                # `directive` is a model instruction (imperative, NEVER quote to user).
+                # Keep them in separate blocks so the model knows which to surface
+                # and which to obey silently.
+                caveat_texts = "\n".join(
+                    f"  [{c.get('kind','').upper()}] {c.get('text') or c.get('code','')}"
                     for c in mustcarry
+                    if c.get("text") or c.get("code")
+                )
+                caveat_obeyed = "\n".join(
+                    f"  [{c.get('kind','').upper()}] {c.get('directive')}"
+                    for c in mustcarry
+                    if c.get("directive")
                 )
                 known_absent_order = (
                     "\n  ORDERING: lead with the qualification (why the value is "
@@ -2866,15 +2872,34 @@ def _execute_tool(
                 )
                 # Include `answer` in the verbatim block — caveats qualify the answer
                 # but do not contain the facts (e.g. the daily cap only lives in answer).
-                prefix = (
-                    "⚠️ SYNTHESIS REQUIREMENT\n"
+                verbatim_section = (
                     f"Quote this sentence verbatim as your answer headline:\n"
                     f"  {headline}\n"
-                    "Then include all of the following (non-optional — omitting any "
-                    "makes the answer factually wrong):\n"
-                    + (caveat_directives or f"  status={status}: source is held but silent on this value.")
-                    + known_absent_order
-                    + "\n\nFull registry data:\n"
+                )
+                if caveat_texts:
+                    verbatim_section += (
+                        "Also include each of these user-facing caveat texts verbatim "
+                        "(omitting any makes the answer factually wrong):\n"
+                        + caveat_texts
+                        + known_absent_order
+                    )
+                elif status == "known_absent":
+                    verbatim_section += (
+                        f"  status={status}: source is held but silent on this value."
+                        + known_absent_order
+                    )
+                obey_section = ""
+                if caveat_obeyed:
+                    obey_section = (
+                        "\nMUST OBEY — DO NOT QUOTE TO USER:\n"
+                        + caveat_obeyed
+                        + "\n"
+                    )
+                prefix = (
+                    "⚠️ SYNTHESIS REQUIREMENT\n"
+                    + verbatim_section
+                    + obey_section
+                    + "\nFull registry data:\n"
                 )
                 result_str = prefix + _sl_json.dumps(data)
             else:
