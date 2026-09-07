@@ -408,11 +408,22 @@ _SERVICE_LINE_ROUTING_BLOCK = """\
 ── Service line registry (FL Medicaid BH standard) ──────────────────────
 service_line_code_lookup / limits / coverage / search / detail / requirements / gaps
 
-WHEN TO USE THESE (not rag):
+TOOL PRECEDENCE FOR HCPCS/CPT CODE QUESTIONS:
+  healthcare_query also claims "HCPCS wording / code meaning" competence.
+  For FL Medicaid BH codes the registry STRICTLY WINS:
+    service_line_code_lookup → ALWAYS FIRST for any HCPCS/CPT code question.
+    healthcare_query         → ONLY if service_line_code_lookup status=unknown
+                               (the registry genuinely has nothing on that code).
+  Never let healthcare_query answer for a code the registry binds. Its answers
+  are generated, not looked up, and it returns wrong and inconsistent definitions
+  for FL Medicaid BH codes (two calls to healthcare_query on H0031 return two
+  different wrong answers; both flip the MH/SUD category).
+
+WHEN TO USE THESE (not rag, not healthcare_query):
   Any question about a HCPCS/CPT code meaning, rate, or modifier
-    → service_line_code_lookup FIRST. Do not answer from rag for FL
-      Medicaid BH codes — rag documents contain wrong and outdated
-      definitions and the registry is the authoritative source.
+    → service_line_code_lookup FIRST. Do not answer from rag or
+      healthcare_query for FL Medicaid BH codes — the registry is
+      the authoritative source; the alternatives are unreliable.
   "what is H2017" / "what is HCPCS code H0031" / "what does H0031 mean"
                                                  → service_line_code_lookup
   "can I bill H0031 HN" / "can I bill X"        → service_line_code_lookup
