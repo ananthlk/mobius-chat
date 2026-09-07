@@ -2835,6 +2835,46 @@ def _execute_tool(
 
         import json as _sl_json
 
+        def _sl_pack(data: dict) -> dict:
+            """Build a uniform tool-result dict from a service-line envelope.
+
+            Uses `answer` (new envelope field) for the note/sources so the
+            integrator has citation-weighted text. Prepends a SYNTHESIS
+            REQUIREMENT block to `result` when status=known_absent or when
+            any material/blocking caveat is present — this keeps the
+            qualification in the integrator's context even after synthesis
+            compression.
+            """
+            headline = data.get("answer", "") or data.get("note", "")
+            status = data.get("status", "")
+            caveats = data.get("caveats") or []
+            mustcarry = [c for c in caveats if c.get("kind") in ("material", "blocking")]
+
+            if status == "known_absent" or mustcarry:
+                caveat_lines = "\n".join(
+                    f"  [{c.get('kind','').upper()}] {c.get('text') or c.get('code','')}"
+                    for c in mustcarry
+                )
+                prefix = (
+                    "⚠️ SYNTHESIS REQUIREMENT — the following qualifications are "
+                    "non-optional. They MUST appear verbatim in your final answer, "
+                    "not only in reasoning. Omitting or paraphrasing them makes the "
+                    "answer factually incorrect:\n"
+                    + (caveat_lines or f"  status={status}: the source is held but silent; do not assert the numeric value as usable.")
+                    + "\n\nFull registry data:\n"
+                )
+                result_str = prefix + _sl_json.dumps(data)
+            else:
+                result_str = _sl_json.dumps(data)
+
+            return {
+                "tool": tool, "success": True,
+                "result": result_str,
+                "note": headline,
+                "sources": [{"text": headline}] if headline else [],
+                "signal": _sl_signal(status),
+            }
+
         def _sl_signal(status: str) -> str:
             # known_absent = governing document IS held and is silent — that IS
             # a sourced response; map to SOURCES_FOUND so the badge and golden
@@ -2863,14 +2903,7 @@ def _execute_tool(
                     return _sl_no_src("code is required")
                 emit(f"◌ Service line registry: looking up {code}" + (f"/{modifier}" if modifier else ""))
                 data = _sl_get(f"/codes/{code}", modifier=modifier)
-                note = data.get("note", "")
-                return {
-                    "tool": tool, "success": True,
-                    "result": _sl_json.dumps(data),
-                    "note": note,
-                    "sources": [{"text": note}] if note else [],
-                    "signal": _sl_signal(data.get("status", "")),
-                }
+                return _sl_pack(data)
 
             elif tool == "service_line_limits":
                 code = _sl_str(inputs.get("code")).strip().upper()
@@ -2879,14 +2912,7 @@ def _execute_tool(
                     return _sl_no_src("code is required")
                 emit(f"◌ Service line registry: billing limits for {code}" + (f"/{modifier}" if modifier else ""))
                 data = _sl_get(f"/codes/{code}/limits", modifier=modifier)
-                note = data.get("note", "")
-                return {
-                    "tool": tool, "success": True,
-                    "result": _sl_json.dumps(data),
-                    "note": note,
-                    "sources": [{"text": note}] if note else [],
-                    "signal": _sl_signal(data.get("status", "")),
-                }
+                return _sl_pack(data)
 
             elif tool == "service_line_coverage":
                 code = _sl_str(inputs.get("code")).strip().upper()
@@ -2895,14 +2921,7 @@ def _execute_tool(
                     return _sl_no_src("code is required")
                 emit(f"◌ Service line registry: coverage for {code}" + (f"/{modifier}" if modifier else ""))
                 data = _sl_get(f"/codes/{code}/coverage", modifier=modifier)
-                note = data.get("note", "")
-                return {
-                    "tool": tool, "success": True,
-                    "result": _sl_json.dumps(data),
-                    "note": note,
-                    "sources": [{"text": note}] if note else [],
-                    "signal": _sl_signal(data.get("status", "")),
-                }
+                return _sl_pack(data)
 
             elif tool == "service_line_search":
                 q = _sl_str(inputs.get("q")).strip()
@@ -2910,12 +2929,7 @@ def _execute_tool(
                     return _sl_no_src("q is required")
                 emit(f"◌ Service line registry: searching '{q[:60]}'")
                 data = _sl_get("/search", q=q)
-                return {
-                    "tool": tool, "success": True,
-                    "result": _sl_json.dumps(data),
-                    "sources": [],
-                    "signal": _sl_signal(data.get("status", "")),
-                }
+                return _sl_pack(data)
 
             elif tool == "service_line_detail":
                 line_key = _sl_str(inputs.get("line_key")).strip()
@@ -2923,36 +2937,19 @@ def _execute_tool(
                     return _sl_no_src("line_key is required")
                 emit(f"◌ Service line registry: full card for '{line_key}'")
                 data = _sl_get(f"/lines/{line_key}")
-                return {
-                    "tool": tool, "success": True,
-                    "result": _sl_json.dumps(data),
-                    "sources": [],
-                    "signal": _sl_signal(data.get("status", "")),
-                }
+                return _sl_pack(data)
 
             elif tool == "service_line_requirements":
                 line_key = _sl_str(inputs.get("line_key")).strip() or None
                 req_type = _sl_str(inputs.get("requirement_type")).strip() or None
                 emit(f"◌ Service line registry: requirements" + (f" for {line_key}" if line_key else ""))
                 data = _sl_get("/requirements", line_key=line_key, requirement_type=req_type)
-                return {
-                    "tool": tool, "success": True,
-                    "result": _sl_json.dumps(data),
-                    "sources": [],
-                    "signal": _sl_signal(data.get("status", "")),
-                }
+                return _sl_pack(data)
 
             elif tool == "service_line_gaps":
                 emit("◌ Service line registry: checking coverage gaps")
                 data = _sl_get("/gaps")
-                note = data.get("note", "")
-                return {
-                    "tool": tool, "success": True,
-                    "result": _sl_json.dumps(data),
-                    "note": note,
-                    "sources": [{"text": note}] if note else [],
-                    "signal": RETRIEVAL_SIGNAL_SOURCES_FOUND,
-                }
+                return _sl_pack(data)
 
         except httpx.HTTPStatusError as _e:
             logger.warning(
