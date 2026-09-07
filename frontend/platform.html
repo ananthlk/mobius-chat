@@ -480,19 +480,66 @@
       }
 
       function renderLearnView() {
-        var html = '<div style="max-width: 800px;">';
+        var html = '<div style="max-width: 900px;">';
+
+        html += '<h2 style="margin-bottom: 16px; font-size: 16px;">Learning System</h2>';
+
+        html += '<div style="background: #1a1a1e; border: 0.5px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 16px; margin-bottom: 24px;">';
+        html += '<h3 style="font-size: 13px; font-weight: 600; margin-bottom: 12px;">Architecture Overview</h3>';
+        html += '<p style="font-size: 12px; color: rgba(255,255,255,0.6); margin-bottom: 12px; line-height: 1.5;">Mobius is built in 7 layers + Deep Research. Click any layer or component to see UI links, database schemas, APIs, ownership, and roadmap.</p>';
+        html += '<div style="display: flex; gap: 8px; flex-wrap: wrap;">';
+        html += '<a href="https://raw.githubusercontent.com/ananthlk/Mobius-Master/main/docs/mobius-architecture-essay-complete.md" style="display: inline-block; padding: 6px 12px; background: #7c3aed; color: white; text-decoration: none; border-radius: 4px; font-size: 12px; font-weight: 500;" target="_blank">📖 Read Essay</a>';
+        html += '<a href="https://raw.githubusercontent.com/ananthlk/Mobius-Master/main/docs/mobius-architecture-diagram-complete.html" style="display: inline-block; padding: 6px 12px; background: #7c3aed; color: white; text-decoration: none; border-radius: 4px; font-size: 12px; font-weight: 500;" target="_blank">📊 View Diagram</a>';
+        html += '<a href="https://raw.githubusercontent.com/ananthlk/Mobius-Master/main/docs/mobius-architecture-drilldown-reference.md" style="display: inline-block; padding: 6px 12px; background: #7c3aed; color: white; text-decoration: none; border-radius: 4px; font-size: 12px; font-weight: 500;" target="_blank">🔍 Drilldown Reference</a>';
+        html += '</div>';
+        html += '</div>';
+
+        html += '<div style="margin-bottom: 24px;">';
+        html += '<h3 style="font-size: 13px; font-weight: 600; margin-bottom: 12px;">7-Layer Stack + Deep Research</h3>';
+        var layers = [
+          { num: 1, name: 'Surfaces', components: ['Chat', 'API', 'Chrome Extension', 'Mobile/Dashboard'] },
+          { num: 2, name: 'Router & Optimizer', components: ['Prompt Composer', 'Mode Selector', 'Strategy Selector', 'Bandit Optimizer'] },
+          { num: 3, name: 'Platform Agents', components: ['Product Awareness', 'Eval Command Center', 'User Manager', 'Org Agent', 'Feedback Agent', 'Technical Review'] },
+          { num: 4, name: 'Domain Agents', components: ['Credentialing', 'Strategy', 'Appeals', 'Sourcing', 'Curation', 'Roster', 'Prior Auth', 'Engagement'] },
+          { num: 5, name: 'Skills', components: ['Email', 'Tasks', 'Download', 'Feedback', 'Vault', 'Deep Research'] },
+          { num: 6, name: 'Intelligence', components: ['Fact Store', 'RAG Corpus', 'Embeddings', 'Vector Index', 'Citation Engine'] },
+          { num: 7, name: 'Evaluation & Feedback', components: ['Accuracy Grading', 'Coverage Analysis', 'Latency Tracking', 'Clarity Assessment', 'Gap Signaling'] }
+        ];
+
+        layers.forEach(layer => {
+          html += '<div style="background: #1a1a1e; border-left: 3px solid #7c3aed; border-radius: 6px; padding: 12px; margin-bottom: 12px;">';
+          html += '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">';
+          html += '<div><span style="font-size: 18px; font-weight: 700; color: #7c3aed; margin-right: 8px;">L' + layer.num + '</span><span style="font-size: 13px; font-weight: 600;">' + layer.name + '</span></div>';
+          html += '</div>';
+          html += '<div style="display: flex; gap: 6px; flex-wrap: wrap;">';
+          layer.components.forEach(comp => {
+            html += '<span style="display: inline-block; background: rgba(124, 58, 237, 0.1); color: #a78bfa; padding: 4px 8px; border-radius: 4px; font-size: 11px; border: 0.5px solid rgba(124, 58, 237, 0.3);">' + comp + '</span>';
+          });
+          html += '</div>';
+          html += '</div>';
+        });
+
+        html += '<div style="background: #1a1a1e; border: 2px dashed #7c3aed; border-radius: 6px; padding: 12px; margin-bottom: 12px;">';
+        html += '<div style="font-size: 13px; font-weight: 600; margin-bottom: 8px;">🔄 Deep Research (Parallel System)</div>';
+        html += '<div style="display: flex; gap: 6px; flex-wrap: wrap;">';
+        var drComponents = ['Gap Identification', 'Research', 'Verification', 'Fact Store Ingestion', 'RAG Corpus Ingestion'];
+        drComponents.forEach(comp => {
+          html += '<span style="display: inline-block; background: rgba(124, 58, 237, 0.1); color: #a78bfa; padding: 4px 8px; border-radius: 4px; font-size: 11px; border: 0.5px solid rgba(124, 58, 237, 0.3);">' + comp + '</span>';
+        });
+        html += '</div>';
+        html += '</div>';
+        html += '</div>';
+
         var faqs = [
           { q: 'What is Mobius?', a: 'Mobius unlocks network-scale Revenue Cycle Management intelligence. It connects organizations to a shared corpus of payer policies, denial patterns, and operational best practices.' },
           { q: 'What are the 8 RCM Gates?', a: '1. Claim Closure (auto-post), 2. Denial Management, 3. Eligibility Verification, 4. Payor Policies & Benefits, 5. Credentialing, 6. Authorization/Appeals, 7. Coding & Claims, 8. Network Effects.' },
-          { q: 'How do I get started?', a: 'New orgs start with Org Agent for onboarding + datastore setup. Then access Chat for immediate policy lookups. Progress through Gates as operational readiness increases.' },
+          { q: 'How do I navigate the architecture?', a: 'Start with "Read Essay" for the conceptual overview. Then "View Diagram" for visual layers. Then "Drilldown Reference" to explore each component\'s UI links, schemas, APIs, and ownership.' },
           { q: 'Where is all my documentation?', a: 'This platform is your single source of truth. Specs tab has detailed docs. Coordination tab shows all cross-team agreements. Status tab shows live metrics.' },
           { q: 'Who owns what?', a: 'Technical tab shows ownership for all 23 modules. Each module has a single owner + contributing agents. See Coordination tab for multi-module decisions.' },
-          { q: 'How is Mobius different from X?', a: 'Mobius is network-native: designed for 34 independent orgs to share RCM intelligence without sharing patient data. Your data stays yours; the network learns.' },
-          { q: 'How do I report a bug?', a: 'See BUG_LOG.md in docs/. File with: title, repro steps, root cause hypothesis, severity. Platform Architects triage on slower days.' },
-          { q: 'Where are the API docs?', a: 'Check Specs tab for "RAG Backend", "Payor Fact Store API", and module-specific contracts. All tool manifests documented in ReAct Agent spec.' }
+          { q: 'How do I report a bug?', a: 'See BUG_LOG.md in docs/. File with: title, repro steps, root cause hypothesis, severity. Platform Architects triage on slower days.' }
         ];
 
-        html += '<h2 style="margin-bottom: 16px; font-size: 16px;">FAQ & Learning</h2>';
+        html += '<h2 style="font-size: 16px; margin-bottom: 16px; margin-top: 24px;">FAQ</h2>';
         faqs.forEach(faq => {
           html += '<div class="faq-item">';
           html += '<div class="faq-question">' + faq.q + '</div>';
@@ -503,10 +550,10 @@
         html += '<h3 style="font-size: 14px; margin-top: 24px; margin-bottom: 12px;">Key Documentation</h3>';
         var docs = [
           { name: 'mobius-model.md', desc: 'RCM Gates, tiers, vision, value capture' },
-          { name: 'platform-definition.json', desc: 'Machine-readable all 23 modules + 5 lenses' },
+          { name: 'mobius-architecture-essay-complete.md', desc: 'Comprehensive narrative: 7 layers + Deep Research + why it works' },
+          { name: 'mobius-architecture-drilldown-reference.md', desc: 'Component details: UIs, schemas, APIs, ownership, roadmap' },
           { name: 'RAG_FACTSTORE_COORDINATION.md', desc: 'All cross-agent agreements (git-backed)' },
-          { name: 'BUG_LOG.md', desc: 'Known issues, blockers, repro steps' },
-          { name: 'AHCA_RERUN_SPRINT.md', desc: 'Live sprint: 1,160 docs through pipeline' }
+          { name: 'BUG_LOG.md', desc: 'Known issues, blockers, repro steps' }
         ];
         docs.forEach(doc => {
           html += '<div style="background: #1a1a1e; padding: 8px 12px; border-radius: 4px; margin-bottom: 8px; font-size: 12px;">';
