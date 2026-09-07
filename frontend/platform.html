@@ -495,6 +495,18 @@
         html += '</div>';
 
         html += '<div style="margin-bottom: 24px;">';
+        html += '<h3 style="font-size: 13px; font-weight: 600; margin-bottom: 12px;">Sourcing & Ingestion Pipeline (Foundation)</h3>';
+        html += '<div style="background: #1a1a1e; border-left: 3px solid #f59e0b; border-radius: 6px; padding: 12px; margin-bottom: 12px;">';
+        html += '<div style="font-size: 13px; font-weight: 600; margin-bottom: 8px;">Raw Documents → Indexed Intelligence</div>';
+        html += '<div style="display: flex; gap: 6px; flex-wrap: wrap;">';
+        var pipelineSteps = ['Sourcing Agent', 'Extraction (Tables/Sections)', 'Chunking', 'Tagging (Lexicon)', 'Embedding', 'Publishing'];
+        pipelineSteps.forEach(step => {
+          html += '<span style="display: inline-block; background: rgba(245, 158, 11, 0.1); color: #fbbf24; padding: 4px 8px; border-radius: 4px; font-size: 11px; border: 0.5px solid rgba(245, 158, 11, 0.3);">' + step + '</span>';
+        });
+        html += '</div>';
+        html += '<div style="font-size: 11px; color: rgba(255,255,255,0.4); margin-top: 8px;">↓ Feeds INTO Layer 6 (Intelligence)</div>';
+        html += '</div>';
+
         html += '<h3 style="font-size: 13px; font-weight: 600; margin-bottom: 12px;">7-Layer Stack + Deep Research</h3>';
         var layers = [
           { num: 1, name: 'Surfaces', components: ['Chat', 'API', 'Chrome Extension', 'Mobile/Dashboard'] },
