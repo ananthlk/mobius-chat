@@ -2846,10 +2846,18 @@ def _execute_tool(
                 return RETRIEVAL_SIGNAL_SOURCES_FOUND
             return RETRIEVAL_SIGNAL_NO_SOURCES  # unknown
 
+        def _sl_str(v) -> str:
+            """Coerce a planner-supplied input field to str safely."""
+            if v is None:
+                return ""
+            if isinstance(v, str):
+                return v
+            return str(v)  # int, list, dict, etc. — log will expose the shape
+
         try:
             if tool == "service_line_code_lookup":
-                code = (inputs.get("code") or "").strip().upper()
-                modifier = (inputs.get("modifier") or "").strip().upper() or None
+                code = _sl_str(inputs.get("code")).strip().upper()
+                modifier = _sl_str(inputs.get("modifier")).strip().upper() or None
                 if not code:
                     return _sl_no_src("code is required")
                 emit(f"◌ Service line registry: looking up {code}" + (f"/{modifier}" if modifier else ""))
@@ -2864,8 +2872,8 @@ def _execute_tool(
                 }
 
             elif tool == "service_line_limits":
-                code = (inputs.get("code") or "").strip().upper()
-                modifier = (inputs.get("modifier") or "").strip().upper() or None
+                code = _sl_str(inputs.get("code")).strip().upper()
+                modifier = _sl_str(inputs.get("modifier")).strip().upper() or None
                 if not code:
                     return _sl_no_src("code is required")
                 emit(f"◌ Service line registry: billing limits for {code}" + (f"/{modifier}" if modifier else ""))
@@ -2880,8 +2888,8 @@ def _execute_tool(
                 }
 
             elif tool == "service_line_coverage":
-                code = (inputs.get("code") or "").strip().upper()
-                modifier = (inputs.get("modifier") or "").strip().upper() or None
+                code = _sl_str(inputs.get("code")).strip().upper()
+                modifier = _sl_str(inputs.get("modifier")).strip().upper() or None
                 if not code:
                     return _sl_no_src("code is required")
                 emit(f"◌ Service line registry: coverage for {code}" + (f"/{modifier}" if modifier else ""))
@@ -2896,7 +2904,7 @@ def _execute_tool(
                 }
 
             elif tool == "service_line_search":
-                q = (inputs.get("q") or "").strip()
+                q = _sl_str(inputs.get("q")).strip()
                 if not q:
                     return _sl_no_src("q is required")
                 emit(f"◌ Service line registry: searching '{q[:60]}'")
@@ -2909,7 +2917,7 @@ def _execute_tool(
                 }
 
             elif tool == "service_line_detail":
-                line_key = (inputs.get("line_key") or "").strip()
+                line_key = _sl_str(inputs.get("line_key")).strip()
                 if not line_key:
                     return _sl_no_src("line_key is required")
                 emit(f"◌ Service line registry: full card for '{line_key}'")
@@ -2922,8 +2930,8 @@ def _execute_tool(
                 }
 
             elif tool == "service_line_requirements":
-                line_key = (inputs.get("line_key") or "").strip() or None
-                req_type = (inputs.get("requirement_type") or "").strip() or None
+                line_key = _sl_str(inputs.get("line_key")).strip() or None
+                req_type = _sl_str(inputs.get("requirement_type")).strip() or None
                 emit(f"◌ Service line registry: requirements" + (f" for {line_key}" if line_key else ""))
                 data = _sl_get("/requirements", line_key=line_key, requirement_type=req_type)
                 return {
@@ -2946,8 +2954,16 @@ def _execute_tool(
                 }
 
         except httpx.HTTPStatusError as _e:
+            logger.warning(
+                "service_line tool HTTP error: tool=%s status=%s body=%s inputs=%r",
+                tool, _e.response.status_code, _e.response.text[:400], inputs,
+            )
             return _sl_no_src(f"HTTP {_e.response.status_code}: {_e.response.text[:200]}")
         except Exception as _e:
+            logger.warning(
+                "service_line tool error: tool=%s exc=%r inputs=%r",
+                tool, _e, inputs, exc_info=True,
+            )
             return _sl_no_src(str(_e)[:200])
 
     # ── Appeals Agent — direct HTTP dispatch ─────────────────────────────
