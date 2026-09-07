@@ -922,6 +922,92 @@ export function renderFirstPass(block: EnvFirstPassBlock): HTMLElement | null {
   return fp;
 }
 
+/** certified_answer block — service-line certified-fact answer (CERTIFIED_ANSWER_BLOCK_CONTRACT). */
+export interface CertifiedAnswerCaveat { code?: string; kind?: "material" | "context" | "blocking"; text?: string; }
+export interface CertifiedAnswerProvenance { document?: string; page?: number; sourced?: boolean; }
+export type CertifiedAnswerBlock = {
+  type?: "certified_answer";
+  status?: "found" | "known_absent" | "unknown";
+  answer?: string;
+  caveats?: CertifiedAnswerCaveat[];
+  provenance?: CertifiedAnswerProvenance[];
+  meta?: { state?: string; program?: string; authority?: string; uniform?: boolean };
+};
+const _CA_PILL: Record<string, { label: string; cls: string }> = {
+  found: { label: "Sourced", cls: "found" },
+  known_absent: { label: "Source silent", cls: "silent" },
+  unknown: { label: "Not held", cls: "notheld" },
+};
+
+/**
+ * renderCertifiedAnswer — the ONE new render for service-line certified answers. THE principle: all three
+ * states (found / known_absent / unknown) share IDENTICAL chrome — only a NEUTRAL provenance pill and which
+ * caveats show ever change, so the common "unknown" case reads as a real answer, never a failure (no error
+ * tint, no empty state). Caveats placed by KIND, never by reading text: material → ⚑ inline lines; context →
+ * footer; blocking is NOT here (it's a separate disambiguation block). sourced:false → flagged, not a citation.
+ */
+export function renderCertifiedAnswer(block: CertifiedAnswerBlock): HTMLElement | null {
+  const answer = String(block?.answer ?? "").trim();
+  if (!answer) return null;
+  const wrap = document.createElement("div");
+  wrap.className = "certified-answer";
+
+  const pill = _CA_PILL[block.status ?? "unknown"] ?? _CA_PILL.unknown;
+  const head = document.createElement("div"); head.className = "ca-head";
+  const pillEl = document.createElement("span"); pillEl.className = `ca-pill ca-pill--${pill.cls}`; pillEl.textContent = pill.label;
+  head.appendChild(pillEl);
+  wrap.appendChild(head);
+
+  const ans = document.createElement("div"); ans.className = "ca-answer";
+  ans.innerHTML = _inlineMd(answer);   // the verbatim headline, same treatment in every state
+  wrap.appendChild(ans);
+
+  const prov = Array.isArray(block.provenance) ? block.provenance : [];
+  if (prov.length) {
+    const line = document.createElement("div"); line.className = "ca-provenance";
+    const sourced = prov.filter((p) => p && p.sourced !== false);
+    const unsourced = prov.filter((p) => p && p.sourced === false);
+    if (sourced.length) {
+      const s = document.createElement("span"); s.className = "ca-prov-sourced";
+      s.textContent = "sourced: " + sourced.map((p) => (p.document || "source") + (p.page != null ? " p." + p.page : "")).join(" · ");
+      line.appendChild(s);
+    }
+    if (unsourced.length) {
+      // sourced:false is our placeholder wording, NOT policy — flag it, never present as a citation.
+      const u = document.createElement("span"); u.className = "ca-prov-unsourced";
+      u.textContent = (sourced.length ? " · " : "") + "⚠ unsourced placeholder (our wording, not policy)";
+      line.appendChild(u);
+    }
+    wrap.appendChild(line);
+  }
+
+  const caveats = Array.isArray(block.caveats) ? block.caveats : [];
+  for (const c of caveats) {
+    if (c?.kind !== "material" || !c.text) continue;
+    const row = document.createElement("div"); row.className = "ca-caveat ca-caveat--material";
+    const ic = document.createElement("span"); ic.className = "ca-caveat-icon"; ic.setAttribute("aria-hidden", "true"); ic.textContent = "⚑";
+    const tx = document.createElement("span"); tx.className = "ca-caveat-text"; tx.innerHTML = _inlineMd(c.text);
+    row.appendChild(ic); row.appendChild(tx);
+    wrap.appendChild(row);
+  }
+
+  const footer = document.createElement("div"); footer.className = "ca-footer";
+  const m = block.meta;
+  if (m && m.uniform) {   // render the jurisdiction tag ONLY when uniform — a missing tag beats a wrong one.
+    const jt = document.createElement("span"); jt.className = "ca-jurisdiction";
+    jt.textContent = [m.state, m.program].filter(Boolean).join(" ") + (m.authority ? " · " + m.authority : "");
+    footer.appendChild(jt);
+  }
+  for (const c of caveats) {
+    if (c?.kind !== "context" || !c.text) continue;
+    const cx = document.createElement("span"); cx.className = "ca-context"; cx.innerHTML = _inlineMd(c.text);
+    footer.appendChild(cx);
+  }
+  if (footer.childElementCount) wrap.appendChild(footer);
+
+  return wrap;
+}
+
 /** A block whose `type` steers dispatch; every other field is block-specific. */
 export interface EnvBlock { type: string; [k: string]: unknown; }
 

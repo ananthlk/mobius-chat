@@ -8604,6 +8604,45 @@ body.landing-state .composer-landing-chips {
 }
 .disambig-dl-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 
+/* certified_answer — service-line certified-fact answer. Identical chrome for all 3 states; only the
+   provenance pill tone + which caveats show ever change. NO error/red tint anywhere — "unknown" is a
+   real answer. Neutral pills (subtle green / amber / grey). */
+.certified-answer { margin: 0.35rem 0 0.5rem; }
+.ca-head { margin-bottom: 0.3rem; }
+.ca-pill {
+  display: inline-flex; align-items: center; font-size: 0.6rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.05em; padding: 0.1rem 0.45rem; border-radius: 4px;
+}
+.ca-pill--found  { color: #0f7a43; background: rgba(15, 157, 88, 0.12); }
+.ca-pill--silent { color: #8a5a10; background: rgba(185, 122, 18, 0.14); }
+.ca-pill--notheld{ color: var(--text-tertiary, #6b7280); background: rgba(107, 113, 133, 0.14); }
+.ca-answer { font-size: 0.9rem; line-height: 1.5; color: var(--text-primary, #111827); font-weight: 500; }
+.ca-provenance { font-size: 0.7rem; color: var(--text-tertiary, #6b7280); margin-top: 0.2rem; }
+.ca-prov-unsourced { color: #8a5a10; }
+.ca-caveat { display: flex; align-items: baseline; gap: 0.4rem; font-size: 0.76rem; line-height: 1.4; margin-top: 0.35rem; color: var(--text-secondary, #374151); }
+.ca-caveat-icon { flex: none; color: #8a5a10; font-size: 0.72rem; }
+.ca-footer {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem;
+  margin-top: 0.55rem; padding-top: 0.4rem; border-top: 1px solid rgba(17, 24, 39, 0.07);
+  font-size: 0.7rem; color: var(--text-tertiary, #6b7280); line-height: 1.4;
+}
+.ca-jurisdiction {
+  font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.6rem;
+  color: var(--mobius-violet, #7c3aed); background: rgba(124, 58, 237, 0.09); padding: 0.05rem 0.35rem; border-radius: 4px;
+}
+@media (prefers-color-scheme: dark) {
+  .ca-pill--found  { color: #4ade80; background: rgba(74, 222, 128, 0.14); }
+  .ca-pill--silent { color: #fbbf24; background: rgba(251, 191, 36, 0.15); }
+  .ca-pill--notheld{ color: #9ca3af; background: rgba(156, 163, 175, 0.16); }
+  .ca-caveat-icon, .ca-prov-unsourced { color: #fbbf24; }
+  .ca-footer { border-top-color: rgba(255, 255, 255, 0.1); }
+}
+:root[data-theme="dark"] .ca-pill--found  { color: #4ade80; background: rgba(74, 222, 128, 0.14); }
+:root[data-theme="dark"] .ca-pill--silent { color: #fbbf24; background: rgba(251, 191, 36, 0.15); }
+:root[data-theme="dark"] .ca-pill--notheld{ color: #9ca3af; background: rgba(156, 163, 175, 0.16); }
+:root[data-theme="dark"] .ca-caveat-icon, :root[data-theme="dark"] .ca-prov-unsourced { color: #fbbf24; }
+:root[data-theme="dark"] .ca-footer { border-top-color: rgba(255, 255, 255, 0.1); }
+
 .envelope-callout {
   padding: 0.5rem 0.65rem;
   border-radius: var(--radius-sm);
@@ -9693,12 +9732,15 @@ body.landing-state .composer-landing-chips {
    Text Selection Toolbar — floating copy / bookmark / cite
    ═══════════════════════════════════════════════════════════════════════════ */
 .text-selection-toolbar {
-  position: absolute; z-index: 10001; display: flex; gap: 2px;
+  position: fixed; z-index: 10001;
+  display: flex; gap: 2px;
   background: #1c2129; border: 1px solid #30363d; border-radius: 8px;
   padding: 4px; box-shadow: 0 4px 16px rgba(0,0,0,0.4);
   animation: tst-fade-in 0.12s ease;
+  transform: translateY(-100%) translateY(-8px);
 }
-@keyframes tst-fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes tst-fade-in { from { opacity: 0; transform: translateY(calc(-100% - 4px)); } to { opacity: 1; transform: translateY(calc(-100% - 8px)); } }
+
 .text-selection-toolbar button {
   display: flex; align-items: center; gap: 5px; padding: 5px 10px;
   border: none; border-radius: 5px; background: transparent;
@@ -9706,7 +9748,7 @@ body.landing-state .composer-landing-chips {
 }
 .text-selection-toolbar button:hover { background: rgba(59,130,246,0.15); color: #3b82f6; }
 .text-selection-toolbar button svg { width: 14px; height: 14px; flex-shrink: 0; }
-.tst-divider { width: 1px; background: #30363d; margin: 2px 0; }
+.tst-divider { width: 1px; background: #30363d; margin: 2px 0; align-self: stretch; }
 .tst-toast {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
   background: #1c2129; border: 1px solid #30363d; border-radius: 8px;

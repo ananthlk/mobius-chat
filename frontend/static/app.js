@@ -3043,6 +3043,87 @@ function renderOneSection(sec) {
   _renderSectionBody(sec, sectionEl);
   return sectionEl;
 }
+var _CA_PILL = {
+  found: { label: "Sourced", cls: "found" },
+  known_absent: { label: "Source silent", cls: "silent" },
+  unknown: { label: "Not held", cls: "notheld" }
+};
+function renderCertifiedAnswer(block) {
+  const answer = String(block?.answer ?? "").trim();
+  if (!answer)
+    return null;
+  const wrap = document.createElement("div");
+  wrap.className = "certified-answer";
+  const pill = _CA_PILL[block.status ?? "unknown"] ?? _CA_PILL.unknown;
+  const head = document.createElement("div");
+  head.className = "ca-head";
+  const pillEl = document.createElement("span");
+  pillEl.className = `ca-pill ca-pill--${pill.cls}`;
+  pillEl.textContent = pill.label;
+  head.appendChild(pillEl);
+  wrap.appendChild(head);
+  const ans = document.createElement("div");
+  ans.className = "ca-answer";
+  ans.innerHTML = _inlineMd(answer);
+  wrap.appendChild(ans);
+  const prov = Array.isArray(block.provenance) ? block.provenance : [];
+  if (prov.length) {
+    const line = document.createElement("div");
+    line.className = "ca-provenance";
+    const sourced = prov.filter((p) => p && p.sourced !== false);
+    const unsourced = prov.filter((p) => p && p.sourced === false);
+    if (sourced.length) {
+      const s = document.createElement("span");
+      s.className = "ca-prov-sourced";
+      s.textContent = "sourced: " + sourced.map((p) => (p.document || "source") + (p.page != null ? " p." + p.page : "")).join(" \xB7 ");
+      line.appendChild(s);
+    }
+    if (unsourced.length) {
+      const u = document.createElement("span");
+      u.className = "ca-prov-unsourced";
+      u.textContent = (sourced.length ? " \xB7 " : "") + "\u26A0 unsourced placeholder (our wording, not policy)";
+      line.appendChild(u);
+    }
+    wrap.appendChild(line);
+  }
+  const caveats = Array.isArray(block.caveats) ? block.caveats : [];
+  for (const c of caveats) {
+    if (c?.kind !== "material" || !c.text)
+      continue;
+    const row = document.createElement("div");
+    row.className = "ca-caveat ca-caveat--material";
+    const ic = document.createElement("span");
+    ic.className = "ca-caveat-icon";
+    ic.setAttribute("aria-hidden", "true");
+    ic.textContent = "\u2691";
+    const tx = document.createElement("span");
+    tx.className = "ca-caveat-text";
+    tx.innerHTML = _inlineMd(c.text);
+    row.appendChild(ic);
+    row.appendChild(tx);
+    wrap.appendChild(row);
+  }
+  const footer = document.createElement("div");
+  footer.className = "ca-footer";
+  const m = block.meta;
+  if (m && m.uniform) {
+    const jt = document.createElement("span");
+    jt.className = "ca-jurisdiction";
+    jt.textContent = [m.state, m.program].filter(Boolean).join(" ") + (m.authority ? " \xB7 " + m.authority : "");
+    footer.appendChild(jt);
+  }
+  for (const c of caveats) {
+    if (c?.kind !== "context" || !c.text)
+      continue;
+    const cx = document.createElement("span");
+    cx.className = "ca-context";
+    cx.innerHTML = _inlineMd(c.text);
+    footer.appendChild(cx);
+  }
+  if (footer.childElementCount)
+    wrap.appendChild(footer);
+  return wrap;
+}
 function envelopeToAnswerCard(blocks, base) {
   if (!Array.isArray(blocks) || blocks.length === 0)
     return base ?? null;
@@ -10463,6 +10544,10 @@ function renderAssistantFromEnvelope(envelope, opts) {
           (sel, echo) => opts.onDisambiguationSelect?.(sel, echo)
         ));
       }
+    } else if (t === "certified_answer") {
+      const el2 = renderCertifiedAnswer(block);
+      if (el2)
+        bubble.appendChild(el2);
     } else if (t === "task_list") {
       let parseDetail2 = function(raw) {
         if (!raw)
@@ -12903,7 +12988,8 @@ ${message}`;
       localStorage.setItem("alpha_banner_dismissed", "1");
     }
     const selectedMode = localStorage.getItem("_mobiusChatMode") || "copilot";
-    messagesEl.querySelectorAll(".thinking-block").forEach((block) => {
+    const _allThinkingBlocks = Array.from(messagesEl.querySelectorAll(".thinking-block"));
+    _allThinkingBlocks.slice(0, -1).forEach((block) => {
       block.classList.add("collapsed");
       const p = block.querySelector(".thinking-preview");
       if (p)

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
-import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, applyCitationFootnotes, renderSourcesList, retainStreamedDraftAsFirstPass, stripCitationMarkers, renderFormatBlock, renderModeBadge, renderFirstPass, renderEnvelope, envelopeToAnswerCard } from "./bubble";
+import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, applyCitationFootnotes, renderSourcesList, retainStreamedDraftAsFirstPass, stripCitationMarkers, renderFormatBlock, renderModeBadge, renderFirstPass, renderEnvelope, envelopeToAnswerCard, renderCertifiedAnswer } from "./bubble";
 import type { AnswerCard } from "../answer-card";
 
 // A v2 (no-mode) card: primary section leads, detail tucks; citations light up their tab.
@@ -1096,6 +1096,59 @@ describe("empty sections render nothing (dangling-header fix, Chat Master 2026-0
     ] } as unknown as Parameters<typeof renderAnswerCard>[0];
     const el = renderAnswerCard(card);
     expect(el.textContent).not.toContain("Overview of Covered Services");
+  });
+});
+
+describe("renderCertifiedAnswer (service-line certified-fact block)", () => {
+  // Real 'unknown' payload (php) — the COMMON case; must render as a real answer, not a failure.
+  const php = {
+    type: "certified_answer" as const, status: "unknown" as const,
+    answer: "Partial Hospitalization Program (PHP) is a recognised service line (declined well), and we hold no fee schedule, coverage document or codes for it.",
+    caveats: [
+      { code: "absence_is_not_denial", kind: "material" as const, text: "We hold nothing here — a gap in our sources, NOT a finding that the benefit does not exist." },
+      { code: "standard_not_payor", kind: "context" as const, text: "This is the AHCA/CMS published standard only." },
+    ],
+    provenance: [], meta: { state: "FL", program: "Medicaid", authority: "AHCA", uniform: true },
+  };
+
+  it("unknown renders as a real answer — pill + headline + material caveat, no error/empty state", () => {
+    const el = renderCertifiedAnswer(php)!;
+    expect(el.querySelector(".ca-pill--notheld")?.textContent).toBe("Not held");
+    expect(el.querySelector(".ca-answer")?.textContent).toContain("Partial Hospitalization Program");
+    // material caveat inline with the ⚑; context caveat in the footer
+    expect(el.querySelector(".ca-caveat--material .ca-caveat-text")?.textContent).toContain("gap in our sources");
+    expect(el.querySelector(".ca-footer .ca-context")?.textContent).toContain("published standard");
+  });
+
+  it("all three states share identical chrome — only the pill label/class differs", () => {
+    for (const [status, label, cls] of [["found", "Sourced", "found"], ["known_absent", "Source silent", "silent"], ["unknown", "Not held", "notheld"]] as const) {
+      const el = renderCertifiedAnswer({ ...php, status })!;
+      expect(el.querySelector(".ca-answer")).not.toBeNull();       // same headline element in every state
+      expect(el.querySelector(`.ca-pill--${cls}`)?.textContent).toBe(label);
+      expect(el.querySelector(".ca-pill--error, .error, [class*='fail']")).toBeNull();   // never an error state
+    }
+  });
+
+  it("sourced:false renders flagged, NOT as a citation", () => {
+    const el = renderCertifiedAnswer({ type: "certified_answer", status: "found", answer: "x",
+      provenance: [{ document: "Fee Schedule.pdf", page: 2, sourced: true }, { document: "placeholder", sourced: false }] })!;
+    expect(el.querySelector(".ca-prov-sourced")?.textContent).toContain("Fee Schedule.pdf p.2");
+    expect(el.querySelector(".ca-prov-unsourced")?.textContent).toContain("unsourced placeholder");
+  });
+
+  it("jurisdiction tag renders only when meta.uniform is true", () => {
+    expect(renderCertifiedAnswer({ ...php, meta: { state: "FL", program: "Medicaid", uniform: true } })!.querySelector(".ca-jurisdiction")?.textContent).toContain("FL Medicaid");
+    expect(renderCertifiedAnswer({ ...php, meta: { uniform: false } })!.querySelector(".ca-jurisdiction")).toBeNull();
+  });
+
+  it("blocking caveats never render here (they become a disambiguation block)", () => {
+    const el = renderCertifiedAnswer({ type: "certified_answer", status: "found", answer: "H0031 is 4 services",
+      caveats: [{ code: "modifier_ambiguous", kind: "blocking", text: "ask which one" }] })!;
+    expect(el.textContent).not.toContain("ask which one");
+  });
+
+  it("null when there is no answer sentence", () => {
+    expect(renderCertifiedAnswer({ type: "certified_answer", status: "unknown", answer: "" })).toBeNull();
   });
 });
 

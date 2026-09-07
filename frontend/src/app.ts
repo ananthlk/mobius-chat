@@ -470,6 +470,7 @@ type EnvelopeBlock =
   | { type: "attachments"; has_pdf?: boolean }
   | { type: "document_download"; documents: DocumentDownloadEntry[]; query?: string }
   | { type: "disambiguation"; select_kind: string; query?: string; candidates: DisambiguationCandidate[] }
+  | ({ type: "certified_answer" } & CertifiedAnswerBlock)
   | { type: "pipeline_human_gate"; version?: number; gate: CredentialingCopilotPayload & { plan_kind?: string; thread_id?: string | null } };
 
 /** Single RAG source (when backend provides sources array) */
@@ -711,7 +712,7 @@ import {
   simpleMarkdownToHtml, simpleMarkdownToHtmlInner, rosterStepMarkdownToHtml,
   CONFIDENCE_BADGE_MAP, renderConfidenceBadge, createQcSampleShieldSvg, renderQcAuditBadge,
 } from "./ui-helpers";
-import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, retainStreamedDraftAsFirstPass, envelopeToAnswerCard, _inlineMd } from "./render/bubble";
+import { renderAnswerCard, formatOutputIntentLabel, applyInlineCorrections, retainStreamedDraftAsFirstPass, envelopeToAnswerCard, _inlineMd, renderCertifiedAnswer, type CertifiedAnswerBlock } from "./render/bubble";
 
 /** Insert QC badge into an already-rendered assistant turn (late eval webhook). */
 function applyQcAuditToTurn(turnWrap: HTMLElement, qc: QcAuditInfo | undefined): void {
@@ -8411,6 +8412,11 @@ function renderAssistantFromEnvelope(
           (sel, echo) => opts.onDisambiguationSelect?.(sel, echo),
         ));
       }
+    } else if (t === "certified_answer") {
+      // Service-line certified answer. Renders here (additive path) for now; the lead-vs-body ORDERING
+      // refinement is deferred to the joint E2E test with Chat Master once a real service-line turn emits.
+      const el = renderCertifiedAnswer(block as unknown as CertifiedAnswerBlock);
+      if (el) bubble.appendChild(el);
     } else if (t === "task_list") {
       const b = block as {
         tasks: Array<{
