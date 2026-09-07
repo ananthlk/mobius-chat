@@ -770,6 +770,98 @@ async def get_coordination() -> str:
     except FileNotFoundError:
         return "# Coordination file not found\n"
 
+@app.get("/docs/{filename}")
+def get_doc(filename: str):
+    """Serve markdown docs as rendered HTML from docs directory."""
+    from fastapi.responses import HTMLResponse
+    import os
+    import re
+
+    # Security: sanitize filename to prevent directory traversal
+    safe_filename = os.path.basename(filename).replace("..", "")
+    doc_path = f"../docs/{safe_filename}"
+
+    if not os.path.exists(doc_path):
+        return HTMLResponse(content="<h1>Document not found</h1>", status_code=404)
+
+    try:
+        with open(doc_path, "r") as f:
+            markdown_content = f.read()
+
+        # Convert markdown to HTML
+        html_body = _markdown_to_html(markdown_content)
+
+        return HTMLResponse(content=f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{safe_filename}</title>
+    <style>
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 40px 20px;
+            background: #0f0f11;
+            color: #f1f0ee;
+            line-height: 1.6;
+        }}
+        h1, h2, h3, h4, h5, h6 {{ margin-top: 24px; margin-bottom: 12px; font-weight: 600; }}
+        h1 {{ font-size: 28px; }}
+        h2 {{ font-size: 24px; border-bottom: 2px solid #7c3aed; padding-bottom: 8px; }}
+        h3 {{ font-size: 20px; }}
+        code {{ background: #1a1a1e; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: #a78bfa; }}
+        pre {{ background: #1a1a1e; padding: 16px; border-radius: 6px; overflow-x: auto; border-left: 3px solid #7c3aed; }}
+        pre code {{ background: none; padding: 0; color: #d1d5db; }}
+        a {{ color: #7c3aed; text-decoration: none; }}
+        a:hover {{ text-decoration: underline; }}
+        table {{ border-collapse: collapse; width: 100%; margin: 16px 0; }}
+        th, td {{ border: 1px solid rgba(255,255,255,0.1); padding: 12px; text-align: left; }}
+        th {{ background: #1a1a1e; font-weight: 600; }}
+        blockquote {{ border-left: 4px solid #7c3aed; padding-left: 16px; margin-left: 0; color: rgba(255,255,255,0.7); }}
+        .back-link {{ margin-bottom: 24px; font-size: 14px; }}
+    </style>
+</head>
+<body>
+    <div class="back-link"><a href="javascript:history.back()">← Back to Platform</a></div>
+    {html_body}
+</body>
+</html>
+        """)
+    except Exception as e:
+        return HTMLResponse(content=f"<h1>Error</h1><p>{str(e)}</p>", status_code=500)
+
+def _markdown_to_html(markdown: str) -> str:
+    """Simple markdown to HTML converter."""
+    import re
+    html = markdown
+
+    # Headers (order matters: do ### before ##)
+    html = re.sub(r'^### (.*?)$', r'<h3>\1</h3>', html, flags=re.MULTILINE)
+    html = re.sub(r'^## (.*?)$', r'<h2>\1</h2>', html, flags=re.MULTILINE)
+    html = re.sub(r'^# (.*?)$', r'<h1>\1</h1>', html, flags=re.MULTILINE)
+
+    # Code blocks
+    html = re.sub(r'```(.*?)```', r'<pre><code>\1</code></pre>', html, flags=re.DOTALL)
+
+    # Inline code
+    html = re.sub(r'`([^`]+)`', r'<code>\1</code>', html)
+
+    # Links
+    html = re.sub(r'\[(.*?)\]\((.*?)\)', r'<a href="\2">\1</a>', html)
+
+    # Bold
+    html = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', html)
+
+    # Paragraphs
+    html = re.sub(r'\n\n+', '</p><p>', html)
+    html = f'<p>{html}</p>'
+    html = html.replace('<p></p>', '')
+
+    return html
+
 @app.post("/chat/org-name-candidates")
 def post_chat_org_name_candidates(body: OrgNameCandidatesRequest) -> dict[str, Any]:
     """Return NPPES/PML org matches with NPI, practice address, and primary taxonomy code."""
