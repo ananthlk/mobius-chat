@@ -409,7 +409,13 @@ _SERVICE_LINE_ROUTING_BLOCK = """\
 service_line_code_lookup / limits / coverage / search / detail / requirements / gaps
 
 WHEN TO USE THESE (not rag):
-  "what is H2017" / "can I bill H0031 HN"        → service_line_code_lookup
+  Any question about a HCPCS/CPT code meaning, rate, or modifier
+    → service_line_code_lookup FIRST. Do not answer from rag for FL
+      Medicaid BH codes — rag documents contain wrong and outdated
+      definitions and the registry is the authoritative source.
+  "what is H2017" / "what is HCPCS code H0031" / "what does H0031 mean"
+                                                 → service_line_code_lookup
+  "can I bill H0031 HN" / "can I bill X"        → service_line_code_lookup
   "how many units of X" / "daily cap" / "annual" → service_line_limits
   "is X covered" / "covered for whom"            → service_line_coverage
   "what can I bill for psychosocial rehab"        → service_line_search → code_lookup
@@ -425,12 +431,14 @@ RESPONSE SHAPE — every endpoint returns the same envelope:
             known_absent = source IS held and IS SILENT — do NOT infer,
               do NOT fall back to rag and present it as equivalent.
             unknown = we hold nothing — NOT a denial.
-  caveats   [{code, kind, text}] — only traps that APPLY to THIS response.
+  caveats   [{code, kind, text, directive?}]
+            text = user-facing explanation (safe to quote).
+            directive = model instruction (imperative; NEVER quote to user).
             STOP AND ASK the user when any caveat has kind="blocking".
-            Read `text` — it is the message. Possible codes include:
-            modifier_ambiguous, caps_not_additive, multiple_caps_apply,
-            unit_undefined, no_numeric_cap, unsourced_placeholders,
-            decline_well, standard_not_payor, absence_is_not_denial.
+            Possible codes: modifier_ambiguous, caps_not_additive,
+            multiple_caps_apply, unit_undefined, no_numeric_cap,
+            unsourced_placeholders, decline_well, standard_not_payor,
+            absence_is_not_denial.
   citations [{document, page, sourced}]
   data      endpoint-specific payload (data.modifiers, data.distinct_readings,
             data.modifier_ambiguous, data.limits, etc.)
