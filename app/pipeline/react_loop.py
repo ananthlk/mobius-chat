@@ -2803,6 +2803,151 @@ def _execute_tool(
                 _tr["section_hint"] = _hint  # singular key
         return _tr
 
+    # ── Service Line Registry — direct HTTP dispatch ─────────────────────
+    # Seven tools over /api/service-line on mobius-payor.
+    # NOT ACTIVE UNTIL mobius-payor is redeployed with commit e15c9a5.
+    # Base URL: PAYOR_API_URL (already in env, same service as payor_readiness).
+    _SL_TOOLS = {
+        "service_line_code_lookup", "service_line_limits", "service_line_coverage",
+        "service_line_search", "service_line_detail", "service_line_requirements",
+        "service_line_gaps",
+    }
+    if tool in _SL_TOOLS:
+        import os as _os
+        _sl_base = (_os.environ.get("PAYOR_API_URL", "")).rstrip("/")
+
+        def _sl_get(path: str, **params):
+            with httpx.Client(timeout=20.0) as _c:
+                _r = _c.get(
+                    f"{_sl_base}/api/service-line{path}",
+                    params={k: v for k, v in params.items() if v is not None},
+                )
+                _r.raise_for_status()
+                return _r.json()
+
+        def _sl_no_src(msg: str = ""):
+            return {
+                "tool": tool, "success": False,
+                "result": f"[{tool}] {msg or 'failed'}",
+                "signal": RETRIEVAL_SIGNAL_NO_SOURCES, "sources": [],
+            }
+
+        def _sl_signal(status: str) -> str:
+            # known_absent = governing document IS held and is silent — that IS
+            # a sourced response; map to SOURCES_FOUND so the badge and golden
+            # flag reflect the registry as authoritative. Mapping to NO_SOURCES
+            # would produce BADGE_NO_SOURCES and risk suggest_escalate firing
+            # and sending the model back to retrieval (the fee-schedule chunk
+            # the registry exists to replace). unknown = we hold nothing; that
+            # legitimately has no sources.
+            if status in ("found", "known_absent"):
+                return RETRIEVAL_SIGNAL_SOURCES_FOUND
+            return RETRIEVAL_SIGNAL_NO_SOURCES  # unknown
+
+        try:
+            if tool == "service_line_code_lookup":
+                code = (inputs.get("code") or "").strip().upper()
+                modifier = (inputs.get("modifier") or "").strip().upper() or None
+                if not code:
+                    return _sl_no_src("code is required")
+                emit(f"◌ Service line registry: looking up {code}" + (f"/{modifier}" if modifier else ""))
+                data = _sl_get(f"/codes/{code}", modifier=modifier)
+                note = data.get("note", "")
+                return {
+                    "tool": tool, "success": True,
+                    "result": data,
+                    "note": note,
+                    "sources": [{"text": note}] if note else [],
+                    "signal": _sl_signal(data.get("status", "")),
+                }
+
+            elif tool == "service_line_limits":
+                code = (inputs.get("code") or "").strip().upper()
+                modifier = (inputs.get("modifier") or "").strip().upper() or None
+                if not code:
+                    return _sl_no_src("code is required")
+                emit(f"◌ Service line registry: billing limits for {code}" + (f"/{modifier}" if modifier else ""))
+                data = _sl_get(f"/codes/{code}/limits", modifier=modifier)
+                note = data.get("note", "")
+                return {
+                    "tool": tool, "success": True,
+                    "result": data,
+                    "note": note,
+                    "sources": [{"text": note}] if note else [],
+                    "signal": _sl_signal(data.get("status", "")),
+                }
+
+            elif tool == "service_line_coverage":
+                code = (inputs.get("code") or "").strip().upper()
+                modifier = (inputs.get("modifier") or "").strip().upper() or None
+                if not code:
+                    return _sl_no_src("code is required")
+                emit(f"◌ Service line registry: coverage for {code}" + (f"/{modifier}" if modifier else ""))
+                data = _sl_get(f"/codes/{code}/coverage", modifier=modifier)
+                note = data.get("note", "")
+                return {
+                    "tool": tool, "success": True,
+                    "result": data,
+                    "note": note,
+                    "sources": [{"text": note}] if note else [],
+                    "signal": _sl_signal(data.get("status", "")),
+                }
+
+            elif tool == "service_line_search":
+                q = (inputs.get("q") or "").strip()
+                if not q:
+                    return _sl_no_src("q is required")
+                emit(f"◌ Service line registry: searching '{q[:60]}'")
+                data = _sl_get("/search", q=q)
+                return {
+                    "tool": tool, "success": True,
+                    "result": data,
+                    "sources": [],
+                    "signal": _sl_signal(data.get("status", "")),
+                }
+
+            elif tool == "service_line_detail":
+                line_key = (inputs.get("line_key") or "").strip()
+                if not line_key:
+                    return _sl_no_src("line_key is required")
+                emit(f"◌ Service line registry: full card for '{line_key}'")
+                data = _sl_get(f"/lines/{line_key}")
+                return {
+                    "tool": tool, "success": True,
+                    "result": data,
+                    "sources": [],
+                    "signal": _sl_signal(data.get("status", "")),
+                }
+
+            elif tool == "service_line_requirements":
+                line_key = (inputs.get("line_key") or "").strip() or None
+                req_type = (inputs.get("requirement_type") or "").strip() or None
+                emit(f"◌ Service line registry: requirements" + (f" for {line_key}" if line_key else ""))
+                data = _sl_get("/requirements", line_key=line_key, requirement_type=req_type)
+                return {
+                    "tool": tool, "success": True,
+                    "result": data,
+                    "sources": [],
+                    "signal": _sl_signal(data.get("status", "")),
+                }
+
+            elif tool == "service_line_gaps":
+                emit("◌ Service line registry: checking coverage gaps")
+                data = _sl_get("/gaps")
+                note = data.get("note", "")
+                return {
+                    "tool": tool, "success": True,
+                    "result": data,
+                    "note": note,
+                    "sources": [{"text": note}] if note else [],
+                    "signal": RETRIEVAL_SIGNAL_SOURCES_FOUND,
+                }
+
+        except httpx.HTTPStatusError as _e:
+            return _sl_no_src(f"HTTP {_e.response.status_code}: {_e.response.text[:200]}")
+        except Exception as _e:
+            return _sl_no_src(str(_e)[:200])
+
     # ── Appeals Agent — direct HTTP dispatch ─────────────────────────────
     # These 5 tools bypass MCP and call the appeals REST API directly so
     # the router treats them as Tier 1 (same weight as rag).

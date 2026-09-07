@@ -338,6 +338,144 @@ ingest_url(url)
     new doc is now available to retrieve."""
 
 
+## Service-line registry tools
+# Seven direct-HTTP tools over /api/service-line on mobius-payor.
+# They answer from certified FL Medicaid BH registry rows — NOT retrieval.
+# STATUS RULE (all tools): found=answer+cite, known_absent=source held+silent
+# (do NOT infer, do NOT fall back to rag), unknown=no data (NOT a denial).
+# Every response carries a `note` written for the model — pass it through.
+# These dispatch in react_loop.py; prose here drives the planner.
+
+_SERVICE_LINE_STATUS_NOTE = """\
+  STATUS — all three values differ:
+    found         → answer; cite source_ref.
+    known_absent  → the governing document IS held and is SILENT.
+                    Do NOT infer. Do NOT fall back silently to rag and
+                    present that result as equivalent. Say the source
+                    does not state it.
+    unknown       → we hold nothing. This is NOT a denial.\
+"""
+
+_SERVICE_LINE_CODE_LOOKUP_BLOCK = """\
+service_line_code_lookup(code, modifier?)
+  What a HCPCS/CPT code is: every (code, modifier) pair under that code,
+    its definition, rate, payment basis, telemedicine flag, coverage and limits.
+  MODIFIER RULE: if modifier_ambiguous is true, the code covers several
+    distinct billable services with different rates and limits — present
+    the alternatives from modifiers[] or ask which the user means; never
+    answer for the bare code. If modifier_ambiguous is false, do NOT ask
+    for a modifier. Either way, state modifier_note's guidance: it also
+    covers the case where all rows carry one specific modifier, which the
+    answer must say out loud.
+    DO NOT derive this from pair_count — pair_count counts rows
+    (line × modifier) and exceeds the service count whenever a code sits
+    on more than one service line, which is not ambiguity.
+  Use for: "what is H2017", "what does H0031 HN mean", "can I bill X".
+  Scope: FL Medicaid BH standard only. Payor-specific rules are the Fact
+    Store's. A miss may mean out-of-scope, not non-existent.
+""" + _SERVICE_LINE_STATUS_NOTE
+
+_SERVICE_LINE_LIMITS_BLOCK = """\
+service_line_limits(code, modifier?)
+  How much may be billed for a (code, modifier) pair.
+  DISTINCT_READINGS RULE: quote distinct_readings[], not limits[]. 15
+    (code, modifier) pairs belong to more than one service line — limits[]
+    repeats each cap per line. H2019/HR returns 4 rows for 2 real caps;
+    summing gives 208 for a 104-unit cap. distinct_readings deduplicates.
+    limits[] is the per-line breakdown for callers that need to know which
+    service line a cap sits under — a user-facing answer never needs it;
+    quoting both makes one cap look like two.
+  MULTI-CAP RULE: a service usually has more than one cap. H2019/HR is
+    4 units/day AND 104 units/state-fiscal-year — both apply. Return all.
+  unlimited=true means the source affirmatively says "as medically
+    necessary" — that is an answer, not a blank.
+  status=known_absent with not_computable populated means the schedule
+    states an amount and never defines the unit — give the raw wording,
+    do not guess the unit.
+  Use for: "how many units of X", "is there a daily cap", "annual limit".
+""" + _SERVICE_LINE_STATUS_NOTE
+
+_SERVICE_LINE_COVERAGE_BLOCK = """\
+service_line_coverage(code, modifier?)
+  Whether the FL Medicaid standard covers this (code, modifier) pair,
+    plus any population restriction.
+  basis distinguishes evidence strength: quoted_rule = the rule's own
+    sentence; published_rate = AHCA prints a rate for the pair (both
+    sourced, not equal — prefer quoted_rule).
+  GAPS FALLBACK: if status=unknown, then call service_line_gaps() and
+    check whether the code's service line appears in lines_without_coverage.
+      yes → "we hold no coverage document for that line at all" (24/31 lines)
+      no  → the line IS sourced and this code is absent from it — stronger.
+    Do NOT call service_line_gaps() as a blanket pre-check; it is ~650
+    tokens of registry-wide data and returns nothing code-specific.
+  SCOPE: AHCA/CMS standard only. A payor covering less or capping tighter
+    is a delta held by the Fact Store — say so rather than implying the
+    standard binds a specific plan.
+""" + _SERVICE_LINE_STATUS_NOTE
+
+_SERVICE_LINE_SEARCH_BLOCK = """\
+service_line_search(q)
+  Free-text search across line names, code definitions, and coverage
+    statements. Returns matching line keys and codes.
+  Use when: the user names a service in words ("psychosocial rehab",
+    "group therapy", "Baker Act") and you need the line key or code
+    before another call.
+  Routing: service_line_search(q) → service_line_code_lookup(code)
+    is cheaper than service_line_detail(line_key) for lookup tasks —
+    detail pulls the full card (~3500 tokens); avoid it as a lookup step."""
+
+_SERVICE_LINE_DETAIL_BLOCK = """\
+service_line_detail(line_key)
+  The complete card for one service line: codes, coverage, limits,
+    prose-only limits, and standard requirements. ~3500 tokens.
+  Use for: "tell me everything about bh_assessment", "do you do
+    partial hospitalisation" (check scope field).
+  scope=decline_well means FL Medicaid covers this and Mobius does NOT
+    serve it — decline the work; do not say the service does not exist.
+    10 of 31 lines are in this state.
+  Do NOT use as a lookup step — route search(q) → code_lookup instead."""
+
+_SERVICE_LINE_REQUIREMENTS_BLOCK = """\
+service_line_requirements(line_key?, requirement_type?)
+  What the published standard requires to bill: place of service,
+    documentation, supervision, credentialing, prior authorisation,
+    provider qualification.
+  sourced=false rows are PLACEHOLDERS — they name a requirement we know
+    exists but have not extracted. The statement on an unsourced row is
+    our wording, not policy. Never quote it. 78 of 153 rows are sourced.
+  Use for: "what do I need to bill bh_assessment", "PA required for X"."""
+
+_SERVICE_LINE_GAPS_BLOCK = """\
+service_line_gaps()
+  What the registry does NOT know: lines with no coverage answer (24/31),
+    limits that stayed prose, requirements unsourced.
+  Call this ONLY when service_line_coverage() returns status=unknown —
+    check whether the code's line appears in lines_without_coverage to
+    distinguish "no coverage doc held for this line" from "line is sourced
+    but this code is absent." Do NOT call as a blanket pre-check.
+  ~650 tokens; registry-wide, not code-specific."""
+
+_SERVICE_LINE_ROUTING_BLOCK = """\
+── Service line registry (FL Medicaid BH standard) ──────────────────────
+service_line_code_lookup / limits / coverage / search / detail / requirements / gaps
+
+WHEN TO USE THESE (not rag):
+  "what is H2017" / "can I bill H0031 HN"         → service_line_code_lookup
+  "how many units of X" / "daily cap" / "annual"  → service_line_limits
+  "is X covered" / "covered for whom"             → service_line_coverage
+  "what can I bill for psychosocial rehab"         → service_line_search → code_lookup
+  "what do I need to bill bh_assessment"          → service_line_requirements
+  "do you do partial hospitalisation"             → service_line_detail (check scope)
+  any "is X not covered" question                 → service_line_coverage first,
+                                                     gaps() only if unknown
+
+SCOPE BOUNDARY: FL Medicaid BH standard only. Payor-specific rates/rules
+  → Fact Store. Appeals process → appeals_* tools. Provider enrolment → NPI lookup.
+  A miss means out-of-scope as often as non-existent.
+
+"""
+
+
 _AUTO_DISCOVERED_HEADER = """\
 ── Auto-discovered tools (from MCP) ─────────────────────────────────────
 These tools are published by a remote MCP server and auto-registered at
@@ -400,6 +538,15 @@ _ROUTER_OWNED_BLOCKS: dict[str, str] = {
     "appeals_get_playbook": "_APPEALS_BLOCK",
     "appeals_validate_claim": "_APPEALS_BLOCK",
     "appeals_assemble_letter": "_APPEALS_BLOCK",
+    # Service line registry tools — dispatched directly in react_loop.py
+    # NOT deployed yet; wired behind PAYOR_API_URL /api/service-line/*
+    "service_line_code_lookup": "_SERVICE_LINE_CODE_LOOKUP_BLOCK",
+    "service_line_limits": "_SERVICE_LINE_LIMITS_BLOCK",
+    "service_line_coverage": "_SERVICE_LINE_COVERAGE_BLOCK",
+    "service_line_search": "_SERVICE_LINE_SEARCH_BLOCK",
+    "service_line_detail": "_SERVICE_LINE_DETAIL_BLOCK",
+    "service_line_requirements": "_SERVICE_LINE_REQUIREMENTS_BLOCK",
+    "service_line_gaps": "_SERVICE_LINE_GAPS_BLOCK",
 }
 
 
@@ -438,6 +585,16 @@ def _compose_manifest(allowed: frozenset[str] | None = None) -> str:
         # Any message containing a CARC code number (e.g. "CARC 22", "CARC 29")
         # or describing a denial/appeal workflow MUST use these tools.
         _router_block("appeals_find_carc", _APPEALS_BLOCK),
+        # Service line registry — FL Medicaid BH code/limits/coverage from
+        # certified rows. Rendered as a section header + per-tool blocks.
+        # NOT deployed yet; blocks included so manifest is ready at deploy time.
+        _router_block("service_line_code_lookup", _SERVICE_LINE_ROUTING_BLOCK + _SERVICE_LINE_CODE_LOOKUP_BLOCK),
+        _router_block("service_line_limits", _SERVICE_LINE_LIMITS_BLOCK),
+        _router_block("service_line_coverage", _SERVICE_LINE_COVERAGE_BLOCK),
+        _router_block("service_line_search", _SERVICE_LINE_SEARCH_BLOCK),
+        _router_block("service_line_detail", _SERVICE_LINE_DETAIL_BLOCK),
+        _router_block("service_line_requirements", _SERVICE_LINE_REQUIREMENTS_BLOCK),
+        _router_block("service_line_gaps", _SERVICE_LINE_GAPS_BLOCK),
         # Retrieval methodology primer — describes the single rag() entry point.
         _RETRIEVAL_METHODOLOGY_PRIMER if _allow("rag") else "",
         # rag: the ONE retrieval tool. Replaces search_corpus + payor_lookup +

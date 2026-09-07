@@ -6910,7 +6910,9 @@ function _svgIcon(name) {
     copy: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25z"/></svg>',
     bookmark: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M3 2.75C3 1.784 3.784 1 4.75 1h6.5c.966 0 1.75.784 1.75 1.75v11.5a.75.75 0 01-1.227.579L8 11.722l-3.773 3.107A.75.75 0 013 14.25zm1.75-.25a.25.25 0 00-.25.25v9.91l3.023-2.489a.75.75 0 01.954 0l3.023 2.49V2.75a.25.25 0 00-.25-.25z"/></svg>',
     cite: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.75 2h12.5c.966 0 1.75.784 1.75 1.75v8.5A1.75 1.75 0 0114.25 14H1.75A1.75 1.75 0 010 12.25v-8.5C0 2.784.784 2 1.75 2zm0 1.5a.25.25 0 00-.25.25v8.5c0 .138.112.25.25.25h12.5a.25.25 0 00.25-.25v-8.5a.25.25 0 00-.25-.25zM3.5 6.25a.75.75 0 01.75-.75h7.5a.75.75 0 010 1.5h-7.5a.75.75 0 01-.75-.75zm.75 2.25a.75.75 0 000 1.5h4a.75.75 0 000-1.5z"/></svg>',
-    task: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M2.5 1.75a.25.25 0 01.25-.25h8.5a.25.25 0 01.25.25v.5h1.5v-.5A1.75 1.75 0 0011.25 0h-8.5A1.75 1.75 0 001 1.75v12.5c0 .966.784 1.75 1.75 1.75h4.5a.75.75 0 000-1.5h-4.5a.25.25 0 01-.25-.25zM4.75 4a.75.75 0 000 1.5h4.5a.75.75 0 000-1.5zm0 3a.75.75 0 000 1.5h2.5a.75.75 0 000-1.5zm10.28 2.72a.75.75 0 00-1.06-1.06L10.5 12.13l-1.47-1.47a.75.75 0 10-1.06 1.06l2 2a.75.75 0 001.06 0z"/></svg>'
+    task: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M2.5 1.75a.25.25 0 01.25-.25h8.5a.25.25 0 01.25.25v.5h1.5v-.5A1.75 1.75 0 0011.25 0h-8.5A1.75 1.75 0 001 1.75v12.5c0 .966.784 1.75 1.75 1.75h4.5a.75.75 0 000-1.5h-4.5a.25.25 0 01-.25-.25zM4.75 4a.75.75 0 000 1.5h4.5a.75.75 0 000-1.5zm0 3a.75.75 0 000 1.5h2.5a.75.75 0 000-1.5zm10.28 2.72a.75.75 0 00-1.06-1.06L10.5 12.13l-1.47-1.47a.75.75 0 10-1.06 1.06l2 2a.75.75 0 001.06 0z"/></svg>',
+    ask: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M0 2.75C0 1.784.784 1 1.75 1h12.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0114.25 12H8.06l-2.573 2.573A1.457 1.457 0 013 13.543V12H1.75A1.75 1.75 0 010 10.25zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h2a.75.75 0 01.75.75v2.19l2.72-2.72a.75.75 0 01.53-.22h6.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25z"/></svg>',
+    send: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 2.5L14.5 8 1.5 13.5V9.5L11 8 1.5 6.5z"/></svg>'
   };
   return icons[name] || "";
 }
@@ -6967,8 +6969,22 @@ function initTextSelectionToolbar() {
       const page = _getPageFromElement(container);
       const toolbar = document.createElement("div");
       toolbar.className = "text-selection-toolbar";
-      toolbar.style.top = window.scrollY + rect.top - 42 + "px";
-      toolbar.style.left = window.scrollX + rect.left + rect.width / 2 - 100 + "px";
+      toolbar.style.top = rect.top + "px";
+      toolbar.style.left = Math.max(8, rect.left + rect.width / 2 - 130) + "px";
+      const askBtn = document.createElement("button");
+      askBtn.innerHTML = _svgIcon("ask") + " Ask";
+      askBtn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const excerpt = text.length > 180 ? text.slice(0, 177) + "\u2026" : text;
+        document.dispatchEvent(new CustomEvent("mobius:ask-with-context", {
+          detail: { selectionText: excerpt }
+        }));
+        _removeToolbar();
+      });
+      toolbar.appendChild(askBtn);
+      const d0 = document.createElement("span");
+      d0.className = "tst-divider";
+      toolbar.appendChild(d0);
       const copyBtn = document.createElement("button");
       copyBtn.innerHTML = _svgIcon("copy") + " Copy";
       copyBtn.addEventListener("click", (ev) => {
@@ -13759,6 +13775,11 @@ ${message}`;
     }
   });
   sendBtn.addEventListener("click", () => sendMessage());
+  document.addEventListener("mobius:ask-with-context", (e) => {
+    const { selectionText } = e.detail;
+    const excerpt = selectionText.length > 180 ? selectionText.slice(0, 177) + "\u2026" : selectionText;
+    sendMessage(`Can you tell me more about this: "${excerpt}"?`);
+  });
   let composerStagedFile = null;
   const composerAttachBtn = document.getElementById("composerAttach");
   const composerAttachmentInput = document.getElementById("composerAttachmentInput");
