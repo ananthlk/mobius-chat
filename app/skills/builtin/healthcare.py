@@ -115,6 +115,10 @@ register(
             "  Medicare/Medicaid coverage summaries (NCD/LCD), CPT/HCPCS wording, diagnosis/procedure codes.\n"
             "Also: NPI registry facts when the question is a 10-digit NPI number (same backend as registry lookup).\n"
             "Use when: User asks what a code means, ICD-10, HCPCS, coverage, or NPI-by-number without PML context.\n"
+            "Do NOT use for: FL Medicaid BH HCPCS/CPT codes (H-codes, T-codes, etc.) — use service_line_code_lookup\n"
+            "  FIRST for those. This tool generates HCPCS definitions and produces wrong, inconsistent answers for\n"
+            "  FL Medicaid BH codes (verified: returns different wrong definitions on repeated calls). Only call this\n"
+            "  tool for FL Medicaid BH codes if service_line_code_lookup returns status=unknown.\n"
             "Do NOT use for: PML enrollment status (skill is being rebuilt — not available in chat currently).\n"
             "Cannot: PML status without credentialing report; org NPI by name."
         ),
