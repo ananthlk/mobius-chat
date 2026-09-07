@@ -739,6 +739,37 @@ class OrgNameCandidatesRequest(BaseModel):
     search_mode: Literal["copilot", "agentic"] | None = None
 
 
+# Platform coherence API — serves git-backed platform definition
+@app.get("/api/platform/definition")
+async def get_platform_definition() -> dict[str, Any]:
+    """Fetch platform definition (23 modules × 5 lenses) from disk."""
+    try:
+        import json
+        with open("../docs/platform-definition.json", "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        # Fallback: return minimal structure
+        return {"platform": "Mobius", "modules": [], "error": "Definition not found"}
+
+@app.get("/api/platform/status")
+async def get_platform_status() -> dict[str, Any]:
+    """Fetch live AHCA sprint status from disk."""
+    try:
+        import json
+        with open("../docs/ahca_rerun_status.json", "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+@app.get("/api/platform/coordination")
+async def get_coordination() -> str:
+    """Fetch coordination file (RAG ↔ Fact Store agreements) from disk."""
+    try:
+        with open("../docs/RAG_FACTSTORE_COORDINATION.md", "r") as f:
+            return f.read()
+    except FileNotFoundError:
+        return "# Coordination file not found\n"
+
 @app.post("/chat/org-name-candidates")
 def post_chat_org_name_candidates(body: OrgNameCandidatesRequest) -> dict[str, Any]:
     """Return NPPES/PML org matches with NPI, practice address, and primary taxonomy code."""

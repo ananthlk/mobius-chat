@@ -301,9 +301,11 @@
       });
 
       Promise.all([
-        fetch('https://raw.githubusercontent.com/ananthlk/Mobius-Master/main/docs/platform-definition.json', { cache: 'no-cache' }).then(r => r.json()),
-        fetch('https://raw.githubusercontent.com/ananthlk/Mobius-Master/main/docs/ahca_rerun_status.json', { cache: 'no-cache' }).then(r => r.json()).catch(() => ({})),
-        fetch('https://raw.githubusercontent.com/ananthlk/Mobius-Master/main/docs/RAG_FACTSTORE_COORDINATION.md', { cache: 'no-cache' }).then(r => r.text()).catch(() => '')
+        fetch('/api/platform/definition', { cache: 'no-cache' }).then(r => r.json()).catch(() =>
+          fetch('https://raw.githubusercontent.com/ananthlk/Mobius-Master/main/docs/platform-definition.json', { cache: 'no-cache' }).then(r => r.json())
+        ),
+        fetch('/api/platform/status', { cache: 'no-cache' }).then(r => r.json()).catch(() => ({})),
+        fetch('/api/platform/coordination', { cache: 'no-cache' }).then(r => r.text()).catch(() => '')
       ])
         .then(([def, status, coord]) => {
           platform = def;
