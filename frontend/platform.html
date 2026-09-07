@@ -42,7 +42,7 @@
     .topbar-back:hover { color: rgba(255,255,255,0.75); }
     .topbar-back svg { width: 14px; height: 14px; }
     .topbar-divider { width: 0.5px; height: 16px; background: rgba(255,255,255,0.12); }
-    .topbar-wordmark {
+    .topbar-title {
       display: flex;
       align-items: center;
       gap: 7px;
@@ -50,18 +50,48 @@
       font-weight: 500;
       color: rgba(255,255,255,0.7);
     }
-    .topbar-wordmark img { width: 18px; height: 18px; opacity: 0.8; }
-    .frame-wrap {
+    .topbar-title img { width: 18px; height: 18px; opacity: 0.8; }
+    .tabs {
+      height: 40px;
+      border-bottom: 0.5px solid rgba(255,255,255,0.09);
+      display: flex;
+      gap: 0;
+      padding: 0 16px;
+      overflow-x: auto;
+      flex-shrink: 0;
+      background: #141416;
+    }
+    .tab {
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 500;
+      color: rgba(255,255,255,0.5);
+      background: none;
+      border: none;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: color .15s, border-color .15s;
+      white-space: nowrap;
+    }
+    .tab:hover { color: rgba(255,255,255,0.7); }
+    .tab.active {
+      color: rgba(255,255,255,0.9);
+      border-bottom-color: #7c3aed;
+    }
+    .content-wrap {
       flex: 1;
       position: relative;
       overflow: hidden;
     }
-    #schematic-frame {
-      width: 100%;
-      height: 100%;
-      border: none;
-      display: block;
+    .content {
+      position: absolute;
+      inset: 0;
+      display: none;
+      flex-direction: column;
+      overflow-y: auto;
+      padding: 16px;
     }
+    .content.active { display: flex; }
     #loading {
       position: absolute;
       inset: 0;
@@ -84,17 +114,78 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
     .loading-label { font-size: 12px; color: rgba(255,255,255,0.3); }
-    #not-configured {
-      display: none;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      height: 100%;
-      gap: 10px;
-      color: rgba(255,255,255,0.3);
-      font-size: 14px;
+    .module-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 12px;
     }
-    #not-configured.visible { display: flex; }
+    .module-card {
+      background: #1a1a1e;
+      border: 0.5px solid rgba(255,255,255,0.1);
+      border-radius: 8px;
+      padding: 12px;
+      cursor: pointer;
+      transition: background .15s, border-color .15s;
+    }
+    .module-card:hover {
+      background: #252529;
+      border-color: rgba(255,255,255,0.2);
+    }
+    .module-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: #f1f0ee;
+      margin-bottom: 6px;
+    }
+    .module-status {
+      display: inline-block;
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 3px;
+      margin-bottom: 8px;
+      font-weight: 500;
+    }
+    .status-live { background: rgba(34, 197, 94, 0.2); color: #86efac; }
+    .status-building { background: rgba(59, 130, 246, 0.2); color: #93c5fd; }
+    .status-partial { background: rgba(251, 146, 60, 0.2); color: #fed7aa; }
+    .status-blocked { background: rgba(239, 68, 68, 0.2); color: #fca5a5; }
+    .status-frozen { background: rgba(107, 114, 128, 0.2); color: #d1d5db; }
+    .module-desc {
+      font-size: 12px;
+      color: rgba(255,255,255,0.6);
+      line-height: 1.4;
+      margin-bottom: 8px;
+    }
+    .module-owner {
+      font-size: 11px;
+      color: rgba(255,255,255,0.4);
+      margin-bottom: 4px;
+    }
+    .module-gates {
+      font-size: 11px;
+      color: rgba(255,255,255,0.5);
+    }
+    .table-wrap {
+      overflow-x: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    th, td {
+      padding: 8px;
+      text-align: left;
+      border-bottom: 0.5px solid rgba(255,255,255,0.1);
+    }
+    th {
+      background: #1a1a1e;
+      font-weight: 600;
+      color: rgba(255,255,255,0.7);
+    }
+    td { color: rgba(255,255,255,0.6); }
+    td a { color: #7c3aed; text-decoration: none; }
+    td a:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
@@ -106,59 +197,150 @@
       Back
     </a>
     <div class="topbar-divider"></div>
-    <div class="topbar-wordmark">
+    <div class="topbar-title">
       <img src="static/logo.svg" alt="" aria-hidden="true" />
       Platform
     </div>
   </div>
 
-  <div class="frame-wrap">
+  <div class="tabs">
+    <button class="tab active" data-tab="user">User View</button>
+    <button class="tab" data-tab="technical">Technical View</button>
+    <button class="tab" data-tab="specs">Specs</button>
+    <button class="tab" data-tab="eval">Eval / QA</button>
+    <button class="tab" data-tab="git">Git Ops</button>
+  </div>
+
+  <div class="content-wrap">
     <div id="loading">
       <div class="spinner"></div>
-      <span class="loading-label">Loading schematic…</span>
+      <span class="loading-label">Loading platform definition…</span>
     </div>
-    <iframe
-      id="schematic-frame"
-      sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
-      title="Mobius platform schematic"
-    ></iframe>
-    <div id="not-configured">
-      <span>Platform schematic not configured</span>
-      <span style="font-size:12px">Set MOBIUS_PLATFORM_SCHEMATIC_URL on the chat service</span>
-    </div>
+    <div id="user" class="content active"></div>
+    <div id="technical" class="content"></div>
+    <div id="specs" class="content"></div>
+    <div id="eval" class="content"></div>
+    <div id="git" class="content"></div>
   </div>
 
   <script>
     (function () {
-      var frame = document.getElementById('schematic-frame');
       var loading = document.getElementById('loading');
-      var notConfigured = document.getElementById('not-configured');
+      var tabs = document.querySelectorAll('.tab');
+      var contents = document.querySelectorAll('.content');
+      var platform = null;
 
-      function buildSrc(base) {
-        var suffix = location.hash || location.search || '';
-        if (!suffix) return base;
-        if (base.includes('#')) return base + suffix.replace(/^[#?]/, '&');
-        return base + suffix;
+      // Tab switching
+      tabs.forEach(function (tab) {
+        tab.addEventListener('click', function () {
+          var tabName = tab.dataset.tab;
+          tabs.forEach(t => t.classList.remove('active'));
+          contents.forEach(c => c.classList.remove('active'));
+          tab.classList.add('active');
+          document.getElementById(tabName).classList.add('active');
+        });
+      });
+
+      // Fetch platform definition from GitHub
+      fetch('https://raw.githubusercontent.com/ananthlk/Mobius-Master/main/docs/platform-definition.json', {
+        cache: 'no-cache'
+      })
+        .then(r => r.json())
+        .then(data => {
+          platform = data;
+          renderPlatform();
+          loading.classList.add('hidden');
+        })
+        .catch(err => {
+          console.error('Failed to load platform definition:', err);
+          loading.innerHTML = '<span style="color: rgba(255,255,255,0.5)">Failed to load platform definition</span>';
+        });
+
+      function renderPlatform() {
+        if (!platform) return;
+        renderUserView();
+        renderTechnicalView();
+        renderSpecsView();
+        renderEvalView();
+        renderGitView();
       }
 
-      fetch('/chat/config')
-        .then(function (r) { return r.json(); })
-        .then(function (cfg) {
-          var url = (cfg['platform_schematic_url'] || '').trim();
-          if (!url) {
-            loading.classList.add('hidden');
-            notConfigured.classList.add('visible');
-            return;
-          }
-          frame.src = buildSrc(url);
-          frame.addEventListener('load', function () {
-            loading.classList.add('hidden');
-          });
-        })
-        .catch(function () {
-          loading.classList.add('hidden');
-          notConfigured.classList.add('visible');
+      function renderUserView() {
+        var html = '<div class="module-grid">';
+        platform.modules.forEach(m => {
+          var status = m.user_view.status;
+          var statusClass = 'status-' + status;
+          html += '<div class="module-card">';
+          html += '<div class="module-name">' + m.name + '</div>';
+          html += '<div class="module-status ' + statusClass + '">' + status.toUpperCase() + '</div>';
+          html += '<div class="module-desc">' + m.user_view.description + '</div>';
+          html += '<div class="module-owner">Surface: ' + (m.user_view.surface || 'N/A') + '</div>';
+          html += '</div>';
         });
+        html += '</div>';
+        document.getElementById('user').innerHTML = html;
+      }
+
+      function renderTechnicalView() {
+        var html = '<div class="table-wrap"><table><tr><th>Module</th><th>Owner</th><th>Status</th><th>Repo</th></tr>';
+        platform.modules.forEach(m => {
+          var repo = m.technical_view.repo || '—';
+          html += '<tr>';
+          html += '<td><strong>' + m.name + '</strong><br><small style="color:rgba(255,255,255,0.4)">' + (m.technical_view.module || '') + '</small></td>';
+          html += '<td>' + (m.technical_view.owner || '—') + '</td>';
+          html += '<td><span class="module-status status-' + m.technical_view.status + '">' + m.technical_view.status + '</span></td>';
+          html += '<td><small>' + repo + '</small></td>';
+          html += '</tr>';
+        });
+        html += '</table></div>';
+        document.getElementById('technical').innerHTML = html;
+      }
+
+      function renderSpecsView() {
+        var html = '<div class="table-wrap"><table><tr><th>Module</th><th>Spec Link</th><th>Status</th></tr>';
+        platform.modules.forEach(m => {
+          var link = m.specs_view.link || '—';
+          var linkHtml = link.startsWith('/') || link.startsWith('docs/') ? '<a href="' + link + '">' + link + '</a>' : link;
+          html += '<tr>';
+          html += '<td><strong>' + m.name + '</strong></td>';
+          html += '<td>' + linkHtml + '</td>';
+          html += '<td>' + (m.specs_view.status || 'N/A') + '</td>';
+          html += '</tr>';
+        });
+        html += '</table></div>';
+        document.getElementById('specs').innerHTML = html;
+      }
+
+      function renderEvalView() {
+        var html = '<div class="table-wrap"><table><tr><th>Module</th><th>Owned By</th><th>Gates</th><th>Status</th></tr>';
+        platform.modules.forEach(m => {
+          var gates = m.gates ? m.gates.join(', ') : '—';
+          html += '<tr>';
+          html += '<td><strong>' + m.name + '</strong></td>';
+          html += '<td>' + (m.eval_view.owned_by || '—') + '</td>';
+          html += '<td>' + gates + '</td>';
+          html += '<td>' + (m.eval_view.status || '—') + '</td>';
+          html += '</tr>';
+        });
+        html += '</table></div>';
+        document.getElementById('eval').innerHTML = html;
+      }
+
+      function renderGitView() {
+        var html = '<div class="table-wrap"><table><tr><th>Module</th><th>Repo</th><th>Branch</th><th>Status</th></tr>';
+        platform.modules.forEach(m => {
+          var repo = m.git_view.repo || '—';
+          var branch = m.git_view.branch || 'main';
+          html += '<tr>';
+          html += '<td><strong>' + m.name + '</strong></td>';
+          html += '<td><small>' + repo + '</small></td>';
+          html += '<td><small>' + branch + '</small></td>';
+          html += '<td>' + (m.git_view.status || '—') + '</td>';
+          html += '</tr>';
+        });
+        html += '</table></div>';
+        document.getElementById('git').innerHTML = html;
+      }
     })();
   </script>
 </body>
