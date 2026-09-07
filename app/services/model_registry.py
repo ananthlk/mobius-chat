@@ -40,6 +40,7 @@ import json
 import logging
 import os
 import random
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -66,6 +67,49 @@ LIVE_HEALTH_FAIL_THRESHOLD  = 3     # ≥N timeouts in the window → degraded
 LIVE_HEALTH_LATENCY_RATIO   = 3.0   # mean recent latency > N × ema_latency → degraded
 LIVE_HEALTH_COOLOFF_SECONDS = 300   # 5 minutes; auto-clear after this with no new bad signals
 LIVE_HEALTH_MIN_SAMPLES     = 3     # don't degrade a model on its first call
+
+# Task #108-adjacent (Service Line Facts, 2026-09-07): a hard account-level
+# refusal — bad/expired API key, exhausted credit balance, revoked
+# permission — fails on literally EVERY call to that model, not just some
+# fraction of a sliding window. Waiting for LIVE_HEALTH_MIN_SAMPLES more
+# failed calls (or, on the Postgres tracker, a second sample of the exact
+# same model_id — which a bandit spreading traffic across models may never
+# produce) just burns turns on a model guaranteed to keep failing. These
+# phrases/status codes are classified as permanent and degrade the model
+# immediately, bypassing the statistical threshold entirely — see
+# classify_permanent_failure() and _LiveHealth.record_outcome's
+# `permanent_reason` path below.
+_PERMANENT_ERROR_PHRASES: tuple[str, ...] = (
+    "credit balance is too low",
+    "insufficient_quota",
+    "invalid api key",
+    "invalid x-api-key",
+    "incorrect api key",
+    "authentication_error",
+    "permission_denied",
+)
+
+
+def classify_permanent_failure(exc_str: str) -> str | None:
+    """Best-effort classification of an LLM call failure as a permanent,
+    account-level refusal rather than a transient backend hiccup.
+
+    Regex/substring heuristic on the exception's string repr — the same
+    approach tpd_tracker.parse_retry_after_seconds already uses on this
+    same exception, since providers bake the HTTP status/body into a
+    plain ``Exception`` message rather than a typed error class. Returns
+    a short reason string, or None if this doesn't look permanent (also
+    None for 429s — those are rate limits, already handled by
+    tpd_tracker's retry-after tracking, and they DO resolve on their own).
+    """
+    s = (exc_str or "").lower()
+    for phrase in _PERMANENT_ERROR_PHRASES:
+        if phrase in s:
+            return phrase
+    m = re.search(r"\b(401|403)\b", s)
+    if m:
+        return f"http_{m.group(1)}"
+    return None
 
 
 class _LiveHealth:
@@ -113,6 +157,7 @@ class _LiveHealth:
         latency_ms: int,
         was_timeout: bool,
         ema_latency_ms: float = 0.0,
+        permanent_reason: str | None = None,
     ) -> None:
         import time as _t
         now = _t.time()
@@ -127,7 +172,7 @@ class _LiveHealth:
 
             if entry is not None and entry.get("probe_in_flight"):
                 # This outcome is the probe result.
-                if not was_timeout:
+                if not was_timeout and not permanent_reason:
                     # Probe succeeded — backend recovered.
                     held_for_s = now - entry.get("since", now)
                     logger.info(
@@ -143,7 +188,8 @@ class _LiveHealth:
                     entry["probe_in_flight"] = False
                     entry["probe_after"] = now + LIVE_HEALTH_COOLOFF_SECONDS
                     entry["reason"] = (
-                        f"probe failed at {latency_ms}ms; "
+                        (f"probe failed: {permanent_reason}; " if permanent_reason
+                         else f"probe failed at {latency_ms}ms; ")
                         + entry.get("reason", "previously degraded")
                     )
                     logger.warning(
@@ -157,12 +203,21 @@ class _LiveHealth:
             # is a no-op; a successful call while degraded shouldn't
             # actually happen (is_degraded would have blocked it) but
             # we treat it as recovery just in case.
-            if not was_timeout and model_id in self._degraded:
+            if not was_timeout and not permanent_reason and model_id in self._degraded:
                 logger.info(
                     "live-health: model=%s recovered (call in %dms slipped through); clearing",
                     model_id, latency_ms,
                 )
                 self._degraded.pop(model_id, None)
+                return
+
+            # A permanent, account-level failure (bad key, exhausted credit,
+            # revoked permission) is knowable as fatal on the FIRST call —
+            # degrade immediately rather than waiting for
+            # LIVE_HEALTH_MIN_SAMPLES more calls to a model that will fail
+            # every single time until someone fixes the account.
+            if permanent_reason:
+                self._mark_degraded(model_id, f"permanent failure: {permanent_reason}", now)
                 return
 
             # Evaluate degradation triggers from the rolling window.
@@ -1928,6 +1983,7 @@ class ModelRouter:
         model_id: str,
         latency_ms: int,
         was_timeout: bool,
+        permanent_reason: str | None = None,
     ) -> None:
         """Record a failed call into the live-health window.
 
@@ -1938,10 +1994,21 @@ class ModelRouter:
 
         We track timeouts specifically because they indicate "backend
         is slow" — exactly the signal the bandit was missing.
+
+        ``permanent_reason`` (Task #108-adjacent, Service Line Facts,
+        2026-09-07): set when classify_permanent_failure() recognizes the
+        error as a permanent, account-level refusal (bad key, exhausted
+        credit, revoked permission) rather than a transient hiccup — this
+        degrades the model immediately instead of waiting on the
+        sliding-window threshold, since a permanent failure fails on
+        every subsequent call regardless of sample count.
         """
         spec = MODEL_ROSTER.get(model_id)
         ema = spec.ema_latency_ms if spec else 0.0
-        _LIVE_HEALTH.record_outcome(model_id, latency_ms=latency_ms, was_timeout=was_timeout, ema_latency_ms=ema)
+        _LIVE_HEALTH.record_outcome(
+            model_id, latency_ms=latency_ms, was_timeout=was_timeout,
+            ema_latency_ms=ema, permanent_reason=permanent_reason,
+        )
 
     def observe_quality(self, model_id: str, quality_score: float) -> None:
         """Apply an external quality observation (e.g. post-run adjudicator) without bumping call_count."""

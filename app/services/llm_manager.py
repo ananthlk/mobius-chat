@@ -160,6 +160,7 @@ async def generate(
     text = ""
     success = False
     error_type: str | None = None
+    error_detail: str = ""
 
     # attachments only passed when present -- every non-Vertex provider's
     # generate_with_usage(**kwargs) either ignores or blind-forwards
@@ -188,6 +189,7 @@ async def generate(
         success = True
     except Exception as e:
         error_type = type(e).__name__
+        error_detail = str(e)
         # Phase 2.5b — parse 429 "try again in X" hints so the bandit's
         # tpd_tracker short-circuits this model for the remaining window
         # instead of retrying and failing every turn until the daily
@@ -251,11 +253,25 @@ async def generate(
                     is_timeout = (error_type or "").lower() in (
                         "timeouterror", "asynciotimeouterror", "futuretimeouterror"
                     ) or "abandoned after" in str(usage.get("error") or "")
+                    # Task #108-adjacent (Service Line Facts, 2026-09-07): a
+                    # hard account-level refusal (bad key, exhausted credit,
+                    # revoked permission) fails on every call, not just a
+                    # fraction of a window — classify it so the health
+                    # tracker can degrade immediately instead of waiting on
+                    # a threshold that a failure-every-time error may never
+                    # reach (see classify_permanent_failure docstring).
+                    permanent_reason = None
+                    try:
+                        from app.services.model_registry import classify_permanent_failure
+                        permanent_reason = classify_permanent_failure(error_detail)
+                    except Exception:
+                        pass
                     if hasattr(router, "record_call_failure"):
                         router.record_call_failure(
                             model_id=model_id,
                             latency_ms=latency_ms,
                             was_timeout=bool(is_timeout),
+                            permanent_reason=permanent_reason,
                         )
             except Exception:
                 pass

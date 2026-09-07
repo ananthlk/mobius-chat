@@ -249,6 +249,14 @@ class LlmHealthState:
             return None
         if row.recent_timeouts >= _FAIL_THRESHOLD:
             return f"{row.recent_timeouts}/{row.recent_total} recent calls timed out"
+        # Service Line Facts, 2026-09-07: recent_failures (non-timeout
+        # errors — 4xx, 5xx, auth/billing refusals) was tracked in every
+        # row but never checked here, so a model failing every call for a
+        # non-timeout reason (e.g. an exhausted Anthropic credit balance)
+        # could accumulate any number of failures and never degrade. This
+        # mirrors the timeout check above using the same threshold.
+        if row.recent_failures >= _FAIL_THRESHOLD:
+            return f"{row.recent_failures}/{row.recent_total} recent calls failed (non-timeout)"
         # Latency-deviation trigger — skip for long-output stages where slow
         # generation is expected (not a sign of backend degradation).
         # NOTE: reference the tuple directly (not via class name) to avoid a
