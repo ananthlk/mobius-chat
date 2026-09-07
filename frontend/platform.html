@@ -186,6 +186,58 @@
     td { color: rgba(255,255,255,0.6); }
     td a { color: #7c3aed; text-decoration: none; }
     td a:hover { text-decoration: underline; }
+    .gate-row {
+      display: grid;
+      grid-template-columns: auto 1fr auto auto auto;
+      gap: 16px;
+      padding: 12px;
+      background: #1a1a1e;
+      border-radius: 6px;
+      margin-bottom: 8px;
+      align-items: center;
+    }
+    .gate-num { font-weight: 700; color: #7c3aed; font-size: 14px; }
+    .gate-name { font-weight: 600; color: #f1f0ee; }
+    .gate-status { padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 500; }
+    .coord-entry {
+      background: #1a1a1e;
+      border-left: 2px solid #7c3aed;
+      padding: 12px;
+      margin-bottom: 12px;
+      border-radius: 4px;
+    }
+    .coord-header {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .coord-from { color: #93c5fd; }
+    .coord-type { background: rgba(124, 58, 237, 0.2); color: #a78bfa; padding: 2px 6px; border-radius: 2px; font-size: 10px; }
+    .coord-body { font-size: 12px; color: rgba(255,255,255,0.6); line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+    .faq-item {
+      background: #1a1a1e;
+      padding: 12px;
+      margin-bottom: 12px;
+      border-radius: 6px;
+    }
+    .faq-question { font-weight: 600; color: #f1f0ee; margin-bottom: 8px; font-size: 13px; }
+    .faq-answer { font-size: 12px; color: rgba(255,255,255,0.6); line-height: 1.5; }
+    .status-block {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .status-card {
+      background: #1a1a1e;
+      padding: 12px;
+      border-radius: 6px;
+      border: 0.5px solid rgba(255,255,255,0.1);
+    }
+    .status-label { font-size: 11px; color: rgba(255,255,255,0.5); text-transform: uppercase; font-weight: 600; margin-bottom: 4px; }
+    .status-value { font-size: 18px; font-weight: 700; color: #86efac; }
   </style>
 </head>
 <body>
@@ -204,23 +256,31 @@
   </div>
 
   <div class="tabs">
-    <button class="tab active" data-tab="user">User View</button>
-    <button class="tab" data-tab="technical">Technical View</button>
+    <button class="tab active" data-tab="product">Product</button>
+    <button class="tab" data-tab="technical">Technical</button>
     <button class="tab" data-tab="specs">Specs</button>
-    <button class="tab" data-tab="eval">Eval / QA</button>
-    <button class="tab" data-tab="git">Git Ops</button>
+    <button class="tab" data-tab="roadmap">Roadmap</button>
+    <button class="tab" data-tab="sprints">Sprints</button>
+    <button class="tab" data-tab="coordination">Coordination</button>
+    <button class="tab" data-tab="eval">Eval/QA</button>
+    <button class="tab" data-tab="learn">Learn</button>
+    <button class="tab" data-tab="status">Status</button>
   </div>
 
   <div class="content-wrap">
     <div id="loading">
       <div class="spinner"></div>
-      <span class="loading-label">Loading platform definition…</span>
+      <span class="loading-label">Loading platform…</span>
     </div>
-    <div id="user" class="content active"></div>
+    <div id="product" class="content active"></div>
     <div id="technical" class="content"></div>
     <div id="specs" class="content"></div>
+    <div id="roadmap" class="content"></div>
+    <div id="sprints" class="content"></div>
+    <div id="coordination" class="content"></div>
     <div id="eval" class="content"></div>
-    <div id="git" class="content"></div>
+    <div id="learn" class="content"></div>
+    <div id="status" class="content"></div>
   </div>
 
   <script>
@@ -230,7 +290,6 @@
       var contents = document.querySelectorAll('.content');
       var platform = null;
 
-      // Tab switching
       tabs.forEach(function (tab) {
         tab.addEventListener('click', function () {
           var tabName = tab.dataset.tab;
@@ -241,31 +300,34 @@
         });
       });
 
-      // Fetch platform definition from GitHub
-      fetch('https://raw.githubusercontent.com/ananthlk/Mobius-Master/main/docs/platform-definition.json', {
-        cache: 'no-cache'
-      })
-        .then(r => r.json())
-        .then(data => {
-          platform = data;
-          renderPlatform();
+      Promise.all([
+        fetch('https://raw.githubusercontent.com/ananthlk/Mobius-Master/main/docs/platform-definition.json', { cache: 'no-cache' }).then(r => r.json()),
+        fetch('https://raw.githubusercontent.com/ananthlk/Mobius-Master/main/docs/ahca_rerun_status.json', { cache: 'no-cache' }).then(r => r.json()).catch(() => ({})),
+        fetch('https://raw.githubusercontent.com/ananthlk/Mobius-Master/main/docs/RAG_FACTSTORE_COORDINATION.md', { cache: 'no-cache' }).then(r => r.text()).catch(() => '')
+      ])
+        .then(([def, status, coord]) => {
+          platform = def;
+          renderAll(status, coord);
           loading.classList.add('hidden');
         })
         .catch(err => {
-          console.error('Failed to load platform definition:', err);
-          loading.innerHTML = '<span style="color: rgba(255,255,255,0.5)">Failed to load platform definition</span>';
+          console.error('Failed to load platform:', err);
+          loading.innerHTML = '<span style="color: rgba(255,255,255,0.5)">Failed to load platform</span>';
         });
 
-      function renderPlatform() {
-        if (!platform) return;
-        renderUserView();
+      function renderAll(status, coord) {
+        renderProductView();
         renderTechnicalView();
         renderSpecsView();
+        renderRoadmap();
+        renderSprints();
+        renderCoordination(coord);
         renderEvalView();
-        renderGitView();
+        renderLearnView();
+        renderStatusView(status);
       }
 
-      function renderUserView() {
+      function renderProductView() {
         var html = '<div class="module-grid">';
         platform.modules.forEach(m => {
           var status = m.user_view.status;
@@ -278,7 +340,7 @@
           html += '</div>';
         });
         html += '</div>';
-        document.getElementById('user').innerHTML = html;
+        document.getElementById('product').innerHTML = html;
       }
 
       function renderTechnicalView() {
@@ -311,6 +373,95 @@
         document.getElementById('specs').innerHTML = html;
       }
 
+      function renderRoadmap() {
+        var html = '<div style="max-width: 800px;">';
+        html += '<h2 style="margin-bottom: 16px; font-size: 16px;">RCM Gates & Tier Progression</h2>';
+        html += '<div style="background: #1a1a1e; padding: 12px; border-radius: 6px; margin-bottom: 16px;">';
+        html += '<div style="font-size: 12px; color: rgba(255,255,255,0.6); line-height: 1.6;">';
+        html += '<strong>Tier A (Point Solutions):</strong> Gates 1-2 live | Claim Closure + Denial Management<br>';
+        html += '<strong>Tier B (Network Intelligence):</strong> Gates 3-5 live, Gate 6 building | Eligibility + Payor Policies + Credentialing + Appeals/Auth<br>';
+        html += '<strong>Tier C (Virtual Network):</strong> Full network effects | Collective negotiation, unified ops';
+        html += '</div></div>';
+
+        if (platform.roadmap && platform.roadmap.gates_progress) {
+          Object.keys(platform.roadmap.gates_progress).forEach(gateNum => {
+            var gate = platform.roadmap.gates_progress[gateNum];
+            var statusClass = 'status-' + gate.status;
+            html += '<div class="gate-row">';
+            html += '<div class="gate-num">Gate ' + gateNum + '</div>';
+            html += '<div class="gate-name">' + gate.name + '</div>';
+            html += '<div class="gate-status ' + statusClass + '">' + gate.status.toUpperCase() + '</div>';
+            html += '</div>';
+          });
+        }
+        html += '</div>';
+        document.getElementById('roadmap').innerHTML = html;
+      }
+
+      function renderSprints() {
+        var html = '<div style="max-width: 1000px;">';
+        html += '<h2 style="margin-bottom: 16px; font-size: 16px;">Platform Coherence Sprint Board</h2>';
+        html += '<div style="background: #1a1a1e; padding: 12px; border-radius: 6px; margin-bottom: 16px;">';
+        html += '<div style="font-size: 12px; color: rgba(255,255,255,0.6);">';
+        html += '<strong>Target Completion:</strong> Oct 12, 2026<br>';
+        html += '<strong>Objective:</strong> 100% module coverage across 5 lenses (User/Technical/Specs/Eval/Git)<br>';
+        html += '<strong>Status:</strong> Continuous refinement (roadmap + sprint board + onboarding)';
+        html += '</div></div>';
+        html += '<div style="margin-bottom: 16px;">';
+        html += '<h3 style="font-size: 13px; margin-bottom: 12px; font-weight: 600;">8-Phase Platform Coherence Progression</h3>';
+        var phases = [
+          { num: 1, name: 'Survey & Frame', status: '✅ Done', desc: 'Map all 23 modules across 5 lenses' },
+          { num: 2, name: 'Agent Sign-Off', status: '✅ Done', desc: 'Each agent confirms own module details' },
+          { num: 3, name: 'Specs Unification', status: '🔨 In Progress', desc: 'Single framework, consistent terminology' },
+          { num: 4, name: 'Roadmap Integration', status: '🔨 In Progress', desc: 'All roadmap items + gating mapped' },
+          { num: 5, name: 'Coordination Visible', status: '🔨 In Progress', desc: 'All cross-agent agreements documented' },
+          { num: 6, name: 'Documentation Complete', status: '📋 Planned', desc: 'All specs drafted, linked, searchable' },
+          { num: 7, name: 'Onboarding Live', status: '📋 Planned', desc: 'New team members self-serve' },
+          { num: 8, name: 'Platform Live', status: '📋 Planned', desc: 'This dashboard is the source of truth' }
+        ];
+        phases.forEach(p => {
+          html += '<div class="gate-row">';
+          html += '<div class="gate-num">P' + p.num + '</div>';
+          html += '<div><div class="gate-name">' + p.name + '</div><div style="font-size: 11px; color: rgba(255,255,255,0.4); margin-top: 2px;">' + p.desc + '</div></div>';
+          html += '<div style="font-size: 11px; font-weight: 600;">' + p.status + '</div>';
+          html += '</div>';
+        });
+        html += '</div></div>';
+        document.getElementById('sprints').innerHTML = html;
+      }
+
+      function renderCoordination(coordText) {
+        var html = '<div style="max-width: 900px;">';
+        html += '<h2 style="margin-bottom: 16px; font-size: 16px;">Cross-Agent Coordination</h2>';
+        html += '<div style="font-size: 12px; color: rgba(255,255,255,0.5); margin-bottom: 16px;">';
+        html += 'Append-only ledger: all cross-team agreements, blockers, and sign-offs tracked in git';
+        html += '</div>';
+
+        if (coordText) {
+          var entries = coordText.match(/\*\*PA-\d+.*?\n(?:[\s\S]*?)(?=\n\*\*PA-|\n---|\Z)/g) || [];
+          if (entries.length === 0) {
+            entries = coordText.match(/\*\*(PA-[^*]*)\*\*[\s\S]*?(?=(?:\n\*\*[^*]|\n---|\Z))/g) || [];
+          }
+          entries.forEach(entry => {
+            var lines = entry.split('\n');
+            var header = lines[0];
+            var body = lines.slice(1).join('\n').trim();
+            html += '<div class="coord-entry">';
+            html += '<div class="coord-header">';
+            html += '<span class="coord-from">' + header + '</span>';
+            html += '<span class="coord-type">' + (body.includes('DECISION') ? 'DECISION' : body.includes('ANSWER') ? 'ANSWER' : 'ASK') + '</span>';
+            html += '</div>';
+            html += '<div class="coord-body">' + escapeHtml(body.substring(0, 500)) + (body.length > 500 ? '…' : '') + '</div>';
+            html += '</div>';
+          });
+        }
+        if (entries.length === 0) {
+          html += '<div style="color: rgba(255,255,255,0.4); font-size: 12px;">Loading coordination entries…</div>';
+        }
+        html += '</div>';
+        document.getElementById('coordination').innerHTML = html;
+      }
+
       function renderEvalView() {
         var html = '<div class="table-wrap"><table><tr><th>Module</th><th>Owned By</th><th>Gates</th><th>Status</th></tr>';
         platform.modules.forEach(m => {
@@ -326,20 +477,90 @@
         document.getElementById('eval').innerHTML = html;
       }
 
-      function renderGitView() {
-        var html = '<div class="table-wrap"><table><tr><th>Module</th><th>Repo</th><th>Branch</th><th>Status</th></tr>';
-        platform.modules.forEach(m => {
-          var repo = m.git_view.repo || '—';
-          var branch = m.git_view.branch || 'main';
-          html += '<tr>';
-          html += '<td><strong>' + m.name + '</strong></td>';
-          html += '<td><small>' + repo + '</small></td>';
-          html += '<td><small>' + branch + '</small></td>';
-          html += '<td>' + (m.git_view.status || '—') + '</td>';
-          html += '</tr>';
+      function renderLearnView() {
+        var html = '<div style="max-width: 800px;">';
+        var faqs = [
+          { q: 'What is Mobius?', a: 'Mobius unlocks network-scale Revenue Cycle Management intelligence. It connects organizations to a shared corpus of payer policies, denial patterns, and operational best practices.' },
+          { q: 'What are the 8 RCM Gates?', a: '1. Claim Closure (auto-post), 2. Denial Management, 3. Eligibility Verification, 4. Payor Policies & Benefits, 5. Credentialing, 6. Authorization/Appeals, 7. Coding & Claims, 8. Network Effects.' },
+          { q: 'How do I get started?', a: 'New orgs start with Org Agent for onboarding + datastore setup. Then access Chat for immediate policy lookups. Progress through Gates as operational readiness increases.' },
+          { q: 'Where is all my documentation?', a: 'This platform is your single source of truth. Specs tab has detailed docs. Coordination tab shows all cross-team agreements. Status tab shows live metrics.' },
+          { q: 'Who owns what?', a: 'Technical tab shows ownership for all 23 modules. Each module has a single owner + contributing agents. See Coordination tab for multi-module decisions.' },
+          { q: 'How is Mobius different from X?', a: 'Mobius is network-native: designed for 34 independent orgs to share RCM intelligence without sharing patient data. Your data stays yours; the network learns.' },
+          { q: 'How do I report a bug?', a: 'See BUG_LOG.md in docs/. File with: title, repro steps, root cause hypothesis, severity. Platform Architects triage on slower days.' },
+          { q: 'Where are the API docs?', a: 'Check Specs tab for "RAG Backend", "Payor Fact Store API", and module-specific contracts. All tool manifests documented in ReAct Agent spec.' }
+        ];
+
+        html += '<h2 style="margin-bottom: 16px; font-size: 16px;">FAQ & Learning</h2>';
+        faqs.forEach(faq => {
+          html += '<div class="faq-item">';
+          html += '<div class="faq-question">' + faq.q + '</div>';
+          html += '<div class="faq-answer">' + faq.a + '</div>';
+          html += '</div>';
         });
-        html += '</table></div>';
-        document.getElementById('git').innerHTML = html;
+
+        html += '<h3 style="font-size: 14px; margin-top: 24px; margin-bottom: 12px;">Key Documentation</h3>';
+        var docs = [
+          { name: 'mobius-model.md', desc: 'RCM Gates, tiers, vision, value capture' },
+          { name: 'platform-definition.json', desc: 'Machine-readable all 23 modules + 5 lenses' },
+          { name: 'RAG_FACTSTORE_COORDINATION.md', desc: 'All cross-agent agreements (git-backed)' },
+          { name: 'BUG_LOG.md', desc: 'Known issues, blockers, repro steps' },
+          { name: 'AHCA_RERUN_SPRINT.md', desc: 'Live sprint: 1,160 docs through pipeline' }
+        ];
+        docs.forEach(doc => {
+          html += '<div style="background: #1a1a1e; padding: 8px 12px; border-radius: 4px; margin-bottom: 8px; font-size: 12px;">';
+          html += '<strong>' + doc.name + '</strong><br>';
+          html += '<span style="color: rgba(255,255,255,0.5);">' + doc.desc + '</span>';
+          html += '</div>';
+        });
+
+        html += '</div>';
+        document.getElementById('learn').innerHTML = html;
+      }
+
+      function renderStatusView(status) {
+        var html = '<div style="max-width: 1200px;">';
+        html += '<h2 style="margin-bottom: 16px; font-size: 16px;">Live System Status</h2>';
+
+        if (status && status.status) {
+          html += '<div class="status-block">';
+          html += '<div class="status-card"><div class="status-label">AHCA Reingestion</div><div class="status-value">' + status.status + '/1160</div></div>';
+          html += '<div class="status-card"><div class="status-label">Published Chunks</div><div class="status-value">' + (status.published_chunks ? Math.round(status.published_chunks / 1000000) + 'M' : '—') + '</div></div>';
+          html += '<div class="status-card"><div class="status-label">Gate Verdicts</div><div class="status-value">' + Object.keys(status).filter(k => k.endsWith('_gate')).length + '</div></div>';
+          html += '<div class="status-card"><div class="status-label">Active/Retired</div><div class="status-value">' + (status.active || 0) + '/' + (status.retired || 0) + '</div></div>';
+          html += '</div>';
+
+          if (status.gate_verdicts) {
+            html += '<h3 style="font-size: 13px; margin-bottom: 12px; font-weight: 600;">Gate Verdicts</h3>';
+            Object.keys(status.gate_verdicts).slice(0, 10).forEach(gate => {
+              html += '<div style="background: #1a1a1e; padding: 8px 12px; border-radius: 4px; margin-bottom: 6px; font-size: 12px;">';
+              html += '<strong>' + gate + ':</strong> ' + status.gate_verdicts[gate];
+              html += '</div>';
+            });
+          }
+        } else {
+          html += '<div style="color: rgba(255,255,255,0.4); font-size: 12px;">No live status data available. Check back after AHCA sprint runs.</div>';
+        }
+
+        html += '<h3 style="font-size: 13px; margin-top: 24px; margin-bottom: 12px; font-weight: 600;">Known Blockers</h3>';
+        var blockers = [
+          'Specs-platform deployment: Cloud Run serving stale index.html (code correct, image issue)',
+          'Observer Agent: wiring gated on calibration',
+          'Historical Extraction: blocked on Chat↔RAG linkage + trace writer'
+        ];
+        blockers.forEach(b => {
+          html += '<div style="background: #1a1a1e; padding: 8px 12px; border-radius: 4px; margin-bottom: 6px; font-size: 12px;">';
+          html += '⚠️ ' + b;
+          html += '</div>';
+        });
+
+        html += '</div>';
+        document.getElementById('status').innerHTML = html;
+      }
+
+      function escapeHtml(text) {
+        var div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
       }
     })();
   </script>
