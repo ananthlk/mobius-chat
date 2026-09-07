@@ -2851,22 +2851,28 @@ def _execute_tool(
             mustcarry = [c for c in caveats if c.get("kind") in ("material", "blocking")]
 
             if status == "known_absent" or mustcarry:
-                caveat_lines = "\n".join(
-                    f"  [{c.get('kind','').upper()}] {c.get('text') or c.get('code','')}"
+                # `directive` is a model instruction (imperative, never rendered to
+                # users); `text` is user-facing (declarative, safe to quote). Use
+                # directive for the instruction block so model imperatives don't leak
+                # into the provider's answer. Fall back to text/code when absent.
+                caveat_directives = "\n".join(
+                    f"  [{c.get('kind','').upper()}] {c.get('directive') or c.get('text') or c.get('code','')}"
                     for c in mustcarry
                 )
                 known_absent_order = (
-                    "\n  ORDERING: for status=known_absent your answer MUST lead "
-                    "with the qualification (why the value is unusable), not the "
-                    "numeric value. A skimming reader takes only the first clause."
+                    "\n  ORDERING: lead with the qualification (why the value is "
+                    "unusable), not the numeric value."
                     if status == "known_absent" else ""
                 )
+                # Include `answer` in the verbatim block — caveats qualify the answer
+                # but do not contain the facts (e.g. the daily cap only lives in answer).
                 prefix = (
-                    "⚠️ SYNTHESIS REQUIREMENT — the following qualifications are "
-                    "non-optional. They MUST appear verbatim in your final answer, "
-                    "not only in reasoning. Omitting or paraphrasing them makes the "
-                    "answer factually incorrect:\n"
-                    + (caveat_lines or f"  status={status}: the source is held but silent; do not assert the numeric value as usable.")
+                    "⚠️ SYNTHESIS REQUIREMENT\n"
+                    f"Quote this sentence verbatim as your answer headline:\n"
+                    f"  {headline}\n"
+                    "Then include all of the following (non-optional — omitting any "
+                    "makes the answer factually wrong):\n"
+                    + (caveat_directives or f"  status={status}: source is held but silent on this value.")
                     + known_absent_order
                     + "\n\nFull registry data:\n"
                 )
