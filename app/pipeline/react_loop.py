@@ -2832,6 +2832,8 @@ def _execute_tool(
                 "signal": RETRIEVAL_SIGNAL_NO_SOURCES, "sources": [],
             }
 
+        import json as _sl_json
+
         def _sl_signal(status: str) -> str:
             # known_absent = governing document IS held and is silent — that IS
             # a sourced response; map to SOURCES_FOUND so the badge and golden
@@ -2855,7 +2857,7 @@ def _execute_tool(
                 note = data.get("note", "")
                 return {
                     "tool": tool, "success": True,
-                    "result": data,
+                    "result": _sl_json.dumps(data),
                     "note": note,
                     "sources": [{"text": note}] if note else [],
                     "signal": _sl_signal(data.get("status", "")),
@@ -2871,7 +2873,7 @@ def _execute_tool(
                 note = data.get("note", "")
                 return {
                     "tool": tool, "success": True,
-                    "result": data,
+                    "result": _sl_json.dumps(data),
                     "note": note,
                     "sources": [{"text": note}] if note else [],
                     "signal": _sl_signal(data.get("status", "")),
@@ -2887,7 +2889,7 @@ def _execute_tool(
                 note = data.get("note", "")
                 return {
                     "tool": tool, "success": True,
-                    "result": data,
+                    "result": _sl_json.dumps(data),
                     "note": note,
                     "sources": [{"text": note}] if note else [],
                     "signal": _sl_signal(data.get("status", "")),
@@ -2901,7 +2903,7 @@ def _execute_tool(
                 data = _sl_get("/search", q=q)
                 return {
                     "tool": tool, "success": True,
-                    "result": data,
+                    "result": _sl_json.dumps(data),
                     "sources": [],
                     "signal": _sl_signal(data.get("status", "")),
                 }
@@ -2914,7 +2916,7 @@ def _execute_tool(
                 data = _sl_get(f"/lines/{line_key}")
                 return {
                     "tool": tool, "success": True,
-                    "result": data,
+                    "result": _sl_json.dumps(data),
                     "sources": [],
                     "signal": _sl_signal(data.get("status", "")),
                 }
@@ -2926,7 +2928,7 @@ def _execute_tool(
                 data = _sl_get("/requirements", line_key=line_key, requirement_type=req_type)
                 return {
                     "tool": tool, "success": True,
-                    "result": data,
+                    "result": _sl_json.dumps(data),
                     "sources": [],
                     "signal": _sl_signal(data.get("status", "")),
                 }
@@ -2937,7 +2939,7 @@ def _execute_tool(
                 note = data.get("note", "")
                 return {
                     "tool": tool, "success": True,
-                    "result": data,
+                    "result": _sl_json.dumps(data),
                     "note": note,
                     "sources": [{"text": note}] if note else [],
                     "signal": RETRIEVAL_SIGNAL_SOURCES_FOUND,
