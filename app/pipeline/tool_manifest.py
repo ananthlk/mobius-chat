@@ -341,77 +341,26 @@ ingest_url(url)
 ## Service-line registry tools
 # Seven direct-HTTP tools over /api/service-line on mobius-payor.
 # They answer from certified FL Medicaid BH registry rows — NOT retrieval.
-# STATUS RULE (all tools): found=answer+cite, known_absent=source held+silent
-# (do NOT infer, do NOT fall back to rag), unknown=no data (NOT a denial).
-# Every response carries a `note` written for the model — pass it through.
 # These dispatch in react_loop.py; prose here drives the planner.
-
-_SERVICE_LINE_STATUS_NOTE = """\
-  STATUS — all three values differ:
-    found         → answer; cite source_ref.
-    known_absent  → the governing document IS held and is SILENT.
-                    Do NOT infer. Do NOT fall back silently to rag and
-                    present that result as equivalent. Say the source
-                    does not state it.
-    unknown       → we hold nothing. This is NOT a denial.\
-"""
 
 _SERVICE_LINE_CODE_LOOKUP_BLOCK = """\
 service_line_code_lookup(code, modifier?)
-  What a HCPCS/CPT code is: every (code, modifier) pair under that code,
-    its definition, rate, payment basis, telemedicine flag, coverage and limits.
-  MODIFIER RULE: if modifier_ambiguous is true, the code covers several
-    distinct billable services with different rates and limits — present
-    the alternatives from modifiers[] or ask which the user means; never
-    answer for the bare code. If modifier_ambiguous is false, do NOT ask
-    for a modifier. Either way, state modifier_note's guidance: it also
-    covers the case where all rows carry one specific modifier, which the
-    answer must say out loud.
-    DO NOT derive this from pair_count — pair_count counts rows
-    (line × modifier) and exceeds the service count whenever a code sits
-    on more than one service line, which is not ambiguity.
+  What a HCPCS/CPT code is: every (code, modifier) pair, definition, rate,
+    payment basis, telemedicine flag, coverage, and limits.
   Use for: "what is H2017", "what does H0031 HN mean", "can I bill X".
-  Scope: FL Medicaid BH standard only. Payor-specific rules are the Fact
-    Store's. A miss may mean out-of-scope, not non-existent.
-""" + _SERVICE_LINE_STATUS_NOTE
+  Scope: FL Medicaid BH standard only. A miss may mean out-of-scope."""
 
 _SERVICE_LINE_LIMITS_BLOCK = """\
 service_line_limits(code, modifier?)
   How much may be billed for a (code, modifier) pair.
-  DISTINCT_READINGS RULE: quote distinct_readings[], not limits[]. 15
-    (code, modifier) pairs belong to more than one service line — limits[]
-    repeats each cap per line. H2019/HR returns 4 rows for 2 real caps;
-    summing gives 208 for a 104-unit cap. distinct_readings deduplicates.
-    limits[] is the per-line breakdown for callers that need to know which
-    service line a cap sits under — a user-facing answer never needs it;
-    quoting both makes one cap look like two.
-  MULTI-CAP RULE: a service usually has more than one cap. H2019/HR is
-    4 units/day AND 104 units/state-fiscal-year — both apply. Return all.
-  unlimited=true means the source affirmatively says "as medically
-    necessary" — that is an answer, not a blank.
-  status=known_absent with not_computable populated means the schedule
-    states an amount and never defines the unit — give the raw wording,
-    do not guess the unit.
-  Use for: "how many units of X", "is there a daily cap", "annual limit".
-""" + _SERVICE_LINE_STATUS_NOTE
+  Use for: "how many units of X", "is there a daily cap", "annual limit"."""
 
 _SERVICE_LINE_COVERAGE_BLOCK = """\
 service_line_coverage(code, modifier?)
-  Whether the FL Medicaid standard covers this (code, modifier) pair,
-    plus any population restriction.
-  basis distinguishes evidence strength: quoted_rule = the rule's own
-    sentence; published_rate = AHCA prints a rate for the pair (both
-    sourced, not equal — prefer quoted_rule).
-  GAPS FALLBACK: if status=unknown, then call service_line_gaps() and
-    check whether the code's service line appears in lines_without_coverage.
-      yes → "we hold no coverage document for that line at all" (24/31 lines)
-      no  → the line IS sourced and this code is absent from it — stronger.
-    Do NOT call service_line_gaps() as a blanket pre-check; it is ~650
-    tokens of registry-wide data and returns nothing code-specific.
-  SCOPE: AHCA/CMS standard only. A payor covering less or capping tighter
-    is a delta held by the Fact Store — say so rather than implying the
-    standard binds a specific plan.
-""" + _SERVICE_LINE_STATUS_NOTE
+  Whether the FL Medicaid standard covers this (code, modifier) pair.
+  If status=unknown: call service_line_gaps() to distinguish "no coverage
+    doc held for this line at all" from "line is sourced but code absent".
+  Do NOT call service_line_gaps() as a blanket pre-check."""
 
 _SERVICE_LINE_SEARCH_BLOCK = """\
 service_line_search(q)
@@ -460,18 +409,35 @@ _SERVICE_LINE_ROUTING_BLOCK = """\
 service_line_code_lookup / limits / coverage / search / detail / requirements / gaps
 
 WHEN TO USE THESE (not rag):
-  "what is H2017" / "can I bill H0031 HN"         → service_line_code_lookup
-  "how many units of X" / "daily cap" / "annual"  → service_line_limits
-  "is X covered" / "covered for whom"             → service_line_coverage
-  "what can I bill for psychosocial rehab"         → service_line_search → code_lookup
-  "what do I need to bill bh_assessment"          → service_line_requirements
-  "do you do partial hospitalisation"             → service_line_detail (check scope)
-  any "is X not covered" question                 → service_line_coverage first,
-                                                     gaps() only if unknown
+  "what is H2017" / "can I bill H0031 HN"        → service_line_code_lookup
+  "how many units of X" / "daily cap" / "annual" → service_line_limits
+  "is X covered" / "covered for whom"            → service_line_coverage
+  "what can I bill for psychosocial rehab"        → service_line_search → code_lookup
+  "what do I need to bill bh_assessment"         → service_line_requirements
+  "do you do partial hospitalisation"            → service_line_detail
+  any "is X not covered" question                → service_line_coverage first;
+                                                   gaps() only if status=unknown
+
+RESPONSE SHAPE — every endpoint returns the same envelope:
+  answer    one quotable sentence — use this as the headline.
+  status    found | known_absent | unknown
+            found = answer + cite.
+            known_absent = source IS held and IS SILENT — do NOT infer,
+              do NOT fall back to rag and present it as equivalent.
+            unknown = we hold nothing — NOT a denial.
+  caveats   [{code, kind, text}] — only traps that APPLY to THIS response.
+            STOP AND ASK the user when any caveat has kind="blocking".
+            Read `text` — it is the message. Possible codes include:
+            modifier_ambiguous, caps_not_additive, multiple_caps_apply,
+            unit_undefined, no_numeric_cap, unsourced_placeholders,
+            decline_well, standard_not_payor, absence_is_not_denial.
+  citations [{document, page, sourced}]
+  data      endpoint-specific payload (data.modifiers, data.distinct_readings,
+            data.modifier_ambiguous, data.limits, etc.)
+  query     echo of what was asked
 
 SCOPE BOUNDARY: FL Medicaid BH standard only. Payor-specific rates/rules
-  → Fact Store. Appeals process → appeals_* tools. Provider enrolment → NPI lookup.
-  A miss means out-of-scope as often as non-existent.
+  → Fact Store. Appeals → appeals_* tools. Provider enrolment → NPI lookup.
 
 """
 
