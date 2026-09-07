@@ -174,6 +174,7 @@ RETRIEVAL_SIGNAL_CORPUS_PLUS_GOOGLE = "corpus_plus_google"
 RETRIEVAL_SIGNAL_GOOGLE_ONLY = "google_only"
 RETRIEVAL_SIGNAL_NO_SOURCES = "no_sources"
 RETRIEVAL_SIGNAL_ROSTER_COMPLETE = "roster_complete"
+RETRIEVAL_SIGNAL_SOURCES_FOUND = "corpus_only"  # alias: direct-registry tools (service line, fact store)
 RETRIEVAL_SIGNAL_SYSTEM_CONTEXT = "system_context"
 """Answer grounded entirely in caller-supplied ``system_context`` (Round 0).
 

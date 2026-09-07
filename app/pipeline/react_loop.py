@@ -115,6 +115,7 @@ from app.services.doc_assembly import (
     RETRIEVAL_SIGNAL_GOOGLE_ONLY,
     RETRIEVAL_SIGNAL_NO_SOURCES,
     RETRIEVAL_SIGNAL_ROSTER_COMPLETE,
+    RETRIEVAL_SIGNAL_SOURCES_FOUND,
     RETRIEVAL_SIGNAL_SYSTEM_CONTEXT,
 )
 from app.services.chat_mode_utils import translate_chat_mode_to_caller_mode
