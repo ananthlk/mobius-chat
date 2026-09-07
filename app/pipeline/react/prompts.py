@@ -1316,11 +1316,21 @@ def build_reasoning_context(
                 result_bits.append(f"[Summary]\n{summ}")
             result_bits.append(f"[Full result — {len(raw)} chars, complete, not truncated]\n{raw}")
             result_preview = "\n\n".join(result_bits)
-            parts.append(
+            tool_block = (
                 f"Tool: {r.get('tool', '')}\n"
                 f"Result: {result_preview}\n"
                 f"Success: {r.get('success', False)}"
             )
+            synth = (r.get("synthesis_note") or "").strip()
+            if synth:
+                # synthesis_note carries per-response model instructions from
+                # direct-registry tools (service line, fact store). It is
+                # model-only context — it must never appear in react_draft,
+                # ctx.final_message, or any user-facing surface. It arrives
+                # here because `result` is pure JSON (display channel) and
+                # synthesis_note is the separate reasoning-context channel.
+                tool_block += f"\n[Synthesis instructions — model-only, do not quote or show to user]\n{synth}"
+            parts.append(tool_block)
 
     parts.append(f"\nUser question: {ctx.effective_message or ctx.message}")
 

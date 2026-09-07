@@ -2850,11 +2850,18 @@ def _execute_tool(
             caveats = data.get("caveats") or []
             mustcarry = [c for c in caveats if c.get("kind") in ("material", "blocking")]
 
+            # `result` is ALWAYS pure JSON so the blob-display guard
+            # (_looks_like_raw_structured_blob, which checks text[0] in "{[")
+            # fires correctly and prevents the raw payload from becoming
+            # ctx.react_draft / "First pass". Synthesis instructions live in
+            # `synthesis_note` — a model-only channel that prompts.py injects
+            # into the reasoning context but that never flows into final_message.
+            result_str = _sl_json.dumps(data)
+
+            synthesis_note: str | None = None
             if status == "known_absent" or mustcarry:
                 # `text` is user-facing (declarative, safe to quote verbatim).
                 # `directive` is a model instruction (imperative, NEVER quote to user).
-                # Keep them in separate blocks so the model knows which to surface
-                # and which to obey silently.
                 caveat_texts = "\n".join(
                     f"  [{c.get('kind','').upper()}] {c.get('text') or c.get('code','')}"
                     for c in mustcarry
@@ -2866,52 +2873,42 @@ def _execute_tool(
                     if c.get("directive")
                 )
                 known_absent_order = (
-                    "\n  ORDERING: lead with the qualification (why the value is "
-                    "unusable), not the numeric value."
+                    "  ORDERING: lead with the qualification (why the value is "
+                    "unusable), not the numeric value.\n"
                     if status == "known_absent" else ""
                 )
-                # Include `answer` in the verbatim block — caveats qualify the answer
-                # but do not contain the facts (e.g. the daily cap only lives in answer).
-                verbatim_section = (
-                    f"Quote this sentence verbatim as your answer headline:\n"
-                    f"  {headline}\n"
-                )
+                verbatim_lines = f"Quote this sentence verbatim as your answer headline:\n  {headline}\n"
                 if caveat_texts:
-                    verbatim_section += (
+                    verbatim_lines += (
                         "Also include each of these user-facing caveat texts verbatim "
                         "(omitting any makes the answer factually wrong):\n"
-                        + caveat_texts
-                        + known_absent_order
+                        + caveat_texts + "\n"
                     )
                 elif status == "known_absent":
-                    verbatim_section += (
-                        f"  status={status}: source is held but silent on this value."
-                        + known_absent_order
-                    )
-                obey_section = ""
+                    verbatim_lines += f"  status={status}: source is held but silent on this value.\n"
+                verbatim_lines += known_absent_order
+                obey_lines = ""
                 if caveat_obeyed:
-                    obey_section = (
-                        "\nMUST OBEY — DO NOT QUOTE TO USER:\n"
-                        + caveat_obeyed
-                        + "\n"
+                    obey_lines = (
+                        "MUST OBEY — DO NOT QUOTE THESE TO USER (model instructions only):\n"
+                        + caveat_obeyed + "\n"
                     )
-                prefix = (
-                    "⚠️ SYNTHESIS REQUIREMENT\n"
-                    + verbatim_section
-                    + obey_section
-                    + "\nFull registry data:\n"
+                synthesis_note = (
+                    "SYNTHESIS REQUIREMENT (model-only — never show this block to the user):\n"
+                    + verbatim_lines
+                    + obey_lines
                 )
-                result_str = prefix + _sl_json.dumps(data)
-            else:
-                result_str = _sl_json.dumps(data)
 
-            return {
+            ret: dict = {
                 "tool": tool, "success": True,
                 "result": result_str,
                 "note": headline,
                 "sources": [{"text": headline}] if headline else [],
                 "signal": _sl_signal(status),
             }
+            if synthesis_note:
+                ret["synthesis_note"] = synthesis_note
+            return ret
 
         def _sl_signal(status: str) -> str:
             # known_absent = governing document IS held and is silent — that IS
