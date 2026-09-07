@@ -2855,12 +2855,19 @@ def _execute_tool(
                     f"  [{c.get('kind','').upper()}] {c.get('text') or c.get('code','')}"
                     for c in mustcarry
                 )
+                known_absent_order = (
+                    "\n  ORDERING: for status=known_absent your answer MUST lead "
+                    "with the qualification (why the value is unusable), not the "
+                    "numeric value. A skimming reader takes only the first clause."
+                    if status == "known_absent" else ""
+                )
                 prefix = (
                     "⚠️ SYNTHESIS REQUIREMENT — the following qualifications are "
                     "non-optional. They MUST appear verbatim in your final answer, "
                     "not only in reasoning. Omitting or paraphrasing them makes the "
                     "answer factually incorrect:\n"
                     + (caveat_lines or f"  status={status}: the source is held but silent; do not assert the numeric value as usable.")
+                    + known_absent_order
                     + "\n\nFull registry data:\n"
                 )
                 result_str = prefix + _sl_json.dumps(data)
