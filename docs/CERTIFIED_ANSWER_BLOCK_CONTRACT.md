@@ -48,6 +48,20 @@ maps to my table/stats. Citations to the Sources surface.
 ```
 
 - `answer` is the star — rendered as the headline in ALL three states, same treatment.
+- **`answer` MUST be the API's `answer` field VERBATIM — never a model paraphrase. This is enforced, not
+  advisory** (Chat Master decomposition requirement; 2026-08-11 E2E evidence below). The block's entire
+  premise is that the headline is quotable and the material caveats qualify it. If the sentence is
+  re-synthesised, a caveat can end up contradicting its own headline and the render is worse than either
+  piece alone — a confident number under a pill that says "Source silent" with a ⚑ line disagreeing.
+  - **Motivating failure (T2023 HA, `known_absent`):** API `answer` = *"The schedule states a limit for
+    T2023 HA but never defines what one unit is, so we cannot say how much service it buys. Its exact
+    wording: 'Maximum 1 unit per month.'"* + a `unit_undefined` material caveat. The synthesis step
+    **dropped the qualification** and emitted *"the billing limit is 1 unit per month"* — a confident claim
+    the caveat then contradicts. The caveat survived the tool call and died in synthesis.
+  - **Contract rule:** Chat Master's tool-response→envelope layer passes `api.answer` straight into
+    `certified_answer.answer` with NO LLM rewrite — especially for `known_absent`, where the honest answer is
+    deliberately a non-answer ("we cannot say…") that a paraphrase will "helpfully" turn into an assertion.
+    A test should assert `block.answer === api.answer` for these turns.
 - `caveats` here carry only `material` and `context` (a test on your side already asserts blocking never
   rides here — good; blocking goes to the disambiguation block).
 - `provenance` is the small inline citation line; the FULL citation list still goes to the `sources` block.
@@ -75,7 +89,7 @@ looks like a confident answer — the sentence + material caveats carry the hone
 - `context` → footer, muted (standard_not_payor lives here — it's on every answer).
 - `blocking` → never rendered here; it's the `disambiguation` block.
 
-**Layout:**
+**Layout — and ORDERING is load-bearing, not cosmetic:**
 ```
 [provenance pill]  <answer sentence, verbatim>
                    · sourced: 2025 …Fee Schedule.pdf p.2        (provenance, when sourced:true)
@@ -85,6 +99,12 @@ looks like a confident answer — the sentence + material caveats carry the hone
 ────
 <context caveat> (footer, muted)   ·   Sources (full citations)
 ```
+The `certified_answer` header (answer + material caveats) MUST render **above** the data table, never
+after it. The reason is the T2023 HA case: the table shows a raw "1 unit / month" while the header says
+"we cannot say how much service it buys." If the number is read first, the qualification arrives too late
+— the header has to **overrule the number**, so it comes first and the ⚑ sits between the honest sentence
+and the raw figure. This is the one place the deferred lead-vs-body ordering actually matters, and T2023 HA
+is the payload to tune it against.
 
 ---
 
