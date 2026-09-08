@@ -145,6 +145,30 @@
       margin-bottom: 8px;
       font-weight: 500;
     }
+    /* 7+1 layer framework grouping */
+    .layer-block { margin-bottom: 34px; }
+    .layer-head {
+      display: flex; align-items: baseline; gap: 10px;
+      padding-bottom: 8px; margin-bottom: 4px;
+      border-bottom: 1px solid rgba(255,255,255,0.10);
+    }
+    .layer-label {
+      font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+      color: #a78bfa;
+    }
+    .layer-name { font-size: 15px; font-weight: 600; color: rgba(255,255,255,0.92); }
+    .layer-count {
+      margin-left: auto; font-size: 11px; font-variant-numeric: tabular-nums;
+      color: rgba(255,255,255,0.4);
+    }
+    .layer-desc {
+      font-size: 12px; color: rgba(255,255,255,0.45);
+      margin: 0 0 14px;
+    }
+    .layer-row td {
+      font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+      color: #a78bfa; padding-top: 18px; border-bottom: 1px solid rgba(255,255,255,0.10);
+    }
     .status-live { background: rgba(34, 197, 94, 0.2); color: #86efac; }
     .status-building { background: rgba(59, 130, 246, 0.2); color: #93c5fd; }
     .status-partial { background: rgba(251, 146, 60, 0.2); color: #fed7aa; }
@@ -422,35 +446,75 @@
         renderStatusView(status);
       }
 
-      function renderProductView() {
-        var html = '<div class="module-grid">';
-        platform.modules.forEach(m => {
-          var status = m.user_view.status;
-          var statusClass = 'status-' + status;
-          html += '<div class="module-card">';
-          html += '<div class="module-name">' + m.name + '</div>';
-          html += '<div class="module-status ' + statusClass + '">' + status.toUpperCase() + '</div>';
-          html += '<div class="module-desc">' + m.user_view.description + '</div>';
-          html += '<div class="module-owner">Surface: ' + (m.user_view.surface || 'N/A') + '</div>';
-          html += '</div>';
+      // The 7+1 layer framework is the platform's organising idea, so the module
+      // views group by it rather than presenting one flat grid. A module with no
+      // layer falls into "Unplaced" instead of disappearing — silently dropping a
+      // module from the framework is the one failure this view must not have.
+      function byLayer(renderCard) {
+        var layers = (platform.layers || []).slice();
+        var mods = platform.modules || [];
+        var html = '';
+        layers.forEach(function (L) {
+          var inLayer = mods.filter(m => m.layer === L.layer);
+          if (!inLayer.length) return;
+          html += '<div class="layer-block">' +
+            '<div class="layer-head">' +
+              '<span class="layer-label">' + esc(L.label) + '</span>' +
+              '<span class="layer-name">' + esc(L.name) + '</span>' +
+              '<span class="layer-count">' + inLayer.length + '</span>' +
+            '</div>' +
+            '<p class="layer-desc">' + esc(L.description) + '</p>' +
+            '<div class="module-grid">' + inLayer.map(renderCard).join('') + '</div>' +
+          '</div>';
         });
-        html += '</div>';
-        document.getElementById('product').innerHTML = html;
+        var unplaced = mods.filter(m => m.layer === undefined || m.layer === null);
+        if (unplaced.length) {
+          html += '<div class="layer-block"><div class="layer-head">' +
+            '<span class="layer-label">Unplaced</span>' +
+            '<span class="layer-name">Not yet assigned to a layer</span>' +
+            '<span class="layer-count">' + unplaced.length + '</span></div>' +
+            '<div class="module-grid">' + unplaced.map(renderCard).join('') + '</div></div>';
+        }
+        return html;
+      }
+
+      function renderProductView() {
+        document.getElementById('product').innerHTML = byLayer(function (m) {
+          var status = m.user_view.status;
+          return '<div class="module-card">' +
+            '<div class="module-name">' + esc(m.name) + '</div>' +
+            '<div class="module-status status-' + esc(status) + '">' + esc(status.toUpperCase()) + '</div>' +
+            '<div class="module-desc">' + esc(m.user_view.description) + '</div>' +
+            '<div class="module-owner">Surface: ' + esc(m.user_view.surface || 'N/A') + '</div>' +
+          '</div>';
+        });
       }
 
       function renderTechnicalView() {
-        var html = '<div class="table-wrap"><table><tr><th>Module</th><th>Owner</th><th>Status</th><th>Repo</th></tr>';
-        platform.modules.forEach(m => {
-          var repo = m.technical_view.repo || '—';
-          html += '<tr>';
-          html += '<td><strong>' + m.name + '</strong><br><small style="color:rgba(255,255,255,0.4)">' + (m.technical_view.module || '') + '</small></td>';
-          html += '<td>' + (m.technical_view.owner || '—') + '</td>';
-          html += '<td><span class="module-status status-' + m.technical_view.status + '">' + m.technical_view.status + '</span></td>';
-          html += '<td><small>' + repo + '</small></td>';
-          html += '</tr>';
+        var mods = platform.modules || [];
+        var rows = '';
+        (platform.layers || []).forEach(function (L) {
+          var inLayer = mods.filter(m => m.layer === L.layer);
+          if (!inLayer.length) return;
+          // A spanning row keeps the layer visible while scanning a long table —
+          // the grouping is the point of the view, not decoration.
+          rows += '<tr class="layer-row"><td colspan="4">' + esc(L.label) +
+                  ' &middot; ' + esc(L.name) + '</td></tr>';
+          inLayer.forEach(function (m) {
+            var tv = m.technical_view || {};
+            rows += '<tr>' +
+              '<td><strong>' + esc(m.name) + '</strong><br><small style="color:rgba(255,255,255,0.4)">' +
+                esc(tv.module || '') + '</small></td>' +
+              '<td>' + esc(tv.owner || '—') + '</td>' +
+              '<td><span class="module-status status-' + esc(tv.status || '') + '">' +
+                esc(tv.status || '—') + '</span></td>' +
+              '<td><small>' + esc(tv.repo || (m.git_view && m.git_view.repo) || '—') + '</small></td>' +
+            '</tr>';
+          });
         });
-        html += '</table></div>';
-        document.getElementById('technical').innerHTML = html;
+        document.getElementById('technical').innerHTML =
+          '<div class="table-wrap"><table><tr><th>Module</th><th>Owner</th><th>Status</th><th>Repo</th></tr>' +
+          rows + '</table></div>';
       }
 
       function renderSpecsView() {
