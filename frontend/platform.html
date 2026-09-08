@@ -195,6 +195,21 @@
       margin-top: 9px; font-size: 10px; color: #fbbf24;
       border-left: 2px solid rgba(251,191,36,0.5); padding-left: 7px;
     }
+    /* A caveat is a verified module with something the owner must still decide.
+       It is not the same as unverified, and must not be quietly folded into it. */
+    .caveat {
+      margin-top: 9px; font-size: 10px; color: #fbbf24;
+      border-left: 2px solid rgba(251,191,36,0.5); padding-left: 7px;
+      line-height: 1.5;
+    }
+    /* The evidence trail: which repo, branch and deploy config prove the
+       mapping. The whole point of code-truth is that this is checkable. */
+    .provenance {
+      margin-top: 9px; font-size: 10px; color: rgba(255,255,255,0.42);
+      border-left: 2px solid rgba(255,255,255,0.14); padding-left: 7px;
+      line-height: 1.5;
+    }
+    .provenance b { color: rgba(255,255,255,0.62); font-weight: 600; }
     .stage {
       display: inline-block; font-size: 9px; text-transform: uppercase;
       letter-spacing: .06em; font-weight: 700; color: #a78bfa;
@@ -234,6 +249,17 @@
     .pcomp-runs {
       flex-basis: 100%; font-size: 10px; color: rgba(255,255,255,0.42);
       overflow-wrap: anywhere;
+    }
+    /* Pipeline rows carry the same honesty marks as layer cards. Until
+       2026-09-08 they carried none, so an unverified Pre-Layer 0 component
+       would have rendered as though it were proven. */
+    .pcomp-note {
+      flex-basis: 100%; font-size: 9.5px; line-height: 1.5;
+      border-left: 2px solid rgba(255,255,255,0.14); padding-left: 6px;
+      color: rgba(255,255,255,0.40); margin-top: 2px;
+    }
+    .pcomp-note.warn {
+      color: #fbbf24; border-left-color: rgba(251,191,36,0.5);
     }
 
     /* 7+1 layer framework grouping — collapsible */
@@ -624,6 +650,10 @@
                     '<span class="kind kind-' + esc(m.kind) + '">' + esc(m.kind) + '</span>' +
                     (away ? '<span class="pcomp-home">' + esc(home) + '</span>' : '') +
                     '<code class="pcomp-runs">' + esc(m.service || m.repo) + '</code>' +
+                    (m.verified === false
+                      ? '<div class="pcomp-note warn">unverified — no deploy config names this service</div>' : '') +
+                    (m.caveat ? '<div class="pcomp-note warn">' + esc(m.caveat) + '</div>' : '') +
+                    (m.provenance ? '<div class="pcomp-note">Traced to: ' + esc(m.provenance) + '</div>' : '') +
                   '</div>';
                 }).join('') +
               '</div>';
@@ -694,6 +724,12 @@
           // to fix.
           if (m.verified === false) {
             html += '<div class="unverified">unverified — no deploy config names this service</div>';
+          }
+          if (m.caveat) {
+            html += '<div class="caveat">' + esc(m.caveat) + '</div>';
+          }
+          if (m.provenance) {
+            html += '<div class="provenance"><b>Traced to:</b> ' + esc(m.provenance) + '</div>';
           }
           return html + '</div>';
         });
