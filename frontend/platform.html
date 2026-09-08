@@ -201,6 +201,41 @@
       min-width: 46px;
     }
 
+    /* Pre-Layer 0 rendered as the pipeline it describes */
+    .pipeline {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr));
+      gap: 10px; align-items: start;
+    }
+    .pstage {
+      background: #1a1a1e; border: 0.5px solid rgba(255,255,255,0.1);
+      border-radius: 8px; padding: 11px;
+    }
+    .pstage-head { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
+    .pstage-n {
+      width: 17px; height: 17px; border-radius: 50%; flex-shrink: 0;
+      background: rgba(167,139,250,0.18); color: #a78bfa;
+      font-size: 10px; font-weight: 700; display: flex;
+      align-items: center; justify-content: center;
+    }
+    .pstage-name { font-size: 12px; font-weight: 600; color: #f1f0ee; }
+    .pstage-desc {
+      font-size: 10.5px; color: rgba(255,255,255,0.40);
+      line-height: 1.45; margin: 0 0 9px;
+    }
+    .pcomp {
+      display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+      padding: 6px 0; border-top: 1px solid rgba(255,255,255,0.06);
+    }
+    .pcomp-name { font-size: 11.5px; font-weight: 500; color: rgba(255,255,255,0.88); }
+    .pcomp-home {
+      font-size: 9px; color: #7dd3fc; border: 1px solid rgba(125,211,252,0.35);
+      border-radius: 3px; padding: 1px 4px;
+    }
+    .pcomp-runs {
+      flex-basis: 100%; font-size: 10px; color: rgba(255,255,255,0.42);
+      overflow-wrap: anywhere;
+    }
+
     /* 7+1 layer framework grouping */
     .layer-block { margin-bottom: 34px; }
     .layer-head {
@@ -512,6 +547,43 @@
         var html = '';
         layers.forEach(function (L) {
           var inLayer = mods.filter(m => m.layer === L.layer);
+
+          // Pre-Layer 0 is a pipeline, not a bag of components. Several of the
+          // things that get knowledge in are Skills and live in Layer 5 — the
+          // stage view references them there rather than duplicating them.
+          if (L.layer === 0) {
+            var staged = mods.filter(m => m.stage);
+            html += '<div class="layer-block">' +
+              '<div class="layer-head">' +
+                '<span class="layer-label">' + esc(L.label) + '</span>' +
+                '<span class="layer-name">' + esc(L.name) + '</span>' +
+                '<span class="layer-count">' + staged.length + ' across ' +
+                  (platform.pipeline_stages || []).length + ' stages</span>' +
+              '</div>' +
+              '<p class="layer-desc">' + esc(L.description) + '</p>' +
+              '<div class="pipeline">';
+            (platform.pipeline_stages || []).forEach(function (S, i) {
+              var here = staged.filter(m => m.stage === S.stage);
+              html += '<div class="pstage">' +
+                '<div class="pstage-head"><span class="pstage-n">' + (i + 1) + '</span>' +
+                  '<span class="pstage-name">' + esc(S.label) + '</span></div>' +
+                '<p class="pstage-desc">' + esc(S.description) + '</p>' +
+                here.map(function (m) {
+                  var home = (layers.find(x => x.layer === m.layer) || {}).label || '';
+                  var away = m.layer !== 0;
+                  return '<div class="pcomp">' +
+                    '<span class="pcomp-name">' + esc(m.name) + '</span>' +
+                    '<span class="kind kind-' + esc(m.kind) + '">' + esc(m.kind) + '</span>' +
+                    (away ? '<span class="pcomp-home">' + esc(home) + '</span>' : '') +
+                    '<code class="pcomp-runs">' + esc(m.service || m.repo) + '</code>' +
+                  '</div>';
+                }).join('') +
+              '</div>';
+            });
+            html += '</div></div>';
+            return;
+          }
+
           if (!inLayer.length) return;
           html += '<div class="layer-block">' +
             '<div class="layer-head">' +
