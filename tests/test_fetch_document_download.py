@@ -88,6 +88,74 @@ def test_corpus_search_fallback_when_name_match_fails(monkeypatch):
     assert doc["state"] == "FL"
 
 
+def test_corpus_search_wrong_rule_number_filtered_out(monkeypatch):
+    # Regression: querying "Florida rule 59G-4.029" must NOT return 59G-4.127
+    # via corpus_search when 59G-4.029 isn't in the corpus.  The vector search
+    # finds related rules but they have a DIFFERENT rule number; the caller
+    # ends up looping on the wrong download card for 12 rounds.
+    wrong_rule = {
+        "document_id": "44444444-4444-4444-4444-444444444444",
+        "document_display_name": "59G-4.127 Mental Health Coverage Policy",
+        "document_filename": "59G-4.127_MH_Coverage_Policy.pdf",
+        "document_payer": "",
+        "document_state": "FL",
+        "document_program": "Medicaid",
+        "document_authority_level": "state_rule",
+        "updated_at": "2026-01-01T00:00:00Z",
+    }
+    monkeypatch.setattr(fd, "_fetch_candidates", lambda q: [wrong_rule])
+    monkeypatch.setattr(
+        fd,
+        "_corpus_search_resolve",
+        lambda q, limit=3: [
+            {
+                "document_id": wrong_rule["document_id"],
+                "document_display_name": wrong_rule["document_display_name"],
+                "document_filename": wrong_rule["document_filename"],
+            }
+        ],
+    )
+    monkeypatch.setattr(fd, "_web_registry_resolve", lambda q, limit=3: [])
+    ctx = SimpleNamespace()
+
+    env = fd._run_fetch_document(_call("Florida rule 59G-4.029", ctx))
+
+    # Must NOT return the wrong rule — should signal no_sources (not in corpus)
+    assert env.signal == "no_sources", (
+        f"Expected no_sources, got {env.signal!r}; "
+        "wrong-numbered document from corpus_search should be filtered out"
+    )
+
+
+def test_corpus_search_correct_rule_number_accepted(monkeypatch):
+    # When the document EXISTS in the candidate pool with the rule number in its
+    # name, _rank_matches finds it directly (name_match) and corpus_search is
+    # never invoked.  This verifies the filter doesn't interfere with that path.
+    right_rule = {
+        "document_id": "55555555-5555-5555-5555-555555555555",
+        "document_display_name": "59G-4.029 Behavioral Health Coverage Policy",
+        "document_filename": "59G-4.029_BH_Coverage_Policy.pdf",
+        "document_payer": "",
+        "document_state": "FL",
+        "document_program": "Medicaid",
+        "document_authority_level": "state_rule",
+        "updated_at": "2026-01-01T00:00:00Z",
+    }
+    monkeypatch.setattr(fd, "_fetch_candidates", lambda q: [right_rule])
+    # corpus_search should never be called when name_match succeeds
+    cs_called = []
+    monkeypatch.setattr(fd, "_corpus_search_resolve", lambda q, limit=3: cs_called.append(q) or [])
+    ctx = SimpleNamespace()
+
+    env = fd._run_fetch_document(_call("Florida rule 59G-4.029", ctx))
+
+    # Resolves via name_match directly — no corpus_search needed
+    assert env.signal == "ok"
+    assert env.extra["resolved_via"] == "name_match"
+    assert not cs_called, "corpus_search should not be called when name_match succeeds"
+    assert ctx.react_document_download_data["documents"][0]["document_id"] == right_rule["document_id"]
+
+
 def test_payer_column_counts_toward_match(monkeypatch):
     # Regression: "Sunshine provider manual" must beat a doc whose NAME
     # contains sunshine+health when the manual's payer column carries it.

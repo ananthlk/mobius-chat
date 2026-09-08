@@ -649,6 +649,35 @@ def _rank_matches(query: str, candidates: list[dict[str, Any]]) -> list[dict[str
     return [c for _, c in scored]
 
 
+def _filter_specific_id_conflicts(
+    query: str, candidates: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Filter corpus-search results that conflict with specific identifiers in the query.
+
+    When the query contains digit-containing tokens (rule numbers like "4.029",
+    "59g", "fl.um.87") that uniquely identify a document, any candidate whose
+    name lacks ALL of those tokens is almost certainly the wrong document — a
+    different rule number returned by semantic similarity.
+
+    Description-only queries ("the policy about telehealth visits") have no
+    digit tokens; the filter is a no-op and all candidates pass through.
+    """
+    qtokens = _tokenize(query)
+    # Only tokens that contain at least one digit are considered "specific identifiers."
+    # "telehealth" → no digit → not an identifier. "59g", "4.029", "029" → identifiers.
+    digit_tokens = [t for t in qtokens if any(c.isdigit() for c in t)]
+    if not digit_tokens:
+        return list(candidates)  # no specific identifier in query; trust semantic results
+    out: list[dict[str, Any]] = []
+    for c in candidates:
+        name_tokens = set(_tokenize(c.get("document_display_name") or ""))
+        file_tokens = set(_tokenize(c.get("document_filename") or ""))
+        target = name_tokens | file_tokens
+        if all(t in target for t in digit_tokens):
+            out.append(c)
+    return out
+
+
 # ── Semantic fallback via corpus_search ─────────────────────────────
 
 
@@ -1063,8 +1092,21 @@ def _run_fetch_document(call: SkillCall) -> SkillEnvelope:
     if not matches:
         _e("  No name match — trying corpus search…")
         try:
-            matches = _merge_metadata(_corpus_search_resolve(query), candidates)
-            resolved_via = "corpus_search"
+            cs_docs = _corpus_search_resolve(query)
+            merged = _merge_metadata(cs_docs, candidates)
+            # Guard: when the query contains a specific document identifier
+            # (digit-containing tokens like "4.029" or "59g" in "59G-4.029"),
+            # filter out any corpus-search result that is MISSING those tokens
+            # in its name.  Without this, a query for "59G-4.029" returns
+            # 59G-4.127 and 59G-4.190 — documents semantically related but
+            # clearly wrong (different rule numbers) — and the loop wastes
+            # 12 rounds on a download card for the wrong document.
+            # Description-only queries ("the policy about telehealth visits")
+            # have NO digit tokens, so the filter never fires and the semantic
+            # match continues to work as designed.
+            matches = _filter_specific_id_conflicts(query, merged)
+            if matches:
+                resolved_via = "corpus_search"
         except Exception as exc:
             logger.warning("fetch_document: corpus_search fallback failed: %s", exc)
             matches = []
