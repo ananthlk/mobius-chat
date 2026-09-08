@@ -181,6 +181,10 @@
       display: block; color: rgba(255,255,255,0.40); font-size: 10.5px;
       line-height: 1.45; margin-top: 2px;
     }
+    .unverified {
+      margin-top: 9px; font-size: 10px; color: #fbbf24;
+      border-left: 2px solid rgba(251,191,36,0.5); padding-left: 7px;
+    }
     .stage {
       display: inline-block; font-size: 9px; text-transform: uppercase;
       letter-spacing: .06em; font-weight: 700; color: #a78bfa;
@@ -538,21 +542,26 @@
               '</div>';
           }
 
-          // What the role actually runs on. Roles alone hid the fact that
-          // chunking and embedding are separate deployed workers.
-          if (m.components && m.components.length) {
-            html += '<div class="components">';
-            m.components.forEach(function (c) {
-              html += '<div class="component">' +
-                (c.stage ? '<span class="stage">' + esc(c.stage) + '</span>' : '') +
-                '<code>' + esc(c.service) + '</code>' +
-                '<span class="component-desc">' + esc(c.description) + '</span>' +
-              '</div>';
-            });
-            html += '</div>';
+          // What actually runs, and where the code is. A module is a deployed
+          // service or an in-repo module — never a maintainer's job title.
+          html += '<div class="components">';
+          html += '<div class="component"><span class="stage">runs</span><code>' +
+            (m.service ? esc(m.service) : '<em style="opacity:.6">in-repo — not a service</em>') +
+            '</code></div>';
+          html += '<div class="component"><span class="stage">code</span><code>' +
+            esc(m.repo || '—') + '</code></div>';
+          if (m.owner) {
+            html += '<div class="component"><span class="stage">owner</span>' +
+              '<code style="opacity:.75">' + esc(m.owner) + '</code></div>';
           }
+          html += '</div>';
 
-          html += '<div class="module-owner">Surface: ' + esc(m.user_view.surface || 'N/A') + '</div>';
+          // Say so when no deploy config names the service. A framework that
+          // presents an unproven mapping as fact is the problem it was built
+          // to fix.
+          if (m.verified === false) {
+            html += '<div class="unverified">unverified — no deploy config names this service</div>';
+          }
           return html + '</div>';
         });
       }
