@@ -639,12 +639,22 @@
         });
         h += '</div></div>';
 
+        // Both paths rejoin here. An earlier version put integrate inside the
+        // classic lane, on the strength of its indentation — it is actually
+        // after the if/else and runs on both. Caught by the Chat seat.
+        (f.shared_post || []).forEach(function (fn) {
+          h += ARROW + node(strip(fn), 'both paths');
+        });
+        if (f.shared_post_guard) {
+          h += '<div class="pcomp-note warn" style="max-width:330px;text-align:center;border:0;' +
+               'padding:6px 0 0">' + esc(f.shared_post_guard) + '</div>';
+        }
         h += ARROW + '<div class="snode" style="cursor:default"><div class="snode-name">' +
              esc(f.exit) + '</div><div class="snode-sub">exit</div></div></div>';
 
         var rest = Object.keys(SUBS).filter(function (k) {
           return !/react_loop|round0|prompts|tool_manifest|capabilities|parsing|react_retry_guard|curator_tools|critic|governor|feedback_signal/.test(k)
-                 && !(f.classic_path || []).concat(f.shared_pre || []).some(function (fn) { return strip(fn) === k; });
+                 && !(f.classic_path || []).concat(f.shared_pre || [], f.shared_post || []).some(function (fn) { return strip(fn) === k; });
         });
         if (rest.length) {
           h += '<div class="sphase" style="max-width:760px;margin:0 auto 18px">' +
