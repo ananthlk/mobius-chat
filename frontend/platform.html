@@ -248,13 +248,29 @@
     .schip.sel { border-color:#a78bfa; background:rgba(167,139,250,0.2); }
     .schip.mediated::after { content:" ◦"; color:#fbbf24; }
     .schip.emitting::after { content:" ●"; color:#4ade80; }
+    /* Two columns: the schema you click, and a panel that stays put.
+       The panel used to sit above the diagram, so clicking a node near the
+       bottom meant scrolling back up to read the answer. Sticky keeps it in
+       view wherever you click. */
+    .subwrap { display:grid; grid-template-columns:minmax(0,1fr) 350px; gap:26px; align-items:start; }
+    .subdetail-col { position:sticky; top:14px; max-height:calc(100vh - 40px); overflow-y:auto; }
+    @media (max-width:1000px) {
+      .subwrap { grid-template-columns:1fr; }
+      /* Stacked, the panel must come FIRST — sticky on an element that sits
+         below the diagram never pins, because you never scroll past it. */
+      .subdetail-col { order:-1; position:sticky; top:0; z-index:5; max-height:48vh;
+                       overflow-y:auto; background:#12101c; padding-bottom:8px;
+                       border-bottom:1px solid rgba(255,255,255,0.10); }
+    }
     .sdetail {
       border:1px solid rgba(167,139,250,0.35); border-radius:11px; padding:16px 18px;
-      background:rgba(167,139,250,0.06); margin-bottom:22px;
+      background:rgba(167,139,250,0.07);
     }
+    .sd-hint { font-size:10px; color:rgba(255,255,255,0.35); margin:8px 2px 0; line-height:1.5; }
     .sdetail h4 { margin:0 0 3px; font-size:14px; color:#fff; font-weight:650; }
     .sdetail .sd-role { font-size:12px; color:rgba(255,255,255,0.72); line-height:1.55; margin:6px 0 10px; white-space:pre-wrap; }
-    .sd-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px; }
+    .sd-grid { display:grid; grid-template-columns:1fr; gap:11px; }
+    @media (max-width:1000px) { .sd-grid { grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); } }
     .sd-cell b { display:block; font-size:9.5px; text-transform:uppercase; letter-spacing:.06em;
                  color:#a78bfa; margin-bottom:3px; }
     .sd-cell { font-size:10.5px; color:rgba(255,255,255,0.62); line-height:1.55; overflow-wrap:anywhere; }
@@ -568,9 +584,14 @@
           ' emit nothing of their own — marked ◦ below. Their behaviour is visible only through ' +
           'whichever module emits for them, so &ldquo;how often did round0 short-circuit?&rdquo; cannot be ' +
           'answered from the trace today.</div>' +
-          '<div id="sub-detail"></div>' +
-          schemaHtml() +
-          '<p class="slegend">● emits its own signals · ◦ observable only through its caller</p>';
+          '<div class="subwrap">' +
+            '<div>' + schemaHtml() +
+              '<p class="slegend">● emits its own signals · ◦ observable only through its caller</p>' +
+            '</div>' +
+            '<div class="subdetail-col"><div id="sub-detail"></div>' +
+              '<p class="sd-hint">Click any node or chip in the diagram — this panel follows you down the page.</p>' +
+            '</div>' +
+          '</div>';
         el.innerHTML = html;
         wireSchema();
         if (SUBFLOW) selectSub('react_loop');
