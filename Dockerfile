@@ -116,6 +116,7 @@ COPY mobius-chat/frontend   /build/mobius-chat/frontend
 # consoles and service-line data the runtime never opens. These are ~240 KB.
 COPY docs/releases                                  /build/docs/releases
 COPY docs/platform-definition.json                  /build/docs/
+COPY docs/chat-submodules.json                      /build/docs/
 COPY docs/mobius-architecture-essay-complete.md     /build/docs/
 COPY docs/mobius-architecture-drilldown-reference.md /build/docs/
 COPY docs/mobius-architecture-diagram-complete.html /build/docs/

@@ -742,7 +742,7 @@ class OrgNameCandidatesRequest(BaseModel):
 # Platform coherence API — serves git-backed platform definition
 @app.get("/api/platform/definition")
 async def get_platform_definition() -> dict[str, Any]:
-    """Fetch platform definition (23 modules × 5 lenses) from disk."""
+    """Fetch the platform definition from disk (44 modules)."""
     try:
         import json
         with open("../docs/platform-definition.json", "r") as f:
@@ -750,6 +750,25 @@ async def get_platform_definition() -> dict[str, Any]:
     except FileNotFoundError:
         # Fallback: return minimal structure
         return {"platform": "Mobius", "modules": [], "error": "Definition not found"}
+
+@app.get("/api/platform/submodules")
+async def get_platform_submodules() -> dict[str, Any]:
+    """The pipeline's sub-modules, generated from the code.
+
+    Written by scripts/platform/gen_chat_submodules.py — never by hand. The
+    bar is a named role in a declared pipeline (app/stages, app/pipeline,
+    app/pipeline/react). Each entry carries its usage, the signals it emits,
+    and where those surface; a module that emits nothing is marked mediated
+    rather than left blank, because blank reads as "nothing to see" when the
+    truth is "not independently observable".
+    """
+    try:
+        import json
+        with open("../docs/chat-submodules.json", "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {"submodules": [], "error": "Sub-module catalogue not found"}
+
 
 @app.get("/api/platform/status")
 async def get_platform_status() -> dict[str, Any]:

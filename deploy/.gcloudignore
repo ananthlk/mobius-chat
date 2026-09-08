@@ -25,6 +25,7 @@
 docs/*
 !docs/releases/
 !docs/platform-definition.json
+!docs/chat-submodules.json
 !docs/mobius-architecture-essay-complete.md
 !docs/mobius-architecture-drilldown-reference.md
 !docs/mobius-architecture-diagram-complete.html
