@@ -236,13 +236,26 @@
       overflow-wrap: anywhere;
     }
 
-    /* 7+1 layer framework grouping */
+    /* 7+1 layer framework grouping — collapsible */
     .layer-block { margin-bottom: 34px; }
+    .layer-block.collapsed { margin-bottom: 10px; }
     .layer-head {
-      display: flex; align-items: baseline; gap: 10px;
-      padding-bottom: 8px; margin-bottom: 4px;
-      border-bottom: 1px solid rgba(255,255,255,0.10);
+      display: flex; align-items: baseline; gap: 10px; width: 100%;
+      padding: 0 0 8px; margin-bottom: 4px;
+      border: none; border-bottom: 1px solid rgba(255,255,255,0.10);
+      background: none; cursor: pointer; text-align: left;
+      font: inherit; color: inherit;
     }
+    .layer-head:hover .layer-name { color: #fff; }
+    .layer-head:hover { border-bottom-color: rgba(167,139,250,0.55); }
+    .layer-head:focus-visible { outline: 2px solid #7c3aed; outline-offset: 3px; }
+    .chev {
+      color: #a78bfa; font-size: 15px; line-height: 1; align-self: center;
+      transition: transform .15s ease; transform: rotate(90deg);
+    }
+    .layer-block.collapsed .chev { transform: rotate(0deg); }
+    .layer-body { }
+    .layer-block.collapsed > .layer-body { display: none; }
     .layer-label {
       font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
       color: #a78bfa;
@@ -541,6 +554,46 @@
       // views group by it rather than presenting one flat grid. A module with no
       // layer falls into "Unplaced" instead of disappearing — silently dropping a
       // module from the framework is the one failure this view must not have.
+      // Nine layers of 44 modules is a very long page. Collapsing to the
+      // headers puts the whole framework on one screen, which is the point of
+      // the view; the count stays visible so a collapsed layer never reads as
+      // empty. Per-layer state is remembered so a reader's shape survives a
+      // reload.
+      var COLLAPSE_KEY = 'mobius.platform.collapsed';
+      function collapsedSet() {
+        try { return new Set(JSON.parse(localStorage.getItem(COLLAPSE_KEY) || '[]')); }
+        catch (e) { return new Set(); }   // private window / blocked storage
+      }
+      function saveCollapsed(set) {
+        try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify([...set])); }
+        catch (e) { /* non-fatal: the page works, it just won't remember */ }
+      }
+      function layerOpen(L, countLabel) {
+        var isOpen = !collapsedSet().has(String(L.layer));
+        return '<section class="layer-block' + (isOpen ? '' : ' collapsed') +
+                 '" data-layer="' + esc(String(L.layer)) + '">' +
+          '<button class="layer-head" type="button" aria-expanded="' + isOpen + '">' +
+            '<span class="chev" aria-hidden="true">\u203A</span>' +
+            '<span class="layer-label">' + esc(L.label) + '</span>' +
+            '<span class="layer-name">' + esc(L.name) + '</span>' +
+            '<span class="layer-count">' + esc(String(countLabel)) + '</span>' +
+          '</button>' +
+          '<div class="layer-body">';
+      }
+
+      // Delegated so it survives every re-render.
+      document.addEventListener('click', function (e) {
+        var head = e.target.closest && e.target.closest('.layer-head');
+        if (!head) return;
+        var block = head.parentElement, key = block.dataset.layer;
+        var set = collapsedSet();
+        var nowCollapsed = !block.classList.contains('collapsed');
+        block.classList.toggle('collapsed', nowCollapsed);
+        head.setAttribute('aria-expanded', String(!nowCollapsed));
+        nowCollapsed ? set.add(key) : set.delete(key);
+        saveCollapsed(set);
+      });
+
       function byLayer(renderCard) {
         var layers = (platform.layers || []).slice();
         var mods = platform.modules || [];
@@ -553,13 +606,8 @@
           // stage view references them there rather than duplicating them.
           if (L.layer === 0) {
             var staged = mods.filter(m => m.stage);
-            html += '<div class="layer-block">' +
-              '<div class="layer-head">' +
-                '<span class="layer-label">' + esc(L.label) + '</span>' +
-                '<span class="layer-name">' + esc(L.name) + '</span>' +
-                '<span class="layer-count">' + staged.length + ' across ' +
-                  (platform.pipeline_stages || []).length + ' stages</span>' +
-              '</div>' +
+            html += layerOpen(L, staged.length + ' across ' +
+                  (platform.pipeline_stages || []).length + ' stages') +
               '<p class="layer-desc">' + esc(L.description) + '</p>' +
               '<div class="pipeline">';
             (platform.pipeline_stages || []).forEach(function (S, i) {
@@ -580,28 +628,22 @@
                 }).join('') +
               '</div>';
             });
-            html += '</div></div>';
+            html += '</div></div></div>';
             return;
           }
 
           if (!inLayer.length) return;
-          html += '<div class="layer-block">' +
-            '<div class="layer-head">' +
-              '<span class="layer-label">' + esc(L.label) + '</span>' +
-              '<span class="layer-name">' + esc(L.name) + '</span>' +
-              '<span class="layer-count">' + inLayer.length + '</span>' +
-            '</div>' +
+          html += layerOpen(L, inLayer.length) +
             '<p class="layer-desc">' + esc(L.description) + '</p>' +
             '<div class="module-grid">' + inLayer.map(renderCard).join('') + '</div>' +
-          '</div>';
+          '</div></div>';
         });
         var unplaced = mods.filter(m => m.layer === undefined || m.layer === null);
         if (unplaced.length) {
-          html += '<div class="layer-block"><div class="layer-head">' +
-            '<span class="layer-label">Unplaced</span>' +
-            '<span class="layer-name">Not yet assigned to a layer</span>' +
-            '<span class="layer-count">' + unplaced.length + '</span></div>' +
-            '<div class="module-grid">' + unplaced.map(renderCard).join('') + '</div></div>';
+          html += layerOpen({layer: 'unplaced', label: 'Unplaced',
+                             name: 'Not yet assigned to a layer'}, unplaced.length) +
+            '<div class="module-grid">' + unplaced.map(renderCard).join('') +
+            '</div></div></div>';
         }
         return html;
       }
