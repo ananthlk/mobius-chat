@@ -145,6 +145,48 @@
       margin-bottom: 8px;
       font-weight: 500;
     }
+    /* kind: agent decides, skill is a reusable task — the distinction is the
+       point, so it gets a badge rather than being implied by position */
+    .kind {
+      margin-left: 8px; font-size: 9px; font-weight: 700; letter-spacing: .07em;
+      text-transform: uppercase; padding: 2px 6px; border-radius: 4px;
+      vertical-align: middle; border: 1px solid transparent;
+    }
+    .kind-agent      { color:#c4b5fd; border-color:rgba(167,139,250,0.45); }
+    .kind-skill      { color:#7dd3fc; border-color:rgba(125,211,252,0.45); }
+    .kind-surface    { color:#86efac; border-color:rgba(134,239,172,0.40); }
+    .kind-store      { color:#fcd34d; border-color:rgba(252,211,77,0.40); }
+    .kind-worker     { color:#fca5a5; border-color:rgba(252,165,165,0.40); }
+    .kind-governance { color:#d1d5db; border-color:rgba(209,213,219,0.35); }
+
+    .called-by { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+    .called-by-label {
+      font-size: 9px; text-transform: uppercase; letter-spacing: .07em;
+      color: rgba(255,255,255,0.35); margin-right: 2px;
+    }
+    .consumer {
+      font-size: 10px; padding: 2px 7px; border-radius: 999px;
+      background: rgba(125,211,252,0.10); color: #7dd3fc;
+    }
+
+    .components { margin-top: 11px; border-top: 1px solid rgba(255,255,255,0.07); padding-top: 9px; }
+    /* Service name and stage on one line, description beneath. Side-by-side
+       squeezed the description into an unreadable ribbon inside a card. */
+    .component { margin-bottom: 9px; font-size: 11px; }
+    .component code {
+      color: rgba(255,255,255,0.75); font-size: 10.5px;
+      overflow-wrap: anywhere;
+    }
+    .component-desc {
+      display: block; color: rgba(255,255,255,0.40); font-size: 10.5px;
+      line-height: 1.45; margin-top: 2px;
+    }
+    .stage {
+      display: inline-block; font-size: 9px; text-transform: uppercase;
+      letter-spacing: .06em; font-weight: 700; color: #a78bfa;
+      min-width: 46px;
+    }
+
     /* 7+1 layer framework grouping */
     .layer-block { margin-bottom: 34px; }
     .layer-head {
@@ -481,12 +523,37 @@
       function renderProductView() {
         document.getElementById('product').innerHTML = byLayer(function (m) {
           var status = m.user_view.status;
-          return '<div class="module-card">' +
-            '<div class="module-name">' + esc(m.name) + '</div>' +
+          var html = '<div class="module-card">' +
+            '<div class="module-name">' + esc(m.name) +
+              (m.kind ? '<span class="kind kind-' + esc(m.kind) + '">' + esc(m.kind) + '</span>' : '') +
+            '</div>' +
             '<div class="module-status status-' + esc(status) + '">' + esc(status.toUpperCase()) + '</div>' +
-            '<div class="module-desc">' + esc(m.user_view.description) + '</div>' +
-            '<div class="module-owner">Surface: ' + esc(m.user_view.surface || 'N/A') + '</div>' +
-          '</div>';
+            '<div class="module-desc">' + esc(m.user_view.description) + '</div>';
+
+          // A skill is a task reused by many agents, so the useful fact about it
+          // is who calls it — not which layer it sits in.
+          if (m.consumers && m.consumers.length) {
+            html += '<div class="called-by"><span class="called-by-label">Called by</span>' +
+              m.consumers.map(c => '<span class="consumer">' + esc(c) + '</span>').join('') +
+              '</div>';
+          }
+
+          // What the role actually runs on. Roles alone hid the fact that
+          // chunking and embedding are separate deployed workers.
+          if (m.components && m.components.length) {
+            html += '<div class="components">';
+            m.components.forEach(function (c) {
+              html += '<div class="component">' +
+                (c.stage ? '<span class="stage">' + esc(c.stage) + '</span>' : '') +
+                '<code>' + esc(c.service) + '</code>' +
+                '<span class="component-desc">' + esc(c.description) + '</span>' +
+              '</div>';
+            });
+            html += '</div>';
+          }
+
+          html += '<div class="module-owner">Surface: ' + esc(m.user_view.surface || 'N/A') + '</div>';
+          return html + '</div>';
         });
       }
 
