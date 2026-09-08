@@ -770,6 +770,30 @@ async def get_coordination() -> str:
     except FileNotFoundError:
         return "# Coordination file not found\n"
 
+@app.get("/api/platform/releases")
+async def get_platform_releases() -> dict[str, Any]:
+    """Release manifests, newest first, read from docs/releases/.
+
+    Served from the generated lockfiles rather than a hand-kept list: the
+    manifests are produced from git by scripts/release/cut_product_release.py,
+    so this surface cannot drift from what was actually tagged.
+    """
+    import json
+    from pathlib import Path
+
+    rel_dir = Path("../docs/releases")
+    releases: list[dict[str, Any]] = []
+    try:
+        for lock in sorted(rel_dir.glob("product-v*.lock.json"), reverse=True):
+            with lock.open() as f:
+                releases.append(json.load(f))
+    except OSError:
+        pass
+    if not releases:
+        return {"releases": [], "error": "no release manifests found"}
+    return {"releases": releases, "current": releases[0]["product_version"]}
+
+
 @app.get("/docs/{filename}")
 def get_doc(filename: str):
     """Serve markdown docs as rendered HTML from docs directory."""
@@ -777,11 +801,28 @@ def get_doc(filename: str):
     import os
     import re
 
-    # Security: sanitize filename to prevent directory traversal
+    # Security: sanitize filename to prevent directory traversal. basename()
+    # strips any path the caller supplied, so a document is located by NAME
+    # across a fixed set of directories rather than by a caller-controlled path.
     safe_filename = os.path.basename(filename).replace("..", "")
-    doc_path = f"../docs/{safe_filename}"
+    if not safe_filename.endswith(".md"):
+        safe_filename += ".md"
 
-    if not os.path.exists(doc_path):
+    # Release notes live in docs/releases and its per-module subdirectories, so
+    # look there too — otherwise every link from the Releases tab 404s.
+    search_dirs = ["../docs", "../docs/releases"]
+    try:
+        mod_dir = "../docs/releases/modules"
+        search_dirs += [os.path.join(mod_dir, d) for d in sorted(os.listdir(mod_dir))]
+    except OSError:
+        pass
+
+    doc_path = next(
+        (p for p in (os.path.join(d, safe_filename) for d in search_dirs)
+         if os.path.exists(p)),
+        None,
+    )
+    if doc_path is None:
         return HTMLResponse(content="<h1>Document not found</h1>", status_code=404)
 
     try:

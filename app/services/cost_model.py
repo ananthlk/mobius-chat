@@ -3,12 +3,13 @@ from typing import Any
 
 from app.services.usage import LLMUsageDict
 
-# Default $ per 1K tokens (input, output). Source: provider pricing pages Mar 2026.
+# Default $ per 1K tokens (input, output). Source: provider pricing pages Aug 2026.
 # register_rate() can override at runtime for new models.
 _DEFAULT_RATES: dict[tuple[str, str], tuple[float, float]] = {
 
     # ── GOOGLE VERTEX ─────────────────────────────────────────────────────────
-    ("vertex", "gemini-2.5-flash"):      (0.000075, 0.000300),
+    ("vertex", "gemini-2.5-flash"):      (0.000150, 0.001250),
+    ("vertex", "gemini-2.5-flash-lite"): (0.000100, 0.000400),
     ("vertex", "gemini-2.5-pro"):        (0.001250, 0.005000),
     ("vertex", "gemini-2.0-flash"):      (0.000100, 0.000400),
     ("vertex", "gemini-2.0-flash-lite"): (0.000018, 0.000072),
@@ -29,8 +30,18 @@ _DEFAULT_RATES: dict[tuple[str, str], tuple[float, float]] = {
     ("groq", "meta-llama/llama-prompt-guard-2-22m"):       (0.000030, 0.000030),
 
     # ── ANTHROPIC ─────────────────────────────────────────────────────────────
+    ("anthropic", "claude-sonnet-5"):            (0.002000, 0.010000),
     ("anthropic", "claude-sonnet-4-6"):          (0.003000, 0.015000),
-    ("anthropic", "claude-haiku-4-5-20251001"):  (0.000800, 0.004000),
+    ("anthropic", "claude-haiku-4-5"):           (0.001000, 0.005000),
+    ("anthropic", "claude-haiku-4-5-20251001"):  (0.001000, 0.005000),
+    ("anthropic", "claude-opus-5"):              (0.005000, 0.025000),
+    ("anthropic", "claude-opus-4-7"):            (0.005000, 0.025000),
+    ("anthropic", "claude-opus-4-6"):            (0.005000, 0.025000),
+    ("anthropic", "claude-opus-4-5"):            (0.005000, 0.025000),
+
+    # ── PERPLEXITY (per-request search fee not modeled — token rates only) ────
+    ("perplexity", "sonar-pro"):                 (0.003000, 0.015000),
+    ("perplexity", "sonar"):                     (0.001000, 0.001000),
 
     # ── OPENAI ────────────────────────────────────────────────────────────────
     ("openai", "gpt-4o"):      (0.002500, 0.010000),

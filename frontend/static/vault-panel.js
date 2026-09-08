@@ -64,6 +64,8 @@
     currentThreadId: null,                       // active chat thread (for "use in chat")
     loading: false,                              // show a loading state during the open fetch
     pinned: ["recent", "liked", "tasks"],        // user's 3 pinned sections (shared w/ sidebar); set from readPinned() on open
+    signInRequired: false,                        // hosted + unauthenticated → gate, don't render content
+    beaconFired: false,                           // access beacon fired once per session
   };
   const EXPIRING_DAYS = 3;
   function clearFilters() { state.uFilter = null; state.tFilter = null; }
@@ -151,19 +153,49 @@
 
   // ── data load ────────────────────────────────────────────────────
   async function loadAll() {
-    try { const r = await authFetch("/chat/whoami"); if (r.ok) { const d = await r.json(); if (d.ok && d.user) state.me = d.user; } } catch { /* unknown */ }
-    if (!state.me || !token()) { loadPreview(); return; }
-    const uid = state.me.user_id, aref = state.me.assignee_ref;
-    const orgName = (state.me.org_memberships && state.me.org_memberships[0] && state.me.org_memberships[0].display_name) || null;
+    // Signed-in = has a platform token. NEVER show sample data to a token holder —
+    // even if /chat/whoami can't resolve their mobius-user identity (Recent/Liked are
+    // server-scoped by the token alone; only Uploads/Tasks need the resolved user_id).
+    if (!token()) {
+      // Truly not signed in: gate in chat (docked); demo sample only standalone.
+      state.loading = false;
+      state.signInRequired = false; state.preview = false;
+      if (state.docked) { state.signInRequired = true; renderAll(); }
+      else loadPreview();
+      return;   // leave state.loaded false so a later signed-in open re-loads.
+    }
+    state.signInRequired = false; state.preview = false;
+    // Best-effort identity — may be null for a signed-in-but-unresolved user; that's OK.
+    try { const r = await authFetch("/chat/whoami"); if (r.ok) { const d = await r.json(); if (d.ok && d.user) state.me = d.user; } } catch { /* unresolved — token-scoped sections still load */ }
+    const me = state.me || {};
+    const uid = me.user_id, aref = me.assignee_ref;
+    const orgName = (me.org_memberships && me.org_memberships[0] && me.org_memberships[0].display_name) || null;
     const jobs = [
+      // Token-scoped (require_user derives the user server-side) — load regardless of whoami.
       authFetch("/chat/history/threads?limit=25").then(r => r.ok ? r.json() : []).then(d => state.recent = arr(d, "threads")).catch(() => {}),
       authFetch("/chat/history/most-helpful-searches?limit=25").then(r => r.ok ? r.json() : []).then(d => state.liked = arr(d)).catch(() => {}),
-      authFetch("/chat/uploads?user_id=" + encodeURIComponent(uid) + "&include_inactive=true&limit=200").then(r => r.ok ? r.json() : {}).then(d => state.uploads = arr(d, "uploads")).catch(() => {}),
     ];
+    // User-scoped sections need the resolved identity; skip gracefully if unresolved.
+    if (uid) jobs.push(authFetch("/chat/uploads?user_id=" + encodeURIComponent(uid) + "&include_inactive=true&limit=200").then(r => r.ok ? r.json() : {}).then(d => state.uploads = arr(d, "uploads")).catch(() => {}));
     if (aref) jobs.push(authFetch("/chat/tasks?status=open&assignee=" + encodeURIComponent(aref) + "&limit=100").then(r => r.ok ? r.json() : {}).then(d => bucketTasks(arr(d, "tasks"))).catch(() => {}));
     if (orgName) jobs.push(authFetch("/chat/tasks?status=open&org_name=" + encodeURIComponent(orgName) + "&limit=100").then(r => r.ok ? r.json() : {}).then(d => state.tasksOrg = arr(d, "tasks").filter(t => (t.kind || "work_item") === "work_item")).catch(() => {}));
     await Promise.all(jobs);
     state.loaded = true; state.loading = false; renderAll();
+    fireAccessBeacon();
+  }
+
+  // Usage ledger (auth-gating spec §5): one fire-and-forget beacon post-auth.
+  // Fail-open — a dropped beacon never affects the user. Server derives
+  // user_id/org from the bearer; we just name the surface.
+  function fireAccessBeacon() {
+    if (state.beaconFired || !token()) return;
+    state.beaconFired = true;
+    try {
+      authFetch("/api/v1/users/access-beacon", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ surface: "vault" }),
+      }).catch(() => { /* fail-open */ });
+    } catch { /* fail-open */ }
   }
   function arr(d, key) {
     if (Array.isArray(d)) return d;
@@ -623,6 +655,13 @@
     renderRail();
     const banner = q(".mv-preview"); if (banner) banner.style.display = state.preview ? "block" : "none";
     qa(".mv-panel-body [data-panel]").forEach(p => p.classList.toggle("active", p.dataset.panel === state.tab));
+    if (state.signInRequired) {
+      // Auth gate: hosted + not signed in → no content, no sample data.
+      const active = q('.mv-panel-body [data-panel="' + state.tab + '"]');
+      if (active) { active.innerHTML = ""; active.appendChild(el("div", "mv-loading", "Sign in to view your Vault.")); }
+      const strip = q(".mv-urgency"); if (strip) strip.classList.remove("show");
+      return;
+    }
     if (state.loading) {
       // Don't go silent during the open fetch — show a concrete loading line.
       const active = q('.mv-panel-body [data-panel="' + state.tab + '"]');
@@ -719,6 +758,7 @@
     // window.mobiusCurrentThreadId); null disables that action gracefully.
     state.currentThreadId = opts.currentThreadId || window.mobiusCurrentThreadId || null;
     state.pinned = readPinned();                  // re-read each open — sidebar may have changed it
+    state.signInRequired = false;                 // re-evaluated by loadAll
     state.selTasks.clear(); state.selUploads.clear();
     build();
     state.open = true;

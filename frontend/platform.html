@@ -264,6 +264,7 @@
     <button class="tab" data-tab="coordination">Coordination</button>
     <button class="tab" data-tab="eval">Eval/QA</button>
     <button class="tab" data-tab="learn">Learn</button>
+    <button class="tab" data-tab="releases">Releases</button>
     <button class="tab" data-tab="status">Status</button>
   </div>
 
@@ -280,6 +281,7 @@
     <div id="coordination" class="content"></div>
     <div id="eval" class="content"></div>
     <div id="learn" class="content"></div>
+    <div id="releases" class="content"></div>
     <div id="status" class="content"></div>
   </div>
 
@@ -305,17 +307,108 @@
           fetch('https://raw.githubusercontent.com/ananthlk/Mobius-Master/main/docs/platform-definition.json', { cache: 'no-cache' }).then(r => r.json())
         ),
         fetch('/api/platform/status', { cache: 'no-cache' }).then(r => r.json()).catch(() => ({})),
-        fetch('/api/platform/coordination', { cache: 'no-cache' }).then(r => r.text()).catch(() => '')
+        fetch('/api/platform/coordination', { cache: 'no-cache' }).then(r => r.text()).catch(() => ''),
+        fetch('/api/platform/releases', { cache: 'no-cache' }).then(r => r.json()).catch(() => ({ releases: [] }))
       ])
-        .then(([def, status, coord]) => {
+        .then(([def, status, coord, rel]) => {
           platform = def;
           renderAll(status, coord);
+          renderReleases(rel);
           loading.classList.add('hidden');
         })
         .catch(err => {
           console.error('Failed to load platform:', err);
           loading.innerHTML = '<span style="color: rgba(255,255,255,0.5)">Failed to load platform</span>';
         });
+
+      function esc(s) {
+        return String(s == null ? '' : s).replace(/[&<>"]/g, c =>
+          ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+      }
+
+      function renderReleases(data) {
+        var el = document.getElementById('releases');
+        var rels = (data && data.releases) || [];
+        if (!rels.length) {
+          el.innerHTML = '<div class="content-wrap"><p class="module-desc">' +
+            'No release manifests found. Cut one with ' +
+            '<code>scripts/release/cut_product_release.py</code>.</p></div>';
+          return;
+        }
+        var html = '<div class="content-wrap">';
+        rels.forEach(function (r) {
+          var mods = r.modules || [];
+          var tagged = mods.filter(m => m.version).length;
+          // Surface the caveats rather than only the happy count — a release
+          // page that hides which modules were tagged off main is worse than
+          // no page, because people will trust it.
+          var offMain = mods.filter(m => m.branch && m.branch !== 'main');
+          var excluded = mods.reduce((a, m) => a + (m.uncommitted_files_excluded || 0), 0);
+
+          html += '<h2 class="module-name" style="font-size:18px;margin:0 0 4px">' +
+                  esc(r.product_version) + '</h2>';
+          html += '<p class="module-owner" style="margin:0 0 14px">cut ' +
+                  esc((r.cut_at || '').replace('T', ' ').replace('+00:00', ' UTC')) +
+                  ' &middot; ' + tagged + ' of ' + mods.length + ' modules tagged</p>';
+
+          if (offMain.length || excluded) {
+            html += '<div class="status-block" style="margin-bottom:16px">';
+            if (offMain.length) {
+              html += '<div class="status-card"><div class="status-label">Tagged off main</div>' +
+                offMain.map(m => '<div class="module-desc" style="margin:2px 0">' +
+                  esc(m.module) + ' &rarr; <code>' + esc(m.branch) + '</code></div>').join('') +
+                '</div>';
+            }
+            if (excluded) {
+              html += '<div class="status-card"><div class="status-label">Uncommitted at cut time</div>' +
+                '<div class="module-desc" style="margin:2px 0">' + excluded +
+                ' file(s) excluded &mdash; a tag points at a commit, so this work is not in the release.</div></div>';
+            }
+            html += '</div>';
+          }
+
+          html += '<div class="module-grid">';
+          mods.forEach(function (m) {
+            var cls = m.version ? 'status-live' : 'status-blocked';
+            html += '<div class="module-card">' +
+              '<div class="module-name">' + esc(m.module) + '</div>' +
+              '<span class="module-status ' + cls + '">' + esc(m.version || 'untagged') + '</span>' +
+              '<div class="module-desc" style="margin-top:8px"><code>' +
+              esc(m.commit_short || '') + '</code> &middot; ' + (m.commits_total || 0) + ' commits' +
+              (m.branch && m.branch !== 'main'
+                ? '<br><span style="color:#fed7aa">branch: ' + esc(m.branch) + '</span>' : '') +
+              (m.uncommitted_files_excluded
+                ? '<br><span style="color:rgba(255,255,255,0.45)">' +
+                  m.uncommitted_files_excluded + ' uncommitted file(s) excluded</span>' : '') +
+              '</div>' +
+              (m.notes ? '<div class="module-owner"><a href="/docs/' +
+                esc((m.notes || '').split('/').pop().replace('.md', '')) +
+                '" style="color:#93c5fd">release notes</a></div>' : '') +
+              '</div>';
+          });
+          html += '</div>';
+
+          var pre = r.pre_release || [];
+          if (pre.length) {
+            html += '<h3 class="module-name" style="font-size:14px;margin:22px 0 6px">Pre-release &mdash; carried, untagged</h3>' +
+              '<p class="module-desc" style="margin:0 0 8px">Too early to claim a version. Listed so the manifest is complete rather than flattering.</p>' +
+              '<p class="module-desc">' +
+              pre.map(m => esc(m.module) + ' <span style="opacity:.55">(' +
+                (m.commits_total || 0) + 'c)</span>').join(' &middot; ') + '</p>';
+          }
+          var dep = r.deprecated || [];
+          if (dep.length) {
+            html += '<h3 class="module-name" style="font-size:14px;margin:22px 0 6px">Deprecated</h3>' +
+              dep.map(m => '<p class="module-desc">' + esc(m.module) + ' &mdash; ' +
+                esc(m.reason) + '</p>').join('');
+          }
+          html += '<p class="module-owner" style="margin-top:22px">' +
+            '<a href="/docs/product-' + esc(r.product_version.replace('product-', '')) +
+            '" style="color:#93c5fd">Read the release story</a> &middot; ' +
+            '<a href="/docs/RELEASE_PROCESS" style="color:#93c5fd">How versioning works</a></p>';
+        });
+        el.innerHTML = html + '</div>';
+      }
 
       function renderAll(status, coord) {
         renderProductView();

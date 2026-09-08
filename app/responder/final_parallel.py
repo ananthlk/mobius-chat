@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 # in a 48h sample). Scoped to chat.thinking only, not a blanket raise --
 # copilot/quick/task turns weren't the ones whose retrieval payload grew.
 _INTEGRATOR_A_MAX_TOKENS_DEFAULT = 4096
-_INTEGRATOR_A_MAX_TOKENS_CHAT_THINKING = 16384
+_INTEGRATOR_A_MAX_TOKENS_CHAT_THINKING = 32768
 
 
 def _integrator_a_max_tokens(mode: str | None) -> int:
@@ -344,9 +344,17 @@ def format_response_parallel(
             # headroom on top of whatever thinking silently uses. Widened well past
             # the pre-today values (Call A was 4096) rather than guessing at a
             # minimal restore -- correctness over the latency optimization for now.
+            # chat.thinking turns: drop the latency hard-filter and switch to
+            # reasoning_depth="thinking" so the bandit routes integrator_a to a
+            # Pro-class model that can produce the full 32k output budget.
+            # Non-thinking turns keep latency_budget_ms=3000 + reasoning_depth="fast"
+            # (Haiku/Flash) — interactive latency matters more there.
+            _is_thinking = translate_chat_mode_to_caller_mode(mode) == "chat.thinking"
             fut_a = pool.submit(
                 _call_llm, prompt_a, "integrator_a", _integrator_a_max_tokens(mode),
-                **shared_kwargs, latency_budget_ms=3000, reasoning_depth="fast",
+                **shared_kwargs,
+                latency_budget_ms=None if _is_thinking else 3000,
+                reasoning_depth="thinking" if _is_thinking else "fast",
             )
             fut_b = pool.submit(_call_llm, prompt_b, "integrator_critic", 3072, **shared_kwargs, latency_budget_ms=2000, reasoning_depth="fast")
             fut_c = pool.submit(_call_llm, prompt_c, "integrator_enrichment", 2048, **shared_kwargs, latency_budget_ms=1500, reasoning_depth="fast")
