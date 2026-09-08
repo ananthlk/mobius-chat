@@ -17,6 +17,18 @@
 !mobius-skills-core/
 !mobius-retriever/
 
+# The platform page reads these at runtime (the Dockerfile COPYs them to /docs).
+# Re-exclude the rest of docs/ immediately: the tree is ~12 MB of generated
+# consoles and service-line data the runtime never opens, and the point of this
+# file is keeping the tarball small.
+!docs/
+docs/*
+!docs/releases/
+!docs/platform-definition.json
+!docs/mobius-architecture-essay-complete.md
+!docs/mobius-architecture-drilldown-reference.md
+!docs/mobius-architecture-diagram-complete.html
+
 # Prune noise within the four allowed repos.
 **/.git/
 **/.github/

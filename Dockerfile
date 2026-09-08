@@ -106,6 +106,20 @@ COPY mobius-chat/config     /build/mobius-chat/config
 COPY mobius-chat/db         /build/mobius-chat/db
 COPY mobius-chat/frontend   /build/mobius-chat/frontend
 
+# --- Docs the platform page reads at runtime ---
+# The app resolves these as ../docs from /app, i.e. /docs in the image. Without
+# them /api/platform/{definition,releases} return empty and every /docs/ link on
+# the Learn and Releases tabs 404s — which is how they behaved in dev while
+# working locally, because locally ../docs is the real repo.
+#
+# Targeted rather than the whole tree: docs/ is ~12 MB, most of it generated
+# consoles and service-line data the runtime never opens. These are ~240 KB.
+COPY docs/releases                                  /build/docs/releases
+COPY docs/platform-definition.json                  /build/docs/
+COPY docs/mobius-architecture-essay-complete.md     /build/docs/
+COPY docs/mobius-architecture-drilldown-reference.md /build/docs/
+COPY docs/mobius-architecture-diagram-complete.html /build/docs/
+
 
 # ══════════════════════════════════════════════════════════════════════
 # Stage 2 — runtime
@@ -138,6 +152,8 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 # App code. The chown happens in-COPY so the final image doesn't carry
 # a separate 3× layer for a ``chown -R`` pass.
 COPY --from=builder --chown=chat:chat /build/mobius-chat /app
+# Sits beside /app so the app's ../docs resolves to it.
+COPY --from=builder --chown=chat:chat /build/docs /docs
 
 WORKDIR /app
 USER chat
