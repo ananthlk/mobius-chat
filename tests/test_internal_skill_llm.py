@@ -83,7 +83,9 @@ _KNOWN_UNROUTED = {
     "appeals_investigation",
     "org_intel_report",
     "org_intel_synthesis",
-    "payor_fact_reverify",
+    # payor_fact_reverify removed 2026-09-09 — routed at the stage owner's
+    # request. The rot guard below is what forced this line to be deleted
+    # rather than left behind as an exemption outliving its problem.
 }
 
 
