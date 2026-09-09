@@ -98,3 +98,48 @@ the classification caller. Copying that map here would duplicate a RULE, and a
 duplicated rule drifts — as distinct from a provider dialect adapter, which is a
 translation whose source of truth is the SDK. rag owns the answer; chat passes
 the question through and lets the 422 surface.
+
+---
+
+# DEFERRED — a storage failure reported as a PHI verdict
+
+**Status: awaiting Ananth's clearance. Not fixed. Chat is off PHI code by his
+instruction, and this lives in the gate's error handling.**
+
+Observed live on `mobius-chat-00975-bpc`, 2026-09-09:
+
+```
+23:04:58  [hipaa-gate] audit written doc=5a8ee782 gate=clean action=published
+23:05:00  rag: IntegrityError — duplicate key "rag_published_embeddings_pkey"
+23:05:00  [hipaa-gate] gate FAILED doc=5a8ee782 — treating as blocked: HTTP 500
+23:05:00  [hipaa-gate] BLOCKED action=blocked_indeterminate gate=indeterminate
+```
+
+The classifier ruled the document **clean**. rag's *publish* then threw a 500,
+and the caller of `_run_hipaa_gate_sync` (`app/main.py:1769`) catches **any**
+exception and reports `blocked_indeterminate`. The comment states the intent:
+"Audit write failure or /publish failure → fail closed."
+
+**Failing closed is correct and must stay.** The defect is the ATTRIBUTION.
+`indeterminate` is a classifier verdict. Using it for "the pipeline exploded
+after a clean verdict" makes a storage bug indistinguishable from a PHI edge
+case, in the one surface where that distinction is the entire point.
+
+Not theoretical: it cost the browser-extension seat an hour of misattribution
+today — they reported a PHI gate regression that was rag's non-idempotent
+publish, because the surface told them PHI.
+
+**Proposed narrow fix** (agreed by the extension seat, recorded in
+USER_FETCH_PAIRING_SPEC §2.8 as an operability item): keep failing closed, keep
+blocking, but distinguish in the audit and the response between
+  * the classifier returning `indeterminate`, and
+  * the gate pipeline failing downstream of a `clean` verdict.
+An operator reading the audit should be able to tell which happened.
+
+**Related, other owners:**
+- rag publish is not idempotent — `rag_published_embeddings_pkey` violates on
+  re-publish of identical content. Pre-existing (first seen 20:40, before the
+  22:54 deploy); 9 occurrences in 24h. Master RAG's.
+- `phi_classify` tripping circuit breakers — `recent avg 11598ms > 3.0× ema
+  3384ms`, then "All candidates tripped circuit breakers — using least-bad".
+  The classifier's LLM layer is slow. phi-classifier seat's.
