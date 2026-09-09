@@ -139,7 +139,6 @@ async function loadDetail(cid){
   const el = document.getElementById('detail');
   if(!sp.length){ el.innerHTML = '<div class="empty">No spans for this turn.</div>'; return; }
 
-  const selfTxt = s.llm_exceeds_wall ? 'n/a' : ms(s.self_ms)+'ms';
   const roots = sp.filter(x=>(x.depth||0)===0).sort((a,b)=>(b.wall_ms||0)-(a.wall_ms||0));
   const kids  = sp.filter(x=>(x.depth||0)>0);
 
@@ -153,6 +152,7 @@ async function loadDetail(cid){
   // Per-turn MATRIX: every row split processing / llm / db(r,w) / tool, so
   // the hierarchy never changes units as you drill.
   let matrixRows = '<tr><td colspan="7" class="lbl">loading…</td></tr>';
+  let mtot = null;
   try {
     const mr = await fetch(`${API}/chat/matrix/${encodeURIComponent(cid)}`);
     const md = await mr.json();
@@ -170,7 +170,7 @@ async function loadDetail(cid){
         <td class="num lbl">${rw}</td>
         <td class="num">${ms(r.tool_ms)}</td></tr>`;
     }).join('') || '<tr><td colspan="7" class="lbl">no rows</td></tr>';
-    const t = md.totals||{};
+    const t = md.totals||{}; mtot = t;
     matrixRows += `<tr style="border-top:2px solid var(--mobius-border)">
       <td><b>TOTAL</b></td><td class="num"><b>${ms(t.wall_ms)}</b></td>
       <td class="num"><b>${ms(t.processing_ms)}</b></td><td class="num">${ms(t.llm_ms)}</td>
@@ -194,12 +194,12 @@ async function loadDetail(cid){
     <div class="kpis">
       <div class="kpi"><div class="k">Wall</div><div class="v">${ms(s.wall_ms)}<span style="font-size:13px">ms</span></div>
         <div class="n">${s.chat_mode||'—'} · ${sp.length} spans</div></div>
-      <div class="kpi"><div class="k">LLM</div><div class="v" style="color:var(--llm)">${ms(s.llm_ms)}<span style="font-size:13px">ms</span></div>
-        <div class="n">${pct(s.llm_ms,s.wall_ms).toFixed(0)}% of wall · routing</div></div>
-      <div class="kpi"><div class="k">Self (code + I/O)</div><div class="v" style="color:var(--self)">${selfTxt}</div>
-        <div class="n">${s.llm_exceeds_wall?'parallel llm — not computable':'what our code costs'}</div></div>
-      <div class="kpi"><div class="k">rich_evidence</div><div class="v" style="font-size:16px">${s.rich_evidence===null||s.rich_evidence===undefined?'—':String(s.rich_evidence)}</div>
-        <div class="n">early exit changes round count</div></div>
+      <div class="kpi"><div class="k">Our processing</div><div class="v" style="color:var(--self)">${mtot?ms(mtot.processing_ms):'—'}<span style="font-size:13px">ms</span></div>
+        <div class="n">${mtot?pct(mtot.processing_ms,mtot.wall_ms).toFixed(1)+'% of wall — code we own':'—'}</div></div>
+      <div class="kpi"><div class="k">LLM (waiting on models)</div><div class="v" style="color:var(--llm)">${mtot?ms(mtot.llm_ms):ms(s.llm_ms)}<span style="font-size:13px">ms</span></div>
+        <div class="n">purchased, not elapsed — parallel calls overlap</div></div>
+      <div class="kpi"><div class="k">Tool (out of process)</div><div class="v">${mtot?ms(mtot.tool_ms):'—'}<span style="font-size:13px">ms</span></div>
+        <div class="n">${mtot?pct(mtot.tool_ms,mtot.wall_ms).toFixed(0)+'% of wall — RAG over HTTP':'—'}</div></div>
     </div>
 
     <h2>Process matrix — where the time went</h2>
