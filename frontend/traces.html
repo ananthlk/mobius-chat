@@ -125,7 +125,7 @@ async function loadList(){
         <span>${t.span_count} spans</span>
       </div>
       <div class="bar"><i class="b-llm" style="width:${lp}%"></i><i class="b-self" style="width:${sp}%"></i></div>
-      <div class="meta"><span>llm ${ms(t.llm_ms)}ms</span><span>self ${ms(t.self_ms)}ms</span></div>`;
+      <div class="meta"><span>llm ${ms(t.llm_ms)}ms</span><span title="wall minus llm — still includes external tool time; open the turn for the processing/llm/db/tool split">non-llm ${ms(t.self_ms)}ms</span></div>`;
     d.onclick = ()=>{ document.querySelectorAll('.row').forEach(x=>x.classList.remove('sel'));
                       d.classList.add('sel'); loadDetail(t.correlation_id); };
     el.appendChild(d);
