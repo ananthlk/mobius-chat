@@ -33,6 +33,19 @@ class TestClassifyPermanentFailure:
     def test_bare_403(self):
         assert classify_permanent_failure("request failed: 403 Forbidden") == "http_403"
 
+    def test_groq_model_not_found(self):
+        # Live-probed against Groq's actual endpoint 2026-09-09 (Chat Master's
+        # follow-up on the Anthropic outage): a DIFFERENT permanent-failure
+        # shape than the auth/billing phrases — no 401/403, no "credit"/"key"
+        # wording, just a 404 the model itself is gone/inaccessible.
+        exc = (
+            'Groq API error 404: {"error": {"message": "The model '
+            '`llama-3.3-70b-versatile` does not exist or you do not have '
+            'access to it.", "type": "invalid_request_error", '
+            '"code": "model_not_found"}}'
+        )
+        assert classify_permanent_failure(exc) == "does not exist or you do not have access to it"
+
     def test_rate_limit_429_is_not_permanent(self):
         # 429s are transient and already handled by tpd_tracker's
         # retry-after tracking — must not be classified as permanent.

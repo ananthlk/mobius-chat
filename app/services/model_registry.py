@@ -87,6 +87,18 @@ _PERMANENT_ERROR_PHRASES: tuple[str, ...] = (
     "incorrect api key",
     "authentication_error",
     "permission_denied",
+    # Groq/OpenAI-compatible "model_not_found" (2026-09-09, Chat Master's
+    # live-probe follow-up on the Anthropic outage): confirmed via a live
+    # call against Groq's actual endpoint — llama-3.3-70b-versatile 404s
+    # with {"error": {"message": "The model `...` does not exist or you
+    # do not have access to it.", "code": "model_not_found"}}. A DIFFERENT
+    # permanent-failure shape than the auth/billing phrases above (no 401/
+    # 403, no "credit"/"key" wording) — this is why a phrase-matching
+    # classifier needs its fall-through made loud (see the WARNING log in
+    # llm_manager.py's finally block) rather than assumed complete: each
+    # new vendor/failure shape has to be added by hand as it's found.
+    "does not exist or you do not have access to it",
+    "model_not_found",
 )
 
 

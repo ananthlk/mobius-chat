@@ -12,11 +12,14 @@ Changes from previous version:
 """
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
 from app.services.llm_analytics import _write_async, build_record
 from app.services.usage import LLMUsageDict, zero_usage
+
+logger = logging.getLogger(__name__)
 
 _env_checked = False
 
@@ -266,6 +269,25 @@ async def generate(
                         permanent_reason = classify_permanent_failure(error_detail)
                     except Exception:
                         pass
+                    # Chat Master's follow-up (2026-09-09) on the classifier
+                    # itself: a phrase-matching heuristic that silently
+                    # matches nothing on an unrecognized vendor error shape
+                    # has "the same shape as the bug you just fixed" —
+                    # variant_id matching nothing for a month with no
+                    # signal anywhere. Make the fall-through loud: log every
+                    # non-timeout failure the classifier did NOT recognize
+                    # as permanent, so a new failure-every-time shape (a
+                    # vendor's own novel error format) shows up in logs
+                    # immediately instead of silently taking the slower
+                    # statistical-threshold path with nobody the wiser.
+                    if permanent_reason is None and not is_timeout:
+                        logger.warning(
+                            "llm-health: unrecognized failure shape for model=%s "
+                            "(not classified as permanent, not a timeout) — "
+                            "add a phrase to classify_permanent_failure() if this "
+                            "repeats: %s",
+                            model_id, error_detail[:300],
+                        )
                     if hasattr(router, "record_call_failure"):
                         router.record_call_failure(
                             model_id=model_id,
