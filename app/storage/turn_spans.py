@@ -67,12 +67,12 @@ def save_spans(
                 INSERT INTO turn_spans (
                     correlation_id, span_id, parent_span_id, module, label, depth,
                     wall_ms, llm_ms, counts, model_mix, rich_evidence, chat_mode,
-                    sampled, sample_rate, source
+                    sampled, sample_rate, source, concurrent
                 )
                 VALUES (:cid, :span_id, :parent_span_id, :module, :label, :depth,
                         :wall_ms, :llm_ms, CAST(:counts AS jsonb),
                         CAST(:model_mix AS jsonb), :rich_evidence, :chat_mode,
-                        :sampled, :sample_rate, :source)
+                        :sampled, :sample_rate, :source, :concurrent)
                 ON CONFLICT (correlation_id, span_id) DO NOTHING
                 """,
                 _DB,
@@ -92,6 +92,7 @@ def save_spans(
                     "sampled": True,
                     "sample_rate": _rate,
                     "source": _src,
+                    "concurrent": bool(r.get("concurrent")),
                 },
             )
             if isinstance(result, dict) and result.get("error"):
@@ -125,7 +126,7 @@ def read_spans(correlation_id: str) -> list[dict[str, Any]]:
         """
         SELECT span_id, parent_span_id, module, label, depth,
                wall_ms, llm_ms, counts, model_mix, rich_evidence, chat_mode,
-               sampled, sample_rate
+               sampled, sample_rate, concurrent
         FROM turn_spans
         WHERE correlation_id = :cid
         ORDER BY depth ASC, wall_ms DESC
@@ -281,7 +282,7 @@ def node_rollup(limit_spans: int = 5000, source: str | None = "real") -> dict[st
     result = db_query(
         """
         SELECT correlation_id, span_id, parent_span_id, module, label,
-               depth, wall_ms, llm_ms, counts, created_at, source
+               depth, wall_ms, llm_ms, counts, created_at, source, concurrent
         FROM turn_spans
         WHERE (:src IS NULL OR source = :src)
         ORDER BY created_at DESC
@@ -420,7 +421,8 @@ def node_rollup(limit_spans: int = 5000, source: str | None = "real") -> dict[st
     }
 
 
-def turn_matrix(correlation_id: str) -> dict[str, Any]:
+def turn_matrix(correlation_id: str,
+                spans: list[dict] | None = None) -> dict[str, Any]:
     """The per-turn MATRIX: every process row split by where its time went.
 
     Rows are the span tree — phase, module, and sub-process (round, tool,
@@ -439,7 +441,11 @@ def turn_matrix(correlation_id: str) -> dict[str, Any]:
     This is a VIEW, not a verdict. It does not rank or flag; it shows the
     decomposition and lets the reader decide what to attack.
     """
-    spans = read_spans(correlation_id)
+    # `spans` is injectable so the shape rules below can be tested without a
+    # database. The predecessor of this module shipped a broken write because
+    # every test patched db_execute — a guard that needs infrastructure to run
+    # is a guard that eventually does not run.
+    spans = read_spans(correlation_id) if spans is None else spans
     if not spans:
         return {"correlation_id": correlation_id, "rows": [], "totals": {}}
 
@@ -457,7 +463,15 @@ def turn_matrix(correlation_id: str) -> dict[str, Any]:
         kids = by_parent.get(sp["span_id"], [])
         tool = sum(float(k.get("wall_ms") or 0.0) for k in kids
                    if str(k.get("label") or "").startswith("tool:"))
-        kids_wall = sum(float(k.get("wall_ms") or 0.0) for k in kids)
+        # Sequential children consumed the parent's wall one after another, so
+        # they SUM. Concurrent ones overlapped, so as a group they cost only
+        # max() — summing them would subtract time the parent never spent and
+        # push its processing to a clamped 0, hiding real work.
+        _seq = [k for k in kids if not k.get("concurrent")]
+        _par = [float(k.get("wall_ms") or 0.0) for k in kids if k.get("concurrent")]
+        kids_wall = sum(float(k.get("wall_ms") or 0.0) for k in _seq)
+        if _par:
+            kids_wall += max(_par)
         wall = float(sp.get("wall_ms") or 0.0)
 
         # llm_ms on the span ROLLS UP from children (a parent's llm includes
@@ -490,6 +504,7 @@ def turn_matrix(correlation_id: str) -> dict[str, Any]:
             "processing_ms": 0.0 if _is_tool else round(
                 max(0.0, wall - kids_wall - own_llm - db_r - db_w), 1),
             "is_external": _is_tool,
+            "concurrent": bool(sp.get("concurrent")),
         }
 
     rows: list[dict[str, Any]] = []
@@ -516,6 +531,9 @@ def turn_matrix(correlation_id: str) -> dict[str, Any]:
     totals = {
         "wall_ms": round(sum(r["wall_ms"] for r in roots), 1),
         # Exclusive columns sum across ALL rows; inclusive wall sums roots only.
+        # Concurrent LLM calls are summed here deliberately: this is model time
+        # PURCHASED, not wall elapsed. The wall column already reflects that
+        # three 4s calls cost 4s of turn, not 12s.
         "llm_ms": round(sum(r["own_llm_ms"] for r in rows), 1),
         "db_ms": round(sum(r["db_read_ms"] + r["db_write_ms"] for r in rows), 1),
         "db_reads": sum(r["db_reads"] for r in rows),

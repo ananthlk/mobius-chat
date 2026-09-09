@@ -209,6 +209,8 @@ class Span:
     # set with no signal that it is partial. Measuring in-span keeps the
     # number correct regardless of whether that table is ever fixed.
     llm_ms: float = 0.0
+    # Ran in parallel with its siblings — see db/schema/064.
+    concurrent: bool = False
     counts: dict[tuple[str, str], _Count] = field(default_factory=dict)
 
     @property
@@ -231,6 +233,7 @@ class Span:
             "wall_ms": round(self.wall_ms, 2),
             "llm_ms": round(self.llm_ms, 2),
             "self_ms": round(self.self_ms, 2),
+            "concurrent": self.concurrent,
             "counts": [c.to_dict() for c in self.counts.values()],
         }
 
@@ -245,6 +248,50 @@ class TurnTrace:
         self._open_cms: list[Any] = []
 
     # ── recording ────────────────────────────────────────────────────
+    def add_completed(self, module: str, label: str, wall_ms: float,
+                      llm_ms: float = 0.0, kind: str | None = None,
+                      target: str | None = None,
+                      rollup_llm_ms: float | None = None,
+                      concurrent: bool = False) -> None:
+        """File an ALREADY-FINISHED span measured somewhere this stack cannot go.
+
+        Concurrent fan-outs (the integrator's 3-way ThreadPoolExecutor) cannot
+        use ``span()``: ``_stack`` is a plain list, so three threads pushing and
+        popping it would mis-parent each other's spans and the tree would be
+        quietly wrong — worse than absent. So the worker times itself, and the
+        PARENT thread files the result here after the join, where the stack is
+        single-threaded again. No push/pop: the span is born closed.
+        """
+        parent = self._stack[-1] if self._stack else None
+        node = module
+        if node not in NODE_KEYS and parent is not None:
+            label, node = label or node, parent.module
+        sp = Span(
+            span_id=uuid.uuid4().hex[:16],
+            parent_span_id=parent.span_id if parent else None,
+            module=node, label=label, depth=len(self._stack),
+            started_at=time.perf_counter(),
+            wall_ms=float(wall_ms), llm_ms=float(llm_ms),
+            concurrent=bool(concurrent),
+        )
+        if kind:
+            # The matrix reads its llm/db columns from COUNTS, not from
+            # Span.llm_ms — so a span with llm_ms set but no count still shows
+            # its model time as processing. Both, or the column lies.
+            sp.counts[(kind, target or label)] = _Count(
+                kind=kind, target=target or label, n=1, ms=float(llm_ms or wall_ms))
+        self.spans.append(sp)
+        # Roll up to ancestors, same as span() does on close. CONCURRENT
+        # siblings must pass rollup_llm_ms explicitly: summing three parallel
+        # calls would charge the parent more LLM time than it has wall, and the
+        # parent's processing would clamp to zero — under-reporting our own code
+        # instead of over-reporting it. The caller knows they overlapped; this
+        # method cannot.
+        roll = llm_ms if rollup_llm_ms is None else rollup_llm_ms
+        if roll:
+            for a in self._stack:
+                a.llm_ms += float(roll)
+
     @contextmanager
     def span(self, module: str, label: str | None = None) -> Iterator[Span]:
         """Open a span named by a SCHEMA NODE KEY.

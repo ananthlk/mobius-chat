@@ -328,3 +328,49 @@ class TestSourceClassification:
         import uuid as _u
         from app.telemetry.spans import classify_source
         assert classify_source(str(_u.uuid4()), "eval") == "eval"
+
+
+# ── concurrent siblings (db/schema/064) ──────────────────────────────────
+# The integrator fans three LLM calls out on a thread pool. Two things go wrong
+# without the `concurrent` flag, and BOTH are silent:
+#   1. their walls sum to more than the parent's, so the matrix stops being
+#      additive — a total that isn't the sum of its parts;
+#   2. the parent's processing clamps to 0, hiding real code time.
+# These run entirely in-process on purpose: the bug that shipped the last
+# version of this module was masked by tests that patched db_execute, so a
+# guard that needs a database is a guard that does not run.
+
+def test_concurrent_children_use_max_not_sum():
+    from app.storage.turn_spans import turn_matrix
+    parent = {"span_id": "p", "parent_span_id": None, "module": "integrate",
+              "label": None, "depth": 0, "wall_ms": 5000.0, "llm_ms": 0.0,
+              "counts": [], "concurrent": False}
+    kids = [
+        {"span_id": f"k{i}", "parent_span_id": "p", "module": "integrate",
+         "label": f"llm:call_{i}", "depth": 1, "wall_ms": ms, "llm_ms": ms,
+         "counts": [{"kind": "llm", "target": f"call_{i}", "n": 1, "ms": ms}],
+         "concurrent": True}
+        for i, ms in enumerate((4000.0, 3000.0, 2500.0))
+    ]
+    m = turn_matrix("cid-x", spans=[parent] + kids)
+    by = {r["label"] or r["module"]: r for r in m["rows"]}
+    # 5000 wall, the block cost max(4000)=4000 -> 1000ms is genuinely OURS.
+    # Summing the children (9500) would have clamped this to 0.
+    assert by["integrate"]["processing_ms"] == 1000.0
+    # Children never report an external call's wait as our processing.
+    assert all(by[f"llm:call_{i}"]["processing_ms"] == 0.0 for i in range(3))
+
+
+def test_add_completed_emits_both_llm_ms_and_a_count():
+    """The matrix reads its llm column from COUNTS, not Span.llm_ms. A span
+    that sets one without the other shows model time as processing."""
+    from app.telemetry.spans import TurnTrace, KIND_LLM
+    tr = TurnTrace("cid-y")
+    with tr.span("integrate"):
+        tr.add_completed("integrate", "llm:a", wall_ms=900.0, llm_ms=900.0,
+                         kind=KIND_LLM, target="a", rollup_llm_ms=0.0,
+                         concurrent=True)
+    sp = [s for s in tr.spans if s.label == "llm:a"][0]
+    assert sp.llm_ms == 900.0
+    assert [c for c in sp.counts.values() if c.kind == KIND_LLM][0].ms == 900.0
+    assert sp.concurrent is True

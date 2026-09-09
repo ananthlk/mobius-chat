@@ -7214,15 +7214,49 @@ function renderModuleTiming(correlationId: string): HTMLElement {
         return row;
       };
 
-      for (const s of spans) {
-        const indent = "\u00a0\u00a0".repeat(Number(s.depth) || 0);
-        // module is the schema NODE key; label is the finer local name when
-        // the span is narrower than any node (node -> span tree).
-        const name = s.label ? `${s.module} · ${s.label}` : String(s.module);
-        body.appendChild(mk(
-          `${indent}${name}`,
-          `${Math.round(s.wall_ms || 0)}ms wall · ${Math.round(s.self_ms || 0)}ms self`
-        ));
+      // Per-row MATRIX rather than wall/self. "self" bundled our code, the DB,
+      // and any un-spanned external call together, so a 30s RAG round-trip and
+      // 30s of our own loop looked identical — the one distinction a reader
+      // actually needs. Columns: processing (our code, children removed) /
+      // llm / db / tool (out of process).
+      let mrows: any[] = [];
+      let mtot: any = {};
+      try {
+        const mr = await fetch(`${API_BASE}/chat/matrix/${encodeURIComponent(correlationId)}`);
+        if (mr.ok) { const md = await mr.json(); mrows = md.rows || []; mtot = md.totals || {}; }
+      } catch { /* fall back to the span list below */ }
+      const cols = (r: any) => {
+        const bits = [`${Math.round(r.processing_ms || 0)}ms proc`];
+        if (r.own_llm_ms) bits.push(`${Math.round(r.own_llm_ms)}ms llm`);
+        const db = (r.db_read_ms || 0) + (r.db_write_ms || 0);
+        if (db) bits.push(`${Math.round(db)}ms db (${r.db_reads || 0}r/${r.db_writes || 0}w)`);
+        if (r.tool_ms) bits.push(`${Math.round(r.tool_ms)}ms tool`);
+        if (r.is_external) bits.push("external");
+        if (r.concurrent) bits.push("parallel");
+        return bits.join(" · ");
+      };
+      if (mrows.length) {
+        for (const r of mrows) {
+          const indent = "\u00a0\u00a0".repeat(Number(r.depth) || 0);
+          const name = r.label ? `${r.module} · ${r.label}` : String(r.module);
+          body.appendChild(mk(`${indent}${name}`,
+            `${Math.round(r.wall_ms || 0)}ms wall · ${cols(r)}`));
+        }
+        body.appendChild(mk("TOTAL",
+          `${Math.round(mtot.wall_ms || 0)}ms wall · ${Math.round(mtot.processing_ms || 0)}ms proc · ` +
+          `${Math.round(mtot.llm_ms || 0)}ms llm · ${Math.round(mtot.db_ms || 0)}ms db · ` +
+          `${Math.round(mtot.tool_ms || 0)}ms tool`));
+      } else {
+        for (const s of spans) {
+          const indent = "\u00a0\u00a0".repeat(Number(s.depth) || 0);
+          // module is the schema NODE key; label is the finer local name when
+          // the span is narrower than any node (node -> span tree).
+          const name = s.label ? `${s.module} · ${s.label}` : String(s.module);
+          body.appendChild(mk(
+            `${indent}${name}`,
+            `${Math.round(s.wall_ms || 0)}ms wall · ${Math.round(s.self_ms || 0)}ms self`
+          ));
+        }
       }
       const counts: any[] = Array.isArray(sum.counts) ? sum.counts : [];
       if (counts.length) {

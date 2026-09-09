@@ -1,0 +1,15 @@
+-- turn_spans.concurrent — this span ran in parallel with its siblings.
+--
+-- Why a column and not a label convention: the process matrix computes a row's
+-- own processing as `wall - sum(children) - llm - db`. That formula assumes
+-- children run one after another. The integrator fans out three LLM calls on a
+-- ThreadPoolExecutor, so their walls OVERLAP: summing them subtracts more than
+-- the parent ever spent, driving the parent's processing negative (clamped to
+-- 0) and making the children sum to more than their parent — the additivity
+-- that makes the matrix trustworthy, gone.
+--
+-- With the flag, concurrent siblings contribute max(), not sum(), and the UI
+-- can say so, rather than a reader having to know that three particular labels
+-- happen to overlap. Encoding that in a naming convention would be a rule with
+-- no enforcement — it breaks silently the first time someone renames a stage.
+ALTER TABLE turn_spans ADD COLUMN IF NOT EXISTS concurrent boolean NOT NULL DEFAULT false;

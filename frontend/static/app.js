@@ -9546,13 +9546,54 @@ function renderModuleTiming(correlationId) {
         row.appendChild(ve);
         return row;
       };
-      for (const s of spans) {
-        const indent = "\xA0\xA0".repeat(Number(s.depth) || 0);
-        const name = s.label ? `${s.module} \xB7 ${s.label}` : String(s.module);
+      let mrows = [];
+      let mtot = {};
+      try {
+        const mr = await fetch(`${API_BASE}/chat/matrix/${encodeURIComponent(correlationId)}`);
+        if (mr.ok) {
+          const md = await mr.json();
+          mrows = md.rows || [];
+          mtot = md.totals || {};
+        }
+      } catch {
+      }
+      const cols = (r2) => {
+        const bits = [`${Math.round(r2.processing_ms || 0)}ms proc`];
+        if (r2.own_llm_ms)
+          bits.push(`${Math.round(r2.own_llm_ms)}ms llm`);
+        const db = (r2.db_read_ms || 0) + (r2.db_write_ms || 0);
+        if (db)
+          bits.push(`${Math.round(db)}ms db (${r2.db_reads || 0}r/${r2.db_writes || 0}w)`);
+        if (r2.tool_ms)
+          bits.push(`${Math.round(r2.tool_ms)}ms tool`);
+        if (r2.is_external)
+          bits.push("external");
+        if (r2.concurrent)
+          bits.push("parallel");
+        return bits.join(" \xB7 ");
+      };
+      if (mrows.length) {
+        for (const r2 of mrows) {
+          const indent = "\xA0\xA0".repeat(Number(r2.depth) || 0);
+          const name = r2.label ? `${r2.module} \xB7 ${r2.label}` : String(r2.module);
+          body.appendChild(mk(
+            `${indent}${name}`,
+            `${Math.round(r2.wall_ms || 0)}ms wall \xB7 ${cols(r2)}`
+          ));
+        }
         body.appendChild(mk(
-          `${indent}${name}`,
-          `${Math.round(s.wall_ms || 0)}ms wall \xB7 ${Math.round(s.self_ms || 0)}ms self`
+          "TOTAL",
+          `${Math.round(mtot.wall_ms || 0)}ms wall \xB7 ${Math.round(mtot.processing_ms || 0)}ms proc \xB7 ${Math.round(mtot.llm_ms || 0)}ms llm \xB7 ${Math.round(mtot.db_ms || 0)}ms db \xB7 ${Math.round(mtot.tool_ms || 0)}ms tool`
         ));
+      } else {
+        for (const s of spans) {
+          const indent = "\xA0\xA0".repeat(Number(s.depth) || 0);
+          const name = s.label ? `${s.module} \xB7 ${s.label}` : String(s.module);
+          body.appendChild(mk(
+            `${indent}${name}`,
+            `${Math.round(s.wall_ms || 0)}ms wall \xB7 ${Math.round(s.self_ms || 0)}ms self`
+          ));
+        }
       }
       const counts = Array.isArray(sum.counts) ? sum.counts : [];
       if (counts.length) {

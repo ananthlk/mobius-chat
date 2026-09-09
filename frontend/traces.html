@@ -158,7 +158,8 @@ async function loadDetail(cid){
     const md = await mr.json();
     matrixRows = (md.rows||[]).map(r=>{
       const nm = '&nbsp;'.repeat(4*(r.depth||0)) + (r.label || r.module);
-      const ext = r.is_external ? ' <span class="pill">external</span>' : '';
+      const ext = (r.is_external ? ' <span class="pill">external</span>' : '')
+        + (r.concurrent ? ' <span class="pill">parallel</span>' : '');
       const rw = (r.db_reads||r.db_writes) ? `${r.db_reads}r/${r.db_writes}w` : '';
       return `<tr>
         <td>${nm}${ext}</td>

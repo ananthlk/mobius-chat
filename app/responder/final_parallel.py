@@ -121,20 +121,31 @@ def _call_llm(
     mode: str | None,
     latency_budget_ms: int | None = None,
     reasoning_depth: str | None = None,
+    _sink: list | None = None,
 ) -> tuple[str, dict[str, Any]]:
+    """Run one integrator call. ``_sink`` collects (stage, elapsed_ms) so the
+    PARENT thread can file a span for it after the join — this runs in a pool
+    worker, where the turn trace is deliberately not visible (see
+    TurnTrace.add_completed). ``list.append`` is the whole synchronisation."""
     from app.services.llm_manager import generate_sync
-    return generate_sync(
-        prompt,
-        stage=stage,
-        max_tokens=max_tokens,
-        config_sha=config_sha,
-        correlation_id=correlation_id,
-        thread_id=thread_id,
-        phi_detected=phi_detected,
-        mode=mode,
-        latency_budget_ms=latency_budget_ms,
-        reasoning_depth=reasoning_depth,
-    )
+    import time as _t
+    _t0 = _t.perf_counter()
+    try:
+        return generate_sync(
+            prompt,
+            stage=stage,
+            max_tokens=max_tokens,
+            config_sha=config_sha,
+            correlation_id=correlation_id,
+            thread_id=thread_id,
+            phi_detected=phi_detected,
+            mode=mode,
+            latency_budget_ms=latency_budget_ms,
+            reasoning_depth=reasoning_depth,
+        )
+    finally:
+        if _sink is not None:
+            _sink.append((stage, (_t.perf_counter() - _t0) * 1000.0))
 
 
 def _parse_json_response(text: str, label: str) -> dict[str, Any]:
@@ -165,6 +176,36 @@ def _parse_json_response(text: str, label: str) -> dict[str, Any]:
             pass
         logger.warning("[parallel:%s] could not parse JSON response", label)
         return {}
+
+
+def _file_integrator_spans(sink: list) -> None:
+    """File one span per integrator call, in the parent thread, after the join.
+
+    The three calls run concurrently, so their spans are siblings whose walls
+    overlap — they intentionally do NOT sum to the parent's wall. That is the
+    honest shape: the block costs max(A,B,C), and showing each call's own wall
+    is what tells you WHICH one sets that maximum. Recording ``llm_ms`` equal to
+    the wall keeps the time in the LLM column, where waiting on a model belongs,
+    instead of in `integrate`'s processing.
+    """
+    if not sink:
+        return
+    try:
+        from app.telemetry.spans import _ACTIVE
+        tr = _ACTIVE.get()
+        if tr is None:
+            return
+        from app.telemetry.spans import KIND_LLM
+        for stage, ms in sink:
+            tr.add_completed("integrate", f"llm:{stage}", wall_ms=ms, llm_ms=ms,
+                             kind=KIND_LLM, target=stage, rollup_llm_ms=0.0,
+                             concurrent=True)
+        # The block cost max(A,B,C), not A+B+C — roll up only that.
+        _peak = max(ms for _, ms in sink)
+        for _a in tr._stack:
+            _a.llm_ms += _peak
+    except Exception:  # telemetry must never break a turn
+        logger.debug("[parallel] span filing failed", exc_info=True)
 
 
 def format_response_parallel(
@@ -314,6 +355,11 @@ def format_response_parallel(
 
     try:
         _e("◌ Drafting answer — running 3 parallel LLM passes…")
+        # Timings come back out of the workers here; spans get filed after the
+        # join. Until this existed, all three integrator calls were invisible to
+        # the trace and their wall landed in `integrate`'s processing column —
+        # 12s of model wait reading as 12s of our own code.
+        _llm_sink: list[tuple[str, float]] = []
         with ThreadPoolExecutor(max_workers=3) as pool:
             # latency_budget_ms: hard pre-filter in ModelRouter.select(), trims
             # candidates to those whose tracked ema_latency_ms fits the budget
@@ -352,12 +398,12 @@ def format_response_parallel(
             _is_thinking = translate_chat_mode_to_caller_mode(mode) == "chat.thinking"
             fut_a = pool.submit(
                 _call_llm, prompt_a, "integrator_a", _integrator_a_max_tokens(mode),
-                **shared_kwargs,
+                **shared_kwargs, _sink=_llm_sink,
                 latency_budget_ms=None if _is_thinking else 3000,
                 reasoning_depth="thinking" if _is_thinking else "fast",
             )
-            fut_b = pool.submit(_call_llm, prompt_b, "integrator_critic", 3072, **shared_kwargs, latency_budget_ms=2000, reasoning_depth="fast")
-            fut_c = pool.submit(_call_llm, prompt_c, "integrator_enrichment", 2048, **shared_kwargs, latency_budget_ms=1500, reasoning_depth="fast")
+            fut_b = pool.submit(_call_llm, prompt_b, "integrator_critic", 3072, **shared_kwargs, _sink=_llm_sink, latency_budget_ms=2000, reasoning_depth="fast")
+            fut_c = pool.submit(_call_llm, prompt_c, "integrator_enrichment", 2048, **shared_kwargs, _sink=_llm_sink, latency_budget_ms=1500, reasoning_depth="fast")
             # Wait for all three; collect results even if some fail. Each
             # branch now parses + emits its OWN partial the moment it lands,
             # rather than waiting for the other two (see _emit_partial above).
@@ -403,9 +449,11 @@ def format_response_parallel(
                         logger.warning("[parallel:C] call failed: %s", e)
     except Exception as e:
         logger.warning("[parallel] ThreadPoolExecutor failed: %s", e, exc_info=True)
+        _file_integrator_spans(_llm_sink)
         fb = _fallback_message(plan, stub_answers)
         _emit_integrator_chunks(fb, message_chunk_callback)
         return (fb, [])
+    _file_integrator_spans(_llm_sink)
 
     # ── Parse call A (core card) — must succeed ──
     card = _parse_answer_card(text_a)
