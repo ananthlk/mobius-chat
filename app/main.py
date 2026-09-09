@@ -2574,6 +2574,18 @@ _SKILL_LLM_ALLOWED_STAGES = frozenset({
     # (rag_eval_adjudicate), not here — this stage is only the "ask the
     # question again" half.
     "payor_fact_reverify",
+    # mobius-skills/deep-research (2026-09-09): parses a caller's PROSE
+    # request into the DESCRIPTIVE fields only — the question, the standard
+    # to judge by, the fields wanted back. ~600 in / 3000 out.
+    #
+    # Deliberately NOT permitted to populate anything that grants permission
+    # (acceptable sources, runnable tools, decisions the machine may take):
+    # those are stated by the caller or they default, and the defaults refuse.
+    # A model inferring permission is manufacturing consent, and a
+    # manufactured grant is invisible precisely because it looks identical to
+    # a declared one. That constraint lives in the deep-research seat's prompt
+    # and schema; this allowlist entry only says the stage may route here.
+    "research_parse",
 })
 
 

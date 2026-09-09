@@ -66,3 +66,57 @@ def test_internal_skill_llm_ok(client, monkeypatch):
     body = r.json()
     assert body.get("text") == "hello"
     assert body.get("usage", {}).get("model") == "gemini-2.5-flash"
+
+
+# ── allowlist ↔ roster registration ──────────────────────────────────
+# An allowlisted stage that is in NO model's eligible_stages passes the gate,
+# gets zero candidates from _get_candidates, and falls through to
+# fallback_no_models("gemini-2.5-flash"). The call SUCCEEDS — it just silently
+# bypasses the bandit and its analytics, so nothing surfaces the gap. That is
+# the documented PARALLEL_INTEGRATOR_STAGES bug (model_registry.py), where the
+# same mistake ran unnoticed until someone went looking.
+
+# Stages allowlisted but deliberately not yet routed. Each belongs to another
+# seat and is reported to them; listing them here keeps the guard useful
+# instead of permanently red, and makes the debt visible rather than silent.
+_KNOWN_UNROUTED = {
+    "appeals_investigation",
+    "org_intel_report",
+    "org_intel_synthesis",
+    "payor_fact_reverify",
+}
+
+
+def _registered_stages() -> dict:
+    from app.services.model_registry import MODEL_ROSTER
+    reg: dict[str, list[str]] = {}
+    for mid, spec in MODEL_ROSTER.items():
+        for st in (spec.eligible_stages or []):
+            reg.setdefault(st, []).append(mid)
+    return reg
+
+
+def test_every_allowlisted_stage_has_an_eligible_model():
+    from app.main import _SKILL_LLM_ALLOWED_STAGES
+    reg = _registered_stages()
+    unrouted = {s for s in _SKILL_LLM_ALLOWED_STAGES if s not in reg}
+    new = unrouted - _KNOWN_UNROUTED
+    assert not new, (
+        "these stages are allowlisted but no model declares them, so calls will "
+        f"silently bypass the bandit: {sorted(new)}"
+    )
+
+
+def test_known_unrouted_list_does_not_rot():
+    """If someone registers one of these, the entry must leave this list —
+    otherwise the exemption outlives the problem and hides the next one."""
+    reg = _registered_stages()
+    fixed = {s for s in _KNOWN_UNROUTED if s in reg}
+    assert not fixed, (
+        f"now routed, remove from _KNOWN_UNROUTED: {sorted(fixed)}")
+
+
+def test_research_parse_is_routable():
+    from app.main import _SKILL_LLM_ALLOWED_STAGES
+    assert "research_parse" in _SKILL_LLM_ALLOWED_STAGES
+    assert _registered_stages().get("research_parse")

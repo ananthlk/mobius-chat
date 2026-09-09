@@ -1016,6 +1016,22 @@ PARALLEL_INTEGRATOR_STAGES = ["integrator_a", "integrator_critic", "integrator_e
 # (1500ms per the design doc's _call_llm_json call) on an unproven model.
 REACT_COMPLETION_CRITIC_STAGES = ["react_completion_critic"]
 
+# mobius-skills/deep-research (2026-09-09, deep-research seat's request).
+# Prose request -> descriptive fields only. Same narrow-pool rationale as the
+# two lists above: {flash, pro} lets the bandit compare on a cheap parse task
+# rather than opening the unconstrained reasoning pool for ~600 in / 3000 out.
+#
+# Registered at the same time as the /internal/skill-llm allowlist entry ON
+# PURPOSE. An allowlisted stage that is in no model's eligible_stages passes
+# the gate, gets ZERO candidates, and falls through to
+# fallback_no_models("gemini-2.5-flash") — it appears to work while silently
+# bypassing the bandit and its analytics. That is the documented
+# PARALLEL_INTEGRATOR_STAGES bug (see above) and it is invisible by
+# construction: the call succeeds. Four allowlisted stages are in that state
+# right now — appeals_investigation, org_intel_report, org_intel_synthesis,
+# payor_fact_reverify — reported to their owners rather than fixed blind here.
+RESEARCH_PARSE_STAGES = ["research_parse"]
+
 CHEAP_STAGES = ["badge", "classifier", "critique", "vibe"]  # adjudicator removed → locked to gemini-2.5-pro (Task #25)
 PHI_SAFE_STAGES = ["phi_detector", "phi_classify"]
 
@@ -1053,7 +1069,7 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         # "ruler") — it appears in no other model's eligible_stages, so the
         # bandit always resolves it to gemini-2.5-pro → deterministic scoring
         # across calibration runs (drift monitor + lift comparability).
-        eligible_stages=vertex_roster_eligible_stages() + ["thread_summary", LEXICON_ANALYZE_STAGE, "rag_eval_adjudicate", "rag_fact_check", "adjudicator"] + PARALLEL_INTEGRATOR_STAGES + REACT_COMPLETION_CRITIC_STAGES,
+        eligible_stages=vertex_roster_eligible_stages() + ["thread_summary", LEXICON_ANALYZE_STAGE, "rag_eval_adjudicate", "rag_fact_check", "adjudicator"] + PARALLEL_INTEGRATOR_STAGES + REACT_COMPLETION_CRITIC_STAGES + RESEARCH_PARSE_STAGES,
         spec_tokens_per_sec=100.0,
         spec_context_k=1000,
         spec_input_per_1m_usd=1.25,
@@ -1074,7 +1090,7 @@ MODEL_ROSTER: dict[str, ModelSpec] = {
         # vertex candidate. Pre-fix, the router fell through to flash
         # via the hard "fallback_no_models" path; making it intentional
         # gives the bandit a real comparison vs. flash-lite + Haiku.
-        eligible_stages=vertex_roster_eligible_stages() + [ROSTER_CLEAN_STAGE, "vibe", "feedback_classify", "thread_summary", "phi_classify"] + LEXICON_FAST_STAGES + [LEXICON_ANALYZE_STAGE] + PARALLEL_INTEGRATOR_STAGES + REACT_COMPLETION_CRITIC_STAGES,
+        eligible_stages=vertex_roster_eligible_stages() + [ROSTER_CLEAN_STAGE, "vibe", "feedback_classify", "thread_summary", "phi_classify"] + LEXICON_FAST_STAGES + [LEXICON_ANALYZE_STAGE] + PARALLEL_INTEGRATOR_STAGES + REACT_COMPLETION_CRITIC_STAGES + RESEARCH_PARSE_STAGES,
         spec_tokens_per_sec=300.0,
         spec_context_k=1000,
         spec_input_per_1m_usd=0.075,
