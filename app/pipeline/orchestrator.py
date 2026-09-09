@@ -1242,8 +1242,24 @@ def _persist_turn_spans(ctx: PipelineContext) -> None:
     try:
         from app.telemetry.spans import get_trace
         tr = get_trace(ctx)
-        if tr is None or not tr.spans:
+        if tr is None:
+            # Loud. A missing trace means the attach at run_pipeline's top did
+            # not survive to here, which is a wiring bug — and a silent return
+            # made it indistinguishable from "this turn recorded nothing",
+            # which is the exact ambiguity this telemetry exists to remove.
+            # My own early return was the one silent path in a module whose
+            # stated policy is loud-never-silent.
+            logger.warning("[spans] no TurnTrace on ctx at completion cid=%s "
+                           "— spans were never recorded for this turn",
+                           ctx.correlation_id[:8])
             return
+        if not tr.spans:
+            logger.warning("[spans] TurnTrace present but EMPTY at completion "
+                           "cid=%s — the trace attached but no span was opened",
+                           ctx.correlation_id[:8])
+            return
+        logger.info("[spans] persisting %d span(s) cid=%s",
+                    len(tr.spans), ctx.correlation_id[:8])
         mix: list[dict] = []
         seen: set[tuple[str, str]] = set()
         for s in tr.spans:
