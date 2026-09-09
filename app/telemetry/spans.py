@@ -612,34 +612,38 @@ def classify_source(correlation_id: str, declared: str | None = None) -> str:
 
 
 
+_TRACED_NO_CTX_WARNED: set = set()
+
+
 def traced(node: str, label: str | None = None):
     """Decorator: run a function inside a span on `node`.
 
-    Instrumentation was the bottleneck, not the schema. 32 of 36 nodes showed
-    as `silent` purely because nothing opened a span for them — which reads as
-    "dead code or mis-modelled" when the truth was "not yet measured". A
-    decorator makes covering a node one line at its entry point instead of a
-    surgical edit to its body.
+    USES THE AMBIENT TRACE, not a ctx argument. The first version sniffed the
+    arguments for a PipelineContext and, not finding one, returned the
+    function unwrapped — SILENTLY. Four of the six functions instrumented that
+    way (governor.evaluate, should_run_critic, parse_critic_response,
+    resolve_pronouns) take no ctx, so they were decorated, recorded nothing,
+    and were indistinguishable in the matrix from modules that never ran.
 
-    ctx is found positionally or by keyword; when a callee has no ctx the
-    decorator is a no-op passthrough rather than an error, because a function
-    called both inside and outside a turn is normal and must not be forced to
-    care.
+    A decorator that silently declines to instrument is the
+    producer-without-a-consumer defect wearing the instrument's own clothes —
+    the third time in this build I have written it. The ambient ContextVar
+    removes the requirement entirely: any function executing inside a turn
+    gets a span, whatever its signature.
+
+    No active trace is a genuine no-op and stays silent: a function called
+    outside a turn (a warm-up, an eval, a unit test) is not an error and must
+    not log on every call.
     """
     def _wrap(fn):
         import functools
 
         @functools.wraps(fn)
         def _inner(*args, **kwargs):
-            ctx = kwargs.get("ctx")
-            if ctx is None:
-                for a in args:
-                    if hasattr(a, "correlation_id") and hasattr(a, "thinking_chunks"):
-                        ctx = a
-                        break
-            if ctx is None or get_trace(ctx) is None:
+            tr = _ACTIVE.get()
+            if tr is None or not tr._stack:
                 return fn(*args, **kwargs)
-            with span(ctx, node, label=label or fn.__name__):
+            with tr.span(node, label=label or fn.__name__):
                 return fn(*args, **kwargs)
         return _inner
     return _wrap

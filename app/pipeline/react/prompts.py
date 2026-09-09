@@ -32,6 +32,7 @@ from app.pipeline.context import PipelineContext
 # ``app.pipeline.tool_manifest.get_tool_manifest`` for the contract.
 from app.pipeline import tool_manifest as _tool_manifest_module
 from app.communication.plan_display import jurisdiction_summary
+from app.telemetry.spans import traced  # P2b node instrumentation
 
 logger = logging.getLogger(__name__)
 
@@ -653,6 +654,7 @@ def _get_config_sha() -> str:
     return sha or ""
 
 
+@traced("prompts")
 def _call_llm_json(
     system: str,
     user: str,
@@ -782,6 +784,7 @@ def _overlap_tokens(text: str) -> set[str]:
 # ── Reasoning-context builder ─────────────────────────────────────────────
 
 
+@traced("prompts")
 def build_reasoning_context(
     ctx: PipelineContext,
     tool_results: list[dict],

@@ -55,6 +55,7 @@ from __future__ import annotations
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
+from app.telemetry.spans import traced  # P2b node instrumentation
 
 
 # ── Signal taxonomy ──────────────────────────────────────────────────
@@ -367,6 +368,7 @@ def make_web_trace(
     )
 
 
+@traced("emit_envelope")
 def make_react_trace(
     correlation_id: str,
     *,

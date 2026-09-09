@@ -32,6 +32,7 @@ import logging
 import re
 
 from app.pipeline.context import PipelineContext
+from app.telemetry.spans import traced  # P2b node instrumentation
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,7 @@ def _parse_react_decision_dict_obj(text: str) -> dict | None:
     return None
 
 
+@traced("parsing")
 def _parse_react_decision_json(decision_raw: str) -> dict | None:
     """
     Parse reasoning-round JSON. Returns None if parsing fails (caller may stop the loop).
