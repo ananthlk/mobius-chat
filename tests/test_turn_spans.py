@@ -262,3 +262,41 @@ class TestToolSelectionLayers:
         assert ("tool.offered", "product_feedback") not in not_offered
         assert ("tool.offered", "product_feedback") in not_picked
         assert ("tool.dispatched", "product_feedback:failure") in failed
+
+
+class TestDbIdentifier:
+    """The mocked read-back cannot catch a wrong database key.
+
+    Every span test patches db_execute/db_query, so `_DB` is never exercised
+    against the real client contract. Shipped with _DB = "mobius_chat" (the
+    PHYSICAL database name) instead of "chat" (db_client's LOGICAL key), all
+    15 tests passed and every live write failed with
+
+        connection_error: No fallback URL for database 'mobius_chat'
+
+    Only the live turn caught it — which is the argument for the acceptance
+    criterion being a REAL turn rather than a mocked round trip. This pins the
+    value so the same mistake can't return silently.
+    """
+
+    def test_db_key_matches_the_other_storage_modules(self):
+        import app.storage.threads as threads
+        import app.storage.turn_spans as spans
+        import app.storage.turns as turns
+        assert spans._DB == threads._DB == turns._DB, (
+            f"turn_spans uses _DB={spans._DB!r} but the rest of app/storage uses "
+            f"{threads._DB!r} — db_client resolves the LOGICAL key, not the "
+            f"physical database name"
+        )
+
+    def test_db_key_resolves_in_db_client(self):
+        """The key must be one db_client can actually map to a URL."""
+        import inspect
+        import app.db_client as db_client
+        import app.storage.turn_spans as spans
+        src = inspect.getsource(db_client._get_fallback_url)
+        assert f'"{spans._DB}"' in src, (
+            f"_DB={spans._DB!r} does not appear in _get_fallback_url's mapping; "
+            f"writes will fail with connection_error at runtime while every "
+            f"mocked test still passes"
+        )

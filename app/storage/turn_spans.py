@@ -26,7 +26,13 @@ from app.db_client import db_execute, db_query
 
 logger = logging.getLogger(__name__)
 
-_DB = "mobius_chat"
+# The db_client's LOGICAL key, not the physical database name. _get_fallback_url
+# maps "chat" -> CHAT_RAG_DATABASE_URL (db_client.py:133); "mobius_chat" is the
+# actual Postgres database, and passing it here produced
+#   connection_error: No fallback URL for database 'mobius_chat'
+# on every write and read. Every other storage module uses "chat"
+# (threads.py, turns.py, feedback.py, tool_policy.py, ...).
+_DB = "chat"
 
 
 def save_spans(
