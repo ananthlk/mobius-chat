@@ -7211,8 +7211,11 @@ function renderModuleTiming(correlationId: string): HTMLElement {
 
       for (const s of spans) {
         const indent = "\u00a0\u00a0".repeat(Number(s.depth) || 0);
+        // module is the schema NODE key; label is the finer local name when
+        // the span is narrower than any node (node -> span tree).
+        const name = s.label ? `${s.module} · ${s.label}` : String(s.module);
         body.appendChild(mk(
-          `${indent}${s.module}`,
+          `${indent}${name}`,
           `${Math.round(s.wall_ms || 0)}ms wall · ${Math.round(s.self_ms || 0)}ms self`
         ));
       }

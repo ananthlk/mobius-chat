@@ -4868,6 +4868,28 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 break
 
         tool = decision.get("tool")
+
+        # P2b layer 2 of the tool-selection split: record EVERY tool name the
+        # planner emitted, at the moment it is read off the decision and
+        # before any gate can drop it. Parsing is deterministic, so a
+        # malformed emission is dropped rather than retried — and a drop with
+        # no record is indistinguishable from the planner never emitting a
+        # tool at all. That ambiguity is why the sporadic feedback-tool
+        # selection (Ananth, 2026-09-09: model said the tool was broken; the
+        # backend answered 200 in 1.3s; it fired 73s later) cannot currently
+        # be attributed to a layer.
+        try:
+            from app.telemetry.spans import record as _rec, KIND_TOOL_EMITTED
+            if tool:
+                _rec(ctx, KIND_TOOL_EMITTED, str(tool))
+            elif not decision.get("is_complete", False):
+                # No tool AND not finishing: the planner produced a round that
+                # neither acts nor concludes. Recorded explicitly so "emitted
+                # nothing" is a positive observation rather than an absence.
+                _rec(ctx, KIND_TOOL_EMITTED, "__none__")
+        except Exception:
+            pass
+
         inputs = decision.get("inputs") or {}
         is_complete = decision.get("is_complete", False)
         thought = (decision.get("thought") or "").strip()
@@ -5701,6 +5723,18 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
             skip_retry=(mode_label == "quick"),
             open_gaps=_gaps_open,
         )
+
+        # P2b layer 3 of the tool-selection split: record the dispatch WITH its
+        # outcome. A tool that was dispatched and failed must be distinguishable
+        # from one that was never selected — today both leave no trace, so the
+        # three candidate layers produce identical evidence (none) and the
+        # sporadic-selection bug cannot be attributed.
+        try:
+            from app.telemetry.spans import record as _rec, KIND_TOOL_DISPATCHED
+            _outcome = "success" if (isinstance(result, dict) and result.get("success")) else "failure"
+            _rec(ctx, KIND_TOOL_DISPATCHED, f"{tool or 'search_corpus'}:{_outcome}")
+        except Exception:
+            pass
 
         # Task #86 (2026-08-11, Chat Master): checked here, immediately
         # after the tool call returns and BEFORE retry_guard.record_result

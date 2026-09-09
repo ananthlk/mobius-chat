@@ -54,10 +54,10 @@ def save_spans(
             result = db_execute(
                 """
                 INSERT INTO turn_spans (
-                    correlation_id, span_id, parent_span_id, module, depth,
+                    correlation_id, span_id, parent_span_id, module, label, depth,
                     wall_ms, llm_ms, counts, model_mix, rich_evidence, chat_mode
                 )
-                VALUES (:cid, :span_id, :parent_span_id, :module, :depth,
+                VALUES (:cid, :span_id, :parent_span_id, :module, :label, :depth,
                         :wall_ms, :llm_ms, CAST(:counts AS jsonb),
                         CAST(:model_mix AS jsonb), :rich_evidence, :chat_mode)
                 ON CONFLICT (correlation_id, span_id) DO NOTHING
@@ -68,6 +68,7 @@ def save_spans(
                     "span_id": r.get("span_id"),
                     "parent_span_id": r.get("parent_span_id"),
                     "module": r.get("module"),
+                    "label": r.get("label"),
                     "depth": int(r.get("depth") or 0),
                     "wall_ms": float(r.get("wall_ms") or 0.0),
                     "llm_ms": float(r.get("llm_ms") or 0.0),
@@ -106,7 +107,7 @@ def read_spans(correlation_id: str) -> list[dict[str, Any]]:
     """
     result = db_query(
         """
-        SELECT span_id, parent_span_id, module, depth,
+        SELECT span_id, parent_span_id, module, label, depth,
                wall_ms, llm_ms, counts, model_mix, rich_evidence, chat_mode
         FROM turn_spans
         WHERE correlation_id = :cid

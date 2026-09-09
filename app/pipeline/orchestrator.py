@@ -679,6 +679,36 @@ def run_pipeline(
             user_id=getattr(ctx, "user_id", None),
         )
 
+        # P2b layer 1 of the tool-selection split: record WHICH TOOLS WERE
+        # OFFERED this turn, at the point the offer is decided.
+        #
+        # This is the layer with no other tell. allowed_tools is filtered by
+        # mode AND user subscription, so a tool can disappear between two
+        # consecutive turns of the same session with no error raised anywhere
+        # — which is exactly the shape of the sporadic feedback-tool bug
+        # (2026-09-09: "my feedback tool isn't working", then the same tool
+        # firing fully 73 seconds later, with the backend answering 200
+        # throughout). Without this count, "not offered" and "offered but not
+        # chosen" are indistinguishable after the fact.
+        #
+        # Recorded against the tool_manifest node because that is the node
+        # whose behaviour this is, even though the resolution happens here.
+        try:
+            from app.telemetry.spans import span as _span, record as _rec, KIND_TOOL_OFFERED
+            with _span(ctx, "tool_manifest", label="resolve_allowed_tools"):
+                _allowed = ctx.allowed_tools
+                if _allowed is None:
+                    # None means "no filter" — every registered tool is on
+                    # offer. Recorded as a distinct value rather than skipped,
+                    # so an unfiltered turn is a positive observation.
+                    _rec(ctx, KIND_TOOL_OFFERED, "__unfiltered__")
+                else:
+                    for _t in _allowed:
+                        _rec(ctx, KIND_TOOL_OFFERED, str(_t))
+        except Exception as _exc:
+            logger.warning("[spans] allowed_tools record failed cid=%s: %s",
+                           correlation_id[:8], _exc)
+
         # P1c: master_objective retired. Nothing can create one, so the
         # end-pursuit branch had no objective to abandon and never fired.
         # The guard is kept so user_provided_context extraction keeps its

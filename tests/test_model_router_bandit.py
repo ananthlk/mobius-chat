@@ -63,21 +63,57 @@ def test_bandit_priors_only_env(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_beta_prior_uses_per_model_benchmark() -> None:
-    """Each model's beta_prior uses its ema_quality (benchmark), not a constant."""
+    """Each model's beta_prior derives from ITS OWN ema_quality, not a constant.
+
+    Asserts the RELATIONSHIP (each prior's mean tracks that model's
+    ema_quality, and the ordering of means follows the ordering of emas)
+    rather than any specific seeded values.
+
+    Why: MODEL_ROSTER is a process-wide mutable singleton whose ema_quality
+    is updated by observed quality as the process runs. This test used to
+    open with
+
+        assert pro.ema_quality > flash.ema_quality > lite.ema_quality
+
+    which encodes the SEEDED ordering (pro .88 > flash .78 > lite .65). In
+    full-suite order that is false: 38 calls / 37 quality samples accumulate
+    into the roster during a run and pull flash to ~0.609, below lite's
+    untouched static 0.65 — so the assertion inverted. It passed alone and
+    failed in the suite, which reads like flakiness but is accumulation.
+
+    The same hazard is documented in test_claude_current_gen_models.py:29-35,
+    which calls MODEL_ROSTER "a shared, process-wide mutable singleton" and
+    uses source inspection to avoid it. A test that asserts on live values of
+    a singleton the suite mutates is testing the suite, not the code.
+
+    Note the ordering claim is kept — just made relative. If beta_prior ever
+    stopped tracking ema_quality, sorting by one and checking the other still
+    catches it, whatever the emas happen to be at that moment.
+    """
     pro = MODEL_ROSTER["gemini-2.5-pro"]
     flash = MODEL_ROSTER["gemini-2.5-flash"]
     lite = MODEL_ROSTER["gemini-2.0-flash-lite"]
-    assert pro.ema_quality > flash.ema_quality > lite.ema_quality
-    a_p, b_p = pro.beta_prior
-    a_f, b_f = flash.beta_prior
-    a_l, b_l = lite.beta_prior
-    mean_p = a_p / (a_p + b_p)
-    mean_f = a_f / (a_f + b_f)
-    mean_l = a_l / (a_l + b_l)
-    assert abs(mean_p - pro.ema_quality) < 0.01
-    assert abs(mean_f - flash.ema_quality) < 0.01
-    assert abs(mean_l - lite.ema_quality) < 0.01
-    assert mean_p > mean_f > mean_l
+
+    def _mean(spec) -> float:
+        a, b = spec.beta_prior
+        return a / (a + b)
+
+    # 1. Each prior's mean tracks that model's OWN ema — the "not a constant"
+    #    claim, and the part that would break if beta_prior were hardcoded.
+    for spec in (pro, flash, lite):
+        assert abs(_mean(spec) - spec.ema_quality) < 0.01, (
+            f"{spec.model_id}: beta_prior mean {_mean(spec):.4f} does not track "
+            f"ema_quality {spec.ema_quality:.4f}"
+        )
+
+    # 2. Distinct emas must yield distinctly ordered means — relative, so it
+    #    holds whatever the live emas have drifted to.
+    ranked = sorted((pro, flash, lite), key=lambda s: s.ema_quality)
+    means = [_mean(s) for s in ranked]
+    assert means == sorted(means), (
+        "beta_prior means must order the same way as ema_quality; got "
+        + ", ".join(f"{s.model_id}={m:.4f}" for s, m in zip(ranked, means))
+    )
 
 
 def test_bandit_stats_row_strips_quality_when_priors_only(monkeypatch: pytest.MonkeyPatch):

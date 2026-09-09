@@ -9547,8 +9547,9 @@ function renderModuleTiming(correlationId) {
       };
       for (const s of spans) {
         const indent = "\xA0\xA0".repeat(Number(s.depth) || 0);
+        const name = s.label ? `${s.module} \xB7 ${s.label}` : String(s.module);
         body.appendChild(mk(
-          `${indent}${s.module}`,
+          `${indent}${name}`,
           `${Math.round(s.wall_ms || 0)}ms wall \xB7 ${Math.round(s.self_ms || 0)}ms self`
         ));
       }

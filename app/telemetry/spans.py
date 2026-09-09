@@ -57,7 +57,65 @@ KIND_DB_READ = "db.read"
 KIND_DB_WRITE = "db.write"
 KIND_LLM = "llm"
 KIND_HTTP = "http"
-_KINDS = {KIND_DB_READ, KIND_DB_WRITE, KIND_LLM, KIND_HTTP}
+
+# Tool-selection counts. These three exist to separate the three layers that
+# can drop a tool call, which today produce IDENTICAL evidence: none.
+#
+#   Ananth, live 2026-09-09: "can i offer some feedback" -> the model replied
+#   that its feedback tool was broken. 73 seconds later, same session, the
+#   tool fired fully. mobius-feedback /classify answers 200 in 1.3s. The tool
+#   is not broken; it is intermittently NOT SELECTED.
+#
+# Three candidate layers, one tell each:
+#   TOOL_OFFERED    the manifest actually rendered this turn. ctx.allowed_tools
+#                   is mode- and subscription-filtered, so a tool can vanish
+#                   between two turns with no error raised anywhere.
+#   TOOL_EMITTED    every tool name the planner emitted, INCLUDING names that
+#                   failed to parse. Parsing is deterministic, so a malformed
+#                   emission is dropped rather than retried — and a drop with
+#                   no record is indistinguishable from never emitting.
+#   TOOL_DISPATCHED target carries "<tool>:<outcome>", so a dispatch that
+#                   failed is distinguishable from one that never happened.
+#
+# A duration cannot tell these three apart. A count can, at n=1.
+KIND_TOOL_OFFERED = "tool.offered"
+KIND_TOOL_EMITTED = "tool.emitted"
+KIND_TOOL_DISPATCHED = "tool.dispatched"
+
+_KINDS = {KIND_DB_READ, KIND_DB_WRITE, KIND_LLM, KIND_HTTP,
+          KIND_TOOL_OFFERED, KIND_TOOL_EMITTED, KIND_TOOL_DISPATCHED}
+
+# Span names are NODE KEYS from the chat schema, not ad-hoc labels.
+#
+# Ananth: "shouldn't the span also map to our schema in some regards.. else
+# what is the point of those modules". The reason is not tidiness. Ad-hoc
+# names give two independent decompositions of one system — 36 schema nodes
+# and N arbitrary spans — and neither can check the other. Tie them and they
+# become reciprocally falsifiable:
+#
+#   a span whose name is not a node  -> the schema is incomplete
+#   a live node that never spans     -> it is dead code, or mis-modelled
+#
+# Today neither error is detectable: the schema is hand-written and nothing
+# in the running system contradicts it. That is the same "nothing fails
+# loudly when a producer disappears" shape this program has spent two days
+# cataloguing, applied to our own map of the system.
+#
+# AUTHORITATIVE SOURCE is scripts/platform/chat_node_content.py in the parent
+# repo, which mobius-chat cannot import. This copy is a runtime guard only;
+# refresh.sh owns enforcement (fails when a span name is not a node, or a
+# live node produces no span across a corpus run). Mismatch here logs, never
+# raises — a telemetry guard must not be able to fail a turn.
+NODE_KEYS = frozenset({
+    "PHI gate", "POST /chat", "active_context", "capabilities", "clarification",
+    "clarify", "classify", "completion_extension_gate", "context", "continuity",
+    "credentialing_envelope", "critic", "curator_tools", "emit_envelope",
+    "feedback_signal", "governor", "integrate", "jurisdiction", "llm_manager",
+    "message_resolver", "orchestrator", "parsing", "personalization", "plan",
+    "prompts", "queue", "react_loop", "react_retry_guard", "resolve",
+    "retrieval_budget", "round0", "run_pipeline", "stages", "state_load",
+    "tool_manifest", "worker",
+})
 
 
 @dataclass
@@ -83,9 +141,15 @@ class _Count:
 class Span:
     span_id: str
     parent_span_id: str | None
-    module: str
+    module: str          # the NODE KEY (inherited by children finer than a node)
     depth: int
     started_at: float
+    # Local label for a span finer than any node — a single tool call inside
+    # react_loop, a single write inside state_load. The mapping is
+    # node -> span TREE, not node -> span. A child whose parent is not a node
+    # is still a schema gap, which is why `module` is inherited rather than
+    # left blank.
+    label: str | None = None
     wall_ms: float = 0.0
     # llm_ms is time spent in LLM calls attributed to THIS span, measured in
     # process. Deliberately not joined from llm_calls: 790 of 1,979 rows had
@@ -110,6 +174,7 @@ class Span:
             "span_id": self.span_id,
             "parent_span_id": self.parent_span_id,
             "module": self.module,
+            "label": self.label,
             "depth": self.depth,
             "wall_ms": round(self.wall_ms, 2),
             "llm_ms": round(self.llm_ms, 2),
@@ -128,13 +193,36 @@ class TurnTrace:
 
     # ── recording ────────────────────────────────────────────────────
     @contextmanager
-    def span(self, module: str) -> Iterator[Span]:
-        """Open a span. Nests under whatever span is currently open."""
+    def span(self, module: str, label: str | None = None) -> Iterator[Span]:
+        """Open a span named by a SCHEMA NODE KEY.
+
+        A child span finer than any node passes ``label`` and inherits the
+        parent's node key, so every span still resolves to a node and the
+        span set stays checkable against the schema in both directions.
+        """
         parent = self._stack[-1] if self._stack else None
+        node = module
+        if node not in NODE_KEYS:
+            if parent is not None:
+                # Finer than a node: inherit the parent's key, keep the name
+                # as a local label so the detail is not lost.
+                label = label or node
+                node = parent.module
+            else:
+                # A ROOT span that is not a node means the schema is missing
+                # something the system actually does. Loud, and recorded as
+                # given so refresh.sh can surface the gap rather than have it
+                # silently normalised away.
+                logger.warning(
+                    "[spans] root span %r is not a schema node key — either the "
+                    "schema is incomplete or this span is misnamed (cid=%s)",
+                    node, self.correlation_id[:8],
+                )
         sp = Span(
             span_id=uuid.uuid4().hex[:16],
             parent_span_id=parent.span_id if parent else None,
-            module=module,
+            module=node,
+            label=label,
             depth=len(self._stack),
             started_at=time.perf_counter(),
         )
@@ -214,7 +302,7 @@ def get_trace(ctx: Any) -> TurnTrace | None:
 
 
 @contextmanager
-def span(ctx: Any, module: str) -> Iterator[Span | None]:
+def span(ctx: Any, module: str, label: str | None = None) -> Iterator[Span | None]:
     """ctx-aware span. No-ops when the turn has no trace attached.
 
     Lets call sites be instrumented without every one of them branching on
@@ -224,7 +312,7 @@ def span(ctx: Any, module: str) -> Iterator[Span | None]:
     if tr is None:
         yield None
         return
-    with tr.span(module) as sp:
+    with tr.span(module, label=label) as sp:
         yield sp
 
 

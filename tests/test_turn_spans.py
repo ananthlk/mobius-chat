@@ -30,7 +30,10 @@ class TestTurnTrace:
         root, child = t.spans
         assert root.module == "react_loop" and root.depth == 0
         assert root.parent_span_id is None
-        assert child.module == "rag" and child.depth == 1
+        # "rag" is not a schema node key, so the child inherits the parent's
+        # node and keeps "rag" as its local label — node -> span TREE.
+        assert child.module == "react_loop" and child.label == "rag"
+        assert child.depth == 1
         assert child.parent_span_id == root.span_id
 
     def test_a_loop_is_distinguishable_from_one_slow_call(self):
@@ -107,12 +110,12 @@ class TestSameTurnReadBack:
             rows = [r for r in store if r["cid"] == (params or {}).get("cid")]
             import json as _j
             return {
-                "columns": ["span_id", "parent_span_id", "module", "depth",
+                "columns": ["span_id", "parent_span_id", "module", "label", "depth",
                             "wall_ms", "llm_ms", "counts", "model_mix",
                             "rich_evidence", "chat_mode"],
-                "rows": [[r["span_id"], r["parent_span_id"], r["module"], r["depth"],
-                          r["wall_ms"], r["llm_ms"], r["counts"], r["model_mix"],
-                          r["rich_evidence"], r["chat_mode"]] for r in rows],
+                "rows": [[r["span_id"], r["parent_span_id"], r["module"], r["label"],
+                          r["depth"], r["wall_ms"], r["llm_ms"], r["counts"],
+                          r["model_mix"], r["rich_evidence"], r["chat_mode"]] for r in rows],
             }
         return _exec, _query
 
@@ -138,7 +141,9 @@ class TestSameTurnReadBack:
         with patch("app.storage.turn_spans.db_query", _query):
             spans = read_spans("cid-acceptance")
         assert len(spans) == 2
-        assert {s["module"] for s in spans} == {"react_loop", "rag"}
+        # both spans resolve to the react_loop NODE; the finer one is labelled
+        assert {s["module"] for s in spans} == {"react_loop"}
+        assert {s.get("label") for s in spans} == {None, "rag"}
 
         # THE RENDER INPUT: what the diagnostics panel is handed.
         summary = summarize(spans)
@@ -161,3 +166,99 @@ class TestSameTurnReadBack:
         assert written == 0
         assert any("write failed" in r.getMessage() for r in caplog.records), \
             "a missing span row must be traceable to a logged cause, not look like a fast turn"
+
+
+# ── schema-node binding ─────────────────────────────────────────────
+
+class TestNodeKeyBinding:
+    """span.module is a schema node key, so spans and the schema can check
+    each other. Ad-hoc names give two decompositions of one system that
+    neither can falsify."""
+
+    def test_known_node_key_is_kept(self):
+        t = TurnTrace("cid-n1")
+        with t.span("react_loop"):
+            pass
+        assert t.spans[0].module == "react_loop"
+        assert t.spans[0].label is None
+
+    def test_child_finer_than_a_node_inherits_the_parent_key(self):
+        """node -> span TREE, not node -> span. Every span still resolves to
+        a node, so a live node that produces no span is detectable."""
+        t = TurnTrace("cid-n2")
+        with t.span("react_loop"):
+            with t.span("rag_call"):
+                pass
+        root, child = t.spans
+        assert child.module == "react_loop", "inherits the node key"
+        assert child.label == "rag_call", "keeps its own local name"
+
+    def test_unknown_ROOT_span_is_reported_as_a_schema_gap(self, caplog):
+        """A root span that is not a node means the schema is missing
+        something the system does. It must be loud — a silently normalised
+        name is how the map stops matching the territory."""
+        t = TurnTrace("cid-n3")
+        with caplog.at_level("WARNING"):
+            with t.span("something_not_modelled"):
+                pass
+        assert any("not a schema node key" in r.getMessage() for r in caplog.records)
+        assert t.spans[0].module == "something_not_modelled", "recorded as given, not silently renamed"
+
+
+# ── the tool-selection three-layer split ────────────────────────────
+
+class TestToolSelectionLayers:
+    """Ananth 2026-09-09: the model said its feedback tool was broken; the
+    backend answered 200 in 1.3s; the tool fired fully 73s later. Three
+    layers could drop the call and today they produce IDENTICAL evidence:
+    none. These counts separate them at n=1."""
+
+    from app.telemetry.spans import (  # noqa: E402
+        KIND_TOOL_DISPATCHED, KIND_TOOL_EMITTED, KIND_TOOL_OFFERED,
+    )
+
+    def _trace(self, *, offered, emitted, dispatched):
+        t = TurnTrace("cid-tool")
+        with t.span("tool_manifest", label="resolve_allowed_tools"):
+            for x in offered:
+                t.record(self.KIND_TOOL_OFFERED, x)
+        with t.span("react_loop"):
+            for x in emitted:
+                t.record(self.KIND_TOOL_EMITTED, x)
+            for x in dispatched:
+                t.record(self.KIND_TOOL_DISPATCHED, x)
+        return {(c["kind"], c["target"]): c["n"] for c in t.totals()["counts"]}
+
+    def test_layer1_not_offered_is_distinguishable(self):
+        """The manifest never contained the tool — allowed_tools filtered it."""
+        c = self._trace(offered=["search_corpus"], emitted=[], dispatched=[])
+        assert ("tool.offered", "product_feedback") not in c
+        assert ("tool.emitted", "product_feedback") not in c
+
+    def test_layer2_offered_but_planner_never_emitted_it(self):
+        """Offered and available, model simply didn't pick it. Distinct from
+        layer 1 — and the distinction is the diagnosis."""
+        c = self._trace(offered=["product_feedback"], emitted=["__none__"], dispatched=[])
+        assert c[("tool.offered", "product_feedback")] == 1
+        assert ("tool.emitted", "product_feedback") not in c
+        assert c[("tool.emitted", "__none__")] == 1, "emitting nothing is a positive observation"
+
+    def test_layer3_dispatched_and_failed_vs_never_selected(self):
+        """A dispatch that failed must not look like a tool that was never
+        chosen. Outcome rides in the target for exactly this reason."""
+        c = self._trace(offered=["product_feedback"], emitted=["product_feedback"],
+                        dispatched=["product_feedback:failure"])
+        assert c[("tool.dispatched", "product_feedback:failure")] == 1
+        assert ("tool.dispatched", "product_feedback:success") not in c
+
+    def test_the_three_layers_are_mutually_exclusive_on_one_turn(self):
+        """The point of the split: given the counts, exactly one layer
+        explains a missing tool call."""
+        not_offered = self._trace(offered=["search_corpus"], emitted=["__none__"], dispatched=[])
+        not_picked = self._trace(offered=["product_feedback"], emitted=["__none__"], dispatched=[])
+        failed = self._trace(offered=["product_feedback"], emitted=["product_feedback"],
+                             dispatched=["product_feedback:failure"])
+        # Same user-visible symptom (no feedback captured), three different causes.
+        assert ("tool.offered", "product_feedback") not in not_offered
+        assert ("tool.offered", "product_feedback") in not_picked
+        assert ("tool.dispatched", "product_feedback:failure") in failed
