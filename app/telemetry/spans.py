@@ -142,6 +142,21 @@ PHASE_PRE = "preprocessing"
 PHASE_REACT = "react"
 PHASE_POST = "postprocessing"
 
+# Schema nodes with NO code behind them (verified repo-wide 2026-09-09).
+# They can never produce a span, so their absence from a trace says nothing
+# about the turn — it is a stale schema entry, not a fast node. Naming them
+# here is the difference between "measured zero" and "does not exist"; without
+# it, a reader comparing the 36-node schema against a trace draws the wrong
+# conclusion from identical evidence.
+#   credentialing_envelope    — module deleted 2026-04-18; only the removal
+#                               note survives (react_loop.py:132-137). Ananth
+#                               2026-09-08: "needs to go, this is not a chat
+#                               thing". The SCHEMA still rates it green.
+#   completion_extension_gate — appears nowhere in the repository except this
+#                               file's own node list.
+# Reported to Product Awareness, who own the schema; not removed unilaterally.
+NODES_WITHOUT_CODE = frozenset({"credentialing_envelope", "completion_extension_gate"})
+
 NODE_PHASE: dict[str, str] = {
     # ── preprocessing: everything before the reasoning loop opens ──
     "POST /chat": PHASE_PRE, "queue": PHASE_PRE, "worker": PHASE_PRE,
@@ -373,6 +388,18 @@ class TurnTrace:
         except Exception as exc:  # pragma: no cover
             logger.warning("[spans] close_span failed: %s", exc)
 
+    def close_all(self) -> None:
+        """Close every still-open span, innermost first.
+
+        The turn root is opened in run_pipeline and closed at persist time, in
+        a different function, and any stage that returned early (clarification,
+        refusal) leaves its own spans open too. An unclosed span has wall_ms 0,
+        so it would render as a node that took no time — the same "0 means not
+        measured" lie this whole exercise is about removing.
+        """
+        while self._open_cms:
+            self.close_span()
+
     def record(self, kind: str, target: str, n: int = 1, ms: float = 0.0) -> None:
         """Tally n occurrences of `kind` against `target` on the open span."""
         if not self._stack:
@@ -483,10 +510,49 @@ def reset_active(token) -> None:
         _ACTIVE.set(None)
 
 
+# Measurements that arrived with no active trace to hold them. This is not
+# bookkeeping trivia: llm_manager.generate() reports EVERY model call through
+# record_ambient, and _ACTIVE deliberately does not cross a thread boundary, so
+# a call made from a worker pool used to vanish here in total silence. Its time
+# then reappeared as the caller's `processing` — that is exactly how 11.5s of
+# integrator model wait was read as 12s of our own code. A dropped measurement
+# must be countable, or the fallback attribution stays plausible forever.
+_ORPHANED: dict[str, float] = {}
+
+
+def orphaned_ms() -> dict[str, float]:
+    """Time measured but attributable to no span, by kind. Non-empty means the
+    matrix is UNDER-reporting some external wait and over-reporting our code."""
+    return dict(_ORPHANED)
+
+
 def record_ambient(kind: str, target: str, n: int = 1, ms: float = 0.0) -> None:
-    """Record against the active turn, if any. Silent when there is none."""
+    """Record against the active turn. A drop is counted, never silent."""
     tr = _ACTIVE.get()
     if tr is None or not tr._stack:
+        if ms:
+            _ORPHANED[kind] = _ORPHANED.get(kind, 0.0) + float(ms)
+            # Only LLM drops are warned about. Not every orphan is a defect:
+            # the progress writer and other daemon threads run OUTSIDE any turn
+            # by design (that is why _ACTIVE does not propagate — so a daemon
+            # cannot attach counts to a turn that already finished), and they
+            # produce a steady stream of orphaned db writes. Warning on those
+            # would be noise that trains a reader to ignore the line, taking
+            # the real signal with it.
+            #
+            # An orphaned LLM call is different: every model call belongs to
+            # some turn, so one with no span is a measurement that has gone
+            # missing, and its time WILL surface as its caller's processing.
+            # That is the 11.5s-as-our-code failure, and it should be loud.
+            if kind == KIND_LLM:
+                logger.warning(
+                    "[spans] llm %.0fms on %r had no active span — NOT attributed. "
+                    "Almost always a call made from a thread the trace does not "
+                    "reach; its time will look like the caller's own processing.",
+                    ms, target,
+                )
+            else:
+                logger.debug("[spans] orphaned %s %.0fms on %r", kind, ms, target)
         return
     try:
         tr.record(kind, target, n=n, ms=ms)

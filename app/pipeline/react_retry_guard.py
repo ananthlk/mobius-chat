@@ -34,6 +34,7 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 from typing import Any
+from app.telemetry.spans import traced
 
 
 @dataclass
@@ -100,6 +101,7 @@ class ReactRetryGuard:
 
     # ── Public API ──────────────────────────────────────────────────────────
 
+    @traced("react_retry_guard")
     def record_result(
         self,
         *,
@@ -131,6 +133,7 @@ class ReactRetryGuard:
             # Phase 0.19: a successful call clears the per-tool failure streak.
             self.consecutive_failures_per_tool[tool] = 0
 
+    @traced("react_retry_guard")
     def should_block(
         self,
         *,

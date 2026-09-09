@@ -3,8 +3,10 @@ Active context persistence.
 Replaces active_skill — generic for any tool.
 """
 from __future__ import annotations
+from app.telemetry.spans import traced
 
 
+@traced("active_context")
 def persist_active_context(
     ctx,
     turn_record: dict,
@@ -19,6 +21,7 @@ def persist_active_context(
     return turn_record
 
 
+@traced("active_context")
 def load_active_context(
     merged_state: dict | None,
     last_turns: list[dict] | None = None,

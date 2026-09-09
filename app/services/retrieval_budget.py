@@ -31,6 +31,7 @@ precision.
 from __future__ import annotations
 
 from typing import Any
+from app.telemetry.spans import traced
 
 # System prompt + tool manifest overhead for a react round. Not measured
 # per-call (the real system prompt is resolved dynamically via LLMManager
@@ -98,6 +99,7 @@ def _estimate_conversation_history_tokens(ctx: Any) -> int:
     return total_chars // 4
 
 
+@traced("retrieval_budget")
 def compute_token_budget_for_retrieval(ctx: Any) -> int:
     """Chat's real per-request retrieval token budget for this turn.
 

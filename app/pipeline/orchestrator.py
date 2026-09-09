@@ -482,6 +482,15 @@ def run_pipeline(
     _trace_token = set_active(ctx.turn_trace)
     from app.telemetry.spans import span as _span
 
+    # ONE root for the whole turn. Until this existed, state_load, react_loop
+    # and integrate were three separate roots, so every gap BETWEEN them —
+    # queue hand-off, persistence, publish — was in no span at all and simply
+    # absent from the total. The root's own processing is exactly that gap,
+    # which is the one number the previous shape could not show. Closed in
+    # _persist_turn_spans via close_all(), so an early return still records it.
+    if ctx.turn_trace is not None:
+        ctx.turn_trace.open_span("run_pipeline", label=f"turn:{_normalize_chat_mode(getattr(ctx,'chat_mode',None))}")
+
     # PHI gate ran in the API process before this worker picked the turn up,
     # so it cannot open its own span here. Its measured duration rides on the
     # payload; replay it as a zero-width span so the PHI gate node appears in
@@ -1322,6 +1331,9 @@ def _persist_turn_spans(ctx: PipelineContext) -> None:
                     len(tr.spans), ctx.correlation_id[:8])
         mix: list[dict] = []
         seen: set[tuple[str, str]] = set()
+        # Close the turn root (and anything an early return left open) BEFORE
+        # reading rows: an open span still has wall_ms 0.
+        tr.close_all()
         for s in tr.spans:
             for (kind, target), c in s.counts.items():
                 if kind == "llm":

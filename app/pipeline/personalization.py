@@ -34,6 +34,7 @@ from __future__ import annotations
 import logging
 import os
 from typing import Any
+from app.telemetry.spans import traced
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ def _enabled() -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
+@traced("personalization")
 def splice_user_profile(base_prompt: str, profile: dict | None) -> str:
     """Pattern A — splice ``profile.rendered_prompt`` into a system prompt.
 

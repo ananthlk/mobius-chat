@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from app.telemetry.spans import traced
 
 # Phrases that indicate the user wants to stop the relentless pursuit
 END_PURSUIT_PHRASES = (
@@ -54,6 +55,7 @@ def user_wants_to_end_pursuit(message: str) -> bool:
     return bool(_END_PATTERN.search(message.strip()))
 
 
+@traced("continuity")
 def extract_user_provided_context(
     message: str,
     has_active_objective: bool = False,

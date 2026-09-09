@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any
+from app.telemetry.spans import traced
 
 # Slot -> j_tag dimension (prefix in policy_lexicon_entries kind='j')
 _SLOT_TO_DIMENSION: dict[str, str] = {
@@ -47,6 +48,7 @@ def get_options_for_slot(slot: str) -> list[dict[str, str]]:
         return []
 
 
+@traced("clarification")
 def build_clarification_options(missing_slots: list[str]) -> list[dict[str, Any]]:
     """Build option sets for each missing slot from lexicon. Returns list of {slot, label, selection_mode, choices}."""
     out: list[dict[str, Any]] = []

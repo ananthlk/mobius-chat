@@ -3,6 +3,7 @@ from typing import Any
 
 from app.state.context_router import Route
 from app.state.jurisdiction import get_jurisdiction_from_active, jurisdiction_to_summary
+from app.telemetry.spans import traced
 
 _MAX_RESOLVED_SLOTS = 6  # spec §11 Q4
 
@@ -18,6 +19,7 @@ def _format_resolved_slots(resolved: dict[str, str]) -> str:
     return "\n".join(lines) + "\n\n"
 
 
+@traced("context")
 def build_context_pack(
     route: Route,
     state: dict[str, Any],

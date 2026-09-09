@@ -374,3 +374,67 @@ def test_add_completed_emits_both_llm_ms_and_a_count():
     assert sp.llm_ms == 900.0
     assert [c for c in sp.counts.values() if c.kind == KIND_LLM][0].ms == 900.0
     assert sp.concurrent is True
+
+
+def test_close_all_closes_the_turn_root_and_any_early_return_leftovers():
+    """An unclosed span has wall_ms 0 — it renders as a node that took no time,
+    which is the same lie as a node that was never instrumented."""
+    from app.telemetry.spans import TurnTrace
+    tr = TurnTrace("cid-z")
+    tr.open_span("run_pipeline", label="turn:copilot")
+    tr.open_span("state_load")          # simulate an early return leaving it open
+    tr.close_all()
+    assert not tr._open_cms
+    assert all(s.wall_ms >= 0.0 for s in tr.spans)
+    # The root must be the ONLY depth-0 span, so totals cover the whole turn
+    # including the gaps between stages.
+    assert [s.module for s in tr.spans if s.depth == 0] == ["run_pipeline"]
+
+
+def test_dropped_measurement_is_counted_not_swallowed():
+    """record_ambient with no active trace used to return silently. That is how
+    11.5s of integrator model time was read as our own processing.
+
+    Asserts DELTAS, never the whole dict: _ORPHANED is process-global and the
+    progress-writer daemon thread adds to it from outside any test. An exact
+    equality here passes alone and fails in a full run — which is the
+    order-dependence this suite already has four of.
+    """
+    from app.telemetry import spans as sp
+    # Guarantee there is no ambient trace. Another test may have left one bound
+    # (the suite runs in random order), and record_ambient would then attribute
+    # the call instead of orphaning it — so this asserted nothing about the
+    # behaviour under test and failed only on some seeds.
+    _tok = sp.set_active(None)
+    try:
+        before = sp.orphaned_ms().get("llm", 0.0)
+        sp.record_ambient(sp.KIND_LLM, "gemini-2.5-flash", ms=4200.0)
+        assert sp.orphaned_ms().get("llm", 0.0) - before == 4200.0
+        # A zero-duration record is not a lost measurement; not counted.
+        mid = sp.orphaned_ms().get("llm", 0.0)
+        sp.record_ambient(sp.KIND_LLM, "x", ms=0.0)
+        assert sp.orphaned_ms().get("llm", 0.0) == mid
+    finally:
+        sp.reset_active(_tok)
+
+
+def test_orphaned_db_writes_are_counted_but_not_warned(caplog):
+    """Daemon threads (the progress writer) run outside any turn BY DESIGN and
+    orphan db writes constantly. Warning on those is noise that teaches a reader
+    to ignore the line — which would take the real llm signal with it."""
+    import logging
+    from app.telemetry import spans as sp
+    _tok = sp.set_active(None)   # see the note in the test above
+    try:
+        b_db = sp.orphaned_ms().get("db.write", 0.0)
+        b_llm = sp.orphaned_ms().get("llm", 0.0)
+        with caplog.at_level(logging.WARNING, logger="app.telemetry.spans"):
+            sp.record_ambient(sp.KIND_DB_WRITE, "chat_progress_events", ms=70453.0)
+            assert "NOT attributed" not in caplog.text
+            sp.record_ambient(sp.KIND_LLM, "gemini-2.5-flash", ms=4200.0)
+            assert "NOT attributed" in caplog.text
+        # Both COUNTED — the gauge must not lie just because one is quiet.
+        assert sp.orphaned_ms().get("db.write", 0.0) - b_db == 70453.0
+        assert sp.orphaned_ms().get("llm", 0.0) - b_llm == 4200.0
+    finally:
+        sp.reset_active(_tok)

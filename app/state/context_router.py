@@ -12,6 +12,7 @@ import time
 from typing import Any, Literal
 
 import re
+from app.telemetry.spans import traced
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,7 @@ def _cache_set(key: str, value: dict) -> None:
     _ROUTE_CACHE[key] = (value, time.time() + _ROUTE_CACHE_TTL)
 
 
+@traced("classify")
 def _llm_classify_route(message: str, summary: str, open_slots: list[str]) -> dict | None:
     """Call a cheap/fast LLM to classify ambiguous (LIGHT) routes. Returns None on any failure."""
     key = _cache_key(message, summary)
@@ -139,6 +141,7 @@ def _llm_classify_route(message: str, summary: str, open_slots: list[str]) -> di
 # Public interface
 # -------------------------------------------------------------------
 
+@traced("context")
 def route_context(
     user_text: str,
     existing_state: dict[str, Any],

@@ -31,6 +31,7 @@ import os
 from typing import Any
 
 import httpx
+from app.telemetry.spans import traced
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,7 @@ def _no_rag_url_result(tool: str) -> dict:
 # ── lookup_authoritative_sources ─────────────────────────────────────
 
 
+@traced("curator_tools")
 def call_lookup_authoritative_sources(inputs: dict) -> dict:
     """GET /sources/search with the planner's filter inputs.
 
@@ -229,6 +231,7 @@ def call_lookup_authoritative_sources(inputs: dict) -> dict:
 # ── ingest_url ───────────────────────────────────────────────────────
 
 
+@traced("curator_tools")
 def call_ingest_url(inputs: dict) -> dict:
     """POST /documents/import-from-html (or /import-from-gcs).
 

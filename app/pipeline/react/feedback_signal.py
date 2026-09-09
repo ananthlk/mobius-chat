@@ -11,10 +11,12 @@ import logging
 import os
 
 from app.pipeline.context import PipelineContext
+from app.telemetry.spans import traced
 
 logger = logging.getLogger(__name__)
 
 
+@traced("feedback_signal")
 def maybe_set_feedback_signal(ctx: PipelineContext) -> None:
     """Compute the cadence signal for this turn and stash it on
     ``ctx.feedback_signal``. Runs once per turn. Fully self-contained and

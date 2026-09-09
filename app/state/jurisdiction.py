@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.storage.threads import DEFAULT_JURISDICTION
+from app.telemetry.spans import traced
 
 
 @dataclass
@@ -66,6 +67,7 @@ def get_jurisdiction_from_active(active: dict[str, Any] | None) -> dict[str, Any
     return j.to_dict()
 
 
+@traced("jurisdiction")
 def get_jurisdiction_obj(active: dict[str, Any] | None) -> Jurisdiction:
     """Resolve Jurisdiction from active. Single source of truth."""
     active = active if isinstance(active, dict) else {}
@@ -114,6 +116,7 @@ def jurisdiction_to_summary(j: dict[str, Any] | Jurisdiction | None) -> str:
     return " ".join(parts)
 
 
+@traced("jurisdiction")
 def build_jurisdiction_patch(
     *,
     state: str | None = None,
