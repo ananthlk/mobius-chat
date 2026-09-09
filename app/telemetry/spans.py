@@ -610,3 +610,36 @@ def classify_source(correlation_id: str, declared: str | None = None) -> str:
 
 
 
+
+
+def traced(node: str, label: str | None = None):
+    """Decorator: run a function inside a span on `node`.
+
+    Instrumentation was the bottleneck, not the schema. 32 of 36 nodes showed
+    as `silent` purely because nothing opened a span for them — which reads as
+    "dead code or mis-modelled" when the truth was "not yet measured". A
+    decorator makes covering a node one line at its entry point instead of a
+    surgical edit to its body.
+
+    ctx is found positionally or by keyword; when a callee has no ctx the
+    decorator is a no-op passthrough rather than an error, because a function
+    called both inside and outside a turn is normal and must not be forced to
+    care.
+    """
+    def _wrap(fn):
+        import functools
+
+        @functools.wraps(fn)
+        def _inner(*args, **kwargs):
+            ctx = kwargs.get("ctx")
+            if ctx is None:
+                for a in args:
+                    if hasattr(a, "correlation_id") and hasattr(a, "thinking_chunks"):
+                        ctx = a
+                        break
+            if ctx is None or get_trace(ctx) is None:
+                return fn(*args, **kwargs)
+            with span(ctx, node, label=label or fn.__name__):
+                return fn(*args, **kwargs)
+        return _inner
+    return _wrap

@@ -45,6 +45,7 @@ from typing import Callable
 
 from app.pipeline.context import PipelineContext
 from app.services.doc_assembly import RETRIEVAL_SIGNAL_SYSTEM_CONTEXT
+from app.telemetry.spans import traced  # P2b node instrumentation
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,7 @@ def _is_needs_tools(text: str) -> bool:
     return head == ROUND0_SENTINEL or head.upper().startswith(ROUND0_SENTINEL)
 
 
+@traced("round0")
 def try_system_context_round0(
     ctx: PipelineContext,
     emitter: Callable[[str], None] | None = None,

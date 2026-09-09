@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from app.telemetry.spans import traced  # P2b node instrumentation
 
 # ---------------------------------------------------------------------------
 # SECTION 1 — Pronoun / reference resolution
@@ -105,6 +106,7 @@ def _get_prior_failed_query(
     return None
 
 
+@traced("message_resolver")
 def resolve_pronouns(
     current_message: str,
     last_turns: list[dict[str, Any]],
@@ -242,6 +244,7 @@ _LOCATION_FOLLOWUP_WITH_NPIS = re.compile(
 )
 
 
+@traced("message_resolver")
 def detect_skill_reference(
     message: str,
     active_skill: dict | None,

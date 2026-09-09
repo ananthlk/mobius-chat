@@ -27,6 +27,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from typing import Literal
+from app.telemetry.spans import traced  # P2b node instrumentation
 
 Directive = Literal["search", "consolidate", "extend", "finalize", "complete"]
 ConfidenceBar = Literal["high", "medium", "low"]
@@ -124,6 +125,7 @@ class RoundState:
     extension_rounds_available: int  # contract.max_extension_rounds - extensions granted so far
 
 
+@traced("governor")
 def evaluate(contract: ProductPromiseContract, state: RoundState) -> tuple[Directive, str]:
     """Pure function — no I/O, no side effects. Returns (directive, reason).
     Precedence order matches SPEC_REACT_PRODUCT_PROMISE exactly; first match

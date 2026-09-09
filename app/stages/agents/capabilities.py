@@ -7,6 +7,7 @@ Each tool has explicit capability declarations so the parser/LLM can
 match questions to the right tool. If the first tool fails, ReAct can try another.
 """
 from typing import Any
+from app.telemetry.spans import traced  # P2b node instrumentation
 
 # Per-tool explicit capability declarations (tool_name -> what it can/cannot do)
 TOOL_CAPABILITIES: dict[str, dict[str, Any]] = {
@@ -293,6 +294,7 @@ def slim_master_plan(plan: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
+@traced("capabilities")
 def planner_input_json(
     user_message: str, context: str = "", last_master_plan: dict[str, Any] | None = None
 ) -> dict[str, Any]:

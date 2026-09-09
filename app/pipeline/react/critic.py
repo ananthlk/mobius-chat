@@ -73,6 +73,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from typing import Any
+from app.telemetry.spans import traced  # P2b node instrumentation
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +142,7 @@ _FACTUAL_CLAIM_PATTERNS: list[re.Pattern[str]] = [
 _GOOGLE_SIGNAL = "google_only"  # matches RETRIEVAL_SIGNAL_GOOGLE_ONLY value
 
 
+@traced("critic")
 def should_run_critic(
     answer: str,
     all_sources: list[dict],
@@ -532,6 +534,7 @@ def resolve_critic_system_prompt_v2(user_profile: dict | None) -> "ResolvedCompo
 # ── Response parser ──────────────────────────────────────────────────
 
 
+@traced("critic")
 def parse_critic_response(raw: str) -> CritiqueResult:
     """Parse the critic's JSON output into a ``CritiqueResult``.
 
