@@ -2608,6 +2608,14 @@ class SkillLLMRequest(BaseModel):
     # hard failure). ``stage`` stays the bandit-arm identifier either way.
     prompt_address: str | None = None
     template_vars: dict | None = None
+    # Callers (mobius-payor's llm_manager_client, deep-research) have been
+    # SENDING this since before the field existed. Pydantic ignores unknown
+    # fields, so it was accepted and silently dropped: the caller's structured
+    # output worked against their local dev fallback and would have degraded to
+    # free text the moment it went through chat, with no error anywhere.
+    # A producer whose consumer never existed. llm_manager.generate has taken
+    # response_schema all along; only this hop was missing.
+    response_schema: dict | None = None
 
 
 @app.post("/internal/skill-llm")
@@ -2667,6 +2675,7 @@ async def internal_skill_llm(
             mode=(body.mode or "").strip() or None,
             composition_id=composition_id,
             composition_hash=composition_hash,
+            response_schema=body.response_schema or None,
         )
     except asyncio.TimeoutError as e:
         raise HTTPException(

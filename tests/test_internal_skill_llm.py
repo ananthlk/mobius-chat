@@ -120,3 +120,33 @@ def test_research_parse_is_routable():
     from app.main import _SKILL_LLM_ALLOWED_STAGES
     assert "research_parse" in _SKILL_LLM_ALLOWED_STAGES
     assert _registered_stages().get("research_parse")
+
+
+def test_response_schema_reaches_the_model_call():
+    """Callers were sending response_schema before the field existed. Pydantic
+    ignores unknown fields, so it was accepted and dropped — structured output
+    worked against a caller's local dev fallback and would have silently become
+    free text through chat, with no error to notice."""
+    import asyncio
+    from unittest.mock import patch
+    from fastapi.testclient import TestClient
+    import app.main as m
+
+    seen = {}
+
+    async def _fake_generate(prompt, **kw):
+        seen.update(kw)
+        return "{}", {"model": "gemini-2.5-flash"}
+
+    schema = {"type": "object", "properties": {"question": {"type": "string"}}}
+    with patch.dict("os.environ", {"MOBIUS_SKILL_LLM_INTERNAL_KEY": "k"}), \
+         patch.object(m.llm_manager if hasattr(m, "llm_manager") else __import__(
+             "app.services.llm_manager", fromlist=["x"]), "generate", _fake_generate):
+        c = TestClient(m.app)
+        r = c.post("/internal/skill-llm",
+                   headers={"X-Mobius-Skill-LLM-Key": "k"},
+                   json={"system": "s", "user": "u", "stage": "research_parse",
+                         "response_schema": schema})
+    assert r.status_code == 200, r.text
+    assert seen.get("response_schema") == schema, (
+        "response_schema was accepted by the endpoint but never reached generate()")
