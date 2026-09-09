@@ -97,3 +97,44 @@ Two structural guards now exist:
 "free"): `feedback_signal`, `retrieval_budget`, `jurisdiction`, `personalization`,
 and the sequential `format_response` path. If a latency spec targets any of these,
 instrument first — do not trust a 0.
+
+---
+
+# Schema findings (sent to Product Awareness 2026-09-09)
+
+## `credentialing_envelope` is stale — the only confirmed one
+Verified against **git history, not grep**:
+- Module deleted by P1d, commit `298830c` ("remove the credentialing/roster
+  surface, 26,390 lines").
+- Its documented core, `resolve_step3_roster_merge_context`, has **zero**
+  remaining references.
+- `scripts/platform/chat_node_content.py` still rates it **green, depth="code"**
+  with a full behavioural description.
+
+Named in `app/telemetry/spans.py:NODES_WITHOUT_CODE` so a reader comparing the
+36-node schema to a live trace does not read "no span" as "fast". Their file is
+not edited from here.
+
+## `completion_extension_gate` — I was wrong, the schema was right
+I nearly reported this as a second stale entry. It is live code: ~60 lines
+**inline** in react_loop's main loop (completion critic + the `max_it += 1`
+extension bump), with no module, class or function — exactly as the schema says.
+
+My existence test was a search for a **symbol** of that name. A nameless block
+has no symbol, so the empty result proved nothing and I read it as absence.
+
+> **A name-based search answers "is there a symbol called X", never "does X
+> happen."** Reserve absence claims for git history.
+
+The false claim had already shipped in `NODES_WITHOUT_CODE`; corrected in the
+same commit that instrumented the node.
+
+This node was the most valuable one in the whole set to instrument, precisely
+because it is nameless: with nothing to decorate its LLM call was charged to the
+enclosing round's processing, *and* anyone searching for it concluded it was
+absent. Two independent ways of being invisible, stacked.
+
+## Coverage
+35 of 36 schema nodes have code; 26 emit spans. Uninstrumented remainder is
+infrastructure (`queue`, `worker`, `POST /chat`, `orchestrator`, `stages`) plus
+`plan`/`resolve`, deleted by the refactor.
