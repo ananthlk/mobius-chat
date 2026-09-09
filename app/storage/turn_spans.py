@@ -238,3 +238,128 @@ def list_recent_traces(limit: int = 40) -> list[dict[str, Any]]:
         d["created_at"] = str(d.get("created_at") or "")
         out.append(d)
     return out
+
+
+def node_rollup(limit_spans: int = 5000) -> dict[str, Any]:
+    """Per-node MATRIX: processing · llm · db · tool(external), plus both
+    falsifiability directions.
+
+    Ananth's shape: for each node, where did ITS time go. A single duration
+    per node says a node is slow; the matrix says WHY, and the four causes
+    have four different owners:
+
+      llm         model routing. Not our code — flash ~4.7s vs Pro ~20s is a
+                  4x swing that no amount of refactoring touches.
+      db          database time, summed from this node's own counts.
+      tool        time in CHILD spans that are tool dispatches — work the
+                  node handed to something external (RAG over HTTP). Inside
+                  the node's wall, but not the node's code.
+      processing  wall - llm - db - tool. What the node's OWN code costs.
+                  This is the only column a refactor can move, which is why
+                  it must not be an unexplained remainder.
+
+    Percentiles are p50/p95 on the node's wall, never a mean — the mean is
+    eaten by the tail and the tail is where a loop lives.
+
+    Aggregated in Python rather than SQL: the four-way split depends on the
+    parent/child relation AND on JSONB counts, and expressing that as one
+    query makes it unreadable for no gain at these volumes. limit_spans
+    bounds it; the cap is reported so a truncated rollup is never mistaken
+    for a complete one.
+    """
+    result = db_query(
+        """
+        SELECT correlation_id, span_id, parent_span_id, module, label,
+               depth, wall_ms, llm_ms, counts, created_at
+        FROM turn_spans
+        ORDER BY created_at DESC
+        LIMIT :lim
+        """,
+        _DB,
+        params={"lim": int(limit_spans)},
+    )
+    if not isinstance(result, dict) or result.get("error"):
+        logger.warning("[turn_spans] node rollup failed: %s",
+                       (result or {}).get("error") if isinstance(result, dict) else "no result")
+        return {"observed": [], "silent": [], "unmodelled": [], "node_count": 0,
+                "truncated": False}
+
+    cols = result.get("columns") or []
+    rows = [dict(zip(cols, r)) for r in (result.get("rows") or [])]
+    for r in rows:
+        c = r.get("counts")
+        if isinstance(c, str):
+            try:
+                r["counts"] = json.loads(c)
+            except Exception:
+                r["counts"] = []
+        r["wall_ms"] = float(r.get("wall_ms") or 0.0)
+        r["llm_ms"] = float(r.get("llm_ms") or 0.0)
+
+    by_id = {r["span_id"]: r for r in rows}
+    # tool time a span delegated to a child dispatch
+    tool_child: dict[str, float] = {}
+    for r in rows:
+        pid = r.get("parent_span_id")
+        if pid and str(r.get("label") or "").startswith("tool:"):
+            tool_child[pid] = tool_child.get(pid, 0.0) + r["wall_ms"]
+
+    agg: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        # A child tool span's time belongs to its PARENT's `tool` column, not
+        # to a second row of its own — otherwise the node double-counts.
+        if str(r.get("label") or "").startswith("tool:") and r.get("parent_span_id") in by_id:
+            continue
+        node = r["module"]
+        a = agg.setdefault(node, {"module": node, "turns": set(), "spans": 0,
+                                  "walls": [], "llm": 0.0, "db": 0.0,
+                                  "tool": 0.0, "processing": 0.0,
+                                  "db_n": 0, "llm_n": 0, "last_seen": ""})
+        db_ms = sum(float(c.get("ms") or 0.0) for c in (r.get("counts") or [])
+                    if str(c.get("kind", "")).startswith("db."))
+        db_n = sum(int(c.get("n") or 0) for c in (r.get("counts") or [])
+                   if str(c.get("kind", "")).startswith("db."))
+        llm_n = sum(int(c.get("n") or 0) for c in (r.get("counts") or [])
+                    if c.get("kind") == "llm")
+        tool_ms = tool_child.get(r["span_id"], 0.0)
+        proc = max(0.0, r["wall_ms"] - r["llm_ms"] - db_ms - tool_ms)
+
+        a["turns"].add(r["correlation_id"])
+        a["spans"] += 1
+        a["walls"].append(r["wall_ms"])
+        a["llm"] += r["llm_ms"]
+        a["db"] += db_ms
+        a["tool"] += tool_ms
+        a["processing"] += proc
+        a["db_n"] += db_n
+        a["llm_n"] += llm_n
+        a["last_seen"] = max(a["last_seen"], str(r.get("created_at") or ""))
+
+    def _pct(vals: list[float], q: float) -> float:
+        if not vals:
+            return 0.0
+        v = sorted(vals)
+        k = max(0, min(len(v) - 1, int(round(q * (len(v) - 1)))))
+        return v[k]
+
+    observed = []
+    for a in agg.values():
+        walls = a.pop("walls")
+        a["turns"] = len(a["turns"])
+        a["p50_wall"] = round(_pct(walls, 0.50), 1)
+        a["p95_wall"] = round(_pct(walls, 0.95), 1)
+        a["total_wall"] = round(sum(walls), 1)
+        for k in ("llm", "db", "tool", "processing"):
+            a[k] = round(a[k], 1)
+        observed.append(a)
+    observed.sort(key=lambda x: -x["p95_wall"])
+
+    from app.telemetry.spans import NODE_KEYS
+    seen = {o["module"] for o in observed}
+    return {
+        "observed": observed,
+        "silent": sorted(NODE_KEYS - seen),
+        "unmodelled": sorted(seen - set(NODE_KEYS)),
+        "node_count": len(NODE_KEYS),
+        "truncated": len(rows) >= limit_spans,
+    }

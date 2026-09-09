@@ -60,12 +60,29 @@
   .warnbox{background:#fef2f2;border:1px solid #fecaca;color:#991b1b;padding:9px 12px;border-radius:8px;
            font-size:12.5px;margin-top:10px}
   .legend{display:flex;gap:14px;font-size:11.5px;color:var(--mobius-text-muted,#64748b);margin-top:8px}
+  .tabs{display:flex;gap:4px;margin-left:8px}
+  .tab{border:1px solid var(--mobius-border,#e2e8f0);background:#fff;border-radius:7px;padding:4px 11px;
+       font:inherit;font-size:12.5px;cursor:pointer;color:var(--mobius-text-secondary,#374151)}
+  .tab.on{background:#f5f3ff;border-color:#c4b5fd;color:#5b21b6;font-weight:600}
+  .full{grid-column:1/-1;overflow-y:auto;padding:24px 28px}
+  .sil{color:#92400e;background:#fffbeb;border:1px solid #fde68a}
+  .unm{color:#991b1b;background:#fef2f2;border:1px solid #fecaca}
+  .chip{display:inline-block;padding:3px 9px;border-radius:6px;font-size:12px;margin:0 6px 6px 0;
+        font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .mbar{display:flex;height:10px;border-radius:3px;overflow:hidden;background:#eef2f7}
+  .mbar i{display:block;height:100%}
+  .m-proc{background:#0ea5e9} .m-llm{background:#7c3aed} .m-db{background:#f59e0b} .m-tool{background:#10b981}
+  .why{font-size:12.5px;color:var(--mobius-text-muted,#64748b);margin:2px 0 10px;line-height:1.55;max-width:76ch}
 </style>
 </head>
 <body>
 <header>
   <h1>Turn traces</h1>
   <span class="sub" id="hdr">loading…</span>
+  <span class="tabs" id="tabs">
+    <button class="tab on" data-v="turns">By turn</button>
+    <button class="tab" data-v="nodes">By schema node</button>
+  </span>
   <span class="sub" style="margin-left:auto" id="rate"></span>
 </header>
 <div class="wrap">
@@ -184,6 +201,69 @@ async function loadDetail(cid){
       Two runs are only comparable when the mix matches: flash ≈4.7s vs Pro ≈20s is a 4× swing that
       has nothing to do with our code.</div>`;
 }
+
+async function loadNodes(){
+  const wrap=document.querySelector('.wrap');
+  wrap.innerHTML='<div class="full" id="nodeview"><div class="empty">loading…</div></div>';
+  const r=await fetch(`${API}/chat/traces/nodes`); const d=await r.json();
+  const obs=d.observed||[], sil=d.silent||[], unm=d.unmodelled||[];
+  const rows=obs.map(o=>{
+    const W=o.total_wall||0;
+    const seg=(v,cls)=>W>0?`<i class="${cls}" style="width:${100*v/W}%"></i>`:'';
+    return `<tr>
+      <td><span class="node">${o.module}</span><div class="lbl" style="font-size:11px">${o.turns} turns · ${o.spans} spans</div></td>
+      <td style="width:150px"><div class="mbar">${seg(o.processing,'m-proc')}${seg(o.llm,'m-llm')}${seg(o.db,'m-db')}${seg(o.tool,'m-tool')}</div></td>
+      <td class="num"><b>${ms(o.processing)}</b></td>
+      <td class="num">${ms(o.llm)}${o.llm_n?`<div class="lbl" style="font-size:11px">n=${o.llm_n}</div>`:''}</td>
+      <td class="num">${ms(o.db)}${o.db_n?`<div class="lbl" style="font-size:11px">n=${o.db_n}</div>`:''}</td>
+      <td class="num">${ms(o.tool)}</td>
+      <td class="num">${ms(o.p50_wall)}</td>
+      <td class="num">${ms(o.p95_wall)}</td></tr>`;
+  }).join('');
+  document.getElementById('nodeview').innerHTML=`
+    <h2 style="margin-top:0">Node matrix — ${obs.length} of ${d.node_count} schema nodes observed</h2>
+    <div class="why">For each node, where <b>its</b> time went. One duration says a node is slow;
+      the split says why — and the four causes have four different owners.
+      <b>processing</b> = wall − llm − db − tool: the node's own code, and the only column a
+      refactor can move. <b>tool</b> is work handed to something external (RAG over HTTP) — inside
+      the node's wall, but not its code. p50/p95, never a mean.</div>
+    <div class="legend" style="margin-bottom:10px">
+      <span><span class="kindtag m-proc"></span>processing</span>
+      <span><span class="kindtag m-llm"></span>llm</span>
+      <span><span class="kindtag m-db"></span>db</span>
+      <span><span class="kindtag m-tool"></span>tool (external)</span></div>
+    <table>
+      <tr><th>Schema node</th><th>Split</th><th class="num">Processing</th><th class="num">LLM</th>
+          <th class="num">DB</th><th class="num">Tool</th>
+          <th class="num">p50 wall</th><th class="num">p95 wall</th></tr>
+      ${rows||'<tr><td colspan="8" class="lbl">no spans recorded yet</td></tr>'}
+    </table>
+    ${d.truncated?'<div class="warnbox">Rollup truncated at the span cap — these numbers cover the most recent spans only.</div>':''}
+
+    <h2>Silent — ${sil.length} nodes produced no span</h2>
+    <div class="why">Each is <b>either dead code or mis-modelled</b>. Until spans carried node keys
+      neither was detectable: a hand-written schema has nothing in the running system to contradict
+      it. Instrumentation here is still thin, so most of these mean "not yet instrumented" — the
+      list only becomes an accusation once coverage is complete.</div>
+    <div>${sil.map(n=>`<span class="chip sil">${n}</span>`).join('')||'<span class="lbl">none</span>'}</div>
+
+    <h2>Unmodelled — ${unm.length} span names are not schema nodes</h2>
+    <div class="why">The schema is missing something the system actually does. Recorded verbatim
+      rather than normalised, so the gap is visible instead of silently renamed away.</div>
+    <div>${unm.map(n=>`<span class="chip unm">${n}</span>`).join('')||'<span class="lbl">none — every span maps to a node</span>'}</div>`;
+}
+
+function showTurns(){
+  document.querySelector('.wrap').innerHTML=
+    '<div class="list" id="list"><div class="empty">loading…</div></div>'+
+    '<div class="detail" id="detail"><div class="empty">Select a turn.</div></div>';
+  loadList();
+}
+document.getElementById('tabs').addEventListener('click',e=>{
+  const b=e.target.closest('.tab'); if(!b) return;
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on')); b.classList.add('on');
+  b.dataset.v==='nodes' ? loadNodes() : showTurns();
+});
 loadList();
 </script>
 </body>

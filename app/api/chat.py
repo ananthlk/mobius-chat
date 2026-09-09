@@ -582,6 +582,19 @@ def get_chat_plan(correlation_id: str):
     return plan_payload
 
 
+@router.get("/chat/traces/nodes")
+def get_node_rollup():
+    """Trace data rolled up by SCHEMA NODE, with both falsifiability lists.
+
+    Returns observed nodes (p50/p95, never a mean — the mean is eaten by the
+    tail and the tail is where the loop lives), plus `silent` (schema nodes
+    that produced no span: dead code or mis-modelled) and `unmodelled` (span
+    names that are not nodes: the schema is incomplete).
+    """
+    from app.storage.turn_spans import node_rollup
+    return node_rollup()
+
+
 @router.get("/chat/traces")
 def list_turn_traces(limit: int = 40):
     """Recent turns that produced spans — the trace viewer's index.
