@@ -9531,7 +9531,8 @@ function renderModuleTiming(correlationId) {
         oneline.textContent = "no spans recorded";
         return;
       }
-      oneline.textContent = `${Math.round(sum.wall_ms || 0)}ms wall \xB7 ${Math.round(sum.llm_ms || 0)}ms llm \xB7 ${Math.round(sum.self_ms || 0)}ms self \xB7 ${spans.length} spans`;
+      const selfTxt = sum.llm_exceeds_wall ? "self n/a (parallel llm)" : `${Math.round(sum.self_ms || 0)}ms self`;
+      oneline.textContent = `${Math.round(sum.wall_ms || 0)}ms wall \xB7 ${Math.round(sum.llm_ms || 0)}ms llm \xB7 ${selfTxt} \xB7 ${spans.length} spans`;
       const mk = (k, v) => {
         const row = document.createElement("div");
         row.className = "diag-telemetry-row";

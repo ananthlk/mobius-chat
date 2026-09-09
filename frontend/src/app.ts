@@ -7192,9 +7192,14 @@ function renderModuleTiming(correlationId: string): HTMLElement {
       }
       // wall / llm / self — the split is the point: self_ms is what moves when
       // CODE gets slower, wall moves when the model router picks Pro over flash.
+      // "self" is code+DB time. When LLM calls overlap, llm_ms exceeds wall and
+      // self is not computable — say so rather than showing a clamped 0.
+      const selfTxt = sum.llm_exceeds_wall
+        ? "self n/a (parallel llm)"
+        : `${Math.round(sum.self_ms || 0)}ms self`;
       oneline.textContent =
         `${Math.round(sum.wall_ms || 0)}ms wall · ${Math.round(sum.llm_ms || 0)}ms llm · ` +
-        `${Math.round(sum.self_ms || 0)}ms self · ${spans.length} spans`;
+        `${selfTxt} · ${spans.length} spans`;
 
       const mk = (k: string, v: string) => {
         const row = document.createElement("div");

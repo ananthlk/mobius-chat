@@ -461,6 +461,29 @@ def db_query(
     max_rows: int = 1000,
 ) -> dict:
     """Execute a read-only SQL query. Falls back to direct DB if agent is down."""
+    # P2b: time every DB call and attribute it to the active turn's span.
+    # Recorded per TABLE, because the target is what separates a loop (40
+    # writes to one table) from a busy turn (40 writes across 40). This is
+    # the non-LLM half of the wall/llm split — without it "self_ms" is just
+    # an unexplained remainder.
+    import time as _t_db
+    from app.telemetry import spans as _sp
+    _t0_db = _t_db.perf_counter()
+    try:
+        return _db_query_inner(sql, db_name, params, max_rows)
+    finally:
+        _sp.record_ambient(
+            _sp.KIND_DB_READ, _sp.sql_target(sql),
+            ms=(_t_db.perf_counter() - _t0_db) * 1000.0,
+        )
+
+
+def _db_query_inner(
+    sql: str,
+    db_name: str,
+    params: dict | None = None,
+    max_rows: int = 1000,
+) -> dict:
     if _DIRECT_MODE:
         return _fallback_query(sql, db_name, params or {}, max_rows)
     try:
@@ -482,6 +505,28 @@ def db_execute(
     params: dict | None = None,
 ) -> dict:
     """Execute a write SQL statement. Falls back to direct DB if agent is down."""
+    # P2b: time every DB call and attribute it to the active turn's span.
+    # Recorded per TABLE, because the target is what separates a loop (40
+    # writes to one table) from a busy turn (40 writes across 40). This is
+    # the non-LLM half of the wall/llm split — without it "self_ms" is just
+    # an unexplained remainder.
+    import time as _t_db
+    from app.telemetry import spans as _sp
+    _t0_db = _t_db.perf_counter()
+    try:
+        return _db_execute_inner(sql, db_name, params)
+    finally:
+        _sp.record_ambient(
+            _sp.KIND_DB_WRITE, _sp.sql_target(sql),
+            ms=(_t_db.perf_counter() - _t0_db) * 1000.0,
+        )
+
+
+def _db_execute_inner(
+    sql: str,
+    db_name: str,
+    params: dict | None = None,
+) -> dict:
     if _DIRECT_MODE:
         return _fallback_execute(sql, db_name, params or {})
     try:

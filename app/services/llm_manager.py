@@ -214,6 +214,21 @@ async def generate(
         latency_ms = int((time.perf_counter() - t0) * 1000)
         model_id   = spec.model_id if spec else (usage.get("model") or "unknown")
         provider_n = spec.provider if spec else (usage.get("provider") or "unknown")
+
+        # P2b: attribute this call's latency to the active turn's span, keyed
+        # by MODEL. Within Vertex, flash (~4.7s) and Pro (~20s) are 4x apart,
+        # so provider alone cannot explain a latency move — the model is the
+        # controlling dimension. Measured here rather than joined from
+        # llm_calls because 790 of 1,979 rows in 24h have a NULL
+        # correlation_id, so that join returns a partial set with no signal
+        # that it is partial. This is also what makes wall/llm meaningful:
+        # self_ms = wall - llm is the CODE latency, and without this it is
+        # just an unexplained remainder.
+        try:
+            from app.telemetry import spans as _sp
+            _sp.record_ambient(_sp.KIND_LLM, str(model_id), ms=float(latency_ms))
+        except Exception:
+            pass
         cost_usd   = float(usage.get("cost_usd") or 0.0)
 
         # Phase 2.5b — feed the tpd_tracker so the filter in

@@ -456,8 +456,14 @@ def run_pipeline(
     # P2b turn telemetry: per-module spans, counts-by-target, wall/llm split.
     # Attached to ctx rather than a thread-local so a span crossing a thread
     # boundary is a visible choice (react_loop spawns daemon threads).
-    from app.telemetry.spans import TurnTrace
+    from app.telemetry.spans import TurnTrace, reset_active, set_active
     ctx.turn_trace = TurnTrace(correlation_id)
+    # Bind it to this execution context so llm_manager and db_client — many
+    # frames below, with no ctx — can attribute their latency to this turn.
+    # A ContextVar rather than a thread-local: it does not propagate into new
+    # threads, so react_loop's daemon threads cannot attach counts to a turn
+    # that has already completed.
+    _trace_token = set_active(ctx.turn_trace)
 
     _detect_and_resolve_retry(ctx)
 
@@ -1223,6 +1229,15 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
         logger.info("Clarification/refinement published for %s", ctx.correlation_id[:8])
     else:
         logger.info("Clarification/refinement publish skipped for %s -- already finalized elsewhere", ctx.correlation_id[:8])
+
+
+def _release_active_trace(token) -> None:
+    """Unbind the turn's trace from this execution context."""
+    try:
+        from app.telemetry.spans import reset_active
+        reset_active(token)
+    except Exception:
+        pass
 
 
 def _persist_turn_spans(ctx: PipelineContext) -> None:

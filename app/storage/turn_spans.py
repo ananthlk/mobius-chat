@@ -170,10 +170,18 @@ def summarize(spans: list[dict[str, Any]]) -> dict[str, Any]:
         a["ms"] = round(a["ms"], 2)
     wall = round(sum(float(s.get("wall_ms") or 0.0) for s in roots), 2)
     llm = round(sum(float(s.get("llm_ms") or 0.0) for s in roots), 2)
+    # llm_ms can legitimately EXCEED wall_ms when LLM calls run in parallel
+    # (the integrator fans out): llm_ms is total model time, not wall time
+    # spent in the model. Clamping self_ms to 0 keeps it meaningful, but the
+    # clamp would silently hide the condition — so it is reported. A reader
+    # seeing self_ms=0 must be able to tell "no code time" from "we could not
+    # compute code time because the calls overlapped".
+    _parallel = llm > wall
     return {
         "wall_ms": wall,
         "llm_ms": llm,
         "self_ms": round(max(0.0, wall - llm), 2),
+        "llm_exceeds_wall": _parallel,
         "span_count": len(spans),
         "counts": counts,
         "model_mix": (roots[0].get("model_mix") if roots else []) or [],

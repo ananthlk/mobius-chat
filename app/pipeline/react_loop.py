@@ -5899,6 +5899,16 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 _chunk_count >= _FAST_MODE_MIN_CHUNKS
                 and _total_chars >= _FAST_MODE_MIN_CHARS
             )
+            # P2b control-set stamp. This early exit changes ROUND COUNT and
+            # is triggered by what retrieval returned, not by any config — so
+            # a run where 8 of 22 questions exit early is silently
+            # incomparable to one where 3 did, with nothing to point at.
+            # Recorded, never forced.
+            try:
+                ctx.react_rich_evidence = bool(_rich_evidence)
+            except Exception:
+                pass
+
             if _rich_evidence:
                 # 2026-08-07 (Ananth, directly, live finding): this used
                 # to ship _raw_text verbatim -- the raw "[1] Sunshine

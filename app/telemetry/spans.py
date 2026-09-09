@@ -41,7 +41,9 @@ crosses a thread boundary a visible choice.
 """
 from __future__ import annotations
 
+import contextvars
 import logging
+import re
 import time
 import uuid
 from contextlib import contextmanager
@@ -320,3 +322,69 @@ def record(ctx: Any, kind: str, target: str, n: int = 1, ms: float = 0.0) -> Non
     tr = get_trace(ctx)
     if tr is not None:
         tr.record(kind, target, n=n, ms=ms)
+
+
+# ── ambient trace ────────────────────────────────────────────────────
+#
+# The header above says spans are passed explicitly, not held in a
+# thread-local, so a span crossing a thread boundary is a visible choice.
+# That still holds for SPANS. It does not work for COUNTS: an LLM call in
+# llm_manager and a query in db_client are many frames below the pipeline
+# and have no ctx, and threading ctx through both is a large, invasive
+# change to modules this phase is not refactoring.
+#
+# A ContextVar is the right tool rather than a compromise:
+#   * it is per-logical-context, so concurrent turns cannot cross-talk
+#   * it does NOT propagate into new threads by default, so react_loop's
+#     daemon threads (e.g. the RAG grade callback) cannot silently attach
+#     counts to a turn that has already completed — the exact mis-parenting
+#     the explicit rule was written to prevent
+#
+# So: spans stay explicit; ambient counts attach to whatever turn is
+# actually executing. If no turn is active, record_ambient is a no-op and
+# says nothing — an LLM call outside a turn (a warm-up, an eval) is not an
+# error and must not log on every occurrence.
+_ACTIVE: contextvars.ContextVar["TurnTrace | None"] = contextvars.ContextVar(
+    "mobius_active_turn_trace", default=None
+)
+
+
+def set_active(trace: "TurnTrace | None"):
+    """Bind the turn's trace to this execution context. Returns a reset token."""
+    return _ACTIVE.set(trace)
+
+
+def reset_active(token) -> None:
+    try:
+        _ACTIVE.reset(token)
+    except Exception:  # pragma: no cover — token from another context
+        _ACTIVE.set(None)
+
+
+def record_ambient(kind: str, target: str, n: int = 1, ms: float = 0.0) -> None:
+    """Record against the active turn, if any. Silent when there is none."""
+    tr = _ACTIVE.get()
+    if tr is None or not tr._stack:
+        return
+    try:
+        tr.record(kind, target, n=n, ms=ms)
+    except Exception as exc:  # never let telemetry break a caller
+        logger.warning("[spans] record_ambient(%s,%s) failed: %s", kind, target, exc)
+
+
+_TABLE_RE = re.compile(
+    r"\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM|FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_.]*)",
+    re.IGNORECASE,
+)
+
+
+def sql_target(sql: str) -> str:
+    """Best-effort table name from a SQL statement.
+
+    The TARGET is the point: "40 writes to chat_state" is a loop, "40 writes
+    across 40 tables" is a busy turn, and a bare count cannot separate them.
+    Falls back to "unknown_table" rather than dropping the count — an
+    unattributed write is still evidence of a write.
+    """
+    m = _TABLE_RE.search(sql or "")
+    return m.group(1).lower() if m else "unknown_table"
