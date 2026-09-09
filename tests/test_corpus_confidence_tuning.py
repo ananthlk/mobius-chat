@@ -153,6 +153,17 @@ class TestCallSiteUsesHelper:
     def test_call_site_uses_helper(self):
         """Positive assertion: the helper IS wired at the call site.
         Defense against someone accidentally deleting the helper
-        call and leaving confidence_min unset entirely."""
+        call and leaving confidence_min unset entirely.
+
+        Match up to the opening paren only. The helper later gained a
+        chat_mode argument — the call site is now
+        ``_corpus_confidence_min(getattr(ctx, "chat_mode", None))`` — and
+        pinning the empty-paren form made this fail on an argument change
+        that did not affect what the test is actually guarding.
+
+        NOTE: this asserts on react_loop.py's SOURCE TEXT, so it will break
+        when P4 splits that module even though nothing is wrong. Prefer
+        importing and asserting behaviour if this needs touching again.
+        """
         src = Path("app/pipeline/react_loop.py").read_text()
-        assert "confidence_min=_corpus_confidence_min()" in src
+        assert "confidence_min=_corpus_confidence_min(" in src

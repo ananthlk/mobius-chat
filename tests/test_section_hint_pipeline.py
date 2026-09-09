@@ -202,11 +202,28 @@ def test_finalize_response_no_hints_when_no_section_hint():
 # ---------------------------------------------------------------------------
 
 def test_build_consolidator_includes_tool_section_hints():
-    """Consolidator JSON payload must include tool_section_hints when passed."""
+    """Consolidator JSON payload must carry tool section hints when passed.
+
+    Two things changed under this test and it had been failing since:
+
+    1. The hints are no longer forwarded raw. ``_build_consolidator_input_json``
+       runs them through ``build_pre_built_sections`` and emits typed
+       AnswerCard sections under ``pre_built_sections``, so the integrator
+       cannot fall back to bullets for data that has explicit structure.
+    2. A ``table`` hint now needs BOTH ``table_headers`` and ``rows``. The old
+       fixture supplied only ``rows``, so the section was silently skipped and
+       no key was written at all — the assertion failed on a fixture that no
+       longer described a valid hint.
+    """
     from app.responder.final import _build_consolidator_input_json
 
     plan = Plan(subquestions=[])
-    hints = [{"section_format": "table", "section_title": "Rate Gap", "rows": [["x", "y"]]}]
+    hints = [{
+        "section_format": "table",
+        "section_title": "Rate Gap",
+        "table_headers": ["Code", "Gap"],
+        "rows": [["x", "y"]],
+    }]
 
     raw = _build_consolidator_input_json(
         plan,
@@ -216,8 +233,11 @@ def test_build_consolidator_includes_tool_section_hints():
     )
     payload = json.loads(raw)
 
-    assert "tool_section_hints" in payload
-    assert payload["tool_section_hints"] == hints
+    assert "pre_built_sections" in payload
+    section = payload["pre_built_sections"][0]
+    assert section["format"] == "table"
+    assert section["label"] == "Rate Gap"
+    assert section["data"] == {"headers": ["Code", "Gap"], "rows": [["x", "y"]]}
 
 
 # ---------------------------------------------------------------------------

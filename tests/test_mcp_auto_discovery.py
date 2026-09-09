@@ -212,7 +212,10 @@ def test_manifest_still_renders_curated_builtins(adapter_cleanup):
 
     manifest = tm.get_tool_manifest()
     # A sampling of expected sections from the curated block.
-    assert "search_corpus(query)" in manifest
+    # search_corpus declares itself as a "search_corpus:" Can/Cannot block
+    # now, not a "(query)" signature. Match the declaration form, not a
+    # bare name — bare names also match prose cross-references.
+    assert "search_corpus:" in manifest
     assert "healthcare_query" in manifest
     assert "refuse(reason)" in manifest
     assert "google_search" in manifest

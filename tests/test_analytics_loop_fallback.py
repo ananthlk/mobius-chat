@@ -121,6 +121,13 @@ def test_write_async_lands_via_one_shot(monkeypatch):
 
     from datetime import datetime, timezone
 
+    # Must list EVERY column _write_async binds. It reads them as
+    # record["<col>"], and the whole body sits under a try/except that
+    # swallows the KeyError — so a missing key makes the write silently
+    # no-op and this test fails on executed["v"] with no clue why.
+    # It had been failing since the INSERT gained composition_id /
+    # composition_hash / is_hard_pinned (LLMManager v2) and
+    # module_key / variant_id (2026-09-08 llm_calls writer fix).
     rec = {k: None for k in (
         "call_id", "correlation_id", "thread_id", "config_sha", "model", "provider",
         "stage", "tier", "complexity", "is_ab_call", "ab_variant", "success",
@@ -128,6 +135,8 @@ def test_write_async_lands_via_one_shot(monkeypatch):
         "latency_ms", "input_tokens", "output_tokens", "cost_usd", "quality_score",
         "quality_source", "phi_detected", "phi_scrubbed", "phi_types", "prompt_len_chars",
         "output_len_chars", "prompt_hash", "synced_to_bq", "synced_at",
+        "composition_id", "composition_hash", "is_hard_pinned",
+        "module_key", "variant_id",
     )}
     rec["ts"] = datetime.now(timezone.utc)
     rec["stage"] = "thread_summary"

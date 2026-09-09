@@ -65,7 +65,13 @@ class TestRecoverableRetry:
         emit = _Emits()
         call_count = {"n": 0}
 
-        def fake_execute(tool, inputs, ctx, emitter):
+        # *a/**kw like every other fake in this file: _execute_tool gained an
+        # open_gaps kwarg, and a fixed 4-arg signature made the call raise
+        # TypeError. _run_once() catches that and returns an exception
+        # envelope, which is not a recoverable error_envelope — so the retry
+        # never fired and the test failed on the retry count rather than on
+        # anything to do with rate limiting.
+        def fake_execute(*a, **kw):
             call_count["n"] += 1
             if call_count["n"] == 1:
                 return _envelope_result("rate_limit", retry_after=1)

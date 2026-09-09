@@ -81,68 +81,57 @@ def client(app):
 
 
 class TestListRecentForRestoration:
-    def test_auth_off_returns_globally_recent(self, client, monkeypatch):
-        """auth=off (dev) → endpoint returns globally most-recent active
-        uploads. Since require_user resolves to None, the route calls
-        ``list_recent_global`` (post db-agent refactor) which in turn
-        asks the db-agent via db_query."""
-        from app.storage.instant_rag_catalog import _SELECT_COLUMNS
+    def test_no_identity_returns_nothing(self, client, monkeypatch):
+        """No resolved user_id → the endpoint returns NOTHING, not the
+        globally-recent list.
 
-        fake_rows = [
-            ["doc-1", "e-1", "u-1", "t-a", None, "A.pdf", None, None, 9, "active",
-             None, None, None, None, None, None, None, None,
-             datetime(2026, 4, 18, 0, 0, tzinfo=timezone.utc),
-             datetime(2026, 4, 25, 0, 0, tzinfo=timezone.utc), None],
-            ["doc-2", "e-2", "u-2", "t-b", None, "B.pdf", None, None, 5, "active",
-             None, None, None, None, None, None, None, None,
-             datetime(2026, 4, 17, 0, 0, tzinfo=timezone.utc),
-             datetime(2026, 4, 24, 0, 0, tzinfo=timezone.utc), None],
-        ]
+        This test previously asserted the opposite (auth_scope == "global",
+        two uploads returned) and had been failing since the behaviour was
+        deliberately changed: ``app/api/uploads.py`` now short-circuits with
+        ``auth_scope: "none"`` because handing cross-session uploads to an
+        unauthenticated caller is a data-isolation violation — one user's
+        filenames leaking into another's restoration banner.
 
-        def _fake_query(sql, db_name, params=None, max_rows=1000):
-            return {
-                "columns": list(_SELECT_COLUMNS),
-                "rows": fake_rows,
-                "row_count": len(fake_rows),
-                "truncated": False,
-            }
-
-        monkeypatch.setattr("app.storage.instant_rag_catalog.db_query", _fake_query)
-
+        DO NOT "fix" this test by restoring the global path. The old
+        assertion documented the vulnerability, not a requirement.
+        ``list_recent_global`` is intentionally off the request path.
+        """
         r = client.get("/chat/uploads/recent/for-restoration?limit=5")
         assert r.status_code == 200
         body = r.json()
-        assert body["auth_scope"] == "global"
-        assert body["count"] == 2
-        names = [u["filename"] for u in body["uploads"]]
-        assert "A.pdf" in names and "B.pdf" in names
+        assert body["auth_scope"] == "none"
+        assert body["count"] == 0
+        assert body["uploads"] == []
 
     def test_excludes_current_thread(self, client, monkeypatch):
         """When current_thread_id is provided, uploads from that thread
         must be filtered out — the banner should only offer things to
-        restore, not things already visible."""
-        from app.storage.instant_rag_catalog import _SELECT_COLUMNS
+        restore, not things already visible.
 
-        fake_rows = [
-            ["doc-a", "e", "u-a", "t-current", None, "onthread.pdf", None, None, 1, "active",
-             None, None, None, None, None, None, None, None,
-             datetime(2026, 4, 18, tzinfo=timezone.utc), None, None],
-            ["doc-b", "e", "u-b", "t-other",   None, "elsewhere.pdf", None, None, 1, "active",
-             None, None, None, None, None, None, None, None,
-             datetime(2026, 4, 18, tzinfo=timezone.utc), None, None],
+        Runs authenticated: the current-thread filter lives on the
+        ``list_for_user`` path, and the unauthenticated path now returns
+        nothing at all (see test_no_identity_returns_nothing). Previously
+        this drove the endpoint with no identity and asserted on results
+        that path can no longer produce.
+        """
+        from app.api import uploads as uploads_mod
+
+        monkeypatch.setenv("CHAT_AUTH_MODE", "required")
+        rows = [
+            _sample_upload_row(doc_id="doc-a", thread_id="t-current",
+                               filename="onthread.pdf", user_id="u-42"),
+            _sample_upload_row(doc_id="doc-b", thread_id="t-other",
+                               filename="elsewhere.pdf", user_id="u-42"),
         ]
 
-        def _fake_query(sql, db_name, params=None, max_rows=1000):
-            return {
-                "columns": list(_SELECT_COLUMNS),
-                "rows": fake_rows,
-                "row_count": len(fake_rows),
-                "truncated": False,
-            }
+        with patch("app.auth.get_user_id_from_request",
+                   return_value=TokenCheckResult(user_id="u-42")), \
+             patch.object(uploads_mod, "list_for_user", return_value=rows):
+            r = client.get(
+                "/chat/uploads/recent/for-restoration?current_thread_id=t-current",
+                headers={"Authorization": "Bearer good"},
+            )
 
-        monkeypatch.setattr("app.storage.instant_rag_catalog.db_query", _fake_query)
-
-        r = client.get("/chat/uploads/recent/for-restoration?current_thread_id=t-current")
         assert r.status_code == 200
         names = [u["filename"] for u in r.json()["uploads"]]
         assert "elsewhere.pdf" in names

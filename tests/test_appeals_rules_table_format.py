@@ -30,7 +30,16 @@ def _rule(rule_id="COB.R001", name="Medicaid Payor of Last Resort", statement="s
 
 class TestAppealsRulesTableData:
     def test_extracts_from_find_carc_matches_shape(self):
-        data = {"matches": [{"carc": 22, "rules": [_rule("COB.R001"), _rule("COB.R003", name="TPL")]}]}
+        # Rules carry an authority so the Authority column survives: since
+        # 2026-08-10 a column that is empty for EVERY row is dropped to save
+        # width on the card (see _appeals_rules_table_data). Without this the
+        # table would legitimately come back with 3 headers, which would test
+        # the drop rule rather than the find_carc shape extraction this case
+        # is about. The drop rule has its own coverage below.
+        data = {"matches": [{"carc": 22, "rules": [
+            _rule("COB.R001", authority={"state": "fl_409_910_fs"}),
+            _rule("COB.R003", name="TPL", authority={"state": "fl_409_910_fs"}),
+        ]}]}
         out = _appeals_rules_table_data(data)
         assert out["headers"] == ["Rule", "Statement", "Appeal Argument", "Authority"]
         assert len(out["rows"]) == 2
@@ -54,9 +63,26 @@ class TestAppealsRulesTableData:
         assert out["rows"][0][3] == "fl_409_910_fs"
 
     def test_no_authority_shows_em_dash(self):
-        data = {"rules": [_rule(authority={})]}
+        """A rule with no authority renders "—" — but only while the column
+        survives. Pair it with a rule that HAS an authority; an all-empty
+        Authority column is dropped entirely (2026-08-10), which is covered
+        by test_all_empty_authority_column_is_dropped below."""
+        data = {"rules": [
+            _rule("COB.R001", authority={}),
+            _rule("COB.R003", name="TPL", authority={"state": "fl_409_910_fs"}),
+        ]}
         out = _appeals_rules_table_data(data)
         assert out["rows"][0][3] == "—"
+        assert out["rows"][1][3] == "fl_409_910_fs"
+
+    def test_all_empty_authority_column_is_dropped(self):
+        """When EVERY row lacks an authority the column is removed rather than
+        rendering a column of em-dashes — pure width cost on a card that wraps
+        badly (Ananth screenshot review 2026-08-10, CARC 197 x FL Medicaid)."""
+        data = {"rules": [_rule(authority={})]}
+        out = _appeals_rules_table_data(data)
+        assert out["headers"] == ["Rule", "Statement", "Appeal Argument"]
+        assert len(out["rows"][0]) == 3
 
     def test_sub_rules_noise_not_in_row(self):
         """The nested sub_rules/authority_tags/facts structure that made the

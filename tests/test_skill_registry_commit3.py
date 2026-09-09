@@ -219,7 +219,13 @@ class TestComputedToolManifest:
         still present after the composition refactor."""
         from app.pipeline.tool_manifest import TOOL_MANIFEST
 
-        assert "search_corpus(query)" in TOOL_MANIFEST
+        # search_corpus was converted to the Can/Cannot block form
+        # ("search_corpus:") and no longer renders a "(query)" signature;
+        # the other three still declare theirs as "name(args)". Assert the
+        # DECLARATION form each one actually uses rather than a bare name —
+        # a bare "search_corpus" would also match the many prose
+        # cross-references in other tools' blocks and stop proving anything.
+        assert "search_corpus:" in TOOL_MANIFEST
         assert "healthcare_npi_lookup(question)" in TOOL_MANIFEST
         assert "search_uploaded_document(" in TOOL_MANIFEST
         assert "refuse(reason)" in TOOL_MANIFEST
@@ -293,6 +299,13 @@ class TestEntityAndFollowUpViews:
             "list_tasks",           # pre-existing registry drift, not previously reflected here
             "product_feedback",     # 2026-07-02 — open feedback + CSAT/NPS surveys
             "product_help_search",  # 2026-07-02 — product-awareness "how to use Mobius" skill
+            # Added to the registry with follow_up_capable=True but never
+            # reflected here, so this lock had been failing. Verified against
+            # registry.follow_up_capable() 2026-09-09 — all three are
+            # genuinely registered, this is catch-up not a behaviour change.
+            "payor_lookup",
+            "assign_task",
+            "patch_task",
         })
 
 
