@@ -5718,11 +5718,19 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         # retry_after_seconds hint on the classifier envelope. One retry per
         # call keeps the blast radius small; if it still fails, the retry
         # guard + fail-fast machinery take over.
-        result = _execute_tool_with_retry(
-            tool or "search_corpus", inputs, ctx, rn, emit, emitter,
-            skip_retry=(mode_label == "quick"),
-            open_gaps=_gaps_open,
-        )
+        # P2b: a child span per dispatch, labelled by tool. This is where the
+        # non-LLM time in react_loop actually goes — RAG retrieval is an HTTP
+        # call to mobius-rag, not a local DB query, so without this the
+        # remainder (wall - llm) is a single unexplained number. Child of
+        # react_loop, so it inherits that node key and the tree still maps to
+        # the schema.
+        from app.telemetry.spans import span as _tspan
+        with _tspan(ctx, "react_loop", label=f"tool:{tool or 'search_corpus'}"):
+            result = _execute_tool_with_retry(
+                tool or "search_corpus", inputs, ctx, rn, emit, emitter,
+                skip_retry=(mode_label == "quick"),
+                open_gaps=_gaps_open,
+            )
 
         # P2b layer 3 of the tool-selection split: record the dispatch WITH its
         # outcome. A tool that was dispatched and failed must be distinguishable

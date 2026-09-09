@@ -464,6 +464,7 @@ def run_pipeline(
     # threads, so react_loop's daemon threads cannot attach counts to a turn
     # that has already completed.
     _trace_token = set_active(ctx.turn_trace)
+    from app.telemetry.spans import span as _span
 
     _detect_and_resolve_retry(ctx)
 
@@ -643,7 +644,8 @@ def run_pipeline(
             return now
 
         trace_entered(f"pipeline.stage.{STATE_LOAD}", correlation_id=correlation_id[:8])
-        run_state_load(ctx)
+        with _span(ctx, "state_load"):
+            run_state_load(ctx)
         _t_pf = _pf("state_load", _t_pf)
 
         # Cache-assist invocation (2026-04-23). Runs AFTER state_load so
