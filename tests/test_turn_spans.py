@@ -448,3 +448,31 @@ def test_orphaned_db_writes_are_counted_but_not_warned(caplog):
         assert sp.orphaned_ms().get("llm", 0.0) - b_llm >= 4200.0
     finally:
         sp.reset_active(_tok)
+
+
+def test_acquire_time_is_reported_but_not_added_to_the_db_column():
+    """Connection-acquire time sits INSIDE the db.read total (db_query times the
+    whole call), so it is reported alongside db_read_ms, never summed into it.
+
+    This is the instrument for a real finding: with CHAT_DB_MODE=direct every
+    query acquires its own connection, and a pooled acquire costs a SELECT 1
+    plus a commit before the caller's SQL runs. A count keyed on the target
+    table cannot see that — four reads each reporting n=1 while the wall says
+    1.2s is exactly what acquire-time wearing query-time's clothes looks like.
+    """
+    from app.storage.turn_spans import turn_matrix
+    sp = {"span_id": "s", "parent_span_id": None, "module": "state_load",
+          "label": None, "depth": 0, "wall_ms": 600.0, "llm_ms": 0.0,
+          "concurrent": False,
+          "counts": [
+              {"kind": "db.read", "target": "chat_state", "n": 4, "ms": 500.0},
+              {"kind": "db.acquire", "target": "pool", "n": 4, "ms": 420.0},
+          ]}
+    m = turn_matrix("cid-a", spans=[sp])
+    row = m["rows"][0]
+    assert row["db_read_ms"] == 500.0          # unchanged, not 920
+    assert row["db_acquire_ms"] == 420.0       # reported separately
+    assert row["db_acquires"] == 4
+    # 600 wall - 500 db = 100 of our own code. Acquire must not eat into it.
+    assert row["processing_ms"] == 100.0
+    assert m["totals"]["db_acquire_ms"] == 420.0

@@ -57,6 +57,14 @@ logger = logging.getLogger(__name__)
 # producer loses its consumer one string at a time.
 KIND_DB_READ = "db.read"
 KIND_DB_WRITE = "db.write"
+# Time spent GETTING to the database, before the caller's SQL runs: pool
+# getconn, its SELECT 1 liveness probe, and the commit that follows. Separate
+# from db.read/db.write on purpose — it is acquire-time wearing query-time's
+# clothes, and a count keyed on the target table cannot see it, because it is
+# not a read of that table, it is the cost of reaching it. Four reads reporting
+# n=1 each while the wall said 1.2s is exactly what that looks like from the
+# outside.
+KIND_DB_ACQUIRE = "db.acquire"
 KIND_LLM = "llm"
 KIND_HTTP = "http"
 
@@ -85,7 +93,7 @@ KIND_TOOL_OFFERED = "tool.offered"
 KIND_TOOL_EMITTED = "tool.emitted"
 KIND_TOOL_DISPATCHED = "tool.dispatched"
 
-_KINDS = {KIND_DB_READ, KIND_DB_WRITE, KIND_LLM, KIND_HTTP, KIND_ROUND,
+_KINDS = {KIND_DB_READ, KIND_DB_WRITE, KIND_DB_ACQUIRE, KIND_LLM, KIND_HTTP, KIND_ROUND,
           KIND_TOOL_OFFERED, KIND_TOOL_EMITTED, KIND_TOOL_DISPATCHED}
 
 # Span names are NODE KEYS from the chat schema, not ad-hoc labels.

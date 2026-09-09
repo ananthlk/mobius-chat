@@ -393,7 +393,21 @@ def _fallback_query(sql: str, db_name: str, params: dict, max_rows: int) -> dict
         }
 
     try:
-        conn, is_pooled = _acquire_conn(url)
+        # Timed separately from the query. CHAT_DB_MODE=direct means every
+        # db_query/db_execute acquires its own connection, and a pooled acquire
+        # costs a SELECT 1 plus a commit before the caller's SQL starts — so a
+        # single logical read is three round-trips. Measuring it is how that
+        # stops being an inference from source and becomes a number.
+        import time as _t_acq
+        from app.telemetry import spans as _sp_acq
+        _t0_acq = _t_acq.perf_counter()
+        try:
+            conn, is_pooled = _acquire_conn(url)
+        finally:
+            _sp_acq.record_ambient(
+                _sp_acq.KIND_DB_ACQUIRE, "pool" ,
+                ms=(_t_acq.perf_counter() - _t0_acq) * 1000.0,
+            )
     except Exception as exc:
         return _fallback_error(exc)
 
@@ -428,7 +442,21 @@ def _fallback_execute(sql: str, db_name: str, params: dict) -> dict:
         }
 
     try:
-        conn, is_pooled = _acquire_conn(url)
+        # Timed separately from the query. CHAT_DB_MODE=direct means every
+        # db_query/db_execute acquires its own connection, and a pooled acquire
+        # costs a SELECT 1 plus a commit before the caller's SQL starts — so a
+        # single logical read is three round-trips. Measuring it is how that
+        # stops being an inference from source and becomes a number.
+        import time as _t_acq
+        from app.telemetry import spans as _sp_acq
+        _t0_acq = _t_acq.perf_counter()
+        try:
+            conn, is_pooled = _acquire_conn(url)
+        finally:
+            _sp_acq.record_ambient(
+                _sp_acq.KIND_DB_ACQUIRE, "pool" ,
+                ms=(_t_acq.perf_counter() - _t0_acq) * 1000.0,
+            )
     except Exception as exc:
         return _fallback_error(exc)
 
@@ -605,7 +633,21 @@ def _fallback_transaction(statements: list[dict], db_name: str) -> dict:
             "_fallback": True,
         }
     try:
-        conn, is_pooled = _acquire_conn(url)
+        # Timed separately from the query. CHAT_DB_MODE=direct means every
+        # db_query/db_execute acquires its own connection, and a pooled acquire
+        # costs a SELECT 1 plus a commit before the caller's SQL starts — so a
+        # single logical read is three round-trips. Measuring it is how that
+        # stops being an inference from source and becomes a number.
+        import time as _t_acq
+        from app.telemetry import spans as _sp_acq
+        _t0_acq = _t_acq.perf_counter()
+        try:
+            conn, is_pooled = _acquire_conn(url)
+        finally:
+            _sp_acq.record_ambient(
+                _sp_acq.KIND_DB_ACQUIRE, "pool" ,
+                ms=(_t_acq.perf_counter() - _t0_acq) * 1000.0,
+            )
     except Exception as exc:
         return _fallback_error(exc)
 

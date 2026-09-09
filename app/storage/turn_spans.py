@@ -458,6 +458,11 @@ def turn_matrix(correlation_id: str,
         counts = sp.get("counts") or []
         db_r = sum(float(c["ms"]) for c in counts if c.get("kind") == "db.read")
         db_w = sum(float(c["ms"]) for c in counts if c.get("kind") == "db.write")
+        # Acquire time is INSIDE the db.read/db.write totals (db_query times the
+        # whole call), so it is reported alongside them, never added to them —
+        # adding would double-count and inflate the DB column.
+        acq = sum(float(c["ms"]) for c in counts if c.get("kind") == "db.acquire")
+        n_acq = sum(int(c["n"]) for c in counts if c.get("kind") == "db.acquire")
         n_r = sum(int(c["n"]) for c in counts if c.get("kind") == "db.read")
         n_w = sum(int(c["n"]) for c in counts if c.get("kind") == "db.write")
         kids = by_parent.get(sp["span_id"], [])
@@ -496,6 +501,8 @@ def turn_matrix(correlation_id: str,
             "own_llm_ms": round(own_llm, 1),                       # exclusive
             "db_read_ms": round(db_r, 1), "db_write_ms": round(db_w, 1),
             "db_reads": n_r, "db_writes": n_w, "tool_ms": round(tool, 1),
+            # Of the db_* time above, how much was spent before any SQL ran.
+            "db_acquire_ms": round(acq, 1), "db_acquires": n_acq,
             # EXCLUSIVE self time: what THIS row cost, children removed. The
             # inclusive version made parent rows look like they held work that
             # actually belonged to a child, and made the column non-additive —
@@ -536,6 +543,8 @@ def turn_matrix(correlation_id: str,
         # three 4s calls cost 4s of turn, not 12s.
         "llm_ms": round(sum(r["own_llm_ms"] for r in rows), 1),
         "db_ms": round(sum(r["db_read_ms"] + r["db_write_ms"] for r in rows), 1),
+        "db_acquire_ms": round(sum(r["db_acquire_ms"] for r in rows), 1),
+        "db_acquires": sum(r["db_acquires"] for r in rows),
         "db_reads": sum(r["db_reads"] for r in rows),
         "db_writes": sum(r["db_writes"] for r in rows),
         "tool_ms": round(sum(r["tool_ms"] for r in rows if r.get("is_external")), 1),
