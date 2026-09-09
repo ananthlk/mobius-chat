@@ -2629,6 +2629,14 @@ _SKILL_LLM_ALLOWED_STAGES = frozenset({
     # a declared one. That constraint lives in the deep-research seat's prompt
     # and schema; this allowlist entry only says the stage may route here.
     "research_parse",
+    # mobius-payor (2026-09-09). Both were declared in the payor seat's
+    # PAYOR_STAGES but never here, so every hosted call returned 400 while dev
+    # fell through to direct Vertex and worked — a latent outage on two live
+    # paths, invisible in the only environment anyone was testing in.
+    "payor_classify",   # source_run -> classifier.classify_llm, the low-confidence
+                        # fallback behind use_llm_fallback. Degrades to the keyword
+                        # result on failure; never fabricates.
+    "fact_shape",       # fact_loop.execute_run, spawned by POST /api/facts/run.
 })
 
 

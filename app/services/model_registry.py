@@ -1043,7 +1043,20 @@ RESEARCH_PARSE_STAGES = ["research_parse"]
 # This stage is only the "ask the question again" half — the diff verdict is
 # graded separately through rag_eval_adjudicate — so it is a candidate for
 # comparison, not a ruler.
-PAYOR_FACT_STAGES = ["payor_fact_reverify"]
+PAYOR_FACT_STAGES = ["payor_fact_reverify", "payor_classify", "fact_shape"]
+# payor_classify / fact_shape added 2026-09-09 at the stage owner's request;
+# pool left to me. Both get {flash, pro} rather than the pro-LOCK used for
+# rag_fact_check / rag_eval_adjudicate.
+#
+# payor_classify is the tempting one to lock — it is taxonomy classification
+# against a fixed rubric, and drift would mean the same document classified two
+# ways. But the lock precedent is narrower than "consistency matters": those two
+# are locked because Eval owns their rubric and needs a deterministic RULER.
+# payor_classify is a low-confidence FALLBACK that degrades to the keyword
+# result and never fabricates, and it runs at corpus scale (574 docs measured,
+# 5,257 for AHCA). Pro-locking a bulk pass with no ruler requirement buys
+# determinism nobody asked for at a cost everybody pays. If classification drift
+# shows up in the corpus, locking it later is a one-line change.
 
 CHEAP_STAGES = ["badge", "classifier", "critique", "vibe"]  # adjudicator removed → locked to gemini-2.5-pro (Task #25)
 PHI_SAFE_STAGES = ["phi_detector", "phi_classify"]

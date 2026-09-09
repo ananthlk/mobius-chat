@@ -36,17 +36,24 @@ Picking someone's candidate pool blind is how you get a bandit arm nobody chose.
 - `org_intel_report`
 - `org_intel_synthesis`
 
-**OPEN QUESTION for the payor / deep-research seat**
-`PAYOR_STAGES` (mobius-payor/app/llm_manager_client.py) declares `payor_classify`
-and `fact_shape`; **neither is in our allowlist**, so a hosted call on either
-gets HTTP 400 while dev works. Their coordination rule was followed on their
-side — our half was never done.
+**RESOLVED 2026-09-09** — the payor seat confirmed both are live and asked for
+both. `payor_classify` and `fact_shape` are now allowlisted and routed on
+{flash, pro}. Reachability verified here rather than taken on trust:
 
-Deliberately not added: their own comment calls `fact_shape` a prototype, and
-allowlisting a stage is a scoping decision about an authenticated internal
-endpoint — the stage owner's call, not ours. Awaiting their answer on which of
-the two should be live. If `fact_shape` stays dev-only, the 400 is a known state
-rather than a surprise at deploy.
+- `fact_shape` — `fact_loop.execute_run`, spawned by `POST /api/facts/run`
+  (mobius-payor/app/routers/facts_admin.py:85).
+- `payor_classify` — `source_run.py:382` → `classifier.classify_llm`, the
+  low-confidence keyword fallback, behind `use_llm_fallback`. (Their comment
+  names `classifier.classify_document`, which does not exist; the stage is real,
+  the path is this one.)
+
+`payor_classify` is NOT pro-locked despite being classification against a fixed
+rubric. The lock precedent is narrower than "consistency matters": rag_fact_check
+and rag_eval_adjudicate are locked because Eval owns their rubric and needs a
+deterministic RULER. payor_classify is a fallback that degrades to the keyword
+result and never fabricates, running at corpus scale (574 docs measured, 5,257
+for AHCA). Locking a bulk pass with no ruler requirement buys determinism nobody
+asked for at a cost everybody pays. One line to lock it later if drift appears.
 
 ## Also fixed this pass
 `SkillLLMRequest` had no `response_schema` field. Callers were sending it,
