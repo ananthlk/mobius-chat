@@ -64,7 +64,7 @@ def test_state_load_picks_latest_non_empty_context_summary(monkeypatch):
     ``ctx.previous_thread_summary``."""
     from app.stages import state_load as sl
 
-    monkeypatch.setattr(sl, "get_state", lambda tid: {"active": {}})
+    monkeypatch.setattr(sl, "get_state_with_version", lambda tid: ({"active": {}}, 1))
     monkeypatch.setattr(sl, "save_state_full", lambda tid, st: None)
     monkeypatch.setattr(sl, "get_last_turn_sources", lambda tid: [])
     # No canonical per-thread brief yet (legacy thread) -> falls back to
@@ -89,7 +89,7 @@ def test_state_load_picks_latest_non_empty_context_summary(monkeypatch):
 def test_state_load_returns_none_when_no_summaries(monkeypatch):
     from app.stages import state_load as sl
 
-    monkeypatch.setattr(sl, "get_state", lambda tid: {"active": {}})
+    monkeypatch.setattr(sl, "get_state_with_version", lambda tid: ({"active": {}}, 1))
     monkeypatch.setattr(sl, "save_state_full", lambda tid, st: None)
     monkeypatch.setattr(sl, "get_last_turn_sources", lambda tid: [])
     monkeypatch.setattr(sl, "get_thread_rolling_summary", lambda tid: None)
@@ -108,7 +108,7 @@ def test_state_load_loads_prior_resolved_entities_when_continuation(monkeypatch)
     the (extra) DB query only fires on continuation turns."""
     from app.stages import state_load as sl
 
-    monkeypatch.setattr(sl, "get_state", lambda tid: {"active": {}})
+    monkeypatch.setattr(sl, "get_state_with_version", lambda tid: ({"active": {}}, 1))
     monkeypatch.setattr(sl, "save_state_full", lambda tid, st: None)
     monkeypatch.setattr(sl, "get_last_turn_sources", lambda tid: [])
     monkeypatch.setattr(sl, "get_thread_rolling_summary", lambda tid: None)
@@ -125,7 +125,7 @@ def test_state_load_loads_prior_resolved_entities_when_continuation(monkeypatch)
 def test_state_load_skips_prior_resolved_entities_on_fresh_turn(monkeypatch):
     from app.stages import state_load as sl
 
-    monkeypatch.setattr(sl, "get_state", lambda tid: {"active": {}})
+    monkeypatch.setattr(sl, "get_state_with_version", lambda tid: ({"active": {}}, 1))
     monkeypatch.setattr(sl, "save_state_full", lambda tid, st: None)
     monkeypatch.setattr(sl, "get_last_turn_sources", lambda tid: [])
     monkeypatch.setattr(sl, "get_thread_rolling_summary", lambda tid: None)
@@ -393,7 +393,7 @@ def test_state_load_prefers_canonical_rolling_summary(monkeypatch):
     directly and does NOT fall back to walking per-turn context_summary."""
     from app.stages import state_load as sl
 
-    monkeypatch.setattr(sl, "get_state", lambda tid: {"active": {}})
+    monkeypatch.setattr(sl, "get_state_with_version", lambda tid: ({"active": {}}, 1))
     monkeypatch.setattr(sl, "save_state_full", lambda tid, st: None)
     monkeypatch.setattr(sl, "get_last_turn_sources", lambda tid: [])
     # Canonical per-thread brief present -> wins over any per-turn value.

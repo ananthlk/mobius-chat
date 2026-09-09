@@ -90,6 +90,20 @@ class PipelineContext:
     # State (patch-based for now; will migrate to ThreadState in Phase 2)
     merged_state: dict[str, Any] = field(default_factory=dict)
     """Current thread state after load + apply patch."""
+    state_read_failed: bool = False
+    """True when state_load could NOT read this thread's stored state.
+
+    Every write derived from that read must be suppressed — merged_state is
+    DEFAULTS in this case, and save_state_full replaces a row entirely, so
+    persisting it would destroy the conversation. Six sites write from this one
+    read: state_load x2, orchestrator x3, react_loop x1.
+    """
+    state_version: int | None = None
+    """state_version as read by state_load, for compare-and-set on write.
+
+    None means "no row yet" or "not read" — both of which mean an unguarded
+    write, so callers pass it through rather than inventing a value.
+    """
     last_turns: list[dict] = field(default_factory=list)
     """Last turn messages for context (user + assistant)."""
     last_turn_sources: list[dict] = field(default_factory=list)

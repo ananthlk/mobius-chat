@@ -9,8 +9,9 @@ from app.state.model import ThreadState
 from app.state.state_extractor import extract_state_delta
 from app.storage.results import clear_tool_results
 from app.storage.threads import (
+    StateUnavailable,
     get_last_turn_messages,
-    get_state,
+    get_state_with_version,
     get_thread_rolling_summary,
     save_state_full,
 )
@@ -32,7 +33,32 @@ def run_state_load(
         ctx.context_pack = ""
         return
 
-    raw = get_state(ctx.thread_id) or {}
+    # THE RULE (P3 work order): state is only replaced from state that was
+    # actually read. A failed read previously returned None, became `or {}`,
+    # built a ThreadState from DEFAULT_STATE, and handed it to save_state_full
+    # — "replace state entirely (no merge)". One transient error plus one
+    # delta-bearing message destroyed the conversation, and state_version
+    # incremented exactly as a healthy turn would, so nothing afterwards could
+    # tell the difference.
+    #
+    # The turn still RUNS on defaults (a read failure should not fail the
+    # user's question), but every write derived from this read is suppressed —
+    # here, and at the three orchestrator sites and one react_loop site that
+    # persist ctx.merged_state, which is this same read.
+    _state_version: int | None = None
+    try:
+        raw_opt, _state_version = get_state_with_version(ctx.thread_id)
+        raw = raw_opt or {}
+    except StateUnavailable as exc:
+        logger.warning(
+            "[state_load] state unreadable for thread=%s (%s) — running this turn "
+            "on defaults and SUPPRESSING all state writes; persisting now would "
+            "replace the thread with defaults.",
+            str(ctx.thread_id)[:8], exc,
+        )
+        raw = {}
+        ctx.state_read_failed = True
+    ctx.state_version = _state_version
     thread_state = ThreadState.from_dict(raw)
 
     # Capture prior payer before applying delta (for _prior_payer emit)
@@ -49,7 +75,8 @@ def run_state_load(
         for key in ("active_skill", "last_failed_query", "active_context"):
             if key in raw and raw[key] is not None:
                 to_save[key] = raw[key]
-        save_state_full(ctx.thread_id, to_save)
+        if not getattr(ctx, "state_read_failed", False):
+            save_state_full(ctx.thread_id, to_save, expected_version=_state_version)
 
     merged = thread_state.to_dict()
     # Restore conversational continuity / ReAct fields not in ThreadState model (saved as full JSON)
@@ -94,7 +121,8 @@ def run_state_load(
         for key in ("active_skill", "last_failed_query", "active_context"):
             if key in merged and merged.get(key) is not None:
                 to_save[key] = merged[key]
-        save_state_full(ctx.thread_id, to_save)
+        if not getattr(ctx, "state_read_failed", False):
+            save_state_full(ctx.thread_id, to_save, expected_version=_state_version)
         merged = thread_state.to_dict()
         for key in ("active_skill", "last_failed_query", "active_context"):
             if key in raw and raw[key] is not None:

@@ -62,7 +62,7 @@ def format_thread_uploads_markdown(thread_id: str) -> str:
     outside the chat process (e.g. the MCP server) source records via
     HTTP and call the shared formatter directly.
     """
-    from app.storage.threads import get_state
+    from app.storage.threads import StateUnavailable, get_state
 
     tid = (thread_id or "").strip()
     if not tid:
@@ -70,7 +70,11 @@ def format_thread_uploads_markdown(thread_id: str) -> str:
         # so the message text matches across consumers.
         return run_list_thread_uploads("", None).text
 
-    raw = get_state(tid) or {}
+    # "no uploads" and "could not read the uploads" are different answers.
+    try:
+        raw = get_state(tid) or {}
+    except StateUnavailable:
+        return "I couldn't read this conversation's uploaded-file list just now (a storage read failed). That is not the same as having no uploads — please try again in a moment."
     active = raw.get("active") or {}
     files = [u for u in (active.get("uploaded_files") or []) if isinstance(u, dict)]
     return run_list_thread_uploads(

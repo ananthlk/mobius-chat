@@ -3489,10 +3489,25 @@ def _sync_extra_out_to_context(ctx: PipelineContext, emitter=None) -> None:
     # Persist report_run_id / last_report_org / credentialing co-pilot pointers
     if ctx.thread_id and (ctx.thread_id or "").strip():
         try:
-            from app.storage.threads import get_state, save_state_full
+            from app.storage.threads import (
+                StateUnavailable, get_state_with_version, save_state_full,
+            )
             from app.state.model import ThreadState
-            raw = get_state(ctx.thread_id) or {}
-            ts = ThreadState.from_dict(raw)
+            # Its own read, not ctx.merged_state — so it needs its own guard.
+            # `or {}` here would build a ThreadState from DEFAULT_STATE and
+            # full-replace the thread with it on any read error; the enclosing
+            # `except Exception: pass` would then make the destruction silent.
+            try:
+                _raw_opt, _ver = get_state_with_version(ctx.thread_id)
+                raw = _raw_opt or {}
+            except StateUnavailable as _su:
+                logger.warning(
+                    "[react_loop] state unreadable for thread=%s (%s) — not "
+                    "persisting report/credentialing pointers this turn.",
+                    str(ctx.thread_id)[:8], _su,
+                )
+                raw = None
+            ts = ThreadState.from_dict(raw or {})
             delta: dict[str, Any] = {}
             if extra.get("report_run_id"):
                 delta["report_run_id"] = extra["report_run_id"]
@@ -3506,9 +3521,9 @@ def _sync_extra_out_to_context(ctx: PipelineContext, emitter=None) -> None:
                 delta["credentialing_run_id"] = cred["run_id"]
                 delta["credentialing_run_mode"] = cred.get("mode", "copilot")
                 delta["credentialing_pending_step_id"] = cred.get("pending_step_id")
-            if delta:
+            if delta and raw is not None:
                 ts.apply_delta({"active": delta})
-                save_state_full(ctx.thread_id, ts.to_dict())
+                save_state_full(ctx.thread_id, ts.to_dict(), expected_version=_ver)
         except Exception:
             pass
 

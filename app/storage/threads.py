@@ -557,16 +557,48 @@ def get_last_turn_messages(thread_id: str, limit_turns: int = 2) -> list[dict[st
 # -------------------------------------------------------------------
 
 
+class StateUnavailable(RuntimeError):
+    """The state read FAILED. It does not mean the thread has no state.
+
+    Existing to make one distinction the old code could not express: `None`
+    used to mean "no row", "query error" and "undecodable jsonb" alike, and the
+    docstring named only the first. Every caller's `get_state(tid) or {}` was
+    reasonable given that docstring — and every one of them then built a
+    ThreadState from DEFAULT_STATE and handed it to save_state_full, whose
+    contract is "replace state entirely (no merge)".
+
+    One failed read plus one delta-bearing message therefore replaced an entire
+    conversation with defaults, and `state_version` incremented on that write
+    exactly as a healthy turn would, so nothing afterwards could tell the two
+    apart.
+
+    Mirrors _write_state_row's convention (warn on connection_error, raise on
+    everything else) — that function is thirty lines below and always did this
+    correctly. get_state was the one function in this module not following its
+    own file's rule, and it was the one that lost data.
+    """
+
+
 def get_state(thread_id: str) -> dict[str, Any] | None:
-    """Return state_json for thread_id, or None if no row. Caller can merge with DEFAULT_STATE."""
+    """Return state_json for thread_id, or None IF AND ONLY IF there is no row.
+
+    Raises StateUnavailable if the state could not be read — query error,
+    unreachable database, or a row whose jsonb does not decode to an object.
+    Callers must not treat that as an empty thread: see the rule in
+    save_state_full — state is only replaced from state that was actually read.
+    """
     result = db_query(
-        "SELECT state_json FROM chat_state WHERE thread_id = :tid",
+        "SELECT state_json, state_version FROM chat_state WHERE thread_id = :tid",
         _DB,
         params={"tid": thread_id},
     )
-    if _err_code(result) is not None:
+    code = _err_code(result)
+    if code is not None:
+        # Connection errors raise too. _write_state_row can safely no-op on one
+        # because not writing loses nothing; a READ that quietly reports "no
+        # state" causes the very overwrite that does.
         logger.warning("Failed to get state: %s", _err_message(result))
-        return None
+        raise StateUnavailable(_err_message(result) or code)
     rows = result.get("rows") or []
     if not rows:
         return None
@@ -574,31 +606,106 @@ def get_state(thread_id: str) -> dict[str, Any] | None:
     decoded = _decode_jsonb(raw)
     if isinstance(decoded, dict):
         return dict(decoded)
-    return None
+    # A row exists but did not decode. Previously indistinguishable from "new
+    # thread", so the recovery was to overwrite the row we failed to read.
+    raise StateUnavailable(f"state_json for thread {thread_id[:8]} did not decode to an object")
 
 
-def _write_state_row(tid: str, state_json: str) -> None:
-    """Shared UPSERT for chat_state. Raises on non-connection errors."""
-    result = db_execute(
-        """
-        INSERT INTO chat_state (thread_id, state_json, state_version, updated_at)
-        VALUES (:tid, CAST(:state_json AS jsonb), 1, now())
-        ON CONFLICT (thread_id) DO UPDATE SET
-            state_json = EXCLUDED.state_json,
-            state_version = chat_state.state_version + 1,
-            updated_at = now()
-        """,
+def get_state_with_version(thread_id: str) -> tuple[dict[str, Any] | None, int | None]:
+    """(state, state_version) — the version is what makes the write a
+    compare-and-set. Same failure contract as get_state."""
+    result = db_query(
+        "SELECT state_json, state_version FROM chat_state WHERE thread_id = :tid",
         _DB,
-        params={"tid": tid, "state_json": state_json},
+        params={"tid": thread_id},
     )
     code = _err_code(result)
-    if code is None:
-        return
+    if code is not None:
+        logger.warning("Failed to get state: %s", _err_message(result))
+        raise StateUnavailable(_err_message(result) or code)
+    rows = result.get("rows") or []
+    if not rows:
+        return None, None
+    decoded = _decode_jsonb(rows[0][0])
+    if not isinstance(decoded, dict):
+        raise StateUnavailable(f"state_json for thread {thread_id[:8]} did not decode to an object")
+    try:
+        ver = int(rows[0][1])
+    except (TypeError, ValueError, IndexError):
+        ver = None
+    return dict(decoded), ver
+
+
+def _write_state_row(tid: str, state_json: str,
+                     expected_version: int | None = None) -> bool:
+    """Shared UPSERT for chat_state. Raises on non-connection errors.
+
+    ``expected_version`` turns the write into a COMPARE-AND-SET: the row is
+    replaced only if state_version still holds the value we read. Returns False
+    when the compare fails, having written nothing.
+
+    state_version has always been incremented here and, until now, read
+    NOWHERE — grep it: the INSERT and two docstrings, never a comparison. So
+    read-modify-write through get_state/save_state_full was unguarded and two
+    concurrent turns on one thread were a lost update. Using the column we were
+    already maintaining costs nothing and gives an overwrite an artifact.
+    """
+    if expected_version is None:
+        result = db_execute(
+            """
+            INSERT INTO chat_state (thread_id, state_json, state_version, updated_at)
+            VALUES (:tid, CAST(:state_json AS jsonb), 1, now())
+            ON CONFLICT (thread_id) DO UPDATE SET
+                state_json = EXCLUDED.state_json,
+                state_version = chat_state.state_version + 1,
+                updated_at = now()
+            """,
+            _DB,
+            params={"tid": tid, "state_json": state_json},
+        )
+    else:
+        result = db_execute(
+            """
+            UPDATE chat_state
+               SET state_json = CAST(:state_json AS jsonb),
+                   state_version = state_version + 1,
+                   updated_at = now()
+             WHERE thread_id = :tid AND state_version = :ev
+            """,
+            _DB,
+            params={"tid": tid, "state_json": state_json, "ev": int(expected_version)},
+        )
+    code = _err_code(result)
     if code == "connection_error":
         logger.warning("CHAT_RAG_DATABASE_URL not set (or db-agent unreachable); state not persisted")
-        return
-    logger.exception("Failed to save state: %s", _err_message(result))
-    raise RuntimeError(_err_message(result))
+        return False
+    if code is not None:
+        logger.exception("Failed to save state: %s", _err_message(result))
+        raise RuntimeError(_err_message(result))
+    if expected_version is not None:
+        # Two backends answer this call (db-agent over MCP, or direct psycopg2)
+        # and they do not agree on the key. A MISSING count must mean "unknown",
+        # never "0 rows matched": reading absence as a miss would turn every
+        # compare-and-set into a silent no-op and stop persisting state
+        # altogether — a far worse failure than the race being guarded.
+        affected = result.get("rows_affected")
+        if affected is None:
+            affected = result.get("rowcount")
+        if affected is None:
+            logger.debug(
+                "[state] backend reported no affected-row count; treating the "
+                "compare-and-set for thread=%s as applied", str(tid)[:8])
+        elif int(affected) == 0:
+            # Someone else advanced the row between our read and our write.
+            # Loud, because the alternative is silently discarding a turn.
+            logger.warning(
+                "[state] compare-and-set MISS thread=%s expected_version=%s — "
+                "another turn wrote first; this turn's state was NOT persisted "
+                "rather than overwriting theirs.",
+                str(tid)[:8], expected_version,
+            )
+            return False
+    return True
 
 
 def save_state(thread_id: str, patch: dict[str, Any]) -> None:
@@ -608,25 +715,44 @@ def save_state(thread_id: str, patch: dict[str, Any]) -> None:
         logger.warning("save_state called with empty thread_id; skipping persistence")
         return
     ensure_thread(tid)
-    current = get_state(tid)
+    # Same defect as the call sites, one level down: this read used to fall back
+    # to DEFAULT_STATE on failure and then _write_state_row a FULL replace, so a
+    # transient error here also destroyed the thread. A failed read means we
+    # have nothing to patch — skip the write.
+    try:
+        current, _ver = get_state_with_version(tid)
+    except StateUnavailable as exc:
+        logger.warning("[state] save_state skipped for %s — state unreadable: %s",
+                       tid[:8], exc)
+        return
     if current is None:
         current = json.loads(json.dumps(DEFAULT_STATE))
+        _ver = None
     for k, v in patch.items():
         if isinstance(current.get(k), dict) and isinstance(v, dict):
             current[k] = {**current.get(k, {}), **v}
         else:
             current[k] = v
-    _write_state_row(tid, json.dumps(current))
+    _write_state_row(tid, json.dumps(current), expected_version=_ver)
 
 
-def save_state_full(thread_id: str, state: dict[str, Any]) -> None:
-    """Replace state entirely (no merge). Use with ThreadState.to_dict()."""
+def save_state_full(thread_id: str, state: dict[str, Any],
+                    expected_version: int | None = None) -> bool:
+    """Replace state entirely (no merge). Use with ThreadState.to_dict().
+
+    THE RULE: state is only replaced from state that was actually read. This
+    function cannot verify that on its own — pass ``expected_version`` from
+    get_state_with_version and it becomes a compare-and-set; callers whose read
+    FAILED must not call it at all (see StateUnavailable).
+
+    Returns True if the row was written.
+    """
     tid = (thread_id or "").strip()
     if not tid:
         logger.warning("save_state_full called with empty thread_id; skipping persistence")
-        return
+        return False
     ensure_thread(tid)
-    _write_state_row(tid, json.dumps(state))
+    return _write_state_row(tid, json.dumps(state), expected_version=expected_version)
 
 
 # -------------------------------------------------------------------
@@ -642,17 +768,17 @@ def append_uploaded_file_record(thread_id: str, record: dict[str, Any]) -> bool:
 
     Returns False if state could not be persisted (e.g. DB unavailable).
     """
-    current = get_state(thread_id)
+    # This block used to carry a comment explaining that it could not tell "no
+    # row" from "DB unreachable" without a second probe. It can now: get_state
+    # raises on the second. The probe below is kept because it also answers a
+    # different question (can we WRITE), which the read cannot.
+    try:
+        current = get_state(thread_id)
+    except StateUnavailable as exc:
+        logger.warning("[state] upload record not appended for %s — state "
+                       "unreadable: %s", str(thread_id)[:8], exc)
+        return False
     if current is None:
-        # Either no row yet, or DB unreachable. If DB is reachable we'll
-        # create a fresh state; if not, save_state's connection_error
-        # branch will log + no-op and we still return True to the caller
-        # because the caller only uses the bool to decide whether to skip
-        # optimistic UI. Keep pre-refactor behavior: return False only
-        # when get_state couldn't connect (we can't distinguish cleanly
-        # from "no row" without another probe). Historically this path
-        # returned False when URL was unset — the agent's connection_error
-        # surfaces via _err_code in the probe below.
         current = json.loads(json.dumps(DEFAULT_STATE))
 
     # Probe reachability: if we can't write, return False to match legacy.
@@ -676,7 +802,12 @@ def update_uploaded_file_chunk_count(thread_id: str, document_id: str, chunks_co
     Flips the `(indexing…)` label in per-round context to `(N chunks indexed)`
     without requiring the user to refresh or re-upload.
     """
-    current = get_state(thread_id)
+    try:
+        current = get_state(thread_id)
+    except StateUnavailable as exc:
+        logger.warning("[state] chunk-count update skipped for %s — state "
+                       "unreadable: %s", str(thread_id)[:8], exc)
+        return
     if current is None:
         return
     active = {**(current.get("active") or {})}
@@ -699,7 +830,15 @@ def register_open_slots(thread_id: str, slots: list[str]) -> None:
     """Set state.open_slots to slots (replace), increment state_version, save."""
     from app.state.model import ThreadState
 
-    raw = get_state(thread_id)
+    # Not named in the work order, and one of the clearest instances: a full
+    # replace built from a read that could have failed. Without the guard, a
+    # transient error here replaces the thread with defaults-plus-open_slots.
+    try:
+        raw, ver = get_state_with_version(thread_id)
+    except StateUnavailable as exc:
+        logger.warning("[state] register_open_slots skipped for %s — state "
+                       "unreadable: %s", str(thread_id)[:8], exc)
+        return
     thread_state = ThreadState.from_dict(raw)
     thread_state.apply_delta({"open_slots": list(slots) if slots else []})
-    save_state_full(thread_id, thread_state.to_dict())
+    save_state_full(thread_id, thread_state.to_dict(), expected_version=ver)

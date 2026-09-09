@@ -2258,7 +2258,18 @@ def get_thread_uploads(thread_id: str) -> dict[str, Any]:
     if not tid:
         raise HTTPException(status_code=400, detail="thread_id is required")
     thresh = _roster_freshness_days_threshold()
-    raw = get_state(tid)
+    # NOT an `or {}` site (the work order lists it as one) — but the same
+    # conflation: a failed read fell into the "empty thread" branch below and
+    # told the caller it has no files. Read-only, so nothing is destroyed; the
+    # cost is a confident wrong answer instead of an error.
+    from app.storage.threads import StateUnavailable
+    try:
+        raw = get_state(tid)
+    except StateUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="thread state is temporarily unreadable; please retry",
+        ) from exc
     if not raw:
         return {
             "thread_id": tid,

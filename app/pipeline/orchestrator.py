@@ -1166,9 +1166,11 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
                     config_sha=config_sha,
                     user_id=ctx.user_id,
                 )
-            if ctx.thread_id:
+            if ctx.thread_id and not ctx.state_read_failed:
+                # Suppressed when state_load's read failed: merged_state is then
+                # DEFAULTS, and this is a full replace.
                 merged = {**(ctx.merged_state or {}), "refined_query": ctx.refined_query}
-                save_state_full(ctx.thread_id, merged)
+                save_state_full(ctx.thread_id, merged, expected_version=ctx.state_version)
         except Exception as e:
             logger.warning("Failed to persist route clarification turn: %s", e)
         if try_finalize(ctx.correlation_id):
@@ -1269,9 +1271,10 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
                 config_sha=config_sha,
                 user_id=ctx.user_id,
             )
-        if ctx.thread_id:
+        if ctx.thread_id and not ctx.state_read_failed:
+            # Suppressed when state_load's read failed — see state_load.
             merged = {**(ctx.merged_state or {}), "refined_query": ctx.refined_query}
-            save_state_full(ctx.thread_id, merged)
+            save_state_full(ctx.thread_id, merged, expected_version=ctx.state_version)
     except Exception as e:
         logger.warning("Failed to persist clarification/refinement turn: %s", e)
 
@@ -1500,9 +1503,10 @@ def _publish_completed(ctx: PipelineContext, t0_start: float) -> None:
                 config_sha=config_sha,
                 user_id=ctx.user_id,
             )
-        if ctx.thread_id:
+        if ctx.thread_id and not ctx.state_read_failed:
+            # Suppressed when state_load's read failed — see state_load.
             merged = {**(ctx.merged_state or {}), "refined_query": ctx.refined_query}
-            save_state_full(ctx.thread_id, merged)
+            save_state_full(ctx.thread_id, merged, expected_version=ctx.state_version)
     except Exception as e:
         logger.warning("Failed to persist turn: %s", e)
 

@@ -44,14 +44,20 @@ def _run_list_thread_document_uploads(call: SkillCall) -> SkillEnvelope:
     shared skill handles formatting. Split chosen so the MCP server
     can source records over HTTP without this file caring.
     """
-    from app.storage.threads import get_state
+    from app.storage.threads import StateUnavailable, get_state
     from mobius_skills_core.skills.list_thread_uploads import run_list_thread_uploads
 
     tid = (call.thread_id or "").strip()
     # Pull uploads from thread state (same read the legacy helper did).
     uploaded_files: list = []
     if tid:
-        raw = get_state(tid) or {}
+        # A failed read must not render as "no uploads". Same value, opposite
+        # meanings: one is a fact about the thread, the other a fact about the
+        # database, and only one of them is the user's problem.
+        try:
+            raw = get_state(tid) or {}
+        except StateUnavailable:
+            return SkillEnvelope(text="I couldn't read this conversation's uploaded-file list just now (a storage read failed). That is not the same as having no uploads — please try again in a moment.", signal="no_sources")
         active: dict = raw.get("active") or {}
         uploaded_files = [
             u for u in (active.get("uploaded_files") or []) if isinstance(u, dict)
