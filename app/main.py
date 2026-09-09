@@ -1465,6 +1465,8 @@ def _handle_instant_rag_upload(
     user_id: str | None = None,
     gate_override: str | None = None,
     mode_override: bool | None = None,
+    source_url: str | None = None,
+    fetch_provenance: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Forward chat document uploads to mobius-rag's canonical /upload pipeline.
 
@@ -1539,6 +1541,17 @@ def _handle_instant_rag_upload(
         f"&payer={quote_plus(org_name or '')}"
         f"&agent_scope=chat"
     )
+    # source_url is forwarded because rag DECLARES it (mobius-rag/app/main.py
+    # :8083) and therefore actually consumes it. The other four provenance
+    # fields are deliberately NOT appended here: rag's /upload has no parameter
+    # for access / task_id / fetched_at / signal_headers, so FastAPI would
+    # discard them exactly the way chat was discarding them before this change.
+    # Fixing a silent drop by moving it one hop downstream is not fixing it.
+    # They are surfaced in the response instead — see source_provenance below —
+    # so the sender can see what arrived and what is still unplumbed, and the
+    # rag-side contract can be frozen with the Crawler before anything is sent.
+    if source_url:
+        upload_qs += f"&source_url={quote_plus(source_url)}"
 
     try:
         req = urllib.request.Request(
@@ -1995,6 +2008,17 @@ def _handle_instant_rag_upload(
         # foreground_cutoff hasn't elapsed; URI is stable once document_id
         # is known so the FE can open it immediately after this response.
         "progress_channel": f"/chat/uploads/{document_id}/events",
+        # What chat RECEIVED vs what it could forward. Explicit so the caller
+        # can tell "you dropped it" from "rag has nowhere to put it yet" —
+        # indistinguishable until now, because both looked like success.
+        "source_provenance": {
+            "received": sorted(
+                ([k for k in ("source_url",) if source_url])
+                + list((fetch_provenance or {}).keys())
+            ),
+            "forwarded_to_rag": ["source_url"] if source_url else [],
+            "pending_rag_support": sorted((fetch_provenance or {}).keys()),
+        },
     }
     if redirect_url:
         response["redirect_url"] = redirect_url
@@ -2092,6 +2116,16 @@ def post_chat_upload(
     file: UploadFile = File(...),
     thread_id: str | None = Form(None),
     org_name: str | None = Form(None),
+    # TODO-B (browser-extension user-fetch lane, 2026-09-09). The extension
+    # has been sending these all along and FastAPI has been discarding them:
+    # an UNDECLARED Form field is not an error, it is simply absent, so the
+    # upload succeeded and the provenance evaporated with no log to show for
+    # it. Declaring them is the whole fix on this side.
+    source_url: str | None = Form(None),
+    access: str | None = Form(None),
+    task_id: str | None = Form(None),
+    fetched_at: str | None = Form(None),
+    signal_headers: str | None = Form(None),
     user_id: str | None = Depends(require_user),
 ) -> dict[str, Any]:
     """Unified document-upload entry point (P0 unify, 2026-07-09).
@@ -2148,6 +2182,15 @@ def post_chat_upload(
         user_id=user_id,
         gate_override=gate_override,
         mode_override=mode_override,
+        source_url=(source_url or "").strip() or None,
+        fetch_provenance={
+            k: v for k, v in (
+                ("access", (access or "").strip() or None),
+                ("task_id", (task_id or "").strip() or None),
+                ("fetched_at", (fetched_at or "").strip() or None),
+                ("signal_headers", (signal_headers or "").strip() or None),
+            ) if v
+        },
     )
 
 
