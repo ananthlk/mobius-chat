@@ -4444,6 +4444,16 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         ctx.react_rounds_used = rn
         ctx.react_max_rounds = max_it
 
+        # P2b: time each round without re-indenting a ~600-line loop body.
+        # Records the elapsed time of the round that just ended. See
+        # spans.mark_round for why this is a count rather than a child span,
+        # and why it should become a real span when P4 splits this module.
+        try:
+            from app.telemetry.spans import mark_round as _mark_round
+            _mark_round(ctx, rn)
+        except Exception:
+            pass
+
         # Structured signal at the guidance-mode transition.
         if not _guidance_mode_emitted:
             from app.pipeline.react.prompts import is_guidance_round

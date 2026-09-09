@@ -32,6 +32,15 @@ from app.services.cost_model import compute_cost
 from app.services.model_registry import integrator_llm_stage, per_call_router_composite
 from app.state.jurisdiction import get_jurisdiction_from_active, jurisdiction_to_summary
 
+# P2b child spans: integrate is ~1,079ms/turn of PURE processing (no llm, no
+# db, no external tool) — the largest block of code-we-control in the trace.
+# One number cannot say WHICH part, so its heavy phases get child spans.
+# Module-level because the instrumented calls live in more than one function;
+# a function-local import left _ispan undefined at the other call sites and
+# broke three run_integrate tests. app.telemetry.spans imports nothing from
+# app, so there is no circular-import risk here.
+from app.telemetry.spans import span as _ispan
+
 # Badge keys for source_confidence_strip
 BADGE_APPROVED_AUTHORITATIVE = "approved_authoritative"
 BADGE_APPROVED_INFORMATIONAL = "approved_informational"
@@ -774,11 +783,12 @@ def run_integrate(
     _rag_chunks_pool = getattr(ctx, "rag_chunks", None)
     if _rag_chunks_pool is None:
         _rag_chunks_pool = all_sources
-    rag_chunks = _build_rag_chunks(
-        _rag_chunks_pool, getattr(ctx, "tool_section_hints", None), getattr(ctx, "chat_mode", None),
-        curated_chunk_ids=getattr(ctx, "curated_chunk_ids", None),
-        evidence_memory=getattr(ctx, "_evidence_memory", None),
-    )
+    with _ispan(ctx, "integrate", label="build_rag_chunks"):
+            rag_chunks = _build_rag_chunks(
+            _rag_chunks_pool, getattr(ctx, "tool_section_hints", None), getattr(ctx, "chat_mode", None),
+            curated_chunk_ids=getattr(ctx, "curated_chunk_ids", None),
+            evidence_memory=getattr(ctx, "_evidence_memory", None),
+        )
     tool_outputs = _build_tool_outputs_for_prompt(getattr(ctx, "tool_outputs", None))
     reasoning_ledger = _build_reasoning_ledger(getattr(ctx, "react_trace_rounds", None))
 
@@ -974,11 +984,12 @@ def run_integrate(
         )
         integrator_usage = integrator_usages[0] if integrator_usages else None
     elif not _disambiguation_used:
-        final_message, integrator_usage = format_response(
-            plan, answers, user_message=ctx.message,
-            llm_stage=_integ_stage,
-            **_shared_integ_kwargs,
-        )
+        with _ispan(ctx, "integrate", label="format_response"):
+                final_message, integrator_usage = format_response(
+                plan, answers, user_message=ctx.message,
+                llm_stage=_integ_stage,
+                **_shared_integ_kwargs,
+            )
 
     # Post-process: when ctx.recital.verbatim is set, upgrade the integrator's
     # card to mode=RECITAL and inject the verbatim text. The integrator still
@@ -1861,20 +1872,21 @@ def run_integrate(
 
     _cred_card_data = getattr(ctx, "react_credentialing_card_data", None)
 
-    payload["assistant_envelope"] = build_assistant_envelope_v1(
-        answer_card=answer_card_dict,
-        ui_blocks_raw=integrator_ui_blocks,
-        tool_fired=_tf,
-        response_sources=response_sources,
-        next_steps=next_steps,
-        next_questions_for_user=next_questions_for_user,
-        roster_report_final_md=_md_for_envelope,
-        has_roster_pdf=_has_pdf,
-        resolutions=resolutions,
-        source_confidence_strip=source_confidence_strip,
-        pipeline_human_gate=_pipeline_gate,
-        credentialing_card_data=_cred_card_data,
-    )
+    with _ispan(ctx, "integrate", label="assistant_envelope"):
+            payload["assistant_envelope"] = build_assistant_envelope_v1(
+            answer_card=answer_card_dict,
+            ui_blocks_raw=integrator_ui_blocks,
+            tool_fired=_tf,
+            response_sources=response_sources,
+            next_steps=next_steps,
+            next_questions_for_user=next_questions_for_user,
+            roster_report_final_md=_md_for_envelope,
+            has_roster_pdf=_has_pdf,
+            resolutions=resolutions,
+            source_confidence_strip=source_confidence_strip,
+            pipeline_human_gate=_pipeline_gate,
+            credentialing_card_data=_cred_card_data,
+        )
 
     pws = getattr(ctx, "pending_workflow_selection", None)
     if isinstance(pws, list) and pws:

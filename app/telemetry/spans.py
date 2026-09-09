@@ -80,11 +80,12 @@ KIND_HTTP = "http"
 #                   failed is distinguishable from one that never happened.
 #
 # A duration cannot tell these three apart. A count can, at n=1.
+KIND_ROUND = "round"
 KIND_TOOL_OFFERED = "tool.offered"
 KIND_TOOL_EMITTED = "tool.emitted"
 KIND_TOOL_DISPATCHED = "tool.dispatched"
 
-_KINDS = {KIND_DB_READ, KIND_DB_WRITE, KIND_LLM, KIND_HTTP,
+_KINDS = {KIND_DB_READ, KIND_DB_WRITE, KIND_LLM, KIND_HTTP, KIND_ROUND,
           KIND_TOOL_OFFERED, KIND_TOOL_EMITTED, KIND_TOOL_DISPATCHED}
 
 # Span names are NODE KEYS from the chat schema, not ad-hoc labels.
@@ -522,3 +523,40 @@ def classify_source(correlation_id: str, declared: str | None = None) -> str:
         return SOURCE_REAL
     except (ValueError, AttributeError, TypeError):
         return SOURCE_SMOKE
+
+
+def mark_round(ctx: Any, rn: int) -> None:
+    """Close out the previous ReAct round's timing and start the next.
+
+    react_loop's round body is ~600 lines under `for iteration in count()`.
+    Wrapping it in a span context manager would mean re-indenting all of it —
+    a large, risky edit to the single biggest module in the codebase, for
+    telemetry. So rounds are timed by MARKING the boundary instead: each call
+    records the elapsed time since the previous mark against the round that
+    just ended.
+
+    The result is a count per round rather than a nested span, which is the
+    honest trade: it gives per-round duration without touching the loop's
+    structure, and it cannot express anything nested INSIDE a round. When
+    react_loop is split in P4 and its body is being restructured anyway, this
+    should become real child spans.
+    """
+    tr = get_trace(ctx)
+    if tr is None or not tr._stack:
+        return
+    now = time.perf_counter()
+    prev_rn = getattr(ctx, "_span_round_n", None)
+    prev_t = getattr(ctx, "_span_round_t", None)
+    if prev_rn is not None and prev_t is not None:
+        tr.record(KIND_ROUND, f"round_{prev_rn}", ms=(now - prev_t) * 1000.0)
+    ctx._span_round_n = rn
+    ctx._span_round_t = now
+
+
+def close_rounds(ctx: Any) -> None:
+    """Record the final round, which has no successor to close it."""
+    mark_round(ctx, None)
+    try:
+        ctx._span_round_n = None
+    except Exception:
+        pass

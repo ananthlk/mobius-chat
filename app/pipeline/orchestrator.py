@@ -782,7 +782,16 @@ def run_pipeline(
             from app.pipeline.react_loop import run_react
             from app.telemetry.spans import span as _span
             with _span(ctx, "react_loop"):
-                run_react(ctx, emitter=on_thinking)
+                try:
+                    run_react(ctx, emitter=on_thinking)
+                finally:
+                    # The last round has no successor to close it, so record
+                    # it here — inside the span, before it closes.
+                    try:
+                        from app.telemetry.spans import close_rounds
+                        close_rounds(ctx)
+                    except Exception:
+                        pass
         except Exception as e:
             logger.exception("ReAct stage error: %s", e)
             _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e, user_id=ctx.user_id)
