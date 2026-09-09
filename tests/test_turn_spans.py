@@ -430,9 +430,9 @@ def test_orphaned_db_writes_are_counted_but_not_warned(caplog):
         b_llm = sp.orphaned_ms().get("llm", 0.0)
         with caplog.at_level(logging.WARNING, logger="app.telemetry.spans"):
             sp.record_ambient(sp.KIND_DB_WRITE, "chat_progress_events", ms=70453.0)
-            assert "NOT attributed" not in caplog.text
+            assert "AT RECORD TIME" not in caplog.text
             sp.record_ambient(sp.KIND_LLM, "gemini-2.5-flash", ms=4200.0)
-            assert "NOT attributed" in caplog.text
+            assert "AT RECORD TIME" in caplog.text
         # Both COUNTED — the gauge must not lie just because one is quiet.
         assert sp.orphaned_ms().get("db.write", 0.0) - b_db == 70453.0
         assert sp.orphaned_ms().get("llm", 0.0) - b_llm == 4200.0

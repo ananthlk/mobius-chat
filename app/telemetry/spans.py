@@ -521,8 +521,13 @@ _ORPHANED: dict[str, float] = {}
 
 
 def orphaned_ms() -> dict[str, float]:
-    """Time measured but attributable to no span, by kind. Non-empty means the
-    matrix is UNDER-reporting some external wait and over-reporting our code."""
+    """Time that had no span AT RECORD TIME, by kind, for this process's life.
+
+    An UPPER BOUND on loss, not a loss figure: a pool worker's call orphans here
+    and is then filed by its parent after the join, so the integrator's three
+    calls land in this tally every turn despite being correctly attributed.
+    Treat a rise as "go look at that turn's matrix", not as proof of a gap.
+    """
     return dict(_ORPHANED)
 
 
@@ -545,10 +550,19 @@ def record_ambient(kind: str, target: str, n: int = 1, ms: float = 0.0) -> None:
             # missing, and its time WILL surface as its caller's processing.
             # That is the 11.5s-as-our-code failure, and it should be loud.
             if kind == KIND_LLM:
+                # Deliberately hedged. A call made in a pool worker orphans HERE
+                # and is still filed correctly a moment later by the parent
+                # after the join (add_completed) — the integrator fan-out does
+                # exactly that, three times a turn. Saying "NOT attributed"
+                # flatly would cry wolf on the one path already fixed, and a
+                # warning that is wrong three times a turn is a warning nobody
+                # reads by the fourth. Check the turn's matrix before treating
+                # one of these as a real loss.
                 logger.warning(
-                    "[spans] llm %.0fms on %r had no active span — NOT attributed. "
-                    "Almost always a call made from a thread the trace does not "
-                    "reach; its time will look like the caller's own processing.",
+                    "[spans] llm %.0fms on %r had no active span AT RECORD TIME. "
+                    "If the caller files it after a join it is still counted "
+                    "(integrator fan-out does); otherwise this time is lost and "
+                    "will look like the caller's own processing.",
                     ms, target,
                 )
             else:
