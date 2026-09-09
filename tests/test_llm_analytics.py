@@ -44,6 +44,37 @@ def test_build_record_shape_and_prompt_hash():
     assert record["output_len_chars"] == 2
 
 
+def test_build_record_module_key_mirrors_stage():
+    """module_key ≡ stage is the ratified 1:1 rule (migration 051, DQ-2).
+
+    Regression test: build_record never populated module_key/variant_id
+    (only migration 051's one-time backfill UPDATE ever set them, for
+    rows that existed before it ran) — every row inserted since has had
+    both NULL, which silently zeroed out model_performance_by_stage's
+    `WHERE variant_id = 'default'` filter (migration 052) for over a
+    month. See the comment in build_record() for the full mechanism.
+    """
+    record = llm_analytics.build_record(
+        model="gemini-2.5-flash",
+        provider="vertex",
+        stage="adjudicator",
+        success=True,
+        prompt="hi",
+    )
+    assert record["module_key"] == "adjudicator"
+    assert record["variant_id"] == "default"
+
+
+def test_build_record_module_key_uses_normalized_stage():
+    """module_key mirrors the SAME normalized stage value written to
+    `stage` (falls back to "unknown"), not the raw unnormalized input."""
+    record = llm_analytics.build_record(
+        model="x", provider="y", stage="  ", success=True, prompt="",
+    )
+    assert record["stage"] == "unknown"
+    assert record["module_key"] == "unknown"
+
+
 def test_build_record_minimal():
     """build_record with minimal args uses defaults."""
     record = llm_analytics.build_record(
@@ -146,3 +177,25 @@ def test_update_quality_async_returns_false_when_update_matches_zero_rows():
     assert result is False
     # The quality_updates INSERT must NOT run for a call_id that doesn't exist.
     assert len(conn.executed) == 1
+
+
+def test_write_async_sends_module_key_and_variant_id():
+    """Regression test for the mechanism, not just build_record's dict shape:
+    _write_async's INSERT column list and positional args must actually
+    include module_key/variant_id, and the column/placeholder/arg counts
+    must all agree — a mismatch here is exactly how this went unnoticed
+    for a month (asyncpg raises on a count mismatch, but a same-length
+    swap or a silently-omitted column raises nothing)."""
+    record = llm_analytics.build_record(
+        model="gemini-2.5-pro", provider="vertex", stage="adjudicator",
+        success=True, prompt="hi",
+    )
+    conn = _FakeConn(update_tag="INSERT 0 1")
+    with patch.object(llm_analytics, "_acquire_conn", return_value=_FakeAcquireConn(conn)):
+        asyncio.run(llm_analytics._write_async(record))
+    assert len(conn.executed) == 1
+    sql, args = conn.executed[0]
+    assert "module_key" in sql
+    assert "variant_id" in sql
+    assert "adjudicator" in args
+    assert "default" in args

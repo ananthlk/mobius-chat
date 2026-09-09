@@ -110,6 +110,7 @@ def build_record(
     prompt_len = len(prompt) if prompt else 0
     output_len = len(output_text) if output_text else 0
     ts = datetime.now(timezone.utc)
+    stage_norm = (stage or "").strip() or "unknown"
     return {
         "call_id": uuid.uuid4(),
         "correlation_id": correlation_id,
@@ -118,7 +119,35 @@ def build_record(
         "config_sha": config_sha,
         "model": (model or "").strip() or "unknown",
         "provider": (provider or "").strip() or "unknown",
-        "stage": (stage or "").strip() or "unknown",
+        "stage": stage_norm,
+        # module_key / variant_id (migration 051/052, DQ-2/DQ-1 gate,
+        # 2026-07-25): added to the schema and to the reader's
+        # `WHERE variant_id = 'default'` filter (052) but never wired into
+        # this writer — every row inserted since the migration-051 backfill
+        # ran (2026-08-05 02:28 UTC) has both columns NULL, which matches
+        # neither the migration's ratified semantics NOR anything the
+        # reader expects. model_performance_by_stage's variant-aware filter
+        # (052) has therefore been silently matching zero rows for over a
+        # month: model_winner_by_stage/model_composite_scores frozen on
+        # pre-08-05 data, and model_registry._refresh_stats' PG-truth
+        # ema_latency_ms/ema_quality refresh never fires, leaving ema stuck
+        # at its hardcoded ModelSpec seed until an in-memory instance
+        # happens to accumulate enough live calls itself (reset on every
+        # fresh Cloud Run instance) — the mechanism behind the "all stages
+        # running on the least-bad latency-breaker fallback" finding.
+        # module_key ≡ stage is the ratified 1:1 rule (DQ-2) for this
+        # writer — CallManager v2 (call_manager.py, not yet wired into the
+        # live path) is the only place a finer-grained module_key would
+        # ever diverge from stage; until it is, this copy is exact, per
+        # migration 051's own backfill comment. variant_id='default' is
+        # correct for every call this writer sees today: PromptManager IS
+        # called live (critic.py/prompts.py/final.py) but its
+        # RenderedPrompt.variant_id is never threaded into this call —
+        # CallManager (call_manager.py) is the intended home for that and
+        # is not instantiated anywhere outside its own module/tests, so no
+        # code path currently produces a non-default variant id here.
+        "module_key": stage_norm,
+        "variant_id": "default",
         "tier": tier,
         "complexity": complexity,
         "is_ab_call": is_ab_call,
@@ -166,11 +195,11 @@ async def _write_async(record: dict[str, Any]) -> None:
                     latency_ms, input_tokens, output_tokens, cost_usd,
                     quality_score, quality_source, phi_detected, phi_scrubbed, phi_types,
                     prompt_len_chars, output_len_chars, prompt_hash, synced_to_bq, synced_at,
-                    composition_id, composition_hash, is_hard_pinned
+                    composition_id, composition_hash, is_hard_pinned, module_key, variant_id
                 ) VALUES (
                     $1, $2, $3, $4::timestamptz, $5, $6, $7, $8, $9, $10, $11, $12,
                     $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27,
-                    $28, $29, $30, $31, $32, $33, $34, $35
+                    $28, $29, $30, $31, $32, $33, $34, $35, $36, $37
                 )
                 """,
                 record["call_id"],
@@ -208,6 +237,8 @@ async def _write_async(record: dict[str, Any]) -> None:
                 record["composition_id"],
                 record["composition_hash"],
                 record["is_hard_pinned"],
+                record["module_key"],
+                record["variant_id"],
             )
     except Exception as e:
         logger.warning("llm_analytics write failed: %s", e)
