@@ -32,9 +32,17 @@ from app.services.cost_model import compute_cost
 from app.services.model_registry import integrator_llm_stage, per_call_router_composite
 from app.state.jurisdiction import get_jurisdiction_from_active, jurisdiction_to_summary
 
-# P2b child spans: integrate is ~1,079ms/turn of PURE processing (no llm, no
-# db, no external tool) — the largest block of code-we-control in the trace.
-# One number cannot say WHICH part, so its heavy phases get child spans.
+# P2b child spans: integrate's heavy phases each get one, because a single
+# number cannot say WHICH part is slow.
+# CORRECTION (2026-09-09): this comment used to read "~1,079ms/turn of PURE
+# processing (no llm, no db, no external tool) — the largest block of
+# code-we-control". That was wrong, and wrong in the direction that wastes
+# someone's day. integrate's whole job is to format the response VIA THE
+# INTEGRATOR LLM; those calls simply had no spans, so their wall fell into the
+# processing column and looked like our code. On cid=40a51d7d it read as
+# 12,087ms of "our processing" while the actual model calls ran on a thread
+# pool the trace could not see. The calls are now spanned (final_parallel
+# ._file_integrator_spans), so this node's processing number means what it says.
 # Module-level because the instrumented calls live in more than one function;
 # a function-local import left _ispan undefined at the other call sites and
 # broke three run_integrate tests. app.telemetry.spans imports nothing from
