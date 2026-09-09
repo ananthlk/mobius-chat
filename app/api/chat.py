@@ -582,6 +582,21 @@ def get_chat_plan(correlation_id: str):
     return plan_payload
 
 
+def _require_trace_admin() -> None:
+    """Gate for the turn-telemetry read surface.
+
+    Gating the /traces PAGE alone would be theatre: the page is a thin client
+    over these three endpoints, so anyone could read the same data straight
+    from the JSON. The gate belongs on the data, and the page inherits it.
+
+    404 rather than 403 — an unauthenticated caller should not learn that an
+    admin telemetry surface exists here.
+    """
+    from app.api.admin import _admin_enabled
+    if not _admin_enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+
+
 @router.get("/chat/traces/nodes")
 def get_node_rollup():
     """Trace data rolled up by SCHEMA NODE, with both falsifiability lists.
@@ -591,6 +606,7 @@ def get_node_rollup():
     that produced no span: dead code or mis-modelled) and `unmodelled` (span
     names that are not nodes: the schema is incomplete).
     """
+    _require_trace_admin()
     from app.storage.turn_spans import node_rollup
     return node_rollup()
 
@@ -602,6 +618,7 @@ def list_turn_traces(limit: int = 40):
     Carries wall/llm/self per turn so the list itself is triageable: a reader
     looking for the slow turn should not have to open every row to find it.
     """
+    _require_trace_admin()
     from app.storage.turn_spans import list_recent_traces
     return {"traces": list_recent_traces(limit=limit)}
 
@@ -625,6 +642,23 @@ def get_turn_spans(correlation_id: str):
     that ran before this shipped, and a turn whose telemetry failed, are
     both "no rows" — and the caller distinguishes them from the WARNING in
     the logs, not from an HTTP code that would also mean "bad id".
+
+    DELIBERATELY NOT _require_trace_admin(). This is PER-TURN telemetry for a
+    turn the caller already has the correlation_id for, and its consumer is
+    the diagnostics tab — whose own visibility gate is
+    getShowLlmPerformance() (app.ts:5459): a client-side check on the user's
+    `activities`, NOT the server's MOBIUS_ADMIN_ENABLED flag.
+
+    Gating this with the admin env flag would use a DIFFERENT definition of
+    "who may see this" than the surface that consumes it, so anywhere the two
+    diverge the panel renders "unavailable" to a user who legitimately has
+    the diagnostics activity — a silent mismatch between a gate and its
+    caller, which is the defect class this program exists to remove. It also
+    shows nothing the diagnostics tab does not already show for the same
+    turn (model names, latencies, RAG telemetry).
+
+    The FLEET endpoints (/chat/traces, /chat/traces/nodes) ARE admin-gated:
+    they cross turns and users, which is a different audience question.
     """
     from app.storage.turn_spans import read_spans, summarize
     spans = read_spans(correlation_id)

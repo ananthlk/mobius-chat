@@ -2944,7 +2944,21 @@ if _frontend.exists():
     # URL sourced from MOBIUS_PLATFORM_SCHEMATIC_URL via /chat/config.
     @app.get("/traces")
     def traces_page():
-        """Turn-trace viewer (P2b). Reads /chat/traces + /chat/spans/{cid}."""
+        """Turn-trace viewer (P2b). Reads /chat/traces + /chat/spans/{cid}.
+
+        ADMIN-GATED, on the Chat FE owner's ruling 2026-09-09. The page shows
+        per-turn timings, schema node names and database table names. No
+        message content — but they are infra internals, and world-readable is
+        too loose. I had matched /platform's open posture; that was the wrong
+        reference, since /platform is a published architecture view and this
+        is an operational surface.
+
+        Same gate the admin API uses, so there is one definition of "admin"
+        rather than a second one that drifts.
+        """
+        from app.api.admin import _admin_enabled
+        if not _admin_enabled():
+            raise HTTPException(status_code=404, detail="Not found")
         r = FileResponse(_frontend / "traces.html")
         r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return r
