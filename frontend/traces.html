@@ -72,6 +72,12 @@
   .mbar{display:flex;height:10px;border-radius:3px;overflow:hidden;background:#eef2f7}
   .mbar i{display:block;height:100%}
   .m-proc{background:#0ea5e9} .m-llm{background:#7c3aed} .m-db{background:#f59e0b} .m-tool{background:#10b981}
+  .phaserow{cursor:pointer;background:var(--mobius-bg-secondary,#f8fafc)}
+  .phaserow:hover{background:#f1f5f9}
+  .phaserow td{border-top:2px solid var(--mobius-border,#e2e8f0)}
+  .chev{display:inline-block;width:14px;color:var(--mobius-text-muted,#64748b);font-size:11px}
+  .noderow{display:none}
+  .noderow.open{display:table-row}
   .why{font-size:12.5px;color:var(--mobius-text-muted,#64748b);margin:2px 0 10px;line-height:1.55;max-width:76ch}
 </style>
 </head>
@@ -207,21 +213,40 @@ async function loadNodes(){
   wrap.innerHTML='<div class="full" id="nodeview"><div class="empty">loading…</div></div>';
   const r=await fetch(`${API}/chat/traces/nodes`); const d=await r.json();
   const obs=d.observed||[], sil=d.silent||[], unm=d.unmodelled||[];
-  const rows=obs.map(o=>{
+  const phases=d.phases||[];
+  const grand=phases.reduce((a,p)=>a+(p.total_wall||0),0)||1;
+  const seg=(v,W,cls)=>W>0?`<i class="${cls}" style="width:${100*v/W}%"></i>`:'';
+
+  const nodeRow=o=>{
     const W=o.total_wall||0;
-    const seg=(v,cls)=>W>0?`<i class="${cls}" style="width:${100*v/W}%"></i>`:'';
-    return `<tr>
-      <td><span class="node">${o.module}</span><div class="lbl" style="font-size:11px">${o.turns} turns · ${o.spans} spans</div></td>
-      <td style="width:150px"><div class="mbar">${seg(o.processing,'m-proc')}${seg(o.llm,'m-llm')}${seg(o.db,'m-db')}${seg(o.tool,'m-tool')}</div></td>
+    const pc = o.db_n ? `<div class="lbl" style="font-size:10.5px">p50 ${ms(o.db_ms_per_call_p50)} · p95 ${ms(o.db_ms_per_call_p95)} /call</div>` : '';
+    return `<tr class="noderow">
+      <td style="padding-left:34px"><span class="node">${o.module}</span>
+        <div class="lbl" style="font-size:11px">${o.turns} turns · ${o.spans} spans</div></td>
+      <td style="width:130px"><div class="mbar">${seg(o.processing,W,'m-proc')}${seg(o.llm,W,'m-llm')}${seg(o.db,W,'m-db')}${seg(o.tool,W,'m-tool')}</div></td>
       <td class="num"><b>${ms(o.processing)}</b></td>
-      <td class="num">${ms(o.llm)}${o.llm_n?`<div class="lbl" style="font-size:11px">n=${o.llm_n}</div>`:''}</td>
-      <td class="num">${ms(o.db)}${o.db_n?`<div class="lbl" style="font-size:11px">n=${o.db_n}</div>`:''}</td>
+      <td class="num">${ms(o.llm)}${o.llm_n?`<div class="lbl" style="font-size:10.5px">n=${o.llm_n}</div>`:''}</td>
+      <td class="num">${ms(o.db)}${o.db_n?`<div class="lbl" style="font-size:10.5px">n=${o.db_n}</div>${pc}`:''}</td>
       <td class="num">${ms(o.tool)}</td>
       <td class="num">${ms(o.p50_wall)}</td>
       <td class="num">${ms(o.p95_wall)}</td></tr>`;
+  };
+
+  const rows = phases.map(p=>{
+    const kids = obs.filter(o=>o.phase===p.phase);
+    const W=p.total_wall||0;
+    return `<tr class="phaserow" data-p="${p.phase}">
+      <td><span class="chev">▸</span><b style="text-transform:capitalize">${p.phase}</b>
+        <div class="lbl" style="font-size:11px">${p.nodes} modules · ${(100*W/grand).toFixed(0)}% of measured time</div></td>
+      <td style="width:130px"><div class="mbar" style="height:13px">${seg(p.processing,W,'m-proc')}${seg(p.llm,W,'m-llm')}${seg(p.db,W,'m-db')}${seg(p.tool,W,'m-tool')}</div></td>
+      <td class="num"><b>${ms(p.processing)}</b></td>
+      <td class="num">${ms(p.llm)}${p.llm_n?`<div class="lbl" style="font-size:10.5px">n=${p.llm_n}</div>`:''}</td>
+      <td class="num">${ms(p.db)}${p.db_n?`<div class="lbl" style="font-size:10.5px">n=${p.db_n}</div>`:''}</td>
+      <td class="num">${ms(p.tool)}</td>
+      <td class="num lbl">—</td><td class="num lbl">—</td></tr>` + kids.map(nodeRow).join('');
   }).join('');
   document.getElementById('nodeview').innerHTML=`
-    <h2 style="margin-top:0">Node matrix — ${obs.length} of ${d.node_count} schema nodes observed</h2>
+    <h2 style="margin-top:0">Phase → module — ${obs.length} of ${d.node_count} schema nodes observed</h2>
     <div class="why">For each node, where <b>its</b> time went. One duration says a node is slow;
       the split says why — and the four causes have four different owners.
       <b>processing</b> = wall − llm − db − tool: the node's own code, and the only column a
@@ -233,7 +258,7 @@ async function loadNodes(){
       <span><span class="kindtag m-db"></span>db</span>
       <span><span class="kindtag m-tool"></span>tool (external)</span></div>
     <table>
-      <tr><th>Schema node</th><th>Split</th><th class="num">Processing</th><th class="num">LLM</th>
+      <tr><th>Phase / module</th><th>Split</th><th class="num">Processing</th><th class="num">LLM</th>
           <th class="num">DB</th><th class="num">Tool</th>
           <th class="num">p50 wall</th><th class="num">p95 wall</th></tr>
       ${rows||'<tr><td colspan="8" class="lbl">no spans recorded yet</td></tr>'}

@@ -119,6 +119,55 @@ NODE_KEYS = frozenset({
     "tool_manifest", "worker",
 })
 
+# ── phases ───────────────────────────────────────────────────────────
+#
+# Ananth's framing: preprocessing · react · postprocessing, with the real
+# modules bundled underneath, so a reader gets a phase-level answer first and
+# drills into modules only when the phase is the suspect.
+#
+# The value is that the three phases have different levers. Preprocessing is
+# almost all I/O — make fewer calls, or make them cheaper. React is dominated
+# by model routing, which no refactor touches. Postprocessing is our own
+# composition code. "The turn is slow" is unanswerable; "preprocessing is
+# 40% of it" points at one of three different teams' work.
+#
+# Assignment is by WHERE IN THE TURN a node runs, not by what it is about.
+# UNPHASED IS DELIBERATE AND VISIBLE: a node with no phase shows up in its own
+# bucket rather than being defaulted into one. Silently bucketing an unmapped
+# node would make the phase totals quietly wrong, which is worse than an
+# obvious gap — the same reason an unknown root span is recorded verbatim
+# rather than normalised.
+PHASE_PRE = "preprocessing"
+PHASE_REACT = "react"
+PHASE_POST = "postprocessing"
+
+NODE_PHASE: dict[str, str] = {
+    # ── preprocessing: everything before the reasoning loop opens ──
+    "POST /chat": PHASE_PRE, "queue": PHASE_PRE, "worker": PHASE_PRE,
+    "run_pipeline": PHASE_PRE, "orchestrator": PHASE_PRE,
+    "PHI gate": PHASE_PRE, "state_load": PHASE_PRE, "context": PHASE_PRE,
+    "active_context": PHASE_PRE, "jurisdiction": PHASE_PRE,
+    "personalization": PHASE_PRE, "message_resolver": PHASE_PRE,
+    "capabilities": PHASE_PRE, "tool_manifest": PHASE_PRE,
+    "clarification": PHASE_PRE, "clarify": PHASE_PRE, "classify": PHASE_PRE,
+    "plan": PHASE_PRE, "stages": PHASE_PRE, "continuity": PHASE_PRE,
+    # ── react: the reason -> act -> observe loop and its machinery ──
+    "react_loop": PHASE_REACT, "round0": PHASE_REACT, "prompts": PHASE_REACT,
+    "parsing": PHASE_REACT, "critic": PHASE_REACT, "governor": PHASE_REACT,
+    "completion_extension_gate": PHASE_REACT, "react_retry_guard": PHASE_REACT,
+    "retrieval_budget": PHASE_REACT, "curator_tools": PHASE_REACT,
+    "llm_manager": PHASE_REACT, "resolve": PHASE_REACT,
+    # ── postprocessing: turning the loop's output into the answer ──
+    "integrate": PHASE_POST, "emit_envelope": PHASE_POST,
+    "feedback_signal": PHASE_POST, "credentialing_envelope": PHASE_POST,
+}
+
+PHASE_ORDER = [PHASE_PRE, PHASE_REACT, PHASE_POST, "unphased"]
+
+
+def phase_for(node: str) -> str:
+    return NODE_PHASE.get(node, "unphased")
+
 
 @dataclass
 class _Count:

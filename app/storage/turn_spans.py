@@ -240,6 +240,11 @@ def list_recent_traces(limit: int = 40) -> list[dict[str, Any]]:
     return out
 
 
+def _phase_for(node: str) -> str:
+    from app.telemetry.spans import phase_for
+    return phase_for(node)
+
+
 def node_rollup(limit_spans: int = 5000) -> dict[str, Any]:
     """Per-node MATRIX: processing · llm · db · tool(external), plus both
     falsifiability directions.
@@ -317,6 +322,16 @@ def node_rollup(limit_spans: int = 5000) -> dict[str, Any]:
                                   "db_n": 0, "llm_n": 0, "last_seen": ""})
         db_ms = sum(float(c.get("ms") or 0.0) for c in (r.get("counts") or [])
                     if str(c.get("kind", "")).startswith("db."))
+        # Per-span mean ms/call, collected so the rollup can report a SPREAD.
+        # The stored schema keeps n and total ms per (kind,target), so a true
+        # per-call distribution is not recoverable — this is the honest
+        # approximation, and the gap is named rather than papered over:
+        # averaging cold-start smoke turns (~450ms/call) with real turns
+        # (~35ms/call) produced a single number describing neither.
+        _dbn = sum(int(c.get("n") or 0) for c in (r.get("counts") or [])
+                   if str(c.get("kind", "")).startswith("db."))
+        if _dbn:
+            a.setdefault("_percall", []).append(db_ms / _dbn)
         db_n = sum(int(c.get("n") or 0) for c in (r.get("counts") or [])
                    if str(c.get("kind", "")).startswith("db."))
         llm_n = sum(int(c.get("n") or 0) for c in (r.get("counts") or [])
@@ -324,7 +339,12 @@ def node_rollup(limit_spans: int = 5000) -> dict[str, Any]:
         tool_ms = tool_child.get(r["span_id"], 0.0)
         proc = max(0.0, r["wall_ms"] - r["llm_ms"] - db_ms - tool_ms)
 
-        a["turns"].add(r["correlation_id"])
+        # A TURN OCCURRENCE, not a correlation_id. The deploy smoke test
+        # reuses fixed cids (sel-cid-3/4) and span_id is fresh per run, so
+        # those cids accumulate rows on every deploy. Counting distinct cids
+        # divided four runs' milliseconds by one "turn" and produced a
+        # per-turn figure ~14x the truth. Group by the ROOT span instead.
+        a["turns"].add((r["correlation_id"], r.get("parent_span_id") or r["span_id"]))
         a["spans"] += 1
         a["walls"].append(r["wall_ms"])
         a["llm"] += r["llm_ms"]
@@ -348,15 +368,42 @@ def node_rollup(limit_spans: int = 5000) -> dict[str, Any]:
         a["turns"] = len(a["turns"])
         a["p50_wall"] = round(_pct(walls, 0.50), 1)
         a["p95_wall"] = round(_pct(walls, 0.95), 1)
+        pc = a.pop("_percall", [])
+        a["db_ms_per_call_p50"] = round(_pct(pc, 0.50), 1) if pc else 0.0
+        a["db_ms_per_call_p95"] = round(_pct(pc, 0.95), 1) if pc else 0.0
+        a["phase"] = _phase_for(a["module"])
         a["total_wall"] = round(sum(walls), 1)
         for k in ("llm", "db", "tool", "processing"):
             a[k] = round(a[k], 1)
         observed.append(a)
     observed.sort(key=lambda x: -x["p95_wall"])
 
-    from app.telemetry.spans import NODE_KEYS
+    from app.telemetry.spans import NODE_KEYS, PHASE_ORDER
     seen = {o["module"] for o in observed}
+
+    # Phase tier: preprocessing / react / postprocessing. The three have
+    # different levers — preprocessing is nearly all I/O, react is dominated
+    # by model routing no refactor touches, postprocessing is our composition
+    # code. "The turn is slow" is unanswerable; "preprocessing is 40% of it"
+    # points at one of three different bodies of work.
+    phases: dict[str, dict[str, Any]] = {}
+    for o in observed:
+        ph = phases.setdefault(o["phase"], {
+            "phase": o["phase"], "processing": 0.0, "llm": 0.0, "db": 0.0,
+            "tool": 0.0, "db_n": 0, "llm_n": 0, "nodes": 0, "total_wall": 0.0,
+        })
+        for k in ("processing", "llm", "db", "tool", "total_wall"):
+            ph[k] += o[k]
+        ph["db_n"] += o["db_n"]
+        ph["llm_n"] += o["llm_n"]
+        ph["nodes"] += 1
+    for ph in phases.values():
+        for k in ("processing", "llm", "db", "tool", "total_wall"):
+            ph[k] = round(ph[k], 1)
+    phase_list = [phases[p] for p in PHASE_ORDER if p in phases]
+
     return {
+        "phases": phase_list,
         "observed": observed,
         "silent": sorted(NODE_KEYS - seen),
         "unmodelled": sorted(seen - set(NODE_KEYS)),
