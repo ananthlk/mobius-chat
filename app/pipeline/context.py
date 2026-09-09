@@ -212,8 +212,6 @@ class PipelineContext:
     # Collected during pipeline (emitter appends)
     thinking_chunks: list[str] = field(default_factory=list)
 
-    # Relentless continuity: master objective (created after plan, updated after resolve)
-    master_objective: dict | None = None
     # User-provided context (when user shares docs/links/info to help answer)
     user_provided_context: str | None = None
     # Roster/credentialing: step outputs (CSV per step) for validation UI

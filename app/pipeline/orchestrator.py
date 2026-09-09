@@ -24,11 +24,7 @@ from app.storage.threads import register_open_slots, save_state_full
 
 from app.stages.state_load import run_state_load
 from app.stages.integrate import run_integrate
-from app.state.master_objective import MasterObjective
-from app.state.objective_eval import update_objective_from_integrator
-from app.state.user_context_resolution import prefill_answer_set_from_master_objective, update_answer_set_from_user_context
 from app.state.continuity_checks import extract_user_provided_context, user_wants_to_end_pursuit
-from app.stages.continuity import should_ask_user_for_help, get_objective_end_state
 from app.trace_log import trace_entered
 from app.pipeline.stages import (
     STATE_LOAD,
@@ -188,18 +184,6 @@ def _debug_plan_state(label: str, ctx: PipelineContext) -> None:
     if not DEBUG_PLAN:
         return
     lines = [f"\n  [DEBUG {label}]"]
-    obj = ctx.master_objective
-    if obj:
-        status = obj.get("status", "?")
-        summary = (obj.get("summary") or "")[:80]
-        subs = obj.get("sub_objectives") or []
-        lines.append(f"  master_objective: status={status} summary={summary!r}")
-        for so in subs:
-            ans = (so.get("answer") or "").strip()
-            ans_part = f" | answer={ans[:50]}{'...' if len(ans) > 50 else ''}" if ans else ""
-            lines.append(f"    - {so.get('id')}: {so.get('status')} | {(so.get('text') or '')[:50]}{ans_part}")
-    else:
-        lines.append("  master_objective: (none)")
     answer_set = getattr(ctx, "answer_set", None) or {}
     if answer_set:
         lines.append("  answer_set (source=planner|user_context|master_objective|rag|tool):")
@@ -689,22 +673,12 @@ def run_pipeline(
             user_id=getattr(ctx, "user_id", None),
         )
 
-        obj_raw = (ctx.merged_state or {}).get("master_objective")
-        has_active = bool(obj_raw and (obj_raw.get("status") or "active") == "active")
-        if user_wants_to_end_pursuit(ctx.message or ""):
-            if obj_raw:
-                obj = MasterObjective.from_dict(obj_raw)
-                if obj and obj.status == "active":
-                    obj.status = "abandoned"
-                    ctx.master_objective = obj.to_dict()
-                    ctx.merged_state = {**(ctx.merged_state or {}), "master_objective": ctx.master_objective}
-                    _publish_pursuit_ended(correlation_id, ctx, t0)
-                    return
-        else:
-            ctx.user_provided_context = extract_user_provided_context(ctx.message or "", has_active)
-
-        # Load master_objective into ctx so planner sees last_master_plan on follow-ups
-        ctx.master_objective = (ctx.merged_state or {}).get("master_objective")
+        # P1c: master_objective retired. Nothing can create one, so the
+        # end-pursuit branch had no objective to abandon and never fired.
+        # The guard is kept so user_provided_context extraction keeps its
+        # exact prior condition (has_active was always False).
+        if not user_wants_to_end_pursuit(ctx.message or ""):
+            ctx.user_provided_context = extract_user_provided_context(ctx.message or "", False)
 
         # Conversational continuity: resolve pronoun/implicit references before planning
         from app.pipeline.message_resolver import (
@@ -835,37 +809,7 @@ def run_pipeline(
             _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e, user_id=ctx.user_id)
             return
 
-        # Integrator may output resolved_subquestions when it used user_provided_context; update objective
-        obj_raw = ctx.master_objective
-        obj = MasterObjective.from_dict(obj_raw) if obj_raw else None
-        integrator_data = ctx.response_payload if ctx.response_payload else ctx.final_message
-        if obj and integrator_data:
-            updated = update_objective_from_integrator(obj, integrator_data)
-            if updated:
-                ctx.master_objective = updated.to_dict()
-                ctx.merged_state = {**(ctx.merged_state or {}), "master_objective": ctx.master_objective}
         _debug_plan_state("POST-INTEGRATOR", ctx)
-
-        # User-as-leverage: when partial, add user_ask to payload (frontend can render below answer)
-        ask_user, ask_msg = should_ask_user_for_help(ctx)
-        if ask_user and ctx.response_payload:
-            # Prefer integrator's next_questions_for_user when available (more specific)
-            nq = ctx.response_payload.get("next_questions_for_user")
-            if nq and isinstance(nq, list) and nq:
-                first = nq[0]
-                if isinstance(first, dict):
-                    ctx.response_payload["user_ask"] = str(first.get("text") or "").strip() or ask_msg
-                else:
-                    ctx.response_payload["user_ask"] = str(first)
-            elif ask_msg:
-                ctx.response_payload["user_ask"] = ask_msg
-
-        # Clear end state for UI (resolved | need_info | unable | user_ended | incomplete)
-        obj_status, closure_msg = get_objective_end_state(ctx)
-        if ctx.response_payload:
-            ctx.response_payload["objective_status"] = obj_status
-            if closure_msg:
-                ctx.response_payload["closure_message"] = closure_msg
 
         # Product feedback (docs/feedback-agent-spec.md §6): surface the
         # planner's periodic nudge/survey decision, plus any capture_card a
@@ -1032,66 +976,6 @@ def _run_document_selection(
         ),
     }
     _publish_completed(ctx, t0_start)
-
-
-def _publish_pursuit_ended(correlation_id: str, ctx: PipelineContext, t0_start: float) -> None:
-    """Publish when user ends the relentless pursuit (never mind, that's enough, etc.)."""
-    duration_ms = int((time.perf_counter() - t0_start) * 1000)
-    msg = "Understood. Let me know if you'd like to ask something else."
-    payload = {
-        "status": "completed",
-        "message": msg,
-        "plan": ctx.plan.model_dump() if ctx.plan else None,
-        "thinking_log": (ctx.thinking_chunks if ctx.thinking_chunks is not None else []),
-        "response_source": "pursuit_ended",
-        "pursuit_ended": True,
-        "objective_status": "user_ended",
-        "model_used": None,
-        "llm_error": None,
-        "tokens_used": {"input_tokens": 0, "output_tokens": 0},
-        "usage_breakdown": [],
-        "cost_usd": 0.0,
-        "sources": [],
-        "source_confidence_strip": None,
-        "cited_source_indices": [],
-        "thread_id": ctx.thread_id,
-    }
-    try:
-        config_sha = get_config_sha() or None
-    except Exception:
-        config_sha = None
-    persistence = get_persistence()
-    try:
-        if ctx.thread_id:
-            persistence.save_turn_with_messages(
-                correlation_id=correlation_id,
-                question=ctx.message,
-                thinking_log=(ctx.thinking_chunks if ctx.thinking_chunks is not None else []),
-                final_message=msg,
-                sources=[],
-                duration_ms=duration_ms,
-                model_used=None,
-                llm_provider=None,
-                thread_id=ctx.thread_id,
-                user_content=ctx.message,
-                assistant_content=msg,
-                plan_snapshot=ctx.plan.model_dump() if ctx.plan else None,
-                source_confidence_strip=None,
-                config_sha=config_sha,
-                user_id=ctx.user_id,
-            )
-            merged = {**(ctx.merged_state or {}), "refined_query": ctx.refined_query}
-            if ctx.master_objective is not None:
-                merged["master_objective"] = ctx.master_objective
-            save_state_full(ctx.thread_id, merged)
-    except Exception as e:
-        logger.warning("Failed to persist pursuit-ended turn: %s", e)
-    if try_finalize(correlation_id):
-        store_response(correlation_id, payload)
-        get_queue().publish_response(correlation_id, payload)
-        logger.info("Pursuit ended (user requested); response published for %s", correlation_id[:8])
-    else:
-        logger.info("Pursuit-ended publish skipped for %s -- already finalized elsewhere", correlation_id[:8])
 
 
 def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) -> None:
@@ -1289,8 +1173,6 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
             )
         if ctx.thread_id:
             merged = {**(ctx.merged_state or {}), "refined_query": ctx.refined_query}
-            if ctx.master_objective is not None:
-                merged["master_objective"] = ctx.master_objective
             save_state_full(ctx.thread_id, merged)
     except Exception as e:
         logger.warning("Failed to persist clarification/refinement turn: %s", e)
@@ -1446,8 +1328,6 @@ def _publish_completed(ctx: PipelineContext, t0_start: float) -> None:
             )
         if ctx.thread_id:
             merged = {**(ctx.merged_state or {}), "refined_query": ctx.refined_query}
-            if ctx.master_objective is not None:
-                merged["master_objective"] = ctx.master_objective
             save_state_full(ctx.thread_id, merged)
     except Exception as e:
         logger.warning("Failed to persist turn: %s", e)
