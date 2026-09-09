@@ -89,36 +89,6 @@ class TestPostChat:
         assert captured["payload"]["message"] == "hi"
         assert captured["payload"]["thread_id"] == "thread-xyz"
 
-    def test_use_react_forwarded_when_set(self, client):
-        captured: dict = {}
-
-        def fake_publish(cid, payload):
-            captured["payload"] = payload
-
-        fake_queue = MagicMock()
-        fake_queue.publish_request.side_effect = fake_publish
-        with patch("app.api.chat.get_queue", return_value=fake_queue), \
-             patch("app.api.chat.ensure_thread", return_value="t"):
-            client.post("/chat", json={"message": "x", "use_react": False})
-        assert captured["payload"]["use_react"] is False
-
-    def test_use_react_omitted_when_none(self, client):
-        """If the client doesn't send use_react, the worker uses env
-        default. The payload must NOT contain use_react=null — worker
-        code checks ``"use_react" in payload`` to decide override vs.
-        fall-through. Including None would break that."""
-        captured: dict = {}
-
-        def fake_publish(cid, payload):
-            captured["payload"] = payload
-
-        fake_queue = MagicMock()
-        fake_queue.publish_request.side_effect = fake_publish
-        with patch("app.api.chat.get_queue", return_value=fake_queue), \
-             patch("app.api.chat.ensure_thread", return_value="t"):
-            client.post("/chat", json={"message": "x"})
-        assert "use_react" not in captured["payload"]
-
     def test_chat_mode_forwarded(self, client):
         captured: dict = {}
 

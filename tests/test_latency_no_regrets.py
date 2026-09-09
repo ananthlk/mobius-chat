@@ -232,21 +232,15 @@ def test_run_pipeline_emits_thinking_before_state_load():
          patch.object(orchestrator, "store_response"), \
          patch.object(orchestrator, "get_persistence"), \
          patch.object(orchestrator, "get_queue"), \
-         patch.object(orchestrator, "clear_progress"), \
-         patch.object(orchestrator, "run_classify"), \
-         patch.object(orchestrator, "run_plan"), \
-         patch.object(orchestrator, "run_clarify"), \
-         patch.object(orchestrator, "run_resolve"), \
+         patch("app.pipeline.react_loop.run_react"), \
          patch.object(orchestrator, "run_integrate"), \
-         patch.object(orchestrator, "_publish_completed"), \
-         patch.dict(os.environ, {"MOBIUS_USE_REACT": "0"}):
+         patch.object(orchestrator, "_publish_completed"):
         try:
             orchestrator.run_pipeline(
                 "cid-abc",
                 "hello",
                 "thread-abc",
                 t0_start=0.0,
-                use_react_override=False,
             )
         except Exception:
             # We don't care if downstream stages crash in this

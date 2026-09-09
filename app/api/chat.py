@@ -81,8 +81,6 @@ class ChatRequest(BaseModel):
     """Client-supplied correlation ID. When provided and a valid UUID, used as-is so
     callers can pre-generate a CID and use it immediately for SSE streaming and polling
     without parsing the response body. When absent or invalid, the server generates one."""
-    use_react: bool | None = None
-    """Per-request override for MOBIUS_USE_REACT; when None, worker uses env."""
     chat_mode: Literal["copilot", "agentic", "quick", "task"] | None = None
     """copilot: registry-first, 3 rounds. agentic: web escalation, 6 rounds. quick: mini-container, 2 rounds, brief answers. task: skips integrator, returns raw_text."""
 
@@ -326,8 +324,6 @@ def post_chat(
         correlation_id = str(uuid.uuid4())
     thread_id = ensure_thread((body.thread_id or "").strip() or None)
     payload: dict = {"message": body.message or "", "thread_id": thread_id}
-    if body.use_react is not None:
-        payload["use_react"] = body.use_react
     if body.chat_mode is not None:
         payload["chat_mode"] = body.chat_mode
     if body.force_citable_required is not None:

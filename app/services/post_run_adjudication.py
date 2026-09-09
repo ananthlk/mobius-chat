@@ -128,13 +128,12 @@ async def _run_async(ctx: PipelineContext, payload: dict[str, Any]) -> None:
     usage_breakdown = payload.get("usage_breakdown") if isinstance(payload.get("usage_breakdown"), list) else []
 
     tool_fired = _tool_fired_from_log(thinking_lines)
-    legacy_path = (os.environ.get("MOBIUS_USE_REACT") or "1").strip().lower() in ("0", "false", "no", "off")
     stage_meta = build_stage_metadata(
         thinking_log=thinking_lines,
         tool_fired=tool_fired,
         expected_tool=None,
         iterations=_react_iterations(usage_breakdown),
-        legacy_path=legacy_path,
+        legacy_path=False,
         usage_breakdown=usage_breakdown,
     )
 

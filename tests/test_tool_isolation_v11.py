@@ -449,36 +449,3 @@ class TestAnswerToolAutoScrape:
 
 
 # ---------------------------------------------------------------------------
-# Regression: RAG jurisdiction context is unchanged
-# ---------------------------------------------------------------------------
-
-class TestRagJurisdictionUnchanged:
-    """Regression: RAG path must still receive rag_filter_overrides from active jurisdiction."""
-
-    def test_rag_filter_overrides_passed_correctly(self):
-        """When agent=RAG, rag_filter_overrides still flow from active jurisdiction (not broken)."""
-        from app.stages.resolve import _answer_for_subquestion
-        from app.services.doc_assembly import RETRIEVAL_SIGNAL_NO_SOURCES
-
-        with patch("app.stages.resolve.answer_non_patient") as mock_rag:
-            mock_rag.return_value = (
-                "PA criteria for H0036 requires diagnosis X and documentation Y. " * 5,
-                [{"document_name": "Sunshine PA Policy", "source_type": "internal"}],
-                None,
-                "approved_authoritative",
-            )
-            ans, usage, sources, signal, layer = _answer_for_subquestion(
-                correlation_id="test-corr",
-                sq_id="t1",
-                agent="RAG",
-                kind="non_patient",
-                text="What is Sunshine Health's PA criteria for H0036?",
-                rag_filter_overrides={"payer": "Sunshine Health"},
-                active_context={"jurisdiction": "Florida", "payer": "Sunshine Health"},
-            )
-
-        assert layer == 1  # RAG layer
-        assert "PA criteria" in ans
-        # Verify rag_filter_overrides was passed through to answer_non_patient
-        call_kwargs = mock_rag.call_args[1]
-        assert call_kwargs.get("rag_filter_overrides") == {"payer": "Sunshine Health"}

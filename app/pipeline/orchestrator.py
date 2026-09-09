@@ -23,23 +23,15 @@ from app.storage.threads import register_open_slots, save_state_full
 
 
 from app.stages.state_load import run_state_load
-from app.stages.classify import run_classify
-from app.stages.plan import run_plan
-from app.stages.clarify import run_clarify
-from app.stages.resolve import run_resolve
 from app.stages.integrate import run_integrate
-from app.state.master_objective import MasterObjective, create_or_update_objective
-from app.state.objective_eval import update_objective_from_answers, update_objective_from_integrator
+from app.state.master_objective import MasterObjective
+from app.state.objective_eval import update_objective_from_integrator
 from app.state.user_context_resolution import prefill_answer_set_from_master_objective, update_answer_set_from_user_context
 from app.state.continuity_checks import extract_user_provided_context, user_wants_to_end_pursuit
 from app.stages.continuity import should_ask_user_for_help, get_objective_end_state
 from app.trace_log import trace_entered
 from app.pipeline.stages import (
     STATE_LOAD,
-    CLASSIFY,
-    PLAN,
-    CLARIFY,
-    RESOLVE,
     INTEGRATE,
 )
 
@@ -190,9 +182,6 @@ def _emit_model_summary(ctx: PipelineContext, react_duration_s: float, emitter: 
 
 
 DEBUG_PLAN = os.environ.get("MOBIUS_DEBUG_PLAN", "").lower() in ("1", "true", "yes")
-# Default ReAct=1; treat missing or empty env as "1" so .env with MOBIUS_USE_REACT= doesn't disable ReAct
-_use_react_val = (os.environ.get("MOBIUS_USE_REACT") or "1").strip().lower()
-USE_REACT = _use_react_val in ("1", "true", "yes")
 
 def _debug_plan_state(label: str, ctx: PipelineContext) -> None:
     """Print master plan, answers (with source), and parser plan when MOBIUS_DEBUG_PLAN=1 (for conversation_demo)."""
@@ -436,7 +425,6 @@ def run_pipeline(
     message: str,
     thread_id: str | None,
     t0_start: float | None = None,
-    use_react_override: bool | None = None,
     chat_mode: str | None = None,
     force_citable_required: bool | None = None,
     user_id: str | None = None,
@@ -466,12 +454,6 @@ def run_pipeline(
     t0 = t0_start if t0_start is not None else time.perf_counter()
     start_progress(correlation_id)
 
-    # Read at request time so we use current env (worker may have set MOBIUS_USE_REACT=1 after load_dotenv)
-    env_use_react = (os.environ.get("MOBIUS_USE_REACT") or "1").strip().lower() in ("1", "true", "yes")
-    if use_react_override is not None:
-        use_react = use_react_override
-    else:
-        use_react = env_use_react
 
     # system_context (2026-04-22): normalize empty/whitespace to None so
     # downstream checks are simple `if ctx.system_context:` truthiness.
@@ -758,115 +740,50 @@ def run_pipeline(
         ctx.active_skill_name = skill_name
         _t_pf = _pf("active_skill_detect", _t_pf)
 
-        if use_react:
-            # ReAct path: Reason → Act → Observe; run_react sets ctx.plan, ctx.answers, ctx.answer_set, etc.
-            logger.info("[pipeline] USE_REACT=true — taking ReAct path (no clarify/plan steps)")
-            trace_entered("pipeline.stage.react", correlation_id=correlation_id[:8])
-            t_react_start = time.perf_counter()
-            try:
-                from app.pipeline.react_loop import run_react
-                run_react(ctx, emitter=on_thinking)
-            except Exception as e:
-                logger.exception("ReAct stage error: %s", e)
-                _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e, user_id=ctx.user_id)
-                return
-            _emit_model_summary(ctx, time.perf_counter() - t_react_start, on_thinking)
-            # Two-phase latency: emit ReAct answer immediately so the frontend renders
-            # before the integrator's LLM call starts. The completed event replaces it.
-            if getattr(ctx, "final_message", None):
-                ctx.react_draft = ctx.final_message  # saved before integrator overwrites
-                from app.storage.progress import append_draft_answer
-                _mode_hint = "RECITAL" if getattr(ctx, "recital", None) else None
-                # 2026-08-07 (Ananth, directly): same condition
-                # integrate.py's suggest_escalate check uses
-                # (react_unfinished_reason == "no_path_forward") --
-                # available synchronously right here, so the "Try with
-                # Think mode" button doesn't have to wait for the
-                # integrator's slower completed-card event.
-                _draft_suggest_escalate = getattr(ctx, "react_unfinished_reason", None) == "no_path_forward"
-                _cta_confirm_authoritative = _should_suggest_confirm_authoritative(
-                    rag_call_history=getattr(ctx, "_rag_call_history", None) or [],
-                    force_citable_required=getattr(ctx, "force_citable_required", None),
-                    final_message=ctx.final_message,
-                )
-                append_draft_answer(
-                    ctx.correlation_id, ctx.final_message, mode_hint=_mode_hint,
-                    suggest_escalate=_draft_suggest_escalate,
-                    cta_confirm_authoritative=_cta_confirm_authoritative,
-                )
-                ctx.cta_confirm_authoritative = _cta_confirm_authoritative
-            updates = {}
-            if getattr(ctx, "failed_query", None):
-                updates["last_failed_query"] = ctx.failed_query
-            if getattr(ctx, "active_context", None):
-                updates["active_context"] = ctx.active_context
-            if updates:
-                ctx.merged_state = {**(ctx.merged_state or {}), **updates}
-            _debug_plan_state("PRE-INTEGRATOR", ctx)
-        else:
-            # Legacy path: classify → plan → clarify → resolve (only when MOBIUS_USE_REACT=0)
-            logger.info("[pipeline] USE_REACT=false — taking legacy path (clarify → plan → resolve)")
-            trace_entered(f"pipeline.stage.{CLASSIFY}", correlation_id=correlation_id[:8])
-            run_classify(ctx, emitter=on_thinking)
-            trace_entered(f"pipeline.stage.{PLAN}", correlation_id=correlation_id[:8])
-            _debug_plan_state("PRE-PARSER", ctx)
-            run_plan(ctx, emitter=on_thinking)
-
-            store_plan(correlation_id, ctx.plan, thinking_log=(ctx.thinking_chunks if ctx.thinking_chunks is not None else []))
-
-            if ctx.plan:
-                is_new = ctx.classification == "new_question"
-                obj = create_or_update_objective(ctx.plan, ctx.merged_state or {}, is_new_question=is_new)
-                ctx.master_objective = obj.to_dict()
-                ctx.merged_state = {**(ctx.merged_state or {}), "master_objective": ctx.master_objective}
-            _debug_plan_state("POST-PARSER", ctx)
-
-            trace_entered(f"pipeline.stage.{CLARIFY}", correlation_id=correlation_id[:8])
-            try:
-                resolvable = run_clarify(ctx, emitter=on_thinking)
-            except Exception as e:
-                logger.exception("Clarify stage error: %s", e)
-                _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e, user_id=ctx.user_id)
-                return
-            if not resolvable:
-                _publish_clarification_or_refinement(ctx, t0)
-                return
-
-            if ctx.classification in ("slot_fill", "jurisdiction_change"):
-                ctx.answers = ["[No answer yet]"] * len(ctx.plan.subquestions or [])
-                update_answer_set_from_user_context(ctx)
-            prefill_answer_set_from_master_objective(ctx)
-
-            trace_entered(f"pipeline.stage.{RESOLVE}", correlation_id=correlation_id[:8])
-            try:
-                run_resolve(ctx, emitter=on_thinking)
-            except Exception as e:
-                logger.exception("Resolve stage error: %s", e)
-                _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e, user_id=ctx.user_id)
-                return
-
-            updates = {}
-            if getattr(ctx, "failed_query", None):
-                updates["last_failed_query"] = ctx.failed_query
-            if getattr(ctx, "active_skill", None):
-                updates["active_skill"] = ctx.active_skill
-            if updates:
-                ctx.merged_state = {**(ctx.merged_state or {}), **updates}
-
-            obj_raw = ctx.master_objective
-            obj = MasterObjective.from_dict(obj_raw) if obj_raw else None
-            if obj and ctx.plan and ctx.answers:
-                updated = update_objective_from_answers(
-                    obj, ctx.plan, ctx.answers, ctx.retrieval_signals or []
-                )
-                if updated:
-                    ctx.master_objective = updated.to_dict()
-                    ctx.merged_state = {**(ctx.merged_state or {}), "master_objective": ctx.master_objective}
-
-            if ctx.classification not in ("slot_fill", "jurisdiction_change"):
-                update_answer_set_from_user_context(ctx)
-            _debug_plan_state("PRE-INTEGRATOR", ctx)
-
+        # ReAct path: Reason → Act → Observe; run_react sets ctx.plan, ctx.answers, ctx.answer_set, etc.
+        logger.info("[pipeline] USE_REACT=true — taking ReAct path (no clarify/plan steps)")
+        trace_entered("pipeline.stage.react", correlation_id=correlation_id[:8])
+        t_react_start = time.perf_counter()
+        try:
+            from app.pipeline.react_loop import run_react
+            run_react(ctx, emitter=on_thinking)
+        except Exception as e:
+            logger.exception("ReAct stage error: %s", e)
+            _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e, user_id=ctx.user_id)
+            return
+        _emit_model_summary(ctx, time.perf_counter() - t_react_start, on_thinking)
+        # Two-phase latency: emit ReAct answer immediately so the frontend renders
+        # before the integrator's LLM call starts. The completed event replaces it.
+        if getattr(ctx, "final_message", None):
+            ctx.react_draft = ctx.final_message  # saved before integrator overwrites
+            from app.storage.progress import append_draft_answer
+            _mode_hint = "RECITAL" if getattr(ctx, "recital", None) else None
+            # 2026-08-07 (Ananth, directly): same condition
+            # integrate.py's suggest_escalate check uses
+            # (react_unfinished_reason == "no_path_forward") --
+            # available synchronously right here, so the "Try with
+            # Think mode" button doesn't have to wait for the
+            # integrator's slower completed-card event.
+            _draft_suggest_escalate = getattr(ctx, "react_unfinished_reason", None) == "no_path_forward"
+            _cta_confirm_authoritative = _should_suggest_confirm_authoritative(
+                rag_call_history=getattr(ctx, "_rag_call_history", None) or [],
+                force_citable_required=getattr(ctx, "force_citable_required", None),
+                final_message=ctx.final_message,
+            )
+            append_draft_answer(
+                ctx.correlation_id, ctx.final_message, mode_hint=_mode_hint,
+                suggest_escalate=_draft_suggest_escalate,
+                cta_confirm_authoritative=_cta_confirm_authoritative,
+            )
+            ctx.cta_confirm_authoritative = _cta_confirm_authoritative
+        updates = {}
+        if getattr(ctx, "failed_query", None):
+            updates["last_failed_query"] = ctx.failed_query
+        if getattr(ctx, "active_context", None):
+            updates["active_context"] = ctx.active_context
+        if updates:
+            ctx.merged_state = {**(ctx.merged_state or {}), **updates}
+        _debug_plan_state("PRE-INTEGRATOR", ctx)
         # Task mode: skip the integrator/composer entirely.
         # Return the ReAct loop's final answer as raw markdown.
         # The appeals agent (and any other programmatic caller) reads
