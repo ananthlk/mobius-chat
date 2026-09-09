@@ -457,16 +457,26 @@ def turn_matrix(correlation_id: str) -> dict[str, Any]:
         kids = by_parent.get(sp["span_id"], [])
         tool = sum(float(k.get("wall_ms") or 0.0) for k in kids
                    if str(k.get("label") or "").startswith("tool:"))
-        # Child ROUND spans are not "tool" — their time is the parent's own
-        # work, decomposed one level down. Subtracting them would make the
-        # parent's processing read as ~0 and hide where the time is.
+        kids_wall = sum(float(k.get("wall_ms") or 0.0) for k in kids)
         wall = float(sp.get("wall_ms") or 0.0)
-        llm = float(sp.get("llm_ms") or 0.0)
+
+        # llm_ms on the span ROLLS UP from children (a parent's llm includes
+        # its children's, so self_ms is honest at every level). For a matrix
+        # the rolled-up value double-counts, so `processing` is computed from
+        # this span's OWN counts and excludes every child's wall.
+        own_llm = sum(float(c["ms"]) for c in counts if c.get("kind") == "llm")
         return {
-            "wall_ms": round(wall, 1), "llm_ms": round(llm, 1),
+            "wall_ms": round(wall, 1),
+            "llm_ms": round(float(sp.get("llm_ms") or 0.0), 1),   # inclusive
+            "own_llm_ms": round(own_llm, 1),                       # exclusive
             "db_read_ms": round(db_r, 1), "db_write_ms": round(db_w, 1),
             "db_reads": n_r, "db_writes": n_w, "tool_ms": round(tool, 1),
-            "processing_ms": round(max(0.0, wall - llm - db_r - db_w - tool), 1),
+            # EXCLUSIVE self time: what THIS row cost, children removed. The
+            # inclusive version made parent rows look like they held work that
+            # actually belonged to a child, and made the column non-additive —
+            # a total that does not equal the sum of its parts is a total no
+            # one can act on.
+            "processing_ms": round(max(0.0, wall - kids_wall - own_llm - db_r - db_w), 1),
         }
 
     rows: list[dict[str, Any]] = []
@@ -492,12 +502,12 @@ def turn_matrix(correlation_id: str) -> dict[str, Any]:
     roots = [r for r in rows if r["depth"] == 0]
     totals = {
         "wall_ms": round(sum(r["wall_ms"] for r in roots), 1),
-        "llm_ms": round(sum(r["llm_ms"] for r in roots), 1),
+        # Exclusive columns sum across ALL rows; inclusive wall sums roots only.
+        "llm_ms": round(sum(r["own_llm_ms"] for r in rows), 1),
         "db_ms": round(sum(r["db_read_ms"] + r["db_write_ms"] for r in rows), 1),
         "db_reads": sum(r["db_reads"] for r in rows),
         "db_writes": sum(r["db_writes"] for r in rows),
         "tool_ms": round(sum(r["tool_ms"] for r in roots), 1),
     }
-    totals["processing_ms"] = round(
-        max(0.0, totals["wall_ms"] - totals["llm_ms"] - totals["db_ms"] - totals["tool_ms"]), 1)
+    totals["processing_ms"] = round(sum(r["processing_ms"] for r in rows), 1)
     return {"correlation_id": correlation_id, "rows": rows, "totals": totals}
