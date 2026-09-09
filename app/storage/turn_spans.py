@@ -42,6 +42,7 @@ def save_spans(
     chat_mode: str | None = None,
     model_mix: list[dict[str, Any]] | None = None,
     rich_evidence: bool | None = None,
+    sample_rate: float | None = None,
 ) -> int:
     """Persist one turn's spans. Returns the number written.
 
@@ -55,17 +56,20 @@ def save_spans(
         return 0
     written = 0
     _mix = json.dumps(model_mix or [])
+    _rate = sample_rate
     for r in rows:
         try:
             result = db_execute(
                 """
                 INSERT INTO turn_spans (
                     correlation_id, span_id, parent_span_id, module, label, depth,
-                    wall_ms, llm_ms, counts, model_mix, rich_evidence, chat_mode
+                    wall_ms, llm_ms, counts, model_mix, rich_evidence, chat_mode,
+                    sampled, sample_rate
                 )
                 VALUES (:cid, :span_id, :parent_span_id, :module, :label, :depth,
                         :wall_ms, :llm_ms, CAST(:counts AS jsonb),
-                        CAST(:model_mix AS jsonb), :rich_evidence, :chat_mode)
+                        CAST(:model_mix AS jsonb), :rich_evidence, :chat_mode,
+                        :sampled, :sample_rate)
                 ON CONFLICT (correlation_id, span_id) DO NOTHING
                 """,
                 _DB,
@@ -82,6 +86,8 @@ def save_spans(
                     "model_mix": _mix,
                     "rich_evidence": rich_evidence,
                     "chat_mode": chat_mode,
+                    "sampled": True,
+                    "sample_rate": _rate,
                 },
             )
             if isinstance(result, dict) and result.get("error"):
@@ -114,7 +120,8 @@ def read_spans(correlation_id: str) -> list[dict[str, Any]]:
     result = db_query(
         """
         SELECT span_id, parent_span_id, module, label, depth,
-               wall_ms, llm_ms, counts, model_mix, rich_evidence, chat_mode
+               wall_ms, llm_ms, counts, model_mix, rich_evidence, chat_mode,
+               sampled, sample_rate
         FROM turn_spans
         WHERE correlation_id = :cid
         ORDER BY depth ASC, wall_ms DESC
@@ -188,3 +195,46 @@ def summarize(spans: list[dict[str, Any]]) -> dict[str, Any]:
         "rich_evidence": (roots[0].get("rich_evidence") if roots else None),
         "chat_mode": (roots[0].get("chat_mode") if roots else None),
     }
+
+
+def list_recent_traces(limit: int = 40) -> list[dict[str, Any]]:
+    """Recent turns that produced spans — the index for the trace viewer.
+
+    Rolls up to one row per turn from its depth-0 spans. Ordered newest
+    first, and carries enough to triage without opening each trace: total
+    wall, llm, the derived self, and the mode. A list that showed only a
+    duration would make the reader open every row to find the slow one.
+    """
+    result = db_query(
+        """
+        SELECT correlation_id,
+               MAX(created_at)                        AS created_at,
+               SUM(wall_ms) FILTER (WHERE depth = 0)  AS wall_ms,
+               SUM(llm_ms)  FILTER (WHERE depth = 0)  AS llm_ms,
+               COUNT(*)                               AS span_count,
+               MAX(chat_mode)                         AS chat_mode,
+               BOOL_OR(rich_evidence)                 AS rich_evidence,
+               MAX(sample_rate)                       AS sample_rate
+        FROM turn_spans
+        GROUP BY correlation_id
+        ORDER BY MAX(created_at) DESC
+        LIMIT :lim
+        """,
+        _DB,
+        params={"lim": int(limit)},
+    )
+    if not isinstance(result, dict) or result.get("error"):
+        logger.warning("[turn_spans] recent list failed: %s",
+                       (result or {}).get("error") if isinstance(result, dict) else "no result")
+        return []
+    cols = result.get("columns") or []
+    out = []
+    for row in result.get("rows") or []:
+        d = dict(zip(cols, row))
+        for k in ("wall_ms", "llm_ms"):
+            d[k] = float(d.get(k) or 0.0)
+        d["self_ms"] = round(max(0.0, d["wall_ms"] - d["llm_ms"]), 2)
+        d["llm_exceeds_wall"] = d["llm_ms"] > d["wall_ms"]
+        d["created_at"] = str(d.get("created_at") or "")
+        out.append(d)
+    return out

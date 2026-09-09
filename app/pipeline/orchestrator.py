@@ -456,8 +456,24 @@ def run_pipeline(
     # P2b turn telemetry: per-module spans, counts-by-target, wall/llm split.
     # Attached to ctx rather than a thread-local so a span crossing a thread
     # boundary is a visible choice (react_loop spawns daemon threads).
-    from app.telemetry.spans import TurnTrace, reset_active, set_active
-    ctx.turn_trace = TurnTrace(correlation_id)
+    from app.telemetry.spans import (
+        TurnTrace, is_sampled, reset_active, sample_rate, set_active,
+    )
+    # Deterministic on correlation_id, so the same turn is always in or out —
+    # and so the sample can later be aligned with the QA audit set instead of
+    # being an independent random subset that merely overlaps it.
+    # MOBIUS_SPAN_SAMPLE_RATE defaults to 1.0: every turn for now (Ananth
+    # 2026-09-09), narrowing to the audit cadence once that is fixed.
+    _span_rate = sample_rate()
+    _span_on = is_sampled(correlation_id, _span_rate)
+    ctx.turn_trace = TurnTrace(correlation_id) if _span_on else None
+    ctx.span_sample_rate = _span_rate
+    if not _span_on:
+        # Said out loud, once. "No spans for this cid" must not be ambiguous
+        # between not-sampled and sampled-but-broken — those are opposite
+        # conclusions from identical evidence.
+        logger.info("[spans] turn not sampled cid=%s rate=%.3f",
+                    correlation_id[:8], _span_rate)
     # Bind it to this execution context so llm_manager and db_client — many
     # frames below, with no ctx — can attribute their latency to this turn.
     # A ContextVar rather than a thread-local: it does not propagate into new
@@ -1259,6 +1275,8 @@ def _persist_turn_spans(ctx: PipelineContext) -> None:
     try:
         from app.telemetry.spans import get_trace
         tr = get_trace(ctx)
+        if tr is None and getattr(ctx, "span_sample_rate", 1.0) < 1.0:
+            return  # deliberately not sampled; already logged at turn start
         if tr is None:
             # Loud. A missing trace means the attach at run_pipeline's top did
             # not survive to here, which is a wiring bug — and a silent return
@@ -1294,6 +1312,7 @@ def _persist_turn_spans(ctx: PipelineContext) -> None:
             chat_mode=getattr(ctx, "chat_mode", None),
             model_mix=mix,
             rich_evidence=getattr(ctx, "react_rich_evidence", None),
+            sample_rate=getattr(ctx, "span_sample_rate", None),
         )
     except Exception as exc:
         # Loud, never silent: a missing span row must be traceable to a

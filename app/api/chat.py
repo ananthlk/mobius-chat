@@ -582,6 +582,17 @@ def get_chat_plan(correlation_id: str):
     return plan_payload
 
 
+@router.get("/chat/traces")
+def list_turn_traces(limit: int = 40):
+    """Recent turns that produced spans — the trace viewer's index.
+
+    Carries wall/llm/self per turn so the list itself is triageable: a reader
+    looking for the slow turn should not have to open every row to find it.
+    """
+    from app.storage.turn_spans import list_recent_traces
+    return {"traces": list_recent_traces(limit=limit)}
+
+
 @router.get("/chat/spans/{correlation_id}")
 def get_turn_spans(correlation_id: str):
     """Per-module span breakdown for one turn (P2b latency telemetry).

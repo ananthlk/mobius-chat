@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Turn traces — Mobius</title>
+<link rel="stylesheet" href="/static/mobius-tokens.css">
+<style>
+  :root{
+    --violet:#7c3aed; --llm:#7c3aed; --self:#0ea5e9; --db:#f59e0b; --tool:#10b981;
+    --warn:#dc2626;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--mobius-bg-primary,#fafbfc);color:var(--mobius-text-primary,#1a1d21);
+       font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif}
+  header{padding:20px 28px;border-bottom:1px solid var(--mobius-border,#e2e8f0);background:#fff;
+         display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}
+  h1{margin:0;font-size:17px;font-weight:650;letter-spacing:-.01em}
+  .sub{color:var(--mobius-text-muted,#64748b);font-size:12.5px}
+  .wrap{display:grid;grid-template-columns:340px 1fr;gap:0;height:calc(100vh - 66px)}
+  .list{border-right:1px solid var(--mobius-border,#e2e8f0);overflow-y:auto;background:#fff}
+  .detail{overflow-y:auto;padding:24px 28px}
+  .row{padding:12px 16px;border-bottom:1px solid var(--mobius-border-light,#e5e7eb);cursor:pointer}
+  .row:hover{background:var(--mobius-bg-hover,#f9fafb)}
+  .row.sel{background:#f5f3ff;box-shadow:inset 3px 0 0 var(--violet)}
+  .cid{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--mobius-text-secondary,#374151)}
+  .meta{display:flex;gap:10px;align-items:center;margin-top:5px;font-size:11.5px;color:var(--mobius-text-muted,#64748b)}
+  .pill{padding:1px 7px;border-radius:99px;background:var(--mobius-bg-tertiary,#f1f5f9);font-size:10.5px;
+        font-weight:600;letter-spacing:.02em}
+  /* the split bar — the whole point of the list view */
+  .bar{display:flex;height:5px;border-radius:3px;overflow:hidden;margin-top:7px;background:#eef2f7}
+  .bar i{display:block;height:100%}
+  .bar .b-llm{background:var(--llm)} .bar .b-self{background:var(--self)}
+  .empty{padding:40px 20px;text-align:center;color:var(--mobius-text-muted,#64748b);font-size:13px}
+  /* detail */
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:4px 0 22px}
+  .kpi{background:#fff;border:1px solid var(--mobius-border,#e2e8f0);border-radius:10px;padding:13px 15px}
+  .kpi .k{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--mobius-text-muted,#64748b)}
+  .kpi .v{font-size:21px;font-weight:640;margin-top:3px;font-variant-numeric:tabular-nums}
+  .kpi .n{font-size:11px;color:var(--mobius-text-muted,#64748b);margin-top:2px}
+  h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--mobius-text-muted,#64748b);
+     margin:26px 0 10px;font-weight:650}
+  table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--mobius-border,#e2e8f0);
+        border-radius:10px;overflow:hidden}
+  th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;
+     color:var(--mobius-text-muted,#64748b);padding:9px 13px;background:var(--mobius-bg-secondary,#f8fafc);font-weight:650}
+  td{padding:9px 13px;border-top:1px solid var(--mobius-border-light,#e5e7eb);font-size:13px;
+     font-variant-numeric:tabular-nums}
+  td.num{text-align:right}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+  .node{font-weight:600}
+  .lbl{color:var(--mobius-text-muted,#64748b)}
+  /* the flame row — where the time went, proportional */
+  .flame{display:flex;height:22px;border-radius:5px;overflow:hidden;background:#eef2f7;margin-bottom:3px}
+  .flame i{display:block;height:100%;position:relative}
+  .kindtag{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:7px;vertical-align:middle}
+  .k-llm{background:var(--llm)} .k-db{background:var(--db)} .k-tool{background:var(--tool)}
+  .big{font-size:15px;font-weight:650}
+  .note{font-size:12px;color:var(--mobius-text-muted,#64748b);margin-top:8px;line-height:1.55}
+  .warnbox{background:#fef2f2;border:1px solid #fecaca;color:#991b1b;padding:9px 12px;border-radius:8px;
+           font-size:12.5px;margin-top:10px}
+  .legend{display:flex;gap:14px;font-size:11.5px;color:var(--mobius-text-muted,#64748b);margin-top:8px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Turn traces</h1>
+  <span class="sub" id="hdr">loading…</span>
+  <span class="sub" style="margin-left:auto" id="rate"></span>
+</header>
+<div class="wrap">
+  <div class="list" id="list"><div class="empty">loading…</div></div>
+  <div class="detail" id="detail"><div class="empty">Select a turn.</div></div>
+</div>
+<script>
+const API = window.location.origin;
+const ms = v => Math.round(v||0).toLocaleString();
+let traces = [], sel = null;
+
+function pct(a,b){ return b>0 ? (100*a/b) : 0; }
+
+async function loadList(){
+  const r = await fetch(`${API}/chat/traces?limit=40`);
+  const d = await r.json();
+  traces = d.traces || [];
+  const el = document.getElementById('list');
+  document.getElementById('hdr').textContent = `${traces.length} recent turns`;
+  if(!traces.length){ el.innerHTML = '<div class="empty">No traces yet.</div>'; return; }
+  const rate = traces[0].sample_rate;
+  document.getElementById('rate').textContent =
+    rate == null ? '' : `sampling ${rate >= 1 ? 'every turn' : (100*rate).toFixed(1)+'%'}`;
+  el.innerHTML = '';
+  traces.forEach((t,i)=>{
+    const d = document.createElement('div');
+    d.className = 'row' + (i===0?' sel':'');
+    const lp = pct(t.llm_ms, t.wall_ms), sp = 100-lp;
+    d.innerHTML = `
+      <div class="cid">${t.correlation_id.slice(0,8)}</div>
+      <div class="meta">
+        <span class="big">${ms(t.wall_ms)}ms</span>
+        <span class="pill">${t.chat_mode||'—'}</span>
+        <span>${t.span_count} spans</span>
+      </div>
+      <div class="bar"><i class="b-llm" style="width:${lp}%"></i><i class="b-self" style="width:${sp}%"></i></div>
+      <div class="meta"><span>llm ${ms(t.llm_ms)}ms</span><span>self ${ms(t.self_ms)}ms</span></div>`;
+    d.onclick = ()=>{ document.querySelectorAll('.row').forEach(x=>x.classList.remove('sel'));
+                      d.classList.add('sel'); loadDetail(t.correlation_id); };
+    el.appendChild(d);
+  });
+  loadDetail(traces[0].correlation_id);
+}
+
+async function loadDetail(cid){
+  const r = await fetch(`${API}/chat/spans/${encodeURIComponent(cid)}`);
+  const d = await r.json(); const s = d.summary||{}; const sp = d.spans||[];
+  const el = document.getElementById('detail');
+  if(!sp.length){ el.innerHTML = '<div class="empty">No spans for this turn.</div>'; return; }
+
+  const selfTxt = s.llm_exceeds_wall ? 'n/a' : ms(s.self_ms)+'ms';
+  const roots = sp.filter(x=>(x.depth||0)===0).sort((a,b)=>(b.wall_ms||0)-(a.wall_ms||0));
+  const kids  = sp.filter(x=>(x.depth||0)>0);
+
+  // flame: proportional share of wall per root span
+  const flame = roots.map(x=>{
+    const w = pct(x.wall_ms, s.wall_ms);
+    const isLLMheavy = (x.llm_ms||0) > (x.wall_ms||0)/2;
+    return `<i style="width:${w}%;background:${isLLMheavy?'var(--llm)':'var(--self)'}" title="${x.module} ${ms(x.wall_ms)}ms"></i>`;
+  }).join('');
+
+  const spanRows = roots.map(x=>{
+    const kidsOf = kids.filter(k=>k.parent_span_id===x.span_id).sort((a,b)=>(b.wall_ms||0)-(a.wall_ms||0));
+    const self = Math.max(0,(x.wall_ms||0)-(x.llm_ms||0));
+    let html = `<tr><td><span class="node">${x.module}</span>${x.label?' <span class="lbl">· '+x.label+'</span>':''}</td>
+      <td class="num">${ms(x.wall_ms)}</td><td class="num">${ms(x.llm_ms)}</td><td class="num">${ms(self)}</td></tr>`;
+    kidsOf.forEach(k=>{
+      const ks = Math.max(0,(k.wall_ms||0)-(k.llm_ms||0));
+      html += `<tr><td style="padding-left:30px" class="lbl">└─ ${k.label||k.module}</td>
+        <td class="num">${ms(k.wall_ms)}</td><td class="num">${ms(k.llm_ms)}</td><td class="num">${ks}</td></tr>`;
+    });
+    return html;
+  }).join('');
+
+  const counts = (s.counts||[]);
+  const kindClass = k => k==='llm'?'k-llm' : k.startsWith('db')?'k-db' : 'k-tool';
+  const countRows = counts.map(c=>`<tr>
+      <td><span class="kindtag ${kindClass(c.kind)}"></span><span class="mono">${c.kind}</span></td>
+      <td class="mono">${c.target}</td>
+      <td class="num"><b>${c.n}</b></td>
+      <td class="num">${ms(c.ms)}</td></tr>`).join('');
+
+  // A count of n>=10 against ONE target is the loop signature.
+  const loops = counts.filter(c=>c.n>=10 && c.kind.startsWith('db'));
+
+  el.innerHTML = `
+    <div class="mono" style="color:var(--mobius-text-muted)">${cid}</div>
+    <div class="kpis">
+      <div class="kpi"><div class="k">Wall</div><div class="v">${ms(s.wall_ms)}<span style="font-size:13px">ms</span></div>
+        <div class="n">${s.chat_mode||'—'} · ${sp.length} spans</div></div>
+      <div class="kpi"><div class="k">LLM</div><div class="v" style="color:var(--llm)">${ms(s.llm_ms)}<span style="font-size:13px">ms</span></div>
+        <div class="n">${pct(s.llm_ms,s.wall_ms).toFixed(0)}% of wall · routing</div></div>
+      <div class="kpi"><div class="k">Self (code + I/O)</div><div class="v" style="color:var(--self)">${selfTxt}</div>
+        <div class="n">${s.llm_exceeds_wall?'parallel llm — not computable':'what our code costs'}</div></div>
+      <div class="kpi"><div class="k">rich_evidence</div><div class="v" style="font-size:16px">${s.rich_evidence===null||s.rich_evidence===undefined?'—':String(s.rich_evidence)}</div>
+        <div class="n">early exit changes round count</div></div>
+    </div>
+
+    <h2>Where the time went</h2>
+    <div class="flame">${flame}</div>
+    <div class="legend"><span><span class="kindtag k-llm"></span>llm-dominated</span>
+      <span><span class="kindtag" style="background:var(--self)"></span>code / io</span></div>
+    <table style="margin-top:12px">
+      <tr><th>Span (schema node · label)</th><th class="num">Wall</th><th class="num">LLM</th><th class="num">Self</th></tr>
+      ${spanRows}
+    </table>
+
+    <h2>Counts by target <span style="text-transform:none;font-weight:400">— n is the detector, not the duration</span></h2>
+    <table>
+      <tr><th>Kind</th><th>Target</th><th class="num">n</th><th class="num">ms</th></tr>
+      ${countRows || '<tr><td colspan="4" class="lbl">no counts recorded</td></tr>'}
+    </table>
+    ${loops.length ? `<div class="warnbox"><b>Possible loop:</b> ${loops.map(l=>`${l.n}× ${l.kind} → <span class="mono">${l.target}</span>`).join(', ')}
+       — repeated writes to one target, which a total duration would hide.</div>` : ''}
+    <div class="note">Model mix: ${(s.model_mix||[]).map(m=>`${m.model} ×${m.n}`).join(', ')||'—'}.
+      Two runs are only comparable when the mix matches: flash ≈4.7s vs Pro ≈20s is a 4× swing that
+      has nothing to do with our code.</div>`;
+}
+loadList();
+</script>
+</body>
+</html>

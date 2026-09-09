@@ -388,3 +388,51 @@ def sql_target(sql: str) -> str:
     """
     m = _TABLE_RE.search(sql or "")
     return m.group(1).lower() if m else "unknown_table"
+
+
+# ── sampling ─────────────────────────────────────────────────────────
+#
+# Telemetry costs a DB write per span per turn. At full rate that is fine
+# now and will not be at volume, so the gate exists before it is needed
+# rather than after the bill.
+#
+# DETERMINISTIC, NOT RANDOM. The sample decision is a hash of the
+# correlation_id, so:
+#   * the same turn is always sampled or always not — re-running a trace
+#     for the same cid gives the same answer, which random sampling cannot
+#   * it can be LINED UP WITH THE QA AUDIT RUNS: if the audit selects turns
+#     by cid, telemetry can be made to select exactly the same set instead
+#     of an independent random subset that happens to overlap. Two
+#     independent samples of the same population answer different questions.
+#
+# Default rate is 1.0 — every turn — per Ananth 2026-09-09: run everywhere
+# for now, narrow it to the audit set once that cadence is fixed.
+#
+# CRITICALLY, the decision is RECORDED on the turn. Without it, "this turn
+# has no spans" means both "not sampled" and "sampled but recorded nothing",
+# and those are opposite conclusions — one is expected, the other is a bug.
+# That ambiguity is the same absence-with-no-record shape __none__ and
+# __unfiltered__ exist to prevent.
+import hashlib
+import os
+
+
+def sample_rate() -> float:
+    raw = (os.environ.get("MOBIUS_SPAN_SAMPLE_RATE") or "1.0").strip()
+    try:
+        return max(0.0, min(1.0, float(raw)))
+    except ValueError:
+        logger.warning("[spans] bad MOBIUS_SPAN_SAMPLE_RATE=%r — defaulting to 1.0", raw)
+        return 1.0
+
+
+def is_sampled(correlation_id: str, rate: float | None = None) -> bool:
+    r = sample_rate() if rate is None else rate
+    if r >= 1.0:
+        return True
+    if r <= 0.0:
+        return False
+    # Uniform in [0,1) from the cid — stable across processes and restarts.
+    h = hashlib.sha256((correlation_id or "").encode("utf-8")).digest()
+    bucket = int.from_bytes(h[:8], "big") / float(1 << 64)
+    return bucket < r

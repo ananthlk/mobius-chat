@@ -2942,6 +2942,13 @@ if _frontend.exists():
 
     # Platform schematic — thin wrapper iframing the PA Agent schematic.
     # URL sourced from MOBIUS_PLATFORM_SCHEMATIC_URL via /chat/config.
+    @app.get("/traces")
+    def traces_page():
+        """Turn-trace viewer (P2b). Reads /chat/traces + /chat/spans/{cid}."""
+        r = FileResponse(_frontend / "traces.html")
+        r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return r
+
     @app.get("/platform")
     def platform_page():
         r = FileResponse(_frontend / "platform.html")
