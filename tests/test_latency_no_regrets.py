@@ -227,7 +227,7 @@ def test_run_pipeline_emits_thinking_before_state_load():
          patch.object(orchestrator, "send_to_user", side_effect=fake_send_to_user), \
          patch.object(orchestrator, "start_progress"), \
          patch.object(orchestrator, "register_open_slots"), \
-         patch.object(orchestrator, "save_state_full"), \
+         patch.object(orchestrator, "save_state_tracked"), \
          patch.object(orchestrator, "store_plan"), \
          patch.object(orchestrator, "store_response"), \
          patch.object(orchestrator, "get_persistence"), \

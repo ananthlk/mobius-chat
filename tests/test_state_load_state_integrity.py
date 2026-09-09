@@ -157,3 +157,48 @@ def test_missing_rowcount_is_not_read_as_a_miss(store, monkeypatch):
     monkeypatch.setattr(th, "db_execute", lambda *a, **k: {})   # no count reported
     save_ok = th.save_state_full("t-1", {"active": {}}, expected_version=11)
     assert save_ok is True
+
+
+# ── the multi-write turn (this is the case that reached production) ──
+def test_two_writes_in_one_turn_both_land(store):
+    """A turn writes chat_state more than once: state_load persists the delta,
+    then the orchestrator persists refined_query at the end.
+
+    The first version of the compare-and-set captured state_version once at read
+    time and passed that same stale value to every write, so the SECOND write of
+    an ordinary single-user turn missed and was dropped — refined_query silently
+    stopped persisting. Worse than the lost update being guarded: the race is
+    rare, this was every turn. Caught in a live two-turn conversation, not by
+    the gate, because nothing covered a turn that writes twice.
+    """
+    from app.storage.threads import save_state_tracked
+
+    ctx = _run()                                   # state_load writes: 11 -> 12
+    assert store.stored("t-1")[1] == 12
+
+    # the orchestrator's end-of-turn write, same ctx
+    ok = save_state_tracked(ctx, {**ctx.merged_state, "refined_query": "rates for Cigna TX"})
+    assert ok is True, "the turn's second write was rejected by its own guard"
+    state, ver = store.stored("t-1")
+    assert ver == 13
+    assert state.get("refined_query") == "rates for Cigna TX"
+
+
+def test_tracked_write_still_refuses_a_genuinely_concurrent_change(store):
+    """Advancing our own version must not disarm the guard against someone
+    else's write."""
+    from app.storage.threads import save_state_tracked
+    ctx = _run()                                   # 11 -> 12, ctx tracks 12
+    store.rows["t-1"] = (json.dumps({"active": {"payer": "United"}}), 99)  # another turn
+    ok = save_state_tracked(ctx, {"active": {"payer": "Aetna"}})
+    assert ok is False
+    assert store.stored("t-1")[0] == {"active": {"payer": "United"}}
+
+
+def test_tracked_write_is_suppressed_after_a_failed_read(store):
+    from app.storage.threads import save_state_tracked
+    store.fail_reads = True
+    ctx = _run()
+    before = store.stored("t-1")
+    assert save_state_tracked(ctx, {"active": {}}) is False
+    assert store.stored("t-1") == before

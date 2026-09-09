@@ -19,7 +19,7 @@ from app.persistence import get_persistence
 from app.queue import get_queue
 from app.storage import store_plan, store_response
 from app.storage.progress import start_progress, try_finalize
-from app.storage.threads import register_open_slots, save_state_full
+from app.storage.threads import register_open_slots, save_state_tracked
 
 
 from app.stages.state_load import run_state_load
@@ -1166,11 +1166,12 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
                     config_sha=config_sha,
                     user_id=ctx.user_id,
                 )
-            if ctx.thread_id and not ctx.state_read_failed:
-                # Suppressed when state_load's read failed: merged_state is then
-                # DEFAULTS, and this is a full replace.
+            if ctx.thread_id:
+                # save_state_tracked no-ops when state_load's read failed
+                # (merged_state would be DEFAULTS and this is a full replace)
+                # and keeps ctx.state_version current across the turn's writes.
                 merged = {**(ctx.merged_state or {}), "refined_query": ctx.refined_query}
-                save_state_full(ctx.thread_id, merged, expected_version=ctx.state_version)
+                save_state_tracked(ctx, merged)
         except Exception as e:
             logger.warning("Failed to persist route clarification turn: %s", e)
         if try_finalize(ctx.correlation_id):
@@ -1271,10 +1272,10 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
                 config_sha=config_sha,
                 user_id=ctx.user_id,
             )
-        if ctx.thread_id and not ctx.state_read_failed:
-            # Suppressed when state_load's read failed — see state_load.
+        if ctx.thread_id:
+            # See state_load — no-ops on a failed read, tracks the version.
             merged = {**(ctx.merged_state or {}), "refined_query": ctx.refined_query}
-            save_state_full(ctx.thread_id, merged, expected_version=ctx.state_version)
+            save_state_tracked(ctx, merged)
     except Exception as e:
         logger.warning("Failed to persist clarification/refinement turn: %s", e)
 
@@ -1503,10 +1504,10 @@ def _publish_completed(ctx: PipelineContext, t0_start: float) -> None:
                 config_sha=config_sha,
                 user_id=ctx.user_id,
             )
-        if ctx.thread_id and not ctx.state_read_failed:
-            # Suppressed when state_load's read failed — see state_load.
+        if ctx.thread_id:
+            # See state_load — no-ops on a failed read, tracks the version.
             merged = {**(ctx.merged_state or {}), "refined_query": ctx.refined_query}
-            save_state_full(ctx.thread_id, merged, expected_version=ctx.state_version)
+            save_state_tracked(ctx, merged)
     except Exception as e:
         logger.warning("Failed to persist turn: %s", e)
 

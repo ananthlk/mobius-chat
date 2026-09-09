@@ -468,7 +468,7 @@ def test_publish_completed_adds_answered_from_system_context_flag():
 
     with patch.object(orch, "get_queue", return_value=FakeQueue()), \
          patch.object(orch, "get_persistence", return_value=FakePersistence()), \
-         patch.object(orch, "save_state_full"), \
+         patch.object(orch, "save_state_tracked"), \
          patch("app.services.task_manager_promotion.promote"):
         orch._publish_completed(ctx, t0_start=0.0)
 
@@ -499,7 +499,7 @@ def test_publish_completed_omits_flag_when_signal_absent():
 
     with patch.object(orch, "get_queue", return_value=FakeQueue()), \
          patch.object(orch, "get_persistence", return_value=FakePersistence()), \
-         patch.object(orch, "save_state_full"), \
+         patch.object(orch, "save_state_tracked"), \
          patch("app.services.task_manager_promotion.promote"):
         orch._publish_completed(ctx, t0_start=0.0)
 

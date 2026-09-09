@@ -736,6 +736,36 @@ def save_state(thread_id: str, patch: dict[str, Any]) -> None:
     _write_state_row(tid, json.dumps(current), expected_version=_ver)
 
 
+def save_state_tracked(ctx: Any, state: dict[str, Any]) -> bool:
+    """Compare-and-set write that KEEPS THE TURN'S VERSION CURRENT.
+
+    A turn writes chat_state more than once — state_load persists the delta,
+    then the orchestrator persists refined_query at the end. Each write advances
+    state_version, so a version captured once at read time is stale by the
+    second write. Passing it anyway made the compare-and-set miss on an ordinary
+    single-user conversation and DROP a write nobody was racing.
+
+    That is worse than the lost update being guarded against: the race is rare,
+    this was every turn. So the tracked version advances with each successful
+    write, and the guard only fires when someone ELSE moved the row.
+
+    Duck-typed on ctx rather than importing PipelineContext, which would be a
+    circular import from storage back into the pipeline.
+    """
+    if getattr(ctx, "state_read_failed", False):
+        return False
+    tid = getattr(ctx, "thread_id", None)
+    if not tid:
+        return False
+    ver = getattr(ctx, "state_version", None)
+    ok = save_state_full(tid, state, expected_version=ver)
+    if ok:
+        # A successful CAS advanced the row by exactly one; a successful insert
+        # of a brand-new row leaves it at 1.
+        ctx.state_version = (ver + 1) if ver is not None else 1
+    return ok
+
+
 def save_state_full(thread_id: str, state: dict[str, Any],
                     expected_version: int | None = None) -> bool:
     """Replace state entirely (no merge). Use with ThreadState.to_dict().

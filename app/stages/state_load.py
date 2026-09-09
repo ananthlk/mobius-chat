@@ -13,7 +13,7 @@ from app.storage.threads import (
     get_last_turn_messages,
     get_state_with_version,
     get_thread_rolling_summary,
-    save_state_full,
+    save_state_tracked,
 )
 from app.storage.turns import get_last_turn_sources, get_prior_resolved_entities
 
@@ -75,8 +75,7 @@ def run_state_load(
         for key in ("active_skill", "last_failed_query", "active_context"):
             if key in raw and raw[key] is not None:
                 to_save[key] = raw[key]
-        if not getattr(ctx, "state_read_failed", False):
-            save_state_full(ctx.thread_id, to_save, expected_version=_state_version)
+        save_state_tracked(ctx, to_save)
 
     merged = thread_state.to_dict()
     # Restore conversational continuity / ReAct fields not in ThreadState model (saved as full JSON)
@@ -121,8 +120,7 @@ def run_state_load(
         for key in ("active_skill", "last_failed_query", "active_context"):
             if key in merged and merged.get(key) is not None:
                 to_save[key] = merged[key]
-        if not getattr(ctx, "state_read_failed", False):
-            save_state_full(ctx.thread_id, to_save, expected_version=_state_version)
+        save_state_tracked(ctx, to_save)
         merged = thread_state.to_dict()
         for key in ("active_skill", "last_failed_query", "active_context"):
             if key in raw and raw[key] is not None:

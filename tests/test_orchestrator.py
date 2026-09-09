@@ -274,7 +274,7 @@ def _publish_and_capture(ctx: PipelineContext) -> dict:
         mock_persist.return_value.save_turn = lambda **kw: None
         with patch("app.pipeline.orchestrator.get_queue") as mock_q:
             with patch("app.pipeline.orchestrator.store_response"):
-                with patch("app.pipeline.orchestrator.save_state_full"):
+                with patch("app.pipeline.orchestrator.save_state_tracked"):
                     with patch("app.pipeline.orchestrator.register_open_slots"):
                         _publish_clarification_or_refinement(ctx, 0.0)
     mock_q.return_value.publish_response.assert_called_once()
