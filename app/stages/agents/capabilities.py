@@ -297,14 +297,11 @@ def planner_input_json(
     user_message: str, context: str = "", last_master_plan: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     """Build full planner input payload (user_message, context, available_capabilities, defaults_policy, last_master_plan)."""
-    from app.planner.credentialing_flow_intent import credentialing_flow_intent_for_planner
-
     payload: dict[str, Any] = {
         "user_message": user_message,
         "context": context or "",
         "available_capabilities": available_capabilities_json(),
         "defaults_policy": defaults_policy_json(),
-        "credentialing_flow_intent": credentialing_flow_intent_for_planner(user_message),
     }
     if last_master_plan and isinstance(last_master_plan, dict):
         payload["last_master_plan"] = slim_master_plan(last_master_plan)

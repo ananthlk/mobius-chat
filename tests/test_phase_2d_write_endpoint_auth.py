@@ -112,7 +112,11 @@ def _route_has_require_user_dependency(route: Any) -> bool:
 
 PROTECTED_ROUTES = [
     ("POST", "/chat"),
-    ("POST", "/chat/roster-upload"),
+    # ("POST", "/chat/roster-upload") — route deleted in P1d (2026-09-09) with
+    # chat's credentialing surface. Both owners confirmed no caller: appeals-agent's
+    # only call site is excluded from its deployed image, and the credentialing
+    # skill has its own /roster-uploads endpoint. /chat/upload is the canonical
+    # replacement and is covered below.
     ("POST", "/chat/qc-user-score/{correlation_id}"),
     ("POST", "/chat/adjudication-feedback/{correlation_id}"),
     ("POST", "/chat/feedback/{correlation_id}"),

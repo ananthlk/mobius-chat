@@ -5,7 +5,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from app.planner.credentialing_flow_intent import CredentialingFlowIntent
 
 QuestionIntent = Literal["factual", "canonical"]
 QuestionIntentExtended = Literal["factual", "canonical", "procedural", "diagnostic", "creative"]
@@ -71,10 +70,6 @@ class Plan(BaseModel):
     task_plan: "TaskPlan | None" = Field(
         default=None,
         description="Full Mobius TaskPlan when using new planner schema; None when using legacy format.",
-    )
-    credentialing_flow_intent: CredentialingFlowIntent | None = Field(
-        default=None,
-        description="Rule-based roster/credentialing data-path hints from credentialing_flow_intent.parse (not autopilot/copilot).",
     )
 
 

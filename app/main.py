@@ -163,139 +163,6 @@ def _compute_roster_freshness(
         return "stale", None
 
 
-def _build_roster_upload_acknowledgment(
-    *,
-    filename: str,
-    org_name_entered: str,
-    billing_npi: str,
-    matched_org_name: str,
-    matched_practice_address: str | None,
-    row_count_cleansed: int,
-    row_count_resolved: int,
-    process_status: str,
-    resolution_summary: dict[str, Any] | None,
-    pipeline_progress: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """
-    Plain-language recap for non-technical users (TurboTax-style checklist).
-    Shown in the chat UI after a successful roster upload.
-    """
-    checks: list[dict[str, str]] = []
-
-    checks.append(
-        {
-            "tone": "success",
-            "title": "We received your file",
-            "detail": (
-                f"{filename} — we read {row_count_cleansed} roster row(s) after cleanup "
-                f"(blank lines and basic formatting fixes)."
-            ),
-        }
-    )
-    if pipeline_progress and isinstance(pipeline_progress, dict):
-        psum = (pipeline_progress.get("summary") or "").strip()
-        if psum:
-            checks.append(
-                {
-                    "tone": "success",
-                    "title": "Pipeline — where your upload is",
-                    "detail": psum,
-                }
-            )
-    checks.append(
-        {
-            "tone": "success",
-            "title": "Organization you entered",
-            "detail": f"You told us this roster is for: {org_name_entered}.",
-        }
-    )
-    entity = (matched_org_name or "").strip() or "Name from the national registry"
-    addr = (matched_practice_address or "").strip()
-    loc = f" Practice address on file: {addr}." if addr else ""
-    checks.append(
-        {
-            "tone": "success",
-            "title": "Billing organization we matched",
-            "detail": (
-                f"We’re using billing NPI {billing_npi} — {entity}.{loc} "
-                f"This is the organization we use for outside-in claims data in reconciliation. "
-                f"If that’s not the right entity, type: Use billing NPI and your 10-digit number."
-            ),
-        }
-    )
-
-    if row_count_resolved and resolution_summary:
-        high = int(resolution_summary.get("confidence_high") or 0)
-        med = int(resolution_summary.get("confidence_medium") or 0)
-        low = int(resolution_summary.get("confidence_low") or 0)
-        checks.append(
-            {
-                "tone": "success",
-                "title": "Provider names and NPIs",
-                "detail": (
-                    f"We checked {row_count_resolved} provider row(s) against the national NPI registry. "
-                    f"{high} row(s) matched with high confidence, {med} with medium, {low} with low. "
-                    f"The reconciliation report will flag anything that needs a second look."
-                ),
-            }
-        )
-    elif row_count_resolved:
-        checks.append(
-            {
-                "tone": "success",
-                "title": "Provider rows prepared",
-                "detail": f"We prepared {row_count_resolved} provider row(s) for reconciliation.",
-            }
-        )
-
-    alerts: list[dict[str, str]] = []
-    if resolution_summary:
-        nm = int(resolution_summary.get("no_match") or 0) + int(resolution_summary.get("not_in_nppes") or 0)
-        if nm > 0:
-            alerts.append(
-                {
-                    "tone": "warning",
-                    "message": (
-                        f"{nm} row(s) did not match a national NPI record. They stay on your roster — "
-                        f"the report may ask you to verify those providers manually."
-                    ),
-                }
-            )
-        low_n = int(resolution_summary.get("confidence_low") or 0)
-        if low_n > 0:
-            alerts.append(
-                {
-                    "tone": "notice",
-                    "message": (
-                        f"{low_n} row(s) have a low-confidence NPI match. "
-                        f"The reconciliation output will highlight them — a quick review is a good idea."
-                    ),
-                }
-            )
-        ins = int(resolution_summary.get("insufficient") or 0)
-        if ins > 0:
-            alerts.append(
-                {
-                    "tone": "notice",
-                    "message": (
-                        f"{ins} row(s) didn’t have enough name or NPI information for an automatic registry lookup."
-                    ),
-                }
-            )
-
-    next_step = (
-        "You’re set — we saved everything to this chat. If “Send reconciliation request after upload” was on, "
-        "your request is already running. Otherwise, press Send with the message we put in the box."
-    )
-
-    return {
-        "headline": "We’ve got your roster",
-        "subhead": "Here’s what we understood and saved. You don’t need to upload again unless you change files.",
-        "checks": checks,
-        "alerts": alerts,
-        "next_step": next_step,
-        "process_status": process_status,
-    }
 
 # Structured logging (Sprint 1 #10, 2026-04-23) — must run before the
 # FastAPI app is built so the first import-time log lines already go
@@ -361,7 +228,7 @@ app.middleware("http")(request_context_middleware)
 # megabytes of document content.
 
 _DEFAULT_MAX_REQUEST_BYTES = 1 * 1024 * 1024  # 1 MB
-_LARGE_BODY_PREFIXES = ("/upload", "/chat/upload", "/chat/roster-upload")
+_LARGE_BODY_PREFIXES = ("/upload", "/chat/upload")
 
 
 def _max_request_bytes() -> int:
@@ -2284,86 +2151,6 @@ def post_chat_upload(
     )
 
 
-@app.post("/chat/roster-upload")
-def post_chat_roster_upload(
-    file: UploadFile = File(...),
-    org_name: str = Form(...),
-    thread_id: str | None = Form(None),
-    run_id: str | None = Form(None),
-    file_purpose: str | None = Form("roster_reconciliation"),
-    user_id: str | None = Depends(require_user),
-) -> dict[str, Any]:
-    """Back-compat alias for instant_rag + roster_reconciliation uploads.
-
-    New code should use POST /chat/upload (instant_rag only).
-    Roster/credentialing agents call this directly with
-    file_purpose=roster_reconciliation and that path is unchanged.
-    """
-    # Size cap (2026-04-20 hardening). Enforce before reading the whole
-    # body into memory so a malicious client can't exhaust disk / RSS.
-    # Chunked reads until cap is exceeded OR the stream is exhausted.
-    _MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MB — covers any realistic
-                                            # roster CSV or policy PDF
-    buf = bytearray()
-    while True:
-        chunk = file.file.read(1024 * 1024)
-        if not chunk:
-            break
-        if len(buf) + len(chunk) > _MAX_UPLOAD_BYTES:
-            raise HTTPException(
-                status_code=413,
-                detail=(
-                    f"Upload exceeds {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB "
-                    "limit. Split the file or contact support if you need "
-                    "a higher limit for this purpose."
-                ),
-            )
-        buf.extend(chunk)
-    content = bytes(buf)
-
-    filename = file.filename or "upload"
-    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
-    purpose = (file_purpose or "roster_reconciliation").strip()
-
-    # Block dangerous file types
-    _BLOCKED_EXTS = {"exe", "bat", "sh", "dll", "so", "dylib", "com", "msi", "scr"}
-    if ext in _BLOCKED_EXTS:
-        raise HTTPException(status_code=400, detail=f"File type '.{ext}' is not allowed")
-
-    org_name = (org_name or "").strip()
-
-    # ── Instant RAG path ─────────────────────────────────────────────────
-    if purpose == "instant_rag":
-        # 2026-04-27 consolidation: route document uploads through
-        # mobius-rag's canonical /upload pipeline (was instant-rag
-        # skill, which bypassed lexicon expansion + hybrid retrieval
-        # + rerank). The `instant_rag` purpose name is kept as a
-        # back-compat alias so the frontend doesn't change.
-        return _handle_instant_rag_upload(
-            content=content, filename=filename, org_name=org_name,
-            thread_id=thread_id, file_purpose=purpose, user_id=user_id,
-        )
-
-    # ── Roster reconciliation path ────────────────────────────────────────
-    if purpose == "roster_reconciliation":
-        from app.api.roster_upload import handle_roster_upload
-        return handle_roster_upload(
-            content=content,
-            filename=filename,
-            ext=ext,
-            org_name=org_name,
-            thread_id=thread_id,
-            run_id=run_id,
-            file_purpose=purpose,
-        )
-
-    raise HTTPException(
-        status_code=400,
-        detail=(
-            f"file_purpose={purpose!r} is not supported. "
-            "Accepted values: 'roster_reconciliation', 'instant_rag'."
-        ),
-    )
 
 @app.get("/chat/uploads/{document_id}/events")
 def chat_upload_events(document_id: str):
@@ -2657,7 +2444,6 @@ from app.api.admin_prompts import router as _admin_prompts_router
 from app.api.auth_proxy import router as _auth_proxy_router
 from app.api.org_proxy import router as _org_proxy_router
 from app.api.chat import router as _chat_router
-from app.api.credentialing import router as _credentialing_router
 from app.api.doc_reader import router as _doc_reader_router
 from app.api.download import router as _download_router
 from app.api.verify_claim import router as _verify_claim_router
@@ -2670,7 +2456,6 @@ from app.api.training import router as _training_router
 from app.api.uploads import router as _uploads_router
 from app.api.user_tools import router as _user_tools_router
 app.include_router(_chat_router)  # Phase 2b.2 — core chat lifecycle extracted from main.py
-app.include_router(_credentialing_router)  # credentialing-runs + NPI lookup (restored for pipeline UI)
 app.include_router(_history_router)
 app.include_router(_feedback_router)
 app.include_router(_product_feedback_router)  # open product feedback + CSAT/NPS surveys
@@ -3123,12 +2908,6 @@ if _frontend.exists():
     @app.get("/")
     def index():
         r = FileResponse(_frontend / "index.html")
-        r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        return r
-
-    @app.get("/pipeline")
-    def pipeline():
-        r = FileResponse(_frontend / "static" / "pipeline.html")
         r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return r
 
