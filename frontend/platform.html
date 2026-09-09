@@ -624,7 +624,7 @@
 
         h += '<div class="slanes">';
         // ReAct lane
-        h += '<div class="slane"><div class="slane-title">ReAct path</div>' + node('react_loop', 'replaces plan + resolve + integrate');
+        h += '<div class="slane"><div class="slane-title">ReAct path</div>' + node('react_loop', 'replaces plan + resolve; integrate still runs');
         (f.react_phases || []).forEach(function (p) {
           h += '<div class="sphase"><div class="sphase-name">' + esc(p.phase) + '</div>' +
                '<div class="sphase-note">' + esc(p.note || '') +

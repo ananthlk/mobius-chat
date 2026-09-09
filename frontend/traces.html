@@ -150,18 +150,32 @@ async function loadDetail(cid){
     return `<i style="width:${w}%;background:${isLLMheavy?'var(--llm)':'var(--self)'}" title="${x.module} ${ms(x.wall_ms)}ms"></i>`;
   }).join('');
 
-  const spanRows = roots.map(x=>{
-    const kidsOf = kids.filter(k=>k.parent_span_id===x.span_id).sort((a,b)=>(b.wall_ms||0)-(a.wall_ms||0));
-    const self = Math.max(0,(x.wall_ms||0)-(x.llm_ms||0));
-    let html = `<tr><td><span class="node">${x.module}</span>${x.label?' <span class="lbl">· '+x.label+'</span>':''}</td>
-      <td class="num">${ms(x.wall_ms)}</td><td class="num">${ms(x.llm_ms)}</td><td class="num">${ms(self)}</td></tr>`;
-    kidsOf.forEach(k=>{
-      const ks = Math.max(0,(k.wall_ms||0)-(k.llm_ms||0));
-      html += `<tr><td style="padding-left:30px" class="lbl">└─ ${k.label||k.module}</td>
-        <td class="num">${ms(k.wall_ms)}</td><td class="num">${ms(k.llm_ms)}</td><td class="num">${ks}</td></tr>`;
-    });
-    return html;
-  }).join('');
+  // Per-turn MATRIX: every row split processing / llm / db(r,w) / tool, so
+  // the hierarchy never changes units as you drill.
+  let matrixRows = '<tr><td colspan="7" class="lbl">loading…</td></tr>';
+  try {
+    const mr = await fetch(`${API}/chat/matrix/${encodeURIComponent(cid)}`);
+    const md = await mr.json();
+    matrixRows = (md.rows||[]).map(r=>{
+      const nm = '&nbsp;'.repeat(4*(r.depth||0)) + (r.label || r.module);
+      const ext = r.is_external ? ' <span class="pill">external</span>' : '';
+      const rw = (r.db_reads||r.db_writes) ? `${r.db_reads}r/${r.db_writes}w` : '';
+      return `<tr>
+        <td>${nm}${ext}</td>
+        <td class="num">${ms(r.wall_ms)}</td>
+        <td class="num"><b>${ms(r.processing_ms)}</b></td>
+        <td class="num">${ms(r.own_llm_ms)}</td>
+        <td class="num">${ms(r.db_read_ms+r.db_write_ms)}</td>
+        <td class="num lbl">${rw}</td>
+        <td class="num">${ms(r.tool_ms)}</td></tr>`;
+    }).join('') || '<tr><td colspan="7" class="lbl">no rows</td></tr>';
+    const t = md.totals||{};
+    matrixRows += `<tr style="border-top:2px solid var(--mobius-border)">
+      <td><b>TOTAL</b></td><td class="num"><b>${ms(t.wall_ms)}</b></td>
+      <td class="num"><b>${ms(t.processing_ms)}</b></td><td class="num">${ms(t.llm_ms)}</td>
+      <td class="num">${ms(t.db_ms)}</td><td class="num lbl">${t.db_reads||0}r/${t.db_writes||0}w</td>
+      <td class="num">${ms(t.tool_ms)}</td></tr>`;
+  } catch(e){ matrixRows = '<tr><td colspan="7" class="lbl">matrix unavailable</td></tr>'; }
 
   const counts = (s.counts||[]);
   const kindClass = k => k==='llm'?'k-llm' : k.startsWith('db')?'k-db' : 'k-tool';
@@ -187,13 +201,17 @@ async function loadDetail(cid){
         <div class="n">early exit changes round count</div></div>
     </div>
 
-    <h2>Where the time went</h2>
+    <h2>Process matrix — where the time went</h2>
+    <div class="why" style="margin-bottom:10px"><b>processing</b> is exclusive self-time: this row's
+      own code, children removed, so the column is additive. Rows marked <span class="pill">external</span>
+      are work handed outside the process (RAG over HTTP) — counted as <b>tool</b>, never as our
+      processing, because putting them there sends you to optimise the wrong thing.</div>
     <div class="flame">${flame}</div>
-    <div class="legend"><span><span class="kindtag k-llm"></span>llm-dominated</span>
-      <span><span class="kindtag" style="background:var(--self)"></span>code / io</span></div>
     <table style="margin-top:12px">
-      <tr><th>Span (schema node · label)</th><th class="num">Wall</th><th class="num">LLM</th><th class="num">Self</th></tr>
-      ${spanRows}
+      <tr><th>Process</th><th class="num">Wall</th><th class="num">Processing</th>
+          <th class="num">LLM</th><th class="num">DB</th><th class="num">r/w</th>
+          <th class="num">Tool</th></tr>
+      ${matrixRows}
     </table>
 
     <h2>Counts by target <span style="text-transform:none;font-weight:400">— n is the detector, not the duration</span></h2>

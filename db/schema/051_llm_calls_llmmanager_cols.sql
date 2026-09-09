@@ -24,6 +24,11 @@
 --   template_id    — FK to prompt_templates.id (nullable during migration).
 --   turn_id        — == chat_turns.correlation_id. LLMManager.call() requires it
 --                    non-null going forward (DEP-1); historical rows may be NULL.
+--                    WARNING: only written by the CallManager v2 path. The main
+--                    pipeline still goes through generate() which writes
+--                    correlation_id but NOT turn_id. Join on correlation_id, not
+--                    turn_id — joining on turn_id silently loses most rows and
+--                    produces a low (wrong) number with no error anywhere.
 --   is_hard_pinned — model selection was forced (config model_id non-null or a
 --                    calibration_mode turn). Excluded from model-arm training.
 

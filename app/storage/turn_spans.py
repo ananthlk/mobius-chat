@@ -465,6 +465,17 @@ def turn_matrix(correlation_id: str) -> dict[str, Any]:
         # the rolled-up value double-counts, so `processing` is computed from
         # this span's OWN counts and excludes every child's wall.
         own_llm = sum(float(c["ms"]) for c in counts if c.get("kind") == "llm")
+
+        # A tool:* span is an EXTERNAL call (RAG over HTTP), not our code. As a
+        # leaf with no llm/db counts of its own, the generic formula put its
+        # whole wall in `processing` — so a 5,770ms RAG call read as 5,770ms of
+        # our processing. That is the misattribution that sends someone to
+        # optimise the wrong thing, which is the specific harm this view exists
+        # to prevent. Its time belongs in `tool` on its own row too, not only
+        # on its parent's.
+        _is_tool = str(sp.get("label") or "").startswith("tool:")
+        if _is_tool:
+            tool = wall
         return {
             "wall_ms": round(wall, 1),
             "llm_ms": round(float(sp.get("llm_ms") or 0.0), 1),   # inclusive
@@ -476,7 +487,9 @@ def turn_matrix(correlation_id: str) -> dict[str, Any]:
             # actually belonged to a child, and made the column non-additive —
             # a total that does not equal the sum of its parts is a total no
             # one can act on.
-            "processing_ms": round(max(0.0, wall - kids_wall - own_llm - db_r - db_w), 1),
+            "processing_ms": 0.0 if _is_tool else round(
+                max(0.0, wall - kids_wall - own_llm - db_r - db_w), 1),
+            "is_external": _is_tool,
         }
 
     rows: list[dict[str, Any]] = []
@@ -507,7 +520,7 @@ def turn_matrix(correlation_id: str) -> dict[str, Any]:
         "db_ms": round(sum(r["db_read_ms"] + r["db_write_ms"] for r in rows), 1),
         "db_reads": sum(r["db_reads"] for r in rows),
         "db_writes": sum(r["db_writes"] for r in rows),
-        "tool_ms": round(sum(r["tool_ms"] for r in roots), 1),
+        "tool_ms": round(sum(r["tool_ms"] for r in rows if r.get("is_external")), 1),
     }
     totals["processing_ms"] = round(sum(r["processing_ms"] for r in rows), 1)
     return {"correlation_id": correlation_id, "rows": rows, "totals": totals}
