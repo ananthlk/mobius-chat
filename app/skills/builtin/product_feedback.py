@@ -258,7 +258,8 @@ def _run_product_feedback(call: SkillCall) -> SkillEnvelope:
     _emit("◌ Checking for sensitive info…")
     from app.skills.phi_gate import gate_feedback_text, _DROP_MESSAGE
     safe_verbatim, phi_scrubbed, dropped = gate_feedback_text(
-        verbatim, thread_id=thread_id, user_id=user_id)
+        verbatim, thread_id=thread_id, user_id=user_id,
+        correlation_id=correlation_id)
 
     if dropped:
         cat = inputs.get("category") if inputs.get("category") in _CATEGORY_LABEL else "other"

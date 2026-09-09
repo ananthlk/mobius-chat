@@ -204,8 +204,25 @@ def test_fire_rag_grade_callbacks_patches_correlation_id_url():
 
     with patch("urllib.request.urlopen", side_effect=fake_urlopen):
         _fire_rag_grade_callbacks(ctx)
+        # _fire_rag_grade_callbacks spawns a fire-and-forget daemon thread
+        # (orchestrator.py: threading.Thread(..., daemon=True).start()), so we
+        # must not leave this `with` block until it has called urlopen —
+        # exiting tears down the patch and the thread then hits the real one.
+        #
+        # This used to be a flat time.sleep(0.05) and was FLAKY: under full-suite
+        # load (or a second pytest process on the same machine) 50ms is not
+        # reliably enough, `captured` stays empty, and the asserts below fail
+        # with KeyError. Observed 2026-09-09 as a phantom "regression" that
+        # passed in isolation, passed with its own file, and failed only under
+        # a loaded full-suite run.
+        #
+        # Poll for the actual condition instead of guessing a duration: fast
+        # in the common case (~1ms), tolerant when the machine is busy.
         import time as _time
-        _time.sleep(0.05)  # fire-and-forget thread — give it a moment
+        _deadline = _time.monotonic() + 5.0
+        while "url" not in captured and _time.monotonic() < _deadline:
+            _time.sleep(0.005)
+        assert "url" in captured, "grade callback thread did not fire within 5s"
 
     assert captured["url"] == "https://mobius-rag-ortabkknqa-uc.a.run.app/api/observe/decisions/turn-cid-123/grade"
     assert captured["method"] == "PATCH"

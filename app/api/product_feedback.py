@@ -110,7 +110,8 @@ def post_product_feedback(
     # scrub-and-keep gate as the skill path (app.skills.phi_gate).
     from app.skills.phi_gate import gate_feedback_text, _DROP_MESSAGE
     safe_verbatim, phi_scrubbed, dropped = gate_feedback_text(
-        body.verbatim, thread_id=body.thread_id, user_id=user_id)
+        body.verbatim, thread_id=body.thread_id, user_id=user_id,
+        correlation_id=body.correlation_id)
     if dropped:
         fid = store.insert_open_feedback(
             trigger=body.trigger, category=category, verbatim="", tidied="",

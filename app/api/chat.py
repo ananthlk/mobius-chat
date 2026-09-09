@@ -227,7 +227,11 @@ _PHI_GATE_URL = os.environ.get(
 ).rstrip("/")
 
 
-def _phi_check_message(text: str, thread_id: str | None = None) -> dict:
+def _phi_check_message(
+    text: str,
+    thread_id: str | None = None,
+    correlation_id: str | None = None,
+) -> dict:
     """POST to /message-check and return the parsed body.
 
     FAIL-CLOSED: any network error, timeout, or non-200 response returns
@@ -243,7 +247,20 @@ def _phi_check_message(text: str, thread_id: str | None = None) -> dict:
         with httpx.Client(timeout=4.0) as client:
             r = client.post(
                 f"{_PHI_GATE_URL}/message-check",
-                json={"text": text, "thread_id": thread_id},
+                # correlation_id (2026-09-09): the classifier accepts it
+                # (models.py:66), honours it (main.py:99) and forwards it to
+                # /internal/skill-llm (classifier.py:301) — chat simply wasn't
+                # sending it, so all 98 phi_classify llm_calls rows/day landed
+                # with correlation_id NULL and attributed to no turn. The PHI
+                # gate runs on every turn, so that is live-path LLM cost
+                # belonging to nothing. Do NOT widen this payload further:
+                # the classifier receives raw clinical text, and a UUID is the
+                # only safe thing to add.
+                json={
+                    "text": text,
+                    "thread_id": thread_id,
+                    "correlation_id": correlation_id,
+                },
             )
             if r.status_code == 200:
                 return r.json()
@@ -354,7 +371,7 @@ def post_chat(
         payload["profile"] = body.profile
     # PHI gate — authoritative re-run before dispatch. Frontend pre-checks
     # for UX; this is the enforcement layer that can't be bypassed.
-    _phi = _phi_check_message(body.message or "", thread_id)
+    _phi = _phi_check_message(body.message or "", thread_id, correlation_id)
     if _phi.get("block"):
         if not body.phi_override:
             _log_phi_msg_gate(correlation_id, thread_id, user_id, "blocked", _phi)

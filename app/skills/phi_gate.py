@@ -44,7 +44,11 @@ def _log_gate(where: str, body: dict) -> None:
 
 
 def gate_feedback_text(
-    text: str, *, thread_id: str | None = None, user_id: str | None = None
+    text: str,
+    *,
+    thread_id: str | None = None,
+    user_id: str | None = None,
+    correlation_id: str | None = None,
 ) -> tuple[str | None, bool, bool]:
     """Return (safe_text, phi_scrubbed, dropped).
 
@@ -63,8 +67,15 @@ def gate_feedback_text(
     gate = "indeterminate"  # fail-closed default
     try:
         with httpx.Client(timeout=_TIMEOUT) as c:
+            # correlation_id (2026-09-09): see the note on the same fix in
+            # api/chat.py:_phi_check_message. This is the SECOND implementation
+            # of the same gate (the message path writes an audit row, this one
+            # doesn't — already logged as a chat bug). Fixing only the message
+            # path would leave feedback-text PHI calls unattributable and make
+            # the "two implementations" finding quietly half-true.
             r = c.post(f"{_PHI_URL}/message-check",
-                       json={"text": text, "thread_id": thread_id, "user_id": user_id})
+                       json={"text": text, "thread_id": thread_id,
+                             "user_id": user_id, "correlation_id": correlation_id})
         if r.status_code == 200:
             body = r.json()
             gate = (body.get("gate") or "indeterminate").strip().lower()
