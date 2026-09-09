@@ -1313,6 +1313,7 @@ def _persist_turn_spans(ctx: PipelineContext) -> None:
             model_mix=mix,
             rich_evidence=getattr(ctx, "react_rich_evidence", None),
             sample_rate=getattr(ctx, "span_sample_rate", None),
+            source=getattr(ctx, "turn_source", None),
         )
     except Exception as exc:
         # Loud, never silent: a missing span row must be traceable to a

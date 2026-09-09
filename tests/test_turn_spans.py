@@ -300,3 +300,31 @@ class TestDbIdentifier:
             f"writes will fail with connection_error at runtime while every "
             f"mocked test still passes"
         )
+
+
+class TestSourceClassification:
+    """Fleet percentiles are only meaningful over ONE population.
+
+    Deploy smoke turns hit cold connection pools at ~400-500ms per DB call;
+    real turns run at ~30-39ms. Mixed, the p50 described neither — correct
+    arithmetic over the wrong sampling frame.
+    """
+
+    def test_uuid_is_real_and_scripted_ids_are_smoke(self):
+        import uuid as _u
+        from app.telemetry.spans import classify_source
+        assert classify_source(str(_u.uuid4())) == "real"
+        for cid in ("sel-cid-3", "smoke-1", "cid-local-probe", "abc", ""):
+            assert classify_source(cid) == "smoke", cid
+
+    def test_unrecognised_shape_errs_toward_smoke(self):
+        """Polluting the real baseline with synthetic turns is the failure
+        that matters; a synthetic turn wrongly excluded is merely absent."""
+        from app.telemetry.spans import classify_source
+        assert classify_source("not-a-uuid-at-all") == "smoke"
+
+    def test_declared_source_wins_over_inference(self):
+        """An eval harness knows what it is; a UUID cid must not override it."""
+        import uuid as _u
+        from app.telemetry.spans import classify_source
+        assert classify_source(str(_u.uuid4()), "eval") == "eval"

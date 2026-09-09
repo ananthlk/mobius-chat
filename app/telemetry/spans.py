@@ -485,3 +485,40 @@ def is_sampled(correlation_id: str, rate: float | None = None) -> bool:
     h = hashlib.sha256((correlation_id or "").encode("utf-8")).digest()
     bucket = int.from_bytes(h[:8], "big") / float(1 << 64)
     return bucket < r
+
+
+# ── turn source ──────────────────────────────────────────────────────
+SOURCE_REAL = "real"
+SOURCE_SMOKE = "smoke"
+SOURCE_EVAL = "eval"
+
+_SMOKE_CID_PREFIXES = ("sel-cid-", "smoke-", "probe-", "test-cid-", "cid-")
+
+
+def classify_source(correlation_id: str, declared: str | None = None) -> str:
+    """Which population this turn belongs to.
+
+    Fleet percentiles are only meaningful over one population. Deploy smoke
+    turns hit cold connection pools at ~400-500ms per DB call while real
+    turns run at ~30-39ms; mixed, the p50 describes neither.
+
+    `declared` wins when a caller states its source (an eval harness knows
+    what it is). Otherwise infer: chat mints real correlation_ids as UUID4,
+    so anything that is NOT a UUID was hand-made by a script — the smoke
+    probe, a trace, a local repro.
+
+    Errs toward SMOKE for unrecognised shapes rather than REAL: polluting
+    the real-traffic baseline with synthetic turns is the failure that
+    matters, and a synthetic turn wrongly excluded is merely absent.
+    """
+    if declared in (SOURCE_REAL, SOURCE_SMOKE, SOURCE_EVAL):
+        return declared
+    cid = (correlation_id or "").strip()
+    low = cid.lower()
+    if any(low.startswith(p) for p in _SMOKE_CID_PREFIXES):
+        return SOURCE_SMOKE
+    try:
+        uuid.UUID(cid)
+        return SOURCE_REAL
+    except (ValueError, AttributeError, TypeError):
+        return SOURCE_SMOKE

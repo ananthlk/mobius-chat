@@ -598,7 +598,7 @@ def _require_trace_admin() -> None:
 
 
 @router.get("/chat/traces/nodes")
-def get_node_rollup():
+def get_node_rollup(source: str | None = "real"):
     """Trace data rolled up by SCHEMA NODE, with both falsifiability lists.
 
     Returns observed nodes (p50/p95, never a mean — the mean is eaten by the
@@ -608,11 +608,14 @@ def get_node_rollup():
     """
     _require_trace_admin()
     from app.storage.turn_spans import node_rollup
-    return node_rollup()
+    # Defaults to REAL traffic. Deploy smoke turns hit cold pools at
+    # ~400-500ms/DB-call against real turns' ~30-39ms; mixed, the p50
+    # describes neither population. Pass source=smoke / eval / all to widen.
+    return node_rollup(source=None if source == "all" else source)
 
 
 @router.get("/chat/traces")
-def list_turn_traces(limit: int = 40):
+def list_turn_traces(limit: int = 40, source: str | None = None):
     """Recent turns that produced spans — the trace viewer's index.
 
     Carries wall/llm/self per turn so the list itself is triageable: a reader
@@ -620,7 +623,8 @@ def list_turn_traces(limit: int = 40):
     """
     _require_trace_admin()
     from app.storage.turn_spans import list_recent_traces
-    return {"traces": list_recent_traces(limit=limit)}
+    return {"traces": list_recent_traces(limit=limit,
+                                         source=None if source == "all" else source)}
 
 
 @router.get("/chat/spans/{correlation_id}")

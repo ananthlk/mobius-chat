@@ -43,6 +43,7 @@ def save_spans(
     model_mix: list[dict[str, Any]] | None = None,
     rich_evidence: bool | None = None,
     sample_rate: float | None = None,
+    source: str | None = None,
 ) -> int:
     """Persist one turn's spans. Returns the number written.
 
@@ -57,6 +58,8 @@ def save_spans(
     written = 0
     _mix = json.dumps(model_mix or [])
     _rate = sample_rate
+    from app.telemetry.spans import classify_source
+    _src = classify_source(correlation_id, source)
     for r in rows:
         try:
             result = db_execute(
@@ -64,12 +67,12 @@ def save_spans(
                 INSERT INTO turn_spans (
                     correlation_id, span_id, parent_span_id, module, label, depth,
                     wall_ms, llm_ms, counts, model_mix, rich_evidence, chat_mode,
-                    sampled, sample_rate
+                    sampled, sample_rate, source
                 )
                 VALUES (:cid, :span_id, :parent_span_id, :module, :label, :depth,
                         :wall_ms, :llm_ms, CAST(:counts AS jsonb),
                         CAST(:model_mix AS jsonb), :rich_evidence, :chat_mode,
-                        :sampled, :sample_rate)
+                        :sampled, :sample_rate, :source)
                 ON CONFLICT (correlation_id, span_id) DO NOTHING
                 """,
                 _DB,
@@ -88,6 +91,7 @@ def save_spans(
                     "chat_mode": chat_mode,
                     "sampled": True,
                     "sample_rate": _rate,
+                    "source": _src,
                 },
             )
             if isinstance(result, dict) and result.get("error"):
@@ -197,7 +201,7 @@ def summarize(spans: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def list_recent_traces(limit: int = 40) -> list[dict[str, Any]]:
+def list_recent_traces(limit: int = 40, source: str | None = None) -> list[dict[str, Any]]:
     """Recent turns that produced spans — the index for the trace viewer.
 
     Rolls up to one row per turn from its depth-0 spans. Ordered newest
@@ -214,14 +218,16 @@ def list_recent_traces(limit: int = 40) -> list[dict[str, Any]]:
                COUNT(*)                               AS span_count,
                MAX(chat_mode)                         AS chat_mode,
                BOOL_OR(rich_evidence)                 AS rich_evidence,
-               MAX(sample_rate)                       AS sample_rate
+               MAX(sample_rate)                       AS sample_rate,
+               MAX(source)                            AS source
         FROM turn_spans
+        WHERE (:src IS NULL OR source = :src)
         GROUP BY correlation_id
         ORDER BY MAX(created_at) DESC
         LIMIT :lim
         """,
         _DB,
-        params={"lim": int(limit)},
+        params={"lim": int(limit), "src": source},
     )
     if not isinstance(result, dict) or result.get("error"):
         logger.warning("[turn_spans] recent list failed: %s",
@@ -245,7 +251,7 @@ def _phase_for(node: str) -> str:
     return phase_for(node)
 
 
-def node_rollup(limit_spans: int = 5000) -> dict[str, Any]:
+def node_rollup(limit_spans: int = 5000, source: str | None = "real") -> dict[str, Any]:
     """Per-node MATRIX: processing · llm · db · tool(external), plus both
     falsifiability directions.
 
@@ -275,13 +281,14 @@ def node_rollup(limit_spans: int = 5000) -> dict[str, Any]:
     result = db_query(
         """
         SELECT correlation_id, span_id, parent_span_id, module, label,
-               depth, wall_ms, llm_ms, counts, created_at
+               depth, wall_ms, llm_ms, counts, created_at, source
         FROM turn_spans
+        WHERE (:src IS NULL OR source = :src)
         ORDER BY created_at DESC
         LIMIT :lim
         """,
         _DB,
-        params={"lim": int(limit_spans)},
+        params={"lim": int(limit_spans), "src": source},
     )
     if not isinstance(result, dict) or result.get("error"):
         logger.warning("[turn_spans] node rollup failed: %s",
@@ -409,4 +416,5 @@ def node_rollup(limit_spans: int = 5000) -> dict[str, Any]:
         "unmodelled": sorted(seen - set(NODE_KEYS)),
         "node_count": len(NODE_KEYS),
         "truncated": len(rows) >= limit_spans,
+        "source": source or "all",
     }
