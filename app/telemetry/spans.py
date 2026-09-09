@@ -242,6 +242,7 @@ class TurnTrace:
         self.correlation_id = correlation_id
         self.spans: list[Span] = []
         self._stack: list[Span] = []
+        self._open_cms: list[Any] = []
 
     # ── recording ────────────────────────────────────────────────────
     @contextmanager
@@ -300,6 +301,30 @@ class TurnTrace:
             # its children's, so self_ms is honest at every level.
             if parent is not None:
                 parent.llm_ms += sp.llm_ms
+
+    # ── manual open/close ────────────────────────────────────────────
+    # The context manager needs an indented block. react_loop's round body is
+    # ~600 lines under `for iteration in count()`, and wrapping it would mean
+    # re-indenting the largest module in the codebase for telemetry. These let
+    # a caller open a span at the top of a loop body and close it at the top
+    # of the next iteration, giving REAL spans — which matters because a span
+    # collects llm/db counts from record_ambient, and a bare duration cannot.
+    # That is the difference between "round 2 took 11s" and "round 2 took 11s,
+    # of which 9s was llm and 300ms was db".
+    def open_span(self, module: str, label: str | None = None) -> Span:
+        cm = self.span(module, label=label)
+        sp = cm.__enter__()
+        self._open_cms.append(cm)
+        return sp
+
+    def close_span(self) -> None:
+        if not self._open_cms:
+            return
+        cm = self._open_cms.pop()
+        try:
+            cm.__exit__(None, None, None)
+        except Exception as exc:  # pragma: no cover
+            logger.warning("[spans] close_span failed: %s", exc)
 
     def record(self, kind: str, target: str, n: int = 1, ms: float = 0.0) -> None:
         """Tally n occurrences of `kind` against `target` on the open span."""
@@ -525,38 +550,63 @@ def classify_source(correlation_id: str, declared: str | None = None) -> str:
         return SOURCE_SMOKE
 
 
-def mark_round(ctx: Any, rn: int) -> None:
-    """Close out the previous ReAct round's timing and start the next.
+def mark_round(ctx: Any, rn: int | None) -> None:
+    """Close the previous ReAct round's span and open the next.
 
-    react_loop's round body is ~600 lines under `for iteration in count()`.
-    Wrapping it in a span context manager would mean re-indenting all of it —
-    a large, risky edit to the single biggest module in the codebase, for
-    telemetry. So rounds are timed by MARKING the boundary instead: each call
-    records the elapsed time since the previous mark against the round that
-    just ended.
+    Rounds are REAL SPANS, not bare durations. A span collects the llm and db
+    counts that record_ambient attributes to the open stack top, so a round
+    row can say "11.3s, of which 9.4s llm and 0.3s db" instead of just 11.3s.
+    A duration alone cannot be decomposed after the fact.
 
-    The result is a count per round rather than a nested span, which is the
-    honest trade: it gives per-round duration without touching the loop's
-    structure, and it cannot express anything nested INSIDE a round. When
-    react_loop is split in P4 and its body is being restructured anyway, this
-    should become real child spans.
+    Opened/closed manually rather than with a `with` block because the round
+    body is ~600 lines under `for iteration in count()` and wrapping it would
+    mean re-indenting the largest module in the codebase for telemetry. The
+    boundary marks are equivalent; only the syntax differs.
     """
     tr = get_trace(ctx)
-    if tr is None or not tr._stack:
+    if tr is None:
         return
-    now = time.perf_counter()
-    prev_rn = getattr(ctx, "_span_round_n", None)
-    prev_t = getattr(ctx, "_span_round_t", None)
-    if prev_rn is not None and prev_t is not None:
-        tr.record(KIND_ROUND, f"round_{prev_rn}", ms=(now - prev_t) * 1000.0)
-    ctx._span_round_n = rn
-    ctx._span_round_t = now
+    if getattr(ctx, "_span_round_open", False):
+        tr.close_span()
+        ctx._span_round_open = False
+    if rn is not None:
+        tr.open_span("react_loop", label=f"round_{rn}")
+        ctx._span_round_open = True
 
 
 def close_rounds(ctx: Any) -> None:
-    """Record the final round, which has no successor to close it."""
+    """Close the final round, which has no successor to close it."""
     mark_round(ctx, None)
+
+
+def classify_source(correlation_id: str, declared: str | None = None) -> str:
+    """Which population this turn belongs to.
+
+    Fleet percentiles are only meaningful over one population. Deploy smoke
+    turns hit cold connection pools at ~400-500ms per DB call while real
+    turns run at ~30-39ms; mixed, the p50 describes neither.
+
+    `declared` wins when a caller states its source (an eval harness knows
+    what it is). Otherwise infer: chat mints real correlation_ids as UUID4,
+    so anything that is NOT a UUID was hand-made by a script — the smoke
+    probe, a trace, a local repro.
+
+    Errs toward SMOKE for unrecognised shapes rather than REAL: polluting
+    the real-traffic baseline with synthetic turns is the failure that
+    matters, and a synthetic turn wrongly excluded is merely absent.
+    """
+    if declared in (SOURCE_REAL, SOURCE_SMOKE, SOURCE_EVAL):
+        return declared
+    cid = (correlation_id or "").strip()
+    low = cid.lower()
+    if any(low.startswith(p) for p in _SMOKE_CID_PREFIXES):
+        return SOURCE_SMOKE
     try:
-        ctx._span_round_n = None
-    except Exception:
-        pass
+        uuid.UUID(cid)
+        return SOURCE_REAL
+    except (ValueError, AttributeError, TypeError):
+        return SOURCE_SMOKE
+
+
+
+

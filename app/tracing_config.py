@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -124,6 +125,20 @@ def configure_tracing() -> None:
     #   * CHAT_TRACE_EXPORTER=console → ConsoleSpanExporter (dev diagnostic)
     #   * otherwise → Cloud Trace (assumed hosted)
     exporter_choice = (os.environ.get("CHAT_TRACE_EXPORTER") or "").strip().lower()
+    # Never export to Cloud Trace from a test process. CloudTraceSpanExporter
+    # reaches the network, and BatchSpanProcessor registers an atexit flush —
+    # so with no reachable Cloud Trace endpoint the flush retries against its
+    # 5s export timeout while the interpreter is trying to exit. The comment
+    # below already names "block shutdown" as the risk this config guards
+    # against; under pytest there is no operator to notice, the suite simply
+    # appears to hang long AFTER pytest reports all tests passed (measured
+    # 2026-09-09: pytest done at 10:33, process not exiting until 57:47).
+    # Console keeps spans observable without egress. Tests that need to
+    # assert on span contents install their own InMemorySpanExporter.
+    _under_pytest = "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
+    if _under_pytest and exporter_choice != "console":
+        exporter_choice = "console"
+        logger.info("tracing: pytest detected — forcing ConsoleSpanExporter (no network export)")
     if exporter_choice == "console":
         exporter = ConsoleSpanExporter()
         logger.info("tracing: using ConsoleSpanExporter")

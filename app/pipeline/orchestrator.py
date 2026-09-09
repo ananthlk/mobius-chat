@@ -482,6 +482,22 @@ def run_pipeline(
     _trace_token = set_active(ctx.turn_trace)
     from app.telemetry.spans import span as _span
 
+    # PHI gate ran in the API process before this worker picked the turn up,
+    # so it cannot open its own span here. Its measured duration rides on the
+    # payload; replay it as a zero-width span so the PHI gate node appears in
+    # the matrix with a real number instead of being silently absent.
+    _phi_ms = None
+    try:
+        _phi_ms = float(phi_gate_verdict.get("_phi_gate_ms")) if isinstance(phi_gate_verdict, dict) else None
+    except (TypeError, ValueError):
+        _phi_ms = None
+    if _phi_ms and ctx.turn_trace is not None:
+        with ctx.turn_trace.span("PHI gate") as _psp:
+            pass
+        # Set AFTER the block: span()'s finally clause computes wall_ms from
+        # its own clock and would overwrite an assignment made inside.
+        _psp.wall_ms = _phi_ms
+
     _detect_and_resolve_retry(ctx)
 
     def on_thinking(chunk) -> None:  # str | dict (EmitEnvelope.to_dict())

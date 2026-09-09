@@ -418,3 +418,86 @@ def node_rollup(limit_spans: int = 5000, source: str | None = "real") -> dict[st
         "truncated": len(rows) >= limit_spans,
         "source": source or "all",
     }
+
+
+def turn_matrix(correlation_id: str) -> dict[str, Any]:
+    """The per-turn MATRIX: every process row split by where its time went.
+
+    Rows are the span tree — phase, module, and sub-process (round, tool,
+    integrate phase) — and every row carries the same four columns so the
+    hierarchy never changes units under the reader:
+
+        processing = wall - llm - db - tool(child)   our code, this row only
+        llm        model time attributed to this row
+        db         database time, with read/write counts split out
+        tool       work handed to something external
+
+    `writes` is broken out separately from `db` because a read and a write are
+    different problems: a repeated read is usually a caching question, a
+    repeated write is usually a correctness one.
+
+    This is a VIEW, not a verdict. It does not rank or flag; it shows the
+    decomposition and lets the reader decide what to attack.
+    """
+    spans = read_spans(correlation_id)
+    if not spans:
+        return {"correlation_id": correlation_id, "rows": [], "totals": {}}
+
+    from app.telemetry.spans import phase_for
+    by_parent: dict[Any, list[dict]] = {}
+    for sp in spans:
+        by_parent.setdefault(sp.get("parent_span_id"), []).append(sp)
+
+    def _cols(sp: dict) -> dict[str, Any]:
+        counts = sp.get("counts") or []
+        db_r = sum(float(c["ms"]) for c in counts if c.get("kind") == "db.read")
+        db_w = sum(float(c["ms"]) for c in counts if c.get("kind") == "db.write")
+        n_r = sum(int(c["n"]) for c in counts if c.get("kind") == "db.read")
+        n_w = sum(int(c["n"]) for c in counts if c.get("kind") == "db.write")
+        kids = by_parent.get(sp["span_id"], [])
+        tool = sum(float(k.get("wall_ms") or 0.0) for k in kids
+                   if str(k.get("label") or "").startswith("tool:"))
+        # Child ROUND spans are not "tool" — their time is the parent's own
+        # work, decomposed one level down. Subtracting them would make the
+        # parent's processing read as ~0 and hide where the time is.
+        wall = float(sp.get("wall_ms") or 0.0)
+        llm = float(sp.get("llm_ms") or 0.0)
+        return {
+            "wall_ms": round(wall, 1), "llm_ms": round(llm, 1),
+            "db_read_ms": round(db_r, 1), "db_write_ms": round(db_w, 1),
+            "db_reads": n_r, "db_writes": n_w, "tool_ms": round(tool, 1),
+            "processing_ms": round(max(0.0, wall - llm - db_r - db_w - tool), 1),
+        }
+
+    rows: list[dict[str, Any]] = []
+
+    def _walk(sp: dict, depth: int) -> None:
+        label = sp.get("label")
+        rows.append({
+            "depth": depth,
+            "phase": phase_for(sp["module"]),
+            "module": sp["module"],
+            "label": label,
+            "name": f"{sp['module']}·{label}" if label else sp["module"],
+            **_cols(sp),
+        })
+        for k in sorted(by_parent.get(sp["span_id"], []),
+                        key=lambda x: -(x.get("wall_ms") or 0.0)):
+            _walk(k, depth + 1)
+
+    for root in sorted(by_parent.get(None, []),
+                       key=lambda x: -(x.get("wall_ms") or 0.0)):
+        _walk(root, 0)
+
+    roots = [r for r in rows if r["depth"] == 0]
+    totals = {
+        "wall_ms": round(sum(r["wall_ms"] for r in roots), 1),
+        "llm_ms": round(sum(r["llm_ms"] for r in roots), 1),
+        "db_ms": round(sum(r["db_read_ms"] + r["db_write_ms"] for r in rows), 1),
+        "db_reads": sum(r["db_reads"] for r in rows),
+        "db_writes": sum(r["db_writes"] for r in rows),
+        "tool_ms": round(sum(r["tool_ms"] for r in roots), 1),
+    }
+    totals["processing_ms"] = round(
+        max(0.0, totals["wall_ms"] - totals["llm_ms"] - totals["db_ms"] - totals["tool_ms"]), 1)
+    return {"correlation_id": correlation_id, "rows": rows, "totals": totals}

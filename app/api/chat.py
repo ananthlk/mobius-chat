@@ -371,7 +371,17 @@ def post_chat(
         payload["profile"] = body.profile
     # PHI gate — authoritative re-run before dispatch. Frontend pre-checks
     # for UX; this is the enforcement layer that can't be bypassed.
+    # P2b: the PHI gate runs on EVERY turn and is a network call to the
+    # classifier. It executes in the API process, before the worker picks the
+    # turn up, so it has no TurnTrace to attach to — its cost is recorded on
+    # the response instead and folded into the preprocessing row by the
+    # reader. Named here so it is not invisible: an unmeasured mandatory
+    # step is indistinguishable from a free one.
+    import time as _t_phi
+    _phi_t0 = _t_phi.perf_counter()
     _phi = _phi_check_message(body.message or "", thread_id, correlation_id)
+    _phi_ms = (_t_phi.perf_counter() - _phi_t0) * 1000.0
+    payload["_phi_gate_ms"] = round(_phi_ms, 1)
     if _phi.get("block"):
         if not body.phi_override:
             _log_phi_msg_gate(correlation_id, thread_id, user_id, "blocked", _phi)
@@ -612,6 +622,17 @@ def get_node_rollup(source: str | None = "real"):
     # ~400-500ms/DB-call against real turns' ~30-39ms; mixed, the p50
     # describes neither population. Pass source=smoke / eval / all to widen.
     return node_rollup(source=None if source == "all" else source)
+
+
+@router.get("/chat/matrix/{correlation_id}")
+def get_turn_matrix(correlation_id: str):
+    """Per-turn process matrix: every row split by processing/llm/db/tool.
+
+    A VIEW, not a verdict — it decomposes and lets the reader decide what to
+    attack, rather than ranking for them.
+    """
+    from app.storage.turn_spans import turn_matrix
+    return turn_matrix(correlation_id)
 
 
 @router.get("/chat/traces")
