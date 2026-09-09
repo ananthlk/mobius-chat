@@ -2125,6 +2125,17 @@ def post_chat_upload(
     access: str | None = Form(None),
     task_id: str | None = Form(None),
     fetched_at: str | None = Form(None),
+    # signal_headers is an ALLOWLIST, not a header bag — verified in the
+    # extension source (mobius-os/extension/src/background.ts:150): it iterates
+    # exactly five Content-Signal names (x-robots-tag, content-signal,
+    # content-usage, tdm-reservation, tdm-policy) and calls headers.get() per
+    # name. Session headers are never read, so there is no credential to leak.
+    # I flagged the opposite when this landed, reasoning from the field's name
+    # and the sender's own "forward the raw header lines verbatim" comment
+    # rather than from its code; the extension seat corrected me and was right.
+    # Still neither logged nor persisted here — defence in depth against a
+    # future sender widening the list, which is a real risk even though the
+    # current one has not.
     signal_headers: str | None = Form(None),
     user_id: str | None = Depends(require_user),
 ) -> dict[str, Any]:
