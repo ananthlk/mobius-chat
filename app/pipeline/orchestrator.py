@@ -453,6 +453,12 @@ def run_pipeline(
         user_profile=user_profile if isinstance(user_profile, dict) and user_profile else None,
         is_continuation=bool(is_continuation),
     )
+    # P2b turn telemetry: per-module spans, counts-by-target, wall/llm split.
+    # Attached to ctx rather than a thread-local so a span crossing a thread
+    # boundary is a visible choice (react_loop spawns daemon threads).
+    from app.telemetry.spans import TurnTrace
+    ctx.turn_trace = TurnTrace(correlation_id)
+
     _detect_and_resolve_retry(ctx)
 
     def on_thinking(chunk) -> None:  # str | dict (EmitEnvelope.to_dict())
@@ -720,7 +726,9 @@ def run_pipeline(
         t_react_start = time.perf_counter()
         try:
             from app.pipeline.react_loop import run_react
-            run_react(ctx, emitter=on_thinking)
+            from app.telemetry.spans import span as _span
+            with _span(ctx, "react_loop"):
+                run_react(ctx, emitter=on_thinking)
         except Exception as e:
             logger.exception("ReAct stage error: %s", e)
             _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e, user_id=ctx.user_id)
@@ -803,7 +811,9 @@ def run_pipeline(
         try:
             on_thinking("Composing answer…")
             on_thinking("  (Integrator: turning reasoning + tool output into your answer card.)")
-            run_integrate(ctx, emitter=on_thinking)
+            from app.telemetry.spans import span as _span
+            with _span(ctx, "integrate"):
+                run_integrate(ctx, emitter=on_thinking)
         except Exception as e:
             logger.exception("Integrate stage error: %s", e)
             _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e, user_id=ctx.user_id)
@@ -1185,9 +1195,53 @@ def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) 
         logger.info("Clarification/refinement publish skipped for %s -- already finalized elsewhere", ctx.correlation_id[:8])
 
 
+def _persist_turn_spans(ctx: PipelineContext) -> None:
+    """Write this turn's spans to turn_spans. Called once, at completion.
+
+    Placed BEFORE the `if not payload: return` guard in _publish_completed
+    so a turn that produced no payload still records where its time went —
+    that is precisely the turn someone will be asking about.
+
+    Stamps the model mix per {provider, model}: within Vertex, flash (~4.7s)
+    and Pro (~20s) are 4x apart, so provider alone cannot explain a latency
+    move. Also stamps rich_evidence, react_loop's content-triggered early
+    exit, which changes ROUND COUNT and is driven by what retrieval returned
+    rather than by any config — unrecorded, it is invisible drift between
+    two runs of the same question set.
+    """
+    try:
+        from app.telemetry.spans import get_trace
+        tr = get_trace(ctx)
+        if tr is None or not tr.spans:
+            return
+        mix: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        for s in tr.spans:
+            for (kind, target), c in s.counts.items():
+                if kind == "llm":
+                    prov = (getattr(ctx, "llm_provider", None) or "unknown")
+                    key = (prov, target)
+                    if key not in seen:
+                        seen.add(key)
+                        mix.append({"provider": prov, "model": target, "n": c.n})
+        from app.storage.turn_spans import save_spans
+        save_spans(
+            ctx.correlation_id,
+            tr.to_rows(),
+            chat_mode=getattr(ctx, "chat_mode", None),
+            model_mix=mix,
+            rich_evidence=getattr(ctx, "react_rich_evidence", None),
+        )
+    except Exception as exc:
+        # Loud, never silent: a missing span row must be traceable to a
+        # logged cause, not look like a turn that was simply fast.
+        logger.warning("[spans] persist failed cid=%s: %s", ctx.correlation_id[:8], exc)
+
+
 def _publish_completed(ctx: PipelineContext, t0_start: float) -> None:
     """Persist and publish completed response."""
     duration_ms = int((time.perf_counter() - t0_start) * 1000)
+    _persist_turn_spans(ctx)
     payload = ctx.response_payload
     if not payload:
         return

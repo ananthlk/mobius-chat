@@ -582,6 +582,33 @@ def get_chat_plan(correlation_id: str):
     return plan_payload
 
 
+@router.get("/chat/spans/{correlation_id}")
+def get_turn_spans(correlation_id: str):
+    """Per-module span breakdown for one turn (P2b latency telemetry).
+
+    THE READER. It ships with the writer deliberately: a timing row nobody
+    can read is the producer-without-a-consumer defect this telemetry was
+    built to detect, and an instrument that is an instance of its own target
+    is worse than no instrument.
+
+    Returns {summary, spans}. `summary.counts` is sorted by n descending so
+    a loop — 40 writes to one target — is the first thing on screen rather
+    than something the reader has to total up by eye. Rendering only a
+    duration here would forecloses the question even though the stored data
+    answers it.
+
+    200 with empty lists when the turn has no spans, rather than 404: a turn
+    that ran before this shipped, and a turn whose telemetry failed, are
+    both "no rows" — and the caller distinguishes them from the WARNING in
+    the logs, not from an HTTP code that would also mean "bad id".
+    """
+    from app.storage.turn_spans import read_spans, summarize
+    spans = read_spans(correlation_id)
+    return {"correlation_id": correlation_id,
+            "summary": summarize(spans),
+            "spans": spans}
+
+
 @router.get("/chat/skills-manifest", response_class=PlainTextResponse)
 def get_chat_skills_manifest() -> str:
     """Return the planner-facing tool manifest as plain text.

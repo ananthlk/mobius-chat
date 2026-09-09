@@ -9495,6 +9495,85 @@ function renderDiagnosticsCard(thinkingLog) {
   });
   return wrap;
 }
+function renderModuleTiming(correlationId) {
+  const wrap = document.createElement("div");
+  wrap.className = "llm-performance module-trace-section collapsed";
+  const preview = document.createElement("div");
+  preview.className = "llm-performance-preview";
+  preview.setAttribute("role", "button");
+  preview.setAttribute("tabindex", "0");
+  preview.setAttribute("aria-expanded", "false");
+  const titleEl = document.createElement("span");
+  titleEl.className = "llm-performance-title";
+  titleEl.textContent = "Module timing";
+  const oneline = document.createElement("span");
+  oneline.className = "llm-performance-oneline";
+  oneline.textContent = "loading\u2026";
+  preview.appendChild(titleEl);
+  preview.appendChild(oneline);
+  wrap.appendChild(preview);
+  const body = document.createElement("div");
+  body.className = "llm-performance-body";
+  wrap.appendChild(body);
+  preview.addEventListener("click", () => {
+    const open = wrap.classList.toggle("collapsed");
+    preview.setAttribute("aria-expanded", String(!open));
+  });
+  (async () => {
+    try {
+      const r = await fetch(`${API_BASE}/chat/spans/${encodeURIComponent(correlationId)}`);
+      if (!r.ok)
+        throw new Error(String(r.status));
+      const data = await r.json();
+      const sum = data.summary || {};
+      const spans = Array.isArray(data.spans) ? data.spans : [];
+      if (!spans.length) {
+        oneline.textContent = "no spans recorded";
+        return;
+      }
+      oneline.textContent = `${Math.round(sum.wall_ms || 0)}ms wall \xB7 ${Math.round(sum.llm_ms || 0)}ms llm \xB7 ${Math.round(sum.self_ms || 0)}ms self \xB7 ${spans.length} spans`;
+      const mk = (k, v) => {
+        const row = document.createElement("div");
+        row.className = "diag-telemetry-row";
+        const ke = document.createElement("span");
+        ke.className = "diag-telemetry-key";
+        ke.textContent = k;
+        const ve = document.createElement("span");
+        ve.className = "diag-telemetry-val";
+        ve.textContent = v;
+        row.appendChild(ke);
+        row.appendChild(ve);
+        return row;
+      };
+      for (const s of spans) {
+        const indent = "\xA0\xA0".repeat(Number(s.depth) || 0);
+        body.appendChild(mk(
+          `${indent}${s.module}`,
+          `${Math.round(s.wall_ms || 0)}ms wall \xB7 ${Math.round(s.self_ms || 0)}ms self`
+        ));
+      }
+      const counts = Array.isArray(sum.counts) ? sum.counts : [];
+      if (counts.length) {
+        body.appendChild(mk("\u2014", "counts by target (n = the loop detector)"));
+        for (const c of counts) {
+          body.appendChild(mk(`${c.kind} \u2192 ${c.target}`, `n=${c.n} \xB7 ${Math.round(c.ms || 0)}ms`));
+        }
+      }
+      const mix = Array.isArray(sum.model_mix) ? sum.model_mix : [];
+      if (mix.length) {
+        body.appendChild(mk("model mix", mix.map((m) => `${m.model}\xD7${m.n}`).join(", ")));
+      }
+      if (sum.rich_evidence !== null && sum.rich_evidence !== void 0) {
+        body.appendChild(mk("rich_evidence", String(sum.rich_evidence)));
+      }
+      if (sum.chat_mode)
+        body.appendChild(mk("chat_mode", String(sum.chat_mode)));
+    } catch (e) {
+      oneline.textContent = "unavailable";
+    }
+  })();
+  return wrap;
+}
 function renderReactTraceCard(thinkingLog) {
   if (!Array.isArray(thinkingLog) || thinkingLog.length === 0)
     return null;
@@ -11914,6 +11993,8 @@ function run() {
       _diag.qa.push(qaVerdictsEl);
     if (opts.correlationId)
       _diag.bandit.push(renderBanditAttribution(opts.correlationId));
+    if (opts.correlationId)
+      _diag.ragTel.push(renderModuleTiming(opts.correlationId));
     if (opts.hipaaDiagnostics) {
       const hd = opts.hipaaDiagnostics;
       const hipaaSection = document.createElement("div");

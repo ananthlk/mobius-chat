@@ -7140,6 +7140,109 @@ function renderDiagnosticsCard(
   return wrap;
 }
 
+/** Module timing (P2b): per-module spans with counts labelled by target.
+ *
+ * THE READER. Ships with the writer by design — a stored timing row nobody
+ * renders is the producer-without-a-consumer defect this telemetry exists to
+ * find, and an instrument that is an instance of its own target is worse than
+ * none.
+ *
+ * Renders n per (kind, target), NOT just a duration. A panel showing only
+ * elapsed time would foreclose the question the stored data answers: "40 writes
+ * to chat_state" is a loop, "40 writes across 40 tables" is a busy turn, and a
+ * total cannot separate them. Counts come back sorted by n descending so the
+ * loop is the first row on screen.
+ */
+function renderModuleTiming(correlationId: string): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "llm-performance module-trace-section collapsed";
+  const preview = document.createElement("div");
+  preview.className = "llm-performance-preview";
+  preview.setAttribute("role", "button");
+  preview.setAttribute("tabindex", "0");
+  preview.setAttribute("aria-expanded", "false");
+  const titleEl = document.createElement("span");
+  titleEl.className = "llm-performance-title";
+  titleEl.textContent = "Module timing";
+  const oneline = document.createElement("span");
+  oneline.className = "llm-performance-oneline";
+  oneline.textContent = "loading…";
+  preview.appendChild(titleEl);
+  preview.appendChild(oneline);
+  wrap.appendChild(preview);
+
+  const body = document.createElement("div");
+  body.className = "llm-performance-body";
+  wrap.appendChild(body);
+  preview.addEventListener("click", () => {
+    const open = wrap.classList.toggle("collapsed");
+    preview.setAttribute("aria-expanded", String(!open));
+  });
+
+  (async () => {
+    try {
+      const r = await fetch(`${API_BASE}/chat/spans/${encodeURIComponent(correlationId)}`);
+      if (!r.ok) throw new Error(String(r.status));
+      const data = await r.json();
+      const sum = data.summary || {};
+      const spans: any[] = Array.isArray(data.spans) ? data.spans : [];
+      if (!spans.length) {
+        oneline.textContent = "no spans recorded";
+        return;
+      }
+      // wall / llm / self — the split is the point: self_ms is what moves when
+      // CODE gets slower, wall moves when the model router picks Pro over flash.
+      oneline.textContent =
+        `${Math.round(sum.wall_ms || 0)}ms wall · ${Math.round(sum.llm_ms || 0)}ms llm · ` +
+        `${Math.round(sum.self_ms || 0)}ms self · ${spans.length} spans`;
+
+      const mk = (k: string, v: string) => {
+        const row = document.createElement("div");
+        row.className = "diag-telemetry-row";
+        const ke = document.createElement("span");
+        ke.className = "diag-telemetry-key";
+        ke.textContent = k;
+        const ve = document.createElement("span");
+        ve.className = "diag-telemetry-val";
+        ve.textContent = v;
+        row.appendChild(ke); row.appendChild(ve);
+        return row;
+      };
+
+      for (const s of spans) {
+        const indent = "\u00a0\u00a0".repeat(Number(s.depth) || 0);
+        body.appendChild(mk(
+          `${indent}${s.module}`,
+          `${Math.round(s.wall_ms || 0)}ms wall · ${Math.round(s.self_ms || 0)}ms self`
+        ));
+      }
+      const counts: any[] = Array.isArray(sum.counts) ? sum.counts : [];
+      if (counts.length) {
+        body.appendChild(mk("—", "counts by target (n = the loop detector)"));
+        for (const c of counts) {
+          body.appendChild(mk(`${c.kind} → ${c.target}`, `n=${c.n} · ${Math.round(c.ms || 0)}ms`));
+        }
+      }
+      // Control-set stamps: model mix decides whether two runs are comparable
+      // at all, and rich_evidence changes round count without any config diff.
+      const mix: any[] = Array.isArray(sum.model_mix) ? sum.model_mix : [];
+      if (mix.length) {
+        body.appendChild(mk("model mix", mix.map((m: any) => `${m.model}×${m.n}`).join(", ")));
+      }
+      if (sum.rich_evidence !== null && sum.rich_evidence !== undefined) {
+        body.appendChild(mk("rich_evidence", String(sum.rich_evidence)));
+      }
+      if (sum.chat_mode) body.appendChild(mk("chat_mode", String(sum.chat_mode)));
+    } catch (e) {
+      // Visible failure, not a blank section: an empty panel and a broken
+      // fetch must not look the same to whoever is diagnosing a slow turn.
+      oneline.textContent = "unavailable";
+    }
+  })();
+
+  return wrap;
+}
+
 /** React-loop diagnostics card (2026-08 — Ananth's ask: the emit trail was
  * "blah" and none of the governor's real reasoning was surfaced anywhere
  * queryable). One leaf per round showing the governor's actual directive
@@ -10052,6 +10155,10 @@ function run(): void {
     // Bandit: reward attribution (Task #34) — per-stage quality_score from the
     // bandit_reward_persisted SSE events, accumulated live in the post-completion window.
     if (opts.correlationId) _diag.bandit.push(renderBanditAttribution(opts.correlationId));
+
+    // Module timing (P2b): per-module spans + counts-by-target. Sits with the
+    // RAG telemetry group since both answer "where did this turn's time go".
+    if (opts.correlationId) _diag.ragTel.push(renderModuleTiming(opts.correlationId));
 
     // Section 3: HIPAA gate audit (if this turn followed an instant-RAG upload)
     if (opts.hipaaDiagnostics) {
