@@ -587,6 +587,11 @@ def get_state(thread_id: str) -> dict[str, Any] | None:
     Callers must not treat that as an empty thread: see the rule in
     save_state_full — state is only replaced from state that was actually read.
     """
+    if not (thread_id or "").strip():
+        # No thread means no state — a fact, not a failure. Querying with '' hits
+        # the uuid cast and surfaces as an unreadable-state warning, which would
+        # train a reader to ignore the one warning that matters.
+        return None
     result = db_query(
         "SELECT state_json, state_version FROM chat_state WHERE thread_id = :tid",
         _DB,
@@ -614,6 +619,8 @@ def get_state(thread_id: str) -> dict[str, Any] | None:
 def get_state_with_version(thread_id: str) -> tuple[dict[str, Any] | None, int | None]:
     """(state, state_version) — the version is what makes the write a
     compare-and-set. Same failure contract as get_state."""
+    if not (thread_id or "").strip():
+        return None, None      # see get_state — absence, not failure
     result = db_query(
         "SELECT state_json, state_version FROM chat_state WHERE thread_id = :tid",
         _DB,

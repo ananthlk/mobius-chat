@@ -202,3 +202,13 @@ def test_tracked_write_is_suppressed_after_a_failed_read(store):
     before = store.stored("t-1")
     assert save_state_tracked(ctx, {"active": {}}) is False
     assert store.stored("t-1") == before
+
+
+def test_empty_thread_id_is_absence_not_failure(store):
+    """An empty thread_id means "no thread", which is a fact about the caller,
+    not a database failure. Querying with '' hits the uuid cast and logged an
+    unreadable-state warning on a live path — noise that trains a reader to skip
+    the one warning that matters."""
+    from app.storage.threads import get_state, get_state_with_version
+    assert get_state("") is None
+    assert get_state_with_version("  ") == (None, None)
