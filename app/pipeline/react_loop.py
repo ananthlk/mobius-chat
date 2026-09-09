@@ -5119,25 +5119,35 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                         parse_completion_critic_response as _cc_parse,
                     )
 
-                    try:
-                        _cc_raw = _call_llm_json(
-                            _cc_system_prompt,
-                            _cc_build_msg(
-                                question=ctx.effective_message or ctx.message or "",
-                                answer=answer,
-                            ),
-                            ctx=ctx, stage="react_completion_critic", max_tokens=400,
-                            reasoning_depth="fast", latency_budget_ms=1500,
-                        )
-                        _cc_verdict = _cc_parse(_cc_raw)
-                    except Exception as _cc_exc:
-                        # Same posture as the groundedness floor's own
-                        # provider-failure handling below: a completion-
-                        # gate infrastructure failure must never kill a
-                        # turn — degrade to "satisfied" (i.e. no-op) and
-                        # fall through to the existing finalize path.
-                        logger.debug("completion critic call failed: %s", _cc_exc)
-                        _cc_verdict = None
+                    # completion_extension_gate — a real schema node with no
+                    # module, class or function to hang a decorator on: it IS
+                    # this inline block. An explicit span is the only way it can
+                    # appear in the matrix; without one its LLM call is charged
+                    # to the enclosing round's processing, and searching for the
+                    # node by name finds nothing — which is exactly why I
+                    # wrongly concluded it had no code.
+                    from app.telemetry.spans import span as _cc_span
+                    with _cc_span(ctx, "completion_extension_gate",
+                                  label="completion_critic"):
+                        try:
+                            _cc_raw = _call_llm_json(
+                                _cc_system_prompt,
+                                _cc_build_msg(
+                                    question=ctx.effective_message or ctx.message or "",
+                                    answer=answer,
+                                ),
+                                ctx=ctx, stage="react_completion_critic", max_tokens=400,
+                                reasoning_depth="fast", latency_budget_ms=1500,
+                            )
+                            _cc_verdict = _cc_parse(_cc_raw)
+                        except Exception as _cc_exc:
+                            # Same posture as the groundedness floor's own
+                            # provider-failure handling below: a completion-
+                            # gate infrastructure failure must never kill a
+                            # turn — degrade to "satisfied" (i.e. no-op) and
+                            # fall through to the existing finalize path.
+                            logger.debug("completion critic call failed: %s", _cc_exc)
+                            _cc_verdict = None
 
                     ctx.completion_critic_ran = True
                     if _cc_verdict is not None:

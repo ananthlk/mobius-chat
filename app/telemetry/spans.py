@@ -142,20 +142,26 @@ PHASE_PRE = "preprocessing"
 PHASE_REACT = "react"
 PHASE_POST = "postprocessing"
 
-# Schema nodes with NO code behind them (verified repo-wide 2026-09-09).
-# They can never produce a span, so their absence from a trace says nothing
-# about the turn — it is a stale schema entry, not a fast node. Naming them
-# here is the difference between "measured zero" and "does not exist"; without
-# it, a reader comparing the 36-node schema against a trace draws the wrong
-# conclusion from identical evidence.
-#   credentialing_envelope    — module deleted 2026-04-18; only the removal
-#                               note survives (react_loop.py:132-137). Ananth
-#                               2026-09-08: "needs to go, this is not a chat
-#                               thing". The SCHEMA still rates it green.
-#   completion_extension_gate — appears nowhere in the repository except this
-#                               file's own node list.
-# Reported to Product Awareness, who own the schema; not removed unilaterally.
-NODES_WITHOUT_CODE = frozenset({"credentialing_envelope", "completion_extension_gate"})
+# Schema nodes with NO code behind them (verified against git history).
+# Such a node can never produce a span, so its absence from a trace says nothing
+# about the turn — it is a stale schema entry, not a fast node. Naming it here
+# is the difference between "measured zero" and "does not exist".
+#
+#   credentialing_envelope — module deleted by P1d (commit 298830c). Its core,
+#       resolve_step3_roster_merge_context, has zero remaining references. The
+#       SCHEMA still rates it green with a full description.
+#
+# CORRECTION: completion_extension_gate was in this set and should NOT have
+# been. It is live code — roughly sixty lines INLINE in react_loop's main loop
+# (the completion critic + extension-round bump), with no module, class or
+# function of its own. My "does it exist" test was a search for a symbol, and a
+# nameless block has no symbol, so absence of a match proved nothing. The schema
+# was right; the search was wrong. It now carries an explicit span.
+#
+# The general rule this cost me: a name-based search answers "is there a symbol
+# called X", never "does X happen". Reserve this set for absence confirmed
+# against git history, not against grep.
+NODES_WITHOUT_CODE = frozenset({"credentialing_envelope"})
 
 NODE_PHASE: dict[str, str] = {
     # ── preprocessing: everything before the reasoning loop opens ──
