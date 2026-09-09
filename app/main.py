@@ -1541,17 +1541,27 @@ def _handle_instant_rag_upload(
         f"&payer={quote_plus(org_name or '')}"
         f"&agent_scope=chat"
     )
-    # source_url is forwarded because rag DECLARES it (mobius-rag/app/main.py
-    # :8083) and therefore actually consumes it. The other four provenance
-    # fields are deliberately NOT appended here: rag's /upload has no parameter
-    # for access / task_id / fetched_at / signal_headers, so FastAPI would
-    # discard them exactly the way chat was discarding them before this change.
-    # Fixing a silent drop by moving it one hop downstream is not fixing it.
-    # They are surfaced in the response instead — see source_provenance below —
-    # so the sender can see what arrived and what is still unplumbed, and the
-    # rag-side contract can be frozen with the Crawler before anything is sent.
-    if source_url:
-        upload_qs += f"&source_url={quote_plus(source_url)}"
+    # USER-FETCH PROVENANCE -> rag, as QUERY PARAMS (Crawler-frozen §2.9).
+    #
+    # The hop shapes differ and that is not an accident to paper over: the
+    # extension sends these to chat as multipart FORM fields, and rag declares
+    # them as QUERY params. Forwarding them in the inbound shape would have rag
+    # return 200 and drop all five — the same silent drop, relocated to the last
+    # hop, after both sides believed they were done. The extension seat caught
+    # this by probing rag's DEPLOYED contract rather than reading its source;
+    # my own source read was stale by then (the shared checkout had moved), so
+    # the deployed OpenAPI is the authority here, not the file on disk.
+    #
+    # `access` is forwarded VERBATIM and not validated. rag maps it through a
+    # closed map and 422s on an unknown value rather than defaulting the
+    # classification caller — deliberately, because a silently defaulted caller
+    # is provenance that looks right forever. Copying that map into chat would
+    # duplicate a RULE, and a duplicated rule drifts; rag owns the answer, so
+    # chat passes the question through and lets the 422 surface.
+    _prov_qs = {"source_url": source_url, **(fetch_provenance or {})}
+    for _k, _v in _prov_qs.items():
+        if _v:
+            upload_qs += f"&{_k}={quote_plus(str(_v))}"
 
     try:
         req = urllib.request.Request(
@@ -2008,16 +2018,18 @@ def _handle_instant_rag_upload(
         # foreground_cutoff hasn't elapsed; URI is stable once document_id
         # is known so the FE can open it immediately after this response.
         "progress_channel": f"/chat/uploads/{document_id}/events",
-        # What chat RECEIVED vs what it could forward. Explicit so the caller
-        # can tell "you dropped it" from "rag has nowhere to put it yet" —
-        # indistinguishable until now, because both looked like success.
+        # What chat RECEIVED vs what it actually forwarded. Kept now that rag
+        # accepts all five: it is the readout that distinguishes "not deployed
+        # yet" from "landed", and pending_rag_support emptying is the signal
+        # the extension watches for. A field only lands in `pending` if rag
+        # genuinely has nowhere to put it — today, nothing does.
         "source_provenance": {
             "received": sorted(
                 ([k for k in ("source_url",) if source_url])
                 + list((fetch_provenance or {}).keys())
             ),
-            "forwarded_to_rag": ["source_url"] if source_url else [],
-            "pending_rag_support": sorted((fetch_provenance or {}).keys()),
+            "forwarded_to_rag": sorted(k for k, v in _prov_qs.items() if v),
+            "pending_rag_support": [],
         },
     }
     if redirect_url:

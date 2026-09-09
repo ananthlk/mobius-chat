@@ -67,3 +67,34 @@ ordinary JSON-Schema to the Vertex SDK's uppercase type enum. A caller that
 talks to the Vertex SDK directly needs its own copy — that is a provider dialect
 adapter (a translation whose source of truth is the SDK), not a duplicated rule,
 so it is not expected to drift the way a duplicated policy does.
+
+---
+
+# The same trap, three hops (2026-09-09)
+
+One defect shape appeared at every hop of the browser-extension user-fetch lane,
+and each instance was invisible in the environment being tested:
+
+1. **extension -> chat.** `/chat/upload` did not declare the Form fields. An
+   undeclared Form field in FastAPI is not an error — it is absent. 200 back,
+   provenance gone.
+2. **chat -> rag.** Fixed by forwarding... in the INBOUND shape. The hops differ:
+   the extension sends multipart FORM, rag declares QUERY params. A form-shaped
+   forward makes rag return 200 and drop all five — the same silent drop moved
+   to the last hop, after both sides believe they are done.
+3. **reading the contract.** I checked rag's source and concluded four fields
+   were unsupported. The DEPLOYED service accepted all five; my checkout was
+   stale (shared checkout, another session had moved it). The extension seat
+   found it by PROBING the deployed contract instead of reading it.
+
+**The rule that falls out:** for a cross-service contract, the deployed
+service's OpenAPI is the authority, not the file on disk — and the hop's SHAPE
+(query vs form vs body) is part of the contract, not an implementation detail.
+Both hops returning 200 proves nothing about whether anything arrived.
+
+`access` is forwarded verbatim and NOT validated chat-side. rag maps it through
+a Crawler-frozen closed map and 422s on an unknown value rather than defaulting
+the classification caller. Copying that map here would duplicate a RULE, and a
+duplicated rule drifts — as distinct from a provider dialect adapter, which is a
+translation whose source of truth is the SDK. rag owns the answer; chat passes
+the question through and lets the 422 surface.
