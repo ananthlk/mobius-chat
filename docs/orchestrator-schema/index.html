@@ -1,0 +1,406 @@
+<title>Orchestrator Turn Schema</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --ground:#F5F7F9; --surface:#FFFFFF; --sunk:#EDF1F4;
+    --ink:#12171C; --ink-2:#41505E; --ink-3:#6E8090;
+    --rule:#DCE3E9; --rule-2:#C3CED7;
+    --accent:#0B6E77; --accent-soft:#E2F0F1;
+    --live:#2E6F4E;  --live-bg:#E4F1E9;
+    --chg:#8A5A00;   --chg-bg:#FBEEDA;
+    --new:#2B5590;   --new-bg:#E4ECF7;
+    --bad:#A32A22;   --bad-bg:#F9E4E2;
+    --api:#5C4B8A;   --worker:#0B6E77;
+    --shadow:0 1px 2px rgba(18,23,28,.06),0 8px 24px -18px rgba(18,23,28,.35);
+  }
+  @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+    --ground:#0E1319; --surface:#161C24; --sunk:#111720;
+    --ink:#E6EBF0; --ink-2:#AEBCC8; --ink-3:#7D8D9B;
+    --rule:#26313C; --rule-2:#33414F;
+    --accent:#5BC6CE; --accent-soft:#123034;
+    --live:#7BC79A; --live-bg:#13291E;
+    --chg:#E0AC5B;  --chg-bg:#2E2312;
+    --new:#8FB4E8;  --new-bg:#16233A;
+    --bad:#E88F87;  --bad-bg:#331A18;
+    --api:#A896D8;  --worker:#5BC6CE;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 28px -20px rgba(0,0,0,.8);
+  }}
+  :root[data-theme="dark"]{
+    --ground:#0E1319; --surface:#161C24; --sunk:#111720;
+    --ink:#E6EBF0; --ink-2:#AEBCC8; --ink-3:#7D8D9B;
+    --rule:#26313C; --rule-2:#33414F;
+    --accent:#5BC6CE; --accent-soft:#123034;
+    --live:#7BC79A; --live-bg:#13291E;
+    --chg:#E0AC5B;  --chg-bg:#2E2312;
+    --new:#8FB4E8;  --new-bg:#16233A;
+    --bad:#E88F87;  --bad-bg:#331A18;
+    --api:#A896D8;  --worker:#5BC6CE;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 28px -20px rgba(0,0,0,.8);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ground);color:var(--ink);
+       font-family:"IBM Plex Sans",ui-sans-serif,system-ui,sans-serif;
+       font-size:15px;line-height:1.62;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1080px;margin:0 auto;padding:40px 24px 96px}
+  h1,h2,h3{font-family:Archivo,"IBM Plex Sans",sans-serif;text-wrap:balance;margin:0}
+  h1{font-size:clamp(28px,4.2vw,42px);font-weight:700;letter-spacing:-.02em;line-height:1.1}
+  h2{font-size:20px;font-weight:600;letter-spacing:-.01em}
+  h3{font-size:15px;font-weight:600}
+  code,.mono{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.87em}
+  code{background:var(--sunk);padding:.1em .38em;border-radius:3px;color:var(--ink-2)}
+  a{color:var(--accent)}
+  .lede{color:var(--ink-2);font-size:17px;max-width:64ch;margin:14px 0 0}
+  header{border-bottom:2px solid var(--ink);padding-bottom:22px;margin-bottom:8px}
+  .eyebrow{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.14em;
+           text-transform:uppercase;color:var(--accent);font-weight:600;margin-bottom:10px}
+  .meta{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:18px;
+        font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--ink-3)}
+  .meta b{color:var(--ink-2);font-weight:500}
+
+  .legend{display:flex;flex-wrap:wrap;gap:8px;margin:26px 0 34px}
+  .tag{display:inline-flex;align-items:center;gap:6px;font-family:"IBM Plex Mono",monospace;
+       font-size:11px;font-weight:600;letter-spacing:.04em;padding:3px 9px;border-radius:3px;
+       text-transform:uppercase;white-space:nowrap}
+  .t-live{background:var(--live-bg);color:var(--live)}
+  .t-chg{background:var(--chg-bg);color:var(--chg)}
+  .t-new{background:var(--new-bg);color:var(--new)}
+  .t-bad{background:var(--bad-bg);color:var(--bad)}
+
+  section{margin:0 0 42px}
+  .phase{display:grid;grid-template-columns:112px 1fr;gap:0 22px;align-items:start}
+  .rail{position:relative;padding-top:2px}
+  .rail .n{font-family:"IBM Plex Mono",monospace;font-size:26px;font-weight:600;
+           color:var(--rule-2);line-height:1}
+  .proc{margin-top:7px;font-family:"IBM Plex Mono",monospace;font-size:10.5px;font-weight:600;
+        letter-spacing:.08em;text-transform:uppercase}
+  .proc.api{color:var(--api)} .proc.worker{color:var(--worker)} .proc.q{color:var(--ink-3)}
+  .body{border-left:2px solid var(--rule);padding:0 0 30px 22px}
+  .phase:last-child .body{padding-bottom:0}
+  .hrow{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px}
+  .body p{margin:9px 0 0;color:var(--ink-2);max-width:66ch}
+
+  .steps{list-style:none;margin:14px 0 0;padding:0;display:flex;flex-direction:column;gap:1px;
+         background:var(--rule);border:1px solid var(--rule);border-radius:5px;overflow:hidden}
+  .steps li{background:var(--surface);padding:11px 14px;display:grid;
+            grid-template-columns:26px 1fr auto;gap:12px;align-items:baseline}
+  .steps .k{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--ink-3);font-weight:600}
+  .steps .d{color:var(--ink-2);font-size:14.2px}
+  .steps .d b{color:var(--ink);font-weight:600}
+  .steps .ref{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--ink-3);white-space:nowrap}
+
+  .loop{border:2px solid var(--accent);border-radius:8px;background:var(--surface);
+        box-shadow:var(--shadow);overflow:hidden;margin-top:16px}
+  .loop-hd{background:var(--accent-soft);padding:13px 18px;border-bottom:1px solid var(--rule);
+           display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between}
+  .loop-hd h3{color:var(--accent);font-size:14px;letter-spacing:.02em}
+  .loop-hd .cyc{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--ink-3)}
+  .cyc-list{list-style:none;margin:0;padding:0}
+  .cyc-list li{display:grid;grid-template-columns:34px 1fr;gap:14px;padding:14px 18px;
+               border-bottom:1px solid var(--rule)}
+  .cyc-list li:last-child{border-bottom:0}
+  .cyc-list .num{font-family:"IBM Plex Mono",monospace;font-size:15px;font-weight:600;
+                 color:var(--accent);padding-top:1px}
+  .cyc-list h4{margin:0 0 3px;font-family:Archivo,sans-serif;font-size:14.5px;font-weight:600;
+               display:flex;flex-wrap:wrap;gap:8px;align-items:baseline}
+  .cyc-list p{margin:4px 0 0;color:var(--ink-2);font-size:14px;max-width:64ch}
+  .owner{font-family:"IBM Plex Mono",monospace;font-size:10.5px;letter-spacing:.05em;
+         color:var(--ink-3);text-transform:uppercase}
+  .back{background:var(--sunk);padding:11px 18px;font-family:"IBM Plex Mono",monospace;
+        font-size:11.5px;color:var(--accent);font-weight:600;letter-spacing:.03em}
+
+  table{width:100%;border-collapse:collapse;margin-top:14px;font-size:13.6px}
+  .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--rule);vertical-align:top}
+  th{font-family:"IBM Plex Mono",monospace;font-size:10.5px;letter-spacing:.08em;
+     text-transform:uppercase;color:var(--ink-3);font-weight:600;border-bottom:1.5px solid var(--rule-2)}
+  td{color:var(--ink-2)} td b{color:var(--ink);font-weight:600}
+  td.num{font-variant-numeric:tabular-nums;font-family:"IBM Plex Mono",monospace}
+
+  .note{border-left:3px solid var(--rule-2);padding:2px 0 2px 16px;margin:16px 0 0;
+        color:var(--ink-2);font-size:14px;max-width:66ch}
+  .note.warn{border-left-color:var(--bad)}
+  .note.warn b{color:var(--bad)}
+  .note.acc{border-left-color:var(--accent)}
+
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:14px;margin-top:16px}
+  .box{border:1px solid var(--rule);border-radius:6px;padding:14px 16px;background:var(--surface)}
+  .box h3{margin-bottom:5px;font-size:13.5px}
+  .box p{margin:0;color:var(--ink-2);font-size:13.6px}
+  .box .big{font-family:"IBM Plex Mono",monospace;font-size:22px;font-weight:600;
+            color:var(--ink);font-variant-numeric:tabular-nums;display:block;margin-bottom:2px}
+
+  pre{background:var(--sunk);border:1px solid var(--rule);border-radius:6px;padding:13px 15px;
+      overflow-x:auto;margin:14px 0 0;font-family:"IBM Plex Mono",monospace;font-size:12.4px;
+      line-height:1.62;color:var(--ink-2)}
+  hr{border:0;border-top:1px solid var(--rule);margin:38px 0}
+  footer{margin-top:52px;padding-top:20px;border-top:1px solid var(--rule);
+         color:var(--ink-3);font-size:12.6px;max-width:70ch}
+  @media (max-width:660px){
+    .phase{grid-template-columns:1fr;gap:0}
+    .rail{display:flex;align-items:baseline;gap:12px;margin-bottom:6px}
+    .rail .n{font-size:19px}.proc{margin-top:0}
+    .body{border-left:0;padding-left:0;padding-bottom:26px;border-bottom:1px solid var(--rule);margin-bottom:22px}
+    .steps li{grid-template-columns:22px 1fr}
+    .steps .ref{grid-column:2;white-space:normal}
+  }
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<div class="wrap">
+<header>
+  <div class="eyebrow">mobius-chat · orchestrator · schema v2</div>
+  <h1>Orchestrator Turn Schema</h1>
+  <p class="lede">One request, end to end — admission to publish — with the react loop
+    restructured so the <b>governor decides what a round is for</b> before the round runs,
+    and <b>open gaps</b> are the state that carries through it.</p>
+  <div class="meta">
+    <span><b>Owner</b> chat seat (orchestrator)</span>
+    <span><b>Supersedes</b> the implicit flow in <code>run_pipeline</code></span>
+    <span><b>Live facts read from</b> mobius-chat-00982</span>
+    <span><b>Date</b> 2026-09-10</span>
+  </div>
+</header>
+
+<div class="legend">
+  <span class="tag t-live">live — exists today</span>
+  <span class="tag t-chg">changed — exists, behaves differently</span>
+  <span class="tag t-new">new — must be built</span>
+  <span class="tag t-bad">defect — known, named, not yet fixed</span>
+</div>
+
+<p class="note acc">This document exists because two implementations of one idea drifted:
+the appeals tools were reachable through <code>react_loop</code> <em>and</em>
+<code>tool_agent</code>, and only one door was hardened. A seven-step loop across five
+seats will reproduce that at scale unless the steps, their owners, and their inputs are
+declared once. <b>That is this page's only job.</b></p>
+
+<hr>
+
+<!-- ─── PHASE 1 ─── -->
+<section class="phase">
+  <div class="rail"><div class="n">01</div><div class="proc api">API process</div></div>
+  <div class="body">
+    <div class="hrow"><h2>Admission</h2><span class="tag t-live">live</span></div>
+    <p>The only place the turn's contract is set. Everything downstream reads it; nothing
+      downstream may invent it.</p>
+    <ul class="steps">
+      <li><span class="k">1.1</span><span class="d"><b>PHI gate</b> — blocking, fail-closed. A block returns 422 and <b>no turn exists</b>.</span><span class="ref">api/chat.py:247</span></li>
+      <li><span class="k">1.2</span><span class="d"><b>Build payload</b> — message, thread, mode, user, selection.</span><span class="ref">api/chat.py:343</span></li>
+      <li><span class="k">1.3</span><span class="d"><b>Open the promise</b> — tier, latency, cost, quality, <code>posted_at</code>. Fixed here, never re-made.</span><span class="ref">react/promise.py</span></li>
+      <li><span class="k">1.4</span><span class="d"><b>Enqueue</b> and return <code>correlation_id</code>.</span><span class="ref">api/chat.py:411</span></li>
+    </ul>
+    <p class="note warn"><b>Constraint that survives into v2:</b> when <code>chat_mode</code>
+      is absent the tier is resolved later, in the worker, from thread state
+      (<code>orchestrator.py:708</code>). POST cannot state one, so the promise records an
+      explicit <em>unpromised reason</em> rather than guessing. A promise invented after
+      POST is not a promise.</p>
+  </div>
+</section>
+
+<!-- ─── PHASE 2 ─── -->
+<section class="phase">
+  <div class="rail"><div class="n">02</div><div class="proc q">queue</div></div>
+  <div class="body">
+    <div class="hrow"><h2>Handoff</h2><span class="tag t-live">live</span><span class="tag t-chg">now measured</span></div>
+    <p>The gap between processes. Until today nothing measured it, because the two sides
+      hold different clocks: <code>posted_at</code> is wall-clock UTC and crosses processes;
+      <code>t0_start</code> is a <code>perf_counter</code> and is process-local. They cannot
+      be subtracted — so both are recorded and their difference is the queue wait.</p>
+    <div class="grid2">
+      <div class="box"><h3>Queue wait, first measurement</h3>
+        <p><span class="big">0.023s</span>median across 16 turns — the two clocks agree to ~23ms on the warm path.</p></div>
+      <div class="box"><h3>…and it is bimodal</h3>
+        <p><span class="big">3.67s</span>p90. Twelve turns sit at ~0.02s, two at ~3.9s. Two regimes, not a tail — a p50 alone would call this negligible and be wrong about one turn in seven.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── PHASE 3 ─── -->
+<section class="phase">
+  <div class="rail"><div class="n">03</div><div class="proc worker">worker</div></div>
+  <div class="body">
+    <div class="hrow"><h2>Turn setup</h2><span class="tag t-live">live</span></div>
+    <ul class="steps">
+      <li><span class="k">3.1</span><span class="d"><b>Deadline wrapper</b> — <code>signal.alarm</code> on the main thread, otherwise a worker thread.</span><span class="ref">worker/run.py</span></li>
+      <li><span class="k">3.2</span><span class="d"><b>Rehydrate the promise.</b> Absent ⇒ <code>None</code>, and the turn still attests. Never synthesised.</span><span class="ref">promise.from_payload</span></li>
+      <li><span class="k">3.3</span><span class="d"><b>Build <code>PipelineContext</code></b>, stamp the logging correlation id, open the turn trace.</span><span class="ref">orchestrator.py:448</span></li>
+    </ul>
+    <p class="note warn"><b>Trap, paid for twice today:</b> ContextVars do not cross thread
+      boundaries. A value set in <code>process_one</code> is invisible to the thread that
+      runs the turn, so the context is stamped in <code>run_pipeline</code> as well —
+      and released only <em>after</em> the attestation emits.</p>
+  </div>
+</section>
+
+<!-- ─── PHASE 4 ─── -->
+<section class="phase">
+  <div class="rail"><div class="n">04</div><div class="proc worker">worker</div></div>
+  <div class="body">
+    <div class="hrow"><h2>Pre-react</h2><span class="tag t-live">live</span></div>
+    <ul class="steps">
+      <li><span class="k">4.1</span><span class="d"><b>state_load</b> — four independent reads, parallel. Absent and empty stay distinguishable.</span><span class="ref">stages/state_load.py</span></li>
+      <li><span class="k">4.2</span><span class="d"><b>cache assist</b> — may answer without entering the loop at all.</span><span class="ref">orchestrator.py:718</span></li>
+      <li><span class="k">4.3</span><span class="d"><b>Resolve mode</b> — request mode, else the thread's last mode, else <code>copilot</code>.</span><span class="ref">orchestrator.py:708</span></li>
+    </ul>
+  </div>
+</section>
+
+<!-- ─── PHASE 5: THE LOOP ─── -->
+<section class="phase">
+  <div class="rail"><div class="n">05</div><div class="proc worker">worker</div></div>
+  <div class="body">
+    <div class="hrow"><h2>The react control loop</h2><span class="tag t-chg">restructured</span></div>
+    <p>The change is one inversion: <b>the governor stops being a brake and becomes the
+      scheduler.</b> Today it is consulted at the <em>end</em> of a round to decide whether
+      to grant another. In v2 it decides at the <em>top</em> what the round is for, and the
+      loop terminates on <b>gaps closed</b> rather than on rounds exhausted.</p>
+
+    <p class="note acc"><b>The socket already exists and is already load-bearing.</b>
+      A round-top governor call runs today at <code>react_loop.py:4729</code> and shapes the
+      round's <code>agent_role</code> and <code>reasoning_depth</code>. It does not select
+      tools, choose the model, or gate continuation. <b>v2 extends a live call site rather
+      than introducing one</b> — which is why this is smaller than it looks.</p>
+
+    <div class="loop">
+      <div class="loop-hd">
+        <h3>One cycle · repeats until no gap is open or the governor stops it</h3>
+        <span class="cyc">state carried: <b>open gaps</b></span>
+      </div>
+      <ol class="cyc-list">
+        <li><span class="num">1</span><div>
+          <h4>Governor sets the round <span class="tag t-chg">changed</span><span class="owner">governor seat</span></h4>
+          <p>Reads <b>open gaps · time left · quality so far · cost so far</b> and emits a directive
+            plus a budget for this round. Continuation is decided here and <b>only</b> here.</p></div></li>
+        <li><span class="num">2</span><div>
+          <h4>Select tools per gap <span class="tag t-new">new</span><span class="owner">tool_manifest seat</span></h4>
+          <p>Choose the tool that closes <em>this</em> gap, not the tool that fits the question.
+            The manifest is rendered for the selected set, not the catalogue.</p></div></li>
+        <li><span class="num">3</span><div>
+          <h4>Build the prompt for the intent <span class="tag t-chg">changed</span><span class="owner">chat seat</span></h4>
+          <p>Composed from the directive and the selected tools — the round's purpose, not a
+            general system prompt reused every round.</p></div></li>
+        <li><span class="num">4</span><div>
+          <h4>Select the model <span class="tag t-new">new</span><span class="owner">llm_manager seat</span></h4>
+          <p>Chosen for this round's work and budget. See the open question below: prompt size
+            and model choice constrain each other.</p></div></li>
+        <li><span class="num">5</span><div>
+          <h4>Call <span class="tag t-live">live</span><span class="owner">chat seat</span></h4>
+          <p>The model returns a tool choice and arguments.</p></div></li>
+        <li><span class="num">6</span><div>
+          <h4>Execute the tool <span class="tag t-live">live</span><span class="owner">chat seat</span></h4>
+          <p>Dispatch, retry policy, and the three-state result verdict — content, declared
+            absence, or nothing.</p></div></li>
+        <li><span class="num">7</span><div>
+          <h4>Classify into memory · update gaps <span class="tag t-new">new</span><span class="owner">unassigned — see §7</span></h4>
+          <p>The result closes a gap, narrows one, or opens a new one. <b>This step is what
+            makes the loop terminate</b>, and it is the step with no owner today.</p></div></li>
+      </ol>
+      <div class="back">↺ back to step 1 — with the gap set as it now stands</div>
+    </div>
+
+    <h3 style="margin-top:26px">What the governor needs, and what it actually has</h3>
+    <div class="scroll"><table>
+      <thead><tr><th>Input</th><th>Status</th><th>Where it would come from</th></tr></thead>
+      <tbody>
+        <tr><td><b>Time left</b></td><td><span class="tag t-live">live</span></td><td>The promise clock. <code>promised_latency_s</code> and elapsed, shipped 2026-09-10.</td></tr>
+        <tr><td><b>Open gaps</b></td><td><span class="tag t-chg">partial</span></td><td>Exists as an enrichment field off <code>evidence_review</code>, not as a first-class object with a lifecycle.</td></tr>
+        <tr><td><b>Quality so far</b></td><td><span class="tag t-new">missing</span></td><td>Groundedness runs at end of turn. Nothing reports quality <em>per round</em>.</td></tr>
+        <tr><td><b>Cost so far</b></td><td><span class="tag t-new">missing</span></td><td><code>delivered_cost_c</code> is NULL by design — promise step 3.</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note warn"><b>One of four inputs is live.</b> A governor that steers on time
+      and fakes the other three is worse than one that admits it steers on time — so
+      steps 2, 4 and 7 land <em>after</em> cost and per-round quality, not before.</p>
+
+    <h3 style="margin-top:26px">What the restructure retires</h3>
+    <div class="grid2">
+      <div class="box"><h3>The two-writer extension defect <span class="tag t-bad">defect</span></h3>
+        <p>Today the completion critic <em>and</em> the governor both grant extensions from
+          one shared ledger, reading the same env var with different defaults (90 vs 120)
+          and different margins (5s vs 25s). Making the governor the only actor that decides
+          continuation <b>removes this rather than fixing it</b>.</p></div>
+      <div class="box"><h3>The manifest's unconditional cost</h3>
+        <p>58 tools rendered every round, ~36% of the react prompt. Per-gap selection makes
+          the reduction real <b>without anyone having to decide which tools are dead</b> —
+          a far safer mechanism than pruning a static list.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── PHASE 6 ─── -->
+<section class="phase">
+  <div class="rail"><div class="n">06</div><div class="proc worker">worker</div></div>
+  <div class="body">
+    <div class="hrow"><h2>Integrate</h2><span class="tag t-live">live</span></div>
+    <p>Turns rounds and tool output into the answer card. Unchanged by v2, but it is the
+      consumer of whatever step 7 records — if gaps are not written down, integrate cannot
+      say what was not answered.</p>
+  </div>
+</section>
+
+<!-- ─── PHASE 7 ─── -->
+<section class="phase">
+  <div class="rail"><div class="n">07</div><div class="proc worker">worker</div></div>
+  <div class="body">
+    <div class="hrow"><h2>Exit</h2><span class="tag t-live">live</span><span class="tag t-bad">structure is a defect</span></div>
+    <p>Three publish terminals reached from <b>eight</b> call sites — and the eight differ
+      only in <em>how deep in the try-nest the turn stopped</em>, not in outcome.</p>
+    <div class="scroll"><table>
+      <thead><tr><th>Terminal</th><th>Call sites</th><th>Reality</th></tr></thead>
+      <tbody>
+        <tr><td><code>_publish_completed</code></td><td class="num">4</td><td>Live. Also carries the early return on an empty payload, which gets <b>its own outcome</b> — a turn that delivered nothing is not <em>completed</em>.</td></tr>
+        <tr><td><code>_publish_failed</code></td><td class="num">4</td><td>Live. Takes no <code>ctx</code>, so the outcome is marked at each call site.</td></tr>
+        <tr><td><code>_publish_clarification…</code></td><td class="num">0</td><td><b>Unreachable.</b> 209 lines, no callers. Orphaned by the refactor that deleted the classic path.</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note warn"><b>Dead at both ends.</b> Nothing anywhere sets
+      <code>needs_clarification</code>, <code>needs_route_clarification</code>,
+      <code>route_clarification_choices</code> or <code>clarification_message</code>, and every
+      read of all four sits inside the unreachable terminal. A <em>consumer with no producer</em>
+      — the mirror of the defect this program has catalogued twelve times, and harder to see,
+      because a falsy default makes an absent producer look like a legitimate negative.</p>
+  </div>
+</section>
+
+<!-- ─── PHASE 8 ─── -->
+<section class="phase">
+  <div class="rail"><div class="n">08</div><div class="proc worker">worker</div></div>
+  <div class="body">
+    <div class="hrow"><h2>Close</h2><span class="tag t-live">live</span></div>
+    <p>The attestation closes in <code>run_pipeline</code>'s outermost <code>finally</code> —
+      <b>one site, covering all three terminals and every early return.</b> Writing it inside
+      <code>_publish_completed</code> would leave every failed turn, every empty-payload turn
+      and every unreached exit with no record, which is the emit sitting on the success path
+      where the missing row is the valuable one.</p>
+    <pre>promised 31s · delivered 19.7s · kept        → turn_attestations (system of record)
+                                            → turn_completed envelope (what the trace shows)
+                                            → jsonPayload.event=turn_attestation (log)</pre>
+    <p class="note">Verified on the deployed build: 14 turns, 14 rows, 0 duplicates. The
+      <code>finally</code> fires exactly once across every exit those turns took.</p>
+  </div>
+</section>
+
+<hr>
+
+<section>
+  <h2>Open questions — decide before anyone writes code</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>#</th><th>Question</th><th>Why it blocks</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1</td><td><b>Who owns the gap object?</b> Opened by whom, closed by whom, on what evidence.</td><td>The loop terminates on "no gaps open". That is only as trustworthy as the thing that closes gaps — and an unread close is this program's most-repeated defect.</td></tr>
+      <tr><td class="num">2</td><td><b>Does prompt size constrain model choice, or the reverse?</b> Step 3 precedes step 4.</td><td>Token budget and manifest size differ per model. If the arrow is not declared, two seats will implement opposite answers — exactly the two-door failure this schema exists to prevent.</td></tr>
+      <tr><td class="num">3</td><td><b>Per-gap or per-round tool selection?</b> One tool per gap, or one set for all open gaps.</td><td>Changes whether step 2 runs once or N times per cycle, and therefore what step 5 is given.</td></tr>
+      <tr><td class="num">4</td><td><b>What happens to a gap that will not close?</b></td><td>Without a give-up rule, "terminate on no gaps open" is an infinite loop with a round cap as its only real bound — which is the behaviour v2 set out to replace.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<footer>
+  Facts marked live were read from the deployed revision <code>mobius-chat-00982</code>
+  on 2026-09-10, not from source. Latency and queue-wait figures are measurements from 16
+  real turns; the promise terms are the codified section-7 values at <code>promise_version v1</code>.
+  Line references are accurate as of commit <code>80f17a3</code> and will drift — treat them as
+  pointers, not contracts.
+</footer>
+</div>
