@@ -122,15 +122,27 @@
   <div class="creed">
     <blockquote>Close the open gaps — within the prescribed time, within cost,
       at the desired quality, without errors.</blockquote>
+    <p style="margin-top:14px"><b>Five terms of three kinds. Flattening them is the danger.</b></p>
     <div class="terms">
-      <div class="term"><b>Time</b><span>The promise clock, from POST to publish</span></div>
-      <div class="term"><b>Cost</b><span>LLM spend, the dominant term today</span></div>
-      <div class="term"><b>Quality</b><span>The tier's posture: none · some · best</span></div>
-      <div class="term"><b>Errors</b><span>Tool failures and dead ends, not silently absorbed</span></div>
+      <div class="term" style="border-top-color:var(--miss)"><b>Objective</b>
+        <span><b>gaps closed</b> — what the turn is <em>for</em></span></div>
+      <div class="term"><b>Promise · tradeable</b>
+        <span><b>time · cost · quality</b> — spendable against each other. That trade <em>is</em> what the tiers are.</span></div>
+      <div class="term" style="border-top-color:var(--bad)"><b>Invariant</b>
+        <span><b>errors</b> — not a budget line. Never traded.</span></div>
     </div>
   </div>
-  <p class="note acc">Everyone contributes to this contract; only the governor sets it.
-    That asymmetry is the spec.</p>
+  <p class="note warn"><b>Why the kinds matter more than the terms.</b> You can spend cost
+    to buy quality. <b>You cannot spend errors to buy anything.</b> In a flat five-term list
+    some future directive eventually trades the error term — a governor accepting a 2% error
+    rate to hit a latency target is plainly wrong, and nothing in a flat list says so.
+    <b>Errors are a precondition on every directive, not a term in the budget.</b></p>
+  <p class="note acc"><b>And "gaps closed" is the same quantity as recall.</b> It is the only
+    term with no measure — and operationally a gap left open <em>is</em> a recall failure.
+    The gap lifecycle and the quality term are <b>one problem, not two</b>; scoping them
+    separately builds two mechanisms for one thing.</p>
+  <p>Everyone contributes to this contract; only the governor sets it. That asymmetry is
+    the spec.</p>
 </section>
 
 <section>
@@ -179,11 +191,18 @@
       <tr><td><b>Round budget</b></td><td><span class="tag t-part">extends</span></td>
         <td>What this round may spend: tool calls, a time slice, a cost slice.</td></tr>
       <tr><td><b>Run the critic?</b></td><td><span class="tag t-miss">new</span></td>
-        <td>At the governor's discretion. Today it is gated on
-            <code>agentic AND rounds-left AND ledger&gt;0</code> — a mode test standing in for a judgement.</td></tr>
+        <td><b>run_critic ⇔ actionable_budget(time, cost) AND quality_is_uncertain.</b>
+            A value-of-information test: <em>spend on knowing only when the knowing can change
+            the doing.</em> Today's <code>agentic</code> test is dropped — a mode is a promise
+            envelope, and expected difficulty is a <b>forecast</b>, a different quantity.
+            <code>rn &lt; max_it</code> was the sound half: a verdict at the last round has
+            nowhere to go, so it is pure cost.</td></tr>
       <tr><td><b>Enrichers in integrate?</b></td><td><span class="tag t-miss">new</span></td>
-        <td>Does react output publish directly, or go through the enrichers? A quality-for-cost call,
-            and the governor's to make.</td></tr>
+        <td><b>One lever, two moments.</b> Budget the intent at <b>admission</b> (on
+            <code>fast</code>, 13s, the answer is usually no — decide it while resolving the tier).
+            Make the call at the <b>react→integrate boundary</b>, the highest-information moment in
+            the turn: react has finished, real spend is known, the promise clock has a real
+            remainder. <b>Admission can rule it out; only the boundary can rule it in.</b></td></tr>
       <tr><td><b>Agent role</b></td><td><span class="tag t-live">live</span></td>
         <td>Already derived from the directive.</td></tr>
       <tr><td><b>Reasoning depth</b></td><td><span class="tag t-live">live</span></td>
@@ -242,15 +261,48 @@
     <li><b>Be the only granter of continuation.</b>
       <p>Two actors granting extensions from one ledger, on two different deadline defaults,
         is a defect that exists today. Sole authority retires it rather than repairing it.</p></li>
-    <li><b>Declare a floor as a floor.</b>
-      <p>While <code>react_1</code> under-reports cost, the cost term is a lower bound. A
-        governor that spends against an understated number and reports the budget kept is
-        wrong in the direction that costs money.</p></li>
+    <li><b>Cost may inform a decision. It must not decide one — yet.</b>
+      <p>While <code>react_1</code> reports cost on 686 of 1,236 calls, the cost term is a
+        lower bound, and an understated spend <b>fails open</b>: it permits rounds it should
+        refuse. Time may decide — the promise clock is complete. Carry the coverage figure
+        beside the number so no reader mistakes it for a total.</p></li>
+    <li><b>Exercise traffic must be markable at POST.</b>
+      <p>Sixteen turns generated to exercise the promise wiring now sit permanently in
+        <code>turn_attestations</code>, and they will be inside every conformance number
+        computed from that table — including the one that decides whether the tier latencies
+        get restated. <b>They are real turns</b>, so no predicate distinguishes them the way
+        <code>VERIFY-ROW</code> distinguished the seeded rows. The flag has to be set
+        <b>at POST, where it is knowable</b>, never inferred later from the question text.</p></li>
   </ol>
 </section>
 
 <section>
-  <div class="sec-hd"><span class="sec-n">06</span><h2>Open — for the governor seat to answer</h2></div>
+  <div class="sec-hd"><span class="sec-n">06</span><h2>How the move is proven</h2></div>
+  <p>The decision logic moving out of react must be shown equal <b>before</b> it is trusted,
+    and a replay is not enough: it proves equality on the traffic you replayed, and the risk
+    is the input nobody thought to replay. <b>Six of the seven moved decisions read mode,
+    elapsed time, or round number.</b></p>
+  <ol class="rules">
+    <li><b>Shadow, not replay.</b>
+      <p>React computes its directive exactly as today <em>and</em> calls the governor. Both
+        emit on the same envelope with their inputs. <b>React uses its own.</b> Equality is
+        asserted per turn.</p></li>
+    <li><b>Switch only after N consecutive agreements across all four tiers and both regimes.</b>
+      <p>Both regimes means warm dispatch <em>and</em> cold start — cold start is roughly one
+        turn in five by the queue-wait measurement, and has different elapsed-time behaviour.
+        <b>Every divergence is a finding</b>, not a bug to paper over.</p></li>
+    <li><b>Purity: the extracted functions take the clock as an input. They never read it.</b>
+      <p>Two independent <code>monotonic()</code> reads in one turn cannot be compared for
+        equality — the shadow test would fail on noise and teach nothing.</p></li>
+  </ol>
+  <p class="note warn"><b>On the two extension writers.</b> Reconciling their deadlines would
+    leave two writers that <em>agree today</em> — and agreement is not a property anything
+    enforces. It is the same shape as a rule that exists only in a comment.
+    <b>One granter cannot disagree with itself.</b></p>
+</section>
+
+<section>
+  <div class="sec-hd"><span class="sec-n">07</span><h2>Open — for the governor seat to answer</h2></div>
   <div class="scroll"><table>
     <thead><tr><th>#</th><th>Question</th><th>Why it blocks</th></tr></thead>
     <tbody>
