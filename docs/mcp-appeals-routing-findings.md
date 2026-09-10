@@ -546,3 +546,108 @@ their own fail-open to the Tool Manifest seat — as a *parsing hazard for the
 caller*, missing that it was a *protocol violation on their end*. Not a wrong
 fact: a correct fact scoped to the wrong owner. Distinct from §13's two, and the
 hardest of the three to catch, because nothing about it looks like an error.
+
+---
+
+## 16. ✅ §4 CLOSED — the image runs mcp **2.2.0**, where the field is `is_error`
+
+I read the deployed image directly. No docker needed: Artifact Registry's REST API
+serves manifests and blobs to `gcloud auth print-access-token`, so the layers can be
+pulled and opened with `tarfile`. No API enablement, no build, no deploy.
+
+### First: candidate (1) is dead — the image DOES match the commit
+
+Extracted from layer 7 of `sha256:ca0695e4…9327a` and diffed against `299519c`:
+
+```
+mcp_manager.py : IDENTICAL to 299519c   (isError check present at :127)
+mcp_adapter.py : IDENTICAL to 299519c
+react_loop.py  : IDENTICAL to 299519c   (:2792 guard as analysed)
+registry.py    : IDENTICAL to 299519c   (:116 success=True, :313 literal)
+```
+
+So the deploy-from-dirty-tree hypothesis — which I called the leading candidate —
+is **wrong**. Worth stating plainly: I proposed it, and reading the artefact killed
+it in one step where four seats had reasoned about it for hours.
+
+### Then: the actual cause
+
+`requirements.txt:113` says `mcp>=1.0.0`. **The image resolved that to `mcp 2.2.0`.**
+Platform and I between us tested 1.0.0, 1.2.0 and 1.26.0 and concluded the field
+was present "at every version the pin permits." **We tested the versions we chose,
+not the version that is deployed. `>=1.0.0` permits 2.x.**
+
+In 2.2.0 the type moved out of `mcp` into a separate `mcp_types` package, and the
+field was renamed:
+
+```python
+# mcp_types/_v2026_07_28/__init__.py
+is_error: Annotated[bool | None, Field(alias="isError")] = None
+```
+
+`isError` survives only as a **serialization alias**. Pydantic v2 does not expose an
+alias as an attribute. Reproduced under the image's exact SDK:
+
+```
+mcp == 2.2.0
+CallToolResult module: mcp_types._types
+fields: ['meta','content','structured_content','is_error','result_type']
+
+server sent isError=True  ->  r.is_error = True
+  hasattr(r,'isError')       = False
+  getattr(r,'isError',False) = False    <-- what mcp_manager.py:127 evaluates
+  => branch taken: SUCCESS (success=True)
+```
+
+**That is the whole join.** The server flags the error correctly; the client asks for
+an attribute that no longer exists; `getattr` returns its default; `mcp_manager`
+returns `(text, True)`; `mcp_adapter` takes the success branch and attaches a
+`SourceRef` citing the error text; `_skill_success` passes because the text guard
+tests a different literal; the span records `success`. Every observation accounted
+for — matching text, the `completed` log line, the attached source, the span.
+
+### 🔴 The scope is far wider than appeals
+
+`getattr(result, "isError", False)` is **unconditionally `False` in production**. It
+does not depend on the tool, the server, or the error. **Every MCP tool call in the
+deployed service is recorded as a success, always — all 34.** Appeals is simply where
+it became visible, because that is the tool whose calls always fail.
+
+This retro-justifies §10 and widens it: `tool.dispatched:<tool>:success` carries **no
+information at all** for MCP tools in this revision. Not "unreliable" — constant.
+
+### Both proposed fixes were inert, and the second was caught the same way
+
+Platform's amendment — `'isError' in result.model_fields_set` — **also fails**, for a
+new reason:
+
+```
+model_fields_set          = {'content', 'is_error'}
+'isError'  in fields_set  = False    <-- the proposed check
+'is_error' in fields_set  = True     <-- the one that works
+```
+
+`model_fields_set` holds **field names**, not aliases. So the amended fix would have
+shipped and changed nothing, exactly like the `getattr`-default fix before it. **Two
+inert fixes in one thread, both caught by testing against the deployed artefact
+rather than a local assumption.**
+
+### Corrected fix (1)
+
+1. **Pin `mcp` to `2.2.0`** — the version actually deployed. `>=1.0.0` spanning a
+   major version is the root enabler; a silent major bump renamed a field the code
+   depends on and nothing failed loudly.
+2. **Read the outcome via the model, not a string attribute** — `result.is_error`
+   under 2.x. Do not reach for `getattr` with a default on a field whose name is an
+   API contract; if compatibility across 1.x/2.x is wanted, resolve it explicitly and
+   fail **closed** when neither name is present.
+3. `_skill_success` structured, not string; `registry.py:312` sets `success=False`.
+
+### The lesson, and it is mine
+
+I excluded a correct hypothesis by testing it against artefacts I picked. Platform
+raised `getattr` fail-open early; they withdrew it and **I told them it was
+"excluded at every permitted version."** It was right the whole time. The check that
+would have settled it on the first pass is the same one that settled it now: **read
+the thing that is running.** A version range is not a version, a commit is not an
+image, and a local venv is not production.
