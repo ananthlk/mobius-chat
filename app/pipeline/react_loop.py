@@ -152,11 +152,14 @@ def tool_result_verdict(result: object) -> str:
       * ``content``    — a payload the tool stands behind.
 
     The middle state is the one that matters and the one an emptiness check
-    alone cannot see. ``appeals_get_playbook`` on its not-found path returns
-    ``{"found": False, "message": "No playbook for X. Default FL Medicaid: 60
-    days, certified mail."}`` — a SYNTHESISED payload announcing an absence. It
-    is not empty, so "did anything come back?" answers yes, and the funnel would
-    read a correct answer as a bug.
+    alone cannot see: a tool can return a well-formed payload whose CONTENT is
+    "I found nothing". Such a payload is not empty, so "did anything come back?"
+    answers yes, and the funnel would read a correct answer as a bug.
+
+    (The original example here was appeals_get_playbook's invented
+    "Default FL Medicaid: 60 days, certified mail." fallback. That fallback has
+    since been REMOVED — it fabricated a filing deadline — so the example is
+    kept as description of the shape, not of current behaviour.)
 
     It also decides turn 143309c1. If that call carried ``no_sources``, the model
     read a declared absence and answered CORRECTLY, and the apparent bug is a
@@ -3193,6 +3196,34 @@ def _execute_tool(
                 if not payor or not lookup:
                     return {**_no_src(), "result": "[appeals_get_playbook] payor and (carc_group or carc) are required"}
                 emit(f"◌ Checking {payor} playbook…")
+                # The payor key is FREE TEXT from the model — whatever it
+                # inferred from the user's phrasing — and appeals matches it
+                # EXACTLY. "Sunshine Health" hits; "sunshine health", "Sunshine"
+                # and "Sunshine Health Plan" all return 200 with {}, which is
+                # byte-identical to "this payor has no playbook". So a name the
+                # user happened to phrase differently reads as a missing
+                # playbook, and that alone reproduces the sporadic-selection
+                # symptom without any manifest, parsing or executor fault.
+                # Recorded so the next empty result can be attributed instead of
+                # guessed at. quote() because the payor is interpolated into a
+                # URL path and previously was not encoded at all.
+                from urllib.parse import quote as _q
+                try:
+                    from app.telemetry.spans import record as _rec_pb, KIND_TOOL_DISPATCHED
+                    _rec_pb(ctx, KIND_TOOL_DISPATCHED, f"appeals_get_playbook:payor={payor[:60]}")
+                except Exception:
+                    pass
+                _pb_reason = ""
+                # TRANSPORT vs CONTENT, kept separate on purpose.
+                #   _call_ok  — did the request work at all
+                #   found     — did a playbook actually come back
+                # `success` binds to _call_ok. A payor with genuinely no
+                # playbook is a CORRECT answer from a working tool, and
+                # recording it as `appeals_get_playbook:failure` would corrupt
+                # the dispatch funnel with a failure that did not happen.
+                # (Caught by test_appeals_playbook_zero_result, which encodes
+                # exactly this distinction — I had briefly collapsed the two.)
+                _call_ok = True
                 try:
                     # P0-0(d): the GUARDED read. Chat declares its audience —
                     # provider — from its own context; it is never inferred.
@@ -3201,22 +3232,55 @@ def _execute_tool(
                     # artifact. Undeclared audience serves nothing. Reading the
                     # unguarded /playbook here is what let a member remedy render
                     # as rung 4 of a provider ladder in live customer output.
-                    pb = _appeals_get(f"/playbook-guarded/{payor}/{lookup}",
+                    #
+                    # audience="provider" is NOT optional and must not be dropped
+                    # in a refactor: the route defaults it to "", which appeals
+                    # currently fails OPEN on — scalars pass through, so a
+                    # dropped argument leaks PROVIDER deadlines and fax numbers
+                    # rather than serving nothing. Guarded by a test.
+                    pb = _appeals_get(f"/playbook-guarded/{_q(payor, safe='')}/{_q(str(lookup), safe='')}",
                                       audience="provider")
-                    found = True
                 except httpx.HTTPStatusError as _e:
                     if _e.response.status_code == 404 and carc and carc_group:
                         try:
-                            pb = _appeals_get(f"/playbook-guarded/{payor}/{carc}",
+                            pb = _appeals_get(f"/playbook-guarded/{_q(payor, safe='')}/{_q(str(carc), safe='')}",
                                               audience="provider")
-                            found = True
                         except Exception:
-                            pb = {"message": f"No playbook for {payor}. Default FL Medicaid: 60 days, certified mail."}
-                            found = False
+                            pb, _pb_reason = {}, "unsourced"
                     else:
-                        pb = {"message": f"No playbook for {payor}. Default FL Medicaid: 60 days, certified mail."}
-                        found = False
+                        pb, _pb_reason = {}, "unsourced"
+                except Exception:
+                    _call_ok = False
+                    # Transport/timeout — the resolver could not answer. NOT the
+                    # same as "there is no playbook", and the user should be told
+                    # to retry rather than told nothing exists.
+                    pb, _pb_reason = {}, "resolver_unavailable"
+                if not isinstance(pb, dict):
+                    pb, _pb_reason = {}, "unsourced"
+                # A MISS IS 200 WITH {}, NEVER A 404. `found` used to be set from
+                # HTTP success, so an empty body was recorded as "found" — the
+                # lookup reporting a hit for a payor key that matched nothing.
+                found = bool(pb)
+                if not found and not _pb_reason:
+                    _pb_reason = "unsourced"
+                #
+                # NO INVENTED DEFAULT. This branch used to substitute
+                # "Default FL Medicaid: 60 days, certified mail." for a missing
+                # playbook. Removed, on the appeals seat's ruling and for the
+                # reason they gave: a wrong appeal deadline is UNRECOVERABLE —
+                # it loses the claim — and it was being generated by a service
+                # with no payor data at all. Worse, those FL Medicaid deadlines
+                # are blank BECAUSE appeals deliberately removed fabricated ones;
+                # refilling the gap at render time made their remediation
+                # invisible to the user. And "default FL Medicaid" is not a
+                # well-formed idea: a deadline resolves on payer × product_line ×
+                # state × network_status × audience × appeal_level × request_type
+                # as of the denial date — a fair hearing, a plan appeal, a
+                # provider claim dispute and a UM denial are four different
+                # clocks. Render the REASON, never a number.
                 result_data = {"found": found, **pb}
+                if _pb_reason:
+                    result_data["reason"] = _pb_reason
                 # 2026-08-07 (Ananth, directly, live-query finding): this used
                 # to report success=True + signal=None whenever the HTTP call
                 # succeeded, even when the fetched playbook had neither a
@@ -3234,7 +3298,26 @@ def _execute_tool(
                 # handler had just never adopted it.
                 days = pb.get("deadline_appeal_days") if found else None
                 method = (pb.get("submission_method") or "").strip() if found else ""
-                usable = found and (days is not None or bool(method))
+                # PER FIELD, not OR-ed. `found and (days is not None or method)`
+                # passed the exact case it was built to catch: FL Medicaid rows
+                # carry submission_method="portal" with deadline_appeal_days=null
+                # — 72 of 141 rows, 51% of the corpus — so a DEADLINE question
+                # was answered "usable" from a playbook with no deadline. OR-ing
+                # two independent facts into one boolean means the present field
+                # vouches for the absent one.
+                has_deadline = days is not None
+                has_method = bool(method)
+                # `usable` is retained for the retrieval signal, and now means
+                # "at least one filing-critical field is actually present" —
+                # the honest floor. Which field the ANSWER needs is decided by
+                # the question, so both flags travel in the payload rather than
+                # being collapsed here where the question is not known.
+                usable = found and (has_deadline or has_method)
+                # Actually put them in the payload — the model needs to see
+                # WHICH field is missing to answer a deadline question honestly
+                # from a playbook that only has a submission method.
+                result_data["has_deadline"] = has_deadline
+                result_data["has_submission_method"] = has_method
                 if usable:
                     emit(f"✓ {payor} playbook: {days if days is not None else '?'}d deadline · {method}")
                 elif found:
@@ -3373,7 +3456,7 @@ def _execute_tool(
                         f"{_appeals_base}/admin/rules-library?carc={carc or ''}"
                         f"&payor={_urlquote(payor)}&tab=playbook")
                 return {
-                    "tool": tool, "success": found,
+                    "tool": tool, "success": _call_ok,
                     "result": _json.dumps(result_data),
                     "signal": None if usable else RETRIEVAL_SIGNAL_NO_SOURCES,
                     "sources": [],
