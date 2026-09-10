@@ -401,3 +401,80 @@ inferred.** It stays open until the image or the log line settles it.
    independently confirmed the appeals hardening at `:3073` and none asked whether
    control reaches it. It does not. `gate_with_no_caller`, applied to a dispatch
    branch.
+
+---
+
+## 14. §4 REOPENS — the SDK lead is dead across the whole pin range
+
+Platform (`aebd873`) argued against their own hypothesis. Both of their
+measurements reproduce here, and I closed the one escape they had left open.
+
+**(a) `isError` fail-closed at the `getattr` is inert.** `CallToolResult.isError`
+is a real pydantic field with `default=False`, so an omitted flag is materialised
+**before any `getattr` runs**:
+```
+server omitted isError -> r.isError = False
+  getattr(r,'isError',False) = False
+  getattr(r,'isError',True)  = False   <- the "fail closed" fix changes nothing
+  'isError' in r.model_fields_set = False   <- the only discriminator
+```
+**Changing the default at `mcp_manager.py:127` would look like a fix and do
+nothing.** Platform sent this before I wrote it rather than after, which is the
+whole value of the exchange.
+
+**(b) The primary sends the flag explicitly**, so the default never fires there:
+```
+mobius-provider-roster-credentialing/mcp
+   isError          = True
+   explicitly sent? = True   ('isError' in model_fields_set)
+```
+
+**(c) NEW — and it kills the last variant of the lead: the field exists at the pin
+floor.**
+```
+mcp == 1.0.0   fields: ['content', 'isError']   has isError: True
+mcp == 1.2.0   has isError: True
+mcp == 1.26.0  has isError: True
+```
+`requirements.txt:113` allows `mcp>=1.0.0`. **Every version in the allowed range
+carries the field**, and the server sends it explicitly as `True`. So any SDK the
+image could legally contain parses `isError=True` → `mcp_manager` returns
+`(text, False)` → failure branch → **no sources attached.** But sources are
+observed.
+
+**The SDK explanation cannot account for the observation at any permitted version.**
+Withdrawn. §4 is now *less* explained than when we agreed to keep it open, and
+keeping it open was the right call for exactly this reason.
+
+### What remains, stated as classes rather than a guess
+
+1. **The deployed image does not match commit `299519c`.** Platform and I both
+   verified `git show 299519c:app/services/mcp_manager.py` — that is the **commit**,
+   and **nobody has verified the image**. `scripts/deploy.sh dev` builds the
+   **working directory, not committed HEAD** (documented in
+   `feedback_chat_deploy_cache_bug`), and this checkout is shared by several
+   sessions. An image built while any tree was dirty contains that tree.
+2. **A path none of us has found** produces the `MCP: <tool>` `SourceRef`. Weak —
+   `mcp_adapter.py:274` is the only producer repo-wide, grepped without the `app/`
+   restriction — but it is not excluded.
+
+(1) is now the leading candidate, and it is our own tooling rather than an
+upstream quirk. **This also changes what the log line must capture:** recording
+`success` and `isError` alone cannot distinguish "the code did something
+unexpected" from "the code is not the code we think is running." It should also
+record the running module's identity — e.g. `mcp_manager.__file__` plus the
+deployed `GIT_SHA`/revision — so the next reading answers *which code ran*.
+
+### Consolidated (1), amended again
+
+pin `mcp` to the **deployed** version → `isError` checked via
+**`'isError' in result.model_fields_set`**, *not* a `getattr` default →
+`_skill_success` structured, not string → `registry.py:312` sets `success=False`.
+
+### And the appeals server's fail-open is its own defect
+
+It sends `isError=false` **explicitly** (`in model_fields_set = True`) on a real
+failure — not omitting the field and being defaulted. **It asserts that a failure
+succeeded.** Appeals' fix, independent of chat. This does not change §11: chat must
+still stop trusting the flag, because a server that lies explicitly defeats
+`model_fields_set` too.
