@@ -1201,6 +1201,27 @@ def _resolve_gate_org(user_id: str | None) -> tuple[str, str]:
     return ("__unresolved__", "unresolved")
 
 
+class GatePublishFailed(Exception):
+    """The classifier reached a verdict; the pipeline failed AFTER it.
+
+    Exists so a storage failure stops being reported as a PHI verdict.
+    `indeterminate` is a CLASSIFIER answer — "I could not decide". Reusing it
+    for "publish exploded" makes a rag bug indistinguishable from a PHI edge
+    case in the one surface where that distinction is the entire point. It cost
+    the browser-extension seat an hour: they reported a PHI gate regression that
+    was rag's non-idempotent publish, because the surface told them PHI.
+
+    Carries the verdict so the caller can say what was actually determined while
+    still failing closed. Blocking is NOT relaxed by any of this — an unpublished
+    document is still unpublished; it is only described accurately.
+    """
+
+    def __init__(self, verdict: dict, cause: Exception):
+        super().__init__(str(cause))
+        self.verdict = verdict
+        self.cause = cause
+
+
 def _run_hipaa_gate_sync(
     document_id: str,
     rag_url: str,
@@ -1391,8 +1412,23 @@ def _run_hipaa_gate_sync(
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with _urllib_req.urlopen(_pub_req, timeout=60) as _r:
-            _pub_resp = _json_mod.loads(_r.read())
+        try:
+            with _urllib_req.urlopen(_pub_req, timeout=60) as _r:
+                _pub_resp = _json_mod.loads(_r.read())
+        except Exception as _pub_err:
+            # Narrow on purpose: ONLY the publish call. Everything before this
+            # point is the gate deciding; a failure here is the store refusing a
+            # document the gate already cleared, and the two must not report the
+            # same way.
+            raise GatePublishFailed(
+                {"gate": gate, "phi_flag": bool(phi_flag),
+                 "identifier_labels": list(identifier_labels or []),
+                 "transaction_id": str(transaction_id or ""),
+                 "classifier_version": str(classifier_version or ""),
+                 "layers_run": list(layers_run or []),
+                 "confidence": confidence},
+                _pub_err,
+            ) from _pub_err
         logger.info(
             "[hipaa-gate] publish OK for doc=%s action=%s resp=%s",
             document_id[:8], action_taken, str(_pub_resp)[:80],
@@ -1766,8 +1802,44 @@ def _handle_instant_rag_upload(
                 _test_gate_override=gate_override,
                 _test_mode_override=mode_override,
             )
+        except GatePublishFailed as _pub_fail:
+            # The gate REACHED a verdict and the store then refused the write.
+            # Still blocked — an unpublished document stays unpublished — but
+            # reported as what it is. Calling this "indeterminate" told the
+            # extension seat their clean document might contain PHI, and cost
+            # them an hour chasing a PHI regression that was rag's
+            # non-idempotent publish (rag_published_embeddings_pkey).
+            _v = _pub_fail.verdict
+            logger.error(
+                "[hipaa-gate] PUBLISH FAILED for doc=%s — classifier said gate=%s; "
+                "blocking, but this is a STORAGE failure, not a PHI verdict: %s",
+                str(document_id)[:8], _v.get("gate"), _pub_fail.cause,
+            )
+            gate_result = {
+                "blocked": True,
+                "action_taken": "blocked_publish_failed",
+                # the classifier's real answer, not a stand-in for it
+                "gate": _v.get("gate") or "indeterminate",
+                "phi_flag": bool(_v.get("phi_flag", True)),
+                "evidence_categories": [],
+                "identifier_labels": list(_v.get("identifier_labels") or []),
+                "hipaa_mode_allowed": False,
+                "reason": (
+                    "Document was not published: the storage service rejected "
+                    "the write after the PHI gate completed. This is not a PHI "
+                    "determination — the gate returned "
+                    f"{_v.get('gate') or 'unknown'}."
+                ),
+                "transaction_id": _v.get("transaction_id") or "",
+                "classifier_version": _v.get("classifier_version") or "",
+                "layers_run": list(_v.get("layers_run") or []),
+                "confidence": _v.get("confidence"),
+                "ceiling": "private",
+            }
         except Exception as _gate_err:
-            # Audit write failure or /publish failure → fail closed.
+            # Everything else — including an audit-write failure, where we cannot
+            # prove a verdict was ever reached. Fail closed AND report
+            # indeterminate, because here that is the honest answer.
             logger.error(
                 "[hipaa-gate] gate FAILED for doc=%s — treating as blocked: %s",
                 str(document_id)[:8], _gate_err,
