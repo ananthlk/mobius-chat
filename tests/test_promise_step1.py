@@ -251,3 +251,55 @@ class TestRowIsSelfDescribing:
                                     now=datetime.now(UTC)))
         json.dumps(captured)
         assert captured["p_lat"] == 13.0 and captured["p_qual"] == "none"
+
+
+class TestPromiseVersionIsEnforcedNotAsserted:
+    """Turn the comment into a constraint.
+
+    `promise.py` says: "Bump when the §7 numbers change; NEVER edit a version's
+    values in place." That is a comment, and a rule that exists only as a
+    comment is not a rule — the Governor seat's generalisation of the same
+    shape as the swallow that hid a failing write and the docstring that
+    vouched for a dead terminal: an artifact asserting a property nothing
+    enforces.
+
+    Editing `_TERMS` without bumping `PROMISE_VERSION` would silently change
+    the meaning of every historical `turn_attestations` row, retroactively,
+    with nothing able to detect it. Rows written since 63b9212 store the terms
+    inline so they survive such an edit — but the rows written BEFORE any such
+    edit are only safe because the version is honest.
+
+    These freeze v1. Changing a v1 number now fails here, and the fix is to add
+    a v2 rather than to update the expectation.
+    """
+
+    V1 = {
+        "fast": (13.0, 16.0, "none"),
+        "normal": (31.0, 45.0, "some"),
+        "thinking": (95.0, 81.0, "best"),
+    }
+
+    def test_v1_terms_are_frozen(self):
+        from app.pipeline.react.promise import _TERMS, PROMISE_VERSION
+        if PROMISE_VERSION != "v1":
+            pytest.skip(f"promise version is {PROMISE_VERSION}; v1 freeze no longer applies")
+        assert _TERMS == self.V1, (
+            "A v1 promise value changed. Do NOT update this expectation — every "
+            "turn_attestations row written under v1 is interpreted against these "
+            "numbers, so editing them rewrites history. Add a v2 instead."
+        )
+
+    def test_the_tier_map_is_frozen_too(self):
+        """A mode silently re-pointed at a different tier changes the promise
+        just as effectively as editing the numbers."""
+        from app.pipeline.react.promise import _TIER_BY_MODE, PROMISE_VERSION
+        if PROMISE_VERSION != "v1":
+            pytest.skip("v1 freeze no longer applies")
+        assert _TIER_BY_MODE == {"quick": "fast", "copilot": "normal", "agentic": "thinking"}
+
+    def test_every_tier_in_the_map_has_terms(self):
+        """A mode mapped to a tier with no row would raise KeyError at POST —
+        on the user's request path, not in a background job."""
+        from app.pipeline.react.promise import _TERMS, _TIER_BY_MODE
+        missing = [t for t in _TIER_BY_MODE.values() if t not in _TERMS]
+        assert missing == [], f"tiers with no §7 terms: {missing}"
