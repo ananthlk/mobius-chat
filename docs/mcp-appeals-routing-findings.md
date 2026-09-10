@@ -259,3 +259,81 @@ needs either the image itself or Platform's proposed log line at
 When it is pinned, pin to **the version in the deployed image**, not to latest —
 Platform's point, and correct: pinning forward would fix the drift and destroy the
 evidence in one commit.
+
+---
+
+## 9. §4 CLOSED on the second half — and the guard is not belt-and-suspenders
+
+**Finding is Appeals'**, relayed via Platform (mobius-c2), verified here.
+
+`react_loop.py:2792`:
+```python
+_skill_success = env.success and bool(env.text and not env.text.startswith("Unknown skill"))
+```
+Measured, not read:
+```
+actual text            : 'Unknown tool: appeals_lookup_rules'
+startswith("Unknown skill") -> False
+guard passes           -> True
+```
+
+Their framing is the right one and sharper than "off by one word": **`registry.py:312`
+emits `Unknown skill: {name!r}.` — chat's own literal, which this guard matches
+exactly and always has. Chat's own `Unknown tool` (`react_loop.py:3619`) sets
+`success=False` and `sources=[]`, so it never reaches the guard.** What the guard
+cannot match is a *remote server's* wording. `'Unknown tool: <name>'` belongs to the
+roster/credentialing MCP server. **It is a guard whose contract is a string owned by
+another system**, and renaming `skill`→`tool` would leave it armed against exactly
+two spellings.
+
+### 🔴 And it is the ONLY mechanism, not a second line of defence
+
+The comment at `:2791` calls it belt-and-suspenders. It is not:
+
+```
+SkillEnvelope.success default        : True   (registry.py:116)
+registry.py:312 unknown-skill envelope: text=..., signal=no_sources  — no success=False
+resulting .success                   : True
+```
+
+So for the unknown-skill case **the string comparison is the sole thing that turns a
+miss into a failure.** The `success` field exists precisely to end this — its own
+docstring (`registry.py:121-122`) says *"previously failure and success envelopes
+were indistinguishable by shape, so react_loop.py's success check had to (wrongly)
+infer from text."* The field was added; **`registry.py:312` was never migrated to
+it.** A producer added, one consumer left on the old contract — the same shape as
+everything else in this file.
+
+### Consequence for fix (1) — I accept Platform's amendment
+
+My (1) was "pin `mcp` + make `isError` fail closed." That closes fail-open #1 and
+leaves #2 armed. Folding in: **`_skill_success` must read a structured outcome, not
+a string**, and `registry.py:312` must set `success=False`. Otherwise the next MCP
+server that words its error differently reproduces this entire thread — and the pin
+would have made it *less* visible, not more.
+
+Complete path to `success=True` with no single bug: SDK drops/renames `isError` →
+`getattr(..., False)` reads no-error → the text guard written to catch exactly that
+tests a literal owned by a different system → passes → `_skill_success` True →
+propagates to the result dict, the span, and the funnel. **Three fail-open defaults,
+each individually defensible.** That is why three seats hunted one bug and none of us
+found it.
+
+## 10. Correction I owe on my own earlier work — span-based conclusions
+
+Platform flagged that appeals span history is unusable as a baseline until this
+lands. **The same applies to my own MCP analytics finding** (schematic §3.2,
+`70082ce`), and I should say so before someone builds on it: its table cites
+`tool.dispatched → success` for `get_market_size`, `get_top_orgs` and
+`get_market_share_timeseries`. **For MCP tools that column is exactly the field
+this thread proves unreliable.**
+
+**The conclusion still stands, but not on that evidence.** It rests on the answer
+content — 2,923,378 beneficiaries, $793,099,275.81 paid, named organizations with
+revenue — read from `chat_turns.final_message`, which no fail-open default can
+manufacture. A tool that returned nothing cannot produce those figures. **`emitted`
+is also sound**, since it records the planner's selection before any dispatch.
+
+So: §3.2's *selection* finding is unaffected, and its *dispatch-succeeded* column
+should be read as unverified for MCP tools until fix (1) lands. Corrected in the
+schematic rather than left for a reader to discover.
