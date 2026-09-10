@@ -54,6 +54,33 @@ def process_one(correlation_id: str, payload: dict) -> None:
     """
     from app.pipeline.orchestrator import run_pipeline
 
+    # Stamp the correlation_id onto the logging ContextVar for this turn.
+    #
+    # Found 2026-09-10 while evidencing the attestation emit: the API process
+    # gets this from HTTP middleware (logging_config:284), but the WORKER --
+    # which is where the entire turn actually runs -- never set it. So
+    # ContextFilter stamped "" on every worker log record, and the JSON
+    # formatter then DROPPED the empty field (logging_config:153). Every log
+    # line from every turn was uncorrelated in Cloud Logging, and
+    # extra={"correlation_id": ...} could not fix it locally because the
+    # filter overwrites the record attribute after `extra` is applied.
+    #
+    # Reset in the finally: the worker reuses threads, so a leaked ContextVar
+    # would stamp the PREVIOUS turn's id onto a turn that failed before
+    # reaching here -- which is worse than an empty one, because it is wrong
+    # rather than absent.
+    from app.logging_config import reset_request_context, set_request_context
+    _log_ctx_tokens = set_request_context(correlation_id=correlation_id)
+    try:
+        _process_one_inner(correlation_id, payload)
+    finally:
+        reset_request_context(_log_ctx_tokens)
+
+
+def _process_one_inner(correlation_id: str, payload: dict) -> None:
+    """The body of process_one; see that function for the logging-context wrapper."""
+    from app.pipeline.orchestrator import run_pipeline
+
     message = payload.get("message", "").strip()
     thread_id = (payload.get("thread_id") or "").strip() or None
     chat_mode = payload.get("chat_mode")

@@ -303,3 +303,42 @@ class TestPromiseVersionIsEnforcedNotAsserted:
         from app.pipeline.react.promise import _TERMS, _TIER_BY_MODE
         missing = [t for t in _TIER_BY_MODE.values() if t not in _TERMS]
         assert missing == [], f"tiers with no §7 terms: {missing}"
+
+
+class TestWorkerStampsLoggingCorrelationId:
+    """The worker must put correlation_id on the logging ContextVar.
+
+    Found while evidencing §5's E surface. The API process gets this from HTTP
+    middleware, but the WORKER — where the whole turn runs — never set it, so
+    `ContextFilter` stamped "" on every worker log record and the JSON
+    formatter dropped the empty field. Every log line of every turn was
+    uncorrelated in Cloud Logging, and `extra={"correlation_id": ...}` could
+    not fix it locally because the filter overwrites the record attribute
+    AFTER `extra` is applied.
+    """
+
+    def test_context_is_set_during_the_turn_and_reset_after(self):
+        from app.logging_config import get_correlation_id
+        from app.worker import run as worker
+
+        seen = {}
+
+        def _inner(cid, payload):
+            seen["during"] = get_correlation_id()
+
+        with patch.object(worker, "_process_one_inner", side_effect=_inner):
+            worker.process_one("cid-abc123", {})
+
+        assert seen["during"] == "cid-abc123", "not stamped during the turn"
+        assert get_correlation_id() in (None, ""), "leaked after the turn"
+
+    def test_context_is_reset_even_when_the_turn_raises(self):
+        """A leaked ContextVar would stamp the PREVIOUS turn's id onto a later
+        turn — wrong is worse than absent."""
+        from app.logging_config import get_correlation_id
+        from app.worker import run as worker
+
+        with patch.object(worker, "_process_one_inner", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError):
+                worker.process_one("cid-leak", {})
+        assert get_correlation_id() in (None, "")
