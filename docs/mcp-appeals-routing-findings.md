@@ -651,3 +651,60 @@ raised `getattr` fail-open early; they withdrew it and **I told them it was
 would have settled it on the first pass is the same one that settled it now: **read
 the thing that is running.** A version range is not a version, a commit is not an
 image, and a local venv is not production.
+
+---
+
+## 17. The appeals image, read the same way — and the seam stated exactly
+
+Platform caveated their own `40` because they read it in **chat's** venv, not the
+appeals image. Correct caution, and the same technique that closed §16 resolves it —
+no docker, no Container Analysis API, no build.
+
+**Installed in the deployed appeals image** (`…mobius-appeals-prototype@sha256:51b7b29a…`):
+
+```
+anyio      4.15.1     (Platform read 4.13.0 in chat's venv)
+starlette  1.6.0      (Platform read 1.0.0)
+fastapi    0.141.1
+httpx      0.28.1
+uvicorn    0.52.4
+mcp        1.30.0     <-- see below
+```
+
+Every library differs from the local reading, which is exactly why the caveat was
+worth making. **The `40` survives it** — from `anyio/_backends/_asyncio.py` in that
+image:
+
+```
+CapacityLimiter(40)
+```
+
+So the predicted knee at **~40 concurrent sync tool calls** against
+`containerConcurrency: 80` is now measured against the artefact that is running,
+not inferred from a local default. Platform's two sharpenings stand unchanged: the
+limiter is **process-wide**, so a burst of MCP tool calls starves unrelated sync
+endpoints in that process, and the load test remains Appeals' to run against a
+non-production instance.
+
+### 🔴 The seam, stated exactly
+
+```
+chat    runs mcp 2.2.0   -> CallToolResult.is_error   (isError only an alias)
+appeals runs mcp 1.30.0  -> CallToolResult.isError
+```
+
+**The two services are on different MAJOR versions of the same protocol library.**
+That is the whole failure in one line: the appeals server, on 1.x, sets `isError`
+exactly as FastMCP's contract requires — and chat, on 2.x, asks for an attribute
+that its own SDK renamed. **Neither service is wrong about the protocol. They are
+wrong about each other.**
+
+Both depend on `mcp` with no upper bound, so the two ends of one wire drifted a
+major version apart with nothing failing loudly. This is the strongest possible
+argument for §16's fix (1): **pin `mcp` on both sides**, and treat the version skew
+between services that speak to each other as a thing that must be declared rather
+than resolved independently by two `pip install` runs months apart.
+
+It also sharpens §11 one last time. Chat must derive the outcome from something it
+owns — and "something it owns" cannot include a field name in a dependency that a
+peer service resolves separately.
