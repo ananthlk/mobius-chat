@@ -145,3 +145,57 @@ class TestCloseGuarantee:
     def test_exactly_one_attestation_per_turn(self):
         seen = self._run(boom=True)
         assert len(seen) == 1, "a finally that fires twice writes two rows"
+
+
+class TestWriteParamsAreTransportSafe:
+    """Regression guard for a bug 21 unit tests missed.
+
+    ``write()`` originally passed ``datetime`` objects as query params.
+    ``db_execute`` JSON-serialises params for the db-agent transport, so every
+    INSERT raised ``Object of type datetime is not JSON serializable`` -- and
+    because ``write()`` swallows and logs (correctly: telemetry must not fail a
+    turn), it produced ZERO rows behind a fully green suite. It was found by
+    doing a real write against dev, which is precisely why the work order's
+    definition of done is a demonstration rather than a test run.
+
+    These assert the transport contract without needing a database.
+    """
+
+    def _params(self, att):
+        import json
+        captured = {}
+
+        def fake_execute(sql, db, params=None):
+            captured.update(params or {})
+            return {}
+
+        with patch("app.db_client.db_execute", side_effect=fake_execute):
+            from app.pipeline.react import promise as mod
+            mod.write(att)
+        return captured, json
+
+    def test_every_param_survives_json_serialisation(self):
+        from app.pipeline.react.promise import close_promise, open_promise
+        att = close_promise(open_promise("agentic", datetime.now(UTC)),
+                            correlation_id="cid", outcome="completed",
+                            now=datetime.now(UTC), worker_latency_s=1.0)
+        params, json = self._params(att)
+        assert params, "write() did not reach db_execute"
+        json.dumps(params)  # raises on a datetime, which is the bug
+
+    def test_timestamps_are_sent_as_strings_not_datetimes(self):
+        from app.pipeline.react.promise import close_promise, open_promise
+        att = close_promise(open_promise("quick", datetime.now(UTC)),
+                            correlation_id="cid", outcome="completed",
+                            now=datetime.now(UTC))
+        params, _ = self._params(att)
+        assert isinstance(params["published_at"], str)
+        assert isinstance(params["posted_at"], str)
+
+    def test_a_null_posted_at_stays_null_not_the_string_none(self):
+        """The no-promise case must write SQL NULL, not "None"."""
+        from app.pipeline.react.promise import close_promise
+        att = close_promise(None, correlation_id="cid", outcome="failed",
+                            now=datetime.now(UTC))
+        params, _ = self._params(att)
+        assert params["posted_at"] is None

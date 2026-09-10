@@ -255,8 +255,15 @@ def write(a: Attestation) -> None:
                 "cid": a.correlation_id,
                 "ver": a.promise_version,
                 "tier": a.tier,
-                "posted_at": a.posted_at,
-                "published_at": a.published_at,
+                # ISO strings, NOT datetime objects. db_execute JSON-serialises
+                # its params for the db-agent transport, and a datetime is not
+                # JSON-serialisable -- passing one makes every INSERT raise,
+                # which write() then swallows, producing zero rows behind a
+                # green test suite. Postgres casts ISO 8601 text to TIMESTAMPTZ.
+                # Found by a real write against dev; 21 unit tests missed it
+                # because they mocked the writer.
+                "posted_at": a.posted_at.isoformat() if a.posted_at else None,
+                "published_at": a.published_at.isoformat(),
                 "outcome": a.outcome,
                 "delivered": a.delivered_latency_s,
                 "worker": a.worker_latency_s,
@@ -321,8 +328,14 @@ def read(correlation_id: str) -> dict | None:
             _DB,
             params={"cid": correlation_id},
         )
+        # db_query returns {columns: [...], rows: [[...]]} -- positional rows,
+        # not dicts. Zipped here so callers get a mapping and cannot silently
+        # index the wrong column after a SELECT-list edit.
+        cols = (res or {}).get("columns") or []
         rows = (res or {}).get("rows") or []
-        return rows[0] if rows else None
+        if not rows:
+            return None
+        return dict(zip(cols, rows[0], strict=False))
     except Exception as exc:
         logger.warning("[promise] attestation read failed cid=%s: %s",
                        correlation_id[:8], exc)
