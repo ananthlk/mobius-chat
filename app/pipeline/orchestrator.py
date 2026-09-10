@@ -1468,8 +1468,17 @@ def _publish_completed(ctx: PipelineContext, t0_start: float) -> None:
                 )
             except Exception:
                 pass
+        # The Product Promise on the EXISTING envelope stream, so the turn
+        # trace shows promised-vs-delivered without a new surface. The durable
+        # record is still the turn_attestations row from run_pipeline's finally.
+        from datetime import UTC as _UTC
+        from datetime import datetime as _dt
+
+        from app.pipeline.react.promise import envelope_fields as _promise_fields
+        _promise_env = _promise_fields(getattr(ctx, "promise", None), _dt.now(_UTC))
         env = make_turn_completed(
             correlation_id=ctx.correlation_id,
+            promise=_promise_env,
             rounds_used=rounds_used,
             tools_used=list(tools_used),
             final_signal=",".join(ctx.retrieval_signals or []) or "unknown",

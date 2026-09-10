@@ -342,3 +342,46 @@ class TestWorkerStampsLoggingCorrelationId:
             with pytest.raises(RuntimeError):
                 worker.process_one("cid-leak", {})
         assert get_correlation_id() in (None, "")
+
+
+class TestPromiseOnTheExistingEnvelopeStream:
+    """Ananth, 2026-09-10: *"if you write to the emit envelope table it should
+    pick it up, dont invent something new."*
+
+    So the promise rides the EXISTING `turn_completed` envelope rather than a
+    new surface. The `turn_attestations` row stays the system of record — it is
+    written from run_pipeline's finally and therefore covers exits the publish
+    terminals never reach; the envelope is the readable half.
+    """
+
+    def test_note_shows_promised_delivered_and_the_verdict(self):
+        from app.communication.emit_envelope import make_turn_completed
+        from app.pipeline.react.promise import envelope_fields, open_promise
+        posted = datetime.now(UTC) - timedelta(seconds=20.7)
+        pf = envelope_fields(open_promise("copilot", posted), datetime.now(UTC))
+        e = make_turn_completed("cid", rounds_used=2, tools_used=[],
+                                final_signal="ok", duration_ms=19308, promise=pf)
+        assert "promised 31s" in e.note and "delivered 20.7s" in e.note and "kept" in e.note
+
+    def test_a_turn_with_no_promise_emits_the_envelope_unchanged(self):
+        """Additive: no promise must mean byte-identical to before."""
+        from app.communication.emit_envelope import make_turn_completed
+        e = make_turn_completed("cid", rounds_used=2, tools_used=[],
+                                final_signal="ok", duration_ms=100)
+        assert e.note == "✓ Turn completed in 2 round(s), 100ms"
+        assert "promise" not in e.to_dict()["data"]
+
+    def test_kept_is_derived_not_stored(self):
+        """A stored verdict can drift out of agreement with the two numbers it
+        came from — same reason queue_wait is derived."""
+        from app.pipeline.react.promise import envelope_fields, open_promise
+        over = envelope_fields(open_promise("quick", datetime.now(UTC) - timedelta(seconds=99)),
+                               datetime.now(UTC))
+        assert over["kept"] is False, "99s against a 13s promise is a miss"
+
+    def test_unpromised_turn_carries_the_reason_and_no_verdict(self):
+        from app.pipeline.react.promise import envelope_fields, open_promise
+        pf = envelope_fields(open_promise("task", datetime.now(UTC)), datetime.now(UTC))
+        assert pf["promised_latency_s"] is None
+        assert "kept" not in pf, "nothing was promised, so nothing was kept or missed"
+        assert "task" in pf["unpromised_reason"]

@@ -875,10 +875,20 @@ def make_turn_completed(
     thread_id: str | None = None,
     user_id: str | None = None,
     integrator_mode: str | None = None,
+    promise: dict | None = None,
 ) -> EmitEnvelope:
     """A chat turn finished successfully. Promoted as ``info``
     (low) — the throughput + cost-per-turn + rounds-distribution
-    dashboard foundation."""
+    dashboard foundation.
+
+    ``promise`` (2026-09-10, Ananth: *"if you write to the emit envelope table
+    it should pick it up, dont invent something new"*) carries the Product
+    Promise alongside what was delivered, so the attestation surfaces on the
+    EXISTING envelope stream rather than on a new one. Optional and absent when
+    None, so a turn with no promise emits exactly the envelope it emitted
+    before. The durable record is still the ``turn_attestations`` row written
+    from run_pipeline's finally — this is the readable half, not the system of
+    record."""
     data: dict = {
         "rounds_used": rounds_used,
         "tools_used": tools_used,
@@ -889,11 +899,24 @@ def make_turn_completed(
     }
     if integrator_mode is not None:
         data["integrator_mode"] = integrator_mode
+    if promise:
+        data["promise"] = promise
     return EmitEnvelope(
         signal="turn_completed",
         correlation_id=correlation_id,
         step_id="turn_complete",
-        note=f"✓ Turn completed in {rounds_used} round(s), {duration_ms}ms",
+        note=(
+            f"✓ Turn completed in {rounds_used} round(s), {duration_ms}ms"
+            + (
+                f" · promised {promise['promised_latency_s']:.0f}s"
+                f" · delivered {promise['delivered_latency_s']:.1f}s"
+                f" · {'kept' if promise.get('kept') else 'MISSED'}"
+                if promise
+                and promise.get("promised_latency_s") is not None
+                and promise.get("delivered_latency_s") is not None
+                else ""
+            )
+        ),
         data=data,
         thread_id=thread_id,
         user_id=user_id,

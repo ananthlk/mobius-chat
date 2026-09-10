@@ -357,3 +357,36 @@ def read(correlation_id: str) -> dict | None:
         logger.warning("[promise] attestation read failed cid=%s: %s",
                        correlation_id[:8], exc)
         return None
+
+
+def envelope_fields(p: Promise | None, now: datetime) -> dict[str, Any] | None:
+    """The promise, shaped for the EXISTING emit-envelope stream.
+
+    Returns None when there is no promise, so the envelope is byte-identical to
+    what it was before. Computed at publish time rather than read back from the
+    row, because the row is written later (from run_pipeline's finally, so it
+    covers exits the publish terminals never reach) — and a UI that waited for
+    the row would show nothing on precisely the turns that matter most.
+
+    `kept` is derived here rather than stored: a stored verdict can drift out of
+    agreement with the two numbers it came from.
+    """
+    if p is None:
+        return None
+    delivered: float | None = None
+    if p.posted_at is not None:
+        d = (now - p.posted_at).total_seconds()
+        delivered = d if d >= 0 else None
+    out: dict[str, Any] = {
+        "version": p.version,
+        "tier": p.tier,
+        "promised_latency_s": p.latency_s,
+        "promised_cost_c": p.cost_c,
+        "promised_quality": p.quality,
+        "delivered_latency_s": delivered,
+    }
+    if p.latency_s is not None and delivered is not None:
+        out["kept"] = delivered <= p.latency_s
+    if p.unpromised_reason:
+        out["unpromised_reason"] = p.unpromised_reason
+    return out
