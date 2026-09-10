@@ -92,9 +92,19 @@ KIND_ROUND = "round"
 KIND_TOOL_OFFERED = "tool.offered"
 KIND_TOOL_EMITTED = "tool.emitted"
 KIND_TOOL_DISPATCHED = "tool.dispatched"
+# Did the dispatch return CONTENT, as opposed to merely not failing?
+# tool.dispatched's outcome is `result.get("success")` — the tool's own flag —
+# which says the call did not error. It does not say anything came back. That
+# gap is why turn 143309c1 was unresolvable: appeals_get_playbook recorded
+# `success` while the answer said no playbook existed, and nothing distinguished
+# "returned a playbook the answer ignored" from "returned success and nothing".
+# Recorded as its own kind rather than folded into tool.dispatched's target, so
+# the existing series stays comparable across the change.
+KIND_TOOL_RESULT = "tool.result"
 
 _KINDS = {KIND_DB_READ, KIND_DB_WRITE, KIND_DB_ACQUIRE, KIND_LLM, KIND_HTTP, KIND_ROUND,
-          KIND_TOOL_OFFERED, KIND_TOOL_EMITTED, KIND_TOOL_DISPATCHED}
+          KIND_TOOL_OFFERED, KIND_TOOL_EMITTED, KIND_TOOL_DISPATCHED,
+          KIND_TOOL_RESULT}
 
 # Span names are NODE KEYS from the chat schema, not ad-hoc labels.
 #

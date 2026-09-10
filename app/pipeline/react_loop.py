@@ -141,6 +141,36 @@ from app.skills.document_upload import DOCUMENT_UPLOAD_SKILL_MARKDOWN, format_th
 # tool output into a concise Summary block" logic used by the healthcare
 # lookup branches too. Retained (renamed) because those remain in the
 # tool dispatch.
+def tool_result_is_empty(result: object) -> bool:
+    """Did this tool return nothing?
+
+    Module-level and public so a test can exercise THIS function rather than a
+    copy of it. As an inline closure, the only way to test it was to
+    reimplement it in the test — which asserts that a copy behaves like itself,
+    the failure mode this lane keeps finding.
+
+    Separate from the tool's own `success` flag on purpose: `success` says the
+    call did not error, and says nothing about content. Turn 143309c1 recorded
+    `appeals_get_playbook:success` while the answer said no playbook existed,
+    and nothing distinguished "returned a playbook the answer ignored" from
+    "returned success and nothing" — the difference between an L3 bug and a
+    correct answer.
+    """
+    if not isinstance(result, dict):
+        return not bool(result)
+    payload = result.get("result")
+    if isinstance(payload, str):
+        has_payload = bool(payload.strip())
+    elif payload is None:
+        has_payload = False
+    else:
+        try:
+            has_payload = len(payload) > 0
+        except TypeError:
+            has_payload = payload is not None
+    return not (has_payload or bool(result.get("sources")))
+
+
 def _attach_result_summary(
     out: dict[str, Any],
     result_text: str,
@@ -4724,6 +4754,13 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         )
 
         decision = _parse_react_decision_json(decision_raw)
+        # Parse outcome for this round, for the tool.emitted split below.
+        # Without it, a malformed emission and a planner that simply chose no
+        # tool both arrive at `__none__` — the ambiguity the code comment at
+        # the recording site already names, and the reason Ananth's
+        # "json formatting" hypothesis could not be tested.
+        _parse_failed_first = decision is None
+        _parse_recovered = False
 
         if decision is None:
             # Parse-failure prose fallback: the LLM produced plain prose
@@ -4804,6 +4841,14 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
                 # (its second try), not the stale first attempt.
                 decision_raw = decision_raw_retry
                 if decision is not None:
+                    # A RECOVERED parse failure. Previously invisible: this
+                    # branch only ever called emit(), which goes to the turn's
+                    # thinking chunks and not to logs — so a retry that worked
+                    # cost a whole extra LLM round and left no trace anywhere
+                    # queryable. The persistent-failure warning below fires only
+                    # when the retry ALSO fails, so "0 parse-failure warnings"
+                    # never meant "0 parse failures".
+                    _parse_recovered = True
                     emit("  Format-correction retry succeeded.")
                 else:
                     logger.warning(
@@ -4905,8 +4950,18 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         # be attributed to a layer.
         try:
             from app.telemetry.spans import record as _rec, KIND_TOOL_EMITTED
+            if _parse_recovered:
+                # Records that the round's FIRST emission was unparseable even
+                # though the retry rescued it. Costs a round; had no record.
+                _rec(ctx, KIND_TOOL_EMITTED, "__unparseable_recovered__")
             if tool:
                 _rec(ctx, KIND_TOOL_EMITTED, str(tool))
+            elif _parse_failed_first and not _parse_recovered:
+                # The emission could not be parsed and the retry did not rescue
+                # it. Distinct from `__none__`: one is the planner choosing not
+                # to act, the other is the planner acting and us dropping it.
+                # Opposite conclusions, and they were the same number.
+                _rec(ctx, KIND_TOOL_EMITTED, "__unparseable__")
             elif not decision.get("is_complete", False):
                 # No tool AND not finishing: the planner produced a round that
                 # neither acts nor concludes. Recorded explicitly so "emitted
@@ -5773,9 +5828,16 @@ def run_react(ctx: PipelineContext, emitter=None) -> None:
         # three candidate layers produce identical evidence (none) and the
         # sporadic-selection bug cannot be attributed.
         try:
-            from app.telemetry.spans import record as _rec, KIND_TOOL_DISPATCHED
+            from app.telemetry.spans import (
+                record as _rec, KIND_TOOL_DISPATCHED, KIND_TOOL_RESULT,
+            )
             _outcome = "success" if (isinstance(result, dict) and result.get("success")) else "failure"
             _rec(ctx, KIND_TOOL_DISPATCHED, f"{tool or 'search_corpus'}:{_outcome}")
+
+            # Funnel stage 3: did anything actually COME BACK.
+            _rec(ctx, KIND_TOOL_RESULT,
+                 f"{tool or 'search_corpus'}:"
+                 f"{'empty' if tool_result_is_empty(result) else 'nonempty'}")
         except Exception:
             pass
 

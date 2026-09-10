@@ -470,7 +470,8 @@ incomplete, fix it on the MCP server side so this section stays useful to
 the planner."""
 
 
-def _auto_discovered_block(allowed: frozenset[str] | None = None) -> str:
+def _auto_discovered_block(allowed: frozenset[str] | None = None,
+                           _rendered: set[str] | None = None) -> str:
     """Render the MCP-sourced, planner-visible skills that aren't in the
     curated builtin ordering.
 
@@ -501,6 +502,8 @@ def _auto_discovered_block(allowed: frozenset[str] | None = None) -> str:
     body = registry.manifest_text(names=render)
     if not body.strip():
         return ""
+    if _rendered is not None:
+        _rendered.update(render)
     return f"{_AUTO_DISCOVERED_HEADER}\n\n{body}"
 
 
@@ -535,7 +538,8 @@ _ROUTER_OWNED_BLOCKS: dict[str, str] = {
 }
 
 
-def _compose_manifest(allowed: frozenset[str] | None = None) -> str:
+def _compose_manifest(allowed: frozenset[str] | None = None,
+                      _rendered: set[str] | None = None) -> str:
     """Splice router-owned prose with registry-rendered skill blocks.
 
     Block order (deliberate — planner reads top-down):
@@ -555,11 +559,30 @@ def _compose_manifest(allowed: frozenset[str] | None = None) -> str:
     def _registry_block(name: str) -> str:
         if not _allow(name):
             return ""
-        return registry.manifest_text(names=(name,))
+        _text = registry.manifest_text(names=(name,))
+        # Recorded only when the block is NON-EMPTY. `_allow` says the filter
+        # permitted it; it does not say the registry had anything to render.
+        # Recording a permitted-but-absent tool as "offered" would be the same
+        # misattribution this instrument exists to remove.
+        if _rendered is not None and _text.strip():
+            _rendered.add(name)
+        return _text
 
-    def _router_block(name: str, prose: str) -> str:
+    def _router_block(name: str, prose: str,
+                      also: frozenset[str] | tuple[str, ...] = ()) -> str:
+        """`also` names the OTHER tools a multi-tool block puts on offer.
+
+        _APPEALS_BLOCK is gated on the single key `appeals_find_carc` but
+        documents five callable tools. Recording only the gate key would report
+        appeals_get_playbook as never offered on turns where the model called
+        it — the funnel would then show a tool called but not offered, which is
+        an artefact of the instrument, not a fact about the turn.
+        """
         if not _allow(name):
             return ""
+        if _rendered is not None and prose.strip():
+            _rendered.add(name)
+            _rendered.update(n for n in also if _allow(n))
         return prose
 
     curated_blocks = [
@@ -569,7 +592,7 @@ def _compose_manifest(allowed: frozenset[str] | None = None) -> str:
         # Appeals tools — MUST BE CHECKED FIRST before rag or any other tool.
         # Any message containing a CARC code number (e.g. "CARC 22", "CARC 29")
         # or describing a denial/appeal workflow MUST use these tools.
-        _router_block("appeals_find_carc", _APPEALS_BLOCK),
+        _router_block("appeals_find_carc", _APPEALS_BLOCK, also=_APPEALS_TOOLS),
         # Service line registry — FL Medicaid BH code/limits/coverage from
         # certified rows. Rendered as a section header + per-tool blocks.
         # NOT deployed yet; blocks included so manifest is ready at deploy time.
@@ -611,7 +634,7 @@ def _compose_manifest(allowed: frozenset[str] | None = None) -> str:
         _router_block("ingest_url", _INGEST_URL_BLOCK),
         _router_block("refuse", _REFUSE_BLOCK),
     ]
-    auto_block = _auto_discovered_block(allowed=allowed)
+    auto_block = _auto_discovered_block(allowed=allowed, _rendered=_rendered)
     if auto_block:
         curated_blocks.append(auto_block)
     joined = "\n\n".join(b for b in curated_blocks if b.strip())
@@ -662,6 +685,26 @@ def get_tool_manifest(allowed: list[str] | None = None) -> str:
         None if allowed is None else frozenset(allowed)
     )
     return _compose_manifest(allowed=allowed_set)
+
+
+def get_manifest_tool_names(allowed: list[str] | None = None) -> list[str]:
+    """The tool names the manifest ACTUALLY renders for this `allowed` set.
+
+    Exists because `tool.offered` recorded a single `__unfiltered__` sentinel —
+    the fact that no filter ran, never what was on offer. Over 76 turns that was
+    the only value ever written, so "was tool X offered?" had no answer and the
+    first stage of the tool funnel could not be built.
+
+    Derived from the composer rather than reimplemented beside it: a second list
+    of tool names would drift from the manifest the model actually sees, and a
+    drifted answer to "what was offered" is worse than no answer.
+    """
+    names: set[str] = set()
+    _compose_manifest(
+        allowed=None if allowed is None else frozenset(allowed),
+        _rendered=names,
+    )
+    return sorted(names)
 
 
 # Back-compat: modules that still do ``from ... import TOOL_MANIFEST``

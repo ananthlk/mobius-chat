@@ -746,14 +746,28 @@ def run_pipeline(
             from app.telemetry.spans import span as _span, record as _rec, KIND_TOOL_OFFERED
             with _span(ctx, "tool_manifest", label="resolve_allowed_tools"):
                 _allowed = ctx.allowed_tools
+                # Record WHAT WAS OFFERED, by name, in both branches.
+                #
+                # Until now the unfiltered branch recorded a single
+                # `__unfiltered__` sentinel, and across 76 turns that was the
+                # ONLY value ever written — so the first stage of the tool
+                # funnel could not answer "was tool X offered?" and L1 could not
+                # be eliminated or confirmed. The sentinel recorded that no
+                # filter ran, which is a fact about the FILTER, not about the
+                # manifest.
+                #
+                # Names come from the composer (get_manifest_tool_names), not a
+                # second list kept alongside it: a parallel list would drift
+                # from the manifest the model actually sees, and a drifted
+                # answer to "what was offered" is worse than none.
+                from app.pipeline.tool_manifest import get_manifest_tool_names
+                for _t in get_manifest_tool_names(_allowed):
+                    _rec(ctx, KIND_TOOL_OFFERED, str(_t))
                 if _allowed is None:
-                    # None means "no filter" — every registered tool is on
-                    # offer. Recorded as a distinct value rather than skipped,
-                    # so an unfiltered turn is a positive observation.
+                    # Kept alongside the names: "no filter applied" and "the
+                    # filter happened to permit everything" are different facts
+                    # about tool policy, and only this distinguishes them.
                     _rec(ctx, KIND_TOOL_OFFERED, "__unfiltered__")
-                else:
-                    for _t in _allowed:
-                        _rec(ctx, KIND_TOOL_OFFERED, str(_t))
         except Exception as _exc:
             logger.warning("[spans] allowed_tools record failed cid=%s: %s",
                            correlation_id[:8], _exc)
