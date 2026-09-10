@@ -9,6 +9,7 @@ import re
 import time
 import traceback
 from collections.abc import Callable
+from typing import Any
 
 from app.chat_config import get_config_sha
 from app.communication.agent import format_clarification, format_refinement_ask
@@ -418,6 +419,7 @@ def run_pipeline(
     phi_gate_verdict: dict | None = None,
     is_continuation: bool = False,
     selection: dict | None = None,
+    promise: Any | None = None,
 ) -> None:
     """Run the full pipeline: state_load -> classify -> plan -> clarify -> [resolve -> integrate] | early_exit.
 
@@ -453,6 +455,10 @@ def run_pipeline(
         user_profile=user_profile if isinstance(user_profile, dict) and user_profile else None,
         is_continuation=bool(is_continuation),
     )
+    # The Product Promise, made at POST and carried here unchanged. None means
+    # the request was enqueued before the promise existed; the turn runs
+    # normally and still attests with a null promise. Never synthesised here.
+    ctx.promise = promise
     # P2b turn telemetry: per-module spans, counts-by-target, wall/llm split.
     # Attached to ctx rather than a thread-local so a span crossing a thread
     # boundary is a visible choice (react_loop spawns daemon threads).
@@ -833,6 +839,7 @@ def run_pipeline(
                         pass
         except Exception as e:
             logger.exception("ReAct stage error: %s", e)
+            ctx.publish_outcome = "failed"
             _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e, user_id=ctx.user_id)
             return
         _emit_model_summary(ctx, time.perf_counter() - t_react_start, on_thinking)
@@ -918,6 +925,7 @@ def run_pipeline(
                 run_integrate(ctx, emitter=on_thinking)
         except Exception as e:
             logger.exception("Integrate stage error: %s", e)
+            ctx.publish_outcome = "failed"
             _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e, user_id=ctx.user_id)
             return
 
@@ -993,6 +1001,7 @@ def run_pipeline(
             if "not iterable" in err_str or "nonetype" in err_str:
                 logger.error("NoneType/iterable TypeError in pipeline; full traceback:\n%s", traceback.format_exc())
         logger.exception("Pipeline error: %s", e)
+        ctx.publish_outcome = "failed"
         _publish_failed(correlation_id, message, thread_id, ctx.thinking_chunks, e, user_id=ctx.user_id)
         # Stamp the exception onto the tracing span for cross-reference
         # with Cloud Trace error views.
@@ -1008,6 +1017,33 @@ def run_pipeline(
                 _pipeline_span_cm.__exit__(None, None, None)
             except Exception:
                 pass
+        # Close the Product Promise. ONE site, deliberately: there are three
+        # publish terminals reached from eight call sites, plus an early return
+        # on empty payload. Writing this inside _publish_completed would give
+        # every failed turn, every clarification turn and every empty-payload
+        # turn no attestation at all -- the emit sitting on the success path,
+        # where the most valuable record is the one that goes missing.
+        #
+        # ctx.publish_outcome defaults to "unknown", which is a finding rather
+        # than a gap: it means no terminal ran, and the row still exists to say
+        # so. Never raises -- a telemetry failure must not fail a turn.
+        try:
+            from datetime import UTC, datetime
+
+            from app.pipeline.react.promise import close_promise as _close_promise
+            from app.pipeline.react.promise import write as _write_attestation
+            _att = _close_promise(
+                getattr(ctx, "promise", None),
+                correlation_id=correlation_id,
+                outcome=getattr(ctx, "publish_outcome", "unknown"),
+                now=datetime.now(UTC),
+                worker_latency_s=(time.perf_counter() - t0),
+            )
+            if _att is not None:
+                _write_attestation(_att)
+        except Exception:
+            logger.exception("[promise] attestation close failed cid=%s",
+                             correlation_id[:8])
 
 
 def _run_document_selection(
@@ -1060,6 +1096,7 @@ def _run_document_selection(
         env = _skill_registry.dispatch(call)
     except Exception as e:
         logger.exception("Document selection resolve error: %s", e)
+        ctx.publish_outcome = "failed"
         _publish_failed(ctx.correlation_id, ctx.message, ctx.thread_id, ctx.thinking_chunks, e, user_id=ctx.user_id)
         return
 
@@ -1091,7 +1128,16 @@ def _run_document_selection(
 
 
 def _publish_clarification_or_refinement(ctx: PipelineContext, t0_start: float) -> None:
-    """Build and publish clarification or refinement response."""
+    """Build and publish clarification or refinement response.
+
+    NOTE 2026-09-10: this terminal currently has ZERO callers repo-wide --
+    orphaned by f2aac16, which deleted the classic path (clarification was
+    that path's terminal; the ReAct path has no clarify step). The outcome is
+    set anyway so the attestation is correct if it is ever revived, and so a
+    `clarification` row appearing in turn_attestations is itself the signal
+    that it has been.
+    """
+    ctx.publish_outcome = "clarification"
     from app.communication.assistant_envelope import build_assistant_envelope_v1, resolve_tool_fired
 
     def _minimal_envelope(message: str = "") -> dict:
@@ -1382,7 +1428,13 @@ def _publish_completed(ctx: PipelineContext, t0_start: float) -> None:
     _persist_turn_spans(ctx)
     payload = ctx.response_payload
     if not payload:
+        # A turn that reached the completed terminal but had nothing to
+        # deliver is NOT "completed" -- reporting it as such is the
+        # false-success this program keeps finding. Its own outcome, so the
+        # attestation records what actually happened.
+        ctx.publish_outcome = "empty_payload"
         return
+    ctx.publish_outcome = "completed"
 
     # Sprint A.1 commit 3: emit a structured turn_completed envelope
     # so task-manager promotion (A.2) can feed throughput, cost, and

@@ -249,6 +249,18 @@ class PipelineContext:
     # UI chat mode (POST /chat chat_mode): copilot | agentic | quick | task
     chat_mode: str = "copilot"
 
+    # The Product Promise, made at POST and carried through the turn
+    # (app/pipeline/react/promise.py; work order docs/work-order-promise-step1.md).
+    # None means the request was enqueued BEFORE the promise existed -- the turn
+    # runs normally and still attests, with a null promise. It is never
+    # synthesised here: a promise invented after POST is not a promise.
+    promise: Any | None = None
+
+    # Which publish terminal actually ran. Set by each terminal, read once by
+    # run_pipeline's outermost finally. "unknown" means no terminal ran at all,
+    # which is itself a finding worth having rather than a missing row.
+    publish_outcome: str = "unknown"
+
     # Per-request override for react's citable_required decision (POST /chat
     # force_citable_required) -- 2026-08-07, Task #41(a) follow-up, "confirm
     # from authoritative sources" CTA re-submit. None (all normal traffic)

@@ -59,6 +59,17 @@ def process_one(correlation_id: str, payload: dict) -> None:
     chat_mode = payload.get("chat_mode")
     if chat_mode is not None and not isinstance(chat_mode, str):
         chat_mode = None
+    # The Product Promise, made at POST. from_payload tolerates absence and
+    # returns None for a request enqueued before the promise existed -- that
+    # turn runs normally and attests with a null promise. Deliberately NOT
+    # synthesised here: a promise invented after POST is not a promise, and
+    # would silently backfill the gap this measures.
+    try:
+        from app.pipeline.react.promise import from_payload as _promise_from_payload
+        promise = _promise_from_payload(payload.get("promise"))
+    except Exception as exc:
+        logger.warning("[promise] rehydrate failed cid=%s: %s", correlation_id[:8], exc)
+        promise = None
     force_citable_required = payload.get("force_citable_required")
     if force_citable_required is not None and not isinstance(force_citable_required, bool):
         force_citable_required = None
@@ -250,6 +261,7 @@ def process_one(correlation_id: str, payload: dict) -> None:
                 chat_mode=chat_mode,
                 force_citable_required=force_citable_required,
                 is_continuation=is_continuation,
+                promise=promise,
                 user_id=user_id,
                 system_context=system_context,
                 cache_assist=cache_assist,

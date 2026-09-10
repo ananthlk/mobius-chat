@@ -408,6 +408,36 @@ def post_chat(
         "action": _phi_action,
     }
 
+    # The Product Promise is made HERE and nowhere else (work order
+    # docs/work-order-promise-step1.md section 2a). Fixed at POST, carried on
+    # the payload, closed at PUBLISH. One key, additive -- a worker that
+    # predates it ignores the key, same convention as user_id above.
+    #
+    # body.chat_mode, NOT a resolved mode: when it is absent the tier is
+    # decided later in the worker from thread state
+    # (orchestrator.py:708-712), so POST genuinely cannot state one and the
+    # promise records that as an explicit unpromised_reason rather than
+    # guessing "copilot".
+    try:
+        from datetime import UTC, datetime
+
+        from app.pipeline.react.promise import open_promise, to_payload
+        _promise = open_promise(body.chat_mode, datetime.now(UTC))
+        payload["promise"] = to_payload(_promise)
+        logger.info(
+            "[promise] opened cid=%s tier=%s", correlation_id[:8], _promise.tier,
+            extra={
+                "event": "promise_opened",
+                "correlation_id": correlation_id,
+                "promise": payload["promise"],
+            },
+        )
+    except Exception as exc:
+        # Never fail a user's request because the promise could not be made.
+        # Loud, though: a turn with no promise key is indistinguishable from a
+        # pre-deploy enqueue unless the cause is logged here.
+        logger.warning("[promise] open failed cid=%s: %s", correlation_id[:8], exc)
+
     get_queue().publish_request(correlation_id, payload)
     return ChatResponse(correlation_id=correlation_id, thread_id=thread_id)
 
