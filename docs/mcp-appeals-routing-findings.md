@@ -945,3 +945,58 @@ this near-moot, but **nobody pulled the base layers**, and Platform kept it visi
 rather than closing it on the strength of a commit message. Correct call: that is the
 same substitution — a record *about* the build standing in for the build — that this
 section exists to document.
+
+---
+
+## 23. Read the PROTOCOL, not the binding — the fix that survives the next rename
+
+Platform found that 2.2.0 also renamed `McpError` → `MCPError`, and that chat's
+`_is_session_error` **survived it** because it is duck-typed on structure
+(`getattr(exc,'error').code`). Confirmed here on 2.2.0:
+
+```
+duck  getattr(exc,'error').code = -32600 | msg: Missing session ID
+```
+
+Their conclusion is the important one, and it changes fix (1): **swapping `isError`
+for `is_error` would be the same dependency one name later.** The two renames
+separate cleanly:
+
+- **`.error.code` survived** — it is the JSON-RPC wire shape, so it *cannot* move
+  without a protocol change.
+- **`isError` did not** — it was a Python-side spelling, and spellings move.
+
+### The durable check, tested across BOTH majors
+
+```
+                                          mcp 2.2.0     mcp 1.26.0
+getattr(r,'isError', False)                 False   ✗      True
+r.is_error                                  True           (absent)
+r.model_dump(by_alias=True)['isError']      True    ✓      True   ✓
+```
+
+**`model_dump(by_alias=True)` reads the field by its WIRE name** — the one fixed by
+the MCP specification — instead of by whatever the SDK currently calls it in Python.
+It is correct on the deployed 2.2.0 *and* on 1.26.0, i.e. it would have been correct
+before the bump, correct after it, and correct through it.
+
+**So step 2 of fix (1) is not "use `is_error`". It is: read the protocol field and
+fail closed when it is not stated.** Same principle as `.error.code` surviving:
+depend on the wire contract, which is versioned deliberately and loudly, never on a
+binding's spelling, which is versioned silently.
+
+**One asymmetry worth knowing, and another argument for the pin:** on 2.x the field
+defaults to `None`, so "server omitted it" is distinguishable from "server said
+false". On 1.x it defaults to `False`, so omission and denial are identical. A
+fail-closed-on-omission rule is therefore *expressible* on 2.x and *not* on 1.x —
+which means the correct behaviour here depends on the version, and that dependency
+should be pinned rather than discovered.
+
+### The generalisation
+
+This is §11's rule with a mechanism attached. §11 said chat must derive outcomes from
+something it owns and treat remote values as evidence. It cannot own a peer's flag —
+but it *can* own **which name it reads that flag by**, and the durable choice is the
+protocol's name, not the library's.
+
+**Read the protocol, not the binding.**
