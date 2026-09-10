@@ -31,7 +31,11 @@ precision.
 from __future__ import annotations
 
 from typing import Any
-from app.telemetry.spans import traced
+import logging
+
+from app.telemetry.spans import traced, record_decision
+
+logger = logging.getLogger(__name__)
 
 # System prompt + tool manifest overhead for a react round. Not measured
 # per-call (the real system prompt is resolved dynamically via LLMManager
@@ -114,5 +118,19 @@ def compute_token_budget_for_retrieval(ctx: Any) -> int:
         - _SYSTEM_PROMPT_RESERVE_TOKENS
         - history_tokens
         - _ANSWER_GENERATION_RESERVE_TOKENS
+    )
+    # The DECISION is not the number — it is whether the floor BOUND. When it
+    # does, the computed budget was rejected: history has eaten the window and
+    # RAG gets a minimum payload rather than a sized one. That is a materially
+    # different turn, and it was invisible, because both paths return an int
+    # and the caller cannot tell which one it got.
+    bound = budget < _MIN_BUDGET_FLOOR
+    record_decision(
+        "retrieval_budget", "floor_bound" if bound else "computed",
+        logger_=logger,
+        computed=budget, floor=_MIN_BUDGET_FLOOR, context_window=context_window,
+        history_tokens=history_tokens,
+        system_reserve=_SYSTEM_PROMPT_RESERVE_TOKENS,
+        answer_reserve=_ANSWER_GENERATION_RESERVE_TOKENS,
     )
     return max(budget, _MIN_BUDGET_FLOOR)

@@ -569,6 +569,42 @@ def orphaned_ms() -> dict[str, float]:
     return dict(_ORPHANED)
 
 
+def record_decision(node: str, decision: str, logger_: Any = None, **inputs: Any) -> None:
+    """Record a DECISION a node made, with the inputs that could have changed it.
+
+    The one shape for the P2 telemetry-gap pass, so twenty-three nodes do not
+    invent twenty-three conventions.
+
+    Two halves, deliberately:
+
+      * a COUNT, targeted `node:decision` — low cardinality, so "did the mix of
+        decisions shift?" is answerable by grouping, without parsing anything.
+      * a LOG line carrying the inputs — because a count tells you the branch
+        and not why. Per the assertability rule, "the governor granted an
+        extension" cannot be checked against anything; "extend, rounds_left 0,
+        ext_avail 1, elapsed 8.2s, soft_target 12s" can.
+
+    `decision` must name the branch INCLUDING the negative one. A record on the
+    grant path and none on the refuse path re-creates make_tool_failed: the
+    refusal becomes structurally invisible and the node looks healthy because
+    the only thing it ever emits is success.
+
+    Never raises. Telemetry that can break a turn is worse than none.
+    """
+    try:
+        record_ambient(KIND_DECISION, f"{node}:{decision}")
+    except Exception:
+        pass
+    if logger_ is not None and inputs:
+        try:
+            logger_.info(
+                "[%s] %s | %s", node, decision,
+                " ".join(f"{k}={v!r}" for k, v in sorted(inputs.items())),
+            )
+        except Exception:
+            pass
+
+
 def record_ambient(kind: str, target: str, n: int = 1, ms: float = 0.0) -> None:
     """Record against the active turn. A drop is counted, never silent."""
     tr = _ACTIVE.get()

@@ -34,7 +34,7 @@ from __future__ import annotations
 import logging
 import os
 from typing import Any
-from app.telemetry.spans import traced
+from app.telemetry.spans import traced, record_decision
 
 logger = logging.getLogger(__name__)
 
@@ -86,16 +86,31 @@ def autonomy_for(profile: dict | None, *, sensitive: bool) -> str:
     field is always trustworthy if present, even when we're A/B-ing
     rendered_prompt off).
     """
-    if not profile or not isinstance(profile, dict):
-        return "confirm_first"
-    auto = profile.get("autonomy")
-    if not isinstance(auto, dict):
-        return "confirm_first"
-    key = "sensitive_tasks" if sensitive else "routine_tasks"
-    val = (auto.get(key) or "").strip().lower()
-    if val in ("automatic", "confirm_first", "manual"):
-        return val
-    return "confirm_first"
+    # This gates whether a tool AUTO-EXECUTES or asks first, so the reason for
+    # the answer matters as much as the answer. Four distinct situations all
+    # returned "confirm_first" and were indistinguishable afterwards: no
+    # profile, a malformed profile, no autonomy block, an unrecognised value.
+    # Three of those are DEFECTS upstream and one is a legitimate default —
+    # collapsing them meant a broken profile looked exactly like a cautious
+    # user, forever.
+    def _decide() -> tuple[str, str]:
+        if not profile or not isinstance(profile, dict):
+            return "confirm_first", "no_profile"
+        auto = profile.get("autonomy")
+        if not isinstance(auto, dict):
+            return "confirm_first", "no_autonomy_block"
+        key = "sensitive_tasks" if sensitive else "routine_tasks"
+        val = (auto.get(key) or "").strip().lower()
+        if val in ("automatic", "confirm_first", "manual"):
+            return val, "declared"
+        return "confirm_first", ("unset" if not val else "unrecognised_value")
+
+    mode, why = _decide()
+    record_decision(
+        "personalization", f"autonomy_{mode}", logger_=logger,
+        reason=why, sensitive=sensitive, has_profile=bool(profile),
+    )
+    return mode
 
 
 def personalization_emit_payload(profile: dict | None) -> dict[str, Any]:

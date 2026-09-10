@@ -11,7 +11,7 @@ import logging
 import os
 
 from app.pipeline.context import PipelineContext
-from app.telemetry.spans import traced
+from app.telemetry.spans import traced, record_decision
 
 logger = logging.getLogger(__name__)
 
@@ -25,10 +25,14 @@ def maybe_set_feedback_signal(ctx: PipelineContext) -> None:
     Inputs it can't cheaply obtain at plan-time (thread turn-count, last-turn
     qc, just-rated) default to the conservative value so the ask never
     over-fires; wiring those in is a follow-up (spec §12)."""
+    # Both early exits are recorded. "no signal this turn" has three causes —
+    # feature off, no user, cadence not due — and they were one silent return.
     if (os.environ.get("FEEDBACK_PERIODIC_ENABLED", "1") or "1").strip().lower() in ("0", "false", "no"):
+        record_decision("feedback_signal", "skipped", logger_=logger, reason="disabled")
         return
     user_id = getattr(ctx, "user_id", None)
     if not user_id:
+        record_decision("feedback_signal", "skipped", logger_=logger, reason="no_user_id")
         return
     from app.storage import product_feedback as _pf
 
