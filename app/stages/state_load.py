@@ -8,6 +8,7 @@ from app.state.context_router import route_context
 from app.state.model import ThreadState
 from app.state.state_extractor import extract_state_delta
 from app.storage.results import clear_tool_results
+from app.telemetry.spans import record_decision
 from app.storage.threads import (
     StateUnavailable,
     get_last_turn_messages,
@@ -59,6 +60,12 @@ def run_state_load(
         raw = {}
         ctx.state_read_failed = True
     ctx.state_version = _state_version
+    record_decision(
+        "state_load", "state_unreadable" if ctx.state_read_failed
+        else ("state_found" if raw else "state_absent"),
+        logger_=logger, thread_id=str(ctx.thread_id)[:8],
+        state_version=_state_version, keys=len(raw or {}),
+    )
     thread_state = ThreadState.from_dict(raw)
 
     # Capture prior payer before applying delta (for _prior_payer emit)
@@ -85,23 +92,76 @@ def run_state_load(
     ctx.merged_state = merged
     # Carry report_run_id from previous turn so "ask about this report" can use it
     ctx.report_run_id = (merged.get("active") or {}).get("report_run_id")
-    ctx.last_turns = get_last_turn_messages(ctx.thread_id)
-    ctx.last_turn_sources = get_last_turn_sources(ctx.thread_id)
-    # prior_resolved_entities (2026-08-12, Chat Master directive, Task #90):
-    # gated on is_continuation -- a fresh turn has nothing prior to
-    # resolve, and the query would be pure overhead. last_turns/
-    # last_turn_sources above already cover the last ~3 turns adequately
-    # (#89); this reaches further back (8 turns) for a targeted lookup,
-    # not a wider blanket window.
-    ctx.prior_resolved_entities = (
-        get_prior_resolved_entities(ctx.thread_id) if ctx.is_continuation else []
-    )
+    # ── the four independent reads, CONCURRENTLY ────────────────────────
+    # Measured before changing: p50 1592ms, p95 5600ms over n=211 spans, and DB
+    # reads account for ~1,796ms/turn — the reads ARE this node. Four of them
+    # take nothing but thread_id and none consumes another's result, so they
+    # were paying four round-trips for one round-trip's worth of dependency.
+    #
+    # `get_state_with_version` above is deliberately NOT in this group: it gates
+    # every write in the turn (StateUnavailable must suppress them), so it stays
+    # first and sequential where its failure semantics are obvious.
+    #
+    # Telemetry: the turn trace is a ContextVar that deliberately does not cross
+    # a thread boundary — a shared span stack with no lock would mis-parent, and
+    # concurrent writes to one span's counts dict can lose an update. So each
+    # worker TIMES ITSELF and the parent records the db counts after the join,
+    # the same pattern the integrator fan-out uses. Without this the per-table
+    # attribution for this node would silently become orphaned counts.
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _timed(fn, target: str, *a):
+        import time as _t
+        _t0 = _t.perf_counter()
+        try:
+            return fn(*a), target, (_t.perf_counter() - _t0) * 1000.0, None
+        except Exception as exc:                      # never let a read kill the turn
+            return None, target, (_t.perf_counter() - _t0) * 1000.0, exc
+
+    _tid = ctx.thread_id
+    _want_prior = bool(ctx.is_continuation)
+    with ThreadPoolExecutor(max_workers=4) as _pool:
+        _f_msgs = _pool.submit(_timed, get_last_turn_messages, "chat_turn_messages", _tid)
+        _f_srcs = _pool.submit(_timed, get_last_turn_sources, "chat_turns", _tid)
+        # prior_resolved_entities (2026-08-12, Task #90): gated on
+        # is_continuation -- a fresh turn has nothing prior to resolve, and the
+        # query would be pure overhead.
+        _f_prior = _pool.submit(_timed, get_prior_resolved_entities, "chat_turns", _tid) \
+            if _want_prior else None
+        _f_summ = _pool.submit(_timed, get_thread_rolling_summary, "chat_threads", _tid)
+
+    # RAW results kept alongside the defaulted ones. `_take` substitutes a
+    # default for None so downstream code never handles it — but that
+    # substitution is exactly the absent/empty collapse this node now reports
+    # on, so the block report must read the raw value, not the defaulted one.
+    # Caught by the test: last_turn_sources returning None rendered as "empty".
+    _raw: dict[str, object] = {}
+
+    def _take(fut, default, name: str = ""):
+        if fut is None:
+            _raw[name] = "__not_run__"
+            return default
+        val, target, ms, exc = fut.result()
+        _raw[name] = val if exc is None else "__error__"
+        try:
+            from app.telemetry.spans import record_ambient, KIND_DB_READ
+            record_ambient(KIND_DB_READ, target, ms=ms)
+        except Exception:
+            pass
+        if exc is not None:
+            logger.warning("[state_load] %s read failed: %s", target, exc)
+            return default
+        return val if val is not None else default
+
+    ctx.last_turns = _take(_f_msgs, [], "last_turns")
+    ctx.last_turn_sources = _take(_f_srcs, [], "last_turn_sources")
+    ctx.prior_resolved_entities = _take(_f_prior, [], "prior_resolved")
     # Rolling rich context for the integrator. Prefer the canonical
     # per-thread brief (chat_threads.summary_long), updated in place each
     # turn; fall back to the latest non-null per-turn context_summary for
-    # legacy threads predating migration 036. Threaded into the integrator
-    # so it can REFINE rather than rebuild.
-    _prev_summary: str | None = get_thread_rolling_summary(ctx.thread_id)
+    # legacy threads predating migration 036.
+    _prev_summary: str | None = _take(_f_summ, None, "rolling_summary")
+    _summary_from_canonical = bool(_prev_summary)
     if not _prev_summary:
         for _turn in (ctx.last_turns or []):
             if not isinstance(_turn, dict):
@@ -111,7 +171,38 @@ def run_state_load(
                 _prev_summary = cs
                 break
     ctx.previous_thread_summary = _prev_summary
+    # WHICH BLOCKS WERE ASSEMBLED, AND WHICH WERE ABSENT — the decision this
+    # node actually makes. Per cluster 1: the ABSENT ones are the signal. A
+    # block that is missing and a block that is empty must be distinguishable,
+    # so each records present/empty rather than a truthiness roll-up, and the
+    # summary records WHERE it came from — the canonical per-thread brief or
+    # the legacy per-turn fallback, which are different states of the corpus
+    # that both render as "a summary exists".
+    def _blk(name: str) -> str:
+        v = _raw.get(name, "__missing__")
+        if v == "__not_run__":
+            return "not_run"
+        if v == "__error__":
+            return "read_failed"
+        return "absent" if v is None else ("empty" if not v else "present")
+
+    record_decision(
+        "state_load", "blocks_assembled", logger_=logger,
+        last_turns=_blk("last_turns"),
+        last_turn_sources=_blk("last_turn_sources"),
+        prior_resolved=("skipped_not_continuation" if not ctx.is_continuation
+                        else _blk("prior_resolved")),
+        rolling_summary=(_blk("rolling_summary") if _summary_from_canonical
+                         else ("from_turn_fallback" if _prev_summary else "absent")),
+        merged_keys=len(merged or {}),
+    )
     route = route_context(ctx.message, merged, ctx.last_turns, reset_reason=reset_reason)
+    record_decision(
+        "state_load", f"route_{str(route).lower()}", logger_=logger,
+        reset_reason=reset_reason, had_delta=bool(delta),
+        open_slots=len(getattr(thread_state, "open_slots", None) or []),
+        turns_available=len(ctx.last_turns or []),
+    )
 
     # Improvements 3 & 5: on STANDALONE, evict slots and result cache so stale context doesn't bleed
     if route == "STANDALONE" and (thread_state.open_slots or thread_state.resolved_slots):

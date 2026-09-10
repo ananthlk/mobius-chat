@@ -224,3 +224,84 @@ def test_empty_thread_id_is_absence_not_failure(store):
     from app.storage.threads import get_state, get_state_with_version
     assert get_state("") is None
     assert get_state_with_version("  ") == (None, None)
+
+
+# ── the four independent reads run CONCURRENTLY (P1 latency) ────────
+# Measured before changing: p50 1592ms, p95 5600ms over n=211 spans, with DB
+# reads accounting for ~1,796ms/turn — the reads ARE this node. Four take
+# nothing but thread_id and none consumes another's result.
+
+def test_the_four_independent_reads_are_not_sequential(store, monkeypatch):
+    """Proves concurrency by wall-clock, not by reading the source: four reads
+    that each sleep 60ms must finish in well under 240ms."""
+    import time
+    import app.stages.state_load as sl
+
+    def _slow(v):
+        def _f(*a, **k):
+            time.sleep(0.06)
+            return v
+        return _f
+
+    monkeypatch.setattr(sl, "get_last_turn_messages", _slow([]))
+    monkeypatch.setattr(sl, "get_last_turn_sources", _slow([]))
+    monkeypatch.setattr(sl, "get_prior_resolved_entities", _slow([]))
+    monkeypatch.setattr(sl, "get_thread_rolling_summary", _slow(None))
+    monkeypatch.setattr(sl, "build_context_pack", lambda *a, **k: "")
+    monkeypatch.setattr(sl, "route_context", lambda *a, **k: "CONTINUATION")
+    monkeypatch.setattr(sl, "clear_tool_results", lambda *a, **k: None)
+
+    ctx = PipelineContext(correlation_id="c-p", thread_id="t-1", message="hi")
+    ctx.is_continuation = True
+    t0 = time.perf_counter()
+    sl.run_state_load(ctx)
+    elapsed = (time.perf_counter() - t0) * 1000.0
+    assert elapsed < 200, f"reads look sequential: {elapsed:.0f}ms for 4x60ms"
+
+
+def test_a_failing_read_degrades_and_does_not_kill_the_turn(store, monkeypatch):
+    """Concurrency must not turn one slow table into a failed turn."""
+    import app.stages.state_load as sl
+
+    def _boom(*a, **k):
+        raise RuntimeError("table unavailable")
+
+    monkeypatch.setattr(sl, "get_last_turn_messages", _boom)
+    monkeypatch.setattr(sl, "get_last_turn_sources", lambda *a, **k: [])
+    monkeypatch.setattr(sl, "get_prior_resolved_entities", lambda *a, **k: [])
+    monkeypatch.setattr(sl, "get_thread_rolling_summary", lambda *a, **k: None)
+    monkeypatch.setattr(sl, "build_context_pack", lambda *a, **k: "")
+    monkeypatch.setattr(sl, "route_context", lambda *a, **k: "CONTINUATION")
+    monkeypatch.setattr(sl, "clear_tool_results", lambda *a, **k: None)
+
+    ctx = PipelineContext(correlation_id="c-f", thread_id="t-1", message="hi")
+    sl.run_state_load(ctx)
+    assert ctx.last_turns == [], "a failed read should degrade to empty, not raise"
+
+
+def test_absent_and_empty_blocks_are_distinguishable(store, monkeypatch):
+    """The decision this node makes is which blocks were found and which were
+    ABSENT — and per cluster 1 the absent ones are the signal. A truthiness
+    roll-up would collapse "no writer" into "nothing to write"."""
+    import io, logging
+    import app.stages.state_load as sl
+    monkeypatch.setattr(sl, "get_last_turn_messages", lambda *a, **k: [])
+    monkeypatch.setattr(sl, "get_last_turn_sources", lambda *a, **k: None)
+    monkeypatch.setattr(sl, "get_prior_resolved_entities", lambda *a, **k: [])
+    monkeypatch.setattr(sl, "get_thread_rolling_summary", lambda *a, **k: None)
+    monkeypatch.setattr(sl, "build_context_pack", lambda *a, **k: "")
+    monkeypatch.setattr(sl, "route_context", lambda *a, **k: "STANDALONE")
+    monkeypatch.setattr(sl, "clear_tool_results", lambda *a, **k: None)
+
+    buf = io.StringIO(); h = logging.StreamHandler(buf)
+    lg = logging.getLogger("app.stages.state_load"); lg.addHandler(h); lg.setLevel(logging.INFO)
+    try:
+        ctx = PipelineContext(correlation_id="c-b", thread_id="t-1", message="hi")
+        sl.run_state_load(ctx)
+    finally:
+        lg.removeHandler(h)
+    out = buf.getvalue()
+    assert "blocks_assembled" in out
+    assert "last_turns='empty'" in out          # returned [], not missing
+    assert "last_turn_sources='absent'" in out  # returned None
+    assert "route_standalone" in out            # the routing decision, separately
