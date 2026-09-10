@@ -65,22 +65,31 @@ def test_autonomy_reason_is_recorded_not_just_the_mode(profile, sensitive,
 
 
 # ── active_context: a TTL that is decremented and never enforced ────
-def test_expired_context_is_still_served_and_now_says_so():
-    """expires_after_turns is read and decremented in this module and compared
-    NOWHERE in app/. At ttl == 0 the guard stops counting and the context is
-    returned anyway, so it never expires.
+def test_ttl_no_writer_is_distinguishable_from_ttl_expired():
+    """`expires_after_turns` is INERT IN ALL THREE DIRECTIONS: never written
+    (the only assignments in app/ are the decrements themselves), therefore
+    never counted down, therefore never compared.
 
-    Deliberately asserts the CURRENT behaviour: fixing it changes what the model
-    sees on a later turn, which needs a ruling, not a telemetry pass. The test
-    exists so the day someone fixes it, this fails and they find the note."""
+    My first version of this recording emitted `expired_but_served=(ttl<=0)`,
+    which is True on EVERY row for exactly that reason — a field that can hold
+    one value while passing "producer exists", "consumer exists" and "query
+    returns rows". That is the is_fallback defect, reproduced in a field added
+    hours after naming it. Hence: record the RAW value and whether the KEY IS
+    PRESENT, because "no writer" and "expired" are different facts.
+    """
     from app.pipeline.active_context import load_active_context
     buf, lg, h = _cap("app.pipeline.active_context")
     try:
-        out = load_active_context({"active_context": {"k": 1, "expires_after_turns": 0}})
+        load_active_context({"active_context": {"k": 1}})                       # no key
+        load_active_context({"active_context": {"k": 1, "expires_after_turns": 3}})
     finally:
         lg.removeHandler(h)
-    assert out == {"k": 1, "expires_after_turns": 0}, "TTL now expires — see the note in this test"
-    assert "expired_but_served=True" in buf.getvalue()
+    out = buf.getvalue()
+    assert "ttl_key_present=False" in out and "ttl_raw=None" in out
+    assert "ttl_key_present=True" in out and "ttl_raw=2" in out
+    # the field must take more than one value, or it carries nothing
+    assert out.count("ttl_key_present=False") >= 1
+    assert out.count("ttl_key_present=True") >= 1
 
 
 def test_the_absence_branch_is_recorded_too():
@@ -160,3 +169,42 @@ def test_block_and_allow_are_distinct_targets():
         lg.removeHandler(h)
     out = buf.getvalue()
     assert "allowed" in out and "blocked_repeat" in out
+
+
+# ── the sporadic miss: argument precedence, not the manifest ────────
+
+def test_numeric_carc_is_not_beaten_by_a_carc_group():
+    """`lookup = carc_group or str(carc) if carc else carc_group` parses as
+    `(carc_group or str(carc)) if carc else carc_group` — a conditional binds
+    looser than `or` — so a carc_group WON over a correct numeric carc. The
+    endpoint is case-sensitive (`197` hits, `PRECERT` hits, `precert` -> {}),
+    so a turn holding the right code sent the wrong key and reported no
+    playbook. This is the live "carc 197 / sunshine health" miss."""
+    carc_group, carc = "precert", 197
+
+    # the old expression, kept as the thing being guarded against
+    old = carc_group or str(carc) if carc else carc_group
+    assert old == "precert", "the historical bug no longer reproduces — check the test"
+
+    # what the fix must produce: numeric first, group normalised as fallback
+    lookups = []
+    if carc:
+        lookups.append(str(carc))
+    if carc_group and carc_group.upper() not in lookups:
+        lookups.append(carc_group.upper())
+    assert lookups[0] == "197", "numeric carc must be tried first"
+    assert "PRECERT" in lookups, "group must survive as an upper-cased fallback"
+
+
+def test_the_fix_is_in_the_source_not_only_in_this_test():
+    """Searches CODE, not raw text. The old expression still appears in the
+    comment that explains why it was wrong, and a substring search would fail
+    forever — with the obvious "fix" being to delete the explanation."""
+    import inspect
+    from app.pipeline import react_loop
+    code = "\n".join(
+        ln for ln in inspect.getsource(react_loop).splitlines()
+        if not ln.lstrip().startswith("#")
+    )
+    assert "lookup = carc_group or str(carc) if carc else carc_group" not in code
+    assert "_lookups" in code

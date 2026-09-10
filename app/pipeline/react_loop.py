@@ -3198,7 +3198,33 @@ def _execute_tool(
                 payor = (inputs.get("payor") or "").strip()
                 carc_group = (inputs.get("carc_group") or "").strip()
                 carc = inputs.get("carc") or 0
-                lookup = carc_group or str(carc) if carc else carc_group
+                # PRECEDENCE BUG, fixed 2026-09-10. This was:
+                #     lookup = carc_group or str(carc) if carc else carc_group
+                # which Python parses as `(carc_group or str(carc)) if carc else
+                # carc_group` — a conditional expression binds looser than `or`.
+                # So whenever the model emitted a carc_group it WON over a
+                # correct numeric carc. The endpoint is case-sensitive: `197`
+                # hits, `PRECERT` hits, `precert` returns {}. A turn carrying
+                # the right code sent the wrong key and reported "no playbook"
+                # while holding the answer.
+                #
+                # That is the sporadic miss, and it explains the sporadic part:
+                # whether a turn hit depended on whether the model happened to
+                # emit a group. Live case, "how do i appeal a carc 197 denial
+                # for sunshine health" — playbook id 55 exists, deadline 90d.
+                #
+                # NUMERIC FIRST because it is exact and unambiguous; the group
+                # is a normalised fallback. BOTH are tried, because a miss is
+                # 200 WITH {} rather than a 404, so the 404-only retry below
+                # could never fire for this case.
+                _lookups: list[str] = []
+                if carc:
+                    _lookups.append(str(carc))
+                if carc_group:
+                    _grp = carc_group.upper()          # endpoint is case-sensitive
+                    if _grp not in _lookups:
+                        _lookups.append(_grp)
+                lookup = _lookups[0] if _lookups else ""
                 if not payor or not lookup:
                     return {**_no_src(), "result": "[appeals_get_playbook] payor and (carc_group or carc) are required"}
                 emit(f"◌ Checking {payor} playbook…")
@@ -3239,8 +3265,20 @@ def _execute_tool(
                     # currently fails OPEN on — scalars pass through, so a
                     # dropped argument leaks PROVIDER deadlines and fax numbers
                     # rather than serving nothing. Guarded by a test.
-                    pb = _appeals_get(f"/playbook-guarded/{_q(payor, safe='')}/{_q(str(lookup), safe='')}",
-                                      audience="provider")
+                    pb, _hit_key = {}, ""
+                    for _k in _lookups:
+                        # A miss is 200 with {}, so "did this key work?" cannot
+                        # be answered by exception handling — it must be checked.
+                        _r = _appeals_get(
+                            f"/playbook-guarded/{_q(payor, safe='')}/{_q(_k, safe='')}",
+                            audience="provider")
+                        if isinstance(_r, dict) and _r:
+                            pb, _hit_key = _r, _k
+                            break
+                    if _hit_key and _hit_key != lookup:
+                        logger.info(
+                            "[appeals_get_playbook] alternate key hit: tried=%s hit=%r "
+                            "carc=%r carc_group=%r", _lookups, _hit_key, carc, carc_group)
                 except httpx.HTTPStatusError as _e:
                     if _e.response.status_code == 404 and carc and carc_group:
                         try:
