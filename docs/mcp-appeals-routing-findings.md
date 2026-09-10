@@ -187,3 +187,73 @@ from the registry fallback) is required in `react_loop` **as well as** hardening
 is right that it needs one log line at `mcp_adapter.py:223` recording `success` and
 `getattr(result, "isError", None)`. **I have not added it — chat builds are on hold
 pending Ananth**, and I will not open that door on a peer's request.
+
+---
+
+## 8. PROBE RESULTS, 2026-09-10 — one hypothesis dies, one new defect appears
+
+Ran Platform's `scripts/platform/probe_mcp_tool.py` (`c62129a`) inside chat's own
+`.venv`, against both servers.
+
+**Primary** (`CHAT_SKILLS_MCP_URL`, roster/credentialing):
+```
+advertises 29 tool(s)   — appeals_lookup_rules NOT among them
+call_tool('appeals_lookup_rules', {'carc':'197'})
+  isError  True                      <- attribute PRESENT, value True
+  text     'Unknown tool: appeals_lookup_rules'
+```
+
+**Appeals prototype** (the `EXTRA_MCP_URLS` entry):
+```
+advertises 5 tool(s)  — all five appeals tools
+call_tool('appeals_lookup_rules', {'carc':'197'})
+  isError  False                     <- on a REAL ERROR
+  text     '[appeals_lookup_rules] Error fetching rules for CARC 197: timed out'
+```
+
+### 🔴 NEW — the appeals server itself fails open
+
+**It returns `isError: False` on a genuine backend failure**, putting the error in
+the body text. This is independent of everything above and it changes the fix plan:
+
+> **Fixing the routing alone would send appeals calls to a server that reports its
+> own errors as success.** `call_mcp_tool` would return `(error_text, True)` → the
+> success branch → an error wrapped as a `SourceRef` named
+> `MCP: appeals_lookup_rules`, citing the timeout text as evidence. **The exact
+> symptom we are trying to remove would survive the routing fix**, with a
+> different error string.
+
+So `isError` must fail **closed**, and the adapter must not treat it as sufficient
+on its own — not merely to explain §4, but because a server we route to in
+production demonstrably does not set it. This is now the strongest argument for
+sequencing (1) ahead of (3), stronger than the groundedness point I made earlier.
+
+It also means Appeals' timeout is real and separate: the tool is reachable and
+its backend is timing out on CARC 197 right now.
+
+### The "server changed" explanation is dead
+
+The primary has **not been redeployed since 2026-09-08T13:20Z**
+(`mobius-provider-roster-credentialing-00094-5dl`), well before today's rows at
+14:12 / 14:14 / 14:35Z. Its `isError: True` has been constant throughout. So the
+primary did not transiently behave differently.
+
+### What still stands, and what it now rests on
+
+`success=True` with text `'Unknown tool: appeals_lookup_rules'` — that text is
+**exactly** the primary's, so the call did reach the primary, and the primary set
+`isError: True` on the wire. The client did not see it. **The only surviving
+explanation is that the deployed image's `mcp` SDK does not expose `isError` where
+`mcp_manager.py:127` reads it**, so `getattr(result, "isError", False)` returns its
+default and the code logs `completed`. That fits every observation: matching text,
+constant server, production's success-path log line.
+
+**I could not confirm the image's SDK version.** There is no Cloud Build record for
+the chat image (`gcloud builds list` shows deep-research and payor only — chat is
+built by `scripts/deploy.sh` locally), and docker is unavailable here. Confirming it
+needs either the image itself or Platform's proposed log line at
+`mcp_adapter.py:223`. **Still an unconfirmed lead, not a conclusion.**
+
+When it is pinned, pin to **the version in the deployed image**, not to latest —
+Platform's point, and correct: pinning forward would fix the drift and destroy the
+evidence in one commit.
