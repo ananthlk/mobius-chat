@@ -199,3 +199,55 @@ class TestWriteParamsAreTransportSafe:
                             now=datetime.now(UTC))
         params, _ = self._params(att)
         assert params["posted_at"] is None
+
+
+class TestRowIsSelfDescribing:
+    """The promise is stored in the row, not referenced by (version, tier).
+
+    Governor §7a: "promised and delivered side by side in one row — a delivered
+    number alone cannot be judged." The rejected alternative was to resolve
+    `v1 + thinking -> 95.0` by reading promise.py at the right commit: a join
+    whose far side is a SOURCE TREE. `PROMISE_VERSION`'s "never edit a version's
+    values in place" is a comment, not a constraint — edit `_TERMS` without
+    bumping the version and every historical row silently changes meaning,
+    retroactively, with nothing able to detect it.
+    """
+
+    def test_promised_terms_travel_with_the_delivered_ones(self):
+        from app.pipeline.react.promise import close_promise, open_promise
+        a = close_promise(open_promise("agentic", datetime.now(UTC)),
+                          correlation_id="c", outcome="completed",
+                          now=datetime.now(UTC) + timedelta(seconds=61),
+                          worker_latency_s=48.0)
+        assert (a.promised_latency_s, a.promised_cost_c, a.promised_quality) == (95.0, 81.0, "best")
+        # judgeable without reading any source:
+        assert a.delivered_latency_s < a.promised_latency_s
+
+    def test_a_promise_of_nothing_stores_nulls_not_a_neighbouring_tier(self):
+        from app.pipeline.react.promise import close_promise, open_promise
+        a = close_promise(open_promise("task", datetime.now(UTC)),
+                          correlation_id="c", outcome="completed",
+                          now=datetime.now(UTC))
+        assert (a.promised_latency_s, a.promised_cost_c, a.promised_quality) == (None, None, None)
+        assert a.promise_version == "v1", "a promise WAS made — of nothing"
+
+    def test_no_promise_at_all_stores_nulls_and_no_version(self):
+        from app.pipeline.react.promise import close_promise
+        a = close_promise(None, correlation_id="c", outcome="failed",
+                          now=datetime.now(UTC))
+        assert a.promised_latency_s is None and a.promise_version is None
+
+    def test_promised_terms_are_transport_safe(self):
+        """Same contract as the timestamps — they must survive JSON."""
+        import json
+        from unittest.mock import patch as _patch
+        from app.pipeline.react import promise as mod
+        from app.pipeline.react.promise import close_promise, open_promise
+        captured = {}
+        with _patch("app.db_client.db_execute",
+                    side_effect=lambda sql, db, params=None: captured.update(params or {}) or {}):
+            mod.write(close_promise(open_promise("quick", datetime.now(UTC)),
+                                    correlation_id="c", outcome="completed",
+                                    now=datetime.now(UTC)))
+        json.dumps(captured)
+        assert captured["p_lat"] == 13.0 and captured["p_qual"] == "none"

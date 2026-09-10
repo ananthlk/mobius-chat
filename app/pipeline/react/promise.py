@@ -175,6 +175,11 @@ class Attestation:
     posted_at: datetime | None
     published_at: datetime
     outcome: str
+    # The promise itself, copied in. See migration 065's header for why this is
+    # stored rather than resolved from (promise_version, tier) against source.
+    promised_latency_s: float | None
+    promised_cost_c: float | None
+    promised_quality: str | None
     delivered_latency_s: float | None
     worker_latency_s: float | None
     delivered_cost_c: float | None = None      # step 3 — NULL in step 1
@@ -223,6 +228,9 @@ def close_promise(
         posted_at=posted,
         published_at=now,
         outcome=outcome or "unknown",
+        promised_latency_s=(p.latency_s if p is not None else None),
+        promised_cost_c=(p.cost_c if p is not None else None),
+        promised_quality=(p.quality if p is not None else None),
         delivered_latency_s=delivered,
         worker_latency_s=worker_latency_s,
         notes=notes,
@@ -243,11 +251,13 @@ def write(a: Attestation) -> None:
             """
             INSERT INTO turn_attestations (
                 correlation_id, promise_version, tier, posted_at, published_at,
-                outcome, delivered_latency_s, worker_latency_s,
+                outcome, promised_latency_s, promised_cost_c, promised_quality,
+                delivered_latency_s, worker_latency_s,
                 delivered_cost_c, delivered_quality, notes
             )
             VALUES (:cid, :ver, :tier, :posted_at, :published_at,
-                    :outcome, :delivered, :worker, :cost, :quality, :notes)
+                    :outcome, :p_lat, :p_cost, :p_qual,
+                    :delivered, :worker, :cost, :quality, :notes)
             ON CONFLICT (correlation_id) DO NOTHING
             """,
             _DB,
@@ -265,6 +275,9 @@ def write(a: Attestation) -> None:
                 "posted_at": a.posted_at.isoformat() if a.posted_at else None,
                 "published_at": a.published_at.isoformat(),
                 "outcome": a.outcome,
+                "p_lat": a.promised_latency_s,
+                "p_cost": a.promised_cost_c,
+                "p_qual": a.promised_quality,
                 "delivered": a.delivered_latency_s,
                 "worker": a.worker_latency_s,
                 "cost": a.delivered_cost_c,
@@ -294,6 +307,9 @@ def write(a: Attestation) -> None:
                 "outcome": a.outcome,
                 "posted_at": a.posted_at.isoformat() if a.posted_at else None,
                 "published_at": a.published_at.isoformat(),
+                "promised_latency_s": a.promised_latency_s,
+                "promised_cost_c": a.promised_cost_c,
+                "promised_quality": a.promised_quality,
                 "delivered_latency_s": a.delivered_latency_s,
                 "worker_latency_s": a.worker_latency_s,
                 "queue_wait_s": (
@@ -321,7 +337,8 @@ def read(correlation_id: str) -> dict | None:
         res = db_query(
             """
             SELECT correlation_id, promise_version, tier, posted_at, published_at,
-                   outcome, delivered_latency_s, worker_latency_s,
+                   outcome, promised_latency_s, promised_cost_c, promised_quality,
+                   delivered_latency_s, worker_latency_s,
                    delivered_cost_c, delivered_quality, notes
             FROM turn_attestations WHERE correlation_id = :cid
             """,

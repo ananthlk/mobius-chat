@@ -47,6 +47,20 @@ CREATE TABLE IF NOT EXISTS turn_attestations (
     posted_at            TIMESTAMPTZ,
     published_at         TIMESTAMPTZ NOT NULL,
     outcome              TEXT        NOT NULL,
+    -- THE PROMISE, stored inline rather than referenced by (promise_version,
+    -- tier). Governor section 7a: "promised and delivered side by side in one
+    -- row -- a delivered number alone cannot be judged."
+    --
+    -- The alternative was to resolve v1+thinking -> 95.0 by reading promise.py
+    -- at the right commit. That is a join whose far side is a SOURCE TREE, and
+    -- PROMISE_VERSION's "never edit a version's values in place" rule is a
+    -- COMMENT, not a constraint: edit _TERMS["thinking"] without bumping the
+    -- version and every historical row silently changes meaning, retroactively,
+    -- with nothing to detect it. Three columns make each row self-describing
+    -- and cost ~1,100 rows a month.
+    promised_latency_s   DOUBLE PRECISION,
+    promised_cost_c      DOUBLE PRECISION,
+    promised_quality     TEXT,
     delivered_latency_s  DOUBLE PRECISION,
     worker_latency_s     DOUBLE PRECISION,
     delivered_cost_c     DOUBLE PRECISION,
@@ -64,3 +78,10 @@ CREATE INDEX IF NOT EXISTS turn_attestations_outcome_idx
     ON turn_attestations (outcome, published_at DESC);
 CREATE INDEX IF NOT EXISTS turn_attestations_tier_idx
     ON turn_attestations (tier, published_at DESC);
+
+-- The table already exists in dev from an earlier apply, so the columns above
+-- are added here too. IF NOT EXISTS on every one -- run_migrations re-applies
+-- this file on every boot.
+ALTER TABLE turn_attestations ADD COLUMN IF NOT EXISTS promised_latency_s DOUBLE PRECISION;
+ALTER TABLE turn_attestations ADD COLUMN IF NOT EXISTS promised_cost_c    DOUBLE PRECISION;
+ALTER TABLE turn_attestations ADD COLUMN IF NOT EXISTS promised_quality   TEXT;
