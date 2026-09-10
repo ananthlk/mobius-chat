@@ -109,10 +109,16 @@ KIND_TOOL_RESULT = "tool.result"
 # "N calls came back empty for payors that DO have playbooks", which is the
 # actual claim under test.
 KIND_TOOL_ARG = "tool.arg"
+# A DECISION a node made, targeted by the branch it took. Distinct from a span
+# (which says how long something ran) because a node can be fast and still be
+# choosing wrongly — the governor's evaluate() measures 0ms and decides whether
+# a turn gets another round. Counting decisions by branch is what makes "did
+# this node's behaviour change?" answerable without reading logs.
+KIND_DECISION = "decision"
 
 _KINDS = {KIND_DB_READ, KIND_DB_WRITE, KIND_DB_ACQUIRE, KIND_LLM, KIND_HTTP, KIND_ROUND,
           KIND_TOOL_OFFERED, KIND_TOOL_EMITTED, KIND_TOOL_DISPATCHED,
-          KIND_TOOL_RESULT, KIND_TOOL_ARG}
+          KIND_TOOL_RESULT, KIND_TOOL_ARG, KIND_DECISION}
 
 # Span names are NODE KEYS from the chat schema, not ad-hoc labels.
 #

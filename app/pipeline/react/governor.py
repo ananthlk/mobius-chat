@@ -24,10 +24,18 @@ this file only supplies the mapping function.
 """
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from typing import Literal
 from app.telemetry.spans import traced  # P2b node instrumentation
+
+# This module had NO logger object at all — which is why it read as "zero
+# logger calls" in the audit. The absence was not a style choice; there was
+# nothing to call. Adding the log line without this would have raised NameError
+# straight into the surrounding `except Exception: pass` and logged nothing,
+# forever, while the node counted as instrumented.
+logger = logging.getLogger(__name__)
 
 Directive = Literal["search", "consolidate", "extend", "finalize", "complete"]
 ConfidenceBar = Literal["high", "medium", "low"]
@@ -127,6 +135,48 @@ class RoundState:
 
 @traced("governor")
 def evaluate(contract: ProductPromiseContract, state: RoundState) -> tuple[Directive, str]:
+    """Decide the round directive, and RECORD the decision with its inputs.
+
+    Wraps the pure `_evaluate` below so the decision logic stays free of I/O and
+    directly testable, while the recording happens once at a single exit.
+
+    Why this node needed instrumenting at all: it had zero logger calls and zero
+    structured signal, and it decides whether a turn gets another round — the
+    control loop of the whole product. Its span already existed and measures
+    0ms, which is exactly the trap: a node can be instantaneous and still be
+    choosing wrongly, so timing told us nothing about it.
+
+    What is recorded follows the assertability rule. "governor granted an
+    extension" cannot be checked against anything. "extend, rounds_left 0,
+    ext_avail 1, elapsed 8.2s, soft_target 12s, bar medium" can — every input
+    that could have changed the branch travels with the branch.
+    """
+    directive, reason = _evaluate(contract, state)
+    try:
+        from app.telemetry import spans as _sp
+        # Target is the DIRECTIVE, so counts group by decision and a shift in
+        # the mix is visible without parsing anything.
+        _sp.record_ambient(_sp.KIND_DECISION, f"governor:{directive}")
+    except Exception:
+        pass
+    try:
+        logger.info(
+            "[governor] %s — %s | proposes_complete=%s confidence=%s critic=%s "
+            "grounded=%s elapsed=%.1fs soft_target=%ss hard_ceiling=%ss "
+            "rounds_left=%s ext_avail=%s bar=%s",
+            directive, reason,
+            state.proposes_complete, state.self_reported_confidence,
+            state.critic_verdict, state.groundedness_passed,
+            state.elapsed_s, contract.soft_target_s, contract.hard_ceiling_s,
+            state.base_rounds_remaining, state.extension_rounds_available,
+            contract.confidence_bar,
+        )
+    except Exception:
+        pass
+    return directive, reason
+
+
+def _evaluate(contract: ProductPromiseContract, state: RoundState) -> tuple[Directive, str]:
     """Pure function — no I/O, no side effects. Returns (directive, reason).
     Precedence order matches SPEC_REACT_PRODUCT_PROMISE exactly; first match
     wins. `reason` is a short human-readable string for round_directive_text()
